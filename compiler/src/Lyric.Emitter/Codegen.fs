@@ -1,0 +1,902 @@
+/// IL generation for expression and statement bodies.
+///
+/// E3 introduces a `FunctionCtx` that carries the per-function IL
+/// state: the scope stack of local variables, the loop-label stack
+/// for break/continue, and the enclosing return type so `return` can
+/// validate at IL-time. `emitExpr` / `emitStatement` / `emitBlock`
+/// all take this context now.
+module Lyric.Emitter.Codegen
+
+open System
+open System.Collections.Generic
+open System.Reflection
+open System.Reflection.Emit
+open Lyric.Lexer
+open Lyric.Parser.Ast
+
+type private ClrType = System.Type
+
+/// A single loop frame — break exits, continue rejoins the head.
+type LoopFrame =
+    { BreakLabel:    Label
+      ContinueLabel: Label }
+
+/// Per-function emit context. Mutable on purpose: F# expression
+/// emission threads through a long mutual-recursion graph and a
+/// record makes the call sites unreadable.
+type FunctionCtx =
+    { IL:         ILGenerator
+      ReturnType: ClrType
+      Scopes:     Stack<Dictionary<string, LocalBuilder>>
+      Loops:      Stack<LoopFrame>
+      /// Parameters by name → (CLR-arg-index, declared CLR type).
+      Params:     Dictionary<string, int * ClrType>
+      /// Same-package functions visible at codegen time. E4 only
+      /// resolves single-segment calls; cross-package linking is
+      /// M1.4 work.
+      Funcs:      Dictionary<string, MethodBuilder>
+      /// Same-package records visible at codegen time. E5 supports
+      /// constructor calls and field reads; mutation via `with`
+      /// lands in E5 polish.
+      Records:    Lyric.Emitter.Records.RecordTable
+      /// Same-package enums visible at codegen time.
+      Enums:      Lyric.Emitter.Records.EnumTable
+      /// `Red` / `Color.Red` → (enum info, case info). E6 only
+      /// recognises these for variant-free enums; full-fat unions
+      /// land in a later slice.
+      EnumCases:  Lyric.Emitter.Records.EnumCaseLookup }
+
+module FunctionCtx =
+
+    let make
+            (il: ILGenerator)
+            (returnType: ClrType)
+            (paramList: (string * ClrType) list)
+            (funcs: Dictionary<string, MethodBuilder>)
+            (records: Lyric.Emitter.Records.RecordTable)
+            (enums: Lyric.Emitter.Records.EnumTable)
+            (enumCases: Lyric.Emitter.Records.EnumCaseLookup) : FunctionCtx =
+        let s = Stack<Dictionary<string, LocalBuilder>>()
+        s.Push(Dictionary())
+        let p = Dictionary<string, int * ClrType>()
+        paramList
+        |> List.iteri (fun i (name, ty) -> p.[name] <- (i, ty))
+        { IL         = il
+          ReturnType = returnType
+          Scopes     = s
+          Loops      = Stack()
+          Params     = p
+          Funcs      = funcs
+          Records    = records
+          Enums      = enums
+          EnumCases  = enumCases }
+
+    let pushScope (ctx: FunctionCtx) : unit =
+        ctx.Scopes.Push(Dictionary())
+
+    let popScope (ctx: FunctionCtx) : unit =
+        ctx.Scopes.Pop() |> ignore
+
+    let defineLocal (ctx: FunctionCtx) (name: string) (ty: ClrType) : LocalBuilder =
+        let lb = ctx.IL.DeclareLocal(ty)
+        let frame = ctx.Scopes.Peek()
+        frame.[name] <- lb
+        lb
+
+    let tryLookup (ctx: FunctionCtx) (name: string) : LocalBuilder option =
+        let mutable found : LocalBuilder option = None
+        let arr = ctx.Scopes.ToArray()  // top-down
+        let mutable i = 0
+        while found.IsNone && i < arr.Length do
+            match arr.[i].TryGetValue name with
+            | true, lb -> found <- Some lb
+            | _        -> ()
+            i <- i + 1
+        found
+
+    let pushLoop (ctx: FunctionCtx) (frame: LoopFrame) : unit =
+        ctx.Loops.Push frame
+
+    let popLoop (ctx: FunctionCtx) : unit =
+        ctx.Loops.Pop() |> ignore
+
+    let currentLoop (ctx: FunctionCtx) : LoopFrame option =
+        if ctx.Loops.Count = 0 then None else Some (ctx.Loops.Peek())
+
+// ---------------------------------------------------------------------------
+// Stdlib bindings.
+// ---------------------------------------------------------------------------
+
+let private printlnString : Lazy<MethodInfo> =
+    lazy (
+        let consoleTy = typeof<Lyric.Stdlib.Console>
+        let mi = consoleTy.GetMethod("Println", [| typeof<string> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwith "Lyric.Stdlib.Console::Println(string) not found")
+
+let private printlnAny : Lazy<MethodInfo> =
+    lazy (
+        let consoleTy = typeof<Lyric.Stdlib.Console>
+        let mi = consoleTy.GetMethod("PrintlnAny", [| typeof<obj> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwith "Lyric.Stdlib.Console::PrintlnAny(object) not found")
+
+// ---------------------------------------------------------------------------
+// CLR-type predicates used by the binop emitter.
+// ---------------------------------------------------------------------------
+
+let private isFloatClr (t: ClrType) : bool =
+    t = typeof<single> || t = typeof<double>
+
+let private isUnsignedClr (t: ClrType) : bool =
+    t = typeof<byte> || t = typeof<uint16>
+    || t = typeof<uint32> || t = typeof<uint64>
+
+// ---------------------------------------------------------------------------
+// Literal helpers.
+// ---------------------------------------------------------------------------
+
+let private emitLdcI4 (il: ILGenerator) (n: int) : unit =
+    match n with
+    | -1 -> il.Emit(OpCodes.Ldc_I4_M1)
+    | 0  -> il.Emit(OpCodes.Ldc_I4_0)
+    | 1  -> il.Emit(OpCodes.Ldc_I4_1)
+    | 2  -> il.Emit(OpCodes.Ldc_I4_2)
+    | 3  -> il.Emit(OpCodes.Ldc_I4_3)
+    | 4  -> il.Emit(OpCodes.Ldc_I4_4)
+    | 5  -> il.Emit(OpCodes.Ldc_I4_5)
+    | 6  -> il.Emit(OpCodes.Ldc_I4_6)
+    | 7  -> il.Emit(OpCodes.Ldc_I4_7)
+    | 8  -> il.Emit(OpCodes.Ldc_I4_8)
+    | n when n >= -128 && n <= 127 -> il.Emit(OpCodes.Ldc_I4_S, sbyte n)
+    | _  -> il.Emit(OpCodes.Ldc_I4, n)
+
+let private intLiteralType (suffix: IntSuffix) : ClrType =
+    match suffix with
+    | NoIntSuffix | I32 | I16 | I8 -> typeof<int32>
+    | I64                          -> typeof<int64>
+    | U8                           -> typeof<byte>
+    | U16                          -> typeof<uint16>
+    | U32                          -> typeof<uint32>
+    | U64                          -> typeof<uint64>
+
+let private floatLiteralType (suffix: FloatSuffix) : ClrType =
+    match suffix with
+    | NoFloatSuffix | F64 -> typeof<double>
+    | F32                 -> typeof<single>
+
+let private emitIntLiteral (il: ILGenerator) (value: uint64) (suffix: IntSuffix) : ClrType =
+    let ty = intLiteralType suffix
+    if ty = typeof<int64> then
+        il.Emit(OpCodes.Ldc_I8, int64 value)
+    elif ty = typeof<uint64> then
+        il.Emit(OpCodes.Ldc_I8, int64 value)
+        il.Emit(OpCodes.Conv_U8) |> ignore
+    elif ty = typeof<uint32> then
+        emitLdcI4 il (int (uint32 value))
+        il.Emit(OpCodes.Conv_U4) |> ignore
+    elif ty = typeof<uint16> then
+        emitLdcI4 il (int (uint16 value))
+        il.Emit(OpCodes.Conv_U2) |> ignore
+    elif ty = typeof<byte> then
+        emitLdcI4 il (int (byte value))
+        il.Emit(OpCodes.Conv_U1) |> ignore
+    else
+        emitLdcI4 il (int value)
+    ty
+
+let private emitFloatLiteral (il: ILGenerator) (value: double) (suffix: FloatSuffix) : ClrType =
+    let ty = floatLiteralType suffix
+    if ty = typeof<single> then il.Emit(OpCodes.Ldc_R4, single value)
+    else                        il.Emit(OpCodes.Ldc_R8, value)
+    ty
+
+let private boxIfValue (il: ILGenerator) (ty: ClrType) : unit =
+    if ty.IsValueType then il.Emit(OpCodes.Box, ty)
+
+// ---------------------------------------------------------------------------
+// Read-only type probe.
+//
+// `peekExprType` returns the CLR type that `emitExpr` *would* push,
+// without actually emitting any IL. It only covers the shapes E7
+// needs (the seed-element type for an EList literal); call sites
+// for other kinds fall back to typeof<obj> so the emit can still
+// proceed (the actual element types still drive the emit).
+// ---------------------------------------------------------------------------
+
+let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
+    match e.Kind with
+    | ELiteral (LString _)        -> typeof<string>
+    | ELiteral (LBool _)          -> typeof<bool>
+    | ELiteral (LInt (_, suffix)) -> intLiteralType suffix
+    | ELiteral (LFloat (_, s))    -> floatLiteralType s
+    | ELiteral (LChar _)          -> typeof<char>
+    | ELiteral LUnit              -> typeof<int32>
+    | EParen inner                -> peekExprType ctx inner
+    | EPath { Segments = [name] } ->
+        match FunctionCtx.tryLookup ctx name with
+        | Some lb -> lb.LocalType
+        | None ->
+            match ctx.Params.TryGetValue name with
+            | true, (_, t) -> t
+            | _            -> typeof<obj>
+    | _ -> typeof<obj>
+
+// ---------------------------------------------------------------------------
+// Expression / statement emission.
+// ---------------------------------------------------------------------------
+
+let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
+    let il = ctx.IL
+    match e.Kind with
+
+    // ---- literals -----------------------------------------------------
+
+    | ELiteral (LString s) ->
+        il.Emit(OpCodes.Ldstr, s)
+        typeof<string>
+
+    | ELiteral (LBool b) ->
+        emitLdcI4 il (if b then 1 else 0)
+        typeof<bool>
+
+    | ELiteral (LInt (value, suffix)) ->
+        emitIntLiteral il value suffix
+
+    | ELiteral (LFloat (value, suffix)) ->
+        emitFloatLiteral il value suffix
+
+    | ELiteral (LChar c) ->
+        emitLdcI4 il c
+        typeof<char>
+
+    | ELiteral LUnit ->
+        emitLdcI4 il 0
+        typeof<int32>
+
+    // ---- list literal -------------------------------------------------
+
+    | EList items ->
+        // Element type comes from the first element's read-only
+        // probe; empty lists default to obj[].
+        let elemTy =
+            match items with
+            | [] -> typeof<obj>
+            | first :: _ -> peekExprType ctx first
+        emitLdcI4 il (List.length items)
+        il.Emit(OpCodes.Newarr, elemTy)
+        items
+        |> List.iteri (fun i item ->
+            il.Emit(OpCodes.Dup)
+            emitLdcI4 il i
+            let _ = emitExpr ctx item
+            il.Emit(OpCodes.Stelem, elemTy))
+        elemTy.MakeArrayType()
+
+    // ---- indexing -----------------------------------------------------
+
+    | EIndex (recv, [idx]) ->
+        let recvTy = emitExpr ctx recv
+        let _ = emitExpr ctx idx
+        if recvTy.IsArray then
+            let elemTy =
+                match Option.ofObj (recvTy.GetElementType()) with
+                | Some t -> t
+                | None   -> typeof<obj>
+            il.Emit(OpCodes.Ldelem, elemTy)
+            elemTy
+        else
+            failwithf "E7 codegen: indexing on non-array %s" recvTy.Name
+
+    | EIndex (_, idxs) ->
+        failwithf "E7 codegen: multi-index access not yet supported (%d indices)"
+            (List.length idxs)
+
+    // ---- tuple literal ------------------------------------------------
+
+    | ETuple [single] -> emitExpr ctx single
+
+    | ETuple items when List.length items >= 2 && List.length items <= 7 ->
+        let elemTypes = ResizeArray<ClrType>()
+        for item in items do
+            let t = emitExpr ctx item
+            elemTypes.Add t
+        let openTy =
+            match items.Length with
+            | 2 -> typedefof<System.ValueTuple<_, _>>
+            | 3 -> typedefof<System.ValueTuple<_, _, _>>
+            | 4 -> typedefof<System.ValueTuple<_, _, _, _>>
+            | 5 -> typedefof<System.ValueTuple<_, _, _, _, _>>
+            | 6 -> typedefof<System.ValueTuple<_, _, _, _, _, _>>
+            | _ -> typedefof<System.ValueTuple<_, _, _, _, _, _, _>>
+        let argsArr = elemTypes.ToArray()
+        let closedTy = openTy.MakeGenericType(argsArr)
+        let ctor = closedTy.GetConstructor(argsArr)
+        match Option.ofObj ctor with
+        | Some c ->
+            il.Emit(OpCodes.Newobj, c)
+            closedTy
+        | None ->
+            failwithf "E7 codegen: ValueTuple ctor not found for %d args" items.Length
+
+    | ETuple items ->
+        failwithf "E7 codegen: tuple of %d elements not yet supported"
+            (List.length items)
+
+    | EParen inner -> emitExpr ctx inner
+
+    // ---- field access -------------------------------------------------
+
+    | EMember ({ Kind = EPath { Segments = [enumName] } }, caseName)
+        when ctx.Enums.ContainsKey enumName ->
+        // `Color.Green` — qualified enum case literal.
+        let info = ctx.Enums.[enumName]
+        match info.Cases |> List.tryFind (fun c -> c.Name = caseName) with
+        | Some c ->
+            emitLdcI4 il c.Ordinal
+            info.Type
+        | None ->
+            failwithf "E6 codegen: enum '%s' has no case '%s'" enumName caseName
+
+    | EMember (recv, fieldName) ->
+        let recvTy = emitExpr ctx recv
+        // Arrays / slices: `.length` lowers to `ldlen; conv.i4`.
+        if recvTy.IsArray && fieldName = "length" then
+            il.Emit(OpCodes.Ldlen)
+            il.Emit(OpCodes.Conv_I4)
+            typeof<int32>
+        else
+            // Records: walk the records dict to find a match by
+            // CLR receiver type.
+            let info =
+                ctx.Records.Values
+                |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+            match info with
+            | Some r ->
+                match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                | Some f ->
+                    il.Emit(OpCodes.Ldfld, f.Field)
+                    f.Type
+                | None ->
+                    failwithf "E5/E7 codegen: record '%s' has no field '%s'"
+                        r.Name fieldName
+            | None ->
+                failwithf "E5/E7 codegen: receiver type %s is not a known record"
+                    recvTy.Name
+
+    // ---- variable read ------------------------------------------------
+
+    | EPath { Segments = [name] } ->
+        // Order: parameter slot → local → enum case → unknown.
+        match FunctionCtx.tryLookup ctx name with
+        | Some lb ->
+            il.Emit(OpCodes.Ldloc, lb)
+            lb.LocalType
+        | None ->
+            match ctx.Params.TryGetValue name with
+            | true, (idx, pty) ->
+                il.Emit(OpCodes.Ldarg, idx)
+                pty
+            | _ ->
+                match ctx.EnumCases.TryGetValue name with
+                | true, (info, c) ->
+                    emitLdcI4 il c.Ordinal
+                    info.Type
+                | _ ->
+                    failwithf "E4 codegen: unknown name '%s'" name
+
+    | EPath { Segments = [enumName; caseName] }
+        when ctx.Enums.ContainsKey enumName ->
+        let info = ctx.Enums.[enumName]
+        match info.Cases |> List.tryFind (fun c -> c.Name = caseName) with
+        | Some c ->
+            emitLdcI4 il c.Ordinal
+            info.Type
+        | None ->
+            failwithf "E6 codegen: enum '%s' has no case '%s'" enumName caseName
+
+    // ---- prefix -------------------------------------------------------
+
+    | EPrefix (PreNeg, operand) ->
+        let t = emitExpr ctx operand
+        il.Emit(OpCodes.Neg)
+        t
+
+    | EPrefix (PreNot, operand) ->
+        let _ = emitExpr ctx operand
+        emitLdcI4 il 0
+        il.Emit(OpCodes.Ceq)
+        typeof<bool>
+
+    // ---- binary operators ---------------------------------------------
+
+    | EBinop (BAnd, lhs, rhs) ->
+        let _ = emitExpr ctx lhs
+        let lblFalse = il.DefineLabel()
+        let lblEnd   = il.DefineLabel()
+        il.Emit(OpCodes.Brfalse_S, lblFalse)
+        let _ = emitExpr ctx rhs
+        il.Emit(OpCodes.Br_S, lblEnd)
+        il.MarkLabel(lblFalse)
+        emitLdcI4 il 0
+        il.MarkLabel(lblEnd)
+        typeof<bool>
+
+    | EBinop (BOr, lhs, rhs) ->
+        let _ = emitExpr ctx lhs
+        let lblTrue = il.DefineLabel()
+        let lblEnd  = il.DefineLabel()
+        il.Emit(OpCodes.Brtrue_S, lblTrue)
+        let _ = emitExpr ctx rhs
+        il.Emit(OpCodes.Br_S, lblEnd)
+        il.MarkLabel(lblTrue)
+        emitLdcI4 il 1
+        il.MarkLabel(lblEnd)
+        typeof<bool>
+
+    | EBinop (op, lhs, rhs) ->
+        let lt = emitExpr ctx lhs
+        let _  = emitExpr ctx rhs
+        let opTy = lt
+        match op with
+        | BAdd ->
+            if isFloatClr opTy then il.Emit(OpCodes.Add)
+            elif isUnsignedClr opTy then il.Emit(OpCodes.Add_Ovf_Un)
+            else il.Emit(OpCodes.Add_Ovf)
+            opTy
+        | BSub ->
+            if isFloatClr opTy then il.Emit(OpCodes.Sub)
+            elif isUnsignedClr opTy then il.Emit(OpCodes.Sub_Ovf_Un)
+            else il.Emit(OpCodes.Sub_Ovf)
+            opTy
+        | BMul ->
+            if isFloatClr opTy then il.Emit(OpCodes.Mul)
+            elif isUnsignedClr opTy then il.Emit(OpCodes.Mul_Ovf_Un)
+            else il.Emit(OpCodes.Mul_Ovf)
+            opTy
+        | BDiv ->
+            if isUnsignedClr opTy then il.Emit(OpCodes.Div_Un)
+            else il.Emit(OpCodes.Div)
+            opTy
+        | BMod ->
+            if isUnsignedClr opTy then il.Emit(OpCodes.Rem_Un)
+            else il.Emit(OpCodes.Rem)
+            opTy
+        | BXor ->
+            il.Emit(OpCodes.Xor)
+            opTy
+        | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
+        | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BLt  ->
+            if isUnsignedClr opTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
+            typeof<bool>
+        | BGt  ->
+            if isUnsignedClr opTy then il.Emit(OpCodes.Cgt_Un) else il.Emit(OpCodes.Cgt)
+            typeof<bool>
+        | BLte ->
+            if isUnsignedClr opTy then il.Emit(OpCodes.Cgt_Un) else il.Emit(OpCodes.Cgt)
+            emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BGte ->
+            if isUnsignedClr opTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
+            emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BCoalesce -> opTy
+        | BImplies  ->
+            il.Emit(OpCodes.Pop); il.Emit(OpCodes.Pop); emitLdcI4 il 1; typeof<bool>
+        | BAnd | BOr ->
+            failwith "logical op fell through to fallback"
+
+    // ---- if-expression ------------------------------------------------
+
+    | EIf (cond, thenBranch, elseBranch, _isThen) ->
+        let _ = emitExpr ctx cond
+        match elseBranch with
+        | None ->
+            // Statement-form `if cond { ... }` — no value, no
+            // stack effect.
+            let lblEnd = il.DefineLabel()
+            il.Emit(OpCodes.Brfalse, lblEnd)
+            let thenTy = emitBranch ctx thenBranch
+            // If the then-branch left a value, drop it so the merge
+            // point is balanced.
+            if thenTy <> typeof<System.Void> then
+                il.Emit(OpCodes.Pop)
+            il.MarkLabel(lblEnd)
+            typeof<System.Void>
+        | Some elseB ->
+            let lblElse = il.DefineLabel()
+            let lblEnd  = il.DefineLabel()
+            il.Emit(OpCodes.Brfalse, lblElse)
+            let thenTy = emitBranch ctx thenBranch
+            il.Emit(OpCodes.Br, lblEnd)
+            il.MarkLabel(lblElse)
+            let elseTy = emitBranch ctx elseB
+            il.MarkLabel(lblEnd)
+            // Both branches must agree on whether they push a value.
+            if thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
+                typeof<System.Void>
+            else
+                thenTy
+
+    // ---- match (E6: enum-only patterns) -------------------------------
+
+    | EMatch (scrutinee, arms) ->
+        emitMatch ctx scrutinee arms
+
+    // ---- record construction ------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.Records.ContainsKey name ->
+        let info = ctx.Records.[name]
+        // Sort arguments into field-declaration order. Positional
+        // and named args may mix; named args win.
+        let namedMap =
+            args
+            |> List.choose (function
+                | CANamed (n, ex, _) -> Some (n, ex)
+                | _ -> None)
+            |> Map.ofList
+        let positional =
+            args
+            |> List.choose (function
+                | CAPositional ex -> Some ex
+                | _ -> None)
+        let mutable posIdx = 0
+        for f in info.Fields do
+            let argExpr =
+                match Map.tryFind f.Name namedMap with
+                | Some ex -> ex
+                | None ->
+                    if posIdx < List.length positional then
+                        let ex = List.item posIdx positional
+                        posIdx <- posIdx + 1
+                        ex
+                    else
+                        failwithf "E5 codegen: record '%s' missing field '%s'"
+                            name f.Name
+            let _ = emitExpr ctx argExpr
+            ()
+        il.Emit(OpCodes.Newobj, info.Ctor)
+        info.Type :> ClrType
+
+    // ---- user-defined call --------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.Funcs.ContainsKey name ->
+        let mb = ctx.Funcs.[name]
+        for a in args do
+            let payload =
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex
+            let _ = emitExpr ctx payload
+            ()
+        il.Emit(OpCodes.Call, mb)
+        if mb.ReturnType = typeof<System.Void> then
+            typeof<System.Void>
+        else
+            mb.ReturnType
+
+    // ---- println builtin ----------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = ["println"] } }, [arg]) ->
+        let payload =
+            match arg with
+            | CAPositional ex | CANamed (_, ex, _) -> ex
+        let argTy = emitExpr ctx payload
+        if argTy = typeof<string> then
+            il.Emit(OpCodes.Call, printlnString.Value)
+        else
+            boxIfValue il argTy
+            il.Emit(OpCodes.Call, printlnAny.Value)
+        typeof<System.Void>
+
+    | _ ->
+        failwithf "E3 codegen does not yet handle expression: %A" e.Kind
+
+and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
+    match b with
+    | EOBExpr e   -> emitExpr ctx e
+    | EOBBlock blk ->
+        emitBlock ctx blk
+        typeof<System.Void>     // a block leaves nothing on the stack
+
+/// Compile-time predicate: does `pat` always match? Identifier
+/// patterns are catch-alls *unless* the name happens to be a known
+/// enum case — Lyric uses syntactic shape, not capitalisation, to
+/// distinguish the two.
+and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
+    match pat.Kind with
+    | PWildcard -> true
+    | PBinding ("_", None) -> true
+    | PBinding (name, None) ->
+        not (ctx.EnumCases.ContainsKey name)
+    | PParen inner -> alwaysMatches ctx inner
+    | _ -> false
+
+/// Emit IL that pushes `1` onto the stack iff `pat` matches the
+/// scrutinee value already stored in `tmp`. The slot's CLR type is
+/// passed for context (e.g. enum-case ordinals).
+and private emitPatternTest
+        (ctx: FunctionCtx)
+        (tmp: LocalBuilder)
+        (slotTy: ClrType)
+        (pat: Pattern) : unit =
+    let il = ctx.IL
+    match pat.Kind with
+    | PWildcard | PBinding ("_", None) ->
+        emitLdcI4 il 1
+    | PBinding (name, None) ->
+        match ctx.EnumCases.TryGetValue name with
+        | true, (_, c) ->
+            // `case Red` — equality test against the case ordinal.
+            il.Emit(OpCodes.Ldloc, tmp)
+            emitLdcI4 il c.Ordinal
+            il.Emit(OpCodes.Ceq)
+        | _ ->
+            // Plain identifier binding — always matches; the bind
+            // happens in `emitPatternBind`.
+            emitLdcI4 il 1
+    | PParen inner ->
+        emitPatternTest ctx tmp slotTy inner
+    | PLiteral lit ->
+        // scrutinee == literal
+        il.Emit(OpCodes.Ldloc, tmp)
+        let _ =
+            match lit with
+            | LInt (v, suffix) -> emitIntLiteral il v suffix
+            | LBool b          -> emitLdcI4 il (if b then 1 else 0); typeof<bool>
+            | LChar c          -> emitLdcI4 il c; typeof<char>
+            | LFloat (v, s)    -> emitFloatLiteral il v s
+            | LString s        -> il.Emit(OpCodes.Ldstr, s); typeof<string>
+            | _ -> emitLdcI4 il 0; typeof<int32>
+        il.Emit(OpCodes.Ceq)
+    | PConstructor (path, []) ->
+        // Variant-free pattern — must be an enum case in scope.
+        let key =
+            match path.Segments with
+            | [name] -> name
+            | _ -> String.concat "." path.Segments
+        match ctx.EnumCases.TryGetValue key with
+        | true, (_, c) ->
+            il.Emit(OpCodes.Ldloc, tmp)
+            emitLdcI4 il c.Ordinal
+            il.Emit(OpCodes.Ceq)
+        | _ ->
+            failwithf "E6 codegen: unknown constructor pattern '%s'"
+                (String.concat "." path.Segments)
+    | _ ->
+        failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
+
+/// Bind any identifiers introduced by `pat` into the scope, given
+/// the scrutinee already stored in `tmp`. Names that match a known
+/// enum case are skipped — they're constructor patterns, not
+/// bindings.
+and private emitPatternBind
+        (ctx: FunctionCtx)
+        (tmp: LocalBuilder)
+        (pat: Pattern) : unit =
+    match pat.Kind with
+    | PBinding (name, None) when name <> "_" && not (ctx.EnumCases.ContainsKey name) ->
+        let lb = FunctionCtx.defineLocal ctx name tmp.LocalType
+        ctx.IL.Emit(OpCodes.Ldloc, tmp)
+        ctx.IL.Emit(OpCodes.Stloc, lb)
+    | PParen inner -> emitPatternBind ctx tmp inner
+    | _ -> ()
+
+and private emitMatch
+        (ctx: FunctionCtx)
+        (scrutinee: Expr)
+        (arms: MatchArm list) : ClrType =
+    let il = ctx.IL
+    let scrutTy = emitExpr ctx scrutinee
+    let tmp = FunctionCtx.defineLocal ctx ("__match_" + string (System.Guid.NewGuid().GetHashCode())) scrutTy
+    il.Emit(OpCodes.Stloc, tmp)
+    let endLbl = il.DefineLabel()
+    let mutable resultTy : ClrType option = None
+    arms
+    |> List.iteri (fun i arm ->
+        let nextArm = il.DefineLabel()
+        if not (alwaysMatches ctx arm.Pattern) then
+            emitPatternTest ctx tmp scrutTy arm.Pattern
+            il.Emit(OpCodes.Brfalse, nextArm)
+        FunctionCtx.pushScope ctx
+        emitPatternBind ctx tmp arm.Pattern
+        let armTy = emitBranch ctx arm.Body
+        if resultTy.IsNone then resultTy <- Some armTy
+        FunctionCtx.popScope ctx
+        il.Emit(OpCodes.Br, endLbl)
+        il.MarkLabel(nextArm)
+        ignore i)
+    // Fall-through (no arm matched): push a dummy default so the
+    // stack stays balanced. Phase 1 punt: emit the result type's
+    // zero. M1.4 will replace this with a `MatchFailure` throw.
+    match resultTy with
+    | Some t when t = typeof<System.Void> -> ()
+    | Some t when t.IsValueType ->
+        let dummy = FunctionCtx.defineLocal ctx ("__match_default") t
+        il.Emit(OpCodes.Ldloca, dummy)
+        il.Emit(OpCodes.Initobj, t)
+        il.Emit(OpCodes.Ldloc, dummy)
+    | Some _ ->
+        il.Emit(OpCodes.Ldnull)
+    | None ->
+        emitLdcI4 il 0
+    il.MarkLabel(endLbl)
+    defaultArg resultTy typeof<int32>
+
+and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
+    let il = ctx.IL
+    match s.Kind with
+
+    | SExpr e ->
+        let resultTy = emitExpr ctx e
+        if resultTy <> typeof<System.Void> then
+            il.Emit(OpCodes.Pop)
+
+    | SLocal (LBVal ({ Kind = PBinding (name, None) }, _annot, init))
+    | SLocal (LBLet (name, _annot, init)) ->
+        let initTy = emitExpr ctx init
+        let lb = FunctionCtx.defineLocal ctx name initTy
+        il.Emit(OpCodes.Stloc, lb)
+
+    | SLocal (LBVal ({ Kind = PWildcard }, _annot, init))
+    | SLocal (LBVal ({ Kind = PBinding ("_", None) }, _annot, init)) ->
+        // `val _ = expr` — evaluate for side effects, drop the
+        // result if any.
+        let initTy = emitExpr ctx init
+        if initTy <> typeof<System.Void> then
+            il.Emit(OpCodes.Pop)
+
+    | SLocal (LBVar (name, annot, initOpt)) ->
+        let initTy =
+            match initOpt with
+            | Some init ->
+                let it = emitExpr ctx init
+                Some it
+            | None -> None
+        // Without inference, default-typed `var` falls back to int32
+        // so the slot has *some* CLR type. Annotation handling lands
+        // when TypeMap can consult the type checker.
+        let slotTy = defaultArg initTy typeof<int32>
+        ignore annot
+        let lb = FunctionCtx.defineLocal ctx name slotTy
+        match initOpt with
+        | Some _ -> il.Emit(OpCodes.Stloc, lb)
+        | None   -> ()
+
+    | SLocal _ ->
+        failwithf "E3 codegen does not yet handle this local pattern: %A" s.Kind
+
+    | SAssign (target, AssEq, value) ->
+        match target.Kind with
+        | EPath { Segments = [name] } ->
+            match FunctionCtx.tryLookup ctx name with
+            | Some lb ->
+                let _ = emitExpr ctx value
+                il.Emit(OpCodes.Stloc, lb)
+            | None -> failwithf "E3 codegen: assignment to unknown name '%s'" name
+        | _ ->
+            failwithf "E3 codegen: assignment target not yet supported: %A" target.Kind
+
+    | SAssign (target, op, value) ->
+        // Compound assignment: lower to `target = target <op> value`.
+        match target.Kind with
+        | EPath { Segments = [name] } ->
+            match FunctionCtx.tryLookup ctx name with
+            | Some lb ->
+                let bop =
+                    match op with
+                    | AssPlus    -> BAdd
+                    | AssMinus   -> BSub
+                    | AssStar    -> BMul
+                    | AssSlash   -> BDiv
+                    | AssPercent -> BMod
+                    | AssEq      -> BAdd  // already handled
+                let synthetic : Expr =
+                    { Kind = EBinop (bop, target, value); Span = s.Span }
+                let _ = emitExpr ctx synthetic
+                il.Emit(OpCodes.Stloc, lb)
+            | None -> failwithf "E3 codegen: compound-assign to unknown name '%s'" name
+        | _ ->
+            failwithf "E3 codegen: compound-assign target not yet supported: %A" target.Kind
+
+    | SReturn None ->
+        il.Emit(OpCodes.Ret)
+
+    | SReturn (Some e) ->
+        let _ = emitExpr ctx e
+        il.Emit(OpCodes.Ret)
+
+    | SWhile (_label, cond, body) ->
+        let lblHead = il.DefineLabel()
+        let lblEnd  = il.DefineLabel()
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead }
+        il.MarkLabel(lblHead)
+        let _ = emitExpr ctx cond
+        il.Emit(OpCodes.Brfalse, lblEnd)
+        emitBlock ctx body
+        il.Emit(OpCodes.Br, lblHead)
+        il.MarkLabel(lblEnd)
+        FunctionCtx.popLoop ctx
+
+    | SLoop (_label, body) ->
+        let lblHead = il.DefineLabel()
+        let lblEnd  = il.DefineLabel()
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead }
+        il.MarkLabel(lblHead)
+        emitBlock ctx body
+        il.Emit(OpCodes.Br, lblHead)
+        il.MarkLabel(lblEnd)
+        FunctionCtx.popLoop ctx
+
+    | SBreak _ ->
+        match FunctionCtx.currentLoop ctx with
+        | Some f -> il.Emit(OpCodes.Br, f.BreakLabel)
+        | None   -> failwith "E3 codegen: 'break' outside of a loop"
+
+    | SContinue _ ->
+        match FunctionCtx.currentLoop ctx with
+        | Some f -> il.Emit(OpCodes.Br, f.ContinueLabel)
+        | None   -> failwith "E3 codegen: 'continue' outside of a loop"
+
+    | SFor (_label, { Kind = PBinding (name, None) }, iter, body) ->
+        // `for x in slice { body }` lowers to a counter + ldelem loop.
+        // The iter is presumed to be a slice/array (CLR T[]); other
+        // iterables land in E7.
+        let iterTy = emitExpr ctx iter
+        if not iterTy.IsArray then
+            failwithf "E3 codegen: for-in expects an array/slice, got %A" iterTy
+        let elemTy =
+            match Option.ofObj (iterTy.GetElementType()) with
+            | Some t -> t
+            | None   -> typeof<obj>
+        let arrLocal = FunctionCtx.defineLocal ctx ("__iter_" + name) iterTy
+        il.Emit(OpCodes.Stloc, arrLocal)
+        let idxLocal = FunctionCtx.defineLocal ctx ("__idx_" + name) typeof<int32>
+        emitLdcI4 il 0
+        il.Emit(OpCodes.Stloc, idxLocal)
+        let lblHead = il.DefineLabel()
+        let lblEnd  = il.DefineLabel()
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead }
+        il.MarkLabel(lblHead)
+        // if (idx >= length) goto end
+        il.Emit(OpCodes.Ldloc, idxLocal)
+        il.Emit(OpCodes.Ldloc, arrLocal)
+        il.Emit(OpCodes.Ldlen)
+        il.Emit(OpCodes.Conv_I4)
+        il.Emit(OpCodes.Bge, lblEnd)
+        // load element into the loop variable
+        FunctionCtx.pushScope ctx
+        let elemLocal = FunctionCtx.defineLocal ctx name elemTy
+        il.Emit(OpCodes.Ldloc, arrLocal)
+        il.Emit(OpCodes.Ldloc, idxLocal)
+        il.Emit(OpCodes.Ldelem, elemLocal.LocalType)
+        il.Emit(OpCodes.Stloc, elemLocal)
+        emitBlock ctx body
+        FunctionCtx.popScope ctx
+        // idx <- idx + 1
+        il.Emit(OpCodes.Ldloc, idxLocal)
+        emitLdcI4 il 1
+        il.Emit(OpCodes.Add)
+        il.Emit(OpCodes.Stloc, idxLocal)
+        il.Emit(OpCodes.Br, lblHead)
+        il.MarkLabel(lblEnd)
+        FunctionCtx.popLoop ctx
+
+    | SFor _ ->
+        failwithf "E3 codegen: only single-name for-in patterns are supported: %A" s.Kind
+
+    | SScope (_, blk) | SDefer blk ->
+        FunctionCtx.pushScope ctx
+        emitBlock ctx blk
+        FunctionCtx.popScope ctx
+
+    | _ ->
+        failwithf "E3 codegen does not yet handle statement: %A" s.Kind
+
+and emitBlock (ctx: FunctionCtx) (blk: Block) : unit =
+    FunctionCtx.pushScope ctx
+    for stmt in blk.Statements do
+        emitStatement ctx stmt
+    FunctionCtx.popScope ctx
