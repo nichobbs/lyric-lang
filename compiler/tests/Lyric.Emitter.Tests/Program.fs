@@ -20,6 +20,7 @@ let main argv =
             ContractTests.tests
             GenericsTests.tests
             AsyncTests.tests
+            BankingSmokeTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

@@ -378,28 +378,69 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- await (blocking shim per D035) -------------------------------
 
     | EAwait inner ->
+        // Per the M1.4 blocking shim: emit the Task[T]-shaped value,
+        // call GetAwaiter().GetResult() and propagate the unwrapped
+        // type. When the inner expression's static type is a
+        // TypeBuilder-instantiated generic Task<T> (because T is a
+        // user-defined record/union still under construction), we
+        // can't call .GetMethod on it directly — we have to go
+        // through `TypeBuilder.GetMethod(constructed, openMethod)`.
         let taskTy = emitExpr ctx inner
-        // GetAwaiter() lives on Task<T> or Task. Resolve the
-        // matching method, call it, then call GetResult on the
-        // returned awaiter.
-        let getAwaiter =
-            match Option.ofObj (taskTy.GetMethod("GetAwaiter")) with
-            | Some m -> m
-            | None   -> failwithf "E14 codegen: %s.GetAwaiter not found" taskTy.Name
+        let isClosedGenericOnTaskBuilder =
+            taskTy.IsGenericType
+            && (taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>)
+            && (taskTy.GetGenericArguments() |> Array.exists (fun t ->
+                    t :? TypeBuilder
+                    || (t.IsGenericType && t.GetGenericArguments() |> Array.exists (fun a -> a :? TypeBuilder))))
+        let elemTy =
+            if taskTy.IsGenericType
+               && taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>
+            then taskTy.GetGenericArguments().[0]
+            else typeof<System.Void>
+        let resolveGenericTask () =
+            // For Task<TypeBuilder...> we need TypeBuilder.GetMethod
+            // with the open-generic method.
+            let openGetAwaiter =
+                let mi = typedefof<System.Threading.Tasks.Task<_>>.GetMethod("GetAwaiter")
+                match Option.ofObj mi with
+                | Some m -> m
+                | None -> failwith "E14 codegen: Task<>.GetAwaiter open-generic not found"
+            let closedGetAwaiter =
+                TypeBuilder.GetMethod(taskTy, openGetAwaiter)
+            // The awaiter type is TaskAwaiter<elemTy>; resolve
+            // GetResult on its open generic.
+            let openAwaiterTy =
+                typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+            let closedAwaiterTy = openAwaiterTy.MakeGenericType([| elemTy |])
+            let openGetResult =
+                let mi = openAwaiterTy.GetMethod("GetResult")
+                match Option.ofObj mi with
+                | Some m -> m
+                | None -> failwith "E14 codegen: TaskAwaiter<>.GetResult not found"
+            let closedGetResult =
+                TypeBuilder.GetMethod(closedAwaiterTy, openGetResult)
+            closedGetAwaiter, closedAwaiterTy, closedGetResult, elemTy
+
+        let getAwaiter, awaiterTy, getResult, returnedTy =
+            if isClosedGenericOnTaskBuilder then
+                resolveGenericTask ()
+            else
+                let ga =
+                    match Option.ofObj (taskTy.GetMethod("GetAwaiter")) with
+                    | Some m -> m
+                    | None -> failwithf "E14 codegen: %s.GetAwaiter not found" taskTy.Name
+                let aw = ga.ReturnType
+                let gr =
+                    match Option.ofObj (aw.GetMethod("GetResult")) with
+                    | Some m -> m
+                    | None -> failwithf "E14 codegen: %s.GetResult not found" aw.Name
+                ga, aw, gr, gr.ReturnType
         il.Emit(OpCodes.Callvirt, getAwaiter)
-        let awaiterTy = getAwaiter.ReturnType
-        let getResult =
-            match Option.ofObj (awaiterTy.GetMethod("GetResult")) with
-            | Some m -> m
-            | None   -> failwithf "E14 codegen: %s.GetResult not found" awaiterTy.Name
-        // GetResult is a struct method, so it needs `call`, not
-        // `callvirt`. The awaiter is on the stack as a value type;
-        // we have to address it.
         let awLoc = FunctionCtx.defineLocal ctx "__awaiter" awaiterTy
         il.Emit(OpCodes.Stloc, awLoc)
         il.Emit(OpCodes.Ldloca, awLoc)
         il.Emit(OpCodes.Call, getResult)
-        getResult.ReturnType
+        returnedTy
 
     // ---- result (in ensures clauses) ----------------------------------
 

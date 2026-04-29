@@ -29,6 +29,15 @@ type EmitRequest =
 let private err (code: string) (msg: string) (span: Span) : Diagnostic =
     Diagnostic.error code msg span
 
+/// Wrap `t` in `Task<t>`, or return `Task` for void. Used by the
+/// async lowering: `async func` returns `Task[T]` even though the
+/// E14 blocking shim runs the body synchronously.
+let private toTaskType (t: System.Type) : System.Type =
+    if t = typeof<System.Void> then
+        typeof<System.Threading.Tasks.Task>
+    else
+        typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| t |])
+
 /// Pull every top-level `IFunc` out of a parsed source file.
 let private functionItems (sf: SourceFile) : FunctionDecl list =
     sf.Items
@@ -119,7 +128,8 @@ let private defineInterface
                     fs.Params
                     |> List.map (fun p -> resolveTy p.Type)
                     |> List.toArray
-                let rTy = resolveRet fs.Return
+                let bareRet = resolveRet fs.Return
+                let rTy = if fs.IsAsync then toTaskType bareRet else bareRet
                 let mb =
                     tb.DefineMethod(
                         fs.Name,
@@ -333,15 +343,6 @@ let private defineRecord
       Records.RecordInfo.Fields = fields
       Records.RecordInfo.Ctor   = ctor }
 
-/// Wrap `t` in `Task<t>`, or return `Task` for void. Used by the
-/// async lowering: `async func` returns `Task[T]` even though the
-/// E14 blocking shim runs the body synchronously.
-let private toTaskType (t: System.Type) : System.Type =
-    if t = typeof<System.Void> then
-        typeof<System.Threading.Tasks.Task>
-    else
-        typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| t |])
-
 /// Define a static method header on `programTy` matching the resolved
 /// signature. Body is filled in by `emitFunctionBody` afterwards.
 let private defineMethodHeader
@@ -535,16 +536,10 @@ let private emitFunctionBody
                 | None   -> failwith "Task.CompletedTask getter not found"
             | None -> failwith "Task.CompletedTask property not found"
         else
-            let openTask = typedefof<System.Threading.Tasks.Task<_>>
-            let closedTask = openTask.MakeGenericType([| bareReturnTy |])
-            let fromResult =
-                closedTask.GetMethod(
-                    "FromResult",
-                    [| bareReturnTy |],
-                    null)
-            // The actual `Task.FromResult<T>` lives on the non-
-            // generic Task class; the generic-on-Task<T> lookup
-            // above won't find it. Resolve via the open generic.
+            // `Task.FromResult<T>` lives on the non-generic Task
+            // class. Look up the open-generic method directly so
+            // we don't trip over TypeBuilder limitations when
+            // bareReturnTy is still under construction.
             let fromResultGeneric =
                 let mi =
                     typeof<System.Threading.Tasks.Task>
@@ -552,7 +547,6 @@ let private emitFunctionBody
                 match Option.ofObj mi with
                 | Some m -> m.MakeGenericMethod([| bareReturnTy |])
                 | None   -> failwith "Task.FromResult<T> not found"
-            ignore fromResult
             il.Emit(OpCodes.Call, fromResultGeneric)
     il.Emit(OpCodes.Ret)
 
@@ -739,7 +733,7 @@ let private emitAssembly
                             fd.Params
                             |> List.map (fun p -> resolveTy p.Type)
                             |> List.toArray
-                        let rTy =
+                        let bareRet =
                             match fd.Return with
                             | Some t ->
                                 let lty =
@@ -747,6 +741,8 @@ let private emitAssembly
                                         symbols resolveCtx scratchDiags t
                                 TypeMap.toClrReturnTypeWith lookup lty
                             | None -> typeof<System.Void>
+                        let rTy =
+                            if fd.IsAsync then toTaskType bareRet else bareRet
                         let mb =
                             recInfo.Type.DefineMethod(
                                 fd.Name,
