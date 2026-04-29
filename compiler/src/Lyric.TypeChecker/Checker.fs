@@ -182,6 +182,15 @@ let check (file: SourceFile) : CheckResult =
             | _ -> None)
         |> Map.ofList
 
+    // T5: check each function's body against its resolved signature.
+    for it in file.Items do
+        match it.Kind with
+        | IFunc fn ->
+            match Map.tryFind fn.Name signatures with
+            | Some s -> StmtChecker.checkFunctionBody table signatures diags fn s
+            | None -> ()
+        | _ -> ()
+
     { File        = file
       Symbols     = table
       Signatures  = signatures
