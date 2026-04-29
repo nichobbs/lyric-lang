@@ -18,6 +18,74 @@ let private syntheticSpan = Span.pointAt Position.initial
 let private packagePath (sf: SourceFile) : string list =
     sf.Package.Path.Segments
 
+/// Pre-register type names with empty bodies so Resolver lookups inside
+/// recursive declarations (e.g. `union Tree { case Node(l: Tree[K], …) }`)
+/// can resolve self-references to a fully-qualified `TyNamed`. The
+/// real bodies are filled in by `registerTypeSymbols`.
+let private preRegisterTypeNames
+        (st: SymbolTable)
+        (pkg: string list)
+        (sf: SourceFile) : unit =
+    let qualify (name: string) = pkg @ [name]
+    let placeholder name span generics =
+        SymbolTable.addType st
+            { Name      = qualify name
+              ShortName = name
+              Generics  = generics
+              Kind      = TskOpaque
+              DeclSpan  = span }
+    let genNames (gp: GenericParams option) =
+        match gp with
+        | None -> []
+        | Some gps ->
+            gps.Params
+            |> List.choose (fun p ->
+                match p with
+                | GPType (n, _) -> Some n
+                | _             -> None)
+    for item in sf.Items do
+        match item.Kind with
+        | IRecord r | IExposedRec r -> placeholder r.Name r.Span (genNames r.Generics)
+        | IUnion u                  -> placeholder u.Name u.Span (genNames u.Generics)
+        | IEnum e                   -> placeholder e.Name e.Span []
+        | IOpaque o                 -> placeholder o.Name o.Span (genNames o.Generics)
+        | ITypeAlias a              -> placeholder a.Name a.Span (genNames a.Generics)
+        | IDistinctType d           -> placeholder d.Name d.Span (genNames d.Generics)
+        | IInterface i              -> placeholder i.Name i.Span (genNames i.Generics)
+        | IExtern ep ->
+            for m in ep.Members do
+                match m with
+                | EMRecord r | EMExposedRec r ->
+                    SymbolTable.addType st
+                        { Name      = ep.Path.Segments @ [r.Name]
+                          ShortName = r.Name
+                          Generics  = []
+                          Kind      = TskOpaque
+                          DeclSpan  = r.Span }
+                | EMOpaque o ->
+                    SymbolTable.addType st
+                        { Name      = ep.Path.Segments @ [o.Name]
+                          ShortName = o.Name
+                          Generics  = []
+                          Kind      = TskOpaque
+                          DeclSpan  = o.Span }
+                | EMUnion u ->
+                    SymbolTable.addType st
+                        { Name      = ep.Path.Segments @ [u.Name]
+                          ShortName = u.Name
+                          Generics  = []
+                          Kind      = TskOpaque
+                          DeclSpan  = u.Span }
+                | EMEnum e ->
+                    SymbolTable.addType st
+                        { Name      = ep.Path.Segments @ [e.Name]
+                          ShortName = e.Name
+                          Generics  = []
+                          Kind      = TskOpaque
+                          DeclSpan  = e.Span }
+                | _ -> ()
+        | _ -> ()
+
 /// Walk the source file and add every top-level type declaration to
 /// the symbol table. Bodies are added as best-effort shapes (record
 /// fields, union cases, enum cases) so the resolver can answer
@@ -334,57 +402,66 @@ let private checkBodies (env: CheckEnv) (sf: SourceFile) : unit =
 /// don't drown in `unknown name` errors. This is a stop-gap until
 /// `std.core` lands in Lyric.
 let private installPrelude (st: SymbolTable) : unit =
-    let add name (kind: TypeSymbolKind) =
+    let addType name generics kind =
         SymbolTable.addType st
             { Name      = [name]
               ShortName = name
-              Generics  = ["A"]
+              Generics  = generics
               Kind      = kind
               DeclSpan  = syntheticSpan }
-    add "Option"
+    let addValue name kind =
+        SymbolTable.addValue st
+            { Name      = [name]
+              ShortName = name
+              Kind      = kind
+              DeclSpan  = syntheticSpan }
+
+    // Sum/option types.
+    addType "Option" ["A"]
         (TskUnion
             [ "Some", [None, Type.TyVar "A"]
               "None", [] ])
-    add "Result"
+    addType "Result" ["A"; "B"]
         (TskUnion
             [ "Ok",  [None, Type.TyVar "A"]
               "Err", [None, Type.TyVar "B"] ])
-    SymbolTable.addType st
-        { Name      = ["Result"]
-          ShortName = "Result"
-          Generics  = ["A"; "B"]
-          Kind      = TskUnion
-            [ "Ok",  [None, Type.TyVar "A"]
-              "Err", [None, Type.TyVar "B"] ]
-          DeclSpan  = syntheticSpan }
-    SymbolTable.addType st
-        { Name      = ["Task"]
-          ShortName = "Task"
-          Generics  = ["A"]
-          Kind      = TskOpaque
-          DeclSpan  = syntheticSpan }
-    // Prelude value symbols — `None`, `Some`, `Ok`, `Err` so they
-    // resolve as bare identifiers in expression position.
-    SymbolTable.addValue st
-        { Name      = ["None"]
-          ShortName = "None"
-          Kind      = VskUnionCase (["Option"], [])
-          DeclSpan  = syntheticSpan }
-    SymbolTable.addValue st
-        { Name      = ["Some"]
-          ShortName = "Some"
-          Kind      = VskUnionCase (["Option"], [None, Type.TyVar "A"])
-          DeclSpan  = syntheticSpan }
-    SymbolTable.addValue st
-        { Name      = ["Ok"]
-          ShortName = "Ok"
-          Kind      = VskUnionCase (["Result"], [None, Type.TyVar "A"])
-          DeclSpan  = syntheticSpan }
-    SymbolTable.addValue st
-        { Name      = ["Err"]
-          ShortName = "Err"
-          Kind      = VskUnionCase (["Result"], [None, Type.TyVar "B"])
-          DeclSpan  = syntheticSpan }
+
+    // Container shells; Phase 1 won't validate methods, but the
+    // names need to resolve.
+    addType "Task"   ["A"] TskOpaque
+    addType "List"   ["A"] TskOpaque
+    addType "Map"    ["K"; "V"] TskOpaque
+    addType "Set"    ["A"] TskOpaque
+    addType "Iter"   ["A"] TskOpaque
+    addType "Seq"    ["A"] TskOpaque
+
+    // Prelude value symbols — case constructors.
+    addValue "None" (VskUnionCase (["Option"], []))
+    addValue "Some" (VskUnionCase (["Option"], [None, Type.TyVar "A"]))
+    addValue "Ok"   (VskUnionCase (["Result"], [None, Type.TyVar "A"]))
+    addValue "Err"  (VskUnionCase (["Result"], [None, Type.TyVar "B"]))
+
+    // Free-standing helper functions used pervasively across the
+    // worked examples. Phase 1 ignores their actual signatures —
+    // every parameter is `TyError` (which `Type.compatible` accepts
+    // against anything) so call-sites still pass argument-arity
+    // checks.
+    let polymorphicSig (n: int) =
+        { Generics = []
+          Params   = List.replicate n Type.TyError
+          Return   = Type.TyError }
+    for name, arity in
+        [ "println", 1
+          "print",   1
+          "expect",  1
+          "assert",  1
+          "fail",    1
+          "todo",    0
+          "ignore",  1
+          "debug",   1
+          "log",     1
+          "panic",   1 ] do
+        addValue name (VskFunc (polymorphicSig arity))
 
 /// Run the full type-checking pipeline against a parsed source file
 /// and previously-collected parser diagnostics.
@@ -398,12 +475,14 @@ let check (parserDiags: Diagnostic list) (sf: SourceFile) : CheckResult =
 
     let pkg = packagePath sf
 
-    // Pass 1: type symbols (so they're available when resolving
-    // function signatures).
+    // Pass 0: pre-register type names so recursive declarations can
+    // resolve self-references (`union Tree { case Node(l: Tree[K]) }`).
+    preRegisterTypeNames st pkg sf
+    // Pass 1: type symbols — fields, cases, methods now resolve
+    // against the pre-registered names.
     registerTypeSymbols st env pkg sf
-    // Pass 2: function/value signatures (resolve types using the
-    // type table). This is also where we discover errors in
-    // signatures.
+    // Pass 2: function/value signatures. `func id[T](x: T): T` and
+    // top-level `val`/`const` declarations.
     registerValueSymbols st env pkg sf
     // Pass 3: bodies. Locals are added/removed from a scope stack
     // in `CheckEnv` via push/pop.

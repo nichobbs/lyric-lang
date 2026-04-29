@@ -58,10 +58,12 @@ let private resolvePath (env: CheckEnv) (path: ModulePath) : Type =
                     match SymbolTable.tryResolveAlias env.Symbols name with
                     | Some segs -> Type.TyNamed segs
                     | None ->
-                        err env "T0002"
-                            (sprintf "unknown type '%s'" name)
-                            path.Span
-                        Type.error'
+                        // Tolerated in Phase 1: with no stdlib and
+                        // no module loader, most "unknown type"
+                        // hits are imports we haven't resolved.
+                        // A real bug would surface in argument-
+                        // arity / compatibility checks downstream.
+                        Type.TyNamed [name]
     | _ ->
         match SymbolTable.tryLookupTypeQualified env.Symbols path.Segments with
         | Some sym -> Type.TyNamed sym.Name

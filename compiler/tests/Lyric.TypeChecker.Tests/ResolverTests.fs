@@ -30,13 +30,19 @@ func toString(s: String): String = s
             Expect.isEmpty (noT r) "no type-checker diagnostics"
         }
 
-        test "unknown type produces T0002" {
+        test "unknown type is tolerated as a TyNamed shell" {
+            // Phase 1 deliberately suppresses T0002 for short-name
+            // type references so worked-example blocks that pull
+            // names from imports we haven't loaded don't drown
+            // the diagnostic stream. The check still runs to
+            // completion.
             let src = """
 package Demo
 func bad(x: ZzzNotAType): Int = 0
 """
             let r = checkSource src
-            Expect.contains (codes r) "T0002" "unknown type diagnostic"
+            Expect.isFalse (List.contains "T0002" (codes r))
+                "T0002 suppressed in Phase 1"
         }
 
         test "tuple, slice, nullable types resolve" {

@@ -167,6 +167,21 @@ let checkFunctionBody (env: CheckEnv) (fd: FunctionDecl) (sig': ResolvedSig) : u
         fd.Params sig'.Params
     match fd.Body with
     | None -> ()
+    | Some (FBExpr ({ Kind = ELambda ([], blk) } as _)) ->
+        // `func foo(): T = { ... }` — parser sees the `=` and parses
+        // `{...}` as a zero-argument lambda. Treat it as the block
+        // body it morally is.
+        for stmt in blk.Statements do
+            checkStatement env stmt
+        let last =
+            match List.tryLast blk.Statements with
+            | Some { Kind = SExpr e } -> ExprChecker.inferExpr env e
+            | _ -> Type.unit'
+        if not (Type.compatible sig'.Return last) then
+            err env "T0070"
+                (sprintf "block-bodied function returns %s but signature is %s"
+                    (Type.render last) (Type.render sig'.Return))
+                blk.Span
     | Some (FBExpr e) ->
         let t = inferExpr env e
         if not (Type.compatible sig'.Return t) then

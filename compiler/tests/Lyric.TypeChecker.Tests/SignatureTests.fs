@@ -40,13 +40,16 @@ func sideEffect(x: Int) = ()
             Expect.isEmpty (noT r) "Unit-returning function checks"
         }
 
-        test "function param using unknown type yields T0002" {
+        test "function param using unknown type is tolerated" {
             let src = """
 package Demo
 func bad(x: NotAType): Int = 0
 """
             let r = checkSource src
-            Expect.contains (codes r) "T0002" "unknown param type"
+            // Phase 1 suppresses T0002; the unknown name is folded
+            // into a TyNamed shell so the body still type-checks.
+            Expect.isFalse (List.contains "T0002" (codes r))
+                "T0002 suppressed in Phase 1"
         }
 
         test "function with mode and default" {

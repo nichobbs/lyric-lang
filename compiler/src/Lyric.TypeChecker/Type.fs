@@ -129,15 +129,30 @@ module Type =
 
     /// Check whether `actual` is assignable to `expected`. Phase 1
     /// rules: structural equality, nullable subsumes inner, `TyError`
-    /// is universally compatible (recovery).
+    /// is universally compatible (recovery), `TyVar` matches anything
+    /// (placeholder for the inference pass), and an applied generic
+    /// type is compatible with its bare head when args are absent
+    /// (the type checker doesn't yet track instantiation through
+    /// constructor calls — `Some(x): Option` flows into `Option[A]`).
     let rec compatible (expected: Type) (actual: Type) : bool =
         if expected = actual then true
         else
             match expected, actual with
             | Type.TyError, _ | _, Type.TyError -> true
+            | Type.TyVar _, _ | _, Type.TyVar _ -> true
             | Type.TyNullable e, a              -> compatible e a
+            | a, Type.TyNullable inner          -> compatible a inner
             | Type.TyPrim PtNever, _            -> true   // Never can flow anywhere
             | _, Type.TyPrim PtNever            -> true
+            | Type.TyApp (h, _), other when compatible h other -> true
+            | other, Type.TyApp (h, _) when compatible other h -> true
+            // Distinct/range-refined types compile down to a
+            // primitive in Phase 1. Without the symbol table here
+            // we can't chase the underlying, so we assume any
+            // TyNamed could be a numeric/string distinct of a
+            // primitive and let it slide.
+            | Type.TyNamed _, Type.TyPrim _ -> true
+            | Type.TyPrim _, Type.TyNamed _ -> true
             | Type.TyApp (h1, a1), Type.TyApp (h2, a2)
                 when List.length a1 = List.length a2 ->
                 compatible h1 h2

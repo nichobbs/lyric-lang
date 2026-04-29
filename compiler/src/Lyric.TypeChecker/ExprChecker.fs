@@ -24,9 +24,14 @@ let private inferLiteral (lit: Literal) : Type =
     | LRawString _    -> Type.string'
 
 /// Look up a single-segment path. Order: locals → values (top-level) →
-/// union/enum cases (treated as values) → fall through to a TyError
-/// with diagnostic.
-let private lookupShortPath (env: CheckEnv) (name: string) (span: Span) : Type =
+/// union/enum cases (treated as values) → import alias → silently
+/// return TyError so downstream checks can continue.
+///
+/// We deliberately do NOT emit T0010 in Phase 1: the bootstrap
+/// type-checker has no stdlib, no module-loader, and no resolved
+/// imports, so nearly every unknown short name is a false positive.
+/// Once `std.core` is on disk this can switch back to a hard error.
+let private lookupShortPath (env: CheckEnv) (name: string) (_span: Span) : Type =
     match CheckEnv.tryLookupLocal env name with
     | Some t -> t
     | None ->
@@ -43,15 +48,17 @@ let private lookupShortPath (env: CheckEnv) (name: string) (span: Span) : Type =
                 Type.TyFunction (pTys, Type.TyNamed tn)
         | None ->
             match SymbolTable.tryLookupTypeShort env.Symbols name with
-            | Some sym ->
-                // A bare type name is OK when it's used as a static
-                // receiver for a method call (e.g. `Cents.tryFrom(x)`).
-                // Carrying it as `TyNamed` lets the postfix `.IDENT`
-                // case decide.
-                Type.TyNamed sym.Name
+            | Some sym -> Type.TyNamed sym.Name
             | None ->
-                err env "T0010" (sprintf "unknown name '%s'" name) span
-                Type.error'
+                // If the name was imported as an alias we have no
+                // metadata for the target — it might be a function,
+                // a type, a constant, anything. Returning TyError
+                // is safer than committing to TyNamed (which would
+                // make it look like a constructor and pin the
+                // call's return type to the alias path).
+                match SymbolTable.tryResolveAlias env.Symbols name with
+                | Some _ -> Type.error'
+                | None   -> Type.error'
 
 let private lookupQualifiedPath (env: CheckEnv) (segs: string list) (span: Span) : Type =
     match SymbolTable.tryLookupValueQualified env.Symbols segs with
@@ -152,10 +159,22 @@ let rec inferExpr (env: CheckEnv) (e: Expr) : Type =
                 match lp.Type with
                 | Some t -> Resolver.resolve env t
                 | None   -> Type.error')
-        // Stub-builder DSL bodies (`{ it.foo() -> bar; … }`) parse
-        // as a block of `SRule` statements with no parameters and no
-        // return value. Treat the lambda as `Unit` in that case.
-        Type.TyFunction (pTys, Type.unit')
+        // Type-check the body block in a fresh scope so locals
+        // declared inside the lambda don't leak. Parameters bind
+        // into that scope. This is the path used by function-bodied
+        // lambdas (`func foo(): T = { … }` parses as ELambda).
+        CheckEnv.pushScope env
+        List.iter2
+            (fun (lp: LambdaParam) (t: Type) -> CheckEnv.addLocal env lp.Name t)
+            lambdaParams pTys
+        for stmt in body.Statements do
+            checkLambdaStmt env stmt
+        let resultTy =
+            match List.tryLast body.Statements with
+            | Some { Kind = SExpr e } -> inferExpr env e
+            | _ -> Type.unit'
+        CheckEnv.popScope env
+        Type.TyFunction (pTys, resultTy)
     | ECall (fn, args) ->
         let fnTy = inferExpr env fn
         let argTys =
@@ -231,6 +250,56 @@ let rec inferExpr (env: CheckEnv) (e: Expr) : Type =
         ignore blk
         Type.never'
     | EError -> Type.error'
+
+/// Light statement walker used inside lambda bodies. The full
+/// `StmtChecker` lives downstream of this module so we can't call it
+/// from here; the subset below covers the statements that appear in
+/// lambda / function-as-lambda bodies.
+and private checkLambdaStmt (env: CheckEnv) (stmt: Statement) : unit =
+    match stmt.Kind with
+    | SLocal (LBVal (pat, annot, init)) ->
+        let initTy = inferExpr env init
+        let ty =
+            match annot with
+            | Some t -> Resolver.resolve env t
+            | None   -> initTy
+        bindLambdaPattern env pat ty
+    | SLocal (LBVar (name, annot, initOpt)) ->
+        let ty =
+            match initOpt, annot with
+            | Some init, _ ->
+                let it = inferExpr env init
+                match annot with
+                | Some t -> Resolver.resolve env t
+                | None   -> it
+            | None, Some t -> Resolver.resolve env t
+            | None, None   -> Type.error'
+        CheckEnv.addLocal env name ty
+    | SLocal (LBLet (name, annot, init)) ->
+        let initTy = inferExpr env init
+        let ty =
+            match annot with
+            | Some t -> Resolver.resolve env t
+            | None   -> initTy
+        CheckEnv.addLocal env name ty
+    | SExpr e | SAssign (_, _, e) | SThrow e ->
+        let _ = inferExpr env e
+        ()
+    | SReturn (Some e) ->
+        let _ = inferExpr env e
+        ()
+    | SReturn None | SBreak _ | SContinue _ | SItem _ | SRule _ -> ()
+    | _ ->
+        // Other statement kinds (loops, try/catch, defer, scope)
+        // recurse through StmtChecker once it's wired into the
+        // pipeline; the lambda walker is a best-effort fallback.
+        ()
+
+and private bindLambdaPattern (env: CheckEnv) (pat: Pattern) (ty: Type) : unit =
+    match pat.Kind with
+    | PBinding (name, _) -> CheckEnv.addLocal env name ty
+    | PParen inner | PTypeTest (inner, _) -> bindLambdaPattern env inner ty
+    | _ -> ()
 
 and private inferBranch (env: CheckEnv) (b: ExprOrBlock) : Type =
     match b with

@@ -89,8 +89,10 @@ let tests =
             let mutable totalParser = 0
             let mutable totalType   = 0
             let mutable cleanBlocks = 0
+            let codeFreq = System.Collections.Generic.Dictionary<string, int>()
 
-            for (_, block) in parseable do
+            let perBlock = ResizeArray<int * int * Diagnostic list>()
+            for (lineNo, block) in parseable do
                 let src =
                     if looksLikeFile block then block
                     else wrapFragment block
@@ -104,6 +106,11 @@ let tests =
                 totalLexer  <- totalLexer  + lexer.Length
                 totalParser <- totalParser + parser.Length
                 totalType   <- totalType   + typer.Length
+                perBlock.Add(lineNo, typer.Length, typer)
+                for d in typer do
+                    match codeFreq.TryGetValue d.Code with
+                    | true, n -> codeFreq.[d.Code] <- n + 1
+                    | false, _ -> codeFreq.[d.Code] <- 1
                 if List.isEmpty typer then
                     cleanBlocks <- cleanBlocks + 1
 
@@ -112,16 +119,31 @@ let tests =
                 cleanBlocks totalParseable
             printfn "[t-smoke] totals: lexer=%d  parser=%d  type=%d"
                 totalLexer totalParser totalType
+            let sorted =
+                codeFreq
+                |> Seq.sortByDescending (fun kv -> kv.Value)
+                |> Seq.truncate 10
+            for kv in sorted do
+                printfn "[t-smoke]   %s × %d" kv.Key kv.Value
+            for (line, n, diags) in perBlock do
+                if n > 0 then
+                    printfn "[t-smoke] block @ line %d: %d T-diagnostic(s)" line n
+                    for d in diags |> List.truncate 2 do
+                        printfn "          %s @ %d:%d  %s"
+                            d.Code d.Span.Start.Line d.Span.Start.Column d.Message
 
             // T6 acceptance: every parseable block runs to completion
-            // without throwing. The Phase 1 type checker is
-            // intentionally permissive — we don't yet model record-
-            // constructor calls, generic instantiation, or interface
-            // dispatch with full fidelity, so the absolute count of T
-            // diagnostics is allowed to vary. The hard assertion is
-            // that the run completed.
+            // without throwing AND the clean ratio stays above a
+            // floor. The Phase 1 type checker is intentionally
+            // permissive — name-resolution diagnostics are silenced,
+            // generic instantiation is shallow, and named/primitive
+            // compatibility is relaxed — so the floor is set at 80%
+            // to prevent regressions while leaving room for the
+            // tighter Phase 2 / Phase 3 checks to push the count
+            // back up via real diagnostics.
+            let cleanRatio = float cleanBlocks / float totalParseable
             Expect.isGreaterThanOrEqual
-                cleanBlocks 0
-                "non-throwing run produces a non-negative tally"
+                cleanRatio 0.80
+                (sprintf "clean-parse ratio %.2f below 0.80 threshold" cleanRatio)
         }
     ]
