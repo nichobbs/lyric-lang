@@ -939,6 +939,241 @@ and private parseTypeExpr
             withSuffix
 
 // ---------------------------------------------------------------------------
+// Patterns (full grammar §8). OrPattern wraps a TypeTestPattern, which
+// wraps a PrimaryPattern. TypeTest is `pat is Type`; or-pattern is
+// `pat | pat | ...`. Range patterns (`0 ..= 9`) and literal patterns
+// share the lookahead-on-literal entry point.
+// ---------------------------------------------------------------------------
+
+and private mkPat (kind: PatternKind) (span: Span) : Pattern =
+    { Kind = kind; Span = span }
+
+and private parseRecordPatternFields
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : RecordPatternField list * bool =
+
+    Cursor.advance cursor |> ignore   // {
+    let fields = ResizeArray<RecordPatternField>()
+    let mutable ignoreRest = false
+    let mutable keepGoing = true
+    while keepGoing do
+        match Cursor.peekToken cursor with
+        | TPunct RBrace ->
+            keepGoing <- false
+        | TPunct DotDot ->
+            Cursor.advance cursor |> ignore
+            ignoreRest <- true
+            keepGoing <- false   // '..' must be last
+        | TIdent _ ->
+            let nameTok = Cursor.advance cursor
+            let name =
+                match nameTok.Token with
+                | TIdent n -> n
+                | _ -> "<error>"
+            if Cursor.peekToken cursor = TPunct Eq then
+                Cursor.advance cursor |> ignore
+                let pat = parsePattern cursor diags
+                fields.Add(
+                    RPFNamed(name, pat, joinSpans nameTok.Span pat.Span))
+            else
+                fields.Add(RPFShort(name, nameTok.Span))
+            // Trailing comma optional; loop back regardless.
+            if Cursor.peekToken cursor = TPunct Comma then
+                Cursor.advance cursor |> ignore
+        | _ ->
+            err diags "P0070"
+                "expected a field name or '..' in record pattern"
+                (Cursor.peekSpan cursor)
+            keepGoing <- false
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0071"
+            "expected '}' to close record pattern"
+            (Cursor.peekSpan cursor)
+    List.ofSeq fields, ignoreRest
+
+and private parsePatternArgs
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Pattern list =
+
+    Cursor.advance cursor |> ignore   // (
+    let xs = ResizeArray<Pattern>()
+    if Cursor.peekToken cursor <> TPunct RParen then
+        xs.Add(parsePattern cursor diags)
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            if Cursor.peekToken cursor = TPunct RParen then ()
+            else xs.Add(parsePattern cursor diags)
+    match Cursor.tryEatPunct RParen cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0072"
+            "expected ')' to close constructor-pattern arguments"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parsePrimaryPattern
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Pattern =
+
+    let tok = Cursor.peek cursor
+    match tok.Token with
+
+    // The wildcard `_`. Lyric's lexer produces TIdent "_" for a bare
+    // underscore (per §1.4 of the grammar — `_` alone is a legal
+    // identifier).
+    | TIdent "_" ->
+        Cursor.advance cursor |> ignore
+        mkPat PWildcard tok.Span
+
+    // Literal-led patterns: a literal alone is PLiteral; a literal
+    // followed by `..=` / `..<` / `..` is a range. Unary minus also
+    // qualifies — `-5 ..= 5` is permitted.
+    | TInt _ | TFloat _ | TChar _ | TString _ | TBool _
+    | TTripleString _ | TRawString _ | TPunct Minus ->
+        let firstExpr = parseExpr cursor diags
+        match Cursor.peekToken cursor with
+        | TPunct DotDotEq ->
+            Cursor.advance cursor |> ignore
+            let hi = parseExpr cursor diags
+            mkPat (PRange(firstExpr, true, hi))
+                (joinSpans firstExpr.Span hi.Span)
+        | TPunct DotDot | TPunct DotDotLt ->
+            Cursor.advance cursor |> ignore
+            let hi = parseExpr cursor diags
+            mkPat (PRange(firstExpr, false, hi))
+                (joinSpans firstExpr.Span hi.Span)
+        | _ ->
+            // Plain literal pattern. Convert the parsed expression
+            // back into the AST literal form.
+            match firstExpr.Kind with
+            | ELiteral lit -> mkPat (PLiteral lit) firstExpr.Span
+            | EPrefix(PreNeg, { Kind = ELiteral (LInt(v, sfx)) }) ->
+                // `-N` literal — represent as a negated int literal
+                // pattern using a synthesised Expr-based range. For
+                // now we fall through to a binding pattern named
+                // "<error>"; full negative-literal support arrives
+                // when LInt grows a sign field.
+                let _ = (v, sfx)
+                err diags "P0073"
+                    "negative literal patterns not yet supported"
+                    firstExpr.Span
+                mkPat PError firstExpr.Span
+            | _ ->
+                err diags "P0073"
+                    "expected a literal pattern"
+                    firstExpr.Span
+                mkPat PError firstExpr.Span
+
+    | TPunct LParen ->
+        Cursor.advance cursor |> ignore
+        // `()` — unit pattern (treated as a 0-tuple).
+        if Cursor.peekToken cursor = TPunct RParen then
+            let endTok = Cursor.advance cursor
+            mkPat (PTuple [])
+                (joinSpans tok.Span endTok.Span)
+        else
+            let first = parsePattern cursor diags
+            if Cursor.peekToken cursor = TPunct Comma then
+                let items = ResizeArray<Pattern>()
+                items.Add(first)
+                while Cursor.peekToken cursor = TPunct Comma do
+                    Cursor.advance cursor |> ignore
+                    if Cursor.peekToken cursor = TPunct RParen then ()
+                    else items.Add(parsePattern cursor diags)
+                let endSpan =
+                    match Cursor.tryEatPunct RParen cursor with
+                    | Some t -> t.Span
+                    | None ->
+                        err diags "P0074"
+                            "expected ')' to close tuple pattern"
+                            (Cursor.peekSpan cursor)
+                        first.Span
+                mkPat (PTuple (List.ofSeq items))
+                    (joinSpans tok.Span endSpan)
+            else
+                let endSpan =
+                    match Cursor.tryEatPunct RParen cursor with
+                    | Some t -> t.Span
+                    | None ->
+                        err diags "P0074"
+                            "expected ')' to close paren pattern"
+                            (Cursor.peekSpan cursor)
+                        first.Span
+                mkPat (PParen first) (joinSpans tok.Span endSpan)
+
+    | TIdent _ ->
+        let path = parseModulePath cursor diags
+        match Cursor.peekToken cursor with
+        | TPunct LParen ->
+            let args = parsePatternArgs cursor diags
+            let lastSpan =
+                match args with
+                | [] -> path.Span
+                | _  -> (List.last args).Span
+            mkPat (PConstructor(path, args))
+                (joinSpans path.Span lastSpan)
+        | TPunct LBrace ->
+            let fields, ignoreRest = parseRecordPatternFields cursor diags
+            let lastSpan = Cursor.peekSpan cursor
+            mkPat (PRecord(path, fields, ignoreRest))
+                (joinSpans path.Span lastSpan)
+        | TPunct At when path.Segments.Length = 1 ->
+            Cursor.advance cursor |> ignore
+            let inner = parsePrimaryPattern cursor diags
+            mkPat (PBinding(List.head path.Segments, Some inner))
+                (joinSpans path.Span inner.Span)
+        | _ when path.Segments.Length = 1 ->
+            mkPat (PBinding(List.head path.Segments, None)) path.Span
+        | _ ->
+            // Multi-segment path with no payload — payload-less
+            // constructor (e.g. `case Color.Red ->`).
+            mkPat (PConstructor(path, [])) path.Span
+
+    | _ ->
+        err diags "P0075"
+            "expected a pattern"
+            tok.Span
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        mkPat PError tok.Span
+
+and private parseTypeTestPattern
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Pattern =
+
+    let primary = parsePrimaryPattern cursor diags
+    if Cursor.peekToken cursor = TKeyword KwIs then
+        Cursor.advance cursor |> ignore
+        let ty = parseTypeExpr cursor diags
+        mkPat (PTypeTest(primary, ty))
+            (joinSpans primary.Span ty.Span)
+    else
+        primary
+
+and private parsePattern
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Pattern =
+
+    let first = parseTypeTestPattern cursor diags
+    if Cursor.peekToken cursor = TPunct Pipe then
+        let alts = ResizeArray<Pattern>()
+        alts.Add(first)
+        while Cursor.peekToken cursor = TPunct Pipe do
+            Cursor.advance cursor |> ignore
+            alts.Add(parseTypeTestPattern cursor diags)
+        let lastSpan = (List.last (List.ofSeq alts)).Span
+        mkPat (POr (List.ofSeq alts)) (joinSpans first.Span lastSpan)
+    else
+        first
+
+// ---------------------------------------------------------------------------
 // Public testing entry points (exposed but documented as low-level).
 // ---------------------------------------------------------------------------
 
@@ -972,6 +1207,20 @@ let parseExprFromString (source: string) : Expr * Diagnostic list =
             "unexpected tokens after expression"
             (Cursor.peekSpan cursor)
     e, List.ofSeq diags
+
+/// Parse a single Pattern from a string. Tests entry point only.
+let parsePatternFromString (source: string) : Pattern * Diagnostic list =
+    let lexed = lex source
+    let cursor = Cursor.make lexed.Tokens
+    let diags = ResizeArray<Diagnostic>(lexed.Diagnostics)
+    Cursor.skipStmtEnds cursor |> ignore
+    let p = parsePattern cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    if not (Cursor.isAtEnd cursor) then
+        err diags "P0066"
+            "unexpected tokens after pattern"
+            (Cursor.peekSpan cursor)
+    p, List.ofSeq diags
 
 // ---------------------------------------------------------------------------
 // Top-level entry.
