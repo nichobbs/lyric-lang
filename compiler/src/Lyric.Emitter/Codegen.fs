@@ -42,9 +42,14 @@ type FunctionCtx =
       /// Same-package enums visible at codegen time.
       Enums:      Lyric.Emitter.Records.EnumTable
       /// `Red` / `Color.Red` → (enum info, case info). E6 only
-      /// recognises these for variant-free enums; full-fat unions
-      /// land in a later slice.
-      EnumCases:  Lyric.Emitter.Records.EnumCaseLookup }
+      /// recognises these for variant-free enums; variant-bearing
+      /// unions live below.
+      EnumCases:  Lyric.Emitter.Records.EnumCaseLookup
+      /// Variant-bearing unions visible at codegen time.
+      Unions:     Lyric.Emitter.Records.UnionTable
+      /// `Some` / `Option.Some` → (union info, case info). Bare and
+      /// qualified spellings both resolve.
+      UnionCases: Lyric.Emitter.Records.UnionCaseLookup }
 
 module FunctionCtx =
 
@@ -55,7 +60,9 @@ module FunctionCtx =
             (funcs: Dictionary<string, MethodBuilder>)
             (records: Lyric.Emitter.Records.RecordTable)
             (enums: Lyric.Emitter.Records.EnumTable)
-            (enumCases: Lyric.Emitter.Records.EnumCaseLookup) : FunctionCtx =
+            (enumCases: Lyric.Emitter.Records.EnumCaseLookup)
+            (unions: Lyric.Emitter.Records.UnionTable)
+            (unionCases: Lyric.Emitter.Records.UnionCaseLookup) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
@@ -69,7 +76,9 @@ module FunctionCtx =
           Funcs      = funcs
           Records    = records
           Enums      = enums
-          EnumCases  = enumCases }
+          EnumCases  = enumCases
+          Unions     = unions
+          UnionCases = unionCases }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -369,7 +378,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- variable read ------------------------------------------------
 
     | EPath { Segments = [name] } ->
-        // Order: parameter slot → local → enum case → unknown.
+        // Order: parameter slot → local → enum case → nullary union
+        // case → fallthrough.
         match FunctionCtx.tryLookup ctx name with
         | Some lb ->
             il.Emit(OpCodes.Ldloc, lb)
@@ -385,7 +395,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     emitLdcI4 il c.Ordinal
                     info.Type
                 | _ ->
-                    failwithf "E4 codegen: unknown name '%s'" name
+                    match ctx.UnionCases.TryGetValue name with
+                    | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
+                        // Nullary case literal — `None` / `Leaf` etc.
+                        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                        info.Type :> ClrType
+                    | _ ->
+                        failwithf "E4 codegen: unknown name '%s'" name
 
     | EPath { Segments = [enumName; caseName] }
         when ctx.Enums.ContainsKey enumName ->
@@ -524,6 +540,43 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | EMatch (scrutinee, arms) ->
         emitMatch ctx scrutinee arms
 
+    // ---- union case construction (variant-bearing) -------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.UnionCases.ContainsKey name ->
+        let info, caseInfo = ctx.UnionCases.[name]
+        // Cases with payloads accept positional or named args.
+        let namedMap =
+            args
+            |> List.choose (function
+                | CANamed (n, ex, _) -> Some (n, ex)
+                | _ -> None)
+            |> Map.ofList
+        let positional =
+            args
+            |> List.choose (function
+                | CAPositional ex -> Some ex
+                | _ -> None)
+        let mutable posIdx = 0
+        for f in caseInfo.Fields do
+            let argExpr =
+                match Map.tryFind f.Name namedMap with
+                | Some ex -> ex
+                | None ->
+                    if posIdx < List.length positional then
+                        let ex = List.item posIdx positional
+                        posIdx <- posIdx + 1
+                        ex
+                    else
+                        failwithf "E11 codegen: union case '%s' missing field '%s'"
+                            name f.Name
+            let argTy = emitExpr ctx argExpr
+            // Box value-typed args into the erased `obj` payload slot.
+            if f.Type = typeof<obj> && argTy.IsValueType then
+                il.Emit(OpCodes.Box, argTy)
+        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+        info.Type :> ClrType
+
     // ---- record construction ------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
@@ -602,15 +655,16 @@ and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
         typeof<System.Void>     // a block leaves nothing on the stack
 
 /// Compile-time predicate: does `pat` always match? Identifier
-/// patterns are catch-alls *unless* the name happens to be a known
-/// enum case — Lyric uses syntactic shape, not capitalisation, to
-/// distinguish the two.
+/// patterns are catch-alls *unless* the name names an enum case or
+/// a nullary union case — Lyric uses syntactic shape, not
+/// capitalisation, to distinguish the two.
 and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
     match pat.Kind with
     | PWildcard -> true
     | PBinding ("_", None) -> true
     | PBinding (name, None) ->
         not (ctx.EnumCases.ContainsKey name)
+        && not (ctx.UnionCases.ContainsKey name)
     | PParen inner -> alwaysMatches ctx inner
     | _ -> false
 
@@ -634,9 +688,17 @@ and private emitPatternTest
             emitLdcI4 il c.Ordinal
             il.Emit(OpCodes.Ceq)
         | _ ->
-            // Plain identifier binding — always matches; the bind
-            // happens in `emitPatternBind`.
-            emitLdcI4 il 1
+            match ctx.UnionCases.TryGetValue name with
+            | true, (_, caseInfo) ->
+                // `case Yes` for a nullary union case — type-test.
+                il.Emit(OpCodes.Ldloc, tmp)
+                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Cgt_Un)
+            | _ ->
+                // Plain identifier binding — always matches; the
+                // bind happens in `emitPatternBind`.
+                emitLdcI4 il 1
     | PParen inner ->
         emitPatternTest ctx tmp slotTy inner
     | PLiteral lit ->
@@ -651,37 +713,87 @@ and private emitPatternTest
             | LString s        -> il.Emit(OpCodes.Ldstr, s); typeof<string>
             | _ -> emitLdcI4 il 0; typeof<int32>
         il.Emit(OpCodes.Ceq)
-    | PConstructor (path, []) ->
-        // Variant-free pattern — must be an enum case in scope.
+    | PConstructor (path, sub) ->
+        // Two flavours: enum case (no sub-patterns) and union case
+        // (any number of sub-patterns).
         let key =
             match path.Segments with
             | [name] -> name
             | _ -> String.concat "." path.Segments
         match ctx.EnumCases.TryGetValue key with
-        | true, (_, c) ->
+        | true, (_, c) when sub.IsEmpty ->
             il.Emit(OpCodes.Ldloc, tmp)
             emitLdcI4 il c.Ordinal
             il.Emit(OpCodes.Ceq)
         | _ ->
-            failwithf "E6 codegen: unknown constructor pattern '%s'"
-                (String.concat "." path.Segments)
+            match ctx.UnionCases.TryGetValue key with
+            | true, (_, caseInfo) ->
+                // `tmp is CaseSubclass` — `isinst` returns the value
+                // typed as the subclass, or `null`. We use the
+                // `cgt.un` against ldnull idiom to convert "not null"
+                // into the bool 1.
+                il.Emit(OpCodes.Ldloc, tmp)
+                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Cgt_Un)
+            | _ ->
+                failwithf "E11 codegen: unknown constructor pattern '%s'"
+                    (String.concat "." path.Segments)
     | _ ->
         failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
 
 /// Bind any identifiers introduced by `pat` into the scope, given
 /// the scrutinee already stored in `tmp`. Names that match a known
-/// enum case are skipped — they're constructor patterns, not
-/// bindings.
+/// enum or nullary-union case are skipped — they're constructor
+/// patterns, not bindings.
 and private emitPatternBind
         (ctx: FunctionCtx)
         (tmp: LocalBuilder)
         (pat: Pattern) : unit =
+    let il = ctx.IL
     match pat.Kind with
-    | PBinding (name, None) when name <> "_" && not (ctx.EnumCases.ContainsKey name) ->
+    | PBinding (name, None)
+        when name <> "_"
+             && not (ctx.EnumCases.ContainsKey name)
+             && not (ctx.UnionCases.ContainsKey name) ->
         let lb = FunctionCtx.defineLocal ctx name tmp.LocalType
-        ctx.IL.Emit(OpCodes.Ldloc, tmp)
-        ctx.IL.Emit(OpCodes.Stloc, lb)
+        il.Emit(OpCodes.Ldloc, tmp)
+        il.Emit(OpCodes.Stloc, lb)
     | PParen inner -> emitPatternBind ctx tmp inner
+    | PConstructor (path, sub) when not sub.IsEmpty ->
+        let key =
+            match path.Segments with
+            | [name] -> name
+            | _ -> String.concat "." path.Segments
+        match ctx.UnionCases.TryGetValue key with
+        | true, (_, caseInfo) ->
+            // Cast `tmp` to the case subclass and store in a typed
+            // temp; sub-patterns load fields off it.
+            let castedTmp =
+                FunctionCtx.defineLocal ctx
+                    ("__case_" + caseInfo.Name) (caseInfo.Type :> ClrType)
+            il.Emit(OpCodes.Ldloc, tmp)
+            il.Emit(OpCodes.Castclass, caseInfo.Type)
+            il.Emit(OpCodes.Stloc, castedTmp)
+            let pairs =
+                caseInfo.Fields
+                |> List.zip (sub |> List.truncate (List.length caseInfo.Fields))
+            for (sp, f) in pairs do
+                match sp.Kind with
+                | PBinding (name, None)
+                    when name <> "_"
+                         && not (ctx.EnumCases.ContainsKey name)
+                         && not (ctx.UnionCases.ContainsKey name) ->
+                    let lb = FunctionCtx.defineLocal ctx name f.Type
+                    il.Emit(OpCodes.Ldloc, castedTmp)
+                    il.Emit(OpCodes.Ldfld, f.Field)
+                    il.Emit(OpCodes.Stloc, lb)
+                | PWildcard | PBinding ("_", None) -> ()
+                | _ ->
+                    // Nested patterns (e.g. `case Some(Some(x))`) need
+                    // recursive testing; defer to a later slice.
+                    ()
+        | _ -> ()
     | _ -> ()
 
 and private emitMatch

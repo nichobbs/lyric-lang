@@ -54,6 +54,14 @@ let private enumItems (sf: SourceFile) : EnumDecl list =
         | IEnum e -> Some e
         | _ -> None)
 
+/// Pull every top-level `IUnion` out of a parsed source file.
+let private unionItems (sf: SourceFile) : UnionDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IUnion u -> Some u
+        | _ -> None)
+
 /// Define a CLR enum type backing one Lyric enum. Each case becomes
 /// a `Public Static Literal` field with a sequential ordinal value,
 /// matching the strategy doc's §8.2 "variant-free unions" lowering.
@@ -74,6 +82,103 @@ let private defineEnum
     { Records.EnumInfo.Name  = ed.Name
       Records.EnumInfo.Type  = ty
       Records.EnumInfo.Cases = cases }
+
+/// Define the abstract base + sealed per-case subclasses for a Lyric
+/// union. Per D035, payload-field types are erased to `obj` in M1.4;
+/// reified generics is a Phase 2 follow-up.
+let private defineUnion
+        (md: ModuleBuilder)
+        (nsName: string)
+        (symbols: SymbolTable)
+        (ud: UnionDecl) : Records.UnionInfo =
+    let fullName =
+        if String.IsNullOrEmpty nsName then ud.Name
+        else nsName + "." + ud.Name
+    // Abstract base — no fields, no public ctor; cases extend it.
+    let baseTy =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public ||| TypeAttributes.Abstract,
+            typeof<obj>)
+    // Define a protected default ctor on the base so subclass ctors
+    // can chain to it.
+    let baseCtor =
+        baseTy.DefineConstructor(
+            MethodAttributes.Family ||| MethodAttributes.HideBySig,
+            CallingConventions.Standard,
+            [||])
+    let baseCtorIl = baseCtor.GetILGenerator()
+    baseCtorIl.Emit(OpCodes.Ldarg_0)
+    let objCtor = typeof<obj>.GetConstructor([||])
+    match Option.ofObj objCtor with
+    | Some c -> baseCtorIl.Emit(OpCodes.Call, c)
+    | None   -> failwith "object's no-arg ctor not found"
+    baseCtorIl.Emit(OpCodes.Ret)
+
+    // Resolve each case's payload field types via the type checker's
+    // resolver. Erasure: TyVar / TyUser → obj.
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    let cases =
+        ud.Cases
+        |> List.map (fun c ->
+            let caseFullName = fullName + "+" + c.Name
+            let caseTy =
+                md.DefineType(
+                    caseFullName,
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    baseTy :> System.Type)
+            let payload =
+                c.Fields
+                |> List.mapi (fun i f ->
+                    let lty, fname =
+                        match f with
+                        | UFNamed (n, te, _) ->
+                            Resolver.resolveType symbols resolveCtx scratchDiags te,
+                            n
+                        | UFPos (te, _) ->
+                            Resolver.resolveType symbols resolveCtx scratchDiags te,
+                            sprintf "Item%d" (i + 1)
+                    // Erasure: anything that isn't already a CLR
+                    // primitive lowers to obj. Reified generics
+                    // upgrade this in Phase 2.
+                    let cty =
+                        match lty with
+                        | TyPrim _ | TySlice _ | TyArray _ | TyTuple _ ->
+                            TypeMap.toClrType lty
+                        | _ -> typeof<obj>
+                    let fb =
+                        caseTy.DefineField(
+                            fname,
+                            cty,
+                            FieldAttributes.Public ||| FieldAttributes.InitOnly)
+                    { Records.UnionPayloadField.Name  = fname
+                      Records.UnionPayloadField.Type  = cty
+                      Records.UnionPayloadField.Field = fb })
+            // Constructor: takes every payload field in order.
+            let paramTypes =
+                payload |> List.map (fun f -> f.Type) |> List.toArray
+            let ctor =
+                caseTy.DefineConstructor(
+                    MethodAttributes.Public,
+                    CallingConventions.Standard,
+                    paramTypes)
+            let cil = ctor.GetILGenerator()
+            cil.Emit(OpCodes.Ldarg_0)
+            cil.Emit(OpCodes.Call, baseCtor)
+            payload
+            |> List.iteri (fun i f ->
+                cil.Emit(OpCodes.Ldarg_0)
+                cil.Emit(OpCodes.Ldarg, i + 1)
+                cil.Emit(OpCodes.Stfld, f.Field))
+            cil.Emit(OpCodes.Ret)
+            { Records.UnionCaseInfo.Name   = c.Name
+              Records.UnionCaseInfo.Type   = caseTy
+              Records.UnionCaseInfo.Fields = payload
+              Records.UnionCaseInfo.Ctor   = ctor })
+    { Records.UnionInfo.Name  = ud.Name
+      Records.UnionInfo.Type  = baseTy
+      Records.UnionInfo.Cases = cases }
 
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
@@ -186,7 +291,9 @@ let private emitFunctionBody
         (funcs: Dictionary<string, MethodBuilder>)
         (records: Records.RecordTable)
         (enums: Records.EnumTable)
-        (enumCases: Records.EnumCaseLookup) : unit =
+        (enumCases: Records.EnumCaseLookup)
+        (unions: Records.UnionTable)
+        (unionCases: Records.UnionCaseLookup) : unit =
     let il = mb.GetILGenerator()
     let returnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
     let paramList =
@@ -194,7 +301,8 @@ let private emitFunctionBody
         |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
     let ctx =
         Codegen.FunctionCtx.make
-            il returnTy paramList funcs records enums enumCases
+            il returnTy paramList
+            funcs records enums enumCases unions unionCases
 
     // Helper: emit a block, treating the trailing SExpr as the
     // function's return value when the function isn't Unit-typed.
@@ -316,6 +424,20 @@ let private emitAssembly
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type)
+
+        let unionTable = Records.UnionTable()
+        let unionCaseLookup = Records.UnionCaseLookup()
+        for ud in unionItems sf do
+            let info = defineUnion ctx.Module nsName symbols ud
+            unionTable.[ud.Name] <- info
+            for c in info.Cases do
+                unionCaseLookup.[c.Name] <- (info, c)
+                unionCaseLookup.[ud.Name + "." + c.Name] <- (info, c)
+            symbols.TryFind ud.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+
         let lookup =
             fun (id: TypeId) ->
                 match typeIdToClr.TryGetValue id with
@@ -355,14 +477,21 @@ let private emitAssembly
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
                 methodTable recordTable enumTable enumCases
+                unionTable unionCaseLookup
 
         let lyricMain = methodTable.["main"]
         let hostMain  = defineHostEntryPoint programTy lyricMain
 
         // Finalise every type so the persisted PE captures their
-        // metadata. Records are sealed first so their TypeBuilders
+        // metadata. User types are sealed first so their TypeBuilders
         // are valid types when programTy.CreateType references them.
         for kv in recordTable do
+            kv.Value.Type.CreateType() |> ignore
+        for kv in unionTable do
+            // Subclasses must be created before their abstract base
+            // gets sealed.
+            for c in kv.Value.Cases do
+                c.Type.CreateType() |> ignore
             kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (Some (hostMain :> MethodInfo))
