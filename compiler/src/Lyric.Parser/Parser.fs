@@ -472,64 +472,10 @@ let private skipItemBody (cursor: Cursor) : Span =
             Cursor.advance cursor |> ignore
     joinSpans startSpan lastSpan
 
-/// Try to parse one top-level item. Returns None at EOF; otherwise
-/// always returns Some, populating an IError-tagged Item on
-/// unrecognised input so the parser keeps making progress.
-let private parseItem
-        (cursor: Cursor)
-        (diags:  ResizeArray<Diagnostic>)
-        : Item option =
-
-    Cursor.skipStmtEnds cursor |> ignore
-    if Cursor.isAtEnd cursor then None
-    else
-        let prefixStart = Cursor.peekSpan cursor
-        let docs = parseItemDocComments cursor
-        let anns = parseItemAnnotations cursor diags
-        let vis =
-            match Cursor.tryEatKeyword KwPub cursor with
-            | Some t -> Some (Pub t.Span)
-            | None -> None
-
-        let nextTok = Cursor.peek cursor
-        if isItemStartToken nextTok.Token then
-            err diags "P0098"
-                "item-level parsing not yet implemented; body skipped"
-                nextTok.Span
-            let bodySpan = skipItemBody cursor
-            let totalSpan = joinSpans prefixStart bodySpan
-            Some
-                { DocComments = docs
-                  Annotations = anns
-                  Visibility  = vis
-                  Kind        = IError
-                  Span        = totalSpan }
-        else
-            err diags "P0040"
-                "expected an item declaration"
-                nextTok.Span
-            // Advance one token to guarantee progress.
-            if not (Cursor.isAtEnd cursor) then
-                Cursor.advance cursor |> ignore
-            Some
-                { DocComments = docs
-                  Annotations = anns
-                  Visibility  = vis
-                  Kind        = IError
-                  Span        = joinSpans prefixStart nextTok.Span }
-
-let private parseItems
-        (cursor: Cursor)
-        (diags:  ResizeArray<Diagnostic>)
-        : Item list =
-
-    let xs = ResizeArray<Item>()
-    let mutable keepGoing = true
-    while keepGoing do
-        match parseItem cursor diags with
-        | Some it -> xs.Add(it)
-        | None    -> keepGoing <- false
-    List.ofSeq xs
+/// `parseItem` and `parseItems` were originally defined here as
+/// top-level `let private` functions. They have moved into the
+/// mutual-recursion chain below so they can call the typed item-body
+/// parsers introduced in P5b.
 
 // ===========================================================================
 //  P4: Expressions (minimal subset), type expressions, range bounds.
@@ -1471,6 +1417,559 @@ and private parseInvariantClause
     let expr = parseExpr cursor diags
     { Expr = expr
       Span = joinSpans startTok.Span expr.Span }
+
+// ---------------------------------------------------------------------------
+// P5b: type-shaped item bodies.
+//
+// Each item kind below shares the same prefix shape (name + generics +
+// optional where-clause + body) with small variations. The two helpers
+// `mergeGenericsInfo` and `readIdent` factor the common bits.
+// ---------------------------------------------------------------------------
+
+and private mergeGenericsInfo
+        (diags:  ResizeArray<Diagnostic>)
+        (prefix: GenericParams option)
+        (suffix: GenericParams option)
+        : GenericParams option =
+    match prefix, suffix with
+    | Some _, Some s ->
+        err diags "P0102"
+            "generic[...] may appear before or after the name, not both"
+            s.Span
+        prefix
+    | Some _, None -> prefix
+    | None, Some _ -> suffix
+    | None, None   -> None
+
+and private readIdent
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (whatFor: string)
+        : string * Span =
+    match Cursor.tryEatIdent cursor with
+    | Some (n, s) -> n, s
+    | None ->
+        let span = Cursor.peekSpan cursor
+        err diags "P0103"
+            (sprintf "expected an identifier for %s name" whatFor)
+            span
+        "<error>", span
+
+/// Parse a single annotation that may follow a field or post-name on
+/// an opaque type declaration.
+and private parseTrailingAnnotations
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Annotation list =
+    let xs = ResizeArray<Annotation>()
+    let mutable keep = true
+    while keep do
+        match parseAnnotation cursor diags with
+        | Some a -> xs.Add(a)
+        | None -> keep <- false
+    List.ofSeq xs
+
+// ----- alias ---------------------------------------------------------------
+
+and private parseTypeAliasBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : TypeAliasDecl =
+    let startTok = Cursor.advance cursor   // 'alias'
+    let name, nameSpan = readIdent cursor diags "alias"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    match Cursor.tryEatPunct Eq cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0110"
+            "expected '=' in type alias"
+            (Cursor.peekSpan cursor)
+    let rhs = parseTypeExpr cursor diags
+    { Name     = name
+      Generics = generics
+      RHS      = rhs
+      Span     = joinSpans startTok.Span rhs.Span }
+
+// ----- distinct type -------------------------------------------------------
+
+and private parseDerivesClauseOpt
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : string list =
+    match Cursor.peekToken cursor with
+    | TIdent "derives" ->
+        Cursor.advance cursor |> ignore
+        let xs = ResizeArray<string>()
+        let appendIdent () =
+            match Cursor.tryEatIdent cursor with
+            | Some (n, _) -> xs.Add(n)
+            | None ->
+                err diags "P0111"
+                    "expected a marker name in 'derives' clause"
+                    (Cursor.peekSpan cursor)
+        appendIdent ()
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            appendIdent ()
+        List.ofSeq xs
+    | _ -> []
+
+and private parseDistinctTypeBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : DistinctTypeDecl =
+    let startTok = Cursor.advance cursor   // 'type'
+    let name, nameSpan = readIdent cursor diags "type"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    match Cursor.tryEatPunct Eq cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0112"
+            "expected '=' in distinct type declaration"
+            (Cursor.peekSpan cursor)
+    let initial = parseTypeExpr cursor diags
+    // The type-expression grammar (§4) admits `Foo range a ..= b` as a
+    // refined-type form. Distinct-type RHS context (§3.3) wants the
+    // range as a separate RangeClause, so unwrap a TRefined back into
+    // its head + bound.
+    let underlying, rangeFromType =
+        match initial.Kind with
+        | TRefined(headPath, bound) ->
+            let bareUnderlying =
+                mkType (TRef headPath) headPath.Span
+            bareUnderlying, Some bound
+        | _ -> initial, None
+    let range =
+        match rangeFromType with
+        | Some _ -> rangeFromType
+        | None ->
+            match Cursor.peekToken cursor with
+            | TIdent "range" ->
+                Cursor.advance cursor |> ignore
+                Some (parseRangeBound cursor diags)
+            | _ -> None
+    let derives = parseDerivesClauseOpt cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    { Name       = name
+      Generics   = generics
+      Underlying = underlying
+      Range      = range
+      Derives    = derives
+      Span       = joinSpans startTok.Span endSpan }
+
+// ----- record / exposed record ---------------------------------------------
+
+and private parseFieldDecl
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : FieldDecl =
+    let startSpan = Cursor.peekSpan cursor
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    let vis =
+        match Cursor.tryEatKeyword KwPub cursor with
+        | Some t -> Some (Pub t.Span)
+        | None -> None
+    let name, nameSpan = readIdent cursor diags "field"
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0120"
+            "expected ':' after field name"
+            (Cursor.peekSpan cursor)
+    let ty = parseTypeExpr cursor diags
+    let dflt =
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> Some (parseExpr cursor diags)
+        | None -> None
+    let trailingAnns = parseTrailingAnnotations cursor diags
+    // Field-level trailing annotations attach to the field's annotation
+    // list (after any item-level prefix annotations).
+    let allAnns = List.append anns trailingAnns
+    { DocComments = docs
+      Annotations = allAnns
+      Visibility  = vis
+      Name        = name
+      Type        = ty
+      Default     = dflt
+      Span        = joinSpans startSpan ty.Span }
+
+and private parseRecordMembers
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : RecordMember list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0121"
+            "expected '{' to start record body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<RecordMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        match Cursor.peekToken cursor with
+        | TKeyword KwInvariant ->
+            xs.Add(RMInvariant (parseInvariantClause cursor diags))
+        | _ ->
+            xs.Add(RMField (parseFieldDecl cursor diags))
+        // Tolerate STMT_END or comma between members.
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0122"
+            "expected '}' to close record body"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parseRecordBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        (isExposed: bool)
+        : RecordDecl =
+    let startSpan = Cursor.peekSpan cursor
+    if isExposed then
+        Cursor.advance cursor |> ignore   // 'exposed'
+    Cursor.advance cursor |> ignore       // 'record'
+    let name, nameSpan = readIdent cursor diags "record"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    let where = parseWhereClauseOpt cursor diags
+    let members = parseRecordMembers cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    { Name     = name
+      Generics = generics
+      Where    = where
+      Members  = members
+      Span     = joinSpans startSpan endSpan }
+
+// ----- union ---------------------------------------------------------------
+
+and private parseUnionField
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : UnionField =
+    // Look-ahead: `IDENT ':' Type` is named; otherwise positional.
+    let saved = Cursor.mark cursor
+    match Cursor.peekToken cursor with
+    | TIdent _ ->
+        let nameTok = Cursor.advance cursor
+        if Cursor.peekToken cursor = TPunct Colon then
+            Cursor.advance cursor |> ignore
+            let ty = parseTypeExpr cursor diags
+            let name =
+                match nameTok.Token with
+                | TIdent n -> n
+                | _ -> "<error>"
+            UFNamed(name, ty, joinSpans nameTok.Span ty.Span)
+        else
+            Cursor.reset cursor saved
+            let ty = parseTypeExpr cursor diags
+            UFPos(ty, ty.Span)
+    | _ ->
+        let ty = parseTypeExpr cursor diags
+        UFPos(ty, ty.Span)
+
+and private parseUnionCase
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : UnionCase =
+    let startSpan = Cursor.peekSpan cursor
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    match Cursor.tryEatKeyword KwCase cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0130"
+            "expected 'case' to start a union case"
+            (Cursor.peekSpan cursor)
+    let name, nameSpan = readIdent cursor diags "case"
+    let fields = ResizeArray<UnionField>()
+    if Cursor.peekToken cursor = TPunct LParen then
+        Cursor.advance cursor |> ignore
+        if Cursor.peekToken cursor <> TPunct RParen then
+            fields.Add(parseUnionField cursor diags)
+            while Cursor.peekToken cursor = TPunct Comma do
+                Cursor.advance cursor |> ignore
+                if Cursor.peekToken cursor = TPunct RParen then ()
+                else fields.Add(parseUnionField cursor diags)
+        match Cursor.tryEatPunct RParen cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0131"
+                "expected ')' to close union case payload"
+                (Cursor.peekSpan cursor)
+    let endSpan = Cursor.peekSpan cursor
+    { DocComments = docs
+      Annotations = anns
+      Name        = name
+      Fields      = List.ofSeq fields
+      Span        = joinSpans startSpan endSpan }
+
+and private parseUnionCases
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : UnionCase list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0132"
+            "expected '{' to start union body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<UnionCase>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        xs.Add(parseUnionCase cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0133"
+            "expected '}' to close union body"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parseUnionBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : UnionDecl =
+    let startTok = Cursor.advance cursor   // 'union'
+    let name, nameSpan = readIdent cursor diags "union"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    let where = parseWhereClauseOpt cursor diags
+    let cases = parseUnionCases cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    { Name     = name
+      Generics = generics
+      Where    = where
+      Cases    = cases
+      Span     = joinSpans startTok.Span endSpan }
+
+// ----- enum ----------------------------------------------------------------
+
+and private parseEnumCase
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : EnumCase =
+    let startSpan = Cursor.peekSpan cursor
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    match Cursor.tryEatKeyword KwCase cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0140"
+            "expected 'case' to start an enum case"
+            (Cursor.peekSpan cursor)
+    let name, nameSpan = readIdent cursor diags "case"
+    { DocComments = docs
+      Annotations = anns
+      Name        = name
+      Span        = joinSpans startSpan nameSpan }
+
+and private parseEnumCases
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : EnumCase list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0141"
+            "expected '{' to start enum body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<EnumCase>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        xs.Add(parseEnumCase cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0142"
+            "expected '}' to close enum body"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parseEnumBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : EnumDecl =
+    let startTok = Cursor.advance cursor   // 'enum'
+    let name, _ = readIdent cursor diags "enum"
+    let cases = parseEnumCases cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    { Name = name
+      Cases = cases
+      Span = joinSpans startTok.Span endSpan }
+
+// ----- opaque type ---------------------------------------------------------
+
+and private parseOpaqueMembers
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : OpaqueMember list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0150"
+            "expected '{' to start opaque type body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<OpaqueMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        match Cursor.peekToken cursor with
+        | TKeyword KwInvariant ->
+            xs.Add(OMInvariant (parseInvariantClause cursor diags))
+        | _ ->
+            xs.Add(OMField (parseFieldDecl cursor diags))
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0151"
+            "expected '}' to close opaque type body"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parseOpaqueTypeBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : OpaqueTypeDecl =
+    let startTok = Cursor.advance cursor   // 'opaque'
+    Cursor.advance cursor |> ignore        // 'type'
+    let name, _ = readIdent cursor diags "opaque type"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    let where = parseWhereClauseOpt cursor diags
+    // Post-name annotations (e.g. `@projectable`).
+    let postAnns = parseTrailingAnnotations cursor diags
+    // Body is optional: a header-only opaque declaration is legal
+    // (the body lives elsewhere in the package or in a .lbody file).
+    let hasBody = Cursor.peekToken cursor = TPunct LBrace
+    let members =
+        if hasBody then parseOpaqueMembers cursor diags
+        else []
+    let endSpan = Cursor.peekSpan cursor
+    { Name        = name
+      Generics    = generics
+      Where       = where
+      Annotations = postAnns
+      Members     = members
+      HasBody     = hasBody
+      Span        = joinSpans startTok.Span endSpan }
+
+// ---------------------------------------------------------------------------
+// Top-level item loop. Lives at the end of the mutual-recursion chain
+// so it can dispatch into every body parser above.
+// ---------------------------------------------------------------------------
+
+and private parseItem
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Item option =
+
+    Cursor.skipStmtEnds cursor |> ignore
+    if Cursor.isAtEnd cursor then None
+    else
+        let prefixStart = Cursor.peekSpan cursor
+        let docs = parseItemDocComments cursor
+        let anns = parseItemAnnotations cursor diags
+        let vis =
+            match Cursor.tryEatKeyword KwPub cursor with
+            | Some t -> Some (Pub t.Span)
+            | None -> None
+
+        // Optional `generic[...]` head modifier; the suffix form
+        // (`record X generic[T]`) is parsed inside each body parser.
+        let genericsPrefix = parseGenericParamsOpt cursor diags
+
+        let nextTok = Cursor.peek cursor
+        let kind =
+            match nextTok.Token with
+            | TKeyword KwAlias ->
+                ITypeAlias (parseTypeAliasBody cursor diags genericsPrefix)
+            | TKeyword KwType ->
+                IDistinctType (parseDistinctTypeBody cursor diags genericsPrefix)
+            | TKeyword KwRecord ->
+                IRecord (parseRecordBody cursor diags genericsPrefix false)
+            | TKeyword KwExposed
+                when (Cursor.peekAt cursor 1).Token = TKeyword KwRecord ->
+                IExposedRec (parseRecordBody cursor diags genericsPrefix true)
+            | TKeyword KwUnion ->
+                IUnion (parseUnionBody cursor diags genericsPrefix)
+            | TKeyword KwEnum ->
+                match genericsPrefix with
+                | Some g ->
+                    err diags "P0100"
+                        "enum does not accept generic parameters"
+                        g.Span
+                | None -> ()
+                IEnum (parseEnumBody cursor diags)
+            | TKeyword KwOpaque
+                when (Cursor.peekAt cursor 1).Token = TKeyword KwType ->
+                IOpaque (parseOpaqueTypeBody cursor diags genericsPrefix)
+            | tok when isItemStartToken tok ->
+                // Recognised but not yet implemented; fall back to
+                // the P3 skip-and-IError path.
+                err diags "P0098"
+                    "item-level parsing not yet implemented; body skipped"
+                    nextTok.Span
+                skipItemBody cursor |> ignore
+                IError
+            | _ ->
+                err diags "P0040"
+                    "expected an item declaration"
+                    nextTok.Span
+                if not (Cursor.isAtEnd cursor) then
+                    Cursor.advance cursor |> ignore
+                IError
+
+        let endSpan = Cursor.peekSpan cursor
+        Some
+            { DocComments = docs
+              Annotations = anns
+              Visibility  = vis
+              Kind        = kind
+              Span        = joinSpans prefixStart endSpan }
+
+and private parseItems
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Item list =
+    let xs = ResizeArray<Item>()
+    let mutable keepGoing = true
+    while keepGoing do
+        match parseItem cursor diags with
+        | Some it -> xs.Add(it)
+        | None    -> keepGoing <- false
+    List.ofSeq xs
 
 // ---------------------------------------------------------------------------
 // Public testing entry points (exposed but documented as low-level).

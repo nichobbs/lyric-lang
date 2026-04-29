@@ -13,15 +13,14 @@ let private prelude = "package P\n"
 let tests =
     testList "item-head recognition" [
 
-        test "every item kind is recognised and skipped to body end" {
+        test "kinds not yet implemented produce IError + P0098" {
+            // Item kinds that still fall through to the recognise-
+            // and-skip placeholder. The kinds we DO parse fully now
+            // (alias, type, record, exposed record, union, enum,
+            // opaque) have dedicated tests in ItemBodyTests.
             let cases =
                 [ "pub func f(): Int = 1"
-                  "pub record R { x: Int }"
-                  "pub union U { case A, case B }"
-                  "pub enum E { case Red, case Green }"
-                  "pub opaque type O { x: Int }"
                   "pub protected type P { var x: Int }"
-                  "pub exposed record X { y: Int }"
                   "pub interface I { func f(): Int }"
                   "impl I for X { func f(): Int = 1 }"
                   "wire W { expose x }"
@@ -29,21 +28,16 @@ let tests =
                   "test \"x\" { 1 }"
                   "property \"y\" { true }"
                   "fixture f = 1"
-                  "pub type X = Long"
-                  "pub alias Y = Long"
                   "pub val K: Int = 42"
                   "pub async func g(): Int = 1"
                   "scope_kind Tenant" ]
             for src in cases do
                 let r = parseFile (prelude + src)
-                // Must produce exactly one item; its kind is IError
-                // (the recognise-and-skip placeholder for now).
                 Expect.equal r.File.Items.Length 1
                     (sprintf "one item parsed for: %s" src)
                 match r.File.Items.[0].Kind with
                 | IError -> ()
                 | other -> failtestf "expected IError, got %A in: %s" other src
-                // Each item should have raised exactly one P0098.
                 let p98s =
                     r.Diagnostics
                     |> List.filter (fun d -> d.Code = "P0098")
@@ -68,23 +62,24 @@ let tests =
             | None -> failtest "expected pub"
         }
 
-        test "two consecutive items, both recognised" {
+        test "two consecutive items, both recognised and parsed" {
             let src =
                 prelude
                 + "pub type Cents = Long\n"
                 + "pub record Amount { value: Cents }\n"
             let r = parseFile src
             Expect.equal r.File.Items.Length 2 "two items"
+            // No P0098: type and record are now fully parsed.
             let p98s =
                 r.Diagnostics
                 |> List.filter (fun d -> d.Code = "P0098")
-            Expect.equal p98s.Length 2 "two P0098 diagnostics"
+            Expect.equal p98s.Length 0 "no P0098 diagnostics"
         }
 
         test "non-item garbage produces P0040 and recovery continues" {
             // `42` at the top level is not a valid item start; the
             // parser flags it and consumes one token to make progress,
-            // then recognises the following record.
+            // then recognises the following typed-alias item.
             let src =
                 prelude
                 + "42\n"
@@ -92,13 +87,13 @@ let tests =
             let r = parseFile src
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "P0040" "non-item flagged"
-            // A single legitimate item should still be parsed.
-            let realItems =
+            // The legitimate item still appears in the items list.
+            let typedItems =
                 r.File.Items
                 |> List.filter (fun i ->
-                    match i.Kind with IError -> true | _ -> false)
-            Expect.isGreaterThanOrEqual realItems.Length 1
-                "at least one item recognised"
+                    match i.Kind with IDistinctType _ -> true | _ -> false)
+            Expect.equal typedItems.Length 1
+                "the type item is still parsed"
         }
 
         test "balanced braces inside an item body do not confuse the skipper" {
