@@ -17,10 +17,10 @@ let tests =
             // Item kinds that still fall through to the recognise-
             // and-skip placeholder. The kinds we DO parse fully now
             // (alias, type, record, exposed record, union, enum,
-            // opaque) have dedicated tests in ItemBodyTests.
+            // opaque, func, async func) have dedicated tests in
+            // ItemBodyTests / FunctionDeclTests.
             let cases =
-                [ "pub func f(): Int = 1"
-                  "pub protected type P { var x: Int }"
+                [ "pub protected type P { var x: Int }"
                   "pub interface I { func f(): Int }"
                   "impl I for X { func f(): Int = 1 }"
                   "wire W { expose x }"
@@ -29,7 +29,6 @@ let tests =
                   "property \"y\" { true }"
                   "fixture f = 1"
                   "pub val K: Int = 42"
-                  "pub async func g(): Int = 1"
                   "scope_kind Tenant" ]
             for src in cases do
                 let r = parseFile (prelude + src)

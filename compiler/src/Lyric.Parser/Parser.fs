@@ -1886,6 +1886,241 @@ and private parseOpaqueTypeBody
       Span        = joinSpans startTok.Span endSpan }
 
 // ---------------------------------------------------------------------------
+// P6a: functions, parameter modes, contract clauses.
+//
+// `func`-shaped items have the head:
+//   [async] func NAME [generic[…]] '(' params ')' [: TYPE]
+//                                  [where …] { contract clauses }
+//                                  ( '=' EXPR | block )
+// FunctionSig (used inside interfaces and externs) is everything up to
+// but not including the body.
+// ---------------------------------------------------------------------------
+
+and private parseParam
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Param =
+    // The worked-example syntax is `name: mode type`, mirrored in the
+    // language reference (§5.1: `func add(x: in Int, y: in Int)`).
+    // The original grammar.ebnf put the mode first; this is a known
+    // grammar/reference mismatch and we follow the reference + the
+    // worked examples here.
+    let startSpan = Cursor.peekSpan cursor
+    let name, _ = readIdent cursor diags "parameter"
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0161"
+            "expected ':' after parameter name"
+            (Cursor.peekSpan cursor)
+    let mode =
+        match Cursor.peekToken cursor with
+        | TKeyword KwIn    -> Cursor.advance cursor |> ignore; PMIn
+        | TKeyword KwOut   -> Cursor.advance cursor |> ignore; PMOut
+        | TKeyword KwInout -> Cursor.advance cursor |> ignore; PMInout
+        | _ ->
+            err diags "P0160"
+                "expected parameter mode 'in', 'out', or 'inout' after ':'"
+                (Cursor.peekSpan cursor)
+            PMIn
+    let ty = parseTypeExpr cursor diags
+    let dflt =
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> Some (parseExpr cursor diags)
+        | None -> None
+    let endSpan =
+        match dflt with
+        | Some e -> e.Span
+        | None -> ty.Span
+    { Mode    = mode
+      Name    = name
+      Type    = ty
+      Default = dflt
+      Span    = joinSpans startSpan endSpan }
+
+/// Wait — Lyric's worked examples occasionally write parameters
+/// without an explicit mode keyword. The grammar requires a mode (per
+/// language reference D004, mandatory parameter modes), but inside
+/// constructor-style helpers the convention may vary. The parser here
+/// requires a mode and reports P0160 if missing.
+and private parseParamList
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Param list =
+    match Cursor.tryEatPunct LParen cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0162"
+            "expected '(' to start parameter list"
+            (Cursor.peekSpan cursor)
+    let xs = ResizeArray<Param>()
+    if Cursor.peekToken cursor <> TPunct RParen then
+        xs.Add(parseParam cursor diags)
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            if Cursor.peekToken cursor = TPunct RParen then ()
+            else xs.Add(parseParam cursor diags)
+    match Cursor.tryEatPunct RParen cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0163"
+            "expected ')' to close parameter list"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+/// Parse a single contract clause. Returns None if the next token is
+/// not a contract-clause keyword.
+and private parseContractClauseOpt
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ContractClause option =
+    let startSpan = Cursor.peekSpan cursor
+    match Cursor.peekToken cursor with
+    | TKeyword KwRequires ->
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0170"
+                "expected ':' after 'requires'"
+                (Cursor.peekSpan cursor)
+        let e = parseExpr cursor diags
+        Some (CCRequires(e, joinSpans startSpan e.Span))
+    | TKeyword KwEnsures ->
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0170"
+                "expected ':' after 'ensures'"
+                (Cursor.peekSpan cursor)
+        let e = parseExpr cursor diags
+        Some (CCEnsures(e, joinSpans startSpan e.Span))
+    | TKeyword KwWhen ->
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0170"
+                "expected ':' after 'when'"
+                (Cursor.peekSpan cursor)
+        let e = parseExpr cursor diags
+        Some (CCWhen(e, joinSpans startSpan e.Span))
+    | _ -> None
+
+/// Parse zero or more contract clauses, tolerating STMT_ENDs between
+/// them. Returns the collected list and stops at the first non-clause
+/// token (typically `=` or `{` for a function body).
+and private parseContractClauses
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ContractClause list =
+    let xs = ResizeArray<ContractClause>()
+    let mutable keepGoing = true
+    while keepGoing do
+        Cursor.skipStmtEnds cursor |> ignore
+        match parseContractClauseOpt cursor diags with
+        | Some c -> xs.Add(c)
+        | None -> keepGoing <- false
+    List.ofSeq xs
+
+/// Parse a placeholder block body: opening '{', balanced-brace skip,
+/// closing '}'. The contained statements are parsed in a later slice
+/// (P7); for now we synthesise an empty Block whose span covers the
+/// braced range. Diagnostics are not emitted for the skip.
+and private parseBlockSkeleton
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Block =
+    let startSpan = Cursor.peekSpan cursor
+    let openTok = Cursor.tryEatPunct LBrace cursor
+    match openTok with
+    | None ->
+        err diags "P0171"
+            "expected '{' to start block"
+            startSpan
+        { Statements = []; Span = startSpan }
+    | Some _ ->
+        let mutable depth = 1
+        while depth > 0 && not (Cursor.isAtEnd cursor) do
+            match Cursor.peekToken cursor with
+            | TPunct LBrace ->
+                depth <- depth + 1
+                Cursor.advance cursor |> ignore
+            | TPunct RBrace ->
+                depth <- depth - 1
+                Cursor.advance cursor |> ignore
+            | _ ->
+                Cursor.advance cursor |> ignore
+        let endSpan = Cursor.peekSpan cursor
+        { Statements = []
+          Span       = joinSpans startSpan endSpan }
+
+and private parseFunctionBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : FunctionBody =
+    match Cursor.peekToken cursor with
+    | TPunct Eq ->
+        Cursor.advance cursor |> ignore
+        FBExpr (parseExpr cursor diags)
+    | TPunct LBrace ->
+        FBBlock (parseBlockSkeleton cursor diags)
+    | _ ->
+        err diags "P0172"
+            "expected '=' or '{' to start function body"
+            (Cursor.peekSpan cursor)
+        FBBlock { Statements = []; Span = Cursor.peekSpan cursor }
+
+and private parseFunctionDeclBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : FunctionDecl =
+    let startSpan = Cursor.peekSpan cursor
+    let isAsync =
+        match Cursor.tryEatKeyword KwAsync cursor with
+        | Some _ -> true
+        | None -> false
+    match Cursor.tryEatKeyword KwFunc cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0173"
+            "expected 'func' keyword"
+            (Cursor.peekSpan cursor)
+    let name, _ = readIdent cursor diags "function"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    let parameters = parseParamList cursor diags
+    let returnType =
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> Some (parseTypeExpr cursor diags)
+        | None -> None
+    let where = parseWhereClauseOpt cursor diags
+    let contracts = parseContractClauses cursor diags
+    // Body. If the next token is `=` or `{`, parse one. Otherwise
+    // there is no body — used in interface signatures and extern
+    // declarations.
+    let body =
+        match Cursor.peekToken cursor with
+        | TPunct Eq | TPunct LBrace ->
+            Some (parseFunctionBody cursor diags)
+        | _ -> None
+    let endSpan = Cursor.peekSpan cursor
+    { DocComments = []
+      Annotations = []
+      Visibility  = None
+      IsAsync     = isAsync
+      Name        = name
+      Generics    = generics
+      Params      = parameters
+      Return      = returnType
+      Where       = where
+      Contracts   = contracts
+      Body        = body
+      Span        = joinSpans startSpan endSpan }
+
+// ---------------------------------------------------------------------------
 // Top-level item loop. Lives at the end of the mutual-recursion chain
 // so it can dispatch into every body parser above.
 // ---------------------------------------------------------------------------
@@ -1901,14 +2136,21 @@ and private parseItem
         let prefixStart = Cursor.peekSpan cursor
         let docs = parseItemDocComments cursor
         let anns = parseItemAnnotations cursor diags
-        let vis =
-            match Cursor.tryEatKeyword KwPub cursor with
-            | Some t -> Some (Pub t.Span)
-            | None -> None
-
-        // Optional `generic[...]` head modifier; the suffix form
-        // (`record X generic[T]`) is parsed inside each body parser.
-        let genericsPrefix = parseGenericParamsOpt cursor diags
+        // The worked examples use both orderings of the optional
+        // `pub` visibility marker and the `generic[…]` head modifier
+        // (e.g. `pub generic[T]` and `generic[T] pub`). Loop, eating
+        // whichever appears next, until neither matches.
+        let mutable vis            : Visibility option   = None
+        let mutable genericsPrefix : GenericParams option = None
+        let mutable progress = true
+        while progress do
+            match Cursor.peekToken cursor with
+            | TKeyword KwPub when vis.IsNone ->
+                let t = Cursor.advance cursor
+                vis <- Some (Pub t.Span)
+            | TKeyword KwGeneric when genericsPrefix.IsNone ->
+                genericsPrefix <- parseGenericParamsOpt cursor diags
+            | _ -> progress <- false
 
         let nextTok = Cursor.peek cursor
         let kind =
@@ -1935,6 +2177,19 @@ and private parseItem
             | TKeyword KwOpaque
                 when (Cursor.peekAt cursor 1).Token = TKeyword KwType ->
                 IOpaque (parseOpaqueTypeBody cursor diags genericsPrefix)
+            | TKeyword KwFunc ->
+                let fn = parseFunctionDeclBody cursor diags genericsPrefix
+                IFunc { fn with
+                          DocComments = docs
+                          Annotations = anns
+                          Visibility  = vis }
+            | TKeyword KwAsync
+                when (Cursor.peekAt cursor 1).Token = TKeyword KwFunc ->
+                let fn = parseFunctionDeclBody cursor diags genericsPrefix
+                IFunc { fn with
+                          DocComments = docs
+                          Annotations = anns
+                          Visibility  = vis }
             | tok when isItemStartToken tok ->
                 // Recognised but not yet implemented; fall back to
                 // the P3 skip-and-IError path.
