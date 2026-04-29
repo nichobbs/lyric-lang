@@ -197,6 +197,13 @@ let rec checkStatement
         // Nested item declarations are rare; defer to T6+.
         ()
 
+    | SRule (_, _) ->
+        // Stub-builder DSL rule entries (`it.foo() -> bar`) parse
+        // inside `{ … }` lambdas. The Phase 1 type checker tolerates
+        // them but doesn't yet model the stub-builder protocol; full
+        // checking lands when @stubbable lands in T6+.
+        ()
+
 and checkBlock
         (scope: Scope)
         (table: SymbolTable)
