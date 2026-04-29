@@ -28,14 +28,32 @@ type FunctionCtx =
     { IL:         ILGenerator
       ReturnType: ClrType
       Scopes:     Stack<Dictionary<string, LocalBuilder>>
-      Loops:      Stack<LoopFrame> }
+      Loops:      Stack<LoopFrame>
+      /// Parameters by name → (CLR-arg-index, declared CLR type).
+      Params:     Dictionary<string, int * ClrType>
+      /// Same-package functions visible at codegen time. E4 only
+      /// resolves single-segment calls; cross-package linking is
+      /// M1.4 work.
+      Funcs:      Dictionary<string, MethodBuilder> }
 
 module FunctionCtx =
 
-    let make (il: ILGenerator) (returnType: ClrType) : FunctionCtx =
+    let make
+            (il: ILGenerator)
+            (returnType: ClrType)
+            (paramList: (string * ClrType) list)
+            (funcs: Dictionary<string, MethodBuilder>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
-        { IL = il; ReturnType = returnType; Scopes = s; Loops = Stack() }
+        let p = Dictionary<string, int * ClrType>()
+        paramList
+        |> List.iteri (fun i (name, ty) -> p.[name] <- (i, ty))
+        { IL         = il
+          ReturnType = returnType
+          Scopes     = s
+          Loops      = Stack()
+          Params     = p
+          Funcs      = funcs }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -199,12 +217,21 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- variable read ------------------------------------------------
 
     | EPath { Segments = [name] } ->
+        // Order: parameter slot → local variable → function name
+        // (which loads a delegate; deferred to E8). Locals shadow
+        // params shadow functions, mirroring the type checker's
+        // lookup order.
         match FunctionCtx.tryLookup ctx name with
         | Some lb ->
             il.Emit(OpCodes.Ldloc, lb)
             lb.LocalType
         | None ->
-            failwithf "E3 codegen: unknown name '%s'" name
+            match ctx.Params.TryGetValue name with
+            | true, (idx, pty) ->
+                il.Emit(OpCodes.Ldarg, idx)
+                pty
+            | _ ->
+                failwithf "E4 codegen: unknown name '%s'" name
 
     // ---- prefix -------------------------------------------------------
 
@@ -327,6 +354,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 typeof<System.Void>
             else
                 thenTy
+
+    // ---- user-defined call --------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.Funcs.ContainsKey name ->
+        let mb = ctx.Funcs.[name]
+        for a in args do
+            let payload =
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex
+            let _ = emitExpr ctx payload
+            ()
+        il.Emit(OpCodes.Call, mb)
+        if mb.ReturnType = typeof<System.Void> then
+            typeof<System.Void>
+        else
+            mb.ReturnType
 
     // ---- println builtin ----------------------------------------------
 
