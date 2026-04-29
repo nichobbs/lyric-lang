@@ -13,6 +13,8 @@ Format:
 
 ## Q001: Record vs class lowering on .NET
 
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §5 (16-byte heuristic with `@valueType`/`@referenceType` overrides).
+
 **Question:** When does Lyric lower a record to .NET `readonly struct` vs `record class`?
 
 **Context:** Small records benefit from value-type semantics (no allocation, copy on assignment). Large records benefit from reference semantics (cheaper to pass around). Some records contain async-unsafe state and should always be reference types.
@@ -33,6 +35,8 @@ Format:
 ---
 
 ## Q002: Sealing opaque types against .NET reflection
+
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §7.2 (mangled field names + `[Lyric.Opaque]` + AOT trim + analyzer).
 
 **Question:** What concrete .NET mechanism prevents reflection from inspecting opaque types' fields?
 
@@ -59,6 +63,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q003: Projection cycle handling
 
+**Status:** RESOLVED — see decision log D026.
+
 **Question:** What is the syntax for breaking projection cycles?
 
 **Context:** If `User` is `@projectable` and contains a `Team` field, and `Team` is `@projectable` and contains a `members: slice[User]` field, the projection graph cycles. The auto-generated views would recurse infinitely.
@@ -78,6 +84,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q004: Generic constraint markers
+
+**Status:** OPEN — the lowering scheme is settled (`docs/09-msil-emission.md` §9.4) but the canonical built-in marker list is not yet pinned down.
 
 **Question:** What is the exhaustive list of built-in constraint markers for generics?
 
@@ -99,6 +107,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q005: Async with non-record `inout` parameters
 
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §11.4 (use-after-await analyser rejects; pre-await use is fine).
+
 **Question:** What happens when an `async` function has an `out` or `inout` parameter whose type is a value type, and the function awaits?
 
 **Context:** `async` functions on .NET become state machines. `out`/`inout` parameters are by-reference. Holding a reference across an await point is unsafe in general (the referent could be on a stack frame that's gone by the time the await resumes).
@@ -119,6 +129,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q006: `?` operator in non-error-returning functions
 
+**Status:** RESOLVED — see decision log D027.
+
 **Question:** What does `?` do when used inside a function that doesn't return `Result` or nullable?
 
 **Context:** `?` is the early-return operator. If the enclosing function doesn't return a compatible error type, where does the early return go?
@@ -137,6 +149,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q007: `var` capture across async boundaries
+
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §11.5 (snapshot by value; cross-await write requires `protected type` or stdlib `Atomic[T]`).
 
 **Question:** How are mutable local variables (`var`) handled when captured by an `async` closure or spawned task?
 
@@ -158,6 +172,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q008: Concurrent `func` calls on protected types
 
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §17.4 (`ReaderWriterLockSlim` if any `func`, else `SemaphoreSlim`).
+
 **Question:** Can multiple callers invoke `func` (non-mutating) operations on a protected type concurrently?
 
 **Context:** Ada's `protected` distinguishes between `entry`/`procedure` (exclusive) and `function` (concurrent reads). C# `lock` is exclusive only. Reader-writer locks allow concurrent readers but cost more on the implementation side.
@@ -176,6 +192,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q009: Protected type lowering details
+
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §17.1–17.3 (`SemaphoreSlim` plus condition variables for `when:` barriers).
 
 **Question:** How exactly does `protected type` lower to .NET primitives?
 
@@ -197,6 +215,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q010: Task vs ValueTask selection
 
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §14.2 (default `Task<T>`; `@hot` opts into `ValueTask<T>`).
+
 **Question:** When does an `async` function compile to `Task<T>` vs `ValueTask<T>`?
 
 **Context:** `ValueTask<T>` avoids allocation in the common synchronous-completion case. `Task<T>` is more general and supports continuations naturally.
@@ -217,6 +237,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q011: Standard library API surface
 
+**Status:** DEFERRED — Phase 3 work; not gating Phase 0.
+
 **Question:** What is the v1.0 standard library API surface, and what stability guarantees apply?
 
 **Context:** The standard library is the user's first impression of the language. Too small and users complain about reaching for FFI; too large and we commit to maintaining things forever.
@@ -231,6 +253,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q012: Package registry
+
+**Status:** DEFERRED — Phase 3 work; not gating Phase 0.
 
 **Question:** Where do Lyric packages live?
 
@@ -251,6 +275,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q013: Doctest semantics
 
+**Status:** RESOLVED — see decision log D028.
+
 **Question:** How are code examples in doc comments executed?
 
 **Context:** Rustdoc compiles and runs all code blocks in doc comments by default. This is great for keeping examples accurate but slows compilation.
@@ -265,6 +291,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q014: Operator overloading via traits/interfaces
+
+**Status:** RESOLVED — see decision log D029.
 
 **Question:** Can users implement `Add`, `Sub`, etc. on their own types, or only `derive` them on numeric distinct types?
 
@@ -285,6 +313,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q015: Error trait
 
+**Status:** RESOLVED — see decision log D030.
+
 **Question:** Is there a built-in `Error` interface that error types implement?
 
 **Context:** Rust has `std::error::Error`. Provides `.source()`, `.description()`, integrates with `?` and printing.
@@ -299,6 +329,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q016: Coercion of non-async to async
+
+**Status:** RESOLVED — see decision log D031.
 
 **Question:** Can a synchronous function be passed where an async function is expected?
 
@@ -315,6 +347,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q017: Newtype derives for non-numeric distinct types
 
+**Status:** RESOLVED — confirmed by language reference §2.3 as written; no design change required.
+
 **Question:** What does `derives Compare, Hash` give a non-numeric distinct type?
 
 **Context:** `type UserId = Long derives Compare, Hash`. The `Compare` and `Hash` derive should give comparison and hashing, not numeric arithmetic.
@@ -328,6 +362,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q018: Module docstrings vs item docstrings
+
+**Status:** RESOLVED — see decision log D032.
 
 **Question:** What's the syntax for module-level documentation?
 
@@ -344,6 +380,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q019: Pattern matching on protected types
 
+**Status:** RESOLVED — see `docs/09-msil-emission.md` §17.5 (rejected at type-check; no IL emitted).
+
 **Question:** Can pattern matching access fields inside a protected type?
 
 **Context:** Pattern matching on the *outside* of a protected type (binding it as a name) is fine. But `match queue { case TokenBucket { tokens: t, ... } -> ... }` would access state without going through an entry, breaking mutual exclusion.
@@ -353,6 +391,8 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 ---
 
 ## Q020: SMT solver licensing
+
+**Status:** RESOLVED — see decision log D033.
 
 **Question:** Z3 (MIT) or CVC5 (BSD-3)? Both are good; both are free.
 

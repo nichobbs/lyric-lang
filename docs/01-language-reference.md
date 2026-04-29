@@ -1025,19 +1025,24 @@ The language server conforms to the Microsoft Language Server Protocol (latest s
 
 ## Index of TBD items
 
-This document marks the following as requiring Phase 0 work:
+This document originally marked twelve points as requiring Phase 0
+work. Their resolution status is now:
 
-1. Record-vs-class lowering heuristic (§2.4)
-2. Opaque type metadata sealing mechanism on .NET (§2.8)
-3. Projection cycle handling syntax (§2.9)
-4. Exhaustive list of generic constraint markers (§2.11)
-5. Async-mode parameter mode interaction (§5.2)
-6. `?` operator behavior on nullable in non-nullable-return functions (§4.5)
-7. `var` capture across async boundaries (§5.4)
-8. `func` exclusivity in protected types (§7.4)
-9. Protected type lowering (§7.4)
-10. Task vs ValueTask selection (§7.1)
-11. Standard library API surface and stability guarantees (§12)
-12. Package registry (§13.8)
+| # | Topic | §  | Status |
+|---|---|----|--------|
+| 1 | Record-vs-class lowering heuristic | 2.4 | Resolved — `09-msil-emission.md` §5 |
+| 2 | Opaque type metadata sealing | 2.8 | Resolved — `09-msil-emission.md` §7.2 |
+| 3 | Projection cycle handling syntax | 2.9 | Resolved — `03-decision-log.md` D026 |
+| 4 | Exhaustive list of generic constraint markers | 2.11 | **Open** — see `06-open-questions.md` Q004 |
+| 5 | Async + `out`/`inout` parameter interaction | 5.2 | Resolved — `09-msil-emission.md` §11.4 |
+| 6 | `?` in non-error-returning functions | 4.5 | Resolved — `03-decision-log.md` D027 |
+| 7 | `var` capture across async boundaries | 5.4 | Resolved — `09-msil-emission.md` §11.5 |
+| 8 | `func` exclusivity in protected types | 7.4 | Resolved — `09-msil-emission.md` §17.4 |
+| 9 | Protected type lowering | 7.4 | Resolved — `09-msil-emission.md` §17.1–17.3 |
+| 10 | Task vs ValueTask selection | 7.1 | Resolved — `09-msil-emission.md` §14.2 |
+| 11 | Standard library API surface | 12 | Deferred to Phase 3 |
+| 12 | Package registry | 13.8 | Deferred to Phase 3 |
 
-These are tracked in `docs/06-open-questions.md`.
+The single remaining Phase 0 design question is Q004; the deferred
+items (Q011, Q012) are intentional and tracked under Phase 3 in
+`docs/05-implementation-plan.md`.
