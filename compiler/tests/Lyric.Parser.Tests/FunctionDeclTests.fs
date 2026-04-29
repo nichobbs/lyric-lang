@@ -101,16 +101,17 @@ let tests =
 
         // ----- block body (placeholder) -----
 
-        test "block-bodied function parses to an empty block placeholder" {
+        test "block-bodied function parses statements" {
             let f =
                 parseClean
                     "func main(): Int { return 0 }"
             let fn = getOnlyFunc f
             match fn.Body with
             | Some (FBBlock blk) ->
-                // P6 emits an empty Block; full statement parsing
-                // arrives in P7.
-                Expect.isEmpty blk.Statements "empty placeholder"
+                Expect.equal blk.Statements.Length 1 "one statement"
+                match blk.Statements.[0].Kind with
+                | SReturn (Some _) -> ()
+                | other -> failtestf "expected SReturn, got %A" other
             | other -> failtestf "expected FBBlock, got %A" other
         }
 

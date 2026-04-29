@@ -15,6 +15,7 @@
     <Compile Include="ItemBodyTests.fs" />
     <Compile Include="FunctionDeclTests.fs" />
     <Compile Include="InterfaceImplTests.fs" />
+    <Compile Include="StatementAndControlFlowTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

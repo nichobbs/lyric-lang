@@ -562,6 +562,65 @@ let rec private parsePrimaryExpr
         Cursor.advance cursor |> ignore
         mkExpr EResult tok.Span
 
+    | TKeyword KwIf ->
+        parseIfExpr cursor diags
+
+    | TKeyword KwMatch ->
+        parseMatchExpr cursor diags
+
+    | TKeyword KwAwait ->
+        let opTok = Cursor.advance cursor
+        let inner = parsePostfixExpr cursor diags
+        mkExpr (EAwait inner) (joinSpans opTok.Span inner.Span)
+
+    | TKeyword KwSpawn ->
+        let opTok = Cursor.advance cursor
+        let inner = parsePostfixExpr cursor diags
+        mkExpr (ESpawn inner) (joinSpans opTok.Span inner.Span)
+
+    | TKeyword KwOld ->
+        let opTok = Cursor.advance cursor
+        match Cursor.tryEatPunct LParen cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0190"
+                "expected '(' after 'old'"
+                (Cursor.peekSpan cursor)
+        let inner = parseExpr cursor diags
+        let endSpan =
+            match Cursor.tryEatPunct RParen cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0191" "expected ')' to close 'old(...)'"
+                    (Cursor.peekSpan cursor)
+                inner.Span
+        mkExpr (EOld inner) (joinSpans opTok.Span endSpan)
+
+    | TPunct LBrace ->
+        // Lambda in expression position: `{ x: Int -> body }`. We don't
+        // currently emit block-expressions outside match/if/etc.
+        parseLambdaExpr cursor diags
+
+    | TPunct LBracket ->
+        // List literal: `[a, b, c]`.
+        let startTok = Cursor.advance cursor
+        let xs = ResizeArray<Expr>()
+        if Cursor.peekToken cursor <> TPunct RBracket then
+            xs.Add(parseExpr cursor diags)
+            while Cursor.peekToken cursor = TPunct Comma do
+                Cursor.advance cursor |> ignore
+                if Cursor.peekToken cursor = TPunct RBracket then ()
+                else xs.Add(parseExpr cursor diags)
+        let endSpan =
+            match Cursor.tryEatPunct RBracket cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0192"
+                    "expected ']' to close list literal"
+                    (Cursor.peekSpan cursor)
+                startTok.Span
+        mkExpr (EList (List.ofSeq xs)) (joinSpans startTok.Span endSpan)
+
     | TIdent _ ->
         // Single-segment path. Multi-segment access (`Money.Amount`)
         // is built up by the postfix-`.IDENT` rule, since at the
@@ -649,6 +708,507 @@ and private parseCallArg
             CAPositional (parseExpr cursor diags)
     | _ ->
         CAPositional (parseExpr cursor diags)
+
+// ---------------------------------------------------------------------------
+// Control-flow expressions: if, match, lambda. These live at primary-expr
+// level — they begin with a keyword that disambiguates them from binary
+// operators.
+// ---------------------------------------------------------------------------
+
+and private parseIfExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let startTok = Cursor.advance cursor   // 'if'
+    let cond = parseExpr cursor diags
+    if Cursor.peekToken cursor = TKeyword KwThen then
+        // Ternary form: `if cond then a else b`.
+        Cursor.advance cursor |> ignore
+        let thenExpr = parseExpr cursor diags
+        match Cursor.tryEatKeyword KwElse cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0200"
+                "expected 'else' in `if … then … else …` expression"
+                (Cursor.peekSpan cursor)
+        let elseExpr = parseExpr cursor diags
+        mkExpr
+            (EIf(cond,
+                 EOBExpr thenExpr,
+                 Some (EOBExpr elseExpr),
+                 true))
+            (joinSpans startTok.Span elseExpr.Span)
+    else
+        // Block form: `if cond { … } [else { … } | else if …]`.
+        let thenBlock = parseBlock cursor diags
+        let elseBranch, endSpan =
+            match Cursor.tryEatKeyword KwElse cursor with
+            | Some _ ->
+                if Cursor.peekToken cursor = TKeyword KwIf then
+                    let elseIf = parseIfExpr cursor diags
+                    Some (EOBExpr elseIf), elseIf.Span
+                else
+                    let blk = parseBlock cursor diags
+                    Some (EOBBlock blk), blk.Span
+            | None ->
+                None, thenBlock.Span
+        mkExpr
+            (EIf(cond, EOBBlock thenBlock, elseBranch, false))
+            (joinSpans startTok.Span endSpan)
+
+and private parseMatchArmBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ExprOrBlock =
+    match Cursor.peekToken cursor with
+    | TPunct LBrace ->
+        EOBBlock (parseBlock cursor diags)
+    | TKeyword KwReturn | TKeyword KwThrow
+    | TIdent "break" | TIdent "continue" ->
+        // Diverging single-statement body — wrap in a synthetic Block
+        // so the AST is uniform. ('break' and 'continue' are soft
+        // keywords; the lexer emits them as TIdent.)
+        let stmt = parseStatement cursor diags
+        EOBBlock { Statements = [stmt]; Span = stmt.Span }
+    | _ ->
+        EOBExpr (parseExpr cursor diags)
+
+and private parseMatchArm
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : MatchArm =
+    let startSpan = Cursor.peekSpan cursor
+    match Cursor.tryEatKeyword KwCase cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0201"
+            "expected 'case' to start a match arm"
+            (Cursor.peekSpan cursor)
+    let pat = parsePattern cursor diags
+    let guard =
+        match Cursor.peekToken cursor with
+        | TKeyword KwWhere | TKeyword KwIf ->
+            Cursor.advance cursor |> ignore
+            Some (parseExpr cursor diags)
+        | _ -> None
+    match Cursor.tryEatPunct Arrow cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0202"
+            "expected '->' after match-arm pattern"
+            (Cursor.peekSpan cursor)
+    let body = parseMatchArmBody cursor diags
+    let endSpan =
+        match body with
+        | EOBExpr e  -> e.Span
+        | EOBBlock b -> b.Span
+    { Pattern = pat
+      Guard   = guard
+      Body    = body
+      Span    = joinSpans startSpan endSpan }
+
+and private parseMatchExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let startTok = Cursor.advance cursor   // 'match'
+    let scrutinee = parseExpr cursor diags
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0203"
+            "expected '{' to start match arms"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let arms = ResizeArray<MatchArm>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        arms.Add(parseMatchArm cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    let endSpan =
+        match Cursor.tryEatPunct RBrace cursor with
+        | Some t -> t.Span
+        | None ->
+            err diags "P0204"
+                "expected '}' to close match expression"
+                (Cursor.peekSpan cursor)
+            scrutinee.Span
+    mkExpr (EMatch(scrutinee, List.ofSeq arms))
+        (joinSpans startTok.Span endSpan)
+
+and private parseLambdaExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    // Already at '{'. Save position so we can backtrack if it turns out
+    // to be a body-only lambda or a block-expression.
+    let startTok = Cursor.advance cursor   // '{'
+    let saved = Cursor.mark cursor
+    Cursor.skipStmtEnds cursor |> ignore
+
+    // Is there a parameter list followed by '->'?
+    //   { x -> body }
+    //   { x: Int -> body }
+    //   { x, y -> body }
+    //   { (x: Int, y: Int) -> body }
+    //   { -> body }              (no params)
+    let lambdaParams, hasArrow =
+        let params' = ResizeArray<LambdaParam>()
+        let mutable saw = false
+        let savePos = Cursor.mark cursor
+        let mutable headOk = true
+
+        // Bare '->' = no params.
+        if Cursor.peekToken cursor = TPunct Arrow then
+            saw <- true
+        elif Cursor.peekToken cursor = TPunct LParen then
+            // Parenthesised parameter list — not consumed in this
+            // first prototype; bail out and treat as a body-only block.
+            headOk <- false
+        else
+            // Try a comma-separated identifier list followed by '->'.
+            let mutable keep = true
+            while keep do
+                match Cursor.peekToken cursor with
+                | TIdent name ->
+                    let nameTok = Cursor.advance cursor
+                    let ty =
+                        match Cursor.tryEatPunct Colon cursor with
+                        | Some _ -> Some (parseTypeExpr cursor diags)
+                        | None -> None
+                    let endSpan =
+                        match ty with
+                        | Some t -> t.Span
+                        | None -> nameTok.Span
+                    params'.Add(
+                        { Name = name; Type = ty
+                          Span = joinSpans nameTok.Span endSpan })
+                    if Cursor.peekToken cursor = TPunct Comma then
+                        Cursor.advance cursor |> ignore
+                    else
+                        keep <- false
+                | _ ->
+                    headOk <- false
+                    keep <- false
+            if headOk && Cursor.peekToken cursor = TPunct Arrow then
+                saw <- true
+            else
+                headOk <- false
+
+        if not headOk || not saw then
+            Cursor.reset cursor savePos
+            [], false
+        else
+            // Consume the '->'.
+            Cursor.advance cursor |> ignore
+            List.ofSeq params', true
+
+    // Body: parse statements up to the closing '}'.
+    let stmts = ResizeArray<Statement>()
+    Cursor.skipStmtEnds cursor |> ignore
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        stmts.Add(parseStatement cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Semi ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    let endSpan =
+        match Cursor.tryEatPunct RBrace cursor with
+        | Some t -> t.Span
+        | None ->
+            err diags "P0205"
+                "expected '}' to close lambda / block"
+                (Cursor.peekSpan cursor)
+            startTok.Span
+
+    if hasArrow then
+        let body =
+            { Statements = List.ofSeq stmts
+              Span       = joinSpans startTok.Span endSpan }
+        mkExpr (ELambda(lambdaParams, body))
+            (joinSpans startTok.Span endSpan)
+    else
+        // Body-only: treat as a no-param lambda whose body is the
+        // braced statement list. (Block-as-expression is an
+        // alternative; we conflate them here.)
+        let _ = saved
+        let body =
+            { Statements = List.ofSeq stmts
+              Span       = joinSpans startTok.Span endSpan }
+        mkExpr (ELambda([], body))
+            (joinSpans startTok.Span endSpan)
+
+// ---------------------------------------------------------------------------
+// Blocks and statements (P7).
+//
+// A block is `{ Statement (NL Statement)* [NL] }`. Each statement may be
+// a binding, a control-flow statement, an item declaration, an
+// assignment, or a bare expression.
+// ---------------------------------------------------------------------------
+
+and private mkStmt (kind: StatementKind) (span: Span) : Statement =
+    { Kind = kind; Span = span }
+
+and private parseLocalBinding
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : LocalBinding =
+    match Cursor.peekToken cursor with
+    | TKeyword KwVal ->
+        Cursor.advance cursor |> ignore
+        let pat = parsePattern cursor diags
+        let ty =
+            match Cursor.tryEatPunct Colon cursor with
+            | Some _ -> Some (parseTypeExpr cursor diags)
+            | None -> None
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0210"
+                "expected '=' in 'val' binding"
+                (Cursor.peekSpan cursor)
+        let init = parseExpr cursor diags
+        LBVal(pat, ty, init)
+    | TKeyword KwVar ->
+        Cursor.advance cursor |> ignore
+        let name, _ = readIdent cursor diags "var binding"
+        let ty =
+            match Cursor.tryEatPunct Colon cursor with
+            | Some _ -> Some (parseTypeExpr cursor diags)
+            | None -> None
+        let init =
+            match Cursor.tryEatPunct Eq cursor with
+            | Some _ -> Some (parseExpr cursor diags)
+            | None -> None
+        LBVar(name, ty, init)
+    | TKeyword KwLet ->
+        Cursor.advance cursor |> ignore
+        let name, _ = readIdent cursor diags "let binding"
+        let ty =
+            match Cursor.tryEatPunct Colon cursor with
+            | Some _ -> Some (parseTypeExpr cursor diags)
+            | None -> None
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0211"
+                "expected '=' in 'let' binding"
+                (Cursor.peekSpan cursor)
+        let init = parseExpr cursor diags
+        LBLet(name, ty, init)
+    | _ ->
+        err diags "P0212"
+            "expected 'val', 'var', or 'let'"
+            (Cursor.peekSpan cursor)
+        LBVal(mkPat PError (Cursor.peekSpan cursor), None,
+              mkExpr EError (Cursor.peekSpan cursor))
+
+and private parseCatchClause
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : CatchClause =
+    let startTok = Cursor.advance cursor   // 'catch'
+    let typeName, _ = readIdent cursor diags "catch type"
+    let bindAs =
+        match Cursor.tryEatKeyword KwAs cursor with
+        | Some _ ->
+            match Cursor.tryEatIdent cursor with
+            | Some (n, _) -> Some n
+            | None ->
+                err diags "P0220"
+                    "expected identifier after 'as' in catch"
+                    (Cursor.peekSpan cursor)
+                None
+        | None -> None
+    let body = parseBlock cursor diags
+    { Type = typeName
+      Bind = bindAs
+      Body = body
+      Span = joinSpans startTok.Span body.Span }
+
+and private parseStatement
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Statement =
+    let startSpan = Cursor.peekSpan cursor
+    match Cursor.peekToken cursor with
+
+    | TKeyword KwVal | TKeyword KwVar | TKeyword KwLet ->
+        let lb = parseLocalBinding cursor diags
+        let endSpan = Cursor.peekSpan cursor
+        mkStmt (SLocal lb) (joinSpans startSpan endSpan)
+
+    | TKeyword KwReturn ->
+        Cursor.advance cursor |> ignore
+        // Optional return value: stop at STMT_END or block-closer.
+        let value =
+            match Cursor.peekToken cursor with
+            | TStmtEnd | TPunct RBrace | TPunct Semi | TEof -> None
+            | _ -> Some (parseExpr cursor diags)
+        let endSpan =
+            match value with
+            | Some e -> e.Span
+            | None -> startSpan
+        mkStmt (SReturn value) (joinSpans startSpan endSpan)
+
+    | TIdent "break" ->
+        Cursor.advance cursor |> ignore
+        let label =
+            match Cursor.tryEatIdent cursor with
+            | Some (n, _) -> Some n
+            | None -> None
+        mkStmt (SBreak label) (joinSpans startSpan (Cursor.peekSpan cursor))
+
+    | TIdent "continue" ->
+        Cursor.advance cursor |> ignore
+        let label =
+            match Cursor.tryEatIdent cursor with
+            | Some (n, _) -> Some n
+            | None -> None
+        mkStmt (SContinue label) (joinSpans startSpan (Cursor.peekSpan cursor))
+
+    | TKeyword KwThrow ->
+        Cursor.advance cursor |> ignore
+        let e = parseExpr cursor diags
+        mkStmt (SThrow e) (joinSpans startSpan e.Span)
+
+    | TKeyword KwTry ->
+        Cursor.advance cursor |> ignore
+        let body = parseBlock cursor diags
+        let catches = ResizeArray<CatchClause>()
+        while Cursor.peekToken cursor = TKeyword KwCase
+              || (match Cursor.peekToken cursor with
+                  | TIdent "catch" -> true
+                  | _ -> false) do
+            // 'catch' is not a reserved keyword in Lyric; it appears
+            // as a bare identifier in catch clauses. Recognise it
+            // contextually here.
+            if Cursor.peekToken cursor = TIdent "catch" then
+                catches.Add(parseCatchClause cursor diags)
+            else
+                ()
+        // The grammar has 'catch' as part of the keyword set in
+        // language reference §1.3 — but my lexer currently treats it
+        // as an identifier. The lookup above tolerates either.
+        // Real fix: add KwCatch to the lexer. Tracked as a follow-up.
+        let endSpan =
+            if catches.Count > 0 then
+                (catches.[catches.Count - 1]).Span
+            else body.Span
+        mkStmt (STry(body, List.ofSeq catches))
+            (joinSpans startSpan endSpan)
+
+    | TKeyword KwDo ->
+        // `do { ... }` — infinite loop.
+        Cursor.advance cursor |> ignore
+        let body = parseBlock cursor diags
+        mkStmt (SLoop(None, body))
+            (joinSpans startSpan body.Span)
+
+    | TKeyword KwScope ->
+        Cursor.advance cursor |> ignore
+        // Optional `[scope-tag]` — not yet emitted.
+        let body = parseBlock cursor diags
+        mkStmt (SScope(None, body))
+            (joinSpans startSpan body.Span)
+
+    | TKeyword KwFor ->
+        Cursor.advance cursor |> ignore
+        let pat = parsePattern cursor diags
+        match Cursor.tryEatKeyword KwIn cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0221"
+                "expected 'in' in for-loop"
+                (Cursor.peekSpan cursor)
+        let iter = parseExpr cursor diags
+        let body = parseBlock cursor diags
+        mkStmt (SFor(None, pat, iter, body))
+            (joinSpans startSpan body.Span)
+
+    | TKeyword KwWhile ->
+        Cursor.advance cursor |> ignore
+        let cond = parseExpr cursor diags
+        let body = parseBlock cursor diags
+        mkStmt (SWhile(None, cond, body))
+            (joinSpans startSpan body.Span)
+
+    | TIdent "defer"
+    | TKeyword KwSpawn  ->
+        // Reserved: `defer` is in language reference §4.3 but not yet
+        // a keyword in the lexer. Treat any TIdent "defer" followed by
+        // `{` as a defer block.
+        if Cursor.peekToken cursor = TIdent "defer" then
+            Cursor.advance cursor |> ignore
+            let body = parseBlock cursor diags
+            mkStmt (SDefer body) (joinSpans startSpan body.Span)
+        else
+            // Plain expression statement (e.g. `spawn …`).
+            let e = parseExpr cursor diags
+            mkStmt (SExpr e) (joinSpans startSpan e.Span)
+
+    | _ ->
+        // Expression statement OR assignment. Parse an expression; if
+        // the next token is an assignment op, treat as assignment.
+        let e = parseExpr cursor diags
+        match Cursor.peekToken cursor with
+        | TPunct Eq | TPunct PlusEq | TPunct MinusEq
+        | TPunct StarEq | TPunct SlashEq | TPunct PercentEq ->
+            let op =
+                match Cursor.peekToken cursor with
+                | TPunct Eq        -> AssEq
+                | TPunct PlusEq    -> AssPlus
+                | TPunct MinusEq   -> AssMinus
+                | TPunct StarEq    -> AssStar
+                | TPunct SlashEq   -> AssSlash
+                | TPunct PercentEq -> AssPercent
+                | _                -> AssEq
+            Cursor.advance cursor |> ignore
+            let value = parseExpr cursor diags
+            mkStmt (SAssign(e, op, value))
+                (joinSpans startSpan value.Span)
+        | _ ->
+            mkStmt (SExpr e) (joinSpans startSpan e.Span)
+
+and private parseBlock
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Block =
+    let startSpan = Cursor.peekSpan cursor
+    match Cursor.tryEatPunct LBrace cursor with
+    | None ->
+        err diags "P0230"
+            "expected '{' to start block"
+            (Cursor.peekSpan cursor)
+        { Statements = []; Span = startSpan }
+    | Some _ ->
+        Cursor.skipStmtEnds cursor |> ignore
+        let stmts = ResizeArray<Statement>()
+        while Cursor.peekToken cursor <> TPunct RBrace
+              && not (Cursor.isAtEnd cursor) do
+            stmts.Add(parseStatement cursor diags)
+            // Tolerate STMT_END or ';' between statements.
+            match Cursor.peekToken cursor with
+            | TStmtEnd | TPunct Semi ->
+                Cursor.advance cursor |> ignore
+                Cursor.skipStmtEnds cursor |> ignore
+            | _ -> ()
+        let endSpan =
+            match Cursor.tryEatPunct RBrace cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0231"
+                    "expected '}' to close block"
+                    (Cursor.peekSpan cursor)
+                startSpan
+        { Statements = List.ofSeq stmts
+          Span       = joinSpans startSpan endSpan }
 
 and private parsePrefixExpr
         (cursor: Cursor)
@@ -2024,38 +2584,6 @@ and private parseContractClauses
         | None -> keepGoing <- false
     List.ofSeq xs
 
-/// Parse a placeholder block body: opening '{', balanced-brace skip,
-/// closing '}'. The contained statements are parsed in a later slice
-/// (P7); for now we synthesise an empty Block whose span covers the
-/// braced range. Diagnostics are not emitted for the skip.
-and private parseBlockSkeleton
-        (cursor: Cursor)
-        (diags:  ResizeArray<Diagnostic>)
-        : Block =
-    let startSpan = Cursor.peekSpan cursor
-    let openTok = Cursor.tryEatPunct LBrace cursor
-    match openTok with
-    | None ->
-        err diags "P0171"
-            "expected '{' to start block"
-            startSpan
-        { Statements = []; Span = startSpan }
-    | Some _ ->
-        let mutable depth = 1
-        while depth > 0 && not (Cursor.isAtEnd cursor) do
-            match Cursor.peekToken cursor with
-            | TPunct LBrace ->
-                depth <- depth + 1
-                Cursor.advance cursor |> ignore
-            | TPunct RBrace ->
-                depth <- depth - 1
-                Cursor.advance cursor |> ignore
-            | _ ->
-                Cursor.advance cursor |> ignore
-        let endSpan = Cursor.peekSpan cursor
-        { Statements = []
-          Span       = joinSpans startSpan endSpan }
-
 and private parseFunctionBody
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
@@ -2065,7 +2593,7 @@ and private parseFunctionBody
         Cursor.advance cursor |> ignore
         FBExpr (parseExpr cursor diags)
     | TPunct LBrace ->
-        FBBlock (parseBlockSkeleton cursor diags)
+        FBBlock (parseBlock cursor diags)
     | _ ->
         err diags "P0172"
             "expected '=' or '{' to start function body"
