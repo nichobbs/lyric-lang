@@ -164,12 +164,15 @@ let tests =
 
         // ----- end of file / item placeholder -----
 
-        test "tokens past imports trigger the P0099 placeholder" {
-            // An item like `pub func foo() {}` is not yet parseable; the
-            // parser surfaces P0099 to flag the work-in-progress state.
-            let _, diags = parseWithDiags "package Foo\npub func foo(): Int = 1"
+        test "items past imports are recognised as IError placeholders" {
+            // An item like `pub func foo(): Int = 1` is recognised by P3
+            // (the item kind is identified, the body skipped) but not
+            // yet parsed in detail; the parser surfaces P0098 to flag
+            // the work-in-progress state.
+            let _, diags =
+                parseWithDiags "package Foo\npub func foo(): Int = 1"
             let codes = diags |> List.map (fun d -> d.Code)
-            Expect.contains codes "P0099" "items remain unparsed"
+            Expect.contains codes "P0098" "item bodies remain unparsed"
         }
 
         test "package + imports only is clean" {

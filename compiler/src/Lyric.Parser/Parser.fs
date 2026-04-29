@@ -2,11 +2,11 @@
 ///
 /// Phase 1 milestone M1.1 work-in-progress. The current state covers
 /// the file head — module doc comments, file-level annotations,
-/// `package` declaration, and imports — per docs/grammar.ebnf §2.
-/// Item-level parsing (records, functions, etc.) lands in subsequent
-/// slices (P3 through P9 per the project plan). Anything past the
-/// imports therefore still produces a `P0099` diagnostic flagging
-/// unparsed tokens.
+/// `package` declaration, and imports — plus item-head recognition:
+/// every recognised top-level item keyword is consumed (with its body
+/// skipped via balanced-brace scan) and produces an `IError`-tagged
+/// AST node together with a `P0098` diagnostic. Typed item bodies
+/// land in subsequent slices (P4 through P9).
 module Lyric.Parser.Parser
 
 open Lyric.Lexer
@@ -397,6 +397,141 @@ let private parseImports
     List.ofSeq xs
 
 // ---------------------------------------------------------------------------
+// Item recognition (P3 — bodies are skipped via balanced-brace scan;
+// the typed body parsing lives in subsequent slices P4 through P8).
+// ---------------------------------------------------------------------------
+
+/// Item-level annotations (e.g. `@projectable`, `@derive(Json)`,
+/// `@stubbable`) directly precede the item's keyword. Unlike the file-
+/// level loop, this helper does not skip leading STMT_ENDs — we want to
+/// stay attached to the next item.
+let private parseItemAnnotations
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Annotation list =
+
+    let xs = ResizeArray<Annotation>()
+    let mutable keepGoing = true
+    while keepGoing do
+        match parseAnnotation cursor diags with
+        | Some a ->
+            xs.Add(a)
+            // Tolerate one STMT_END between annotations and before
+            // the item keyword: `@runtime_checked\n@axiom\nfunc foo`.
+            Cursor.skipStmtEnds cursor |> ignore
+        | None -> keepGoing <- false
+    List.ofSeq xs
+
+/// True when the next token can begin a top-level item.
+let private isItemStartToken (tok: Token) : bool =
+    match tok with
+    | TKeyword kw ->
+        match kw with
+        | KwAlias | KwType | KwRecord | KwUnion | KwEnum
+        | KwOpaque | KwProtected | KwExposed | KwInterface
+        | KwImpl | KwWire | KwExtern | KwAsync | KwFunc
+        | KwVal | KwGeneric | KwTest | KwProperty | KwFixture -> true
+        | _ -> false
+    // `scope_kind` is a soft keyword; lexed as a regular identifier.
+    | TIdent "scope_kind" -> true
+    | _ -> false
+
+/// Skip past the current item: consume tokens until we either close the
+/// outermost brace-delimited body or hit a top-level STMT_END (for
+/// items with no body, e.g. `type X = Long range 0 ..= 99`). Returns the
+/// span covering the skipped region.
+let private skipItemBody (cursor: Cursor) : Span =
+    let startSpan = Cursor.peekSpan cursor
+    let mutable depth = 0
+    let mutable seenBrace = false
+    let mutable keepGoing = true
+    let mutable lastSpan = startSpan
+    while keepGoing && not (Cursor.isAtEnd cursor) do
+        let tok = Cursor.peek cursor
+        lastSpan <- tok.Span
+        match tok.Token with
+        | TPunct LBrace ->
+            seenBrace <- true
+            depth <- depth + 1
+            Cursor.advance cursor |> ignore
+        | TPunct LParen | TPunct LBracket ->
+            depth <- depth + 1
+            Cursor.advance cursor |> ignore
+        | TPunct RBrace ->
+            depth <- max 0 (depth - 1)
+            Cursor.advance cursor |> ignore
+            if seenBrace && depth = 0 then keepGoing <- false
+        | TPunct RParen | TPunct RBracket ->
+            depth <- max 0 (depth - 1)
+            Cursor.advance cursor |> ignore
+        | TStmtEnd when depth = 0 ->
+            // `type X = Long`, `extern func ...` and similar one-line
+            // items end here; do not consume the terminator itself.
+            keepGoing <- false
+        | _ ->
+            Cursor.advance cursor |> ignore
+    joinSpans startSpan lastSpan
+
+/// Try to parse one top-level item. Returns None at EOF; otherwise
+/// always returns Some, populating an IError-tagged Item on
+/// unrecognised input so the parser keeps making progress.
+let private parseItem
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Item option =
+
+    Cursor.skipStmtEnds cursor |> ignore
+    if Cursor.isAtEnd cursor then None
+    else
+        let prefixStart = Cursor.peekSpan cursor
+        let docs = parseItemDocComments cursor
+        let anns = parseItemAnnotations cursor diags
+        let vis =
+            match Cursor.tryEatKeyword KwPub cursor with
+            | Some t -> Some (Pub t.Span)
+            | None -> None
+
+        let nextTok = Cursor.peek cursor
+        if isItemStartToken nextTok.Token then
+            err diags "P0098"
+                "item-level parsing not yet implemented; body skipped"
+                nextTok.Span
+            let bodySpan = skipItemBody cursor
+            let totalSpan = joinSpans prefixStart bodySpan
+            Some
+                { DocComments = docs
+                  Annotations = anns
+                  Visibility  = vis
+                  Kind        = IError
+                  Span        = totalSpan }
+        else
+            err diags "P0040"
+                "expected an item declaration"
+                nextTok.Span
+            // Advance one token to guarantee progress.
+            if not (Cursor.isAtEnd cursor) then
+                Cursor.advance cursor |> ignore
+            Some
+                { DocComments = docs
+                  Annotations = anns
+                  Visibility  = vis
+                  Kind        = IError
+                  Span        = joinSpans prefixStart nextTok.Span }
+
+let private parseItems
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Item list =
+
+    let xs = ResizeArray<Item>()
+    let mutable keepGoing = true
+    while keepGoing do
+        match parseItem cursor diags with
+        | Some it -> xs.Add(it)
+        | None    -> keepGoing <- false
+    List.ofSeq xs
+
+// ---------------------------------------------------------------------------
 // Top-level entry.
 // ---------------------------------------------------------------------------
 
@@ -413,13 +548,7 @@ let parse (source: string) : ParseResult =
     let fileAnnotations = parseFileLevelAnnotations cursor diags
     let packageDecl = parsePackageDecl cursor diags
     let imports = parseImports cursor diags
-
-    // Anything left over is an item; item parsing lands in P3+.
-    Cursor.skipStmtEnds cursor |> ignore
-    if not (Cursor.isAtEnd cursor) then
-        err diags "P0099"
-            "item-level parsing not yet implemented; tokens remain unconsumed"
-            (Cursor.peekSpan cursor)
+    let items = parseItems cursor diags
 
     let endSpan = Cursor.peekSpan cursor
     let file =
@@ -427,7 +556,7 @@ let parse (source: string) : ParseResult =
           FileLevelAnnotations = fileAnnotations
           Package              = packageDecl
           Imports              = imports
-          Items                = []
+          Items                = items
           Span                 = joinSpans startSpan endSpan }
 
     { File        = file

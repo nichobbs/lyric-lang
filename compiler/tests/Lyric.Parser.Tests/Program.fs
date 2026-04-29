@@ -8,5 +8,6 @@ let main argv =
         testList "Lyric.Parser" [
             SkeletonTests.tests
             FileHeadTests.tests
+            ItemHeadTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
