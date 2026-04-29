@@ -15,5 +15,6 @@ let main argv =
             CommentTests.tests
             PunctuationTests.tests
             StmtEndTests.tests
+            SmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

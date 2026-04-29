@@ -5,6 +5,14 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- Copy the worked-examples doc next to the test binary so the smoke
+       test can extract and lex its code blocks at runtime. -->
+  <ItemGroup>
+    <None Include="..\..\..\docs\02-worked-examples.md"
+          Link="02-worked-examples.md"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Include="TestHelpers.fs" />
     <Compile Include="KeywordTests.fs" />
@@ -16,6 +24,7 @@
     <Compile Include="CommentTests.fs" />
     <Compile Include="PunctuationTests.fs" />
     <Compile Include="StmtEndTests.fs" />
+    <Compile Include="SmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
