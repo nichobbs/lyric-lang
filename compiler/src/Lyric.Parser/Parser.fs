@@ -46,6 +46,16 @@ let private joinSpans (a: Span) (b: Span) : Span =
 let private err (diags: ResizeArray<Diagnostic>) code msg span =
     diags.Add(Diagnostic.error code msg span)
 
+/// Loop-progress guard. Each body-loop in the parser captures the
+/// cursor's position at the start of an iteration and calls this at the
+/// end. If no token was consumed (a recovery path failed to advance),
+/// we force the cursor forward by one token to break the loop. Without
+/// this, malformed input — e.g. an unterminated `union { ` — sends the
+/// surrounding member-loop into an infinite cycle.
+let private forceAdvanceIfStuck (cursor: Cursor) (before: int) : unit =
+    if Cursor.mark cursor = before && not (Cursor.isAtEnd cursor) then
+        Cursor.advance cursor |> ignore
+
 // ---------------------------------------------------------------------------
 // Module-doc and ordinary-doc comment harvesting.
 // ---------------------------------------------------------------------------
@@ -823,12 +833,14 @@ and private parseMatchExpr
     let arms = ResizeArray<MatchArm>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         arms.Add(parseMatchArm cursor diags)
         match Cursor.peekToken cursor with
         | TStmtEnd | TPunct Comma ->
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     let endSpan =
         match Cursor.tryEatPunct RBrace cursor with
         | Some t -> t.Span
@@ -912,12 +924,14 @@ and private parseLambdaExpr
     Cursor.skipStmtEnds cursor |> ignore
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         stmts.Add(parseStatement cursor diags)
         match Cursor.peekToken cursor with
         | TStmtEnd | TPunct Semi ->
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     let endSpan =
         match Cursor.tryEatPunct RBrace cursor with
         | Some t -> t.Span
@@ -1192,6 +1206,7 @@ and private parseBlock
         let stmts = ResizeArray<Statement>()
         while Cursor.peekToken cursor <> TPunct RBrace
               && not (Cursor.isAtEnd cursor) do
+            let _before = Cursor.mark cursor
             stmts.Add(parseStatement cursor diags)
             // Tolerate STMT_END or ';' between statements.
             match Cursor.peekToken cursor with
@@ -1199,6 +1214,7 @@ and private parseBlock
                 Cursor.advance cursor |> ignore
                 Cursor.skipStmtEnds cursor |> ignore
             | _ -> ()
+            forceAdvanceIfStuck cursor _before
         let endSpan =
             match Cursor.tryEatPunct RBrace cursor with
             | Some t -> t.Span
@@ -2038,6 +2054,7 @@ and private parseTypeAliasBody
         : TypeAliasDecl =
     let startTok = Cursor.advance cursor   // 'alias'
     let name, nameSpan = readIdent cursor diags "alias"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
     match Cursor.tryEatPunct Eq cursor with
@@ -2083,6 +2100,7 @@ and private parseDistinctTypeBody
         : DistinctTypeDecl =
     let startTok = Cursor.advance cursor   // 'type'
     let name, nameSpan = readIdent cursor diags "type"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
     match Cursor.tryEatPunct Eq cursor with
@@ -2172,6 +2190,7 @@ and private parseRecordMembers
     let xs = ResizeArray<RecordMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         match Cursor.peekToken cursor with
         | TKeyword KwInvariant ->
             xs.Add(RMInvariant (parseInvariantClause cursor diags))
@@ -2183,6 +2202,7 @@ and private parseRecordMembers
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2202,9 +2222,13 @@ and private parseRecordBody
         Cursor.advance cursor |> ignore   // 'exposed'
     Cursor.advance cursor |> ignore       // 'record'
     let name, nameSpan = readIdent cursor diags "record"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    parseTrailingAnnotations cursor diags |> ignore
     let members = parseRecordMembers cursor diags
     let endSpan = Cursor.peekSpan cursor
     { Name     = name
@@ -2290,12 +2314,14 @@ and private parseUnionCases
     let xs = ResizeArray<UnionCase>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         xs.Add(parseUnionCase cursor diags)
         match Cursor.peekToken cursor with
         | TStmtEnd | TPunct Comma ->
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2311,9 +2337,13 @@ and private parseUnionBody
         : UnionDecl =
     let startTok = Cursor.advance cursor   // 'union'
     let name, nameSpan = readIdent cursor diags "union"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    parseTrailingAnnotations cursor diags |> ignore
     let cases = parseUnionCases cursor diags
     let endSpan = Cursor.peekSpan cursor
     { Name     = name
@@ -2357,12 +2387,14 @@ and private parseEnumCases
     let xs = ResizeArray<EnumCase>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         xs.Add(parseEnumCase cursor diags)
         match Cursor.peekToken cursor with
         | TStmtEnd | TPunct Comma ->
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2399,6 +2431,7 @@ and private parseOpaqueMembers
     let xs = ResizeArray<OpaqueMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         match Cursor.peekToken cursor with
         | TKeyword KwInvariant ->
             xs.Add(OMInvariant (parseInvariantClause cursor diags))
@@ -2409,6 +2442,7 @@ and private parseOpaqueMembers
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2425,10 +2459,15 @@ and private parseOpaqueTypeBody
     let startTok = Cursor.advance cursor   // 'opaque'
     Cursor.advance cursor |> ignore        // 'type'
     let name, _ = readIdent cursor diags "opaque type"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
-    // Post-name annotations (e.g. `@projectable`).
+    Cursor.skipStmtEnds cursor |> ignore
+    // Post-name annotations (e.g. `@projectable`). Stored on
+    // OpaqueTypeDecl directly — this parser does not drop them
+    // like the record / union / etc. variants.
     let postAnns = parseTrailingAnnotations cursor diags
     // Body is optional: a header-only opaque declaration is legal
     // (the body lives elsewhere in the package or in a .lbody file).
@@ -2617,6 +2656,7 @@ and private parseFunctionDeclBody
             "expected 'func' keyword"
             (Cursor.peekSpan cursor)
     let name, _ = readIdent cursor diags "function"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
     let parameters = parseParamList cursor diags
@@ -2624,7 +2664,10 @@ and private parseFunctionDeclBody
         match Cursor.tryEatPunct Colon cursor with
         | Some _ -> Some (parseTypeExpr cursor diags)
         | None -> None
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    parseTrailingAnnotations cursor diags |> ignore
     let contracts = parseContractClauses cursor diags
     // Body. If the next token is `=` or `{`, parse one. Otherwise
     // there is no body — used in interface signatures and extern
@@ -2717,6 +2760,7 @@ and private parseInterfaceMembers
     let xs = ResizeArray<InterfaceMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         match parseInterfaceMember cursor diags with
         | Some m -> xs.Add(m)
         | None -> ()
@@ -2725,6 +2769,7 @@ and private parseInterfaceMembers
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2740,9 +2785,13 @@ and private parseInterfaceBody
         : InterfaceDecl =
     let startTok = Cursor.advance cursor   // 'interface'
     let name, _ = readIdent cursor diags "interface"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    parseTrailingAnnotations cursor diags |> ignore
     let members = parseInterfaceMembers cursor diags
     let endSpan = Cursor.peekSpan cursor
     { Name     = name
@@ -2786,6 +2835,7 @@ and private parseImplMembers
     let xs = ResizeArray<ImplMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         match parseImplMember cursor diags with
         | Some m -> xs.Add(m)
         | None -> ()
@@ -2794,6 +2844,7 @@ and private parseImplMembers
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2818,7 +2869,10 @@ and private parseImplBody
             "expected 'for' in impl declaration"
             (Cursor.peekSpan cursor)
     let target = parseTypeExpr cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    parseTrailingAnnotations cursor diags |> ignore
     let members = parseImplMembers cursor diags
     let endSpan = Cursor.peekSpan cursor
     { Generics  = generics
@@ -2952,9 +3006,13 @@ and private parseProtectedTypeBody
     let startTok = Cursor.advance cursor   // 'protected'
     Cursor.advance cursor |> ignore        // 'type'
     let name, _ = readIdent cursor diags "protected type"
+    Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    Cursor.skipStmtEnds cursor |> ignore
     let where = parseWhereClauseOpt cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    parseTrailingAnnotations cursor diags |> ignore
     match Cursor.tryEatPunct LBrace cursor with
     | Some _ -> ()
     | None ->
@@ -2964,12 +3022,14 @@ and private parseProtectedTypeBody
     let xs = ResizeArray<ProtectedMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         xs.Add(parseProtectedMember cursor diags)
         match Cursor.peekToken cursor with
         | TStmtEnd | TPunct Comma ->
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -3102,12 +3162,14 @@ and private parseWireBody
     let xs = ResizeArray<WireMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         xs.Add(parseWireMember cursor diags)
         match Cursor.peekToken cursor with
         | TStmtEnd | TPunct Comma ->
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
@@ -3179,6 +3241,7 @@ and private parseExternPackageBody
     let xs = ResizeArray<ExternMember>()
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
         match parseExternMember cursor diags with
         | Some m -> xs.Add(m)
         | None -> ()
@@ -3187,6 +3250,7 @@ and private parseExternPackageBody
             Cursor.advance cursor |> ignore
             Cursor.skipStmtEnds cursor |> ignore
         | _ -> ()
+        forceAdvanceIfStuck cursor _before
     match Cursor.tryEatPunct RBrace cursor with
     | Some _ -> ()
     | None ->
