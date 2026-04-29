@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Backend.fs" />
+    <Compile Include="Emitter.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
+    <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
+    <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+    <ProjectReference Include="..\Lyric.Stdlib\Lyric.Stdlib.fsproj" />
+  </ItemGroup>
+
+</Project>
