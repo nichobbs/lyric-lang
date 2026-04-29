@@ -137,21 +137,23 @@ let tests =
             // Acceptance criterion (P11 milestone): at least 80% of
             // parseable blocks produce zero diagnostics, AND every
             // block parses to completion (no infinite loops). The
-            // latter is the load-bearing guarantee. Remaining
-            // failures cluster around the design-call items
-            // tracked in the conversation:
+            // latter is the load-bearing guarantee. P12 added two
+            // language features that were the dominant residual
+            // sources of parse errors:
             //
             //   * `(TypeExpr).method(...)` — type-as-expression
             //     for static-method dispatch on a refined type
             //     (e.g. `(Nat range 1 ..= 100).tryFrom(x)`).
-            //   * Stub-builder DSL inside `{ … }` lambdas:
-            //     `it.findById(x) -> Some(y)` per-line entries.
+            //   * `lhs -> rhs` rule entries inside `{ … }` lambdas
+            //     for the stub-builder DSL.
             //
-            // These are tracked as P11+ polish work; the parser
-            // infrastructure (every item kind, every statement,
-            // most expressions) is in place and produces a
-            // well-typed AST for the majority of the worked
-            // examples.
+            // The remaining residual is Kotlin-style trailing-lambda
+            // sugar: `obj.method { … }` where `{ … }` is a single
+            // lambda argument. Adding this requires plumbing a
+            // "no-trailing-lambda" flag through the expression
+            // tower so `if cond { … }`/`while …`/`for …`/`match …`
+            // scrutinees do not eagerly slurp the following block.
+            // Tracked as P13 polish.
             let cleanRatio = float cleanBlocks / float totalParseable
             Expect.isGreaterThanOrEqual
                 cleanRatio

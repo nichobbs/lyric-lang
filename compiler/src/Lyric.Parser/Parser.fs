@@ -527,6 +527,33 @@ let rec private parsePrimaryExpr
         | Some lit -> mkExpr (ELiteral lit) tok.Span
         | None     -> mkExpr EError tok.Span
 
+    | TPunct LParen
+            when (match (Cursor.peekAt cursor 1).Token with
+                  | TIdent _ -> true
+                  | _ -> false)
+                 && (Cursor.peekAt cursor 2).Token = TIdent "range" ->
+        // Type-as-expression: `(Nat range 1 ..= 100).tryFrom(x)`. The
+        // refined type is parsed but discarded — only the head segment
+        // survives as an EPath, since the type checker handles the
+        // refinement constraint at call resolution.
+        Cursor.advance cursor |> ignore
+        let ty = parseTypeExprNoArrow cursor diags
+        let _ =
+            match Cursor.tryEatPunct RParen cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0051"
+                    "expected ')' to close parenthesised type expression"
+                    (Cursor.peekSpan cursor)
+                ty.Span
+        let head =
+            match ty.Kind with
+            | TRefined (mp, _) -> mp
+            | TRef mp          -> mp
+            | _ ->
+                { Segments = []; Span = ty.Span }
+        mkExpr (EPath head) (joinSpans tok.Span ty.Span)
+
     | TPunct LParen ->
         Cursor.advance cursor |> ignore
         // Empty parens: '()' — the unit value.
@@ -1281,8 +1308,9 @@ and private parseStatement
             mkStmt (SExpr e) (joinSpans startSpan e.Span)
 
     | _ ->
-        // Expression statement OR assignment. Parse an expression; if
-        // the next token is an assignment op, treat as assignment.
+        // Expression statement OR assignment OR stub-builder rule
+        // (`lhs -> rhs`). Parse an expression; the trailing token
+        // discriminates the form.
         let e = parseExpr cursor diags
         match Cursor.peekToken cursor with
         | TPunct Eq | TPunct PlusEq | TPunct MinusEq
@@ -1300,6 +1328,13 @@ and private parseStatement
             let value = parseExpr cursor diags
             mkStmt (SAssign(e, op, value))
                 (joinSpans startSpan value.Span)
+        | TPunct Arrow ->
+            // Stub-builder rule entry inside a `{ … }` lambda, e.g.
+            //   it.findById(x) -> Some(y)
+            Cursor.advance cursor |> ignore
+            let rhs = parseExpr cursor diags
+            mkStmt (SRule(e, rhs))
+                (joinSpans startSpan rhs.Span)
         | _ ->
             mkStmt (SExpr e) (joinSpans startSpan e.Span)
 
