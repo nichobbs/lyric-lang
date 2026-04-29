@@ -11,5 +11,6 @@ let main argv =
             ItemHeadTests.tests
             TypeExprTests.tests
             PatternTests.tests
+            ExprTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

@@ -608,9 +608,27 @@ let rec private parsePrimaryExpr
                         inner.Span
                 mkExpr (EParen inner) (joinSpans tok.Span endSpan)
 
+    | TKeyword KwSelf ->
+        Cursor.advance cursor |> ignore
+        mkExpr ESelf tok.Span
+
+    | TKeyword KwResult ->
+        Cursor.advance cursor |> ignore
+        mkExpr EResult tok.Span
+
     | TIdent _ ->
-        let path = parseModulePath cursor diags
-        mkExpr (EPath path) path.Span
+        // Single-segment path. Multi-segment access (`Money.Amount`)
+        // is built up by the postfix-`.IDENT` rule, since at the
+        // expression level a dot is also member access.
+        let nameTok = Cursor.advance cursor
+        let name =
+            match nameTok.Token with
+            | TIdent n -> n
+            | _ -> "<error>"
+        let path =
+            { Segments = [name]
+              Span     = nameTok.Span }
+        mkExpr (EPath path) nameTok.Span
 
     | _ ->
         err diags "P0050"
@@ -618,6 +636,73 @@ let rec private parsePrimaryExpr
             tok.Span
         Cursor.advance cursor |> ignore
         mkExpr EError tok.Span
+
+and private parsePostfixExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let mutable e = parsePrimaryExpr cursor diags
+    let mutable keep = true
+    while keep do
+        match Cursor.peekToken cursor with
+        | TPunct LParen ->
+            // Function/method call: `e(arg1, arg2 = expr, …)`.
+            Cursor.advance cursor |> ignore
+            let args = ResizeArray<CallArg>()
+            if Cursor.peekToken cursor <> TPunct RParen then
+                args.Add(parseCallArg cursor diags)
+                while Cursor.peekToken cursor = TPunct Comma do
+                    Cursor.advance cursor |> ignore
+                    if Cursor.peekToken cursor = TPunct RParen then ()
+                    else args.Add(parseCallArg cursor diags)
+            let endSpan =
+                match Cursor.tryEatPunct RParen cursor with
+                | Some t -> t.Span
+                | None ->
+                    err diags "P0080"
+                        "expected ')' to close call argument list"
+                        (Cursor.peekSpan cursor)
+                    e.Span
+            e <- mkExpr (ECall(e, List.ofSeq args)) (joinSpans e.Span endSpan)
+        | TPunct Dot ->
+            Cursor.advance cursor |> ignore
+            match Cursor.tryEatIdent cursor with
+            | Some (name, span) ->
+                e <- mkExpr (EMember(e, name)) (joinSpans e.Span span)
+            | None ->
+                err diags "P0081"
+                    "expected an identifier after '.'"
+                    (Cursor.peekSpan cursor)
+                keep <- false
+        | TPunct Question ->
+            let qTok = Cursor.advance cursor
+            e <- mkExpr (EPropagate e) (joinSpans e.Span qTok.Span)
+        | _ -> keep <- false
+    e
+
+and private parseCallArg
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : CallArg =
+    // Named (`x = expr`) vs positional. Use a save/restore for the
+    // single-token lookahead.
+    let saved = Cursor.mark cursor
+    match Cursor.peekToken cursor with
+    | TIdent _ ->
+        let nameTok = Cursor.advance cursor
+        if Cursor.peekToken cursor = TPunct Eq then
+            Cursor.advance cursor |> ignore
+            let value = parseExpr cursor diags
+            let name =
+                match nameTok.Token with
+                | TIdent n -> n
+                | _ -> "<error>"
+            CANamed(name, value, joinSpans nameTok.Span value.Span)
+        else
+            Cursor.reset cursor saved
+            CAPositional (parseExpr cursor diags)
+    | _ ->
+        CAPositional (parseExpr cursor diags)
 
 and private parsePrefixExpr
         (cursor: Cursor)
@@ -640,7 +725,7 @@ and private parsePrefixExpr
         mkExpr (EPrefix(PreRef, inner))
             (joinSpans opTok.Span inner.Span)
     | _ ->
-        parsePrimaryExpr cursor diags
+        parsePostfixExpr cursor diags
 
 and private parseMulExpr
         (cursor: Cursor)
@@ -684,11 +769,78 @@ and private parseAddExpr
         | _ -> keep <- false
     lhs
 
+and private parseCompareExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let lhs = parseAddExpr cursor diags
+    // At most one comparison operator at this level — chained
+    // comparisons are a parse error per language reference §4.1.
+    let pickOp () =
+        match Cursor.peekToken cursor with
+        | TPunct EqEq  -> Some BEq
+        | TPunct NotEq -> Some BNeq
+        | TPunct Lt    -> Some BLt
+        | TPunct LtEq  -> Some BLte
+        | TPunct Gt    -> Some BGt
+        | TPunct GtEq  -> Some BGte
+        | _ -> None
+    match pickOp () with
+    | None -> lhs
+    | Some op ->
+        Cursor.advance cursor |> ignore
+        let rhs = parseAddExpr cursor diags
+        // Detect a chained comparison and emit a diagnostic.
+        match pickOp () with
+        | Some _ ->
+            err diags "P0082"
+                "comparison operators do not chain (use parentheses)"
+                (Cursor.peekSpan cursor)
+        | None -> ()
+        mkExpr (EBinop(op, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+
+and private parseAndExpr2
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let mutable lhs = parseCompareExpr cursor diags
+    while Cursor.peekToken cursor = TKeyword KwAnd do
+        Cursor.advance cursor |> ignore
+        let rhs = parseCompareExpr cursor diags
+        lhs <- mkExpr (EBinop(BAnd, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+    lhs
+
+and private parseOrExpr2
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let mutable lhs = parseAndExpr2 cursor diags
+    let mutable keep = true
+    while keep do
+        match Cursor.peekToken cursor with
+        | TKeyword KwOr ->
+            Cursor.advance cursor |> ignore
+            let rhs = parseAndExpr2 cursor diags
+            lhs <- mkExpr (EBinop(BOr, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | TKeyword KwXor ->
+            Cursor.advance cursor |> ignore
+            let rhs = parseAndExpr2 cursor diags
+            lhs <- mkExpr (EBinop(BXor, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | TIdent "implies" ->
+            // Soft keyword used in contract sub-language. Modelled
+            // as a binary operator at or-precedence; the contract
+            // validator (a later pass) confirms its placement.
+            Cursor.advance cursor |> ignore
+            let rhs = parseAndExpr2 cursor diags
+            lhs <- mkExpr (EBinop(BImplies, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | _ -> keep <- false
+    lhs
+
 and private parseExpr
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
         : Expr =
-    parseAddExpr cursor diags
+    parseOrExpr2 cursor diags
 
 // ---------------------------------------------------------------------------
 // Range bounds: `lo ..= hi`, `lo ..< hi`, `lo .. hi`, `..= hi`, `lo ..`.
@@ -1172,6 +1324,153 @@ and private parsePattern
         mkPat (POr (List.ofSeq alts)) (joinSpans first.Span lastSpan)
     else
         first
+
+// ---------------------------------------------------------------------------
+// Generic parameters, where-clauses, invariant clauses (helpers reused
+// by every item kind that admits generics or carries an invariant).
+// ---------------------------------------------------------------------------
+
+and private parseGenericParam
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : GenericParam =
+
+    let nameTok = Cursor.peek cursor
+    match Cursor.tryEatIdent cursor with
+    | Some (name, nameSpan) ->
+        // `T: SomeBound` is a value generic; bare `T` is a type generic.
+        if Cursor.peekToken cursor = TPunct Colon then
+            Cursor.advance cursor |> ignore
+            let ty = parseTypeExpr cursor diags
+            GPValue(name, ty, joinSpans nameSpan ty.Span)
+        else
+            GPType(name, nameSpan)
+    | None ->
+        err diags "P0090"
+            "expected an identifier in generic parameter list"
+            nameTok.Span
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        GPType("<error>", nameTok.Span)
+
+/// Parse `generic[T, U: Nat]` if it is the next token. Returns None if
+/// the cursor does not start with the `generic` keyword.
+and private parseGenericParamsOpt
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : GenericParams option =
+    if Cursor.peekToken cursor <> TKeyword KwGeneric then None
+    else
+        let startTok = Cursor.advance cursor   // 'generic'
+        match Cursor.tryEatPunct LBracket cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0091"
+                "expected '[' after 'generic'"
+                (Cursor.peekSpan cursor)
+        let xs = ResizeArray<GenericParam>()
+        if Cursor.peekToken cursor <> TPunct RBracket then
+            xs.Add(parseGenericParam cursor diags)
+            while Cursor.peekToken cursor = TPunct Comma do
+                Cursor.advance cursor |> ignore
+                if Cursor.peekToken cursor = TPunct RBracket then ()
+                else xs.Add(parseGenericParam cursor diags)
+        let endSpan =
+            match Cursor.tryEatPunct RBracket cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0092"
+                    "expected ']' to close generic parameter list"
+                    (Cursor.peekSpan cursor)
+                startTok.Span
+        Some
+            { Params = List.ofSeq xs
+              Span   = joinSpans startTok.Span endSpan }
+
+and private parseConstraintRef
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ConstraintRef =
+    let head = parseModulePath cursor diags
+    let args, endSpan =
+        match Cursor.peekToken cursor with
+        | TPunct LBracket ->
+            let xs = parseTypeArgs cursor diags
+            let last =
+                match xs with
+                | [] -> head.Span
+                | _ ->
+                    match List.last xs with
+                    | TAType t  -> t.Span
+                    | TAValue e -> e.Span
+            xs, last
+        | _ -> [], head.Span
+    { Head = head; Args = args; Span = joinSpans head.Span endSpan }
+
+and private parseWhereBound
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : WhereBound =
+    let nameTok = Cursor.peek cursor
+    let name, nameSpan =
+        match Cursor.tryEatIdent cursor with
+        | Some (n, s) -> n, s
+        | None ->
+            err diags "P0093"
+                "expected an identifier in where-bound"
+                nameTok.Span
+            "<error>", nameTok.Span
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0094"
+            "expected ':' after the bound's type variable"
+            (Cursor.peekSpan cursor)
+    let constraints = ResizeArray<ConstraintRef>()
+    constraints.Add(parseConstraintRef cursor diags)
+    while Cursor.peekToken cursor = TPunct Plus do
+        Cursor.advance cursor |> ignore
+        constraints.Add(parseConstraintRef cursor diags)
+    let endSpan = (List.last (List.ofSeq constraints)).Span
+    { Name        = name
+      Constraints = List.ofSeq constraints
+      Span        = joinSpans nameSpan endSpan }
+
+/// Parse `where T: Compare + Hash, U: Default` if `where` is the next
+/// token. Returns None if absent.
+and private parseWhereClauseOpt
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : WhereClause option =
+    if Cursor.peekToken cursor <> TKeyword KwWhere then None
+    else
+        let startTok = Cursor.advance cursor
+        let xs = ResizeArray<WhereBound>()
+        xs.Add(parseWhereBound cursor diags)
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            xs.Add(parseWhereBound cursor diags)
+        let endSpan = (List.last (List.ofSeq xs)).Span
+        Some
+            { Bounds = List.ofSeq xs
+              Span   = joinSpans startTok.Span endSpan }
+
+/// Parse `invariant: <expr>`. Caller is expected to have peeked
+/// `invariant` already.
+and private parseInvariantClause
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : InvariantClause =
+    let startTok = Cursor.advance cursor   // 'invariant'
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0095"
+            "expected ':' after 'invariant'"
+            (Cursor.peekSpan cursor)
+    let expr = parseExpr cursor diags
+    { Expr = expr
+      Span = joinSpans startTok.Span expr.Span }
 
 // ---------------------------------------------------------------------------
 // Public testing entry points (exposed but documented as low-level).
