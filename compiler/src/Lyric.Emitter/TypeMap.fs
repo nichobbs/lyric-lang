@@ -35,17 +35,18 @@ let private primToClr : PrimType -> ClrType =
     | PtUnit   -> typeof<System.ValueTuple>
     | PtNever  -> typeof<System.ValueTuple>   // diverging — stack value never observed
 
-/// Map a Lyric `Type` to a CLR `System.Type`. Returns `typeof<obj>`
-/// for currently-unsupported shapes; the emitter will surface a
-/// diagnostic when it actually tries to use such a slot.
-let rec toClrType (t: Type) : ClrType =
+/// Map a Lyric `Type` to a CLR `System.Type` using a lookup for
+/// user-defined types. The lookup may return `None` for types whose
+/// CLR shape isn't yet known (in which case we fall back to `obj`).
+let rec toClrTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
+    let recur = toClrTypeWith lookup
     match t with
     | TyPrim p -> primToClr p
     | TyTuple [] -> typeof<System.ValueTuple>
-    | TyTuple [x] -> toClrType x
+    | TyTuple [x] -> recur x
     | TyTuple xs ->
         // System.ValueTuple<...> for ≤ 7 elements; nested for more.
-        let args = xs |> List.map toClrType |> List.toArray
+        let args = xs |> List.map recur |> List.toArray
         match args.Length with
         | 2 -> typedefof<System.ValueTuple<_, _>>.MakeGenericType args
         | 3 -> typedefof<System.ValueTuple<_, _, _>>.MakeGenericType args
@@ -53,27 +54,39 @@ let rec toClrType (t: Type) : ClrType =
         | 5 -> typedefof<System.ValueTuple<_, _, _, _, _>>.MakeGenericType args
         | 6 -> typedefof<System.ValueTuple<_, _, _, _, _, _>>.MakeGenericType args
         | 7 -> typedefof<System.ValueTuple<_, _, _, _, _, _, _>>.MakeGenericType args
-        | _ -> typeof<obj>           // > 7 elements lands in E7 polish
+        | _ -> typeof<obj>
     | TyNullable inner ->
-        let cl = toClrType inner
+        let cl = recur inner
         if cl.IsValueType then
             typedefof<System.Nullable<_>>.MakeGenericType([| cl |])
         else
             cl
     | TySlice elem | TyArray (_, elem) ->
-        (toClrType elem).MakeArrayType()
-    | TyFunction _    -> typeof<obj>     // E4 lifts to delegate types
-    | TyUser _        -> typeof<obj>     // E5 / E6 / E8 fill these in
+        (recur elem).MakeArrayType()
+    | TyFunction _    -> typeof<obj>     // E8 lifts to delegate types
+    | TyUser (id, _)  ->
+        match lookup id with
+        | Some t -> t
+        | None   -> typeof<obj>
     | TySelf          -> typeof<obj>
     | TyVar _         -> typeof<obj>
     | TyError         -> typeof<obj>
 
+/// Convenience overload that knows nothing about user types — every
+/// `TyUser` lowers to `obj`. Kept for tests / call sites that
+/// haven't built a TypeId map yet.
+let toClrType (t: Type) : ClrType =
+    toClrTypeWith (fun _ -> None) t
+
 /// CLR return-type for a Lyric type. Differs from `toClrType` only
 /// for `Unit` and `Never`, which lower to `void` at the return slot.
-let toClrReturnType (t: Type) : ClrType =
+let toClrReturnTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
     match t with
     | TyPrim PtUnit | TyPrim PtNever -> typeof<System.Void>
-    | _ -> toClrType t
+    | _ -> toClrTypeWith lookup t
+
+let toClrReturnType (t: Type) : ClrType =
+    toClrReturnTypeWith (fun _ -> None) t
 
 /// Whether a Lyric type lowers to a CLR `void`-shaped value (no
 /// stack value to push at function exit).

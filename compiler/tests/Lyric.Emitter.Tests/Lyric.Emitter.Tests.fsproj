@@ -13,6 +13,7 @@
     <Compile Include="ArithmeticTests.fs" />
     <Compile Include="ControlFlowTests.fs" />
     <Compile Include="FunctionCallTests.fs" />
+    <Compile Include="RecordTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

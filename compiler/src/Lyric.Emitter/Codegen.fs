@@ -34,7 +34,11 @@ type FunctionCtx =
       /// Same-package functions visible at codegen time. E4 only
       /// resolves single-segment calls; cross-package linking is
       /// M1.4 work.
-      Funcs:      Dictionary<string, MethodBuilder> }
+      Funcs:      Dictionary<string, MethodBuilder>
+      /// Same-package records visible at codegen time. E5 supports
+      /// constructor calls and field reads; mutation via `with`
+      /// lands in E5 polish.
+      Records:    Lyric.Emitter.Records.RecordTable }
 
 module FunctionCtx =
 
@@ -42,7 +46,8 @@ module FunctionCtx =
             (il: ILGenerator)
             (returnType: ClrType)
             (paramList: (string * ClrType) list)
-            (funcs: Dictionary<string, MethodBuilder>) : FunctionCtx =
+            (funcs: Dictionary<string, MethodBuilder>)
+            (records: Lyric.Emitter.Records.RecordTable) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
@@ -53,7 +58,8 @@ module FunctionCtx =
           Scopes     = s
           Loops      = Stack()
           Params     = p
-          Funcs      = funcs }
+          Funcs      = funcs
+          Records    = records }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -214,6 +220,28 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EParen inner -> emitExpr ctx inner
 
+    // ---- field access (record member) ---------------------------------
+
+    | EMember (recv, fieldName) ->
+        let recvTy = emitExpr ctx recv
+        // The receiver's CLR type tells us which record's field
+        // table to consult. Walk the records dict to find a match.
+        let info =
+            ctx.Records.Values
+            |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+        match info with
+        | Some r ->
+            match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+            | Some f ->
+                il.Emit(OpCodes.Ldfld, f.Field)
+                f.Type
+            | None ->
+                failwithf "E5 codegen: record '%s' has no field '%s'"
+                    r.Name fieldName
+        | None ->
+            failwithf "E5 codegen: receiver type %s is not a known record"
+                recvTy.Name
+
     // ---- variable read ------------------------------------------------
 
     | EPath { Segments = [name] } ->
@@ -354,6 +382,42 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 typeof<System.Void>
             else
                 thenTy
+
+    // ---- record construction ------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.Records.ContainsKey name ->
+        let info = ctx.Records.[name]
+        // Sort arguments into field-declaration order. Positional
+        // and named args may mix; named args win.
+        let namedMap =
+            args
+            |> List.choose (function
+                | CANamed (n, ex, _) -> Some (n, ex)
+                | _ -> None)
+            |> Map.ofList
+        let positional =
+            args
+            |> List.choose (function
+                | CAPositional ex -> Some ex
+                | _ -> None)
+        let mutable posIdx = 0
+        for f in info.Fields do
+            let argExpr =
+                match Map.tryFind f.Name namedMap with
+                | Some ex -> ex
+                | None ->
+                    if posIdx < List.length positional then
+                        let ex = List.item posIdx positional
+                        posIdx <- posIdx + 1
+                        ex
+                    else
+                        failwithf "E5 codegen: record '%s' missing field '%s'"
+                            name f.Name
+            let _ = emitExpr ctx argExpr
+            ()
+        il.Emit(OpCodes.Newobj, info.Ctor)
+        info.Type :> ClrType
 
     // ---- user-defined call --------------------------------------------
 

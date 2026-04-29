@@ -37,17 +37,98 @@ let private functionItems (sf: SourceFile) : FunctionDecl list =
         | IFunc fn -> Some fn
         | _ -> None)
 
+/// Pull every top-level `IRecord` / `IExposedRec` out of a parsed
+/// source file.
+let private recordItems (sf: SourceFile) : RecordDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IRecord r | IExposedRec r -> Some r
+        | _ -> None)
+
+/// Define the CLR class + fields + ctor for one Lyric record. The
+/// resulting `RecordInfo` goes into the per-emit `RecordTable` so
+/// codegen can resolve constructors and field reads.
+let private defineRecord
+        (md: ModuleBuilder)
+        (nsName: string)
+        (symbols: SymbolTable)
+        (rd: RecordDecl) : Records.RecordInfo =
+    let fullName =
+        if String.IsNullOrEmpty nsName then rd.Name
+        else nsName + "." + rd.Name
+    let tb =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public ||| TypeAttributes.Sealed,
+            typeof<obj>)
+    // Resolve each field's type via the typechecker's resolver. This
+    // gives us a `Lyric.TypeChecker.Type` that TypeMap projects onto
+    // a CLR System.Type.
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    let fieldDecls =
+        rd.Members
+        |> List.choose (fun m ->
+            match m with
+            | RMField fd -> Some fd
+            | _          -> None)
+    let fields =
+        fieldDecls
+        |> List.map (fun fd ->
+            let lty =
+                Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
+            let cty = TypeMap.toClrType lty
+            let fb =
+                tb.DefineField(
+                    fd.Name,
+                    cty,
+                    FieldAttributes.Public ||| FieldAttributes.InitOnly)
+            { Records.RecordField.Name  = fd.Name
+              Records.RecordField.Type  = cty
+              Records.RecordField.Field = fb })
+    // Constructor: takes every field in declaration order, stores
+    // them onto `this`.
+    let ctorParamTypes =
+        fields
+        |> List.map (fun f -> f.Type)
+        |> List.toArray
+    let ctor =
+        tb.DefineConstructor(
+            MethodAttributes.Public,
+            CallingConventions.Standard,
+            ctorParamTypes)
+    let cil = ctor.GetILGenerator()
+    // base ctor (System.Object::.ctor)
+    cil.Emit(OpCodes.Ldarg_0)
+    let objCtor = typeof<obj>.GetConstructor([||])
+    match Option.ofObj objCtor with
+    | Some c -> cil.Emit(OpCodes.Call, c)
+    | None   -> failwith "object's no-arg ctor not found"
+    // store each arg onto `this`
+    fields
+    |> List.iteri (fun i f ->
+        cil.Emit(OpCodes.Ldarg_0)
+        cil.Emit(OpCodes.Ldarg, i + 1)
+        cil.Emit(OpCodes.Stfld, f.Field))
+    cil.Emit(OpCodes.Ret)
+    { Records.RecordInfo.Name   = rd.Name
+      Records.RecordInfo.Type   = tb
+      Records.RecordInfo.Fields = fields
+      Records.RecordInfo.Ctor   = ctor }
+
 /// Define a static method header on `programTy` matching the resolved
 /// signature. Body is filled in by `emitFunctionBody` afterwards.
 let private defineMethodHeader
         (programTy: TypeBuilder)
+        (lookup: TypeId -> System.Type option)
         (fn: FunctionDecl)
         (sg: ResolvedSignature) : MethodBuilder =
     let paramTypes =
         sg.Params
-        |> List.map (fun p -> TypeMap.toClrType p.Type)
+        |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
         |> List.toArray
-    let returnType = TypeMap.toClrReturnType sg.Return
+    let returnType = TypeMap.toClrReturnTypeWith lookup sg.Return
     let mb =
         programTy.DefineMethod(
             fn.Name,
@@ -72,13 +153,15 @@ let private emitFunctionBody
         (mb: MethodBuilder)
         (fn: FunctionDecl)
         (sg: ResolvedSignature)
-        (funcs: Dictionary<string, MethodBuilder>) : unit =
+        (lookup: TypeId -> System.Type option)
+        (funcs: Dictionary<string, MethodBuilder>)
+        (records: Records.RecordTable) : unit =
     let il = mb.GetILGenerator()
-    let returnTy = TypeMap.toClrReturnType sg.Return
+    let returnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
     let paramList =
         sg.Params
-        |> List.map (fun p -> p.Name, TypeMap.toClrType p.Type)
-    let ctx = Codegen.FunctionCtx.make il returnTy paramList funcs
+        |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
+    let ctx = Codegen.FunctionCtx.make il returnTy paramList funcs records
 
     // Helper: emit a block, treating the trailing SExpr as the
     // function's return value when the function isn't Unit-typed.
@@ -151,10 +234,12 @@ let private defineHostEntryPoint
 
 /// Emit the assembly. Layout: a single `<package-name>.Program` type
 /// carrying every Lyric `func` as a static method, plus a host
-/// `Main` entry point that delegates to Lyric's `main`.
+/// `Main` entry point that delegates to Lyric's `main`. Each Lyric
+/// record becomes its own sealed CLR class.
 let private emitAssembly
         (sf: SourceFile)
         (sigs: Map<string, ResolvedSignature>)
+        (symbols: SymbolTable)
         (req: EmitRequest) : Diagnostic list =
     let funcs = functionItems sf
     match funcs |> List.tryFind (fun f -> f.Name = "main") with
@@ -172,6 +257,28 @@ let private emitAssembly
         let typeName =
             if String.IsNullOrEmpty nsName then "Program"
             else nsName + ".Program"
+
+        // Pass 0 — record types. Defined before functions so
+        // signatures can mention them, and the runtime sees the
+        // sealed CLR classes ready when the host calls newobj.
+        let recordTable = Records.RecordTable()
+        let typeIdToClr = Dictionary<TypeId, System.Type>()
+        for rd in recordItems sf do
+            let info = defineRecord ctx.Module nsName symbols rd
+            recordTable.[rd.Name] <- info
+            // Find the TypeId the type checker assigned and stash a
+            // (TypeId → CLR type) mapping so signature lowering can
+            // resolve `TyUser` to the right `TypeBuilder`.
+            symbols.TryFind rd.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+        let lookup =
+            fun (id: TypeId) ->
+                match typeIdToClr.TryGetValue id with
+                | true, t  -> Some t
+                | false, _ -> None
+
         let programTy =
             ctx.Module.DefineType(
                 typeName,
@@ -180,22 +287,18 @@ let private emitAssembly
                 ||| TypeAttributes.Abstract,
                 typeof<obj>)
 
-        // Pass A — define every header. We need them all visible
-        // before bodies emit so calls (including recursion and
-        // forward references) can resolve.
+        // Pass A — define every header.
         let methodTable = Dictionary<string, MethodBuilder>()
         for fn in funcs do
             match Map.tryFind fn.Name sigs with
             | Some sg ->
-                let mb = defineMethodHeader programTy fn sg
+                let mb = defineMethodHeader programTy lookup fn sg
                 methodTable.[fn.Name] <- mb
             | None ->
-                // Synthesise a unit signature for functions the type
-                // checker didn't resolve (e.g. parser recovery).
                 let synthSig : ResolvedSignature =
                     { Generics = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
-                let mb = defineMethodHeader programTy fn synthSig
+                let mb = defineMethodHeader programTy lookup fn synthSig
                 methodTable.[fn.Name] <- mb
 
         // Pass B — emit bodies.
@@ -206,10 +309,17 @@ let private emitAssembly
                 | None ->
                     { Generics = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
-            emitFunctionBody methodTable.[fn.Name] fn sg methodTable
+            emitFunctionBody
+                methodTable.[fn.Name] fn sg lookup methodTable recordTable
 
         let lyricMain = methodTable.["main"]
         let hostMain  = defineHostEntryPoint programTy lyricMain
+
+        // Finalise every type so the persisted PE captures their
+        // metadata. Records are sealed first so their TypeBuilders
+        // are valid types when programTy.CreateType references them.
+        for kv in recordTable do
+            kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (Some (hostMain :> MethodInfo))
         []
@@ -228,7 +338,12 @@ let emit (req: EmitRequest) : EmitResult =
     if parserFatal then
         { OutputPath = None; Diagnostics = upstream }
     else
-        let emitDiags = emitAssembly parsed.File checked'.Signatures req
+        let emitDiags =
+            emitAssembly
+                parsed.File
+                checked'.Signatures
+                checked'.Symbols
+                req
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
