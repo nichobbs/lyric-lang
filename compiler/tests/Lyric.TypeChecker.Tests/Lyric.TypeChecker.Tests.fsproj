@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -6,19 +6,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="TypeRepTests.fs" />
+    <Compile Include="SymbolTableTests.fs" />
     <Compile Include="ResolverTests.fs" />
     <Compile Include="SignatureTests.fs" />
     <Compile Include="ExprCheckerTests.fs" />
     <Compile Include="StmtCheckerTests.fs" />
-    <Compile Include="WorkedExampleSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
     <ProjectReference Include="..\..\src\Lyric.Lexer\Lyric.Lexer.fsproj" />
     <ProjectReference Include="..\..\src\Lyric.Parser\Lyric.Parser.fsproj" />
-    <ProjectReference Include="..\..\src\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

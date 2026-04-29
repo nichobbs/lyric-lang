@@ -1,389 +1,334 @@
-/// Type-check (more accurately, type-infer) expressions. Inference is
-/// shallow — there's no Hindley-Milner unification yet — but it's
-/// enough to surface argument-arity, primitive-mismatch, and
-/// unknown-name errors against the worked examples.
+/// Bottom-up type inference for expressions.
+///
+/// `inferExpr` consumes a parser AST `Expr` and returns the resolved
+/// `Type`. Unsupported or recovery cases return `TyError`, which the
+/// equivalence rules in `Type.equiv` treat as compatible with anything
+/// to suppress cascading diagnostics.
+///
+/// T4 implements: literals, single-segment paths (scope + global),
+/// parens, tuples, lists, prefix operators, binary operators
+/// (arithmetic + comparison + logical), function calls, member
+/// access, and the contract atoms `self` / `result` / `old(_)`.
+/// Lambdas, full control-flow expressions (`if` / `match`), block
+/// expressions, async / spawn semantics, and `?` propagation are
+/// deferred to T5+.
 module Lyric.TypeChecker.ExprChecker
 
 open Lyric.Lexer
 open Lyric.Parser.Ast
-open Lyric.TypeChecker
-open Lyric.TypeChecker.Symbols
 
-let private err (env: CheckEnv) (code: string) (msg: string) (span: Span) : unit =
-    CheckEnv.report env (Diagnostic.error code msg span)
+let private err
+        (diags: ResizeArray<Diagnostic>)
+        (code:  string)
+        (msg:   string)
+        (span:  Span) =
+    diags.Add(Diagnostic.error code msg span)
 
-let private inferLiteral (lit: Literal) : Type =
+// ---------------------------------------------------------------------------
+// Literals.
+// ---------------------------------------------------------------------------
+
+let typeOfLiteral (lit: Literal) : Type =
     match lit with
-    | LUnit         -> Type.unit'
-    | LBool _       -> Type.bool'
-    | LInt _        -> Type.int'
-    | LFloat _      -> Type.double'
-    | LChar _       -> Type.char'
-    | LString _     -> Type.string'
-    | LTripleString _ -> Type.string'
-    | LRawString _    -> Type.string'
+    | LInt(_, NoIntSuffix) -> TyPrim PtInt        // default
+    | LInt(_, I8)  -> TyPrim PtByte               // (signed 8-bit; closest in Lyric)
+    | LInt(_, I16) -> TyPrim PtInt
+    | LInt(_, I32) -> TyPrim PtInt
+    | LInt(_, I64) -> TyPrim PtLong
+    | LInt(_, U8)  -> TyPrim PtByte
+    | LInt(_, U16) -> TyPrim PtUInt
+    | LInt(_, U32) -> TyPrim PtUInt
+    | LInt(_, U64) -> TyPrim PtULong
+    | LFloat(_, NoFloatSuffix) -> TyPrim PtDouble
+    | LFloat(_, F32) -> TyPrim PtFloat
+    | LFloat(_, F64) -> TyPrim PtDouble
+    | LChar _   -> TyPrim PtChar
+    | LString _ | LTripleString _ | LRawString _ -> TyPrim PtString
+    | LBool _   -> TyPrim PtBool
+    | LUnit     -> TyPrim PtUnit
 
-/// Look up a single-segment path. Order: locals → values (top-level) →
-/// union/enum cases (treated as values) → import alias → silently
-/// return TyError so downstream checks can continue.
-///
-/// We deliberately do NOT emit T0010 in Phase 1: the bootstrap
-/// type-checker has no stdlib, no module-loader, and no resolved
-/// imports, so nearly every unknown short name is a false positive.
-/// Once `std.core` is on disk this can switch back to a hard error.
-let private lookupShortPath (env: CheckEnv) (name: string) (_span: Span) : Type =
-    match CheckEnv.tryLookupLocal env name with
-    | Some t -> t
-    | None ->
-        match SymbolTable.tryLookupValueShort env.Symbols name with
-        | Some sym ->
-            match sym.Kind with
-            | VskFunc rs ->
-                Type.TyFunction (rs.Params, rs.Return)
-            | VskVal t | VskConst t | VskLocal t | VskParam t -> t
-            | VskEnumCase tn -> Type.TyNamed tn
-            | VskUnionCase (tn, []) -> Type.TyNamed tn
-            | VskUnionCase (tn, fields) ->
-                let pTys = fields |> List.map snd
-                Type.TyFunction (pTys, Type.TyNamed tn)
+// ---------------------------------------------------------------------------
+// Path resolution at expression-level.
+// ---------------------------------------------------------------------------
+
+let private resolvePath
+        (scope: Scope)
+        (table: SymbolTable)
+        (sigs:  Map<string, ResolvedSignature>)
+        (diags: ResizeArray<Diagnostic>)
+        (path:  ModulePath)
+        (span:  Span)
+        : Type =
+    match path.Segments with
+    | [name] ->
+        // 1. Local binding (parameter or val/var/let).
+        match scope.TryFind(name) with
+        | Some b -> b.Type
         | None ->
-            match SymbolTable.tryLookupTypeShort env.Symbols name with
-            | Some sym -> Type.TyNamed sym.Name
+            // 2. Function in the package.
+            match Map.tryFind name sigs with
+            | Some s ->
+                let paramTypes = s.Params |> List.map (fun p -> p.Type)
+                TyFunction(paramTypes, s.Return, s.IsAsync)
             | None ->
-                // If the name was imported as an alias we have no
-                // metadata for the target — it might be a function,
-                // a type, a constant, anything. Returning TyError
-                // is safer than committing to TyNamed (which would
-                // make it look like a constructor and pin the
-                // call's return type to the alias path).
-                match SymbolTable.tryResolveAlias env.Symbols name with
-                | Some _ -> Type.error'
-                | None   -> Type.error'
-
-let private lookupQualifiedPath (env: CheckEnv) (segs: string list) (span: Span) : Type =
-    match SymbolTable.tryLookupValueQualified env.Symbols segs with
-    | Some sym ->
-        match sym.Kind with
-        | VskFunc rs ->
-            Type.TyFunction (rs.Params, rs.Return)
-        | VskVal t | VskConst t | VskLocal t | VskParam t -> t
-        | VskEnumCase tn -> Type.TyNamed tn
-        | VskUnionCase (tn, []) -> Type.TyNamed tn
-        | VskUnionCase (tn, fields) ->
-            let pTys = fields |> List.map snd
-            Type.TyFunction (pTys, Type.TyNamed tn)
-    | None ->
-        match SymbolTable.tryLookupTypeQualified env.Symbols segs with
-        | Some sym -> Type.TyNamed sym.Name
-        | None     -> Type.TyNamed segs   // tolerated; extern/imported
-
-let rec inferExpr (env: CheckEnv) (e: Expr) : Type =
-    match e.Kind with
-    | ELiteral lit  -> inferLiteral lit
-    | EInterpolated _ -> Type.string'
-    | EPath path ->
-        match path.Segments with
-        | [name] -> lookupShortPath env name path.Span
-        | segs   -> lookupQualifiedPath env segs path.Span
-    | EParen inner -> inferExpr env inner
-    | ETuple es    -> Type.TyTuple (es |> List.map (inferExpr env))
-    | EList es ->
-        // Element type = type of first element; all others must be
-        // compatible. Empty list defaults to slice[Error] under
-        // Phase 1's no-inference rules.
-        match es with
-        | [] -> Type.TySlice Type.error'
-        | first :: rest ->
-            let firstTy = inferExpr env first
-            for r in rest do
-                let rt = inferExpr env r
-                if not (Type.compatible firstTy rt) then
-                    err env "T0020"
-                        (sprintf "list element type %s mismatches first element %s"
-                            (Type.render rt) (Type.render firstTy))
-                        r.Span
-            Type.TySlice firstTy
-    | EIf (cond, thenB, elseB, _) ->
-        let cTy = inferExpr env cond
-        if not (Type.compatible Type.bool' cTy) then
-            err env "T0021"
-                (sprintf "'if' condition has type %s, expected Bool" (Type.render cTy))
-                cond.Span
-        let thenTy = inferBranch env thenB
-        match elseB with
-        | Some eb ->
-            let elseTy = inferBranch env eb
-            if Type.compatible thenTy elseTy then thenTy
-            elif Type.compatible elseTy thenTy then elseTy
-            else
-                err env "T0022"
-                    (sprintf "'if' branches differ: %s vs %s"
-                        (Type.render thenTy) (Type.render elseTy))
-                    e.Span
-                Type.error'
-        | None -> Type.unit'
-    | EMatch (scr, arms) ->
-        let _ = inferExpr env scr
-        match arms with
-        | [] -> Type.error'
-        | first :: rest ->
-            let firstTy = inferBranch env first.Body
-            for arm in rest do
-                let _ = inferBranch env arm.Body
-                ()
-            firstTy
-    | EAwait inner ->
-        let t = inferExpr env inner
-        match t with
-        | Type.TyApp (Type.TyNamed ["Task"], [a]) -> a
-        | _ -> t
-    | ESpawn inner ->
-        let t = inferExpr env inner
-        Type.TyApp (Type.TyNamed ["Task"], [t])
-    | ETry inner ->
-        let _ = inferExpr env inner
-        Type.error'
-    | EOld inner -> inferExpr env inner
-    | EForall _ | EExists _ -> Type.bool'
-    | ESelf ->
-        match env.SelfTy with
-        | Some t -> t
-        | None ->
-            err env "T0030" "'self' used outside of a method" e.Span
-            Type.error'
-    | EResult -> env.Return
-    | ELambda (lambdaParams, body) ->
-        // Resolve the parameter types we have annotations for.
-        let pTys =
-            lambdaParams |> List.map (fun lp ->
-                match lp.Type with
-                | Some t -> Resolver.resolve env t
-                | None   -> Type.error')
-        // Type-check the body block in a fresh scope so locals
-        // declared inside the lambda don't leak. Parameters bind
-        // into that scope. This is the path used by function-bodied
-        // lambdas (`func foo(): T = { … }` parses as ELambda).
-        CheckEnv.pushScope env
-        List.iter2
-            (fun (lp: LambdaParam) (t: Type) -> CheckEnv.addLocal env lp.Name t)
-            lambdaParams pTys
-        for stmt in body.Statements do
-            checkLambdaStmt env stmt
-        let resultTy =
-            match List.tryLast body.Statements with
-            | Some { Kind = SExpr e } -> inferExpr env e
-            | _ -> Type.unit'
-        CheckEnv.popScope env
-        Type.TyFunction (pTys, resultTy)
-    | ECall (fn, args) ->
-        let fnTy = inferExpr env fn
-        let argTys =
-            args |> List.map (fun a ->
-                match a with
-                | CAPositional e | CANamed (_, e, _) -> inferExpr env e)
-        match fnTy with
-        | Type.TyFunction (paramTys, retTy) ->
-            if List.length paramTys <> List.length argTys then
-                err env "T0040"
-                    (sprintf "expected %d argument(s), got %d"
-                        (List.length paramTys) (List.length argTys))
-                    e.Span
-                retTy
-            else
-                List.iter2
-                    (fun expected actual ->
-                        if not (Type.compatible expected actual) then
-                            err env "T0041"
-                                (sprintf "argument type %s incompatible with parameter %s"
-                                    (Type.render actual) (Type.render expected))
-                                e.Span)
-                    paramTys argTys
-                retTy
-        | Type.TyError -> Type.error'
-        | Type.TyNamed _ ->
-            // Treat as a constructor call — we don't track type
-            // shapes well enough to verify. Return the named type.
-            fnTy
-        | _ ->
-            err env "T0042"
-                (sprintf "call target has non-function type %s" (Type.render fnTy))
-                e.Span
-            Type.error'
-    | ETypeApp (fn, _) -> inferExpr env fn
-    | EIndex (recv, _) ->
-        let rt = inferExpr env recv
-        match rt with
-        | Type.TyArray (_, e) | Type.TySlice e -> e
-        | _ -> Type.error'
-    | EMember (recv, name) ->
-        let rt = inferExpr env recv
-        memberType env rt name e.Span
-    | EPropagate inner ->
-        let t = inferExpr env inner
-        match t with
-        | Type.TyApp (Type.TyNamed ["Result"], [ok; _]) -> ok
-        | Type.TyApp (Type.TyNamed ["Option"], [a])     -> a
-        | _ -> t
-    | EPrefix (op, operand) ->
-        let t = inferExpr env operand
-        match op with
-        | PreNeg -> t
-        | PreNot ->
-            if not (Type.compatible Type.bool' t) then
-                err env "T0050"
-                    (sprintf "operator 'not' requires Bool, got %s" (Type.render t))
-                    operand.Span
-            Type.bool'
-        | PreRef -> t
-    | EBinop (op, lhs, rhs) ->
-        let lt = inferExpr env lhs
-        let rt = inferExpr env rhs
-        inferBinop env op lt rt e.Span
-    | ERange _ ->
-        // A range expression in value position is a slice — the
-        // backing iterator's element type matches the bounds. We
-        // don't track that yet; fall back to TyError.
-        Type.error'
-    | EAssign _ -> Type.unit'
-    | EBlock blk ->
-        // The diverging-statement wrapper. Type it as Never.
-        ignore blk
-        Type.never'
-    | EError -> Type.error'
-
-/// Light statement walker used inside lambda bodies. The full
-/// `StmtChecker` lives downstream of this module so we can't call it
-/// from here; the subset below covers the statements that appear in
-/// lambda / function-as-lambda bodies.
-and private checkLambdaStmt (env: CheckEnv) (stmt: Statement) : unit =
-    match stmt.Kind with
-    | SLocal (LBVal (pat, annot, init)) ->
-        let initTy = inferExpr env init
-        let ty =
-            match annot with
-            | Some t -> Resolver.resolve env t
-            | None   -> initTy
-        bindLambdaPattern env pat ty
-    | SLocal (LBVar (name, annot, initOpt)) ->
-        let ty =
-            match initOpt, annot with
-            | Some init, _ ->
-                let it = inferExpr env init
-                match annot with
-                | Some t -> Resolver.resolve env t
-                | None   -> it
-            | None, Some t -> Resolver.resolve env t
-            | None, None   -> Type.error'
-        CheckEnv.addLocal env name ty
-    | SLocal (LBLet (name, annot, init)) ->
-        let initTy = inferExpr env init
-        let ty =
-            match annot with
-            | Some t -> Resolver.resolve env t
-            | None   -> initTy
-        CheckEnv.addLocal env name ty
-    | SExpr e | SAssign (_, _, e) | SThrow e ->
-        let _ = inferExpr env e
-        ()
-    | SReturn (Some e) ->
-        let _ = inferExpr env e
-        ()
-    | SReturn None | SBreak _ | SContinue _ | SItem _ | SRule _ -> ()
+                // 3. Other named symbol (for now, return TyError;
+                // T5+ resolves vals / consts / union ctors).
+                match table.TryFindOne name with
+                | Some _ -> TyError
+                | None ->
+                    err diags "T0020"
+                        (sprintf "unknown name '%s'" name)
+                        span
+                    TyError
     | _ ->
-        // Other statement kinds (loops, try/catch, defer, scope)
-        // recurse through StmtChecker once it's wired into the
-        // pipeline; the lambda walker is a best-effort fallback.
-        ()
+        // Multi-segment expression path (e.g. `Module.func`). Cross-
+        // package resolution is T7+.
+        TyError
 
-and private bindLambdaPattern (env: CheckEnv) (pat: Pattern) (ty: Type) : unit =
-    match pat.Kind with
-    | PBinding (name, _) -> CheckEnv.addLocal env name ty
-    | PParen inner | PTypeTest (inner, _) -> bindLambdaPattern env inner ty
-    | _ -> ()
+// ---------------------------------------------------------------------------
+// Operator semantics.
+// ---------------------------------------------------------------------------
 
-and private inferBranch (env: CheckEnv) (b: ExprOrBlock) : Type =
-    match b with
-    | EOBExpr e -> inferExpr env e
-    | EOBBlock blk ->
-        // Phase 1: a block's value is the type of its trailing
-        // expression statement. Without one, the block is `Unit`.
-        match List.tryLast blk.Statements with
-        | Some { Kind = SExpr e } -> inferExpr env e
-        | _ -> Type.unit'
+let private isNumeric (t: Type) : bool =
+    match t with
+    | TyPrim PtByte | TyPrim PtInt | TyPrim PtLong
+    | TyPrim PtUInt | TyPrim PtULong | TyPrim PtNat
+    | TyPrim PtFloat | TyPrim PtDouble -> true
+    | TyError -> true   // poisoning
+    | _ -> false
 
-and private inferBinop (env: CheckEnv) (op: BinOp) (lt: Type) (rt: Type) (span: Span) : Type =
-    let arith () =
-        if Type.compatible lt rt then lt
-        elif Type.compatible rt lt then rt
-        else
-            err env "T0051"
-                (sprintf "operands of arithmetic operator differ: %s and %s"
-                    (Type.render lt) (Type.render rt))
-                span
-            Type.error'
-    let cmp () =
-        if not (Type.compatible lt rt) && not (Type.compatible rt lt) then
-            err env "T0052"
-                (sprintf "operands of comparison differ: %s and %s"
-                    (Type.render lt) (Type.render rt))
-                span
-        Type.bool'
-    let logical () =
-        if not (Type.compatible Type.bool' lt) then
-            err env "T0053"
-                (sprintf "logical operator requires Bool on the left, got %s" (Type.render lt))
-                span
-        if not (Type.compatible Type.bool' rt) then
-            err env "T0053"
-                (sprintf "logical operator requires Bool on the right, got %s" (Type.render rt))
-                span
-        Type.bool'
+let private isOrdered (t: Type) : bool =
+    isNumeric t
+    || (match t with
+        | TyPrim PtChar | TyPrim PtString -> true
+        | _ -> false)
+
+let private inferBinop
+        (diags: ResizeArray<Diagnostic>)
+        (op:    BinOp)
+        (lhs:   Type)
+        (rhs:   Type)
+        (span:  Span)
+        : Type =
     match op with
-    | BAdd | BSub | BMul | BDiv | BMod -> arith ()
-    | BAnd | BOr | BXor                -> logical ()
-    | BEq | BNeq | BLt | BLte | BGt | BGte -> cmp ()
+    | BAdd | BSub | BMul | BDiv | BMod ->
+        if not (isNumeric lhs) then
+            err diags "T0030"
+                (sprintf "left operand of arithmetic operator is not numeric (got %s)"
+                    (Type.render lhs))
+                span
+        if not (Type.equiv lhs rhs) then
+            err diags "T0031"
+                (sprintf "arithmetic operands must have the same type (got %s and %s)"
+                    (Type.render lhs) (Type.render rhs))
+                span
+        lhs
+    | BEq | BNeq ->
+        if not (Type.equiv lhs rhs) then
+            err diags "T0032"
+                (sprintf "equality operands must have the same type (got %s and %s)"
+                    (Type.render lhs) (Type.render rhs))
+                span
+        TyPrim PtBool
+    | BLt | BLte | BGt | BGte ->
+        if not (isOrdered lhs) || not (Type.equiv lhs rhs) then
+            err diags "T0033"
+                (sprintf "comparison operands must be matching ordered types (got %s and %s)"
+                    (Type.render lhs) (Type.render rhs))
+                span
+        TyPrim PtBool
+    | BAnd | BOr | BXor | BImplies ->
+        if not (Type.equiv lhs (TyPrim PtBool)) then
+            err diags "T0034"
+                (sprintf "left operand of logical operator must be Bool (got %s)"
+                    (Type.render lhs))
+                span
+        if not (Type.equiv rhs (TyPrim PtBool)) then
+            err diags "T0034"
+                (sprintf "right operand of logical operator must be Bool (got %s)"
+                    (Type.render rhs))
+                span
+        TyPrim PtBool
     | BCoalesce ->
-        match lt with
-        | Type.TyNullable inner -> if Type.compatible inner rt then inner else rt
-        | _ -> if Type.compatible lt rt then lt else rt
-    | BImplies -> logical ()
+        // `a ?? b`: `a` should be a nullable T; result is T.
+        match lhs with
+        | TyNullable inner ->
+            if not (Type.equiv inner rhs) then
+                err diags "T0035"
+                    (sprintf "?? RHS type %s must match the nullable's inner type %s"
+                        (Type.render rhs) (Type.render inner))
+                    span
+            inner
+        | TyError -> TyError
+        | other ->
+            err diags "T0035"
+                (sprintf "?? LHS must be a nullable type (got %s)" (Type.render other))
+                span
+            rhs
 
-and private memberType (env: CheckEnv) (rt: Type) (name: string) (span: Span) : Type =
-    match rt with
-    | Type.TyError -> Type.error'
-    | Type.TyNamed segs ->
-        // Type-as-receiver static method call. The shape of the type's
-        // associated functions isn't tracked yet, so we fall back to
-        // TyError (no diagnostic — the call site will adapt).
-        match SymbolTable.tryLookupTypeQualified env.Symbols segs with
-        | Some sym ->
-            match sym.Kind with
-            | TskRecord fields | TskExposedRec fields ->
-                match List.tryFind (fun (n, _) -> n = name) fields with
-                | Some (_, t) -> t
-                | None        -> Type.error'
-            | TskInterface methods ->
-                match List.tryFind (fun (n, _) -> n = name) methods with
-                | Some (_, rs) -> Type.TyFunction (rs.Params, rs.Return)
-                | None         -> Type.error'
-            | TskUnion cases ->
-                match List.tryFind (fun (n, _) -> n = name) cases with
-                | Some (_, []) -> Type.TyNamed sym.Name
-                | Some (_, fields) ->
-                    let pTys = fields |> List.map snd
-                    Type.TyFunction (pTys, Type.TyNamed sym.Name)
-                | None -> Type.error'
-            | TskEnum cases ->
-                if List.contains name cases then Type.TyNamed sym.Name
-                else Type.error'
-            | _ -> Type.error'
-        | None -> Type.error'
-    | Type.TyApp (Type.TyNamed segs, _) ->
-        // Generic instantiation: defer to the head's members for now.
-        memberType env (Type.TyNamed segs) name span
-    | Type.TyTuple ts ->
-        // `t.0`, `t.1`, …
-        match System.Int32.TryParse name with
-        | true, i when i >= 0 && i < List.length ts -> ts.[i]
-        | _ -> Type.error'
-    | _ -> Type.error'
+let private inferPrefix
+        (diags: ResizeArray<Diagnostic>)
+        (op:    PrefixOp)
+        (inner: Type)
+        (span:  Span)
+        : Type =
+    match op with
+    | PreNeg ->
+        if not (isNumeric inner) then
+            err diags "T0036"
+                (sprintf "unary minus requires a numeric operand (got %s)"
+                    (Type.render inner))
+                span
+        inner
+    | PreNot ->
+        if not (Type.equiv inner (TyPrim PtBool)) then
+            err diags "T0037"
+                (sprintf "'not' requires a Bool operand (got %s)"
+                    (Type.render inner))
+                span
+        TyPrim PtBool
+    | PreRef ->
+        // Reserved prefix operator — return the inner type for now.
+        inner
+
+// ---------------------------------------------------------------------------
+// Member access.
+// ---------------------------------------------------------------------------
+
+let private fieldsOfRecord (table: SymbolTable) (id: TypeId) : (string * Type) list =
+    let extract (rd: RecordDecl) =
+        rd.Members
+        |> List.choose (fun m ->
+            match m with
+            | RMField fd ->
+                let ctx = GenericContext()
+                let diags2 = ResizeArray<Diagnostic>()
+                let t = Resolver.resolveType table ctx diags2 fd.Type
+                Some (fd.Name, t)
+            | _ -> None)
+    table.All()
+    |> Seq.tryPick (fun s ->
+        match s.Kind with
+        | DKRecord(tid, rd) when tid = id     -> Some (extract rd)
+        | DKExposedRec(tid, rd) when tid = id -> Some (extract rd)
+        | _ -> None)
+    |> Option.defaultValue []
+
+let private inferMember
+        (table: SymbolTable)
+        (diags: ResizeArray<Diagnostic>)
+        (receiver: Type)
+        (name:  string)
+        (span:  Span)
+        : Type =
+    match receiver with
+    | TyUser(id, _) ->
+        let fs = fieldsOfRecord table id
+        match List.tryFind (fun (n, _) -> n = name) fs with
+        | Some (_, t) -> t
+        | None ->
+            // Could still be a method or a union case access — for
+            // now, return TyError without diagnostic to avoid noise.
+            TyError
+    | TyError -> TyError
+    | other ->
+        err diags "T0040"
+            (sprintf "type %s has no member '%s'" (Type.render other) name)
+            span
+        TyError
+
+// ---------------------------------------------------------------------------
+// Top-level inference.
+// ---------------------------------------------------------------------------
+
+let rec inferExpr
+        (scope: Scope)
+        (table: SymbolTable)
+        (sigs:  Map<string, ResolvedSignature>)
+        (diags: ResizeArray<Diagnostic>)
+        (e:     Expr)
+        : Type =
+
+    let infer = inferExpr scope table sigs diags
+
+    match e.Kind with
+    | ELiteral lit       -> typeOfLiteral lit
+    | EPath path         -> resolvePath scope table sigs diags path e.Span
+    | EParen inner       -> infer inner
+    | ETuple xs          -> TyTuple (xs |> List.map infer)
+    | EList xs ->
+        let elemTypes = xs |> List.map infer
+        let elem =
+            match elemTypes with
+            | []      -> TyError
+            | t :: ts ->
+                if List.forall (Type.equiv t) ts then t
+                else
+                    err diags "T0041"
+                        "list literal elements must share a type" e.Span
+                    t
+        TySlice elem
+
+    | EPrefix(op, inner) ->
+        let innerT = infer inner
+        inferPrefix diags op innerT e.Span
+
+    | EBinop(op, l, r) ->
+        let lT = infer l
+        let rT = infer r
+        inferBinop diags op lT rT e.Span
+
+    | ECall(fn, args) ->
+        let fnT = infer fn
+        let argTypes = args |> List.map (function
+                                          | CAPositional e -> infer e
+                                          | CANamed(_, e, _) -> infer e)
+        match fnT with
+        | TyFunction(paramTypes, ret, _) ->
+            if List.length paramTypes <> List.length argTypes then
+                err diags "T0042"
+                    (sprintf "expected %d argument(s), got %d"
+                        (List.length paramTypes) (List.length argTypes))
+                    e.Span
+            else
+                List.iter2 (fun p a ->
+                    if not (Type.equiv p a) then
+                        err diags "T0043"
+                            (sprintf "argument type %s does not match parameter type %s"
+                                (Type.render a) (Type.render p))
+                            e.Span)
+                    paramTypes argTypes
+            ret
+        | TyError -> TyError
+        | other ->
+            err diags "T0044"
+                (sprintf "called value of non-function type %s" (Type.render other))
+                e.Span
+            TyError
+
+    | EMember(receiver, name) ->
+        let rT = infer receiver
+        inferMember table diags rT name e.Span
+
+    | EPropagate inner ->
+        // `e?` propagates an error/null. The result is the inner
+        // type's "value" projection — for T4 we return TyError.
+        let _ = infer inner
+        TyError
+
+    | EAwait inner | ESpawn inner | EOld inner ->
+        infer inner
+
+    | ESelf -> TySelf
+
+    | EResult ->
+        // Resolved by the contract elaborator; for now, TyError so
+        // surrounding expressions don't cascade.
+        TyError
+
+    | ELambda _ | EIf _ | EMatch _ | EBlock _
+    | ETry _ | EForall _ | EExists _
+    | EAssign _ | ERange _ | ETypeApp _ | EIndex _
+    | EInterpolated _ -> TyError
+
+    | EError -> TyError
