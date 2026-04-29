@@ -637,6 +637,420 @@ The pattern: `RawConfig` is what `appsettings.json` deserializes to (flat, expos
 
 ---
 
+## Example 6: 3-D vector math with custom operator overloading
+
+Demonstrates `impl Add for Vec3` and `impl Sub for Vec3` per decision-log entry D029. Shows how a user-defined record (not a numeric distinct type) can opt into binary operators by implementing the closed numeric trait set.
+
+```
+// vec3.l
+@runtime_checked
+package Vec3
+
+pub record Vec3 @valueType {
+  x: Double
+  y: Double
+  z: Double
+}
+
+impl Add for Vec3 {
+  func add(self: in Vec3, other: in Vec3): Vec3 {
+    return Vec3(x = self.x + other.x, y = self.y + other.y, z = self.z + other.z)
+  }
+}
+
+impl Sub for Vec3 {
+  func sub(self: in Vec3, other: in Vec3): Vec3 {
+    return Vec3(x = self.x - other.x, y = self.y - other.y, z = self.z - other.z)
+  }
+}
+
+pub func dot(a: in Vec3, b: in Vec3): Double {
+  return a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+pub func scale(v: in Vec3, k: in Double): Vec3 {
+  return Vec3(x = v.x * k, y = v.y * k, z = v.z * k)
+}
+
+pub func length(v: in Vec3): Double
+  ensures: result >= 0.0
+{
+  return Double.sqrt(dot(v, v))
+}
+```
+
+Once the impls are in place, the operators are usable directly:
+
+```
+// usage.l
+import Vec3.{Vec3, scale, length}
+
+func translate(point: in Vec3, by: in Vec3): Vec3 {
+  return point + by                        // resolves to Add::add
+}
+
+func displacement(from: in Vec3, to: in Vec3): Double {
+  return length(to - from)                 // resolves to Sub::sub then length
+}
+```
+
+Per D029, the algebra is conventionally numeric: `Vec3 + Vec3 -> Vec3`, same-type. Lyric does not enforce associativity or distributivity; it enforces the *signature* shape. The decision log calls out that any `+`-with-string-concatenation-style abuse is socially discouraged but not mechanically blocked.
+
+---
+
+## Example 7: Test wire with `@stubbable` interfaces
+
+Demonstrates multiple wires (a production wire and a test wire) and `@stubbable`-derived stub builders, replacing the runtime mocking frameworks Lyric does not support. Builds on Example 1's `transfer` service.
+
+```
+// repositories.l
+@runtime_checked
+package Repositories
+
+import Account.{Account, AccountId}
+import TransferService.{IdempotencyKey, TransferReceipt}
+import Time.Instant
+
+@stubbable
+pub interface AccountRepository {
+  async func findById(id: in AccountId): Account?
+  async func saveAll(accounts: in slice[Account]): Unit
+}
+
+@stubbable
+pub interface IdempotencyStore {
+  async func lookup(key: in IdempotencyKey): TransferReceipt?
+  async func store(key: in IdempotencyKey, receipt: in TransferReceipt): Unit
+}
+
+@stubbable
+pub interface Clock {
+  func now(): Instant
+}
+```
+
+`@stubbable` directs the compiler to emit a stub builder per interface. The builders surface as `<InterfaceName>Stub` types with `.returning { ... }`, `.recording()`, and `.failing { ... }` helpers (see language reference §10).
+
+```
+// transfer_test.l
+@test_module
+package TransferService
+
+import Account.{Account, AccountId, AccountRepository}
+import Money.{Amount, Cents}
+import TransferService.{TransferService, transfer, IdempotencyKey, IdempotencyStore, Clock}
+import Time.Instant
+import Repositories.{AccountRepositoryStub, IdempotencyStoreStub, ClockStub}
+
+wire TestWire {
+  @provided alice: Account
+  @provided bob: Account
+  @provided fixedNow: Instant
+
+  singleton accounts: AccountRepository =
+      AccountRepositoryStub.recording()
+          .returning { it.findById(alice.id) -> Some(alice)
+                      ; it.findById(bob.id)   -> Some(bob) }
+
+  singleton idempotency: IdempotencyStore =
+      IdempotencyStoreStub.recording()
+          .returning { it.lookup(_) -> None }
+
+  singleton clock: Clock =
+      ClockStub.returning { it.now() -> fixedNow }
+
+  singleton svc: TransferService = TransferService.make(accounts, idempotency, clock)
+  expose svc
+  expose accounts          // tests inspect the recording
+}
+
+test "successful transfer credits the destination" {
+  val alice = makeAccount(id = "A", balance = 1_000_00)
+  val bob   = makeAccount(id = "B", balance = 0)
+  val now   = Instant.fromIso8601("2026-04-29T00:00:00Z").unwrap()
+
+  val w = TestWire.bootstrap(alice, bob, now)
+  val key = IdempotencyKey.tryFrom("op-1").unwrap()
+  val amount = Amount.make(Cents.tryFrom(100_00).unwrap()).unwrap()
+
+  val receipt = await transfer(w.svc, alice.id, bob.id, amount, key)
+  expect(receipt.isOk)
+  expect(w.accounts.recorded("saveAll").length == 1)
+}
+```
+
+Notes:
+
+- The test wire is just another `wire` block — no special syntax for tests.
+- `@stubbable`-generated stubs are statically typed: a signature change to `AccountRepository` produces a *compile error* in `transfer_test.l`, not a runtime failure.
+- No reflection, no proxy classes, no DynamicMock — the stubs are AOT-compatible.
+- `recording()` is one helper per language reference §10.4; it captures every call so tests can assert on call counts and arguments.
+
+---
+
+## Example 8: `@axiom` extern boundary for filesystem I/O
+
+Demonstrates an `extern package` declaration with `@axiom`. The block describes a contract the compiler will *trust*; the proof system uses these contracts as facts when verifying callers, but does not check them. This is the gateway between Lyric and the .NET BCL.
+
+```
+// system_io.l
+@axiom("System.IO.File operations conform to the .NET BCL contract")
+extern package System.IO {
+
+  pub exposed type File @derive(opaqueHandle)
+
+  pub func readAllBytes(path: in String): slice[Byte]
+    requires: path.length > 0
+    ensures: result.length >= 0
+
+  pub func readAllText(path: in String): String
+    requires: path.length > 0
+
+  pub func writeAllBytes(path: in String, bytes: in slice[Byte]): Unit
+    requires: path.length > 0
+
+  pub func exists(path: in String): Bool
+}
+```
+
+The `@axiom` annotation declares that the contracts are assumed by the prover, not derived. The language reference §6.5 explains the social cost: every line of an axiom block is reviewable in a PR diff, and accumulates in the `<package>.lyric-contract` artifact for downstream auditing.
+
+A `@runtime_checked` wrapper that re-establishes the language's safety contracts:
+
+```
+// fs.l
+@runtime_checked
+package Fs
+
+import System.IO as Sys
+
+pub union FsError {
+  case NotFound(path: String)
+  case IoError(path: String, message: String)
+  case PermissionDenied(path: String)
+}
+
+pub func readBytes(path: in String): Result[slice[Byte], FsError]
+  requires: path.length > 0
+{
+  if not Sys.exists(path) {
+    return Err(NotFound(path))
+  }
+  return try {
+    Ok(Sys.readAllBytes(path))
+  } catch Bug as b {
+    Err(IoError(path, b.message))
+  }
+}
+
+pub func readText(path: in String): Result[String, FsError]
+  requires: path.length > 0
+{
+  return readBytes(path).map { bytes -> String.fromUtf8(bytes).unwrap() }
+}
+```
+
+The `try { ... } catch Bug as b` form is the *robustness boundary* per language reference §8.2: the compiler emits a warning if `Bug` is caught in normal code, but warning-disabled here because this *is* the boundary. Downstream packages call `Fs.readBytes(...)` and get `Result`-typed errors, with no `Bug` propagation crossing the wrapper.
+
+---
+
+## Example 9: Projection cycle handled with `@projectionBoundary`
+
+Demonstrates D026: when the `@projectable` graph cycles, the compiler requires an explicit cut. Here `User` references its `Team`, and `Team` references its `members` — the projection would otherwise recurse infinitely.
+
+```
+// directory.l
+@runtime_checked
+package Directory
+
+pub opaque type UserId @projectable {
+  value: Guid
+}
+
+pub opaque type TeamId @projectable {
+  value: Guid
+}
+
+pub opaque type Team @projectable {
+  id: TeamId
+  name: String
+  // The cycle is broken here: TeamView contains members as
+  // slice[UserId], not slice[UserView].
+  members: slice[User] @projectionBoundary(asId)
+}
+
+pub opaque type User @projectable {
+  id: UserId
+  email: String
+  // Symmetric cut: UserView's team field projects as TeamId.
+  team: Team? @projectionBoundary(asId)
+}
+```
+
+The compiler-emitted views become:
+
+```
+exposed record UserView @derive(Json) {
+  id: Guid                    // UserId.toView()
+  email: String
+  teamId: Guid?               // Team.id.value, not the full TeamView
+}
+
+exposed record TeamView @derive(Json) {
+  id: Guid                    // TeamId.toView()
+  name: String
+  memberIds: slice[Guid]      // each User.id.value, not slice[UserView]
+}
+```
+
+Without the `@projectionBoundary` markers, the compiler would emit a precise error pointing at both `Team.members` and `User.team`, naming the cycle and refusing to default to a silent shape.
+
+The reverse projections (`UserView.tryInto`, `TeamView.tryInto`) cannot reconstruct the full graph from IDs alone — that is the user's job, by querying the repository for the referenced entities. The compiler emits *fallible* `tryInto` overloads that take the resolved counterparties as additional arguments:
+
+```
+pub func TeamView.tryInto(self: in TeamView, members: in slice[User])
+  : Result[Team, ContractViolation]
+```
+
+This is intentional: the cycle-cut sacrifices automatic round-trip in exchange for a finite serialised shape, and the type system makes the trade visible.
+
+---
+
+## Example 10: Binary search tree with proven invariants
+
+Demonstrates a recursive `@proof_required` data structure with a non-trivial invariant — every node's left subtree contains only smaller keys, every right subtree only larger — and a proof obligation on `insert` that the BST property is preserved. Shows quantifiers over inductive structure and the bounds of the decidable fragment (§11 of contract semantics).
+
+```
+// bst.l
+@proof_required
+package Bst
+
+generic[K] pub union Tree
+  where K: Compare
+{
+  case Leaf
+  case Node(left: Tree[K], key: K, right: Tree[K])
+}
+
+generic[K] pub func contains(t: in Tree[K], k: in K): Bool
+  where K: Compare
+{
+  return match t {
+    case Leaf -> false
+    case Node(l, key, r) ->
+      if k == key then true
+      else if k < key then contains(l, k)
+      else contains(r, k)
+  }
+}
+
+generic[K] @pure pub func keys(t: in Tree[K]): slice[K]
+  where K: Compare
+{
+  return match t {
+    case Leaf -> []
+    case Node(l, key, r) -> keys(l).append(key).concat(keys(r))
+  }
+}
+
+generic[K] @pure pub func isBst(t: in Tree[K]): Bool
+  where K: Compare
+{
+  return match t {
+    case Leaf -> true
+    case Node(l, key, r) ->
+      isBst(l) and isBst(r) and
+      forall (lk: K) where keys(l).contains(lk) implies lk < key and
+      forall (rk: K) where keys(r).contains(rk) implies rk > key
+  }
+}
+
+generic[K] pub func insert(t: in Tree[K], k: in K): Tree[K]
+  where K: Compare
+  requires: isBst(t)
+  ensures:  isBst(result)
+  ensures:  contains(result, k)
+  ensures:  forall (other: K) where contains(t, other) implies contains(result, other)
+{
+  return match t {
+    case Leaf -> Node(Leaf, k, Leaf)
+    case Node(l, key, r) ->
+      if k == key then t
+      else if k < key then Node(insert(l, k), key, r)
+      else Node(l, key, insert(r, k))
+  }
+}
+```
+
+The conservation property — every key already present remains present — falls within the decidable fragment because the recursion terminates on the inductive structure of `Tree[K]` and the quantifiers range over a finite slice. Z3 discharges these obligations in milliseconds for `K: Int` or any other primitive with a built-in theory.
+
+The same code with `K: String` may push the solver into `unknown` because string-ordering reasoning lives outside the decidable fragment for free quantifiers. Per `08-contract-semantics.md` §11, the verifier reports such cases as unverified obligations rather than producing a wrong proof; the user can either narrow the obligation or shift the package to `@runtime_checked`.
+
+---
+
+## Example 11: `old(_)` and history-aware contracts
+
+Demonstrates `old(...)` in `ensures:` clauses — the snapshot mechanism that lets postconditions refer to the function's pre-state. Builds an immutable stack with contracts that talk about both the pre- and post-states.
+
+```
+// stack.l
+@proof_required
+package Stack
+
+generic[T] pub opaque type Stack {
+  items: slice[T]
+}
+
+generic[T] pub func empty(): Stack[T]
+  ensures: result.items.length == 0
+{
+  return Stack(items = [])
+}
+
+generic[T] pub func depth(s: in Stack[T]): Nat
+  ensures: result == s.items.length
+{
+  return s.items.length
+}
+
+generic[T] pub func push(s: in Stack[T], x: in T): Stack[T]
+  ensures: result.items.length == old(s.items.length) + 1
+  ensures: result.items[old(s.items.length)] == x
+  ensures: forall (i: Nat) where i < old(s.items.length)
+              implies result.items[i] == old(s.items[i])
+{
+  return Stack(items = s.items.append(x))
+}
+
+generic[T] pub func pop(s: in Stack[T]): Result[(T, Stack[T]), StackError]
+  requires: s.items.length > 0
+  ensures: result.isOk implies {
+    val (top, rest) = result.value
+    rest.items.length == old(s.items.length) - 1 and
+    top == old(s.items[s.items.length - 1]) and
+    forall (i: Nat) where i < rest.items.length
+              implies rest.items[i] == old(s.items[i])
+  }
+{
+  val n = s.items.length
+  return Ok((s.items[n - 1], Stack(items = s.items.slice(0, n - 1))))
+}
+
+pub union StackError { case Empty }
+```
+
+Per `08-contract-semantics.md` §5.2, `old(s.items.length)` is captured immediately after `requires:` succeeds and held in a generated frame slot. The runtime cost is paid only for the values the contract actually reads — `old(s.items.length)` is a single `Nat` snapshot, not a deep copy of the slice. Inside the `ensures:`, every reference to `old(...)` reads the snapshot, never the post-state.
+
+A version of `push` that *forgets* to mention `old` —
+
+```
+ensures: result.items.length == s.items.length + 1     // wrong!
+```
+
+— would misuse `s.items.length`: by the time the postcondition runs, the parameter has not changed (it is `in`, after all) so this happens to work, but the *intent* is the pre-state. Authors writing more aggressive contracts (e.g. on `inout`-mutable structures) must use `old` explicitly; the contract validator does not insert it for them.
+
+---
+
 ## What these examples demonstrate
 
 1. **Range subtypes work end-to-end.** `Cents`, `Nat range 1 ..= 100`, `Double range 0.1 ..= 1_000_000.0` all participate in normal expressions, with conversion only at boundaries.
@@ -652,3 +1066,15 @@ The pattern: `RawConfig` is what `appsettings.json` deserializes to (flat, expos
 6. **Concurrency primitives match the problem.** `protected type` for shared state, `scope { ... }` for parallel tasks, `async`/`await` for sequencing. No raw locks anywhere.
 
 7. **The boundary between domain and infrastructure is enforced.** `@proof_required` modules can't accidentally call into Redis. `exposed` records can't accidentally hide invariants. The discipline is structural, not cultural.
+
+8. **Operator overloading is opt-in and bounded.** `impl Add for Vec3` is admissible (D029); `impl SomethingWeird for X` is not. Math-shaped types read like math; non-math types stay disciplined.
+
+9. **Test infrastructure is part of the language.** `@stubbable` plus a second `wire` block replaces mocking frameworks, with statically-typed stubs and zero runtime reflection.
+
+10. **`@axiom` makes the FFI boundary visible.** Every interaction with .NET BCL or external libraries is explicit, contract-bearing, and listed in the package's contract metadata.
+
+11. **Cyclic data shapes require explicit cuts.** D026's `@projectionBoundary` annotation surfaces the trade-off (lose round-trip, gain finite shape) at the type declaration where reviewers can see it.
+
+12. **Inductive proofs work in the decidable fragment.** Tree invariants, sortedness, set conservation: Z3 discharges these directly when the underlying types are primitives. Beyond the fragment, the verifier is honest about it.
+
+13. **`old(_)` snapshots capture intent.** Pre/post-state contracts read clearly and cost only what they read; the snapshot mechanism is per-frame and per-expression, not whole-state.

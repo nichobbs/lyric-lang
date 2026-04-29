@@ -34,7 +34,7 @@ From `docs/05-implementation-plan.md` §"Phase 0":
 |---|---|---|
 | 1 | Language reference v0.1 | Drafted (`docs/01-language-reference.md`) |
 | 2 | Decision log | Drafted (`docs/03-decision-log.md`) |
-| 3 | Worked examples | Drafted (`docs/02-worked-examples.md`) — more edge cases pending |
+| 3 | Worked examples | Drafted (`docs/02-worked-examples.md`) — 11 examples covering both happy-path and edge cases |
 | 4 | Formal grammar in BNF/EBNF | Drafted (`docs/grammar.ebnf`) |
 | 5 | Operational semantics for contracts | Drafted (`docs/08-contract-semantics.md`) |
 | 6 | Resolution of 12 [TBD] items in §13 of the language reference | Q001–Q010 resolved (see `docs/01-language-reference.md` §13 status table); Q011, Q012 deferred to Phase 3 |
