@@ -178,7 +178,7 @@ type Cents = Long range 0 ..= 1_000_000_000_00 derives Add, Sub, Compare
 type UserId = Long derives Compare, Hash    // no arithmetic on user IDs
 ```
 
-Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Hash`, `Equals`. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type.
+Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Hash`, `Equals`, `Default`. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
 
 ### 2.4 Records
 
@@ -350,7 +350,7 @@ generic[T] func sum(xs: in slice[T]): T
 }
 ```
 
-Constraints may be interfaces or built-in trait-like markers (`Comparable`, `Hashable`, `Default`, `Copyable`, `Send` — **[TBD]** exhaustive list).
+Constraints may be user-defined interfaces or built-in trait-like markers. The closed set of built-in markers is `Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod` (see decision log D034). All but `Copyable` are also valid in `derives` clauses; `Copyable` is structural — it asserts the type lowers to a CLR value type.
 
 Value generics:
 
@@ -1033,7 +1033,7 @@ work. Their resolution status is now:
 | 1 | Record-vs-class lowering heuristic | 2.4 | Resolved — `09-msil-emission.md` §5 |
 | 2 | Opaque type metadata sealing | 2.8 | Resolved — `09-msil-emission.md` §7.2 |
 | 3 | Projection cycle handling syntax | 2.9 | Resolved — `03-decision-log.md` D026 |
-| 4 | Exhaustive list of generic constraint markers | 2.11 | **Open** — see `06-open-questions.md` Q004 |
+| 4 | Exhaustive list of generic constraint markers | 2.11 | Resolved — `03-decision-log.md` D034 |
 | 5 | Async + `out`/`inout` parameter interaction | 5.2 | Resolved — `09-msil-emission.md` §11.4 |
 | 6 | `?` in non-error-returning functions | 4.5 | Resolved — `03-decision-log.md` D027 |
 | 7 | `var` capture across async boundaries | 5.4 | Resolved — `09-msil-emission.md` §11.5 |
@@ -1043,6 +1043,6 @@ work. Their resolution status is now:
 | 11 | Standard library API surface | 12 | Deferred to Phase 3 |
 | 12 | Package registry | 13.8 | Deferred to Phase 3 |
 
-The single remaining Phase 0 design question is Q004; the deferred
-items (Q011, Q012) are intentional and tracked under Phase 3 in
+No Phase 0 design questions remain open. Q011 and Q012 are
+intentionally deferred to Phase 3 per
 `docs/05-implementation-plan.md`.

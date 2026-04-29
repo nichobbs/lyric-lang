@@ -85,7 +85,7 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q004: Generic constraint markers
 
-**Status:** OPEN — the lowering scheme is settled (`docs/09-msil-emission.md` §9.4) but the canonical built-in marker list is not yet pinned down.
+**Status:** RESOLVED — see decision log D034.
 
 **Question:** What is the exhaustive list of built-in constraint markers for generics?
 

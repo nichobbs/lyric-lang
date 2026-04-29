@@ -1222,9 +1222,10 @@ RawStringLit    = RAW_STRING_LITERAL ;
  *      its required-or-optional status, and any associated args, are
  *      decided by post-parse analysis once the question is resolved.
  *
- *    Q004 (Generic constraint markers)
+ *    Q004 (Generic constraint markers) — settled by D034.
  *      ConstraintRef is a free ModulePath; the closed list of built-in
- *      markers ('Add', 'Sub', 'Compare', etc.) is enforced in name
+ *      markers ('Equals', 'Compare', 'Hash', 'Default', 'Copyable',
+ *      'Add', 'Sub', 'Mul', 'Div', 'Mod') is enforced in name
  *      resolution rather than by the grammar.
  *
  *    Q005 (Async and out/inout parameters)

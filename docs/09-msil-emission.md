@@ -540,7 +540,11 @@ Constraints map to CLR generic constraints when possible:
 - `where T: Copyable` → `where T : struct` (CLR value-type constraint).
 - `where T: Default` → `where T : new()`.
 - Interface constraints (`where T: Compare`) → CLR interface
-  constraints on the interface emitted for the marker (see Q004).
+  constraints on the interface emitted for the marker. The closed
+  marker set (`Equals`, `Compare`, `Hash`, `Default`, `Copyable`,
+  `Add`, `Sub`, `Mul`, `Div`, `Mod`) is fixed by decision-log D034;
+  user-defined interfaces are also admissible as `where` constraints,
+  lowered as ordinary CLR interface constraints.
 - Marker constraints not expressible in CLR (e.g. `Add` over distinct
   types) compile to a generated wrapper interface that the source
   generator emits as `[Lyric.MarkerConstraint("Add")]`.
@@ -1187,7 +1191,7 @@ CLR or AOT linker resolves the actual code.
 | Q001  | Record vs class lowering           | §5: 16-byte heuristic, with `@valueType`/`@referenceType` overrides |
 | Q002  | Sealing opaque types               | §7.2: mangled names + `[Lyric.Opaque]` + AOT trim + analyzer |
 | Q003  | Projection cycles                  | §7.3: defers to contract metadata; mandatory `@projectionBoundary` per Q003 recommendation |
-| Q004  | Generic constraint markers         | §9.4: lower to CLR constraints + generated marker interfaces |
+| Q004  | Generic constraint markers         | settled by D034 (closed list of 10 markers); §9.4 documents lowering |
 | Q005  | Async + `inout`                    | §11.4: enforced by the static analyser; no special IL needed |
 | Q006  | `?` in non-error functions         | grammar §7 / contract validator: enforced before IL emission |
 | Q007  | `var` capture across async         | §11.5: snapshot by value; cross-await write requires `protected type` |

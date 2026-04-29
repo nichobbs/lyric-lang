@@ -754,6 +754,74 @@ incremental solver API.
 
 ---
 
+## D034: Closed list of built-in generic constraint markers
+
+**Status:** ACCEPTED
+
+**Decision:** The set of built-in markers usable in `derives` clauses
+on distinct types and `where` clauses on generics is closed at:
+
+`Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`,
+`Mul`, `Div`, `Mod`
+
+with the following semantics:
+
+| Marker     | Sense | Derivable? | Constraint? |
+|------------|-------|-----------:|-------------:|
+| `Equals`   | Value equality. Generates `==`/`!=` and `IEquatable<T>`. | yes | yes |
+| `Compare`  | Total ordering. Generates `<`/`<=`/`>`/`>=` and `IComparable<T>`. | yes | yes |
+| `Hash`     | Stable hash code consistent with `Equals`. | yes | yes |
+| `Default`  | Canonical default value via `T.default()`. Rejected as a derive on range subtypes whose underlying default is out of range. | yes | yes |
+| `Copyable` | Type lowers to a CLR value type (per `09-msil-emission.md` §5). Structural property; cannot be opted into. | no  | yes |
+| `Add`      | `T + T -> T`. | yes | yes |
+| `Sub`      | `T - T -> T`; admits unary `-T` when underlying is signed. | yes | yes |
+| `Mul`      | `T * T -> T`. | yes | yes |
+| `Div`      | `T / T -> T`. | yes | yes |
+| `Mod`      | `T % T -> T`. | yes | yes |
+
+User-defined interfaces are usable as `where` constraints. They are
+not derivable; the language has no auto-implementation mechanism for
+arbitrary interfaces. To make a distinct type satisfy a user-defined
+interface, write an `impl` block.
+
+**Alternatives considered:**
+
+- **Add `Send`** (Rust-style thread-safety marker). Rejected:
+  Lyric's thread-safety is structural via `protected type` and the
+  default-immutable `val` binding; a `Send` marker would be a no-op
+  in nearly all programs and a misleading half-measure where it
+  wasn't.
+- **Add a `Numeric` umbrella.** Rejected: the canonical idiom
+  (`type Cents = Long range … derives Add, Sub, Compare`) requires
+  the user to *opt in* to each operator. A coarse umbrella would
+  over-derive (e.g. `Cents * Cents` is meaningless).
+- **Built-in `Iterable`, `Sized`, `Indexable`.** Rejected: these
+  receive no special compiler support — `for x in xs` desugars to
+  ordinary method calls. They live as plain interfaces in
+  `std.collections`.
+- **Naming as `Comparable`/`Hashable`/`Addable`.** Rejected:
+  bare-noun (`Compare`, `Hash`, `Add`) is the established style
+  used throughout the worked examples; consistency wins over the
+  marginal precision of `-able` suffixes.
+
+**Rationale:**
+
+- Each marker maps to a specific lowering pattern (`09-msil-emission.md`
+  §6.2 for derives on distinct types, §9.4 for generic constraints), so
+  the implementer can emit the corresponding CLR member or constraint
+  without ambiguity.
+- Closing the list precludes a long tail of low-value markers
+  (`Iterable`, `Numeric`, `Send`, etc.) accumulating over the
+  language's lifetime.
+- Opening the list later is cheap (add an entry to the table); closing
+  it later is expensive (existing user code may rely on the loose
+  rules).
+- Closes Q004 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
