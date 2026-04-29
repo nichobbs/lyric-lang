@@ -2829,6 +2829,511 @@ and private parseImplBody
       Span      = joinSpans startTok.Span endSpan }
 
 // ---------------------------------------------------------------------------
+// P8: remaining item kinds — protected, wire, extern, scope_kind, val,
+// test, property, fixture.
+// ---------------------------------------------------------------------------
+
+// ----- protected type ------------------------------------------------------
+
+and private parseEntryDecl
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : EntryDecl =
+    let startSpan = Cursor.peekSpan cursor
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    let vis =
+        match Cursor.tryEatKeyword KwPub cursor with
+        | Some t -> Some (Pub t.Span)
+        | None -> None
+    let entryTok = Cursor.advance cursor   // 'entry'
+    let name, _ = readIdent cursor diags "entry"
+    let parameters = parseParamList cursor diags
+    let returnType =
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> Some (parseTypeExpr cursor diags)
+        | None -> None
+    let contracts = parseContractClauses cursor diags
+    let body = parseFunctionBody cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    let _ = entryTok
+    { DocComments = docs
+      Annotations = anns
+      Visibility  = vis
+      Name        = name
+      Params      = parameters
+      Return      = returnType
+      Contracts   = contracts
+      Body        = body
+      Span        = joinSpans startSpan endSpan }
+
+and private parseProtectedField
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ProtectedField =
+    let startSpan = Cursor.peekSpan cursor
+    match Cursor.peekToken cursor with
+    | TKeyword KwVar ->
+        Cursor.advance cursor |> ignore
+        let name, _ = readIdent cursor diags "field"
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0240" "expected ':' after field name" (Cursor.peekSpan cursor)
+        let ty = parseTypeExpr cursor diags
+        let init =
+            match Cursor.tryEatPunct Eq cursor with
+            | Some _ -> Some (parseExpr cursor diags)
+            | None -> None
+        let endSpan =
+            match init with
+            | Some e -> e.Span
+            | None -> ty.Span
+        PFVar(name, ty, init, joinSpans startSpan endSpan)
+    | TKeyword KwLet ->
+        Cursor.advance cursor |> ignore
+        let name, _ = readIdent cursor diags "field"
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0240" "expected ':' after field name" (Cursor.peekSpan cursor)
+        let ty = parseTypeExpr cursor diags
+        let init =
+            match Cursor.tryEatPunct Eq cursor with
+            | Some _ -> Some (parseExpr cursor diags)
+            | None -> None
+        let endSpan =
+            match init with
+            | Some e -> e.Span
+            | None -> ty.Span
+        PFLet(name, ty, init, joinSpans startSpan endSpan)
+    | _ ->
+        // Plain immutable field: same shape as record FieldDecl.
+        PFImmutable (parseFieldDecl cursor diags)
+
+and private parseProtectedMember
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ProtectedMember =
+    Cursor.skipStmtEnds cursor |> ignore
+    match Cursor.peekToken cursor with
+    | TKeyword KwInvariant ->
+        PMInvariant (parseInvariantClause cursor diags)
+    | TKeyword KwEntry ->
+        PMEntry (parseEntryDecl cursor diags)
+    // pub-prefixed entry is also legal — handled inside parseEntryDecl.
+    | TKeyword KwPub
+        when (Cursor.peekAt cursor 1).Token = TKeyword KwEntry ->
+        PMEntry (parseEntryDecl cursor diags)
+    | TKeyword KwPub
+        when ((Cursor.peekAt cursor 1).Token = TKeyword KwFunc
+              || (Cursor.peekAt cursor 1).Token = TKeyword KwAsync) ->
+        // `pub func` / `pub async func` member.
+        let docs = parseItemDocComments cursor
+        let anns = parseItemAnnotations cursor diags
+        let visTok = Cursor.advance cursor   // pub
+        let fn = parseFunctionDeclBody cursor diags None
+        PMFunc { fn with DocComments = docs
+                         Annotations = anns
+                         Visibility  = Some (Pub visTok.Span) }
+    | TKeyword KwFunc | TKeyword KwAsync ->
+        PMFunc (parseFunctionDeclBody cursor diags None)
+    | TKeyword KwVar | TKeyword KwLet ->
+        PMField (parseProtectedField cursor diags)
+    | _ ->
+        // Plain field declaration (var-less).
+        PMField (parseProtectedField cursor diags)
+
+and private parseProtectedTypeBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : ProtectedTypeDecl =
+    let startTok = Cursor.advance cursor   // 'protected'
+    Cursor.advance cursor |> ignore        // 'type'
+    let name, _ = readIdent cursor diags "protected type"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    let where = parseWhereClauseOpt cursor diags
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0241" "expected '{' to start protected type body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<ProtectedMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        xs.Add(parseProtectedMember cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0242" "expected '}' to close protected type body"
+            (Cursor.peekSpan cursor)
+    let endSpan = Cursor.peekSpan cursor
+    { Name     = name
+      Generics = generics
+      Where    = where
+      Members  = List.ofSeq xs
+      Span     = joinSpans startTok.Span endSpan }
+
+// ----- wire ---------------------------------------------------------------
+
+and private parseWireMember
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : WireMember =
+    let startSpan = Cursor.peekSpan cursor
+    match Cursor.peekToken cursor with
+    | TPunct At
+        when (Cursor.peekAt cursor 1).Token = TIdent "provided" ->
+        Cursor.advance cursor |> ignore   // @
+        Cursor.advance cursor |> ignore   // provided
+        let name, _ = readIdent cursor diags "@provided"
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0250" "expected ':' after @provided name" (Cursor.peekSpan cursor)
+        let ty = parseTypeExpr cursor diags
+        WMProvided(name, ty, joinSpans startSpan ty.Span)
+    | TKeyword KwSingleton ->
+        Cursor.advance cursor |> ignore
+        let name, _ = readIdent cursor diags "singleton"
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0251" "expected ':' after 'singleton' name" (Cursor.peekSpan cursor)
+        let ty = parseTypeExpr cursor diags
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0252" "expected '=' in singleton declaration" (Cursor.peekSpan cursor)
+        let init = parseExpr cursor diags
+        WMSingleton(name, ty, init, joinSpans startSpan init.Span)
+    | TKeyword KwScoped ->
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct LBracket cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0253" "expected '[' after 'scoped'" (Cursor.peekSpan cursor)
+        let scope, _ = readIdent cursor diags "scope tag"
+        match Cursor.tryEatPunct RBracket cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0254" "expected ']' to close 'scoped[…]'" (Cursor.peekSpan cursor)
+        let name, _ = readIdent cursor diags "scoped"
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0251" "expected ':' after 'scoped' name" (Cursor.peekSpan cursor)
+        let ty = parseTypeExpr cursor diags
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0252" "expected '=' in scoped declaration" (Cursor.peekSpan cursor)
+        let init = parseExpr cursor diags
+        WMScoped(scope, name, ty, init, joinSpans startSpan init.Span)
+    | TKeyword KwBind ->
+        Cursor.advance cursor |> ignore
+        // Parse the LHS type WITHOUT consuming the bind's `->`. We
+        // build it by composing parseAtomNonParenType (which never
+        // looks for arrows) with the nullable suffix and an optional
+        // `[type-args]` for parameterised interfaces.
+        let interface' =
+            let atom = parseAtomNonParenType cursor diags
+            applyNullableSuffix cursor atom
+        match Cursor.tryEatPunct Arrow cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0255" "expected '->' in bind declaration" (Cursor.peekSpan cursor)
+        let provider = parseExpr cursor diags
+        WMBind(interface', provider, joinSpans startSpan provider.Span)
+    | TKeyword KwUse ->
+        // `expose` is the keyword in §7.1; `use` is its synonym only
+        // in re-exports. We accept `expose` only here.
+        err diags "P0256" "unexpected 'use' inside wire body (did you mean 'expose'?)"
+            (Cursor.peekSpan cursor)
+        Cursor.advance cursor |> ignore
+        let name, sp = readIdent cursor diags "expose"
+        WMExpose(name, joinSpans startSpan sp)
+    | TIdent "expose" ->
+        Cursor.advance cursor |> ignore
+        let name, sp = readIdent cursor diags "expose"
+        WMExpose(name, joinSpans startSpan sp)
+    | TKeyword KwVal ->
+        Cursor.advance cursor |> ignore
+        let name, _ = readIdent cursor diags "wire-local val"
+        let ty =
+            match Cursor.tryEatPunct Colon cursor with
+            | Some _ -> Some (parseTypeExpr cursor diags)
+            | None -> None
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0257" "expected '=' in wire-local val" (Cursor.peekSpan cursor)
+        let init = parseExpr cursor diags
+        WMLocal(name, ty, init, joinSpans startSpan init.Span)
+    | _ ->
+        err diags "P0258" "expected wire member" (Cursor.peekSpan cursor)
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        WMExpose("<error>", startSpan)
+
+and private parseWireBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : WireDecl =
+    let startTok = Cursor.advance cursor   // 'wire'
+    let name, _ = readIdent cursor diags "wire"
+    let parameters =
+        if Cursor.peekToken cursor = TPunct LParen then
+            parseParamList cursor diags
+        else []
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0259" "expected '{' to start wire body" (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<WireMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        xs.Add(parseWireMember cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0260" "expected '}' to close wire body" (Cursor.peekSpan cursor)
+    let endSpan = Cursor.peekSpan cursor
+    { Name    = name
+      Params  = parameters
+      Members = List.ofSeq xs
+      Span    = joinSpans startTok.Span endSpan }
+
+// ----- extern package ------------------------------------------------------
+
+and private parseExternMember
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ExternMember option =
+    let _docs = parseItemDocComments cursor
+    let _anns = parseItemAnnotations cursor diags
+    let _vis  =
+        match Cursor.tryEatKeyword KwPub cursor with
+        | Some _ -> true
+        | None -> false
+    match Cursor.peekToken cursor with
+    | TKeyword KwExposed
+        when (Cursor.peekAt cursor 1).Token = TKeyword KwRecord ->
+        Some (EMExposedRec (parseRecordBody cursor diags None true))
+    | TKeyword KwRecord ->
+        Some (EMRecord (parseRecordBody cursor diags None false))
+    | TKeyword KwUnion ->
+        Some (EMUnion (parseUnionBody cursor diags None))
+    | TKeyword KwEnum ->
+        Some (EMEnum (parseEnumBody cursor diags))
+    | TKeyword KwOpaque
+        when (Cursor.peekAt cursor 1).Token = TKeyword KwType ->
+        Some (EMOpaque (parseOpaqueTypeBody cursor diags None))
+    | TKeyword KwAlias ->
+        Some (EMTypeAlias (parseTypeAliasBody cursor diags None))
+    | TKeyword KwType ->
+        Some (EMDistinctType (parseDistinctTypeBody cursor diags None))
+    | TKeyword KwFunc | TKeyword KwAsync ->
+        let fn = parseFunctionDeclBody cursor diags None
+        Some (EMSig
+            { IsAsync = fn.IsAsync; Name = fn.Name
+              Generics = fn.Generics; Params = fn.Params
+              Return = fn.Return; Where = fn.Where
+              Contracts = fn.Contracts; Span = fn.Span })
+    | _ ->
+        err diags "P0270"
+            "expected an extern declaration"
+            (Cursor.peekSpan cursor)
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        None
+
+and private parseExternPackageBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (anns: Annotation list)
+        : ExternPackageDecl =
+    let startTok = Cursor.advance cursor   // 'extern'
+    Cursor.advance cursor |> ignore        // 'package'
+    let path = parseModulePath cursor diags
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0271" "expected '{' to start extern package body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<ExternMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        match parseExternMember cursor diags with
+        | Some m -> xs.Add(m)
+        | None -> ()
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0272" "expected '}' to close extern package body"
+            (Cursor.peekSpan cursor)
+    let endSpan = Cursor.peekSpan cursor
+    { Path        = path
+      Annotations = anns
+      Members     = List.ofSeq xs
+      Span        = joinSpans startTok.Span endSpan }
+
+// ----- module-level val / scope_kind / test / property / fixture ----------
+
+and private parseModuleValBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ValDecl =
+    let startTok = Cursor.advance cursor   // 'val'
+    let pat = parsePattern cursor diags
+    let ty =
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> Some (parseTypeExpr cursor diags)
+        | None -> None
+    match Cursor.tryEatPunct Eq cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0280" "expected '=' in module-level val" (Cursor.peekSpan cursor)
+    let init = parseExpr cursor diags
+    { Pattern = pat
+      Type    = ty
+      Init    = init
+      Span    = joinSpans startTok.Span init.Span }
+
+and private parseScopeKindBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ScopeKindDecl =
+    let startTok = Cursor.advance cursor   // 'scope_kind' (TIdent)
+    let name, sp = readIdent cursor diags "scope_kind"
+    { Name = name
+      Span = joinSpans startTok.Span sp }
+
+and private parseTestBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TestDecl =
+    let startTok = Cursor.advance cursor   // 'test'
+    let title =
+        match Cursor.peek cursor with
+        | { Token = TString s } ->
+            Cursor.advance cursor |> ignore
+            s
+        | t ->
+            err diags "P0290" "expected a string literal as test name" t.Span
+            "<error>"
+    Cursor.skipStmtEnds cursor |> ignore
+    let body = parseBlock cursor diags
+    { Title = title
+      Body  = body
+      Span  = joinSpans startTok.Span body.Span }
+
+and private parsePropertyBinder
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : PropertyBinder =
+    let name, nameSp = readIdent cursor diags "property binder"
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0291" "expected ':' in property binder"
+            (Cursor.peekSpan cursor)
+    let ty = parseTypeExpr cursor diags
+    { Name = name
+      Type = ty
+      Span = joinSpans nameSp ty.Span }
+
+and private parsePropertyBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : PropertyDecl =
+    let startTok = Cursor.advance cursor   // 'property'
+    let title =
+        match Cursor.peek cursor with
+        | { Token = TString s } ->
+            Cursor.advance cursor |> ignore
+            s
+        | t ->
+            err diags "P0292" "expected a string literal as property name" t.Span
+            "<error>"
+    let binders =
+        match Cursor.peekToken cursor with
+        | TIdent "forall" ->
+            Cursor.advance cursor |> ignore
+            match Cursor.tryEatPunct LParen cursor with
+            | Some _ -> ()
+            | None ->
+                err diags "P0293" "expected '(' after 'forall' in property"
+                    (Cursor.peekSpan cursor)
+            let xs = ResizeArray<PropertyBinder>()
+            if Cursor.peekToken cursor <> TPunct RParen then
+                xs.Add(parsePropertyBinder cursor diags)
+                while Cursor.peekToken cursor = TPunct Comma do
+                    Cursor.advance cursor |> ignore
+                    if Cursor.peekToken cursor = TPunct RParen then ()
+                    else xs.Add(parsePropertyBinder cursor diags)
+            match Cursor.tryEatPunct RParen cursor with
+            | Some _ -> ()
+            | None ->
+                err diags "P0294" "expected ')' to close 'forall' binder list"
+                    (Cursor.peekSpan cursor)
+            List.ofSeq xs
+        | _ -> []
+    Cursor.skipStmtEnds cursor |> ignore
+    let where' =
+        match Cursor.tryEatKeyword KwWhere cursor with
+        | Some _ -> Some (parseExpr cursor diags)
+        | None -> None
+    Cursor.skipStmtEnds cursor |> ignore
+    let body = parseBlock cursor diags
+    { Title  = title
+      ForAll = binders
+      Where  = where'
+      Body   = body
+      Span   = joinSpans startTok.Span body.Span }
+
+and private parseFixtureBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : FixtureDecl =
+    let startTok = Cursor.advance cursor   // 'fixture'
+    let name, _ = readIdent cursor diags "fixture"
+    let ty =
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> Some (parseTypeExpr cursor diags)
+        | None -> None
+    match Cursor.tryEatPunct Eq cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0295" "expected '=' in fixture declaration"
+            (Cursor.peekSpan cursor)
+    let init = parseExpr cursor diags
+    { Name = name
+      Type = ty
+      Init = init
+      Span = joinSpans startTok.Span init.Span }
+
+// ---------------------------------------------------------------------------
 // Top-level item loop. Lives at the end of the mutual-recursion chain
 // so it can dispatch into every body parser above.
 // ---------------------------------------------------------------------------
@@ -2902,6 +3407,24 @@ and private parseItem
                 IInterface (parseInterfaceBody cursor diags genericsPrefix)
             | TKeyword KwImpl ->
                 IImpl (parseImplBody cursor diags genericsPrefix)
+            | TKeyword KwProtected
+                when (Cursor.peekAt cursor 1).Token = TKeyword KwType ->
+                IProtected (parseProtectedTypeBody cursor diags genericsPrefix)
+            | TKeyword KwWire ->
+                IWire (parseWireBody cursor diags)
+            | TKeyword KwExtern
+                when (Cursor.peekAt cursor 1).Token = TKeyword KwPackage ->
+                IExtern (parseExternPackageBody cursor diags anns)
+            | TKeyword KwVal ->
+                IVal (parseModuleValBody cursor diags)
+            | TKeyword KwTest ->
+                ITest (parseTestBody cursor diags)
+            | TKeyword KwProperty ->
+                IProperty (parsePropertyBody cursor diags)
+            | TKeyword KwFixture ->
+                IFixture (parseFixtureBody cursor diags)
+            | TIdent "scope_kind" ->
+                IScopeKind (parseScopeKindBody cursor diags)
             | tok when isItemStartToken tok ->
                 // Recognised but not yet implemented; fall back to
                 // the P3 skip-and-IError path.

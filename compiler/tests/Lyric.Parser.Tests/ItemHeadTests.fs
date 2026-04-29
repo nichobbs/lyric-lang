@@ -13,19 +13,16 @@ let private prelude = "package P\n"
 let tests =
     testList "item-head recognition" [
 
-        test "kinds not yet implemented produce IError + P0098" {
-            // Item kinds that still fall through to the recognise-
-            // and-skip placeholder. The kinds we DO parse fully now
-            // (alias, type, record, exposed record, union, enum,
-            // opaque, func, async func, interface, impl) have
-            // dedicated tests in ItemBodyTests / FunctionDeclTests /
-            // InterfaceImplTests.
+        test "every item kind parses without IError + P0098" {
+            // After P8, every item kind from docs/grammar.ebnf §3 has
+            // a typed body parser. None of these should fall through
+            // to the IError placeholder.
             let cases =
                 [ "pub protected type P { var x: Int }"
                   "wire W { expose x }"
                   "extern package Sys { func f(): Int }"
-                  "test \"x\" { 1 }"
-                  "property \"y\" { true }"
+                  "test \"x\" { val a = 1 }"
+                  "property \"y\" forall (x: Int) { val b = x }"
                   "fixture f = 1"
                   "pub val K: Int = 42"
                   "scope_kind Tenant" ]
@@ -34,13 +31,14 @@ let tests =
                 Expect.equal r.File.Items.Length 1
                     (sprintf "one item parsed for: %s" src)
                 match r.File.Items.[0].Kind with
-                | IError -> ()
-                | other -> failtestf "expected IError, got %A in: %s" other src
+                | IError ->
+                    failtestf "expected typed item, got IError for: %s" src
+                | _ -> ()
                 let p98s =
                     r.Diagnostics
                     |> List.filter (fun d -> d.Code = "P0098")
-                Expect.equal p98s.Length 1
-                    (sprintf "one P0098 for: %s" src)
+                Expect.equal p98s.Length 0
+                    (sprintf "no P0098 for: %s" src)
         }
 
         test "doc comments and annotations attach to the next item" {

@@ -164,15 +164,15 @@ let tests =
 
         // ----- end of file / item placeholder -----
 
-        test "items past imports — kinds not yet implemented produce P0098" {
-            // `pub protected type P { … }` is recognised by P3 (item
-            // kind identified, body skipped) but not yet parsed in
-            // detail; the parser surfaces P0098 to flag the
-            // work-in-progress state.
+        test "every item kind past imports parses without P0098" {
+            // After P8, items no longer fall through to the
+            // recognise-and-skip placeholder. Test a `protected type`
+            // — historically the last unimplemented kind.
             let _, diags =
                 parseWithDiags "package Foo\npub protected type P { var x: Int }"
             let codes = diags |> List.map (fun d -> d.Code)
-            Expect.contains codes "P0098" "protected bodies remain unparsed"
+            Expect.isFalse (List.contains "P0098" codes)
+                "no P0098: every item kind has a typed parser now"
         }
 
         test "package + imports only is clean" {
