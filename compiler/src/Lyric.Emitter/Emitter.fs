@@ -52,7 +52,11 @@ let private emitFunctionBody (il: ILGenerator) (fn: FunctionDecl) : unit =
         // function's block.
         Codegen.emitBlock il blk
     | Some (FBExpr e) ->
-        Codegen.emitExpr il e
+        let resultTy = Codegen.emitExpr il e
+        // Expression-bodied function returning Unit: pop any leftover
+        // value so the stack is balanced before `ret`.
+        if resultTy <> typeof<System.Void> then
+            il.Emit(System.Reflection.Emit.OpCodes.Pop)
 
 /// Define and emit one Lyric `func` as a static method on the
 /// `<Program>` type. Returns the resulting MethodBuilder so the

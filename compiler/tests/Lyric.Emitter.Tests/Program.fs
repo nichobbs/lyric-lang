@@ -9,5 +9,6 @@ let main argv =
             StdlibSmokeTests.tests
             EmitterScaffoldTests.tests
             HelloWorldTests.tests
+            ArithmeticTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
