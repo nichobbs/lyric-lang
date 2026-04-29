@@ -1,0 +1,537 @@
+# 03 — Decision Log
+
+This document records every significant design decision, the alternatives considered, the rationale, and any subsequent revisions. It is the canonical record of *why* Lyric is the way it is.
+
+Format for each entry:
+- **Status**: ACCEPTED | SUPERSEDED | OPEN
+- **Decision**: what was decided
+- **Alternatives**: what was considered
+- **Rationale**: why this won
+- **Revisions**: changes over time, with forward links if superseded
+
+---
+
+## D001: Target the .NET runtime as the primary backend
+
+**Status:** ACCEPTED
+
+**Decision:** Lyric's primary compilation target is .NET (CLR/CoreCLR). MSIL is the emitted intermediate. Native AOT is the production deployment target.
+
+**Alternatives:**
+- JVM
+- LLVM-native with C ABI
+- WASM-first
+- Polyglot via multiple backends
+
+**Rationale:**
+- Reified generics align with Lyric's monomorphization strategy. JVM erases generics, which would force either Scala-style specialization gymnastics or accepting that range subtypes lose their distinct identity at runtime.
+- Value types (`struct`) are first-class on .NET, allowing range subtypes and small records to compile to zero-allocation forms.
+- C# already has `in`/`out`/`ref` parameter modes — the runtime knows how to represent them.
+- Native AOT is mature and aligns with our no-reflection stance.
+- The .NET ecosystem has been migrating toward AOT-compatible source-generator-based libraries (System.Text.Json SG, ASP.NET request delegate generator, EF Core compiled models, FluentValidation SG). We benefit from this migration without driving it.
+- LLVM-native would require building a runtime from scratch; WASM-first would isolate us from server ecosystems; polyglot is too much complexity at v1.
+
+**Revisions:** None. JVM remains a stretch goal post-v1 (D023).
+
+---
+
+## D002: Use the host runtime's tracing GC; do not implement memory management
+
+**Status:** ACCEPTED
+
+**Decision:** Lyric uses .NET's tracing GC. No ownership/borrowing system, no ARC, no manual memory management.
+
+**Alternatives:**
+- ARC (Swift-style)
+- Ownership/borrowing (Rust-style)
+- Region/arena allocation
+
+**Rationale:**
+- Bolting ARC on top of a tracing GC runtime is a self-inflicted complexity wound — it buys nothing, costs everything.
+- Ownership/borrowing is hostile to the application domain (services, APIs) we're targeting. Rust's value proposition depends on no-runtime systems work; we don't need that.
+- The complexity budget is better spent on the verification story (proof system) than on memory management.
+- For application code, GC pause times are not the bottleneck; correctness is.
+
+**Revisions:** None.
+
+---
+
+## D003: Tiered visibility — opaque domain types and exposed wire types
+
+**Status:** ACCEPTED
+
+**Decision:** The type system has two visibility tiers. `opaque type T` has its representation invisible to clients and to host reflection. `exposed record T` is flat, host-visible, reflection-friendly. Boundary code converts between them.
+
+**Alternatives:**
+- Pure (a): allow ecosystem libraries unconditionally; ban reflection inside Lyric only
+- Pure (b): no representation visible to host; force users to write boundary types manually for every interaction
+- Single visibility tier with annotations to opt out
+
+**Rationale:**
+- Pure (a) gives up the safety story at the language boundary — Jackson/Hibernate-equivalents would crack open opaque types via reflection.
+- Pure (b) is too punishing; every DTO becomes manual work, killing ergonomics.
+- Tiered visibility encodes the discipline mature DDD codebases already follow informally (entities vs DTOs).
+- Combined with `@projectable` (D015), the developer experience is single-keyword.
+
+**Revisions:** None. Initially the visibility was implicit on the package boundary; D015 made the projection mechanism explicit.
+
+---
+
+## D004: Mandatory parameter modes (`in`/`out`/`inout`)
+
+**Status:** ACCEPTED
+
+**Decision:** Every function parameter declares a mode (`in`, `out`, `inout`) explicitly. There is no implicit default mode.
+
+**Alternatives:**
+- C#-style optional modes (`in`/`out`/`ref` opt-in, default by-value)
+- Mode inference
+
+**Rationale:**
+- Modes are part of the function's contract. Knowing whether a parameter is read-only, write-only, or read-write changes how callers reason about the function and how the prover models it.
+- C#'s opt-in modes mean most code never uses them, and the information is lost. Lyric chose to require them because the cost is small (one keyword per parameter) and the benefit is consistent visibility.
+- Inference would lose the information at the source level, defeating the purpose.
+
+**Revisions:** None.
+
+---
+
+## D005: Combine spec and body into a single source file by default
+
+**Status:** ACCEPTED (revised from D005-original)
+
+**Decision:** Lyric source files are unified by default. Public visibility is marked with `pub`. Contract metadata is emitted as a compiler artifact, not authored by hand.
+
+**Alternatives:**
+- Ada-style mandatory `.lspec`/`.lbody` split files
+- Header-file-style separation
+- Module signatures as separate optional artifact
+
+**Rationale:**
+- Information hiding is a binary/metadata concern, not a source-layout concern. Whether the public surface is in a separate file does not change what consumers see at the binary level — that's controlled by emit logic regardless.
+- Incremental compilation benefits (the main practical payoff of split files) can be achieved by having the compiler emit a contract metadata artifact automatically. Swift's `.swiftinterface`, OCaml's `.cmi`, Rust's `rmeta` all do this.
+- Forcing the design step via file count is cultural, not structural; you cannot make developers commit to contracts first by giving them two files. Discipline comes from review, not layout.
+- Modern developers expect single-file modules. Adding a file split tax for symbolic value is wrong.
+- A project-level opt-in for split files (D025) preserves the option for teams that want it.
+
+**Revisions:**
+- *D005-original (SUPERSEDED):* Required `.lspec` and `.lbody` files following the Ada model. Superseded after recognizing that the binary contract emission, not the source split, is what matters for information hiding. The split was paying for itself in ceremony rather than guarantees.
+
+---
+
+## D006: No reflection in the language; opaque types are sealed against host reflection
+
+**Status:** ACCEPTED
+
+**Decision:** Lyric programs cannot use reflection. Opaque types compile to forms that resist .NET reflection (sealed metadata, no public properties, no exposed constructors).
+
+**Alternatives:**
+- Permit reflection but restrict it to specific scenarios
+- Allow reflection only in `@unsafe` blocks
+- Don't bother sealing against host reflection — trust the developer
+
+**Rationale:**
+- Without sealing, the "opaque" guarantee is purely advisory. Any third-party library can crack it open.
+- Banning reflection is what makes compile-time DI viable, AOT compatibility automatic, and the safety story coherent.
+- The cost is real but bounded: most `@reflection`-driven .NET libraries have AOT-compatible source-generator alternatives in 2026.
+- Source generators (`@derive(Json)`, etc.) cover the legitimate use cases that reflection used to handle.
+
+**Revisions:** None.
+
+---
+
+## D007: Drop `raises:` clauses; recoverable errors via `Result[T, E]`, bugs propagate freely
+
+**Status:** ACCEPTED (revised from D007-original)
+
+**Decision:** Functions do not declare which exceptions they may throw. Recoverable errors are encoded in the return type as `Result[T, E]`. Bugs (precondition violations, contract violations, unwrap failures) propagate uniformly and are not part of function signatures.
+
+**Alternatives:**
+- Java-style checked exceptions
+- Soft `raises:` clauses (warn but don't enforce)
+- Effect system with `raises` as one effect
+
+**Rationale:**
+- Java's checked exceptions failed for well-documented reasons: refactoring friction, lambda/HOF awkwardness, async amplification, the `RuntimeException` escape hatch culture.
+- Soft `raises:` reproduces these problems without the enforcement. Either it's checked (Java problems) or it's not (lying annotations).
+- Full effect systems are powerful but cost a whole extra type-system axis; out of scope for v1.
+- `Result[T, E]` works. Rust validates this. The cost is real (every error path explicit) but it's localized and consistent.
+
+**Revisions:**
+- *D007-original (SUPERSEDED):* Functions declared `raises: ErrorType` in their signatures, checked at the boundary but not at every call site. Superseded after recognizing this would reproduce Java's failure mode. The `raises:` clause was attractive because it preserved Ada flavor, but it would have been a footgun that future developers would have routed around with wrapper exceptions.
+
+---
+
+## D008: Compile-time dependency injection via `wire` blocks
+
+**Status:** ACCEPTED
+
+**Decision:** Dependency injection is a language feature, not a runtime container. `wire` blocks declare the object graph; the compiler resolves it at compile time and emits straight-line factory code.
+
+**Alternatives:**
+- Runtime DI container (Spring/ASP.NET style)
+- Explicit hand-wiring with no language support
+- Capability-based passing (effect-system style)
+
+**Rationale:**
+- Reflection ban (D006) makes runtime DI containers impossible anyway.
+- Compile-time DI gives better errors, faster startup, AOT compatibility, and zero runtime overhead.
+- The lifetime checking ("singleton can't depend on scoped[Request]") catches captive-dependency bugs that Spring/ASP.NET diagnose at runtime.
+- The cost is one new construct (`wire`), which is well-bounded.
+
+**Revisions:** None.
+
+---
+
+## D009: `protected type` for shared mutable state, no raw locks
+
+**Status:** ACCEPTED
+
+**Decision:** Shared mutable state is wrapped in `protected type` declarations with declared invariants and barrier conditions. Raw locks (`Monitor.Enter`, `lock` statement) are not directly available; access requires `@axiom` boundaries.
+
+**Alternatives:**
+- C#-style `lock` blocks plus library types
+- Rust-style `Arc<Mutex<T>>` plus library
+- Actor model (Erlang-style)
+- Ada-style protected types (chosen)
+
+**Rationale:**
+- Raw locks invite forgetting to lock, locking the wrong thing, holding locks across foreign calls. The defensive coding required is real.
+- Protected types make mutual exclusion structural — there is no way to access the state without going through the protected interface. Bug class eliminated.
+- Barrier conditions (`when:` clauses) handle the "wait until predicate true" pattern without manual condition variables.
+- Actors are powerful but a different architectural commitment; protected types are the local primitive.
+
+**Revisions:** None.
+
+---
+
+## D010: Range subtypes as a first-class language feature
+
+**Status:** ACCEPTED
+
+**Decision:** `type X = Long range a ..= b` declares a distinct type whose values must lie in `[a, b]`. Construction outside the range fails (`tryFrom` returns `Err`, `from` panics). Inside `@proof_required` modules, range obligations are discharged statically.
+
+**Alternatives:**
+- Newtype wrappers (Rust/Haskell style)
+- Refinement types via a separate annotation system
+- Don't bother — let users build it themselves
+
+**Rationale:**
+- This is one of Ada's most distinctive features and a huge driver of the language's safety story.
+- It's much cleaner than `newtype Cents = Cents(Long)` patterns because the range is part of the type, not part of a private constructor.
+- Combined with distinct nominal types (D011), it solves "I'm passing a year where I meant an age" at compile time.
+
+**Revisions:** None.
+
+---
+
+## D011: Distinct nominal types separate from aliases
+
+**Status:** ACCEPTED
+
+**Decision:** `type X = Long` creates a distinct type. `alias X = Long` creates a type synonym. The keywords are separate.
+
+**Alternatives:**
+- TypeScript-style branded types via phantom parameters
+- Rust-style newtype always
+- Treat all type declarations as aliases (Java-style)
+
+**Rationale:**
+- Distinct types are the common case in Lyric idioms; aliases are the exception (mostly for shortening generic types in signatures).
+- Separating the keywords removes ambiguity. `type Cents = Long` and `type UserId = Long` should be different types — the keyword choice makes that explicit.
+
+**Revisions:** None.
+
+---
+
+## D012: Sum types with exhaustive matching, no inheritance
+
+**Status:** ACCEPTED
+
+**Decision:** Polymorphism is via interfaces and sum types. There is no class inheritance. Sum types use `union` keyword; pattern matching is exhaustive.
+
+**Alternatives:**
+- Java-style class inheritance plus interfaces
+- Rust-style enums with traits
+- Both inheritance and sum types
+
+**Rationale:**
+- Class inheritance is widely recognized as overused. Composition + interfaces + sum types covers the use cases without the fragility.
+- Sum types model "data that can be one of several things" correctly; class hierarchies model it incorrectly (open extension when closed semantics were wanted).
+- Exhaustiveness checking catches the bug class where adding a variant silently breaks downstream code.
+
+**Revisions:** None.
+
+---
+
+## D013: Optional formal verification per module, not at function granularity
+
+**Status:** ACCEPTED
+
+**Decision:** Verification level is declared at the package level (`@runtime_checked`, `@proof_required`). The proof system can only reason about code in proof-required modules; calls into other modules require axiom boundaries.
+
+**Alternatives:**
+- Function-level verification opt-in
+- Project-wide verification
+- No verification at all
+
+**Rationale:**
+- SPARK's actual model. It works in practice because the boundaries are clear.
+- Function-level opt-in is too granular — a verified function calling unverified helpers gives you nothing.
+- Project-wide verification is unrealistic — you can't verify code that calls into the .NET BCL.
+- Per-module is the right granularity: domain modules can be `@proof_required`; application modules with I/O are `@runtime_checked`.
+
+**Revisions:** None.
+
+---
+
+## D014: Property-based testing built into the language
+
+**Status:** ACCEPTED
+
+**Decision:** `property` declarations and `forall` are language-level constructs. The compiler auto-derives generators for opaque types from their invariants. Contract `ensures` clauses are runnable as auto-generated property tests via `lyric test --properties`.
+
+**Alternatives:**
+- Property testing as a library (Hypothesis/QuickCheck style)
+- No built-in property support
+
+**Rationale:**
+- Property testing pairs naturally with a contract-rich type system.
+- Auto-derived generators that respect invariants is something a library cannot do without ugly metaprogramming. Built-in is meaningfully better.
+- Running contracts as property tests is free correctness — the spec is already there.
+- The cost (a few language constructs) is small relative to the safety benefit.
+
+**Revisions:** None.
+
+---
+
+## D015: `@projectable` for compiler-generated exposed twins
+
+**Status:** ACCEPTED
+
+**Decision:** Opaque types annotated `@projectable` automatically have a sibling `exposed record` generated by the compiler, plus `toView()` and `tryInto()` conversion functions.
+
+**Alternatives:**
+- Hand-written DTOs always
+- Macros that users write
+- Procedural source generators
+
+**Rationale:**
+- Without this, tiered visibility (D003) is too verbose. Every type needs a hand-written DTO.
+- Compiler-driven generation handles field drift, recursive projection, and invariant enforcement at the boundary correctly.
+- The `@hidden` field annotation handles the "don't expose this" case explicitly.
+- This is the bridge that makes D003 ergonomic enough to be the default.
+
+**Revisions:** None.
+
+---
+
+## D016: `@stubbable` for compiler-generated test stubs
+
+**Status:** ACCEPTED
+
+**Decision:** Interfaces annotated `@stubbable` have a stub builder generated by the compiler with `.returning { ... }`, `.recording()`, `.failing { ... }` methods.
+
+**Alternatives:**
+- Mocking framework (impossible without reflection — D006)
+- Hand-written stubs
+- Macro-based stub generation
+
+**Rationale:**
+- Without `@stubbable`, banning reflection-driven mocking would mean every interface needs a hand-written stub for every test scenario. Real friction.
+- Compiler-generated stubs are statically typed (signature changes break tests at compile time, not runtime), AOT-compatible, and predictable.
+- We deliberately omit Mockito-style argument-matching DSLs (`when(eq(...)).thenReturn(...)`) — they encourage brittle tests and don't fit a static system.
+
+**Revisions:** None.
+
+---
+
+## D017: Swift operator precedence + Rust chained-comparison rules
+
+**Status:** ACCEPTED
+
+**Decision:** The base operator precedence table is Swift's, with Rust's rule that comparison operators do not chain (`a < b < c` is a parse error).
+
+**Alternatives:**
+- C/Java/JavaScript family (most familiar but inherits known flaws)
+- Custom precedence
+- User-definable operator precedence (Scala/Haskell style)
+
+**Rationale:**
+- Swift's table is already a cleanup of the C family — fewer levels, no ternary, no assignment-as-expression.
+- Rust's chained-comparison rule catches a real bug class for free.
+- User-definable precedence is a footgun.
+- Citing an external standard (Swift's docs) is preferable to inventing our own table.
+
+**Revisions:** None.
+
+---
+
+## D018: JS/Kotlin-style string interpolation `${expr}`
+
+**Status:** ACCEPTED (revised from D018-original)
+
+**Decision:** String interpolation uses `${expr}` syntax inside `"..."` strings. `\${...}` escapes the interpolation.
+
+**Alternatives:**
+- Swift-style `\(expr)` interpolation
+- C#-style `$"..."` prefix with `{expr}`
+- Python-style f-strings
+
+**Rationale:**
+- TS, Kotlin, shell, Groovy, and others all use `${...}`. The vast majority of developers arriving at Lyric have it in muscle memory.
+- Swift's `\(...)` is slightly cleaner syntactically but unfamiliar to non-Swift developers.
+- C#'s `$` prefix means string literals are non-interpolating by default, which is consistent but also less ergonomic.
+- Familiarity wins where the technical differences are minor.
+
+**Revisions:**
+- *D018-original (SUPERSEDED):* Initially proposed Swift's `\(expr)` syntax. Reversed in favor of `${expr}` based on user familiarity argument.
+
+---
+
+## D019: Bitwise operators as named methods, not symbolic
+
+**Status:** ACCEPTED
+
+**Decision:** Bitwise AND, OR, XOR, shift operations are methods on integer types (`a.and(b)`, `a.shl(3)`), not symbolic operators.
+
+**Alternatives:**
+- C-style `&`, `|`, `^`, `<<`, `>>`
+- Different symbolic operators
+
+**Rationale:**
+- Sidesteps the C-family precedence trap (`a & b == c` parses as `a & (b == c)`).
+- Bitwise operations are uncommon in application code; the verbosity penalty is small in practice.
+- The change makes Lyric look slightly different from C-family languages but in a place where the difference is justifiable.
+
+**Revisions:** None.
+
+---
+
+## D020: Bootstrap compiler in F#, not C#
+
+**Status:** ACCEPTED
+
+**Decision:** The Phase 1 bootstrap compiler will be implemented in F#.
+
+**Alternatives:**
+- C# (more ecosystem familiarity)
+- Rust (better tooling for compilers)
+- OCaml (the historical "compiler-implementation language")
+
+**Rationale:**
+- ML-family languages are dramatically better for compiler implementation: pattern matching on AST, sum types for AST nodes, immutable data, fold patterns over recursive structures.
+- Roslyn (C# in C#) is enormous because C# is a hostile language for writing compilers in. Don't repeat that mistake.
+- F# gives full .NET interop, which we need for emitting MSIL and integrating with the .NET tooling ecosystem.
+- Rust is also a good choice but introduces a non-.NET dependency for the bootstrap and offers no advantage over F# for our targets.
+
+**Revisions:** None.
+
+---
+
+## D021: Self-hosting at v3, not before language stability
+
+**Status:** ACCEPTED
+
+**Decision:** The compiler will not be self-hosted in Phase 1-3. Self-hosting is targeted for Phase 5, after the language is stable.
+
+**Alternatives:**
+- Self-host from day one
+- Self-host after Phase 1 (full language MVP)
+- Never self-host
+
+**Rationale:**
+- Every language change costs double during pre-stability self-hosting (bootstrap + self-hosted both updated).
+- Languages that self-host too early either freeze prematurely or thrash. Rust took ~5 years to self-host; Go waited until 1.5 (4 years post-release).
+- Dogfooding is real value, but it's worth more once the language is stable enough that compiler changes are mostly bug fixes.
+
+**Revisions:** None.
+
+---
+
+## D022: Adopt external standards aggressively where decisions are conventional
+
+**Status:** ACCEPTED
+
+**Decision:** Lyric adopts external standards (Unicode UAX #31, IEEE 754-2019, ISO 8601, IANA tzdata, RFC 8259, SemVer, LSP, RE2, Markdown for docs) rather than inventing replacements where the decision is conventional rather than load-bearing.
+
+**Alternatives:**
+- Custom decisions everywhere
+- Adopt some standards, invent others ad-hoc
+
+**Rationale:**
+- Most language-design effort goes into things that didn't actually need to be redesigned. Adopting a stable standard is free correctness for our users.
+- Citing external documents in the spec is more compact than restating the rules.
+- Pinning to standards is defensible to skeptics (regulators, conservative teams).
+
+**Revisions:** None.
+
+---
+
+## D023: JVM backend is post-v1
+
+**Status:** ACCEPTED
+
+**Decision:** The JVM is a post-v1 stretch goal. v1 ships .NET only.
+
+**Alternatives:**
+- Multi-target from day one
+- JVM as primary target
+
+**Rationale:**
+- Erased generics on JVM mean range subtypes and distinct nominal types lose their identity at runtime.
+- Reflection culture on JVM is much stronger than .NET; the AOT-compatible-library ecosystem migration is less complete.
+- Building two backends in parallel is a way to ship neither. Pick one, do it well.
+
+**Revisions:** None. Revisit after v1 ships if there's user demand.
+
+---
+
+## D024: No global escape hatches for time, randomness, IO
+
+**Status:** ACCEPTED
+
+**Decision:** `Clock`, `RandomSource`, `FileSystem`, etc. are interfaces obtained via DI. There is no `@global_clock_unsafe`-style escape hatch for direct access to system primitives.
+
+**Alternatives:**
+- Permit a documented escape hatch for `main`/CLI tools
+- Make global access easier "for ergonomic reasons"
+
+**Rationale:**
+- Every escape hatch I've seen in production languages becomes the norm somewhere. The friction of DI is the feature.
+- `main` ergonomics will need to be good enough that this isn't painful — that's a tooling investment worth making.
+
+**Revisions:** None.
+
+---
+
+## D025: Optional split-file mode at project level
+
+**Status:** ACCEPTED
+
+**Decision:** Projects may opt into authoring `.lspec`/`.lbody` split files via `lyric.toml` configuration. Default is unified files.
+
+**Alternatives:**
+- Force unified everywhere
+- Force split everywhere
+
+**Rationale:**
+- Some teams (safety-critical, conservative engineering cultures) genuinely prefer the discipline of separate spec files.
+- The implementation cost is small — the parser handles either layout, the rest of the pipeline is unchanged.
+- Provides an upgrade path for teams migrating from Ada.
+
+**Revisions:** None.
+
+---
+
+## Decisions deferred to v2 or later
+
+- Package generics (Ada-style module-level parameterization)
+- JVM backend
+- Self-hosting
+- Annex-style certifiable conformance
+- Effect system (currently only `async` is effectful)
+- Hot reload
+- REPL
+
+These are noted in `04-out-of-scope.md` with full rationale.
