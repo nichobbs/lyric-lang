@@ -187,6 +187,34 @@ let private boxIfValue (il: ILGenerator) (ty: ClrType) : unit =
     if ty.IsValueType then il.Emit(OpCodes.Box, ty)
 
 // ---------------------------------------------------------------------------
+// Read-only type probe.
+//
+// `peekExprType` returns the CLR type that `emitExpr` *would* push,
+// without actually emitting any IL. It only covers the shapes E7
+// needs (the seed-element type for an EList literal); call sites
+// for other kinds fall back to typeof<obj> so the emit can still
+// proceed (the actual element types still drive the emit).
+// ---------------------------------------------------------------------------
+
+let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
+    match e.Kind with
+    | ELiteral (LString _)        -> typeof<string>
+    | ELiteral (LBool _)          -> typeof<bool>
+    | ELiteral (LInt (_, suffix)) -> intLiteralType suffix
+    | ELiteral (LFloat (_, s))    -> floatLiteralType s
+    | ELiteral (LChar _)          -> typeof<char>
+    | ELiteral LUnit              -> typeof<int32>
+    | EParen inner                -> peekExprType ctx inner
+    | EPath { Segments = [name] } ->
+        match FunctionCtx.tryLookup ctx name with
+        | Some lb -> lb.LocalType
+        | None ->
+            match ctx.Params.TryGetValue name with
+            | true, (_, t) -> t
+            | _            -> typeof<obj>
+    | _ -> typeof<obj>
+
+// ---------------------------------------------------------------------------
 // Expression / statement emission.
 // ---------------------------------------------------------------------------
 
@@ -218,29 +246,104 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         emitLdcI4 il 0
         typeof<int32>
 
+    // ---- list literal -------------------------------------------------
+
+    | EList items ->
+        // Element type comes from the first element's read-only
+        // probe; empty lists default to obj[].
+        let elemTy =
+            match items with
+            | [] -> typeof<obj>
+            | first :: _ -> peekExprType ctx first
+        emitLdcI4 il (List.length items)
+        il.Emit(OpCodes.Newarr, elemTy)
+        items
+        |> List.iteri (fun i item ->
+            il.Emit(OpCodes.Dup)
+            emitLdcI4 il i
+            let _ = emitExpr ctx item
+            il.Emit(OpCodes.Stelem, elemTy))
+        elemTy.MakeArrayType()
+
+    // ---- indexing -----------------------------------------------------
+
+    | EIndex (recv, [idx]) ->
+        let recvTy = emitExpr ctx recv
+        let _ = emitExpr ctx idx
+        if recvTy.IsArray then
+            let elemTy =
+                match Option.ofObj (recvTy.GetElementType()) with
+                | Some t -> t
+                | None   -> typeof<obj>
+            il.Emit(OpCodes.Ldelem, elemTy)
+            elemTy
+        else
+            failwithf "E7 codegen: indexing on non-array %s" recvTy.Name
+
+    | EIndex (_, idxs) ->
+        failwithf "E7 codegen: multi-index access not yet supported (%d indices)"
+            (List.length idxs)
+
+    // ---- tuple literal ------------------------------------------------
+
+    | ETuple [single] -> emitExpr ctx single
+
+    | ETuple items when List.length items >= 2 && List.length items <= 7 ->
+        let elemTypes = ResizeArray<ClrType>()
+        for item in items do
+            let t = emitExpr ctx item
+            elemTypes.Add t
+        let openTy =
+            match items.Length with
+            | 2 -> typedefof<System.ValueTuple<_, _>>
+            | 3 -> typedefof<System.ValueTuple<_, _, _>>
+            | 4 -> typedefof<System.ValueTuple<_, _, _, _>>
+            | 5 -> typedefof<System.ValueTuple<_, _, _, _, _>>
+            | 6 -> typedefof<System.ValueTuple<_, _, _, _, _, _>>
+            | _ -> typedefof<System.ValueTuple<_, _, _, _, _, _, _>>
+        let argsArr = elemTypes.ToArray()
+        let closedTy = openTy.MakeGenericType(argsArr)
+        let ctor = closedTy.GetConstructor(argsArr)
+        match Option.ofObj ctor with
+        | Some c ->
+            il.Emit(OpCodes.Newobj, c)
+            closedTy
+        | None ->
+            failwithf "E7 codegen: ValueTuple ctor not found for %d args" items.Length
+
+    | ETuple items ->
+        failwithf "E7 codegen: tuple of %d elements not yet supported"
+            (List.length items)
+
     | EParen inner -> emitExpr ctx inner
 
-    // ---- field access (record member) ---------------------------------
+    // ---- field access -------------------------------------------------
 
     | EMember (recv, fieldName) ->
         let recvTy = emitExpr ctx recv
-        // The receiver's CLR type tells us which record's field
-        // table to consult. Walk the records dict to find a match.
-        let info =
-            ctx.Records.Values
-            |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
-        match info with
-        | Some r ->
-            match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
-            | Some f ->
-                il.Emit(OpCodes.Ldfld, f.Field)
-                f.Type
+        // Arrays / slices: `.length` lowers to `ldlen; conv.i4`.
+        if recvTy.IsArray && fieldName = "length" then
+            il.Emit(OpCodes.Ldlen)
+            il.Emit(OpCodes.Conv_I4)
+            typeof<int32>
+        else
+            // Records: walk the records dict to find a match by
+            // CLR receiver type.
+            let info =
+                ctx.Records.Values
+                |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+            match info with
+            | Some r ->
+                match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                | Some f ->
+                    il.Emit(OpCodes.Ldfld, f.Field)
+                    f.Type
+                | None ->
+                    failwithf "E5/E7 codegen: record '%s' has no field '%s'"
+                        r.Name fieldName
             | None ->
-                failwithf "E5 codegen: record '%s' has no field '%s'"
-                    r.Name fieldName
-        | None ->
-            failwithf "E5 codegen: receiver type %s is not a known record"
-                recvTy.Name
+                failwithf "E5/E7 codegen: receiver type %s is not a known record"
+                    recvTy.Name
 
     // ---- variable read ------------------------------------------------
 
@@ -475,6 +578,14 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         let lb = FunctionCtx.defineLocal ctx name initTy
         il.Emit(OpCodes.Stloc, lb)
 
+    | SLocal (LBVal ({ Kind = PWildcard }, _annot, init))
+    | SLocal (LBVal ({ Kind = PBinding ("_", None) }, _annot, init)) ->
+        // `val _ = expr` — evaluate for side effects, drop the
+        // result if any.
+        let initTy = emitExpr ctx init
+        if initTy <> typeof<System.Void> then
+            il.Emit(OpCodes.Pop)
+
     | SLocal (LBVar (name, annot, initOpt)) ->
         let initTy =
             match initOpt with
@@ -574,7 +685,10 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         let iterTy = emitExpr ctx iter
         if not iterTy.IsArray then
             failwithf "E3 codegen: for-in expects an array/slice, got %A" iterTy
-        let elemTy = iterTy.GetElementType()
+        let elemTy =
+            match Option.ofObj (iterTy.GetElementType()) with
+            | Some t -> t
+            | None   -> typeof<obj>
         let arrLocal = FunctionCtx.defineLocal ctx ("__iter_" + name) iterTy
         il.Emit(OpCodes.Stloc, arrLocal)
         let idxLocal = FunctionCtx.defineLocal ctx ("__idx_" + name) typeof<int32>
@@ -592,10 +706,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         il.Emit(OpCodes.Bge, lblEnd)
         // load element into the loop variable
         FunctionCtx.pushScope ctx
-        let elemLocal =
-            match elemTy with
-            | null -> FunctionCtx.defineLocal ctx name typeof<obj>
-            | t    -> FunctionCtx.defineLocal ctx name t
+        let elemLocal = FunctionCtx.defineLocal ctx name elemTy
         il.Emit(OpCodes.Ldloc, arrLocal)
         il.Emit(OpCodes.Ldloc, idxLocal)
         il.Emit(OpCodes.Ldelem, elemLocal.LocalType)
