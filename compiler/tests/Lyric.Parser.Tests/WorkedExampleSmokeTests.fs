@@ -53,26 +53,31 @@ let private extractLyricBlocks (markdown: string) : (int * string) list =
             buf.AppendLine(line) |> ignore
     List.ofSeq xs
 
-/// A code block has a Lyric "header" if it starts with one of:
-///   - a leading `// path/to/file.l` comment
-///   - a top-level annotation (@runtime_checked / @proof_required / @axiom /
-///     @test_module)
-///   - a `package` declaration
-/// Blocks lacking a header are treated as fragments — they still attempt
-/// parsing but do not require `package`.
+/// A code block is treated as a complete file when it contains an
+/// explicit `package …` declaration. Worked-example blocks that
+/// start with a `@axiom`/`@runtime_checked`/etc. annotation but
+/// omit `package` are treated as fragments and prepended with a
+/// synthetic `package SmokeTest` so the parser's P0020 doesn't
+/// fire trivially.
 let private looksLikeFile (block: string) : bool =
-    let trimmedLines =
+    block.Split('\n')
+    |> Array.exists (fun l -> l.TrimStart().StartsWith("package "))
+
+/// True for blocks that are clearly illustrative snippets rather
+/// than parseable Lyric source — a stand-alone `ensures:` clause,
+/// a single expression, etc. The smoke test skips these.
+let private isPartialSnippet (block: string) : bool =
+    let firstReal =
         block.Split('\n')
         |> Array.map (fun l -> l.Trim())
-        |> Array.filter (fun l -> l <> "" && not (l.StartsWith("//")))
-    if trimmedLines.Length = 0 then false
-    else
-        let first = trimmedLines.[0]
-        first.StartsWith("@runtime_checked")
-        || first.StartsWith("@proof_required")
-        || first.StartsWith("@axiom")
-        || first.StartsWith("@test_module")
-        || first.StartsWith("package ")
+        |> Array.tryFind (fun l -> l <> "" && not (l.StartsWith("//")))
+    match firstReal with
+    | None -> true
+    | Some line ->
+        line.StartsWith("requires:")
+        || line.StartsWith("ensures:")
+        || line.StartsWith("invariant:")
+        || line.StartsWith("when:")
 
 /// Add a `package SmokeTest` prelude for fragments so the parser does
 /// not fire P0020.
@@ -95,7 +100,14 @@ let tests =
             let mutable cleanBlocks = 0
             let mutable failingBlocks = ResizeArray<int * string * Diagnostic list>()
 
-            for (lineNo, block) in blocks do
+            // Filter out illustrative snippets that aren't intended
+            // to parse as standalone Lyric source.
+            let parseable =
+                blocks |> Seq.filter (fun (_, b) -> not (isPartialSnippet b))
+                       |> List.ofSeq
+            let totalParseable = parseable.Length
+
+            for (lineNo, block) in parseable do
                 let src =
                     if looksLikeFile block then block
                     else wrapFragment block
@@ -113,46 +125,39 @@ let tests =
 
             // Print a short summary on success / failure for visibility.
             printfn ""
-            printfn "[smoke] %d blocks: %d clean, %d with diagnostics (%d lexer, %d parser)"
-                blocks.Length cleanBlocks (blocks.Length - cleanBlocks)
-                totalLexer totalParser
+            printfn "[smoke] %d / %d parseable blocks clean (%d lexer, %d parser diagnostics; %d total blocks, %d skipped as illustrative)"
+                cleanBlocks totalParseable totalLexer totalParser blocks.Length
+                (blocks.Length - totalParseable)
             for (line, _, diags) in failingBlocks do
                 printfn "[smoke] block @ line %d: %d diagnostics" line diags.Length
                 for d in diags |> List.truncate 3 do
                     printfn "   %s @ %d:%d  %s"
                         d.Code d.Span.Start.Line d.Span.Start.Column d.Message
 
-            // Acceptance criterion (P9 milestone): at least 40% of
-            // blocks parse cleanly AND every block parses to
-            // completion (no infinite loops). The latter is the
-            // important guarantee — the percentage is a moving
-            // target that increases as later slices fill in:
+            // Acceptance criterion (P11 milestone): at least 80% of
+            // parseable blocks produce zero diagnostics, AND every
+            // block parses to completion (no infinite loops). The
+            // latter is the load-bearing guarantee. P12 added two
+            // language features that were the dominant residual
+            // sources of parse errors:
             //
-            //   * `try { … } catch …` as an EXPRESSION (currently
-            //     statement-only); blocks the `return try { … }
-            //     catch …` shape used in the FFI wrapper example.
-            //   * `?? return Err(…)` — `return` in the RHS of `??`
-            //     requires `return`/`break`/`continue`/`throw` to
-            //     be admissible in expression position (today the
-            //     parser only allows them in match-arm bodies).
-            //   * `opaque type X = record { … }` body-file form
-            //     (variant of §3.7 not yet recognised).
-            //   * `forall (…) where … implies … and forall (…) …`
-            //     — quantifier expressions in contracts; requires
-            //     `forall`/`exists` as primary expressions.
-            //   * Typed lambda parameters: `{ x: Int -> body }`
-            //     needs a `parseTypeExprNoArrow` so the lambda's
-            //     `->` is not consumed as a function-type arrow.
+            //   * `(TypeExpr).method(...)` — type-as-expression
+            //     for static-method dispatch on a refined type
+            //     (e.g. `(Nat range 1 ..= 100).tryFrom(x)`).
+            //   * `lhs -> rhs` rule entries inside `{ … }` lambdas
+            //     for the stub-builder DSL.
             //
-            // These are tracked as P10+ polish work; the parser
-            // infrastructure (every item kind, every statement,
-            // most expressions) is in place and produces a
-            // well-typed AST for the majority of the worked
-            // examples.
-            let cleanRatio = float cleanBlocks / float blocks.Length
+            // The remaining residual is Kotlin-style trailing-lambda
+            // sugar: `obj.method { … }` where `{ … }` is a single
+            // lambda argument. Adding this requires plumbing a
+            // "no-trailing-lambda" flag through the expression
+            // tower so `if cond { … }`/`while …`/`for …`/`match …`
+            // scrutinees do not eagerly slurp the following block.
+            // Tracked as P13 polish.
+            let cleanRatio = float cleanBlocks / float totalParseable
             Expect.isGreaterThanOrEqual
                 cleanRatio
-                0.40
-                (sprintf "clean-parse ratio %.2f below 0.40 threshold" cleanRatio)
+                0.80
+                (sprintf "clean-parse ratio %.2f below 0.80 threshold" cleanRatio)
         }
     ]

@@ -633,6 +633,11 @@ and StatementKind =
     | SWhile       of label: string option * cond: Expr * body: Block
     | SLoop        of label: string option * body: Block        // `do { … }`
     | SExpr        of Expr
+    /// `lhs -> rhs` — stub-builder DSL rule entry inside a `{ … }`
+    /// lambda body, e.g. `it.findById(x) -> Some(y)`. Carried as an
+    /// opaque pair through the AST; the type checker decides whether
+    /// the enclosing context (a stub-builder lambda) admits it.
+    | SRule        of lhs: Expr * rhs: Expr
     | SItem        of Item                                    // nested item declaration
 
 and LocalBinding =
