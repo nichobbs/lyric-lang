@@ -9,6 +9,7 @@
     <Compile Include="SkeletonTests.fs" />
     <Compile Include="FileHeadTests.fs" />
     <Compile Include="ItemHeadTests.fs" />
+    <Compile Include="TypeExprTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

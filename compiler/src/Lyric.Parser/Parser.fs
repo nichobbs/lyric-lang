@@ -531,6 +531,448 @@ let private parseItems
         | None    -> keepGoing <- false
     List.ofSeq xs
 
+// ===========================================================================
+//  P4: Expressions (minimal subset), type expressions, range bounds.
+//
+//  These productions form a small mutually-recursive group. The
+//  expression parser here is intentionally minimal — just enough to
+//  handle range bounds (`0 ..= 100`), array sizes (`array[16, T]`),
+//  and value-generic arguments. The full precedence cascade lands in
+//  P7 by replacing parsePrimaryExpr / parseAddExpr below.
+// ===========================================================================
+
+let private mkExpr (kind: ExprKind) (span: Span) : Expr =
+    { Kind = kind; Span = span }
+
+let private mkType (kind: TypeExprKind) (span: Span) : TypeExpr =
+    { Kind = kind; Span = span }
+
+let private literalFromToken (tok: Token) : Literal option =
+    match tok with
+    | TInt(v, sfx)        -> Some (LInt(v, sfx))
+    | TFloat(v, sfx)      -> Some (LFloat(v, sfx))
+    | TChar c             -> Some (LChar c)
+    | TString s           -> Some (LString s)
+    | TTripleString s     -> Some (LTripleString s)
+    | TRawString s        -> Some (LRawString s)
+    | TBool b             -> Some (LBool b)
+    | _                   -> None
+
+let rec private parsePrimaryExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let tok = Cursor.peek cursor
+    match tok.Token with
+    | TInt _ | TFloat _ | TChar _ | TString _
+    | TTripleString _ | TRawString _ | TBool _ ->
+        Cursor.advance cursor |> ignore
+        match literalFromToken tok.Token with
+        | Some lit -> mkExpr (ELiteral lit) tok.Span
+        | None     -> mkExpr EError tok.Span
+
+    | TPunct LParen ->
+        Cursor.advance cursor |> ignore
+        // Empty parens: '()' — the unit value.
+        if Cursor.peekToken cursor = TPunct RParen then
+            let endTok = Cursor.advance cursor
+            mkExpr (ELiteral LUnit) (joinSpans tok.Span endTok.Span)
+        else
+            let inner = parseExpr cursor diags
+            // Tuple literal? `(a, b, c)`.
+            if Cursor.peekToken cursor = TPunct Comma then
+                let items = ResizeArray<Expr>()
+                items.Add(inner)
+                while Cursor.peekToken cursor = TPunct Comma do
+                    Cursor.advance cursor |> ignore
+                    if Cursor.peekToken cursor = TPunct RParen then ()
+                    else items.Add(parseExpr cursor diags)
+                let endSpan =
+                    match Cursor.tryEatPunct RParen cursor with
+                    | Some t -> t.Span
+                    | None ->
+                        err diags "P0051"
+                            "expected ')' to close tuple expression"
+                            (Cursor.peekSpan cursor)
+                        (List.last (List.ofSeq items)).Span
+                mkExpr (ETuple (List.ofSeq items))
+                    (joinSpans tok.Span endSpan)
+            else
+                let endSpan =
+                    match Cursor.tryEatPunct RParen cursor with
+                    | Some t -> t.Span
+                    | None ->
+                        err diags "P0051"
+                            "expected ')' to close parenthesised expression"
+                            (Cursor.peekSpan cursor)
+                        inner.Span
+                mkExpr (EParen inner) (joinSpans tok.Span endSpan)
+
+    | TIdent _ ->
+        let path = parseModulePath cursor diags
+        mkExpr (EPath path) path.Span
+
+    | _ ->
+        err diags "P0050"
+            "expected an expression"
+            tok.Span
+        Cursor.advance cursor |> ignore
+        mkExpr EError tok.Span
+
+and private parsePrefixExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    match Cursor.peekToken cursor with
+    | TPunct Minus ->
+        let opTok = Cursor.advance cursor
+        let inner = parsePrefixExpr cursor diags
+        mkExpr (EPrefix(PreNeg, inner))
+            (joinSpans opTok.Span inner.Span)
+    | TKeyword KwNot ->
+        let opTok = Cursor.advance cursor
+        let inner = parsePrefixExpr cursor diags
+        mkExpr (EPrefix(PreNot, inner))
+            (joinSpans opTok.Span inner.Span)
+    | TPunct Amp ->
+        let opTok = Cursor.advance cursor
+        let inner = parsePrefixExpr cursor diags
+        mkExpr (EPrefix(PreRef, inner))
+            (joinSpans opTok.Span inner.Span)
+    | _ ->
+        parsePrimaryExpr cursor diags
+
+and private parseMulExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let mutable lhs = parsePrefixExpr cursor diags
+    let mutable keep = true
+    while keep do
+        match Cursor.peekToken cursor with
+        | TPunct Star ->
+            Cursor.advance cursor |> ignore
+            let rhs = parsePrefixExpr cursor diags
+            lhs <- mkExpr (EBinop(BMul, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | TPunct Slash ->
+            Cursor.advance cursor |> ignore
+            let rhs = parsePrefixExpr cursor diags
+            lhs <- mkExpr (EBinop(BDiv, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | TPunct Percent ->
+            Cursor.advance cursor |> ignore
+            let rhs = parsePrefixExpr cursor diags
+            lhs <- mkExpr (EBinop(BMod, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | _ -> keep <- false
+    lhs
+
+and private parseAddExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    let mutable lhs = parseMulExpr cursor diags
+    let mutable keep = true
+    while keep do
+        match Cursor.peekToken cursor with
+        | TPunct Plus ->
+            Cursor.advance cursor |> ignore
+            let rhs = parseMulExpr cursor diags
+            lhs <- mkExpr (EBinop(BAdd, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | TPunct Minus ->
+            Cursor.advance cursor |> ignore
+            let rhs = parseMulExpr cursor diags
+            lhs <- mkExpr (EBinop(BSub, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+        | _ -> keep <- false
+    lhs
+
+and private parseExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    parseAddExpr cursor diags
+
+// ---------------------------------------------------------------------------
+// Range bounds: `lo ..= hi`, `lo ..< hi`, `lo .. hi`, `..= hi`, `lo ..`.
+// ---------------------------------------------------------------------------
+
+and private parseRangeBound
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : RangeBound =
+    // Lower-open form: `..= hi` (no `lo` to its left).
+    match Cursor.peekToken cursor with
+    | TPunct DotDotEq ->
+        Cursor.advance cursor |> ignore
+        let hi = parseExpr cursor diags
+        RBLowerOpen hi
+    | TPunct DotDot | TPunct DotDotLt ->
+        let opTok = Cursor.advance cursor
+        let hi = parseExpr cursor diags
+        // `..` and `..<` both produce a half-open lower bound here. We
+        // synthesise an LInt 0 placeholder for the missing low bound.
+        let lo = mkExpr (ELiteral (LInt(0UL, NoIntSuffix))) opTok.Span
+        RBHalfOpen(lo, hi)
+    | _ ->
+        let lo = parseExpr cursor diags
+        match Cursor.peekToken cursor with
+        | TPunct DotDotEq ->
+            Cursor.advance cursor |> ignore
+            // Upper-open form `lo ..` is rare and ambiguous with end of
+            // expression; require `lo ..= hi` to provide hi.
+            let hi = parseExpr cursor diags
+            RBClosed(lo, hi)
+        | TPunct DotDotLt ->
+            Cursor.advance cursor |> ignore
+            let hi = parseExpr cursor diags
+            RBHalfOpen(lo, hi)
+        | TPunct DotDot ->
+            Cursor.advance cursor |> ignore
+            // `lo .. hi` (treat as half-open) or `lo ..` (open upper).
+            // We pick by checking whether an expression follows.
+            match Cursor.peekToken cursor with
+            | TStmtEnd | TPunct Comma | TPunct RParen
+            | TPunct RBracket | TPunct RBrace | TEof ->
+                RBUpperOpen lo
+            | _ ->
+                let hi = parseExpr cursor diags
+                RBHalfOpen(lo, hi)
+        | _ ->
+            err diags "P0060"
+                "expected '..', '..<', or '..=' in range bound"
+                (Cursor.peekSpan cursor)
+            // Fall back to `lo ..= lo` so downstream code has something.
+            RBClosed(lo, lo)
+
+// ---------------------------------------------------------------------------
+// Type arguments: types or const expressions inside `[...]`.
+// ---------------------------------------------------------------------------
+
+and private parseTypeArg
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TypeArg =
+    // Heuristic: integer / float / char / string / bool / unary-minus /
+    // parenthesised — definitely a value. Otherwise try the type path
+    // and let the resolver upgrade if needed.
+    match Cursor.peekToken cursor with
+    | TInt _ | TFloat _ | TChar _ | TString _
+    | TTripleString _ | TRawString _ | TBool _
+    | TPunct Minus ->
+        TAValue (parseExpr cursor diags)
+    | _ ->
+        TAType (parseTypeExpr cursor diags)
+
+and private parseTypeArgs
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TypeArg list =
+    Cursor.advance cursor |> ignore // eat '['
+    let xs = ResizeArray<TypeArg>()
+    if Cursor.peekToken cursor <> TPunct RBracket then
+        xs.Add(parseTypeArg cursor diags)
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            if Cursor.peekToken cursor = TPunct RBracket then ()
+            else xs.Add(parseTypeArg cursor diags)
+    match Cursor.tryEatPunct RBracket cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0061"
+            "expected ']' to close type-argument list"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+// ---------------------------------------------------------------------------
+// Type expressions (full grammar).
+// ---------------------------------------------------------------------------
+
+and private applyNullableSuffix
+        (cursor: Cursor)
+        (t: TypeExpr)
+        : TypeExpr =
+    if Cursor.peekToken cursor = TPunct Question then
+        let qTok = Cursor.advance cursor
+        mkType (TNullable t) (joinSpans t.Span qTok.Span)
+    else t
+
+and private parseAtomNonParenType
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TypeExpr =
+
+    let tok = Cursor.peek cursor
+    match tok.Token with
+
+    | TIdent "Self" ->
+        Cursor.advance cursor |> ignore
+        mkType TSelf tok.Span
+
+    | TIdent "Never" ->
+        Cursor.advance cursor |> ignore
+        mkType TNever tok.Span
+
+    | TIdent "array"
+        when (Cursor.peekAt cursor 1).Token = TPunct LBracket ->
+        Cursor.advance cursor |> ignore  // 'array'
+        Cursor.advance cursor |> ignore  // '['
+        let size = parseTypeArg cursor diags
+        match Cursor.tryEatPunct Comma cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0062"
+                "expected ',' between size and element type in array[...]"
+                (Cursor.peekSpan cursor)
+        let elem = parseTypeExpr cursor diags
+        let endSpan =
+            match Cursor.tryEatPunct RBracket cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0061"
+                    "expected ']' to close array[...]"
+                    (Cursor.peekSpan cursor)
+                elem.Span
+        mkType (TArray(size, elem)) (joinSpans tok.Span endSpan)
+
+    | TIdent "slice"
+        when (Cursor.peekAt cursor 1).Token = TPunct LBracket ->
+        Cursor.advance cursor |> ignore  // 'slice'
+        Cursor.advance cursor |> ignore  // '['
+        let elem = parseTypeExpr cursor diags
+        let endSpan =
+            match Cursor.tryEatPunct RBracket cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0061"
+                    "expected ']' to close slice[...]"
+                    (Cursor.peekSpan cursor)
+                elem.Span
+        mkType (TSlice elem) (joinSpans tok.Span endSpan)
+
+    | TIdent _ ->
+        // ModulePath; then optionally a generic application or a
+        // `range` refinement.
+        let path = parseModulePath cursor diags
+        match Cursor.peekToken cursor with
+        | TPunct LBracket ->
+            let args = parseTypeArgs cursor diags
+            let endSpan =
+                match args with
+                | [] -> path.Span
+                | _ ->
+                    match List.last args with
+                    | TAType t  -> t.Span
+                    | TAValue e -> e.Span
+            mkType (TGenericApp(path, args)) (joinSpans path.Span endSpan)
+        | TIdent "range" ->
+            Cursor.advance cursor |> ignore
+            let bound = parseRangeBound cursor diags
+            let endSpan =
+                match bound with
+                | RBClosed(_, hi) | RBHalfOpen(_, hi) | RBLowerOpen hi -> hi.Span
+                | RBUpperOpen lo -> lo.Span
+            mkType (TRefined(path, bound)) (joinSpans path.Span endSpan)
+        | _ ->
+            mkType (TRef path) path.Span
+
+    | _ ->
+        err diags "P0050"
+            "expected a type"
+            tok.Span
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        mkType TError tok.Span
+
+and private parseTypeListUntilRParen
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TypeExpr list =
+    let xs = ResizeArray<TypeExpr>()
+    if Cursor.peekToken cursor <> TPunct RParen then
+        xs.Add(parseTypeExpr cursor diags)
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            if Cursor.peekToken cursor = TPunct RParen then ()
+            else xs.Add(parseTypeExpr cursor diags)
+    List.ofSeq xs
+
+and private parseTypeExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TypeExpr =
+
+    let startSpan = Cursor.peekSpan cursor
+
+    if Cursor.peekToken cursor = TPunct LParen then
+        // Could be: `()`, `(T)`, `(A, B)`, `() -> T`, `(A, B) -> T`,
+        // `(T) -> U`.
+        Cursor.advance cursor |> ignore
+        let inner = parseTypeListUntilRParen cursor diags
+        let closeSpan =
+            match Cursor.tryEatPunct RParen cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0063"
+                    "expected ')' to close parenthesised type"
+                    (Cursor.peekSpan cursor)
+                startSpan
+        if Cursor.peekToken cursor = TPunct Arrow then
+            Cursor.advance cursor |> ignore
+            let result = parseTypeExpr cursor diags
+            mkType (TFunction(inner, result))
+                (joinSpans startSpan result.Span)
+        else
+            let span = joinSpans startSpan closeSpan
+            let nodeKind =
+                match inner with
+                | []  -> TUnit
+                | [t] -> TParen t
+                | xs  -> TTuple xs
+            applyNullableSuffix cursor (mkType nodeKind span)
+    else
+        let atom = parseAtomNonParenType cursor diags
+        let withSuffix = applyNullableSuffix cursor atom
+        if Cursor.peekToken cursor = TPunct Arrow then
+            Cursor.advance cursor |> ignore
+            let result = parseTypeExpr cursor diags
+            mkType (TFunction([withSuffix], result))
+                (joinSpans withSuffix.Span result.Span)
+        else
+            withSuffix
+
+// ---------------------------------------------------------------------------
+// Public testing entry points (exposed but documented as low-level).
+// ---------------------------------------------------------------------------
+
+/// Parse a single TypeExpr from a string, returning the type and any
+/// diagnostics. Convenience wrapper for tests; not part of the
+/// stable parser surface.
+let parseTypeFromString (source: string) : TypeExpr * Diagnostic list =
+    let lexed = lex source
+    let cursor = Cursor.make lexed.Tokens
+    let diags = ResizeArray<Diagnostic>(lexed.Diagnostics)
+    Cursor.skipStmtEnds cursor |> ignore
+    let t = parseTypeExpr cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    if not (Cursor.isAtEnd cursor) then
+        err diags "P0064"
+            "unexpected tokens after type"
+            (Cursor.peekSpan cursor)
+    t, List.ofSeq diags
+
+/// Parse a single Expr from a string. Currently parses only the
+/// minimal-expression subset implemented in P4.
+let parseExprFromString (source: string) : Expr * Diagnostic list =
+    let lexed = lex source
+    let cursor = Cursor.make lexed.Tokens
+    let diags = ResizeArray<Diagnostic>(lexed.Diagnostics)
+    Cursor.skipStmtEnds cursor |> ignore
+    let e = parseExpr cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
+    if not (Cursor.isAtEnd cursor) then
+        err diags "P0065"
+            "unexpected tokens after expression"
+            (Cursor.peekSpan cursor)
+    e, List.ofSeq diags
+
 // ---------------------------------------------------------------------------
 // Top-level entry.
 // ---------------------------------------------------------------------------

@@ -51,6 +51,11 @@ type Punct =
     | Plus | Minus | Star | Slash | Percent
     // Plain.
     | Eq | Bang
+    // Pipe is used between alternatives in or-patterns
+    // (`case A | B -> …`); ampersand is the prefix-ref operator
+    // (`&x`). Single-char tokens; `||` / `&&` do not exist (Lyric
+    // uses the `or` / `and` keywords for boolean ops).
+    | Pipe | Amp
     // Brackets.
     | LParen | RParen | LBracket | RBracket | LBrace | RBrace
     // Separators.

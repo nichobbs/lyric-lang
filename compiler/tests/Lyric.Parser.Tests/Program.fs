@@ -9,5 +9,6 @@ let main argv =
             SkeletonTests.tests
             FileHeadTests.tests
             ItemHeadTests.tests
+            TypeExprTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
