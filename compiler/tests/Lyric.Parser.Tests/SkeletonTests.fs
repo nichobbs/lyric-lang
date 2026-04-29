@@ -7,22 +7,23 @@ open Lyric.Parser.Parser
 let tests =
     testList "parser skeleton" [
 
-        test "empty input parses with no diagnostics" {
+        test "empty input reports a missing-package diagnostic" {
+            // Every Lyric file must start with `package …`. An empty
+            // file violates that, so the parser surfaces P0020.
             let r = parse ""
-            Expect.isEmpty r.Diagnostics "no diagnostics for empty input"
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "P0020" "missing package on empty input"
         }
 
-        test "whitespace-only input parses with no diagnostics" {
+        test "whitespace-only input reports the same missing-package diagnostic" {
             let r = parse "\n\n   \n"
-            Expect.isEmpty r.Diagnostics "no diagnostics for whitespace-only input"
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "P0020" "missing package on whitespace input"
         }
 
-        test "non-empty input reports the unimplemented-parser diagnostic" {
+        test "well-formed file head parses with no diagnostics" {
             let r = parse "package Foo"
-            // The lexer alone produces zero diagnostics for valid input;
-            // the parser stub adds P0001 because tokens remain unconsumed.
-            Expect.equal r.Diagnostics.Length 1 "exactly one diagnostic"
-            Expect.equal (List.head r.Diagnostics).Code "P0001" "diag code"
+            Expect.isEmpty r.Diagnostics "no diagnostics for `package Foo`"
         }
 
         test "lexer diagnostics propagate through parse()" {
