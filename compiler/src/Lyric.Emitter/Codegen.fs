@@ -49,7 +49,16 @@ type FunctionCtx =
       Unions:     Lyric.Emitter.Records.UnionTable
       /// `Some` / `Option.Some` → (union info, case info). Bare and
       /// qualified spellings both resolve.
-      UnionCases: Lyric.Emitter.Records.UnionCaseLookup }
+      UnionCases: Lyric.Emitter.Records.UnionCaseLookup
+      /// Lyric interfaces, keyed by name.
+      Interfaces: Lyric.Emitter.Records.InterfaceTable
+      /// `true` when emitting an instance method (impl method) — at
+      /// CLR level arg 0 is `self` and named params shift by one.
+      IsInstance: bool
+      /// The impl target's CLR type when `IsInstance = true`. Drives
+      /// the static type returned by `ESelf` so field reads can
+      /// resolve.
+      SelfType:   ClrType option }
 
 module FunctionCtx =
 
@@ -62,12 +71,16 @@ module FunctionCtx =
             (enums: Lyric.Emitter.Records.EnumTable)
             (enumCases: Lyric.Emitter.Records.EnumCaseLookup)
             (unions: Lyric.Emitter.Records.UnionTable)
-            (unionCases: Lyric.Emitter.Records.UnionCaseLookup) : FunctionCtx =
+            (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
+            (interfaces: Lyric.Emitter.Records.InterfaceTable)
+            (isInstance: bool)
+            (selfType: ClrType option) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
+        let argShift = if isInstance then 1 else 0
         paramList
-        |> List.iteri (fun i (name, ty) -> p.[name] <- (i, ty))
+        |> List.iteri (fun i (name, ty) -> p.[name] <- (i + argShift, ty))
         { IL         = il
           ReturnType = returnType
           Scopes     = s
@@ -78,7 +91,10 @@ module FunctionCtx =
           Enums      = enums
           EnumCases  = enumCases
           Unions     = unions
-          UnionCases = unionCases }
+          UnionCases = unionCases
+          Interfaces = interfaces
+          IsInstance = isInstance
+          SelfType   = selfType }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -335,6 +351,53 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             (List.length items)
 
     | EParen inner -> emitExpr ctx inner
+
+    // ---- self ---------------------------------------------------------
+
+    | ESelf when ctx.IsInstance ->
+        il.Emit(OpCodes.Ldarg_0)
+        match ctx.SelfType with
+        | Some t -> t
+        | None   -> typeof<obj>
+
+    | ESelf ->
+        failwith "E12 codegen: 'self' used outside of an impl method"
+
+    // ---- method-style call (callvirt on interface or class method) ----
+
+    | ECall ({ Kind = EMember (recv, methodName) }, args) ->
+        let recvTy = emitExpr ctx recv
+        // Try to find an interface method with this name.
+        let ifaceMethod =
+            ctx.Interfaces.Values
+            |> Seq.collect (fun i -> i.Members |> List.map (fun m -> i, m))
+            |> Seq.tryFind (fun (_, m) -> m.Name = methodName)
+        let mi : MethodInfo option =
+            match ifaceMethod with
+            | Some (_, m) -> Some (m.Method :> MethodInfo)
+            | None ->
+                // Fall back to a method on the receiver's CLR type
+                // by reflection. This catches impl-method calls where
+                // we have a concrete target type.
+                recvTy.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = methodName && not m.IsStatic)
+        match mi with
+        | Some method ->
+            for a in args do
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let _ = emitExpr ctx payload
+                ()
+            il.Emit(OpCodes.Callvirt, method)
+            if method.ReturnType = typeof<System.Void> then
+                typeof<System.Void>
+            else
+                method.ReturnType
+        | None ->
+            failwithf "E12 codegen: no method '%s' on %s"
+                methodName recvTy.Name
 
     // ---- field access -------------------------------------------------
 

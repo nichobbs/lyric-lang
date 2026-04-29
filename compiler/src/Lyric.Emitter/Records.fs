@@ -86,3 +86,22 @@ type UnionTable = Dictionary<string, UnionInfo>
 
 /// Reverse lookup: bare or qualified case name → (parent union, case info).
 type UnionCaseLookup = Dictionary<string, UnionInfo * UnionCaseInfo>
+
+// ---------------------------------------------------------------------------
+// Interfaces.
+// ---------------------------------------------------------------------------
+
+/// One declared method of a Lyric interface, lowered to an abstract
+/// CLR interface method.
+type InterfaceMember =
+    { Name:    string
+      Method:  MethodBuilder
+      Params:  ClrType list
+      Return:  ClrType }
+
+type InterfaceInfo =
+    { Name:    string
+      Type:    TypeBuilder
+      Members: InterfaceMember list }
+
+type InterfaceTable = Dictionary<string, InterfaceInfo>
