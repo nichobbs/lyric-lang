@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="SkeletonTests.fs" />
+    <Compile Include="FileHeadTests.fs" />
+    <Compile Include="ItemHeadTests.fs" />
+    <Compile Include="TypeExprTests.fs" />
+    <Compile Include="PatternTests.fs" />
+    <Compile Include="ExprTests.fs" />
+    <Compile Include="ItemBodyTests.fs" />
+    <Compile Include="FunctionDeclTests.fs" />
+    <Compile Include="InterfaceImplTests.fs" />
+    <Compile Include="StatementAndControlFlowTests.fs" />
+    <Compile Include="RemainingItemTests.fs" />
+    <Compile Include="WorkedExampleSmokeTests.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lyric.Parser\Lyric.Parser.fsproj" />
+    <ProjectReference Include="..\..\src\Lyric.Lexer\Lyric.Lexer.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Expecto" Version="10.2.3" />
+  </ItemGroup>
+
+</Project>

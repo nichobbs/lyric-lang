@@ -77,18 +77,26 @@ The bootstrap compiler (Phase 1, in F# on .NET 9) lives in `compiler/`:
 - `compiler/global.json` — pins SDK to 9.0.x.
 - `compiler/Directory.Build.props` — `TargetFramework=net9.0`,
   `TreatWarningsAsErrors=true`, `Nullable=enable`.
-- `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1).
-- `compiler/tests/Lyric.Lexer.Tests/` — Expecto-based tests
-  (console-app project; F# does not coexist cleanly with the new
+- `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
+- `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, in progress).
+- `compiler/tests/Lyric.Lexer.Tests/` and
+  `compiler/tests/Lyric.Parser.Tests/` — Expecto-based tests (console-app
+  projects; F# does not coexist cleanly with the new
   Microsoft.Testing.Platform xunit runner — Expecto is the F#-native
   alternative).
 
 Build: `cd compiler && dotnet build Lyric.sln`.
 
-Run tests: `cd compiler && dotnet run --project tests/Lyric.Lexer.Tests`.
+Run tests:
+```
+cd compiler
+dotnet run --project tests/Lyric.Lexer.Tests
+dotnet run --project tests/Lyric.Parser.Tests
+```
 
-The lexer is the only project so far; parser, type checker, etc. land
-in subsequent commits per `docs/05-implementation-plan.md` §"Phase 1".
+Subsequent slices add type checker, mode checker, contract elaborator,
+monomorphizer, and MSIL emitter per `docs/05-implementation-plan.md`
+§"Phase 1".
 
 ## Glossary (project-specific terms)
 
