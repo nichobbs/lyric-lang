@@ -2121,6 +2121,186 @@ and private parseFunctionDeclBody
       Span        = joinSpans startSpan endSpan }
 
 // ---------------------------------------------------------------------------
+// P6b: interface and impl declarations.
+// ---------------------------------------------------------------------------
+
+and private parseAssociatedTypeDecl
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : AssociatedTypeDecl =
+    let startTok = Cursor.advance cursor   // 'type'
+    let name, nameSpan = readIdent cursor diags "associated type"
+    let default' =
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> Some (parseTypeExpr cursor diags)
+        | None -> None
+    let endSpan =
+        match default' with
+        | Some t -> t.Span
+        | None -> nameSpan
+    { Name    = name
+      Default = default'
+      Span    = joinSpans startTok.Span endSpan }
+
+and private parseInterfaceMember
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : InterfaceMember option =
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    match Cursor.peekToken cursor with
+    | TKeyword KwType ->
+        Some (IMAssoc (parseAssociatedTypeDecl cursor diags))
+    | TKeyword KwFunc | TKeyword KwAsync ->
+        let fn = parseFunctionDeclBody cursor diags None
+        let fn = { fn with DocComments = docs; Annotations = anns }
+        match fn.Body with
+        | None ->
+            Some (IMSig
+                { IsAsync   = fn.IsAsync
+                  Name      = fn.Name
+                  Generics  = fn.Generics
+                  Params    = fn.Params
+                  Return    = fn.Return
+                  Where     = fn.Where
+                  Contracts = fn.Contracts
+                  Span      = fn.Span })
+        | Some _ ->
+            Some (IMFunc fn)
+    | _ ->
+        err diags "P0181"
+            "expected 'func', 'async func', or 'type' inside interface body"
+            (Cursor.peekSpan cursor)
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        None
+
+and private parseInterfaceMembers
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : InterfaceMember list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0182"
+            "expected '{' to start interface body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<InterfaceMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        match parseInterfaceMember cursor diags with
+        | Some m -> xs.Add(m)
+        | None -> ()
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0183"
+            "expected '}' to close interface body"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parseInterfaceBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : InterfaceDecl =
+    let startTok = Cursor.advance cursor   // 'interface'
+    let name, _ = readIdent cursor diags "interface"
+    let genericsSuffix = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    let where = parseWhereClauseOpt cursor diags
+    let members = parseInterfaceMembers cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    { Name     = name
+      Generics = generics
+      Where    = where
+      Members  = members
+      Span     = joinSpans startTok.Span endSpan }
+
+and private parseImplMember
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ImplMember option =
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    match Cursor.peekToken cursor with
+    | TKeyword KwType ->
+        Some (IMplAssoc (parseAssociatedTypeDecl cursor diags))
+    | TKeyword KwFunc | TKeyword KwAsync ->
+        let fn = parseFunctionDeclBody cursor diags None
+        let fn = { fn with DocComments = docs; Annotations = anns }
+        Some (IMplFunc fn)
+    | _ ->
+        err diags "P0184"
+            "expected 'func', 'async func', or 'type' inside impl body"
+            (Cursor.peekSpan cursor)
+        if not (Cursor.isAtEnd cursor) then
+            Cursor.advance cursor |> ignore
+        None
+
+and private parseImplMembers
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ImplMember list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0185"
+            "expected '{' to start impl body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let xs = ResizeArray<ImplMember>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        match parseImplMember cursor diags with
+        | Some m -> xs.Add(m)
+        | None -> ()
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0186"
+            "expected '}' to close impl body"
+            (Cursor.peekSpan cursor)
+    List.ofSeq xs
+
+and private parseImplBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (genericsPrefix: GenericParams option)
+        : ImplDecl =
+    let startTok = Cursor.advance cursor   // 'impl'
+    let suffixGenerics = parseGenericParamsOpt cursor diags
+    let generics = mergeGenericsInfo diags genericsPrefix suffixGenerics
+    let interface' = parseConstraintRef cursor diags
+    match Cursor.tryEatKeyword KwFor cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0180"
+            "expected 'for' in impl declaration"
+            (Cursor.peekSpan cursor)
+    let target = parseTypeExpr cursor diags
+    let where = parseWhereClauseOpt cursor diags
+    let members = parseImplMembers cursor diags
+    let endSpan = Cursor.peekSpan cursor
+    { Generics  = generics
+      Interface = interface'
+      Target    = target
+      Where     = where
+      Members   = members
+      Span      = joinSpans startTok.Span endSpan }
+
+// ---------------------------------------------------------------------------
 // Top-level item loop. Lives at the end of the mutual-recursion chain
 // so it can dispatch into every body parser above.
 // ---------------------------------------------------------------------------
@@ -2190,6 +2370,10 @@ and private parseItem
                           DocComments = docs
                           Annotations = anns
                           Visibility  = vis }
+            | TKeyword KwInterface ->
+                IInterface (parseInterfaceBody cursor diags genericsPrefix)
+            | TKeyword KwImpl ->
+                IImpl (parseImplBody cursor diags genericsPrefix)
             | tok when isItemStartToken tok ->
                 // Recognised but not yet implemented; fall back to
                 // the P3 skip-and-IError path.

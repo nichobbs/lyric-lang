@@ -14,5 +14,6 @@ let main argv =
             ExprTests.tests
             ItemBodyTests.tests
             FunctionDeclTests.tests
+            InterfaceImplTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

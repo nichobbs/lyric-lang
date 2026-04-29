@@ -14,6 +14,7 @@
     <Compile Include="ExprTests.fs" />
     <Compile Include="ItemBodyTests.fs" />
     <Compile Include="FunctionDeclTests.fs" />
+    <Compile Include="InterfaceImplTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

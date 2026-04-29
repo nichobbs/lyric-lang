@@ -17,12 +17,11 @@ let tests =
             // Item kinds that still fall through to the recognise-
             // and-skip placeholder. The kinds we DO parse fully now
             // (alias, type, record, exposed record, union, enum,
-            // opaque, func, async func) have dedicated tests in
-            // ItemBodyTests / FunctionDeclTests.
+            // opaque, func, async func, interface, impl) have
+            // dedicated tests in ItemBodyTests / FunctionDeclTests /
+            // InterfaceImplTests.
             let cases =
                 [ "pub protected type P { var x: Int }"
-                  "pub interface I { func f(): Int }"
-                  "impl I for X { func f(): Int = 1 }"
                   "wire W { expose x }"
                   "extern package Sys { func f(): Int }"
                   "test \"x\" { 1 }"
