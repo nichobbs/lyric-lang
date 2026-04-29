@@ -46,6 +46,35 @@ let private recordItems (sf: SourceFile) : RecordDecl list =
         | IRecord r | IExposedRec r -> Some r
         | _ -> None)
 
+/// Pull every top-level `IEnum` out of a parsed source file.
+let private enumItems (sf: SourceFile) : EnumDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IEnum e -> Some e
+        | _ -> None)
+
+/// Define a CLR enum type backing one Lyric enum. Each case becomes
+/// a `Public Static Literal` field with a sequential ordinal value,
+/// matching the strategy doc's §8.2 "variant-free unions" lowering.
+let private defineEnum
+        (md: ModuleBuilder)
+        (nsName: string)
+        (ed: EnumDecl) : Records.EnumInfo =
+    let fullName =
+        if String.IsNullOrEmpty nsName then ed.Name
+        else nsName + "." + ed.Name
+    let eb = md.DefineEnum(fullName, TypeAttributes.Public, typeof<int32>)
+    let cases =
+        ed.Cases
+        |> List.mapi (fun i c ->
+            eb.DefineLiteral(c.Name, box i) |> ignore
+            { Records.EnumCase.Name = c.Name; Records.EnumCase.Ordinal = i })
+    let ty = eb.CreateType()
+    { Records.EnumInfo.Name  = ed.Name
+      Records.EnumInfo.Type  = ty
+      Records.EnumInfo.Cases = cases }
+
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
 /// codegen can resolve constructors and field reads.
@@ -155,13 +184,17 @@ let private emitFunctionBody
         (sg: ResolvedSignature)
         (lookup: TypeId -> System.Type option)
         (funcs: Dictionary<string, MethodBuilder>)
-        (records: Records.RecordTable) : unit =
+        (records: Records.RecordTable)
+        (enums: Records.EnumTable)
+        (enumCases: Records.EnumCaseLookup) : unit =
     let il = mb.GetILGenerator()
     let returnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
     let paramList =
         sg.Params
         |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
-    let ctx = Codegen.FunctionCtx.make il returnTy paramList funcs records
+    let ctx =
+        Codegen.FunctionCtx.make
+            il returnTy paramList funcs records enums enumCases
 
     // Helper: emit a block, treating the trailing SExpr as the
     // function's return value when the function isn't Unit-typed.
@@ -258,21 +291,31 @@ let private emitAssembly
             if String.IsNullOrEmpty nsName then "Program"
             else nsName + ".Program"
 
-        // Pass 0 — record types. Defined before functions so
-        // signatures can mention them, and the runtime sees the
-        // sealed CLR classes ready when the host calls newobj.
+        // Pass 0 — record + enum types. Defined before functions so
+        // signatures can mention them, and the runtime sees them
+        // ready when the host calls newobj / loads case constants.
         let recordTable = Records.RecordTable()
+        let enumTable   = Records.EnumTable()
+        let enumCases   = Records.EnumCaseLookup()
         let typeIdToClr = Dictionary<TypeId, System.Type>()
         for rd in recordItems sf do
             let info = defineRecord ctx.Module nsName symbols rd
             recordTable.[rd.Name] <- info
-            // Find the TypeId the type checker assigned and stash a
-            // (TypeId → CLR type) mapping so signature lowering can
-            // resolve `TyUser` to the right `TypeBuilder`.
             symbols.TryFind rd.Name
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+        for ed in enumItems sf do
+            let info = defineEnum ctx.Module nsName ed
+            enumTable.[ed.Name] <- info
+            for c in info.Cases do
+                // Bare `Red` and qualified `Color.Red` both resolve.
+                enumCases.[c.Name] <- (info, c)
+                enumCases.[ed.Name + "." + c.Name] <- (info, c)
+            symbols.TryFind ed.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type)
         let lookup =
             fun (id: TypeId) ->
                 match typeIdToClr.TryGetValue id with
@@ -310,7 +353,8 @@ let private emitAssembly
                     { Generics = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
             emitFunctionBody
-                methodTable.[fn.Name] fn sg lookup methodTable recordTable
+                methodTable.[fn.Name] fn sg lookup
+                methodTable recordTable enumTable enumCases
 
         let lyricMain = methodTable.["main"]
         let hostMain  = defineHostEntryPoint programTy lyricMain

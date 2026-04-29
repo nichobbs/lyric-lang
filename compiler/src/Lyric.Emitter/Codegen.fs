@@ -38,7 +38,13 @@ type FunctionCtx =
       /// Same-package records visible at codegen time. E5 supports
       /// constructor calls and field reads; mutation via `with`
       /// lands in E5 polish.
-      Records:    Lyric.Emitter.Records.RecordTable }
+      Records:    Lyric.Emitter.Records.RecordTable
+      /// Same-package enums visible at codegen time.
+      Enums:      Lyric.Emitter.Records.EnumTable
+      /// `Red` / `Color.Red` → (enum info, case info). E6 only
+      /// recognises these for variant-free enums; full-fat unions
+      /// land in a later slice.
+      EnumCases:  Lyric.Emitter.Records.EnumCaseLookup }
 
 module FunctionCtx =
 
@@ -47,7 +53,9 @@ module FunctionCtx =
             (returnType: ClrType)
             (paramList: (string * ClrType) list)
             (funcs: Dictionary<string, MethodBuilder>)
-            (records: Lyric.Emitter.Records.RecordTable) : FunctionCtx =
+            (records: Lyric.Emitter.Records.RecordTable)
+            (enums: Lyric.Emitter.Records.EnumTable)
+            (enumCases: Lyric.Emitter.Records.EnumCaseLookup) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
@@ -59,7 +67,9 @@ module FunctionCtx =
           Loops      = Stack()
           Params     = p
           Funcs      = funcs
-          Records    = records }
+          Records    = records
+          Enums      = enums
+          EnumCases  = enumCases }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -319,6 +329,17 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     // ---- field access -------------------------------------------------
 
+    | EMember ({ Kind = EPath { Segments = [enumName] } }, caseName)
+        when ctx.Enums.ContainsKey enumName ->
+        // `Color.Green` — qualified enum case literal.
+        let info = ctx.Enums.[enumName]
+        match info.Cases |> List.tryFind (fun c -> c.Name = caseName) with
+        | Some c ->
+            emitLdcI4 il c.Ordinal
+            info.Type
+        | None ->
+            failwithf "E6 codegen: enum '%s' has no case '%s'" enumName caseName
+
     | EMember (recv, fieldName) ->
         let recvTy = emitExpr ctx recv
         // Arrays / slices: `.length` lowers to `ldlen; conv.i4`.
@@ -348,10 +369,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- variable read ------------------------------------------------
 
     | EPath { Segments = [name] } ->
-        // Order: parameter slot → local variable → function name
-        // (which loads a delegate; deferred to E8). Locals shadow
-        // params shadow functions, mirroring the type checker's
-        // lookup order.
+        // Order: parameter slot → local → enum case → unknown.
         match FunctionCtx.tryLookup ctx name with
         | Some lb ->
             il.Emit(OpCodes.Ldloc, lb)
@@ -362,7 +380,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 il.Emit(OpCodes.Ldarg, idx)
                 pty
             | _ ->
-                failwithf "E4 codegen: unknown name '%s'" name
+                match ctx.EnumCases.TryGetValue name with
+                | true, (info, c) ->
+                    emitLdcI4 il c.Ordinal
+                    info.Type
+                | _ ->
+                    failwithf "E4 codegen: unknown name '%s'" name
+
+    | EPath { Segments = [enumName; caseName] }
+        when ctx.Enums.ContainsKey enumName ->
+        let info = ctx.Enums.[enumName]
+        match info.Cases |> List.tryFind (fun c -> c.Name = caseName) with
+        | Some c ->
+            emitLdcI4 il c.Ordinal
+            info.Type
+        | None ->
+            failwithf "E6 codegen: enum '%s' has no case '%s'" enumName caseName
 
     // ---- prefix -------------------------------------------------------
 
@@ -486,6 +519,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             else
                 thenTy
 
+    // ---- match (E6: enum-only patterns) -------------------------------
+
+    | EMatch (scrutinee, arms) ->
+        emitMatch ctx scrutinee arms
+
     // ---- record construction ------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
@@ -562,6 +600,130 @@ and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
     | EOBBlock blk ->
         emitBlock ctx blk
         typeof<System.Void>     // a block leaves nothing on the stack
+
+/// Compile-time predicate: does `pat` always match? Identifier
+/// patterns are catch-alls *unless* the name happens to be a known
+/// enum case — Lyric uses syntactic shape, not capitalisation, to
+/// distinguish the two.
+and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
+    match pat.Kind with
+    | PWildcard -> true
+    | PBinding ("_", None) -> true
+    | PBinding (name, None) ->
+        not (ctx.EnumCases.ContainsKey name)
+    | PParen inner -> alwaysMatches ctx inner
+    | _ -> false
+
+/// Emit IL that pushes `1` onto the stack iff `pat` matches the
+/// scrutinee value already stored in `tmp`. The slot's CLR type is
+/// passed for context (e.g. enum-case ordinals).
+and private emitPatternTest
+        (ctx: FunctionCtx)
+        (tmp: LocalBuilder)
+        (slotTy: ClrType)
+        (pat: Pattern) : unit =
+    let il = ctx.IL
+    match pat.Kind with
+    | PWildcard | PBinding ("_", None) ->
+        emitLdcI4 il 1
+    | PBinding (name, None) ->
+        match ctx.EnumCases.TryGetValue name with
+        | true, (_, c) ->
+            // `case Red` — equality test against the case ordinal.
+            il.Emit(OpCodes.Ldloc, tmp)
+            emitLdcI4 il c.Ordinal
+            il.Emit(OpCodes.Ceq)
+        | _ ->
+            // Plain identifier binding — always matches; the bind
+            // happens in `emitPatternBind`.
+            emitLdcI4 il 1
+    | PParen inner ->
+        emitPatternTest ctx tmp slotTy inner
+    | PLiteral lit ->
+        // scrutinee == literal
+        il.Emit(OpCodes.Ldloc, tmp)
+        let _ =
+            match lit with
+            | LInt (v, suffix) -> emitIntLiteral il v suffix
+            | LBool b          -> emitLdcI4 il (if b then 1 else 0); typeof<bool>
+            | LChar c          -> emitLdcI4 il c; typeof<char>
+            | LFloat (v, s)    -> emitFloatLiteral il v s
+            | LString s        -> il.Emit(OpCodes.Ldstr, s); typeof<string>
+            | _ -> emitLdcI4 il 0; typeof<int32>
+        il.Emit(OpCodes.Ceq)
+    | PConstructor (path, []) ->
+        // Variant-free pattern — must be an enum case in scope.
+        let key =
+            match path.Segments with
+            | [name] -> name
+            | _ -> String.concat "." path.Segments
+        match ctx.EnumCases.TryGetValue key with
+        | true, (_, c) ->
+            il.Emit(OpCodes.Ldloc, tmp)
+            emitLdcI4 il c.Ordinal
+            il.Emit(OpCodes.Ceq)
+        | _ ->
+            failwithf "E6 codegen: unknown constructor pattern '%s'"
+                (String.concat "." path.Segments)
+    | _ ->
+        failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
+
+/// Bind any identifiers introduced by `pat` into the scope, given
+/// the scrutinee already stored in `tmp`. Names that match a known
+/// enum case are skipped — they're constructor patterns, not
+/// bindings.
+and private emitPatternBind
+        (ctx: FunctionCtx)
+        (tmp: LocalBuilder)
+        (pat: Pattern) : unit =
+    match pat.Kind with
+    | PBinding (name, None) when name <> "_" && not (ctx.EnumCases.ContainsKey name) ->
+        let lb = FunctionCtx.defineLocal ctx name tmp.LocalType
+        ctx.IL.Emit(OpCodes.Ldloc, tmp)
+        ctx.IL.Emit(OpCodes.Stloc, lb)
+    | PParen inner -> emitPatternBind ctx tmp inner
+    | _ -> ()
+
+and private emitMatch
+        (ctx: FunctionCtx)
+        (scrutinee: Expr)
+        (arms: MatchArm list) : ClrType =
+    let il = ctx.IL
+    let scrutTy = emitExpr ctx scrutinee
+    let tmp = FunctionCtx.defineLocal ctx ("__match_" + string (System.Guid.NewGuid().GetHashCode())) scrutTy
+    il.Emit(OpCodes.Stloc, tmp)
+    let endLbl = il.DefineLabel()
+    let mutable resultTy : ClrType option = None
+    arms
+    |> List.iteri (fun i arm ->
+        let nextArm = il.DefineLabel()
+        if not (alwaysMatches ctx arm.Pattern) then
+            emitPatternTest ctx tmp scrutTy arm.Pattern
+            il.Emit(OpCodes.Brfalse, nextArm)
+        FunctionCtx.pushScope ctx
+        emitPatternBind ctx tmp arm.Pattern
+        let armTy = emitBranch ctx arm.Body
+        if resultTy.IsNone then resultTy <- Some armTy
+        FunctionCtx.popScope ctx
+        il.Emit(OpCodes.Br, endLbl)
+        il.MarkLabel(nextArm)
+        ignore i)
+    // Fall-through (no arm matched): push a dummy default so the
+    // stack stays balanced. Phase 1 punt: emit the result type's
+    // zero. M1.4 will replace this with a `MatchFailure` throw.
+    match resultTy with
+    | Some t when t = typeof<System.Void> -> ()
+    | Some t when t.IsValueType ->
+        let dummy = FunctionCtx.defineLocal ctx ("__match_default") t
+        il.Emit(OpCodes.Ldloca, dummy)
+        il.Emit(OpCodes.Initobj, t)
+        il.Emit(OpCodes.Ldloc, dummy)
+    | Some _ ->
+        il.Emit(OpCodes.Ldnull)
+    | None ->
+        emitLdcI4 il 0
+    il.MarkLabel(endLbl)
+    defaultArg resultTy typeof<int32>
 
 and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     let il = ctx.IL

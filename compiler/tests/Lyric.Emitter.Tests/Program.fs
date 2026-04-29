@@ -14,5 +14,6 @@ let main argv =
             FunctionCallTests.tests
             RecordTests.tests
             SliceTests.tests
+            EnumMatchTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

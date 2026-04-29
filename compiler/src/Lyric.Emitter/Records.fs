@@ -29,3 +29,22 @@ type RecordInfo =
 
 /// Per-emit table of records visible at codegen time.
 type RecordTable = Dictionary<string, RecordInfo>
+
+/// One case of a Lyric enum, post-CLR-lowering.
+type EnumCase =
+    { Name:    string
+      Ordinal: int }
+
+/// What the codegen needs to know about a Lyric enum.
+type EnumInfo =
+    { Name:  string
+      /// The closed CLR enum type backing the Lyric enum.
+      Type:  ClrType
+      Cases: EnumCase list }
+
+type EnumTable = Dictionary<string, EnumInfo>
+
+/// Reverse lookup: bare or qualified case name → (parent enum, ordinal).
+/// Populated alongside `EnumTable` so codegen can resolve `Red` and
+/// `Color.Red` symmetrically.
+type EnumCaseLookup = Dictionary<string, EnumInfo * EnumCase>
