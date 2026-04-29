@@ -708,6 +708,28 @@ and private parsePostfixExpr
         | TPunct Question ->
             let qTok = Cursor.advance cursor
             e <- mkExpr (EPropagate e) (joinSpans e.Span qTok.Span)
+        | TPunct LBracket ->
+            // Postfix indexing: `a[i]`, `a[i, j]`. Per grammar §7.
+            // Note this collides with TypeArgs at call sites
+            // (`f[T](x)`), but at expression-postfix level we always
+            // treat `[` as indexing.
+            Cursor.advance cursor |> ignore
+            let xs = ResizeArray<Expr>()
+            if Cursor.peekToken cursor <> TPunct RBracket then
+                xs.Add(parseExpr cursor diags)
+                while Cursor.peekToken cursor = TPunct Comma do
+                    Cursor.advance cursor |> ignore
+                    if Cursor.peekToken cursor = TPunct RBracket then ()
+                    else xs.Add(parseExpr cursor diags)
+            let endSpan =
+                match Cursor.tryEatPunct RBracket cursor with
+                | Some t -> t.Span
+                | None ->
+                    err diags "P0083"
+                        "expected ']' to close index expression"
+                        (Cursor.peekSpan cursor)
+                    e.Span
+            e <- mkExpr (EIndex(e, List.ofSeq xs)) (joinSpans e.Span endSpan)
         | _ -> keep <- false
     e
 
@@ -914,10 +936,14 @@ and private parseQuantifierExpr
 
     // Optional `where COND`. Use parseOrExpr2 (no `implies`) so the
     // trailing `implies BODY` is left for the body parser below.
+    Cursor.skipStmtEnds cursor |> ignore
     let whereExpr =
         match Cursor.tryEatKeyword KwWhere cursor with
         | Some _ -> Some (parseOrExpr2 cursor diags)
         | None -> None
+    // The `implies BODY` may be on its own line — see worked
+    // example 11's stack ensures clauses.
+    Cursor.skipStmtEnds cursor |> ignore
 
     // Body. Three permitted forms:
     //   `implies E`  — explicit implication body
@@ -2610,8 +2636,14 @@ and private parseOpaqueTypeBody
         (diags:  ResizeArray<Diagnostic>)
         (genericsPrefix: GenericParams option)
         : OpaqueTypeDecl =
-    let startTok = Cursor.advance cursor   // 'opaque'
-    Cursor.advance cursor |> ignore        // 'type'
+    // Caller positions the cursor at the leading keyword. We accept
+    // either `opaque type X` (the canonical form) or just `type X`
+    // (when the caller has already consumed a wrapping `exposed`).
+    let startTok = Cursor.peek cursor
+    if Cursor.peekToken cursor = TKeyword KwOpaque then
+        Cursor.advance cursor |> ignore
+    if Cursor.peekToken cursor = TKeyword KwType then
+        Cursor.advance cursor |> ignore
     let name, _ = readIdent cursor diags "opaque type"
     Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
@@ -2673,7 +2705,18 @@ and private parseParam
     // grammar/reference mismatch and we follow the reference + the
     // worked examples here.
     let startSpan = Cursor.peekSpan cursor
-    let name, _ = readIdent cursor diags "parameter"
+    // `self` is a hard keyword but is also the canonical name for the
+    // implicit-receiver parameter inside `impl` method declarations
+    // (worked example 6: `func add(self: in Vec3, other: in Vec3)`).
+    // Accept it specifically as a parameter name in addition to
+    // ordinary identifiers.
+    let name, _ =
+        match Cursor.peekToken cursor with
+        | TKeyword KwSelf ->
+            let t = Cursor.advance cursor
+            "self", t.Span
+        | _ ->
+            readIdent cursor diags "parameter"
     match Cursor.tryEatPunct Colon cursor with
     | Some _ -> ()
     | None ->
@@ -2823,11 +2866,26 @@ and private parseFunctionDeclBody
         err diags "P0173"
             "expected 'func' keyword"
             (Cursor.peekSpan cursor)
-    let name, _ = readIdent cursor diags "function"
+    // Function names may be qualified — `func TypeName.method(…)`
+    // is the method-style declaration form (worked example 9 shows
+    // `pub func TeamView.tryInto(…)`). For now we collapse the
+    // dotted segments into a single string with embedded dots; a
+    // proper qualifier slot on FunctionDecl is a later AST change.
+    let firstName, _ = readIdent cursor diags "function"
+    let parts = ResizeArray<string>()
+    parts.Add(firstName)
+    while Cursor.peekToken cursor = TPunct Dot do
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatIdent cursor with
+        | Some (n, _) -> parts.Add(n)
+        | None -> ()
+    let name = String.concat "." (List.ofSeq parts)
     Cursor.skipStmtEnds cursor |> ignore
     let genericsSuffix = parseGenericParamsOpt cursor diags
     let generics = mergeGenericsInfo diags genericsPrefix genericsSuffix
+    Cursor.skipStmtEnds cursor |> ignore
     let parameters = parseParamList cursor diags
+    Cursor.skipStmtEnds cursor |> ignore
     let returnType =
         match Cursor.tryEatPunct Colon cursor with
         | Some _ -> Some (parseTypeExpr cursor diags)
