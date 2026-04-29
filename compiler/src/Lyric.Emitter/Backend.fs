@@ -10,6 +10,9 @@ open System
 open System.IO
 open System.Reflection
 open System.Reflection.Emit
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 
 /// Description of the assembly to emit. `Name` becomes both the
 /// assembly identity and the runtime entry-point class name (Lyric
@@ -30,10 +33,7 @@ type EmitContext =
       Module:      ModuleBuilder
       Descriptor:  AssemblyDescriptor }
 
-/// Open a persisted-assembly backend. The PE that lands at
-/// `OutputPath` is consumable by `dotnet exec` once the matching
-/// `*.runtimeconfig.json` is written next to it (handled by the
-/// emitter, not the backend).
+/// Open a persisted-assembly backend.
 let create (desc: AssemblyDescriptor) : EmitContext =
     let asmName = AssemblyName(desc.Name)
     asmName.Version <- desc.Version
@@ -60,14 +60,50 @@ let private writeRuntimeConfig (path: string) : unit =
 """
     File.WriteAllText(path, config)
 
-/// Finalise the assembly to disk. Must be called after every type
-/// has been `CreateTypeInfo()`-completed by the emitter.
-let save (ctx: EmitContext) : unit =
+/// Finalise the assembly to disk. The optional `entryPoint` becomes
+/// the PE's `Main` token; passing `None` writes a library .dll.
+///
+/// PersistedAssemblyBuilder doesn't expose a single-call save with
+/// entry point, so we lower through `GenerateMetadata` +
+/// `ManagedPEBuilder` per the .NET 9 documented pattern.
+let save (ctx: EmitContext) (entryPoint: MethodInfo option) : unit =
     match Option.ofObj (Path.GetDirectoryName(ctx.Descriptor.OutputPath)) with
     | Some dir when not (String.IsNullOrEmpty dir) && not (Directory.Exists dir) ->
         Directory.CreateDirectory dir |> ignore
     | _ -> ()
-    ctx.Assembly.Save(ctx.Descriptor.OutputPath)
+
+    let mutable ilStream    = Unchecked.defaultof<BlobBuilder>
+    let mutable fieldData   = Unchecked.defaultof<BlobBuilder>
+    let metadataBuilder =
+        ctx.Assembly.GenerateMetadata(&ilStream, &fieldData)
+
+    let entryHandle =
+        match entryPoint with
+        | Some mi ->
+            MetadataTokens.MethodDefinitionHandle(mi.MetadataToken)
+        | None ->
+            MetadataTokens.MethodDefinitionHandle(0)
+
+    let imageCharacteristics =
+        match entryPoint with
+        | Some _ -> Characteristics.ExecutableImage
+        | None   -> Characteristics.Dll ||| Characteristics.ExecutableImage
+
+    let peHeaderBuilder = PEHeaderBuilder(imageCharacteristics = imageCharacteristics)
+    let peBuilder =
+        ManagedPEBuilder(
+            header           = peHeaderBuilder,
+            metadataRootBuilder = MetadataRootBuilder(metadataBuilder),
+            ilStream         = ilStream,
+            mappedFieldData  = fieldData,
+            entryPoint       = entryHandle)
+
+    let peBlob = BlobBuilder()
+    peBuilder.Serialize(peBlob) |> ignore
+
+    use fs = File.Create(ctx.Descriptor.OutputPath)
+    peBlob.WriteContentTo(fs)
+
     let cfgPath =
         match Option.ofObj (Path.ChangeExtension(ctx.Descriptor.OutputPath, "runtimeconfig.json")) with
         | Some p -> p

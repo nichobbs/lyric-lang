@@ -8,5 +8,6 @@ let main argv =
         testList "Lyric.Emitter" [
             StdlibSmokeTests.tests
             EmitterScaffoldTests.tests
+            HelloWorldTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

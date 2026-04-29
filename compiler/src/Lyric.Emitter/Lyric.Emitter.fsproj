@@ -6,6 +6,8 @@
 
   <ItemGroup>
     <Compile Include="Backend.fs" />
+    <Compile Include="TypeMap.fs" />
+    <Compile Include="Codegen.fs" />
     <Compile Include="Emitter.fs" />
   </ItemGroup>
 
