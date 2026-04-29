@@ -12,6 +12,7 @@
     <Compile Include="IntLiteralTests.fs" />
     <Compile Include="FloatLiteralTests.fs" />
     <Compile Include="StringLiteralTests.fs" />
+    <Compile Include="StringInterpolationTests.fs" />
     <Compile Include="CommentTests.fs" />
     <Compile Include="PunctuationTests.fs" />
     <Compile Include="StmtEndTests.fs" />

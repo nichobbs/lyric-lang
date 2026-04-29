@@ -11,6 +11,7 @@ let main argv =
             IntLiteralTests.tests
             FloatLiteralTests.tests
             StringLiteralTests.tests
+            StringInterpolationTests.tests
             CommentTests.tests
             PunctuationTests.tests
             StmtEndTests.tests

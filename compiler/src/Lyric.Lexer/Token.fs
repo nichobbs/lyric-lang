@@ -77,14 +77,35 @@ type Token =
     /// an Int32 codepoint.
     | TChar    of int
 
-    /// A complete plain string literal (no interpolation).
+    /// A complete plain string literal (no interpolation). Emitted by
+    /// the lexer when a "..." literal contains no '${' holes — the
+    /// common case. Strings with interpolation are emitted as the
+    /// multi-token sequence below.
     | TString  of string
 
-    /// Triple-quoted multiline string. Reserved; not emitted by the
-    /// vertical-slice lexer.
+    /// Beginning of an interpolated string literal — the opening '"'.
+    /// Followed by zero or more (TStringPart, TStringHoleStart,
+    /// ...expr-tokens..., RBrace) tuples, then a final TStringPart
+    /// (possibly empty) and TStringEnd.
+    | TStringStart
+
+    /// A run of literal characters inside an interpolated string,
+    /// between holes (or between '"' and the first hole, or between
+    /// the last hole and the closing '"').
+    | TStringPart of string
+
+    /// The '${' that opens an interpolation hole. The expression
+    /// inside is lexed as ordinary tokens; the matching '}' is a
+    /// regular RBrace, the lexer pops back into string mode after it.
+    | TStringHoleStart
+
+    /// The closing '"' of an interpolated string.
+    | TStringEnd
+
+    /// Triple-quoted multiline string ('"""..."""').
     | TTripleString of string
 
-    /// Raw string (`r"..."` / `r#"..."#`). Reserved.
+    /// Raw string (`r"..."` / `r#"..."#`).
     | TRawString of string
 
     | TBool    of bool
