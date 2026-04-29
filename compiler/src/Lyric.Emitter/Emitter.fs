@@ -333,6 +333,15 @@ let private defineRecord
       Records.RecordInfo.Fields = fields
       Records.RecordInfo.Ctor   = ctor }
 
+/// Wrap `t` in `Task<t>`, or return `Task` for void. Used by the
+/// async lowering: `async func` returns `Task[T]` even though the
+/// E14 blocking shim runs the body synchronously.
+let private toTaskType (t: System.Type) : System.Type =
+    if t = typeof<System.Void> then
+        typeof<System.Threading.Tasks.Task>
+    else
+        typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| t |])
+
 /// Define a static method header on `programTy` matching the resolved
 /// signature. Body is filled in by `emitFunctionBody` afterwards.
 let private defineMethodHeader
@@ -344,7 +353,9 @@ let private defineMethodHeader
         sg.Params
         |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
         |> List.toArray
-    let returnType = TypeMap.toClrReturnTypeWith lookup sg.Return
+    let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+    let returnType =
+        if sg.IsAsync then toTaskType bareReturn else bareReturn
     let mb =
         programTy.DefineMethod(
             fn.Name,
@@ -404,7 +415,14 @@ let private emitFunctionBody
         (isInstance: bool)
         (selfType: System.Type option) : unit =
     let il = mb.GetILGenerator()
-    let returnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+    // For an async function the *body* still computes a value of
+    // the bare return type; the wrapping into `Task<T>` only kicks
+    // in at the exit point. Carrying both keeps the body codegen
+    // ignorant of the lowering strategy.
+    let bareReturnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+    let methodReturnTy =
+        if sg.IsAsync then toTaskType bareReturnTy else bareReturnTy
+    let returnTy = bareReturnTy
     let paramList =
         sg.Params
         |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
@@ -413,6 +431,7 @@ let private emitFunctionBody
             il returnTy paramList
             funcs records enums enumCases unions unionCases
             interfaces isInstance selfType
+    ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
     // and branches here. The label site emits `ensures:` checks and
@@ -491,7 +510,9 @@ let private emitFunctionBody
         else
             routeReturn resultTy
 
-    // Exit-point block: ensures checks (if any) then the ret.
+    // Exit-point block: ensures checks (if any) then the ret. Async
+    // bodies wrap the produced value into `Task.FromResult<T>(value)`
+    // before returning; void async bodies load `Task.CompletedTask`.
     il.MarkLabel(exitLabel)
     for c in fn.Contracts do
         match c with
@@ -501,6 +522,38 @@ let private emitFunctionBody
     match resultLocal with
     | Some loc -> il.Emit(OpCodes.Ldloc, loc)
     | None     -> ()
+    if sg.IsAsync then
+        if isVoidReturn then
+            // Drop nothing; load Task.CompletedTask.
+            let taskTy = typeof<System.Threading.Tasks.Task>
+            let prop = taskTy.GetProperty("CompletedTask")
+            match Option.ofObj prop with
+            | Some p ->
+                let getter = p.GetGetMethod()
+                match Option.ofObj getter with
+                | Some g -> il.Emit(OpCodes.Call, g)
+                | None   -> failwith "Task.CompletedTask getter not found"
+            | None -> failwith "Task.CompletedTask property not found"
+        else
+            let openTask = typedefof<System.Threading.Tasks.Task<_>>
+            let closedTask = openTask.MakeGenericType([| bareReturnTy |])
+            let fromResult =
+                closedTask.GetMethod(
+                    "FromResult",
+                    [| bareReturnTy |],
+                    null)
+            // The actual `Task.FromResult<T>` lives on the non-
+            // generic Task class; the generic-on-Task<T> lookup
+            // above won't find it. Resolve via the open generic.
+            let fromResultGeneric =
+                let mi =
+                    typeof<System.Threading.Tasks.Task>
+                        .GetMethod("FromResult")
+                match Option.ofObj mi with
+                | Some m -> m.MakeGenericMethod([| bareReturnTy |])
+                | None   -> failwith "Task.FromResult<T> not found"
+            ignore fromResult
+            il.Emit(OpCodes.Call, fromResultGeneric)
     il.Emit(OpCodes.Ret)
 
 /// Synthesise a host-runnable `Main(string[]) -> int` that calls the

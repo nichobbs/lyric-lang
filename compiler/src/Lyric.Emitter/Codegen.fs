@@ -375,6 +375,32 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | ESelf ->
         failwith "E12 codegen: 'self' used outside of an impl method"
 
+    // ---- await (blocking shim per D035) -------------------------------
+
+    | EAwait inner ->
+        let taskTy = emitExpr ctx inner
+        // GetAwaiter() lives on Task<T> or Task. Resolve the
+        // matching method, call it, then call GetResult on the
+        // returned awaiter.
+        let getAwaiter =
+            match Option.ofObj (taskTy.GetMethod("GetAwaiter")) with
+            | Some m -> m
+            | None   -> failwithf "E14 codegen: %s.GetAwaiter not found" taskTy.Name
+        il.Emit(OpCodes.Callvirt, getAwaiter)
+        let awaiterTy = getAwaiter.ReturnType
+        let getResult =
+            match Option.ofObj (awaiterTy.GetMethod("GetResult")) with
+            | Some m -> m
+            | None   -> failwithf "E14 codegen: %s.GetResult not found" awaiterTy.Name
+        // GetResult is a struct method, so it needs `call`, not
+        // `callvirt`. The awaiter is on the stack as a value type;
+        // we have to address it.
+        let awLoc = FunctionCtx.defineLocal ctx "__awaiter" awaiterTy
+        il.Emit(OpCodes.Stloc, awLoc)
+        il.Emit(OpCodes.Ldloca, awLoc)
+        il.Emit(OpCodes.Call, getResult)
+        getResult.ReturnType
+
     // ---- result (in ensures clauses) ----------------------------------
 
     | EResult ->
