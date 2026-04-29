@@ -71,9 +71,24 @@ to that branch. Never push elsewhere without explicit permission.
 
 ### Tools and build
 
-There is no compiler, no test runner, no build system. Document changes
-are reviewed by reading. When the bootstrap compiler exists (Phase 1),
-this section will need to grow.
+The bootstrap compiler (Phase 1, in F# on .NET 9) lives in `compiler/`:
+
+- `compiler/Lyric.sln` — the solution.
+- `compiler/global.json` — pins SDK to 9.0.x.
+- `compiler/Directory.Build.props` — `TargetFramework=net9.0`,
+  `TreatWarningsAsErrors=true`, `Nullable=enable`.
+- `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1).
+- `compiler/tests/Lyric.Lexer.Tests/` — Expecto-based tests
+  (console-app project; F# does not coexist cleanly with the new
+  Microsoft.Testing.Platform xunit runner — Expecto is the F#-native
+  alternative).
+
+Build: `cd compiler && dotnet build Lyric.sln`.
+
+Run tests: `cd compiler && dotnet run --project tests/Lyric.Lexer.Tests`.
+
+The lexer is the only project so far; parser, type checker, etc. land
+in subsequent commits per `docs/05-implementation-plan.md` §"Phase 1".
 
 ## Glossary (project-specific terms)
 
