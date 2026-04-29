@@ -9,6 +9,8 @@
     <Compile Include="Symbol.fs" />
     <Compile Include="Scope.fs" />
     <Compile Include="Resolver.fs" />
+    <Compile Include="Signature.fs" />
+    <Compile Include="ExprChecker.fs" />
     <Compile Include="Checker.fs" />
   </ItemGroup>
 

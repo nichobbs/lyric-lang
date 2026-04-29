@@ -9,6 +9,7 @@
     <Compile Include="SymbolTableTests.fs" />
     <Compile Include="ResolverTests.fs" />
     <Compile Include="SignatureTests.fs" />
+    <Compile Include="ExprCheckerTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

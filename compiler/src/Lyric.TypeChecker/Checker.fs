@@ -15,25 +15,6 @@ module Lyric.TypeChecker.Checker
 open Lyric.Lexer
 open Lyric.Parser.Ast
 
-/// A resolved function/entry parameter — the parser's Param after
-/// type resolution.
-type ResolvedParam =
-    { Name:    string
-      Type:    Type
-      Mode:    ParamMode
-      Default: bool         // whether the parameter has a default
-      Span:    Span }
-
-/// A resolved function signature: the surface-level parameter and
-/// return types after T2 resolution. Generic parameters are recorded
-/// by name; bounds are not yet enforced (T6).
-type ResolvedSignature =
-    { Generics: string list
-      Params:   ResolvedParam list
-      Return:   Type
-      IsAsync:  bool
-      Span:     Span }
-
 /// The checker's per-invocation result.
 ///
 /// * Symbols     — package-level symbol table populated in T1.

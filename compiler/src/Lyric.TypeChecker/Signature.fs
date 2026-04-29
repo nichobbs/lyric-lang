@@ -1,59 +1,27 @@
-/// Resolve function-shaped declarations (`FunctionDecl`, `FunctionSig`)
-/// into the type-checker's `ResolvedSig`. Lives in its own file so
-/// `ExprChecker` can call it without forward-reference gymnastics.
-module Lyric.TypeChecker.Signature
+/// Resolved function-signature representation, shared by the
+/// expression checker (which needs to type calls against the
+/// signature) and the top-level Checker (which builds the
+/// per-package signature map).
+namespace Lyric.TypeChecker
 
 open Lyric.Lexer
 open Lyric.Parser.Ast
-open Lyric.TypeChecker
-open Lyric.TypeChecker.Symbols
 
-let private genericNames (gp: GenericParams option) : string list =
-    match gp with
-    | None -> []
-    | Some gps ->
-        gps.Params |> List.choose (fun g ->
-            match g with
-            | GPType (name, _)  -> Some name
-            | GPValue _         -> None)
+/// A resolved function/entry parameter — the parser's Param after
+/// type resolution.
+type ResolvedParam =
+    { Name:    string
+      Type:    Type
+      Mode:    ParamMode
+      Default: bool
+      Span:    Span }
 
-let private withGenericContext
-        (env: CheckEnv)
-        (extra: string list)
-        (action: CheckEnv -> 'a) : 'a =
-    let saved = env.Generics
-    let merged = GenericContext.union env.Generics (GenericContext.make extra)
-    let env' = { env with Generics = merged }
-    let result = action env'
-    // Restore by ignoring `env'` — the caller still holds `env` with
-    // `saved` intact (we only mutate ScopeStack/Diagnostics, not the
-    // record fields).
-    ignore saved
-    result
-
-/// Resolve a function signature given a parser-side `Param list`
-/// + return type + generic clause. The shared signature checker is
-/// reused by `FunctionDecl` (top-level) and `FunctionSig` (interface
-/// member / extern decl).
-let resolveSignature
-        (env: CheckEnv)
-        (generics: GenericParams option)
-        (params': Param list)
-        (returnTy: TypeExpr option) : ResolvedSig =
-    let gNames = genericNames generics
-    withGenericContext env gNames (fun env' ->
-        let pTys =
-            params' |> List.map (fun p -> Resolver.resolve env' p.Type)
-        let rTy =
-            match returnTy with
-            | Some t -> Resolver.resolve env' t
-            | None   -> Type.unit'
-        { Generics = gNames
-          Params   = pTys
-          Return   = rTy })
-
-let resolveFunction (env: CheckEnv) (fd: FunctionDecl) : ResolvedSig =
-    resolveSignature env fd.Generics fd.Params fd.Return
-
-let resolveFunctionSig (env: CheckEnv) (fs: FunctionSig) : ResolvedSig =
-    resolveSignature env fs.Generics fs.Params fs.Return
+/// A resolved function signature. Generic-parameter names are
+/// recorded here; bound enforcement (where T: Compare) is the type
+/// checker's later concern (T6).
+type ResolvedSignature =
+    { Generics: string list
+      Params:   ResolvedParam list
+      Return:   Type
+      IsAsync:  bool
+      Span:     Span }
