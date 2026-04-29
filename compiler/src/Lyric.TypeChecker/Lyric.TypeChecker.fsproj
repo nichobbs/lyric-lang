@@ -8,6 +8,7 @@
     <Compile Include="Type.fs" />
     <Compile Include="Symbol.fs" />
     <Compile Include="Scope.fs" />
+    <Compile Include="Resolver.fs" />
     <Compile Include="Checker.fs" />
   </ItemGroup>
 
