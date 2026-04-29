@@ -10,5 +10,6 @@ let main argv =
             EmitterScaffoldTests.tests
             HelloWorldTests.tests
             ArithmeticTests.tests
+            ControlFlowTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

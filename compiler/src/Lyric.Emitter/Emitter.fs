@@ -35,26 +35,22 @@ let private functionItems (sf: SourceFile) : FunctionDecl list =
         | IFunc fn -> Some fn
         | _ -> None)
 
-/// Emit the body of a Lyric function into the given ILGenerator. E1
-/// supports only `Unit`-returning functions whose body is a block
-/// (`func name(): Unit { stmts }`) or an expression body
-/// (`func name(): Unit = expr`).
+/// Emit the body of a Lyric function into the given ILGenerator.
+/// Phase 1 emit handles only `Unit`-returning functions; E4 broadens
+/// to typed return values.
 let private emitFunctionBody (il: ILGenerator) (fn: FunctionDecl) : unit =
+    let ctx = Codegen.FunctionCtx.make il typeof<System.Void>
     match fn.Body with
-    | None ->
-        // No body — nothing to emit. The caller's `ret` still fires.
-        ()
+    | None -> ()
     | Some (FBBlock blk) ->
-        Codegen.emitBlock il blk
+        Codegen.emitBlock ctx blk
     | Some (FBExpr ({ Kind = ELambda ([], blk) })) ->
         // `func foo(): T = { ... }` parses as FBExpr containing a
         // zero-argument ELambda; treat the lambda's body as the
         // function's block.
-        Codegen.emitBlock il blk
+        Codegen.emitBlock ctx blk
     | Some (FBExpr e) ->
-        let resultTy = Codegen.emitExpr il e
-        // Expression-bodied function returning Unit: pop any leftover
-        // value so the stack is balanced before `ret`.
+        let resultTy = Codegen.emitExpr ctx e
         if resultTy <> typeof<System.Void> then
             il.Emit(System.Reflection.Emit.OpCodes.Pop)
 

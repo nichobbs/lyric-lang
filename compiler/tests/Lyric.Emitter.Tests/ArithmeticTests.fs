@@ -11,13 +11,12 @@ let private wrap (label: string) (expr: string) : string =
 /// prints `expected` followed by a newline (Console.WriteLine adds
 /// the platform-native line terminator; we trim it).
 let private exprPrints (label: string) (expr: string) (expected: string) =
-    test (sprintf "println(%s) prints %s" expr expected) {
+    testCase (sprintf "println(%s) prints %s" expr expected) <| fun () ->
         let _, stdout, stderr, exitCode = compileAndRun label (wrap label expr)
         Expect.equal exitCode 0
             (sprintf "exit 0 (stderr=%s)" stderr)
         Expect.equal (stdout.TrimEnd()) expected
             "stdout matches expected"
-    }
 
 let tests =
     testSequenced
