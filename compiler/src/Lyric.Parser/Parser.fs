@@ -606,6 +606,22 @@ let rec private parsePrimaryExpr
                 inner.Span
         mkExpr (EOld inner) (joinSpans opTok.Span endSpan)
 
+    | TIdent "forall" ->
+        parseQuantifierExpr cursor diags true
+
+    | TIdent "exists" ->
+        parseQuantifierExpr cursor diags false
+
+    // Diverging statements admitted in expression position. Their AST
+    // representation wraps the synthesised statement in a single-stmt
+    // EBlock so the outer expression machinery treats them as values
+    // of type Never (subtyped into anything).
+    | TKeyword KwReturn | TKeyword KwThrow
+    | TIdent "break" | TIdent "continue" | TKeyword KwTry ->
+        let stmt = parseStatement cursor diags
+        let blk  = { Statements = [stmt]; Span = stmt.Span }
+        mkExpr (EBlock blk) stmt.Span
+
     | TPunct LBrace ->
         // Lambda in expression position: `{ x: Int -> body }`. We don't
         // currently emit block-expressions outside match/if/etc.
@@ -852,6 +868,77 @@ and private parseMatchExpr
     mkExpr (EMatch(scrutinee, List.ofSeq arms))
         (joinSpans startTok.Span endSpan)
 
+and private parseQuantifierBinder
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : PropertyBinder =
+    let nameTok = Cursor.peek cursor
+    let name, nameSp =
+        match Cursor.tryEatIdent cursor with
+        | Some (n, s) -> n, s
+        | None ->
+            err diags "P0300" "expected an identifier in quantifier binder" nameTok.Span
+            "<error>", nameTok.Span
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0301" "expected ':' in quantifier binder" (Cursor.peekSpan cursor)
+    let ty = parseTypeExpr cursor diags
+    { Name = name; Type = ty; Span = joinSpans nameSp ty.Span }
+
+and private parseQuantifierExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        (isForall: bool)
+        : Expr =
+    let startTok = Cursor.advance cursor   // 'forall' / 'exists'
+    match Cursor.tryEatPunct LParen cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0302"
+            (sprintf "expected '(' after '%s'"
+                (if isForall then "forall" else "exists"))
+            (Cursor.peekSpan cursor)
+    let binders = ResizeArray<PropertyBinder>()
+    if Cursor.peekToken cursor <> TPunct RParen then
+        binders.Add(parseQuantifierBinder cursor diags)
+        while Cursor.peekToken cursor = TPunct Comma do
+            Cursor.advance cursor |> ignore
+            if Cursor.peekToken cursor = TPunct RParen then ()
+            else binders.Add(parseQuantifierBinder cursor diags)
+    match Cursor.tryEatPunct RParen cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0303" "expected ')' to close quantifier binder list"
+            (Cursor.peekSpan cursor)
+
+    // Optional `where COND`. Use parseOrExpr2 (no `implies`) so the
+    // trailing `implies BODY` is left for the body parser below.
+    let whereExpr =
+        match Cursor.tryEatKeyword KwWhere cursor with
+        | Some _ -> Some (parseOrExpr2 cursor diags)
+        | None -> None
+
+    // Body. Three permitted forms:
+    //   `implies E`  — explicit implication body
+    //   `{ … }`      — block body
+    //   `E`          — bare expression body
+    let body =
+        match Cursor.peekToken cursor with
+        | TIdent "implies" ->
+            Cursor.advance cursor |> ignore
+            parseExpr cursor diags
+        | TPunct LBrace ->
+            let blk = parseBlock cursor diags
+            mkExpr (EBlock blk) blk.Span
+        | _ ->
+            parseExpr cursor diags
+
+    let kind =
+        if isForall then EForall(List.ofSeq binders, whereExpr, body)
+        else EExists(List.ofSeq binders, whereExpr, body)
+    mkExpr kind (joinSpans startTok.Span body.Span)
+
 and private parseLambdaExpr
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
@@ -890,7 +977,7 @@ and private parseLambdaExpr
                     let nameTok = Cursor.advance cursor
                     let ty =
                         match Cursor.tryEatPunct Colon cursor with
-                        | Some _ -> Some (parseTypeExpr cursor diags)
+                        | Some _ -> Some (parseTypeExprNoArrow cursor diags)
                         | None -> None
                     let endSpan =
                         match ty with
@@ -1291,11 +1378,33 @@ and private parseAddExpr
         | _ -> keep <- false
     lhs
 
+and private parseCoalesceExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    // Nil-coalescing `??` — right-associative, between additive and
+    // comparison per language reference §4.1. We tolerate a STMT_END
+    // between the LHS and the `??` because the worked examples chain
+    // `??` onto the next line:
+    //
+    //   val from = await svc.accounts.findById(fromId)
+    //       ?? return Err(AccountNotFound(fromId))
+    let lhs = parseAddExpr cursor diags
+    let savedPos = Cursor.mark cursor
+    Cursor.skipStmtEnds cursor |> ignore
+    if Cursor.peekToken cursor = TPunct QuestionQuestion then
+        Cursor.advance cursor |> ignore
+        let rhs = parseCoalesceExpr cursor diags
+        mkExpr (EBinop(BCoalesce, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
+    else
+        Cursor.reset cursor savedPos
+        lhs
+
 and private parseCompareExpr
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
         : Expr =
-    let lhs = parseAddExpr cursor diags
+    let lhs = parseCoalesceExpr cursor diags
     // At most one comparison operator at this level — chained
     // comparisons are a parse error per language reference §4.1.
     let pickOp () =
@@ -1311,7 +1420,7 @@ and private parseCompareExpr
     | None -> lhs
     | Some op ->
         Cursor.advance cursor |> ignore
-        let rhs = parseAddExpr cursor diags
+        let rhs = parseCoalesceExpr cursor diags
         // Detect a chained comparison and emit a diagnostic.
         match pickOp () with
         | Some _ ->
@@ -1336,6 +1445,10 @@ and private parseOrExpr2
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
         : Expr =
+    // `or` and `xor` only — `implies` lives at the lower-precedence
+    // wrapper parseImpliesExpr so the `where` clause inside a
+    // quantifier can use parseOrExpr2 directly without absorbing the
+    // trailing `implies BODY`.
     let mutable lhs = parseAndExpr2 cursor diags
     let mutable keep = true
     while keep do
@@ -1348,21 +1461,31 @@ and private parseOrExpr2
             Cursor.advance cursor |> ignore
             let rhs = parseAndExpr2 cursor diags
             lhs <- mkExpr (EBinop(BXor, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
-        | TIdent "implies" ->
-            // Soft keyword used in contract sub-language. Modelled
-            // as a binary operator at or-precedence; the contract
-            // validator (a later pass) confirms its placement.
-            Cursor.advance cursor |> ignore
-            let rhs = parseAndExpr2 cursor diags
-            lhs <- mkExpr (EBinop(BImplies, lhs, rhs)) (joinSpans lhs.Span rhs.Span)
         | _ -> keep <- false
     lhs
+
+and private parseImpliesExpr
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : Expr =
+    // `implies` is the contract sub-language's logical implication.
+    // Right-associative: `a implies b implies c` ≡ `a implies (b
+    // implies c)`. The contract validator (a later pass) confirms
+    // that `implies` only appears in admissible positions.
+    let lhs = parseOrExpr2 cursor diags
+    if Cursor.peekToken cursor = TIdent "implies" then
+        Cursor.advance cursor |> ignore
+        let rhs = parseImpliesExpr cursor diags
+        mkExpr (EBinop(BImplies, lhs, rhs))
+            (joinSpans lhs.Span rhs.Span)
+    else
+        lhs
 
 and private parseExpr
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
         : Expr =
-    parseOrExpr2 cursor diags
+    parseImpliesExpr cursor diags
 
 // ---------------------------------------------------------------------------
 // Range bounds: `lo ..= hi`, `lo ..< hi`, `lo .. hi`, `..= hi`, `lo ..`.
@@ -1567,6 +1690,37 @@ and private parseTypeListUntilRParen
             if Cursor.peekToken cursor = TPunct RParen then ()
             else xs.Add(parseTypeExpr cursor diags)
     List.ofSeq xs
+
+/// Parse a type expression that does NOT consume a trailing `->`.
+/// Used in contexts where `->` belongs to the surrounding syntax —
+/// notably typed lambda parameters (`{ x: Int -> body }`) and the
+/// `bind T -> provider` form inside a wire block.
+and private parseTypeExprNoArrow
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : TypeExpr =
+    let startSpan = Cursor.peekSpan cursor
+    if Cursor.peekToken cursor = TPunct LParen then
+        Cursor.advance cursor |> ignore
+        let inner = parseTypeListUntilRParen cursor diags
+        let closeSpan =
+            match Cursor.tryEatPunct RParen cursor with
+            | Some t -> t.Span
+            | None ->
+                err diags "P0063"
+                    "expected ')' to close parenthesised type"
+                    (Cursor.peekSpan cursor)
+                startSpan
+        let span = joinSpans startSpan closeSpan
+        let nodeKind =
+            match inner with
+            | []  -> TUnit
+            | [t] -> TParen t
+            | xs  -> TTuple xs
+        applyNullableSuffix cursor (mkType nodeKind span)
+    else
+        let atom = parseAtomNonParenType cursor diags
+        applyNullableSuffix cursor atom
 
 and private parseTypeExpr
         (cursor: Cursor)
@@ -2469,12 +2623,26 @@ and private parseOpaqueTypeBody
     // OpaqueTypeDecl directly — this parser does not drop them
     // like the record / union / etc. variants.
     let postAnns = parseTrailingAnnotations cursor diags
-    // Body is optional: a header-only opaque declaration is legal
-    // (the body lives elsewhere in the package or in a .lbody file).
-    let hasBody = Cursor.peekToken cursor = TPunct LBrace
-    let members =
-        if hasBody then parseOpaqueMembers cursor diags
-        else []
+    // Body forms recognised:
+    //   `opaque type X`              — header only (no body)
+    //   `opaque type X { … }`        — inline body (record-shape)
+    //   `opaque type X = record { … }` — `.lbody`-style body file
+    //                                    (the `record` keyword is
+    //                                    syntactic sugar — the
+    //                                    representation is always
+    //                                    record-shaped)
+    let hasBody, members =
+        match Cursor.peekToken cursor with
+        | TPunct LBrace ->
+            true, parseOpaqueMembers cursor diags
+        | TPunct Eq ->
+            Cursor.advance cursor |> ignore
+            // Skip a leading `record` keyword if present.
+            if Cursor.peekToken cursor = TKeyword KwRecord then
+                Cursor.advance cursor |> ignore
+            true, parseOpaqueMembers cursor diags
+        | _ ->
+            false, []
     let endSpan = Cursor.peekSpan cursor
     { Name        = name
       Generics    = generics
@@ -3196,6 +3364,24 @@ and private parseExternMember
     | TKeyword KwExposed
         when (Cursor.peekAt cursor 1).Token = TKeyword KwRecord ->
         Some (EMExposedRec (parseRecordBody cursor diags None true))
+    | TKeyword KwExposed
+        when (Cursor.peekAt cursor 1).Token = TKeyword KwType ->
+        // `exposed type X` is the FFI-only sugar (per worked example
+        // §11.1) for an opaque-shaped extern. Treat as a header-only
+        // OpaqueTypeDecl with `exposed` recorded as a synthetic
+        // annotation. Skip the `exposed` keyword first so the body
+        // parser sees `type X`.
+        Cursor.advance cursor |> ignore  // 'exposed'
+        let inlineDecl = parseOpaqueTypeBody cursor diags None
+        // Tag with a synthetic `@exposed` annotation marker so the
+        // resolver can distinguish from a regular opaque extern.
+        let exposedTag : Annotation =
+            { Name = { Segments = ["exposed"]; Span = inlineDecl.Span }
+              Args = []
+              Span = inlineDecl.Span }
+        Some (EMOpaque
+                { inlineDecl with
+                    Annotations = exposedTag :: inlineDecl.Annotations })
     | TKeyword KwRecord ->
         Some (EMRecord (parseRecordBody cursor diags None false))
     | TKeyword KwUnion ->
@@ -3412,22 +3598,36 @@ and private parseItem
     else
         let prefixStart = Cursor.peekSpan cursor
         let docs = parseItemDocComments cursor
-        let anns = parseItemAnnotations cursor diags
-        // The worked examples use both orderings of the optional
-        // `pub` visibility marker and the `generic[…]` head modifier
-        // (e.g. `pub generic[T]` and `generic[T] pub`). Loop, eating
-        // whichever appears next, until neither matches.
+        // Worked-examples freely interleave annotations, `pub`, and
+        // `generic[…]` before the item-kind keyword:
+        //
+        //   pub func foo …
+        //   generic[T] pub func foo …
+        //   @derive(Json) pub exposed record …
+        //   generic[K] @pure pub func keys …
+        //
+        // Loop until none of the three prefix tokens matches.
+        let collectedAnns = ResizeArray<Annotation>()
         let mutable vis            : Visibility option   = None
         let mutable genericsPrefix : GenericParams option = None
         let mutable progress = true
         while progress do
+            // Tolerate STMT_END between prefix tokens (annotations on
+            // their own line, blank line between the annotation and
+            // `pub`, etc.).
+            Cursor.skipStmtEnds cursor |> ignore
             match Cursor.peekToken cursor with
             | TKeyword KwPub when vis.IsNone ->
                 let t = Cursor.advance cursor
                 vis <- Some (Pub t.Span)
             | TKeyword KwGeneric when genericsPrefix.IsNone ->
                 genericsPrefix <- parseGenericParamsOpt cursor diags
+            | TPunct At ->
+                match parseAnnotation cursor diags with
+                | Some a -> collectedAnns.Add(a)
+                | None -> progress <- false
             | _ -> progress <- false
+        let anns = List.ofSeq collectedAnns
 
         let nextTok = Cursor.peek cursor
         let kind =

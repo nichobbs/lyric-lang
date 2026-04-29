@@ -560,6 +560,12 @@ and ExprKind =
     /// Assignment expression (only valid in statement position).
     | EAssign of target: Expr * op: AssignOp * value: Expr
 
+    /// A braced block in expression position. Used to wrap diverging
+    /// statements (`return`, `break`, `continue`, `throw`, `try …`)
+    /// when they appear as the RHS of an operator like `??` or as a
+    /// match-arm body.
+    | EBlock of Block
+
     /// Recovery hatch.
     | EError
 
