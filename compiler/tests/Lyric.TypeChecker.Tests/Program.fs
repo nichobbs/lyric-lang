@@ -8,5 +8,6 @@ let main argv =
         testList "Lyric.TypeChecker" [
             SymbolTableTests.tests
             ResolverTests.tests
+            SignatureTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

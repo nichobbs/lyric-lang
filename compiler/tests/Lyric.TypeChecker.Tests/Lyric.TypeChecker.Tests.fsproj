@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="SymbolTableTests.fs" />
     <Compile Include="ResolverTests.fs" />
+    <Compile Include="SignatureTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
