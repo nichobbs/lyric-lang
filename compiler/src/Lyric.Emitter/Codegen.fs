@@ -42,9 +42,33 @@ type FunctionCtx =
       /// Same-package enums visible at codegen time.
       Enums:      Lyric.Emitter.Records.EnumTable
       /// `Red` / `Color.Red` → (enum info, case info). E6 only
-      /// recognises these for variant-free enums; full-fat unions
-      /// land in a later slice.
-      EnumCases:  Lyric.Emitter.Records.EnumCaseLookup }
+      /// recognises these for variant-free enums; variant-bearing
+      /// unions live below.
+      EnumCases:  Lyric.Emitter.Records.EnumCaseLookup
+      /// Variant-bearing unions visible at codegen time.
+      Unions:     Lyric.Emitter.Records.UnionTable
+      /// `Some` / `Option.Some` → (union info, case info). Bare and
+      /// qualified spellings both resolve.
+      UnionCases: Lyric.Emitter.Records.UnionCaseLookup
+      /// Lyric interfaces, keyed by name.
+      Interfaces: Lyric.Emitter.Records.InterfaceTable
+      /// `true` when emitting an instance method (impl method) — at
+      /// CLR level arg 0 is `self` and named params shift by one.
+      IsInstance: bool
+      /// The impl target's CLR type when `IsInstance = true`. Drives
+      /// the static type returned by `ESelf` so field reads can
+      /// resolve.
+      SelfType:   ClrType option
+      /// Synthesised single exit point. Every `return` (and the
+      /// trailing implicit-return expression) stores into
+      /// `ResultLocal` (if non-void) and branches to this label;
+      /// the label site emits `ensures:` checks and the actual
+      /// `ret`. Set by the emitter before any body codegen runs.
+      mutable ReturnLabel: Label option
+      /// Where the returned value is stashed before the
+      /// `ReturnLabel` block runs. `None` for void-returning
+      /// methods.
+      mutable ResultLocal: LocalBuilder option }
 
 module FunctionCtx =
 
@@ -55,12 +79,18 @@ module FunctionCtx =
             (funcs: Dictionary<string, MethodBuilder>)
             (records: Lyric.Emitter.Records.RecordTable)
             (enums: Lyric.Emitter.Records.EnumTable)
-            (enumCases: Lyric.Emitter.Records.EnumCaseLookup) : FunctionCtx =
+            (enumCases: Lyric.Emitter.Records.EnumCaseLookup)
+            (unions: Lyric.Emitter.Records.UnionTable)
+            (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
+            (interfaces: Lyric.Emitter.Records.InterfaceTable)
+            (isInstance: bool)
+            (selfType: ClrType option) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
+        let argShift = if isInstance then 1 else 0
         paramList
-        |> List.iteri (fun i (name, ty) -> p.[name] <- (i, ty))
+        |> List.iteri (fun i (name, ty) -> p.[name] <- (i + argShift, ty))
         { IL         = il
           ReturnType = returnType
           Scopes     = s
@@ -69,7 +99,14 @@ module FunctionCtx =
           Funcs      = funcs
           Records    = records
           Enums      = enums
-          EnumCases  = enumCases }
+          EnumCases  = enumCases
+          Unions     = unions
+          UnionCases = unionCases
+          Interfaces = interfaces
+          IsInstance = isInstance
+          SelfType   = selfType
+          ReturnLabel = None
+          ResultLocal = None }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -327,6 +364,135 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EParen inner -> emitExpr ctx inner
 
+    // ---- self ---------------------------------------------------------
+
+    | ESelf when ctx.IsInstance ->
+        il.Emit(OpCodes.Ldarg_0)
+        match ctx.SelfType with
+        | Some t -> t
+        | None   -> typeof<obj>
+
+    | ESelf ->
+        failwith "E12 codegen: 'self' used outside of an impl method"
+
+    // ---- await (blocking shim per D035) -------------------------------
+
+    | EAwait inner ->
+        // Per the M1.4 blocking shim: emit the Task[T]-shaped value,
+        // call GetAwaiter().GetResult() and propagate the unwrapped
+        // type. When the inner expression's static type is a
+        // TypeBuilder-instantiated generic Task<T> (because T is a
+        // user-defined record/union still under construction), we
+        // can't call .GetMethod on it directly — we have to go
+        // through `TypeBuilder.GetMethod(constructed, openMethod)`.
+        let taskTy = emitExpr ctx inner
+        let isClosedGenericOnTaskBuilder =
+            taskTy.IsGenericType
+            && (taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>)
+            && (taskTy.GetGenericArguments() |> Array.exists (fun t ->
+                    t :? TypeBuilder
+                    || (t.IsGenericType && t.GetGenericArguments() |> Array.exists (fun a -> a :? TypeBuilder))))
+        let elemTy =
+            if taskTy.IsGenericType
+               && taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>
+            then taskTy.GetGenericArguments().[0]
+            else typeof<System.Void>
+        let resolveGenericTask () =
+            // For Task<TypeBuilder...> we need TypeBuilder.GetMethod
+            // with the open-generic method.
+            let openGetAwaiter =
+                let mi = typedefof<System.Threading.Tasks.Task<_>>.GetMethod("GetAwaiter")
+                match Option.ofObj mi with
+                | Some m -> m
+                | None -> failwith "E14 codegen: Task<>.GetAwaiter open-generic not found"
+            let closedGetAwaiter =
+                TypeBuilder.GetMethod(taskTy, openGetAwaiter)
+            // The awaiter type is TaskAwaiter<elemTy>; resolve
+            // GetResult on its open generic.
+            let openAwaiterTy =
+                typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+            let closedAwaiterTy = openAwaiterTy.MakeGenericType([| elemTy |])
+            let openGetResult =
+                let mi = openAwaiterTy.GetMethod("GetResult")
+                match Option.ofObj mi with
+                | Some m -> m
+                | None -> failwith "E14 codegen: TaskAwaiter<>.GetResult not found"
+            let closedGetResult =
+                TypeBuilder.GetMethod(closedAwaiterTy, openGetResult)
+            closedGetAwaiter, closedAwaiterTy, closedGetResult, elemTy
+
+        let getAwaiter, awaiterTy, getResult, returnedTy =
+            if isClosedGenericOnTaskBuilder then
+                resolveGenericTask ()
+            else
+                let ga =
+                    match Option.ofObj (taskTy.GetMethod("GetAwaiter")) with
+                    | Some m -> m
+                    | None -> failwithf "E14 codegen: %s.GetAwaiter not found" taskTy.Name
+                let aw = ga.ReturnType
+                let gr =
+                    match Option.ofObj (aw.GetMethod("GetResult")) with
+                    | Some m -> m
+                    | None -> failwithf "E14 codegen: %s.GetResult not found" aw.Name
+                ga, aw, gr, gr.ReturnType
+        il.Emit(OpCodes.Callvirt, getAwaiter)
+        let awLoc = FunctionCtx.defineLocal ctx "__awaiter" awaiterTy
+        il.Emit(OpCodes.Stloc, awLoc)
+        il.Emit(OpCodes.Ldloca, awLoc)
+        il.Emit(OpCodes.Call, getResult)
+        returnedTy
+
+    // ---- result (in ensures clauses) ----------------------------------
+
+    | EResult ->
+        match ctx.ResultLocal with
+        | Some loc ->
+            il.Emit(OpCodes.Ldloc, loc)
+            loc.LocalType
+        | None ->
+            failwith "E15 codegen: 'result' used outside of an ensures clause"
+
+    // ---- old() — Phase 4 work, rejected here --------------------------
+
+    | EOld _ ->
+        failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
+
+    // ---- method-style call (callvirt on interface or class method) ----
+
+    | ECall ({ Kind = EMember (recv, methodName) }, args) ->
+        let recvTy = emitExpr ctx recv
+        // Try to find an interface method with this name.
+        let ifaceMethod =
+            ctx.Interfaces.Values
+            |> Seq.collect (fun i -> i.Members |> List.map (fun m -> i, m))
+            |> Seq.tryFind (fun (_, m) -> m.Name = methodName)
+        let mi : MethodInfo option =
+            match ifaceMethod with
+            | Some (_, m) -> Some (m.Method :> MethodInfo)
+            | None ->
+                // Fall back to a method on the receiver's CLR type
+                // by reflection. This catches impl-method calls where
+                // we have a concrete target type.
+                recvTy.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = methodName && not m.IsStatic)
+        match mi with
+        | Some method ->
+            for a in args do
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let _ = emitExpr ctx payload
+                ()
+            il.Emit(OpCodes.Callvirt, method)
+            if method.ReturnType = typeof<System.Void> then
+                typeof<System.Void>
+            else
+                method.ReturnType
+        | None ->
+            failwithf "E12 codegen: no method '%s' on %s"
+                methodName recvTy.Name
+
     // ---- field access -------------------------------------------------
 
     | EMember ({ Kind = EPath { Segments = [enumName] } }, caseName)
@@ -369,7 +535,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- variable read ------------------------------------------------
 
     | EPath { Segments = [name] } ->
-        // Order: parameter slot → local → enum case → unknown.
+        // Order: parameter slot → local → enum case → nullary union
+        // case → fallthrough.
         match FunctionCtx.tryLookup ctx name with
         | Some lb ->
             il.Emit(OpCodes.Ldloc, lb)
@@ -385,7 +552,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     emitLdcI4 il c.Ordinal
                     info.Type
                 | _ ->
-                    failwithf "E4 codegen: unknown name '%s'" name
+                    match ctx.UnionCases.TryGetValue name with
+                    | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
+                        // Nullary case literal — `None` / `Leaf` etc.
+                        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                        info.Type :> ClrType
+                    | _ ->
+                        failwithf "E4 codegen: unknown name '%s'" name
 
     | EPath { Segments = [enumName; caseName] }
         when ctx.Enums.ContainsKey enumName ->
@@ -524,6 +697,43 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | EMatch (scrutinee, arms) ->
         emitMatch ctx scrutinee arms
 
+    // ---- union case construction (variant-bearing) -------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.UnionCases.ContainsKey name ->
+        let info, caseInfo = ctx.UnionCases.[name]
+        // Cases with payloads accept positional or named args.
+        let namedMap =
+            args
+            |> List.choose (function
+                | CANamed (n, ex, _) -> Some (n, ex)
+                | _ -> None)
+            |> Map.ofList
+        let positional =
+            args
+            |> List.choose (function
+                | CAPositional ex -> Some ex
+                | _ -> None)
+        let mutable posIdx = 0
+        for f in caseInfo.Fields do
+            let argExpr =
+                match Map.tryFind f.Name namedMap with
+                | Some ex -> ex
+                | None ->
+                    if posIdx < List.length positional then
+                        let ex = List.item posIdx positional
+                        posIdx <- posIdx + 1
+                        ex
+                    else
+                        failwithf "E11 codegen: union case '%s' missing field '%s'"
+                            name f.Name
+            let argTy = emitExpr ctx argExpr
+            // Box value-typed args into the erased `obj` payload slot.
+            if f.Type = typeof<obj> && argTy.IsValueType then
+                il.Emit(OpCodes.Box, argTy)
+        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+        info.Type :> ClrType
+
     // ---- record construction ------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
@@ -565,12 +775,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when ctx.Funcs.ContainsKey name ->
         let mb = ctx.Funcs.[name]
-        for a in args do
+        // Per D035, generics monomorphise via erasure: type
+        // parameters lower to `obj` and value-typed call-site args
+        // box at the boundary. Inspect each parameter slot and box
+        // when needed.
+        let paramTypes =
+            mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
+        args
+        |> List.iteri (fun i a ->
             let payload =
                 match a with
                 | CAPositional ex | CANamed (_, ex, _) -> ex
-            let _ = emitExpr ctx payload
-            ()
+            let argTy = emitExpr ctx payload
+            if i < paramTypes.Length
+               && paramTypes.[i] = typeof<obj>
+               && argTy.IsValueType then
+                il.Emit(OpCodes.Box, argTy))
         il.Emit(OpCodes.Call, mb)
         if mb.ReturnType = typeof<System.Void> then
             typeof<System.Void>
@@ -602,15 +822,16 @@ and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
         typeof<System.Void>     // a block leaves nothing on the stack
 
 /// Compile-time predicate: does `pat` always match? Identifier
-/// patterns are catch-alls *unless* the name happens to be a known
-/// enum case — Lyric uses syntactic shape, not capitalisation, to
-/// distinguish the two.
+/// patterns are catch-alls *unless* the name names an enum case or
+/// a nullary union case — Lyric uses syntactic shape, not
+/// capitalisation, to distinguish the two.
 and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
     match pat.Kind with
     | PWildcard -> true
     | PBinding ("_", None) -> true
     | PBinding (name, None) ->
         not (ctx.EnumCases.ContainsKey name)
+        && not (ctx.UnionCases.ContainsKey name)
     | PParen inner -> alwaysMatches ctx inner
     | _ -> false
 
@@ -634,9 +855,17 @@ and private emitPatternTest
             emitLdcI4 il c.Ordinal
             il.Emit(OpCodes.Ceq)
         | _ ->
-            // Plain identifier binding — always matches; the bind
-            // happens in `emitPatternBind`.
-            emitLdcI4 il 1
+            match ctx.UnionCases.TryGetValue name with
+            | true, (_, caseInfo) ->
+                // `case Yes` for a nullary union case — type-test.
+                il.Emit(OpCodes.Ldloc, tmp)
+                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Cgt_Un)
+            | _ ->
+                // Plain identifier binding — always matches; the
+                // bind happens in `emitPatternBind`.
+                emitLdcI4 il 1
     | PParen inner ->
         emitPatternTest ctx tmp slotTy inner
     | PLiteral lit ->
@@ -651,37 +880,87 @@ and private emitPatternTest
             | LString s        -> il.Emit(OpCodes.Ldstr, s); typeof<string>
             | _ -> emitLdcI4 il 0; typeof<int32>
         il.Emit(OpCodes.Ceq)
-    | PConstructor (path, []) ->
-        // Variant-free pattern — must be an enum case in scope.
+    | PConstructor (path, sub) ->
+        // Two flavours: enum case (no sub-patterns) and union case
+        // (any number of sub-patterns).
         let key =
             match path.Segments with
             | [name] -> name
             | _ -> String.concat "." path.Segments
         match ctx.EnumCases.TryGetValue key with
-        | true, (_, c) ->
+        | true, (_, c) when sub.IsEmpty ->
             il.Emit(OpCodes.Ldloc, tmp)
             emitLdcI4 il c.Ordinal
             il.Emit(OpCodes.Ceq)
         | _ ->
-            failwithf "E6 codegen: unknown constructor pattern '%s'"
-                (String.concat "." path.Segments)
+            match ctx.UnionCases.TryGetValue key with
+            | true, (_, caseInfo) ->
+                // `tmp is CaseSubclass` — `isinst` returns the value
+                // typed as the subclass, or `null`. We use the
+                // `cgt.un` against ldnull idiom to convert "not null"
+                // into the bool 1.
+                il.Emit(OpCodes.Ldloc, tmp)
+                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Cgt_Un)
+            | _ ->
+                failwithf "E11 codegen: unknown constructor pattern '%s'"
+                    (String.concat "." path.Segments)
     | _ ->
         failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
 
 /// Bind any identifiers introduced by `pat` into the scope, given
 /// the scrutinee already stored in `tmp`. Names that match a known
-/// enum case are skipped — they're constructor patterns, not
-/// bindings.
+/// enum or nullary-union case are skipped — they're constructor
+/// patterns, not bindings.
 and private emitPatternBind
         (ctx: FunctionCtx)
         (tmp: LocalBuilder)
         (pat: Pattern) : unit =
+    let il = ctx.IL
     match pat.Kind with
-    | PBinding (name, None) when name <> "_" && not (ctx.EnumCases.ContainsKey name) ->
+    | PBinding (name, None)
+        when name <> "_"
+             && not (ctx.EnumCases.ContainsKey name)
+             && not (ctx.UnionCases.ContainsKey name) ->
         let lb = FunctionCtx.defineLocal ctx name tmp.LocalType
-        ctx.IL.Emit(OpCodes.Ldloc, tmp)
-        ctx.IL.Emit(OpCodes.Stloc, lb)
+        il.Emit(OpCodes.Ldloc, tmp)
+        il.Emit(OpCodes.Stloc, lb)
     | PParen inner -> emitPatternBind ctx tmp inner
+    | PConstructor (path, sub) when not sub.IsEmpty ->
+        let key =
+            match path.Segments with
+            | [name] -> name
+            | _ -> String.concat "." path.Segments
+        match ctx.UnionCases.TryGetValue key with
+        | true, (_, caseInfo) ->
+            // Cast `tmp` to the case subclass and store in a typed
+            // temp; sub-patterns load fields off it.
+            let castedTmp =
+                FunctionCtx.defineLocal ctx
+                    ("__case_" + caseInfo.Name) (caseInfo.Type :> ClrType)
+            il.Emit(OpCodes.Ldloc, tmp)
+            il.Emit(OpCodes.Castclass, caseInfo.Type)
+            il.Emit(OpCodes.Stloc, castedTmp)
+            let pairs =
+                caseInfo.Fields
+                |> List.zip (sub |> List.truncate (List.length caseInfo.Fields))
+            for (sp, f) in pairs do
+                match sp.Kind with
+                | PBinding (name, None)
+                    when name <> "_"
+                         && not (ctx.EnumCases.ContainsKey name)
+                         && not (ctx.UnionCases.ContainsKey name) ->
+                    let lb = FunctionCtx.defineLocal ctx name f.Type
+                    il.Emit(OpCodes.Ldloc, castedTmp)
+                    il.Emit(OpCodes.Ldfld, f.Field)
+                    il.Emit(OpCodes.Stloc, lb)
+                | PWildcard | PBinding ("_", None) -> ()
+                | _ ->
+                    // Nested patterns (e.g. `case Some(Some(x))`) need
+                    // recursive testing; defer to a later slice.
+                    ()
+        | _ -> ()
     | _ -> ()
 
 and private emitMatch
@@ -802,11 +1081,25 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             failwithf "E3 codegen: compound-assign target not yet supported: %A" target.Kind
 
     | SReturn None ->
-        il.Emit(OpCodes.Ret)
+        // Branch to the synthesised single exit if one was set up;
+        // otherwise emit a bare ret (legacy path for the host's
+        // synthetic Main entry point).
+        match ctx.ReturnLabel with
+        | Some lbl -> il.Emit(OpCodes.Br, lbl)
+        | None     -> il.Emit(OpCodes.Ret)
 
     | SReturn (Some e) ->
         let _ = emitExpr ctx e
-        il.Emit(OpCodes.Ret)
+        match ctx.ReturnLabel, ctx.ResultLocal with
+        | Some lbl, Some loc ->
+            il.Emit(OpCodes.Stloc, loc)
+            il.Emit(OpCodes.Br, lbl)
+        | Some lbl, None ->
+            // Non-void value into a void-returning function — drop.
+            il.Emit(OpCodes.Pop)
+            il.Emit(OpCodes.Br, lbl)
+        | None, _ ->
+            il.Emit(OpCodes.Ret)
 
     | SWhile (_label, cond, body) ->
         let lblHead = il.DefineLabel()

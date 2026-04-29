@@ -48,3 +48,60 @@ type EnumTable = Dictionary<string, EnumInfo>
 /// Populated alongside `EnumTable` so codegen can resolve `Red` and
 /// `Color.Red` symmetrically.
 type EnumCaseLookup = Dictionary<string, EnumInfo * EnumCase>
+
+// ---------------------------------------------------------------------------
+// Variant-bearing unions (sum types with per-case payloads).
+//
+// Each union lowers to:
+//   * An abstract sealed-hierarchy base class (the user-visible type).
+//   * One sealed subclass per case carrying that case's payload as
+//     public readonly fields plus an all-fields constructor.
+// Per D035 the payload-field types are *erased* in M1.4: TyVar / TyUser
+// arguments lower to `obj`. Reified generics is a Phase 2 follow-up.
+// ---------------------------------------------------------------------------
+
+/// One payload field of a union case. Named to avoid clashing with
+/// the parser AST's `UnionField` discriminator.
+type UnionPayloadField =
+    { Name:  string
+      Type:  ClrType
+      Field: FieldBuilder }
+
+/// One case of a Lyric union, post-CLR-lowering.
+type UnionCaseInfo =
+    { Name:    string
+      /// Sealed CLR class implementing the case.
+      Type:    TypeBuilder
+      Fields:  UnionPayloadField list
+      Ctor:    ConstructorBuilder }
+
+/// What the codegen needs to know about a Lyric union.
+type UnionInfo =
+    { Name:  string
+      /// Abstract base class — the union's user-visible CLR type.
+      Type:  TypeBuilder
+      Cases: UnionCaseInfo list }
+
+type UnionTable = Dictionary<string, UnionInfo>
+
+/// Reverse lookup: bare or qualified case name → (parent union, case info).
+type UnionCaseLookup = Dictionary<string, UnionInfo * UnionCaseInfo>
+
+// ---------------------------------------------------------------------------
+// Interfaces.
+// ---------------------------------------------------------------------------
+
+/// One declared method of a Lyric interface, lowered to an abstract
+/// CLR interface method.
+type InterfaceMember =
+    { Name:    string
+      Method:  MethodBuilder
+      Params:  ClrType list
+      Return:  ClrType }
+
+type InterfaceInfo =
+    { Name:    string
+      Type:    TypeBuilder
+      Members: InterfaceMember list }
+
+type InterfaceTable = Dictionary<string, InterfaceInfo>

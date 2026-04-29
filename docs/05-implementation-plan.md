@@ -115,7 +115,7 @@ Single-pass per file; parallel across files. No optimizations beyond what the .N
 1. **M1.1 (month 6-9):** Lexer + parser. Can parse all the worked examples without semantic checking.
 2. **M1.2 (month 9-12):** Type checker for primitives, records, sum types, generic monomorphization. Compiler accepts or rejects programs with type errors but doesn't yet emit code.
 3. **M1.3 (month 12-15):** MSIL emitter. Hello World runs. Increasingly complex programs compile and run.
-4. **M1.4 (month 15-18):** Contract elaboration, async, FFI to .NET BCL. The banking example (sans proof) compiles and runs.
+4. **M1.4 (month 15-18):** Contract elaboration, async, FFI to .NET BCL. The banking example (sans proof) compiles and runs. Three constructs ship in *bootstrap-grade* form (monomorphised generics, blocking-shim async, hand-curated FFI shim); see `docs/03-decision-log.md` D035 for the full scope-cut rationale and the gaps that Phase 2 / Phase 4 picks up.
 
 ### Phase 1 standard library
 

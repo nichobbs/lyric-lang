@@ -15,6 +15,12 @@ let main argv =
             RecordTests.tests
             SliceTests.tests
             EnumMatchTests.tests
+            UnionTests.tests
+            InterfaceTests.tests
+            ContractTests.tests
+            GenericsTests.tests
+            AsyncTests.tests
+            BankingSmokeTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

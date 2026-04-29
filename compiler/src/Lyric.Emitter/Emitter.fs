@@ -29,6 +29,15 @@ type EmitRequest =
 let private err (code: string) (msg: string) (span: Span) : Diagnostic =
     Diagnostic.error code msg span
 
+/// Wrap `t` in `Task<t>`, or return `Task` for void. Used by the
+/// async lowering: `async func` returns `Task[T]` even though the
+/// E14 blocking shim runs the body synchronously.
+let private toTaskType (t: System.Type) : System.Type =
+    if t = typeof<System.Void> then
+        typeof<System.Threading.Tasks.Task>
+    else
+        typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| t |])
+
 /// Pull every top-level `IFunc` out of a parsed source file.
 let private functionItems (sf: SourceFile) : FunctionDecl list =
     sf.Items
@@ -54,6 +63,97 @@ let private enumItems (sf: SourceFile) : EnumDecl list =
         | IEnum e -> Some e
         | _ -> None)
 
+/// Pull every top-level `IUnion` out of a parsed source file.
+let private unionItems (sf: SourceFile) : UnionDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IUnion u -> Some u
+        | _ -> None)
+
+/// Pull every top-level `IInterface` out of a parsed source file.
+let private interfaceItems (sf: SourceFile) : InterfaceDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IInterface i -> Some i
+        | _ -> None)
+
+/// Pull every top-level `IImpl` out of a parsed source file.
+let private implItems (sf: SourceFile) : ImplDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IImpl i -> Some i
+        | _ -> None)
+
+/// Define a CLR interface for one Lyric interface declaration. Each
+/// `IMSig` member becomes an abstract interface method; default
+/// methods (`IMFunc`) and associated types are accepted by the
+/// parser but their lowering is deferred per D035.
+let private defineInterface
+        (md: ModuleBuilder)
+        (nsName: string)
+        (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
+        (id: InterfaceDecl) : Records.InterfaceInfo =
+    let fullName =
+        if String.IsNullOrEmpty nsName then id.Name
+        else nsName + "." + id.Name
+    let tb =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public
+            ||| TypeAttributes.Interface
+            ||| TypeAttributes.Abstract,
+            null)
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    let resolveTy (te: TypeExpr) : System.Type =
+        let lty = Resolver.resolveType symbols resolveCtx scratchDiags te
+        TypeMap.toClrTypeWith lookup lty
+    let resolveRet (te: TypeExpr option) : System.Type =
+        match te with
+        | Some t ->
+            let lty = Resolver.resolveType symbols resolveCtx scratchDiags t
+            TypeMap.toClrReturnTypeWith lookup lty
+        | None -> typeof<System.Void>
+
+    let members =
+        id.Members
+        |> List.choose (fun m ->
+            match m with
+            | IMSig fs ->
+                let pTys =
+                    fs.Params
+                    |> List.map (fun p -> resolveTy p.Type)
+                    |> List.toArray
+                let bareRet = resolveRet fs.Return
+                let rTy = if fs.IsAsync then toTaskType bareRet else bareRet
+                let mb =
+                    tb.DefineMethod(
+                        fs.Name,
+                        MethodAttributes.Public
+                        ||| MethodAttributes.Abstract
+                        ||| MethodAttributes.Virtual
+                        ||| MethodAttributes.HideBySig
+                        ||| MethodAttributes.NewSlot,
+                        rTy,
+                        pTys)
+                fs.Params
+                |> List.iteri (fun i p ->
+                    mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name)
+                    |> ignore)
+                Some
+                    { Records.InterfaceMember.Name   = fs.Name
+                      Records.InterfaceMember.Method = mb
+                      Records.InterfaceMember.Params = pTys |> List.ofArray
+                      Records.InterfaceMember.Return = rTy }
+            | IMFunc _ | IMAssoc _ -> None)
+    { Records.InterfaceInfo.Name    = id.Name
+      Records.InterfaceInfo.Type    = tb
+      Records.InterfaceInfo.Members = members }
+
 /// Define a CLR enum type backing one Lyric enum. Each case becomes
 /// a `Public Static Literal` field with a sequential ordinal value,
 /// matching the strategy doc's §8.2 "variant-free unions" lowering.
@@ -74,6 +174,103 @@ let private defineEnum
     { Records.EnumInfo.Name  = ed.Name
       Records.EnumInfo.Type  = ty
       Records.EnumInfo.Cases = cases }
+
+/// Define the abstract base + sealed per-case subclasses for a Lyric
+/// union. Per D035, payload-field types are erased to `obj` in M1.4;
+/// reified generics is a Phase 2 follow-up.
+let private defineUnion
+        (md: ModuleBuilder)
+        (nsName: string)
+        (symbols: SymbolTable)
+        (ud: UnionDecl) : Records.UnionInfo =
+    let fullName =
+        if String.IsNullOrEmpty nsName then ud.Name
+        else nsName + "." + ud.Name
+    // Abstract base — no fields, no public ctor; cases extend it.
+    let baseTy =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public ||| TypeAttributes.Abstract,
+            typeof<obj>)
+    // Define a protected default ctor on the base so subclass ctors
+    // can chain to it.
+    let baseCtor =
+        baseTy.DefineConstructor(
+            MethodAttributes.Family ||| MethodAttributes.HideBySig,
+            CallingConventions.Standard,
+            [||])
+    let baseCtorIl = baseCtor.GetILGenerator()
+    baseCtorIl.Emit(OpCodes.Ldarg_0)
+    let objCtor = typeof<obj>.GetConstructor([||])
+    match Option.ofObj objCtor with
+    | Some c -> baseCtorIl.Emit(OpCodes.Call, c)
+    | None   -> failwith "object's no-arg ctor not found"
+    baseCtorIl.Emit(OpCodes.Ret)
+
+    // Resolve each case's payload field types via the type checker's
+    // resolver. Erasure: TyVar / TyUser → obj.
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    let cases =
+        ud.Cases
+        |> List.map (fun c ->
+            let caseFullName = fullName + "+" + c.Name
+            let caseTy =
+                md.DefineType(
+                    caseFullName,
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    baseTy :> System.Type)
+            let payload =
+                c.Fields
+                |> List.mapi (fun i f ->
+                    let lty, fname =
+                        match f with
+                        | UFNamed (n, te, _) ->
+                            Resolver.resolveType symbols resolveCtx scratchDiags te,
+                            n
+                        | UFPos (te, _) ->
+                            Resolver.resolveType symbols resolveCtx scratchDiags te,
+                            sprintf "Item%d" (i + 1)
+                    // Erasure: anything that isn't already a CLR
+                    // primitive lowers to obj. Reified generics
+                    // upgrade this in Phase 2.
+                    let cty =
+                        match lty with
+                        | TyPrim _ | TySlice _ | TyArray _ | TyTuple _ ->
+                            TypeMap.toClrType lty
+                        | _ -> typeof<obj>
+                    let fb =
+                        caseTy.DefineField(
+                            fname,
+                            cty,
+                            FieldAttributes.Public ||| FieldAttributes.InitOnly)
+                    { Records.UnionPayloadField.Name  = fname
+                      Records.UnionPayloadField.Type  = cty
+                      Records.UnionPayloadField.Field = fb })
+            // Constructor: takes every payload field in order.
+            let paramTypes =
+                payload |> List.map (fun f -> f.Type) |> List.toArray
+            let ctor =
+                caseTy.DefineConstructor(
+                    MethodAttributes.Public,
+                    CallingConventions.Standard,
+                    paramTypes)
+            let cil = ctor.GetILGenerator()
+            cil.Emit(OpCodes.Ldarg_0)
+            cil.Emit(OpCodes.Call, baseCtor)
+            payload
+            |> List.iteri (fun i f ->
+                cil.Emit(OpCodes.Ldarg_0)
+                cil.Emit(OpCodes.Ldarg, i + 1)
+                cil.Emit(OpCodes.Stfld, f.Field))
+            cil.Emit(OpCodes.Ret)
+            { Records.UnionCaseInfo.Name   = c.Name
+              Records.UnionCaseInfo.Type   = caseTy
+              Records.UnionCaseInfo.Fields = payload
+              Records.UnionCaseInfo.Ctor   = ctor })
+    { Records.UnionInfo.Name  = ud.Name
+      Records.UnionInfo.Type  = baseTy
+      Records.UnionInfo.Cases = cases }
 
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
@@ -157,7 +354,9 @@ let private defineMethodHeader
         sg.Params
         |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
         |> List.toArray
-    let returnType = TypeMap.toClrReturnTypeWith lookup sg.Return
+    let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+    let returnType =
+        if sg.IsAsync then toTaskType bareReturn else bareReturn
     let mb =
         programTy.DefineMethod(
             fn.Name,
@@ -178,6 +377,30 @@ let private defineMethodHeader
 /// For non-Unit functions whose body is a block, the trailing SExpr
 /// (if any) is treated as the implicit return value — matching
 /// Lyric's "last expression is the value" rule for block bodies.
+/// MethodInfo for the LyricAssertionException constructor accepting
+/// a string message. Resolved once per emit run.
+let private lyricAssertCtor : Lazy<ConstructorInfo> =
+    lazy (
+        let exTy = typeof<Lyric.Stdlib.LyricAssertionException>
+        match Option.ofObj (exTy.GetConstructor([| typeof<string> |])) with
+        | Some c -> c
+        | None   -> failwith "LyricAssertionException(string) ctor not found")
+
+/// Emit a runtime contract check: evaluate `cond`; on false, throw
+/// `LyricAssertionException(message)`.
+let private emitContractCheck
+        (ctx: Codegen.FunctionCtx)
+        (cond: Expr)
+        (label: string) : unit =
+    let il = ctx.IL
+    let _ = Codegen.emitExpr ctx cond
+    let okLbl = il.DefineLabel()
+    il.Emit(OpCodes.Brtrue, okLbl)
+    il.Emit(OpCodes.Ldstr, label)
+    il.Emit(OpCodes.Newobj, lyricAssertCtor.Value)
+    il.Emit(OpCodes.Throw)
+    il.MarkLabel(okLbl)
+
 let private emitFunctionBody
         (mb: MethodBuilder)
         (fn: FunctionDecl)
@@ -186,20 +409,63 @@ let private emitFunctionBody
         (funcs: Dictionary<string, MethodBuilder>)
         (records: Records.RecordTable)
         (enums: Records.EnumTable)
-        (enumCases: Records.EnumCaseLookup) : unit =
+        (enumCases: Records.EnumCaseLookup)
+        (unions: Records.UnionTable)
+        (unionCases: Records.UnionCaseLookup)
+        (interfaces: Records.InterfaceTable)
+        (isInstance: bool)
+        (selfType: System.Type option) : unit =
     let il = mb.GetILGenerator()
-    let returnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+    // For an async function the *body* still computes a value of
+    // the bare return type; the wrapping into `Task<T>` only kicks
+    // in at the exit point. Carrying both keeps the body codegen
+    // ignorant of the lowering strategy.
+    let bareReturnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+    let methodReturnTy =
+        if sg.IsAsync then toTaskType bareReturnTy else bareReturnTy
+    let returnTy = bareReturnTy
     let paramList =
         sg.Params
         |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
     let ctx =
         Codegen.FunctionCtx.make
-            il returnTy paramList funcs records enums enumCases
+            il returnTy paramList
+            funcs records enums enumCases unions unionCases
+            interfaces isInstance selfType
+    ignore methodReturnTy
 
-    // Helper: emit a block, treating the trailing SExpr as the
-    // function's return value when the function isn't Unit-typed.
+    // Single exit point: every return path stores the value (if any)
+    // and branches here. The label site emits `ensures:` checks and
+    // the actual `ret`. Empty body / value-less paths still flow
+    // through this exit.
+    let exitLabel = il.DefineLabel()
+    let isVoidReturn = returnTy = typeof<System.Void>
+    let resultLocal =
+        if isVoidReturn then None
+        else Some (il.DeclareLocal(returnTy))
+    ctx.ReturnLabel <- Some exitLabel
+    ctx.ResultLocal <- resultLocal
+
+    // Helper: store a return value (already on the stack) into the
+    // result slot and branch to the exit. `pushedTy` tells us
+    // whether the source actually pushed something.
+    let routeReturn (pushedTy: System.Type) =
+        match resultLocal with
+        | Some loc when pushedTy <> typeof<System.Void> ->
+            il.Emit(OpCodes.Stloc, loc)
+        | None when pushedTy <> typeof<System.Void> ->
+            il.Emit(OpCodes.Pop)
+        | _ -> ()
+        il.Emit(OpCodes.Br, exitLabel)
+
+    // Pre-condition checks fire before any body code.
+    for c in fn.Contracts do
+        match c with
+        | CCRequires (cond, _) ->
+            emitContractCheck ctx cond (sprintf "%s: requires failed" fn.Name)
+        | _ -> ()
+
     let emitBodyBlock (blk: Block) =
-        let isVoidReturn = returnTy = typeof<System.Void>
         let lastIdx = List.length blk.Statements - 1
         Codegen.FunctionCtx.pushScope ctx
         blk.Statements
@@ -207,38 +473,82 @@ let private emitFunctionBody
             if not isVoidReturn && i = lastIdx then
                 match stmt.Kind with
                 | SExpr e ->
-                    let _ = Codegen.emitExpr ctx e
-                    il.Emit(OpCodes.Ret)
+                    let t = Codegen.emitExpr ctx e
+                    routeReturn t
                 | _ ->
                     Codegen.emitStatement ctx stmt
             else
                 Codegen.emitStatement ctx stmt)
         Codegen.FunctionCtx.popScope ctx
-        // If the block didn't end in a Ret (Unit-returning, or a
-        // non-Unit body that ended on a non-expression statement
-        // like an explicit `return`), emit the appropriate ret.
         if isVoidReturn then
-            il.Emit(OpCodes.Ret)
+            il.Emit(OpCodes.Br, exitLabel)
 
     match fn.Body with
     | None ->
-        if returnTy = typeof<System.Void> then il.Emit(OpCodes.Ret)
+        if isVoidReturn then
+            il.Emit(OpCodes.Br, exitLabel)
         else
-            // Defaulted return for an empty body — load `default` of
-            // the return type and ret. Phase 1 punt: emit `0`.
-            il.Emit(OpCodes.Ldc_I4_0)
-            il.Emit(OpCodes.Ret)
+            // Defaulted return for an empty body. Phase 1 punt:
+            // emit `default(T)` via initobj for value types or
+            // `ldnull` for ref types.
+            match resultLocal with
+            | Some loc when loc.LocalType.IsValueType ->
+                il.Emit(OpCodes.Ldloca, loc)
+                il.Emit(OpCodes.Initobj, loc.LocalType)
+            | _ ->
+                il.Emit(OpCodes.Ldnull)
+                routeReturn typeof<obj>
+            il.Emit(OpCodes.Br, exitLabel)
     | Some (FBBlock blk) ->
         emitBodyBlock blk
     | Some (FBExpr ({ Kind = ELambda ([], blk) })) ->
         emitBodyBlock blk
     | Some (FBExpr e) ->
         let resultTy = Codegen.emitExpr ctx e
-        if returnTy = typeof<System.Void> then
+        if isVoidReturn then
             if resultTy <> typeof<System.Void> then il.Emit(OpCodes.Pop)
-            il.Emit(OpCodes.Ret)
+            il.Emit(OpCodes.Br, exitLabel)
         else
-            il.Emit(OpCodes.Ret)
+            routeReturn resultTy
+
+    // Exit-point block: ensures checks (if any) then the ret. Async
+    // bodies wrap the produced value into `Task.FromResult<T>(value)`
+    // before returning; void async bodies load `Task.CompletedTask`.
+    il.MarkLabel(exitLabel)
+    for c in fn.Contracts do
+        match c with
+        | CCEnsures (cond, _) ->
+            emitContractCheck ctx cond (sprintf "%s: ensures failed" fn.Name)
+        | _ -> ()
+    match resultLocal with
+    | Some loc -> il.Emit(OpCodes.Ldloc, loc)
+    | None     -> ()
+    if sg.IsAsync then
+        if isVoidReturn then
+            // Drop nothing; load Task.CompletedTask.
+            let taskTy = typeof<System.Threading.Tasks.Task>
+            let prop = taskTy.GetProperty("CompletedTask")
+            match Option.ofObj prop with
+            | Some p ->
+                let getter = p.GetGetMethod()
+                match Option.ofObj getter with
+                | Some g -> il.Emit(OpCodes.Call, g)
+                | None   -> failwith "Task.CompletedTask getter not found"
+            | None -> failwith "Task.CompletedTask property not found"
+        else
+            // `Task.FromResult<T>` lives on the non-generic Task
+            // class. Look up the open-generic method directly so
+            // we don't trip over TypeBuilder limitations when
+            // bareReturnTy is still under construction.
+            let fromResultGeneric =
+                let mi =
+                    typeof<System.Threading.Tasks.Task>
+                        .GetMethod("FromResult")
+                match Option.ofObj mi with
+                | Some m -> m.MakeGenericMethod([| bareReturnTy |])
+                | None   -> failwith "Task.FromResult<T> not found"
+            il.Emit(OpCodes.Call, fromResultGeneric)
+    il.Emit(OpCodes.Ret)
 
 /// Synthesise a host-runnable `Main(string[]) -> int` that calls the
 /// Lyric `main` function. If `main` returns `Unit`, Main returns 0;
@@ -316,11 +626,34 @@ let private emitAssembly
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type)
+
+        let unionTable = Records.UnionTable()
+        let unionCaseLookup = Records.UnionCaseLookup()
+        for ud in unionItems sf do
+            let info = defineUnion ctx.Module nsName symbols ud
+            unionTable.[ud.Name] <- info
+            for c in info.Cases do
+                unionCaseLookup.[c.Name] <- (info, c)
+                unionCaseLookup.[ud.Name + "." + c.Name] <- (info, c)
+            symbols.TryFind ud.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+
         let lookup =
             fun (id: TypeId) ->
                 match typeIdToClr.TryGetValue id with
                 | true, t  -> Some t
                 | false, _ -> None
+
+        let interfaceTable = Records.InterfaceTable()
+        for id in interfaceItems sf do
+            let info = defineInterface ctx.Module nsName symbols lookup id
+            interfaceTable.[id.Name] <- info
+            symbols.TryFind id.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
 
         let programTy =
             ctx.Module.DefineType(
@@ -344,7 +677,120 @@ let private emitAssembly
                 let mb = defineMethodHeader programTy lookup fn synthSig
                 methodTable.[fn.Name] <- mb
 
-        // Pass B — emit bodies.
+        // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
+        // attach interface methods to Bar's TypeBuilder, both as
+        // method headers and as interface implementations via
+        // DefineMethodOverride. Bodies emit in Pass B alongside the
+        // free-standing funcs.
+        let implMethods =
+            ResizeArray<FunctionDecl * MethodBuilder * ResolvedSignature>()
+        for impl in implItems sf do
+            // Resolve the impl's target. M1.4 only handles record
+            // targets; impls on opaque/distinct/extern types are
+            // tracked into Phase 2.
+            let targetName =
+                match impl.Target.Kind with
+                | TRef p ->
+                    match p.Segments with
+                    | [n] -> Some n
+                    | xs  -> Some (List.last xs)
+                | _ -> None
+            let targetRecord =
+                match targetName with
+                | Some n ->
+                    match recordTable.TryGetValue n with
+                    | true, r -> Some r
+                    | _ -> None
+                | None -> None
+            let ifaceName =
+                match impl.Interface.Head.Segments with
+                | [n] -> Some n
+                | xs  -> Some (List.last xs)
+            let ifaceInfo =
+                match ifaceName with
+                | Some n ->
+                    match interfaceTable.TryGetValue n with
+                    | true, i -> Some i
+                    | _ -> None
+                | None -> None
+            match targetRecord, ifaceInfo with
+            | Some recInfo, Some iface ->
+                recInfo.Type.AddInterfaceImplementation(iface.Type)
+                let resolveCtx = GenericContext()
+                let scratchDiags = ResizeArray<Diagnostic>()
+                for m in impl.Members do
+                    match m with
+                    | IMplFunc fd ->
+                        // Impl-method signatures aren't in the type
+                        // checker's top-level signature map; resolve
+                        // each parameter and the return type directly.
+                        let resolveTy (te: TypeExpr) : System.Type =
+                            let lty =
+                                Resolver.resolveType
+                                    symbols resolveCtx scratchDiags te
+                            TypeMap.toClrTypeWith lookup lty
+                        let pTys =
+                            fd.Params
+                            |> List.map (fun p -> resolveTy p.Type)
+                            |> List.toArray
+                        let bareRet =
+                            match fd.Return with
+                            | Some t ->
+                                let lty =
+                                    Resolver.resolveType
+                                        symbols resolveCtx scratchDiags t
+                                TypeMap.toClrReturnTypeWith lookup lty
+                            | None -> typeof<System.Void>
+                        let rTy =
+                            if fd.IsAsync then toTaskType bareRet else bareRet
+                        let mb =
+                            recInfo.Type.DefineMethod(
+                                fd.Name,
+                                MethodAttributes.Public
+                                ||| MethodAttributes.Virtual
+                                ||| MethodAttributes.HideBySig
+                                ||| MethodAttributes.Final,
+                                rTy,
+                                pTys)
+                        fd.Params
+                        |> List.iteri (fun i p ->
+                            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name)
+                            |> ignore)
+                        match iface.Members |> List.tryFind (fun im -> im.Name = fd.Name) with
+                        | Some im ->
+                            recInfo.Type.DefineMethodOverride(mb, im.Method)
+                        | None -> ()
+                        // Synthesise a ResolvedSignature so the body
+                        // emitter can use the same code path.
+                        let synthSig : ResolvedSignature =
+                            { Generics = []
+                              Params =
+                                fd.Params
+                                |> List.map (fun p ->
+                                    let lty =
+                                        Resolver.resolveType
+                                            symbols resolveCtx scratchDiags p.Type
+                                    { Name    = p.Name
+                                      Type    = lty
+                                      Mode    = p.Mode
+                                      Default = p.Default.IsSome
+                                      Span    = p.Span })
+                              Return =
+                                match fd.Return with
+                                | Some t ->
+                                    Resolver.resolveType
+                                        symbols resolveCtx scratchDiags t
+                                | None -> TyPrim PtUnit
+                              IsAsync = fd.IsAsync
+                              Span    = fd.Span }
+                        implMethods.Add(fd, mb, synthSig)
+                    | IMplAssoc _ -> ()
+            | _ ->
+                // Target type or interface not in scope — skipped.
+                // The type checker has already surfaced a diagnostic.
+                ()
+
+        // Pass B — emit bodies (free-standing funcs).
         for fn in funcs do
             let sg =
                 match Map.tryFind fn.Name sigs with
@@ -355,14 +801,33 @@ let private emitAssembly
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
                 methodTable recordTable enumTable enumCases
+                unionTable unionCaseLookup interfaceTable false None
+
+        // Pass B.5 — emit impl-method bodies as instance methods.
+        for (fd, mb, sg) in implMethods do
+            // The self-type is whatever record this method was
+            // attached to; recover it via the method's declaring
+            // type (which we just set in Pass A.5).
+            let selfTy = mb.DeclaringType
+            emitFunctionBody
+                mb fd sg lookup
+                methodTable recordTable enumTable enumCases
+                unionTable unionCaseLookup interfaceTable true
+                (Option.ofObj selfTy)
 
         let lyricMain = methodTable.["main"]
         let hostMain  = defineHostEntryPoint programTy lyricMain
 
         // Finalise every type so the persisted PE captures their
-        // metadata. Records are sealed first so their TypeBuilders
-        // are valid types when programTy.CreateType references them.
+        // metadata. Interfaces seal first so records can claim them;
+        // unions seal subclasses before their abstract base.
+        for kv in interfaceTable do
+            kv.Value.Type.CreateType() |> ignore
         for kv in recordTable do
+            kv.Value.Type.CreateType() |> ignore
+        for kv in unionTable do
+            for c in kv.Value.Cases do
+                c.Type.CreateType() |> ignore
             kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (Some (hostMain :> MethodInfo))

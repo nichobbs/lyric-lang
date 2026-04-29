@@ -822,6 +822,77 @@ interface, write an `impl` block.
 
 ---
 
+## D035: M1.4 scope cuts — bootstrap-grade lowering for generics, async, and FFI
+
+**Status:** ACCEPTED
+
+**Decision:** The bootstrap compiler's M1.4 milestone (per
+`docs/05-implementation-plan.md`) ships *bootstrap-grade* lowerings for
+three constructs that the language reference describes in their full
+form. The reduced-fidelity lowerings unblock the banking example and
+let the type checker / parser / emitter pipeline verify the broad
+shape of v0.1 end-to-end; the full lowerings land in Phase 2 polish.
+
+| Construct | M1.4 lowering | v0.1-target lowering | Where the gap lives |
+|---|---|---|---|
+| Generics | **Monomorphisation per call site** — the type checker rewrites each generic call into a synthesised concrete instantiation; the emitter sees only monomorphic methods. | Reified generics with `DefineGenericParameters`, JIT specialisation as the strategy doc §9.1 calls for. | `Lyric.Emitter.Codegen.emitCall` has no `ldtoken`/generic-arg handling. |
+| `async` / `await` | **Blocking shim** — `async func` lowers to a `Task<T>`-returning method that calls the body synchronously; `await e` calls `e.GetAwaiter().GetResult()`. Sequential under the hood. | A C#-style state machine per the strategy doc §13. | `Lyric.Emitter.Codegen.emitAsyncBody` documents the simplification. |
+| `extern package` (FFI) | **Hand-extended `Lyric.Stdlib`** — every BCL surface the banking example needs (`std.io.File`, `std.collections.List`, …) is added to the F#-side stdlib shim and the emitter resolves `extern package` references against that table. | Reflection-driven binding to arbitrary BCL types named in `extern package` blocks. | `Lyric.Stdlib.Interop` carries the curated list; out-of-table externs surface as `E0030`. |
+
+Two further M1.4 simplifications are documented but smaller in
+mechanism:
+
+* `@runtime_checked` mode is the only contract evaluation mode in M1.4;
+  `@proof_required` parses but produces no proof obligations. (`@axiom`
+  contracts are trusted, matching their Phase 4 behaviour.)
+* `old(_)` inside ensures-clauses is rejected with a `T0080` diagnostic
+  rather than evaluated against a snapshot. The snapshot machinery
+  belongs to the full proof obligations work and would otherwise sit
+  here as half-implemented dead code.
+
+**Rationale:**
+
+- Each full lowering is multi-week work that the strategy doc treats
+  as Phase 2 / Phase 4 territory. Doing them in M1.4 would either
+  push the milestone out by months or yield half-built versions that
+  later have to be torn out.
+- The bootstrap-grade lowerings preserve the *interface* the rest of
+  the compiler sees: monomorphic generics still type-check identically;
+  blocking async still satisfies `Task<T>` consumers; the FFI shim
+  presents the same `extern package` shape user code references.
+- The banking example (per `docs/02-worked-examples.md` §1) compiles
+  and runs end-to-end with these lowerings — the M1.4 exit criterion
+  per the implementation plan.
+
+**Alternatives considered:**
+
+- **Reified generics in M1.4.** Rejected: the `DefineGenericParameters`
+  + `MakeGenericMethod` machinery interleaves with how method tables
+  are emitted in the M1.3 backend; building it correctly under
+  `PersistedAssemblyBuilder` is non-trivial and would block
+  contracts/async/FFI behind a refactor.
+- **Real async state machines.** Rejected: state-machine generation
+  needs a control-flow-graph pass, async-state-table emission, and
+  `IAsyncStateMachine`/`AsyncTaskMethodBuilder` plumbing — a slice
+  larger than M1.3 itself.
+- **Reflection-driven `extern package`.** Rejected: the M1.3 emitter
+  doesn't yet read `[Lyric.Contract]`-style attribute metadata, and
+  the banking example covers a closed set of BCL surface that a
+  hand-list resolves cleanly.
+
+**Tracked follow-ups:**
+
+- Phase 2 work plan (per `docs/05-implementation-plan.md` §"Phase 2")
+  picks up reified generics and full async state machines.
+- Phase 4 work plan picks up `@proof_required` proof-obligation
+  generation and `old(_)` snapshotting.
+- The Stdlib shim's contents become the seed of `std.core` /
+  `std.io` once the package manager lands (Phase 3).
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -39,7 +39,14 @@ type Console private () =
 /// Contract / test-harness intrinsics. Lyric's `expect` / `assert`
 /// raise on failure; in Phase 1 we wire both to a single
 /// `LyricAssertionException` so callers can catch via the FFI.
-exception LyricAssertionException of string
+///
+/// Defined as a plain CLR class (not an F# `exception` declaration)
+/// so the emitted PE can `newobj` it directly and so the runtime's
+/// `ToString` produces a clean message — F#'s synthesised exception
+/// types have a `Data0` representation that the persisted-assembly
+/// metadata round-trip stumbles on.
+type LyricAssertionException(message: string) =
+    inherit System.Exception(message)
 
 [<Sealed; AbstractClass>]
 type Contracts private () =

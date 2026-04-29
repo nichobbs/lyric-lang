@@ -16,6 +16,12 @@
     <Compile Include="RecordTests.fs" />
     <Compile Include="SliceTests.fs" />
     <Compile Include="EnumMatchTests.fs" />
+    <Compile Include="UnionTests.fs" />
+    <Compile Include="InterfaceTests.fs" />
+    <Compile Include="ContractTests.fs" />
+    <Compile Include="GenericsTests.fs" />
+    <Compile Include="AsyncTests.fs" />
+    <Compile Include="BankingSmokeTests.fs" />
     <Compile Include="EndToEndSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

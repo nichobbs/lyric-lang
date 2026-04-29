@@ -79,14 +79,20 @@ The bootstrap compiler (Phase 1, in F# on .NET 9) lives in `compiler/`:
   `TreatWarningsAsErrors=true`, `Nullable=enable`.
 - `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
-- `compiler/src/Lyric.TypeChecker/` — the type checker (Phase 1,
-  milestone M1.2, in progress).
-- `compiler/tests/Lyric.Lexer.Tests/`,
-  `compiler/tests/Lyric.Parser.Tests/`, and
-  `compiler/tests/Lyric.TypeChecker.Tests/` — Expecto-based tests
-  (console-app projects; F# does not coexist cleanly with the new
-  Microsoft.Testing.Platform xunit runner — Expecto is the F#-native
-  alternative).
+- `compiler/src/Lyric.TypeChecker/` — the type checker (Phase 1, milestone M1.2, complete).
+- `compiler/src/Lyric.Stdlib/` — the F#-side standard-library shim. The emitter
+  targets methods on this assembly (e.g. `Lyric.Stdlib.Console::Println`) for
+  IO, contract assertions, and FFI-style BCL access. Hand-curated; grows as
+  M1.4 brings the banking example up to working order.
+- `compiler/src/Lyric.Emitter/` — the MSIL emitter (Phase 1, milestone M1.3,
+  complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
+  runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
+  `ManagedPEBuilder`.
+- `compiler/tests/Lyric.Lexer.Tests/`, `compiler/tests/Lyric.Parser.Tests/`,
+  `compiler/tests/Lyric.TypeChecker.Tests/`, and
+  `compiler/tests/Lyric.Emitter.Tests/` — Expecto-based tests (console-app
+  projects; F# does not coexist cleanly with the new Microsoft.Testing.Platform
+  xunit runner — Expecto is the F#-native alternative).
 
 Build: `cd compiler && dotnet build Lyric.sln`.
 
@@ -96,11 +102,16 @@ cd compiler
 dotnet run --project tests/Lyric.Lexer.Tests
 dotnet run --project tests/Lyric.Parser.Tests
 dotnet run --project tests/Lyric.TypeChecker.Tests
+dotnet run --project tests/Lyric.Emitter.Tests
 ```
 
-Subsequent slices complete the type checker, then add mode checker,
-contract elaborator, monomorphizer, and MSIL emitter per
-`docs/05-implementation-plan.md` §"Phase 1".
+M1.4 (in progress) layers contract elaboration, async, FFI, variant-bearing
+unions, interfaces, and monomorphised generics onto the M1.3 emitter. Three
+constructs ship in *bootstrap-grade* form per `docs/03-decision-log.md` D035:
+generics are monomorphised at call sites instead of reified in metadata; async
+is lowered to a blocking `.GetAwaiter().GetResult()` shim instead of a real
+state machine; FFI is hand-routed through `Lyric.Stdlib` instead of
+reflection-driven. The full lowerings are tracked into Phase 2 / Phase 4 work.
 
 ## Glossary (project-specific terms)
 
