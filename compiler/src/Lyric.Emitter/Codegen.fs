@@ -58,7 +58,17 @@ type FunctionCtx =
       /// The impl target's CLR type when `IsInstance = true`. Drives
       /// the static type returned by `ESelf` so field reads can
       /// resolve.
-      SelfType:   ClrType option }
+      SelfType:   ClrType option
+      /// Synthesised single exit point. Every `return` (and the
+      /// trailing implicit-return expression) stores into
+      /// `ResultLocal` (if non-void) and branches to this label;
+      /// the label site emits `ensures:` checks and the actual
+      /// `ret`. Set by the emitter before any body codegen runs.
+      mutable ReturnLabel: Label option
+      /// Where the returned value is stashed before the
+      /// `ReturnLabel` block runs. `None` for void-returning
+      /// methods.
+      mutable ResultLocal: LocalBuilder option }
 
 module FunctionCtx =
 
@@ -94,7 +104,9 @@ module FunctionCtx =
           UnionCases = unionCases
           Interfaces = interfaces
           IsInstance = isInstance
-          SelfType   = selfType }
+          SelfType   = selfType
+          ReturnLabel = None
+          ResultLocal = None }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -362,6 +374,21 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | ESelf ->
         failwith "E12 codegen: 'self' used outside of an impl method"
+
+    // ---- result (in ensures clauses) ----------------------------------
+
+    | EResult ->
+        match ctx.ResultLocal with
+        | Some loc ->
+            il.Emit(OpCodes.Ldloc, loc)
+            loc.LocalType
+        | None ->
+            failwith "E15 codegen: 'result' used outside of an ensures clause"
+
+    // ---- old() — Phase 4 work, rejected here --------------------------
+
+    | EOld _ ->
+        failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
 
     // ---- method-style call (callvirt on interface or class method) ----
 
@@ -977,11 +1004,25 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             failwithf "E3 codegen: compound-assign target not yet supported: %A" target.Kind
 
     | SReturn None ->
-        il.Emit(OpCodes.Ret)
+        // Branch to the synthesised single exit if one was set up;
+        // otherwise emit a bare ret (legacy path for the host's
+        // synthetic Main entry point).
+        match ctx.ReturnLabel with
+        | Some lbl -> il.Emit(OpCodes.Br, lbl)
+        | None     -> il.Emit(OpCodes.Ret)
 
     | SReturn (Some e) ->
         let _ = emitExpr ctx e
-        il.Emit(OpCodes.Ret)
+        match ctx.ReturnLabel, ctx.ResultLocal with
+        | Some lbl, Some loc ->
+            il.Emit(OpCodes.Stloc, loc)
+            il.Emit(OpCodes.Br, lbl)
+        | Some lbl, None ->
+            // Non-void value into a void-returning function — drop.
+            il.Emit(OpCodes.Pop)
+            il.Emit(OpCodes.Br, lbl)
+        | None, _ ->
+            il.Emit(OpCodes.Ret)
 
     | SWhile (_label, cond, body) ->
         let lblHead = il.DefineLabel()

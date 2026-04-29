@@ -18,6 +18,7 @@
     <Compile Include="EnumMatchTests.fs" />
     <Compile Include="UnionTests.fs" />
     <Compile Include="InterfaceTests.fs" />
+    <Compile Include="ContractTests.fs" />
     <Compile Include="EndToEndSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -365,6 +365,30 @@ let private defineMethodHeader
 /// For non-Unit functions whose body is a block, the trailing SExpr
 /// (if any) is treated as the implicit return value — matching
 /// Lyric's "last expression is the value" rule for block bodies.
+/// MethodInfo for the LyricAssertionException constructor accepting
+/// a string message. Resolved once per emit run.
+let private lyricAssertCtor : Lazy<ConstructorInfo> =
+    lazy (
+        let exTy = typeof<Lyric.Stdlib.LyricAssertionException>
+        match Option.ofObj (exTy.GetConstructor([| typeof<string> |])) with
+        | Some c -> c
+        | None   -> failwith "LyricAssertionException(string) ctor not found")
+
+/// Emit a runtime contract check: evaluate `cond`; on false, throw
+/// `LyricAssertionException(message)`.
+let private emitContractCheck
+        (ctx: Codegen.FunctionCtx)
+        (cond: Expr)
+        (label: string) : unit =
+    let il = ctx.IL
+    let _ = Codegen.emitExpr ctx cond
+    let okLbl = il.DefineLabel()
+    il.Emit(OpCodes.Brtrue, okLbl)
+    il.Emit(OpCodes.Ldstr, label)
+    il.Emit(OpCodes.Newobj, lyricAssertCtor.Value)
+    il.Emit(OpCodes.Throw)
+    il.MarkLabel(okLbl)
+
 let private emitFunctionBody
         (mb: MethodBuilder)
         (fn: FunctionDecl)
@@ -390,10 +414,38 @@ let private emitFunctionBody
             funcs records enums enumCases unions unionCases
             interfaces isInstance selfType
 
-    // Helper: emit a block, treating the trailing SExpr as the
-    // function's return value when the function isn't Unit-typed.
+    // Single exit point: every return path stores the value (if any)
+    // and branches here. The label site emits `ensures:` checks and
+    // the actual `ret`. Empty body / value-less paths still flow
+    // through this exit.
+    let exitLabel = il.DefineLabel()
+    let isVoidReturn = returnTy = typeof<System.Void>
+    let resultLocal =
+        if isVoidReturn then None
+        else Some (il.DeclareLocal(returnTy))
+    ctx.ReturnLabel <- Some exitLabel
+    ctx.ResultLocal <- resultLocal
+
+    // Helper: store a return value (already on the stack) into the
+    // result slot and branch to the exit. `pushedTy` tells us
+    // whether the source actually pushed something.
+    let routeReturn (pushedTy: System.Type) =
+        match resultLocal with
+        | Some loc when pushedTy <> typeof<System.Void> ->
+            il.Emit(OpCodes.Stloc, loc)
+        | None when pushedTy <> typeof<System.Void> ->
+            il.Emit(OpCodes.Pop)
+        | _ -> ()
+        il.Emit(OpCodes.Br, exitLabel)
+
+    // Pre-condition checks fire before any body code.
+    for c in fn.Contracts do
+        match c with
+        | CCRequires (cond, _) ->
+            emitContractCheck ctx cond (sprintf "%s: requires failed" fn.Name)
+        | _ -> ()
+
     let emitBodyBlock (blk: Block) =
-        let isVoidReturn = returnTy = typeof<System.Void>
         let lastIdx = List.length blk.Statements - 1
         Codegen.FunctionCtx.pushScope ctx
         blk.Statements
@@ -401,38 +453,55 @@ let private emitFunctionBody
             if not isVoidReturn && i = lastIdx then
                 match stmt.Kind with
                 | SExpr e ->
-                    let _ = Codegen.emitExpr ctx e
-                    il.Emit(OpCodes.Ret)
+                    let t = Codegen.emitExpr ctx e
+                    routeReturn t
                 | _ ->
                     Codegen.emitStatement ctx stmt
             else
                 Codegen.emitStatement ctx stmt)
         Codegen.FunctionCtx.popScope ctx
-        // If the block didn't end in a Ret (Unit-returning, or a
-        // non-Unit body that ended on a non-expression statement
-        // like an explicit `return`), emit the appropriate ret.
         if isVoidReturn then
-            il.Emit(OpCodes.Ret)
+            il.Emit(OpCodes.Br, exitLabel)
 
     match fn.Body with
     | None ->
-        if returnTy = typeof<System.Void> then il.Emit(OpCodes.Ret)
+        if isVoidReturn then
+            il.Emit(OpCodes.Br, exitLabel)
         else
-            // Defaulted return for an empty body — load `default` of
-            // the return type and ret. Phase 1 punt: emit `0`.
-            il.Emit(OpCodes.Ldc_I4_0)
-            il.Emit(OpCodes.Ret)
+            // Defaulted return for an empty body. Phase 1 punt:
+            // emit `default(T)` via initobj for value types or
+            // `ldnull` for ref types.
+            match resultLocal with
+            | Some loc when loc.LocalType.IsValueType ->
+                il.Emit(OpCodes.Ldloca, loc)
+                il.Emit(OpCodes.Initobj, loc.LocalType)
+            | _ ->
+                il.Emit(OpCodes.Ldnull)
+                routeReturn typeof<obj>
+            il.Emit(OpCodes.Br, exitLabel)
     | Some (FBBlock blk) ->
         emitBodyBlock blk
     | Some (FBExpr ({ Kind = ELambda ([], blk) })) ->
         emitBodyBlock blk
     | Some (FBExpr e) ->
         let resultTy = Codegen.emitExpr ctx e
-        if returnTy = typeof<System.Void> then
+        if isVoidReturn then
             if resultTy <> typeof<System.Void> then il.Emit(OpCodes.Pop)
-            il.Emit(OpCodes.Ret)
+            il.Emit(OpCodes.Br, exitLabel)
         else
-            il.Emit(OpCodes.Ret)
+            routeReturn resultTy
+
+    // Exit-point block: ensures checks (if any) then the ret.
+    il.MarkLabel(exitLabel)
+    for c in fn.Contracts do
+        match c with
+        | CCEnsures (cond, _) ->
+            emitContractCheck ctx cond (sprintf "%s: ensures failed" fn.Name)
+        | _ -> ()
+    match resultLocal with
+    | Some loc -> il.Emit(OpCodes.Ldloc, loc)
+    | None     -> ()
+    il.Emit(OpCodes.Ret)
 
 /// Synthesise a host-runnable `Main(string[]) -> int` that calls the
 /// Lyric `main` function. If `main` returns `Unit`, Main returns 0;
