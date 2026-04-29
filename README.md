@@ -28,6 +28,9 @@ Lyric targets the .NET runtime initially, leveraging reified generics, value typ
 - [05-implementation-plan.md](docs/05-implementation-plan.md) — phased plan from v0.1 to self-hosting
 - [06-open-questions.md](docs/06-open-questions.md) — unresolved design questions
 - [07-references.md](docs/07-references.md) — external standards and prior art
+- [08-contract-semantics.md](docs/08-contract-semantics.md) — operational semantics for `requires` / `ensures` / `invariant`
+- [09-msil-emission.md](docs/09-msil-emission.md) — how Lyric lowers to MSIL on .NET
+- [grammar.ebnf](docs/grammar.ebnf) — formal grammar (Phase 0 deliverable #4)
 
 ## Reading order
 

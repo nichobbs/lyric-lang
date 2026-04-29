@@ -524,6 +524,304 @@ Format for each entry:
 
 ---
 
+## D026: Mandatory `@projectionBoundary` annotation breaks projection cycles
+
+**Status:** ACCEPTED
+
+**Decision:** When the compiler detects a cycle in the `@projectable`
+graph (e.g. `User` is `@projectable` and contains `Team`, which is
+`@projectable` and contains `slice[User]`), it emits an error pointing
+at both sides of the cycle and requires the author to mark one side
+with `@projectionBoundary(asId)`. The marked field projects as an ID
+reference instead of recursively expanding.
+
+**Alternatives:**
+- Silently default to a "shallow" projection that emits opaque handles.
+- Auto-generate two views (full one-level + reference-only).
+- Accept the cycle and leave it to runtime to break.
+
+**Rationale:**
+- Silent defaulting hides surprise in the wire shape (different JSON than
+  the user expects). Explicit annotation surfaces the choice in the type
+  declaration where it can be reviewed.
+- Auto-generating two views adds API surface and naming churn.
+- Promotes Q003 from `06-open-questions.md`. The recommended option (3)
+  was already accepted; this entry pins it.
+
+**Revisions:** None.
+
+---
+
+## D027: `?` in a non-error-returning function is a compile error
+
+**Status:** ACCEPTED
+
+**Decision:** The error-propagation operator `?` is rejected at compile
+time when the enclosing function's return type is not a compatible
+`Result[_, _]` or `T?`. Users who want to fail loudly use `unwrap()`
+explicitly; users who want to handle the error use `match` or `?` with
+a propagating signature.
+
+**Alternatives:**
+- Implicit panic (treat `?` as `unwrap()`).
+- Implicit unwrap with no warning.
+
+**Rationale:**
+- Conflating `?` with `unwrap()` would silently change error semantics
+  on signature edits — refactoring a function from `Result`-returning to
+  `T`-returning would turn explicit error-propagation into hidden
+  panics.
+- `unwrap()` is already the language's "I know this can't fail" affordance.
+  Two affordances would be noise.
+- Promotes Q006 from `06-open-questions.md`. Recommended option (1).
+
+**Revisions:** None.
+
+---
+
+## D028: Doctests run by default; opt out with `// no_test`
+
+**Status:** ACCEPTED
+
+**Decision:** Code blocks inside `///` doc comments are executed by
+`lyric test` by default. A doc-comment author opts a block out via a
+`// no_test` line at the head of the block.
+
+**Alternatives:**
+- Opt-in (require `// doctest`) — keeps `lyric test` faster but lets
+  examples bit-rot.
+- No doctests at all.
+
+**Rationale:**
+- Examples in documentation are a liability when they go stale; running
+  them is a free correctness check.
+- Rust's experience with `rustdoc` is that default-on is the right
+  default; the opt-out covers the unusual cases (examples that mention
+  external services, are pseudocode, or document API misuse).
+- Promotes Q013 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
+## D029: Operator overloading allowed only via the closed numeric trait set
+
+**Status:** ACCEPTED
+
+**Decision:** Users may write `impl Add for MyType`, `impl Sub for MyType`,
+`impl Mul for MyType`, `impl Div for MyType`, `impl Mod for MyType` —
+and these enable the corresponding binary operators on `MyType`. No
+other operator-defining interfaces exist; `<<`, `>>`, custom symbolic
+operators, etc. are not user-extensible. The `Add`/`Sub`/`Mul`/`Div`/
+`Mod` interfaces require numeric-shaped signatures (`MyType + MyType
+-> MyType` and so on) — the compiler rejects implementations that
+diverge.
+
+**Alternatives:**
+- No `impl`-based overloading; `derives` only on numeric distinct types
+  (the original design).
+- Allow arbitrary operator-defining traits.
+
+**Rationale:**
+- Vector and matrix types are real; forcing them through method calls
+  (`v.add(w)`) reads worse than `v + w` in math-heavy code without
+  buying any safety.
+- Restricting the trait set to the closed numeric markers blocks the
+  worst abuses (`<<` for "stream insertion", `+` for "config merge")
+  while admitting the genuine cases.
+- The compiler's "numeric semantics" requirement is a social check, not
+  a mechanical one — users who write a non-numeric `Add` are violating
+  a documented convention; the language doesn't enforce the algebra.
+- Promotes Q014 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
+## D030: Built-in `Error` interface and auto-derived `Display` on union errors
+
+**Status:** ACCEPTED
+
+**Decision:** `std.core` defines
+
+```
+pub interface Error {
+  func message(): String
+  func source(): Error?     // default: None
+}
+```
+
+Any type used in the `E` position of `Result[T, E]` must implement
+`Error`. For `union` types so used, the compiler auto-derives `Error`
+from each variant's name and payload (`message()` returns
+`"Variant(field1=..., ...)"` by default; users may override with an
+explicit `impl Error for MyError`). A separate `Display` interface for
+general string formatting may follow in v2; for v1, `Error.message()`
+is the only formatting affordance built into the language.
+
+**Alternatives:**
+- No `Error` interface — any type is admissible in `Result[T, E]`.
+- Auto-derive only `Debug`-style formatting, no `Error`.
+- Require manual `impl Error` everywhere.
+
+**Rationale:**
+- A common interface lets stdlib utilities (`Result.context(...)`,
+  logging) work uniformly across error types without runtime
+  reflection.
+- Auto-derive on unions covers the typical case; explicit `impl` is
+  available for the few cases where a custom message is wanted.
+- Promotes Q015 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
+## D031: Synchronous implementations auto-lift to async at interface boundaries
+
+**Status:** ACCEPTED
+
+**Decision:** A synchronous function may satisfy an `async`-declared
+interface method. The compiler wraps the synchronous return value in
+`Task.fromValue(...)` (or the `ValueTask` equivalent for `@hot`
+interfaces) at the impl boundary. The reverse — an `async` function
+satisfying a synchronous interface — is rejected; calling
+`.result`-style blocking conversions are not provided.
+
+**Alternatives:**
+- Strict signature match in both directions.
+- Allow async-to-sync via implicit blocking (rejected; deadlock-prone).
+
+**Rationale:**
+- The wrap is zero-cost in the synchronous-completion path on .NET.
+- Removes the friction of writing `async func findById(...): User? =
+  Task.fromValue(myMap.get(id))` for every in-memory test stub.
+- The asymmetry (sync→async lifts, async→sync rejects) reflects the
+  asymmetry of the runtime: lifting is safe; lowering courts deadlock.
+- Promotes Q016 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
+## D032: `///` for item docs, `//!` for module docs
+
+**Status:** ACCEPTED
+
+**Decision:** Documentation comments use `///` for the following item
+and `//!` for the enclosing package/module. Both are CommonMark with
+GFM tables and code blocks.
+
+**Alternatives:**
+- `////` for module docs.
+- `@doc(...)` annotation on the package declaration.
+- Single style with a positional rule.
+
+**Rationale:**
+- Matches Rust's conventions, which the .NET/Lyric audience is
+  increasingly familiar with.
+- Tooling (LSP, formatters, doc generators) already understands the
+  `///` / `//!` distinction.
+- Promotes Q018 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
+## D033: Z3 is the proof-system SMT backend for v2.0
+
+**Status:** ACCEPTED
+
+**Decision:** When the proof system ships in v2.0 (Phase 4), it
+integrates Z3 as the SMT backend. Z3 is consumed via its .NET
+bindings; the verifier emits SMT-LIB v2.6 queries on top of Z3's
+incremental solver API.
+
+**Alternatives:**
+- CVC5 (more permissive license, comparable performance).
+- Multiple-backend support from day one.
+
+**Rationale:**
+- Z3 is the precedent in the verification community we draw from
+  (Dafny, Boogie, F*, Lean's tactics).
+- Microsoft Research maintains Z3 actively; the .NET bindings track
+  upstream.
+- CVC5 remains a viable fallback if licensing or performance changes
+  later; the verifier's translation to SMT-LIB is solver-agnostic by
+  design, so a swap is feasible at modest cost.
+- Promotes Q020 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
+## D034: Closed list of built-in generic constraint markers
+
+**Status:** ACCEPTED
+
+**Decision:** The set of built-in markers usable in `derives` clauses
+on distinct types and `where` clauses on generics is closed at:
+
+`Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`,
+`Mul`, `Div`, `Mod`
+
+with the following semantics:
+
+| Marker     | Sense | Derivable? | Constraint? |
+|------------|-------|-----------:|-------------:|
+| `Equals`   | Value equality. Generates `==`/`!=` and `IEquatable<T>`. | yes | yes |
+| `Compare`  | Total ordering. Generates `<`/`<=`/`>`/`>=` and `IComparable<T>`. | yes | yes |
+| `Hash`     | Stable hash code consistent with `Equals`. | yes | yes |
+| `Default`  | Canonical default value via `T.default()`. Rejected as a derive on range subtypes whose underlying default is out of range. | yes | yes |
+| `Copyable` | Type lowers to a CLR value type (per `09-msil-emission.md` §5). Structural property; cannot be opted into. | no  | yes |
+| `Add`      | `T + T -> T`. | yes | yes |
+| `Sub`      | `T - T -> T`; admits unary `-T` when underlying is signed. | yes | yes |
+| `Mul`      | `T * T -> T`. | yes | yes |
+| `Div`      | `T / T -> T`. | yes | yes |
+| `Mod`      | `T % T -> T`. | yes | yes |
+
+User-defined interfaces are usable as `where` constraints. They are
+not derivable; the language has no auto-implementation mechanism for
+arbitrary interfaces. To make a distinct type satisfy a user-defined
+interface, write an `impl` block.
+
+**Alternatives considered:**
+
+- **Add `Send`** (Rust-style thread-safety marker). Rejected:
+  Lyric's thread-safety is structural via `protected type` and the
+  default-immutable `val` binding; a `Send` marker would be a no-op
+  in nearly all programs and a misleading half-measure where it
+  wasn't.
+- **Add a `Numeric` umbrella.** Rejected: the canonical idiom
+  (`type Cents = Long range … derives Add, Sub, Compare`) requires
+  the user to *opt in* to each operator. A coarse umbrella would
+  over-derive (e.g. `Cents * Cents` is meaningless).
+- **Built-in `Iterable`, `Sized`, `Indexable`.** Rejected: these
+  receive no special compiler support — `for x in xs` desugars to
+  ordinary method calls. They live as plain interfaces in
+  `std.collections`.
+- **Naming as `Comparable`/`Hashable`/`Addable`.** Rejected:
+  bare-noun (`Compare`, `Hash`, `Add`) is the established style
+  used throughout the worked examples; consistency wins over the
+  marginal precision of `-able` suffixes.
+
+**Rationale:**
+
+- Each marker maps to a specific lowering pattern (`09-msil-emission.md`
+  §6.2 for derives on distinct types, §9.4 for generic constraints), so
+  the implementer can emit the corresponding CLR member or constraint
+  without ambiguity.
+- Closing the list precludes a long tail of low-value markers
+  (`Iterable`, `Numeric`, `Send`, etc.) accumulating over the
+  language's lifetime.
+- Opening the list later is cheap (add an entry to the table); closing
+  it later is expensive (existing user code may rely on the loose
+  rules).
+- Closes Q004 from `06-open-questions.md`.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
