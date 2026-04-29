@@ -1,0 +1,1305 @@
+(* ============================================================================
+ * Lyric — Formal Grammar (v0.1)
+ * Phase 0 deliverable #4 (per docs/05-implementation-plan.md).
+ *
+ * This grammar implements the lexical and syntactic descriptions of
+ * docs/01-language-reference.md. Where the reference and this grammar
+ * disagree, fix the grammar — unless a genuine spec ambiguity has been
+ * uncovered, in which case fix the reference and append a decision-log
+ * entry per CLAUDE.md.
+ *
+ * Notation (a pragmatic EBNF):
+ *
+ *   Foo            non-terminal
+ *   'kw'           literal token text (keyword, punctuation, operator)
+ *   TOKEN          token produced by the lexer (capitalised; defined in §1)
+ *   A B            sequence
+ *   A | B          alternation
+ *   ( A )          grouping
+ *   [ A ]          optional (zero or one)
+ *   { A }          zero or more
+ *   A+             one or more A (sugar for: A { A })
+ *   A*             zero or more A (sugar for: { A })
+ *   A , A          A followed by A (the comma is part of the meta-language
+ *                  in this file; literal commas are written ',')
+ *   (* ... *)      comment in this grammar file
+ *
+ * The grammar assumes a separate lexer that produces a stream of tokens,
+ * skipping whitespace and comments except where statement terminators are
+ * concerned (see §1.7). The grammar is designed to be parseable with one
+ * token of lookahead in nearly every case; ambiguities that require more
+ * are flagged inline.
+ *
+ * Where the reference says "[TBD]", this grammar accepts a syntactically
+ * conservative form and flags it. Resolution belongs in docs/06-open-questions.md.
+ *
+ * ============================================================================ *)
+
+
+(* ============================================================================
+ *  §1. Lexical structure
+ * ============================================================================ *)
+
+(* §1.1 Source representation
+ *
+ * Source files are UTF-8 (no BOM required; a leading BOM is accepted and
+ * skipped). Line endings may be LF or CRLF; the lexer normalises to LF
+ * before tokenising. Source is case-sensitive.
+ *)
+
+(* §1.2 Character classes (referenced by later productions) *)
+
+UnicodeIdStart    = (* per Unicode UAX #31 "Default Identifier Syntax",
+                       category XID_Start; ASCII subset is letters and '_' *) ;
+UnicodeIdContinue = (* per Unicode UAX #31, category XID_Continue *) ;
+
+AsciiLetter   = 'a' | ... | 'z' | 'A' | ... | 'Z' ;
+AsciiDigit    = '0' | ... | '9' ;
+HexDigit      = AsciiDigit | 'a' | ... | 'f' | 'A' | ... | 'F' ;
+OctalDigit    = '0' | ... | '7' ;
+BinaryDigit   = '0' | '1' ;
+
+(* §1.3 Whitespace and comments
+ *
+ * Whitespace is space (U+0020), tab (U+0009), and newline (U+000A — after
+ * normalisation). Whitespace is not significant beyond token separation,
+ * with the single exception of newlines acting as statement terminators
+ * (§1.7).
+ *
+ * Comments are not tokens; the lexer discards them. Doc comments (/// and
+ * //!) are retained as DOC_COMMENT tokens attached to the next item or to
+ * the enclosing module respectively.
+ *)
+
+LineComment      = '//'  { any-char-except-newline } ;
+BlockComment     = '/*' { BlockComment | any-char } '*/' ;     (* nestable *)
+DocItemComment   = '///' { any-char-except-newline } ;          (* DOC_COMMENT *)
+DocModuleComment = '//!' { any-char-except-newline } ;          (* MODULE_DOC_COMMENT *)
+
+(* §1.4 Identifiers *)
+
+IDENT = UnicodeIdStart { UnicodeIdContinue } ;
+
+(* Constraints applied by the lexer after the token is recognised:
+ *   - Reject if the resulting NFC-normalised identifier matches a keyword
+ *     (§1.5). Soft keywords (§1.6) are not rejected here; the parser
+ *     resolves them contextually.
+ *   - Reject if the identifier starts with '_' followed immediately by an
+ *     uppercase letter (reserved for compiler-generated names, per
+ *     reference §1.2).
+ *   - The lexer emits the NFC normalisation of the identifier as the
+ *     token's value; downstream stages compare normalised values only.
+ *)
+
+(* §1.5 Reserved keywords
+ *
+ * These are tokens of their own; an IDENT that matches one of these is
+ * re-emitted by the lexer as the corresponding keyword token. Order
+ * within the table is not significant.
+ *)
+
+Keyword =
+    'alias'    | 'and'       | 'as'        | 'async'     | 'await'
+  | 'bind'     | 'case'      | 'do'        | 'else'      | 'end'
+  | 'ensures'  | 'entry'     | 'enum'      | 'exposed'   | 'extern'
+  | 'false'    | 'fixture'   | 'for'       | 'func'      | 'generic'
+  | 'if'       | 'impl'      | 'import'    | 'in'        | 'inout'
+  | 'interface'| 'invariant' | 'is'        | 'let'       | 'match'
+  | 'mut'      | 'not'       | 'old'       | 'opaque'    | 'or'
+  | 'out'      | 'package'   | 'property'  | 'protected' | 'pub'
+  | 'record'   | 'requires'  | 'result'    | 'return'    | 'scope'
+  | 'scoped'   | 'self'      | 'singleton' | 'spawn'     | 'test'
+  | 'then'     | 'throw'     | 'true'      | 'try'       | 'type'
+  | 'union'    | 'use'       | 'val'       | 'var'       | 'when'
+  | 'where'    | 'while'     | 'wire'      | 'with'      | 'xor' ;
+
+(* §1.6 Soft (contextual) keywords
+ *
+ * These look like ordinary identifiers to the lexer; they acquire keyword
+ * meaning only when the parser is in a position that expects them. They
+ * remain valid identifier names elsewhere in the program.
+ *
+ *   range       — between a numeric type and a range bound (§4)
+ *   derives     — after a distinct-type declaration head (§4)
+ *   forall      — at the head of a contract quantifier expression (§9)
+ *   exists      — at the head of a contract quantifier expression (§9)
+ *   implies     — binary connective in contract expressions (§9)
+ *   scope_kind  — at item position to declare a user-defined scope (§10)
+ *   bootstrap   — generated function name (not actually a soft keyword
+ *                 in the source language; mentioned for completeness)
+ *
+ * No other "looks like a keyword in the docs" word is reserved. In
+ * particular, derive marker names (Add, Sub, Compare, Hash, Equals,
+ * Default, Copyable, Send, Mul, Div, Mod) are ordinary identifiers.
+ *)
+
+SoftKeyword = 'range' | 'derives' | 'forall' | 'exists' | 'implies'
+            | 'scope_kind' ;
+
+(* §1.6.1 Reserved-but-unused keywords
+ *
+ * The following hard keywords appear in the §1.5 list but do not appear in
+ * any production below. They are reserved against future use and are
+ * lexed as keyword tokens (so they cannot be used as identifiers):
+ *
+ *   end     — likely future use: explicit end-of-block marker for split
+ *             files in the .lspec/.lbody mode (Ada-style 'end Foo;').
+ *   mut     — reserved for the resolution of Q007 ('var' capture across
+ *             async boundaries) per docs/06-open-questions.md.
+ *   with    — reserved for future syntax (e.g. capability/effect
+ *             clauses, contextual parameters, or 'with' adapters).
+ *
+ * If Phase 0 review concludes that any of these will not be used,
+ * remove them from §1.5 and append a decision-log entry.
+ *)
+
+(* §1.7 Statement terminators
+ *
+ * The lexer emits a STMT_END token at:
+ *   - every newline that does not appear inside an unclosed bracket pair
+ *     (paren '(', square '[', or brace '{'), and
+ *   - every literal ';'.
+ *
+ * Adjacent STMT_END tokens collapse to one. STMT_END is also suppressed
+ * immediately after a token that cannot terminate a statement: namely,
+ * any binary operator (§7), a '.', '@', '->', ',', or one of the opening
+ * brackets. This is the standard "automatic semicolon insertion" /
+ * "off-side-relaxation" used by Kotlin, Swift, and Go; the goal is that
+ * source code looks like it does in §02-worked-examples.md.
+ *
+ * Productions in this grammar use the meta-symbol NL to mean
+ * "STMT_END or end-of-file". Where NL appears, it is also legal to write
+ * a literal ';' in source; the lexer collapses both.
+ *)
+
+NL = STMT_END ;
+
+(* §1.8 Literals *)
+
+(* Integer literals. The optional type suffix narrows the inferred type.
+ * Underscore separators are permitted between digits (not at start/end). *)
+
+IntLiteral =
+      DecIntBody    [ IntSuffix ]
+    | HexIntBody    [ IntSuffix ]
+    | OctIntBody    [ IntSuffix ]
+    | BinIntBody    [ IntSuffix ] ;
+
+DecIntBody = AsciiDigit { AsciiDigit | '_' } ;
+HexIntBody = '0x' HexDigit    { HexDigit    | '_' } ;
+OctIntBody = '0o' OctalDigit  { OctalDigit  | '_' } ;
+BinIntBody = '0b' BinaryDigit { BinaryDigit | '_' } ;
+
+IntSuffix  = 'u8' | 'u16' | 'u32' | 'u64' | 'i8' | 'i16' | 'i32' | 'i64' ;
+
+(* C-style leading-zero decimal (e.g. 0755) is rejected by the lexer per
+ * reference §1.4. A leading '0' is permitted only if the literal is just
+ * '0' or has a base prefix. *)
+
+(* Float literals. *)
+
+FloatLiteral =
+      DecIntBody '.' DecIntBody [ Exp ] [ FloatSuffix ]
+    | DecIntBody Exp                     [ FloatSuffix ]
+    | DecIntBody                         FloatSuffix ;
+
+Exp         = ('e' | 'E') ['+' | '-'] DecIntBody ;
+FloatSuffix = 'f32' | 'f64' ;
+
+(* String literals. The lexer is responsible for recognising interpolation
+ * holes: it emits a sequence of tokens
+ *
+ *   STR_START STR_PART { '${' Expr '}' STR_PART } STR_END
+ *
+ * for an interpolated string. A non-interpolated string is the degenerate
+ * case where there is one STR_PART and no '${...}' segments. The parser
+ * sees the synthesised non-terminal InterpolatedString below.
+ *)
+
+EscapeSeq =
+      '\\' ('n' | 'r' | 't' | '\\' | '\'' | '"' | '0' | '$')
+    | '\\u{' HexDigit+ '}' ;
+
+StringChar  = (* any Unicode scalar except '\\', '"', or unescaped '$' *)
+            | EscapeSeq
+            | '\\$' ;                       (* escaped interpolation marker *)
+
+StringLiteral      = '"' { StringChar | InterpolationHole } '"' ;
+InterpolationHole  = '${' Expr '}' ;
+
+TripleStringLiteral =
+    '"""' { any-char-except-triple-quote | InterpolationHole } '"""' ;
+
+(* Raw strings: no escape processing, no interpolation. The hashed form
+ * permits embedded double quotes; the number of leading hashes must
+ * match the number of trailing hashes. *)
+
+RawStringLiteral =
+      'r"'  { any-char-except-quote }   '"'
+    | 'r#"' { any-char-except-hash-quote } '"#'
+    | 'r##"' ... '"##'      (* and so on for any positive hash count *) ;
+
+(* Character literal: a single Unicode scalar value. *)
+
+CharLiteral =
+    '\'' ( single-non-escape-non-quote-char | EscapeSeq ) '\'' ;
+
+(* Boolean literals are the keywords 'true' and 'false'. *)
+
+(* §1.9 Punctuation and operator tokens
+ *
+ * The lexer emits the following multi-char tokens. Single-char tokens
+ * (parentheses, brackets, braces, comma, semicolon, dot, colon) are
+ * emitted as their literal selves.
+ *)
+
+Punct = '..=' | '..<' | '..'  | '->'  | '=>'  | '::'
+      | '?'   | '??'  | '@'
+      | '=='  | '!='  | '<='  | '>='  | '<'   | '>'
+      | '+='  | '-='  | '*='  | '/='  | '%='
+      | '+'   | '-'   | '*'   | '/'   | '%'
+      | '='   | '!'
+      | '('   | ')'   | '['   | ']'   | '{'   | '}'
+      | ','   | ';'   | ':'   | '.' ;
+
+(* Note: '!' is reserved for future use; it does not currently appear in
+ * any production except as part of '!=' . The lexer still emits it so
+ * that the parser may produce a clear "unexpected token" diagnostic. *)
+
+
+(* ============================================================================
+ *  §2. File and module structure
+ * ============================================================================ *)
+
+(* A source file is one package's worth of declarations. All .l files in
+ * a directory share a package; the 'package' line at the top of each
+ * file in the directory must match. The split-file mode (.lspec/.lbody,
+ * per reference §3.4) uses the same productions; the only difference is
+ * that .lspec files reject FunctionBody, RecordBody, etc. — a check
+ * applied post-parse. *)
+
+SourceFile =
+      [ ShebangLine NL ]
+      [ ModuleDocComment ]
+      { FileLevelAnnotation NL }
+      PackageDecl NL
+      { ImportDecl NL }
+      { Item NL }
+      EOF ;
+
+ShebangLine       = '#!' { any-char-except-newline } ;        (* tolerated; ignored *)
+ModuleDocComment  = MODULE_DOC_COMMENT ;                      (* '//!' *)
+
+(* File-level annotations are those that apply to the whole package:
+ * '@runtime_checked', '@proof_required', '@proof_required(unsafe_blocks_allowed)',
+ * '@test_module', '@axiom', '@axiom("...")'. They precede the package line. *)
+
+FileLevelAnnotation = Annotation ;
+
+PackageDecl = 'package' ModulePath ;
+
+ModulePath  = IDENT { '.' IDENT } ;
+
+(* §2.1 Imports *)
+
+ImportDecl =
+      'import' ModulePath [ '.' ImportTail ] [ 'as' IDENT ]
+    | 'pub' 'use' ModulePath [ '.' ImportTail ] ;
+
+ImportTail =
+      IDENT [ 'as' IDENT ]
+    | '{' ImportItem { ',' ImportItem } [ ',' ] '}' ;
+
+ImportItem  = IDENT [ 'as' IDENT ] ;
+
+(* Wildcard imports ('import Foo.*') are rejected by the grammar: there is
+ * no production that admits '*' in this position. *)
+
+
+(* ============================================================================
+ *  §3. Items (top-level declarations)
+ *
+ *  An Item is anything that can appear at the top level of a SourceFile
+ *  or inside an 'extern package' block. Items are the unit of 'pub'
+ *  visibility and of doc-comment attachment.
+ * ============================================================================ *)
+
+Item =
+      { ItemDocComment }
+      { Annotation }
+      [ Visibility ]
+      ItemKind ;
+
+ItemDocComment = DOC_COMMENT ;                  (* '///' *)
+
+Visibility = 'pub' ;
+
+ItemKind =
+      ConstDecl
+    | ValDecl                                   (* module-level 'val' only *)
+    | FunctionDecl
+    | TypeAliasDecl                             (* 'alias X = ...' *)
+    | DistinctTypeDecl                          (* 'type X = ...' *)
+    | RecordDecl
+    | ExposedRecordDecl
+    | UnionDecl
+    | EnumDecl
+    | OpaqueTypeDecl
+    | ProtectedTypeDecl
+    | InterfaceDecl
+    | ImplDecl
+    | WireDecl
+    | ScopeKindDecl
+    | ExternPackageDecl
+    | TestItem                                  (* only valid in @test_module *)
+    | FixtureDecl                               (* only valid in @test_module *)
+    | PropertyDecl ;                            (* only valid in @test_module *)
+
+(* The 'only valid in @test_module' constraint is enforced post-parse.
+ * Module-level 'var' is rejected here intentionally per §04-out-of-scope
+ * "Global mutable state". *)
+
+
+(* ============================================================================
+ *  §3.1 Annotations
+ * ============================================================================ *)
+
+Annotation     = '@' AnnotationName [ AnnotationArgs ] ;
+AnnotationName = IDENT { '.' IDENT } ;
+AnnotationArgs = '(' [ AnnotationArg { ',' AnnotationArg } [ ',' ] ] ')' ;
+AnnotationArg  =
+      IDENT '=' Literal
+    | IDENT
+    | StringLit
+    | IntLit ;
+
+(* Recognised annotation names (per reference §1.3) — enforced post-parse,
+ * not by the grammar:
+ *
+ *   @axiom, @derive, @global_clock_unsafe, @hidden, @projectable,
+ *   @proof_required, @provided, @runtime_checked, @stubbable, @test_module,
+ *   @projectionBoundary, @valueType, @referenceType, @hot,
+ *   @pure, @reflection (warning-only), @inline (deferred), and any future
+ *   compiler-internal annotation introduced by the language team.
+ *)
+
+
+(* ============================================================================
+ *  §3.2 Constants and module-level values
+ * ============================================================================ *)
+
+ConstDecl  = 'val' IDENT ':' Type '=' ConstExpr ;     (* SCREAMING_SNAKE by convention *)
+ValDecl    = 'val' Pattern [ ':' Type ] '=' Expr ;    (* module-level immutable binding *)
+
+
+(* ============================================================================
+ *  §3.3 Type aliases and distinct types
+ * ============================================================================ *)
+
+(* A pure type synonym. Structurally identical to its right-hand side. *)
+
+TypeAliasDecl = 'alias' IDENT [ GenericParams ] '=' Type ;
+
+(* A distinct nominal type. Optionally narrowed by a range, optionally
+ * deriving a fixed set of operator/marker traits. The right-hand side
+ * must be a numeric primitive when 'range' or arithmetic 'derives'
+ * markers are present; that constraint is enforced in type checking,
+ * not by the grammar. *)
+
+DistinctTypeDecl =
+    'type' IDENT [ GenericParams ] '=' Type
+        [ RangeClause ]
+        [ DerivesClause ] ;
+
+RangeClause   = 'range' RangeBoundsExpr ;
+RangeBoundsExpr =
+      Expr '..='  Expr
+    | Expr '..<' Expr
+    | Expr '..'  Expr                       (* synonym for '..<' per §4.2.1 *)
+    | '..=' Expr
+    | Expr '..' ;                           (* open-ended; bounded by the
+                                               underlying primitive's MAX *)
+
+DerivesClause = 'derives' DeriveItem { ',' DeriveItem } ;
+DeriveItem    = IDENT ;                     (* Add | Sub | Mul | Div | Mod
+                                               | Compare | Hash | Equals
+                                               — checked post-parse *)
+
+
+(* ============================================================================
+ *  §3.4 Records and exposed records
+ * ============================================================================ *)
+
+RecordDecl =
+    'record' IDENT [ GenericParams ] [ WhereClause ] RecordBody ;
+
+ExposedRecordDecl =
+    'exposed' 'record' IDENT [ GenericParams ] [ WhereClause ] RecordBody ;
+
+RecordBody =
+    '{' { NL } { RecordMember NL } '}' ;
+
+RecordMember =
+      { ItemDocComment }
+      { Annotation }
+      [ Visibility ]
+      ( FieldDecl | InvariantClause ) ;
+
+FieldDecl =
+      IDENT ':' Type [ '=' Expr ] [ Annotation ] ;
+        (* default-value expression is permitted; an exposed record may
+           not have an InvariantClause — checked post-parse. *)
+
+
+(* ============================================================================
+ *  §3.5 Unions (sum types)
+ * ============================================================================ *)
+
+UnionDecl =
+    'union' IDENT [ GenericParams ] [ WhereClause ]
+        '{' { NL } UnionCase { NL UnionCase } { NL } '}' ;
+
+UnionCase =
+      { ItemDocComment }
+      { Annotation }
+      'case' IDENT [ '(' [ UnionField { ',' UnionField } [ ',' ] ] ')' ] ;
+
+UnionField =
+      IDENT ':' Type
+    | Type ;                                  (* positional payload *)
+
+
+(* ============================================================================
+ *  §3.6 Enums (payload-less unions)
+ * ============================================================================ *)
+
+EnumDecl =
+    'enum' IDENT
+        '{' { NL } EnumCase { NL EnumCase } { NL } '}' ;
+
+EnumCase =
+      { ItemDocComment }
+      { Annotation }
+      'case' IDENT ;
+
+
+(* ============================================================================
+ *  §3.7 Opaque types
+ *
+ *  An opaque type may appear in two surface forms:
+ *
+ *    opaque type T                       — declaration only; body is
+ *                                          either elsewhere in the same
+ *                                          package or in a .lbody file
+ *    opaque type T { ... }               — declaration with body
+ *
+ *  The second form is a record-shaped body that may also include an
+ *  invariant clause and (per @projectable) field-level @hidden annotations.
+ * ============================================================================ *)
+
+OpaqueTypeDecl =
+    'opaque' 'type' IDENT [ GenericParams ] [ WhereClause ]
+    [ Annotation { Annotation } ]                 (* e.g. @projectable *)
+    [ OpaqueTypeBody ] ;
+
+OpaqueTypeBody =
+    '{' { NL } { OpaqueMember NL } '}' ;
+
+OpaqueMember =
+      { ItemDocComment }
+      { Annotation }
+      ( FieldDecl | InvariantClause ) ;
+
+
+(* ============================================================================
+ *  §3.8 Protected types
+ *
+ *  A protected type bundles state, an optional invariant, and a set of
+ *  entries / functions that the runtime serialises (see reference §7.4).
+ *  Its body may also contain plain field declarations ('var' for mutable,
+ *  'let' for lazy-init-once read-only, plain FieldDecl for immutable) and
+ *  helper functions visible only inside the type.
+ * ============================================================================ *)
+
+ProtectedTypeDecl =
+    'protected' 'type' IDENT [ GenericParams ] [ WhereClause ]
+        '{' { NL } { ProtectedMember NL } '}' ;
+
+ProtectedMember =
+      { ItemDocComment }
+      { Annotation }
+      [ Visibility ]
+      ( ProtectedField
+      | InvariantClause
+      | EntryDecl
+      | FunctionDecl ) ;
+
+ProtectedField =
+      'var' IDENT ':' Type [ '=' Expr ]
+    | 'let' IDENT ':' Type [ '=' Expr ]
+    | FieldDecl ;
+
+EntryDecl =
+    'entry' IDENT '(' [ ParamList ] ')' [ ':' Type ]
+        { ContractClause }
+        FunctionBody ;
+
+
+(* ============================================================================
+ *  §3.9 Interfaces and impls
+ * ============================================================================ *)
+
+InterfaceDecl =
+    'interface' IDENT [ GenericParams ] [ WhereClause ]
+        '{' { NL } { InterfaceMember NL } '}' ;
+
+InterfaceMember =
+      { ItemDocComment }
+      { Annotation }
+      ( FunctionSig
+      | FunctionDecl                            (* default method *)
+      | AssociatedTypeDecl ) ;
+
+AssociatedTypeDecl = 'type' IDENT [ '=' Type ] ;
+
+FunctionSig =
+      [ 'async' ] 'func' IDENT [ GenericParams ]
+          '(' [ ParamList ] ')' [ ':' Type ]
+          [ WhereClause ]
+          { ContractClause } ;
+
+ImplDecl =
+    'impl' [ GenericParams ] InterfaceRef 'for' Type [ WhereClause ]
+        '{' { NL } { ImplMember NL } '}' ;
+
+InterfaceRef = ModulePath [ TypeArgs ] ;
+
+ImplMember =
+      { ItemDocComment }
+      { Annotation }
+      ( FunctionDecl
+      | AssociatedTypeDecl ) ;
+
+
+(* ============================================================================
+ *  §4. Types
+ *
+ *  A Type is anything that can stand to the right of ':' in a binding,
+ *  parameter, return position, or generic argument list.
+ * ============================================================================ *)
+
+Type =
+      FunctionType
+    | NonFunctionType ;
+
+(* Function types are parsed last because they include arrow tails. *)
+
+FunctionType =
+      '(' [ TypeList ] ')' '->' Type
+    | NonFunctionType '->' Type ;             (* X -> Y; right-associative *)
+
+NonFunctionType =
+      TupleType
+    | NullableType ;
+
+TupleType = '(' Type ',' TypeList ')' ;       (* (A, B), (A, B, C), ... *)
+TypeList  = Type { ',' Type } [ ',' ] ;
+
+NullableType = AtomType [ '?' ] ;             (* T? — nullable *)
+
+AtomType =
+      TypeRef
+    | GenericTypeApp
+    | ArrayTypeForm
+    | SliceTypeForm
+    | RefinedTypeForm
+    | UnitType
+    | NeverType
+    | SelfType
+    | '(' Type ')' ;                          (* parenthesised *)
+
+UnitType  = '(' ')' ;                         (* the type Unit's literal form *)
+NeverType = 'Never' ;                         (* a built-in identifier; not a keyword *)
+SelfType  = 'Self' ;                          (* inside an interface or impl;
+                                                 likewise a built-in identifier *)
+
+TypeRef = ModulePath ;                        (* a bare named type, possibly
+                                                 qualified: Money.Amount *)
+
+GenericTypeApp = ModulePath TypeArgs ;
+TypeArgs       = '[' TypeArg { ',' TypeArg } [ ',' ] ']' ;
+TypeArg        = Type | ConstExpr ;           (* value generics admit const exprs *)
+
+ArrayTypeForm = 'array' '[' ConstExpr ',' Type ']' ;
+SliceTypeForm = 'slice' '[' Type ']' ;
+
+(* §4.1 Refined types
+ *
+ * A refined type is a numeric primitive with a 'range' clause used at a
+ * use-site (parameter, field, return position) — distinct from a top-level
+ * 'type T = ... range ...' declaration in §3.3. The use-site form binds
+ * an anonymous range subtype.
+ *)
+
+RefinedTypeForm =
+      ModulePath 'range' RangeBoundsExpr ;    (* e.g. Int range 0 ..= 99 *)
+
+(* A use-site refinement on a numeric primitive may be parenthesised when
+ * disambiguation is needed:
+ *
+ *   (Nat range 1 ..= 100).tryFrom(...)
+ *
+ * which is parsed by the AtomType '(' Type ')' branch. *)
+
+
+(* ============================================================================
+ *  §5. Functions, parameters, and bodies
+ * ============================================================================ *)
+
+FunctionDecl =
+      [ 'async' ] 'func' IDENT [ GenericParams ]
+          '(' [ ParamList ] ')' [ ':' Type ]
+          [ WhereClause ]
+          { ContractClause }
+          FunctionBody ;
+
+FunctionBody =
+      '=' Expr                                (* expression-bodied function *)
+    | Block ;                                 (* statement-bodied *)
+
+ParamList = Param { ',' Param } [ ',' ] ;
+
+Param =
+      ParamMode IDENT ':' Type [ '=' Expr ] ;
+
+ParamMode = 'in' | 'out' | 'inout' ;
+
+(* §5.1 Generic parameters and where clauses *)
+
+GenericParams =
+    'generic' '[' GenericParam { ',' GenericParam } [ ',' ] ']' ;
+
+(* The 'generic[...]' prefix may also appear before a top-level Item; the
+ * parser accepts it as a head modifier on RecordDecl, UnionDecl,
+ * OpaqueTypeDecl, ProtectedTypeDecl, FunctionDecl, InterfaceDecl, and
+ * ImplDecl. We expose this via the GenericPrefix non-terminal that wraps
+ * Item; see §3 ItemKind productions, which permit GenericParams in their
+ * head. (Productions above show 'GenericParams' inline for brevity.) *)
+
+GenericParam =
+      IDENT [ ':' Type ]                      (* value generic: 'N: Nat' *)
+    | IDENT ;                                 (* type generic: 'T' *)
+
+WhereClause = 'where' WhereBound { ',' WhereBound } ;
+
+WhereBound  = IDENT ':' BoundExpr ;
+BoundExpr   =
+      ConstraintRef { '+' ConstraintRef } ;
+
+ConstraintRef = ModulePath [ TypeArgs ] ;     (* e.g. Compare, Add, Repository[T, K] *)
+
+
+(* ============================================================================
+ *  §6. Statements and blocks
+ * ============================================================================ *)
+
+Block = '{' { NL } [ BlockBody ] '}' ;
+
+BlockBody =
+      Statement { NL Statement } [ NL ] ;
+
+Statement =
+      ItemKind                                (* nested 'val', 'func', etc. *)
+    | LocalBinding
+    | AssignStmt
+    | ReturnStmt
+    | BreakStmt
+    | ContinueStmt
+    | ThrowStmt
+    | TryStmt
+    | DeferStmt
+    | ScopeStmt                               (* structured-concurrency scope *)
+    | ForStmt
+    | WhileStmt
+    | LoopStmt
+    | ExprStmt ;
+
+LocalBinding =
+      'val' Pattern [ ':' Type ] '=' Expr
+    | 'var' IDENT  [ ':' Type ] [ '=' Expr ]
+    | 'let' IDENT  [ ':' Type ] '=' Expr ;    (* lazy, thread-safe *)
+
+AssignStmt =
+      LValue AssignOp Expr ;
+
+AssignOp = '=' | '+=' | '-=' | '*=' | '/=' | '%=' ;
+
+LValue =
+      IDENT
+    | LValue '.' IDENT
+    | LValue '[' Expr ']' ;
+
+ReturnStmt   = 'return' [ Expr ] ;
+BreakStmt    = 'break' [ IDENT ] ;
+ContinueStmt = 'continue' [ IDENT ] ;
+ThrowStmt    = 'throw' Expr ;                 (* raises a Bug; not for recoverable errors *)
+
+TryStmt =
+    'try' Block CatchClause { CatchClause } ;
+
+CatchClause =
+    'catch' IDENT [ 'as' IDENT ] Block ;       (* 'catch Bug as b { ... }' *)
+
+(* 'defer { ... }' runs on scope exit, success or failure. *)
+DeferStmt =
+    'defer' Block ;
+
+(* A 'scope { ... }' block is a structured-concurrency boundary (§7). *)
+ScopeStmt =
+    'scope' [ ScopeBinding ] Block ;
+
+ScopeBinding = '[' IDENT ']' ;                 (* e.g. scope [request] { ... } — reserved *)
+
+ForStmt =
+    [ Label ':' ] 'for' Pattern 'in' Expr Block ;
+
+WhileStmt =
+    [ Label ':' ] 'while' Expr Block ;
+
+LoopStmt =
+    [ Label ':' ] 'do' Block ;                (* infinite loop; exits via break *)
+
+Label = IDENT ;
+
+ExprStmt = Expr ;                             (* an expression in statement position;
+                                                 result is discarded unless it is the
+                                                 trailing expression of a block *)
+
+
+(* ============================================================================
+ *  §7. Expressions
+ *
+ *  Expressions are presented as a precedence cascade. The order is, from
+ *  loosest to tightest binding:
+ *
+ *     Expr          assignment   (right-assoc)        '=' '+=' '-=' '*=' '/=' '%='
+ *     OrExpr        or / xor     (left-assoc)         'or' 'xor'
+ *     AndExpr       and          (left-assoc)         'and'
+ *     CompareExpr   comparison   (non-associative)    '==' '!=' '<' '<=' '>' '>='
+ *     CoalesceExpr  nil-coalesce (right-assoc)        '??'
+ *     AddExpr       additive     (left-assoc)         '+' '-'
+ *     MulExpr       multiplicative (left-assoc)       '*' '/' '%'
+ *     RangeExpr     range        (non-associative)    '..' '..=' '..<'
+ *     PrefixExpr    prefix       (right-assoc)        '-' 'not' '&'
+ *     PropExpr      error-propagation                 trailing '?'
+ *     PostfixExpr   call/index/member                 'f(x)' 'a[i]' '.field'
+ *     PrimaryExpr   atoms
+ *
+ *  This matches reference §4.1 with the following crucial notes:
+ *
+ *    • Comparison operators do not chain: 'a < b < c' is rejected by the
+ *      grammar (CompareExpr permits at most one comparison operator at
+ *      its level).
+ *    • The error-propagation '?' is a postfix unary; it sits between the
+ *      postfix calls/indices and the prefix operators because it must
+ *      apply to the result of a call before negation.
+ *    • There is no ternary '?:' — it is structurally absent (see §4.3).
+ *    • Bitwise operators are not symbolic — they appear only as method
+ *      calls (PostfixExpr) on integer types (reference §4.1 / D019).
+ *
+ *  An 'await' expression, an 'if' expression, a 'match' expression, and
+ *  a 'spawn' expression appear at PrimaryExpr level: they begin with a
+ *  keyword that disambiguates them from a binary operator's right-hand
+ *  side.
+ * ============================================================================ *)
+
+Expr =
+      AssignExpr ;
+
+AssignExpr =
+      OrExpr [ AssignOp AssignExpr ] ;        (* right-assoc *)
+
+OrExpr =
+      AndExpr { ('or' | 'xor') AndExpr } ;
+
+AndExpr =
+      CompareExpr { 'and' CompareExpr } ;
+
+CompareExpr =
+      CoalesceExpr [ CompareOp CoalesceExpr ] ;  (* at most one — no chaining *)
+
+CompareOp = '==' | '!=' | '<' | '<=' | '>' | '>=' ;
+
+CoalesceExpr =
+      AddExpr { '??' AddExpr } ;              (* right-assoc; folded post-parse *)
+
+AddExpr =
+      MulExpr { ('+' | '-') MulExpr } ;
+
+MulExpr =
+      RangeExpr { ('*' | '/' | '%') RangeExpr } ;
+
+RangeExpr =
+      PrefixExpr [ RangeOp PrefixExpr ]       (* non-associative *)
+    | RangeOp PrefixExpr                      (* prefix range: '..= 9' as a pattern bound *)
+    | PrefixExpr RangeOp ;                    (* postfix range: 'a ..' open-ended *)
+
+RangeOp = '..' | '..=' | '..<' ;
+
+PrefixExpr =
+      ('-' | 'not' | '&') PrefixExpr
+    | PropExpr ;
+
+PropExpr =
+      PostfixExpr { '?' } ;                   (* error-propagation; chains, e.g. f()?.g()? *)
+
+PostfixExpr =
+      PrimaryExpr { PostfixOp } ;
+
+PostfixOp =
+      CallArgs                                (* function/method call *)
+    | TypeArgs                                (* turbofish-like type arguments at call sites *)
+    | IndexArgs                               (* a[i] or a[i, j] *)
+    | MemberOp                                (* .field, .method *)
+    | TrailingLambda ;                        (* foo { x -> ... } sugar *)
+
+CallArgs =
+    '(' [ CallArg { ',' CallArg } [ ',' ] ] ')' ;
+
+CallArg =
+      [ IDENT '=' ] Expr ;                    (* named or positional argument *)
+
+IndexArgs =
+    '[' Expr { ',' Expr } [ ',' ] ']' ;
+
+MemberOp = '.' IDENT ;
+
+TrailingLambda = LambdaExpr ;                  (* see §7.2; only attached when it
+                                                  immediately follows a call or path *)
+
+(* §7.1 Primary expressions *)
+
+PrimaryExpr =
+      Literal
+    | InterpolatedString
+    | LambdaExpr
+    | TupleExpr
+    | ListExpr
+    | ParenExpr
+    | IfExpr
+    | MatchExpr
+    | TryExpr
+    | AwaitExpr
+    | SpawnExpr
+    | OldExpr                                 (* 'old(expr)' — only inside ensures *)
+    | QuantifierExpr                          (* 'forall', 'exists' — only in contracts *)
+    | RecordCtor
+    | UnionCtor
+    | SelfExpr                                (* 'self' — only inside method-style contexts *)
+    | ResultExpr                              (* 'result' — only inside ensures clauses *)
+    | Path ;                                  (* IDENT or qualified path like Foo.Bar *)
+
+SelfExpr   = 'self' ;
+ResultExpr = 'result' ;
+
+Path = ModulePath ;
+
+(* §7.1.1 Literals *)
+
+Literal =
+      IntLit
+    | FloatLit
+    | CharLit
+    | StringLit
+    | TripleStringLit
+    | RawStringLit
+    | BoolLit
+    | UnitLit ;                               (* '()' *)
+
+(* IntLit, FloatLit, CharLit, StringLit, TripleStringLit, RawStringLit are
+ * single tokens produced by the lexer per §1.8. *)
+
+BoolLit = 'true' | 'false' ;
+UnitLit = '(' ')' ;
+
+(* §7.1.2 Interpolated strings *)
+
+InterpolatedString =
+    STR_START STR_PART { '${' Expr '}' STR_PART } STR_END ;
+
+(* §7.1.3 Tuples, parens, and lists *)
+
+ParenExpr  = '(' Expr ')' ;
+TupleExpr  = '(' Expr ',' Expr { ',' Expr } [ ',' ] ')' ;
+ListExpr   = '[' [ Expr { ',' Expr } [ ',' ] ] ']' ;
+
+(* §7.1.4 Lambdas *)
+
+LambdaExpr =
+    '{' [ LambdaParams '->' ] [ BlockBody ] '}' ;
+
+LambdaParams =
+      IDENT
+    | IDENT { ',' IDENT } [ ',' ]
+    | '(' [ LambdaParam { ',' LambdaParam } [ ',' ] ] ')'
+    | LambdaParam { ',' LambdaParam } [ ',' ] ;
+
+LambdaParam =
+      IDENT [ ':' Type ] ;
+
+(* §7.1.5 If, match, try, await, spawn, old, quantifier *)
+
+IfExpr =
+      'if' Expr 'then' Expr 'else' Expr        (* ternary form *)
+    | 'if' Expr Block [ 'else' ( Block | IfExpr ) ] ;  (* block form, else optional *)
+
+MatchExpr =
+    'match' Expr '{' { NL } MatchArm { NL MatchArm } { NL } '}' ;
+
+MatchArm =
+    'case' Pattern [ MatchGuard ] '->' ( Expr | Block ) ;
+
+MatchGuard =
+      'where' Expr
+    | 'if' Expr ;                              (* both spellings accepted; reference §4.2 *)
+
+TryExpr =
+    'try' Expr ;                              (* not the same as TryStmt; expression form
+                                                 returns Result-shaped wrap; reserved *)
+
+AwaitExpr =
+    'await' Expr ;                            (* may also appear postfix as 'expr.await' —
+                                                 NOT in v0.1; await is keyword-prefix only *)
+
+SpawnExpr =
+    'spawn' Expr ;                            (* spawn a task within the enclosing scope *)
+
+OldExpr =
+    'old' '(' Expr ')' ;
+
+QuantifierExpr =
+      'forall' '(' QuantifierBinder { ',' QuantifierBinder } ')'
+          [ 'where' Expr ] ( 'implies' Expr | Block | Expr )
+    | 'exists' '(' QuantifierBinder { ',' QuantifierBinder } ')'
+          [ 'where' Expr ] ( Block | Expr ) ;
+
+QuantifierBinder = IDENT ':' Type ;
+
+(* §7.1.6 Constructors *)
+
+(* A record value is constructed by 'TypeRef ( field = expr, ... )' — but
+ * since that is syntactically a call, the parser only distinguishes at
+ * resolve time. The grammar accepts both as PostfixExpr CallArgs and
+ * disambiguates after type resolution. The same applies to union case
+ * constructors like 'Ok(x)' or 'Circle(r)'. *)
+
+RecordCtor = ModulePath '(' [ RecordCtorField { ',' RecordCtorField } [ ',' ] ] ')' ;
+
+RecordCtorField =
+      IDENT '=' Expr
+    | IDENT ;                                 (* shorthand: field-of-same-name *)
+
+UnionCtor = ModulePath [ '(' [ Expr { ',' Expr } [ ',' ] ] ')' ] ;
+
+(* The 'a.copy(field = expr, ...)' pattern uses the ordinary postfix call
+ * with named arguments and the conventional method 'copy'; no special
+ * grammar production is required. *)
+
+
+
+(* ============================================================================
+ *  §8. Patterns
+ *
+ *  Patterns appear in 'val'/'var' bindings (left of '='), in 'for' loops,
+ *  in 'match' arms, and as parameters of union case payloads when
+ *  destructured.
+ * ============================================================================ *)
+
+Pattern =
+      OrPattern ;
+
+OrPattern =
+      PrimaryPattern { '|' PrimaryPattern } ; (* 'A | B' alternative patterns *)
+
+PrimaryPattern =
+      WildcardPattern
+    | LiteralPattern
+    | RangePattern
+    | BindingPattern
+    | ConstructorPattern
+    | RecordPattern
+    | TuplePattern
+    | ParenPattern
+    | TypeTestPattern ;
+
+WildcardPattern  = '_' ;
+LiteralPattern   = Literal | InterpolatedString ;
+RangePattern     = Expr ( '..=' | '..<' | '..' ) Expr ;     (* expressions are restricted
+                                                               to constant forms post-parse *)
+BindingPattern   = IDENT [ '@' PrimaryPattern ] ;            (* 'x' or 'x @ Foo(_)' *)
+
+ConstructorPattern =
+      ModulePath [ '(' [ Pattern { ',' Pattern } [ ',' ] ] ')' ] ;
+
+RecordPattern =
+      ModulePath '{' RecordPatternField { ',' RecordPatternField } [ ',' ]
+          [ '..' ]                            (* '..' means "ignore other fields" *)
+      '}' ;
+
+RecordPatternField =
+      IDENT '=' Pattern
+    | IDENT ;                                 (* shorthand: bind field to same name *)
+
+TuplePattern =
+      '(' [ Pattern { ',' Pattern } [ ',' ] ] ')' ;          (* () is the unit pattern *)
+
+ParenPattern =
+      '(' Pattern ')' ;                       (* parser disambiguates from TuplePattern by
+                                                 absence of trailing comma *)
+
+TypeTestPattern =
+      Pattern 'is' Type ;                     (* binds and refines; reserved form *)
+
+
+(* ============================================================================
+ *  §9. Contracts
+ *
+ *  Contract clauses attach to FunctionDecl, FunctionSig, EntryDecl, and
+ *  Type declarations (as InvariantClause). A contract clause uses the
+ *  contract sublanguage — a restricted subset of Expr (no side effects,
+ *  no I/O, no mutation, no allocation, no calls into non-@pure functions).
+ *  The grammar is the same as Expr; the restrictions are enforced in a
+ *  dedicated pass over the AST.
+ * ============================================================================ *)
+
+ContractClause =
+      RequiresClause
+    | EnsuresClause
+    | WhenClause                              (* on entries: barrier *)
+    | DecreasesClause                         (* termination measure; reserved *)
+    | RaisesClause ;                          (* reserved; not enforceable in v0.1 *)
+
+RequiresClause   = 'requires' ':' ContractExpr ;
+EnsuresClause    = 'ensures'  ':' ContractExpr ;
+WhenClause       = 'when'     ':' ContractExpr ;
+DecreasesClause  = 'where'    'decreases' ':' ContractExpr ;
+RaisesClause     = 'where'    'raises'    ':' Type { ',' Type } ;
+
+InvariantClause = 'invariant' ':' ContractExpr ;
+
+(* The contract expression sublanguage. Syntactically a full Expr; a
+ * post-parse "contract validator" rejects forbidden constructs (calls
+ * to non-@pure functions, mutations, allocations, side-effecting
+ * operators, etc.) per reference §6.3. *)
+
+ContractExpr = Expr ;
+
+
+(* ============================================================================
+ *  §10. Concurrency, DI, FFI, scopes
+ * ============================================================================ *)
+
+(* §10.1 Wire blocks (compile-time DI graph; reference §10) *)
+
+WireDecl =
+    'wire' IDENT [ WireParams ]
+        '{' { NL } { WireMember NL } '}' ;
+
+WireParams = '(' [ ParamList ] ')' ;          (* rare; usually @provided is preferred *)
+
+WireMember =
+      ProvidedDecl
+    | SingletonDecl
+    | ScopedDecl
+    | BindDecl
+    | ExposeDecl
+    | LocalAlias ;
+
+ProvidedDecl =
+      '@provided' IDENT ':' Type ;            (* parameter to bootstrap *)
+
+SingletonDecl =
+      'singleton' IDENT ':' Type '=' Expr ;
+
+ScopedDecl =
+      'scoped' '[' IDENT ']' IDENT ':' Type '=' Expr ;
+
+BindDecl =
+      'bind' Type '->' Expr ;                 (* bind interface to provider *)
+
+ExposeDecl =
+      'expose' IDENT ;
+
+LocalAlias =
+      'val' IDENT [ ':' Type ] '=' Expr ;     (* internal helper binding inside a wire *)
+
+(* §10.2 User-defined scopes *)
+
+ScopeKindDecl = 'scope_kind' IDENT ;          (* declares a new scope tag, e.g. Tenant *)
+
+(* §10.3 Extern packages *)
+
+ExternPackageDecl =
+    'extern' 'package' ModulePath
+        '{' { NL } { ExternMember NL } '}' ;
+
+ExternMember =
+      { ItemDocComment }
+      { Annotation }                          (* '@axiom', sometimes with a string *)
+      [ Visibility ]
+      ( ExposedRecordDecl
+      | RecordDecl
+      | UnionDecl
+      | EnumDecl
+      | FunctionSig
+      | TypeAliasDecl
+      | DistinctTypeDecl
+      | OpaqueTypeDecl ) ;                    (* opaque externs declare an opaque handle *)
+
+
+(* ============================================================================
+ *  §11. Test items
+ *
+ *  These productions are valid only in @test_module packages; a post-parse
+ *  pass rejects them elsewhere.
+ * ============================================================================ *)
+
+TestItem =
+    'test' StringLit Block ;
+
+PropertyDecl =
+    'property' StringLit
+        [ 'forall' '(' PropertyBinder { ',' PropertyBinder } [ ',' ] ')' ]
+        [ 'where' Expr ]
+        Block ;
+
+PropertyBinder = IDENT ':' Type ;
+
+FixtureDecl =
+    'fixture' IDENT [ ':' Type ] '=' Expr ;
+
+
+
+(* ============================================================================
+ *  §12. Helpers used above
+ * ============================================================================ *)
+
+(* §12.1 Constant expressions
+ *
+ * A ConstExpr is a syntactic restriction on Expr: it must consist only of
+ * literals, references to other ConstDecl bindings, arithmetic on those,
+ * and calls to compile-time-evaluable built-ins. The grammar permits any
+ * Expr here; the restriction is enforced in a "const evaluation" pass.
+ * Const expressions appear in:
+ *
+ *   - ConstDecl right-hand sides
+ *   - array[N, T] sizes
+ *   - default values for value-generic parameters
+ *   - range bounds in 'range' clauses (after type checking)
+ *)
+
+ConstExpr = Expr ;
+
+(* §12.2 Token aliases (single-token productions used as conveniences) *)
+
+IntLit          = INT_LITERAL ;
+FloatLit        = FLOAT_LITERAL ;
+CharLit         = CHAR_LITERAL ;
+StringLit       = STRING_LITERAL ;
+TripleStringLit = TRIPLE_STRING_LITERAL ;
+RawStringLit    = RAW_STRING_LITERAL ;
+
+
+(* ============================================================================
+ *  §13. Open syntactic questions (cross-reference docs/06-open-questions.md)
+ *
+ *  The grammar above accepts forms that the language reference flags
+ *  [TBD] or that 06-open-questions.md tracks. Listing them here so that
+ *  Phase 0 reviewers can see what is intentionally tentative:
+ *
+ *    Q003 (Projection cycles)
+ *      The grammar admits '@projectionBoundary' as an arbitrary Annotation;
+ *      its required-or-optional status, and any associated args, are
+ *      decided by post-parse analysis once the question is resolved.
+ *
+ *    Q004 (Generic constraint markers)
+ *      ConstraintRef is a free ModulePath; the closed list of built-in
+ *      markers ('Add', 'Sub', 'Compare', etc.) is enforced in name
+ *      resolution rather than by the grammar.
+ *
+ *    Q005 (Async and out/inout parameters)
+ *      The grammar accepts any combination; the post-parse mode checker
+ *      enforces the rule chosen for Q005.
+ *
+ *    Q006 ('?' in non-error-returning functions)
+ *      The grammar accepts the postfix '?' anywhere PostfixExpr is legal.
+ *      The type checker enforces compatibility with the enclosing
+ *      function's return type.
+ *
+ *    Q008 (Concurrent func calls on protected types)
+ *      The grammar accepts plain 'func' inside ProtectedTypeDecl. A
+ *      'concurrent func' opt-in (per Q008 Option 3) would be added as
+ *      a modifier on ProtectedMember if that resolution wins.
+ *
+ *    Q010 (Task vs ValueTask)
+ *      Grammar-invariant; resolved by codegen and an optional '@hot'
+ *      annotation that the grammar already accepts.
+ *
+ *    Q014 (Operator overloading via traits)
+ *      The grammar already permits ImplDecl on built-in marker
+ *      interfaces (e.g. 'impl Add for MyType'). Whether this is
+ *      legal and what semantic restrictions apply is a post-parse
+ *      decision.
+ *
+ *    Q018 (Module docstrings)
+ *      Grammar uses '//!' for module docs and '///' for items per the
+ *      recommendation; revise SourceFile if Q018 lands differently.
+ *
+ *    Q019 (Pattern matching on protected types)
+ *      The grammar permits RecordPattern on any ModulePath; the rejection
+ *      of patterns that destructure protected types is enforced in
+ *      the type/pattern checker.
+ *
+ *  Other reference [TBD]s (record-vs-class lowering, opaque-type sealing
+ *  mechanism, var-capture across async, protected-type lowering, etc.)
+ *  are codegen / runtime concerns and have no impact on the surface
+ *  grammar.
+ * ============================================================================ *)
+
+
+(* ============================================================================
+ *  §14. End of grammar
+ *
+ *  This grammar is intended to be sufficient for an LL(1)-with-occasional-
+ *  lookahead parser implementation. Known points of >1-token lookahead:
+ *
+ *    1. Distinguishing 'TupleExpr' from 'ParenExpr' requires looking past
+ *       the first ')' to detect a comma. A standard fix: parse '(' Expr
+ *       and decide on the next token (',' → tuple; ')' → paren).
+ *
+ *    2. Distinguishing 'TupleType' from a parenthesised Type uses the
+ *       same trick.
+ *
+ *    3. Distinguishing 'FunctionType' from a tuple-then-arrow requires
+ *       looking past ')' for '->'. A typical implementation parses the
+ *       parenthesised list and only then checks for '->'.
+ *
+ *    4. 'GenericTypeApp' versus 'IndexArgs' on PostfixExpr — both use
+ *       '['. The disambiguation is positional: in a Type production the
+ *       brackets are TypeArgs; in an Expr production they are IndexArgs.
+ *       Where Type and Expr coexist (rarely; e.g. CallArg with a turbofish),
+ *       the parser's grammar position carries the answer.
+ *
+ *    5. RecordCtor versus PostfixExpr CallArgs look identical. The
+ *       parser produces a uniform "call-shaped" AST node; type
+ *       resolution decides whether it is a constructor or a function
+ *       call. Named arguments are accepted in both cases.
+ *
+ *    6. LambdaExpr versus Block — both start with '{'. A lambda has a
+ *       parameter-arrow header; a block does not. The parser resolves
+ *       this with a single-token lookahead after the '{': if the next
+ *       non-NL token is IDENT or '(' followed (eventually) by '->', it
+ *       is a lambda; else it is a block. Per Kotlin conventions.
+ *
+ *  None of these require unbounded lookahead.
+ * ============================================================================ *)
