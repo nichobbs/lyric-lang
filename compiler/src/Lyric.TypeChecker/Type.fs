@@ -1,167 +1,137 @@
-/// Internal type representation used by the type checker.
-///
-/// Constructors carry `Ty…` / `Pt…` prefixes to avoid collisions with
-/// the parser's `TypeExprKind` (`TUnit`, `TRef`, `TSelf`, …) when both
-/// modules are opened in the same file.
+/// Resolved type representation, distinct from the parser's
+/// `Lyric.Parser.Ast.TypeExpr`. A `Type` carries no surface-syntax
+/// information — it is the canonical, post-resolution form used by
+/// the rest of the type checker and downstream passes.
 namespace Lyric.TypeChecker
 
 open Lyric.Lexer
-open Lyric.Parser.Ast
 
-/// Built-in primitive types. Phase 1 covers the §4.1 primitives plus
-/// `Char` and `Byte` since the lexer already recognises their literal
-/// forms. `Nat` is treated as a distinct primitive (rather than a
-/// refinement of `Int`) for now — refinements are deferred per
-/// `docs/05-implementation-plan.md` Phase 1 "Deferred" list.
+/// Stable identifier for a user-defined type (record / union / enum /
+/// opaque / distinct / alias). Allocated at item-resolution time and
+/// used to compare types by identity rather than structure.
+type TypeId = TypeId of int
+
+/// Lyric primitive types per docs/01-language-reference.md §2.1.
 type PrimType =
-    | PtUnit
-    | PtBool
-    | PtInt
-    | PtLong
-    | PtNat
-    | PtByte
-    | PtFloat
-    | PtDouble
-    | PtChar
-    | PtString
-    | PtNever          // uninhabited
+    | TBool
+    | TByte
+    | TInt
+    | TLong
+    | TUInt
+    | TULong
+    | TNat
+    | TFloat
+    | TDouble
+    | TChar
+    | TString
+    | TUnit
+    | TNever
 
-/// The internal kind of a Lyric type. Equality is structural via
-/// derived `=` — two types are equal iff their representations match.
-/// Generic application is shallow (head + args); `TyVar` carries a
-/// bind name for substitution.
-[<RequireQualifiedAccess; StructuralEquality; StructuralComparison>]
+/// Resolved type. `Type` values are constructed by the resolver and
+/// consumed by every downstream pass (mode checker, contract
+/// elaborator, MSIL emitter). They carry no source position; the
+/// surrounding AST node holds the span.
 type Type =
-    | TyPrim of PrimType
-    /// A named user-declared type (record / union / enum / opaque /
-    /// distinct / extern), referenced by its fully-qualified path.
-    /// Generic instantiations live under `TyApp`.
-    | TyNamed of segments: string list
-    /// `head[args…]` — generic instantiation. `head` is normally a
-    /// `TyNamed`; the args are parallel positional bindings.
-    | TyApp of head: Type * args: Type list
-    | TyFunction of parameters: Type list * result: Type
-    | TyTuple of Type list
-    | TyArray of size: int option * element: Type   // None when size is unresolved
-    | TySlice of element: Type
-    | TyNullable of element: Type
-    | TyVar of name: string
-    | TySelf
-    /// Recovery placeholder. Equal to itself only — never to a real
-    /// type — and silently subsumes any unification attempt so that
-    /// downstream errors don't cascade.
-    | TyError
+    | TPrim     of PrimType
 
+    /// `(A, B, …)` — a tuple. The empty tuple is `TPrim TUnit`.
+    | TTuple    of Type list
+
+    /// `T?` — nullable wrapper.
+    | TNullable of Type
+
+    /// `(A, B, …) -> C` — function type. `IsAsync` is true when the
+    /// declaration was `async func`.
+    | TFunction of parameters: Type list * result: Type * isAsync: bool
+
+    /// `array[N, T]` — fixed-size array. Size is None when it is a
+    /// value-generic parameter (e.g. `array[N, T]` inside a generic).
+    | TArray    of size: int option * element: Type
+
+    /// `slice[T]` — dynamic slice.
+    | TSlice    of Type
+
+    /// User-defined nominal type (record / union / opaque / distinct /
+    /// alias) applied to its type arguments. The TypeId is the
+    /// canonical identity of the declaration.
+    | TUser     of TypeId * args: Type list
+
+    /// `Self` — the implicit self-type inside an interface or impl.
+    /// Resolved to a concrete TUser at instantiation.
+    | TSelf
+
+    /// A generic type variable bound by an enclosing `generic[…]`
+    /// header. Identified by its source name.
+    | TVar      of name: string
+
+    /// Recovery placeholder when a type expression could not be
+    /// resolved. Downstream passes treat TError as compatible with
+    /// anything (poisoning prevents cascading errors).
+    | TError
+
+/// Compare types for structural equality. TError is considered equal
+/// to any other type (so a recovered type does not provoke spurious
+/// diagnostics in code that uses it).
 module Type =
 
-    let unit'    = Type.TyPrim PtUnit
-    let bool'    = Type.TyPrim PtBool
-    let int'     = Type.TyPrim PtInt
-    let long'    = Type.TyPrim PtLong
-    let nat'     = Type.TyPrim PtNat
-    let byte'    = Type.TyPrim PtByte
-    let float'   = Type.TyPrim PtFloat
-    let double'  = Type.TyPrim PtDouble
-    let char'    = Type.TyPrim PtChar
-    let string'  = Type.TyPrim PtString
-    let never'   = Type.TyPrim PtNever
-    let error'   = Type.TyError
+    let primName : PrimType -> string = function
+        | TBool   -> "Bool"     | TByte   -> "Byte"
+        | TInt    -> "Int"      | TLong   -> "Long"
+        | TUInt   -> "UInt"     | TULong  -> "ULong"
+        | TNat    -> "Nat"      | TFloat  -> "Float"
+        | TDouble -> "Double"   | TChar   -> "Char"
+        | TString -> "String"   | TUnit   -> "Unit"
+        | TNever  -> "Never"
 
-    /// Pretty-print a type for diagnostics. Stable; not pretty-pretty.
-    let rec render (t: Type) : string =
-        match t with
-        | Type.TyPrim p ->
-            match p with
-            | PtUnit   -> "Unit"
-            | PtBool   -> "Bool"
-            | PtInt    -> "Int"
-            | PtLong   -> "Long"
-            | PtNat    -> "Nat"
-            | PtByte   -> "Byte"
-            | PtFloat  -> "Float"
-            | PtDouble -> "Double"
-            | PtChar   -> "Char"
-            | PtString -> "String"
-            | PtNever  -> "Never"
-        | Type.TyNamed segs    -> String.concat "." segs
-        | Type.TyApp (h, args) ->
-            let argStr =
-                args |> List.map render |> String.concat ", "
-            sprintf "%s[%s]" (render h) argStr
-        | Type.TyFunction (ps, r) ->
-            let psStr = ps |> List.map render |> String.concat ", "
-            sprintf "(%s) -> %s" psStr (render r)
-        | Type.TyTuple ts ->
-            let inner = ts |> List.map render |> String.concat ", "
-            sprintf "(%s)" inner
-        | Type.TyArray (size, e) ->
-            match size with
-            | Some n -> sprintf "array[%d, %s]" n (render e)
-            | None   -> sprintf "array[?, %s]" (render e)
-        | Type.TySlice e    -> sprintf "slice[%s]" (render e)
-        | Type.TyNullable e -> sprintf "%s?" (render e)
-        | Type.TyVar n      -> n
-        | Type.TySelf       -> "Self"
-        | Type.TyError      -> "<error>"
+    let primFromString : string -> PrimType option = function
+        | "Bool"   -> Some TBool    | "Byte"   -> Some TByte
+        | "Int"    -> Some TInt     | "Long"   -> Some TLong
+        | "UInt"   -> Some TUInt    | "ULong"  -> Some TULong
+        | "Nat"    -> Some TNat     | "Float"  -> Some TFloat
+        | "Double" -> Some TDouble  | "Char"   -> Some TChar
+        | "String" -> Some TString  | "Unit"   -> Some TUnit
+        | "Never"  -> Some TNever
+        | _        -> None
 
-    /// Substitute every `TyVar n` with `subst.[n]` if present.
-    /// Untouched variables remain as `TyVar`.
-    let rec subst (s: Map<string, Type>) (t: Type) : Type =
-        match t with
-        | Type.TyVar n ->
-            match Map.tryFind n s with
-            | Some t' -> t'
-            | None    -> t
-        | Type.TyApp (h, args) ->
-            Type.TyApp (subst s h, args |> List.map (subst s))
-        | Type.TyFunction (ps, r) ->
-            Type.TyFunction (ps |> List.map (subst s), subst s r)
-        | Type.TyTuple ts ->
-            Type.TyTuple (ts |> List.map (subst s))
-        | Type.TyArray (n, e) ->
-            Type.TyArray (n, subst s e)
-        | Type.TySlice e ->
-            Type.TySlice (subst s e)
-        | Type.TyNullable e ->
-            Type.TyNullable (subst s e)
-        | Type.TyPrim _ | Type.TyNamed _ | Type.TySelf | Type.TyError ->
-            t
+    let rec equiv (a: Type) (b: Type) : bool =
+        match a, b with
+        | TError, _ | _, TError                 -> true
+        | TPrim x, TPrim y                      -> x = y
+        | TSelf, TSelf                          -> true
+        | TVar x, TVar y                        -> x = y
+        | TTuple xs, TTuple ys                  -> List.compareWith compareT xs ys = 0
+        | TNullable x, TNullable y              -> equiv x y
+        | TFunction(p1, r1, a1), TFunction(p2, r2, a2) ->
+            a1 = a2
+            && List.length p1 = List.length p2
+            && List.forall2 equiv p1 p2
+            && equiv r1 r2
+        | TArray(s1, e1), TArray(s2, e2)        -> s1 = s2 && equiv e1 e2
+        | TSlice x, TSlice y                    -> equiv x y
+        | TUser(id1, a1), TUser(id2, a2) ->
+            id1 = id2
+            && List.length a1 = List.length a2
+            && List.forall2 equiv a1 a2
+        | _                                      -> false
 
-    /// Check whether `actual` is assignable to `expected`. Phase 1
-    /// rules: structural equality, nullable subsumes inner, `TyError`
-    /// is universally compatible (recovery), `TyVar` matches anything
-    /// (placeholder for the inference pass), and an applied generic
-    /// type is compatible with its bare head when args are absent
-    /// (the type checker doesn't yet track instantiation through
-    /// constructor calls — `Some(x): Option` flows into `Option[A]`).
-    let rec compatible (expected: Type) (actual: Type) : bool =
-        if expected = actual then true
-        else
-            match expected, actual with
-            | Type.TyError, _ | _, Type.TyError -> true
-            | Type.TyVar _, _ | _, Type.TyVar _ -> true
-            | Type.TyNullable e, a              -> compatible e a
-            | a, Type.TyNullable inner          -> compatible a inner
-            | Type.TyPrim PtNever, _            -> true   // Never can flow anywhere
-            | _, Type.TyPrim PtNever            -> true
-            | Type.TyApp (h, _), other when compatible h other -> true
-            | other, Type.TyApp (h, _) when compatible other h -> true
-            // Distinct/range-refined types compile down to a
-            // primitive in Phase 1. Without the symbol table here
-            // we can't chase the underlying, so we assume any
-            // TyNamed could be a numeric/string distinct of a
-            // primitive and let it slide.
-            | Type.TyNamed _, Type.TyPrim _ -> true
-            | Type.TyPrim _, Type.TyNamed _ -> true
-            | Type.TyApp (h1, a1), Type.TyApp (h2, a2)
-                when List.length a1 = List.length a2 ->
-                compatible h1 h2
-                && List.forall2 compatible a1 a2
-            | Type.TyFunction (p1, r1), Type.TyFunction (p2, r2)
-                when List.length p1 = List.length p2 ->
-                List.forall2 compatible p1 p2 && compatible r1 r2
-            | Type.TyTuple t1, Type.TyTuple t2
-                when List.length t1 = List.length t2 ->
-                List.forall2 compatible t1 t2
-            | Type.TySlice e1, Type.TySlice e2 -> compatible e1 e2
-            | _ -> false
+    and private compareT (a: Type) (b: Type) : int =
+        if equiv a b then 0 else 1
+
+    let rec render : Type -> string = function
+        | TPrim p          -> primName p
+        | TTuple xs        ->
+            "(" + (xs |> List.map render |> String.concat ", ") + ")"
+        | TNullable x      -> render x + "?"
+        | TFunction(ps, r, isAsync) ->
+            let prefix = if isAsync then "async " else ""
+            let pstr = "(" + (ps |> List.map render |> String.concat ", ") + ")"
+            prefix + pstr + " -> " + render r
+        | TArray(Some n, e) -> sprintf "array[%d, %s]" n (render e)
+        | TArray(None, e)   -> sprintf "array[?, %s]" (render e)
+        | TSlice x          -> sprintf "slice[%s]" (render x)
+        | TUser(TypeId id, []) -> sprintf "<#%d>" id
+        | TUser(TypeId id, args) ->
+            sprintf "<#%d>[%s]" id (args |> List.map render |> String.concat ", ")
+        | TSelf             -> "Self"
+        | TVar n            -> n
+        | TError            -> "<error>"

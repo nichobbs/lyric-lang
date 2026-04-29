@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -6,11 +6,8 @@
 
   <ItemGroup>
     <Compile Include="Type.fs" />
-    <Compile Include="Symbols.fs" />
-    <Compile Include="Resolver.fs" />
-    <Compile Include="Signature.fs" />
-    <Compile Include="ExprChecker.fs" />
-    <Compile Include="StmtChecker.fs" />
+    <Compile Include="Symbol.fs" />
+    <Compile Include="Scope.fs" />
     <Compile Include="Checker.fs" />
   </ItemGroup>
 

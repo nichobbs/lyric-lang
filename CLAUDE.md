@@ -78,10 +78,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 9) lives in `compiler/`:
 - `compiler/Directory.Build.props` — `TargetFramework=net9.0`,
   `TreatWarningsAsErrors=true`, `Nullable=enable`.
 - `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
-- `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, in progress).
-- `compiler/tests/Lyric.Lexer.Tests/` and
-  `compiler/tests/Lyric.Parser.Tests/` — Expecto-based tests (console-app
-  projects; F# does not coexist cleanly with the new
+- `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
+- `compiler/src/Lyric.TypeChecker/` — the type checker (Phase 1,
+  milestone M1.2, in progress).
+- `compiler/tests/Lyric.Lexer.Tests/`,
+  `compiler/tests/Lyric.Parser.Tests/`, and
+  `compiler/tests/Lyric.TypeChecker.Tests/` — Expecto-based tests
+  (console-app projects; F# does not coexist cleanly with the new
   Microsoft.Testing.Platform xunit runner — Expecto is the F#-native
   alternative).
 
@@ -92,11 +95,12 @@ Run tests:
 cd compiler
 dotnet run --project tests/Lyric.Lexer.Tests
 dotnet run --project tests/Lyric.Parser.Tests
+dotnet run --project tests/Lyric.TypeChecker.Tests
 ```
 
-Subsequent slices add type checker, mode checker, contract elaborator,
-monomorphizer, and MSIL emitter per `docs/05-implementation-plan.md`
-§"Phase 1".
+Subsequent slices complete the type checker, then add mode checker,
+contract elaborator, monomorphizer, and MSIL emitter per
+`docs/05-implementation-plan.md` §"Phase 1".
 
 ## Glossary (project-specific terms)
 

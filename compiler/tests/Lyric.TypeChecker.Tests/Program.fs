@@ -6,11 +6,6 @@ open Expecto
 let main argv =
     let allTests =
         testList "Lyric.TypeChecker" [
-            TypeRepTests.tests
-            ResolverTests.tests
-            SignatureTests.tests
-            ExprCheckerTests.tests
-            StmtCheckerTests.tests
-            WorkedExampleSmokeTests.tests
+            SymbolTableTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
