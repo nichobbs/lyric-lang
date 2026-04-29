@@ -708,12 +708,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when ctx.Funcs.ContainsKey name ->
         let mb = ctx.Funcs.[name]
-        for a in args do
+        // Per D035, generics monomorphise via erasure: type
+        // parameters lower to `obj` and value-typed call-site args
+        // box at the boundary. Inspect each parameter slot and box
+        // when needed.
+        let paramTypes =
+            mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
+        args
+        |> List.iteri (fun i a ->
             let payload =
                 match a with
                 | CAPositional ex | CANamed (_, ex, _) -> ex
-            let _ = emitExpr ctx payload
-            ()
+            let argTy = emitExpr ctx payload
+            if i < paramTypes.Length
+               && paramTypes.[i] = typeof<obj>
+               && argTy.IsValueType then
+                il.Emit(OpCodes.Box, argTy))
         il.Emit(OpCodes.Call, mb)
         if mb.ReturnType = typeof<System.Void> then
             typeof<System.Void>
