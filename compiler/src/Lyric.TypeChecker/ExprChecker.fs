@@ -103,7 +103,31 @@ let private isOrdered (t: Type) : bool =
         | TyPrim PtChar | TyPrim PtString -> true
         | _ -> false)
 
+/// Return true if `t` is a distinct type whose declaration includes
+/// the given `derives` marker (e.g. "Add", "Sub", "Compare").  Returns
+/// false for non-distinct types.
+let private hasDerive (table: SymbolTable) (marker: string) (t: Type) : bool =
+    match t with
+    | TyUser(id, _) ->
+        table.All()
+        |> Seq.exists (fun s ->
+            match s.Kind with
+            | DKDistinctType(tid, dt) when tid = id ->
+                List.contains marker dt.Derives
+            | _ -> false)
+    | _ -> false
+
+let private arithMarker (op: BinOp) : string =
+    match op with
+    | BAdd -> "Add"
+    | BSub -> "Sub"
+    | BMul -> "Mul"
+    | BDiv -> "Div"
+    | BMod -> "Mod"
+    | _    -> ""
+
 let private inferBinop
+        (table: SymbolTable)
         (diags: ResizeArray<Diagnostic>)
         (op:    BinOp)
         (lhs:   Type)
@@ -112,7 +136,8 @@ let private inferBinop
         : Type =
     match op with
     | BAdd | BSub | BMul | BDiv | BMod ->
-        if not (isNumeric lhs) then
+        let lhsOk = isNumeric lhs || hasDerive table (arithMarker op) lhs
+        if not lhsOk then
             err diags "T0030"
                 (sprintf "left operand of arithmetic operator is not numeric (got %s)"
                     (Type.render lhs))
@@ -131,7 +156,8 @@ let private inferBinop
                 span
         TyPrim PtBool
     | BLt | BLte | BGt | BGte ->
-        if not (isOrdered lhs) || not (Type.equiv lhs rhs) then
+        let lhsOk = isOrdered lhs || hasDerive table "Compare" lhs
+        if (not lhsOk) || not (Type.equiv lhs rhs) then
             err diags "T0033"
                 (sprintf "comparison operands must be matching ordered types (got %s and %s)"
                     (Type.render lhs) (Type.render rhs))
@@ -276,7 +302,7 @@ let rec inferExpr
     | EBinop(op, l, r) ->
         let lT = infer l
         let rT = infer r
-        inferBinop diags op lT rT e.Span
+        inferBinop table diags op lT rT e.Span
 
     | ECall(fn, args) ->
         let fnT = infer fn

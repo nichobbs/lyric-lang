@@ -702,6 +702,73 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EBinop (op, lhs, rhs) ->
         let lt = emitExpr ctx lhs
+        // Distinct-type binop: if the lhs is a distinct-type struct, the
+        // value on the stack is the wrapper.  Stash it to a local, unwrap
+        // both operands to their underlying primitive, run the primitive
+        // op, and (for arithmetic) re-wrap via `From()`.
+        let lhsDistinct =
+            ctx.DistinctTypes.Values
+            |> Seq.tryFind (fun d -> (d.Type :> ClrType) = lt)
+        match lhsDistinct with
+        | Some info ->
+            let lhsLoc = FunctionCtx.defineLocal ctx "__d_lhs" lt
+            il.Emit(OpCodes.Stloc, lhsLoc)
+            let rt = emitExpr ctx rhs
+            let rhsLoc = FunctionCtx.defineLocal ctx "__d_rhs" rt
+            il.Emit(OpCodes.Stloc, rhsLoc)
+            il.Emit(OpCodes.Ldloca, lhsLoc)
+            il.Emit(OpCodes.Ldfld, info.ValueField)
+            il.Emit(OpCodes.Ldloca, rhsLoc)
+            il.Emit(OpCodes.Ldfld, info.ValueField)
+            let underlyingTy = info.ValueField.FieldType
+            match op with
+            | BAdd ->
+                if isFloatClr underlyingTy then il.Emit(OpCodes.Add)
+                elif isUnsignedClr underlyingTy then il.Emit(OpCodes.Add_Ovf_Un)
+                else il.Emit(OpCodes.Add_Ovf)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BSub ->
+                if isFloatClr underlyingTy then il.Emit(OpCodes.Sub)
+                elif isUnsignedClr underlyingTy then il.Emit(OpCodes.Sub_Ovf_Un)
+                else il.Emit(OpCodes.Sub_Ovf)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BMul ->
+                if isFloatClr underlyingTy then il.Emit(OpCodes.Mul)
+                elif isUnsignedClr underlyingTy then il.Emit(OpCodes.Mul_Ovf_Un)
+                else il.Emit(OpCodes.Mul_Ovf)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BDiv ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Div_Un)
+                else il.Emit(OpCodes.Div)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BMod ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Rem_Un)
+                else il.Emit(OpCodes.Rem)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
+            | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+            | BLt  ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
+                typeof<bool>
+            | BGt  ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Cgt_Un) else il.Emit(OpCodes.Cgt)
+                typeof<bool>
+            | BLte ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Cgt_Un) else il.Emit(OpCodes.Cgt)
+                emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+            | BGte ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
+                emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+            | _ ->
+                failwithf "M2.1 codegen: operator %A not supported on distinct type %s"
+                    op info.Name
+        | None ->
+
         let rt = emitExpr ctx rhs
         let opTy = lt
         match op with

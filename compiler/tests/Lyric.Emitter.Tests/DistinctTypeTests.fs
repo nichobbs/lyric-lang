@@ -115,4 +115,71 @@ func main(): Unit {
 """
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd()) "12345" "distinct in param"
+
+        testCase "[derives Add]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivAdd" """
+package DerivAdd
+
+type Cents = Long range 0 ..= 1000000 derives Add, Sub
+
+func main(): Unit {
+  val a = Cents.from(150)
+  val b = Cents.from(75)
+  val c = a + b
+  println(c.value)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "225" "derives Add"
+
+        testCase "[derives Sub]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivSub" """
+package DerivSub
+
+type Cents = Long range 0 ..= 1000000 derives Add, Sub
+
+func main(): Unit {
+  val a = Cents.from(500)
+  val b = Cents.from(125)
+  val c = a - b
+  println(c.value)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "375" "derives Sub"
+
+        testCase "[derives Compare]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivCmp" """
+package DerivCmp
+
+type Score = Int range 0 ..= 100 derives Compare
+
+func main(): Unit {
+  val a = Score.from(40)
+  val b = Score.from(70)
+  println(a < b)
+  println(a > b)
+  println(a == b)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "True\nFalse\nFalse" "derives Compare"
+
+        testCase "[derives Add chained]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivChain" """
+package DerivChain
+
+type Cents = Long range 0 ..= 1000000 derives Add, Sub
+
+func main(): Unit {
+  val total = Cents.from(100) + Cents.from(50) + Cents.from(25)
+  println(total.value)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "175" "chained derives Add"
     ]
