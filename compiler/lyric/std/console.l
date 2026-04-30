@@ -8,7 +8,7 @@
 @runtime_checked
 package Std.Console
 
-import Std.Errors { IOError }
+import Std.Errors
 import System.Console as HostConsole
 
 /// Write a string to stdout without appending a newline.

@@ -92,9 +92,12 @@ pub func substring(s: in String, start: in Int): String
   return s.substring(start)
 }
 
-// Return the substring bounded by start and length.
+// Return the substring bounded by start and length.  Named
+// `substringOfLength` (not a `substring` overload) because the
+// bootstrap codegen keys methods by name only — function overloading
+// by parameter shape is a Phase 2 item.
 @pure
-pub func substring(s: in String, start: in Int, count: in Int): String
+pub func substringOfLength(s: in String, start: in Int, count: in Int): String
   requires: start >= 0
   requires: count >= 0
   requires: start + count <= s.length
@@ -125,13 +128,13 @@ pub func toLower(s: in String): String {
 // Repeat a string n times.
 @pure
 pub func repeat(s: in String, count: in Int): String {
-  var result = ""
+  var acc = ""
   var i = 0
   while i < count {
-    result = result + s
+    acc = acc + s
     i += 1
   }
-  return result
+  return acc
 }
 
 // Replace all occurrences of a substring with another.
@@ -140,26 +143,14 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
   s.replace(oldValue, newValue)
 }
 
-// Split a string by a delimiter into a slice.
-@pure
-pub func split(s: in String, delimiter: in String): slice[String] {
-  s.split(delimiter)
-}
+// `split` is intentionally absent in v0.1.  The natural mapping is
+// `String.Split(string?, StringSplitOptions = None)`, but the bootstrap
+// codegen does not yet supply default-parameter values when picking a
+// BCL overload, and every 1-arg `String.Split` overload takes a `char`,
+// not a `String`.  Tracked for Phase 2 alongside default-arg support.
 
-// Join a slice of strings with a delimiter.
-@pure
-pub func join(parts: in slice[String], delimiter: in String): String {
-  if parts.length == 0 {
-    return ""
-  }
-  var result = parts[0]
-  var i = 1
-  while i < parts.length {
-    result = result + delimiter + parts[i]
-    i += 1
-  }
-  return result
-}
+// `join` is paired with `split`; deferred for the same reason
+// (`slice[String]` codegen support and default-argument handling).
 
 // ---------------------------------------------------------------------------
 // String comparison.

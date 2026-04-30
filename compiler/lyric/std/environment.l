@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Environment
 
-import Std.Errors { IOError }
+import Std.Errors
 import Std.EnvironmentHost as HostEnvironment
 
 /// Read one environment variable.

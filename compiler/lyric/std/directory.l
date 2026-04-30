@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Directory
 
-import Std.Errors { IOError }
+import Std.Errors
 import System.IO as HostIO
 
 // Empty paths are represented as data errors so callers can recover

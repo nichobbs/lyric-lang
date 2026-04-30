@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Http
 
-import Std.Errors { HttpError, IOError }
+import Std.Errors
 import Std.HttpHost as HostHttp
 
 // ---------------------------------------------------------------------------

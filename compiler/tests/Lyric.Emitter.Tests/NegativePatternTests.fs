@@ -37,9 +37,49 @@ func main(): Unit {
 """,
     "minus-one\nzero\none\nother"
 
-    // (Long literal patterns like `case 100L` have a separate
-    // codegen issue today where the Ldc.I4-vs-Ldc.I8 stack discipline
-    // doesn't match cleanly — tracked outside negative-pattern scope.)
+    // The earlier "Long pattern matching is broken" turned out to
+    // be a wrong-syntax issue (`100L` isn't a valid Lyric integer
+    // literal — the spec uses `100i64`).  Patterns of either suffix
+    // dispatch correctly against a `Long` scrutinee.
+    "long_literal_pattern_with_i64_suffix",
+    """
+package NP_LongI64
+func describe(n: in Long): String {
+  match n {
+    case 100i64  -> "hundred"
+    case -100i64 -> "minus-hundred"
+    case 0i64    -> "zero"
+    case _       -> "other"
+  }
+}
+func main(): Unit {
+  println(describe(100i64))
+  println(describe(-100i64))
+  println(describe(0i64))
+  println(describe(7i64))
+}
+""",
+    "hundred\nminus-hundred\nzero\nother"
+
+    "int_literal_pattern_on_long_scrutinee",
+    """
+package NP_IntOnLong
+// An unsuffixed Int literal in a pattern still matches against a
+// Long scrutinee — the JIT widens Ldc.I4 so the Ceq pair lines up.
+func describe(n: in Long): String {
+  match n {
+    case 100 -> "hundred"
+    case 0   -> "zero"
+    case _   -> "other"
+  }
+}
+func main(): Unit {
+  println(describe(100i64))
+  println(describe(0i64))
+  println(describe(42i64))
+}
+""",
+    "hundred\nzero\nother"
 
     "negative_float_literal_pattern",
     """

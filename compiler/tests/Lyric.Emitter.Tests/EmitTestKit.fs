@@ -86,5 +86,11 @@ let compileAndRun (label: string) (source: string) : EmitResult * string * strin
     let stdout, stderr, exitCode =
         match r.OutputPath with
         | Some _ -> runDll dll
-        | None   -> "", "", -1
+        | None ->
+            let diagText =
+                r.Diagnostics
+                |> List.map (fun d ->
+                    sprintf "[%A %s] %s" d.Severity d.Code d.Message)
+                |> String.concat "\n"
+            "", diagText, -1
     r, stdout, stderr, exitCode

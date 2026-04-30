@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.File
 
-import Std.Errors { IOError }
+import Std.Errors
 import System.IO as HostIO
 
 // Shared path validation for public file APIs. Empty paths are

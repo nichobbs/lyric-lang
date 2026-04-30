@@ -88,7 +88,10 @@ pub union HttpError {
   case Timeout(url: String, durationMs: Long)
   case BadStatus(url: String, statusCode: Int)
   case InvalidUrl(url: String)
-  case IoError(url: String, error: IOError)
+  // Wrap an underlying IO failure.  Named `Transport` (not `IoError`)
+  // because case constructors live at package scope, so a duplicate
+  // `IoError` here would collide with `IOError.IoError`.
+  case Transport(url: String, error: IOError)
 }
 
 // Human-readable message for an HttpError.
@@ -103,7 +106,7 @@ pub func HttpError.message(e: in HttpError): String {
       "HTTP " + code + " from " + url
     case InvalidUrl(url) ->
       "invalid URL: " + url
-    case IoError(url, error) ->
+    case Transport(url, error) ->
       "I/O error for " + url + ": " + IOError.message(error)
   }
 }

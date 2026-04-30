@@ -125,6 +125,39 @@ func main(): Unit {
 }
 """,
     "invalid: abc\noor: 999"
+
+    // End-to-end exercise of all three "user-facing" stdlib modules:
+    // Std.String for normalisation, Std.Parse for the conversion, and
+    // Std.Errors for the failure path.  Exercises that imports from
+    // multiple Std.* modules co-exist in a single user emit and that
+    // every cross-assembly reference (record construction, union case
+    // pattern, free function call) resolves at runtime.
+    "import_all_three_string_parse_errors",
+    """
+package SI9
+import Std.Core
+import Std.String
+import Std.Parse
+import Std.Errors
+
+// Trim+lower the input, then parse it as an Int.  Returns a tagged
+// description so the test can assert end-to-end the round trip
+// through every imported package.
+func parseTrimmed(s: in String): String {
+  val cleaned = toLower(trim(s))
+  match tryParseInt(cleaned) {
+    case Ok(value) -> "ok: " + value
+    case Err(e)    -> "err: " + ParseError.message(e)
+  }
+}
+
+func main(): Unit {
+  println(parseTrimmed("  42 "))
+  println(parseTrimmed("  ABC "))
+  println(parseTrimmed(""))
+}
+""",
+    "ok: 42\nerr: invalid format: 'abc' (expected integer)\nerr: invalid format: '' (expected integer)"
 ]
 
 let tests =
