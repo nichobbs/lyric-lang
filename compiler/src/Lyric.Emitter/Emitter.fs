@@ -842,12 +842,44 @@ let private emitAssembly
         Backend.save ctx (Some (hostMain :> MethodInfo))
         []
 
+/// Walk up the directory tree from `startDir` until `lyric/std/core.l`
+/// is found, returning its absolute path or `None`.
+let private locateCoreL (startDir: string) : string option =
+    let mutable dir = Some (DirectoryInfo(startDir))
+    let mutable found : string option = None
+    while found.IsNone && dir.IsSome do
+        let d = dir.Value
+        let candidate = Path.Combine(d.FullName, "lyric", "std", "core.l")
+        if File.Exists candidate then found <- Some candidate
+        dir <- d.Parent |> Option.ofObj
+    found
+
+/// Resolve `import Std.Core` declarations by locating `core.l`,
+/// parsing it, and prepending its items into the user file.  The
+/// Std.Core import entries are stripped from `Imports` so downstream
+/// passes don't encounter an unknown package reference.
+let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list =
+    let stdCoreImps, otherImps =
+        sf.Imports |> List.partition (fun i -> i.Path.Segments = ["Std"; "Core"])
+    if stdCoreImps.IsEmpty then sf, []
+    else
+        match locateCoreL AppContext.BaseDirectory with
+        | None ->
+            let sp = (List.head stdCoreImps).Span
+            sf, [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
+        | Some path ->
+            let stdParsed = parse (File.ReadAllText path)
+            let mergedItems = stdParsed.File.Items @ sf.Items
+            { sf with Imports = otherImps; Items = mergedItems },
+            stdParsed.Diagnostics
+
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
     let parsed   = parse req.Source
-    let checked' = Lyric.TypeChecker.Checker.check parsed.File
+    let resolved, importDiags = resolveStdlibImports parsed.File
+    let checked' = Lyric.TypeChecker.Checker.check resolved
 
-    let upstream = parsed.Diagnostics @ checked'.Diagnostics
+    let upstream = parsed.Diagnostics @ importDiags @ checked'.Diagnostics
     let parserFatal =
         upstream
         |> List.exists (fun d ->
@@ -858,7 +890,7 @@ let emit (req: EmitRequest) : EmitResult =
     else
         let emitDiags =
             emitAssembly
-                parsed.File
+                resolved
                 checked'.Signatures
                 checked'.Symbols
                 req
