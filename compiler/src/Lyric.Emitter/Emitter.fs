@@ -715,13 +715,25 @@ let private defineRecord
 /// The view contains every non-`@hidden` field of the opaque type and
 /// is itself a sealed CLR class with public fields and an all-fields
 /// constructor — the same shape as a normal record.
-let private defineProjectableView
+/// Per-projectable scratch state collected across the staged view
+/// derivation passes — so cross-referencing projectables can each
+/// see the other's view TypeBuilder + toView method handle before
+/// any IL is emitted.
+type private ProjectableStub =
+    { OpaqueDecl:    OpaqueTypeDecl
+      OpaqueInfo:    Records.RecordInfo
+      ViewBuilder:   TypeBuilder
+      ViewName:      string
+      VisibleFields: FieldDecl list
+      mutable ToView: MethodBuilder option }
+
+/// Pass A: define a stub `<Name>View` TypeBuilder (no fields, no ctor).
+let private defineProjectableViewStub
         (md: ModuleBuilder)
         (nsName: string)
-        (symbols: SymbolTable)
-        (lookup: TypeId -> System.Type option)
-        (opaque: OpaqueTypeDecl) : Records.RecordInfo =
-    let viewName = opaque.Name + "View"
+        (opaqueInfo: Records.RecordInfo)
+        (od: OpaqueTypeDecl) : ProjectableStub =
+    let viewName = od.Name + "View"
     let fullName =
         if String.IsNullOrEmpty nsName then viewName
         else nsName + "." + viewName
@@ -730,31 +742,53 @@ let private defineProjectableView
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Sealed,
             typeof<obj>)
-    let resolveCtx = GenericContext()
-    let scratchDiags = ResizeArray<Diagnostic>()
-    let visibleFields =
-        opaque.Members
+    let visible =
+        od.Members
         |> List.choose (function
             | OMField fd when not (isHiddenField fd) -> Some fd
             | _ -> None)
+    { OpaqueDecl    = od
+      OpaqueInfo    = opaqueInfo
+      ViewBuilder   = tb
+      ViewName      = viewName
+      VisibleFields = visible
+      ToView        = None }
+
+/// Pass B: populate the view's fields + constructor.  When a field's
+/// CLR type matches a known projectable opaque's CLR type, the view
+/// substitutes the corresponding view type — that's how nested
+/// projection is derived from the AST.
+let private populateProjectableView
+        (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
+        (stubByOpaqueClr: Dictionary<System.Type, ProjectableStub>)
+        (stub: ProjectableStub) : Records.RecordInfo =
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
     let fields =
-        visibleFields
+        stub.VisibleFields
         |> List.map (fun fd ->
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
-            let cty = TypeMap.toClrTypeWith lookup lty
+            let sourceClr = TypeMap.toClrTypeWith lookup lty
+            // If this field's source type is itself a `@projectable`
+            // opaque, swap to that opaque's view builder.
+            let viewClr : System.Type =
+                match stubByOpaqueClr.TryGetValue sourceClr with
+                | true, target -> target.ViewBuilder :> System.Type
+                | _ -> sourceClr
             let fb =
-                tb.DefineField(
+                stub.ViewBuilder.DefineField(
                     fd.Name,
-                    cty,
+                    viewClr,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
             { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = cty
+              Records.RecordField.Type  = viewClr
               Records.RecordField.Field = fb })
     let ctorParamTypes =
         fields |> List.map (fun f -> f.Type) |> List.toArray
     let ctor =
-        tb.DefineConstructor(
+        stub.ViewBuilder.DefineConstructor(
             MethodAttributes.Public,
             CallingConventions.Standard,
             ctorParamTypes)
@@ -770,17 +804,20 @@ let private defineProjectableView
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = viewName
-      Records.RecordInfo.Type   = tb
+    { Records.RecordInfo.Name   = stub.ViewName
+      Records.RecordInfo.Type   = stub.ViewBuilder
       Records.RecordInfo.Fields = fields
       Records.RecordInfo.Ctor   = ctor }
 
-/// Attach an instance method `toView(): <Name>View` to an opaque type.
-/// Each non-`@hidden` field is read off `this` and passed to the view's
-/// all-fields constructor.
-let private defineToViewMethod
-        (opaqueInfo: Records.RecordInfo)
+/// Pass C: attach `toView(): <Name>View` on the opaque.  Each visible
+/// field is read off `this`; if the source field is a projectable
+/// opaque, its `toView()` is invoked so the nested value projects
+/// recursively.
+let private populateToViewMethod
+        (stubByOpaqueClr: Dictionary<System.Type, ProjectableStub>)
+        (stub: ProjectableStub)
         (viewInfo: Records.RecordInfo) : MethodBuilder =
+    let opaqueInfo = stub.OpaqueInfo
     let mb =
         opaqueInfo.Type.DefineMethod(
             "toView",
@@ -793,6 +830,17 @@ let private defineToViewMethod
         | Some sourceField ->
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, sourceField.Field)
+            // Recursive projection: call the source field's `toView`
+            // when its declared type is itself a projectable opaque.
+            match stubByOpaqueClr.TryGetValue sourceField.Type with
+            | true, nestedStub ->
+                match nestedStub.ToView with
+                | Some toViewMb ->
+                    il.Emit(OpCodes.Callvirt, toViewMb)
+                | None ->
+                    failwithf "M2.2: nested toView for '%s' not yet defined when emitting '%s'"
+                        nestedStub.ViewName opaqueInfo.Name
+            | _ -> ()
         | None ->
             failwithf "M2.2: projectable view field '%s' not on opaque '%s'"
                 vf.Name opaqueInfo.Name
@@ -1346,16 +1394,42 @@ let private emitAssembly
             |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
 
         // Projectable opaque types — synthesise `<Name>View` exposed
-        // record + a `toView()` instance method on the opaque type.
-        // Bootstrap-grade: skip recursive view projection and `tryInto`
-        // (the latter needs a generic `Result` to land first).
+        // record + a `toView()` instance method.  Three staged passes
+        // so cross-referencing projectables can each see the other's
+        // view TypeBuilder + `toView` MethodBuilder before any field
+        // or IL is emitted.  Recursive projection: a field whose
+        // source CLR type is itself a projectable opaque substitutes
+        // the corresponding view type, and `toView()` calls the
+        // nested `toView()` to project the value.
         let projectableTable = Records.ProjectableTable()
-        for (od, opaqueInfo) in projectableOpaques do
-            let viewInfo = defineProjectableView ctx.Module nsName symbols lookup od
-            recordTable.[viewInfo.Name] <- viewInfo
-            let toViewMb = defineToViewMethod opaqueInfo viewInfo
-            projectableTable.[od.Name] <-
-                { Records.ProjectableInfo.OpaqueName   = od.Name
+        let stubByOpaqueClr = Dictionary<System.Type, ProjectableStub>()
+        let stubs =
+            projectableOpaques
+            |> Seq.toList
+            |> List.map (fun (od, opaqueInfo) ->
+                let stub = defineProjectableViewStub ctx.Module nsName opaqueInfo od
+                stubByOpaqueClr.[opaqueInfo.Type :> System.Type] <- stub
+                stub)
+        // Pass B: populate fields + ctors on every view stub (now all
+        // stubs are visible so cross-referencing fields can land).
+        let viewInfos =
+            stubs
+            |> List.map (fun stub ->
+                let viewInfo =
+                    populateProjectableView symbols lookup stubByOpaqueClr stub
+                recordTable.[viewInfo.Name] <- viewInfo
+                stub, viewInfo)
+        // Pass C: define `toView()` IL on every opaque.  This needs
+        // every view's ctor (built in Pass B) and every other
+        // opaque's `toView` MethodBuilder — define-then-fill on the
+        // method handles inside this loop because each method's IL
+        // body only references the others' MethodBuilders, not their
+        // bodies.
+        for (stub, viewInfo) in viewInfos do
+            let toViewMb = populateToViewMethod stubByOpaqueClr stub viewInfo
+            stub.ToView <- Some toViewMb
+            projectableTable.[stub.OpaqueDecl.Name] <-
+                { Records.ProjectableInfo.OpaqueName   = stub.OpaqueDecl.Name
                   Records.ProjectableInfo.ToViewMethod = toViewMb
                   Records.ProjectableInfo.ViewType    = viewInfo }
 
