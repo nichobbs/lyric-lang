@@ -87,6 +87,31 @@ func main(): Unit {
 }
 """,
     "42"
+
+    "multi_index_jagged_2d",
+    """
+package MI1
+func main(): Unit {
+  val grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+  println(grid[0, 0])
+  println(grid[1, 2])
+  println(grid[2, 1])
+}
+""",
+    "1\n6\n8"
+
+    "multi_index_jagged_3d",
+    """
+package MI2
+func main(): Unit {
+  val cube = [[[10, 11], [12, 13]], [[20, 21], [22, 23]]]
+  println(cube[0, 0, 0])
+  println(cube[0, 1, 1])
+  println(cube[1, 0, 1])
+  println(cube[1, 1, 0])
+}
+""",
+    "10\n13\n21\n22"
 ]
 
 let tests =
