@@ -144,3 +144,50 @@ type ProjectableInfo =
       ViewType:      RecordInfo }
 
 type ProjectableTable = Dictionary<string, ProjectableInfo>
+
+// ---------------------------------------------------------------------------
+// Imported types and functions — pulled in from a precompiled package
+// (e.g. `Lyric.Stdlib.Core.dll` via `import Std.Core`).  These mirror
+// the local-emit shapes above but use runtime-reflection types because
+// they reference an already-finalised assembly.
+// ---------------------------------------------------------------------------
+
+type ImportedField =
+    { Name:  string
+      Type:  ClrType
+      Field: FieldInfo }
+
+type ImportedRecordInfo =
+    { Name:   string
+      Type:   ClrType
+      Fields: ImportedField list
+      Ctor:   ConstructorInfo }
+
+type ImportedRecordTable = Dictionary<string, ImportedRecordInfo>
+
+type ImportedUnionCaseInfo =
+    { Name:   string
+      Type:   ClrType
+      Fields: ImportedField list
+      Ctor:   ConstructorInfo }
+
+type ImportedUnionInfo =
+    { Name:  string
+      Type:  ClrType
+      Cases: ImportedUnionCaseInfo list }
+
+type ImportedUnionTable = Dictionary<string, ImportedUnionInfo>
+
+type ImportedUnionCaseLookup =
+    Dictionary<string, ImportedUnionInfo * ImportedUnionCaseInfo>
+
+type ImportedFuncTable = Dictionary<string, MethodInfo>
+
+type ImportedDistinctTypeInfo =
+    { Name:          string
+      Type:          ClrType
+      ValueField:    FieldInfo
+      FromMethod:    MethodInfo
+      TryFromMethod: MethodInfo option }
+
+type ImportedDistinctTypeTable = Dictionary<string, ImportedDistinctTypeInfo>

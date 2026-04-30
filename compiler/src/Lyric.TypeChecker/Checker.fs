@@ -159,30 +159,37 @@ let private resolveFunctionSig
       IsAsync  = fn.IsAsync
       Span     = fn.Span }
 
-/// Type-check a parser-produced source file. Currently:
-///   T1 — registers every top-level item in the symbol table
-///   T2 — provides a type-expression resolver consumable by callers
-///   T3 — resolves the signature of every top-level function
-let check (file: SourceFile) : CheckResult =
+/// Type-check a parser-produced source file with optional pre-
+/// registered "imported" items (e.g. those pulled in via `import
+/// Std.Core`).  Imported items are added to the symbol table and have
+/// their function signatures resolved so the user's body checker can
+/// resolve calls to them, but their bodies aren't re-checked here —
+/// they were already validated when the imported assembly was
+/// compiled.
+let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult =
     let diags = ResizeArray<Diagnostic>()
     let table = SymbolTable()
     let idSrc = TypeIdSource()
 
+    // Register imported items first so user items can shadow / refer to them.
+    for it in importedItems do
+        registerItem table idSrc diags it |> ignore
     for it in file.Items do
         registerItem table idSrc diags it |> ignore
 
-    // T3: resolve every function's signature now that all type
-    // names in the package are registered.
+    // T3: resolve signatures for every IFunc — both imported and user.
     let signatures =
-        file.Items
-        |> List.choose (fun it ->
+        Seq.append (List.toSeq importedItems) (List.toSeq file.Items)
+        |> Seq.choose (fun it ->
             match it.Kind with
             | IFunc fn ->
                 Some (fn.Name, resolveFunctionSig table diags fn)
             | _ -> None)
-        |> Map.ofList
+        |> Map.ofSeq
 
-    // T5: check each function's body against its resolved signature.
+    // T5: check each function's body against its resolved signature —
+    //     only for user-defined items.  Imported bodies were checked
+    //     at the import target's compile time.
     for it in file.Items do
         match it.Kind with
         | IFunc fn ->
@@ -195,3 +202,7 @@ let check (file: SourceFile) : CheckResult =
       Symbols     = table
       Signatures  = signatures
       Diagnostics = List.ofSeq diags }
+
+/// Back-compat wrapper for callers that don't pass imports.
+let check (file: SourceFile) : CheckResult =
+    checkWithImports file []

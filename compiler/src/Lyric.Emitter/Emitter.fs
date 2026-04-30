@@ -370,11 +370,15 @@ let private defineUnion
     let cases =
         ud.Cases
         |> List.map (fun c ->
-            let caseFullName = fullName + "+" + c.Name
+            // Define case classes as proper nested CLR types so the
+            // PE metadata records them with `NestedPublic` semantics
+            // instead of leaking a literal `+` into the type name
+            // (which the runtime loader misinterprets as a nested-
+            // type reference and then fails to resolve).
             let caseTy =
-                md.DefineType(
-                    caseFullName,
-                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                baseTy.DefineNestedType(
+                    c.Name,
+                    TypeAttributes.NestedPublic ||| TypeAttributes.Sealed,
                     baseTy :> System.Type)
             let payload =
                 c.Fields
@@ -660,6 +664,11 @@ let private emitFunctionBody
         (interfaces: Records.InterfaceTable)
         (distinctTypes: Records.DistinctTypeTable)
         (projectables: Records.ProjectableTable)
+        (importedRecords: Records.ImportedRecordTable)
+        (importedUnions: Records.ImportedUnionTable)
+        (importedUnionCases: Records.ImportedUnionCaseLookup)
+        (importedFuncs: Records.ImportedFuncTable)
+        (importedDistinctTypes: Records.ImportedDistinctTypeTable)
         (isInstance: bool)
         (selfType: System.Type option)
         (programType: TypeBuilder)
@@ -686,7 +695,10 @@ let private emitFunctionBody
         Codegen.FunctionCtx.make
             il returnTy paramList
             funcs records enums enumCases unions unionCases
-            interfaces distinctTypes projectables isInstance selfType programType resolveTypeForCtx
+            interfaces distinctTypes projectables
+            importedRecords importedUnions importedUnionCases
+            importedFuncs importedDistinctTypes
+            isInstance selfType programType resolveTypeForCtx
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -834,12 +846,29 @@ let private defineHostEntryPoint
 /// carrying every Lyric `func` as a static method, plus a host
 /// `Main` entry point that delegates to Lyric's `main`. Each Lyric
 /// record becomes its own sealed CLR class.
+
+/// Result of pre-compiling `core.l` to a standalone library DLL.
+/// User emissions that import `Std.Core` consult this artifact to
+/// resolve types/methods to their precompiled CLR equivalents.
+type private StdlibArtifact =
+    { /// Absolute path to the compiled `Lyric.Stdlib.Core.dll`.
+      AssemblyPath: string
+      /// Loaded into the current process via `Assembly.LoadFrom`.
+      Assembly:     Assembly
+      /// Parsed AST of `core.l`.
+      Source:       SourceFile
+      /// The stdlib's symbol table (typeids are stdlib-local).
+      Symbols:      SymbolTable
+      /// Resolved signatures for every stdlib function.
+      Signatures:   Map<string, ResolvedSignature> }
+
 let private emitAssembly
         (sf: SourceFile)
         (sigs: Map<string, ResolvedSignature>)
         (symbols: SymbolTable)
         (req: EmitRequest)
-        (isLibrary: bool) : Diagnostic list =
+        (isLibrary: bool)
+        (stdlibArtifact: StdlibArtifact option) : Diagnostic list =
     let funcs = functionItems sf
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
@@ -870,6 +899,85 @@ let private emitAssembly
         let enumTable   = Records.EnumTable()
         let enumCases   = Records.EnumCaseLookup()
         let typeIdToClr = Dictionary<TypeId, System.Type>()
+
+        // ---- imported tables — populated from `stdlibArtifact` ----
+        let importedRecordTable     = Records.ImportedRecordTable()
+        let importedUnionTable      = Records.ImportedUnionTable()
+        let importedUnionCaseLookup = Records.ImportedUnionCaseLookup()
+        let importedFuncTable       = Records.ImportedFuncTable()
+        let importedDistinctTypeTable = Records.ImportedDistinctTypeTable()
+        match stdlibArtifact with
+        | None -> ()
+        | Some artifact ->
+            let asm = artifact.Assembly
+            let stdNs = String.concat "." artifact.Source.Package.Path.Segments
+            let qualify name =
+                if String.IsNullOrEmpty stdNs then name
+                else stdNs + "." + name
+            let getType (n: string) : System.Type option =
+                Option.ofObj (asm.GetType n)
+            // Unions
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IUnion ud ->
+                    match getType (qualify ud.Name) with
+                    | None -> ()
+                    | Some baseTy ->
+                        let cases =
+                            ud.Cases
+                            |> List.choose (fun c ->
+                                // Case classes are proper CLR nested types
+                                // (defined via `DefineNestedType`); the
+                                // `+` separator works unescaped for them.
+                                let caseFullName = qualify ud.Name + "+" + c.Name
+                                match getType caseFullName with
+                                | None -> None
+                                | Some caseTy ->
+                                    let ctorOpt =
+                                        caseTy.GetConstructors()
+                                        |> Array.tryHead
+                                    let fields =
+                                        caseTy.GetFields()
+                                        |> Array.filter (fun f -> f.IsPublic && not f.IsStatic)
+                                        |> Array.map (fun f ->
+                                            { Records.ImportedField.Name  = f.Name
+                                              Records.ImportedField.Type  = f.FieldType
+                                              Records.ImportedField.Field = f })
+                                        |> Array.toList
+                                    match ctorOpt with
+                                    | None -> None
+                                    | Some ctor ->
+                                        Some
+                                            { Records.ImportedUnionCaseInfo.Name = c.Name
+                                              Records.ImportedUnionCaseInfo.Type = caseTy
+                                              Records.ImportedUnionCaseInfo.Fields = fields
+                                              Records.ImportedUnionCaseInfo.Ctor = ctor })
+                        let info =
+                            { Records.ImportedUnionInfo.Name  = ud.Name
+                              Records.ImportedUnionInfo.Type  = baseTy
+                              Records.ImportedUnionInfo.Cases = cases }
+                        importedUnionTable.[ud.Name] <- info
+                        for c in info.Cases do
+                            importedUnionCaseLookup.[c.Name] <- (info, c)
+                            importedUnionCaseLookup.[ud.Name + "." + c.Name] <- (info, c)
+                        symbols.TryFind ud.Name
+                        |> Seq.tryHead
+                        |> Option.bind Symbol.typeIdOpt
+                        |> Option.iter (fun tid -> typeIdToClr.[tid] <- baseTy)
+                | _ -> ()
+            // Functions — every IFunc lives as a static method on the
+            // stdlib's `<Pkg>.Program` type.
+            match getType (qualify "Program") with
+            | None -> ()
+            | Some progTy ->
+                for it in artifact.Source.Items do
+                    match it.Kind with
+                    | IFunc fn ->
+                        match Option.ofObj (progTy.GetMethod fn.Name) with
+                        | Some mi -> importedFuncTable.[fn.Name] <- mi
+                        | None    -> ()
+                    | _ -> ()
+
         for rd in recordItems sf do
             let info = defineRecord ctx.Module nsName symbols rd
             recordTable.[rd.Name] <- info
@@ -1103,7 +1211,10 @@ let private emitAssembly
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
                 methodTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable projectableTable false None
+                unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                importedRecordTable importedUnionTable importedUnionCaseLookup
+                importedFuncTable importedDistinctTypeTable
+                false None
                 programTy symbols
 
         // Pass B.5 — emit impl-method bodies as instance methods.
@@ -1115,7 +1226,10 @@ let private emitAssembly
             emitFunctionBody
                 mb fd sg lookup
                 methodTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable projectableTable true
+                unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                importedRecordTable importedUnionTable importedUnionCaseLookup
+                importedFuncTable importedDistinctTypeTable
+                true
                 (Option.ofObj selfTy) programTy symbols
 
         let lyricMainOpt =
@@ -1183,18 +1297,6 @@ let private parseCoreLcached (path: string) : SourceFile * Diagnostic list =
 // directory so it can be copied alongside each user output.
 // ---------------------------------------------------------------------------
 
-type private StdlibArtifact =
-    { /// Absolute path to the compiled `Lyric.Stdlib.Core.dll`.
-      AssemblyPath: string
-      /// Loaded into the current process via `Assembly.LoadFrom`.
-      Assembly:     Assembly
-      /// Parsed AST of `core.l`.
-      Source:       SourceFile
-      /// The stdlib's symbol table (typeids are stdlib-local).
-      Symbols:      SymbolTable
-      /// Resolved signatures for every stdlib function.
-      Signatures:   Map<string, ResolvedSignature> }
-
 let private stdlibArtifactCache : StdlibArtifact option ref = ref None
 let private stdlibLock : obj = obj()
 
@@ -1216,7 +1318,7 @@ let private compileStdlibFresh (corePath: string) : StdlibArtifact =
           AssemblyName = "Lyric.Stdlib.Core"
           OutputPath   = outPath }
     let _emitDiags =
-        emitAssembly stdParsed.File stdChecked.Signatures stdChecked.Symbols req true
+        emitAssembly stdParsed.File stdChecked.Signatures stdChecked.Symbols req true None
     let assembly = Assembly.LoadFrom outPath
     { AssemblyPath = outPath
       Assembly     = assembly
@@ -1241,35 +1343,37 @@ let private getStdlibArtifact (corePath: string) : StdlibArtifact =
 let stdlibAssemblyPath () : string option =
     !stdlibArtifactCache |> Option.map (fun a -> a.AssemblyPath)
 
-/// Resolve `import Std.Core` declarations by locating `core.l`,
-/// parsing it (cached across emits), and prepending its items into the
-/// user file.  The Std.Core import entries are stripped from `Imports`
-/// so downstream passes don't encounter an unknown package reference.
-let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list =
+/// Resolve `import Std.Core` declarations: ensure the stdlib is
+/// precompiled, hand its parsed items to the type checker, and pass
+/// the loaded assembly to the emitter for cross-assembly references.
+/// The user's `SourceFile.Items` is left unchanged so the emitter's
+/// per-package passes only define user-local types.
+let private resolveStdlibImports
+        (sf: SourceFile)
+        : SourceFile * Item list * StdlibArtifact option * Diagnostic list =
     let stdCoreImps, otherImps =
         sf.Imports |> List.partition (fun i -> i.Path.Segments = ["Std"; "Core"])
-    if stdCoreImps.IsEmpty then sf, []
+    if stdCoreImps.IsEmpty then sf, [], None, []
     else
         match locateCoreL AppContext.BaseDirectory with
         | None ->
             let sp = (List.head stdCoreImps).Span
-            sf, [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
+            sf, [], None,
+            [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
         | Some path ->
-            // Trigger stdlib precompilation as a side effect.  The
-            // resulting `Lyric.Stdlib.Core.dll` lives in the per-process
-            // cache directory and isn't yet referenced by emitted user
-            // code (still inlining at the source level); cross-assembly
-            // referencing lands in subsequent slices of multi-package.
-            let _artifact = getStdlibArtifact path
-            let stdFile, stdDiags = parseCoreLcached path
-            let mergedItems = stdFile.Items @ sf.Items
-            { sf with Imports = otherImps; Items = mergedItems }, stdDiags
+            let artifact = getStdlibArtifact path
+            { sf with Imports = otherImps },
+            artifact.Source.Items,
+            Some artifact,
+            []
 
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
     let parsed   = parse req.Source
-    let resolved, importDiags = resolveStdlibImports parsed.File
-    let checked' = Lyric.TypeChecker.Checker.check resolved
+    let resolved, importedItems, stdlibArtifact, importDiags =
+        resolveStdlibImports parsed.File
+    let checked' =
+        Lyric.TypeChecker.Checker.checkWithImports resolved importedItems
 
     let upstream = parsed.Diagnostics @ importDiags @ checked'.Diagnostics
     let parserFatal =
@@ -1287,6 +1391,7 @@ let emit (req: EmitRequest) : EmitResult =
                 checked'.Symbols
                 req
                 false
+                stdlibArtifact
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
