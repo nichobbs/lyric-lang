@@ -240,6 +240,17 @@ let private fieldsOfRecord (table: SymbolTable) (id: TypeId) : (string * Type) l
         | _ -> None)
     |> Option.defaultValue []
 
+/// Built-in member types that the codegen lowers via direct
+/// reflection / opcode (not via a Lyric-defined member).  Each
+/// entry maps `(receiver, member-name) -> result-type`.
+let private builtinMember (receiver: Type) (name: string) : Type option =
+    match receiver, name with
+    | TySlice _,        "length"   -> Some (TyPrim PtInt)
+    | TyArray _,        "length"   -> Some (TyPrim PtInt)
+    | TyPrim PtString,  "length"   -> Some (TyPrim PtInt)
+    | TyPrim PtString,  "isEmpty"  -> Some (TyPrim PtBool)
+    | _ -> None
+
 let private inferMember
         (table: SymbolTable)
         (diags: ResizeArray<Diagnostic>)
@@ -258,10 +269,17 @@ let private inferMember
             TyError
     | TyError -> TyError
     | other ->
-        err diags "T0040"
-            (sprintf "type %s has no member '%s'" (Type.render other) name)
-            span
-        TyError
+        match builtinMember other name with
+        | Some t -> t
+        | None ->
+            // Method-style calls on BCL types (`s.trim()`, `s.toUpper()`,
+            // …) are dispatched at codegen via PascalCase reflection.
+            // The type checker can't yet enumerate every BCL method, so
+            // it returns `TyError` *without* a diagnostic — letting
+            // codegen surface a precise error if the call is bogus,
+            // while not blocking valid programs that use BCL methods
+            // we haven't yet enumerated here.
+            TyError
 
 // ---------------------------------------------------------------------------
 // Top-level inference.

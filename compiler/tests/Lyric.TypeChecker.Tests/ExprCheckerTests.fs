@@ -199,4 +199,38 @@ let tests =
             let t, _ = inferOnly "self"
             Expect.equal t TySelf "Self"
         }
+
+        // ----- BCL member inference -----
+
+        test "string.length resolves to Int without diagnostic" {
+            let t, ds = inferOnly "\"hello\".length"
+            Expect.equal t (TyPrim PtInt) ".length is Int"
+            Expect.isFalse (ds |> List.exists (fun d -> d.Code = "T0040"))
+                "no T0040 for string.length"
+        }
+
+        test "string.isEmpty resolves to Bool" {
+            let t, _ = inferOnly "\"hi\".isEmpty"
+            Expect.equal t (TyPrim PtBool) ".isEmpty is Bool"
+        }
+
+        test "slice[Int].length resolves to Int" {
+            let decls = "pub func ones(xs: in slice[Int]): Int = xs.length"
+            let r =
+                let parsed = parse ("package P\n" + decls)
+                check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.isFalse (List.contains "T0040" codes)
+                "slice.length must not raise T0040"
+        }
+
+        test "string.unknownMember does not raise T0040" {
+            // BCL methods aren't fully enumerated in the type
+            // checker; codegen takes the precise dispatch.  The
+            // checker silently returns TyError instead of falsely
+            // asserting the member doesn't exist.
+            let _, ds = inferOnly "\"x\".trim"
+            Expect.isFalse (ds |> List.exists (fun d -> d.Code = "T0040"))
+                "no T0040 — codegen handles dispatch"
+        }
     ]
