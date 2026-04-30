@@ -105,3 +105,26 @@ type InterfaceInfo =
       Members: InterfaceMember list }
 
 type InterfaceTable = Dictionary<string, InterfaceInfo>
+
+// ---------------------------------------------------------------------------
+// Distinct types (and range subtypes).
+//
+// `type Foo = Int` and `type Score = Int range 0..=100` lower to CLR value
+// types (structs) with a single public `Value` field of the underlying
+// primitive type, plus a static `From(x)` factory.  Range subtypes add a
+// bounds check inside `From` and expose a `TryFrom(x)` that returns the
+// Lyric `Result` union.
+// ---------------------------------------------------------------------------
+
+type DistinctTypeInfo =
+    { Name:       string
+      /// The CLR struct type (value type, single `Value` field).
+      Type:       TypeBuilder
+      /// The backing primitive field named `Value`.
+      ValueField: FieldBuilder
+      /// Static factory: panics on range violation (or unconstrained).
+      FromMethod: MethodBuilder
+      /// Static factory returning Result; None for non-range types.
+      TryFromMethod: MethodBuilder option }
+
+type DistinctTypeTable = Dictionary<string, DistinctTypeInfo>

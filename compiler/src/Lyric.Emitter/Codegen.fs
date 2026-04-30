@@ -52,6 +52,8 @@ type FunctionCtx =
       UnionCases: Lyric.Emitter.Records.UnionCaseLookup
       /// Lyric interfaces, keyed by name.
       Interfaces: Lyric.Emitter.Records.InterfaceTable
+      /// Distinct types and range subtypes, keyed by name.
+      DistinctTypes: Lyric.Emitter.Records.DistinctTypeTable
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -89,6 +91,7 @@ module FunctionCtx =
             (unions: Lyric.Emitter.Records.UnionTable)
             (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
+            (distinctTypes: Lyric.Emitter.Records.DistinctTypeTable)
             (isInstance: bool)
             (selfType: ClrType option)
             (programType: TypeBuilder)
@@ -99,24 +102,25 @@ module FunctionCtx =
         let argShift = if isInstance then 1 else 0
         paramList
         |> List.iteri (fun i (name, ty) -> p.[name] <- (i + argShift, ty))
-        { IL          = il
-          ReturnType  = returnType
-          Scopes      = s
-          Loops       = Stack()
-          Params      = p
-          Funcs       = funcs
-          Records     = records
-          Enums       = enums
-          EnumCases   = enumCases
-          Unions      = unions
-          UnionCases  = unionCases
-          Interfaces  = interfaces
-          IsInstance  = isInstance
-          SelfType    = selfType
-          ReturnLabel = None
-          ResultLocal = None
-          ProgramType = programType
-          ResolveType = resolveType }
+        { IL           = il
+          ReturnType   = returnType
+          Scopes       = s
+          Loops        = Stack()
+          Params       = p
+          Funcs        = funcs
+          Records      = records
+          Enums        = enums
+          EnumCases    = enumCases
+          Unions       = unions
+          UnionCases   = unionCases
+          Interfaces   = interfaces
+          DistinctTypes = distinctTypes
+          IsInstance   = isInstance
+          SelfType     = selfType
+          ReturnLabel  = None
+          ResultLocal  = None
+          ProgramType  = programType
+          ResolveType  = resolveType }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -510,6 +514,28 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | EOld _ ->
         failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
 
+    // ---- distinct type static factory: TypeName.from(x) / .tryFrom(x) --
+
+    | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [typeName] } }, methodName) }, args)
+        when ctx.DistinctTypes.ContainsKey typeName
+             && (methodName = "from" || methodName = "tryFrom") ->
+        let info = ctx.DistinctTypes.[typeName]
+        let arg =
+            match args with
+            | [CAPositional ex] | [CANamed (_, ex, _)] -> ex
+            | _ -> failwithf "M2.1 codegen: %s.%s expects exactly one argument" typeName methodName
+        let _ = emitExpr ctx arg
+        if methodName = "from" then
+            il.Emit(OpCodes.Call, info.FromMethod)
+            info.Type :> ClrType
+        else
+            match info.TryFromMethod with
+            | Some m ->
+                il.Emit(OpCodes.Call, m)
+                m.ReturnType
+            | None ->
+                failwithf "M2.1 codegen: %s.tryFrom not available (no range constraint)" typeName
+
     // ---- method-style call (callvirt on interface or class method) ----
 
     | ECall ({ Kind = EMember (recv, methodName) }, args) ->
@@ -567,23 +593,35 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             il.Emit(OpCodes.Conv_I4)
             typeof<int32>
         else
-            // Records: walk the records dict to find a match by
-            // CLR receiver type.
-            let info =
-                ctx.Records.Values
-                |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
-            match info with
-            | Some r ->
-                match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
-                | Some f ->
-                    il.Emit(OpCodes.Ldfld, f.Field)
-                    f.Type
-                | None ->
-                    failwithf "E5/E7 codegen: record '%s' has no field '%s'"
-                        r.Name fieldName
+            // Distinct types: `.value` reads the backing Value field.
+            let distinctInfo =
+                ctx.DistinctTypes.Values
+                |> Seq.tryFind (fun d -> (d.Type :> ClrType) = recvTy)
+            match distinctInfo with
+            | Some d when fieldName = "value" ->
+                il.Emit(OpCodes.Ldfld, d.ValueField)
+                d.ValueField.FieldType
+            | Some d ->
+                failwithf "M2.1 codegen: distinct type '%s' has no member '%s' (only '.value')"
+                    d.Name fieldName
             | None ->
-                failwithf "E5/E7 codegen: receiver type %s is not a known record"
-                    recvTy.Name
+                // Records: walk the records dict to find a match by
+                // CLR receiver type.
+                let info =
+                    ctx.Records.Values
+                    |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+                match info with
+                | Some r ->
+                    match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                    | Some f ->
+                        il.Emit(OpCodes.Ldfld, f.Field)
+                        f.Type
+                    | None ->
+                        failwithf "E5/E7 codegen: record '%s' has no field '%s'"
+                            r.Name fieldName
+                | None ->
+                    failwithf "E5/E7 codegen: receiver type %s is not a known record or distinct type"
+                        recvTy.Name
 
     // ---- variable read ------------------------------------------------
 
@@ -845,6 +883,28 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Newobj, info.Ctor)
         info.Type :> ClrType
 
+    // ---- distinct type static factory: TypeName.from(x) ----------------
+
+    | ECall ({ Kind = EPath { Segments = [typeName; methodName] } }, args)
+        when ctx.DistinctTypes.ContainsKey typeName
+             && (methodName = "from" || methodName = "tryFrom") ->
+        let info = ctx.DistinctTypes.[typeName]
+        let arg =
+            match args with
+            | [CAPositional ex] | [CANamed (_, ex, _)] -> ex
+            | _ -> failwithf "M2.1 codegen: %s.%s expects exactly one argument" typeName methodName
+        let _ = emitExpr ctx arg
+        if methodName = "from" then
+            il.Emit(OpCodes.Call, info.FromMethod)
+            info.Type :> ClrType
+        else
+            match info.TryFromMethod with
+            | Some m ->
+                il.Emit(OpCodes.Call, m)
+                m.ReturnType
+            | None ->
+                failwithf "M2.1 codegen: %s.tryFrom not available (no range constraint)" typeName
+
     // ---- println builtin ----------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = ["println"] } }, [arg]) ->
@@ -997,7 +1057,7 @@ and private emitLambdaWith
         FunctionCtx.make
             lambdaIL retTy paramPairs
             ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
-            ctx.Unions ctx.UnionCases ctx.Interfaces
+            ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
             false None ctx.ProgramType ctx.ResolveType
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's

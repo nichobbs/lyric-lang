@@ -87,6 +87,14 @@ let private implItems (sf: SourceFile) : ImplDecl list =
         | IImpl i -> Some i
         | _ -> None)
 
+/// Pull every top-level `IDistinctType` out of a parsed source file.
+let private distinctTypeItems (sf: SourceFile) : DistinctTypeDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IDistinctType d -> Some d
+        | _ -> None)
+
 /// Define a CLR interface for one Lyric interface declaration. Each
 /// `IMSig` member becomes an abstract interface method; default
 /// methods (`IMFunc`) and associated types are accepted by the
@@ -153,6 +161,110 @@ let private defineInterface
     { Records.InterfaceInfo.Name    = id.Name
       Records.InterfaceInfo.Type    = tb
       Records.InterfaceInfo.Members = members }
+
+/// Define a CLR struct backing one Lyric distinct type (or range subtype).
+///
+/// The struct has a single public `Value` field of the underlying primitive
+/// type and a static `From(x)` factory.  For range subtypes (`Range` is
+/// `Some`), `From` performs a bounds check (panics on violation) and an
+/// additional `TryFrom(x)` method is synthesised that returns the Lyric
+/// `Result` union type — but since the `Result` union type is not yet built
+/// at this point in the emitter, `TryFrom` is wired up only when the union
+/// table is available (Phase 2.1+). For now the bounds check is in `From`.
+let private defineDistinctType
+        (md: ModuleBuilder)
+        (nsName: string)
+        (lookup: TypeId -> System.Type option)
+        (symbols: SymbolTable)
+        (dt: DistinctTypeDecl) : Records.DistinctTypeInfo =
+    let fullName =
+        if String.IsNullOrEmpty nsName then dt.Name
+        else nsName + "." + dt.Name
+    // Resolve the underlying CLR type for the primitive.
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    let underlyingLy =
+        Resolver.resolveType symbols resolveCtx scratchDiags dt.Underlying
+    let underlyingClr = TypeMap.toClrTypeWith lookup underlyingLy
+
+    // A struct (value type) with explicit layout.
+    let tb =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public
+            ||| TypeAttributes.Sealed
+            ||| TypeAttributes.SequentialLayout
+            ||| TypeAttributes.BeforeFieldInit,
+            typeof<System.ValueType>)
+    let valueField =
+        tb.DefineField("Value", underlyingClr, FieldAttributes.Public)
+
+    // Static `From(x)` factory.
+    let fromMb =
+        tb.DefineMethod(
+            "From",
+            MethodAttributes.Public ||| MethodAttributes.Static,
+            tb,
+            [| underlyingClr |])
+    fromMb.DefineParameter(1, ParameterAttributes.None, "x") |> ignore
+    let fromIl = fromMb.GetILGenerator()
+
+    // Optional range check in `From`.
+    match dt.Range with
+    | Some (RBClosed(loExpr, hiExpr)) ->
+        // Evaluate lo and hi as constant int32 expressions (literals only
+        // for the bootstrap; full expression evaluation deferred to Phase 3).
+        let evalLiteral (e: Expr) : uint64 option =
+            match e.Kind with
+            | ELiteral (LInt (n, _)) -> Some n
+            | _ -> None
+        match evalLiteral loExpr, evalLiteral hiExpr with
+        | Some lo, Some hi ->
+            // if x < lo || x > hi, throw InvalidOperationException
+            let okLbl = fromIl.DefineLabel()
+            let failLbl = fromIl.DefineLabel()
+            fromIl.Emit(OpCodes.Ldarg_0)
+            // Widen to int64 for comparison generality.
+            if underlyingClr = typeof<int64> then
+                fromIl.Emit(OpCodes.Ldc_I8, int64 lo)
+            else
+                fromIl.Emit(OpCodes.Ldc_I4, int lo)
+            fromIl.Emit(OpCodes.Blt, failLbl)
+            fromIl.Emit(OpCodes.Ldarg_0)
+            if underlyingClr = typeof<int64> then
+                fromIl.Emit(OpCodes.Ldc_I8, int64 hi)
+            else
+                fromIl.Emit(OpCodes.Ldc_I4, int hi)
+            fromIl.Emit(OpCodes.Bgt, failLbl)
+            fromIl.Emit(OpCodes.Br, okLbl)
+            fromIl.MarkLabel(failLbl)
+            let msg = sprintf "%s.from: value out of range [%d, %d]" dt.Name lo hi
+            fromIl.Emit(OpCodes.Ldstr, msg)
+            let ioe = typeof<System.InvalidOperationException>
+            let ioCtor = ioe.GetConstructor([| typeof<string> |])
+            match Option.ofObj ioCtor with
+            | Some c -> fromIl.Emit(OpCodes.Newobj, c)
+            | None -> failwith "InvalidOperationException(string) ctor not found"
+            fromIl.Emit(OpCodes.Throw)
+            fromIl.MarkLabel(okLbl)
+        | _ -> ()  // non-literal bounds — skip check in bootstrap
+    | _ -> ()  // no range constraint
+
+    // Create and return the struct.
+    let localVar = fromIl.DeclareLocal(tb)
+    fromIl.Emit(OpCodes.Ldloca, localVar)
+    fromIl.Emit(OpCodes.Initobj, tb)
+    fromIl.Emit(OpCodes.Ldloca, localVar)
+    fromIl.Emit(OpCodes.Ldarg_0)
+    fromIl.Emit(OpCodes.Stfld, valueField)
+    fromIl.Emit(OpCodes.Ldloc, localVar)
+    fromIl.Emit(OpCodes.Ret)
+
+    { Records.DistinctTypeInfo.Name       = dt.Name
+      Records.DistinctTypeInfo.Type       = tb
+      Records.DistinctTypeInfo.ValueField = valueField
+      Records.DistinctTypeInfo.FromMethod = fromMb
+      Records.DistinctTypeInfo.TryFromMethod = None }
 
 /// Define a CLR enum type backing one Lyric enum. Each case becomes
 /// a `Public Static Literal` field with a sequential ordinal value,
@@ -413,6 +525,7 @@ let private emitFunctionBody
         (unions: Records.UnionTable)
         (unionCases: Records.UnionCaseLookup)
         (interfaces: Records.InterfaceTable)
+        (distinctTypes: Records.DistinctTypeTable)
         (isInstance: bool)
         (selfType: System.Type option)
         (programType: TypeBuilder)
@@ -439,7 +552,7 @@ let private emitFunctionBody
         Codegen.FunctionCtx.make
             il returnTy paramList
             funcs records enums enumCases unions unionCases
-            interfaces isInstance selfType programType resolveTypeForCtx
+            interfaces distinctTypes isInstance selfType programType resolveTypeForCtx
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -663,6 +776,20 @@ let private emitAssembly
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
 
+        // Pass 0.5 — distinct types and range subtypes.
+        let distinctTable = Records.DistinctTypeTable()
+        for dt in distinctTypeItems sf do
+            let info = defineDistinctType ctx.Module nsName lookup symbols dt
+            distinctTable.[dt.Name] <- info
+            symbols.TryFind dt.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
+        // Seal distinct type structs so CLR metadata is finalised before
+        // any function body tries to reference them.
+        for kv in distinctTable do
+            kv.Value.Type.CreateType() |> ignore
+
         let programTy =
             ctx.Module.DefineType(
                 typeName,
@@ -809,7 +936,7 @@ let private emitAssembly
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
                 methodTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable false None
+                unionTable unionCaseLookup interfaceTable distinctTable false None
                 programTy symbols
 
         // Pass B.5 — emit impl-method bodies as instance methods.
@@ -821,7 +948,7 @@ let private emitAssembly
             emitFunctionBody
                 mb fd sg lookup
                 methodTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable true
+                unionTable unionCaseLookup interfaceTable distinctTable true
                 (Option.ofObj selfTy) programTy symbols
 
         let lyricMain = methodTable.["main"]

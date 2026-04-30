@@ -23,6 +23,7 @@ let main argv =
             BankingSmokeTests.tests
             StdlibSeedTests.tests
             DelegateTests.tests
+            DistinctTypeTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
