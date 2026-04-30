@@ -1015,7 +1015,9 @@ let private emitFunctionBody
 
     // Helper: store a return value (already on the stack) into the
     // result slot and branch to the exit. `pushedTy` tells us
-    // whether the source actually pushed something.
+    // whether the source actually pushed something.  Inside a
+    // `try { … } finally` protected region (any active defer), the
+    // branch must be a `leave`, not a `br` — ECMA-335 III.3.55.
     let routeReturn (pushedTy: System.Type) =
         match resultLocal with
         | Some loc when pushedTy <> typeof<System.Void> ->
@@ -1023,7 +1025,8 @@ let private emitFunctionBody
         | None when pushedTy <> typeof<System.Void> ->
             il.Emit(OpCodes.Pop)
         | _ -> ()
-        il.Emit(OpCodes.Br, exitLabel)
+        if ctx.TryDepth > 0 then il.Emit(OpCodes.Leave, exitLabel)
+        else il.Emit(OpCodes.Br, exitLabel)
 
     // Pre-condition checks fire before any body code.
     for c in fn.Contracts do
