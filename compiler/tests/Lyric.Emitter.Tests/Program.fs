@@ -27,6 +27,7 @@ let main argv =
             OpaqueTypeTests.tests
             MultiPackageTests.tests
             GenericUnionTests.tests
+            SyntaxSimplificationTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

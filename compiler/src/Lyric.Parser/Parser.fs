@@ -2090,20 +2090,26 @@ and private parseGenericParam
             Cursor.advance cursor |> ignore
         GPType("<error>", nameTok.Span)
 
-/// Parse `generic[T, U: Nat]` if it is the next token. Returns None if
-/// the cursor does not start with the `generic` keyword.
+/// Parse a generic-parameter list immediately after a declaration's
+/// identifier.  Two forms are accepted, both producing the same AST:
+///
+///   1. The bare-bracket form, `[T, U: Nat]` — preferred, mirrors the
+///      type-application syntax users see at use sites (`Box[Int]`).
+///   2. The legacy `generic[T, U: Nat]` form — still recognised for
+///      back-compat; D-numbered decision will retire it.
+///
+/// Returns `None` if the cursor sits on neither form.
 and private parseGenericParamsOpt
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
         : GenericParams option =
-    if Cursor.peekToken cursor <> TKeyword KwGeneric then None
-    else
-        let startTok = Cursor.advance cursor   // 'generic'
+    let parseFromOpenBracket (startTok: Lyric.Lexer.SpannedToken) =
+        // Cursor is positioned on the `[` token (not yet consumed).
         match Cursor.tryEatPunct LBracket cursor with
         | Some _ -> ()
         | None ->
             err diags "P0091"
-                "expected '[' after 'generic'"
+                "expected '[' to open generic parameter list"
                 (Cursor.peekSpan cursor)
         let xs = ResizeArray<GenericParam>()
         if Cursor.peekToken cursor <> TPunct RBracket then
@@ -2123,6 +2129,14 @@ and private parseGenericParamsOpt
         Some
             { Params = List.ofSeq xs
               Span   = joinSpans startTok.Span endSpan }
+    match Cursor.peekToken cursor with
+    | TKeyword KwGeneric ->
+        let startTok = Cursor.advance cursor   // 'generic'
+        parseFromOpenBracket startTok
+    | TPunct LBracket ->
+        let startTok = Cursor.peek cursor      // peek; bracket eaten below
+        parseFromOpenBracket startTok
+    | _ -> None
 
 and private parseConstraintRef
         (cursor: Cursor)
@@ -2763,11 +2777,7 @@ and private parseParam
         | TKeyword KwIn    -> Cursor.advance cursor |> ignore; PMIn
         | TKeyword KwOut   -> Cursor.advance cursor |> ignore; PMOut
         | TKeyword KwInout -> Cursor.advance cursor |> ignore; PMInout
-        | _ ->
-            err diags "P0160"
-                "expected parameter mode 'in', 'out', or 'inout' after ':'"
-                (Cursor.peekSpan cursor)
-            PMIn
+        | _                -> PMIn   // default mode is `in`
     let ty = parseTypeExpr cursor diags
     let dflt =
         match Cursor.tryEatPunct Eq cursor with
