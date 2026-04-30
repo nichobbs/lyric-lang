@@ -231,6 +231,57 @@ let private isUnsignedClr (t: ClrType) : bool =
     || t = typeof<uint32> || t = typeof<uint64>
 
 // ---------------------------------------------------------------------------
+// BCL method/property dispatch.
+//
+// Lyric source uses camelCase (`s.length`, `s.trim()`); the BCL exposes
+// the same operations as PascalCase properties/methods (`String.Length`,
+// `String.Trim`).  When exact-name lookup fails on a CLR type whose
+// namespace lives under `System.*` (or a primitive), fall back to the
+// PascalCase name and disambiguate overloads by argument types.
+// ---------------------------------------------------------------------------
+
+let private isBclType (t: ClrType) : bool =
+    t.IsPrimitive
+    || t = typeof<string>
+    || (match Option.ofObj t.Namespace with
+        | Some ns -> ns.StartsWith("System")
+        | None    -> false)
+
+let private capitalizeFirst (s: string) : string =
+    if String.IsNullOrEmpty s then s
+    else string (Char.ToUpperInvariant s.[0]) + s.Substring(1)
+
+/// Pick a non-static method on `recvTy` named `name` whose parameter
+/// types align with `argTys`.  Prefers exact equality, then assignability.
+let private resolveBclMethod
+        (recvTy: ClrType)
+        (name: string)
+        (argTys: ClrType array)
+        : MethodInfo option =
+    let candidates =
+        recvTy.GetMethods()
+        |> Array.filter (fun m ->
+            m.Name = name
+            && not m.IsStatic
+            && m.GetParameters().Length = argTys.Length)
+    let matches (m: MethodInfo) (cmp: ClrType -> ClrType -> bool) =
+        let pars = m.GetParameters()
+        let mutable ok = true
+        for i in 0 .. argTys.Length - 1 do
+            if ok && not (cmp pars.[i].ParameterType argTys.[i]) then
+                ok <- false
+        ok
+    let exact =
+        candidates
+        |> Array.tryFind (fun m -> matches m (fun p a -> p = a))
+    match exact with
+    | Some _ -> exact
+    | None ->
+        candidates
+        |> Array.tryFind (fun m ->
+            matches m (fun p a -> p.IsAssignableFrom a))
+
+// ---------------------------------------------------------------------------
 // Literal helpers.
 // ---------------------------------------------------------------------------
 
@@ -739,9 +790,25 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 // Fall back to a method on the receiver's CLR type
                 // by reflection. This catches impl-method calls where
                 // we have a concrete target type.
-                recvTy.GetMethods()
-                |> Array.tryFind (fun m ->
-                    m.Name = methodName && not m.IsStatic)
+                let exact =
+                    recvTy.GetMethods()
+                    |> Array.tryFind (fun m ->
+                        m.Name = methodName && not m.IsStatic)
+                match exact with
+                | Some _ -> exact
+                | None when isBclType recvTy ->
+                    // BCL fallback: lyric `s.trim()` -> CLR `String.Trim()`.
+                    // Peek arg types so overloads can be resolved by shape.
+                    let argTys =
+                        args
+                        |> List.map (fun a ->
+                            let payload =
+                                match a with
+                                | CAPositional ex | CANamed (_, ex, _) -> ex
+                            peekExprType ctx payload)
+                        |> Array.ofList
+                    resolveBclMethod recvTy (capitalizeFirst methodName) argTys
+                | None -> None
         match mi with
         | Some method ->
             // For value-type instance methods the receiver must be a
@@ -819,6 +886,29 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | None ->
                         failwithf "E5/E7 codegen: record '%s' has no field '%s'"
                             r.Name fieldName
+                | None when isBclType recvTy ->
+                    // BCL property fallback: lyric `s.length` -> `String.Length`.
+                    let propName = capitalizeFirst fieldName
+                    let prop = recvTy.GetProperty(propName)
+                    let getter =
+                        match Option.ofObj prop with
+                        | Some p when p.CanRead ->
+                            Option.ofObj (p.GetGetMethod())
+                            |> Option.map (fun g -> g, p.PropertyType)
+                        | _ -> None
+                    match getter with
+                    | Some (g, ty) ->
+                        if recvTy.IsValueType then
+                            let recvLoc = FunctionCtx.defineLocal ctx "__bcl_recv" recvTy
+                            il.Emit(OpCodes.Stloc, recvLoc)
+                            il.Emit(OpCodes.Ldloca, recvLoc)
+                            il.Emit(OpCodes.Call, g)
+                        else
+                            il.Emit(OpCodes.Callvirt, g)
+                        ty
+                    | None ->
+                        failwithf "E5/E7 codegen: receiver type %s has no readable property '%s'"
+                            recvTy.Name fieldName
                 | None ->
                     failwithf "E5/E7 codegen: receiver type %s is not a known record or distinct type"
                         recvTy.Name
