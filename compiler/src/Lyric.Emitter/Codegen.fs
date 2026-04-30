@@ -733,8 +733,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     match ctx.UnionCases.TryGetValue name with
                     | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
                         // Nullary case literal — `None` / `Leaf` etc.
-                        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
-                        info.Type :> ClrType
+                        // For generic unions we have no value to infer
+                        // T from, so default to `obj`; downstream
+                        // context (e.g. a typed `val` annotation) is
+                        // expected to converge the slot type.
+                        if List.isEmpty info.Generics then
+                            il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                            info.Type :> ClrType
+                        else
+                            let typeArgs =
+                                Array.create info.Generics.Length typeof<obj>
+                            let constructedCase =
+                                (caseInfo.Type :> System.Type).MakeGenericType typeArgs
+                            let constructedCtor =
+                                TypeBuilder.GetConstructor(constructedCase, caseInfo.Ctor)
+                            let constructedParent =
+                                (info.Type :> System.Type).MakeGenericType typeArgs
+                            il.Emit(OpCodes.Newobj, constructedCtor)
+                            constructedParent
                     | _ ->
                         // Imported nullary case (cross-assembly).
                         match ctx.ImportedUnionCases.TryGetValue name with
@@ -987,9 +1003,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             |> List.choose (function
                 | CAPositional ex -> Some ex
                 | _ -> None)
+        // Resolve each field's value-expression up front, in order, so
+        // we can inspect arg CLR types before deciding how to bind any
+        // generic parameters of the union.
         let mutable posIdx = 0
-        for f in caseInfo.Fields do
-            let argExpr =
+        let argExprs =
+            caseInfo.Fields
+            |> List.map (fun f ->
                 match Map.tryFind f.Name namedMap with
                 | Some ex -> ex
                 | None ->
@@ -999,13 +1019,48 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         ex
                     else
                         failwithf "E11 codegen: union case '%s' missing field '%s'"
-                            name f.Name
-            let argTy = emitExpr ctx argExpr
-            // Box value-typed args into the erased `obj` payload slot.
-            if f.Type = typeof<obj> && argTy.IsValueType then
-                il.Emit(OpCodes.Box, argTy)
-        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
-        info.Type :> ClrType
+                            name f.Name)
+        if List.isEmpty info.Generics then
+            // Non-generic union: emit args directly, box value types into
+            // erased `obj` payload slots, then `Newobj` the case ctor.
+            for (f, argExpr) in List.zip caseInfo.Fields argExprs do
+                let argTy = emitExpr ctx argExpr
+                if f.Type = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy)
+            il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+            info.Type :> ClrType
+        else
+            // Generic union: peek each arg's CLR type without emitting
+            // first so we can bind the union's generic parameters.
+            let bindings = Dictionary<string, ClrType>()
+            let rec bind (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lyricTy with
+                | Lyric.TypeChecker.TyVar n ->
+                    if not (bindings.ContainsKey n) then bindings.[n] <- argTy
+                | _ -> ()
+            for (f, argExpr) in List.zip caseInfo.Fields argExprs do
+                bind f.LyricType (peekExprType ctx argExpr)
+            // Default any unbound to `obj`.
+            let typeArgs =
+                info.Generics
+                |> List.map (fun n ->
+                    match bindings.TryGetValue n with
+                    | true, t  -> t
+                    | false, _ -> typeof<obj>)
+                |> List.toArray
+            // Build the constructed parent + case + ctor refs.
+            let constructedParent =
+                (info.Type :> System.Type).MakeGenericType typeArgs
+            let constructedCase =
+                (caseInfo.Type :> System.Type).MakeGenericType typeArgs
+            let constructedCtor =
+                TypeBuilder.GetConstructor(constructedCase, caseInfo.Ctor)
+            // Now emit each arg, then `Newobj` the constructed ctor.
+            for argExpr in argExprs do
+                let _ = emitExpr ctx argExpr
+                ()
+            il.Emit(OpCodes.Newobj, constructedCtor)
+            constructedParent
 
     // ---- imported union case construction (e.g. Std.Core's Some) ------
 
@@ -1435,10 +1490,19 @@ and private emitPatternTest
             il.Emit(OpCodes.Ceq)
         | _ ->
             match ctx.UnionCases.TryGetValue name with
-            | true, (_, caseInfo) ->
-                // `case Yes` for a nullary union case — type-test.
+            | true, (info, caseInfo) ->
+                // `case Yes` for a nullary union case — type-test.  For
+                // generic unions, the case must be instantiated with
+                // the scrutinee's type args before we test against it.
+                let testTy =
+                    if List.isEmpty info.Generics
+                       || not slotTy.IsGenericType
+                    then caseInfo.Type :> System.Type
+                    else
+                        (caseInfo.Type :> System.Type).MakeGenericType
+                            (slotTy.GetGenericArguments())
                 il.Emit(OpCodes.Ldloc, tmp)
-                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Isinst, testTy)
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
             | _ ->
@@ -1481,13 +1545,22 @@ and private emitPatternTest
             il.Emit(OpCodes.Ceq)
         | _ ->
             match ctx.UnionCases.TryGetValue key with
-            | true, (_, caseInfo) ->
+            | true, (info, caseInfo) ->
                 // `tmp is CaseSubclass` — `isinst` returns the value
                 // typed as the subclass, or `null`. We use the
                 // `cgt.un` against ldnull idiom to convert "not null"
-                // into the bool 1.
+                // into the bool 1.  For generic unions, instantiate
+                // the case type with the scrutinee's type args first
+                // so the test compares apples to apples.
+                let testTy =
+                    if List.isEmpty info.Generics
+                       || not slotTy.IsGenericType
+                    then caseInfo.Type :> System.Type
+                    else
+                        let argTys = slotTy.GetGenericArguments()
+                        (caseInfo.Type :> System.Type).MakeGenericType argTys
                 il.Emit(OpCodes.Ldloc, tmp)
-                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Isinst, testTy)
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
             | _ ->
@@ -1529,13 +1602,34 @@ and private emitPatternBind
             | [name] -> name
             | _ -> String.concat "." path.Segments
         // Resolve the case info from local OR imported union tables.
+        // For generic local unions we also recover the type-arg array
+        // from the scrutinee's CLR type so each field load uses a
+        // fully-substituted FieldInfo.
+        let scrutTy = tmp.LocalType
         let caseTy, caseFields =
             match ctx.UnionCases.TryGetValue key with
-            | true, (_, caseInfo) ->
-                Some (caseInfo.Type :> ClrType),
-                caseInfo.Fields
-                |> List.map (fun f ->
-                    f.Name, f.Type, (f.Field :> FieldInfo))
+            | true, (info, caseInfo) ->
+                if List.isEmpty info.Generics || not scrutTy.IsGenericType then
+                    Some (caseInfo.Type :> ClrType),
+                    caseInfo.Fields
+                    |> List.map (fun f ->
+                        f.Name, f.Type, (f.Field :> FieldInfo))
+                else
+                    let argTys = scrutTy.GetGenericArguments()
+                    let constructed =
+                        (caseInfo.Type :> System.Type).MakeGenericType argTys
+                    let substMap =
+                        info.Generics
+                        |> List.mapi (fun i n -> n, argTys.[i])
+                        |> Map.ofList
+                    Some constructed,
+                    caseInfo.Fields
+                    |> List.map (fun f ->
+                        let substTy =
+                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                (fun _ -> None) substMap f.LyricType
+                        let fi = TypeBuilder.GetField(constructed, f.Field)
+                        f.Name, substTy, fi)
             | _ ->
                 match ctx.ImportedUnionCases.TryGetValue key with
                 | true, (_, caseInfo) ->

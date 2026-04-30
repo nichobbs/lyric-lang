@@ -93,9 +93,17 @@ let rec toClrTypeWithGenerics
             | 4 -> typedefof<System.Func<_,_,_,_>>.MakeGenericType(allTys)
             | 5 -> typedefof<System.Func<_,_,_,_,_>>.MakeGenericType(allTys)
             | n -> failwithf "TypeMap: Func<%d> not supported" n
-    | TyUser (id, _)  ->
+    | TyUser (id, args)  ->
         match lookup id with
-        | Some t -> t
+        | Some t ->
+            // Reified generic types: when the user mentions
+            // `Option[Int]`, `t` is the open generic definition; the
+            // real CLR type is `t.MakeGenericType(int32)`.
+            if List.isEmpty args || not t.IsGenericTypeDefinition
+            then t
+            else
+                let argTys = args |> List.map recur |> List.toArray
+                t.MakeGenericType argTys
         | None   -> typeof<obj>
     | TySelf          -> typeof<obj>
     | TyVar name      ->

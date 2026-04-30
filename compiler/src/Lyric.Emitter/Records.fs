@@ -61,11 +61,14 @@ type EnumCaseLookup = Dictionary<string, EnumInfo * EnumCase>
 // ---------------------------------------------------------------------------
 
 /// One payload field of a union case. Named to avoid clashing with
-/// the parser AST's `UnionField` discriminator.
+/// the parser AST's `UnionField` discriminator.  `LyricType` is kept
+/// (in addition to the lowered `Type`) so codegen can run reified-
+/// generic type-arg inference when the union itself is generic.
 type UnionPayloadField =
-    { Name:  string
-      Type:  ClrType
-      Field: FieldBuilder }
+    { Name:      string
+      Type:      ClrType
+      LyricType: Lyric.TypeChecker.Type
+      Field:     FieldBuilder }
 
 /// One case of a Lyric union, post-CLR-lowering.
 type UnionCaseInfo =
@@ -75,12 +78,16 @@ type UnionCaseInfo =
       Fields:  UnionPayloadField list
       Ctor:    ConstructorBuilder }
 
-/// What the codegen needs to know about a Lyric union.
+/// What the codegen needs to know about a Lyric union.  `Generics` is
+/// the (ordered) list of type-parameter names — empty for non-generic
+/// unions, otherwise driving codegen's `MakeGenericType` calls.
 type UnionInfo =
-    { Name:  string
+    { Name:     string
       /// Abstract base class — the union's user-visible CLR type.
-      Type:  TypeBuilder
-      Cases: UnionCaseInfo list }
+      /// For generic unions this is the open generic definition.
+      Type:     TypeBuilder
+      Cases:    UnionCaseInfo list
+      Generics: string list }
 
 type UnionTable = Dictionary<string, UnionInfo>
 
