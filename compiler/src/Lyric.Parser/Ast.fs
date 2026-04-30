@@ -446,6 +446,17 @@ and ExternPackageDecl =
       Members:     ExternMember list
       Span:        Span }
 
+/// `extern type Foo = "System.Foo"` declares a Lyric-side type
+/// alias for a CLR type loaded in the AppDomain.  User code treats
+/// `Foo` as an opaque handle: it can be returned from extern
+/// functions, passed to other extern functions, stored in
+/// variables — but the bootstrap doesn't yet expose its fields or
+/// allow construction outside the FFI boundary.
+and ExternTypeDecl =
+    { Name:        string
+      ClrName:     string
+      Span:        Span }
+
 
 // ---------------------------------------------------------------------------
 // §8. Test items (`test`, `property`, `fixture`).
@@ -685,6 +696,7 @@ and ItemKind =
     | IWire         of WireDecl
     | IScopeKind    of ScopeKindDecl
     | IExtern       of ExternPackageDecl
+    | IExternType   of ExternTypeDecl
     | ITest         of TestDecl
     | IProperty     of PropertyDecl
     | IFixture      of FixtureDecl

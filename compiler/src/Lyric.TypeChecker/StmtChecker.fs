@@ -235,6 +235,18 @@ let checkFunctionBody
         (sig':  ResolvedSignature)
         : unit =
 
+    // FFI shim: a function with `@externTarget("...")` lowers to a
+    // direct CLR call at codegen time; the user-supplied body is
+    // ignored.  Skip return-type checking — the body is conventionally
+    // a placeholder `()` that wouldn't match the declared return.
+    let isExternTarget =
+        fn.Annotations
+        |> List.exists (fun a ->
+            match a.Name.Segments with
+            | ["externTarget"] -> true
+            | _ -> false)
+    if isExternTarget then () else
+
     let scope = Scope()
     for p in sig'.Params do
         scope.Add(

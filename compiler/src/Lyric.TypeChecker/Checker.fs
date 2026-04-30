@@ -96,6 +96,7 @@ let private registerItem
     | IOpaque o        -> mkType (fun id -> DKOpaque(id, o))         o.Name
     | IProtected p     -> mkType (fun id -> DKProtected(id, p))      p.Name
     | IDistinctType d  -> mkType (fun id -> DKDistinctType(id, d))   d.Name
+    | IExternType e    -> mkType (fun id -> DKExternType(id, e))     e.Name
     | ITypeAlias a     -> Some (mkSym a.Name (DKTypeAlias a))
     | IInterface i     -> mkType (fun id -> DKInterface(id, i))      i.Name
     | IFunc f          -> Some (mkSym f.Name (DKFunc f))
