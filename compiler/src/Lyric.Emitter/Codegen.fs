@@ -611,9 +611,31 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EBinop (op, lhs, rhs) ->
         let lt = emitExpr ctx lhs
-        let _  = emitExpr ctx rhs
+        let rt = emitExpr ctx rhs
         let opTy = lt
         match op with
+        | BAdd when lt = typeof<string> || rt = typeof<string> ->
+            // String concatenation: route `+` to
+            // `String.Concat(object, object)` so either operand
+            // can be a primitive (auto-boxed via the value-type
+            // overload). The result is a string.
+            if rt.IsValueType then il.Emit(OpCodes.Box, rt)
+            // The lhs is already on the stack underneath rhs; we
+            // need to reorder so we can box it too. Use locals
+            // to swap.
+            let rhsLoc = FunctionCtx.defineLocal ctx "__concat_rhs" typeof<obj>
+            il.Emit(OpCodes.Stloc, rhsLoc)
+            if lt.IsValueType then il.Emit(OpCodes.Box, lt)
+            il.Emit(OpCodes.Ldloc, rhsLoc)
+            let concat =
+                let mi =
+                    typeof<System.String>
+                        .GetMethod("Concat", [| typeof<obj>; typeof<obj> |])
+                match Option.ofObj mi with
+                | Some m -> m
+                | None   -> failwith "String.Concat(object, object) not found"
+            il.Emit(OpCodes.Call, concat)
+            typeof<string>
         | BAdd ->
             if isFloatClr opTy then il.Emit(OpCodes.Add)
             elif isUnsignedClr opTy then il.Emit(OpCodes.Add_Ovf_Un)
