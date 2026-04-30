@@ -35,6 +35,7 @@ let main argv =
             ParseTests.tests
             DeferTests.tests
             StdlibImportTests.tests
+            NegativePatternTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
