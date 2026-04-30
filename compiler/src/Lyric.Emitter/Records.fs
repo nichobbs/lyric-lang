@@ -160,35 +160,55 @@ type ProjectableTable = Dictionary<string, ProjectableInfo>
 // ---------------------------------------------------------------------------
 
 type ImportedField =
-    { Name:  string
-      Type:  ClrType
-      Field: FieldInfo }
+    { Name:      string
+      Type:      ClrType
+      /// The Lyric-side type of this field, with any union/record
+      /// generic parameters surviving as `TyVar`.  Codegen needs it
+      /// to infer call-site type-args without trusting reflection on
+      /// the open-generic case type's field types (which would just
+      /// give back `T` and lose the structural shape).
+      LyricType: Lyric.TypeChecker.Type
+      Field:     FieldInfo }
 
 type ImportedRecordInfo =
-    { Name:   string
-      Type:   ClrType
-      Fields: ImportedField list
-      Ctor:   ConstructorInfo }
+    { Name:     string
+      /// Open generic definition for generic records; the concrete
+      /// runtime type for non-generic records.
+      Type:     ClrType
+      Fields:   ImportedField list
+      Ctor:     ConstructorInfo
+      Generics: string list }
 
 type ImportedRecordTable = Dictionary<string, ImportedRecordInfo>
 
 type ImportedUnionCaseInfo =
     { Name:   string
+      /// Open generic definition for cases of generic unions; the
+      /// concrete runtime type for non-generic unions.
       Type:   ClrType
       Fields: ImportedField list
       Ctor:   ConstructorInfo }
 
 type ImportedUnionInfo =
-    { Name:  string
-      Type:  ClrType
-      Cases: ImportedUnionCaseInfo list }
+    { Name:     string
+      /// Open generic definition for generic unions.
+      Type:     ClrType
+      Cases:    ImportedUnionCaseInfo list
+      Generics: string list }
 
 type ImportedUnionTable = Dictionary<string, ImportedUnionInfo>
 
 type ImportedUnionCaseLookup =
     Dictionary<string, ImportedUnionInfo * ImportedUnionCaseInfo>
 
-type ImportedFuncTable = Dictionary<string, MethodInfo>
+/// Imported function carries its `MethodInfo` plus the Lyric-side
+/// signature so the call-site emitter can run reified-generic type-
+/// arg inference.  Ordering follows the local `FuncSigs` shape.
+type ImportedFuncInfo =
+    { Method: MethodInfo
+      Sig:    Lyric.TypeChecker.ResolvedSignature }
+
+type ImportedFuncTable = Dictionary<string, ImportedFuncInfo>
 
 type ImportedDistinctTypeInfo =
     { Name:          string

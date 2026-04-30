@@ -87,6 +87,8 @@ func main(): Unit {
 
     "generic_option_string",
     """
+package StdTest_GenericOptionString
+import Std.Core
 func main(): Unit {
   val some: Option[String] = Some(value = "hello")
   println(unwrapOr(some, "missing"))
@@ -102,22 +104,24 @@ package StdTest_ResultBasics
 import Std.Core
 func main(): Unit {
   println(isOk(Ok(value = 7)))
-  println(isOk(Err(code = 1)))
+  println(isOk(Err(error = 1)))
   println(unwrapResultOr(Ok(value = 7), 0))
-  println(unwrapResultOr(Err(code = 1), 99))
-  println(errCode(Err(code = 42)))
+  println(unwrapResultOr(Err(error = 1), 99))
+  println(unwrapErrOr(Err(error = 42), 0))
 }
 """,
     "True\nFalse\n7\n99\n42"
 
     "generic_result_string_int",
     """
+package StdTest_GenericResultStringInt
+import Std.Core
 func main(): Unit {
   val ok: Result[String, Int] = Ok(value = "ok")
   println(isOk(ok))
   println(isErr(ok))
   println(unwrapResultOr(ok, "fallback"))
-  val err: Result[String, Int] = Err(code = 42)
+  val err: Result[String, Int] = Err(error = 42)
   println(isOk(err))
   println(isErr(err))
   println(unwrapErrOr(err, 999))
@@ -157,7 +161,7 @@ import Std.Core
 func main(): Unit {
   println(isOk(mapResult(Ok(value = 5), { x: Int -> x + 1 })))
   println(unwrapResultOr(mapResult(Ok(value = 5), { x: Int -> x + 1 }), 0))
-  println(isOk(mapResult(Err(code = 42), { x: Int -> x + 1 })))
+  println(isOk(mapResult(Err(error = 42), { x: Int -> x + 1 })))
 }
 """,
     "True\n6\nFalse"
@@ -186,8 +190,14 @@ func main(): Unit {
 """,
     "3\n1"
 
+    // These two tests use direct method-call syntax on `String`
+    // (`s.length`, `s.trim()`) which needs BCL-method dispatch
+    // wired through the codegen — separate work from cross-assembly
+    // generics.  Tests use unique package names so the parser at
+    // least gets to a clean compile attempt.
     "string_length",
     """
+package StdTest_StringLength
 func main(): Unit {
   println("hello".length)
   println("".length)
@@ -198,6 +208,7 @@ func main(): Unit {
 
     "string_operations",
     """
+package StdTest_StringOperations
 func main(): Unit {
   val s = "  hello  "
   println(s.trim().length)
