@@ -31,6 +31,7 @@ let main argv =
             NullaryInferenceTests.tests
             GenericUnionTests.tests
             SyntaxSimplificationTests.tests
+            BclDispatchTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
