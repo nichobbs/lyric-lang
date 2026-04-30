@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET (uses compiler/global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: compiler/global.json
+
+      - name: Restore
+        working-directory: compiler
+        run: dotnet restore Lyric.sln
+
+      - name: Build
+        working-directory: compiler
+        run: dotnet build Lyric.sln --configuration Debug --no-restore
+
+      - name: Lexer tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
+
+      - name: Parser tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
+
+      - name: Type-checker tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
+
+      - name: Emitter tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
+
+      - name: Smoke-test the CLI on examples
+        working-directory: compiler
+        run: |
+          set -euo pipefail
+          for ex in ../examples/*.l; do
+            echo "=== build $ex ==="
+            dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force
+          done
