@@ -103,4 +103,29 @@ let tests =
             for n in ["a"; "b"; "c"] do
                 Expect.isTrue (r.Signatures.ContainsKey n) (sprintf "%s present" n)
         }
+
+        test "where clause referencing unknown type parameter triggers T0050" {
+            let parsed =
+                parse "package P\ngeneric[T] func f(x: in T): T where U: Compare = x"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "T0050" "T0050 reported"
+        }
+
+        test "where clause with unknown constraint triggers T0051" {
+            let parsed =
+                parse "package P\ngeneric[T] func f(x: in T): T where T: Wibble = x"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "T0051" "T0051 reported"
+        }
+
+        test "where clause with valid derive marker is accepted" {
+            let parsed =
+                parse "package P\ngeneric[T] func f(x: in T): T where T: Compare = x"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.isFalse (List.contains "T0050" codes) "no T0050"
+            Expect.isFalse (List.contains "T0051" codes) "no T0051"
+        }
     ]
