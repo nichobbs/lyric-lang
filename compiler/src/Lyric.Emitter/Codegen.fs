@@ -768,6 +768,30 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             failwithf "M2.2 codegen: receiver %s is not a @projectable opaque type"
                 recvTy.Name
 
+    // ---- projectable view: v.tryInto() -> Result[<Name>, String] ------
+
+    | ECall ({ Kind = EMember (recv, "tryInto") }, []) ->
+        let recvTy = emitExpr ctx recv
+        // The receiver is the view type; locate the projectable whose
+        // ViewType matches.  Reflection on the TypeBuilder isn't safe
+        // until it's sealed, so look up via the projectable table.
+        let proj =
+            ctx.Projectables.Values
+            |> Seq.tryFind (fun p ->
+                (p.ViewType.Type :> ClrType) = recvTy)
+        match proj with
+        | Some p ->
+            match p.TryIntoMethod with
+            | Some mi ->
+                il.Emit(OpCodes.Callvirt, mi)
+                mi.ReturnType
+            | None ->
+                failwithf "M2.2 codegen: '%sView::tryInto' was not synthesised (nested-projectable view or `import Std.Core` missing)"
+                    p.OpaqueName
+        | None ->
+            failwithf "M2.2 codegen: receiver %s is not a known projectable view type"
+                recvTy.Name
+
     // ---- distinct type static factory / derive helper -----------------
     //
     // `TypeName.from(x)`, `.tryFrom(x)`, `.default()`, or any other

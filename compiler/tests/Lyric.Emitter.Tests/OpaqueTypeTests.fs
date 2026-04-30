@@ -187,4 +187,90 @@ func main(): Unit {
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd())
                 "fix bug\nurgent\n7" "mixed projection"
+
+        // ---- tryInto reverse projection ------------------------------
+
+        testCase "[@projectable view.tryInto round-trips]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ProjF" """
+package ProjF
+import Std.Core
+
+opaque type User @projectable {
+  id: Int
+  name: String
+}
+
+func main(): Unit {
+  val u = User(id = 7, name = "alice")
+  val v = u.toView()
+  match v.tryInto() {
+    case Ok(back)  -> println(back.name)
+    case Err(_)    -> println("err")
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "alice" "view -> opaque -> field"
+
+        testCase "[@projectable view.tryInto preserves all flat fields]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ProjG" """
+package ProjG
+import Std.Core
+
+opaque type Money @projectable {
+  cents: Long
+  currency: String
+}
+
+func showCents(m: in Money): Long {
+  m.cents
+}
+
+func showCcy(m: in Money): String {
+  m.currency
+}
+
+func main(): Unit {
+  val m = Money(cents = 1500, currency = "USD")
+  val v = m.toView()
+  match v.tryInto() {
+    case Ok(m2)  -> { println(showCents(m2)); println(showCcy(m2)) }
+    case Err(_)  -> println("err")
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "1500\nUSD" "tryInto round-trip"
+
+        testCase "[@projectable @hidden field defaults on tryInto]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ProjH" """
+package ProjH
+import Std.Core
+
+opaque type Account @projectable {
+  id: Int
+  passwordHash: String @hidden
+}
+
+func showId(a: in Account): Int { a.id }
+func showHash(a: in Account): String { a.passwordHash }
+
+func main(): Unit {
+  val a = Account(id = 5, passwordHash = "secret")
+  val v = a.toView()
+  match v.tryInto() {
+    case Ok(a2)  -> { println(showId(a2)); println(showHash(a2)) }
+    case Err(_)  -> println("err")
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            // The `@hidden` field can't be reverse-projected from the
+            // view; the bootstrap fills it with `null` for the String
+            // (`@hidden` defaults to the CLR slot's default), which
+            // `println` writes as an empty line that `TrimEnd` strips.
+            Expect.stringStarts (stdout.TrimEnd()) "5" "id round-trips"
     ]

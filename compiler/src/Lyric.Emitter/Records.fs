@@ -148,7 +148,12 @@ type DistinctTypeTable = Dictionary<string, DistinctTypeInfo>
 type ProjectableInfo =
     { OpaqueName:    string
       ToViewMethod:  MethodBuilder
-      ViewType:      RecordInfo }
+      ViewType:      RecordInfo
+      /// `<Name>View::tryInto(): Result[<Name>, String]` — synthesised
+      /// when (a) `Std.Core.Result` is in the imported-union table and
+      /// (b) the projectable has no nested `@projectable` fields (the
+      /// nested-recursion variant is a follow-up).  `None` otherwise.
+      TryIntoMethod: MethodBuilder option }
 
 type ProjectableTable = Dictionary<string, ProjectableInfo>
 
