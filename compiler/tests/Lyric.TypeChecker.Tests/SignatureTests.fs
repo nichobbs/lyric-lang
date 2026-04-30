@@ -128,4 +128,33 @@ let tests =
             Expect.isFalse (List.contains "T0050" codes) "no T0050"
             Expect.isFalse (List.contains "T0051" codes) "no T0051"
         }
+
+        test "range subtype with inverted bounds triggers T0090" {
+            let parsed = parse "package P\ntype Bad = Int range 10 ..= 5"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "T0090" "T0090 reported for lo > hi"
+        }
+
+        test "range subtype with empty half-open bounds triggers T0090" {
+            let parsed = parse "package P\ntype Empty = Int range 5 ..< 5"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "T0090" "T0090 reported for lo >= hi (half-open)"
+        }
+
+        test "range subtype on non-numeric underlying triggers T0091" {
+            let parsed = parse "package P\ntype Weird = String range 0 ..= 10"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "T0091" "T0091 reported for non-numeric underlying"
+        }
+
+        test "well-formed range subtype produces no T0090/T0091" {
+            let parsed = parse "package P\ntype Score = Int range 0 ..= 100"
+            let r = check parsed.File
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.isFalse (List.contains "T0090" codes) "no T0090"
+            Expect.isFalse (List.contains "T0091" codes) "no T0091"
+        }
     ]

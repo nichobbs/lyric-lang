@@ -125,6 +125,60 @@ let private knownDeriveMarkers : Set<string> =
     Set.ofList [ "Add"; "Sub"; "Mul"; "Div"; "Mod"
                  "Compare"; "Hash"; "Equals"; "Default" ]
 
+/// Numeric primitives that can carry a range refinement.
+let private numericPrimitiveNames : Set<string> =
+    Set.ofList [ "Int"; "Long"; "Short"; "Byte"
+                 "UInt"; "ULong"; "UShort"; "UByte"
+                 "Float"; "Double" ]
+
+/// Literal evaluator used when validating range bounds.  The bootstrap
+/// only accepts integer literals; symbolic bounds escape the check.
+let private literalIntValue (e: Expr) : uint64 option =
+    match e.Kind with
+    | ELiteral (LInt (n, _)) -> Some n
+    | _ -> None
+
+/// Well-formedness check for a range subtype's underlying type and
+/// bounds.  Emits T0090 for inverted/empty bounds and T0091 for a
+/// non-numeric underlying type.  Symbolic (non-literal) bounds are
+/// accepted by the checker; the emitter skips the runtime check on
+/// them in the bootstrap.
+let private checkDistinctType
+        (diags: ResizeArray<Diagnostic>)
+        (dt: DistinctTypeDecl) : unit =
+    match dt.Range with
+    | None -> ()
+    | Some _ ->
+        let underlyingName =
+            match dt.Underlying.Kind with
+            | TRef { Segments = [n] } -> Some n
+            | _ -> None
+        match underlyingName with
+        | Some n when not (Set.contains n numericPrimitiveNames) ->
+            diags.Add(Diagnostic.error "T0091"
+                (sprintf "range subtype '%s' requires a numeric underlying type, got '%s'"
+                    dt.Name n)
+                dt.Span)
+        | _ -> ()
+        match dt.Range with
+        | Some (RBClosed(lo, hi)) ->
+            match literalIntValue lo, literalIntValue hi with
+            | Some loVal, Some hiVal when loVal > hiVal ->
+                diags.Add(Diagnostic.error "T0090"
+                    (sprintf "range subtype '%s' has empty bounds: %d ..= %d (lo > hi)"
+                        dt.Name loVal hiVal)
+                    dt.Span)
+            | _ -> ()
+        | Some (RBHalfOpen(lo, hi)) ->
+            match literalIntValue lo, literalIntValue hi with
+            | Some loVal, Some hiVal when loVal >= hiVal ->
+                diags.Add(Diagnostic.error "T0090"
+                    (sprintf "range subtype '%s' has empty bounds: %d ..< %d (lo must be < hi)"
+                        dt.Name loVal hiVal)
+                    dt.Span)
+            | _ -> ()
+        | _ -> ()
+
 /// Well-formedness check for a `where` clause: each bound's left side
 /// must be a generic parameter of the enclosing item, and each right-
 /// side constraint must be a known derive marker or an interface in
@@ -239,6 +293,14 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
         registerItem table idSrc diags it |> ignore
     for it in file.Items do
         registerItem table idSrc diags it |> ignore
+
+    // T2.5: validate range subtypes — empty/inverted bounds, non-numeric
+    // underlying.  Catches `type X = Int range 10 ..= 5` at type-check
+    // time rather than letting the emitter happily produce dead code.
+    for it in file.Items do
+        match it.Kind with
+        | IDistinctType dt -> checkDistinctType diags dt
+        | _ -> ()
 
     // T3: resolve signatures for every IFunc — both imported and user.
     let signatures =

@@ -210,16 +210,17 @@ let private defineInterface
 ///
 /// The struct has a single public `Value` field of the underlying primitive
 /// type and a static `From(x)` factory.  For range subtypes (`Range` is
-/// `Some`), `From` performs a bounds check (panics on violation) and an
-/// additional `TryFrom(x)` method is synthesised that returns the Lyric
-/// `Result` union type — but since the `Result` union type is not yet built
-/// at this point in the emitter, `TryFrom` is wired up only when the union
-/// table is available (Phase 2.1+). For now the bounds check is in `From`.
+/// `Some`), `From` performs a bounds check that panics on violation, and
+/// — when `Std.Core.Result` is in the imported-union table — a static
+/// `TryFrom(x): Result[Self, String]` is synthesised that performs the
+/// same bounds check but returns `Err(error = msg)` on violation instead
+/// of throwing.
 let private defineDistinctType
         (md: ModuleBuilder)
         (nsName: string)
         (lookup: TypeId -> System.Type option)
         (symbols: SymbolTable)
+        (importedUnions: Records.ImportedUnionTable)
         (dt: DistinctTypeDecl) : Records.DistinctTypeInfo =
     let fullName =
         if String.IsNullOrEmpty nsName then dt.Name
@@ -243,6 +244,45 @@ let private defineDistinctType
     let valueField =
         tb.DefineField("Value", underlyingClr, FieldAttributes.Public)
 
+    // Range-bound evaluation.  The bootstrap accepts integer literals
+    // only; symbolic bounds fall through to "no compile-time check".
+    // `upperExclusive` is true for `a ..< b` / `a .. b` half-open ranges.
+    let evalLiteral (e: Expr) : uint64 option =
+        match e.Kind with
+        | ELiteral (LInt (n, _)) -> Some n
+        | _ -> None
+    let literalBounds : (uint64 * uint64 * bool) option =
+        match dt.Range with
+        | Some (RBClosed(loExpr, hiExpr)) ->
+            match evalLiteral loExpr, evalLiteral hiExpr with
+            | Some lo, Some hi -> Some (lo, hi, false)
+            | _ -> None
+        | Some (RBHalfOpen(loExpr, hiExpr)) ->
+            match evalLiteral loExpr, evalLiteral hiExpr with
+            | Some lo, Some hi -> Some (lo, hi, true)
+            | _ -> None
+        | _ -> None
+
+    // Emit `if x < lo || x op_hi hi goto failLbl`, where op_hi is `>`
+    // for closed ranges and `>=` for half-open ranges.
+    let emitBoundsCheck (il: ILGenerator) (failLbl: Label)
+            (lo: uint64) (hi: uint64) (upperExclusive: bool) : unit =
+        let emitConst (n: uint64) =
+            if underlyingClr = typeof<int64> then
+                il.Emit(OpCodes.Ldc_I8, int64 n)
+            else
+                il.Emit(OpCodes.Ldc_I4, int n)
+        il.Emit(OpCodes.Ldarg_0)
+        emitConst lo
+        il.Emit(OpCodes.Blt, failLbl)
+        il.Emit(OpCodes.Ldarg_0)
+        emitConst hi
+        if upperExclusive then il.Emit(OpCodes.Bge, failLbl)
+        else il.Emit(OpCodes.Bgt, failLbl)
+
+    let bracket (upperExclusive: bool) =
+        if upperExclusive then ")" else "]"
+
     // Static `From(x)` factory.
     let fromMb =
         tb.DefineMethod(
@@ -253,46 +293,26 @@ let private defineDistinctType
     fromMb.DefineParameter(1, ParameterAttributes.None, "x") |> ignore
     let fromIl = fromMb.GetILGenerator()
 
-    // Optional range check in `From`.
-    match dt.Range with
-    | Some (RBClosed(loExpr, hiExpr)) ->
-        // Evaluate lo and hi as constant int32 expressions (literals only
-        // for the bootstrap; full expression evaluation deferred to Phase 3).
-        let evalLiteral (e: Expr) : uint64 option =
-            match e.Kind with
-            | ELiteral (LInt (n, _)) -> Some n
-            | _ -> None
-        match evalLiteral loExpr, evalLiteral hiExpr with
-        | Some lo, Some hi ->
-            // if x < lo || x > hi, throw InvalidOperationException
-            let okLbl = fromIl.DefineLabel()
-            let failLbl = fromIl.DefineLabel()
-            fromIl.Emit(OpCodes.Ldarg_0)
-            // Widen to int64 for comparison generality.
-            if underlyingClr = typeof<int64> then
-                fromIl.Emit(OpCodes.Ldc_I8, int64 lo)
-            else
-                fromIl.Emit(OpCodes.Ldc_I4, int lo)
-            fromIl.Emit(OpCodes.Blt, failLbl)
-            fromIl.Emit(OpCodes.Ldarg_0)
-            if underlyingClr = typeof<int64> then
-                fromIl.Emit(OpCodes.Ldc_I8, int64 hi)
-            else
-                fromIl.Emit(OpCodes.Ldc_I4, int hi)
-            fromIl.Emit(OpCodes.Bgt, failLbl)
-            fromIl.Emit(OpCodes.Br, okLbl)
-            fromIl.MarkLabel(failLbl)
-            let msg = sprintf "%s.from: value out of range [%d, %d]" dt.Name lo hi
-            fromIl.Emit(OpCodes.Ldstr, msg)
-            let ioe = typeof<System.InvalidOperationException>
-            let ioCtor = ioe.GetConstructor([| typeof<string> |])
-            match Option.ofObj ioCtor with
-            | Some c -> fromIl.Emit(OpCodes.Newobj, c)
-            | None -> failwith "InvalidOperationException(string) ctor not found"
-            fromIl.Emit(OpCodes.Throw)
-            fromIl.MarkLabel(okLbl)
-        | _ -> ()  // non-literal bounds — skip check in bootstrap
-    | _ -> ()  // no range constraint
+    // Optional range check in `From` (panic on violation).
+    match literalBounds with
+    | Some (lo, hi, upperExclusive) ->
+        let okLbl = fromIl.DefineLabel()
+        let failLbl = fromIl.DefineLabel()
+        emitBoundsCheck fromIl failLbl lo hi upperExclusive
+        fromIl.Emit(OpCodes.Br, okLbl)
+        fromIl.MarkLabel(failLbl)
+        let msg =
+            sprintf "%s.from: value out of range [%d, %d%s"
+                dt.Name lo hi (bracket upperExclusive)
+        fromIl.Emit(OpCodes.Ldstr, msg)
+        let ioe = typeof<System.InvalidOperationException>
+        let ioCtor = ioe.GetConstructor([| typeof<string> |])
+        match Option.ofObj ioCtor with
+        | Some c -> fromIl.Emit(OpCodes.Newobj, c)
+        | None -> failwith "InvalidOperationException(string) ctor not found"
+        fromIl.Emit(OpCodes.Throw)
+        fromIl.MarkLabel(okLbl)
+    | None -> ()  // no range constraint or non-literal bounds
 
     // Create and return the struct.
     let localVar = fromIl.DeclareLocal(tb)
@@ -303,6 +323,59 @@ let private defineDistinctType
     fromIl.Emit(OpCodes.Stfld, valueField)
     fromIl.Emit(OpCodes.Ldloc, localVar)
     fromIl.Emit(OpCodes.Ret)
+
+    // Optional `TryFrom(x)` factory returning `Result[Self, String]`.
+    // Synthesised iff (a) bounds are literal and (b) `Std.Core.Result`
+    // is imported — otherwise `info.TryFromMethod` stays `None` and the
+    // call site surfaces a diagnostic.
+    let tryFromMethod : MethodBuilder option =
+        match literalBounds, importedUnions.TryGetValue "Result" with
+        | Some (lo, hi, upperExclusive), (true, resultInfo) ->
+            let okCase  = resultInfo.Cases |> List.tryFind (fun c -> c.Name = "Ok")
+            let errCase = resultInfo.Cases |> List.tryFind (fun c -> c.Name = "Err")
+            match okCase, errCase with
+            | Some okCase, Some errCase ->
+                let typeArgs = [| (tb :> System.Type); typeof<string> |]
+                let resultClosed = resultInfo.Type.MakeGenericType typeArgs
+                let okClosed     = okCase.Type.MakeGenericType typeArgs
+                let errClosed    = errCase.Type.MakeGenericType typeArgs
+                // `TypeBuilder.GetConstructor` produces a runtime ctor
+                // reference for a generic instance closed over a
+                // TypeBuilder; the bare `GetConstructors` route fails
+                // with NotSupportedException on TypeBuilderInstantiation.
+                let okCtor  = TypeBuilder.GetConstructor(okClosed, okCase.Ctor)
+                let errCtor = TypeBuilder.GetConstructor(errClosed, errCase.Ctor)
+                let mb =
+                    tb.DefineMethod(
+                        "TryFrom",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        resultClosed,
+                        [| underlyingClr |])
+                mb.DefineParameter(1, ParameterAttributes.None, "x") |> ignore
+                let il = mb.GetILGenerator()
+                let failLbl = il.DefineLabel()
+                emitBoundsCheck il failLbl lo hi upperExclusive
+                // OK branch — build self struct, wrap in Ok(value = self).
+                let selfLocal = il.DeclareLocal(tb)
+                il.Emit(OpCodes.Ldloca, selfLocal)
+                il.Emit(OpCodes.Initobj, tb)
+                il.Emit(OpCodes.Ldloca, selfLocal)
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Stfld, valueField)
+                il.Emit(OpCodes.Ldloc, selfLocal)
+                il.Emit(OpCodes.Newobj, okCtor)
+                il.Emit(OpCodes.Ret)
+                // Err branch — wrap a static error message in Err.
+                il.MarkLabel(failLbl)
+                let msg =
+                    sprintf "%s.tryFrom: value out of range [%d, %d%s"
+                        dt.Name lo hi (bracket upperExclusive)
+                il.Emit(OpCodes.Ldstr, msg)
+                il.Emit(OpCodes.Newobj, errCtor)
+                il.Emit(OpCodes.Ret)
+                Some mb
+            | _ -> None
+        | _ -> None
 
     // ---- derives Equals ----------------------------------------------
     // `equals(other: <Self>): Bool` — compare backing `Value` fields.
@@ -394,7 +467,7 @@ let private defineDistinctType
       Records.DistinctTypeInfo.Type       = tb
       Records.DistinctTypeInfo.ValueField = valueField
       Records.DistinctTypeInfo.FromMethod = fromMb
-      Records.DistinctTypeInfo.TryFromMethod = None }
+      Records.DistinctTypeInfo.TryFromMethod = tryFromMethod }
 
 /// Define a CLR enum type backing one Lyric enum. Each case becomes
 /// a `Public Static Literal` field with a sequential ordinal value,
@@ -1289,7 +1362,9 @@ let private emitAssembly
         // Pass 0.5 — distinct types and range subtypes.
         let distinctTable = Records.DistinctTypeTable()
         for dt in distinctTypeItems sf do
-            let info = defineDistinctType ctx.Module nsName lookup symbols dt
+            let info =
+                defineDistinctType
+                    ctx.Module nsName lookup symbols importedUnionTable dt
             distinctTable.[dt.Name] <- info
             symbols.TryFind dt.Name
             |> Seq.tryHead
