@@ -36,6 +36,7 @@
     <Compile Include="ParseTests.fs" />
     <Compile Include="DeferTests.fs" />
     <Compile Include="StdlibImportTests.fs" />
+    <Compile Include="NegativePatternTests.fs" />
     <Compile Include="EndToEndSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

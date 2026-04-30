@@ -1942,16 +1942,15 @@ and private parsePrimaryPattern
             match firstExpr.Kind with
             | ELiteral lit -> mkPat (PLiteral lit) firstExpr.Span
             | EPrefix(PreNeg, { Kind = ELiteral (LInt(v, sfx)) }) ->
-                // `-N` literal — represent as a negated int literal
-                // pattern using a synthesised Expr-based range. For
-                // now we fall through to a binding pattern named
-                // "<error>"; full negative-literal support arrives
-                // when LInt grows a sign field.
-                let _ = (v, sfx)
-                err diags "P0073"
-                    "negative literal patterns not yet supported"
-                    firstExpr.Span
-                mkPat PError firstExpr.Span
+                // `-N` literal — encode as the two's-complement
+                // representation of `-v` in a uint64.  The codegen
+                // path narrows the uint64 back to the suffix's CLR
+                // width via wrapping casts, recovering the negative
+                // signed value at IL-emit time.
+                let negEncoded = 0UL - v
+                mkPat (PLiteral (LInt(negEncoded, sfx))) firstExpr.Span
+            | EPrefix(PreNeg, { Kind = ELiteral (LFloat(v, sfx)) }) ->
+                mkPat (PLiteral (LFloat(-v, sfx))) firstExpr.Span
             | _ ->
                 err diags "P0073"
                     "expected a literal pattern"
