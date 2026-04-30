@@ -51,6 +51,33 @@ let typeOfLiteral (lit: Literal) : Type =
 // Path resolution at expression-level.
 // ---------------------------------------------------------------------------
 
+/// Bootstrap-grade closed list of names handled directly by the
+/// codegen as builtins (println, panic, expect, assert, host parse
+/// helpers, …).  Returning a function type from `resolvePath` keeps
+/// the type checker silent on these names; the codegen owns the
+/// dispatch.
+let private codegenBuiltinType (name: string) : Type option =
+    match name with
+    | "println" ->
+        // `println` is polymorphic in its argument: codegen routes
+        // string args through Console.Println(string) and everything
+        // else through Console.PrintlnAny(obj) with auto-boxing.  The
+        // type checker mirrors that by accepting any single argument.
+        Some (TyFunction([TyError], TyPrim PtUnit, false))
+    | "panic" ->
+        Some (TyFunction([TyPrim PtString], TyPrim PtNever, false))
+    | "expect" ->
+        Some (TyFunction([TyPrim PtBool; TyPrim PtString], TyPrim PtUnit, false))
+    | "assert" ->
+        Some (TyFunction([TyPrim PtBool], TyPrim PtUnit, false))
+    | "hostParseIntIsValid"    -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+    | "hostParseIntValue"      -> Some (TyFunction([TyPrim PtString], TyPrim PtInt, false))
+    | "hostParseLongIsValid"   -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+    | "hostParseLongValue"     -> Some (TyFunction([TyPrim PtString], TyPrim PtLong, false))
+    | "hostParseDoubleIsValid" -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+    | "hostParseDoubleValue"   -> Some (TyFunction([TyPrim PtString], TyPrim PtDouble, false))
+    | _ -> None
+
 let private resolvePath
         (scope: Scope)
         (table: SymbolTable)
@@ -71,15 +98,19 @@ let private resolvePath
                 let paramTypes = s.Params |> List.map (fun p -> p.Type)
                 TyFunction(paramTypes, s.Return, s.IsAsync)
             | None ->
-                // 3. Other named symbol (for now, return TyError;
-                // T5+ resolves vals / consts / union ctors).
-                match table.TryFindOne name with
-                | Some _ -> TyError
+                // 3. Codegen builtin (println, panic, host-parse, …).
+                match codegenBuiltinType name with
+                | Some t -> t
                 | None ->
-                    err diags "T0020"
-                        (sprintf "unknown name '%s'" name)
-                        span
-                    TyError
+                    // 4. Other named symbol (for now, return TyError;
+                    // T5+ resolves vals / consts / union ctors).
+                    match table.TryFindOne name with
+                    | Some _ -> TyError
+                    | None ->
+                        err diags "T0020"
+                            (sprintf "unknown name '%s'" name)
+                            span
+                        TyError
     | _ ->
         // Multi-segment expression path (e.g. `Module.func`). Cross-
         // package resolution is T7+.
@@ -136,18 +167,25 @@ let private inferBinop
         : Type =
     match op with
     | BAdd | BSub | BMul | BDiv | BMod ->
-        let lhsOk = isNumeric lhs || hasDerive table (arithMarker op) lhs
-        if not lhsOk then
-            err diags "T0030"
-                (sprintf "left operand of arithmetic operator is not numeric (got %s)"
-                    (Type.render lhs))
-                span
-        if not (Type.equiv lhs rhs) then
-            err diags "T0031"
-                (sprintf "arithmetic operands must have the same type (got %s and %s)"
-                    (Type.render lhs) (Type.render rhs))
-                span
-        lhs
+        // String + anything → String concat (codegen handles the
+        // boxing + ToString conversion via Console.PrintlnAny).
+        // Restricted to BAdd; the other arithmetic operators stay
+        // numeric-only.
+        match op, lhs with
+        | BAdd, TyPrim PtString -> TyPrim PtString
+        | _ ->
+            let lhsOk = isNumeric lhs || hasDerive table (arithMarker op) lhs
+            if not lhsOk then
+                err diags "T0030"
+                    (sprintf "left operand of arithmetic operator is not numeric (got %s)"
+                        (Type.render lhs))
+                    span
+            if not (Type.equiv lhs rhs) then
+                err diags "T0031"
+                    (sprintf "arithmetic operands must have the same type (got %s and %s)"
+                        (Type.render lhs) (Type.render rhs))
+                    span
+            lhs
     | BEq | BNeq ->
         if not (Type.equiv lhs rhs) then
             err diags "T0032"

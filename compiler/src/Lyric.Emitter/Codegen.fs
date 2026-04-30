@@ -635,8 +635,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | None   -> typeof<obj>
             il.Emit(OpCodes.Ldelem, elemTy)
             elemTy
+        elif recvTy = typeof<string> then
+            // `s[i]` lowers to `String.get_Chars(int)`, returning a
+            // `Char` (which Lyric models as `Int` at the codegen
+            // layer for primitives — comparisons and equality work
+            // against `'c'` literals which are LdcI4 emissions).
+            let getChars =
+                typeof<string>.GetMethod("get_Chars", [| typeof<int>|])
+            match Option.ofObj getChars with
+            | Some m ->
+                il.Emit(OpCodes.Callvirt, m)
+                typeof<char>
+            | None ->
+                failwith "E7 codegen: String::get_Chars not found"
         else
-            failwithf "E7 codegen: indexing on non-array %s" recvTy.Name
+            failwithf "E7 codegen: indexing on non-array / non-string %s"
+                recvTy.Name
 
     | EIndex (recv, idxs) when not (List.isEmpty idxs) ->
         // `a[i, j, …]` lowers to a chain of single-index loads:
