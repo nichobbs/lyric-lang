@@ -664,28 +664,54 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | ETuple [single] -> emitExpr ctx single
 
-    | ETuple items when List.length items >= 2 && List.length items <= 7 ->
-        let elemTypes = ResizeArray<ClrType>()
-        for item in items do
-            let t = emitExpr ctx item
-            elemTypes.Add t
-        let openTy =
-            match items.Length with
+    | ETuple items when items.Length >= 2 ->
+        // Tuples up to size 7 lower to `ValueTuple<…>` directly.
+        // For 8+, the CLR shape is
+        //   `ValueTuple<T1..T7, ValueTuple<T8..>>` (TRest carrying
+        // the overflow recursively).  Build by emitting the first
+        // 7 items, then recurse to build the rest tuple.  The TRest
+        // arg must itself be a `struct` ValueTuple, so a single-
+        // item tail wraps in `ValueTuple<T>` rather than passing the
+        // bare value through.
+        let openByArity (n: int) : System.Type =
+            match n with
+            | 1 -> typedefof<System.ValueTuple<_>>
             | 2 -> typedefof<System.ValueTuple<_, _>>
             | 3 -> typedefof<System.ValueTuple<_, _, _>>
             | 4 -> typedefof<System.ValueTuple<_, _, _, _>>
             | 5 -> typedefof<System.ValueTuple<_, _, _, _, _>>
             | 6 -> typedefof<System.ValueTuple<_, _, _, _, _, _>>
-            | _ -> typedefof<System.ValueTuple<_, _, _, _, _, _, _>>
-        let argsArr = elemTypes.ToArray()
-        let closedTy = openTy.MakeGenericType(argsArr)
-        let ctor = closedTy.GetConstructor(argsArr)
-        match Option.ofObj ctor with
-        | Some c ->
-            il.Emit(OpCodes.Newobj, c)
-            closedTy
-        | None ->
-            failwithf "E7 codegen: ValueTuple ctor not found for %d args" items.Length
+            | 7 -> typedefof<System.ValueTuple<_, _, _, _, _, _, _>>
+            | _ -> typedefof<System.ValueTuple<_, _, _, _, _, _, _, _>>
+        let rec build (xs: Expr list) : ClrType =
+            if xs.Length <= 7 then
+                let elemTypes =
+                    xs |> List.map (fun e -> emitExpr ctx e) |> List.toArray
+                let closedTy = (openByArity xs.Length).MakeGenericType elemTypes
+                let ctor = closedTy.GetConstructor elemTypes
+                match Option.ofObj ctor with
+                | Some c ->
+                    il.Emit(OpCodes.Newobj, c)
+                    closedTy
+                | None ->
+                    failwithf "E7 codegen: ValueTuple ctor not found for %d args" xs.Length
+            else
+                let front = List.take 7 xs
+                let rest  = List.skip 7 xs
+                let frontTys =
+                    front |> List.map (fun e -> emitExpr ctx e) |> List.toArray
+                let restTy = build rest
+                let allTys = Array.append frontTys [| restTy |]
+                let closedTy = (openByArity 8).MakeGenericType allTys
+                let ctor = closedTy.GetConstructor allTys
+                match Option.ofObj ctor with
+                | Some c ->
+                    il.Emit(OpCodes.Newobj, c)
+                    closedTy
+                | None ->
+                    failwithf "E7 codegen: ValueTuple-with-rest ctor not found for arity %d"
+                        xs.Length
+        build items
 
     | ETuple items ->
         failwithf "E7 codegen: tuple of %d elements not yet supported"
