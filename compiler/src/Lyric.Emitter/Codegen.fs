@@ -35,6 +35,11 @@ type FunctionCtx =
       /// resolves single-segment calls; cross-package linking is
       /// M1.4 work.
       Funcs:      Dictionary<string, MethodBuilder>
+      /// Resolved signatures for `Funcs`, keyed by name.  Used at call
+      /// sites that need Lyric-level param/return types — e.g. the
+      /// generic-method type-arg inference path which can't trust
+      /// `MethodBuilder.GetParameters()` before the host type is sealed.
+      FuncSigs:   Dictionary<string, Lyric.TypeChecker.ResolvedSignature>
       /// Same-package records visible at codegen time. E5 supports
       /// constructor calls and field reads; mutation via `with`
       /// lands in E5 polish.
@@ -97,6 +102,7 @@ module FunctionCtx =
             (returnType: ClrType)
             (paramList: (string * ClrType) list)
             (funcs: Dictionary<string, MethodBuilder>)
+            (funcSigs: Dictionary<string, Lyric.TypeChecker.ResolvedSignature>)
             (records: Lyric.Emitter.Records.RecordTable)
             (enums: Lyric.Emitter.Records.EnumTable)
             (enumCases: Lyric.Emitter.Records.EnumCaseLookup)
@@ -126,6 +132,7 @@ module FunctionCtx =
           Loops        = Stack()
           Params       = p
           Funcs        = funcs
+          FuncSigs     = funcSigs
           Records      = records
           Enums        = enums
           EnumCases    = enumCases
@@ -726,8 +733,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     match ctx.UnionCases.TryGetValue name with
                     | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
                         // Nullary case literal — `None` / `Leaf` etc.
-                        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
-                        info.Type :> ClrType
+                        // For generic unions we have no value to infer
+                        // T from, so default to `obj`; downstream
+                        // context (e.g. a typed `val` annotation) is
+                        // expected to converge the slot type.
+                        if List.isEmpty info.Generics then
+                            il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                            info.Type :> ClrType
+                        else
+                            let typeArgs =
+                                Array.create info.Generics.Length typeof<obj>
+                            let constructedCase =
+                                (caseInfo.Type :> System.Type).MakeGenericType typeArgs
+                            let constructedCtor =
+                                TypeBuilder.GetConstructor(constructedCase, caseInfo.Ctor)
+                            let constructedParent =
+                                (info.Type :> System.Type).MakeGenericType typeArgs
+                            il.Emit(OpCodes.Newobj, constructedCtor)
+                            constructedParent
                     | _ ->
                         // Imported nullary case (cross-assembly).
                         match ctx.ImportedUnionCases.TryGetValue name with
@@ -980,9 +1003,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             |> List.choose (function
                 | CAPositional ex -> Some ex
                 | _ -> None)
+        // Resolve each field's value-expression up front, in order, so
+        // we can inspect arg CLR types before deciding how to bind any
+        // generic parameters of the union.
         let mutable posIdx = 0
-        for f in caseInfo.Fields do
-            let argExpr =
+        let argExprs =
+            caseInfo.Fields
+            |> List.map (fun f ->
                 match Map.tryFind f.Name namedMap with
                 | Some ex -> ex
                 | None ->
@@ -992,13 +1019,48 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         ex
                     else
                         failwithf "E11 codegen: union case '%s' missing field '%s'"
-                            name f.Name
-            let argTy = emitExpr ctx argExpr
-            // Box value-typed args into the erased `obj` payload slot.
-            if f.Type = typeof<obj> && argTy.IsValueType then
-                il.Emit(OpCodes.Box, argTy)
-        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
-        info.Type :> ClrType
+                            name f.Name)
+        if List.isEmpty info.Generics then
+            // Non-generic union: emit args directly, box value types into
+            // erased `obj` payload slots, then `Newobj` the case ctor.
+            for (f, argExpr) in List.zip caseInfo.Fields argExprs do
+                let argTy = emitExpr ctx argExpr
+                if f.Type = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy)
+            il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+            info.Type :> ClrType
+        else
+            // Generic union: peek each arg's CLR type without emitting
+            // first so we can bind the union's generic parameters.
+            let bindings = Dictionary<string, ClrType>()
+            let rec bind (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lyricTy with
+                | Lyric.TypeChecker.TyVar n ->
+                    if not (bindings.ContainsKey n) then bindings.[n] <- argTy
+                | _ -> ()
+            for (f, argExpr) in List.zip caseInfo.Fields argExprs do
+                bind f.LyricType (peekExprType ctx argExpr)
+            // Default any unbound to `obj`.
+            let typeArgs =
+                info.Generics
+                |> List.map (fun n ->
+                    match bindings.TryGetValue n with
+                    | true, t  -> t
+                    | false, _ -> typeof<obj>)
+                |> List.toArray
+            // Build the constructed parent + case + ctor refs.
+            let constructedParent =
+                (info.Type :> System.Type).MakeGenericType typeArgs
+            let constructedCase =
+                (caseInfo.Type :> System.Type).MakeGenericType typeArgs
+            let constructedCtor =
+                TypeBuilder.GetConstructor(constructedCase, caseInfo.Ctor)
+            // Now emit each arg, then `Newobj` the constructed ctor.
+            for argExpr in argExprs do
+                let _ = emitExpr ctx argExpr
+                ()
+            il.Emit(OpCodes.Newobj, constructedCtor)
+            constructedParent
 
     // ---- imported union case construction (e.g. Std.Core's Some) ------
 
@@ -1112,39 +1174,91 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when ctx.Funcs.ContainsKey name ->
         let mb = ctx.Funcs.[name]
-        // Per D035, generics monomorphise via erasure: type
-        // parameters lower to `obj` and value-typed call-site args
-        // box at the boundary. When a parameter slot is a delegate
-        // type and the argument is a lambda, pass the expected type
-        // so the lambda synthesiser picks the right signature.
         let paramTypes =
             mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
-        args
-        |> List.iteri (fun i a ->
-            let payload =
-                match a with
-                | CAPositional ex | CANamed (_, ex, _) -> ex
-            let expectedDelegateTy =
-                if i < paramTypes.Length
-                   && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
-                then Some paramTypes.[i]
-                else None
-            match payload.Kind, expectedDelegateTy with
-            | ELambda (lps, body), Some dt ->
-                emitLambdaWith ctx lps body (Some dt) |> ignore
-            | ELambda (lps, body), None ->
-                emitLambdaWith ctx lps body None |> ignore
-            | _ ->
-                let argTy = emitExpr ctx payload
-                if i < paramTypes.Length
-                   && paramTypes.[i] = typeof<obj>
-                   && argTy.IsValueType then
-                    il.Emit(OpCodes.Box, argTy))
-        il.Emit(OpCodes.Call, mb)
-        if mb.ReturnType = typeof<System.Void> then
-            typeof<System.Void>
+        let isGeneric = mb.IsGenericMethodDefinition
+        if not isGeneric then
+            // Non-generic — existing path.  Erased-generic args still
+            // box at the boundary when a param slot is `obj`.
+            args
+            |> List.iteri (fun i a ->
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let expectedDelegateTy =
+                    if i < paramTypes.Length
+                       && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
+                    then Some paramTypes.[i]
+                    else None
+                match payload.Kind, expectedDelegateTy with
+                | ELambda (lps, body), Some dt ->
+                    emitLambdaWith ctx lps body (Some dt) |> ignore
+                | ELambda (lps, body), None ->
+                    emitLambdaWith ctx lps body None |> ignore
+                | _ ->
+                    let argTy = emitExpr ctx payload
+                    if i < paramTypes.Length
+                       && paramTypes.[i] = typeof<obj>
+                       && argTy.IsValueType then
+                        il.Emit(OpCodes.Box, argTy))
+            il.Emit(OpCodes.Call, mb)
+            if mb.ReturnType = typeof<System.Void> then
+                typeof<System.Void>
+            else
+                mb.ReturnType
         else
-            mb.ReturnType
+            // Reified generic: walk Lyric param types to find which
+            // positional `TyVar` each arg constrains, observe CLR arg
+            // types, then `MakeGenericMethod` and `Call`.  We can't
+            // trust `MethodBuilder.GetParameters()` before the host
+            // type is sealed, so type-arg inference works at the
+            // Lyric-signature level instead.
+            let sg = ctx.FuncSigs.[name]
+            let genericNames = sg.Generics
+            let bindings : ClrType option array =
+                Array.create genericNames.Length None
+            let bindByName (n: string) (argTy: ClrType) =
+                match List.tryFindIndex ((=) n) genericNames with
+                | Some pos when bindings.[pos].IsNone ->
+                    bindings.[pos] <- Some argTy
+                | _ -> ()
+            let rec bindLyricToClr (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lyricTy with
+                | Lyric.TypeChecker.TyVar n -> bindByName n argTy
+                | _ -> ()  // compound-shape inference deferred
+            // Pair-wise emission with type-arg propagation.
+            let lyricParamTypes =
+                sg.Params |> List.map (fun p -> p.Type) |> List.toArray
+            args
+            |> List.iteri (fun i a ->
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let argTy = emitExpr ctx payload
+                if i < lyricParamTypes.Length then
+                    bindLyricToClr lyricParamTypes.[i] argTy)
+            // Default any unbound generic params to `obj` so we still
+            // produce well-formed IL even when inference can't see far
+            // enough into a body to fix T.
+            let resolvedBindings =
+                bindings
+                |> Array.map (function
+                    | Some t -> t
+                    | None   -> typeof<obj>)
+            let constructed = mb.MakeGenericMethod resolvedBindings
+            il.Emit(OpCodes.Call, constructed)
+            // `constructed.ReturnType` is unreliable until the host
+            // type is sealed (Reflection.Emit limitation), so substitute
+            // the resolved bindings into Lyric's `sg.Return` ourselves
+            // to surface the right CLR type to the caller.
+            let substMap =
+                List.zip genericNames (List.ofArray resolvedBindings)
+                |> Map.ofList
+            let returnedTy =
+                Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
+                    (fun _ -> None) substMap sg.Return
+            if returnedTy = typeof<System.Void> then typeof<System.Void>
+            else returnedTy
 
     // ---- delegate / higher-order call ---------------------------------
 
@@ -1268,7 +1382,7 @@ and private emitLambdaWith
     let lambdaCtx =
         FunctionCtx.make
             lambdaIL retTy paramPairs
-            ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
+            ctx.Funcs ctx.FuncSigs ctx.Records ctx.Enums ctx.EnumCases
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
@@ -1376,10 +1490,19 @@ and private emitPatternTest
             il.Emit(OpCodes.Ceq)
         | _ ->
             match ctx.UnionCases.TryGetValue name with
-            | true, (_, caseInfo) ->
-                // `case Yes` for a nullary union case — type-test.
+            | true, (info, caseInfo) ->
+                // `case Yes` for a nullary union case — type-test.  For
+                // generic unions, the case must be instantiated with
+                // the scrutinee's type args before we test against it.
+                let testTy =
+                    if List.isEmpty info.Generics
+                       || not slotTy.IsGenericType
+                    then caseInfo.Type :> System.Type
+                    else
+                        (caseInfo.Type :> System.Type).MakeGenericType
+                            (slotTy.GetGenericArguments())
                 il.Emit(OpCodes.Ldloc, tmp)
-                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Isinst, testTy)
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
             | _ ->
@@ -1422,13 +1545,22 @@ and private emitPatternTest
             il.Emit(OpCodes.Ceq)
         | _ ->
             match ctx.UnionCases.TryGetValue key with
-            | true, (_, caseInfo) ->
+            | true, (info, caseInfo) ->
                 // `tmp is CaseSubclass` — `isinst` returns the value
                 // typed as the subclass, or `null`. We use the
                 // `cgt.un` against ldnull idiom to convert "not null"
-                // into the bool 1.
+                // into the bool 1.  For generic unions, instantiate
+                // the case type with the scrutinee's type args first
+                // so the test compares apples to apples.
+                let testTy =
+                    if List.isEmpty info.Generics
+                       || not slotTy.IsGenericType
+                    then caseInfo.Type :> System.Type
+                    else
+                        let argTys = slotTy.GetGenericArguments()
+                        (caseInfo.Type :> System.Type).MakeGenericType argTys
                 il.Emit(OpCodes.Ldloc, tmp)
-                il.Emit(OpCodes.Isinst, caseInfo.Type)
+                il.Emit(OpCodes.Isinst, testTy)
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
             | _ ->
@@ -1470,13 +1602,34 @@ and private emitPatternBind
             | [name] -> name
             | _ -> String.concat "." path.Segments
         // Resolve the case info from local OR imported union tables.
+        // For generic local unions we also recover the type-arg array
+        // from the scrutinee's CLR type so each field load uses a
+        // fully-substituted FieldInfo.
+        let scrutTy = tmp.LocalType
         let caseTy, caseFields =
             match ctx.UnionCases.TryGetValue key with
-            | true, (_, caseInfo) ->
-                Some (caseInfo.Type :> ClrType),
-                caseInfo.Fields
-                |> List.map (fun f ->
-                    f.Name, f.Type, (f.Field :> FieldInfo))
+            | true, (info, caseInfo) ->
+                if List.isEmpty info.Generics || not scrutTy.IsGenericType then
+                    Some (caseInfo.Type :> ClrType),
+                    caseInfo.Fields
+                    |> List.map (fun f ->
+                        f.Name, f.Type, (f.Field :> FieldInfo))
+                else
+                    let argTys = scrutTy.GetGenericArguments()
+                    let constructed =
+                        (caseInfo.Type :> System.Type).MakeGenericType argTys
+                    let substMap =
+                        info.Generics
+                        |> List.mapi (fun i n -> n, argTys.[i])
+                        |> Map.ofList
+                    Some constructed,
+                    caseInfo.Fields
+                    |> List.map (fun f ->
+                        let substTy =
+                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                (fun _ -> None) substMap f.LyricType
+                        let fi = TypeBuilder.GetField(constructed, f.Field)
+                        f.Name, substTy, fi)
             | _ ->
                 match ctx.ImportedUnionCases.TryGetValue key with
                 | true, (_, caseInfo) ->

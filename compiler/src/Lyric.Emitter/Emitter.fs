@@ -418,8 +418,12 @@ let private defineEnum
       Records.EnumInfo.Cases = cases }
 
 /// Define the abstract base + sealed per-case subclasses for a Lyric
-/// union. Per D035, payload-field types are erased to `obj` in M1.4;
-/// reified generics is a Phase 2 follow-up.
+/// union.  Non-generic unions use proper CLR nested types for the
+/// case classes (keeps the PE TypeRef metadata clean for cross-
+/// assembly references).  Generic unions emit each case as its own
+/// top-level generic class whose type params shadow the parent's,
+/// inheriting from the constructed parent — Reflection.Emit's nested-
+/// generic-type story has friction the bootstrap sidesteps.
 let private defineUnion
         (md: ModuleBuilder)
         (nsName: string)
@@ -428,14 +432,26 @@ let private defineUnion
     let fullName =
         if String.IsNullOrEmpty nsName then ud.Name
         else nsName + "." + ud.Name
-    // Abstract base — no fields, no public ctor; cases extend it.
+    let typeParamNames =
+        match ud.Generics with
+        | Some gs ->
+            gs.Params
+            |> List.map (function
+                | GPType(name, _) | GPValue(name, _, _) -> name)
+        | None -> []
+    let isGeneric = not typeParamNames.IsEmpty
+
     let baseTy =
         md.DefineType(
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Abstract,
             typeof<obj>)
-    // Define a protected default ctor on the base so subclass ctors
-    // can chain to it.
+    let baseTps =
+        if isGeneric
+        then baseTy.DefineGenericParameters(typeParamNames |> List.toArray)
+        else [||]
+
+    // Protected default ctor on the base so subclass ctors can chain.
     let baseCtor =
         baseTy.DefineConstructor(
             MethodAttributes.Family ||| MethodAttributes.HideBySig,
@@ -449,23 +465,41 @@ let private defineUnion
     | None   -> failwith "object's no-arg ctor not found"
     baseCtorIl.Emit(OpCodes.Ret)
 
-    // Resolve each case's payload field types via the type checker's
-    // resolver. Erasure: TyVar / TyUser → obj.
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
+    if isGeneric then resolveCtx.Push(typeParamNames)
+
     let cases =
         ud.Cases
         |> List.map (fun c ->
-            // Define case classes as proper nested CLR types so the
-            // PE metadata records them with `NestedPublic` semantics
-            // instead of leaking a literal `+` into the type name
-            // (which the runtime loader misinterprets as a nested-
-            // type reference and then fails to resolve).
-            let caseTy =
-                baseTy.DefineNestedType(
-                    c.Name,
-                    TypeAttributes.NestedPublic ||| TypeAttributes.Sealed,
-                    baseTy :> System.Type)
+            // Generic unions emit cases as top-level generic classes
+            // (each with its own copy of the parent's type params,
+            // inheriting from the constructed parent).  Non-generic
+            // unions stay nested so cross-assembly TypeRefs are clean.
+            let caseTy, caseTps, caseSubst, caseParentForCtor =
+                if isGeneric then
+                    let caseFull = fullName + "_" + c.Name
+                    let tb =
+                        md.DefineType(
+                            caseFull,
+                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            typeof<obj>)
+                    let tps = tb.DefineGenericParameters(typeParamNames |> List.toArray)
+                    let parentOnCaseTps =
+                        baseTy.MakeGenericType(tps |> Array.map (fun t -> t :> System.Type))
+                    tb.SetParent(parentOnCaseTps)
+                    let subst =
+                        typeParamNames
+                        |> List.mapi (fun i name -> name, tps.[i] :> System.Type)
+                        |> Map.ofList
+                    tb, tps, subst, Some parentOnCaseTps
+                else
+                    let tb =
+                        baseTy.DefineNestedType(
+                            c.Name,
+                            TypeAttributes.NestedPublic ||| TypeAttributes.Sealed,
+                            baseTy :> System.Type)
+                    tb, [||], Map.empty, None
             let payload =
                 c.Fields
                 |> List.mapi (fun i f ->
@@ -477,23 +511,29 @@ let private defineUnion
                         | UFPos (te, _) ->
                             Resolver.resolveType symbols resolveCtx scratchDiags te,
                             sprintf "Item%d" (i + 1)
-                    // Erasure: anything that isn't already a CLR
-                    // primitive lowers to obj. Reified generics
-                    // upgrade this in Phase 2.
                     let cty =
-                        match lty with
-                        | TyPrim _ | TySlice _ | TyArray _ | TyTuple _ ->
-                            TypeMap.toClrType lty
-                        | _ -> typeof<obj>
+                        if isGeneric then
+                            // Generic unions: substitute TyVar via the
+                            // case's GTPBs, leaving everything else to
+                            // the regular type lowering.
+                            TypeMap.toClrTypeWithGenerics
+                                (fun _ -> None) caseSubst lty
+                        else
+                            // Erasure path (D035) for non-generic
+                            // unions: keep TyVar / TyUser as `obj`.
+                            match lty with
+                            | TyPrim _ | TySlice _ | TyArray _ | TyTuple _ ->
+                                TypeMap.toClrType lty
+                            | _ -> typeof<obj>
                     let fb =
                         caseTy.DefineField(
                             fname,
                             cty,
                             FieldAttributes.Public ||| FieldAttributes.InitOnly)
-                    { Records.UnionPayloadField.Name  = fname
-                      Records.UnionPayloadField.Type  = cty
-                      Records.UnionPayloadField.Field = fb })
-            // Constructor: takes every payload field in order.
+                    { Records.UnionPayloadField.Name      = fname
+                      Records.UnionPayloadField.Type      = cty
+                      Records.UnionPayloadField.LyricType = lty
+                      Records.UnionPayloadField.Field     = fb })
             let paramTypes =
                 payload |> List.map (fun f -> f.Type) |> List.toArray
             let ctor =
@@ -503,7 +543,15 @@ let private defineUnion
                     paramTypes)
             let cil = ctor.GetILGenerator()
             cil.Emit(OpCodes.Ldarg_0)
-            cil.Emit(OpCodes.Call, baseCtor)
+            // Reference parent ctor: for generic unions, the call must
+            // go through `TypeBuilder.GetConstructor` on the parent
+            // instantiated to the case's GTPBs.
+            match caseParentForCtor with
+            | Some parent ->
+                let parentCtorRef = TypeBuilder.GetConstructor(parent, baseCtor)
+                cil.Emit(OpCodes.Call, parentCtorRef)
+            | None ->
+                cil.Emit(OpCodes.Call, baseCtor)
             payload
             |> List.iteri (fun i f ->
                 cil.Emit(OpCodes.Ldarg_0)
@@ -514,9 +562,10 @@ let private defineUnion
               Records.UnionCaseInfo.Type   = caseTy
               Records.UnionCaseInfo.Fields = payload
               Records.UnionCaseInfo.Ctor   = ctor })
-    { Records.UnionInfo.Name  = ud.Name
-      Records.UnionInfo.Type  = baseTy
-      Records.UnionInfo.Cases = cases }
+    { Records.UnionInfo.Name     = ud.Name
+      Records.UnionInfo.Type     = baseTy
+      Records.UnionInfo.Cases    = cases
+      Records.UnionInfo.Generics = typeParamNames }
 
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
@@ -685,25 +734,55 @@ let private defineMethodHeader
         (lookup: TypeId -> System.Type option)
         (fn: FunctionDecl)
         (sg: ResolvedSignature) : MethodBuilder =
-    let paramTypes =
+    if sg.Generics.IsEmpty then
+        // Non-generic fast path — single-call signature.
+        let paramTypes =
+            sg.Params
+            |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
+            |> List.toArray
+        let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+        let returnType =
+            if sg.IsAsync then toTaskType bareReturn else bareReturn
+        let mb =
+            programTy.DefineMethod(
+                fn.Name,
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                returnType,
+                paramTypes)
         sg.Params
-        |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
-        |> List.toArray
-    let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
-    let returnType =
-        if sg.IsAsync then toTaskType bareReturn else bareReturn
-    let mb =
-        programTy.DefineMethod(
-            fn.Name,
-            MethodAttributes.Public ||| MethodAttributes.Static,
-            returnType,
-            paramTypes)
-    // Name each parameter so reflection / debuggers see them. Static
-    // method params are 0-indexed; SetParameter uses 1-indexed.
-    sg.Params
-    |> List.iteri (fun i p ->
-        mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
-    mb
+        |> List.iteri (fun i p ->
+            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+        mb
+    else
+        // Generic method — reify type parameters as proper .NET generic
+        // method parameters.  The Reflection.Emit pattern requires three
+        // calls: DefineMethod (no signature), DefineGenericParameters,
+        // then SetParameters / SetReturnType once the GTPBs exist.
+        let mb =
+            programTy.DefineMethod(
+                fn.Name,
+                MethodAttributes.Public ||| MethodAttributes.Static)
+        let typeParams =
+            mb.DefineGenericParameters(sg.Generics |> List.toArray)
+        let genericSubst =
+            sg.Generics
+            |> List.mapi (fun i name -> name, typeParams.[i] :> System.Type)
+            |> Map.ofList
+        let paramTypes =
+            sg.Params
+            |> List.map (fun p ->
+                TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type)
+            |> List.toArray
+        let bareReturn =
+            TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
+        let returnType =
+            if sg.IsAsync then toTaskType bareReturn else bareReturn
+        mb.SetParameters paramTypes
+        mb.SetReturnType returnType
+        sg.Params
+        |> List.iteri (fun i p ->
+            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+        mb
 
 /// Emit a function body. Handles three shapes: an explicit block, an
 /// expression-bodied function, and the `= { ... }` lambda quirk
@@ -742,6 +821,7 @@ let private emitFunctionBody
         (sg: ResolvedSignature)
         (lookup: TypeId -> System.Type option)
         (funcs: Dictionary<string, MethodBuilder>)
+        (funcSigs: Dictionary<string, ResolvedSignature>)
         (records: Records.RecordTable)
         (enums: Records.EnumTable)
         (enumCases: Records.EnumCaseLookup)
@@ -764,23 +844,36 @@ let private emitFunctionBody
     // the bare return type; the wrapping into `Task<T>` only kicks
     // in at the exit point. Carrying both keeps the body codegen
     // ignorant of the lowering strategy.
-    let bareReturnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+    //
+    // Recover the per-method generic substitution from the MethodBuilder
+    // so `TyVar T` references in param/return positions resolve to the
+    // GenericTypeParameterBuilder we stamped down in `defineMethodHeader`.
+    let genericSubst : Map<string, System.Type> =
+        if sg.Generics.IsEmpty then Map.empty
+        else
+            let gtpbs = mb.GetGenericArguments()
+            sg.Generics
+            |> List.mapi (fun i name -> name, gtpbs.[i])
+            |> Map.ofList
+    let bareReturnTy =
+        TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
     let methodReturnTy =
         if sg.IsAsync then toTaskType bareReturnTy else bareReturnTy
     let returnTy = bareReturnTy
     let paramList =
         sg.Params
-        |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
+        |> List.map (fun p ->
+            p.Name, TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type)
     // Type-resolution closure used by lambda synthesis inside the body.
     let resolveCtxInner = GenericContext()
     let scratchDiagsInner = ResizeArray<Diagnostic>()
     let resolveTypeForCtx (te: TypeExpr) : System.Type =
         let lty = Resolver.resolveType symbols resolveCtxInner scratchDiagsInner te
-        TypeMap.toClrTypeWith lookup lty
+        TypeMap.toClrTypeWithGenerics lookup genericSubst lty
     let ctx =
         Codegen.FunctionCtx.make
             il returnTy paramList
-            funcs records enums enumCases unions unionCases
+            funcs funcSigs records enums enumCases unions unionCases
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes
@@ -1161,16 +1254,19 @@ let private emitAssembly
 
         // Pass A — define every header.
         let methodTable = Dictionary<string, MethodBuilder>()
+        let funcSigsTable = Dictionary<string, ResolvedSignature>()
         for fn in funcs do
             match Map.tryFind fn.Name sigs with
             | Some sg ->
                 let mb = defineMethodHeader programTy lookup fn sg
                 methodTable.[fn.Name] <- mb
+                funcSigsTable.[fn.Name] <- sg
             | None ->
                 let synthSig : ResolvedSignature =
                     { Generics = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
                 let mb = defineMethodHeader programTy lookup fn synthSig
+                funcSigsTable.[fn.Name] <- synthSig
                 methodTable.[fn.Name] <- mb
 
         // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
@@ -1296,7 +1392,7 @@ let private emitAssembly
                       IsAsync = false; Span = fn.Span }
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
-                methodTable recordTable enumTable enumCases
+                methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable
@@ -1311,7 +1407,7 @@ let private emitAssembly
             let selfTy = mb.DeclaringType
             emitFunctionBody
                 mb fd sg lookup
-                methodTable recordTable enumTable enumCases
+                methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable
@@ -1354,27 +1450,6 @@ let private locateCoreL (startDir: string) : string option =
         if File.Exists candidate then found <- Some candidate
         dir <- d.Parent |> Option.ofObj
     found
-
-/// Cached result of parsing `core.l`.  Keyed by absolute path + last-
-/// write-time so an edit invalidates the cache on the next emit.
-type private StdlibParseEntry =
-    { Mtime: System.DateTime
-      File:  SourceFile
-      Diags: Diagnostic list }
-
-let private stdlibParseCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, StdlibParseEntry>()
-
-let private parseCoreLcached (path: string) : SourceFile * Diagnostic list =
-    let info = FileInfo(path)
-    let mtime = info.LastWriteTimeUtc
-    match stdlibParseCache.TryGetValue path with
-    | true, e when e.Mtime = mtime -> e.File, e.Diags
-    | _ ->
-        let parsed = parse (File.ReadAllText path)
-        let entry = { Mtime = mtime; File = parsed.File; Diags = parsed.Diagnostics }
-        stdlibParseCache.[path] <- entry
-        entry.File, entry.Diags
 
 // ---------------------------------------------------------------------------
 // Stdlib precompilation — `core.l` compiles once per process to a
