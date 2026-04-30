@@ -326,22 +326,24 @@ An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an o
 
 ### 2.11 Generics
 
-Generics are monomorphized. Each instantiation produces a concrete type at compile time:
+Generics are monomorphized. Each instantiation produces a concrete type at compile time. Type parameters appear in brackets immediately after the declared name:
 
 ```
-generic[T] func identity(x: in T): T = x
+func identity[T](x: T): T = x
 
-generic[T, E] func unwrapOr(r: in Result[T, E], default: in T): T = ...
+func unwrapOr[T, E](r: Result[T, E], default: T): T = ...
 
-generic[T] record Box {
+record Box[T] {
   value: T
 }
 ```
 
+(The legacy `generic[T] func identity(x: in T): T = x` form parses for back-compat. Prefer the bracket form in new code; mixed-mode `: in T` is also still legal but redundant.)
+
 Constraints expressed via `where`:
 
 ```
-generic[T] func sum(xs: in slice[T]): T
+func sum[T](xs: slice[T]): T
   where T: Add + Default
 {
   var total = T.default()
@@ -573,29 +575,29 @@ val name = user.nickname ?? user.email
 ### 5.1 Function declaration
 
 ```
-func add(x: in Int, y: in Int): Int = x + y
+func add(x: Int, y: Int): Int = x + y
 
-func balanceOf(account: in Account): Cents
+func balanceOf(account: Account): Cents
   ensures: result == account.balance
 {
   return account.balance
 }
 
-async func loadUser(id: in UserId): User? {
+async func loadUser(id: UserId): User? {
   // ...
 }
 ```
 
-Parameters declare a mode: `in`, `out`, or `inout`. The mode is mandatory; there is no default.
+Parameters carry one of three modes: `in`, `out`, or `inout`. Omitting the keyword defaults to `in`, the read-only mode used by ~all parameters; `out` and `inout` must be written explicitly when wanted.
 
 ### 5.2 Parameter modes
 
-- `in`: parameter is read-only inside the function. The default for nearly all uses. The compiler may pass by value or by reference; the function cannot mutate.
+- `in`: parameter is read-only inside the function. **Default mode** when no keyword is given. The compiler may pass by value or by reference; the function cannot mutate.
 - `out`: parameter must be assigned exactly once before the function returns. Used for output parameters; the caller passes an uninitialized binding. Equivalent to C# `out`.
 - `inout`: parameter is read/write. Caller passes a mutable binding; function may read and modify. Equivalent to C# `ref`.
 
 ```
-func divmod(n: in Int, d: in Int, q: out Int, r: out Int) {
+func divmod(n: Int, d: Int, q: out Int, r: out Int) {
   q = n / d
   r = n % d
 }
