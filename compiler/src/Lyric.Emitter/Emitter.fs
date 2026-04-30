@@ -1319,7 +1319,7 @@ let private emitAssembly
                 funcSigsTable.[fn.Name] <- sg
             | None ->
                 let synthSig : ResolvedSignature =
-                    { Generics = []; Params = []; Return = TyPrim PtUnit
+                    { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
                 let mb = defineMethodHeader programTy lookup fn synthSig
                 funcSigsTable.[fn.Name] <- synthSig
@@ -1412,6 +1412,7 @@ let private emitAssembly
                         // emitter can use the same code path.
                         let synthSig : ResolvedSignature =
                             { Generics = []
+                              Bounds   = []
                               Params =
                                 fd.Params
                                 |> List.map (fun p ->
@@ -1444,7 +1445,7 @@ let private emitAssembly
                 match Map.tryFind fn.Name sigs with
                 | Some s -> s
                 | None ->
-                    { Generics = []; Params = []; Return = TyPrim PtUnit
+                    { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup

@@ -88,6 +88,13 @@ type FunctionCtx =
       /// `ReturnLabel` block runs. `None` for void-returning
       /// methods.
       mutable ResultLocal: LocalBuilder option
+      /// Caller-side expected type hint for the next expression to
+      /// be emitted.  Used by nullary union-case construction
+      /// (`None`, `Empty`, …) when there's no value to infer T from
+      /// — the val annotation, function param type, or surrounding
+      /// arithmetic context provides one.  Save & restore around
+      /// nested emits to avoid leaking across siblings.
+      mutable ExpectedType: ClrType option
       /// The program TypeBuilder, used to synthesise static
       /// methods for non-capturing lambda expressions.
       ProgramType: TypeBuilder
@@ -155,6 +162,7 @@ module FunctionCtx =
           SelfType     = selfType
           ReturnLabel  = None
           ResultLocal  = None
+          ExpectedType = None
           ProgramType  = programType
           ResolveType  = resolveType
           Lookup       = lookup }
@@ -283,6 +291,55 @@ let private emitFloatLiteral (il: ILGenerator) (value: double) (suffix: FloatSuf
 
 let private boxIfValue (il: ILGenerator) (ty: ClrType) : unit =
     if ty.IsValueType then il.Emit(OpCodes.Box, ty)
+
+// ---------------------------------------------------------------------------
+// Where-clause bound checking (call-site).
+// ---------------------------------------------------------------------------
+
+/// Does `ty` satisfy the given derive marker?  Bootstrap support: CLR
+/// primitives (numeric / Bool / Char) and `String` satisfy a fixed
+/// table of markers.  Locally-defined distinct types live in
+/// `ctx.DistinctTypes` but their `derives` list isn't currently
+/// snapshotted on `DistinctTypeInfo`, so for now they only satisfy
+/// markers via the primitive fallback (i.e. don't).
+let private satisfiesMarker
+        (_ctx: FunctionCtx) (ty: ClrType) (marker: string) : bool =
+    let isNumeric =
+        ty = typeof<sbyte>  || ty = typeof<int16>  || ty = typeof<int32>
+        || ty = typeof<int64>  || ty = typeof<byte>   || ty = typeof<uint16>
+        || ty = typeof<uint32> || ty = typeof<uint64>
+        || ty = typeof<single> || ty = typeof<double>
+    let isOrderedPrim =
+        isNumeric || ty = typeof<char> || ty = typeof<string>
+    let isAnyPrim =
+        ty.IsPrimitive || ty = typeof<string>
+    match marker with
+    | "Add" | "Sub" | "Mul" | "Div" | "Mod" -> isNumeric
+    | "Compare" -> isOrderedPrim
+    | "Hash" | "Equals" | "Default" -> isAnyPrim
+    | _ -> false
+
+/// Validate that each inferred type-arg satisfies its declared
+/// `where` markers.  Raises a clear failure when a bound isn't met;
+/// the bootstrap doesn't expose a structured diagnostic stream at
+/// codegen time, so the build aborts with an explanatory message
+/// rather than silently miscompiling.
+let private checkBounds
+        (ctx: FunctionCtx)
+        (callName: string)
+        (genericNames: string list)
+        (typeArgs: ClrType array)
+        (bounds: Lyric.TypeChecker.ResolvedBound list) : unit =
+    for b in bounds do
+        match List.tryFindIndex ((=) b.Name) genericNames with
+        | Some pos when pos < typeArgs.Length ->
+            let ty = typeArgs.[pos]
+            for m in b.Constraints do
+                if not (satisfiesMarker ctx ty m) then
+                    failwithf
+                        "B0001 generic call '%s': type argument '%s = %s' does not satisfy 'where %s: %s'"
+                        callName b.Name ty.Name b.Name m
+        | _ -> ()
 
 // ---------------------------------------------------------------------------
 // Read-only type probe.
@@ -786,18 +843,27 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     emitLdcI4 il c.Ordinal
                     info.Type
                 | _ ->
-                    // Nullary case context-driven inference: if the
-                    // enclosing function returns a constructed generic
-                    // whose count matches the union's type-param count,
-                    // use those type-args instead of defaulting to obj.
+                    // Nullary case context-driven inference: prefer
+                    // `ctx.ExpectedType` (set by val annotations / call
+                    // arg positions / etc.), then fall back to
+                    // `ctx.ReturnType` (the enclosing function's
+                    // result), defaulting to obj only when neither
+                    // shape matches the union's type-param count.
                     let inferTypeArgsFromReturn (genericCount: int) : ClrType array =
-                        let rt = ctx.ReturnType
-                        if rt.IsGenericType then
-                            let gargs = rt.GetGenericArguments()
-                            if gargs.Length = genericCount then gargs
-                            else Array.create genericCount typeof<obj>
-                        else
-                            Array.create genericCount typeof<obj>
+                        let tryFrom (t: ClrType) : ClrType array option =
+                            if t.IsGenericType then
+                                let gargs = t.GetGenericArguments()
+                                if gargs.Length = genericCount then Some gargs
+                                else None
+                            else None
+                        let fromExpected =
+                            ctx.ExpectedType |> Option.bind tryFrom
+                        match fromExpected with
+                        | Some ts -> ts
+                        | None ->
+                            match tryFrom ctx.ReturnType with
+                            | Some ts -> ts
+                            | None    -> Array.create genericCount typeof<obj>
                     match ctx.UnionCases.TryGetValue name with
                     | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
                         // Nullary case literal — `None` / `Leaf` etc.
@@ -1306,7 +1372,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | ELambda (lps, body), None ->
                     emitLambdaWith ctx lps body None |> ignore
                 | _ ->
+                    // Push the param's CLR type as the expected-type
+                    // hint while emitting the arg, so nullary case
+                    // construction (e.g. `describe(None)` where
+                    // describe takes `Option[Int]`) infers T from
+                    // the param.
+                    let saved = ctx.ExpectedType
+                    if i < paramTypes.Length then
+                        ctx.ExpectedType <- Some paramTypes.[i]
                     let argTy = emitExpr ctx payload
+                    ctx.ExpectedType <- saved
                     if i < paramTypes.Length
                        && paramTypes.[i] = typeof<obj>
                        && argTy.IsValueType then
@@ -1363,6 +1438,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 |> Array.map (function
                     | Some t -> t
                     | None   -> typeof<obj>)
+            checkBounds ctx name genericNames resolvedBindings sg.Bounds
             let constructed = mb.MakeGenericMethod resolvedBindings
             // `constructed.ReturnType` is unreliable until the host
             // type is sealed (Reflection.Emit limitation), so substitute
@@ -1521,7 +1597,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         let payload =
                             match a with
                             | CAPositional ex | CANamed (_, ex, _) -> ex
+                        let saved = ctx.ExpectedType
+                        if i < paramTypes.Length then
+                            ctx.ExpectedType <- Some paramTypes.[i]
                         let argTy = emitExpr ctx payload
+                        ctx.ExpectedType <- saved
                         if i < paramTypes.Length then
                             let pt = paramTypes.[i]
                             if pt = typeof<obj> && argTy.IsValueType then
@@ -1611,6 +1691,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         |> Array.map (function
                             | Some t -> t
                             | None   -> typeof<obj>)
+                    checkBounds ctx name genericNames resolvedBindings sg.Bounds
                     let constructed = mi.MakeGenericMethod resolvedBindings
                     let substMap =
                         List.zip genericNames (List.ofArray resolvedBindings)
@@ -2080,9 +2161,19 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         if resultTy <> typeof<System.Void> then
             il.Emit(OpCodes.Pop)
 
-    | SLocal (LBVal ({ Kind = PBinding (name, None) }, _annot, init))
-    | SLocal (LBLet (name, _annot, init)) ->
+    | SLocal (LBVal ({ Kind = PBinding (name, None) }, annot, init))
+    | SLocal (LBLet (name, annot, init)) ->
+        // If the binding has a type annotation, push it as the
+        // ExpectedType hint so nullary case construction (`None`,
+        // `Empty`) inside `init` picks the right T.
+        let saved = ctx.ExpectedType
+        match annot with
+        | Some te ->
+            try ctx.ExpectedType <- Some (ctx.ResolveType te)
+            with _ -> ()
+        | None -> ()
         let initTy = emitExpr ctx init
+        ctx.ExpectedType <- saved
         let lb = FunctionCtx.defineLocal ctx name initTy
         il.Emit(OpCodes.Stloc, lb)
 

@@ -79,13 +79,10 @@ func describe(o: Option[Int]): Int {
 
 func main(): Unit {
   println(describe(Some(value = 42)))
-  // `None` in an arg slot has no return-type context to bind T from;
-  // construct it through a typed helper instead so the nullary
-  // inference picks Int via the function's return type.
-  println(describe(emptyInt()))
+  // `None` in arg position now infers T from the param type via
+  // ctx.ExpectedType, so this works without a typed helper.
+  println(describe(None))
 }
-
-func emptyInt(): Option[Int] = None
 """,
     "142\n-1"
 ]
