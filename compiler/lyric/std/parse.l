@@ -3,6 +3,12 @@
 // All `tryParse*` functions return Result[T, ParseError] to enforce
 // explicit error handling. The `parse*` convenience functions panic on
 // failure and should be reserved for trusted literals or startup code.
+//
+// Numeric parsing routes through host builtins (`hostParseIntIsValid`,
+// `hostParseIntValue`, …) that the emitter resolves to static methods
+// on `Lyric.Stdlib.Parse`.  Until Lyric grows real out-parameters the
+// host pair is `IsValid` (returns Bool) + `Value` (returns 0 on
+// invalid) — callers gate `Value` behind `IsValid`.
 package Std.Parse
 
 import Std.Errors { ParseError }
@@ -11,24 +17,12 @@ import Std.Errors { ParseError }
 // Int parsing.
 // ---------------------------------------------------------------------------
 
-@axiom
-extern package System.Int32 {
-  func tryParseInt(s: in String, out: in String): Bool
-}
-
 // Parse a string as an Int. Returns Err on invalid format or overflow.
 pub func tryParseInt(s: in String): Result[Int, ParseError] {
-  // Future implementation: delegate to the curated numeric parse
-  // boundary and distinguish invalid format from range overflow.
-  if s.length == 0 {
-    Err(error = InvalidFormat(input = s, expected = "non-empty integer"))
+  if hostParseIntIsValid(s) {
+    Ok(value = hostParseIntValue(s))
   } else {
-    // Placeholder until the host parse boundary is wired.
-    if (s[0] >= '0' and s[0] <= '9') or (s[0] == '-' and s.length > 1) {
-      Ok(value = 0)  // Placeholder result; host parser supplies the real value.
-    } else {
-      Err(error = InvalidFormat(input = s, expected = "integer"))
-    }
+    Err(error = InvalidFormat(input = s, expected = "integer"))
   }
 }
 
@@ -45,15 +39,10 @@ pub func parseInt(s: in String): Int {
 // ---------------------------------------------------------------------------
 
 pub func tryParseLong(s: in String): Result[Long, ParseError] {
-  // Placeholder until the host parse boundary is wired.
-  if s.length == 0 {
-    Err(error = InvalidFormat(input = s, expected = "non-empty long"))
+  if hostParseLongIsValid(s) {
+    Ok(value = hostParseLongValue(s))
   } else {
-    if (s[0] >= '0' and s[0] <= '9') or (s[0] == '-' and s.length > 1) {
-      Ok(value = 0)  // Placeholder result; host parser supplies the real value.
-    } else {
-      Err(error = InvalidFormat(input = s, expected = "long"))
-    }
+    Err(error = InvalidFormat(input = s, expected = "long"))
   }
 }
 
@@ -69,11 +58,10 @@ pub func parseLong(s: in String): Long {
 // ---------------------------------------------------------------------------
 
 pub func tryParseDouble(s: in String): Result[Double, ParseError] {
-  // Placeholder until the host parse boundary is wired.
-  if s.length == 0 {
-    Err(error = InvalidFormat(input = s, expected = "non-empty float"))
+  if hostParseDoubleIsValid(s) {
+    Ok(value = hostParseDoubleValue(s))
   } else {
-    Ok(value = 0.0)  // Placeholder result; host parser supplies the real value.
+    Err(error = InvalidFormat(input = s, expected = "double"))
   }
 }
 

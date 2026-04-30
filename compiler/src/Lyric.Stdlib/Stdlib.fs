@@ -64,3 +64,47 @@ type Contracts private () =
     /// emitter will mark its Lyric type as Never).
     static member Panic (msg: string) : unit =
         raise (LyricAssertionException("panic: " + msg))
+
+/// Numeric / bool parsing routed through `int.TryParse` etc.  The pair
+/// `IsValid` / `Value` is a bootstrap-grade workaround for not having
+/// out-parameters on the Lyric side: callers gate `Value` behind
+/// `IsValid` and accept the cost of parsing twice.  When real out
+/// parameters land the pair collapses into a single TryParse method.
+[<Sealed; AbstractClass>]
+type Parse private () =
+
+    static member IntIsValid (s: string) : bool =
+        let mutable v = 0
+        System.Int32.TryParse(s, &v)
+
+    static member IntValue (s: string) : int =
+        let mutable v = 0
+        System.Int32.TryParse(s, &v) |> ignore
+        v
+
+    static member LongIsValid (s: string) : bool =
+        let mutable v = 0L
+        System.Int64.TryParse(s, &v)
+
+    static member LongValue (s: string) : int64 =
+        let mutable v = 0L
+        System.Int64.TryParse(s, &v) |> ignore
+        v
+
+    static member DoubleIsValid (s: string) : bool =
+        let mutable v = 0.0
+        System.Double.TryParse(
+            s,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            &v)
+
+    static member DoubleValue (s: string) : double =
+        let mutable v = 0.0
+        System.Double.TryParse(
+            s,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            &v)
+        |> ignore
+        v
