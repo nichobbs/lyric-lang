@@ -2472,16 +2472,52 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     | SFor _ ->
         failwithf "E3 codegen: only single-name for-in patterns are supported: %A" s.Kind
 
-    | SScope (_, blk) | SDefer blk ->
+    | SScope (_, blk) ->
         FunctionCtx.pushScope ctx
         emitBlock ctx blk
         FunctionCtx.popScope ctx
+
+    | SDefer _ ->
+        // `defer { ... }` is intercepted at block emission so its body
+        // wraps the remainder of the enclosing scope in a try/finally
+        // (see `emitStatementsWithDefer`).  Reaching this branch means
+        // a defer escaped its surrounding block — treat as a bug.
+        failwith "E14 codegen: bare SDefer reached emitStatement (block emit should have hoisted it)"
 
     | _ ->
         failwithf "E3 codegen does not yet handle statement: %A" s.Kind
 
 and emitBlock (ctx: FunctionCtx) (blk: Block) : unit =
     FunctionCtx.pushScope ctx
-    for stmt in blk.Statements do
-        emitStatement ctx stmt
+    emitStatementsWithDeferTail ctx blk.Statements (fun () -> ())
     FunctionCtx.popScope ctx
+
+/// Emit a list of statements, hoisting `defer { … }` so its body
+/// runs on scope exit (success or failure).  Each defer wraps the
+/// statements that follow it (and the supplied `tail`) in a CLR
+/// `try/finally`; multiple defers in the same block nest LIFO so the
+/// most recently registered cleanup runs first.
+///
+/// `tail` runs after all non-defer statements.  Block emit passes a
+/// no-op; function-body emit passes the `routeReturn` handler so the
+/// last expression's value flows through the defer-wrapping correctly.
+and emitStatementsWithDeferTail
+        (ctx: FunctionCtx)
+        (stmts: Statement list)
+        (tail: unit -> unit) : unit =
+    match stmts with
+    | [] -> tail ()
+    | s :: rest ->
+        match s.Kind with
+        | SDefer body ->
+            let il = ctx.IL
+            il.BeginExceptionBlock() |> ignore
+            emitStatementsWithDeferTail ctx rest tail
+            il.BeginFinallyBlock()
+            FunctionCtx.pushScope ctx
+            emitStatementsWithDeferTail ctx body.Statements (fun () -> ())
+            FunctionCtx.popScope ctx
+            il.EndExceptionBlock()
+        | _ ->
+            emitStatement ctx s
+            emitStatementsWithDeferTail ctx rest tail

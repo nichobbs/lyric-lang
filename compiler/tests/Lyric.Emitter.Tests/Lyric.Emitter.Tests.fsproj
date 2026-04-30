@@ -34,6 +34,7 @@
     <Compile Include="SyntaxSimplificationTests.fs" />
     <Compile Include="BclDispatchTests.fs" />
     <Compile Include="ParseTests.fs" />
+    <Compile Include="DeferTests.fs" />
     <Compile Include="EndToEndSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

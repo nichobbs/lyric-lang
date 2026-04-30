@@ -33,6 +33,7 @@ let main argv =
             SyntaxSimplificationTests.tests
             BclDispatchTests.tests
             ParseTests.tests
+            DeferTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
