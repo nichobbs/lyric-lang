@@ -273,4 +273,35 @@ func main(): Unit {
             // (`@hidden` defaults to the CLR slot's default), which
             // `println` writes as an empty line that `TrimEnd` strips.
             Expect.stringStarts (stdout.TrimEnd()) "5" "id round-trips"
+
+        // ---- @projectionBoundary breaks recursive projection ---------
+
+        testCase "[@projectionBoundary keeps source opaque in view]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ProjBndA" """
+package ProjBndA
+
+opaque type Country @projectable {
+  iso: String
+}
+
+opaque type Address @projectable {
+  city: String
+  country: Country @projectionBoundary(asId)
+}
+
+func main(): Unit {
+  val c = Country(iso = "US")
+  val a = Address(city = "NYC", country = c)
+  val v = a.toView()
+  println(v.city)
+  println(v.country.iso)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            // `v.country` is the source `Country` opaque, not its
+            // view; reading `v.country.iso` reads through the
+            // opaque's field directly.
+            Expect.equal (stdout.TrimEnd()) "NYC\nUS"
+                "@projectionBoundary skips recursive projection"
     ]
