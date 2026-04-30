@@ -452,6 +452,12 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
     | EPrefix (PreNot, _) -> typeof<bool>
     | EPrefix (PreNeg, inner) -> peekExprType ctx inner
     | EIf (_, EOBExpr thenE, _, _) -> peekExprType ctx thenE
+    | EList items ->
+        // List literal: peek the first element to recover the array
+        // shape recursively, e.g. `[[1,2,3],[4,5,6]]` → `int[][]`.
+        match items with
+        | [] -> typeof<obj[]>
+        | first :: _ -> (peekExprType ctx first).MakeArrayType()
     | ECall ({ Kind = EPath { Segments = [name] } }, _) ->
         // Calls to a known func / delegate-typed local return a
         // predictable type that inference upstream needs to see.
@@ -600,9 +606,27 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         else
             failwithf "E7 codegen: indexing on non-array %s" recvTy.Name
 
-    | EIndex (_, idxs) ->
-        failwithf "E7 codegen: multi-index access not yet supported (%d indices)"
-            (List.length idxs)
+    | EIndex (recv, idxs) when not (List.isEmpty idxs) ->
+        // `a[i, j, …]` lowers to a chain of single-index loads:
+        // each index applies to the result of the previous load.
+        // The array shape is `T[][]…[]` (jagged), not `T[i,j]`
+        // (rank-N arrays — a separate IL feature).
+        let mutable curTy = emitExpr ctx recv
+        for idx in idxs do
+            if not curTy.IsArray then
+                failwithf "E7 codegen: multi-index expected array-of-array on inner level, got %s"
+                    curTy.Name
+            let elemTy =
+                match Option.ofObj (curTy.GetElementType()) with
+                | Some t -> t
+                | None   -> typeof<obj>
+            let _ = emitExpr ctx idx
+            il.Emit(OpCodes.Ldelem, elemTy)
+            curTy <- elemTy
+        curTy
+
+    | EIndex (_, []) ->
+        failwith "E7 codegen: indexing with no indices"
 
     // ---- tuple literal ------------------------------------------------
 
