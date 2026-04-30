@@ -893,6 +893,80 @@ mechanism:
 
 ---
 
+## D036: Bracketed generic-parameter syntax + default `in` parameter mode
+
+**Status:** Accepted
+**Date:** 2026-04-30
+**Supersedes:** part of D004 (parameter mode mandatoriness)
+
+### Context
+
+Two ergonomic frictions surfaced once the bootstrap compiler had enough
+syntax to write meaningful programs:
+
+1. Generic-parameter declarations required the `generic` keyword as a
+   prefix (`generic[T] func id(x: in T): T = x`).  At call/use sites
+   the bracket form is already canonical (`Box[Int]`, `id[Int](42)`),
+   so the prefix kept the declaration site visually misaligned with
+   how everyone reads the type elsewhere.
+2. Parameter mode (`in`/`out`/`inout`) was mandatory per D004.  In
+   practice ~all parameters are `in`; the keyword was repeated so
+   often that it functioned as visual noise rather than as
+   intentional documentation of the rare cases where mode actually
+   matters.
+
+### Decision
+
+1. **Generic-parameter declarations** accept a bare-bracket form
+   immediately after the declared name:
+   ```
+   func id[T](x: T): T = x
+   record Box[T] { value: T }
+   union Result[T, E] { case Ok(value: T) | Err(code: E) }
+   ```
+   The legacy `generic[T]` prefix continues to parse; both produce
+   identical ASTs.  New code prefers the bracket form.
+
+2. **Parameter modes** are now optional.  An omitted mode keyword is
+   taken as `in`.  Explicit `out` and `inout` remain required where
+   wanted; the parser still preserves explicit `in` keywords so
+   migration is incremental.  Per-param mixed-style is legal:
+   ```
+   func divmod(n: Int, d: Int, q: out Int, r: out Int) { ... }
+   ```
+
+### Rationale
+
+- Aligns with C# / F# / Rust / TypeScript conventions for both type
+  parameters and parameter modes (which all of those default to
+  read-only).
+- Eliminates two classes of syntactic noise without losing
+  expressiveness; explicit modes remain available for the cases that
+  actually need them.
+- Parser ambiguity is bounded.  The bare `[` only appears at
+  declaration-name position where no other production starts that
+  way, and array sizes always follow a *type expression* (`Int[10]`),
+  not a declared identifier.
+
+### Consequences
+
+- Language reference §2.11 and §5.1 updated accordingly.
+- Grammar `Param` and `GenericParams` productions accept both forms.
+- `core.l` and worked examples retain their explicit `in` keywords
+  for now; the convention will drift toward terse style as new code
+  lands.
+- Diagnostic `P0160` (missing parameter mode) is retired: there is
+  no longer any "missing" mode.
+
+### Tracked follow-ups
+
+- A `lyric fmt` rule once the formatter exists may rewrite legacy
+  forms toward the new canonical style.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

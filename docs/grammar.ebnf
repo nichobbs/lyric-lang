@@ -670,21 +670,27 @@ FunctionBody =
 ParamList = Param { ',' Param } [ ',' ] ;
 
 Param =
-      ParamMode IDENT ':' Type [ '=' Expr ] ;
+      IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+
+(* The mode keyword is optional; an omitted mode is taken as 'in'.
+ * Note also: actual position is *after* the colon, not before — the
+ * language reference (§5.1) and parser agree; this production lists
+ * the on-disk form. *)
 
 ParamMode = 'in' | 'out' | 'inout' ;
 
 (* §5.1 Generic parameters and where clauses *)
 
 GenericParams =
-    'generic' '[' GenericParam { ',' GenericParam } [ ',' ] ']' ;
+      '[' GenericParam { ',' GenericParam } [ ',' ] ']'
+    | 'generic' '[' GenericParam { ',' GenericParam } [ ',' ] ']' ;
 
-(* The 'generic[...]' prefix may also appear before a top-level Item; the
- * parser accepts it as a head modifier on RecordDecl, UnionDecl,
- * OpaqueTypeDecl, ProtectedTypeDecl, FunctionDecl, InterfaceDecl, and
- * ImplDecl. We expose this via the GenericPrefix non-terminal that wraps
- * Item; see §3 ItemKind productions, which permit GenericParams in their
- * head. (Productions above show 'GenericParams' inline for brevity.) *)
+(* Both forms are accepted; the bare-bracket form (preferred) appears
+ * immediately after the declared name (e.g. `func id[T](x: T): T`,
+ * `record Box[T] { ... }`).  The legacy `generic[...]` prefix may
+ * also appear before a top-level Item, accepted as a head modifier on
+ * RecordDecl, UnionDecl, OpaqueTypeDecl, ProtectedTypeDecl,
+ * FunctionDecl, InterfaceDecl, and ImplDecl. *)
 
 GenericParam =
       IDENT [ ':' Type ]                      (* value generic: 'N: Nat' *)

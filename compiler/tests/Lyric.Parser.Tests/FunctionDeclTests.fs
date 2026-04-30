@@ -131,10 +131,15 @@ let tests =
 
         // ----- diagnostic paths -----
 
-        test "missing parameter mode reports P0160" {
+        test "omitted parameter mode defaults to `in`" {
             let r = parse (prelude + "func f(x: Int): Int = x")
-            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
-            Expect.contains codes "P0160" "P0160 reported"
+            Expect.isEmpty r.Diagnostics "no diagnostics"
+            // Confirm the parsed param's mode is PMIn (the default).
+            let item = r.File.Items |> List.head
+            match item.Kind with
+            | IFunc fn ->
+                Expect.equal fn.Params.[0].Mode PMIn "default mode is `in`"
+            | _ -> failtest "expected IFunc"
         }
 
         test "function without body parses (signature-only)" {
