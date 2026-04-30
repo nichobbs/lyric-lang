@@ -128,3 +128,19 @@ type DistinctTypeInfo =
       TryFromMethod: MethodBuilder option }
 
 type DistinctTypeTable = Dictionary<string, DistinctTypeInfo>
+
+// ---------------------------------------------------------------------------
+// Projectable opaque types — `opaque type X @projectable { … }`.
+//
+// Carries the synthesised `XView` exposed record and the `toView()`
+// instance method on `X`.  Codegen consults this table to resolve the
+// method dispatch since `TypeBuilder.GetMethods()` is unsupported on
+// non-finalised types.
+// ---------------------------------------------------------------------------
+
+type ProjectableInfo =
+    { OpaqueName:    string
+      ToViewMethod:  MethodBuilder
+      ViewType:      RecordInfo }
+
+type ProjectableTable = Dictionary<string, ProjectableInfo>

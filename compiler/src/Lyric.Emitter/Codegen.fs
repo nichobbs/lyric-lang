@@ -54,6 +54,8 @@ type FunctionCtx =
       Interfaces: Lyric.Emitter.Records.InterfaceTable
       /// Distinct types and range subtypes, keyed by name.
       DistinctTypes: Lyric.Emitter.Records.DistinctTypeTable
+      /// Projectable opaque types, keyed by opaque type name.
+      Projectables: Lyric.Emitter.Records.ProjectableTable
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -92,6 +94,7 @@ module FunctionCtx =
             (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
             (distinctTypes: Lyric.Emitter.Records.DistinctTypeTable)
+            (projectables: Lyric.Emitter.Records.ProjectableTable)
             (isInstance: bool)
             (selfType: ClrType option)
             (programType: TypeBuilder)
@@ -115,6 +118,7 @@ module FunctionCtx =
           UnionCases   = unionCases
           Interfaces   = interfaces
           DistinctTypes = distinctTypes
+          Projectables = projectables
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -514,6 +518,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | EOld _ ->
         failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
 
+    // ---- projectable opaque: u.toView() -------------------------------
+
+    | ECall ({ Kind = EMember (recv, "toView") }, []) ->
+        let recvTy = emitExpr ctx recv
+        let proj =
+            ctx.Projectables.Values
+            |> Seq.tryFind (fun p ->
+                match Option.ofObj p.ToViewMethod.DeclaringType with
+                | Some dt -> dt = recvTy
+                | None    -> false)
+        match proj with
+        | Some p ->
+            il.Emit(OpCodes.Callvirt, p.ToViewMethod)
+            p.ViewType.Type :> ClrType
+        | None ->
+            failwithf "M2.2 codegen: receiver %s is not a @projectable opaque type"
+                recvTy.Name
+
     // ---- distinct type static factory: TypeName.from(x) / .tryFrom(x) --
 
     | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [typeName] } }, methodName) }, args)
@@ -702,6 +724,73 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EBinop (op, lhs, rhs) ->
         let lt = emitExpr ctx lhs
+        // Distinct-type binop: if the lhs is a distinct-type struct, the
+        // value on the stack is the wrapper.  Stash it to a local, unwrap
+        // both operands to their underlying primitive, run the primitive
+        // op, and (for arithmetic) re-wrap via `From()`.
+        let lhsDistinct =
+            ctx.DistinctTypes.Values
+            |> Seq.tryFind (fun d -> (d.Type :> ClrType) = lt)
+        match lhsDistinct with
+        | Some info ->
+            let lhsLoc = FunctionCtx.defineLocal ctx "__d_lhs" lt
+            il.Emit(OpCodes.Stloc, lhsLoc)
+            let rt = emitExpr ctx rhs
+            let rhsLoc = FunctionCtx.defineLocal ctx "__d_rhs" rt
+            il.Emit(OpCodes.Stloc, rhsLoc)
+            il.Emit(OpCodes.Ldloca, lhsLoc)
+            il.Emit(OpCodes.Ldfld, info.ValueField)
+            il.Emit(OpCodes.Ldloca, rhsLoc)
+            il.Emit(OpCodes.Ldfld, info.ValueField)
+            let underlyingTy = info.ValueField.FieldType
+            match op with
+            | BAdd ->
+                if isFloatClr underlyingTy then il.Emit(OpCodes.Add)
+                elif isUnsignedClr underlyingTy then il.Emit(OpCodes.Add_Ovf_Un)
+                else il.Emit(OpCodes.Add_Ovf)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BSub ->
+                if isFloatClr underlyingTy then il.Emit(OpCodes.Sub)
+                elif isUnsignedClr underlyingTy then il.Emit(OpCodes.Sub_Ovf_Un)
+                else il.Emit(OpCodes.Sub_Ovf)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BMul ->
+                if isFloatClr underlyingTy then il.Emit(OpCodes.Mul)
+                elif isUnsignedClr underlyingTy then il.Emit(OpCodes.Mul_Ovf_Un)
+                else il.Emit(OpCodes.Mul_Ovf)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BDiv ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Div_Un)
+                else il.Emit(OpCodes.Div)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BMod ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Rem_Un)
+                else il.Emit(OpCodes.Rem)
+                il.Emit(OpCodes.Call, info.FromMethod)
+                info.Type :> ClrType
+            | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
+            | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+            | BLt  ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
+                typeof<bool>
+            | BGt  ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Cgt_Un) else il.Emit(OpCodes.Cgt)
+                typeof<bool>
+            | BLte ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Cgt_Un) else il.Emit(OpCodes.Cgt)
+                emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+            | BGte ->
+                if isUnsignedClr underlyingTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
+                emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+            | _ ->
+                failwithf "M2.1 codegen: operator %A not supported on distinct type %s"
+                    op info.Name
+        | None ->
+
         let rt = emitExpr ctx rhs
         let opTy = lt
         match op with
@@ -1058,6 +1147,7 @@ and private emitLambdaWith
             lambdaIL retTy paramPairs
             ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
+            ctx.Projectables
             false None ctx.ProgramType ctx.ResolveType
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's

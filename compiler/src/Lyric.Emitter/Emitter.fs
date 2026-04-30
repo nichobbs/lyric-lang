@@ -95,6 +95,50 @@ let private distinctTypeItems (sf: SourceFile) : DistinctTypeDecl list =
         | IDistinctType d -> Some d
         | _ -> None)
 
+/// Pull every top-level `IOpaque` (with a body) out of a parsed source file.
+/// Bodyless opaque declarations (`opaque type AccountId`) are name-only;
+/// they don't lower to anything until cross-package linking arrives.
+let private opaqueItems (sf: SourceFile) : OpaqueTypeDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IOpaque o when o.HasBody -> Some o
+        | _ -> None)
+
+/// Convert an `OpaqueTypeDecl` body into a synthetic `RecordDecl` for
+/// reuse of the record-emission pipeline.  The CLR shape is identical
+/// (sealed class with public fields and an all-fields ctor); the M2.2
+/// bootstrap deliberately ignores the package-visibility boundary, which
+/// arrives once cross-package compilation can enforce it.
+let private opaqueAsRecord (o: OpaqueTypeDecl) : RecordDecl =
+    let members =
+        o.Members
+        |> List.map (fun m ->
+            match m with
+            | OMField fd      -> RMField fd
+            | OMInvariant inv -> RMInvariant inv)
+    { Name     = o.Name
+      Generics = o.Generics
+      Where    = o.Where
+      Members  = members
+      Span     = o.Span }
+
+/// True if any annotation on `o` has `projectable` as its head segment.
+let private isProjectable (o: OpaqueTypeDecl) : bool =
+    o.Annotations
+    |> List.exists (fun a ->
+        match a.Name.Segments with
+        | "projectable" :: _ -> true
+        | _ -> false)
+
+/// True if a field's annotation list contains `@hidden`.
+let private isHiddenField (fd: FieldDecl) : bool =
+    fd.Annotations
+    |> List.exists (fun a ->
+        match a.Name.Segments with
+        | "hidden" :: _ -> true
+        | _ -> false)
+
 /// Define a CLR interface for one Lyric interface declaration. Each
 /// `IMSig` member becomes an abstract interface method; default
 /// methods (`IMFunc`) and associated types are accepted by the
@@ -455,6 +499,95 @@ let private defineRecord
       Records.RecordInfo.Fields = fields
       Records.RecordInfo.Ctor   = ctor }
 
+/// Generate the sibling exposed record for a `@projectable` opaque type.
+/// The view contains every non-`@hidden` field of the opaque type and
+/// is itself a sealed CLR class with public fields and an all-fields
+/// constructor — the same shape as a normal record.
+let private defineProjectableView
+        (md: ModuleBuilder)
+        (nsName: string)
+        (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
+        (opaque: OpaqueTypeDecl) : Records.RecordInfo =
+    let viewName = opaque.Name + "View"
+    let fullName =
+        if String.IsNullOrEmpty nsName then viewName
+        else nsName + "." + viewName
+    let tb =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public ||| TypeAttributes.Sealed,
+            typeof<obj>)
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    let visibleFields =
+        opaque.Members
+        |> List.choose (function
+            | OMField fd when not (isHiddenField fd) -> Some fd
+            | _ -> None)
+    let fields =
+        visibleFields
+        |> List.map (fun fd ->
+            let lty =
+                Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
+            let cty = TypeMap.toClrTypeWith lookup lty
+            let fb =
+                tb.DefineField(
+                    fd.Name,
+                    cty,
+                    FieldAttributes.Public ||| FieldAttributes.InitOnly)
+            { Records.RecordField.Name  = fd.Name
+              Records.RecordField.Type  = cty
+              Records.RecordField.Field = fb })
+    let ctorParamTypes =
+        fields |> List.map (fun f -> f.Type) |> List.toArray
+    let ctor =
+        tb.DefineConstructor(
+            MethodAttributes.Public,
+            CallingConventions.Standard,
+            ctorParamTypes)
+    let cil = ctor.GetILGenerator()
+    cil.Emit(OpCodes.Ldarg_0)
+    let objCtor = typeof<obj>.GetConstructor([||])
+    match Option.ofObj objCtor with
+    | Some c -> cil.Emit(OpCodes.Call, c)
+    | None   -> failwith "object's no-arg ctor not found"
+    fields
+    |> List.iteri (fun i f ->
+        cil.Emit(OpCodes.Ldarg_0)
+        cil.Emit(OpCodes.Ldarg, i + 1)
+        cil.Emit(OpCodes.Stfld, f.Field))
+    cil.Emit(OpCodes.Ret)
+    { Records.RecordInfo.Name   = viewName
+      Records.RecordInfo.Type   = tb
+      Records.RecordInfo.Fields = fields
+      Records.RecordInfo.Ctor   = ctor }
+
+/// Attach an instance method `toView(): <Name>View` to an opaque type.
+/// Each non-`@hidden` field is read off `this` and passed to the view's
+/// all-fields constructor.
+let private defineToViewMethod
+        (opaqueInfo: Records.RecordInfo)
+        (viewInfo: Records.RecordInfo) : MethodBuilder =
+    let mb =
+        opaqueInfo.Type.DefineMethod(
+            "toView",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig,
+            viewInfo.Type :> System.Type,
+            [||])
+    let il = mb.GetILGenerator()
+    for vf in viewInfo.Fields do
+        match opaqueInfo.Fields |> List.tryFind (fun f -> f.Name = vf.Name) with
+        | Some sourceField ->
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, sourceField.Field)
+        | None ->
+            failwithf "M2.2: projectable view field '%s' not on opaque '%s'"
+                vf.Name opaqueInfo.Name
+    il.Emit(OpCodes.Newobj, viewInfo.Ctor)
+    il.Emit(OpCodes.Ret)
+    mb
+
 /// Define a static method header on `programTy` matching the resolved
 /// signature. Body is filled in by `emitFunctionBody` afterwards.
 let private defineMethodHeader
@@ -526,6 +659,7 @@ let private emitFunctionBody
         (unionCases: Records.UnionCaseLookup)
         (interfaces: Records.InterfaceTable)
         (distinctTypes: Records.DistinctTypeTable)
+        (projectables: Records.ProjectableTable)
         (isInstance: bool)
         (selfType: System.Type option)
         (programType: TypeBuilder)
@@ -552,7 +686,7 @@ let private emitFunctionBody
         Codegen.FunctionCtx.make
             il returnTy paramList
             funcs records enums enumCases unions unionCases
-            interfaces distinctTypes isInstance selfType programType resolveTypeForCtx
+            interfaces distinctTypes projectables isInstance selfType programType resolveTypeForCtx
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -736,6 +870,18 @@ let private emitAssembly
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+
+        // Opaque types — bootstrap-grade: lower as records.  Visibility
+        // is unenforced because we still compile a single package.
+        let projectableOpaques = ResizeArray<OpaqueTypeDecl * Records.RecordInfo>()
+        for od in opaqueItems sf do
+            let info = defineRecord ctx.Module nsName symbols (opaqueAsRecord od)
+            recordTable.[od.Name] <- info
+            symbols.TryFind od.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+            if isProjectable od then projectableOpaques.Add(od, info)
         for ed in enumItems sf do
             let info = defineEnum ctx.Module nsName ed
             enumTable.[ed.Name] <- info
@@ -775,6 +921,20 @@ let private emitAssembly
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
+
+        // Projectable opaque types — synthesise `<Name>View` exposed
+        // record + a `toView()` instance method on the opaque type.
+        // Bootstrap-grade: skip recursive view projection and `tryInto`
+        // (the latter needs a generic `Result` to land first).
+        let projectableTable = Records.ProjectableTable()
+        for (od, opaqueInfo) in projectableOpaques do
+            let viewInfo = defineProjectableView ctx.Module nsName symbols lookup od
+            recordTable.[viewInfo.Name] <- viewInfo
+            let toViewMb = defineToViewMethod opaqueInfo viewInfo
+            projectableTable.[od.Name] <-
+                { Records.ProjectableInfo.OpaqueName   = od.Name
+                  Records.ProjectableInfo.ToViewMethod = toViewMb
+                  Records.ProjectableInfo.ViewType    = viewInfo }
 
         // Pass 0.5 — distinct types and range subtypes.
         let distinctTable = Records.DistinctTypeTable()
@@ -936,7 +1096,7 @@ let private emitAssembly
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
                 methodTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable false None
+                unionTable unionCaseLookup interfaceTable distinctTable projectableTable false None
                 programTy symbols
 
         // Pass B.5 — emit impl-method bodies as instance methods.
@@ -948,7 +1108,7 @@ let private emitAssembly
             emitFunctionBody
                 mb fd sg lookup
                 methodTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable true
+                unionTable unionCaseLookup interfaceTable distinctTable projectableTable true
                 (Option.ofObj selfTy) programTy symbols
 
         let lyricMain = methodTable.["main"]
@@ -981,10 +1141,33 @@ let private locateCoreL (startDir: string) : string option =
         dir <- d.Parent |> Option.ofObj
     found
 
+/// Cached result of parsing `core.l`.  Keyed by absolute path + last-
+/// write-time so an edit invalidates the cache on the next emit.  The
+/// type checker still runs on the merged file because its state depends
+/// on the user's symbols being in scope alongside the stdlib's.
+type private StdlibParseEntry =
+    { Mtime: System.DateTime
+      File:  SourceFile
+      Diags: Diagnostic list }
+
+let private stdlibParseCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, StdlibParseEntry>()
+
+let private parseCoreLcached (path: string) : SourceFile * Diagnostic list =
+    let info = FileInfo(path)
+    let mtime = info.LastWriteTimeUtc
+    match stdlibParseCache.TryGetValue path with
+    | true, e when e.Mtime = mtime -> e.File, e.Diags
+    | _ ->
+        let parsed = parse (File.ReadAllText path)
+        let entry = { Mtime = mtime; File = parsed.File; Diags = parsed.Diagnostics }
+        stdlibParseCache.[path] <- entry
+        entry.File, entry.Diags
+
 /// Resolve `import Std.Core` declarations by locating `core.l`,
-/// parsing it, and prepending its items into the user file.  The
-/// Std.Core import entries are stripped from `Imports` so downstream
-/// passes don't encounter an unknown package reference.
+/// parsing it (cached across emits), and prepending its items into the
+/// user file.  The Std.Core import entries are stripped from `Imports`
+/// so downstream passes don't encounter an unknown package reference.
 let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list =
     let stdCoreImps, otherImps =
         sf.Imports |> List.partition (fun i -> i.Path.Segments = ["Std"; "Core"])
@@ -995,10 +1178,9 @@ let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list
             let sp = (List.head stdCoreImps).Span
             sf, [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
         | Some path ->
-            let stdParsed = parse (File.ReadAllText path)
-            let mergedItems = stdParsed.File.Items @ sf.Items
-            { sf with Imports = otherImps; Items = mergedItems },
-            stdParsed.Diagnostics
+            let stdFile, stdDiags = parseCoreLcached path
+            let mergedItems = stdFile.Items @ sf.Items
+            { sf with Imports = otherImps; Items = mergedItems }, stdDiags
 
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
