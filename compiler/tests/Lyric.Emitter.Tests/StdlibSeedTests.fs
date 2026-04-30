@@ -7,6 +7,7 @@
 /// stdlib functions themselves and the multi-package import machinery.
 module Lyric.Emitter.Tests.StdlibSeedTests
 
+open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
