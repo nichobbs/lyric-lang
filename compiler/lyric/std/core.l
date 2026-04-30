@@ -1,23 +1,10 @@
-// std/core.l — first slice of a Lyric-side standard library.
+// std/core.l - first slice of a Lyric-side standard library.
 //
-// What's in this file is deliberately conservative: the M1.4 emitter
-// erases generic type parameters to `obj`, so `Option[T]` and
-// `Result[T, E]` work cleanly with reference-typed payloads but
-// require boxing/unboxing at the boundary for value-typed payloads.
-// The combinators here are first-order — no `(T) -> U` parameters —
-// because the M1.4 emitter doesn't yet lower function-typed
-// parameters to delegate types. Higher-order map/filter/fold land
-// alongside reified generics in Phase 2.
+// This package defines the small algebraic types and helpers that the
+// rest of the stdlib builds on. Keep these APIs boring and stable:
+// Option and Result appear in almost every safe wrapper.
 //
-// Multi-package compilation is also M2 work. Until then the test
-// harness inlines this file into the user's package: the
-// `package Std.Core` declaration is stripped at load time, and
-// the surrounding source provides its own `package` line.
-//
-// Tracked into Phase 2:
-//   * Promote to a real multi-package import via `import Std.Core`.
-//   * Reified generics so `Option[T]` / `Result[T, E]` work for
-//     value types without boundary boxing.
+// Tracked for the next stdlib slices:
 //   * Higher-order combinators (`mapOption`, `mapResult`, `filter`,
 //     `fold`).
 //   * `Map[K, V]` and `Set[T]` once collections have a real CLR
@@ -26,16 +13,16 @@
 package Std.Core
 
 // ---------------------------------------------------------------------------
-// Option — the absence-or-presence container.
+// Option - the absence-or-presence container.
 // ---------------------------------------------------------------------------
 
-union Option {
-  case Some(value: Int)
+generic[T] union Option {
+  case Some(value: T)
   case None
 }
 
 // Return the value inside `Some`, or `default` if `None`.
-func unwrapOr(o: in Option, default: in Int): Int {
+generic[T] func unwrapOr(o: in Option[T], default: in T): T {
   match o {
     case Some(v) -> v
     case None    -> default
@@ -43,7 +30,7 @@ func unwrapOr(o: in Option, default: in Int): Int {
 }
 
 // `true` iff the option is a Some.
-func isSome(o: in Option): Bool {
+generic[T] func isSome(o: in Option[T]): Bool {
   match o {
     case Some(v) -> true
     case None    -> false
@@ -51,7 +38,7 @@ func isSome(o: in Option): Bool {
 }
 
 // `true` iff the option is None.
-func isNone(o: in Option): Bool {
+generic[T] func isNone(o: in Option[T]): Bool {
   match o {
     case Some(v) -> false
     case None    -> true
@@ -59,43 +46,50 @@ func isNone(o: in Option): Bool {
 }
 
 // ---------------------------------------------------------------------------
-// Result — the success-or-error container.
+// Result - the success-or-error container.
 // ---------------------------------------------------------------------------
 
-union Result {
-  case Ok(value: Int)
-  case Err(code: Int)
+generic[T, E] union Result {
+  case Ok(value: T)
+  case Err(error: E)
 }
 
 // `true` iff the result is Ok.
-func isOk(r: in Result): Bool {
+generic[T, E] func isOk(r: in Result[T, E]): Bool {
   match r {
     case Ok(v)  -> true
     case Err(c) -> false
   }
 }
 
+// `true` iff the result is Err.
+generic[T, E] func isErr(r: in Result[T, E]): Bool {
+  match r {
+    case Ok(v)  -> false
+    case Err(c) -> true
+  }
+}
+
 // Return the success value, or `default` on error.
-func unwrapResultOr(r: in Result, default: in Int): Int {
+generic[T, E] func unwrapResultOr(r: in Result[T, E], default: in T): T {
   match r {
     case Ok(v)  -> v
     case Err(c) -> default
   }
 }
 
-// Get the error code (if any), or 0 on success.
-func errCode(r: in Result): Int {
+// Return the error payload, or `default` on success.
+generic[T, E] func unwrapErrOr(r: in Result[T, E], default: in E): E {
   match r {
-    case Ok(v)  -> 0
+    case Ok(v)  -> default
     case Err(c) -> c
   }
 }
 
 // ---------------------------------------------------------------------------
-// Slice helpers — work directly on the CLR T[] backing of a Lyric
-// `slice[T]`. Non-generic for now because erasing the element type
-// would force boxing on every read; once reified generics land in
-// Phase 2 these become `generic[T]` properly.
+// Slice helpers - intentionally small until higher-order functions and
+// collection abstractions settle. These give examples and smoke tests a
+// concrete place to stand without pretending this is the final slice API.
 // ---------------------------------------------------------------------------
 
 // Sum every Int in the slice.

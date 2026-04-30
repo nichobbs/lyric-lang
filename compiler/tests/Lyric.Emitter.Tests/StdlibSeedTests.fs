@@ -10,6 +10,46 @@ module Lyric.Emitter.Tests.StdlibSeedTests
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
+/// Locate `compiler/lyric/std/` from the test binary. We walk
+/// up parent directories until the directory is found (typical
+/// structure is `compiler/tests/Lyric.Emitter.Tests/bin/Debug/net9.0/`).
+let private locateStdlibDir () : string =
+    let mutable dir = Some (DirectoryInfo(System.AppContext.BaseDirectory))
+    let mutable found : string option = None
+    while found.IsNone && dir.IsSome do
+        let d = dir.Value
+        let candidate = Path.Combine(d.FullName, "lyric", "std")
+        if Directory.Exists candidate then found <- Some candidate
+        dir <- d.Parent |> Option.ofObj
+    match found with
+    | Some p -> p
+    | None ->
+        failwithf "could not locate lyric/std directory from %s"
+            System.AppContext.BaseDirectory
+
+/// Load every `.l` file under `compiler/lyric/std/` and strip each
+/// file's `package` declaration. This lets the tests inline the
+/// stdlib seed into the user's package while preserving separate
+/// source files for future multi-package work.
+let private loadStdlibBody () : string =
+    let stdlibDir = locateStdlibDir ()
+    Directory.GetFiles(stdlibDir, "*.l")
+    |> Array.sort
+    |> Array.map (fun path ->
+        let raw = File.ReadAllText(path)
+        raw.Split('\n')
+        |> Array.filter (fun line ->
+            let t = line.TrimStart()
+            not (t.StartsWith "package "))
+        |> String.concat "\n")
+    |> String.concat "\n"
+
+/// Wrap `driver` (which should not contain its own `package` line)
+/// inside a freshly-named package and prefix it with the inlined
+/// stdlib body.
+let private wrap (label: string) (driver: string) : string =
+    sprintf "package %s\n%s\n%s\n" label (loadStdlibBody ()) driver
+
 let private mk (label: string, driver: string, expected: string) : Test =
     testCase (sprintf "[%s]" label) <| fun () ->
         let _, stdout, stderr, exitCode =
@@ -44,6 +84,17 @@ func main(): Unit {
 """,
     "True\nFalse\nTrue"
 
+    "generic_option_string",
+    """
+func main(): Unit {
+  val some: Option[String] = Some(value = "hello")
+  println(unwrapOr(some, "missing"))
+  val none: Option[String] = None
+  println(unwrapOr(none, "missing"))
+}
+""",
+    "hello\nmissing"
+
     "result_basics",
     """
 package StdTest_ResultBasics
@@ -57,6 +108,21 @@ func main(): Unit {
 }
 """,
     "True\nFalse\n7\n99\n42"
+
+    "generic_result_string_int",
+    """
+func main(): Unit {
+  val ok: Result[String, Int] = Ok(value = "ok")
+  println(isOk(ok))
+  println(isErr(ok))
+  println(unwrapResultOr(ok, "fallback"))
+  val err: Result[String, Int] = Err(code = 42)
+  println(isOk(err))
+  println(isErr(err))
+  println(unwrapErrOr(err, 999))
+}
+""",
+    "True\nFalse\nok\nFalse\nTrue\n42"
 
     "slice_helpers",
     """
@@ -118,6 +184,28 @@ func main(): Unit {
 }
 """,
     "3\n1"
+
+    "string_length",
+    """
+func main(): Unit {
+  println("hello".length)
+  println("".length)
+  println("xyz".length)
+}
+""",
+    "5\n0\n3"
+
+    "string_operations",
+    """
+func main(): Unit {
+  val s = "  hello  "
+  println(s.trim().length)
+  println("hello".startsWith("hel"))
+  println("hello".endsWith("lo"))
+  println("hello".contains("ll"))
+}
+""",
+    "5\nTrue\nTrue\nTrue"
 ]
 
 /// Smoke test for string concatenation.
