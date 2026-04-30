@@ -838,14 +838,21 @@ let private emitAssembly
         (sf: SourceFile)
         (sigs: Map<string, ResolvedSignature>)
         (symbols: SymbolTable)
-        (req: EmitRequest) : Diagnostic list =
+        (req: EmitRequest)
+        (isLibrary: bool) : Diagnostic list =
     let funcs = functionItems sf
-    match funcs |> List.tryFind (fun f -> f.Name = "main") with
-    | None ->
+    // Library packages don't need a `main`; executable packages do.
+    let mainFn =
+        if isLibrary then None
+        else
+            match funcs |> List.tryFind (fun f -> f.Name = "main") with
+            | Some f -> Some f
+            | None -> None
+    if (not isLibrary) && mainFn.IsNone then
         [ err "E0001"
             "no `func main(): Unit` found — Phase 1 emit needs an entry point"
             sf.Span ]
-    | Some _ ->
+    else
         let desc =
             { Name        = req.AssemblyName
               Version     = Version(0, 1, 0, 0)
@@ -1111,8 +1118,15 @@ let private emitAssembly
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable true
                 (Option.ofObj selfTy) programTy symbols
 
-        let lyricMain = methodTable.["main"]
-        let hostMain  = defineHostEntryPoint programTy lyricMain
+        let lyricMainOpt =
+            if isLibrary then None
+            else
+                match methodTable.TryGetValue "main" with
+                | true, m -> Some m
+                | _       -> None
+        let hostMainOpt =
+            lyricMainOpt
+            |> Option.map (fun m -> defineHostEntryPoint programTy m)
 
         // Finalise every type so the persisted PE captures their
         // metadata. Interfaces seal first so records can claim them;
@@ -1126,7 +1140,7 @@ let private emitAssembly
                 c.Type.CreateType() |> ignore
             kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
-        Backend.save ctx (Some (hostMain :> MethodInfo))
+        Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
         []
 
 /// Walk up the directory tree from `startDir` until `lyric/std/core.l`
@@ -1142,9 +1156,7 @@ let private locateCoreL (startDir: string) : string option =
     found
 
 /// Cached result of parsing `core.l`.  Keyed by absolute path + last-
-/// write-time so an edit invalidates the cache on the next emit.  The
-/// type checker still runs on the merged file because its state depends
-/// on the user's symbols being in scope alongside the stdlib's.
+/// write-time so an edit invalidates the cache on the next emit.
 type private StdlibParseEntry =
     { Mtime: System.DateTime
       File:  SourceFile
@@ -1164,6 +1176,71 @@ let private parseCoreLcached (path: string) : SourceFile * Diagnostic list =
         stdlibParseCache.[path] <- entry
         entry.File, entry.Diags
 
+// ---------------------------------------------------------------------------
+// Stdlib precompilation — `core.l` compiles once per process to a
+// standalone `Lyric.Stdlib.Core.dll` that user assemblies reference.
+// The artifact is cached in-memory; the DLL lives in a shared temp
+// directory so it can be copied alongside each user output.
+// ---------------------------------------------------------------------------
+
+type private StdlibArtifact =
+    { /// Absolute path to the compiled `Lyric.Stdlib.Core.dll`.
+      AssemblyPath: string
+      /// Loaded into the current process via `Assembly.LoadFrom`.
+      Assembly:     Assembly
+      /// Parsed AST of `core.l`.
+      Source:       SourceFile
+      /// The stdlib's symbol table (typeids are stdlib-local).
+      Symbols:      SymbolTable
+      /// Resolved signatures for every stdlib function.
+      Signatures:   Map<string, ResolvedSignature> }
+
+let private stdlibArtifactCache : StdlibArtifact option ref = ref None
+let private stdlibLock : obj = obj()
+
+/// The shared cache directory for compiled stdlib artifacts.  Per-
+/// process so concurrent test runs don't trample each other.
+let private stdlibCacheDir : string =
+    let pid = System.Diagnostics.Process.GetCurrentProcess().Id
+    let dir = Path.Combine(Path.GetTempPath(), sprintf "lyric-stdlib-%d" pid)
+    Directory.CreateDirectory dir |> ignore
+    dir
+
+let private compileStdlibFresh (corePath: string) : StdlibArtifact =
+    let outPath = Path.Combine(stdlibCacheDir, "Lyric.Stdlib.Core.dll")
+    let stdSrc = File.ReadAllText corePath
+    let stdParsed = parse stdSrc
+    let stdChecked = Lyric.TypeChecker.Checker.check stdParsed.File
+    let req =
+        { Source       = stdSrc
+          AssemblyName = "Lyric.Stdlib.Core"
+          OutputPath   = outPath }
+    let _emitDiags =
+        emitAssembly stdParsed.File stdChecked.Signatures stdChecked.Symbols req true
+    let assembly = Assembly.LoadFrom outPath
+    { AssemblyPath = outPath
+      Assembly     = assembly
+      Source       = stdParsed.File
+      Symbols      = stdChecked.Symbols
+      Signatures   = stdChecked.Signatures }
+
+/// Get or compile the stdlib artifact.  Compilation runs at most once
+/// per process; subsequent callers get the cached result.
+let private getStdlibArtifact (corePath: string) : StdlibArtifact =
+    lock stdlibLock (fun () ->
+        match !stdlibArtifactCache with
+        | Some a -> a
+        | None ->
+            let a = compileStdlibFresh corePath
+            stdlibArtifactCache := Some a
+            a)
+
+/// Public accessor: returns the absolute path to the compiled stdlib
+/// DLL once compilation has run, or `None` if it hasn't yet.  The test
+/// harness uses this to copy the DLL alongside each user output.
+let stdlibAssemblyPath () : string option =
+    !stdlibArtifactCache |> Option.map (fun a -> a.AssemblyPath)
+
 /// Resolve `import Std.Core` declarations by locating `core.l`,
 /// parsing it (cached across emits), and prepending its items into the
 /// user file.  The Std.Core import entries are stripped from `Imports`
@@ -1178,6 +1255,12 @@ let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list
             let sp = (List.head stdCoreImps).Span
             sf, [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
         | Some path ->
+            // Trigger stdlib precompilation as a side effect.  The
+            // resulting `Lyric.Stdlib.Core.dll` lives in the per-process
+            // cache directory and isn't yet referenced by emitted user
+            // code (still inlining at the source level); cross-assembly
+            // referencing lands in subsequent slices of multi-package.
+            let _artifact = getStdlibArtifact path
             let stdFile, stdDiags = parseCoreLcached path
             let mergedItems = stdFile.Items @ sf.Items
             { sf with Imports = otherImps; Items = mergedItems }, stdDiags
@@ -1203,6 +1286,7 @@ let emit (req: EmitRequest) : EmitResult =
                 checked'.Signatures
                 checked'.Symbols
                 req
+                false
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
