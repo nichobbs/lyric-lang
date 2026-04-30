@@ -1355,27 +1355,6 @@ let private locateCoreL (startDir: string) : string option =
         dir <- d.Parent |> Option.ofObj
     found
 
-/// Cached result of parsing `core.l`.  Keyed by absolute path + last-
-/// write-time so an edit invalidates the cache on the next emit.
-type private StdlibParseEntry =
-    { Mtime: System.DateTime
-      File:  SourceFile
-      Diags: Diagnostic list }
-
-let private stdlibParseCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, StdlibParseEntry>()
-
-let private parseCoreLcached (path: string) : SourceFile * Diagnostic list =
-    let info = FileInfo(path)
-    let mtime = info.LastWriteTimeUtc
-    match stdlibParseCache.TryGetValue path with
-    | true, e when e.Mtime = mtime -> e.File, e.Diags
-    | _ ->
-        let parsed = parse (File.ReadAllText path)
-        let entry = { Mtime = mtime; File = parsed.File; Diags = parsed.Diagnostics }
-        stdlibParseCache.[path] <- entry
-        entry.File, entry.Diags
-
 // ---------------------------------------------------------------------------
 // Stdlib precompilation — `core.l` compiles once per process to a
 // standalone `Lyric.Stdlib.Core.dll` that user assemblies reference.
