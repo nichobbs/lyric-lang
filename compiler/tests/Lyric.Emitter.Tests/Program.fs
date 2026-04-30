@@ -27,6 +27,8 @@ let main argv =
             OpaqueTypeTests.tests
             MultiPackageTests.tests
             CrossAssemblyGenericTests.tests
+            WhereClauseTests.tests
+            NullaryInferenceTests.tests
             GenericUnionTests.tests
             SyntaxSimplificationTests.tests
             EndToEndSmokeTests.tests

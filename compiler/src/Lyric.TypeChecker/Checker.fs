@@ -188,6 +188,20 @@ let private resolveFunctionSig
 
     checkWhereClause table diags genericNames fn.Where
 
+    let bounds =
+        match fn.Where with
+        | Some wc ->
+            wc.Bounds
+            |> List.map (fun b ->
+                let constraints =
+                    b.Constraints
+                    |> List.choose (fun c ->
+                        match c.Head.Segments with
+                        | [name] -> Some name
+                        | _ -> None)
+                { Name = b.Name; Constraints = constraints })
+        | None -> []
+
     let resolveParam (p: Param) : ResolvedParam =
         { Name    = p.Name
           Type    = Resolver.resolveType table ctx diags p.Type
@@ -202,6 +216,7 @@ let private resolveFunctionSig
         | None   -> TyPrim PtUnit
 
     { Generics = genericNames
+      Bounds   = bounds
       Params   = parameters
       Return   = returnType
       IsAsync  = fn.IsAsync

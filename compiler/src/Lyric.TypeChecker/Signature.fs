@@ -16,11 +16,21 @@ type ResolvedParam =
       Default: bool
       Span:    Span }
 
+/// A resolved `where T: M1 + M2` bound: the generic parameter name
+/// followed by the markers/interfaces it must satisfy (each as a
+/// bare identifier; qualified constraint paths surface as a checker
+/// diagnostic at definition time).
+type ResolvedBound =
+    { Name:        string
+      Constraints: string list }
+
 /// A resolved function signature. Generic-parameter names are
-/// recorded here; bound enforcement (where T: Compare) is the type
-/// checker's later concern (T6).
+/// recorded alongside their `where`-clause bounds so call-site
+/// inference can check that inferred type arguments satisfy the
+/// declared markers.
 type ResolvedSignature =
     { Generics: string list
+      Bounds:   ResolvedBound list
       Params:   ResolvedParam list
       Return:   Type
       IsAsync:  bool
