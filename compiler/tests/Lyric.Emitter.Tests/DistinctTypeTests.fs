@@ -231,4 +231,34 @@ func main(): Unit {
 """
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd()) "0" "derives Default"
+
+        testCase "[inherent toInt]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ToIntA" """
+package ToIntA
+
+type UserId = Int
+
+func main(): Unit {
+  val u = UserId.from(123)
+  println(u.toInt())
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "123" "toInt projection"
+
+        testCase "[inherent toLong]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ToLongA" """
+package ToLongA
+
+type Cents = Long range 0 ..= 1000000
+
+func main(): Unit {
+  val c = Cents.from(5000)
+  println(c.toLong())
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "5000" "toLong projection"
     ]

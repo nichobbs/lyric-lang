@@ -342,6 +342,33 @@ let private defineDistinctType
         il.Emit(OpCodes.Callvirt, getHash)
         il.Emit(OpCodes.Ret)
 
+    // ---- inherent `to<Underlying>()` conversion ---------------------
+    // Always present: `type UserId = Int` gets `toInt(): Int`.  Per the
+    // spec the reverse `Long.toUserId(x)` is opt-in (user-declared);
+    // only the projection direction is automatic.
+    let underlyingMethodName =
+        if   underlyingClr = typeof<int32>  then Some "toInt"
+        elif underlyingClr = typeof<int64>  then Some "toLong"
+        elif underlyingClr = typeof<uint32> then Some "toUInt"
+        elif underlyingClr = typeof<uint64> then Some "toULong"
+        elif underlyingClr = typeof<byte>   then Some "toByte"
+        elif underlyingClr = typeof<single> then Some "toFloat"
+        elif underlyingClr = typeof<double> then Some "toDouble"
+        else None
+    match underlyingMethodName with
+    | Some name ->
+        let mb =
+            tb.DefineMethod(
+                name,
+                MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                underlyingClr,
+                [||])
+        let il = mb.GetILGenerator()
+        il.Emit(OpCodes.Ldarg_0)
+        il.Emit(OpCodes.Ldfld, valueField)
+        il.Emit(OpCodes.Ret)
+    | None -> ()
+
     // ---- derives Default ---------------------------------------------
     // `default(): <Self>` static — wrap the underlying type's zero.
     // Range-constrained types reject this at definition time when their
