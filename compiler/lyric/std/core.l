@@ -120,27 +120,27 @@ func countEq(xs: in slice[Int], target: in Int): Int {
 }
 
 // ---------------------------------------------------------------------------
-// Higher-order Option combinators — now that delegate lowering is in place.
+// Higher-order Option / Result combinators.
 // ---------------------------------------------------------------------------
 
-// Apply `f` to the value inside `Some`, or return `None`.
-func mapOption(o: in Option, f: in (Int) -> Int): Option {
+// Apply `f` to the value inside `Some`, or propagate `None`.
+generic[T, U] func mapOption(o: in Option[T], f: in (T) -> U): Option[U] {
   match o {
     case Some(v) -> Some(value = f(v))
     case None    -> None
   }
 }
 
-// Apply `f` to the Ok value, or propagate Err.
-func mapResult(r: in Result, f: in (Int) -> Int): Result {
+// Apply `f` to the Ok value; pass an Err through unchanged.
+generic[T, U, E] func mapResult(r: in Result[T, E], f: in (T) -> U): Result[U, E] {
   match r {
     case Ok(v)  -> Ok(value = f(v))
-    case Err(c) -> Err(code = c)
+    case Err(e) -> Err(error = e)
   }
 }
 
 // Return `Some(value = x)` when `pred(x)` is true, else `None`.
-func filterOption(o: in Option, pred: in (Int) -> Bool): Option {
+generic[T] func filterOption(o: in Option[T], pred: in (T) -> Bool): Option[T] {
   match o {
     case Some(v) -> if pred(v) { Some(value = v) } else { None }
     case None    -> None

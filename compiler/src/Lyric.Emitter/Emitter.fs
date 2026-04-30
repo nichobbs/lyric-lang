@@ -877,7 +877,7 @@ let private emitFunctionBody
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes
-            isInstance selfType programType resolveTypeForCtx
+            isInstance selfType programType resolveTypeForCtx lookup
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -1095,34 +1095,83 @@ let private emitAssembly
                 else stdNs + "." + name
             let getType (n: string) : System.Type option =
                 Option.ofObj (asm.GetType n)
+            // Resolver context against the artifact's symbol table —
+            // used to resolve each declared field/parameter type to a
+            // Lyric `Type`, which is what call-site type-arg inference
+            // walks (reflection on an open generic case type would
+            // surface a bare `T` and lose the structural shape).
+            let importResolveCtx = GenericContext()
+            let importDiags = ResizeArray<Diagnostic>()
+            let importLyric (typeParamNames: string list) (te: TypeExpr) : Lyric.TypeChecker.Type =
+                if not typeParamNames.IsEmpty then importResolveCtx.Push(typeParamNames)
+                let result =
+                    Resolver.resolveType artifact.Symbols importResolveCtx importDiags te
+                if not typeParamNames.IsEmpty then importResolveCtx.Pop() |> ignore
+                result
             // Unions
             for it in artifact.Source.Items do
                 match it.Kind with
                 | IUnion ud ->
+                    let typeParamNames =
+                        match ud.Generics with
+                        | Some gs ->
+                            gs.Params
+                            |> List.map (function
+                                | GPType(name, _) | GPValue(name, _, _) -> name)
+                        | None -> []
+                    let isGeneric = not typeParamNames.IsEmpty
                     match getType (qualify ud.Name) with
                     | None -> ()
                     | Some baseTy ->
                         let cases =
                             ud.Cases
                             |> List.choose (fun c ->
-                                // Case classes are proper CLR nested types
-                                // (defined via `DefineNestedType`); the
-                                // `+` separator works unescaped for them.
-                                let caseFullName = qualify ud.Name + "+" + c.Name
+                                // Generic unions emit case classes as top-
+                                // level types named `<NS>.<Union>_<Case>`
+                                // (per `defineUnion`'s generic path).  Non-
+                                // generic unions use proper nested CLR
+                                // types so `+` is the right separator.
+                                let caseFullName =
+                                    if isGeneric then
+                                        qualify ud.Name + "_" + c.Name
+                                    else
+                                        qualify ud.Name + "+" + c.Name
                                 match getType caseFullName with
                                 | None -> None
                                 | Some caseTy ->
                                     let ctorOpt =
                                         caseTy.GetConstructors()
                                         |> Array.tryHead
-                                    let fields =
+                                    // Walk the parsed case fields to
+                                    // resolve each LyricType against
+                                    // the artifact symbols, then pair
+                                    // it with the matching CLR FieldInfo
+                                    // looked up by name.
+                                    let parsedFields =
+                                        c.Fields
+                                        |> List.mapi (fun i f ->
+                                            let fname, te =
+                                                match f with
+                                                | UFNamed (n, te, _) -> n, te
+                                                | UFPos (te, _) -> sprintf "Item%d" (i + 1), te
+                                            let lty = importLyric typeParamNames te
+                                            fname, lty)
+                                    let clrFields =
                                         caseTy.GetFields()
                                         |> Array.filter (fun f -> f.IsPublic && not f.IsStatic)
-                                        |> Array.map (fun f ->
-                                            { Records.ImportedField.Name  = f.Name
-                                              Records.ImportedField.Type  = f.FieldType
-                                              Records.ImportedField.Field = f })
-                                        |> Array.toList
+                                        |> Array.map (fun f -> f.Name, f)
+                                        |> Map.ofArray
+                                    let fields =
+                                        parsedFields
+                                        |> List.choose (fun (fname, lty) ->
+                                            match Map.tryFind fname clrFields with
+                                            | Some fi ->
+                                                Some
+                                                    { Records.ImportedField.Name      = fname
+                                                      Records.ImportedField.Type      = fi.FieldType
+                                                      Records.ImportedField.LyricType = lty
+                                                      Records.ImportedField.Field     = fi }
+                                            | None -> None)
                                     match ctorOpt with
                                     | None -> None
                                     | Some ctor ->
@@ -1132,9 +1181,10 @@ let private emitAssembly
                                               Records.ImportedUnionCaseInfo.Fields = fields
                                               Records.ImportedUnionCaseInfo.Ctor = ctor })
                         let info =
-                            { Records.ImportedUnionInfo.Name  = ud.Name
-                              Records.ImportedUnionInfo.Type  = baseTy
-                              Records.ImportedUnionInfo.Cases = cases }
+                            { Records.ImportedUnionInfo.Name     = ud.Name
+                              Records.ImportedUnionInfo.Type     = baseTy
+                              Records.ImportedUnionInfo.Cases    = cases
+                              Records.ImportedUnionInfo.Generics = typeParamNames }
                         importedUnionTable.[ud.Name] <- info
                         for c in info.Cases do
                             importedUnionCaseLookup.[c.Name] <- (info, c)
@@ -1145,16 +1195,22 @@ let private emitAssembly
                         |> Option.iter (fun tid -> typeIdToClr.[tid] <- baseTy)
                 | _ -> ()
             // Functions — every IFunc lives as a static method on the
-            // stdlib's `<Pkg>.Program` type.
+            // stdlib's `<Pkg>.Program` type.  We pair the MethodInfo
+            // with the artifact's resolved signature so call-site
+            // type-arg inference can run against Lyric param shapes.
             match getType (qualify "Program") with
             | None -> ()
             | Some progTy ->
                 for it in artifact.Source.Items do
                     match it.Kind with
                     | IFunc fn ->
-                        match Option.ofObj (progTy.GetMethod fn.Name) with
-                        | Some mi -> importedFuncTable.[fn.Name] <- mi
-                        | None    -> ()
+                        match Option.ofObj (progTy.GetMethod fn.Name),
+                              Map.tryFind fn.Name artifact.Signatures with
+                        | Some mi, Some sg ->
+                            importedFuncTable.[fn.Name] <-
+                                { Records.ImportedFuncInfo.Method = mi
+                                  Records.ImportedFuncInfo.Sig    = sg }
+                        | _ -> ()
                     | _ -> ()
 
         for rd in recordItems sf do
