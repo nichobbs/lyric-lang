@@ -46,11 +46,35 @@ let private stdlibDll () : string =
     Path.Combine(baseDir, "Lyric.Stdlib.dll")
 
 /// Produce a clean output directory and copy the stdlib next to it.
+/// Also copies the precompiled Lyric.Stdlib.Core.dll if it exists, so
+/// emitted assemblies that import Std.Core can satisfy their cross-
+/// assembly references at runtime.
 let prepareOutputDir (name: string) : string =
     let dir = Path.Combine(Path.GetTempPath(), "lyric-emit-" + name + "-" + Guid.NewGuid().ToString("N"))
     Directory.CreateDirectory(dir) |> ignore
     File.Copy(stdlibDll (), Path.Combine(dir, "Lyric.Stdlib.dll"), overwrite = true)
+    match Lyric.Emitter.Emitter.stdlibAssemblyPath () with
+    | Some p when File.Exists p ->
+        let fname =
+            match Option.ofObj (Path.GetFileName p) with
+            | Some f -> f
+            | None   -> "Lyric.Stdlib.Core.dll"
+        File.Copy(p, Path.Combine(dir, fname), overwrite = true)
+    | _ -> ()
     dir
+
+/// Copy `Lyric.Stdlib.Core.dll` (if precompiled) into `outDir`.  Run
+/// after `emit` so the compilation has had a chance to populate the
+/// stdlib cache.
+let private copyStdlibCoreIfPresent (outDir: string) : unit =
+    match Lyric.Emitter.Emitter.stdlibAssemblyPath () with
+    | Some p when File.Exists p ->
+        let fname =
+            match Option.ofObj (Path.GetFileName p) with
+            | Some f -> f
+            | None   -> "Lyric.Stdlib.Core.dll"
+        File.Copy(p, Path.Combine(outDir, fname), overwrite = true)
+    | _ -> ()
 
 /// Compile + run a Lyric source string. Returns the stdout/stderr/
 /// exit-code triple plus the EmitResult so individual tests can
@@ -63,6 +87,10 @@ let compileAndRun (label: string) (source: string) : EmitResult * string * strin
           AssemblyName = label
           OutputPath   = dll }
     let r = emit req
+    // The first emit that imports Std.Core triggers stdlib precompile.
+    // Copy the resulting DLL into the output dir so the runtime probing
+    // path can resolve the cross-assembly reference.
+    copyStdlibCoreIfPresent outDir
     let stdout, stderr, exitCode =
         match r.OutputPath with
         | Some _ -> runDll dll

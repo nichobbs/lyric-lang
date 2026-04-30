@@ -56,6 +56,16 @@ type FunctionCtx =
       DistinctTypes: Lyric.Emitter.Records.DistinctTypeTable
       /// Projectable opaque types, keyed by opaque type name.
       Projectables: Lyric.Emitter.Records.ProjectableTable
+      /// Imported records from precompiled packages (e.g. Std.Core).
+      ImportedRecords: Lyric.Emitter.Records.ImportedRecordTable
+      /// Imported unions from precompiled packages.
+      ImportedUnions: Lyric.Emitter.Records.ImportedUnionTable
+      /// Imported union case constructors, both bare and qualified spellings.
+      ImportedUnionCases: Lyric.Emitter.Records.ImportedUnionCaseLookup
+      /// Imported free-standing functions.
+      ImportedFuncs: Lyric.Emitter.Records.ImportedFuncTable
+      /// Imported distinct types and their static factories.
+      ImportedDistinctTypes: Lyric.Emitter.Records.ImportedDistinctTypeTable
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -95,6 +105,11 @@ module FunctionCtx =
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
             (distinctTypes: Lyric.Emitter.Records.DistinctTypeTable)
             (projectables: Lyric.Emitter.Records.ProjectableTable)
+            (importedRecords: Lyric.Emitter.Records.ImportedRecordTable)
+            (importedUnions: Lyric.Emitter.Records.ImportedUnionTable)
+            (importedUnionCases: Lyric.Emitter.Records.ImportedUnionCaseLookup)
+            (importedFuncs: Lyric.Emitter.Records.ImportedFuncTable)
+            (importedDistinctTypes: Lyric.Emitter.Records.ImportedDistinctTypeTable)
             (isInstance: bool)
             (selfType: ClrType option)
             (programType: TypeBuilder)
@@ -119,6 +134,11 @@ module FunctionCtx =
           Interfaces   = interfaces
           DistinctTypes = distinctTypes
           Projectables = projectables
+          ImportedRecords     = importedRecords
+          ImportedUnions      = importedUnions
+          ImportedUnionCases  = importedUnionCases
+          ImportedFuncs       = importedFuncs
+          ImportedDistinctTypes = importedDistinctTypes
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -709,7 +729,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         il.Emit(OpCodes.Newobj, caseInfo.Ctor)
                         info.Type :> ClrType
                     | _ ->
-                        failwithf "E4 codegen: unknown name '%s'" name
+                        // Imported nullary case (cross-assembly).
+                        match ctx.ImportedUnionCases.TryGetValue name with
+                        | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
+                            il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                            info.Type
+                        | _ ->
+                            failwithf "E4 codegen: unknown name '%s'" name
 
     | EPath { Segments = [enumName; caseName] }
         when ctx.Enums.ContainsKey enumName ->
@@ -974,6 +1000,41 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Newobj, caseInfo.Ctor)
         info.Type :> ClrType
 
+    // ---- imported union case construction (e.g. Std.Core's Some) ------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.ImportedUnionCases.ContainsKey name ->
+        let info, caseInfo = ctx.ImportedUnionCases.[name]
+        let namedMap =
+            args
+            |> List.choose (function
+                | CANamed (n, ex, _) -> Some (n, ex)
+                | _ -> None)
+            |> Map.ofList
+        let positional =
+            args
+            |> List.choose (function
+                | CAPositional ex -> Some ex
+                | _ -> None)
+        let mutable posIdx = 0
+        for f in caseInfo.Fields do
+            let argExpr =
+                match Map.tryFind f.Name namedMap with
+                | Some ex -> ex
+                | None ->
+                    if posIdx < List.length positional then
+                        let ex = List.item posIdx positional
+                        posIdx <- posIdx + 1
+                        ex
+                    else
+                        failwithf "imported union case '%s' missing field '%s'"
+                            name f.Name
+            let argTy = emitExpr ctx argExpr
+            if f.Type = typeof<obj> && argTy.IsValueType then
+                il.Emit(OpCodes.Box, argTy)
+        il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+        info.Type
+
     // ---- record construction ------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
@@ -1122,7 +1183,31 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | None ->
                 failwithf "Delegate lowering: no Invoke on %s" delegateTy.Name
         | None ->
-            failwithf "E4 codegen: unknown name '%s'" name
+            // Last fallback: imported function from a precompiled
+            // package (e.g. Std.Core).  Cross-assembly call dispatches
+            // through the runtime MethodInfo we recovered via reflection.
+            match ctx.ImportedFuncs.TryGetValue name with
+            | true, mi ->
+                let paramTypes =
+                    mi.GetParameters()
+                    |> Array.map (fun p -> p.ParameterType)
+                args
+                |> List.iteri (fun i a ->
+                    let payload =
+                        match a with
+                        | CAPositional ex | CANamed (_, ex, _) -> ex
+                    let argTy = emitExpr ctx payload
+                    if i < paramTypes.Length then
+                        let pt = paramTypes.[i]
+                        if pt = typeof<obj> && argTy.IsValueType then
+                            il.Emit(OpCodes.Box, argTy)
+                        elif pt.IsValueType && (argTy = typeof<obj>) then
+                            il.Emit(OpCodes.Unbox_Any, pt))
+                il.Emit(OpCodes.Call, mi)
+                if mi.ReturnType = typeof<System.Void> then typeof<System.Void>
+                else mi.ReturnType
+            | _ ->
+                failwithf "E4 codegen: unknown name '%s'" name
 
     // ---- lambda expression --------------------------------------------
 
@@ -1186,6 +1271,8 @@ and private emitLambdaWith
             ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
             ctx.Projectables
+            ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
+            ctx.ImportedFuncs ctx.ImportedDistinctTypes
             false None ctx.ProgramType ctx.ResolveType
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
@@ -1264,6 +1351,7 @@ and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
     | PBinding (name, None) ->
         not (ctx.EnumCases.ContainsKey name)
         && not (ctx.UnionCases.ContainsKey name)
+        && not (ctx.ImportedUnionCases.ContainsKey name)
     | PParen inner -> alwaysMatches ctx inner
     | _ -> false
 
@@ -1295,9 +1383,17 @@ and private emitPatternTest
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
             | _ ->
-                // Plain identifier binding — always matches; the
-                // bind happens in `emitPatternBind`.
-                emitLdcI4 il 1
+                // Imported nullary union case (e.g. None from Std.Core).
+                match ctx.ImportedUnionCases.TryGetValue name with
+                | true, (_, caseInfo) ->
+                    il.Emit(OpCodes.Ldloc, tmp)
+                    il.Emit(OpCodes.Isinst, caseInfo.Type)
+                    il.Emit(OpCodes.Ldnull)
+                    il.Emit(OpCodes.Cgt_Un)
+                | _ ->
+                    // Plain identifier binding — always matches; the
+                    // bind happens in `emitPatternBind`.
+                    emitLdcI4 il 1
     | PParen inner ->
         emitPatternTest ctx tmp slotTy inner
     | PLiteral lit ->
@@ -1336,8 +1432,16 @@ and private emitPatternTest
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
             | _ ->
-                failwithf "E11 codegen: unknown constructor pattern '%s'"
-                    (String.concat "." path.Segments)
+                // Imported variant-bearing union case.
+                match ctx.ImportedUnionCases.TryGetValue key with
+                | true, (_, caseInfo) ->
+                    il.Emit(OpCodes.Ldloc, tmp)
+                    il.Emit(OpCodes.Isinst, caseInfo.Type)
+                    il.Emit(OpCodes.Ldnull)
+                    il.Emit(OpCodes.Cgt_Un)
+                | _ ->
+                    failwithf "E11 codegen: unknown constructor pattern '%s'"
+                        (String.concat "." path.Segments)
     | _ ->
         failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
 
@@ -1354,7 +1458,8 @@ and private emitPatternBind
     | PBinding (name, None)
         when name <> "_"
              && not (ctx.EnumCases.ContainsKey name)
-             && not (ctx.UnionCases.ContainsKey name) ->
+             && not (ctx.UnionCases.ContainsKey name)
+             && not (ctx.ImportedUnionCases.ContainsKey name) ->
         let lb = FunctionCtx.defineLocal ctx name tmp.LocalType
         il.Emit(OpCodes.Ldloc, tmp)
         il.Emit(OpCodes.Stloc, lb)
@@ -1364,35 +1469,46 @@ and private emitPatternBind
             match path.Segments with
             | [name] -> name
             | _ -> String.concat "." path.Segments
-        match ctx.UnionCases.TryGetValue key with
-        | true, (_, caseInfo) ->
-            // Cast `tmp` to the case subclass and store in a typed
-            // temp; sub-patterns load fields off it.
+        // Resolve the case info from local OR imported union tables.
+        let caseTy, caseFields =
+            match ctx.UnionCases.TryGetValue key with
+            | true, (_, caseInfo) ->
+                Some (caseInfo.Type :> ClrType),
+                caseInfo.Fields
+                |> List.map (fun f ->
+                    f.Name, f.Type, (f.Field :> FieldInfo))
+            | _ ->
+                match ctx.ImportedUnionCases.TryGetValue key with
+                | true, (_, caseInfo) ->
+                    Some caseInfo.Type,
+                    caseInfo.Fields
+                    |> List.map (fun f -> f.Name, f.Type, f.Field)
+                | _ -> None, []
+        match caseTy with
+        | Some t ->
             let castedTmp =
                 FunctionCtx.defineLocal ctx
-                    ("__case_" + caseInfo.Name) (caseInfo.Type :> ClrType)
+                    ("__case_" + key) t
             il.Emit(OpCodes.Ldloc, tmp)
-            il.Emit(OpCodes.Castclass, caseInfo.Type)
+            il.Emit(OpCodes.Castclass, t)
             il.Emit(OpCodes.Stloc, castedTmp)
             let pairs =
-                caseInfo.Fields
-                |> List.zip (sub |> List.truncate (List.length caseInfo.Fields))
-            for (sp, f) in pairs do
+                caseFields
+                |> List.zip (sub |> List.truncate (List.length caseFields))
+            for (sp, (_, fty, fInfo)) in pairs do
                 match sp.Kind with
                 | PBinding (name, None)
                     when name <> "_"
                          && not (ctx.EnumCases.ContainsKey name)
-                         && not (ctx.UnionCases.ContainsKey name) ->
-                    let lb = FunctionCtx.defineLocal ctx name f.Type
+                         && not (ctx.UnionCases.ContainsKey name)
+                         && not (ctx.ImportedUnionCases.ContainsKey name) ->
+                    let lb = FunctionCtx.defineLocal ctx name fty
                     il.Emit(OpCodes.Ldloc, castedTmp)
-                    il.Emit(OpCodes.Ldfld, f.Field)
+                    il.Emit(OpCodes.Ldfld, fInfo)
                     il.Emit(OpCodes.Stloc, lb)
                 | PWildcard | PBinding ("_", None) -> ()
-                | _ ->
-                    // Nested patterns (e.g. `case Some(Some(x))`) need
-                    // recursive testing; defer to a later slice.
-                    ()
-        | _ -> ()
+                | _ -> ()
+        | None -> ()
     | _ -> ()
 
 and private emitMatch
