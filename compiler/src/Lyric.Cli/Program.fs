@@ -94,10 +94,96 @@ let private copyStdlibArtifacts (outDir: string) : unit =
                 | None   -> "Lyric.Stdlib.<unknown>.dll"
             File.Copy(p, Path.Combine(outDir, fname), overwrite = true)
 
+/// Build cache: when a `.lyric-cache` sidecar next to `outPath`
+/// records the same SHA-256 fingerprint as the current source +
+/// every stdlib `.l` file the resolver might pull in, and the
+/// output PE itself still exists, the rebuild is skipped.
+///
+/// The fingerprint covers:
+///   * the source bytes
+///   * every file under `lyric/std/*.l` reachable from the source's
+///     directory (or any ancestor that contains a `lyric/std/` dir)
+///   * the running CLI assembly's mtime — bumped when the compiler
+///     itself is rebuilt, invalidating the cache for free.
+///
+/// Stored as a single hex digest line in `<outPath>.lyric-cache`.
+/// Pass `--force` to skip the cache and always rebuild.
+module private BuildCache =
+
+    open System.Security.Cryptography
+    open System.Text
+
+    let private appendBytes (sha: IncrementalHash) (bytes: byte array) =
+        sha.AppendData bytes
+
+    let private appendString (sha: IncrementalHash) (s: string) =
+        appendBytes sha (Encoding.UTF8.GetBytes s)
+
+    let private appendFile (sha: IncrementalHash) (path: string) =
+        if File.Exists path then
+            appendString sha path
+            appendBytes sha (File.ReadAllBytes path)
+
+    /// Walk up from `startDir` looking for `lyric/std/`; returns the
+    /// alphabetically-sorted list of `.l` files inside or `[]`.
+    let private locateStdlibFiles (startDir: string) : string list =
+        let mutable dir = Some (DirectoryInfo(startDir))
+        let mutable found : string option = None
+        while found.IsNone && (Option.isSome dir) do
+            match dir with
+            | Some d ->
+                let candidate = Path.Combine(d.FullName, "lyric", "std")
+                if Directory.Exists candidate then found <- Some candidate
+                dir <- Option.ofObj d.Parent
+            | None -> ()
+        match found with
+        | Some stdDir ->
+            Directory.GetFiles(stdDir, "*.l")
+            |> Array.sort
+            |> List.ofArray
+        | None -> []
+
+    let fingerprint (sourcePath: string) : string =
+        use sha = IncrementalHash.CreateHash HashAlgorithmName.SHA256
+        appendFile sha sourcePath
+        let sourceDir =
+            safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
+        for std in locateStdlibFiles sourceDir do
+            appendFile sha std
+        // Compiler-version bump: any rebuild of the CLI itself
+        // invalidates user caches.
+        let cliAsm =
+            Path.Combine(AppContext.BaseDirectory, "lyric.dll")
+        if File.Exists cliAsm then
+            appendString sha (File.GetLastWriteTimeUtc(cliAsm).ToString "o")
+        let bytes = sha.GetHashAndReset()
+        let sb = StringBuilder(bytes.Length * 2)
+        for b in bytes do sb.Append(b.ToString "x2") |> ignore
+        sb.ToString()
+
+    let sidecarPath (outPath: string) : string =
+        outPath + ".lyric-cache"
+
+    let isFresh (sourcePath: string) (outPath: string) : bool =
+        let sidecar = sidecarPath outPath
+        File.Exists outPath
+        && File.Exists sidecar
+        && (File.ReadAllText sidecar).Trim() = fingerprint sourcePath
+
+    let stamp (sourcePath: string) (outPath: string) : unit =
+        File.WriteAllText(sidecarPath outPath, fingerprint sourcePath)
+
 /// Compile `sourcePath` and write a `.dll` to `outPath` (plus the
 /// runtimeconfig + stdlib DLLs alongside).  Returns 0 on success,
-/// 1 if any error diagnostics were emitted.
-let private build (sourcePath: string) (outPath: string) : int =
+/// 1 if any error diagnostics were emitted.  When `force = false`
+/// and the build cache says the existing output is up to date, the
+/// emit is skipped entirely and the CLI just confirms the cached
+/// hit.
+let private build (sourcePath: string) (outPath: string) (force: bool) : int =
+    if (not force) && BuildCache.isFresh sourcePath outPath then
+        printfn "up to date %s" outPath
+        0
+    else
     let source = File.ReadAllText sourcePath
     let outDir =
         safeStr (Path.GetDirectoryName(Path.GetFullPath outPath)) "."
@@ -128,9 +214,14 @@ let private build (sourcePath: string) (outPath: string) : int =
     | Some _ when not hadError ->
         writeRuntimeConfig outPath
         copyStdlibArtifacts outDir
+        BuildCache.stamp sourcePath outPath
         printfn "built %s" outPath
         0
     | _ ->
+        // Wipe a stale sidecar if the build failed, so the next
+        // invocation isn't tricked into thinking the cache is fresh.
+        let sidecar = BuildCache.sidecarPath outPath
+        if File.Exists sidecar then File.Delete sidecar
         printErr (sprintf "%s: build failed" sourcePath)
         1
 
@@ -144,7 +235,10 @@ let private run (sourcePath: string) (args: string array) : int =
         Path.Combine(tmp,
                      safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                      + ".dll")
-    let buildExit = build sourcePath outPath
+    // Always force-build for `run` — the temp dir is fresh each
+    // invocation so the cache check would always miss anyway, and
+    // writing the sidecar there is wasted IO.
+    let buildExit = build sourcePath outPath true
     if buildExit <> 0 then buildExit
     else
         let psi = Diagnostics.ProcessStartInfo()
@@ -165,9 +259,12 @@ let private run (sourcePath: string) (args: string array) : int =
 
 let private printUsage () : unit =
     printErr "Usage:"
-    printErr "  lyric build <source.l> [-o <output.dll>]"
+    printErr "  lyric build <source.l> [-o <output.dll>] [--force]"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric --version"
+    printErr ""
+    printErr "  build is incremental — re-running with the same source +"
+    printErr "  stdlib closure skips the emit; pass --force to rebuild."
 
 [<EntryPoint>]
 let main (argv: string array) : int =
@@ -180,23 +277,39 @@ let main (argv: string array) : int =
         printfn "lyric %s" VERSION
         0
     | "build" :: rest ->
-        match rest with
+        let mutable force = false
+        let mutable explicitOut : string option = None
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "--force" :: tail ->
+                force <- true
+                cursor <- tail
+            | "-o" :: out :: tail ->
+                explicitOut <- Some out
+                cursor <- tail
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
         | [] ->
             printErr "build: missing source file"
             printUsage ()
             1
-        | sourcePath :: more ->
+        | sourcePath :: _ ->
             let outPath =
-                match more with
-                | "-o" :: out :: _ -> out
-                | _ ->
+                match explicitOut with
+                | Some o -> o
+                | None ->
                     // Default: <source-dir>/<basename>.dll
                     let dir =
                         safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
-            build sourcePath outPath
+            build sourcePath outPath force
     | "run" :: rest ->
         match rest with
         | [] ->
