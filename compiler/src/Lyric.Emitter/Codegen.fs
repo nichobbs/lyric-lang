@@ -17,9 +17,14 @@ open Lyric.Parser.Ast
 type private ClrType = System.Type
 
 /// A single loop frame — break exits, continue rejoins the head.
+/// `TryDepthAtFrame` snapshots `FunctionCtx.TryDepth` at the loop
+/// header; `break` / `continue` use `leave` instead of `br` when the
+/// current depth exceeds this baseline (i.e. the branch crosses a
+/// protected region opened inside the loop body).
 type LoopFrame =
-    { BreakLabel:    Label
-      ContinueLabel: Label }
+    { BreakLabel:      Label
+      ContinueLabel:   Label
+      TryDepthAtFrame: int }
 
 /// Per-function emit context. Mutable on purpose: F# expression
 /// emission threads through a long mutual-recursion graph and a
@@ -95,6 +100,12 @@ type FunctionCtx =
       /// arithmetic context provides one.  Save & restore around
       /// nested emits to avoid leaking across siblings.
       mutable ExpectedType: ClrType option
+      /// How many active `try { … } finally { … }` regions wrap the
+      /// current emission.  ECMA-335 requires `leave` (not `br`) to
+      /// branch out of a protected region; the codegen consults
+      /// `TryDepth > 0` whenever it routes a return / break /
+      /// continue to a label that may sit outside the current try.
+      mutable TryDepth: int
       /// The program TypeBuilder, used to synthesise static
       /// methods for non-capturing lambda expressions.
       ProgramType: TypeBuilder
@@ -163,6 +174,7 @@ module FunctionCtx =
           ReturnLabel  = None
           ResultLocal  = None
           ExpectedType = None
+          TryDepth     = 0
           ProgramType  = programType
           ResolveType  = resolveType
           Lookup       = lookup }
@@ -2518,28 +2530,33 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     | SReturn None ->
         // Branch to the synthesised single exit if one was set up;
         // otherwise emit a bare ret (legacy path for the host's
-        // synthetic Main entry point).
+        // synthetic Main entry point).  Inside a try { … } finally
+        // protected region the branch must be a `leave`, not a `br`.
         match ctx.ReturnLabel with
-        | Some lbl -> il.Emit(OpCodes.Br, lbl)
-        | None     -> il.Emit(OpCodes.Ret)
+        | Some lbl ->
+            if ctx.TryDepth > 0 then il.Emit(OpCodes.Leave, lbl)
+            else il.Emit(OpCodes.Br, lbl)
+        | None -> il.Emit(OpCodes.Ret)
 
     | SReturn (Some e) ->
         let _ = emitExpr ctx e
         match ctx.ReturnLabel, ctx.ResultLocal with
         | Some lbl, Some loc ->
             il.Emit(OpCodes.Stloc, loc)
-            il.Emit(OpCodes.Br, lbl)
+            if ctx.TryDepth > 0 then il.Emit(OpCodes.Leave, lbl)
+            else il.Emit(OpCodes.Br, lbl)
         | Some lbl, None ->
             // Non-void value into a void-returning function — drop.
             il.Emit(OpCodes.Pop)
-            il.Emit(OpCodes.Br, lbl)
+            if ctx.TryDepth > 0 then il.Emit(OpCodes.Leave, lbl)
+            else il.Emit(OpCodes.Br, lbl)
         | None, _ ->
             il.Emit(OpCodes.Ret)
 
     | SWhile (_label, cond, body) ->
         let lblHead = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead }
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth }
         il.MarkLabel(lblHead)
         let _ = emitExpr ctx cond
         il.Emit(OpCodes.Brfalse, lblEnd)
@@ -2551,7 +2568,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     | SLoop (_label, body) ->
         let lblHead = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead }
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth }
         il.MarkLabel(lblHead)
         emitBlock ctx body
         il.Emit(OpCodes.Br, lblHead)
@@ -2560,13 +2577,21 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
 
     | SBreak _ ->
         match FunctionCtx.currentLoop ctx with
-        | Some f -> il.Emit(OpCodes.Br, f.BreakLabel)
-        | None   -> failwith "E3 codegen: 'break' outside of a loop"
+        | Some f ->
+            if ctx.TryDepth > f.TryDepthAtFrame then
+                il.Emit(OpCodes.Leave, f.BreakLabel)
+            else
+                il.Emit(OpCodes.Br, f.BreakLabel)
+        | None -> failwith "E3 codegen: 'break' outside of a loop"
 
     | SContinue _ ->
         match FunctionCtx.currentLoop ctx with
-        | Some f -> il.Emit(OpCodes.Br, f.ContinueLabel)
-        | None   -> failwith "E3 codegen: 'continue' outside of a loop"
+        | Some f ->
+            if ctx.TryDepth > f.TryDepthAtFrame then
+                il.Emit(OpCodes.Leave, f.ContinueLabel)
+            else
+                il.Emit(OpCodes.Br, f.ContinueLabel)
+        | None -> failwith "E3 codegen: 'continue' outside of a loop"
 
     | SFor (_label, { Kind = PBinding (name, None) }, iter, body) ->
         // `for x in slice { body }` lowers to a counter + ldelem loop.
@@ -2586,7 +2611,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         il.Emit(OpCodes.Stloc, idxLocal)
         let lblHead = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead }
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth }
         il.MarkLabel(lblHead)
         // if (idx >= length) goto end
         il.Emit(OpCodes.Ldloc, idxLocal)
@@ -2655,7 +2680,9 @@ and emitStatementsWithDeferTail
         | SDefer body ->
             let il = ctx.IL
             il.BeginExceptionBlock() |> ignore
+            ctx.TryDepth <- ctx.TryDepth + 1
             emitStatementsWithDeferTail ctx rest tail
+            ctx.TryDepth <- ctx.TryDepth - 1
             il.BeginFinallyBlock()
             FunctionCtx.pushScope ctx
             emitStatementsWithDeferTail ctx body.Statements (fun () -> ())
