@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Lyric.Cli</RootNamespace>
+    <AssemblyName>lyric</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
+    <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
+    <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+    <ProjectReference Include="..\Lyric.Stdlib\Lyric.Stdlib.fsproj" />
+    <ProjectReference Include="..\Lyric.Emitter\Lyric.Emitter.fsproj" />
+  </ItemGroup>
+
+</Project>

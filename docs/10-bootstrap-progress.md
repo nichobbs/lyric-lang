@@ -142,3 +142,50 @@ F#-side static methods that have existed since M1.4).  Without this
 wiring, any stdlib module — `parse.l`'s `parseInt` for instance —
 that calls `panic` to escalate a `Result.Err` into an exception
 hit `E4 codegen: unknown name 'panic'`.
+
+### D-progress-009: bootstrap CLI + first real-world program
+*Lyric CLI branch.*  The `lyric` CLI (lives in
+`compiler/src/Lyric.Cli/`) wraps `Emitter.emit` for direct
+command-line use:
+
+```
+lyric build path/to/foo.l            # writes foo.dll alongside
+lyric build foo.l -o out/bar.dll
+lyric run   foo.l                    # builds + dotnet exec
+```
+
+It writes a sibling `runtimeconfig.json` (computed from the host's
+`Environment.Version`) and copies `Lyric.Stdlib.dll` plus any
+precompiled `Lyric.Stdlib.<X>.dll` artifacts alongside the output
+PE so `dotnet exec` resolves cross-assembly references without
+manual setup.
+
+Writing the first real program (`examples/csv.l`) immediately
+surfaced four gaps in the language surface that the test harness
+had hidden:
+
+1. **`s[i]` on a String wasn't supported.**  Codegen now lowers it
+   to `String::get_Chars(int)` returning `Char`.
+2. **`println(<non-string>)` didn't type-check.**  Even though
+   codegen routed non-string args through `Console.PrintlnAny(obj)`
+   with auto-boxing, the type checker had `println` typed as
+   `(String) -> Unit`.  Now the checker treats `println`'s arg as
+   `TyError` (compatible-with-anything) and lets codegen pick the
+   overload.
+3. **`String + <other>` didn't type-check.**  Codegen handles
+   string concatenation across types via `String.Concat`, but the
+   checker insisted on `String + String`.  Now `BAdd` with a
+   String LHS produces `String` regardless of RHS.
+4. **`println` / `panic` / `expect` / `assert` / `hostParseXxx`
+   were codegen-only builtins.**  The checker now has a
+   `codegenBuiltinType` table that surfaces them as ordinary
+   functions for resolution.
+
+The CLI also wraps `Emitter.emit` in a `try`/`with` so internal
+`failwithf` paths (still used for "M2.x not yet supported"
+messages in codegen) surface as a clean `internal error: …`
+diagnostic + exit 1 instead of a stack trace.
+
+**Bootstrap-grade scope of the CLI**: no incremental builds, no
+build cache (each invocation reparses everything), no `--release`
+flag, no AOT.  These are tracked Phase 3 follow-ups.
