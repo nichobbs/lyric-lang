@@ -728,7 +728,18 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         | None   -> typeof<obj>
 
     | ESelf ->
-        failwith "E12 codegen: 'self' used outside of an impl method"
+        // D037: methods declared inline in a record body hoist to
+        // top-level UFCS functions whose first parameter is named
+        // `self`.  When the body says `self.x`, the parser produces
+        // `EMember(ESelf, "x")`; resolve `ESelf` against that
+        // parameter so inline methods Just Work without an AST
+        // rewrite pass.
+        match ctx.Params.TryGetValue "self" with
+        | true, (idx, pty) ->
+            il.Emit(OpCodes.Ldarg, idx)
+            pty
+        | _ ->
+            failwith "E12 codegen: 'self' used outside of an impl method"
 
     // ---- await (blocking shim per D035) -------------------------------
 
@@ -950,6 +961,40 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | ECall ({ Kind = EMember (recv, methodName) }, args) ->
         let recvTy = emitExpr ctx recv
+        // D037: methods declared inline in a record / opaque body
+        // hoist to top-level UFCS-style `<TypeName>.<methodName>`
+        // functions.  When the receiver is a known local record /
+        // opaque whose dotted-name function is in scope, dispatch to
+        // that static call (passing recv as the first arg) before any
+        // reflection-based lookup — `recvTy.GetMethods()` would throw
+        // because the TypeBuilder isn't sealed yet.
+        let inlineUfcsCall : (MethodBuilder * string) option =
+            let typeName =
+                ctx.Records
+                |> Seq.tryPick (fun kv ->
+                    if (kv.Value.Type :> System.Type) = recvTy then Some kv.Key
+                    else None)
+            match typeName with
+            | Some n ->
+                let key = n + "." + methodName
+                match ctx.Funcs.TryGetValue key with
+                | true, mb -> Some (mb, key)
+                | _ -> None
+            | None -> None
+        match inlineUfcsCall with
+        | Some (mb, _) ->
+            // Receiver is already on the stack; emit args next.
+            for a in args do
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let _ = emitExpr ctx payload
+                ()
+            il.Emit(OpCodes.Call, mb)
+            if mb.ReturnType = typeof<System.Void> then typeof<System.Void>
+            else mb.ReturnType
+        | None ->
+
         // Try to find an interface method with this name.
         let ifaceMethod =
             ctx.Interfaces.Values
