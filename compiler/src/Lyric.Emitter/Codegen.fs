@@ -54,6 +54,8 @@ type FunctionCtx =
       Interfaces: Lyric.Emitter.Records.InterfaceTable
       /// Distinct types and range subtypes, keyed by name.
       DistinctTypes: Lyric.Emitter.Records.DistinctTypeTable
+      /// Projectable opaque types, keyed by opaque type name.
+      Projectables: Lyric.Emitter.Records.ProjectableTable
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -92,6 +94,7 @@ module FunctionCtx =
             (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
             (distinctTypes: Lyric.Emitter.Records.DistinctTypeTable)
+            (projectables: Lyric.Emitter.Records.ProjectableTable)
             (isInstance: bool)
             (selfType: ClrType option)
             (programType: TypeBuilder)
@@ -115,6 +118,7 @@ module FunctionCtx =
           UnionCases   = unionCases
           Interfaces   = interfaces
           DistinctTypes = distinctTypes
+          Projectables = projectables
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -513,6 +517,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EOld _ ->
         failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
+
+    // ---- projectable opaque: u.toView() -------------------------------
+
+    | ECall ({ Kind = EMember (recv, "toView") }, []) ->
+        let recvTy = emitExpr ctx recv
+        let proj =
+            ctx.Projectables.Values
+            |> Seq.tryFind (fun p ->
+                match Option.ofObj p.ToViewMethod.DeclaringType with
+                | Some dt -> dt = recvTy
+                | None    -> false)
+        match proj with
+        | Some p ->
+            il.Emit(OpCodes.Callvirt, p.ToViewMethod)
+            p.ViewType.Type :> ClrType
+        | None ->
+            failwithf "M2.2 codegen: receiver %s is not a @projectable opaque type"
+                recvTy.Name
 
     // ---- distinct type static factory: TypeName.from(x) / .tryFrom(x) --
 
@@ -1125,6 +1147,7 @@ and private emitLambdaWith
             lambdaIL retTy paramPairs
             ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
+            ctx.Projectables
             false None ctx.ProgramType ctx.ResolveType
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
