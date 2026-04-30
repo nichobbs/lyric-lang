@@ -104,6 +104,46 @@ func main(): Unit {
 }
 """,
     "31\n9\n2"
+
+    "mapOption",
+    """
+func main(): Unit {
+  println(isSome(mapOption(Some(value = 3), { x: Int -> x * 2 })))
+  println(unwrapOr(mapOption(Some(value = 3), { x: Int -> x * 2 }), 0))
+  println(isSome(mapOption(None, { x: Int -> x * 2 })))
+}
+""",
+    "True\n6\nFalse"
+
+    "mapResult",
+    """
+func main(): Unit {
+  println(isOk(mapResult(Ok(value = 5), { x: Int -> x + 1 })))
+  println(unwrapResultOr(mapResult(Ok(value = 5), { x: Int -> x + 1 }), 0))
+  println(isOk(mapResult(Err(code = 42), { x: Int -> x + 1 })))
+}
+""",
+    "True\n6\nFalse"
+
+    "filterOption",
+    """
+func main(): Unit {
+  println(isSome(filterOption(Some(value = 10), { x: Int -> x > 5 })))
+  println(isSome(filterOption(Some(value = 3), { x: Int -> x > 5 })))
+  println(isSome(filterOption(None, { x: Int -> x > 5 })))
+}
+""",
+    "True\nFalse\nFalse"
+
+    "countWhere",
+    """
+func main(): Unit {
+  val xs = [1, 2, 3, 4, 5, 6]
+  println(countWhere(xs, { x: Int -> x > 3 }))
+  println(countWhere(xs, { x: Int -> x == 2 }))
+}
+""",
+    "3\n1"
 ]
 
 /// Smoke test for the string-concatenation polish that this branch

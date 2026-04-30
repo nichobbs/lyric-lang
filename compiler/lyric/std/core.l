@@ -118,10 +118,44 @@ func maxInt(xs: in slice[Int]): Int {
   return best
 }
 
-// Count elements equal to `target`. (No higher-order `countWhere`
-// yet; see the file header.)
+// Count elements equal to `target`.
 func countEq(xs: in slice[Int], target: in Int): Int {
   var n = 0
   for x in xs { if x == target { n += 1 } }
+  return n
+}
+
+// ---------------------------------------------------------------------------
+// Higher-order Option combinators — now that delegate lowering is in place.
+// ---------------------------------------------------------------------------
+
+// Apply `f` to the value inside `Some`, or return `None`.
+func mapOption(o: in Option, f: in (Int) -> Int): Option {
+  match o {
+    case Some(v) -> Some(value = f(v))
+    case None    -> None
+  }
+}
+
+// Apply `f` to the Ok value, or propagate Err.
+func mapResult(r: in Result, f: in (Int) -> Int): Result {
+  match r {
+    case Ok(v)  -> Ok(value = f(v))
+    case Err(c) -> Err(code = c)
+  }
+}
+
+// Return `Some(value = x)` when `pred(x)` is true, else `None`.
+func filterOption(o: in Option, pred: in (Int) -> Bool): Option {
+  match o {
+    case Some(v) -> if pred(v) { Some(value = v) } else { None }
+    case None    -> None
+  }
+}
+
+// Count elements satisfying `pred`.
+func countWhere(xs: in slice[Int], pred: in (Int) -> Bool): Int {
+  var n = 0
+  for x in xs { if pred(x) { n += 1 } }
   return n
 }

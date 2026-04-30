@@ -414,7 +414,9 @@ let private emitFunctionBody
         (unionCases: Records.UnionCaseLookup)
         (interfaces: Records.InterfaceTable)
         (isInstance: bool)
-        (selfType: System.Type option) : unit =
+        (selfType: System.Type option)
+        (programType: TypeBuilder)
+        (symbols: SymbolTable) : unit =
     let il = mb.GetILGenerator()
     // For an async function the *body* still computes a value of
     // the bare return type; the wrapping into `Task<T>` only kicks
@@ -427,11 +429,17 @@ let private emitFunctionBody
     let paramList =
         sg.Params
         |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
+    // Type-resolution closure used by lambda synthesis inside the body.
+    let resolveCtxInner = GenericContext()
+    let scratchDiagsInner = ResizeArray<Diagnostic>()
+    let resolveTypeForCtx (te: TypeExpr) : System.Type =
+        let lty = Resolver.resolveType symbols resolveCtxInner scratchDiagsInner te
+        TypeMap.toClrTypeWith lookup lty
     let ctx =
         Codegen.FunctionCtx.make
             il returnTy paramList
             funcs records enums enumCases unions unionCases
-            interfaces isInstance selfType
+            interfaces isInstance selfType programType resolveTypeForCtx
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -802,6 +810,7 @@ let private emitAssembly
                 methodTable.[fn.Name] fn sg lookup
                 methodTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable false None
+                programTy symbols
 
         // Pass B.5 — emit impl-method bodies as instance methods.
         for (fd, mb, sg) in implMethods do
@@ -813,7 +822,7 @@ let private emitAssembly
                 mb fd sg lookup
                 methodTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable true
-                (Option.ofObj selfTy)
+                (Option.ofObj selfTy) programTy symbols
 
         let lyricMain = methodTable.["main"]
         let hostMain  = defineHostEntryPoint programTy lyricMain

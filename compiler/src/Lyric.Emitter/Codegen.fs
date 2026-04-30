@@ -68,7 +68,13 @@ type FunctionCtx =
       /// Where the returned value is stashed before the
       /// `ReturnLabel` block runs. `None` for void-returning
       /// methods.
-      mutable ResultLocal: LocalBuilder option }
+      mutable ResultLocal: LocalBuilder option
+      /// The program TypeBuilder, used to synthesise static
+      /// methods for non-capturing lambda expressions.
+      ProgramType: TypeBuilder
+      /// Resolve a `TypeExpr` from the surface syntax to a CLR type.
+      /// Closed over the symbols and type-id lookup from Emitter.fs.
+      ResolveType: Lyric.Parser.Ast.TypeExpr -> System.Type }
 
 module FunctionCtx =
 
@@ -84,29 +90,33 @@ module FunctionCtx =
             (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
             (isInstance: bool)
-            (selfType: ClrType option) : FunctionCtx =
+            (selfType: ClrType option)
+            (programType: TypeBuilder)
+            (resolveType: Lyric.Parser.Ast.TypeExpr -> System.Type) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
         let argShift = if isInstance then 1 else 0
         paramList
         |> List.iteri (fun i (name, ty) -> p.[name] <- (i + argShift, ty))
-        { IL         = il
-          ReturnType = returnType
-          Scopes     = s
-          Loops      = Stack()
-          Params     = p
-          Funcs      = funcs
-          Records    = records
-          Enums      = enums
-          EnumCases  = enumCases
-          Unions     = unions
-          UnionCases = unionCases
-          Interfaces = interfaces
-          IsInstance = isInstance
-          SelfType   = selfType
+        { IL          = il
+          ReturnType  = returnType
+          Scopes      = s
+          Loops       = Stack()
+          Params      = p
+          Funcs       = funcs
+          Records     = records
+          Enums       = enums
+          EnumCases   = enumCases
+          Unions      = unions
+          UnionCases  = unionCases
+          Interfaces  = interfaces
+          IsInstance  = isInstance
+          SelfType    = selfType
           ReturnLabel = None
-          ResultLocal = None }
+          ResultLocal = None
+          ProgramType = programType
+          ResolveType = resolveType }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -260,6 +270,49 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
             | true, (_, t) -> t
             | _            -> typeof<obj>
     | _ -> typeof<obj>
+
+// ---------------------------------------------------------------------------
+// Lambda synthesis helpers.
+// ---------------------------------------------------------------------------
+
+let private lambdaSeq = ref 0
+let private freshLambdaName () =
+    let n = System.Threading.Interlocked.Increment(lambdaSeq)
+    sprintf "<lambda_%d>" n
+
+/// Given a CLR delegate type (Func<…> or Action<…>), extract
+/// `(paramTypes, returnType)` where returnType is `Void` for Action.
+let private dissectDelegateTy (delegateTy: ClrType) : (ClrType[] * ClrType) option =
+    if not (delegateTy.IsSubclassOf typeof<System.Delegate>) then None
+    else
+        let invoke = delegateTy.GetMethod "Invoke"
+        match Option.ofObj invoke with
+        | None -> None
+        | Some m ->
+            let pts = m.GetParameters() |> Array.map (fun p -> p.ParameterType)
+            Some (pts, m.ReturnType)
+
+/// Build a `Func<…>` or `Action<…>` CLR type from component types.
+/// `paramTys` are the delegate's CLR input types; `retTy` is the
+/// output type (`Void` → Action family).
+let private makeDelegateTy (paramTys: ClrType[]) (retTy: ClrType) : ClrType =
+    if retTy = typeof<System.Void> then
+        match paramTys.Length with
+        | 0 -> typeof<System.Action>
+        | 1 -> typedefof<System.Action<_>>.MakeGenericType(paramTys)
+        | 2 -> typedefof<System.Action<_,_>>.MakeGenericType(paramTys)
+        | 3 -> typedefof<System.Action<_,_,_>>.MakeGenericType(paramTys)
+        | 4 -> typedefof<System.Action<_,_,_,_>>.MakeGenericType(paramTys)
+        | n -> failwithf "Delegate lowering: Action<%d> not supported" n
+    else
+        let allTys = Array.append paramTys [| retTy |]
+        match allTys.Length with
+        | 1 -> typedefof<System.Func<_>>.MakeGenericType(allTys)
+        | 2 -> typedefof<System.Func<_,_>>.MakeGenericType(allTys)
+        | 3 -> typedefof<System.Func<_,_,_>>.MakeGenericType(allTys)
+        | 4 -> typedefof<System.Func<_,_,_,_>>.MakeGenericType(allTys)
+        | 5 -> typedefof<System.Func<_,_,_,_,_>>.MakeGenericType(allTys)
+        | n -> failwithf "Delegate lowering: Func<%d> not supported" n
 
 // ---------------------------------------------------------------------------
 // Expression / statement emission.
@@ -703,10 +756,10 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let lblElse = il.DefineLabel()
             let lblEnd  = il.DefineLabel()
             il.Emit(OpCodes.Brfalse, lblElse)
-            let thenTy = emitBranch ctx thenBranch
+            let thenTy = emitBranchValue ctx thenBranch
             il.Emit(OpCodes.Br, lblEnd)
             il.MarkLabel(lblElse)
-            let elseTy = emitBranch ctx elseB
+            let elseTy = emitBranchValue ctx elseB
             il.MarkLabel(lblEnd)
             // Both branches must agree on whether they push a value.
             if thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
@@ -792,33 +845,6 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Newobj, info.Ctor)
         info.Type :> ClrType
 
-    // ---- user-defined call --------------------------------------------
-
-    | ECall ({ Kind = EPath { Segments = [name] } }, args)
-        when ctx.Funcs.ContainsKey name ->
-        let mb = ctx.Funcs.[name]
-        // Per D035, generics monomorphise via erasure: type
-        // parameters lower to `obj` and value-typed call-site args
-        // box at the boundary. Inspect each parameter slot and box
-        // when needed.
-        let paramTypes =
-            mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
-        args
-        |> List.iteri (fun i a ->
-            let payload =
-                match a with
-                | CAPositional ex | CANamed (_, ex, _) -> ex
-            let argTy = emitExpr ctx payload
-            if i < paramTypes.Length
-               && paramTypes.[i] = typeof<obj>
-               && argTy.IsValueType then
-                il.Emit(OpCodes.Box, argTy))
-        il.Emit(OpCodes.Call, mb)
-        if mb.ReturnType = typeof<System.Void> then
-            typeof<System.Void>
-        else
-            mb.ReturnType
-
     // ---- println builtin ----------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = ["println"] } }, [arg]) ->
@@ -833,8 +859,181 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             il.Emit(OpCodes.Call, printlnAny.Value)
         typeof<System.Void>
 
+    // ---- user-defined call --------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.Funcs.ContainsKey name ->
+        let mb = ctx.Funcs.[name]
+        // Per D035, generics monomorphise via erasure: type
+        // parameters lower to `obj` and value-typed call-site args
+        // box at the boundary. When a parameter slot is a delegate
+        // type and the argument is a lambda, pass the expected type
+        // so the lambda synthesiser picks the right signature.
+        let paramTypes =
+            mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
+        args
+        |> List.iteri (fun i a ->
+            let payload =
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex
+            let expectedDelegateTy =
+                if i < paramTypes.Length
+                   && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
+                then Some paramTypes.[i]
+                else None
+            match payload.Kind, expectedDelegateTy with
+            | ELambda (lps, body), Some dt ->
+                emitLambdaWith ctx lps body (Some dt) |> ignore
+            | ELambda (lps, body), None ->
+                emitLambdaWith ctx lps body None |> ignore
+            | _ ->
+                let argTy = emitExpr ctx payload
+                if i < paramTypes.Length
+                   && paramTypes.[i] = typeof<obj>
+                   && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy))
+        il.Emit(OpCodes.Call, mb)
+        if mb.ReturnType = typeof<System.Void> then
+            typeof<System.Void>
+        else
+            mb.ReturnType
+
+    // ---- delegate / higher-order call ---------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args) ->
+        // Name not in Funcs — check if it is a delegate-typed local or
+        // parameter. If so, emit `callvirt Invoke`.
+        let delegateLoad () =
+            match FunctionCtx.tryLookup ctx name with
+            | Some lb when lb.LocalType.IsSubclassOf typeof<System.Delegate> ->
+                il.Emit(OpCodes.Ldloc, lb)
+                Some lb.LocalType
+            | _ ->
+                match ctx.Params.TryGetValue name with
+                | true, (idx, ty) when ty.IsSubclassOf typeof<System.Delegate> ->
+                    il.Emit(OpCodes.Ldarg, idx)
+                    Some ty
+                | _ -> None
+        match delegateLoad () with
+        | Some delegateTy ->
+            let invoke = delegateTy.GetMethod "Invoke"
+            match Option.ofObj invoke with
+            | Some mi ->
+                let pts = mi.GetParameters() |> Array.map (fun p -> p.ParameterType)
+                args |> List.iteri (fun i a ->
+                    let payload = match a with | CAPositional ex | CANamed (_, ex, _) -> ex
+                    let argTy = emitExpr ctx payload
+                    if i < pts.Length then
+                        let pt = pts.[i]
+                        if pt = typeof<obj> && argTy.IsValueType then
+                            il.Emit(OpCodes.Box, argTy)
+                        elif pt.IsValueType && (argTy = typeof<obj>) then
+                            il.Emit(OpCodes.Unbox_Any, pt))
+                il.Emit(OpCodes.Callvirt, mi)
+                if mi.ReturnType = typeof<System.Void> then typeof<System.Void>
+                else mi.ReturnType
+            | None ->
+                failwithf "Delegate lowering: no Invoke on %s" delegateTy.Name
+        | None ->
+            failwithf "E4 codegen: unknown name '%s'" name
+
+    // ---- lambda expression --------------------------------------------
+
+    | ELambda (params', body) ->
+        emitLambdaWith ctx params' body None
+
     | _ ->
         failwithf "E3 codegen does not yet handle expression: %A" e.Kind
+
+/// Synthesise a static lambda method on `ctx.ProgramType` and emit a
+/// delegate instance pointing to it. `expectedTy` (when Some) is the
+/// target delegate type inferred from the call-site parameter; it
+/// drives the return type when the lambda body is hard to peek. When
+/// None we peek the body or fall back to `obj`.
+and private emitLambdaWith
+        (ctx: FunctionCtx)
+        (params': LambdaParam list)
+        (body: Block)
+        (expectedTy: ClrType option) : ClrType =
+    let il = ctx.IL
+    // Resolve each parameter's CLR type from its annotation.
+    let paramPairs =
+        params'
+        |> List.map (fun lp ->
+            let cty =
+                match lp.Type with
+                | Some te -> ctx.ResolveType te
+                | None    -> typeof<obj>
+            lp.Name, cty)
+    let paramTys = paramPairs |> List.map snd |> List.toArray
+    // Determine return type: prefer the expected delegate's result type;
+    // fall back to peeking the body's last expression.
+    let retTy =
+        match expectedTy with
+        | Some dt ->
+            match dissectDelegateTy dt with
+            | Some (_, r) -> r
+            | None -> typeof<obj>
+        | None ->
+            match List.tryLast body.Statements with
+            | Some { Kind = SExpr e2 } | Some { Kind = SReturn (Some e2) } ->
+                peekExprType ctx e2
+            | _ -> typeof<obj>
+    let delegateTy = makeDelegateTy paramTys retTy
+    // Define a fresh private static method on the program class.
+    let mname = freshLambdaName ()
+    let lambdaMb =
+        ctx.ProgramType.DefineMethod(
+            mname,
+            MethodAttributes.Private ||| MethodAttributes.Static,
+            (if retTy = typeof<System.Void> then typeof<System.Void> else retTy),
+            paramTys)
+    paramPairs |> List.iteri (fun i (n, _) ->
+        lambdaMb.DefineParameter(i + 1, ParameterAttributes.None, n) |> ignore)
+    let lambdaIL = lambdaMb.GetILGenerator()
+    // Build a child context for the lambda body (non-capturing: no
+    // outer locals visible, but outer Funcs/Records/etc. are shared).
+    let lambdaCtx =
+        FunctionCtx.make
+            lambdaIL retTy paramPairs
+            ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
+            ctx.Unions ctx.UnionCases ctx.Interfaces
+            false None ctx.ProgramType ctx.ResolveType
+    // Emit the body. For non-void lambdas, the last statement must leave
+    // its value on the IL stack for `ret` — mirror emitFunctionBody's
+    // single-exit discipline.
+    if retTy = typeof<System.Void> then
+        emitBlock lambdaCtx body
+        lambdaIL.Emit(OpCodes.Ret)
+    else
+        FunctionCtx.pushScope lambdaCtx
+        let stmts = body.Statements
+        let lastIdx = List.length stmts - 1
+        stmts |> List.iteri (fun i stmt ->
+            if i = lastIdx then
+                match stmt.Kind with
+                | SExpr e ->
+                    let _ = emitExpr lambdaCtx e
+                    ()
+                | SReturn (Some e) ->
+                    let _ = emitExpr lambdaCtx e
+                    ()
+                | _ ->
+                    emitStatement lambdaCtx stmt
+            else
+                emitStatement lambdaCtx stmt)
+        FunctionCtx.popScope lambdaCtx
+        lambdaIL.Emit(OpCodes.Ret)
+    // Push the delegate onto the outer caller's IL stack.
+    il.Emit(OpCodes.Ldnull)
+    il.Emit(OpCodes.Ldftn, lambdaMb)
+    let delegateCtor =
+        delegateTy.GetConstructor([| typeof<obj>; typeof<System.IntPtr> |])
+    match Option.ofObj delegateCtor with
+    | Some c -> il.Emit(OpCodes.Newobj, c)
+    | None ->
+        failwithf "Delegate lowering: ctor not found on %s" delegateTy.FullName
+    delegateTy
 
 and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
     match b with
@@ -842,6 +1041,29 @@ and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
     | EOBBlock blk ->
         emitBlock ctx blk
         typeof<System.Void>     // a block leaves nothing on the stack
+
+/// Like `emitBranch` but in expression-returning mode: the last
+/// statement of a block is kept on the stack rather than popped.
+/// Used for `if { … } else { … }` in expression position.
+and private emitBranchValue (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
+    match b with
+    | EOBExpr e -> emitExpr ctx e
+    | EOBBlock blk ->
+        FunctionCtx.pushScope ctx
+        let stmts = blk.Statements
+        let lastIdx = List.length stmts - 1
+        let mutable resultTy = typeof<System.Void>
+        stmts |> List.iteri (fun i stmt ->
+            if i = lastIdx then
+                match stmt.Kind with
+                | SExpr e ->
+                    resultTy <- emitExpr ctx e
+                | _ ->
+                    emitStatement ctx stmt
+            else
+                emitStatement ctx stmt)
+        FunctionCtx.popScope ctx
+        resultTy
 
 /// Compile-time predicate: does `pat` always match? Identifier
 /// patterns are catch-alls *unless* the name names an enum case or
