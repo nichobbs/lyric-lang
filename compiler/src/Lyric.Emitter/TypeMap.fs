@@ -63,7 +63,28 @@ let rec toClrTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
             cl
     | TySlice elem | TyArray (_, elem) ->
         (recur elem).MakeArrayType()
-    | TyFunction _    -> typeof<obj>     // E8 lifts to delegate types
+    | TyFunction (ps, r, _isAsync) ->
+        let paramTys = ps |> List.map recur |> List.toArray
+        let isUnit =
+            match r with TyPrim PtUnit | TyPrim PtNever -> true | _ -> false
+        if isUnit then
+            match paramTys.Length with
+            | 0 -> typeof<System.Action>
+            | 1 -> typedefof<System.Action<_>>.MakeGenericType(paramTys)
+            | 2 -> typedefof<System.Action<_,_>>.MakeGenericType(paramTys)
+            | 3 -> typedefof<System.Action<_,_,_>>.MakeGenericType(paramTys)
+            | 4 -> typedefof<System.Action<_,_,_,_>>.MakeGenericType(paramTys)
+            | n -> failwithf "TypeMap: Action<%d> not supported" n
+        else
+            let retTy = recur r
+            let allTys = Array.append paramTys [| retTy |]
+            match allTys.Length with
+            | 1 -> typedefof<System.Func<_>>.MakeGenericType(allTys)
+            | 2 -> typedefof<System.Func<_,_>>.MakeGenericType(allTys)
+            | 3 -> typedefof<System.Func<_,_,_>>.MakeGenericType(allTys)
+            | 4 -> typedefof<System.Func<_,_,_,_>>.MakeGenericType(allTys)
+            | 5 -> typedefof<System.Func<_,_,_,_,_>>.MakeGenericType(allTys)
+            | n -> failwithf "TypeMap: Func<%d> not supported" n
     | TyUser (id, _)  ->
         match lookup id with
         | Some t -> t

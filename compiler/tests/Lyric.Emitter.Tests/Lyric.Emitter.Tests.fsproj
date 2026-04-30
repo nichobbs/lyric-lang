@@ -23,6 +23,8 @@
     <Compile Include="AsyncTests.fs" />
     <Compile Include="BankingSmokeTests.fs" />
     <Compile Include="StdlibSeedTests.fs" />
+    <Compile Include="DelegateTests.fs" />
+    <Compile Include="DistinctTypeTests.fs" />
     <Compile Include="EndToEndSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
