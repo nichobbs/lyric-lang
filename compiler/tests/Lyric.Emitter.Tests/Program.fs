@@ -27,6 +27,7 @@ let main argv =
             OpaqueTypeTests.tests
             MultiPackageTests.tests
             GenericUnionTests.tests
+            GenericRecordTests.tests
             SyntaxSimplificationTests.tests
             EndToEndSmokeTests.tests
         ]

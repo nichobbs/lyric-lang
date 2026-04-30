@@ -693,12 +693,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     d.Name fieldName
             | None ->
                 // Records: walk the records dict to find a match by
-                // CLR receiver type.
-                let info =
+                // CLR receiver type.  For generic records, the
+                // `recvTy` we observe is a constructed generic
+                // instance (e.g. `Box<int>`); we have to recover the
+                // open def, then re-substitute via
+                // `TypeBuilder.GetField` so the FieldInfo carries the
+                // substituted type.
+                let directHit =
                     ctx.Records.Values
                     |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
-                match info with
-                | Some r ->
+                let constructedHit =
+                    if recvTy.IsGenericType && not recvTy.IsGenericTypeDefinition then
+                        let openDef = recvTy.GetGenericTypeDefinition()
+                        ctx.Records.Values
+                        |> Seq.tryFind (fun r -> (r.Type :> ClrType) = openDef)
+                    else None
+                match directHit, constructedHit with
+                | Some r, _ ->
                     match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
                     | Some f ->
                         il.Emit(OpCodes.Ldfld, f.Field)
@@ -706,7 +717,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | None ->
                         failwithf "E5/E7 codegen: record '%s' has no field '%s'"
                             r.Name fieldName
-                | None ->
+                | None, Some r ->
+                    match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                    | Some f ->
+                        let fInfo = TypeBuilder.GetField(recvTy, f.Field)
+                        let argTys = recvTy.GetGenericArguments()
+                        let substMap =
+                            r.Generics
+                            |> List.mapi (fun i n -> n, argTys.[i])
+                            |> Map.ofList
+                        let substTy =
+                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                (fun _ -> None) substMap f.LyricType
+                        il.Emit(OpCodes.Ldfld, fInfo)
+                        substTy
+                    | None ->
+                        failwithf "E5/E7 codegen: record '%s' has no field '%s'"
+                            r.Name fieldName
+                | None, None ->
                     failwithf "E5/E7 codegen: receiver type %s is not a known record or distinct type"
                         recvTy.Name
 
@@ -1116,8 +1144,9 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | CAPositional ex -> Some ex
                 | _ -> None)
         let mutable posIdx = 0
-        for f in info.Fields do
-            let argExpr =
+        let argExprs =
+            info.Fields
+            |> List.map (fun f ->
                 match Map.tryFind f.Name namedMap with
                 | Some ex -> ex
                 | None ->
@@ -1127,11 +1156,42 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         ex
                     else
                         failwithf "E5 codegen: record '%s' missing field '%s'"
-                            name f.Name
-            let _ = emitExpr ctx argExpr
-            ()
-        il.Emit(OpCodes.Newobj, info.Ctor)
-        info.Type :> ClrType
+                            name f.Name)
+        if List.isEmpty info.Generics then
+            // Non-generic record — emit args directly, then `Newobj`.
+            for argExpr in argExprs do
+                let _ = emitExpr ctx argExpr
+                ()
+            il.Emit(OpCodes.Newobj, info.Ctor)
+            info.Type :> ClrType
+        else
+            // Generic record: peek each arg's CLR type to bind T's
+            // before emitting, MakeGenericType the record + ctor, then
+            // emit args + Newobj on the constructed ctor.
+            let bindings = Dictionary<string, ClrType>()
+            let rec bind (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lyricTy with
+                | Lyric.TypeChecker.TyVar n ->
+                    if not (bindings.ContainsKey n) then bindings.[n] <- argTy
+                | _ -> ()
+            for (f, argExpr) in List.zip info.Fields argExprs do
+                bind f.LyricType (peekExprType ctx argExpr)
+            let typeArgs =
+                info.Generics
+                |> List.map (fun n ->
+                    match bindings.TryGetValue n with
+                    | true, t  -> t
+                    | false, _ -> typeof<obj>)
+                |> List.toArray
+            let constructed =
+                (info.Type :> System.Type).MakeGenericType typeArgs
+            let constructedCtor =
+                TypeBuilder.GetConstructor(constructed, info.Ctor)
+            for argExpr in argExprs do
+                let _ = emitExpr ctx argExpr
+                ()
+            il.Emit(OpCodes.Newobj, constructedCtor)
+            constructed
 
     // ---- distinct type static factory: TypeName.from(x) ----------------
 
@@ -1225,7 +1285,55 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let rec bindLyricToClr (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
                 match lyricTy with
                 | Lyric.TypeChecker.TyVar n -> bindByName n argTy
-                | _ -> ()  // compound-shape inference deferred
+                | Lyric.TypeChecker.TyUser (_, lyricArgs)
+                    when not lyricArgs.IsEmpty
+                         && argTy.IsGenericType ->
+                    // `Box[T]` matched against `Box<int>` → recurse so
+                    // any nested `TyVar` in the param's type args
+                    // binds to the corresponding constructed slot.
+                    let clrArgs = argTy.GetGenericArguments()
+                    if clrArgs.Length = lyricArgs.Length then
+                        List.iteri
+                            (fun i la -> bindLyricToClr la clrArgs.[i])
+                            lyricArgs
+                | Lyric.TypeChecker.TySlice elem
+                | Lyric.TypeChecker.TyArray (_, elem)
+                    when argTy.IsArray ->
+                    let elemTy = argTy.GetElementType()
+                    match Option.ofObj elemTy with
+                    | Some t -> bindLyricToClr elem t
+                    | None   -> ()
+                | Lyric.TypeChecker.TyNullable inner ->
+                    // Nullable<T> on the CLR side; otherwise reference
+                    // type carries through unchanged.
+                    if argTy.IsGenericType
+                       && argTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+                    then bindLyricToClr inner (argTy.GetGenericArguments().[0])
+                    else bindLyricToClr inner argTy
+                | Lyric.TypeChecker.TyTuple lyricElems
+                    when argTy.IsGenericType ->
+                    let clrArgs = argTy.GetGenericArguments()
+                    if clrArgs.Length = lyricElems.Length then
+                        List.iteri
+                            (fun i le -> bindLyricToClr le clrArgs.[i])
+                            lyricElems
+                | Lyric.TypeChecker.TyFunction (lyricPs, lyricR, _) ->
+                    // Func<T1,…,R> (or Action<…>): walk param + return.
+                    if argTy.IsGenericType then
+                        let clrArgs = argTy.GetGenericArguments()
+                        let n = lyricPs.Length
+                        // Action<…> has only param slots; Func<…,R> has
+                        // params + return.
+                        if clrArgs.Length = n then
+                            List.iteri
+                                (fun i lp -> bindLyricToClr lp clrArgs.[i])
+                                lyricPs
+                        elif clrArgs.Length = n + 1 then
+                            List.iteri
+                                (fun i lp -> bindLyricToClr lp clrArgs.[i])
+                                lyricPs
+                            bindLyricToClr lyricR clrArgs.[n]
+                | _ -> ()
             // Pair-wise emission with type-arg propagation.
             let lyricParamTypes =
                 sg.Params |> List.map (fun p -> p.Type) |> List.toArray

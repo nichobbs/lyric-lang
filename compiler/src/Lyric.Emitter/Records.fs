@@ -14,18 +14,26 @@ open System.Reflection.Emit
 
 type private ClrType = System.Type
 
-/// One field of a Lyric record, post-CLR-lowering.
+/// One field of a Lyric record, post-CLR-lowering.  `LyricType` is
+/// kept (in addition to the lowered `Type`) so codegen can run
+/// reified-generic type-arg inference when the record is generic.
 type RecordField =
-    { Name:   string
-      Type:   ClrType
-      Field:  FieldBuilder }
+    { Name:      string
+      Type:      ClrType
+      LyricType: Lyric.TypeChecker.Type
+      Field:     FieldBuilder }
 
-/// What the codegen needs to know about a Lyric record.
+/// What the codegen needs to know about a Lyric record.  `Generics`
+/// is the (ordered) list of type-parameter names — empty for non-
+/// generic records, otherwise driving codegen's `MakeGenericType`
+/// calls.
 type RecordInfo =
-    { Name:   string
-      Type:   TypeBuilder
-      Fields: RecordField list
-      Ctor:   ConstructorBuilder }
+    { Name:     string
+      /// For generic records this is the open generic definition.
+      Type:     TypeBuilder
+      Fields:   RecordField list
+      Ctor:     ConstructorBuilder
+      Generics: string list }
 
 /// Per-emit table of records visible at codegen time.
 type RecordTable = Dictionary<string, RecordInfo>

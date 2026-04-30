@@ -578,16 +578,38 @@ let private defineRecord
     let fullName =
         if String.IsNullOrEmpty nsName then rd.Name
         else nsName + "." + rd.Name
+    let typeParamNames =
+        match rd.Generics with
+        | Some gs ->
+            gs.Params
+            |> List.map (function
+                | GPType(name, _) | GPValue(name, _, _) -> name)
+        | None -> []
+    let isGeneric = not typeParamNames.IsEmpty
+
     let tb =
         md.DefineType(
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Sealed,
             typeof<obj>)
+    // For generic records, declare the type parameters before any
+    // field types reference them.  Build the substitution map keyed
+    // by Lyric type-var name → GenericTypeParameterBuilder so
+    // `TypeMap.toClrTypeWithGenerics` can resolve `TyVar T`.
+    let genericSubst =
+        if isGeneric then
+            let tps = tb.DefineGenericParameters(typeParamNames |> List.toArray)
+            typeParamNames
+            |> List.mapi (fun i name -> name, tps.[i] :> System.Type)
+            |> Map.ofList
+        else Map.empty
+
     // Resolve each field's type via the typechecker's resolver. This
     // gives us a `Lyric.TypeChecker.Type` that TypeMap projects onto
     // a CLR System.Type.
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
+    if isGeneric then resolveCtx.Push(typeParamNames)
     let fieldDecls =
         rd.Members
         |> List.choose (fun m ->
@@ -599,15 +621,21 @@ let private defineRecord
         |> List.map (fun fd ->
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
-            let cty = TypeMap.toClrType lty
+            let cty =
+                if isGeneric then
+                    TypeMap.toClrTypeWithGenerics
+                        (fun _ -> None) genericSubst lty
+                else
+                    TypeMap.toClrType lty
             let fb =
                 tb.DefineField(
                     fd.Name,
                     cty,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
-            { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = cty
-              Records.RecordField.Field = fb })
+            { Records.RecordField.Name      = fd.Name
+              Records.RecordField.Type      = cty
+              Records.RecordField.LyricType = lty
+              Records.RecordField.Field     = fb })
     // Constructor: takes every field in declaration order, stores
     // them onto `this`.
     let ctorParamTypes =
@@ -633,10 +661,11 @@ let private defineRecord
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = rd.Name
-      Records.RecordInfo.Type   = tb
-      Records.RecordInfo.Fields = fields
-      Records.RecordInfo.Ctor   = ctor }
+    { Records.RecordInfo.Name     = rd.Name
+      Records.RecordInfo.Type     = tb
+      Records.RecordInfo.Fields   = fields
+      Records.RecordInfo.Ctor     = ctor
+      Records.RecordInfo.Generics = typeParamNames }
 
 /// Generate the sibling exposed record for a `@projectable` opaque type.
 /// The view contains every non-`@hidden` field of the opaque type and
@@ -675,9 +704,10 @@ let private defineProjectableView
                     fd.Name,
                     cty,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
-            { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = cty
-              Records.RecordField.Field = fb })
+            { Records.RecordField.Name      = fd.Name
+              Records.RecordField.Type      = cty
+              Records.RecordField.LyricType = lty
+              Records.RecordField.Field     = fb })
     let ctorParamTypes =
         fields |> List.map (fun f -> f.Type) |> List.toArray
     let ctor =
@@ -697,10 +727,11 @@ let private defineProjectableView
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = viewName
-      Records.RecordInfo.Type   = tb
-      Records.RecordInfo.Fields = fields
-      Records.RecordInfo.Ctor   = ctor }
+    { Records.RecordInfo.Name     = viewName
+      Records.RecordInfo.Type     = tb
+      Records.RecordInfo.Fields   = fields
+      Records.RecordInfo.Ctor     = ctor
+      Records.RecordInfo.Generics = [] }
 
 /// Attach an instance method `toView(): <Name>View` to an opaque type.
 /// Each non-`@hidden` field is read off `this` and passed to the view's
