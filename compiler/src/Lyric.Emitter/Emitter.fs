@@ -1141,10 +1141,33 @@ let private locateCoreL (startDir: string) : string option =
         dir <- d.Parent |> Option.ofObj
     found
 
+/// Cached result of parsing `core.l`.  Keyed by absolute path + last-
+/// write-time so an edit invalidates the cache on the next emit.  The
+/// type checker still runs on the merged file because its state depends
+/// on the user's symbols being in scope alongside the stdlib's.
+type private StdlibParseEntry =
+    { Mtime: System.DateTime
+      File:  SourceFile
+      Diags: Diagnostic list }
+
+let private stdlibParseCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, StdlibParseEntry>()
+
+let private parseCoreLcached (path: string) : SourceFile * Diagnostic list =
+    let info = FileInfo(path)
+    let mtime = info.LastWriteTimeUtc
+    match stdlibParseCache.TryGetValue path with
+    | true, e when e.Mtime = mtime -> e.File, e.Diags
+    | _ ->
+        let parsed = parse (File.ReadAllText path)
+        let entry = { Mtime = mtime; File = parsed.File; Diags = parsed.Diagnostics }
+        stdlibParseCache.[path] <- entry
+        entry.File, entry.Diags
+
 /// Resolve `import Std.Core` declarations by locating `core.l`,
-/// parsing it, and prepending its items into the user file.  The
-/// Std.Core import entries are stripped from `Imports` so downstream
-/// passes don't encounter an unknown package reference.
+/// parsing it (cached across emits), and prepending its items into the
+/// user file.  The Std.Core import entries are stripped from `Imports`
+/// so downstream passes don't encounter an unknown package reference.
 let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list =
     let stdCoreImps, otherImps =
         sf.Imports |> List.partition (fun i -> i.Path.Segments = ["Std"; "Core"])
@@ -1155,10 +1178,9 @@ let private resolveStdlibImports (sf: SourceFile) : SourceFile * Diagnostic list
             let sp = (List.head stdCoreImps).Span
             sf, [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
         | Some path ->
-            let stdParsed = parse (File.ReadAllText path)
-            let mergedItems = stdParsed.File.Items @ sf.Items
-            { sf with Imports = otherImps; Items = mergedItems },
-            stdParsed.Diagnostics
+            let stdFile, stdDiags = parseCoreLcached path
+            let mergedItems = stdFile.Items @ sf.Items
+            { sf with Imports = otherImps; Items = mergedItems }, stdDiags
 
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
