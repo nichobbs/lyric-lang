@@ -1031,6 +1031,109 @@ let private emitContractCheck
     il.Emit(OpCodes.Throw)
     il.MarkLabel(okLbl)
 
+// ---------------------------------------------------------------------------
+// FFI: `@externTarget("Fully.Qualified.Member")` resolution.
+//
+// `findClrType` walks every loaded assembly looking for a type whose
+// `FullName` matches; `resolveExternTarget` then matches a method
+// (preferred) or a property accessor.  The Lyric function's
+// parameter arity is used as the disambiguator across BCL overloads.
+// ---------------------------------------------------------------------------
+
+let private findClrType (qualifiedName: string) : System.Type option =
+    let direct = System.Type.GetType qualifiedName
+    match Option.ofObj direct with
+    | Some t -> Some t
+    | None ->
+        System.AppDomain.CurrentDomain.GetAssemblies()
+        |> Array.tryPick (fun asm ->
+            try
+                Option.ofObj (asm.GetType qualifiedName)
+            with _ -> None)
+
+/// Pick the BCL method (or property accessor) referenced by `target`.
+/// `target` is `<Fully.Qualified.Type>.<Member>`.  `paramArity` is
+/// the Lyric function's parameter count — used to disambiguate
+/// overloads; for an instance method the receiver counts as the
+/// first parameter.
+let private resolveExternTarget
+        (target: string)
+        (paramArity: int) : MethodInfo option =
+    let lastDot = target.LastIndexOf '.'
+    if lastDot <= 0 then None
+    else
+    let typeName = target.Substring(0, lastDot)
+    let memberName = target.Substring(lastDot + 1)
+    match findClrType typeName with
+    | None -> None
+    | Some t ->
+        let methods = t.GetMethods()
+        // Static method, or instance method whose receiver is the
+        // first Lyric param.
+        let staticMatch =
+            methods |> Array.tryFind (fun m ->
+                m.IsStatic
+                && m.Name = memberName
+                && m.GetParameters().Length = paramArity)
+        match staticMatch with
+        | Some m -> Some m
+        | None ->
+            let instanceMatch =
+                methods |> Array.tryFind (fun m ->
+                    not m.IsStatic
+                    && m.Name = memberName
+                    && m.GetParameters().Length = paramArity - 1)
+            match instanceMatch with
+            | Some m -> Some m
+            | None ->
+                // Property getter: `Type.Prop` -> `get_Prop()`.
+                let prop = t.GetProperty memberName
+                match Option.ofObj prop with
+                | Some p when p.CanRead ->
+                    Option.ofObj (p.GetGetMethod())
+                | _ -> None
+
+let private emitExternCall
+        (il: ILGenerator)
+        (fn: FunctionDecl)
+        (paramList: (string * System.Type) list)
+        (resultLocal: LocalBuilder option)
+        (exitLabel: Label)
+        (target: string) : unit =
+    let arity = List.length paramList
+    let mi =
+        match resolveExternTarget target arity with
+        | Some m -> m
+        | None ->
+            failwithf "FFI: cannot resolve `@externTarget(\"%s\")` for `%s` (arity %d)"
+                target fn.Name arity
+    // Push every Lyric parameter onto the stack in declaration order.
+    paramList
+    |> List.iteri (fun i _ -> il.Emit(OpCodes.Ldarg, i))
+    // Static methods + property getters use `call`; non-static
+    // instance methods use `callvirt`.
+    if mi.IsStatic then il.Emit(OpCodes.Call, mi)
+    else il.Emit(OpCodes.Callvirt, mi)
+    // Stash the result + branch to exit, mirroring routeReturn's
+    // shape but specialised so we don't need to thread that helper
+    // through.
+    let pushedTy = mi.ReturnType
+    if pushedTy = typeof<System.Void> then
+        match resultLocal with
+        | Some _ ->
+            // Lyric declared a non-Unit return but the CLR method
+            // returns void.  Push default(T) so the function body
+            // produces *something* compatible with the declared
+            // return type — surfaces a typing mismatch as a runtime
+            // value rather than malformed IL.
+            ()
+        | None -> ()
+    else
+        match resultLocal with
+        | Some loc -> il.Emit(OpCodes.Stloc, loc)
+        | None     -> il.Emit(OpCodes.Pop)
+    il.Emit(OpCodes.Br, exitLabel)
+
 let private emitFunctionBody
         (mb: MethodBuilder)
         (fn: FunctionDecl)
@@ -1159,6 +1262,29 @@ let private emitFunctionBody
             il.Emit(OpCodes.Br, exitLabel)
 
     match fn.Body with
+    | _ when fn.Annotations
+             |> List.exists (fun a ->
+                match a.Name.Segments with
+                | ["externTarget"] -> true
+                | _ -> false) ->
+        // FFI: function has `@externTarget("Fully.Qualified.Member")`.
+        // Resolve the target via reflection against the loaded
+        // AppDomain (which already has every BCL assembly), pick a
+        // method or property accessor that matches the Lyric param
+        // arity, and emit a direct call.  The user's body — if any —
+        // is intentionally ignored.
+        let targetStr =
+            fn.Annotations
+            |> List.pick (fun a ->
+                match a.Name.Segments with
+                | ["externTarget"] ->
+                    a.Args
+                    |> List.tryPick (function
+                        | ALiteral (AVString (s, _), _)        -> Some s
+                        | AAName (_, AVString (s, _), _)       -> Some s
+                        | _ -> None)
+                | _ -> None)
+        emitExternCall il fn paramList resultLocal exitLabel targetStr
     | None ->
         if isVoidReturn then
             il.Emit(OpCodes.Br, exitLabel)
