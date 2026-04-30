@@ -78,7 +78,35 @@ func main(): Unit {
     "loop\nloop"
 ]
 
+/// Reified-generics regressions: walks `MethodInfo.IsGenericMethodDefinition`
+/// → `MakeGenericMethod`, with type-arg inference driven by Lyric param
+/// types.  Existing erasure-era tests above are repurposed as the
+/// behavioural baseline; the cases below pin down properties only the
+/// reified path can satisfy.
+let private reifiedCases : (string * string * string) list = [
+
+    "generic_int_round_trip",
+    """
+package RG1
+generic[T] func id(x: in T): T = x
+func main(): Unit {
+  println(id(42) + id(8))
+}
+""",
+    "50"
+
+    "generic_chain_through_two_calls",
+    """
+package RG2
+generic[T] func id(x: in T): T = x
+func main(): Unit {
+  println(id(id(7)))
+}
+""",
+    "7"
+]
+
 let tests =
     testSequenced
-    <| testList "generics — erasure-based monomorphisation (E13)"
-        (cases |> List.map mk)
+    <| testList "generics — reified monomorphisation"
+        (List.append (cases |> List.map mk) (reifiedCases |> List.map mk))

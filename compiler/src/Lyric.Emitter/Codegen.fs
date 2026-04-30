@@ -35,6 +35,11 @@ type FunctionCtx =
       /// resolves single-segment calls; cross-package linking is
       /// M1.4 work.
       Funcs:      Dictionary<string, MethodBuilder>
+      /// Resolved signatures for `Funcs`, keyed by name.  Used at call
+      /// sites that need Lyric-level param/return types — e.g. the
+      /// generic-method type-arg inference path which can't trust
+      /// `MethodBuilder.GetParameters()` before the host type is sealed.
+      FuncSigs:   Dictionary<string, Lyric.TypeChecker.ResolvedSignature>
       /// Same-package records visible at codegen time. E5 supports
       /// constructor calls and field reads; mutation via `with`
       /// lands in E5 polish.
@@ -97,6 +102,7 @@ module FunctionCtx =
             (returnType: ClrType)
             (paramList: (string * ClrType) list)
             (funcs: Dictionary<string, MethodBuilder>)
+            (funcSigs: Dictionary<string, Lyric.TypeChecker.ResolvedSignature>)
             (records: Lyric.Emitter.Records.RecordTable)
             (enums: Lyric.Emitter.Records.EnumTable)
             (enumCases: Lyric.Emitter.Records.EnumCaseLookup)
@@ -126,6 +132,7 @@ module FunctionCtx =
           Loops        = Stack()
           Params       = p
           Funcs        = funcs
+          FuncSigs     = funcSigs
           Records      = records
           Enums        = enums
           EnumCases    = enumCases
@@ -1112,39 +1119,91 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when ctx.Funcs.ContainsKey name ->
         let mb = ctx.Funcs.[name]
-        // Per D035, generics monomorphise via erasure: type
-        // parameters lower to `obj` and value-typed call-site args
-        // box at the boundary. When a parameter slot is a delegate
-        // type and the argument is a lambda, pass the expected type
-        // so the lambda synthesiser picks the right signature.
         let paramTypes =
             mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
-        args
-        |> List.iteri (fun i a ->
-            let payload =
-                match a with
-                | CAPositional ex | CANamed (_, ex, _) -> ex
-            let expectedDelegateTy =
-                if i < paramTypes.Length
-                   && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
-                then Some paramTypes.[i]
-                else None
-            match payload.Kind, expectedDelegateTy with
-            | ELambda (lps, body), Some dt ->
-                emitLambdaWith ctx lps body (Some dt) |> ignore
-            | ELambda (lps, body), None ->
-                emitLambdaWith ctx lps body None |> ignore
-            | _ ->
-                let argTy = emitExpr ctx payload
-                if i < paramTypes.Length
-                   && paramTypes.[i] = typeof<obj>
-                   && argTy.IsValueType then
-                    il.Emit(OpCodes.Box, argTy))
-        il.Emit(OpCodes.Call, mb)
-        if mb.ReturnType = typeof<System.Void> then
-            typeof<System.Void>
+        let isGeneric = mb.IsGenericMethodDefinition
+        if not isGeneric then
+            // Non-generic — existing path.  Erased-generic args still
+            // box at the boundary when a param slot is `obj`.
+            args
+            |> List.iteri (fun i a ->
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let expectedDelegateTy =
+                    if i < paramTypes.Length
+                       && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
+                    then Some paramTypes.[i]
+                    else None
+                match payload.Kind, expectedDelegateTy with
+                | ELambda (lps, body), Some dt ->
+                    emitLambdaWith ctx lps body (Some dt) |> ignore
+                | ELambda (lps, body), None ->
+                    emitLambdaWith ctx lps body None |> ignore
+                | _ ->
+                    let argTy = emitExpr ctx payload
+                    if i < paramTypes.Length
+                       && paramTypes.[i] = typeof<obj>
+                       && argTy.IsValueType then
+                        il.Emit(OpCodes.Box, argTy))
+            il.Emit(OpCodes.Call, mb)
+            if mb.ReturnType = typeof<System.Void> then
+                typeof<System.Void>
+            else
+                mb.ReturnType
         else
-            mb.ReturnType
+            // Reified generic: walk Lyric param types to find which
+            // positional `TyVar` each arg constrains, observe CLR arg
+            // types, then `MakeGenericMethod` and `Call`.  We can't
+            // trust `MethodBuilder.GetParameters()` before the host
+            // type is sealed, so type-arg inference works at the
+            // Lyric-signature level instead.
+            let sg = ctx.FuncSigs.[name]
+            let genericNames = sg.Generics
+            let bindings : ClrType option array =
+                Array.create genericNames.Length None
+            let bindByName (n: string) (argTy: ClrType) =
+                match List.tryFindIndex ((=) n) genericNames with
+                | Some pos when bindings.[pos].IsNone ->
+                    bindings.[pos] <- Some argTy
+                | _ -> ()
+            let rec bindLyricToClr (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lyricTy with
+                | Lyric.TypeChecker.TyVar n -> bindByName n argTy
+                | _ -> ()  // compound-shape inference deferred
+            // Pair-wise emission with type-arg propagation.
+            let lyricParamTypes =
+                sg.Params |> List.map (fun p -> p.Type) |> List.toArray
+            args
+            |> List.iteri (fun i a ->
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let argTy = emitExpr ctx payload
+                if i < lyricParamTypes.Length then
+                    bindLyricToClr lyricParamTypes.[i] argTy)
+            // Default any unbound generic params to `obj` so we still
+            // produce well-formed IL even when inference can't see far
+            // enough into a body to fix T.
+            let resolvedBindings =
+                bindings
+                |> Array.map (function
+                    | Some t -> t
+                    | None   -> typeof<obj>)
+            let constructed = mb.MakeGenericMethod resolvedBindings
+            il.Emit(OpCodes.Call, constructed)
+            // `constructed.ReturnType` is unreliable until the host
+            // type is sealed (Reflection.Emit limitation), so substitute
+            // the resolved bindings into Lyric's `sg.Return` ourselves
+            // to surface the right CLR type to the caller.
+            let substMap =
+                List.zip genericNames (List.ofArray resolvedBindings)
+                |> Map.ofList
+            let returnedTy =
+                Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
+                    (fun _ -> None) substMap sg.Return
+            if returnedTy = typeof<System.Void> then typeof<System.Void>
+            else returnedTy
 
     // ---- delegate / higher-order call ---------------------------------
 
@@ -1268,7 +1327,7 @@ and private emitLambdaWith
     let lambdaCtx =
         FunctionCtx.make
             lambdaIL retTy paramPairs
-            ctx.Funcs ctx.Records ctx.Enums ctx.EnumCases
+            ctx.Funcs ctx.FuncSigs ctx.Records ctx.Enums ctx.EnumCases
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases

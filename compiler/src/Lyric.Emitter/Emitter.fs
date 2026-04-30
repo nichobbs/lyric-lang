@@ -685,25 +685,55 @@ let private defineMethodHeader
         (lookup: TypeId -> System.Type option)
         (fn: FunctionDecl)
         (sg: ResolvedSignature) : MethodBuilder =
-    let paramTypes =
+    if sg.Generics.IsEmpty then
+        // Non-generic fast path — single-call signature.
+        let paramTypes =
+            sg.Params
+            |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
+            |> List.toArray
+        let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+        let returnType =
+            if sg.IsAsync then toTaskType bareReturn else bareReturn
+        let mb =
+            programTy.DefineMethod(
+                fn.Name,
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                returnType,
+                paramTypes)
         sg.Params
-        |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
-        |> List.toArray
-    let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
-    let returnType =
-        if sg.IsAsync then toTaskType bareReturn else bareReturn
-    let mb =
-        programTy.DefineMethod(
-            fn.Name,
-            MethodAttributes.Public ||| MethodAttributes.Static,
-            returnType,
-            paramTypes)
-    // Name each parameter so reflection / debuggers see them. Static
-    // method params are 0-indexed; SetParameter uses 1-indexed.
-    sg.Params
-    |> List.iteri (fun i p ->
-        mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
-    mb
+        |> List.iteri (fun i p ->
+            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+        mb
+    else
+        // Generic method — reify type parameters as proper .NET generic
+        // method parameters.  The Reflection.Emit pattern requires three
+        // calls: DefineMethod (no signature), DefineGenericParameters,
+        // then SetParameters / SetReturnType once the GTPBs exist.
+        let mb =
+            programTy.DefineMethod(
+                fn.Name,
+                MethodAttributes.Public ||| MethodAttributes.Static)
+        let typeParams =
+            mb.DefineGenericParameters(sg.Generics |> List.toArray)
+        let genericSubst =
+            sg.Generics
+            |> List.mapi (fun i name -> name, typeParams.[i] :> System.Type)
+            |> Map.ofList
+        let paramTypes =
+            sg.Params
+            |> List.map (fun p ->
+                TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type)
+            |> List.toArray
+        let bareReturn =
+            TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
+        let returnType =
+            if sg.IsAsync then toTaskType bareReturn else bareReturn
+        mb.SetParameters paramTypes
+        mb.SetReturnType returnType
+        sg.Params
+        |> List.iteri (fun i p ->
+            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+        mb
 
 /// Emit a function body. Handles three shapes: an explicit block, an
 /// expression-bodied function, and the `= { ... }` lambda quirk
@@ -742,6 +772,7 @@ let private emitFunctionBody
         (sg: ResolvedSignature)
         (lookup: TypeId -> System.Type option)
         (funcs: Dictionary<string, MethodBuilder>)
+        (funcSigs: Dictionary<string, ResolvedSignature>)
         (records: Records.RecordTable)
         (enums: Records.EnumTable)
         (enumCases: Records.EnumCaseLookup)
@@ -764,23 +795,36 @@ let private emitFunctionBody
     // the bare return type; the wrapping into `Task<T>` only kicks
     // in at the exit point. Carrying both keeps the body codegen
     // ignorant of the lowering strategy.
-    let bareReturnTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+    //
+    // Recover the per-method generic substitution from the MethodBuilder
+    // so `TyVar T` references in param/return positions resolve to the
+    // GenericTypeParameterBuilder we stamped down in `defineMethodHeader`.
+    let genericSubst : Map<string, System.Type> =
+        if sg.Generics.IsEmpty then Map.empty
+        else
+            let gtpbs = mb.GetGenericArguments()
+            sg.Generics
+            |> List.mapi (fun i name -> name, gtpbs.[i])
+            |> Map.ofList
+    let bareReturnTy =
+        TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
     let methodReturnTy =
         if sg.IsAsync then toTaskType bareReturnTy else bareReturnTy
     let returnTy = bareReturnTy
     let paramList =
         sg.Params
-        |> List.map (fun p -> p.Name, TypeMap.toClrTypeWith lookup p.Type)
+        |> List.map (fun p ->
+            p.Name, TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type)
     // Type-resolution closure used by lambda synthesis inside the body.
     let resolveCtxInner = GenericContext()
     let scratchDiagsInner = ResizeArray<Diagnostic>()
     let resolveTypeForCtx (te: TypeExpr) : System.Type =
         let lty = Resolver.resolveType symbols resolveCtxInner scratchDiagsInner te
-        TypeMap.toClrTypeWith lookup lty
+        TypeMap.toClrTypeWithGenerics lookup genericSubst lty
     let ctx =
         Codegen.FunctionCtx.make
             il returnTy paramList
-            funcs records enums enumCases unions unionCases
+            funcs funcSigs records enums enumCases unions unionCases
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes
@@ -1161,16 +1205,19 @@ let private emitAssembly
 
         // Pass A — define every header.
         let methodTable = Dictionary<string, MethodBuilder>()
+        let funcSigsTable = Dictionary<string, ResolvedSignature>()
         for fn in funcs do
             match Map.tryFind fn.Name sigs with
             | Some sg ->
                 let mb = defineMethodHeader programTy lookup fn sg
                 methodTable.[fn.Name] <- mb
+                funcSigsTable.[fn.Name] <- sg
             | None ->
                 let synthSig : ResolvedSignature =
                     { Generics = []; Params = []; Return = TyPrim PtUnit
                       IsAsync = false; Span = fn.Span }
                 let mb = defineMethodHeader programTy lookup fn synthSig
+                funcSigsTable.[fn.Name] <- synthSig
                 methodTable.[fn.Name] <- mb
 
         // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
@@ -1296,7 +1343,7 @@ let private emitAssembly
                       IsAsync = false; Span = fn.Span }
             emitFunctionBody
                 methodTable.[fn.Name] fn sg lookup
-                methodTable recordTable enumTable enumCases
+                methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable
@@ -1311,7 +1358,7 @@ let private emitAssembly
             let selfTy = mb.DeclaringType
             emitFunctionBody
                 mb fd sg lookup
-                methodTable recordTable enumTable enumCases
+                methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable

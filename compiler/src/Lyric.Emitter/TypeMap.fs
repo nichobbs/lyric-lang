@@ -38,14 +38,22 @@ let private primToClr : PrimType -> ClrType =
 /// Map a Lyric `Type` to a CLR `System.Type` using a lookup for
 /// user-defined types. The lookup may return `None` for types whose
 /// CLR shape isn't yet known (in which case we fall back to `obj`).
-let rec toClrTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
-    let recur = toClrTypeWith lookup
+///
+/// `genericSubst` substitutes Lyric `TyVar name` references for the
+/// caller-supplied CLR `Type` (typically a `GenericTypeParameterBuilder`
+/// when emitting a generic method, or a concrete CLR type when
+/// monomorphising a call site).  An empty map preserves the previous
+/// erasure-to-`obj` behaviour for unbound type variables.
+let rec toClrTypeWithGenerics
+        (lookup: TypeId -> ClrType option)
+        (genericSubst: Map<string, ClrType>)
+        (t: Type) : ClrType =
+    let recur = toClrTypeWithGenerics lookup genericSubst
     match t with
     | TyPrim p -> primToClr p
     | TyTuple [] -> typeof<System.ValueTuple>
     | TyTuple [x] -> recur x
     | TyTuple xs ->
-        // System.ValueTuple<...> for ≤ 7 elements; nested for more.
         let args = xs |> List.map recur |> List.toArray
         match args.Length with
         | 2 -> typedefof<System.ValueTuple<_, _>>.MakeGenericType args
@@ -90,8 +98,15 @@ let rec toClrTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
         | Some t -> t
         | None   -> typeof<obj>
     | TySelf          -> typeof<obj>
-    | TyVar _         -> typeof<obj>
+    | TyVar name      ->
+        match Map.tryFind name genericSubst with
+        | Some t -> t
+        | None   -> typeof<obj>      // erasure fallback for unbound vars
     | TyError         -> typeof<obj>
+
+/// Back-compat overload that erases every `TyVar` to `obj`.
+let toClrTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
+    toClrTypeWithGenerics lookup Map.empty t
 
 /// Convenience overload that knows nothing about user types — every
 /// `TyUser` lowers to `obj`. Kept for tests / call sites that
@@ -101,10 +116,16 @@ let toClrType (t: Type) : ClrType =
 
 /// CLR return-type for a Lyric type. Differs from `toClrType` only
 /// for `Unit` and `Never`, which lower to `void` at the return slot.
-let toClrReturnTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
+let toClrReturnTypeWithGenerics
+        (lookup: TypeId -> ClrType option)
+        (genericSubst: Map<string, ClrType>)
+        (t: Type) : ClrType =
     match t with
     | TyPrim PtUnit | TyPrim PtNever -> typeof<System.Void>
-    | _ -> toClrTypeWith lookup t
+    | _ -> toClrTypeWithGenerics lookup genericSubst t
+
+let toClrReturnTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =
+    toClrReturnTypeWithGenerics lookup Map.empty t
 
 let toClrReturnType (t: Type) : ClrType =
     toClrReturnTypeWith (fun _ -> None) t
