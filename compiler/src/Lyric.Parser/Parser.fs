@@ -3558,6 +3558,37 @@ and private parseExternPackageBody
       Members     = List.ofSeq xs
       Span        = joinSpans startTok.Span endSpan }
 
+/// `extern type Foo = "System.Foo"` — declare a Lyric-side opaque
+/// alias for a CLR type loaded into the AppDomain.  The string is
+/// the CLR `FullName`; the type checker treats `Foo` as an
+/// ordinary user type with no fields (opaque), and the emitter
+/// looks the CLR type up at codegen via reflection.
+and private parseExternTypeBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ExternTypeDecl =
+    let startTok = Cursor.advance cursor   // 'extern'
+    Cursor.advance cursor |> ignore        // 'type'
+    let name, _ = readIdent cursor diags "extern type"
+    match Cursor.tryEatPunct Eq cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0273" "expected '=' after extern type name"
+            (Cursor.peekSpan cursor)
+    let clrName, clrSpan =
+        match Cursor.peekToken cursor with
+        | TString s ->
+            let tok = Cursor.advance cursor
+            s, tok.Span
+        | _ ->
+            err diags "P0274"
+                "expected a string literal naming the CLR type (e.g. \"System.DateTime\")"
+                (Cursor.peekSpan cursor)
+            "<error>", Cursor.peekSpan cursor
+    { Name    = name
+      ClrName = clrName
+      Span    = joinSpans startTok.Span clrSpan }
+
 // ----- module-level val / scope_kind / test / property / fixture ----------
 
 and private parseModuleValBody
@@ -3789,6 +3820,9 @@ and private parseItem
             | TKeyword KwExtern
                 when (Cursor.peekAt cursor 1).Token = TKeyword KwPackage ->
                 IExtern (parseExternPackageBody cursor diags anns)
+            | TKeyword KwExtern
+                when (Cursor.peekAt cursor 1).Token = TKeyword KwType ->
+                IExternType (parseExternTypeBody cursor diags)
             | TKeyword KwVal ->
                 IVal (parseModuleValBody cursor diags)
             | TKeyword KwTest ->

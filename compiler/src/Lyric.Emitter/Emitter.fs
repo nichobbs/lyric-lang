@@ -95,6 +95,14 @@ let private distinctTypeItems (sf: SourceFile) : DistinctTypeDecl list =
         | IDistinctType d -> Some d
         | _ -> None)
 
+/// Pull every top-level `IExternType` out of a parsed source file.
+let private externTypeItems (sf: SourceFile) : ExternTypeDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IExternType e -> Some e
+        | _ -> None)
+
 /// Pull every top-level `IOpaque` (with a body) out of a parsed source file.
 /// Bodyless opaque declarations (`opaque type AccountId`) are name-only;
 /// they don't lower to anything until cross-package linking arrives.
@@ -1056,9 +1064,25 @@ let private findClrType (qualifiedName: string) : System.Type option =
 /// the Lyric function's parameter count — used to disambiguate
 /// overloads; for an instance method the receiver counts as the
 /// first parameter.
+/// Match a candidate method's parameter types against the Lyric
+/// function's param CLR types.  Exact equality is required — no
+/// implicit boxing or reference-conversion is performed at the FFI
+/// boundary.  Used to disambiguate BCL overloads (e.g. the four
+/// `op_Subtraction` methods on `System.DateTime`).
+let private paramsExactMatch
+        (m: MethodInfo) (expected: System.Type array) : bool =
+    let p = m.GetParameters()
+    if p.Length <> expected.Length then false
+    else
+        let mutable ok = true
+        for i in 0 .. p.Length - 1 do
+            if ok && p.[i].ParameterType <> expected.[i] then
+                ok <- false
+        ok
+
 let private resolveExternTarget
         (target: string)
-        (paramArity: int) : MethodInfo option =
+        (paramTypes: System.Type array) : MethodInfo option =
     let lastDot = target.LastIndexOf '.'
     if lastDot <= 0 then None
     else
@@ -1068,25 +1092,52 @@ let private resolveExternTarget
     | None -> None
     | Some t ->
         let methods = t.GetMethods()
-        // Static method, or instance method whose receiver is the
-        // first Lyric param.
-        let staticMatch =
-            methods |> Array.tryFind (fun m ->
-                m.IsStatic
-                && m.Name = memberName
-                && m.GetParameters().Length = paramArity)
-        match staticMatch with
+        let arity = paramTypes.Length
+        // Try, in order:
+        //  (a) static method exact-typed against every Lyric param
+        //  (b) static method matching by arity only (fallback when
+        //      a Lyric primitive doesn't perfectly equal the BCL
+        //      param type — should be rare with extern types)
+        //  (c) instance method exact-typed (receiver = first Lyric
+        //      param, remaining Lyric params = method args)
+        //  (d) instance method by arity
+        //  (e) property getter `get_<MemberName>`
+        let isStatic = (fun (m: MethodInfo) -> m.IsStatic)
+        let isInstance = (fun (m: MethodInfo) -> not m.IsStatic)
+        let candidates name pred =
+            methods
+            |> Array.filter (fun m -> m.Name = name && pred m)
+        let staticTyped =
+            candidates memberName isStatic
+            |> Array.tryFind (fun m -> paramsExactMatch m paramTypes)
+        match staticTyped with
         | Some m -> Some m
         | None ->
-            let instanceMatch =
-                methods |> Array.tryFind (fun m ->
-                    not m.IsStatic
-                    && m.Name = memberName
-                    && m.GetParameters().Length = paramArity - 1)
-            match instanceMatch with
+            let staticArity =
+                candidates memberName isStatic
+                |> Array.tryFind (fun m -> m.GetParameters().Length = arity)
+            match staticArity with
             | Some m -> Some m
+            | None when arity >= 1 ->
+                let instanceTyped =
+                    candidates memberName isInstance
+                    |> Array.tryFind (fun m ->
+                        paramsExactMatch m (Array.skip 1 paramTypes))
+                match instanceTyped with
+                | Some m -> Some m
+                | None ->
+                    let instanceArity =
+                        candidates memberName isInstance
+                        |> Array.tryFind (fun m -> m.GetParameters().Length = arity - 1)
+                    match instanceArity with
+                    | Some m -> Some m
+                    | None ->
+                        let prop = t.GetProperty memberName
+                        match Option.ofObj prop with
+                        | Some p when p.CanRead ->
+                            Option.ofObj (p.GetGetMethod())
+                        | _ -> None
             | None ->
-                // Property getter: `Type.Prop` -> `get_Prop()`.
                 let prop = t.GetProperty memberName
                 match Option.ofObj prop with
                 | Some p when p.CanRead ->
@@ -1100,13 +1151,14 @@ let private emitExternCall
         (resultLocal: LocalBuilder option)
         (exitLabel: Label)
         (target: string) : unit =
-    let arity = List.length paramList
+    let paramTypes =
+        paramList |> List.map snd |> List.toArray
     let mi =
-        match resolveExternTarget target arity with
+        match resolveExternTarget target paramTypes with
         | Some m -> m
         | None ->
             failwithf "FFI: cannot resolve `@externTarget(\"%s\")` for `%s` (arity %d)"
-                target fn.Name arity
+                target fn.Name paramTypes.Length
     // Push every Lyric parameter onto the stack in declaration order.
     paramList
     |> List.iteri (fun i _ -> il.Emit(OpCodes.Ldarg, i))
@@ -1433,6 +1485,21 @@ let private emitAssembly
         let enumTable   = Records.EnumTable()
         let enumCases   = Records.EnumCaseLookup()
         let typeIdToClr = Dictionary<TypeId, System.Type>()
+
+        // ---- FFI: register extern types so any reference resolves
+        // ---- to the CLR type at typeIdToClr lookup time.  Failure
+        // ---- to resolve surfaces as a build error rather than a
+        // ---- silent fallback to obj.
+        for et in externTypeItems sf do
+            match findClrType et.ClrName with
+            | Some clr ->
+                symbols.TryFind et.Name
+                |> Seq.tryHead
+                |> Option.bind Symbol.typeIdOpt
+                |> Option.iter (fun id -> typeIdToClr.[id] <- clr)
+            | None ->
+                failwithf "FFI: cannot resolve extern type '%s' = \"%s\" against the loaded AppDomain"
+                    et.Name et.ClrName
 
         // ---- imported tables — populated from `stdlibArtifact` ----
         let importedRecordTable     = Records.ImportedRecordTable()

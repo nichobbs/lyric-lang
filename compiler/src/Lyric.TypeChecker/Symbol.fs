@@ -22,6 +22,8 @@ type DeclKind =
     | DKDistinctType of TypeId * DistinctTypeDecl
     | DKTypeAlias    of TypeAliasDecl
     | DKInterface    of TypeId * InterfaceDecl
+    /// `extern type Foo = "System.Foo"` — opaque CLR-mapped type.
+    | DKExternType   of TypeId * ExternTypeDecl
 
     /// Term-level declarations: they appear in expression position.
     | DKConst    of ConstDecl
@@ -58,12 +60,13 @@ module Symbol =
         | DKRecord _ | DKExposedRec _ | DKUnion _
         | DKEnum _ | DKOpaque _ | DKProtected _
         | DKDistinctType _ | DKTypeAlias _
-        | DKInterface _ -> true
+        | DKInterface _ | DKExternType _ -> true
         | _ -> false
 
     let typeIdOpt (s: Symbol) : TypeId option =
         match s.Kind with
         | DKRecord(id, _) | DKExposedRec(id, _) | DKUnion(id, _)
         | DKEnum(id, _) | DKOpaque(id, _) | DKProtected(id, _)
-        | DKDistinctType(id, _) | DKInterface(id, _) -> Some id
+        | DKDistinctType(id, _) | DKInterface(id, _)
+        | DKExternType(id, _) -> Some id
         | _ -> None
