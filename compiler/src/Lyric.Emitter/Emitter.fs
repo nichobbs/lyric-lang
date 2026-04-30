@@ -304,6 +304,65 @@ let private defineDistinctType
     fromIl.Emit(OpCodes.Ldloc, localVar)
     fromIl.Emit(OpCodes.Ret)
 
+    // ---- derives Equals ----------------------------------------------
+    // `equals(other: <Self>): Bool` — compare backing `Value` fields.
+    if List.contains "Equals" dt.Derives then
+        let mb =
+            tb.DefineMethod(
+                "equals",
+                MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                typeof<bool>,
+                [| tb :> System.Type |])
+        mb.DefineParameter(1, ParameterAttributes.None, "other") |> ignore
+        let il = mb.GetILGenerator()
+        il.Emit(OpCodes.Ldarg_0)
+        il.Emit(OpCodes.Ldfld, valueField)
+        il.Emit(OpCodes.Ldarg_1)
+        il.Emit(OpCodes.Ldfld, valueField)
+        il.Emit(OpCodes.Ceq)
+        il.Emit(OpCodes.Ret)
+
+    // ---- derives Hash ------------------------------------------------
+    // `hash(): UInt` — box the underlying primitive and call GetHashCode.
+    if List.contains "Hash" dt.Derives then
+        let mb =
+            tb.DefineMethod(
+                "hash",
+                MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                typeof<uint32>,
+                [||])
+        let il = mb.GetILGenerator()
+        il.Emit(OpCodes.Ldarg_0)
+        il.Emit(OpCodes.Ldfld, valueField)
+        il.Emit(OpCodes.Box, underlyingClr)
+        let getHash =
+            match Option.ofObj (typeof<obj>.GetMethod("GetHashCode")) with
+            | Some m -> m
+            | None   -> failwith "Object::GetHashCode not found"
+        il.Emit(OpCodes.Callvirt, getHash)
+        il.Emit(OpCodes.Ret)
+
+    // ---- derives Default ---------------------------------------------
+    // `default(): <Self>` static — wrap the underlying type's zero.
+    // Range-constrained types reject this at definition time when their
+    // zero falls outside the range; the bootstrap accepts both because
+    // the M2.1 range bounds we honour are int literals.
+    if List.contains "Default" dt.Derives then
+        let mb =
+            tb.DefineMethod(
+                "default",
+                MethodAttributes.Public ||| MethodAttributes.Static
+                ||| MethodAttributes.HideBySig,
+                tb,
+                [||])
+        let il = mb.GetILGenerator()
+        if underlyingClr = typeof<int64> then il.Emit(OpCodes.Ldc_I8, 0L)
+        elif underlyingClr = typeof<float> then il.Emit(OpCodes.Ldc_R4, 0.0f)
+        elif underlyingClr = typeof<double> then il.Emit(OpCodes.Ldc_R8, 0.0)
+        else il.Emit(OpCodes.Ldc_I4_0)
+        il.Emit(OpCodes.Call, fromMb)
+        il.Emit(OpCodes.Ret)
+
     { Records.DistinctTypeInfo.Name       = dt.Name
       Records.DistinctTypeInfo.Type       = tb
       Records.DistinctTypeInfo.ValueField = valueField

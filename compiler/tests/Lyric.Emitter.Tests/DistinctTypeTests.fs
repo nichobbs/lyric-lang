@@ -182,4 +182,53 @@ func main(): Unit {
 """
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd()) "175" "chained derives Add"
+
+        testCase "[derives Equals]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivEq" """
+package DerivEq
+
+type UserId = Int derives Equals
+
+func main(): Unit {
+  val a = UserId.from(7)
+  val b = UserId.from(7)
+  val c = UserId.from(8)
+  println(a.equals(b))
+  println(a.equals(c))
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "True\nFalse" "derives Equals"
+
+        testCase "[derives Hash]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivHash" """
+package DerivHash
+
+type UserId = Int derives Hash
+
+func main(): Unit {
+  val a = UserId.from(42)
+  val b = UserId.from(42)
+  println(a.hash() == b.hash())
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "True" "derives Hash"
+
+        testCase "[derives Default]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivDef" """
+package DerivDef
+
+type Counter = Int derives Default
+
+func main(): Unit {
+  val c = Counter.default()
+  println(c.value)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "0" "derives Default"
     ]
