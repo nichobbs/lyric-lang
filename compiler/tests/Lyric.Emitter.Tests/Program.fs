@@ -32,6 +32,7 @@ let main argv =
             GenericUnionTests.tests
             SyntaxSimplificationTests.tests
             BclDispatchTests.tests
+            ParseTests.tests
             EndToEndSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

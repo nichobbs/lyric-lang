@@ -219,6 +219,27 @@ let private printlnAny : Lazy<MethodInfo> =
         | Some m -> m
         | None   -> failwith "Lyric.Stdlib.Console::PrintlnAny(object) not found")
 
+/// Lookup a static method on `Lyric.Stdlib.Parse` by name.  Each Lyric
+/// builtin (`hostParseIntIsValid`, `hostParseIntValue`, …) routes to
+/// the matching CLR static.
+let private parseHostMethod (name: string) : Lazy<MethodInfo> =
+    lazy (
+        let parseTy = typeof<Lyric.Stdlib.Parse>
+        let mi = parseTy.GetMethod(name, [| typeof<string> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwithf "Lyric.Stdlib.Parse::%s(string) not found" name)
+
+let private hostParseBuiltins : Map<string, Lazy<MethodInfo>> =
+    Map.ofList [
+        "hostParseIntIsValid",    parseHostMethod "IntIsValid"
+        "hostParseIntValue",      parseHostMethod "IntValue"
+        "hostParseLongIsValid",   parseHostMethod "LongIsValid"
+        "hostParseLongValue",     parseHostMethod "LongValue"
+        "hostParseDoubleIsValid", parseHostMethod "DoubleIsValid"
+        "hostParseDoubleValue",   parseHostMethod "DoubleValue"
+    ]
+
 // ---------------------------------------------------------------------------
 // CLR-type predicates used by the binop emitter.
 // ---------------------------------------------------------------------------
@@ -1420,6 +1441,21 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 m.ReturnType
             | None ->
                 failwithf "M2.1 codegen: %s.tryFrom not available (no range constraint)" typeName
+
+    // ---- std.parse host builtins --------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, [arg])
+        when Map.containsKey name hostParseBuiltins ->
+        let payload =
+            match arg with
+            | CAPositional ex | CANamed (_, ex, _) -> ex
+        let argTy = emitExpr ctx payload
+        if argTy <> typeof<string> then
+            failwithf "host parse builtin '%s' requires String arg, got %s"
+                name argTy.Name
+        let mi = (Map.find name hostParseBuiltins).Value
+        il.Emit(OpCodes.Call, mi)
+        mi.ReturnType
 
     // ---- println builtin ----------------------------------------------
 
