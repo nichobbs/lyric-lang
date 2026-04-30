@@ -112,6 +112,40 @@ func main(): Unit {
 }
 """,
     "10\n13\n21\n22"
+
+    "tuple_8_elements_compiles",
+    """
+package T8
+func makeOctet(): (Int, Int, Int, Int, Int, Int, Int, Int) =
+  (1, 2, 3, 4, 5, 6, 7, 8)
+func main(): Unit {
+  val _ = makeOctet()
+  println(42)
+}
+""",
+    "42"
+
+    "tuple_10_elements_compiles",
+    """
+package T10
+func make10(): (Int, Int, Int, Int, Int, Int, Int, Int, Int, Int) =
+  (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+func main(): Unit {
+  val _ = make10()
+  println(99)
+}
+""",
+    "99"
+
+    "tuple_15_elements_compiles",
+    """
+package T15
+func main(): Unit {
+  val _ = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+  println(15)
+}
+""",
+    "15"
 ]
 
 let tests =
