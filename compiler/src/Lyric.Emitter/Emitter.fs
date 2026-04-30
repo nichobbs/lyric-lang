@@ -848,6 +848,77 @@ let private populateToViewMethod
     il.Emit(OpCodes.Ret)
     mb
 
+/// Optional Pass D: synthesise `<Name>View::tryInto(): Result[<Name>, String]`.
+///
+/// Bootstrap-grade: invariants don't run yet, so the reverse
+/// projection always succeeds.  The IL just copies each field from
+/// the view back to the opaque ctor and wraps the result in `Ok`.
+///
+/// Returns `None` (skip generation) if any of:
+///   - `Std.Core.Result` is not in the imported-union table.
+///   - The projectable has any nested-projectable field whose view
+///     type is one of the other stubs in this batch — handling those
+///     needs a recursive `tryInto` variant that monad-binds through
+///     each nested call.  Tracked as a follow-up.
+let private populateTryIntoMethod
+        (importedUnions: Records.ImportedUnionTable)
+        (stubByOpaqueClr: Dictionary<System.Type, ProjectableStub>)
+        (stub: ProjectableStub)
+        (viewInfo: Records.RecordInfo) : MethodBuilder option =
+    let viewBuilderList =
+        stubByOpaqueClr.Values
+        |> Seq.map (fun s -> s.ViewBuilder :> System.Type)
+        |> Seq.toList
+    let hasNestedProjectableField =
+        viewInfo.Fields
+        |> List.exists (fun f -> List.exists ((=) f.Type) viewBuilderList)
+    if hasNestedProjectableField then None
+    else
+        match importedUnions.TryGetValue "Result" with
+        | true, resultInfo ->
+            let okCase =
+                resultInfo.Cases |> List.tryFind (fun c -> c.Name = "Ok")
+            match okCase with
+            | Some okCase ->
+                let opaqueClr = stub.OpaqueInfo.Type :> System.Type
+                let typeArgs = [| opaqueClr; typeof<string> |]
+                let resultClosed = resultInfo.Type.MakeGenericType typeArgs
+                let okClosed = okCase.Type.MakeGenericType typeArgs
+                let okCtor =
+                    TypeBuilder.GetConstructor(okClosed, okCase.Ctor)
+                let mb =
+                    viewInfo.Type.DefineMethod(
+                        "tryInto",
+                        MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                        resultClosed,
+                        [||])
+                let il = mb.GetILGenerator()
+                // Push every visible field from the view in opaque-
+                // ctor parameter order, then call the opaque's ctor.
+                let opaqueInfo = stub.OpaqueInfo
+                for of_ in opaqueInfo.Fields do
+                    match viewInfo.Fields |> List.tryFind (fun vf -> vf.Name = of_.Name) with
+                    | Some vf ->
+                        il.Emit(OpCodes.Ldarg_0)
+                        il.Emit(OpCodes.Ldfld, vf.Field)
+                    | None ->
+                        // `@hidden` field excluded from the view —
+                        // bootstrap can't reverse-project it, so push
+                        // a default value of the opaque field's type.
+                        if of_.Type.IsValueType then
+                            let loc = il.DeclareLocal(of_.Type)
+                            il.Emit(OpCodes.Ldloca, loc)
+                            il.Emit(OpCodes.Initobj, of_.Type)
+                            il.Emit(OpCodes.Ldloc, loc)
+                        else
+                            il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Newobj, opaqueInfo.Ctor)
+                il.Emit(OpCodes.Newobj, okCtor)
+                il.Emit(OpCodes.Ret)
+                Some mb
+            | None -> None
+        | _ -> None
+
 /// Define a static method header on `programTy` matching the resolved
 /// signature. Body is filled in by `emitFunctionBody` afterwards.
 let private defineMethodHeader
@@ -1438,10 +1509,17 @@ let private emitAssembly
         for (stub, viewInfo) in viewInfos do
             let toViewMb = populateToViewMethod stubByOpaqueClr stub viewInfo
             stub.ToView <- Some toViewMb
+            // Pass D: optional reverse `<Name>View::tryInto`.  Skipped
+            // for projectables with nested-projectable fields (needs
+            // monadic bind through each nested tryInto) and when
+            // `Std.Core.Result` isn't imported.
+            let tryIntoMb =
+                populateTryIntoMethod importedUnionTable stubByOpaqueClr stub viewInfo
             projectableTable.[stub.OpaqueDecl.Name] <-
-                { Records.ProjectableInfo.OpaqueName   = stub.OpaqueDecl.Name
-                  Records.ProjectableInfo.ToViewMethod = toViewMb
-                  Records.ProjectableInfo.ViewType    = viewInfo }
+                { Records.ProjectableInfo.OpaqueName    = stub.OpaqueDecl.Name
+                  Records.ProjectableInfo.ToViewMethod  = toViewMb
+                  Records.ProjectableInfo.ViewType      = viewInfo
+                  Records.ProjectableInfo.TryIntoMethod = tryIntoMb }
 
         // Pass 0.5 — distinct types and range subtypes.
         let distinctTable = Records.DistinctTypeTable()
