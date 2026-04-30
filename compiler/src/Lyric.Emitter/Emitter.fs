@@ -131,6 +131,21 @@ let private isProjectable (o: OpaqueTypeDecl) : bool =
         | "projectable" :: _ -> true
         | _ -> false)
 
+/// True if a field's annotation list contains `@projectionBoundary`.
+/// Per the language reference §2.9, this annotation breaks
+/// recursive view projection on a field of `@projectable` type.
+/// The bootstrap implementation simply leaves the field's view-side
+/// type as the source opaque (cycle-safe) rather than projecting as
+/// the source's id (the `asId` mode in the spec).  Either way the
+/// cycle is broken; the bootstrap chooses the option that doesn't
+/// require a runtime id-lookup.
+let private isProjectionBoundaryField (fd: FieldDecl) : bool =
+    fd.Annotations
+    |> List.exists (fun a ->
+        match a.Name.Segments with
+        | "projectionBoundary" :: _ -> true
+        | _ -> false)
+
 /// True if a field's annotation list contains `@hidden`.
 let private isHiddenField (fd: FieldDecl) : bool =
     fd.Annotations
@@ -771,12 +786,17 @@ let private populateProjectableView
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
             let sourceClr = TypeMap.toClrTypeWith lookup lty
-            // If this field's source type is itself a `@projectable`
-            // opaque, swap to that opaque's view builder.
+            // Recursively substitute the field's source type with the
+            // matching `<Source>View` *unless* the field is annotated
+            // `@projectionBoundary`, in which case the view exposes
+            // the source opaque type as-is (breaking recursive
+            // projection cycles).
             let viewClr : System.Type =
-                match stubByOpaqueClr.TryGetValue sourceClr with
-                | true, target -> target.ViewBuilder :> System.Type
-                | _ -> sourceClr
+                if isProjectionBoundaryField fd then sourceClr
+                else
+                    match stubByOpaqueClr.TryGetValue sourceClr with
+                    | true, target -> target.ViewBuilder :> System.Type
+                    | _ -> sourceClr
             let fb =
                 stub.ViewBuilder.DefineField(
                     fd.Name,
@@ -830,10 +850,14 @@ let private populateToViewMethod
         | Some sourceField ->
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, sourceField.Field)
-            // Recursive projection: call the source field's `toView`
-            // when its declared type is itself a projectable opaque.
+            // Recursive projection only when the *view* field's type
+            // is the source opaque's view builder.  Fields annotated
+            // `@projectionBoundary` had their view-side type left as
+            // the source opaque, so the value carries through without
+            // a `toView()` call.
             match stubByOpaqueClr.TryGetValue sourceField.Type with
-            | true, nestedStub ->
+            | true, nestedStub
+                when vf.Type = (nestedStub.ViewBuilder :> System.Type) ->
                 match nestedStub.ToView with
                 | Some toViewMb ->
                     il.Emit(OpCodes.Callvirt, toViewMb)
