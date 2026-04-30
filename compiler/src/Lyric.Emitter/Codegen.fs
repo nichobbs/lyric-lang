@@ -2168,10 +2168,18 @@ and private emitPatternBind
                             let substTy =
                                 Lyric.Emitter.TypeMap.toClrTypeWithGenerics
                                     ctx.Lookup substMap f.LyricType
+                            // `GetField` on a TypeBuilderInstantiation
+                            // (generic instance closed over a TypeBuilder)
+                            // throws NotSupportedException; route through
+                            // `TypeBuilder.GetField` in that case.
                             let fi =
-                                match Option.ofObj (constructed.GetField f.Name) with
-                                | Some x -> x
-                                | None   -> f.Field   // fallback to open def
+                                if constructed :? TypeBuilder
+                                   || constructed.GetType().Name = "TypeBuilderInstantiation" then
+                                    TypeBuilder.GetField(constructed, f.Field)
+                                else
+                                    match Option.ofObj (constructed.GetField f.Name) with
+                                    | Some x -> x
+                                    | None   -> f.Field
                             f.Name, substTy, fi)
                 | _ -> None, []
         match caseTy with

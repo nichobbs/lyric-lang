@@ -261,4 +261,111 @@ func main(): Unit {
 """
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd()) "5000" "toLong projection"
+
+        // ---- tryFrom returning Result[Self, String] -------------------
+
+        testCase "[range subtype tryFrom Ok branch]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "TryFromOk" """
+package TryFromOk
+import Std.Core
+
+type Score = Int range 0 ..= 100
+
+func main(): Unit {
+  val r = Score.tryFrom(42)
+  match r {
+    case Ok(v)  -> println(v.value)
+    case Err(e) -> println(-1)
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "42" "tryFrom Ok"
+
+        testCase "[range subtype tryFrom Err branch]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "TryFromErr" """
+package TryFromErr
+import Std.Core
+
+type Score = Int range 0 ..= 100
+
+func main(): Unit {
+  val r = Score.tryFrom(150)
+  match r {
+    case Ok(v)  -> println(v.value)
+    case Err(e) -> println(e)
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.stringContains
+                (stdout.TrimEnd()) "out of range" "tryFrom Err carries message"
+
+        testCase "[range subtype tryFrom boundary inclusive]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "TryFromBoundary" """
+package TryFromBoundary
+import Std.Core
+
+type Score = Int range 0 ..= 100
+
+func main(): Unit {
+  match Score.tryFrom(0) {
+    case Ok(v)  -> println(v.value)
+    case Err(e) -> println(-1)
+  }
+  match Score.tryFrom(100) {
+    case Ok(v)  -> println(v.value)
+    case Err(e) -> println(-1)
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "0\n100" "boundary values are Ok"
+
+        testCase "[range subtype tryFrom half-open excludes upper]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "TryFromHalfOpen" """
+package TryFromHalfOpen
+import Std.Core
+
+type Bucket = Int range 0 ..< 10
+
+func main(): Unit {
+  match Bucket.tryFrom(9) {
+    case Ok(v)  -> println(v.value)
+    case Err(e) -> println(-1)
+  }
+  match Bucket.tryFrom(10) {
+    case Ok(v)  -> println(v.value)
+    case Err(e) -> println(-1)
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "9\n-1" "9 in, 10 excluded"
+
+        testCase "[range subtype on Long has tryFrom too]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "TryFromLong" """
+package TryFromLong
+import Std.Core
+
+type Cents = Long range 0 ..= 1_000_000
+
+func main(): Unit {
+  match Cents.tryFrom(5000) {
+    case Ok(c)  -> println(c.value)
+    case Err(e) -> println(-1)
+  }
+  match Cents.tryFrom(2_000_000) {
+    case Ok(c)  -> println(c.value)
+    case Err(e) -> println(-1)
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "5000\n-1" "tryFrom on Long"
     ]
