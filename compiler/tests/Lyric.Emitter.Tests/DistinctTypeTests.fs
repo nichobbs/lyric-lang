@@ -182,4 +182,83 @@ func main(): Unit {
 """
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd()) "175" "chained derives Add"
+
+        testCase "[derives Equals]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivEq" """
+package DerivEq
+
+type UserId = Int derives Equals
+
+func main(): Unit {
+  val a = UserId.from(7)
+  val b = UserId.from(7)
+  val c = UserId.from(8)
+  println(a.equals(b))
+  println(a.equals(c))
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "True\nFalse" "derives Equals"
+
+        testCase "[derives Hash]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivHash" """
+package DerivHash
+
+type UserId = Int derives Hash
+
+func main(): Unit {
+  val a = UserId.from(42)
+  val b = UserId.from(42)
+  println(a.hash() == b.hash())
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "True" "derives Hash"
+
+        testCase "[derives Default]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "DerivDef" """
+package DerivDef
+
+type Counter = Int derives Default
+
+func main(): Unit {
+  val c = Counter.default()
+  println(c.value)
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "0" "derives Default"
+
+        testCase "[inherent toInt]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ToIntA" """
+package ToIntA
+
+type UserId = Int
+
+func main(): Unit {
+  val u = UserId.from(123)
+  println(u.toInt())
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "123" "toInt projection"
+
+        testCase "[inherent toLong]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ToLongA" """
+package ToLongA
+
+type Cents = Long range 0 ..= 1000000
+
+func main(): Unit {
+  val c = Cents.from(5000)
+  println(c.toLong())
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "5000" "toLong projection"
     ]

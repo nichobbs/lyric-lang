@@ -119,6 +119,52 @@ let private registerItem
     | IImpl _          -> None       // impl blocks have no identifier
     | IError           -> None
 
+/// The closed set of derive markers recognised in `where T: M` bounds.
+/// Per D034: Add, Sub, Mul, Div, Mod, Compare, Hash, Equals, Default.
+let private knownDeriveMarkers : Set<string> =
+    Set.ofList [ "Add"; "Sub"; "Mul"; "Div"; "Mod"
+                 "Compare"; "Hash"; "Equals"; "Default" ]
+
+/// Well-formedness check for a `where` clause: each bound's left side
+/// must be a generic parameter of the enclosing item, and each right-
+/// side constraint must be a known derive marker or an interface in
+/// scope.  Bound *enforcement* at call sites still waits on full
+/// generic instantiation; this only catches typos at definition time.
+let private checkWhereClause
+        (table: SymbolTable)
+        (diags: ResizeArray<Diagnostic>)
+        (genericNames: string list)
+        (where: WhereClause option) : unit =
+    match where with
+    | None -> ()
+    | Some wc ->
+        let known = Set.ofList genericNames
+        for b in wc.Bounds do
+            if not (Set.contains b.Name known) then
+                diags.Add(Diagnostic.error "T0050"
+                    (sprintf "'where' clause references unknown type parameter '%s'"
+                        b.Name)
+                    b.Span)
+            for c in b.Constraints do
+                match c.Head.Segments with
+                | [name] ->
+                    let isMarker = Set.contains name knownDeriveMarkers
+                    let isInterface =
+                        match table.TryFindOne name with
+                        | Some s ->
+                            match s.Kind with
+                            | DKInterface _ -> true
+                            | _ -> false
+                        | None -> false
+                    if not (isMarker || isInterface) then
+                        diags.Add(Diagnostic.error "T0051"
+                            (sprintf "unknown constraint '%s' in 'where' clause" name)
+                            c.Span)
+                | _ ->
+                    diags.Add(Diagnostic.error "T0051"
+                        (sprintf "qualified constraint paths not yet supported in 'where' clause")
+                        c.Span)
+
 /// Resolve a single FunctionDecl's signature. The function's generic
 /// parameters are pushed onto the GenericContext so that bare `T`
 /// references in parameter and return positions resolve to TyVar.
@@ -139,6 +185,8 @@ let private resolveFunctionSig
         | None -> []
     if not genericNames.IsEmpty then
         ctx.Push(genericNames)
+
+    checkWhereClause table diags genericNames fn.Where
 
     let resolveParam (p: Param) : ResolvedParam =
         { Name    = p.Name

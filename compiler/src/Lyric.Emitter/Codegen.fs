@@ -536,27 +536,52 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             failwithf "M2.2 codegen: receiver %s is not a @projectable opaque type"
                 recvTy.Name
 
-    // ---- distinct type static factory: TypeName.from(x) / .tryFrom(x) --
-
+    // ---- distinct type static factory / derive helper -----------------
+    //
+    // `TypeName.from(x)`, `.tryFrom(x)`, `.default()`, or any other
+    // static method on the distinct type's struct (the struct is sealed
+    // in Pass 0.5, so reflection works to discover derived statics).
     | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [typeName] } }, methodName) }, args)
-        when ctx.DistinctTypes.ContainsKey typeName
-             && (methodName = "from" || methodName = "tryFrom") ->
+        when ctx.DistinctTypes.ContainsKey typeName ->
         let info = ctx.DistinctTypes.[typeName]
-        let arg =
-            match args with
-            | [CAPositional ex] | [CANamed (_, ex, _)] -> ex
-            | _ -> failwithf "M2.1 codegen: %s.%s expects exactly one argument" typeName methodName
-        let _ = emitExpr ctx arg
-        if methodName = "from" then
+        match methodName with
+        | "from" ->
+            let arg =
+                match args with
+                | [CAPositional ex] | [CANamed (_, ex, _)] -> ex
+                | _ -> failwithf "M2.1 codegen: %s.from expects exactly one argument" typeName
+            let _ = emitExpr ctx arg
             il.Emit(OpCodes.Call, info.FromMethod)
             info.Type :> ClrType
-        else
+        | "tryFrom" ->
             match info.TryFromMethod with
             | Some m ->
+                let arg =
+                    match args with
+                    | [CAPositional ex] | [CANamed (_, ex, _)] -> ex
+                    | _ -> failwithf "M2.1 codegen: %s.tryFrom expects exactly one argument" typeName
+                let _ = emitExpr ctx arg
                 il.Emit(OpCodes.Call, m)
                 m.ReturnType
             | None ->
                 failwithf "M2.1 codegen: %s.tryFrom not available (no range constraint)" typeName
+        | other ->
+            // Look up the method by name on the (already sealed) struct.
+            let mi = info.Type.GetMethod(other)
+            match Option.ofObj mi with
+            | Some m when m.IsStatic ->
+                for a in args do
+                    let payload =
+                        match a with
+                        | CAPositional ex | CANamed (_, ex, _) -> ex
+                    let _ = emitExpr ctx payload
+                    ()
+                il.Emit(OpCodes.Call, m)
+                if m.ReturnType = typeof<System.Void> then typeof<System.Void>
+                else m.ReturnType
+            | _ ->
+                failwithf "M2.1 codegen: distinct type '%s' has no static method '%s'"
+                    typeName other
 
     // ---- method-style call (callvirt on interface or class method) ----
 
@@ -579,13 +604,26 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     m.Name = methodName && not m.IsStatic)
         match mi with
         | Some method ->
+            // For value-type instance methods the receiver must be a
+            // managed pointer, not a value.  Stash the value to a temp
+            // and reload its address, then dispatch via `call` (callvirt
+            // is illegal on non-virtual struct methods).
+            let useCallNotCallvirt =
+                recvTy.IsValueType
+            if useCallNotCallvirt then
+                let recvLoc = FunctionCtx.defineLocal ctx "__recv_val" recvTy
+                il.Emit(OpCodes.Stloc, recvLoc)
+                il.Emit(OpCodes.Ldloca, recvLoc)
             for a in args do
                 let payload =
                     match a with
                     | CAPositional ex | CANamed (_, ex, _) -> ex
                 let _ = emitExpr ctx payload
                 ()
-            il.Emit(OpCodes.Callvirt, method)
+            if useCallNotCallvirt then
+                il.Emit(OpCodes.Call, method)
+            else
+                il.Emit(OpCodes.Callvirt, method)
             if method.ReturnType = typeof<System.Void> then
                 typeof<System.Void>
             else
