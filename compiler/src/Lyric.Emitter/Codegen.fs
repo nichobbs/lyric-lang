@@ -240,6 +240,26 @@ let private hostParseBuiltins : Map<string, Lazy<MethodInfo>> =
         "hostParseDoubleValue",   parseHostMethod "DoubleValue"
     ]
 
+/// Lookup a static method on `Lyric.Stdlib.Contracts` by name (used
+/// for the `panic` / `expect` / `assert` builtins).
+let private contractMethod (name: string) (paramTys: System.Type array) : Lazy<MethodInfo> =
+    lazy (
+        let ty = typeof<Lyric.Stdlib.Contracts>
+        let mi = ty.GetMethod(name, paramTys)
+        match Option.ofObj mi with
+        | Some m -> m
+        | None ->
+            failwithf "Lyric.Stdlib.Contracts::%s not found" name)
+
+let private panicMethod : Lazy<MethodInfo> =
+    contractMethod "Panic" [| typeof<string> |]
+
+let private expectMethod : Lazy<MethodInfo> =
+    contractMethod "Expect" [| typeof<bool>; typeof<string> |]
+
+let private assertMethod : Lazy<MethodInfo> =
+    contractMethod "Assert" [| typeof<bool> |]
+
 // ---------------------------------------------------------------------------
 // CLR-type predicates used by the binop emitter.
 // ---------------------------------------------------------------------------
@@ -794,6 +814,51 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | _ ->
                 failwithf "M2.1 codegen: distinct type '%s' has no static method '%s'"
                     typeName other
+
+    // ---- UFCS-style static dispatch: `Type.method(args)` lowers to a
+    // ---- direct call to a function literally named `Type.method`.
+    // ---- The parser tolerates dotted function names today, so unions
+    // ---- like `errors.l`'s `IOError.message` end up as functions
+    // ---- whose name is the full dotted form.  Match them first so
+    // ---- we don't fall through to `EMember` evaluation that would
+    // ---- try to read a value off the type name.
+    | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [head] } }, methodName) }, args)
+        when ctx.Funcs.ContainsKey (head + "." + methodName) ->
+        let mb = ctx.Funcs.[head + "." + methodName]
+        let paramTypes =
+            mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
+        args
+        |> List.iteri (fun i a ->
+            let payload =
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex
+            let argTy = emitExpr ctx payload
+            if i < paramTypes.Length then
+                let pty = paramTypes.[i]
+                if pty = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy))
+        il.Emit(OpCodes.Call, mb)
+        if mb.ReturnType = typeof<System.Void> then typeof<System.Void>
+        else mb.ReturnType
+
+    | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [head] } }, methodName) }, args)
+        when ctx.ImportedFuncs.ContainsKey (head + "." + methodName) ->
+        let info = ctx.ImportedFuncs.[head + "." + methodName]
+        let paramTypes =
+            info.Method.GetParameters() |> Array.map (fun p -> p.ParameterType)
+        args
+        |> List.iteri (fun i a ->
+            let payload =
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex
+            let argTy = emitExpr ctx payload
+            if i < paramTypes.Length then
+                let pty = paramTypes.[i]
+                if pty = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy))
+        il.Emit(OpCodes.Call, info.Method)
+        if info.Method.ReturnType = typeof<System.Void> then typeof<System.Void>
+        else info.Method.ReturnType
 
     // ---- method-style call (callvirt on interface or class method) ----
 
@@ -1364,12 +1429,37 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | _ -> ()
             for (f, argExpr) in List.zip caseInfo.Fields argExprs do
                 bind f.LyricType (peekExprType ctx argExpr)
+            // Resolve type-args against `ctx.ExpectedType` /
+            // `ctx.ReturnType` first — any time the surrounding
+            // context already pins the union's full shape, prefer
+            // that over per-field peek (which can degrade to `obj`
+            // for builtins or imported funcs that `peekExprType`
+            // doesn't recognise).  Per-field bindings from
+            // `peekExprType` are the fallback when neither shape
+            // matches.
+            let tryArgFromShape (idx: int) (shape: ClrType) =
+                if shape.IsGenericType then
+                    let gargs = shape.GetGenericArguments()
+                    let shapeDef = shape.GetGenericTypeDefinition()
+                    if shapeDef = info.Type
+                       && idx < gargs.Length then
+                        Some gargs.[idx]
+                    else None
+                else None
             let typeArgs =
                 info.Generics
-                |> List.map (fun n ->
-                    match bindings.TryGetValue n with
-                    | true, t  -> t
-                    | false, _ -> typeof<obj>)
+                |> List.mapi (fun i n ->
+                    let fromExpected =
+                        ctx.ExpectedType |> Option.bind (tryArgFromShape i)
+                    match fromExpected with
+                    | Some t -> t
+                    | None ->
+                        match tryArgFromShape i ctx.ReturnType with
+                        | Some t -> t
+                        | None ->
+                            match bindings.TryGetValue n with
+                            | true, t  -> t
+                            | false, _ -> typeof<obj>)
                 |> List.toArray
             let constructedCase = caseInfo.Type.MakeGenericType typeArgs
             // Find the matching ctor on the constructed type by
@@ -1456,6 +1546,35 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         let mi = (Map.find name hostParseBuiltins).Value
         il.Emit(OpCodes.Call, mi)
         mi.ReturnType
+
+    // ---- panic / expect / assert builtins ------------------------------
+
+    | ECall ({ Kind = EPath { Segments = ["panic"] } }, [arg]) ->
+        let payload =
+            match arg with
+            | CAPositional ex | CANamed (_, ex, _) -> ex
+        let _ = emitExpr ctx payload
+        il.Emit(OpCodes.Call, panicMethod.Value)
+        // Panic returns Never; the IL stack ends here, but the codegen
+        // needs *some* CLR type for downstream chaining.  Use Void.
+        typeof<System.Void>
+
+    | ECall ({ Kind = EPath { Segments = ["expect"] } }, [a1; a2]) ->
+        let payload1 =
+            match a1 with CAPositional ex | CANamed (_, ex, _) -> ex
+        let payload2 =
+            match a2 with CAPositional ex | CANamed (_, ex, _) -> ex
+        let _ = emitExpr ctx payload1
+        let _ = emitExpr ctx payload2
+        il.Emit(OpCodes.Call, expectMethod.Value)
+        typeof<System.Void>
+
+    | ECall ({ Kind = EPath { Segments = ["assert"] } }, [arg]) ->
+        let payload =
+            match arg with CAPositional ex | CANamed (_, ex, _) -> ex
+        let _ = emitExpr ctx payload
+        il.Emit(OpCodes.Call, assertMethod.Value)
+        typeof<System.Void>
 
     // ---- println builtin ----------------------------------------------
 

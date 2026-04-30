@@ -1178,7 +1178,7 @@ let private emitAssembly
         (symbols: SymbolTable)
         (req: EmitRequest)
         (isLibrary: bool)
-        (stdlibArtifact: StdlibArtifact option) : Diagnostic list =
+        (stdlibArtifacts: StdlibArtifact list) : Diagnostic list =
     let funcs = functionItems sf
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
@@ -1216,9 +1216,7 @@ let private emitAssembly
         let importedUnionCaseLookup = Records.ImportedUnionCaseLookup()
         let importedFuncTable       = Records.ImportedFuncTable()
         let importedDistinctTypeTable = Records.ImportedDistinctTypeTable()
-        match stdlibArtifact with
-        | None -> ()
-        | Some artifact ->
+        for artifact in stdlibArtifacts do
             let asm = artifact.Assembly
             let stdNs = String.concat "." artifact.Source.Package.Path.Segments
             let qualify name =
@@ -1655,26 +1653,19 @@ let private emitAssembly
         Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
         []
 
-/// Walk up the directory tree from `startDir` until `lyric/std/core.l`
-/// is found, returning its absolute path or `None`.
-let private locateCoreL (startDir: string) : string option =
-    let mutable dir = Some (DirectoryInfo(startDir))
-    let mutable found : string option = None
-    while found.IsNone && dir.IsSome do
-        let d = dir.Value
-        let candidate = Path.Combine(d.FullName, "lyric", "std", "core.l")
-        if File.Exists candidate then found <- Some candidate
-        dir <- d.Parent |> Option.ofObj
-    found
-
 // ---------------------------------------------------------------------------
-// Stdlib precompilation — `core.l` compiles once per process to a
-// standalone `Lyric.Stdlib.Core.dll` that user assemblies reference.
-// The artifact is cached in-memory; the DLL lives in a shared temp
-// directory so it can be copied alongside each user output.
+// Stdlib precompilation.
+//
+// Each `Std.X` module compiles once per process into its own DLL
+// (`Lyric.Stdlib.<X>.dll`) and is cached in memory.  When a stdlib
+// module imports another stdlib module, the importer's emit gets the
+// importee as a previously-compiled artifact so cross-assembly
+// references resolve.  User-side `import Std.X` walks the closure of
+// stdlib deps and hands all visited artifacts to the emitter.
 // ---------------------------------------------------------------------------
 
-let private stdlibArtifactCache : StdlibArtifact option ref = ref None
+/// Cache: package key (e.g. `"Std.Core"`) → compiled artifact.
+let private stdlibArtifactCache : Dictionary<string, StdlibArtifact> = Dictionary()
 let private stdlibLock : obj = obj()
 
 /// The shared cache directory for compiled stdlib artifacts.  Per-
@@ -1685,69 +1676,215 @@ let private stdlibCacheDir : string =
     Directory.CreateDirectory dir |> ignore
     dir
 
-let private compileStdlibFresh (corePath: string) : StdlibArtifact =
-    let outPath = Path.Combine(stdlibCacheDir, "Lyric.Stdlib.Core.dll")
-    let stdSrc = File.ReadAllText corePath
-    let stdParsed = parse stdSrc
-    let stdChecked = Lyric.TypeChecker.Checker.check stdParsed.File
-    let req =
-        { Source       = stdSrc
-          AssemblyName = "Lyric.Stdlib.Core"
-          OutputPath   = outPath }
-    let _emitDiags =
-        emitAssembly stdParsed.File stdChecked.Signatures stdChecked.Symbols req true None
-    let assembly = Assembly.LoadFrom outPath
-    { AssemblyPath = outPath
-      Assembly     = assembly
-      Source       = stdParsed.File
-      Symbols      = stdChecked.Symbols
-      Signatures   = stdChecked.Signatures }
+let private packageKey (segments: string list) : string =
+    String.concat "." segments
 
-/// Get or compile the stdlib artifact.  Compilation runs at most once
-/// per process; subsequent callers get the cached result.
-let private getStdlibArtifact (corePath: string) : StdlibArtifact =
+/// Map a Lyric package segment like `EnvironmentHost` to its `.l`
+/// file basename `environment_host` (camel → snake_case lowercase).
+let private segmentToFileBase (seg: string) : string =
+    let sb = System.Text.StringBuilder()
+    seg
+    |> Seq.iteri (fun i c ->
+        if i > 0 && System.Char.IsUpper c then sb.Append('_') |> ignore
+        sb.Append(System.Char.ToLowerInvariant c) |> ignore)
+    sb.ToString()
+
+/// Walk up the directory tree from `startDir` looking for the `.l`
+/// file backing the given `Std.X[.Y…]` package.
+let private locateStdlibFile
+        (startDir: string)
+        (segments: string list) : string option =
+    match segments with
+    | "Std" :: rest when not (List.isEmpty rest) ->
+        let baseName =
+            rest
+            |> List.map segmentToFileBase
+            |> String.concat "_"
+        let mutable dir = Some (DirectoryInfo(startDir))
+        let mutable found : string option = None
+        while found.IsNone && dir.IsSome do
+            let d = dir.Value
+            let candidate = Path.Combine(d.FullName, "lyric", "std", baseName + ".l")
+            if File.Exists candidate then found <- Some candidate
+            dir <- d.Parent |> Option.ofObj
+        found
+    | _ -> None
+
+/// Recursively ensure that the given `Std.X[.Y…]` package is compiled,
+/// returning its artifact and any diagnostics raised during the
+/// compile chain.  Cached per-process; re-entrant calls hit the
+/// cache.
+let rec private ensureStdlibArtifact
+        (segments: string list) : Result<StdlibArtifact, Diagnostic list> =
+    let key = packageKey segments
     lock stdlibLock (fun () ->
-        match !stdlibArtifactCache with
-        | Some a -> a
-        | None ->
-            let a = compileStdlibFresh corePath
-            stdlibArtifactCache := Some a
-            a)
+        match stdlibArtifactCache.TryGetValue key with
+        | true, a -> Ok a
+        | _ ->
+            match locateStdlibFile AppContext.BaseDirectory segments with
+            | None ->
+                let zeroSpan = Span.make Position.initial Position.initial
+                Error [ err "E900"
+                            (sprintf "cannot locate lyric source for stdlib module '%s'" key)
+                            zeroSpan ]
+            | Some path ->
+                let src = File.ReadAllText path
+                let parsed = parse src
+                // Recursively compile every `Std.X` import the source
+                // declares, so they're cached before this module emits.
+                // Std.Core is auto-included even when not declared so
+                // every stdlib module can rely on `Result` / `Option`.
+                let stdImports =
+                    parsed.File.Imports
+                    |> List.choose (fun i ->
+                        match i.Path.Segments with
+                        | "Std" :: _ when i.Path.Segments <> segments ->
+                            Some i.Path.Segments
+                        | _ -> None)
+                let allDeps =
+                    let needsCore =
+                        segments <> ["Std"; "Core"]
+                        && not (List.exists ((=) ["Std"; "Core"]) stdImports)
+                    if needsCore then ["Std"; "Core"] :: stdImports
+                    else stdImports
+                let mutable depDiags : Diagnostic list = []
+                let depArtifacts =
+                    allDeps
+                    |> List.choose (fun s ->
+                        match ensureStdlibArtifact s with
+                        | Ok a -> Some a
+                        | Error ds ->
+                            depDiags <- depDiags @ ds
+                            None)
+                if not depDiags.IsEmpty then Error depDiags
+                else
+                    // Strip the cross-stdlib imports — they're handled
+                    // by the artifact list, not the user-side
+                    // `Item list` re-registration.  Non-`Std.*` imports
+                    // (e.g. axiom externs to System.*) flow through.
+                    let stripped =
+                        let sf = parsed.File
+                        { sf with
+                            Imports =
+                                sf.Imports
+                                |> List.filter (fun i ->
+                                    match i.Path.Segments with
+                                    | "Std" :: _ -> false
+                                    | _ -> true) }
+                    let importedItems =
+                        depArtifacts |> List.collect (fun a -> a.Source.Items)
+                    let checked' =
+                        Lyric.TypeChecker.Checker.checkWithImports stripped importedItems
+                    let assemblyName =
+                        "Lyric.Stdlib." + (List.tail segments |> String.concat "")
+                    let outPath = Path.Combine(stdlibCacheDir, assemblyName + ".dll")
+                    let req =
+                        { Source       = src
+                          AssemblyName = assemblyName
+                          OutputPath   = outPath }
+                    let _emitDiags =
+                        emitAssembly
+                            stripped checked'.Signatures checked'.Symbols
+                            req true depArtifacts
+                    // Match the original Std.Core path: ignore
+                    // type-checker / emitter diagnostics here so that
+                    // pre-existing stdlib-side issues (e.g. T0040 on
+                    // `slice[T].length`) don't take down user emits.
+                    // Surface them only if `Assembly.LoadFrom` then
+                    // fails — that's the real signal that the DLL
+                    // wasn't produced.
+                    if not (File.Exists outPath) then
+                        let parserErrs =
+                            parsed.Diagnostics
+                            |> List.filter (fun d -> d.Severity = DiagError)
+                        Error parserErrs
+                    else
+                        let assembly = Assembly.LoadFrom outPath
+                        let artifact =
+                            { AssemblyPath = outPath
+                              Assembly     = assembly
+                              // Keep the original (unstripped) parse so
+                              // the user-side visit can walk transitive
+                              // `Std.X` deps.  The type-checker /
+                              // emitter calls used `stripped`.
+                              Source       = parsed.File
+                              Symbols      = checked'.Symbols
+                              Signatures   = checked'.Signatures }
+                        stdlibArtifactCache.[key] <- artifact
+                        Ok artifact)
 
-/// Public accessor: returns the absolute path to the compiled stdlib
-/// DLL once compilation has run, or `None` if it hasn't yet.  The test
-/// harness uses this to copy the DLL alongside each user output.
+/// Public accessor: returns the absolute paths to every compiled
+/// stdlib DLL that has run so far.  The test harness uses this to
+/// copy DLLs alongside each user output.
 let stdlibAssemblyPath () : string option =
-    !stdlibArtifactCache |> Option.map (fun a -> a.AssemblyPath)
+    lock stdlibLock (fun () ->
+        match stdlibArtifactCache.TryGetValue "Std.Core" with
+        | true, a -> Some a.AssemblyPath
+        | _ -> None)
 
-/// Resolve `import Std.Core` declarations: ensure the stdlib is
-/// precompiled, hand its parsed items to the type checker, and pass
-/// the loaded assembly to the emitter for cross-assembly references.
-/// The user's `SourceFile.Items` is left unchanged so the emitter's
-/// per-package passes only define user-local types.
+/// Every compiled stdlib DLL path that has been produced this
+/// process.  Newer code (the test kit) copies all of them so user
+/// programs that import multiple `Std.X` modules can resolve every
+/// reference at runtime.
+let stdlibAssemblyPaths () : string list =
+    lock stdlibLock (fun () ->
+        stdlibArtifactCache.Values
+        |> Seq.map (fun a -> a.AssemblyPath)
+        |> List.ofSeq)
+
+/// Resolve `import Std.X` declarations: walk the dependency closure,
+/// compile what's missing, and hand the artifact list + their parsed
+/// items to the type checker / emitter.  The user's `SourceFile.Items`
+/// is left unchanged; only `Std.*` imports are stripped.
 let private resolveStdlibImports
         (sf: SourceFile)
-        : SourceFile * Item list * StdlibArtifact option * Diagnostic list =
-    let stdCoreImps, otherImps =
-        sf.Imports |> List.partition (fun i -> i.Path.Segments = ["Std"; "Core"])
-    if stdCoreImps.IsEmpty then sf, [], None, []
+        : SourceFile * Item list * StdlibArtifact list * Diagnostic list =
+    let stdImports, otherImps =
+        sf.Imports
+        |> List.partition (fun i ->
+            match i.Path.Segments with
+            | "Std" :: _ -> true
+            | _ -> false)
+    if stdImports.IsEmpty then sf, [], [], []
     else
-        match locateCoreL AppContext.BaseDirectory with
-        | None ->
-            let sp = (List.head stdCoreImps).Span
-            sf, [], None,
-            [ err "E900" "cannot locate lyric/std/core.l for 'import Std.Core'" sp ]
-        | Some path ->
-            let artifact = getStdlibArtifact path
-            { sf with Imports = otherImps },
-            artifact.Source.Items,
-            Some artifact,
-            []
+        let visited = HashSet<string>()
+        let ordered = ResizeArray<StdlibArtifact>()
+        let diags = ResizeArray<Diagnostic>()
+        let rec visit segments =
+            let key = packageKey segments
+            if visited.Add key then
+                match ensureStdlibArtifact segments with
+                | Ok a ->
+                    // Visit deps first so they appear before in the
+                    // ordered list — type-checker import processing
+                    // expects topo order.
+                    let deps =
+                        a.Source.Imports
+                        |> List.choose (fun i ->
+                            match i.Path.Segments with
+                            | "Std" :: _ -> Some i.Path.Segments
+                            | _ -> None)
+                    // Auto-add Std.Core since `ensureStdlibArtifact`
+                    // does — the user-visible item list needs it too.
+                    let withCore =
+                        if segments <> ["Std"; "Core"]
+                           && not (List.exists ((=) ["Std"; "Core"]) deps) then
+                            ["Std"; "Core"] :: deps
+                        else deps
+                    for d in withCore do visit d
+                    ordered.Add a
+                | Error ds ->
+                    for d in ds do diags.Add d
+        for imp in stdImports do
+            visit imp.Path.Segments
+        let artifacts = List.ofSeq ordered
+        let items = artifacts |> List.collect (fun a -> a.Source.Items)
+        { sf with Imports = otherImps }, items, artifacts, List.ofSeq diags
 
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
     let parsed   = parse req.Source
-    let resolved, importedItems, stdlibArtifact, importDiags =
+    let resolved, importedItems, stdlibArtifacts, importDiags =
         resolveStdlibImports parsed.File
     let checked' =
         Lyric.TypeChecker.Checker.checkWithImports resolved importedItems
@@ -1768,7 +1905,7 @@ let emit (req: EmitRequest) : EmitResult =
                 checked'.Symbols
                 req
                 false
-                stdlibArtifact
+                stdlibArtifacts
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
