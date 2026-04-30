@@ -2422,6 +2422,14 @@ and private parseRecordMembers
         match Cursor.peekToken cursor with
         | TKeyword KwInvariant ->
             xs.Add(RMInvariant (parseInvariantClause cursor diags))
+        | TKeyword KwFunc ->
+            // D037: methods in type body — `func name(self: …): R = …`.
+            // Hoisted to a top-level `<RecordName>.<methodName>` after
+            // the source file finishes parsing.
+            xs.Add(RMFunc (parseFunctionDeclBody cursor diags None))
+        | TKeyword KwAsync
+            when (Cursor.peekAt cursor 1).Token = TKeyword KwFunc ->
+            xs.Add(RMFunc (parseFunctionDeclBody cursor diags None))
         | _ ->
             xs.Add(RMField (parseFieldDecl cursor diags))
         // Tolerate STMT_END or comma between members.
@@ -3896,12 +3904,61 @@ let parse (source: string) : ParseResult =
     let items = parseItems cursor diags
 
     let endSpan = Cursor.peekSpan cursor
+
+    // D037: hoist methods declared inside `record` / `exposed record`
+    // bodies to top-level UFCS-style `<TypeName>.<methodName>`
+    // functions.  The original record decl keeps only its fields and
+    // invariants; the hoisted functions append to the file's items so
+    // the existing UFCS dispatch handles the rest.
+    let hoistInlineMethods (xs: Item list) : Item list =
+        let result = ResizeArray<Item>()
+        for it in xs do
+            match it.Kind with
+            | IRecord rd ->
+                let nonFunc, funcs =
+                    rd.Members
+                    |> List.partition (function
+                        | RMFunc _ -> false
+                        | _ -> true)
+                let strippedRecord =
+                    { it with
+                        Kind = IRecord { rd with Members = nonFunc } }
+                result.Add(strippedRecord)
+                for m in funcs do
+                    match m with
+                    | RMFunc fn ->
+                        let renamed =
+                            { fn with
+                                Name = rd.Name + "." + fn.Name }
+                        result.Add({ it with Kind = IFunc renamed })
+                    | _ -> ()
+            | IExposedRec rd ->
+                let nonFunc, funcs =
+                    rd.Members
+                    |> List.partition (function
+                        | RMFunc _ -> false
+                        | _ -> true)
+                let strippedRecord =
+                    { it with
+                        Kind = IExposedRec { rd with Members = nonFunc } }
+                result.Add(strippedRecord)
+                for m in funcs do
+                    match m with
+                    | RMFunc fn ->
+                        let renamed =
+                            { fn with
+                                Name = rd.Name + "." + fn.Name }
+                        result.Add({ it with Kind = IFunc renamed })
+                    | _ -> ()
+            | _ -> result.Add(it)
+        List.ofSeq result
+
     let file =
         { ModuleDoc            = moduleDoc
           FileLevelAnnotations = fileAnnotations
           Package              = packageDecl
           Imports              = imports
-          Items                = items
+          Items                = hoistInlineMethods items
           Span                 = joinSpans startSpan endSpan }
 
     { File        = file

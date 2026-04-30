@@ -249,6 +249,11 @@ and FieldDecl =
 and RecordMember =
     | RMField     of FieldDecl
     | RMInvariant of InvariantClause
+    /// Method declared inside a record body (D037).  The parser hoists
+    /// these to top-level UFCS-style `<RecordName>.<methodName>`
+    /// functions after the source file finishes parsing; they're
+    /// represented as `RMFunc` only for the duration of the AST.
+    | RMFunc      of FunctionDecl
 
 and RecordDecl =
     { Name:     string

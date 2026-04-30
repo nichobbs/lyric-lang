@@ -967,6 +967,100 @@ syntax to write meaningful programs:
 
 ---
 
+## D037: Methods in type body desugar to UFCS-style `Type.method` functions
+
+**Status:** Accepted
+**Date:** 2026-04-30
+
+### Decision
+
+A `record`, `opaque type`, or `exposed record` body may include
+`func` members alongside fields and invariants:
+
+```
+record Point {
+  x: Int
+  y: Int
+
+  func length(self: in Point): Int = self.x * self.x + self.y * self.y
+  func translate(self: in Point, dx: Int, dy: Int): Point =
+    Point(x = self.x + dx, y = self.y + dy)
+}
+```
+
+Methods inside the type body are pure syntactic sugar.  The parser
+hoists each `func` member to a top-level function whose name is
+`<TypeName>.<methodName>` — exactly the form already accepted at
+top level today (`pub func ParseError.message(e: in ParseError):
+String = …`).  Calls of the form `value.method(args)` resolve via
+the existing UFCS dispatch (D036 / PR #22): the codegen looks up
+the dotted function name on `ctx.Funcs` / `ctx.ImportedFuncs` and
+emits a direct static call.
+
+The receiver is **explicit** in v1: the first parameter must be
+named `self` and typed against the enclosing type.  Implicit
+`self` injection (so the user can write `func length(): Int =
+self.x * self.x + …`) is a follow-up that needs AST rewriting of
+`self` references inside the method body — tracked but not in
+this slice.
+
+### Rationale
+
+- C# / Kotlin / Swift / Rust all support data + behaviour at one
+  declaration site; Lyric's split between `record` and `impl` is
+  technically clean but cognitively noisy for the overwhelmingly
+  common case of "this function operates on this type."
+- Pure syntactic sugar means the type checker, emitter, and proof
+  system see the same UFCS-style top-level functions they already
+  understand.  No new dispatch path, no new metadata, no new
+  semantic surface area.
+- `impl` blocks remain the canonical form for interface
+  satisfaction (`impl Repository[User, UserId] for PgRepo { … }`);
+  inline methods are inherent only.
+
+### Alternatives considered
+
+- **Add a new `RMMethod` AST node and dedicated codegen path.**
+  Rejected — duplicates work for no semantic gain.  The hoist-to-
+  top-level approach is one parser pass and zero downstream
+  changes.
+- **Auto-inject `self: in <Type>` and rewrite `self` references
+  inside the body.**  Rejected for v1 — needs an AST walk that
+  rebinds `ESelf` to the parameter named "self".  Cleaner to
+  ship explicit-self first and layer the sugar on top once the
+  rest of the desugar is stable.
+- **Class-style inheritance syntax (`record Foo : Base[T] { … }`).**
+  Rejected — superficial familiarity at the cost of misleading C#
+  developers into expecting `override` and `base` calls (which
+  Lyric explicitly rejects per D012).  The `impl X for Y` form
+  stays as the only way to declare an interface relationship.
+
+### Consequences
+
+- Language reference §2.3 / §2.5 / §2.10 will note inline-method
+  syntax as accepted.
+- Grammar `RecordMember` adds `FunctionDecl` as a valid member.
+- Parser hoist runs once per `SourceFile` after item parsing
+  completes; the resulting `Item list` is indistinguishable from
+  hand-written UFCS-style functions.
+- Diagnostic surface unchanged — typos in the method body or
+  signature surface as ordinary parse / type / codegen errors
+  against the synthesised top-level function.
+
+### Tracked follow-ups
+
+- Implicit `self`: after this lands, add an AST pass that
+  rewrites `self` inside hoisted methods to a parameter named
+  "self", and inject the parameter automatically when the user
+  omits it.
+- `opaque type` and `exposed record` bodies should accept the
+  same method syntax as `record` once it lands; the parser
+  already handles all three through `parseRecordMembers`.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
