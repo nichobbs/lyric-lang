@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Task
 
-pub opaque type Task[T] {
+generic[T] pub opaque type Task {
   marker: Unit
 }
 

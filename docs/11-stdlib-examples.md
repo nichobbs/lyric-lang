@@ -14,6 +14,7 @@ operator is available.
 package Examples.Errors
 
 import Std.Console as Console
+import Std.Errors { IOError }
 import Std.File as File
 
 func printConfig(path: in String): Unit {
@@ -53,6 +54,7 @@ package Examples.Files
 
 import Std.Console as Console
 import Std.Directory as Directory
+import Std.Errors { IOError }
 import Std.File as File
 import Std.Path as Path
 
@@ -86,6 +88,7 @@ successful transport response unless the caller asks for
 package Examples.Http
 
 import Std.Console as Console
+import Std.Errors { HttpError, IOError }
 import Std.Http as Http
 
 async func fetch(url: in String): Unit {
@@ -113,7 +116,7 @@ production and a fixed clock in tests.
 package Examples.Diagnostics
 
 import Std.Log as Log
-import Std.Time as Time
+import Std.Time { Clock, Instant }
 
 func reportStartup(clock: in Clock): Unit {
   val now = clock.now()
@@ -130,7 +133,9 @@ explicit so generated JSON readers can produce domain-specific errors.
 package Examples.Config
 
 import Std.App as App
+import Std.App { Config }
 import Std.Console as Console
+import Std.Errors { IOError }
 
 func load(path: in String): Unit {
   match App.withConfig(path) {
