@@ -985,19 +985,29 @@ let private emitFunctionBody
         | _ -> ()
 
     let emitBodyBlock (blk: Block) =
-        let lastIdx = List.length blk.Statements - 1
+        let stmts = blk.Statements
         Codegen.FunctionCtx.pushScope ctx
-        blk.Statements
-        |> List.iteri (fun i stmt ->
-            if not isVoidReturn && i = lastIdx then
-                match stmt.Kind with
-                | SExpr e ->
-                    let t = Codegen.emitExpr ctx e
-                    routeReturn t
-                | _ ->
-                    Codegen.emitStatement ctx stmt
-            else
-                Codegen.emitStatement ctx stmt)
+        // Split out the last statement so the value-producing case can
+        // route through `routeReturn`.  Defers in the prefix wrap both
+        // the prefix tail and the last-statement handler in try/finally
+        // via `emitStatementsWithDefer`.
+        let prefix, lastOpt =
+            match List.tryLast stmts with
+            | None      -> [], None
+            | Some last -> List.take (List.length stmts - 1) stmts, Some last
+        let emitLast () =
+            match lastOpt with
+            | None -> ()
+            | Some last ->
+                if not isVoidReturn then
+                    match last.Kind with
+                    | SExpr e ->
+                        let t = Codegen.emitExpr ctx e
+                        routeReturn t
+                    | _ -> Codegen.emitStatement ctx last
+                else
+                    Codegen.emitStatement ctx last
+        Codegen.emitStatementsWithDeferTail ctx prefix emitLast
         Codegen.FunctionCtx.popScope ctx
         if isVoidReturn then
             il.Emit(OpCodes.Br, exitLabel)
