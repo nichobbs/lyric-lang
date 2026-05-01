@@ -102,6 +102,39 @@ func main(): Unit {
 }
 """,
     "(UTC) Coordinated Universal Time"
+
+    // D-progress-039: instant comparison helpers.
+    "instantBefore_basic",
+    """
+package T6
+import Std.Core
+import Std.Time
+
+func main(): Unit {
+  val a = fromEpochSeconds(1000i64)
+  val b = fromEpochSeconds(2000i64)
+  println(toString(instantBefore(a, b)))
+  println(toString(instantBefore(b, a)))
+  println(toString(instantEquals(a, a)))
+}
+""",
+    "True\nFalse\nTrue"
+
+    // D-progress-039: duration arithmetic.
+    "duration_addition",
+    """
+package T7
+import Std.Core
+import Std.Time
+
+func main(): Unit {
+  val a = seconds(30.0)
+  val b = seconds(15.0)
+  val sum = addDurations(a, b)
+  println(toString(totalSeconds(sum)))
+}
+""",
+    "45"
 ]
 
 let tests =

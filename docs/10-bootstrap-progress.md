@@ -1696,6 +1696,27 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-039: Std.Time expansion — comparison + duration arithmetic + ISO-8601 formatting
+*claude/c2-async-implementation-ZGU95 branch.*  Closes a deferred
+follow-up from D-progress-027 (initial Std.Time C5 / Tier 1.3
+work).  New surface in `compiler/lyric/std/time.l`:
+
+- **Instant comparison.**  `instantBefore` / `instantAfter` /
+  `instantEquals` resolve via `System.DateTime` operators
+  (`op_LessThan` / `op_GreaterThan` / `op_Equality`).
+- **Duration comparison + arithmetic.**  `durationLess` /
+  `durationGreater` / `addDurations` / `subDurations` resolve
+  via `System.TimeSpan` operators.
+- **ISO-8601 formatting.**  `toIsoString` emits the round-
+  trippable `"o"`-format string via `System.Convert.ToString`
+  on the `Instant`; the inverse round trip works via the
+  existing `parseOptInstant` helper.
+
+Two new tests in `StdTimeTests.fs` cover the comparison and
+duration-arithmetic helpers.  All 350 emitter tests pass.
+
+---
+
 ### D-progress-038: C2 Phase B++ — async impl methods (instance methods on records)
 *claude/c2-async-implementation-ZGU95 branch.*  Builds on
 D-progress-037 to route async impl methods through the
