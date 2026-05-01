@@ -87,11 +87,13 @@ let private renderFieldExpr
                              "toJson")) span
         mkExpr (ECall (callee, [CAPositional access])) span
     | None when isStringField field.Type ->
-        // `"\"" + self.<field> + "\""` — bootstrap-grade: no
-        // escaping, just wrap in quotes.
-        let q = strLit "\"" span
-        let lhs = mkExpr (EBinop (BAdd, q, access)) span
-        mkExpr (EBinop (BAdd, lhs, q)) span
+        // `__lyricJsonEscape(self.<field>)` — routes through the
+        // BCL's `JsonEncodedText.Encode` via the stdlib's JsonHost
+        // helper, surrounding-quotes-included.  The synthesised
+        // extern target is appended once per source file by
+        // `synthesizeItems`.
+        let callee = mkExpr (EPath (mkPath "__lyricJsonEscape" span)) span
+        mkExpr (ECall (callee, [CAPositional access])) span
     | None ->
         // `toString(self.<field>)` — primitive fields, fallthrough.
         let callee = mkExpr (EPath (mkPath "toString" span)) span
@@ -162,6 +164,48 @@ let synthesizeItems (items: Item list) : Item list =
     if Set.isEmpty deriveJsonRecords then items
     else
         let result = ResizeArray<Item>(items)
+        // Synthesise the JSON-string-escape helper once per source
+        // file; the per-field renderer dispatches String fields to
+        // `__lyricJsonEscape(value)` rather than wrapping in quotes
+        // unsafely.  Pinning to the synthesised name avoids needing
+        // the user to `import Std.Json`.
+        let firstSpan =
+            items
+            |> List.tryPick (fun it ->
+                if hasDeriveJson it then Some it.Span else None)
+            |> Option.defaultWith (fun () -> Lyric.Lexer.Span.pointAt Lyric.Lexer.Position.initial)
+        let stringTy = mkType (TRef (mkPath "String" firstSpan)) firstSpan
+        let escAnn : Annotation =
+            { Name = mkPath "externTarget" firstSpan
+              Args =
+                [ ALiteral
+                    (AVString ("Lyric.Stdlib.JsonHost.EncodeString", firstSpan),
+                     firstSpan) ]
+              Span = firstSpan }
+        let escFn : FunctionDecl =
+            { DocComments = []
+              Annotations = [ escAnn ]
+              Visibility  = None
+              IsAsync     = false
+              Name        = "__lyricJsonEscape"
+              Generics    = None
+              Params      =
+                [ { Mode    = PMIn
+                    Name    = "s"
+                    Type    = stringTy
+                    Default = None
+                    Span    = firstSpan } ]
+              Return      = Some stringTy
+              Where       = None
+              Contracts   = []
+              Body        = Some (FBExpr (mkExpr (ELiteral LUnit) firstSpan))
+              Span        = firstSpan }
+        result.Add
+            { DocComments = []
+              Annotations = []
+              Visibility  = None
+              Kind        = IFunc escFn
+              Span        = firstSpan }
         for it in items do
             if hasDeriveJson it then
                 match it.Kind with

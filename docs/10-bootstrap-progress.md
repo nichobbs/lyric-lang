@@ -1377,3 +1377,59 @@ All 689 tests pass.
 - The `repr` strings are canonical-but-free-form; a real
   structural format with field-by-field type info comes when
   `lyric public-api-diff` lands.
+
+
+### D-progress-032: real String escaping in @derive(Json)
+*claude/define-language-spec-5DbnS branch.*  Closes a deferred follow-
+up from D-progress-030: String fields in `@derive(Json)` records now
+route through the BCL's `JsonEncodedText.Encode` (via
+`Lyric.Stdlib.JsonHost.EncodeString`) for proper RFC-8259 escaping
+of `"`, `\`, control chars, and bidi-unsafe sequences.
+
+**Implementation.**  `JsonDerive.synthesizeItems` appends a single
+extern shim per source file:
+
+```lyric
+@externTarget("Lyric.Stdlib.JsonHost.EncodeString")
+func __lyricJsonEscape(s: in String): String = ()
+```
+
+Per-field renderers for String now emit `__lyricJsonEscape(value)`
+instead of the manual `"\"" + value + "\""` quote-wrap.  Pinning to
+the synthesised name avoids requiring the user to `import Std.Json`.
+
+```
+println(M.toJson(M(msg = "line1\nline2")))   // {"msg":"line1\nline2"}
+println(M.toJson(M(msg = "say \"hi\"")))     // {"msg":"say "hi""}
+```
+
+1 new test (`json_derive_string_escaping`) in `JsonDeriveTests.fs`.
+All 690 tests pass.
+
+---
+
+## C2 — real async state machines: status
+
+C2 (Tier 4 of the post-#44 plan) remains **not started**.  Per the
+C2 decision (D-progress-024), the path is hand-rolled
+`IAsyncStateMachine` IL — a 2-4 week focused effort that's beyond a
+single session.  The infrastructure pieces touched by C2:
+
+1. State-machine class synthesis per `async func`.
+2. Locals-that-cross-`await` promoted to fields.
+3. `MoveNext` dispatching on a state field; each `await` saves
+   state, calls `AwaitUnsafeOnCompleted`, returns.
+4. `AsyncTaskMethodBuilder<T>` builder field + Task return.
+5. Exception flow through `SetException`.
+6. `try`/`catch` regions that span an `await` (re-entry into the
+   protected region during `MoveNext`).
+7. `defer` regions that span an `await` (the existing
+   `OpCodes.Leave` plumbing from D-progress-001 starts the
+   foundation).
+8. `CancellationToken` propagation.
+
+Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
+lifetimes) are gated on this landing.  Tier 6 items (CST formatter,
+format5+, Regex RE2, C4 phase 2/3) are on-demand.
+
+The async work would be the next focused PR.

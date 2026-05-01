@@ -80,6 +80,23 @@ func main(): Unit {
 }
 """,
     "42"
+
+    // String fields go through the BCL's JsonEncodedText.Encode via
+    // the synthesised __lyricJsonEscape extern.  Quotes, backslashes,
+    // and control characters are escaped.
+    "json_derive_string_escaping",
+    """
+package JD5
+import Std.Core
+
+@derive(Json)
+pub record M { msg: String }
+
+func main(): Unit {
+  println(M.toJson(M(msg = "line1\nline2")))
+}
+""",
+    "{\"msg\":\"line1\\nline2\"}"
 ]
 
 let tests =
