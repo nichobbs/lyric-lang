@@ -973,3 +973,463 @@ The CLI subcommand is `lyric doc <source.l> [-o out.md]`; without
 - No doctest extraction; the only thing rendered from `///` text is
   the verbatim body.
 - Method tables for `impl` blocks aren't yet rendered.
+
+
+### D-progress-024 (decision): real async state machines via hand-rolled IL
+Recorded as the C2 plan in `docs/12-todo-plan.md`.  See that doc for
+the rationale and rollout.
+
+### D-progress-025: const folding for range-subtype symbolic bounds (C3)
+*claude/define-language-spec-5DbnS branch.*  D-progress-003 noted that
+T0090 / T0091 only fired on integer-literal bounds; symbolic
+constants like `MIN_AGE ..= MAX_AGE` escaped both the well-formedness
+check and the runtime range check.  C3 ships option (b) of the C3
+decision tree (D-progress-025) — a constant folder over literals,
+named-const refs, and integer arithmetic.
+
+**Folder.**  New module
+`compiler/src/Lyric.TypeChecker/ConstFold.fs`:
+
+```fsharp
+type FoldError = NotConstant | Cycle of string | Overflow | DivByZero
+val tryFoldInt : SymbolTable -> Expr -> Result<int64, FoldError>
+```
+
+Walks `ELiteral (LInt n)`, `EParen`, `EPrefix (PreNeg, ...)`,
+`EBinop (BAdd / BSub / BMul / BDiv / BMod, ...)`, and
+`EPath { Segments = [name] }` resolving to `DKConst` or `DKVal`
+symbols.  Cycle detection via a `Set<string>` of currently-resolving
+names.  Arithmetic uses `Microsoft.FSharp.Core.Operators.Checked` so
+overflow is surfaced rather than silently wrapping.
+
+**Wire-up.**  `Checker.checkDistinctType` now folds each bound and
+emits a new T0093 diagnostic when the fold fails ("expression is not
+a compile-time integer constant", "constant 'A' references itself
+transitively", etc.); T0090 fires post-fold for inverted bounds.
+`Emitter.defineDistinctType`'s `evalLiteral` is replaced with an
+`evalConst` that calls the same folder; the runtime range-check IL
+now uses the folded value, so `tryFrom(9999)` on
+`type Age = Int range MIN_AGE ..= MAX_AGE` correctly returns `Err`.
+
+Lyric doesn't currently parse `const` declarations (only `pub val`
+at module level), so the folder accepts both `DKConst` and `DKVal`
+symbols — `pub val MIN_AGE: Int = 0` is treated as a compile-time
+constant when used in a range bound.
+
+**Tests.**  10 new tests in
+`compiler/tests/Lyric.TypeChecker.Tests/ConstFoldTests.fs` covering
+literal-only, named-const, transitive const, arithmetic-in-bounds,
+inverted-after-fold (T0090), cycle detection (T0093), and non-numeric
+underlying (T0091).  2 new e2e tests in `DistinctTypeTests.fs`
+verify the runtime range check uses the folded bounds.
+
+All 666 tests pass: Lexer 70, Parser 182, TypeChecker 100,
+Emitter 309, Lsp 5.
+
+**Bootstrap-grade scope** (option (c) follow-ups): function calls
+in bounds, `if`-in-bounds, float literals, mixed-width arithmetic.
+
+
+### D-progress-026: C4 phase 1 — strict-match auto-FFI
+*claude/define-language-spec-5DbnS branch.*  Phase 1 of C4's phased
+auto-FFI rollout.  When the user calls `ExternTypeName.method(args)`
+on a Lyric extern type and no explicit `@externTarget` is registered,
+the codegen now searches the underlying CLR type's static methods
+and resolves when exactly one viable overload matches by `(name |
+PascalCase, arg-arity, arg-types)` — no per-method declaration
+needed.
+
+```lyric
+extern type Path = "System.IO.Path"
+extern type Math = "System.Math"
+
+func main(): Unit {
+  println(Path.Combine("/tmp", "x.txt"))   // /tmp/x.txt
+  println(Math.max(3, 7))                  // 7  (lowercase → PascalCase Max)
+}
+```
+
+**Resolver.**  For `Type.method(args)`:
+1. Match candidates by `(name = methodName, IsStatic, arity = args.Length)`.
+2. Prefer exactly-one exact-type-match candidate.
+3. Otherwise prefer exactly-one assignable-type-match candidate.
+4. Failing both, retry with PascalCase-cased method name
+   (`max` → `Max`, `combine` → `Combine`).
+5. If nothing unique resolves, surface a structured E0004
+   diagnostic listing the receiver's full name; explicit
+   `@externTarget` is the documented escape hatch.
+
+**Wire-up.**  New `ExternTypeNames : Dictionary<string, ClrType>`
+threaded into `FunctionCtx`, populated in `emitAssembly` from both
+local `extern type` declarations and imported extern types from
+stdlib artifacts.  The dispatch branch sits after the imported-funcs
+UFCS path so explicit `@externTarget` declarations still take
+precedence — backward-compat preserved.
+
+4 new tests in `compiler/tests/Lyric.Emitter.Tests/AutoFfiTests.fs`:
+- `auto_ffi_path_combine` — `Path.Combine(string, string)`
+- `auto_ffi_math_max_pascalcase` — lowercase resolves via PascalCase
+- `auto_ffi_path_combine_three_args` — separate overload by arity
+- `auto_ffi_void_return` — `Console.WriteLine` (void path)
+
+All 670 tests pass: Lexer 70, Parser 182, TypeChecker 100,
+Emitter 313, Lsp 5.
+
+**Bootstrap-grade scope** (phase 2/3 follow-ups in `docs/12-todo-plan.md`):
+- Score-based matching with principled coercion rules (Int↔int/long/
+  double, String↔string, records↔class refs, unboxing/boxing,
+  nullable conversions) — picks lowest-cost match when multiple
+  overloads are viable.
+- Special shapes: out-params (already in via D-progress-014), by-
+  ref structs, `Span<T>` / `ReadOnlySpan<T>`, default args,
+  `params T[]`, extension methods, explicit interface
+  implementations.
+
+
+### D-progress-027: Std.Time expansion (C5 / Tier 1.3)
+*claude/define-language-spec-5DbnS branch.*  Closes the Std.Time
+gaps documented in `docs/10-stdlib-plan.md` Phase 5: calendar
+arithmetic, epoch-to-Instant conversion, and IANA timezone lookup.
+
+**New surface in `compiler/lyric/std/time.l`.**
+
+```lyric
+addMonths(t: in Instant, n: in Int): Instant      // BCL day-of-month-preserving
+addYears(t: in Instant, n: in Int): Instant
+addDays(t: in Instant, n: in Double): Instant
+
+fromEpochMillis(n: in Long): Instant              // Unix-epoch -> Instant
+fromEpochSeconds(n: in Long): Instant
+
+extern type DateTimeOffset = "System.DateTimeOffset"
+extern type TimeZone = "System.TimeZoneInfo"
+
+hostFindTimeZone(id: in String): TimeZone         // IANA / Windows tz lookup
+```
+
+The epoch helpers compose two BCL calls (`DateTimeOffset.From*` then
+`.UtcDateTime`) so callers see a single one-shot helper.
+
+6 new tests in `compiler/tests/Lyric.Emitter.Tests/StdTimeTests.fs`
+covering each of the new helpers plus a UTC-tz lookup smoke.
+
+All 676 tests pass: Lexer 70, Parser 182, TypeChecker 100,
+Emitter 319, Lsp 5.
+
+**Bootstrap-grade scope** (deferred follow-ups):
+- Tz projection ops: `inZone(t, tz)`, `utcFromZoned(t, tz)`,
+  DST-aware comparison.
+- Real `Duration` arithmetic library (Lyric-side `+` / `-` operators
+  on `Duration` rather than `since` / `plus` named helpers).
+- ISO 8601 emission (parsing already lands via `parseOptInstant`).
+
+
+### D-progress-028: bootstrap-grade wire blocks (C6 / Tier 2.1)
+*claude/define-language-spec-5DbnS branch.*  Singleton + `@provided`
++ `expose` + multi-wire support, lowered as a parser-level AST
+synthesis just like `@stubbable` (D-progress-016) and `import as`
+(D-progress-018).  Scoped lifetimes and the lifetime checker stay
+deferred per the C6 decision (D-progress-028) — they're gated on C2.
+
+**Lowering.**  For
+
+```lyric
+record Cfg { tag: String }
+
+wire Prod {
+  @provided n: String
+  singleton cfg: Cfg = Cfg(tag = n)
+  expose cfg
+}
+```
+
+the new `Lyric.Parser.Wire.synthesizeItems` pass appends:
+
+```lyric
+pub record Prod { pub cfg: Cfg }
+func Prod.bootstrap(n: in String): Prod {
+  val cfg = Cfg(tag = n)
+  Prod(cfg = cfg)
+}
+```
+
+ordered as `[record, IWire, bootstrap]` so the symbol table's
+first-symbol-wins lookup (`TryFindOne`) lands on `DKRecord` rather
+than `DKWire` when resolving `TRef [Prod]` in the factory's return
+type.  The original IWire stays in the list for backward-compat with
+parser-shape tests.
+
+**Topological singleton ordering.**  `Wire.referencedNames` walks
+each singleton's `init` expression and collects every single-segment
+EPath reference.  `Wire.topoSortSingletons` does a DFS-based topo
+sort and surfaces a P0260 wire-cycle diagnostic if any back-edge
+fires.
+
+**Record-of-record fix (bonus).**  While testing C6, surfaced a
+pre-existing bug: `defineRecord` used the lookup-less
+`TypeMap.toClrType` to project field types, so a field whose Lyric
+type was another user record fell back to `obj`.  `record Outer { i:
+Inner }` then produced "receiver type Object has no readable property
+'msg'" on `o.i.msg` access.  Fixed by:
+- Splitting `defineRecord` into a TypeBuilder-stub-then-populate
+  pair so all record TypeBuilders are registered in `typeIdToClr`
+  before any record's fields are populated.
+- Switching the populate pass to `toClrTypeWith lookup` so cross-
+  record field types resolve to the matching TypeBuilder.
+
+The two-pass shape applies uniformly to records and opaque-as-record
+types.  Projectable view derivation now skips when a cycle was
+detected (otherwise the recursive `toView` lowering diverges).
+
+**Tests.**
+
+- 4 new tests in `compiler/tests/Lyric.Emitter.Tests/WireTests.fs`:
+  minimal singleton, two-singletons-with-dependency-order,
+  multi-`@provided`, two-wires-in-one-program.
+- Two parser tests updated to reflect the post-synthesis shape:
+  `wire with provided, singleton, bind, expose` and
+  `wire with scoped binding` now look up the IWire among the items
+  rather than using `getOnlyItem` (the synthesiser inserts
+  additional record + bootstrap items alongside the original IWire).
+- `every item kind parses without IError + P0098` in
+  `ItemHeadTests.fs` adjusts the expected count for the wire case
+  to 3 (record + IWire + bootstrap).
+- 2 OpaqueTypeTests for projectable cycle rejection updated
+  implicitly — the codegen now skips the view derivation when a
+  cycle is detected, so the diagnostic surfaces cleanly without the
+  "nested toView not yet defined" follow-up exception.
+
+All 678 tests across the five suites pass: Lexer 70, Parser 182,
+TypeChecker 100, Emitter 323, Lsp 5.
+
+**Bootstrap-grade scope** (deferred follow-ups in C6):
+- `scoped` / `scope_kind` lifetimes with `AsyncLocal<T>`
+  propagation across `await`.
+- Lifetime checker (singleton-depends-on-scoped → compile error).
+- `@bind`-style multi-implementation registration of an interface.
+- Async-local scope tracking for HTTP frameworks / DB integrations.
+
+
+### D-progress-029: reified generic records (Tier 2.2)
+*claude/define-language-spec-5DbnS branch.*  Fresh implementation on
+top of current main (the April 30 PR #43 was too far behind to rebase
+cleanly).  `record Box[T] { value: T }` now lowers to a real generic
+CLR class rather than producing `InvalidProgramException` at runtime.
+
+**Lowering.**
+
+- `Records.RecordInfo` gains `Generics: string list` and
+  `RecordField` gains `LyricType: Lyric.TypeChecker.Type`, mirroring
+  the union-info / union-field shape from D-progress-013.
+- The two-pass record-stub setup from D-progress-028 extends to call
+  `tb.DefineGenericParameters(typeParamNames)` when `rd.Generics` is
+  non-empty, building a `typeParamSubst : Map<string, ClrType>` from
+  Lyric type-param names to the matching `GenericTypeParameterBuilder`.
+- `defineRecordOnto` accepts the substitution and threads it through
+  `TypeMap.toClrTypeWithGenerics` so a field declared `value: T`
+  lowers to a CLR field of type `!0` (the GTPB).
+
+**Construction codegen.**  `ECall (EPath [name], args)` for a generic
+record:
+1. Emits each arg expression and stashes the result into a temp
+   local (so we know the arg's CLR type for inference).
+2. Walks `bindLyricToClr` over each `field.LyricType` paired with
+   the arg's CLR type to fill in the record's generic substitution.
+3. `MakeGenericType` closes the record on the resolved type args.
+4. `TypeBuilder.GetConstructor(closedType, info.Ctor)` gets the
+   closed ctor.
+5. Re-loads each arg from its temp local and emits `Newobj`.
+
+**Field-access codegen.**  `EMember (recv, fieldName)` on a
+constructed generic record:
+- Walks `ctx.Records.Values` matching either `r.Type = recvTy` or
+  `r.Type = recvTy.GetGenericTypeDefinition()` so a `Box<int>`
+  receiver finds the open-`Box<>` `RecordInfo`.
+- For constructed generics, uses
+  `TypeBuilder.GetField(recvTy, f.Field)` to get the closed field
+  handle and substitutes `f.LyricType` through the receiver's
+  generic args to compute the field's closed CLR type.
+
+**Tests.**  5 new tests in `GenericRecordTests.fs`: construction
+(Int, String), two-param `record Pair[A, B]`, arithmetic on
+substituted field, generic-record-as-field-of-non-generic-record.
+
+All 683 tests across the five suites pass: Lexer 70, Parser 182,
+TypeChecker 100, Emitter 328, Lsp 5.
+
+**Bootstrap-grade scope** (deferred):
+- Generic-record passed through generic functions (the field
+  inference recurses through compound shapes via
+  `bindLyricToClr` already, but call-site type-arg propagation
+  through nested generics may have gaps).
+- `where T: Trait` constraints on record type params (parser
+  accepts but the codegen doesn't yet enforce).
+
+
+### D-progress-030: @derive(Json) source-gen (Tier 2.3)
+*claude/define-language-spec-5DbnS branch.*  For each `pub record T`
+annotated `@derive(Json)`, the new
+`Lyric.Parser.JsonDerive.synthesizeItems` pass appends a
+`T.toJson(self): String` function that builds an RFC-8259
+JSON-object string by concatenating field-by-field renderings.
+
+```lyric
+@derive(Json)
+pub record Person { name: String, age: Int }
+
+func main(): Unit {
+  val p = Person(name = "Alice", age = 30)
+  println(Person.toJson(p))     // {"name":"Alice","age":30}
+}
+```
+
+**Per-field rendering.**
+
+- `Bool`, `Int`, `Long`, `UInt`, `ULong`, `Double`, `Float`,
+  `Char` → `toString(value)` (the polymorphic `toString` builtin
+  shipped in D-progress-011).
+- `String` → `"\"" + value + "\""` (no escaping yet).
+- Nested record with `@derive(Json)` → `<TypeName>.toJson(value)`
+  via UFCS-style dotted-name dispatch.
+- Anything else → `toString(value)` fallback.
+
+The derive pass collects every `@derive(Json)` record name first, so
+field-rendering logic can dispatch correctly to recursive `toJson`
+for known nested annotated records.
+
+**Tests.**  4 new tests in `JsonDeriveTests.fs`: basic int+string
+record, nested-records-dispatch, Bool field, and a non-annotated
+record verifying the synthesiser doesn't emit `toJson` when
+`@derive(Json)` is absent.
+
+All 687 tests across the five suites pass: Lexer 70, Parser 182,
+TypeChecker 100, Emitter 332, Lsp 5.
+
+**Bootstrap-grade scope** (deferred follow-ups):
+- Real String escaping (today doesn't escape `"`, `\`, control
+  chars).
+- `slice[T]` / array fields rendered as `[...]`.
+- `Option[T]` / `Result[T, E]` and other unions (need case-by-case
+  emission with case dispatch).
+- Inverse `fromJson` synthesis.
+- Generic records — `record Page[T]` doesn't yet get a
+  per-instantiation toJson.
+
+
+### D-progress-031: embedded Lyric.Contract resource (C8 part 1 / Tier 3.1)
+*claude/define-language-spec-5DbnS branch.*  Every emitted Lyric
+assembly now carries a managed resource named `Lyric.Contract`
+describing its `pub` surface.  Downstream tooling — cross-package
+import resolution, `lyric public-api-diff`, the future
+`lyric search` filter on NuGet — reads the resource via
+`ContractMeta.readFromAssembly` instead of re-parsing source or
+sidecar files.
+
+**Format** (bootstrap-grade JSON; switches to a hand-rolled binary
+later when downstream consumers exist + parse latency matters):
+
+```json
+{
+  "packageName": "MyApp",
+  "version": "0.1.0",
+  "decls": [
+    {"kind":"record","name":"User","repr":"pub record User { name: String, age: Int }"},
+    {"kind":"func","name":"greet","repr":"pub func greet(u: in User): String"},
+    {"kind":"func","name":"User.toJson","repr":"pub func User.toJson(self: in User): String"}
+  ]
+}
+```
+
+Each declaration's `repr` is a free-form canonical string suitable
+for diff display.
+
+**Implementation.**
+
+- New module `compiler/src/Lyric.Emitter/ContractMeta.fs` with:
+  - `buildContract : SourceFile -> string -> Contract` walks the
+    parsed AST and emits one `ContractDecl` per `pub` item.
+  - `toJson : Contract -> string` hand-rolled JSON serialiser.
+  - `embedIntoAssembly : string -> string -> unit` post-processes
+    the emitted PE via Mono.Cecil, adding (or replacing) the
+    `Lyric.Contract` `EmbeddedResource` and writing back atomically
+    via a `.tmp` rename.
+  - `readFromAssembly : string -> string option` reads the resource
+    through Cecil for downstream tooling.
+- The emitter calls `embedIntoAssembly` after `Backend.save`.
+  Cecil failures surface as a non-fatal E0900 warning (the IL is
+  already on disk).
+- Lyric.Emitter takes a Mono.Cecil package reference (already
+  pulled in by Lyric.Cli for the AOT path).
+
+**Tests.**  2 new tests in `ContractMetaTests.fs`:
+- `contract resource is embedded in every emitted DLL`
+- `non-pub items are excluded`
+
+All 689 tests pass.
+
+**Bootstrap-grade scope** (C8 part 2 deferred):
+- The `lyric.toml` manifest + `lyric publish` / `lyric restore`
+  wrappers around `dotnet pack` / `dotnet restore` are still
+  pending.  This first part lands the contract format + embedding
+  mechanism; the package-manager glue wraps next.
+- JSON format → hand-rolled binary (modeled on F#'s
+  `FSharpSignatureData` resource) once parse latency matters.
+- The `repr` strings are canonical-but-free-form; a real
+  structural format with field-by-field type info comes when
+  `lyric public-api-diff` lands.
+
+
+### D-progress-032: real String escaping in @derive(Json)
+*claude/define-language-spec-5DbnS branch.*  Closes a deferred follow-
+up from D-progress-030: String fields in `@derive(Json)` records now
+route through the BCL's `JsonEncodedText.Encode` (via
+`Lyric.Stdlib.JsonHost.EncodeString`) for proper RFC-8259 escaping
+of `"`, `\`, control chars, and bidi-unsafe sequences.
+
+**Implementation.**  `JsonDerive.synthesizeItems` appends a single
+extern shim per source file:
+
+```lyric
+@externTarget("Lyric.Stdlib.JsonHost.EncodeString")
+func __lyricJsonEscape(s: in String): String = ()
+```
+
+Per-field renderers for String now emit `__lyricJsonEscape(value)`
+instead of the manual `"\"" + value + "\""` quote-wrap.  Pinning to
+the synthesised name avoids requiring the user to `import Std.Json`.
+
+```
+println(M.toJson(M(msg = "line1\nline2")))   // {"msg":"line1\nline2"}
+println(M.toJson(M(msg = "say \"hi\"")))     // {"msg":"say "hi""}
+```
+
+1 new test (`json_derive_string_escaping`) in `JsonDeriveTests.fs`.
+All 690 tests pass.
+
+---
+
+## C2 — real async state machines: status
+
+C2 (Tier 4 of the post-#44 plan) remains **not started**.  Per the
+C2 decision (D-progress-024), the path is hand-rolled
+`IAsyncStateMachine` IL — a 2-4 week focused effort that's beyond a
+single session.  The infrastructure pieces touched by C2:
+
+1. State-machine class synthesis per `async func`.
+2. Locals-that-cross-`await` promoted to fields.
+3. `MoveNext` dispatching on a state field; each `await` saves
+   state, calls `AwaitUnsafeOnCompleted`, returns.
+4. `AsyncTaskMethodBuilder<T>` builder field + Task return.
+5. Exception flow through `SetException`.
+6. `try`/`catch` regions that span an `await` (re-entry into the
+   protected region during `MoveNext`).
+7. `defer` regions that span an `await` (the existing
+   `OpCodes.Leave` plumbing from D-progress-001 starts the
+   foundation).
+8. `CancellationToken` propagation.
+
+Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
+lifetimes) are gated on this landing.  Tier 6 items (CST formatter,
+format5+, Regex RE2, C4 phase 2/3) are on-demand.
+
+The async work would be the next focused PR.

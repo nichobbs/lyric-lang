@@ -267,21 +267,25 @@ let private defineDistinctType
     let valueField =
         tb.DefineField("Value", underlyingClr, FieldAttributes.Public)
 
-    // Range-bound evaluation.  The bootstrap accepts integer literals
-    // only; symbolic bounds fall through to "no compile-time check".
-    // `upperExclusive` is true for `a ..< b` / `a .. b` half-open ranges.
-    let evalLiteral (e: Expr) : uint64 option =
-        match e.Kind with
-        | ELiteral (LInt (n, _)) -> Some n
-        | _ -> None
-    let literalBounds : (uint64 * uint64 * bool) option =
+    // Range-bound evaluation.  Defers to `ConstFold.tryFoldInt` so
+    // symbolic bounds (named consts, `MIN ..= cap - 1`, etc.) get
+    // folded the same way the well-formedness checker folds them.
+    // Bounds that the folder can't evaluate fall through to "no
+    // compile-time bound" — the type checker has already emitted
+    // T0093 for the user.  `upperExclusive` is true for `a ..< b`
+    // half-open ranges.
+    let evalConst (e: Expr) : int64 option =
+        match ConstFold.tryFoldInt symbols e with
+        | Ok v    -> Some v
+        | Error _ -> None
+    let literalBounds : (int64 * int64 * bool) option =
         match dt.Range with
         | Some (RBClosed(loExpr, hiExpr)) ->
-            match evalLiteral loExpr, evalLiteral hiExpr with
+            match evalConst loExpr, evalConst hiExpr with
             | Some lo, Some hi -> Some (lo, hi, false)
             | _ -> None
         | Some (RBHalfOpen(loExpr, hiExpr)) ->
-            match evalLiteral loExpr, evalLiteral hiExpr with
+            match evalConst loExpr, evalConst hiExpr with
             | Some lo, Some hi -> Some (lo, hi, true)
             | _ -> None
         | _ -> None
@@ -289,10 +293,10 @@ let private defineDistinctType
     // Emit `if x < lo || x op_hi hi goto failLbl`, where op_hi is `>`
     // for closed ranges and `>=` for half-open ranges.
     let emitBoundsCheck (il: ILGenerator) (failLbl: Label)
-            (lo: uint64) (hi: uint64) (upperExclusive: bool) : unit =
-        let emitConst (n: uint64) =
+            (lo: int64) (hi: int64) (upperExclusive: bool) : unit =
+        let emitConst (n: int64) =
             if underlyingClr = typeof<int64> then
-                il.Emit(OpCodes.Ldc_I8, int64 n)
+                il.Emit(OpCodes.Ldc_I8, n)
             else
                 il.Emit(OpCodes.Ldc_I4, int n)
         il.Emit(OpCodes.Ldarg_0)
@@ -666,24 +670,23 @@ let private defineUnion
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
 /// codegen can resolve constructors and field reads.
-let private defineRecord
-        (md: ModuleBuilder)
-        (nsName: string)
+let private defineRecordOnto
+        (tb: TypeBuilder)
+        (typeParamNames: string list)
+        (typeParamSubst: Map<string, System.Type>)
         (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
         (rd: RecordDecl) : Records.RecordInfo =
-    let fullName =
-        if String.IsNullOrEmpty nsName then rd.Name
-        else nsName + "." + rd.Name
-    let tb =
-        md.DefineType(
-            fullName,
-            TypeAttributes.Public ||| TypeAttributes.Sealed,
-            typeof<obj>)
-    // Resolve each field's type via the typechecker's resolver. This
-    // gives us a `Lyric.TypeChecker.Type` that TypeMap projects onto
-    // a CLR System.Type.
+    // Resolve each field's type via the typechecker's resolver, then
+    // project to a CLR `System.Type` through the typeIdToClr lookup so
+    // records that reference other user records pick up the matching
+    // TypeBuilder rather than falling back to `obj`.  For generic
+    // records, `typeParamSubst` substitutes Lyric `TyVar T` for the
+    // record's GTPBs so a field declared `value: T` lowers to a CLR
+    // field of type `!0` (the GTPB).
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
+    if not typeParamNames.IsEmpty then resolveCtx.Push(typeParamNames)
     let fieldDecls =
         rd.Members
         |> List.choose (fun m ->
@@ -695,15 +698,16 @@ let private defineRecord
         |> List.map (fun fd ->
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
-            let cty = TypeMap.toClrType lty
+            let cty = TypeMap.toClrTypeWithGenerics lookup typeParamSubst lty
             let fb =
                 tb.DefineField(
                     fd.Name,
                     cty,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
-            { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = cty
-              Records.RecordField.Field = fb })
+            { Records.RecordField.Name      = fd.Name
+              Records.RecordField.Type      = cty
+              Records.RecordField.LyricType = lty
+              Records.RecordField.Field     = fb })
     // Constructor: takes every field in declaration order, stores
     // them onto `this`.
     let ctorParamTypes =
@@ -729,10 +733,11 @@ let private defineRecord
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = rd.Name
-      Records.RecordInfo.Type   = tb
-      Records.RecordInfo.Fields = fields
-      Records.RecordInfo.Ctor   = ctor }
+    { Records.RecordInfo.Name     = rd.Name
+      Records.RecordInfo.Type     = tb
+      Records.RecordInfo.Fields   = fields
+      Records.RecordInfo.Ctor     = ctor
+      Records.RecordInfo.Generics = typeParamNames }
 
 /// Generate the sibling exposed record for a `@projectable` opaque type.
 /// The view contains every non-`@hidden` field of the opaque type and
@@ -810,9 +815,10 @@ let private populateProjectableView
                     fd.Name,
                     viewClr,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
-            { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = viewClr
-              Records.RecordField.Field = fb })
+            { Records.RecordField.Name      = fd.Name
+              Records.RecordField.Type      = viewClr
+              Records.RecordField.LyricType = lty
+              Records.RecordField.Field     = fb })
     let ctorParamTypes =
         fields |> List.map (fun f -> f.Type) |> List.toArray
     let ctor =
@@ -832,10 +838,11 @@ let private populateProjectableView
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = stub.ViewName
-      Records.RecordInfo.Type   = stub.ViewBuilder
-      Records.RecordInfo.Fields = fields
-      Records.RecordInfo.Ctor   = ctor }
+    { Records.RecordInfo.Name     = stub.ViewName
+      Records.RecordInfo.Type     = stub.ViewBuilder
+      Records.RecordInfo.Fields   = fields
+      Records.RecordInfo.Ctor     = ctor
+      Records.RecordInfo.Generics = [] }
 
 /// Pass C: attach `toView(): <Name>View` on the opaque.  Each visible
 /// field is read off `this`; if the source field is a projectable
@@ -1467,6 +1474,7 @@ let private emitFunctionBody
         (importedUnionCases: Records.ImportedUnionCaseLookup)
         (importedFuncs: Records.ImportedFuncTable)
         (importedDistinctTypes: Records.ImportedDistinctTypeTable)
+        (externTypeNames: Dictionary<string, System.Type>)
         (isInstance: bool)
         (selfType: System.Type option)
         (programType: TypeBuilder)
@@ -1517,7 +1525,7 @@ let private emitFunctionBody
             funcs funcSigs records enums enumCases unions unionCases
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
-            importedFuncs importedDistinctTypes
+            importedFuncs importedDistinctTypes externTypeNames
             isInstance selfType programType resolveTypeForCtx lookup diags
     ignore methodReturnTy
 
@@ -1772,6 +1780,12 @@ let private emitAssembly
         // `List[Int]`, etc.  We validate arity here so a mismatched
         // declaration fails at compile time rather than as a confusing
         // ArgumentException deep in `MakeGenericType`.
+        // Lyric extern type names (`extern type Url = "System.Uri"`)
+        // mapped to their CLR types.  Drives the C4-phase-1 strict-
+        // match auto-FFI dispatch in codegen — a `Url.method(args)`
+        // call falls back to a static method on the underlying CLR
+        // type when no explicit `@externTarget` is registered.
+        let externTypeNames = Dictionary<string, System.Type>()
         // Local extern types declared in this source file.
         for et in externTypeItems sf do
             match findClrType et.ClrName with
@@ -1788,6 +1802,7 @@ let private emitAssembly
                     failwithf
                         "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d"
                         et.Name lyricArity et.ClrName clrArity
+                externTypeNames.[et.Name] <- clr
                 symbols.TryFind et.Name
                 |> Seq.tryHead
                 |> Option.bind Symbol.typeIdOpt
@@ -1807,6 +1822,8 @@ let private emitAssembly
             for et in externTypeItems art.Source do
                 match findClrType et.ClrName with
                 | Some clr ->
+                    if not (externTypeNames.ContainsKey et.Name) then
+                        externTypeNames.[et.Name] <- clr
                     symbols.TryFind et.Name
                     |> Seq.tryHead
                     |> Option.bind Symbol.typeIdOpt
@@ -2005,25 +2022,81 @@ let private emitAssembly
                             | _ -> ()
                     | _ -> ()
 
+        // Two passes for records / opaques so a field whose type is
+        // another user record (`record Outer { i: Inner }`) sees
+        // Inner's TypeBuilder rather than falling back to `obj`.  The
+        // first pass just defines the empty TypeBuilder (with generic
+        // params if declared) and registers it in `typeIdToClr`; the
+        // second populates fields + ctor.  Generic records (`record
+        // Box[T] { value: T }`) get the open generic type definition
+        // registered so other records / functions referencing
+        // `Box[Int]` can close it via `MakeGenericType`.
+        let recordStubs =
+            ResizeArray<RecordDecl * TypeBuilder * string list * Map<string, System.Type>>()
         for rd in recordItems sf do
-            let info = defineRecord ctx.Module nsName symbols rd
-            recordTable.[rd.Name] <- info
+            let fullName =
+                if String.IsNullOrEmpty nsName then rd.Name
+                else nsName + "." + rd.Name
+            let tb =
+                ctx.Module.DefineType(
+                    fullName,
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeof<obj>)
+            let typeParamNames =
+                match rd.Generics with
+                | Some gs ->
+                    gs.Params
+                    |> List.map (function
+                        | GPType (n, _) | GPValue (n, _, _) -> n)
+                | None -> []
+            let typeParamSubst =
+                if typeParamNames.IsEmpty then Map.empty
+                else
+                    let gtps =
+                        tb.DefineGenericParameters(typeParamNames |> List.toArray)
+                    typeParamNames
+                    |> List.mapi (fun i name -> name, gtps.[i] :> System.Type)
+                    |> Map.ofList
             symbols.TryFind rd.Name
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
-            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+            |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
+            recordStubs.Add(rd, tb, typeParamNames, typeParamSubst)
 
         // Opaque types — bootstrap-grade: lower as records.  Visibility
         // is unenforced because we still compile a single package.
+        let opaqueStubs =
+            ResizeArray<OpaqueTypeDecl * TypeBuilder * string list * Map<string, System.Type>>()
         let projectableOpaques = ResizeArray<OpaqueTypeDecl * Records.RecordInfo>()
         for od in opaqueItems sf do
-            let info = defineRecord ctx.Module nsName symbols (opaqueAsRecord od)
-            recordTable.[od.Name] <- info
+            let fullName =
+                if String.IsNullOrEmpty nsName then od.Name
+                else nsName + "." + od.Name
+            let tb =
+                ctx.Module.DefineType(
+                    fullName,
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeof<obj>)
+            let typeParamNames =
+                match od.Generics with
+                | Some gs ->
+                    gs.Params
+                    |> List.map (function
+                        | GPType (n, _) | GPValue (n, _, _) -> n)
+                | None -> []
+            let typeParamSubst =
+                if typeParamNames.IsEmpty then Map.empty
+                else
+                    let gtps =
+                        tb.DefineGenericParameters(typeParamNames |> List.toArray)
+                    typeParamNames
+                    |> List.mapi (fun i name -> name, gtps.[i] :> System.Type)
+                    |> Map.ofList
             symbols.TryFind od.Name
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
-            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
-            if isProjectable od then projectableOpaques.Add(od, info)
+            |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
+            opaqueStubs.Add(od, tb, typeParamNames, typeParamSubst)
         for ed in enumItems sf do
             let info = defineEnum ctx.Module nsName ed
             enumTable.[ed.Name] <- info
@@ -2054,6 +2127,23 @@ let private emitAssembly
                 match typeIdToClr.TryGetValue id with
                 | true, t  -> Some t
                 | false, _ -> None
+
+        // Second pass for records / opaques — populate fields + ctor
+        // onto the existing TypeBuilder stubs now that every record's
+        // TypeBuilder is registered in typeIdToClr.  This is what
+        // makes `record Outer { i: Inner }` work — Inner's stub is
+        // resolvable by the time Outer's field-type lookup runs.
+        for (rd, stubTb, typeParams, subst) in recordStubs do
+            let info =
+                defineRecordOnto stubTb typeParams subst symbols lookup rd
+            recordTable.[rd.Name] <- info
+        for (od, stubTb, typeParams, subst) in opaqueStubs do
+            let info =
+                defineRecordOnto
+                    stubTb typeParams subst symbols lookup
+                    (opaqueAsRecord od)
+            recordTable.[od.Name] <- info
+            if isProjectable od then projectableOpaques.Add(od, info)
 
         let interfaceTable = Records.InterfaceTable()
         for id in interfaceItems sf do
@@ -2166,11 +2256,19 @@ let private emitAssembly
         // source CLR type is itself a projectable opaque substitutes
         // the corresponding view type, and `toView()` calls the
         // nested `toView()` to project the value.
+        //
+        // When a projectable cycle was detected (`projectableCycleErr`
+        // populated above), the view derivation is skipped — the
+        // recursive `toView` lowering would otherwise diverge with
+        // "nested toView for X not yet defined" since no `@projectionBoundary`
+        // breaks the recursion.
         let projectableTable = Records.ProjectableTable()
         let stubByOpaqueClr = Dictionary<System.Type, ProjectableStub>()
+        let projectablesToDerive =
+            if projectableCycleErr.IsSome then []
+            else projectableOpaques |> Seq.toList
         let stubs =
-            projectableOpaques
-            |> Seq.toList
+            projectablesToDerive
             |> List.map (fun (od, opaqueInfo) ->
                 let stub = defineProjectableViewStub ctx.Module nsName opaqueInfo od
                 stubByOpaqueClr.[opaqueInfo.Type :> System.Type] <- stub
@@ -2393,7 +2491,7 @@ let private emitAssembly
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
-                importedFuncTable importedDistinctTypeTable
+                importedFuncTable importedDistinctTypeTable externTypeNames
                 false None
                 programTy symbols codegenDiags
 
@@ -2408,7 +2506,7 @@ let private emitAssembly
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
-                importedFuncTable importedDistinctTypeTable
+                importedFuncTable importedDistinctTypeTable externTypeNames
                 true
                 (Option.ofObj selfTy) programTy symbols codegenDiags
 
@@ -2435,6 +2533,23 @@ let private emitAssembly
             kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
+        // Embed the `Lyric.Contract` managed resource describing this
+        // assembly's `pub` surface.  Cross-package consumption + the
+        // future `lyric public-api-diff` / `lyric search` tooling
+        // reads it via `ContractMeta.readFromAssembly`.  Best-effort:
+        // a Cecil failure shouldn't fail the build (the IL is
+        // already on disk); surface as a non-fatal warning if it
+        // happens.
+        try
+            let contract = ContractMeta.buildContract sf "0.1.0"
+            ContractMeta.embedIntoAssembly req.OutputPath (ContractMeta.toJson contract)
+        with e ->
+            codegenDiags.Add
+                { Severity = DiagWarning
+                  Code     = "E0900"
+                  Message  =
+                    sprintf "could not embed Lyric.Contract resource: %s" e.Message
+                  Span     = sf.Span }
         List.ofSeq codegenDiags
 
 // ---------------------------------------------------------------------------

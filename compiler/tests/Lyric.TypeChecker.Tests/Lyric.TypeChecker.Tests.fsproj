@@ -11,6 +11,7 @@
     <Compile Include="SignatureTests.fs" />
     <Compile Include="ExprCheckerTests.fs" />
     <Compile Include="StmtCheckerTests.fs" />
+    <Compile Include="ConstFoldTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

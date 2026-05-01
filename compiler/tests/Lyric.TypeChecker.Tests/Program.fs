@@ -11,5 +11,6 @@ let main argv =
             SignatureTests.tests
             ExprCheckerTests.tests
             StmtCheckerTests.tests
+            ConstFoldTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

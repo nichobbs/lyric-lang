@@ -28,12 +28,22 @@ let tests =
                   "scope_kind Tenant" ]
             for src in cases do
                 let r = parseFile (prelude + src)
-                Expect.equal r.File.Items.Length 1
-                    (sprintf "one item parsed for: %s" src)
-                match r.File.Items.[0].Kind with
-                | IError ->
-                    failtestf "expected typed item, got IError for: %s" src
-                | _ -> ()
+                // The C6 wire-block synthesiser inserts a record +
+                // bootstrap alongside `wire W { ... }`, so the item
+                // count for that case is 3.  Other item kinds still
+                // parse to exactly one item.
+                let isWire = src.StartsWith "wire "
+                let expectedCount = if isWire then 3 else 1
+                Expect.equal r.File.Items.Length expectedCount
+                    (sprintf "%d item(s) parsed for: %s" expectedCount src)
+                let hasError =
+                    r.File.Items
+                    |> List.exists (fun it ->
+                        match it.Kind with
+                        | IError -> true
+                        | _ -> false)
+                Expect.isFalse hasError
+                    (sprintf "expected no IError for: %s" src)
                 let p98s =
                     r.Diagnostics
                     |> List.filter (fun d -> d.Code = "P0098")

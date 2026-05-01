@@ -501,13 +501,25 @@ progress-per-session and dependency unblocking:
    multi-wire.  Combined with the already-shipped `@stubbable`,
    unlocks worked-example #7's test-wire pattern + production
    singleton DI.  ~1-1.5 sessions.
-5. **C5 Json source-gen.**  `@derive(Json)` on records synthesises
+5. **Reified generic records (`record Box[T] { value: T }`).**  Today
+   `record` declarations are non-generic at the CLR level — the
+   parser accepts `Box[T]` but the emitter's type-arg inference and
+   field-access lowering produce `InvalidProgramException` at
+   runtime.  Reified generic functions (PR #f8c04fe) and unions
+   (PR #9ad8962) already landed; records are the missing third leg.
+   Fresh re-implementation on top of the current main; the April-30
+   `claude/generic-records` branch (PR #43) is too far behind to
+   rebase cleanly so we'll do this from scratch.  Ordered before C5
+   Json source-gen because Json benefits from generic record support
+   (e.g. `record Page[T] { items: slice[T], total: Int }`).
+   ~1 session.
+6. **C5 Json source-gen.**  `@derive(Json)` on records synthesises
    `toJson` / `fromJson` at compile time.  Unlocks REST services
    without manual string concat.  ~1 session.
 
 ### Tier 3 — package ecosystem
 
-6. **C8 — NuGet piggyback + embedded contract resource.**  Two
+7. **C8 — NuGet piggyback + embedded contract resource.**  Two
    parts: contract-metadata embedded resource format (~1 session),
    then `lyric.toml` manifest + `lyric publish` / `lyric restore`
    wrappers around `dotnet pack` / `dotnet restore` (~1 session).
@@ -516,27 +528,27 @@ progress-per-session and dependency unblocking:
 
 ### Tier 4 — the tentpole
 
-7. **C2 — real async state machines.**  2-4 weeks.  The biggest
+8. **C2 — real async state machines.**  2-4 weeks.  The biggest
    single item; unlocks downstream Tier-5 work.
 
 ### Tier 5 — gated on C2
 
-8. **C5 Http expansion.**  Cancellation tokens, real timeouts,
+9. **C5 Http expansion.**  Cancellation tokens, real timeouts,
    redirect policy.  All want async-state-machine threading; doing
    them on the blocking shim leaks when the shim is replaced.
-9. **C6 scoped wire lifetimes.**  `scoped` declarations + the
-   lifetime checker that rejects singleton-depends-on-scoped.
-   Wants `AsyncLocal<T>` scope propagation across `await`.
+10. **C6 scoped wire lifetimes.**  `scoped` declarations + the
+    lifetime checker that rejects singleton-depends-on-scoped.
+    Wants `AsyncLocal<T>` scope propagation across `await`.
 
 ### Tier 6 — long tail / not blocking v1.0
 
-10. **C7 — full CST formatter.**  Lowest priority per the C7
+11. **C7 — full CST formatter.**  Lowest priority per the C7
     decision; the CST infrastructure mostly pays off for LSP /
     refactor tools that come after the formatter itself.
-11. **B6 — `format5..N`.**  Only when a real program needs it.
-12. **C5 Regex RE2.**  Only when a real program is exposed to
+12. **B6 — `format5..N`.**  Only when a real program needs it.
+13. **C5 Regex RE2.**  Only when a real program is exposed to
     attacker-controlled regex inputs.
-13. **C4 phase 2/3 — score-based matching, special shapes.**  Pulls
+14. **C4 phase 2/3 — score-based matching, special shapes.**  Pulls
     in as user programs hit cases that strict match misses.
 
 ### Why this order

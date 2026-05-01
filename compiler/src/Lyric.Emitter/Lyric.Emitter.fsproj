@@ -8,6 +8,7 @@
     <Compile Include="Backend.fs" />
     <Compile Include="TypeMap.fs" />
     <Compile Include="Records.fs" />
+    <Compile Include="ContractMeta.fs" />
     <Compile Include="Codegen.fs" />
     <Compile Include="Emitter.fs" />
   </ItemGroup>
@@ -17,6 +18,15 @@
     <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
     <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
     <ProjectReference Include="..\Lyric.Stdlib\Lyric.Stdlib.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Used by the embedded `Lyric.Contract` managed resource that
+         ships every emitted assembly's `pub` surface for cross-package
+         consumption.  Cecil's resource-table manipulation is the
+         simplest path while we're emitting via PersistedAssemblyBuilder
+         (which doesn't expose `DefineManifestResource`). -->
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
   </ItemGroup>
 
 </Project>

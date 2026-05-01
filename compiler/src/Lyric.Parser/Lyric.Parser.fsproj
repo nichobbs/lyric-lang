@@ -9,6 +9,8 @@
     <Compile Include="Cursor.fs" />
     <Compile Include="Stubbable.fs" />
     <Compile Include="AliasRewriter.fs" />
+    <Compile Include="Wire.fs" />
+    <Compile Include="JsonDerive.fs" />
     <Compile Include="Parser.fs" />
   </ItemGroup>
 
