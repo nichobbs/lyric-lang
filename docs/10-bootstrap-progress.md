@@ -1208,3 +1208,59 @@ TypeChecker 100, Emitter 323, Lsp 5.
 - Lifetime checker (singleton-depends-on-scoped → compile error).
 - `@bind`-style multi-implementation registration of an interface.
 - Async-local scope tracking for HTTP frameworks / DB integrations.
+
+
+### D-progress-029: reified generic records (Tier 2.2)
+*claude/define-language-spec-5DbnS branch.*  Fresh implementation on
+top of current main (the April 30 PR #43 was too far behind to rebase
+cleanly).  `record Box[T] { value: T }` now lowers to a real generic
+CLR class rather than producing `InvalidProgramException` at runtime.
+
+**Lowering.**
+
+- `Records.RecordInfo` gains `Generics: string list` and
+  `RecordField` gains `LyricType: Lyric.TypeChecker.Type`, mirroring
+  the union-info / union-field shape from D-progress-013.
+- The two-pass record-stub setup from D-progress-028 extends to call
+  `tb.DefineGenericParameters(typeParamNames)` when `rd.Generics` is
+  non-empty, building a `typeParamSubst : Map<string, ClrType>` from
+  Lyric type-param names to the matching `GenericTypeParameterBuilder`.
+- `defineRecordOnto` accepts the substitution and threads it through
+  `TypeMap.toClrTypeWithGenerics` so a field declared `value: T`
+  lowers to a CLR field of type `!0` (the GTPB).
+
+**Construction codegen.**  `ECall (EPath [name], args)` for a generic
+record:
+1. Emits each arg expression and stashes the result into a temp
+   local (so we know the arg's CLR type for inference).
+2. Walks `bindLyricToClr` over each `field.LyricType` paired with
+   the arg's CLR type to fill in the record's generic substitution.
+3. `MakeGenericType` closes the record on the resolved type args.
+4. `TypeBuilder.GetConstructor(closedType, info.Ctor)` gets the
+   closed ctor.
+5. Re-loads each arg from its temp local and emits `Newobj`.
+
+**Field-access codegen.**  `EMember (recv, fieldName)` on a
+constructed generic record:
+- Walks `ctx.Records.Values` matching either `r.Type = recvTy` or
+  `r.Type = recvTy.GetGenericTypeDefinition()` so a `Box<int>`
+  receiver finds the open-`Box<>` `RecordInfo`.
+- For constructed generics, uses
+  `TypeBuilder.GetField(recvTy, f.Field)` to get the closed field
+  handle and substitutes `f.LyricType` through the receiver's
+  generic args to compute the field's closed CLR type.
+
+**Tests.**  5 new tests in `GenericRecordTests.fs`: construction
+(Int, String), two-param `record Pair[A, B]`, arithmetic on
+substituted field, generic-record-as-field-of-non-generic-record.
+
+All 683 tests across the five suites pass: Lexer 70, Parser 182,
+TypeChecker 100, Emitter 328, Lsp 5.
+
+**Bootstrap-grade scope** (deferred):
+- Generic-record passed through generic functions (the field
+  inference recurses through compound shapes via
+  `bindLyricToClr` already, but call-site type-arg propagation
+  through nested generics may have gaps).
+- `where T: Trait` constraints on record type params (parser
+  accepts but the codegen doesn't yet enforce).

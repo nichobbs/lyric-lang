@@ -1501,16 +1501,48 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     d.Name fieldName
             | None ->
                 // Records: walk the records dict to find a match by
-                // CLR receiver type.
+                // CLR receiver type.  For a constructed generic record
+                // (`Box<int>`), the lookup compares against the open
+                // generic definition (`Box<>`) since `r.Type` is the
+                // open TypeBuilder.
+                let recvOpenTy =
+                    if recvTy.IsGenericType && not recvTy.IsGenericTypeDefinition
+                    then recvTy.GetGenericTypeDefinition()
+                    else recvTy
                 let info =
                     ctx.Records.Values
-                    |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+                    |> Seq.tryFind (fun r ->
+                        (r.Type :> ClrType) = recvTy
+                        || (r.Type :> ClrType) = recvOpenTy)
                 match info with
                 | Some r ->
                     match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
                     | Some f ->
-                        il.Emit(OpCodes.Ldfld, f.Field)
-                        f.Type
+                        // Generic record on a constructed instantiation:
+                        // close the FieldBuilder via TypeBuilder.GetField
+                        // and project f.Type's CLR type through the
+                        // generic substitution so the result type carries
+                        // the closed generic args.
+                        let isConstructed =
+                            r.Generics.Length > 0
+                            && recvTy.IsGenericType
+                            && not recvTy.IsGenericTypeDefinition
+                        if isConstructed then
+                            let closedField =
+                                System.Reflection.Emit.TypeBuilder.GetField(recvTy, f.Field)
+                            il.Emit(OpCodes.Ldfld, closedField)
+                            // Substitute generic args from recvTy into
+                            // f.LyricType to compute the field's closed
+                            // CLR type.
+                            let cargs = recvTy.GetGenericArguments()
+                            let substMap =
+                                List.zip r.Generics (List.ofArray cargs)
+                                |> Map.ofList
+                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                ctx.Lookup substMap f.LyricType
+                        else
+                            il.Emit(OpCodes.Ldfld, f.Field)
+                            f.Type
                     | None ->
                         failwithf "E5/E7 codegen: record '%s' has no field '%s'"
                             r.Name fieldName
@@ -2090,6 +2122,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             |> List.choose (function
                 | CAPositional ex -> Some ex
                 | _ -> None)
+        let isGeneric = not info.Generics.IsEmpty
+        // For generic records we need to know each arg's CLR type
+        // BEFORE emitting the Newobj so we can MakeGenericType the
+        // closing instantiation.  Stash each arg's value in a temp
+        // local so we can re-load them after type-arg inference.
+        let argLocals =
+            ResizeArray<LocalBuilder option * Expr * ClrType>()
         let mutable posIdx = 0
         for f in info.Fields do
             let argExpr =
@@ -2103,10 +2142,70 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     else
                         failwithf "E5 codegen: record '%s' missing field '%s'"
                             name f.Name
-            let _ = emitExpr ctx argExpr
-            ()
-        il.Emit(OpCodes.Newobj, info.Ctor)
-        info.Type :> ClrType
+            if isGeneric then
+                let argTy = emitExpr ctx argExpr
+                let lb = FunctionCtx.defineLocal ctx ("__rec_arg_" + f.Name) argTy
+                il.Emit(OpCodes.Stloc, lb)
+                argLocals.Add(Some lb, argExpr, argTy)
+            else
+                let _ = emitExpr ctx argExpr
+                argLocals.Add(None, argExpr, typeof<obj>)
+        if not isGeneric then
+            il.Emit(OpCodes.Newobj, info.Ctor)
+            info.Type :> ClrType
+        else
+            // Reified generic record: bind each generic param from the
+            // arg CLR types (`bindLyricToClr`-style for compound shapes),
+            // close the type, look up the constructed ctor via
+            // TypeBuilder.GetConstructor, re-load the args, Newobj.
+            let bindings : ClrType option array =
+                Array.create info.Generics.Length None
+            let bindByName (n: string) (ty: ClrType) =
+                match List.tryFindIndex ((=) n) info.Generics with
+                | Some pos when bindings.[pos].IsNone ->
+                    bindings.[pos] <- Some ty
+                | _ -> ()
+            let rec bindLyricToClr (lty: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lty with
+                | Lyric.TypeChecker.TyVar n -> bindByName n argTy
+                | Lyric.TypeChecker.TySlice elem
+                | Lyric.TypeChecker.TyArray (_, elem) when argTy.IsArray ->
+                    let et = argTy.GetElementType()
+                    match Option.ofObj et with
+                    | Some t -> bindLyricToClr elem t
+                    | None   -> ()
+                | Lyric.TypeChecker.TyUser (_, lyricArgs)
+                    when not lyricArgs.IsEmpty
+                         && argTy.IsGenericType
+                         && not argTy.IsGenericTypeDefinition ->
+                    let cargs = argTy.GetGenericArguments()
+                    if cargs.Length = lyricArgs.Length then
+                        List.iteri
+                            (fun i la -> bindLyricToClr la cargs.[i])
+                            lyricArgs
+                | _ -> ()
+            let lyricFieldTypes =
+                info.Fields |> List.map (fun f -> f.LyricType)
+            argLocals
+            |> Seq.iteri (fun i (_, _, argTy) ->
+                if i < lyricFieldTypes.Length then
+                    bindLyricToClr (List.item i lyricFieldTypes) argTy)
+            let resolved =
+                bindings
+                |> Array.map (function
+                    | Some t -> t
+                    | None   -> typeof<obj>)
+            let constructed =
+                (info.Type :> System.Type).MakeGenericType(resolved)
+            let constructedCtor =
+                System.Reflection.Emit.TypeBuilder.GetConstructor(constructed, info.Ctor)
+            // Re-load each arg from its temp local in field-declaration order.
+            for (lbOpt, _, _) in argLocals do
+                match lbOpt with
+                | Some lb -> il.Emit(OpCodes.Ldloc, lb)
+                | None    -> ()
+            il.Emit(OpCodes.Newobj, constructedCtor)
+            constructed
 
     // ---- distinct type static factory: TypeName.from(x) ----------------
 

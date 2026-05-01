@@ -672,15 +672,21 @@ let private defineUnion
 /// codegen can resolve constructors and field reads.
 let private defineRecordOnto
         (tb: TypeBuilder)
+        (typeParamNames: string list)
+        (typeParamSubst: Map<string, System.Type>)
         (symbols: SymbolTable)
         (lookup: TypeId -> System.Type option)
         (rd: RecordDecl) : Records.RecordInfo =
     // Resolve each field's type via the typechecker's resolver, then
     // project to a CLR `System.Type` through the typeIdToClr lookup so
     // records that reference other user records pick up the matching
-    // TypeBuilder rather than falling back to `obj`.
+    // TypeBuilder rather than falling back to `obj`.  For generic
+    // records, `typeParamSubst` substitutes Lyric `TyVar T` for the
+    // record's GTPBs so a field declared `value: T` lowers to a CLR
+    // field of type `!0` (the GTPB).
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
+    if not typeParamNames.IsEmpty then resolveCtx.Push(typeParamNames)
     let fieldDecls =
         rd.Members
         |> List.choose (fun m ->
@@ -692,15 +698,16 @@ let private defineRecordOnto
         |> List.map (fun fd ->
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
-            let cty = TypeMap.toClrTypeWith lookup lty
+            let cty = TypeMap.toClrTypeWithGenerics lookup typeParamSubst lty
             let fb =
                 tb.DefineField(
                     fd.Name,
                     cty,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
-            { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = cty
-              Records.RecordField.Field = fb })
+            { Records.RecordField.Name      = fd.Name
+              Records.RecordField.Type      = cty
+              Records.RecordField.LyricType = lty
+              Records.RecordField.Field     = fb })
     // Constructor: takes every field in declaration order, stores
     // them onto `this`.
     let ctorParamTypes =
@@ -726,10 +733,11 @@ let private defineRecordOnto
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = rd.Name
-      Records.RecordInfo.Type   = tb
-      Records.RecordInfo.Fields = fields
-      Records.RecordInfo.Ctor   = ctor }
+    { Records.RecordInfo.Name     = rd.Name
+      Records.RecordInfo.Type     = tb
+      Records.RecordInfo.Fields   = fields
+      Records.RecordInfo.Ctor     = ctor
+      Records.RecordInfo.Generics = typeParamNames }
 
 /// Generate the sibling exposed record for a `@projectable` opaque type.
 /// The view contains every non-`@hidden` field of the opaque type and
@@ -807,9 +815,10 @@ let private populateProjectableView
                     fd.Name,
                     viewClr,
                     FieldAttributes.Public ||| FieldAttributes.InitOnly)
-            { Records.RecordField.Name  = fd.Name
-              Records.RecordField.Type  = viewClr
-              Records.RecordField.Field = fb })
+            { Records.RecordField.Name      = fd.Name
+              Records.RecordField.Type      = viewClr
+              Records.RecordField.LyricType = lty
+              Records.RecordField.Field     = fb })
     let ctorParamTypes =
         fields |> List.map (fun f -> f.Type) |> List.toArray
     let ctor =
@@ -829,10 +838,11 @@ let private populateProjectableView
         cil.Emit(OpCodes.Ldarg, i + 1)
         cil.Emit(OpCodes.Stfld, f.Field))
     cil.Emit(OpCodes.Ret)
-    { Records.RecordInfo.Name   = stub.ViewName
-      Records.RecordInfo.Type   = stub.ViewBuilder
-      Records.RecordInfo.Fields = fields
-      Records.RecordInfo.Ctor   = ctor }
+    { Records.RecordInfo.Name     = stub.ViewName
+      Records.RecordInfo.Type     = stub.ViewBuilder
+      Records.RecordInfo.Fields   = fields
+      Records.RecordInfo.Ctor     = ctor
+      Records.RecordInfo.Generics = [] }
 
 /// Pass C: attach `toView(): <Name>View` on the opaque.  Each visible
 /// field is read off `this`; if the source field is a projectable
@@ -2015,11 +2025,14 @@ let private emitAssembly
         // Two passes for records / opaques so a field whose type is
         // another user record (`record Outer { i: Inner }`) sees
         // Inner's TypeBuilder rather than falling back to `obj`.  The
-        // first pass just defines the empty TypeBuilder and registers
-        // it in `typeIdToClr`; the second populates fields + ctor via
-        // `defineRecord` so its `lookup` resolves cross-references.
+        // first pass just defines the empty TypeBuilder (with generic
+        // params if declared) and registers it in `typeIdToClr`; the
+        // second populates fields + ctor.  Generic records (`record
+        // Box[T] { value: T }`) get the open generic type definition
+        // registered so other records / functions referencing
+        // `Box[Int]` can close it via `MakeGenericType`.
         let recordStubs =
-            ResizeArray<RecordDecl * TypeBuilder * (TypeId option)>()
+            ResizeArray<RecordDecl * TypeBuilder * string list * Map<string, System.Type>>()
         for rd in recordItems sf do
             let fullName =
                 if String.IsNullOrEmpty nsName then rd.Name
@@ -2029,17 +2042,31 @@ let private emitAssembly
                     fullName,
                     TypeAttributes.Public ||| TypeAttributes.Sealed,
                     typeof<obj>)
-            let tid =
-                symbols.TryFind rd.Name
-                |> Seq.tryHead
-                |> Option.bind Symbol.typeIdOpt
-            tid |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
-            recordStubs.Add(rd, tb, tid)
+            let typeParamNames =
+                match rd.Generics with
+                | Some gs ->
+                    gs.Params
+                    |> List.map (function
+                        | GPType (n, _) | GPValue (n, _, _) -> n)
+                | None -> []
+            let typeParamSubst =
+                if typeParamNames.IsEmpty then Map.empty
+                else
+                    let gtps =
+                        tb.DefineGenericParameters(typeParamNames |> List.toArray)
+                    typeParamNames
+                    |> List.mapi (fun i name -> name, gtps.[i] :> System.Type)
+                    |> Map.ofList
+            symbols.TryFind rd.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
+            recordStubs.Add(rd, tb, typeParamNames, typeParamSubst)
 
         // Opaque types — bootstrap-grade: lower as records.  Visibility
         // is unenforced because we still compile a single package.
         let opaqueStubs =
-            ResizeArray<OpaqueTypeDecl * TypeBuilder * (TypeId option)>()
+            ResizeArray<OpaqueTypeDecl * TypeBuilder * string list * Map<string, System.Type>>()
         let projectableOpaques = ResizeArray<OpaqueTypeDecl * Records.RecordInfo>()
         for od in opaqueItems sf do
             let fullName =
@@ -2050,12 +2077,26 @@ let private emitAssembly
                     fullName,
                     TypeAttributes.Public ||| TypeAttributes.Sealed,
                     typeof<obj>)
-            let tid =
-                symbols.TryFind od.Name
-                |> Seq.tryHead
-                |> Option.bind Symbol.typeIdOpt
-            tid |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
-            opaqueStubs.Add(od, tb, tid)
+            let typeParamNames =
+                match od.Generics with
+                | Some gs ->
+                    gs.Params
+                    |> List.map (function
+                        | GPType (n, _) | GPValue (n, _, _) -> n)
+                | None -> []
+            let typeParamSubst =
+                if typeParamNames.IsEmpty then Map.empty
+                else
+                    let gtps =
+                        tb.DefineGenericParameters(typeParamNames |> List.toArray)
+                    typeParamNames
+                    |> List.mapi (fun i name -> name, gtps.[i] :> System.Type)
+                    |> Map.ofList
+            symbols.TryFind od.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
+            opaqueStubs.Add(od, tb, typeParamNames, typeParamSubst)
         for ed in enumItems sf do
             let info = defineEnum ctx.Module nsName ed
             enumTable.[ed.Name] <- info
@@ -2092,11 +2133,15 @@ let private emitAssembly
         // TypeBuilder is registered in typeIdToClr.  This is what
         // makes `record Outer { i: Inner }` work — Inner's stub is
         // resolvable by the time Outer's field-type lookup runs.
-        for (rd, stubTb, _) in recordStubs do
-            let info = defineRecordOnto stubTb symbols lookup rd
+        for (rd, stubTb, typeParams, subst) in recordStubs do
+            let info =
+                defineRecordOnto stubTb typeParams subst symbols lookup rd
             recordTable.[rd.Name] <- info
-        for (od, stubTb, _) in opaqueStubs do
-            let info = defineRecordOnto stubTb symbols lookup (opaqueAsRecord od)
+        for (od, stubTb, typeParams, subst) in opaqueStubs do
+            let info =
+                defineRecordOnto
+                    stubTb typeParams subst symbols lookup
+                    (opaqueAsRecord od)
             recordTable.[od.Name] <- info
             if isProjectable od then projectableOpaques.Add(od, info)
 
