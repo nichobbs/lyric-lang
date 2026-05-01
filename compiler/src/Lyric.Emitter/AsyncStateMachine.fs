@@ -113,10 +113,10 @@ let bodyContainsAwait (fn: FunctionDecl) : bool =
 /// Phase B safe-position checker: every `EAwait` in the body must
 /// appear at a "top-level" statement position so the IL stack is
 /// empty at the suspend point.  Awaits inside sub-expressions
-/// (e.g. `1 + await foo()`, `match await foo()`, `f(await g())`)
-/// would require stack-spilling that Phase B doesn't yet do.
+/// (e.g. `1 + await foo()`, `f(await g())`) would require stack-
+/// spilling that Phase B doesn't yet do.
 ///
-/// Safe positions:
+/// Safe positions (Phase B + B.1 control-flow extension):
 ///   * `EAwait inner` as the entire expression body of an FBExpr.
 ///   * `EAwait inner` as the immediate Init of a top-level
 ///     `val`/`let`/`var` declaration.
@@ -124,9 +124,18 @@ let bodyContainsAwait (fn: FunctionDecl) : bool =
 ///     `SAssign` / `SReturn (Some _)`.
 ///   * `EAwait inner` as the entire expression of a top-level
 ///     `SExpr` / `SThrow`.
+///   * `EIf` whose condition has no awaits and whose branches are
+///     each in safe expression position (recursive).  The IL
+///     stack is empty at the branch entry / suspend points
+///     because branches are emitted as independent IL flows that
+///     converge at the end-of-`if` label.
+///   * `EMatch` whose scrutinee has no awaits and whose arm
+///     bodies are each in safe expression position.  The
+///     scrutinee value is stored to a temp before pattern
+///     matching, so the stack is empty entering each arm.
 ///
-/// `inner` itself must contain no nested awaits (so the stack is
-/// empty at the suspend's `Leave`).
+/// `inner` (the awaited task) must itself contain no nested
+/// awaits — the stack must be empty at the suspend's `Leave`.
 ///
 /// Statements that don't introduce sub-expression contexts —
 /// `SBreak`, `SContinue`, `SReturn None`, `SItem` — are always
@@ -134,15 +143,39 @@ let bodyContainsAwait (fn: FunctionDecl) : bool =
 /// `SDefer`, `SFor`, `SWhile`, `SLoop`, `SScope` — are unsafe iff
 /// they (transitively) contain an `EAwait`.  Phase B+ will lift
 /// those restrictions piece by piece.
-let private isAwaitForm (e: Expr) : bool =
+let rec private isSafeExprPosition (e: Expr) : bool =
+    if not (exprHasAwait e) then true
+    else
     match e.Kind with
+    // `await inner` — safe if inner is await-free.
     | EAwait inner -> not (exprHasAwait inner)
-    | _            -> false
+    // `if` and `match` distribute the safe check over the cond/
+    // scrutinee + each branch.  Each branch is independent in IL
+    // terms (separate basic block), so an await at the branch's
+    // top level is structurally fine.
+    | EIf (cond, thenB, elseOpt, _) ->
+        (not (exprHasAwait cond))
+        && isSafeExprOrBlock thenB
+        && (match elseOpt with
+            | Some b -> isSafeExprOrBlock b
+            | None   -> true)
+    | EMatch (scrut, arms) ->
+        (not (exprHasAwait scrut))
+        && arms |> List.forall (fun a ->
+            (match a.Guard with Some g -> not (exprHasAwait g) | None -> true)
+            && isSafeExprOrBlock a.Body)
+    // `EParen` and `EBlock` wrap expression flow without
+    // introducing stack pressure on the await itself, so descend.
+    | EParen inner -> isSafeExprPosition inner
+    | EBlock blk   -> blk.Statements |> List.forall isSafeStmt
+    | _ -> false
 
-let private isSafeExprPosition (e: Expr) : bool =
-    isAwaitForm e || not (exprHasAwait e)
+and private isSafeExprOrBlock (eob: ExprOrBlock) : bool =
+    match eob with
+    | EOBExpr e  -> isSafeExprPosition e
+    | EOBBlock b -> b.Statements |> List.forall isSafeStmt
 
-let private isSafeStmt (s: Statement) : bool =
+and private isSafeStmt (s: Statement) : bool =
     match s.Kind with
     | SExpr e | SThrow e -> isSafeExprPosition e
     | SLocal (LBVal (_, _, init))

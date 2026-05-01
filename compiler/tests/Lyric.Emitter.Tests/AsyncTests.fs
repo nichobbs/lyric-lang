@@ -175,6 +175,55 @@ func main(): Unit {
 }
 """,
     "ping\n42"
+
+    "phaseB_await_in_if_branch",
+    // Phase B+ extension: `await` inside an `if` branch.  The
+    // suspend protocol's resume label sits inside the then
+    // branch's IL block; state-dispatch jumps directly there
+    // when MoveNext is re-entered.  Convergence at end-of-if
+    // works because the IL stack is empty at suspend (the
+    // awaiter is stashed before suspend) and balanced at the
+    // join point (each branch leaves the same number of values
+    // on the stack — none here).
+    """
+package E14
+async func ping(): Unit { println("ping") }
+async func cond(b: in Bool): Unit {
+  if b {
+    await ping()
+    println("yes")
+  } else {
+    println("no")
+  }
+}
+func main(): Unit {
+  await cond(true)
+  await cond(false)
+}
+""",
+    "ping\nyes\nno"
+
+    "phaseB_await_in_match_arm",
+    // `await` inside a match arm body (Phase B+).  Each arm
+    // body is an independent IL flow; the resume label sits
+    // inside the matching arm.
+    """
+package E14
+async func tag(s: in String): Unit { println(s) }
+async func dispatch(n: in Int): Unit {
+  match n {
+    case 1 -> await tag("one")
+    case 2 -> await tag("two")
+    case _ -> println("other")
+  }
+}
+func main(): Unit {
+  await dispatch(1)
+  await dispatch(2)
+  await dispatch(3)
+}
+""",
+    "one\ntwo\nother"
 ]
 
 let private behavioral =

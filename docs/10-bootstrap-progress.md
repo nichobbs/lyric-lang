@@ -1696,6 +1696,50 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-036: C2 Phase B+ — awaits inside `if` and `match` branches
+*claude/c2-async-implementation-ZGU95 branch.*  Extends Phase B
+(D-progress-034) to allow `EAwait` at safe top-level positions
+inside `if` branches and `match` arm bodies.  The IL emit shape
+unchanged — each branch is an independent basic block, the
+suspend's `Leave` and the resume's `MarkLabel` work the same
+inside a branch as at the function top level.
+
+Recursive safe-position predicate now distributes the check over
+control-flow constructs:
+
+- `EIf (cond, then, else, _)` — safe iff `cond` is await-free and
+  each branch is in safe expression position.
+- `EMatch (scrut, arms)` — safe iff `scrut` is await-free and
+  every arm body / guard is in safe position.
+- `EParen` and `EBlock` descend into their inner expression /
+  statements.
+
+The IL stack is empty entering each branch (cond/scrutinee value
+was already consumed), empty at suspend (the awaiter is stashed
+in a local + an SM field before `Leave`), and balanced at the
+join point (each branch leaves the same number of values).
+
+Two new tests in `AsyncTests.fs`: `phaseB_await_in_if_branch`
+exercises an `await` inside one arm of an if/else;
+`phaseB_await_in_match_arm` exercises awaits in two of three
+match arms (with a third no-await arm to verify the
+state-dispatch table doesn't accidentally jump into the wrong
+arm body).
+
+Out of scope (Phase B+++ work): awaits inside `try`/`catch` /
+`defer` (need protected-region re-entry on resume); awaits
+inside `for`/`while`/loop bodies (need state index per loop
+iteration); awaits in *expression-position* `if`/`match` (e.g.
+`val x = if cond then await foo() else 0` — works in statement
+position via the SLocal-init safe slot, but not inside a
+sub-expression like `f(if cond then await foo() else 0)`).
+
+All 346 emitter tests pass (was 342; +4 new across format5/6
+and Phase B+ if/match).  Lexer/Parser/TypeChecker/LSP suites
+unchanged at 70/182/100/5.  Total: 703 tests pass.
+
+---
+
 ### D-progress-035: B6 — `format5` / `format6` arity-specialised String.Format wrappers
 *claude/c2-async-implementation-ZGU95 branch.*  Closes a deferred
 follow-up from D-progress-011 (which shipped `format1..4`).  Lyric
@@ -1735,10 +1779,11 @@ The infrastructure pieces touched by C2:
 | 6. Locals-that-cross-`await` promoted to fields | **Shipped (Phase B, top-level only)** |
 | 7. `MoveNext` state-dispatch + `AwaitUnsafeOnCompleted` resume | **Shipped (Phase B)** |
 | 8. Exception flow through `SetException` | **Shipped (Phase B)** |
-| 9. `try`/`catch` / `defer` regions that span an `await` | Phase B+ |
-| 10. Match arms / control flow that span an `await` | Phase B+ |
-| 11. Async impl methods + async generics | Phase B+ |
-| 12. `CancellationToken` propagation | Phase C |
+| 9. `if` branches / `match` arm bodies that contain `await` | **Shipped (Phase B+, D-progress-036)** |
+| 10. `try`/`catch` / `defer` regions that span an `await` | Phase B++ |
+| 11. `for`/`while`/loop bodies that contain `await` | Phase B++ |
+| 12. Async impl methods + async generics | Phase B++ |
+| 13. `CancellationToken` propagation | Phase C |
 
 Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
 lifetimes) are gated on Phase C landing.  Tier 6 items (CST
