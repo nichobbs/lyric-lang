@@ -1471,6 +1471,7 @@ let private emitFunctionBody
         (importedUnionCases: Records.ImportedUnionCaseLookup)
         (importedFuncs: Records.ImportedFuncTable)
         (importedDistinctTypes: Records.ImportedDistinctTypeTable)
+        (externTypeNames: Dictionary<string, System.Type>)
         (isInstance: bool)
         (selfType: System.Type option)
         (programType: TypeBuilder)
@@ -1521,7 +1522,7 @@ let private emitFunctionBody
             funcs funcSigs records enums enumCases unions unionCases
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
-            importedFuncs importedDistinctTypes
+            importedFuncs importedDistinctTypes externTypeNames
             isInstance selfType programType resolveTypeForCtx lookup diags
     ignore methodReturnTy
 
@@ -1776,6 +1777,12 @@ let private emitAssembly
         // `List[Int]`, etc.  We validate arity here so a mismatched
         // declaration fails at compile time rather than as a confusing
         // ArgumentException deep in `MakeGenericType`.
+        // Lyric extern type names (`extern type Url = "System.Uri"`)
+        // mapped to their CLR types.  Drives the C4-phase-1 strict-
+        // match auto-FFI dispatch in codegen — a `Url.method(args)`
+        // call falls back to a static method on the underlying CLR
+        // type when no explicit `@externTarget` is registered.
+        let externTypeNames = Dictionary<string, System.Type>()
         // Local extern types declared in this source file.
         for et in externTypeItems sf do
             match findClrType et.ClrName with
@@ -1792,6 +1799,7 @@ let private emitAssembly
                     failwithf
                         "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d"
                         et.Name lyricArity et.ClrName clrArity
+                externTypeNames.[et.Name] <- clr
                 symbols.TryFind et.Name
                 |> Seq.tryHead
                 |> Option.bind Symbol.typeIdOpt
@@ -1811,6 +1819,8 @@ let private emitAssembly
             for et in externTypeItems art.Source do
                 match findClrType et.ClrName with
                 | Some clr ->
+                    if not (externTypeNames.ContainsKey et.Name) then
+                        externTypeNames.[et.Name] <- clr
                     symbols.TryFind et.Name
                     |> Seq.tryHead
                     |> Option.bind Symbol.typeIdOpt
@@ -2397,7 +2407,7 @@ let private emitAssembly
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
-                importedFuncTable importedDistinctTypeTable
+                importedFuncTable importedDistinctTypeTable externTypeNames
                 false None
                 programTy symbols codegenDiags
 
@@ -2412,7 +2422,7 @@ let private emitAssembly
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
-                importedFuncTable importedDistinctTypeTable
+                importedFuncTable importedDistinctTypeTable externTypeNames
                 true
                 (Option.ofObj selfTy) programTy symbols codegenDiags
 

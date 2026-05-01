@@ -76,6 +76,11 @@ type FunctionCtx =
       ImportedFuncs: Lyric.Emitter.Records.ImportedFuncTable
       /// Imported distinct types and their static factories.
       ImportedDistinctTypes: Lyric.Emitter.Records.ImportedDistinctTypeTable
+      /// Lyric extern type names (`extern type Url = "System.Uri"`)
+      /// mapped to their CLR types — both same-package decls and
+      /// imports.  Drives strict-match auto-FFI for static-method
+      /// calls of the form `ExternTypeName.method(args)` (C4 phase 1).
+      ExternTypeNames: Dictionary<string, ClrType>
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -141,6 +146,7 @@ module FunctionCtx =
             (importedUnionCases: Lyric.Emitter.Records.ImportedUnionCaseLookup)
             (importedFuncs: Lyric.Emitter.Records.ImportedFuncTable)
             (importedDistinctTypes: Lyric.Emitter.Records.ImportedDistinctTypeTable)
+            (externTypeNames: Dictionary<string, ClrType>)
             (isInstance: bool)
             (selfType: ClrType option)
             (programType: TypeBuilder)
@@ -173,6 +179,7 @@ module FunctionCtx =
           ImportedUnionCases  = importedUnionCases
           ImportedFuncs       = importedFuncs
           ImportedDistinctTypes = importedDistinctTypes
+          ExternTypeNames = externTypeNames
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -1251,6 +1258,89 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Call, info.Method)
         if info.Method.ReturnType = typeof<System.Void> then typeof<System.Void>
         else info.Method.ReturnType
+
+    // ---- C4 phase 1: strict-match auto-FFI on extern-type static methods.
+    // ---- For `ExternTypeName.method(args)` where `ExternTypeName` is
+    // ---- registered as a Lyric extern type and no explicit
+    // ---- `@externTarget` covers it, search the CLR type's static
+    // ---- methods and resolve when exactly one overload matches by
+    // ---- (name | PascalCase, arg-arity, exact-type-match).  Ambiguous
+    // ---- calls fall through and surface as a normal "no impl" error.
+    | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [head] } }, methodName) }, args)
+        when ctx.ExternTypeNames.ContainsKey head ->
+        let recvTy = ctx.ExternTypeNames.[head]
+        // Emit args first so we know their CLR types for matching.
+        let argLocals =
+            args
+            |> List.map (fun a ->
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let argTy = emitExpr ctx payload
+                let lb = FunctionCtx.defineLocal ctx ("__ext_arg") argTy
+                il.Emit(OpCodes.Stloc, lb)
+                lb, argTy)
+        let argTys = argLocals |> List.map snd |> List.toArray
+        // Try `methodName` and PascalCase-`methodName`; require exactly
+        // one viable overload by exact type match for the strict-phase
+        // bootstrap.  Ambiguous matches fall through with no resolution.
+        let candidatesForName (n: string) =
+            recvTy.GetMethods()
+            |> Array.filter (fun m ->
+                m.Name = n
+                && m.IsStatic
+                && m.GetParameters().Length = argTys.Length)
+        let matches (m: System.Reflection.MethodInfo) (cmp: ClrType -> ClrType -> bool) =
+            let pars = m.GetParameters()
+            let mutable ok = true
+            for i in 0 .. argTys.Length - 1 do
+                if ok && not (cmp pars.[i].ParameterType argTys.[i]) then
+                    ok <- false
+            ok
+        let pickStrict (cands: System.Reflection.MethodInfo array) =
+            // Strict: prefer exact match; if exactly one assignable,
+            // accept that too (covers Int32 → object boxing, etc.).
+            let exact =
+                cands
+                |> Array.filter (fun m -> matches m (fun p a -> p = a))
+            match exact with
+            | [| m |] -> Some m
+            | _ ->
+                let assignable =
+                    cands
+                    |> Array.filter (fun m -> matches m (fun p a -> p.IsAssignableFrom a))
+                match assignable with
+                | [| m |] -> Some m
+                | _ -> None
+        let pasc = capitalizeFirst methodName
+        let resolved =
+            match pickStrict (candidatesForName methodName) with
+            | Some m -> Some m
+            | None when pasc <> methodName ->
+                pickStrict (candidatesForName pasc)
+            | None -> None
+        match resolved with
+        | Some mi ->
+            // Re-load each arg from its temp local; if the param
+            // expects an obj and the arg is a value type, box.
+            let pars = mi.GetParameters()
+            argLocals
+            |> List.iteri (fun i (lb, argTy) ->
+                il.Emit(OpCodes.Ldloc, lb)
+                let pt = pars.[i].ParameterType
+                if pt = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy))
+            il.Emit(OpCodes.Call, mi)
+            if mi.ReturnType = typeof<System.Void> then typeof<System.Void>
+            else mi.ReturnType
+        | None ->
+            // Unresolved — pop everything we already emitted for args
+            // by surfacing a structured diagnostic instead of leaving
+            // the stack in an inconsistent state.
+            codegenErr ctx "E0004"
+                (sprintf "auto-FFI: no unique static method '%s' on %s matching the supplied arg types"
+                    methodName recvTy.FullName)
+                e.Span
 
     // ---- method-style call (callvirt on interface or class method) ----
 
@@ -2781,7 +2871,7 @@ and private emitLambdaWith
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
-            ctx.ImportedFuncs ctx.ImportedDistinctTypes
+            ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
             false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's

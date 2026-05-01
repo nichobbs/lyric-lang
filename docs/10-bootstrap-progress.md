@@ -1028,3 +1028,59 @@ Emitter 309, Lsp 5.
 
 **Bootstrap-grade scope** (option (c) follow-ups): function calls
 in bounds, `if`-in-bounds, float literals, mixed-width arithmetic.
+
+
+### D-progress-026: C4 phase 1 — strict-match auto-FFI
+*claude/define-language-spec-5DbnS branch.*  Phase 1 of C4's phased
+auto-FFI rollout.  When the user calls `ExternTypeName.method(args)`
+on a Lyric extern type and no explicit `@externTarget` is registered,
+the codegen now searches the underlying CLR type's static methods
+and resolves when exactly one viable overload matches by `(name |
+PascalCase, arg-arity, arg-types)` — no per-method declaration
+needed.
+
+```lyric
+extern type Path = "System.IO.Path"
+extern type Math = "System.Math"
+
+func main(): Unit {
+  println(Path.Combine("/tmp", "x.txt"))   // /tmp/x.txt
+  println(Math.max(3, 7))                  // 7  (lowercase → PascalCase Max)
+}
+```
+
+**Resolver.**  For `Type.method(args)`:
+1. Match candidates by `(name = methodName, IsStatic, arity = args.Length)`.
+2. Prefer exactly-one exact-type-match candidate.
+3. Otherwise prefer exactly-one assignable-type-match candidate.
+4. Failing both, retry with PascalCase-cased method name
+   (`max` → `Max`, `combine` → `Combine`).
+5. If nothing unique resolves, surface a structured E0004
+   diagnostic listing the receiver's full name; explicit
+   `@externTarget` is the documented escape hatch.
+
+**Wire-up.**  New `ExternTypeNames : Dictionary<string, ClrType>`
+threaded into `FunctionCtx`, populated in `emitAssembly` from both
+local `extern type` declarations and imported extern types from
+stdlib artifacts.  The dispatch branch sits after the imported-funcs
+UFCS path so explicit `@externTarget` declarations still take
+precedence — backward-compat preserved.
+
+4 new tests in `compiler/tests/Lyric.Emitter.Tests/AutoFfiTests.fs`:
+- `auto_ffi_path_combine` — `Path.Combine(string, string)`
+- `auto_ffi_math_max_pascalcase` — lowercase resolves via PascalCase
+- `auto_ffi_path_combine_three_args` — separate overload by arity
+- `auto_ffi_void_return` — `Console.WriteLine` (void path)
+
+All 670 tests pass: Lexer 70, Parser 182, TypeChecker 100,
+Emitter 313, Lsp 5.
+
+**Bootstrap-grade scope** (phase 2/3 follow-ups in `docs/12-todo-plan.md`):
+- Score-based matching with principled coercion rules (Int↔int/long/
+  double, String↔string, records↔class refs, unboxing/boxing,
+  nullable conversions) — picks lowest-cost match when multiple
+  overloads are viable.
+- Special shapes: out-params (already in via D-progress-014), by-
+  ref structs, `Span<T>` / `ReadOnlySpan<T>`, default args,
+  `params T[]`, extension methods, explicit interface
+  implementations.
