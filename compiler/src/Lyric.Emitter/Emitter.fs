@@ -1067,11 +1067,15 @@ let private emitContractCheck
 // ---------------------------------------------------------------------------
 
 let private findClrType (qualifiedName: string) : System.Type option =
-    // Force-touch one type from `Lyric.Stdlib` so the assembly is in
-    // the AppDomain before we walk it — without this, the FFI resolver
-    // can't find host-side wrapper types like `Lyric.Stdlib.IntList`
-    // until some other code path has already loaded the assembly.
+    // Force-touch a few well-known assemblies so they're loaded into
+    // the AppDomain before we walk it.  `Lyric.Stdlib` carries the
+    // host-side wrapper types (IntList, MapHelpers, etc.); the others
+    // back common stdlib modules (`Std.Json`, `Std.Regex`, `Std.Time`)
+    // and aren't auto-loaded by the BCL on demand.
     let _ = typeof<Lyric.Stdlib.Console>
+    let _ = typeof<System.Text.Json.JsonDocument>
+    let _ = typeof<System.Text.RegularExpressions.Regex>
+    let _ = typeof<System.Net.HttpListener>
     let direct = System.Type.GetType qualifiedName
     match Option.ofObj direct with
     | Some t -> Some t
@@ -1103,12 +1107,14 @@ let private paramsExactMatch
                 ok <- false
         ok
 
-/// Result of `@externTarget` lookup.  Constructors live on a separate
-/// reflection API (`ConstructorInfo`) from regular methods, so we can't
-/// fold them into the same `MethodInfo`-shaped return.
+/// Result of `@externTarget` lookup.  Constructors and static fields
+/// live on different reflection APIs (`ConstructorInfo`, `FieldInfo`)
+/// from regular methods, so we can't fold them into a single
+/// `MethodInfo`-shaped return.
 type private ExternBclMember =
     | EBMMethod of MethodInfo
     | EBMCtor   of ConstructorInfo
+    | EBMField  of FieldInfo
 
 let private resolveExternTarget
         (target: string)
@@ -1163,44 +1169,87 @@ let private resolveExternTarget
         let candidates name pred =
             methods
             |> Array.filter (fun m -> m.Name = name && pred m)
+        // Order matters: an exact instance-method match must beat the
+        // arity-only static fallback.  Otherwise a Lyric extern like
+        // `func isMatch(r: in Regex, input: in String): Bool` (arity
+        // 2, types `[Regex, string]`) would resolve to the static
+        // `Regex.IsMatch(string, string)` because both are arity 2,
+        // and pass `r` as a string — silently returning the wrong
+        // boolean.
         let staticTyped =
             candidates memberName isStatic
             |> Array.tryFind (fun m -> paramsExactMatch m paramTypes)
+        let instanceTyped () =
+            if arity >= 1 then
+                candidates memberName isInstance
+                |> Array.tryFind (fun m ->
+                    paramsExactMatch m (Array.skip 1 paramTypes))
+            else None
+        let staticArity () =
+            candidates memberName isStatic
+            |> Array.tryFind (fun m -> m.GetParameters().Length = arity)
+        let instanceArity () =
+            if arity >= 1 then
+                candidates memberName isInstance
+                |> Array.tryFind (fun m -> m.GetParameters().Length = arity - 1)
+            else None
+        // BCL methods often surface optional trailing params via
+        // `HasDefaultValue`; e.g. `JsonDocument.Parse(string, opts =
+        // default)` is reachable as 1-arg from C#.  Match those when
+        // an exact-arity hit is missing.
+        let staticArityWithDefaults () =
+            candidates memberName isStatic
+            |> Array.tryFind (fun m ->
+                let ps = m.GetParameters()
+                ps.Length > arity
+                && ps |> Array.skip arity
+                      |> Array.forall (fun p -> p.HasDefaultValue))
+        let instanceArityWithDefaults () =
+            if arity >= 1 then
+                candidates memberName isInstance
+                |> Array.tryFind (fun m ->
+                    let ps = m.GetParameters()
+                    ps.Length > arity - 1
+                    && ps |> Array.skip (arity - 1)
+                          |> Array.forall (fun p -> p.HasDefaultValue))
+            else None
+        let propGetter () =
+            let prop = t.GetProperty memberName
+            match Option.ofObj prop with
+            | Some p when p.CanRead -> Option.ofObj (p.GetGetMethod())
+            | _ -> None
         let mi =
             match staticTyped with
             | Some m -> Some m
             | None ->
-                let staticArity =
-                    candidates memberName isStatic
-                    |> Array.tryFind (fun m -> m.GetParameters().Length = arity)
-                match staticArity with
+                match instanceTyped () with
                 | Some m -> Some m
-                | None when arity >= 1 ->
-                    let instanceTyped =
-                        candidates memberName isInstance
-                        |> Array.tryFind (fun m ->
-                            paramsExactMatch m (Array.skip 1 paramTypes))
-                    match instanceTyped with
+                | None ->
+                    match staticArity () with
                     | Some m -> Some m
                     | None ->
-                        let instanceArity =
-                            candidates memberName isInstance
-                            |> Array.tryFind (fun m -> m.GetParameters().Length = arity - 1)
-                        match instanceArity with
+                        match instanceArity () with
                         | Some m -> Some m
                         | None ->
-                            let prop = t.GetProperty memberName
-                            match Option.ofObj prop with
-                            | Some p when p.CanRead ->
-                                Option.ofObj (p.GetGetMethod())
-                            | _ -> None
-                | None ->
-                    let prop = t.GetProperty memberName
-                    match Option.ofObj prop with
-                    | Some p when p.CanRead ->
-                        Option.ofObj (p.GetGetMethod())
-                    | _ -> None
-        mi |> Option.map EBMMethod
+                            match staticArityWithDefaults () with
+                            | Some m -> Some m
+                            | None ->
+                                match instanceArityWithDefaults () with
+                                | Some m -> Some m
+                                | None   -> propGetter ()
+        match mi with
+        | Some m -> Some (EBMMethod m)
+        | None ->
+            // Static field fallback: `System.TimeSpan.Zero`,
+            // `System.String.Empty` etc.  Used when neither a method
+            // nor a property accessor with the given name exists.
+            let f =
+                t.GetField(memberName,
+                    System.Reflection.BindingFlags.Public
+                    ||| System.Reflection.BindingFlags.Static)
+            match Option.ofObj f with
+            | Some f -> Some (EBMField f)
+            | None   -> None
 
 let private emitExternCall
         (il: ILGenerator)
@@ -1286,11 +1335,78 @@ let private emitExternCall
             let closedTy = openClosedClr (unwrapDeclaring c.DeclaringType)
             EBMCtor (System.Reflection.Emit.TypeBuilder.GetConstructor(closedTy, c))
         | other -> other
-    // Push every Lyric parameter onto the stack in declaration order.
-    paramList
-    |> List.iteri (fun i _ -> il.Emit(OpCodes.Ldarg, i))
+    // Static-field externs don't take any params — skip the arg
+    // push so we don't blow the stack discipline.
+    let isFieldExtern =
+        match closedResolved with
+        | EBMField _ -> true
+        | _          -> false
+    if not isFieldExtern then
+        // For instance methods on value-type receivers, the CLR needs
+        // a managed pointer (`T&`) for the `this` slot.  Use `Ldarga`
+        // for arg 0 in that case (later `call` instead of `callvirt`
+        // is selected below).
+        let isValueRecv =
+            match closedResolved with
+            | EBMMethod m when not m.IsStatic ->
+                let dt = m.DeclaringType
+                match Option.ofObj dt with
+                | Some d -> d.IsValueType
+                | None   -> false
+            | _ -> false
+        paramList
+        |> List.iteri (fun i _ ->
+            if i = 0 && isValueRecv then il.Emit(OpCodes.Ldarga, i)
+            else il.Emit(OpCodes.Ldarg, i))
+    // Push default values for any trailing BCL params that the user
+    // didn't supply.  Used when the resolver matched a method whose
+    // declared arity exceeds Lyric's call-site arity but the extras
+    // have `HasDefaultValue` (e.g. `JsonDocument.Parse(string, opts =
+    // default)`).
+    let emitDefault (pt: System.Type) (rawDefault: obj | null) : unit =
+        match Option.ofObj rawDefault with
+        | None when pt.IsValueType ->
+            let tmp = il.DeclareLocal(pt)
+            il.Emit(OpCodes.Ldloca, tmp)
+            il.Emit(OpCodes.Initobj, pt)
+            il.Emit(OpCodes.Ldloc, tmp)
+        | None ->
+            il.Emit(OpCodes.Ldnull)
+        | Some _ when pt = typeof<bool> ->
+            let v : bool = unbox rawDefault
+            il.Emit(OpCodes.Ldc_I4, if v then 1 else 0)
+        | Some _ when pt.IsEnum || pt = typeof<int> ->
+            il.Emit(OpCodes.Ldc_I4, unbox<int> rawDefault)
+        | Some _ when pt = typeof<string> ->
+            il.Emit(OpCodes.Ldstr, unbox<string> rawDefault)
+        | Some _ ->
+            // Unknown literal default — fall back to default(T).
+            if pt.IsValueType then
+                let tmp = il.DeclareLocal(pt)
+                il.Emit(OpCodes.Ldloca, tmp)
+                il.Emit(OpCodes.Initobj, pt)
+                il.Emit(OpCodes.Ldloc, tmp)
+            else il.Emit(OpCodes.Ldnull)
+    let pushTrailingDefaults (declaredArity: int) (params': ParameterInfo array) (suppliedSoFar: int) =
+        if declaredArity > suppliedSoFar then
+            for i in suppliedSoFar .. declaredArity - 1 do
+                let p = params'.[i]
+                if not p.HasDefaultValue then
+                    failwithf "FFI: parameter '%s' on `@externTarget(\"%s\")` has no default value" p.Name target
+                emitDefault p.ParameterType p.DefaultValue
+    let lyricArity = paramList.Length
+    match closedResolved with
+    | EBMMethod m ->
+        let declared = m.GetParameters()
+        let supplied = if m.IsStatic then lyricArity else lyricArity - 1
+        pushTrailingDefaults declared.Length declared supplied
+    | EBMCtor c ->
+        let declared = c.GetParameters()
+        pushTrailingDefaults declared.Length declared lyricArity
+    | EBMField _ -> ()
     // Constructors get `newobj`; static methods + property getters use
-    // `call`; non-static instance methods use `callvirt`.
+    // `call`; non-static instance methods use `callvirt`; static fields
+    // emit `Ldsfld`.
     let pushedTy =
         match closedResolved with
         | EBMCtor c ->
@@ -1298,8 +1414,20 @@ let private emitExternCall
             c.DeclaringType
         | EBMMethod m ->
             if m.IsStatic then il.Emit(OpCodes.Call, m)
-            else il.Emit(OpCodes.Callvirt, m)
+            else
+                // Value-type instance methods — `Call` against a
+                // managed pointer (`Ldarga` was emitted above).
+                // Reference-type instance methods — `Callvirt`.
+                let recvIsValueType =
+                    match Option.ofObj m.DeclaringType with
+                    | Some d -> d.IsValueType
+                    | None   -> false
+                if recvIsValueType then il.Emit(OpCodes.Call, m)
+                else il.Emit(OpCodes.Callvirt, m)
             m.ReturnType
+        | EBMField f ->
+            il.Emit(OpCodes.Ldsfld, f)
+            f.FieldType
     // Stash the result + branch to exit, mirroring routeReturn's
     // shape but specialised so we don't need to thread that helper
     // through.
