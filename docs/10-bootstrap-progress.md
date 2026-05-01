@@ -742,3 +742,60 @@ TypeChecker 90, Emitter 294, Lsp 5).
 - No workspace/configuration / file-watching support.
 - No status reporting back to the client (no `window/showMessage`
   on stdlib-resolve failures).
+
+
+### D-progress-018: `import X as Y` alias semantics
+*claude/stdlib-ergonomics branch.*  Both flavours of alias documented in
+the language reference now work end-to-end:
+
+```lyric
+import Std.Collections.{newList as mkList, newMap as mkMap}
+import Std.Iter as I
+
+func main(): Unit {
+  val xs: List[Int] = mkList()                  // selector alias
+  xs.add(7)
+  val doubled = I.map(xs, { n: Int -> n * 2 }) // package alias
+  for y in doubled { println(y) }
+}
+```
+
+**Selector alias** (`import X.{foo as bar}`): handled in
+`Emitter.fs:resolveStdlibImports`.  Each aliased item is cloned as an
+extra `IFunc` Item with the alias name (and an empty body, since
+imported function bodies aren't re-checked) and added to the
+`importedItems` list passed to `Checker.checkWithImports`.  The
+type-checker then registers the alias name in its signature map and
+symbol table.  The emitter mirrors the rename into `importedFuncTable`
+under both the bare alias and `<alias>/<arity>` keys.
+
+**Package alias** (`import X as A`): handled by a new post-parse AST
+transform `Lyric.Parser.AliasRewriter`.  After parsing, every `EPath`,
+`EMember`, `TRef`, `TGenericApp`, `ConstraintRef`, and pattern-position
+`ModulePath` whose head segment matches a declared alias is collapsed
+to drop that head:
+
+- `Coll.foo` (`EMember (EPath ["Coll"], "foo")`) → `EPath ["foo"]`
+- `Coll.List[Int]` (`TGenericApp { Head = ["Coll"; "List"]; ... }`) →
+  `TGenericApp { Head = ["List"]; ... }`
+- `case Coll.Foo(...)` → `case Foo(...)`
+
+Once rewritten, the rest of the pipeline (type checker, codegen) is
+alias-blind.  This avoids duplicating the imported-call generic-
+inference logic and works uniformly for type, expression, and pattern
+positions.
+
+**Bootstrap-grade scope** (D-progress-018):
+- Aliases ADD names; they don't remove the originals.  `import X as A`
+  exposes `A.foo` *and* `foo`; `import X.{foo as bar}` exposes `bar`
+  *and* `foo`.  Tightening to the strict-rename behaviour is a follow-
+  up.
+- The `AliasRewriter` is scope-blind — a local variable named `Coll`
+  after `import X as Coll` would still get its references rewritten.
+  Users should pick alias names that don't shadow locals.
+- Aliases on non-`Std.*` user packages aren't yet wired through the
+  emitter's package resolver, so this only meaningfully fires for
+  stdlib imports today.
+
+5 end-to-end tests in `AliasTests.fs`.  All 646 tests across all five
+suites pass (Lexer 70, Parser 182, TypeChecker 90, Emitter 299, Lsp 5).

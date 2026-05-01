@@ -4045,6 +4045,11 @@ let parse (source: string) : ParseResult =
               |> hoistInlineMethods
               |> Stubbable.synthesizeItems
           Span                 = joinSpans startSpan endSpan }
+    // Package-level `import X as A` aliases are rewritten as a
+    // post-parse AST transform — `A.foo` → `foo`, `A.Type[T]` → `Type[T]`,
+    // etc. — so subsequent passes (type checker, emitter) don't need
+    // alias awareness.
+    let file = AliasRewriter.rewriteFile file
 
     { File        = file
       Diagnostics = List.ofSeq diags }

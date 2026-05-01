@@ -8,6 +8,7 @@
     <Compile Include="Ast.fs" />
     <Compile Include="Cursor.fs" />
     <Compile Include="Stubbable.fs" />
+    <Compile Include="AliasRewriter.fs" />
     <Compile Include="Parser.fs" />
   </ItemGroup>
 

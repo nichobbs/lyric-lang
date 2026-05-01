@@ -39,26 +39,14 @@ and incremental sync are Phase 3 follow-ups.
 
 ## Band B — short-term follow-ups (next 2–3 sessions)
 
-### B1. `import X as Y` alias
+### B1. ~~`import X as Y` alias~~ — shipped
 
-Parsed at `compiler/src/Lyric.Parser/Parser.fs:376` (`Cursor.tryEatKeyword
-KwAs`) and `Ast.ImportDecl` / `Ast.ImportItem` carry an `Alias: string
-option`, but the type checker and emitter never read it.  Effect today:
-the alias parses cleanly and is silently dropped — `import Std.Core as
-Core` does not introduce `Core.foo` into scope.
+Both flavours work:
+- `import Std.Collections.{newList as mkList}` — selector alias.
+- `import Std.Collections as Coll` — package alias (`Coll.foo`,
+  `Coll.Type[T]`).
 
-To wire through:
-
-- Type checker resolver: when a `use`-style alias is present, register
-  the imported symbol/package under the alias name as well as (or
-  instead of, depending on selector) its source name.
-- Emitter: same plumbing for direct calls and for `EPath` head-segment
-  lookup.
-- Tests: add a smoke that `import Std.Collections as Coll` then
-  `val xs: Coll.List[Int] = Coll.newList()` works.
-
-This isn't urgent — every existing program just uses bare names — but
-the documented language reference promises it works, so it's a real bug.
+See `docs/10-bootstrap-progress.md` D-progress-018.
 
 ### B2. `@projectionBoundary` cycle handling
 
