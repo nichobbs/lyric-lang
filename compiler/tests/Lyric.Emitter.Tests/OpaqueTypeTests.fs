@@ -304,4 +304,75 @@ func main(): Unit {
             // opaque's field directly.
             Expect.equal (stdout.TrimEnd()) "NYC\nUS"
                 "@projectionBoundary skips recursive projection"
+
+        // D026 / B2: the compiler must reject a projectable cycle
+        // unless at least one edge is marked `@projectionBoundary`.
+        // Without the marker the recursive view derivation would
+        // diverge; the bootstrap surfaces a structured T0092 error
+        // pointing at the cycle path.
+        testCase "[projectable cycle without boundary is rejected]" <| fun () ->
+            let r, _, _, exitCode =
+                compileAndRun "ProjCycA" """
+package ProjCycA
+
+opaque type Team @projectable {
+  id: Int
+  member: User
+}
+
+opaque type User @projectable {
+  id: Int
+  team: Team
+}
+
+func main(): Unit {}
+"""
+            Expect.notEqual exitCode 0 "expected build failure"
+            let cycleErr =
+                r.Diagnostics
+                |> List.exists (fun d ->
+                    d.Code = "T0092"
+                    && d.Message.Contains "projectable cycle"
+                    && d.Message.Contains "Team"
+                    && d.Message.Contains "User")
+            Expect.isTrue cycleErr "T0092 names the cyclic types"
+
+        testCase "[projectable cycle on self-loop is rejected]" <| fun () ->
+            let r, _, _, exitCode =
+                compileAndRun "ProjCycB" """
+package ProjCycB
+
+opaque type Node @projectable {
+  id: Int
+  next: Node
+}
+
+func main(): Unit {}
+"""
+            Expect.notEqual exitCode 0 "expected build failure"
+            let cycleErr =
+                r.Diagnostics
+                |> List.exists (fun d -> d.Code = "T0092")
+            Expect.isTrue cycleErr "T0092 fires on self-loop"
+
+        testCase "[projectable cycle broken by @projectionBoundary builds]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "ProjCycC" """
+package ProjCycC
+
+opaque type Team @projectable {
+  id: Int
+  member: User @projectionBoundary(asId)
+}
+
+opaque type User @projectable {
+  id: Int
+  team: Team
+}
+
+func main(): Unit { println("ok") }
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "ok"
+                "compile + run succeeds when boundary breaks the cycle"
     ]

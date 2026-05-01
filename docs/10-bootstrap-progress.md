@@ -799,3 +799,40 @@ positions.
 
 5 end-to-end tests in `AliasTests.fs`.  All 646 tests across all five
 suites pass (Lexer 70, Parser 182, TypeChecker 90, Emitter 299, Lsp 5).
+
+
+### D-progress-019: `@projectionBoundary` cycle detection (D026)
+*claude/stdlib-ergonomics branch.*  D026 mandates that a `@projectable`
+graph cycle requires an explicit `@projectionBoundary` marker on at
+least one edge.  Without it the recursive view derivation diverges.
+
+**Detection.**  Before the projectable-view passes run, the emitter
+builds a directed graph of projectable opaque types where edges are
+non-`@projectionBoundary` fields whose source type mentions another
+projectable.  A DFS finds back-edges; the first back-edge produces a
+T0092 diagnostic that names the cycle path:
+
+```
+T0092 error [12:3]: projectable cycle detected (Team -> User -> Team);
+mark at least one field with `@projectionBoundary` to break the cycle
+```
+
+Self-loops are caught the same way (`Node -> Node`).
+
+**`mentionedProjectables`** walks compound type expressions
+(`slice[T]`, `T?`, `(A, B)`, `(P) -> R`, `Foo[T]`) so a field declared
+`members: slice[User]` participates in the graph.
+
+**Bootstrap-grade scope** (D026 follow-up): `@projectionBoundary(asId)`
+still leaves the source opaque type in the view rather than
+substituting the source's id-field type per the language reference's
+§7.3.  The annotation breaks the cycle, but the view's field type
+isn't the underlying ID — it's the opaque itself.  Tracked in
+`docs/12-todo-plan.md` Band B2 follow-up.
+
+3 new tests in `OpaqueTypeTests.fs`:
+- `projectable cycle without boundary is rejected`
+- `projectable cycle on self-loop is rejected`
+- `projectable cycle broken by @projectionBoundary builds`
+
+All 649 tests across all five suites pass.

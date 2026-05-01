@@ -48,12 +48,17 @@ Both flavours work:
 
 See `docs/10-bootstrap-progress.md` D-progress-018.
 
-### B2. `@projectionBoundary` cycle handling
+### B2. ~~`@projectionBoundary` cycle handling~~ — shipped
 
-D-progress-002.  Recursive view derivation lands in PR #21 but
-`@projectionBoundary(asId)` is parsed and ignored.  Cycle detection at
-type-check time is also missing, so a recursive opaque-without-boundary
-crashes the compiler instead of erroring.
+Cycle detection lands in this branch.  A `@projectable` cycle without
+an `@projectionBoundary` marker is now a structured T0092 diagnostic
+naming the cycle path.  See `docs/10-bootstrap-progress.md`
+D-progress-019.
+
+The full `asId` rename semantic from §7.3 / D026 (project as the
+underlying ID type) is still **bootstrap-grade**: today
+`@projectionBoundary` keeps the source opaque type in the view rather
+than substituting the source's id field type.  Promoted to follow-up.
 
 ### B3. `out`/`inout` on record fields and array elements
 

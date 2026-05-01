@@ -2064,6 +2064,100 @@ let private emitAssembly
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
 
+        // Projectable cycle detection (D026).  Build a directed graph
+        // of projectable opaque types, where an edge `A -> B` means
+        // "type A has a non-`@projectionBoundary` field referencing
+        // projectable B".  Cycles in that graph would cause infinite
+        // recursive view projection, so the language reference
+        // requires the user to mark at least one edge of every cycle
+        // with `@projectionBoundary`.  We DFS the graph and report a
+        // structured error pointing at the cycle.
+        let projectableNames =
+            projectableOpaques
+            |> Seq.map (fun (od, _) -> od.Name)
+            |> Set.ofSeq
+        let rec mentionedProjectables (te: TypeExpr) : string list =
+            match te.Kind with
+            | TRef p ->
+                match p.Segments with
+                | [name] when Set.contains name projectableNames -> [name]
+                | _ -> []
+            | TGenericApp (head, args) ->
+                let headHits =
+                    match head.Segments with
+                    | [name] when Set.contains name projectableNames -> [name]
+                    | _ -> []
+                let argHits =
+                    args
+                    |> List.collect (fun a ->
+                        match a with
+                        | TAType t -> mentionedProjectables t
+                        | TAValue _ -> [])
+                headHits @ argHits
+            | TArray (_, elem)
+            | TSlice elem
+            | TNullable elem
+            | TParen elem -> mentionedProjectables elem
+            | TTuple ts -> ts |> List.collect mentionedProjectables
+            | TFunction (ps, r) ->
+                (ps |> List.collect mentionedProjectables)
+                @ mentionedProjectables r
+            | _ -> []
+        let projectableEdges =
+            projectableOpaques
+            |> Seq.map (fun (od, _) ->
+                let outgoing =
+                    od.Members
+                    |> List.collect (fun m ->
+                        match m with
+                        | OMField fd when not (isProjectionBoundaryField fd) ->
+                            mentionedProjectables fd.Type
+                            |> List.map (fun target -> target, fd)
+                        | _ -> [])
+                od.Name, outgoing)
+            |> Map.ofSeq
+        let mutable projectableCycleErr : Diagnostic option = None
+        let visiting = HashSet<string>()
+        let visited  = HashSet<string>()
+        let rec dfs (path: string list) (node: string) =
+            if projectableCycleErr.IsSome then ()
+            elif visiting.Contains node then
+                // Found a cycle.  Pick the offending field span on
+                // the back-edge (the field that points from `path
+                // head` to `node`, closing the cycle).
+                let cycleSpan =
+                    match Map.tryFind (List.head path) projectableEdges with
+                    | Some edges ->
+                        edges
+                        |> List.tryFind (fun (target, _) -> target = node)
+                        |> Option.map (fun (_, fd) -> fd.Span)
+                        |> Option.defaultValue (List.head path |> fun _ -> Span.make Position.initial Position.initial)
+                    | None -> Span.make Position.initial Position.initial
+                let cyclePath =
+                    let prefix = List.rev path |> List.skipWhile ((<>) node)
+                    String.concat " -> " (prefix @ [node])
+                projectableCycleErr <-
+                    Some (err "T0092"
+                            (sprintf
+                                "projectable cycle detected (%s); mark at least one field with `@projectionBoundary` to break the cycle"
+                                cyclePath)
+                            cycleSpan)
+            elif visited.Contains node then ()
+            else
+                visiting.Add node |> ignore
+                match Map.tryFind node projectableEdges with
+                | Some edges ->
+                    for (target, _) in edges do
+                        dfs (node :: path) target
+                | None -> ()
+                visiting.Remove node |> ignore
+                visited.Add node |> ignore
+        for (od, _) in projectableOpaques do
+            dfs [] od.Name
+        match projectableCycleErr with
+        | Some d -> codegenDiags.Add d
+        | None -> ()
+
         // Projectable opaque types — synthesise `<Name>View` exposed
         // record + a `toView()` instance method.  Three staged passes
         // so cross-referencing projectables can each see the other's
