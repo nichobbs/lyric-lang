@@ -2761,19 +2761,57 @@ let private emitAssembly
                     programTy symbols codegenDiags
 
         // Pass B.5 — emit impl-method bodies as instance methods.
+        // Async impl methods route through the SM path the same way
+        // free-standing async funcs do (D-progress-038), with one
+        // adjustment: `self` becomes the SM's first param-field, and
+        // the kickoff (which runs as the user's impl method) copies
+        // `Ldarg.0` (this = the record) into `sm.self` before
+        // calling `builder.Start`.  Inside MoveNext, `ESelf` resolves
+        // via `SmFields["self"]` → `Ldarg.0; Ldfld <self>`.
         for (fd, mb, sg) in implMethods do
-            // The self-type is whatever record this method was
-            // attached to; recover it via the method's declaring
-            // type (which we just set in Pass A.5).
             let selfTy = mb.DeclaringType
-            emitFunctionBody
-                mb None None fd sg lookup
-                methodTable funcSigsTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable projectableTable
-                importedRecordTable importedUnionTable importedUnionCaseLookup
-                importedFuncTable importedDistinctTypeTable externTypeNames
-                true
-                (Option.ofObj selfTy) programTy symbols codegenDiags
+            let selfTyNonNull : System.Type =
+                match Option.ofObj selfTy with
+                | Some t -> t
+                | None   -> typeof<obj>
+            let usePhaseA =
+                sg.IsAsync && AsyncStateMachine.isPhaseAEligible fd
+                && (not (isNull selfTy))
+            if usePhaseA then
+                let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+                let paramSpecs =
+                    ("self", selfTyNonNull)
+                    :: (sg.Params
+                        |> List.map (fun p ->
+                            p.Name, paramClrType lookup Map.empty p))
+                smCounter <- smCounter + 1
+                let sm =
+                    AsyncStateMachine.defineStateMachine
+                        ctx.Module nsName ("self_" + fd.Name) smCounter
+                        bareReturn paramSpecs []
+                // Kickoff lives on the user's impl method (an instance
+                // method); arg 0 is `this`, args 1..N are user params.
+                let argIndices = paramSpecs |> List.mapi (fun i _ -> i)
+                AsyncStateMachine.emitKickoff mb sm argIndices
+                AsyncStateMachine.emitSetStateMachine sm
+                emitFunctionBody
+                    sm.MoveNext (Some sm) None fd sg lookup
+                    methodTable funcSigsTable recordTable enumTable enumCases
+                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    importedRecordTable importedUnionTable importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable externTypeNames
+                    false None
+                    programTy symbols codegenDiags
+                smTypesToFinalize.Add sm.Type
+            else
+                emitFunctionBody
+                    mb None None fd sg lookup
+                    methodTable funcSigsTable recordTable enumTable enumCases
+                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    importedRecordTable importedUnionTable importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable externTypeNames
+                    true
+                    (Option.ofObj selfTy) programTy symbols codegenDiags
 
         let lyricMainOpt =
             if isLibrary then None

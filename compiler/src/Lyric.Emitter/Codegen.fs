@@ -1041,6 +1041,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     // ---- self ---------------------------------------------------------
 
+    // Async state-machine MoveNext: `self` lives in the SM's
+    // `self` field rather than at `Ldarg.0` (which is the SM
+    // instance, not the record).  Check `SmFields` first so this
+    // case wins over the regular impl-method `IsInstance` path.
+    | ESelf when ctx.SmFields.ContainsKey "self" ->
+        let f = ctx.SmFields.["self"]
+        il.Emit(OpCodes.Ldarg_0)
+        il.Emit(OpCodes.Ldfld, f)
+        f.FieldType
+
     | ESelf when ctx.IsInstance ->
         il.Emit(OpCodes.Ldarg_0)
         match ctx.SelfType with

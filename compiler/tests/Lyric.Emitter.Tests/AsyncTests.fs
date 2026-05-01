@@ -225,6 +225,26 @@ func main(): Unit {
 """,
     "one\ntwo\nother"
 
+    "phaseB_async_impl_method",
+    // Async impl method (Phase A on an instance method).  The
+    // kickoff lives on the user's record (instance method), the
+    // SM has a `self` field that holds the record reference,
+    // `ESelf` resolves via `SmFields["self"]` → `Ldarg.0; Ldfld
+    // <self>` inside MoveNext.  Validates the impl-method route
+    // through the SM path (D-progress-038).
+    """
+package E14
+record IntCounter { v: Int }
+interface ValueGetter { async func getValue(): Int }
+impl ValueGetter for IntCounter {
+  async func getValue(): Int = self.v + 1
+}
+func main(): Unit {
+  println(await IntCounter(v = 41).getValue())
+}
+""",
+    "42"
+
     "phaseB_await_in_while_loop",
     // Phase B+: `await` inside a `while` body.  The resume
     // label sits inside the loop body; state-dispatch jumps

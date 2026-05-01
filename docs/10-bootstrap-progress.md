@@ -1696,6 +1696,61 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-038: C2 Phase B++ — async impl methods (instance methods on records)
+*claude/c2-async-implementation-ZGU95 branch.*  Builds on
+D-progress-037 to route async impl methods through the
+state-machine path.  An `async func` declared inside an `impl
+TraitName for Record` block now lowers to a kickoff stub on the
+record (instance method) plus a sibling SM class whose `MoveNext`
+runs the body — same shape as free-standing async funcs, with
+one adjustment.
+
+**Adjustment for instance methods.**  The kickoff is an instance
+method on the user's record, so `Ldarg.0` is the record reference
+(the implicit `this`).  The SM doesn't have direct access to
+`this` in `MoveNext`, so the kickoff copies `Ldarg.0` into a
+prepended `self` field on the SM (`paramSpecs = ("self",
+recordTy) :: user_param_specs`).  Inside `MoveNext`, the body's
+`ESelf` references resolve via a new `SmFields` lookup
+(`SmFields["self"]`) that emits `Ldarg.0; Ldfld <self>`.
+
+**Closed-generic-on-TypeBuilder fix.**  Async impl methods can
+return Lyric records / unions still under construction (e.g.
+`AsyncTaskMethodBuilder<MaybeBalance>`); calling `GetMethod` /
+`GetProperty` on the resulting `TypeBuilderInstantiation` raises
+`NotSupportedException`.  `builderMember`, `builderCreate`, and
+`builderStart` now route through `TypeBuilder.GetMethod` for
+generic-closed-over-TypeBuilder builder types.
+
+**What ships.**
+
+```lyric
+record IntCounter { v: Int }
+interface ValueGetter { async func getValue(): Int }
+impl ValueGetter for IntCounter {
+  async func getValue(): Int = self.v + 1
+}
+
+func main(): Unit {
+  println(await IntCounter(v = 41).getValue())  // → 42
+}
+```
+
+The existing BankingSmokeTests' `findBalance` impl method (which
+is async) now uses the SM path end-to-end, replacing the M1.4
+`Task.FromResult` shim.
+
+**Bootstrap-grade scope.**  Phase B (suspend/resume) for impl
+methods and async generic funcs are still TODO — the impl-method
+path here only covers Phase A (await-free body).  Async impl
+methods that contain awaits in their body keep the M1.4 path
+until follow-up work extends Phase B to cover them.
+
+One new test (`phaseB_async_impl_method`).  All 348 emitter
+tests pass.
+
+---
+
 ### D-progress-037: C2 Phase B+ — awaits inside `while` / `loop` bodies (no nested locals)
 *claude/c2-async-implementation-ZGU95 branch.*  Builds on
 D-progress-036 to allow `EAwait` at safe positions inside the
@@ -1820,8 +1875,9 @@ The infrastructure pieces touched by C2:
 | 10. `while` / `loop` bodies that contain `await` (no nested locals) | **Shipped (Phase B+, D-progress-037)** |
 | 11. `for` loops + nested-local promotion through loop bodies | Phase B++ |
 | 12. `try`/`catch` / `defer` regions that span an `await` | Phase B++ |
-| 13. Async impl methods + async generics | Phase B++ |
-| 14. `CancellationToken` propagation | Phase C |
+| 13. Async impl methods (Phase A — await-free body) | **Shipped (D-progress-038)** |
+| 14. Async impl methods (Phase B — body awaits) + async generics | Phase B++ |
+| 15. `CancellationToken` propagation | Phase C |
 
 Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
 lifetimes) are gated on Phase C landing.  Tier 6 items (CST

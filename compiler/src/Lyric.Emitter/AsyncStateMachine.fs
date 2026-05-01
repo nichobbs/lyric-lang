@@ -605,34 +605,89 @@ let defineStateMachine
 // IL helpers.
 // ---------------------------------------------------------------------------
 
-/// Resolve `AsyncTaskMethodBuilder[<T>].<Member>` against the closed
-/// builder type.  Methods on closed-generic BCL types resolve via
-/// `GetMethod` / `GetProperty` directly — no TypeBuilder shim needed
-/// because the builder type is BCL, not user-emitted.
+/// True when `BuilderType` is `AsyncTaskMethodBuilder<T>` closed
+/// over a TypeBuilder (i.e. a Lyric record/union still under
+/// construction).  In that case `BuilderType.GetMethod` raises
+/// `NotSupportedException` and we have to route through
+/// `TypeBuilder.GetMethod(closedType, openMethod)`.
+let private builderClosedOverTypeBuilder (sm: StateMachineInfo) : bool =
+    sm.BuilderType.IsGenericType
+    && sm.BuilderType.GetGenericArguments()
+       |> Array.exists (fun a ->
+           a :? TypeBuilder
+           || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
+
+let private builderOpenDef : Type = typedefof<AsyncTaskMethodBuilder<_>>
+let private builderNonGen  : Type = typeof<AsyncTaskMethodBuilder>
+
+/// Resolve a BCL method on `BuilderType`.  Falls back to
+/// `TypeBuilder.GetMethod` when `BuilderType` is closed over a
+/// TypeBuilder (`Type.GetMethod` throws NotSupportedException on
+/// such types).  Pass `getter=true` for property getters.
 let private builderMember
         (sm: StateMachineInfo)
         (name: string) : MethodInfo =
-    match Option.ofObj (sm.BuilderType.GetMethod(name)) with
-    | Some m -> m
-    | None ->
-        // Properties (e.g. `Task` getter) come back via `get_<Name>`.
-        match Option.ofObj (sm.BuilderType.GetMethod("get_" + name)) with
+    let isGenericClosedOverTb =
+        sm.BuilderType.IsGenericType
+        && sm.BuilderType.GetGenericTypeDefinition() = builderOpenDef
+        && builderClosedOverTypeBuilder sm
+    if isGenericClosedOverTb then
+        // Look up the open generic method on the open builder
+        // definition, then specialise via `TypeBuilder.GetMethod`.
+        let candidates = builderOpenDef.GetMethods()
+        let openMI =
+            candidates
+            |> Array.tryFind (fun m -> m.Name = name)
+            |> Option.orElseWith (fun () ->
+                candidates |> Array.tryFind (fun m -> m.Name = "get_" + name))
+        match openMI with
+        | Some m -> TypeBuilder.GetMethod(sm.BuilderType, m)
+        | None ->
+            failwithf "BCL: %s.%s not found (open def lookup)" sm.BuilderType.Name name
+    else
+        match Option.ofObj (sm.BuilderType.GetMethod(name)) with
         | Some m -> m
-        | None -> failwithf "BCL: %s.%s not found" sm.BuilderType.Name name
+        | None ->
+            match Option.ofObj (sm.BuilderType.GetMethod("get_" + name)) with
+            | Some m -> m
+            | None -> failwithf "BCL: %s.%s not found" sm.BuilderType.Name name
 
 /// `AsyncTaskMethodBuilder[<T>]::Create()` (static).
 let private builderCreate (sm: StateMachineInfo) : MethodInfo =
-    match Option.ofObj (sm.BuilderType.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
-    | Some m -> m
-    | None   -> failwithf "BCL: %s.Create not found" sm.BuilderType.Name
+    let isGenericClosedOverTb =
+        sm.BuilderType.IsGenericType
+        && sm.BuilderType.GetGenericTypeDefinition() = builderOpenDef
+        && builderClosedOverTypeBuilder sm
+    if isGenericClosedOverTb then
+        let openCreate =
+            builderOpenDef.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)
+        match Option.ofObj openCreate with
+        | Some m -> TypeBuilder.GetMethod(sm.BuilderType, m)
+        | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Create not found"
+    else
+        match Option.ofObj (sm.BuilderType.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
+        | Some m -> m
+        | None   -> failwithf "BCL: %s.Create not found" sm.BuilderType.Name
 
 /// Closed `Start<TStateMachine>(ref TStateMachine)` for our SM type.
 let private builderStart (sm: StateMachineInfo) : MethodInfo =
+    let isGenericClosedOverTb =
+        sm.BuilderType.IsGenericType
+        && sm.BuilderType.GetGenericTypeDefinition() = builderOpenDef
+        && builderClosedOverTypeBuilder sm
     let openStart =
-        match Option.ofObj
-                  (sm.BuilderType.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
-        | Some m -> m
-        | None   -> failwithf "BCL: %s.Start not found" sm.BuilderType.Name
+        if isGenericClosedOverTb then
+            let openOnDef =
+                match Option.ofObj
+                          (builderOpenDef.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
+                | Some m -> m
+                | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Start not found"
+            TypeBuilder.GetMethod(sm.BuilderType, openOnDef)
+        else
+            match Option.ofObj
+                      (sm.BuilderType.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
+            | Some m -> m
+            | None   -> failwithf "BCL: %s.Start not found" sm.BuilderType.Name
     openStart.MakeGenericMethod([| sm.Type :> Type |])
 
 // ---------------------------------------------------------------------------
@@ -694,16 +749,12 @@ let emitKickoff
     il.Emit(OpCodes.Ldloca, smLocal)
     il.Emit(OpCodes.Call, builderStart sm)
 
-    // return sm.<>builder.Task
+    // return sm.<>builder.Task — `builderMember` routes through
+    // `TypeBuilder.GetMethod` when the closing arg is a Lyric
+    // record/union still under construction.
     il.Emit(OpCodes.Ldloc, smLocal)
     il.Emit(OpCodes.Ldflda, sm.Builder)
-    let taskGetter =
-        match Option.ofObj (sm.BuilderType.GetProperty("Task")) with
-        | Some p ->
-            match Option.ofObj (p.GetGetMethod()) with
-            | Some g -> g
-            | None   -> failwithf "BCL: %s.get_Task missing" sm.BuilderType.Name
-        | None -> failwithf "BCL: %s.Task property missing" sm.BuilderType.Name
+    let taskGetter = builderMember sm "Task"
     il.Emit(OpCodes.Call, taskGetter)
     il.Emit(OpCodes.Ret)
 
