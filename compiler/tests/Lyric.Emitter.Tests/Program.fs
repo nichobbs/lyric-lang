@@ -47,5 +47,6 @@ let main argv =
             AliasTests.tests
             AutoFfiTests.tests
             StdTimeTests.tests
+            WireTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

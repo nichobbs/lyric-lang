@@ -1122,3 +1122,89 @@ Emitter 319, Lsp 5.
 - Real `Duration` arithmetic library (Lyric-side `+` / `-` operators
   on `Duration` rather than `since` / `plus` named helpers).
 - ISO 8601 emission (parsing already lands via `parseOptInstant`).
+
+
+### D-progress-028: bootstrap-grade wire blocks (C6 / Tier 2.1)
+*claude/define-language-spec-5DbnS branch.*  Singleton + `@provided`
++ `expose` + multi-wire support, lowered as a parser-level AST
+synthesis just like `@stubbable` (D-progress-016) and `import as`
+(D-progress-018).  Scoped lifetimes and the lifetime checker stay
+deferred per the C6 decision (D-progress-028) — they're gated on C2.
+
+**Lowering.**  For
+
+```lyric
+record Cfg { tag: String }
+
+wire Prod {
+  @provided n: String
+  singleton cfg: Cfg = Cfg(tag = n)
+  expose cfg
+}
+```
+
+the new `Lyric.Parser.Wire.synthesizeItems` pass appends:
+
+```lyric
+pub record Prod { pub cfg: Cfg }
+func Prod.bootstrap(n: in String): Prod {
+  val cfg = Cfg(tag = n)
+  Prod(cfg = cfg)
+}
+```
+
+ordered as `[record, IWire, bootstrap]` so the symbol table's
+first-symbol-wins lookup (`TryFindOne`) lands on `DKRecord` rather
+than `DKWire` when resolving `TRef [Prod]` in the factory's return
+type.  The original IWire stays in the list for backward-compat with
+parser-shape tests.
+
+**Topological singleton ordering.**  `Wire.referencedNames` walks
+each singleton's `init` expression and collects every single-segment
+EPath reference.  `Wire.topoSortSingletons` does a DFS-based topo
+sort and surfaces a P0260 wire-cycle diagnostic if any back-edge
+fires.
+
+**Record-of-record fix (bonus).**  While testing C6, surfaced a
+pre-existing bug: `defineRecord` used the lookup-less
+`TypeMap.toClrType` to project field types, so a field whose Lyric
+type was another user record fell back to `obj`.  `record Outer { i:
+Inner }` then produced "receiver type Object has no readable property
+'msg'" on `o.i.msg` access.  Fixed by:
+- Splitting `defineRecord` into a TypeBuilder-stub-then-populate
+  pair so all record TypeBuilders are registered in `typeIdToClr`
+  before any record's fields are populated.
+- Switching the populate pass to `toClrTypeWith lookup` so cross-
+  record field types resolve to the matching TypeBuilder.
+
+The two-pass shape applies uniformly to records and opaque-as-record
+types.  Projectable view derivation now skips when a cycle was
+detected (otherwise the recursive `toView` lowering diverges).
+
+**Tests.**
+
+- 4 new tests in `compiler/tests/Lyric.Emitter.Tests/WireTests.fs`:
+  minimal singleton, two-singletons-with-dependency-order,
+  multi-`@provided`, two-wires-in-one-program.
+- Two parser tests updated to reflect the post-synthesis shape:
+  `wire with provided, singleton, bind, expose` and
+  `wire with scoped binding` now look up the IWire among the items
+  rather than using `getOnlyItem` (the synthesiser inserts
+  additional record + bootstrap items alongside the original IWire).
+- `every item kind parses without IError + P0098` in
+  `ItemHeadTests.fs` adjusts the expected count for the wire case
+  to 3 (record + IWire + bootstrap).
+- 2 OpaqueTypeTests for projectable cycle rejection updated
+  implicitly — the codegen now skips the view derivation when a
+  cycle is detected, so the diagnostic surfaces cleanly without the
+  "nested toView not yet defined" follow-up exception.
+
+All 678 tests across the five suites pass: Lexer 70, Parser 182,
+TypeChecker 100, Emitter 323, Lsp 5.
+
+**Bootstrap-grade scope** (deferred follow-ups in C6):
+- `scoped` / `scope_kind` lifetimes with `AsyncLocal<T>`
+  propagation across `await`.
+- Lifetime checker (singleton-depends-on-scoped → compile error).
+- `@bind`-style multi-implementation registration of an interface.
+- Async-local scope tracking for HTTP frameworks / DB integrations.

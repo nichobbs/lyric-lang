@@ -670,22 +670,15 @@ let private defineUnion
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
 /// codegen can resolve constructors and field reads.
-let private defineRecord
-        (md: ModuleBuilder)
-        (nsName: string)
+let private defineRecordOnto
+        (tb: TypeBuilder)
         (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
         (rd: RecordDecl) : Records.RecordInfo =
-    let fullName =
-        if String.IsNullOrEmpty nsName then rd.Name
-        else nsName + "." + rd.Name
-    let tb =
-        md.DefineType(
-            fullName,
-            TypeAttributes.Public ||| TypeAttributes.Sealed,
-            typeof<obj>)
-    // Resolve each field's type via the typechecker's resolver. This
-    // gives us a `Lyric.TypeChecker.Type` that TypeMap projects onto
-    // a CLR System.Type.
+    // Resolve each field's type via the typechecker's resolver, then
+    // project to a CLR `System.Type` through the typeIdToClr lookup so
+    // records that reference other user records pick up the matching
+    // TypeBuilder rather than falling back to `obj`.
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
     let fieldDecls =
@@ -699,7 +692,7 @@ let private defineRecord
         |> List.map (fun fd ->
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags fd.Type
-            let cty = TypeMap.toClrType lty
+            let cty = TypeMap.toClrTypeWith lookup lty
             let fb =
                 tb.DefineField(
                     fd.Name,
@@ -2019,25 +2012,50 @@ let private emitAssembly
                             | _ -> ()
                     | _ -> ()
 
+        // Two passes for records / opaques so a field whose type is
+        // another user record (`record Outer { i: Inner }`) sees
+        // Inner's TypeBuilder rather than falling back to `obj`.  The
+        // first pass just defines the empty TypeBuilder and registers
+        // it in `typeIdToClr`; the second populates fields + ctor via
+        // `defineRecord` so its `lookup` resolves cross-references.
+        let recordStubs =
+            ResizeArray<RecordDecl * TypeBuilder * (TypeId option)>()
         for rd in recordItems sf do
-            let info = defineRecord ctx.Module nsName symbols rd
-            recordTable.[rd.Name] <- info
-            symbols.TryFind rd.Name
-            |> Seq.tryHead
-            |> Option.bind Symbol.typeIdOpt
-            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+            let fullName =
+                if String.IsNullOrEmpty nsName then rd.Name
+                else nsName + "." + rd.Name
+            let tb =
+                ctx.Module.DefineType(
+                    fullName,
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeof<obj>)
+            let tid =
+                symbols.TryFind rd.Name
+                |> Seq.tryHead
+                |> Option.bind Symbol.typeIdOpt
+            tid |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
+            recordStubs.Add(rd, tb, tid)
 
         // Opaque types — bootstrap-grade: lower as records.  Visibility
         // is unenforced because we still compile a single package.
+        let opaqueStubs =
+            ResizeArray<OpaqueTypeDecl * TypeBuilder * (TypeId option)>()
         let projectableOpaques = ResizeArray<OpaqueTypeDecl * Records.RecordInfo>()
         for od in opaqueItems sf do
-            let info = defineRecord ctx.Module nsName symbols (opaqueAsRecord od)
-            recordTable.[od.Name] <- info
-            symbols.TryFind od.Name
-            |> Seq.tryHead
-            |> Option.bind Symbol.typeIdOpt
-            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
-            if isProjectable od then projectableOpaques.Add(od, info)
+            let fullName =
+                if String.IsNullOrEmpty nsName then od.Name
+                else nsName + "." + od.Name
+            let tb =
+                ctx.Module.DefineType(
+                    fullName,
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeof<obj>)
+            let tid =
+                symbols.TryFind od.Name
+                |> Seq.tryHead
+                |> Option.bind Symbol.typeIdOpt
+            tid |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
+            opaqueStubs.Add(od, tb, tid)
         for ed in enumItems sf do
             let info = defineEnum ctx.Module nsName ed
             enumTable.[ed.Name] <- info
@@ -2068,6 +2086,19 @@ let private emitAssembly
                 match typeIdToClr.TryGetValue id with
                 | true, t  -> Some t
                 | false, _ -> None
+
+        // Second pass for records / opaques — populate fields + ctor
+        // onto the existing TypeBuilder stubs now that every record's
+        // TypeBuilder is registered in typeIdToClr.  This is what
+        // makes `record Outer { i: Inner }` work — Inner's stub is
+        // resolvable by the time Outer's field-type lookup runs.
+        for (rd, stubTb, _) in recordStubs do
+            let info = defineRecordOnto stubTb symbols lookup rd
+            recordTable.[rd.Name] <- info
+        for (od, stubTb, _) in opaqueStubs do
+            let info = defineRecordOnto stubTb symbols lookup (opaqueAsRecord od)
+            recordTable.[od.Name] <- info
+            if isProjectable od then projectableOpaques.Add(od, info)
 
         let interfaceTable = Records.InterfaceTable()
         for id in interfaceItems sf do
@@ -2180,11 +2211,19 @@ let private emitAssembly
         // source CLR type is itself a projectable opaque substitutes
         // the corresponding view type, and `toView()` calls the
         // nested `toView()` to project the value.
+        //
+        // When a projectable cycle was detected (`projectableCycleErr`
+        // populated above), the view derivation is skipped — the
+        // recursive `toView` lowering would otherwise diverge with
+        // "nested toView for X not yet defined" since no `@projectionBoundary`
+        // breaks the recursion.
         let projectableTable = Records.ProjectableTable()
         let stubByOpaqueClr = Dictionary<System.Type, ProjectableStub>()
+        let projectablesToDerive =
+            if projectableCycleErr.IsSome then []
+            else projectableOpaques |> Seq.toList
         let stubs =
-            projectableOpaques
-            |> Seq.toList
+            projectablesToDerive
             |> List.map (fun (od, opaqueInfo) ->
                 let stub = defineProjectableViewStub ctx.Module nsName opaqueInfo od
                 stubByOpaqueClr.[opaqueInfo.Type :> System.Type] <- stub

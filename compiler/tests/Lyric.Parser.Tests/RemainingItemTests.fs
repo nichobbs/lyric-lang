@@ -72,8 +72,17 @@ let tests =
                 expose clock
             }"""
             let f = parseClean src
-            match (getOnlyItem f).Kind with
-            | IWire w ->
+            // The C6 wire-block synthesiser appends a synthetic record
+            // + bootstrap factory alongside the original IWire.  The
+            // parser-shape assertion still consults the IWire.
+            let wireItem =
+                f.Items
+                |> List.tryPick (fun it ->
+                    match it.Kind with
+                    | IWire w -> Some w
+                    | _       -> None)
+            match wireItem with
+            | Some w ->
                 Expect.equal w.Members.Length 4 "four members"
                 let kinds =
                     w.Members
@@ -88,18 +97,24 @@ let tests =
                 Expect.equal kinds
                     ["provided"; "singleton"; "bind"; "expose"]
                     "kinds"
-            | other -> failtestf "expected IWire, got %A" other
+            | None -> failtest "no IWire item in parsed result"
         }
 
         test "wire with scoped binding" {
             let f = parseClean
                         "wire W { scoped[Request] dbConn: DatabaseConnection = db.acquire() }"
-            match (getOnlyItem f).Kind with
-            | IWire w ->
+            let wireItem =
+                f.Items
+                |> List.tryPick (fun it ->
+                    match it.Kind with
+                    | IWire w -> Some w
+                    | _       -> None)
+            match wireItem with
+            | Some w ->
                 match w.Members.[0] with
                 | WMScoped("Request", "dbConn", _, _, _) -> ()
                 | other -> failtestf "expected WMScoped, got %A" other
-            | other -> failtestf "expected IWire, got %A" other
+            | None -> failtest "no IWire item in parsed result"
         }
 
         // ----- extern package -----

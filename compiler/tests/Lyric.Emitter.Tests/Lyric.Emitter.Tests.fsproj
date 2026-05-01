@@ -48,6 +48,7 @@
     <Compile Include="AliasTests.fs" />
     <Compile Include="AutoFfiTests.fs" />
     <Compile Include="StdTimeTests.fs" />
+    <Compile Include="WireTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
