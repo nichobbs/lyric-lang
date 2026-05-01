@@ -224,6 +224,30 @@ func main(): Unit {
 }
 """,
     "one\ntwo\nother"
+
+    "phaseB_await_in_while_loop",
+    // Phase B+: `await` inside a `while` body.  The resume
+    // label sits inside the loop body; state-dispatch jumps
+    // there on re-entry, then control falls through to the
+    // increment statement and the loop's back-edge branches
+    // to re-check the condition.  Top-level `var i: Int`
+    // gets promoted to an SM field so its value survives
+    // the cross-resume gap.
+    """
+package E14
+async func ping(): Unit { println("ping") }
+async func loopThree(): Unit {
+  var i: Int = 0
+  while i < 3 {
+    await ping()
+    i = i + 1
+  }
+}
+func main(): Unit {
+  await loopThree()
+}
+""",
+    "ping\nping\nping"
 ]
 
 let private behavioral =

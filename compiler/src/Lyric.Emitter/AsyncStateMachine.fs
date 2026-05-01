@@ -186,8 +186,41 @@ and private isSafeStmt (s: Statement) : bool =
         not (exprHasAwait target) && isSafeExprPosition value
     | SReturn None | SBreak _ | SContinue _ | SItem _ | SRule _ -> true
     | SReturn (Some e) -> isSafeExprPosition e
-    | STry _ | SDefer _ | SFor _ | SWhile _ | SLoop _ | SScope _ ->
+    // Phase B+ control-flow extensions: `while` and `loop` whose
+    // body statements are each in safe position (and whose
+    // condition is await-free) work with the same suspend/resume
+    // IL pattern as straight-line code — each iteration is
+    // structurally identical, the resume label can sit anywhere
+    // inside the body, and the dispatch table jumps to it
+    // directly.  `for` loops aren't yet covered because they
+    // bind an iteration variable per iteration (would need
+    // nested-local promotion).
+    | SWhile (_, cond, body) ->
+        (not (exprHasAwait cond))
+        && (body.Statements |> List.forall isSafeStmt)
+        && (body |> bodyHasNoLocalDecls)
+    | SLoop (_, body) ->
+        (body.Statements |> List.forall isSafeStmt)
+        && (body |> bodyHasNoLocalDecls)
+    | STry _ | SDefer _ | SFor _ | SScope _ ->
         not (stmtHasAwait s)
+
+/// True when a block contains no `SLocal` declarations (transitively
+/// scanning into nested blocks).  Phase B+ permits awaits inside
+/// `while`/`loop` bodies only when no local declarations live there
+/// — promotion of nested locals to SM fields is Phase B++ work.
+and private bodyHasNoLocalDecls (b: Block) : bool =
+    let rec stmtOk (s: Statement) : bool =
+        match s.Kind with
+        | SLocal _ -> false
+        | SFor (_, _, _, body) | SWhile (_, _, body) | SLoop (_, body)
+        | SDefer body | SScope (_, body) ->
+            body.Statements |> List.forall stmtOk
+        | STry (body, catches) ->
+            (body.Statements |> List.forall stmtOk)
+            && catches |> List.forall (fun c -> c.Body.Statements |> List.forall stmtOk)
+        | _ -> true
+    b.Statements |> List.forall stmtOk
 
 let allAwaitsSafe (fn: FunctionDecl) : bool =
     match fn.Body with

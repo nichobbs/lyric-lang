@@ -1696,6 +1696,43 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-037: C2 Phase B+ — awaits inside `while` / `loop` bodies (no nested locals)
+*claude/c2-async-implementation-ZGU95 branch.*  Builds on
+D-progress-036 to allow `EAwait` at safe positions inside the
+body of a `while` or `loop` statement.  The IL flow naturally
+extends: each iteration enters the body, an `await` inside the
+body suspends/resumes via the same protocol, and control falls
+through to the loop back-edge or the iteration's continuation.
+
+Eligibility constraint (Phase B+ scope): the loop body must not
+contain `SLocal` declarations.  Nested-local promotion to SM
+fields requires walking past the top level of the function body,
+and the existing `collectTopLevelLocals` helper only tracks
+flat-block locals.  Phase B++ extends promotion to nested
+declarations; for now, programs that need a counter through an
+async loop declare the counter at the function top level (where
+it gets promoted via the existing path):
+
+```lyric
+async func loopThree(): Unit {
+  var i: Int = 0     // top-level — promoted to SM field
+  while i < 3 {
+    await ping()     // safe position
+    i = i + 1
+  }
+}
+```
+
+`for` loops still aren't covered because they bind an iteration
+variable per iteration; that variable lives inside the loop body
+and would need cross-iteration field-shadow plumbing.
+
+One new test in `AsyncTests.fs` (`phaseB_await_in_while_loop`)
+that loops three times, awaiting in each iteration.  All 347
+emitter tests pass (was 346; +1 new).
+
+---
+
 ### D-progress-036: C2 Phase B+ — awaits inside `if` and `match` branches
 *claude/c2-async-implementation-ZGU95 branch.*  Extends Phase B
 (D-progress-034) to allow `EAwait` at safe top-level positions
@@ -1780,10 +1817,11 @@ The infrastructure pieces touched by C2:
 | 7. `MoveNext` state-dispatch + `AwaitUnsafeOnCompleted` resume | **Shipped (Phase B)** |
 | 8. Exception flow through `SetException` | **Shipped (Phase B)** |
 | 9. `if` branches / `match` arm bodies that contain `await` | **Shipped (Phase B+, D-progress-036)** |
-| 10. `try`/`catch` / `defer` regions that span an `await` | Phase B++ |
-| 11. `for`/`while`/loop bodies that contain `await` | Phase B++ |
-| 12. Async impl methods + async generics | Phase B++ |
-| 13. `CancellationToken` propagation | Phase C |
+| 10. `while` / `loop` bodies that contain `await` (no nested locals) | **Shipped (Phase B+, D-progress-037)** |
+| 11. `for` loops + nested-local promotion through loop bodies | Phase B++ |
+| 12. `try`/`catch` / `defer` regions that span an `await` | Phase B++ |
+| 13. Async impl methods + async generics | Phase B++ |
+| 14. `CancellationToken` propagation | Phase C |
 
 Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
 lifetimes) are gated on Phase C landing.  Tier 6 items (CST
