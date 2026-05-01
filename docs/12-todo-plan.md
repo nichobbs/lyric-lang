@@ -288,20 +288,42 @@ auto-discovered surface — both Phase 4 work.
 
 ### C5 — stdlib expansion
 
-Concrete sub-items, each pickable independently:
+Four sub-areas, each independent.
 
-- **`Std.Time`** is mostly complete (DateTime + TimeSpan via FFI).
-  IANA tz lookup, calendar arithmetic, and "since epoch" helpers are
-  the remaining gaps.
-- **`Std.Json`** is a stub.  Real JSON requires a source-generator
-  pass over user records, OR reflection-driven serialisation (which
-  conflicts with C4).
-- **`Std.Http`** has the basics; cancellation, timeouts, and redirect
-  policy are next.
-- **`Std.Regex`** dispatches to the BCL's ECMA regex.  RE2-compatible
-  semantics would require a separate engine (or a pinned NuGet).
+**Decision (D-progress-027)**: ship Json source-gen + Time
+expansion in this band; defer Http and Regex.
 
-**Decision needed**: pick which stdlib gaps to close first.
+**Json source-gen.**  Replace today's stub with a compile-time
+source-generator pass: walk every `pub record` annotated
+`@derive(Json)` and synthesise a per-record `toJson(self): String`
+method emitting RFC 8259-conformant output.  Inverse `fromJson`
+synthesised when the record's fields are all reconstructable.  No
+runtime reflection — the generated code reads each field via the
+existing record FieldBuilders and produces literal JSON.  AOT-clean
+because every reachable record is rooted by the synthesised method.
+Aligns with the `derive`-driven philosophy from D016 / `@stubbable`
+and `@projectable` derives.
+
+**Time expansion.**  Three concrete adds on top of the existing
+`Std.Time`:
+- `Time.zoneOf(id: in String): Result[TimeZone, IOError]` via
+  `System.TimeZoneInfo.FindSystemTimeZoneById` (FFI).
+- `Instant.fromEpochMillis(n: in Long): Instant` / `Instant.toEpochMillis`
+  (FFI to `DateTimeOffset.FromUnixTimeMilliseconds`).
+- Calendar arithmetic helpers: `addMonths`, `addYears`,
+  preserving day-of-month rules per `DateTime.AddMonths` semantics.
+
+**Http expansion — deferred.**  Cancellation tokens, real timeouts,
+and redirect policy are coupled to C2's async state-machine
+implementation.  Threading a `CancellationToken` through the blocking
+shim is awkward and would leak when the shim is replaced.  Tracked as
+a follow-up gated on C2 landing.
+
+**Regex RE2 — deferred.**  ECMA-regex backtracking is a real
+attacker-input concern but no Lyric program in the bootstrap is yet
+exposed to attacker-controlled regex.  Defer until either (a) a real
+program needs it or (b) we can pin a NuGet engine that's AOT-clean
+across all RID targets.  Tracked as a follow-up.
 
 ### C6 — wire blocks (compile-time DI)
 
