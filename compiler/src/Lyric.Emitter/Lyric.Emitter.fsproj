@@ -10,6 +10,7 @@
     <Compile Include="Records.fs" />
     <Compile Include="ContractMeta.fs" />
     <Compile Include="Codegen.fs" />
+    <Compile Include="AsyncStateMachine.fs" />
     <Compile Include="Emitter.fs" />
   </ItemGroup>
 

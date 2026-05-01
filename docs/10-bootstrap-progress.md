@@ -1406,30 +1406,138 @@ println(M.toJson(M(msg = "say \"hi\"")))     // {"msg":"say "hi""}
 1 new test (`json_derive_string_escaping`) in `JsonDeriveTests.fs`.
 All 690 tests pass.
 
+
+### D-progress-033: C2 Phase A — real `IAsyncStateMachine` synthesis (await-free bodies)
+*claude/c2-async-implementation-ZGU95 branch.*  First commit in the
+multi-phase rollout of D-progress-024 (real async state machines).
+
+**What ships.**  `async func` whose body contains no internal `await`
+now lowers to a real state machine class instead of the M1.4
+`Task.FromResult` shim:
+
+```
+async func twice(n: in Int): Int = n + n
+```
+
+emits a sibling top-level type
+`<twice>__SM_<n> : IAsyncStateMachine` with the canonical layout:
+
+- `<>1__state : int` — state-machine state field (initially -1).
+- `<>t__builder : AsyncTaskMethodBuilder<int>` — the builder.
+- `n : int` — one field per Lyric parameter.
+- `MoveNext()` instance method carrying the user's body.
+- `IAsyncStateMachine.SetStateMachine` forwarding to the builder.
+
+The user's `twice` MethodBuilder becomes a kickoff stub:
+
+```il
+ldloca sm
+newobj <SM>::.ctor()
+ldloc sm
+call AsyncTaskMethodBuilder<int>::Create()
+stfld sm.<>t__builder
+ldloc sm
+ldc.i4.m1
+stfld sm.<>1__state
+ldloc sm
+ldarg.0
+stfld sm.n
+ldloc sm
+ldflda sm.<>t__builder
+ldloca sm
+call AsyncTaskMethodBuilder<int>::Start<SM>(ref SM)
+ldloc sm
+ldflda sm.<>t__builder
+call AsyncTaskMethodBuilder<int>::get_Task()
+ret
+```
+
+`MoveNext` runs the user body — accessing parameters via
+`Ldarg.0; Ldfld` because they live as SM fields, not method args —
+then sets state to -2 and calls `builder.SetResult(value)` (or
+`builder.SetResult()` for `Unit`).
+
+**Implementation outline.**
+- New module: `compiler/src/Lyric.Emitter/AsyncStateMachine.fs`
+  exposes `bodyContainsAwait`, `isPhaseAEligible`,
+  `defineStateMachine`, `emitKickoff`, `emitMoveNextEpilogue`,
+  `emitSetStateMachine`.
+- `Codegen.FunctionCtx` gains a `SmFields : Dictionary<string, FieldInfo>`
+  table.  When non-empty (i.e. emitting a state machine's
+  `MoveNext`), `EPath` reads, `SAssign` writes, and `peekExprType`
+  for parameter names route through `Ldarg.0; Ldfld <field>` /
+  `Ldarg.0; <expr>; Stfld <field>` instead of the regular
+  `Ldarg N` parameter-slot path.
+- `Emitter.fs` Pass B routes async funcs through the SM path when
+  `AsyncStateMachine.isPhaseAEligible` returns true.  Eligibility
+  requires: top-level (caller-side), non-generic, no internal
+  `EAwait` in the body, and no `@externTarget` annotation.  All
+  other async funcs continue using the M1.4 `Task.FromResult` /
+  `Task.CompletedTask` wrapper.
+- SM types are sealed via `CreateType` before `programTy` so the
+  kickoff stub's references resolve at runtime.
+
+**Bootstrap-grade scope (Phase A).**
+- Bodies that contain `await` (e.g. `Std.Http`'s async funcs)
+  keep the M1.4 wrapper path — Phase B adds the real
+  `AwaitUnsafeOnCompleted` suspend/resume protocol with state
+  dispatch and locals promoted to fields.
+- Generic async funcs aren't routed through the SM (closed-generic
+  `Start<SM>` plumbing under TypeBuilder is Phase B / C work).
+- Async impl methods (instance methods on records / opaque types)
+  use the existing path.  The Phase A SM is structured for free-
+  standing top-level funcs.
+- Exceptions thrown out of `MoveNext` aren't yet routed through
+  `SetException`; they propagate naturally because Phase A bodies
+  don't await — Phase B introduces the explicit try/catch around
+  the `MoveNext` body.
+
+**Tests.**
+- All 4 existing async tests in `AsyncTests.fs` pass through the
+  new path (their bodies have no internal `await`).
+- 1 new behavioural case `[async_block_with_locals]` covers a
+  block-bodied async function with multiple `val` bindings.
+- 1 new structural regression test `[sm_shape]` reflects on the
+  emitted assembly to confirm a real `IAsyncStateMachine`
+  implementer is present with the expected fields — catches
+  regressions that flip the routing flag back to the M1.4 shim.
+
+All 337 emitter tests pass (was 335; +2 new).  Lexer/Parser/
+TypeChecker/LSP suites unchanged at 70/182/100/5.
+
+**What doesn't change behaviourally.**  Because Phase A bodies
+never suspend, the Lyric program runs synchronously and produces
+the same output as the M1.4 path.  The win is structural: the
+emitter now produces spec-correct state-machine IL ready to layer
+real suspension on top of, replacing the M1.4 `Task.FromResult`
+shape that Phase B can't extend.
+
 ---
 
 ## C2 — real async state machines: status
 
-C2 (Tier 4 of the post-#44 plan) remains **not started**.  Per the
-C2 decision (D-progress-024), the path is hand-rolled
-`IAsyncStateMachine` IL — a 2-4 week focused effort that's beyond a
-single session.  The infrastructure pieces touched by C2:
+C2 is a 2-4 week focused effort per the C2 decision
+(D-progress-024).  Per **D-progress-033** (this branch), Phase A of
+that plan ships in `claude/c2-async-implementation-ZGU95`: real
+`IAsyncStateMachine` synthesis for the *await-free async body*
+subset.  Phase B (real `AwaitUnsafeOnCompleted` suspend/resume) is
+the next focused PR.
 
-1. State-machine class synthesis per `async func`.
-2. Locals-that-cross-`await` promoted to fields.
-3. `MoveNext` dispatching on a state field; each `await` saves
-   state, calls `AwaitUnsafeOnCompleted`, returns.
-4. `AsyncTaskMethodBuilder<T>` builder field + Task return.
-5. Exception flow through `SetException`.
-6. `try`/`catch` regions that span an `await` (re-entry into the
-   protected region during `MoveNext`).
-7. `defer` regions that span an `await` (the existing
-   `OpCodes.Leave` plumbing from D-progress-001 starts the
-   foundation).
-8. `CancellationToken` propagation.
+The infrastructure pieces touched by C2:
+
+| Piece | Phase A status |
+|---|---|
+| 1. State-machine class synthesis per `async func` | **Shipped (await-free bodies only)** |
+| 2. `<>1__state` / `<>t__builder` fields, parameters as fields | **Shipped** |
+| 3. Kickoff calls `builder.Start<SM>` and returns `builder.Task` | **Shipped** |
+| 4. `MoveNext` runs body and calls `SetResult` on completion | **Shipped** |
+| 5. `IAsyncStateMachine.SetStateMachine` forwards to builder | **Shipped** |
+| 6. Locals-that-cross-`await` promoted to fields | Phase B |
+| 7. `MoveNext` state-dispatch + `AwaitUnsafeOnCompleted` resume | Phase B |
+| 8. Exception flow through `SetException` | Phase B |
+| 9. `try`/`catch` / `defer` regions that span an `await` | Phase B |
+| 10. `CancellationToken` propagation | Phase C |
 
 Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
-lifetimes) are gated on this landing.  Tier 6 items (CST formatter,
-format5+, Regex RE2, C4 phase 2/3) are on-demand.
-
-The async work would be the next focused PR.
+lifetimes) are gated on Phase B / C landing.  Tier 6 items (CST
+formatter, format5+, Regex RE2, C4 phase 2/3) are on-demand.

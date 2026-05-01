@@ -1,5 +1,7 @@
 module Lyric.Emitter.Tests.AsyncTests
 
+open System.IO
+open System.Reflection
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
@@ -11,11 +13,15 @@ let private mk (label: string, source: string, expected: string) : Test =
         Expect.equal (stdout.TrimEnd()) expected
             "stdout matches expected"
 
-/// Per D035, M1.4 ships a *blocking* async shim: `async func` lowers
-/// to a CLR method returning `Task<T>` whose body runs synchronously
-/// before wrapping the value in `Task.FromResult<T>(...)`. `await`
-/// lowers to `.GetAwaiter().GetResult()`. Real C#-style state
-/// machines are Phase 2 work.
+/// Per D-progress-024 (C2 Phase A), `async func` whose body contains
+/// no internal `await` lowers to a real `IAsyncStateMachine` class
+/// with `<>1__state` / `<>t__builder` fields, a `MoveNext` carrying
+/// the user body, and a kickoff stub that calls
+/// `AsyncTaskMethodBuilder<T>.Start` and returns `builder.Task`.
+/// `await` at call sites still uses the M1.4 `GetAwaiter().GetResult()`
+/// shim — these test cases all run synchronously through the SM and
+/// the awaited Task is already-completed when the caller reaches
+/// `GetAwaiter().GetResult()`.
 let private cases : (string * string * string) list = [
 
     "await_int",
@@ -62,9 +68,68 @@ func main(): Unit {
 }
 """,
     "hi from async"
+
+    "async_block_with_locals",
+    // Block body with local bindings + arithmetic — exercises the
+    // exit-label / result-local path through the SM.
+    """
+package E14
+async func compute(a: in Int, b: in Int): Int {
+  val x = a * 2
+  val y = b * 3
+  x + y
+}
+func main(): Unit {
+  println(await compute(4, 5))
+}
+""",
+    "23"
 ]
 
-let tests =
+let private behavioral =
     testSequenced
-    <| testList "async — blocking shim (E14)"
+    <| testList "async — Phase A state-machine (E14 / D-progress-024)"
         (cases |> List.map mk)
+
+/// Inspect the emitted assembly to confirm the Phase A SM class was
+/// actually synthesised: a sibling top-level type named
+/// `<funcname>__SM_<n>` implementing `IAsyncStateMachine`.  Catches
+/// regressions where the routing flag flips back to the M1.4
+/// `Task.FromResult` shim without anyone noticing.
+let private smShape : Test =
+    testCase "[sm_shape] async func emits IAsyncStateMachine class" <| fun () ->
+        let label = "AsyncSmShape"
+        let source = """
+package E14
+async func twice(n: in Int): Int = n + n
+func main(): Unit {
+  println(await twice(21))
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source       = source
+              AssemblyName = label
+              OutputPath   = dll }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let smTypes =
+            asm.GetTypes()
+            |> Array.filter (fun t ->
+                typeof<System.Runtime.CompilerServices.IAsyncStateMachine>.IsAssignableFrom(t))
+        Expect.isGreaterThanOrEqual smTypes.Length 1
+            "expected at least one IAsyncStateMachine implementation"
+        let sm = smTypes.[0]
+        let stateField = sm.GetField "<>1__state"
+        let builderField = sm.GetField "<>t__builder"
+        Expect.isNotNull stateField "state field present"
+        Expect.isNotNull builderField "builder field present"
+        let nField = sm.GetField "n"
+        Expect.isNotNull nField "param field 'n' present"
+
+let tests =
+    testList "async tests" [
+        behavioral
+        smShape
+    ]

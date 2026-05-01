@@ -110,9 +110,13 @@ TryParse method based on the closing `T`).  Per-primitive
 
 ### C2. Real async state machines
 
-M1.4 D035 ships `async`/`await` as `.GetAwaiter().GetResult()` blocking
-shims.  Phase 4 work — needs a real state-machine lowering or a thin
-wrapper over F#'s `task { }` builder via FFI.
+M1.4 D035 shipped `async`/`await` as `.GetAwaiter().GetResult()`
+blocking shims.  Phase A landed in this branch (D-progress-033):
+real `IAsyncStateMachine` synthesis for await-free async bodies
+(struct + builder + `Start` + `SetResult`).  Phase B (real
+`AwaitUnsafeOnCompleted` suspend/resume + state dispatch + locals
+promoted to fields) is the next focused PR; Phase C covers
+cancellation and structured concurrency.
 
 ### C3. Range-subtype symbolic bounds
 
@@ -530,6 +534,17 @@ progress-per-session and dependency unblocking:
 
 8. **C2 — real async state machines.**  2-4 weeks.  The biggest
    single item; unlocks downstream Tier-5 work.
+   - **Phase A — shipped (D-progress-033).**  Real
+     `IAsyncStateMachine` synthesis for await-free async bodies.
+     Replaces the M1.4 `Task.FromResult` shim with spec-correct
+     state-machine IL ready for suspend/resume to layer on top.
+   - **Phase B — next focused PR.**  Real `AwaitUnsafeOnCompleted`
+     protocol: locals-that-cross-`await` promoted to fields, state
+     dispatch in `MoveNext`, exceptions through `SetException`,
+     try/catch + defer regions that span an `await`, and async
+     impl methods + generics.
+   - **Phase C — gated on B.**  `CancellationToken` propagation
+     and structured-concurrency scopes.
 
 ### Tier 5 — gated on C2
 
