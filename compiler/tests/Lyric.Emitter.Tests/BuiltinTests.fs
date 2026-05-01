@@ -132,6 +132,24 @@ func main(): Unit {
 """,
     "[1,2,3,4]"
 
+    "format5_multi_placeholder",
+    """
+package F5x
+func main(): Unit {
+  println(format5("[{0},{1},{2},{3},{4}]", 1, 2, 3, 4, 5))
+}
+""",
+    "[1,2,3,4,5]"
+
+    "format6_multi_placeholder",
+    """
+package F6x
+func main(): Unit {
+  println(format6("[{0},{1},{2},{3},{4},{5}]", 1, 2, 3, 4, 5, 6))
+}
+""",
+    "[1,2,3,4,5,6]"
+
     "format_repeat_placeholder",
     """
 package F5

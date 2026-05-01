@@ -68,9 +68,10 @@ let private codegenBuiltinType (name: string) : Type option =
         // Polymorphic in its argument like `println`; codegen routes
         // through Console.ToStr(obj) with auto-boxing for value types.
         Some (TyFunction([TyError], TyPrim PtString, false))
-    // `format1`/`format2`/`format3`/`format4` are arity-specialised
-    // String.Format wrappers.  Lyric has no varargs, so each arity is
-    // a separate name; codegen routes to Format.Of1..Of4.
+    // `format1`/`format2`/`format3`/`format4`/`format5`/`format6`
+    // are arity-specialised String.Format wrappers.  Lyric has no
+    // varargs, so each arity is a separate name; codegen routes to
+    // Format.Of1..Of6.
     | "format1" ->
         Some (TyFunction([TyPrim PtString; TyError], TyPrim PtString, false))
     | "format2" ->
@@ -79,6 +80,10 @@ let private codegenBuiltinType (name: string) : Type option =
         Some (TyFunction([TyPrim PtString; TyError; TyError; TyError], TyPrim PtString, false))
     | "format4" ->
         Some (TyFunction([TyPrim PtString; TyError; TyError; TyError; TyError], TyPrim PtString, false))
+    | "format5" ->
+        Some (TyFunction([TyPrim PtString; TyError; TyError; TyError; TyError; TyError], TyPrim PtString, false))
+    | "format6" ->
+        Some (TyFunction([TyPrim PtString; TyError; TyError; TyError; TyError; TyError; TyError], TyPrim PtString, false))
     | "panic" ->
         Some (TyFunction([TyPrim PtString], TyPrim PtNever, false))
     | "default" ->

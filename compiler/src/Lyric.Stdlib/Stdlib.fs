@@ -105,6 +105,23 @@ type Format private () =
                        a3: obj | null) : string =
         System.String.Format(template, [| a0; a1; a2; a3 |])
 
+    static member Of5 (template: string,
+                       a0: obj | null,
+                       a1: obj | null,
+                       a2: obj | null,
+                       a3: obj | null,
+                       a4: obj | null) : string =
+        System.String.Format(template, [| a0; a1; a2; a3; a4 |])
+
+    static member Of6 (template: string,
+                       a0: obj | null,
+                       a1: obj | null,
+                       a2: obj | null,
+                       a3: obj | null,
+                       a4: obj | null,
+                       a5: obj | null) : string =
+        System.String.Format(template, [| a0; a1; a2; a3; a4; a5 |])
+
 /// Generic helper for `Dictionary<K, V>` operations that don't fit
 /// directly into the FFI without out-parameters or rich Lyric
 /// inference.  All members are static and routed through Lyric's
@@ -137,6 +154,19 @@ type MapHelpers<'K, 'V when 'K: not null> private () =
 /// Generic exception-to-result helper.  The Lyric side calls
 /// `tryRunValue(() => bclThing(args))` to invoke an arbitrary
 /// throw-prone BCL operation; the F# wrapper catches and surfaces a
+/// Async primitives.  `Std.Task.delay` lowers to `TaskHost.Delay`
+/// via `@externTarget`, returning a real `Task` that suspends the
+/// caller's state machine until the timer fires.  This is the
+/// canonical Phase B suspension trigger used by `AsyncTests`.
+[<Sealed; AbstractClass>]
+type TaskHost private () =
+
+    /// `Task.Delay(ms)` wrapped so consumers can declare the Lyric
+    /// target as `async func delay(ms: in Int): Unit` without
+    /// reaching for a non-Lyric `Task` type at the source level.
+    static member Delay (ms: int) : System.Threading.Tasks.Task =
+        System.Threading.Tasks.Task.Delay(ms)
+
 /// `(IsValid, Value, Error)` triple.  Same shape as `Std.Parse` /
 /// `Std.File` but factored out so future stdlib modules don't each
 /// hand-roll their own try/catch wrappers in F#.

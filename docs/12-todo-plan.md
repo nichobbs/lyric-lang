@@ -87,10 +87,12 @@ intersection — same shape as `if`/`else` — so a function that assigns
 an `out` param in every arm has the param marked definitely-assigned
 after the match.  See `docs/10-bootstrap-progress.md` D-progress-021.
 
-### B6. `format5..N`
+### B6. ~~`format5..N`~~ — shipped
 
-D-progress-011 ships `format1..4`.  Add `format5` and `format6` if a
-real program needs them; otherwise wait for a varargs story.
+`format5` and `format6` shipped (D-progress-035).  Both type-check
+in `ExprChecker.fs` (one extra `TyError` payload per arity) and
+codegen routes through new `Lyric.Stdlib.Format::Of5`/`Of6` static
+helpers.  Format arities beyond 6 wait for a varargs story.
 
 ---
 
@@ -111,12 +113,14 @@ TryParse method based on the closing `T`).  Per-primitive
 ### C2. Real async state machines
 
 M1.4 D035 shipped `async`/`await` as `.GetAwaiter().GetResult()`
-blocking shims.  Phase A landed in this branch (D-progress-033):
-real `IAsyncStateMachine` synthesis for await-free async bodies
-(struct + builder + `Start` + `SetResult`).  Phase B (real
-`AwaitUnsafeOnCompleted` suspend/resume + state dispatch + locals
-promoted to fields) is the next focused PR; Phase C covers
-cancellation and structured concurrency.
+blocking shims.  Phase A (D-progress-033) shipped real
+`IAsyncStateMachine` synthesis for await-free async bodies.
+Phase B (D-progress-034) shipped real `AwaitUnsafeOnCompleted`
+suspend/resume with state dispatch, exception flow through
+`SetException`, and locals promoted to fields.  Remaining work:
+Phase B+ (await inside try/catch/defer/match, async impl
+methods, async generics) and Phase C (cancellation tokens,
+structured concurrency scopes).
 
 ### C3. Range-subtype symbolic bounds
 
@@ -538,12 +542,19 @@ progress-per-session and dependency unblocking:
      `IAsyncStateMachine` synthesis for await-free async bodies.
      Replaces the M1.4 `Task.FromResult` shim with spec-correct
      state-machine IL ready for suspend/resume to layer on top.
-   - **Phase B — next focused PR.**  Real `AwaitUnsafeOnCompleted`
-     protocol: locals-that-cross-`await` promoted to fields, state
-     dispatch in `MoveNext`, exceptions through `SetException`,
-     try/catch + defer regions that span an `await`, and async
-     impl methods + generics.
-   - **Phase C — gated on B.**  `CancellationToken` propagation
+   - **Phase B — shipped (D-progress-034).**  Real
+     `AwaitUnsafeOnCompleted` protocol with state dispatch,
+     exception flow through `SetException`, and locals promoted
+     to fields.  Awaits at safe top-level statement positions
+     (no nesting in sub-expressions, no try/catch/defer/match
+     spanning the await) lower to the canonical Roslyn-equivalent
+     IL pattern.
+   - **Phase B+ — follow-up.**  Awaits inside try/catch / defer
+     / match arms / loop bodies (resume must re-enter protected
+     regions); async impl methods (instance methods on records);
+     async generic funcs (closed-generic SM on `TypeBuilder`);
+     stack-spilling for nested awaits (`f(await g())`).
+   - **Phase C — gated on B+.**  `CancellationToken` propagation
      and structured-concurrency scopes.
 
 ### Tier 5 — gated on C2

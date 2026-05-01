@@ -145,3 +145,50 @@ extern type TimeZone = "System.TimeZoneInfo"
 
 @externTarget("System.TimeZoneInfo.FindSystemTimeZoneById")
 pub func hostFindTimeZone(id: in String): TimeZone = ()
+
+// =====================================================================
+// Comparison.
+//
+// `DateTime.op_LessThan` / `op_GreaterThan` resolve via auto-FFI
+// when the user writes `a < b` on `Instant` values, but the named
+// helpers below are clearer in code and match `Duration` shape
+// where operators don't always lower cleanly.
+// =====================================================================
+
+@externTarget("System.DateTime.op_LessThan")
+pub func instantBefore(a: in Instant, b: in Instant): Bool = ()
+
+@externTarget("System.DateTime.op_GreaterThan")
+pub func instantAfter(a: in Instant, b: in Instant): Bool = ()
+
+@externTarget("System.DateTime.op_Equality")
+pub func instantEquals(a: in Instant, b: in Instant): Bool = ()
+
+@externTarget("System.TimeSpan.op_LessThan")
+pub func durationLess(a: in Duration, b: in Duration): Bool = ()
+
+@externTarget("System.TimeSpan.op_GreaterThan")
+pub func durationGreater(a: in Duration, b: in Duration): Bool = ()
+
+@externTarget("System.TimeSpan.op_Addition")
+pub func addDurations(a: in Duration, b: in Duration): Duration = ()
+
+@externTarget("System.TimeSpan.op_Subtraction")
+pub func subDurations(a: in Duration, b: in Duration): Duration = ()
+
+// =====================================================================
+// ISO-8601 formatting.
+//
+// `DateTime.ToString("o")` produces a round-trippable ISO-8601-with-
+// fractional-seconds string ("2024-12-31T23:59:59.9999999Z" for UTC
+// Instants).  The "o" format specifier guarantees the inverse round
+// trip via `parseOptInstant`.
+// =====================================================================
+
+@externTarget("System.Convert.ToString")
+func hostInstantToString(value: in Instant): String = ()
+
+/// Format an `Instant` as an ISO-8601 round-trippable string.
+pub func toIsoString(t: in Instant): String {
+  hostInstantToString(t)
+}
