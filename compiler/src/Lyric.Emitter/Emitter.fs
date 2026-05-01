@@ -1454,9 +1454,28 @@ let private emitExternCall
         | None     -> il.Emit(OpCodes.Pop)
     il.Emit(OpCodes.Br, exitLabel)
 
+/// Phase B exit context.  When set, `emitFunctionBody` skips
+/// the M1.4 `Task.FromResult` / Phase A `SetResult` epilogues and
+/// instead routes the body's exit through `Leave NormalDone` so
+/// the surrounding structural code (state dispatch, try/catch,
+/// SetResult, ret) can take over.  The body's `EAwait` handlers
+/// consume `SmAwaitInfo` to emit the suspend/resume protocol.
+type private PhaseBExit =
+    { NormalDone:  Label
+      AwaitInfo:   AsyncStateMachine.SmAwaitInfo
+      /// Pre-allocated IL locals for promoted locals; consumed by
+      /// `defineLocal` (via `ctx.PreAllocatedLocals`).
+      PreLocals:   Dictionary<string, LocalBuilder>
+      /// Pre-allocated result local for non-void async funcs.  The
+      /// body's exit-label code stores into this slot before
+      /// `Leave NormalDone`; the surrounding `SetResult` block
+      /// loads from it.  `None` for Unit-returning funcs.
+      ResultLocal: LocalBuilder option }
+
 let private emitFunctionBody
         (mb: MethodBuilder)
         (smInfo: AsyncStateMachine.StateMachineInfo option)
+        (phaseBExit: PhaseBExit option)
         (fn: FunctionDecl)
         (sg: ResolvedSignature)
         (lookup: TypeId -> System.Type option)
@@ -1547,6 +1566,15 @@ let private emitFunctionBody
         for pf in sm.ParamFields do
             ctx.SmFields.[pf.Name] <- (pf.Field :> System.Reflection.FieldInfo)
     | None -> ()
+    // Phase B: thread the suspend/resume context + pre-allocated
+    // local shadow IL slots so the body's `EAwait` handlers and
+    // `defineLocal` calls hit the right code paths.
+    match phaseBExit with
+    | Some pb ->
+        ctx.SmAwaitInfo <- Some pb.AwaitInfo
+        for KeyValue(name, lb) in pb.PreLocals do
+            ctx.PreAllocatedLocals.[name] <- lb
+    | None -> ()
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -1555,9 +1583,15 @@ let private emitFunctionBody
     // through this exit.
     let exitLabel = il.DefineLabel()
     let isVoidReturn = returnTy = typeof<System.Void>
+    // Phase B passes its own pre-allocated result local so the
+    // surrounding SetResult block can load from it after the body
+    // `Leave`s NormalDone.
     let resultLocal =
-        if isVoidReturn then None
-        else Some (il.DeclareLocal(returnTy))
+        match phaseBExit with
+        | Some pb -> pb.ResultLocal
+        | None    ->
+            if isVoidReturn then None
+            else Some (il.DeclareLocal(returnTy))
     ctx.ReturnLabel <- Some exitLabel
     ctx.ResultLocal <- resultLocal
 
@@ -1674,11 +1708,20 @@ let private emitFunctionBody
         | CCEnsures (cond, _) ->
             emitContractCheck ctx cond (sprintf "%s: ensures failed" fn.Name)
         | _ -> ()
+    match phaseBExit with
+    | Some pb ->
+        // Phase B: route exit through Leave NormalDone so the
+        // outer structural code (catch handler + SetResult + ret)
+        // can take over.  resultLocal carries the bare-typed
+        // value (kept by the body emit pipeline via ctx.ResultLocal).
+        // No ret here — the caller ends MoveNext with `Ret`.
+        il.Emit(OpCodes.Leave, pb.NormalDone)
+    | None ->
     match smInfo with
     | Some sm ->
-        // SM mode: emit the SetResult/Ret epilogue.  The user body
-        // produced its bare-typed value into `resultLocal` (or
-        // none, for void); the epilogue helper consumes it.
+        // SM Phase A: emit the SetResult/Ret epilogue.  The user
+        // body produced its bare-typed value into `resultLocal`
+        // (or none, for void); the epilogue helper consumes it.
         AsyncStateMachine.emitMoveNextEpilogue il sm resultLocal
     | None ->
         match resultLocal with
@@ -2523,11 +2566,42 @@ let private emitAssembly
                 match methodTable.TryGetValue arityKey with
                 | true, m -> m
                 | _       -> methodTable.[fn.Name]
-            let useSm =
+            // Phase A: async funcs whose body has no internal `await`.
+            let usePhaseA =
                 sg.IsAsync && AsyncStateMachine.isPhaseAEligible fn
-            if useSm then
-                // Synthesise SM, emit kickoff into the user's MB,
-                // then emit MoveNext into the SM's MoveNext slot.
+            // Phase B: async funcs with awaits at safe top-level
+            // statement positions, whose locals (if any) are simple-
+            // name bindings with type annotations we can resolve.
+            let phaseBSpecOpt =
+                if sg.IsAsync
+                   && (not usePhaseA)
+                   && AsyncStateMachine.isAsyncSmEligible fn
+                   && AsyncStateMachine.isPhaseB fn then
+                    match AsyncStateMachine.collectTopLevelLocals fn with
+                    | None -> None
+                    | Some locals ->
+                        // Locals must have annotations Phase B can
+                        // resolve; without them we don't know the
+                        // CLR field type.  Fall back to M1.4 if any
+                        // local is unannotated.
+                        let resolveCtx = GenericContext()
+                        let scratchDiags = ResizeArray<Diagnostic>()
+                        let resolved =
+                            locals
+                            |> List.choose (fun l ->
+                                match l.Annotation with
+                                | Some te ->
+                                    let lty =
+                                        Resolver.resolveType
+                                            symbols resolveCtx scratchDiags te
+                                    Some (l.Name, TypeMap.toClrTypeWith lookup lty)
+                                | None -> None)
+                        if List.length resolved = List.length locals then
+                            Some resolved
+                        else None
+                else None
+
+            if usePhaseA then
                 let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
                 let paramSpecs =
                     sg.Params
@@ -2537,21 +2611,13 @@ let private emitAssembly
                 let sm =
                     AsyncStateMachine.defineStateMachine
                         ctx.Module nsName fn.Name smCounter
-                        bareReturn paramSpecs
-                // Kickoff body — copy each method arg into the SM
-                // field of the same name, call builder.Start, return
-                // the builder's Task.
+                        bareReturn paramSpecs []
                 let argIndices =
                     sg.Params |> List.mapi (fun i _ -> i)
                 AsyncStateMachine.emitKickoff mb sm argIndices
-                // SetStateMachine — forwards to builder.SetStateMachine.
                 AsyncStateMachine.emitSetStateMachine sm
-                // MoveNext — runs the user body via the regular emit
-                // pipeline, with `SmFields` populated.  Since Phase A
-                // bodies have no internal awaits, MoveNext executes
-                // synchronously and falls through to SetResult.
                 emitFunctionBody
-                    sm.MoveNext (Some sm) fn sg lookup
+                    sm.MoveNext (Some sm) None fn sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
                     unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
@@ -2559,9 +2625,134 @@ let private emitAssembly
                     false None
                     programTy symbols codegenDiags
                 smTypesToFinalize.Add sm.Type
+            elif phaseBSpecOpt.IsSome then
+                // Phase B: real `AwaitUnsafeOnCompleted` suspend/resume
+                // protocol with state dispatch, exception flow through
+                // `SetException`, and locals promoted to fields so
+                // values survive cross-resume gaps.
+                let localSpecs = phaseBSpecOpt.Value
+                let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+                let paramSpecs =
+                    sg.Params
+                    |> List.map (fun p ->
+                        p.Name, paramClrType lookup Map.empty p)
+                smCounter <- smCounter + 1
+                let sm =
+                    AsyncStateMachine.defineStateMachine
+                        ctx.Module nsName fn.Name smCounter
+                        bareReturn paramSpecs localSpecs
+                let argIndices =
+                    sg.Params |> List.mapi (fun i _ -> i)
+                AsyncStateMachine.emitKickoff mb sm argIndices
+                AsyncStateMachine.emitSetStateMachine sm
+                // MoveNext — emit structural code (promote-load,
+                // dispatch, try/catch, SetResult) around the body.
+                let il = sm.MoveNext.GetILGenerator()
+                // Pre-allocate IL locals for promoted locals.  The
+                // body emit's `defineLocal` consumes these so the
+                // user's `val name : T = expr` reuses the same slot
+                // every MoveNext invocation.
+                let promotedShadows = ResizeArray<LocalBuilder * FieldBuilder>()
+                let preLocals = Dictionary<string, LocalBuilder>()
+                for pl in sm.PromotedLocals do
+                    let lb = il.DeclareLocal(pl.LocalType)
+                    promotedShadows.Add(lb, pl.LocalField)
+                    preLocals.[pl.LocalName] <- lb
+                // Define labels.
+                let awaitCount =
+                    AsyncStateMachine.collectAwaitInners fn |> List.length
+                let resumeLabels =
+                    Array.init awaitCount (fun _ -> il.DefineLabel())
+                let bodyStartLabel = il.DefineLabel()
+                let dispatchLabel = il.DefineLabel()
+                let normalDoneLabel = il.DefineLabel()
+                let afterTryLabel = il.DefineLabel()
+                // Pre-allocate result local for non-void returns.
+                let phaseBResultLocal =
+                    if sm.IsVoid then None
+                    else Some (il.DeclareLocal(bareReturn))
+                // Promote-load: SM fields → IL locals.
+                for (lb, fld) in promotedShadows do
+                    il.Emit(OpCodes.Ldarg_0)
+                    il.Emit(OpCodes.Ldfld, fld)
+                    il.Emit(OpCodes.Stloc, lb)
+                // Open try.
+                il.BeginExceptionBlock() |> ignore
+                // Br dispatch — defers state-dispatch emit until
+                // after the body so we can emit resume labels into
+                // the body inline.
+                il.Emit(OpCodes.Br, dispatchLabel)
+                // Body start.
+                il.MarkLabel(bodyStartLabel)
+                // SmAwaitInfo for the body.
+                let smAwaitInfo : AsyncStateMachine.SmAwaitInfo =
+                    { Sm                = sm
+                      NextAwaitIndex    = 0
+                      AwaiterFields     = Dictionary()
+                      ResumeLabels      = resumeLabels
+                      SuspendLeaveLabel = afterTryLabel
+                      PromotedShadows   = promotedShadows }
+                let phaseBExit : PhaseBExit =
+                    { NormalDone  = normalDoneLabel
+                      AwaitInfo   = smAwaitInfo
+                      PreLocals   = preLocals
+                      ResultLocal = phaseBResultLocal }
+                emitFunctionBody
+                    sm.MoveNext (Some sm) (Some phaseBExit) fn sg lookup
+                    methodTable funcSigsTable recordTable enumTable enumCases
+                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    importedRecordTable importedUnionTable importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable externTypeNames
+                    false None
+                    programTy symbols codegenDiags
+                // Dispatch.
+                il.MarkLabel(dispatchLabel)
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldfld, sm.State)
+                il.Emit(OpCodes.Switch, resumeLabels)
+                il.Emit(OpCodes.Br, bodyStartLabel)
+                // Catch.
+                il.BeginCatchBlock(typeof<System.Exception>)
+                let exLocal = il.DeclareLocal(typeof<System.Exception>)
+                il.Emit(OpCodes.Stloc, exLocal)
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldc_I4, -2)
+                il.Emit(OpCodes.Stfld, sm.State)
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldflda, sm.Builder)
+                il.Emit(OpCodes.Ldloc, exLocal)
+                let setException =
+                    match Option.ofObj (sm.BuilderType.GetMethod("SetException")) with
+                    | Some m -> m
+                    | None ->
+                        failwithf "BCL: %s.SetException not found" sm.BuilderType.Name
+                il.Emit(OpCodes.Call, setException)
+                il.Emit(OpCodes.Leave, afterTryLabel)
+                il.EndExceptionBlock()
+                // Normal done: SetResult.
+                il.MarkLabel(normalDoneLabel)
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldc_I4, -2)
+                il.Emit(OpCodes.Stfld, sm.State)
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldflda, sm.Builder)
+                match phaseBResultLocal with
+                | Some loc -> il.Emit(OpCodes.Ldloc, loc)
+                | None     -> ()
+                let setResult =
+                    match Option.ofObj (sm.BuilderType.GetMethod("SetResult")) with
+                    | Some m -> m
+                    | None ->
+                        failwithf "BCL: %s.SetResult not found" sm.BuilderType.Name
+                il.Emit(OpCodes.Call, setResult)
+                il.Emit(OpCodes.Br, afterTryLabel)
+                // After try.
+                il.MarkLabel(afterTryLabel)
+                il.Emit(OpCodes.Ret)
+                smTypesToFinalize.Add sm.Type
             else
                 emitFunctionBody
-                    mb None fn sg lookup
+                    mb None None fn sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
                     unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
@@ -2576,7 +2767,7 @@ let private emitAssembly
             // type (which we just set in Pass A.5).
             let selfTy = mb.DeclaringType
             emitFunctionBody
-                mb None fd sg lookup
+                mb None None fd sg lookup
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup

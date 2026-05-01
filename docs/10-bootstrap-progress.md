@@ -1512,32 +1512,216 @@ emitter now produces spec-correct state-machine IL ready to layer
 real suspension on top of, replacing the M1.4 `Task.FromResult`
 shape that Phase B can't extend.
 
+
+### D-progress-034: C2 Phase B — real `AwaitUnsafeOnCompleted` suspend/resume protocol
+*claude/c2-async-implementation-ZGU95 branch.*  Builds on Phase A
+(D-progress-033).  `async func` whose body contains `await`
+expressions at safe top-level statement positions now uses the
+real Roslyn-equivalent suspend/resume protocol — values that need
+to survive across an `await` are promoted to SM fields, the awaiter
+is stashed in a per-site field, and `AwaitUnsafeOnCompleted` is
+called against the BCL builder.
+
+**What ships.**  An `async func` like
+
+```lyric
+async func sleeps(ms: in Int): Unit {
+  await Task.Delay(ms)
+  println("woke")
+}
+```
+
+now lowers to a state-machine class whose `MoveNext` does:
+
+```il
+.method MoveNext()
+{
+  // (no promoted locals here — empty body locals)
+  .try {
+    Br Ldispatch
+    LbodyStart:
+    // emit `Task.Delay(ms)` — pushes Task on the stack
+    callvirt Task::GetAwaiter()
+    stloc awaiter
+    ldloca awaiter
+    call TaskAwaiter::get_IsCompleted()
+    brtrue Lafter_0
+    // suspend path
+    ldarg.0  ldc.i4.0  stfld <>1__state
+    ldarg.0  ldloc awaiter  stfld <>u__1
+    var smRef = this  // local copy for `ref this` semantics
+    ldarg.0
+    ldflda <>t__builder
+    ldarg.0  ldflda <>u__1
+    ldloca smRef
+    call AsyncTaskMethodBuilder::AwaitUnsafeOnCompleted<TaskAwaiter, SM>
+    Leave LafterTry
+    // resume label (target of state-dispatch switch)
+    Lresume_0:
+    ldarg.0  ldfld <>u__1  stloc awaiter
+    ldarg.0  ldflda <>u__1  initobj TaskAwaiter
+    ldarg.0  ldc.i4.m1  stfld <>1__state
+    Lafter_0:
+    ldloca awaiter  call TaskAwaiter::GetResult()
+    // … println("woke") …
+    Leave LnormalDone
+    Ldispatch:
+    ldarg.0  ldfld <>1__state
+    switch [Lresume_0]
+    Br LbodyStart
+  }
+  .catch [Exception] {
+    stloc ex
+    ldarg.0  ldc.i4 -2  stfld <>1__state
+    ldarg.0  ldflda <>t__builder
+    ldloc ex
+    call AsyncTaskMethodBuilder::SetException
+    Leave LafterTry
+  }
+  LnormalDone:
+  ldarg.0  ldc.i4 -2  stfld <>1__state
+  ldarg.0  ldflda <>t__builder
+  // [ldloc resultLocal if non-void]
+  call AsyncTaskMethodBuilder::SetResult
+  Br LafterTry
+  LafterTry:
+  ret
+}
+```
+
+The structure mirrors Roslyn's class-mode debug emission.  Every
+`await` claims a state index `N`, lazily defines an `<>u__<N+1>`
+awaiter field on the SM, and marks a resume label inside the try
+that the state-dispatch switch targets when re-entering MoveNext
+after suspension.
+
+**Eligibility (Phase B-safe positions).**  An `async func` is
+routed through Phase B when:
+
+- Top-level (caller responsibility).
+- Non-generic (closed-generic SM emit on `TypeBuilder` is Phase
+  B+ work).
+- No `@externTarget` annotation (FFI bypasses the body).
+- Every `EAwait` in the body is at a safe position: directly the
+  expression of a top-level `SExpr` / `SThrow` / `SReturn` /
+  `SAssign` / `SLocal` init, or the entire expression body.
+  Awaits inside sub-expressions (`1 + await foo()`,
+  `match await foo()`, `f(await g())`) require IL stack-spilling
+  that Phase B doesn't yet do.
+- All top-level `val`/`let`/`var` locals use simple-name binding
+  (no destructuring) and have type annotations (so promotion to
+  field has a known CLR storage type).
+
+Async funcs that fail any of these gates keep the M1.4
+`Task.FromResult` / blocking-shim path until Phase B+ extends the
+safe-position grammar.
+
+**Promoted locals.**  Every top-level local with a type annotation
+gets a sibling SM field (`<l>__<name>`).  At MoveNext entry the
+field's value is loaded into a regular IL local; at every suspend
+site the IL local is flushed back to the field so the value
+survives the cross-resume gap.  Body codegen still reads/writes
+via `Ldloc`/`Stloc` on the IL local — promotion is invisible to
+the regular emit pipeline (no `EPath` handler changes for locals).
+Parameters keep the Phase A `Ldarg.0; Ldfld` access pattern via
+`SmFields`.
+
+**Implementation outline.**
+- `AsyncStateMachine.fs` gains `allAwaitsSafe` / `isPhaseB`
+  predicates plus `collectAwaitInners` / `collectTopLevelLocals`
+  pre-pass collectors.  `defineStateMachine` accepts a list of
+  `(name, type)` local specs and pre-allocates an SM field per
+  local; awaiter fields are defined *lazily* during `MoveNext`
+  emit via `defineAwaiterField` because the awaiter type isn't
+  known until `emitExpr` on the inner task expression returns.
+- `Codegen.FunctionCtx` gains an `SmAwaitInfo` slot.  When set,
+  the `EAwait` handler emits the suspend/resume IL pattern
+  instead of the M1.4 blocking shim.  A `PreAllocatedLocals` map
+  lets `defineLocal` reuse pre-declared IL locals for promoted
+  locals (so the body's `SLet x = …` Stloc targets the right
+  shadow slot).
+- `Emitter.fs` Pass B routes Phase B-eligible funcs through
+  `defineStateMachine` (with local specs), then orchestrates
+  MoveNext emission: promote-load → open try → `Br dispatch` →
+  body via `emitFunctionBody` (with `phaseBExit` set so the
+  exit-label code routes through `Leave NormalDone`) → mark
+  dispatch → switch + `Br bodyStart` → catch handler with
+  `SetException` → mark NormalDone with `SetResult` → mark
+  AfterTry with `Ret`.
+- The `AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>` call
+  passes `ref this` via a stack-local copy of `this` (`var sm =
+  this; ldloca sm`) — required because the SM is a class
+  reference, and `Ldarg_0` would push the reference value, not
+  its address.
+
+**Bootstrap-grade scope (Phase B remaining work).**
+- Awaits inside `try`/`catch`/`defer`/`match` arms / loop
+  bodies — the resume label has to enter the protected region
+  correctly, which requires reusing the existing defer / try-leave
+  plumbing from D-progress-001.  Today these fall back to M1.4.
+- Awaits nested in sub-expressions (`f(await g())`) — IL stack
+  must be empty at suspend; needs spill-to-temp transformation.
+- Async impl methods (instance methods on records / opaque
+  types).
+- Async generic funcs (closed-generic SM emit on `TypeBuilder`).
+
+**Tests.**  Five new behavioural cases in `AsyncTests.fs`:
+
+- `phaseB_await_inner_async_void` — await of a Lyric Phase A
+  async func; synchronously-completed Task → fast path through
+  the suspend/resume IL.
+- `phaseB_two_awaits_void` — two await sites → state indices 0
+  and 1, two resume labels, two awaiter fields.
+- `phaseB_await_returns_int` — non-Unit return; result local
+  feeds `SetResult<int>`.
+- `phaseB_real_task_delay_suspends` — `await Task.Delay(ms)` via
+  auto-FFI on `extern type Task`.  `Task.Delay(10)` returns a
+  Task that's NOT pre-completed, so the runtime executes the
+  full suspend/resume cycle (`AwaitUnsafeOnCompleted` schedules
+  a continuation, MoveNext returns, timer fires, MoveNext is
+  re-entered with state == 0, dispatch jumps to the resume
+  label, awaiter is reloaded from its field, GetResult runs,
+  body continues to `SetResult`).  This is the canonical
+  validation that the IL emits a *working* suspension protocol,
+  not just the structural shape.
+- `phaseB_promoted_local_across_await` — `val x: Int = …`
+  declared before an `await`, read after.  Validates the
+  field-shadow protocol: at MoveNext entry the field is loaded
+  into the IL local, at suspend the IL local is flushed to the
+  field, after resume MoveNext re-entry pulls the field's saved
+  value back into the IL local for the post-await read.
+
+All 342 emitter tests pass (was 340; +5 new).  Lexer/Parser/
+TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
+tests pass.
+
 ---
 
 ## C2 — real async state machines: status
 
-C2 is a 2-4 week focused effort per the C2 decision
-(D-progress-024).  Per **D-progress-033** (this branch), Phase A of
-that plan ships in `claude/c2-async-implementation-ZGU95`: real
-`IAsyncStateMachine` synthesis for the *await-free async body*
-subset.  Phase B (real `AwaitUnsafeOnCompleted` suspend/resume) is
-the next focused PR.
+C2 is a multi-phase effort per the C2 decision (D-progress-024).
+Phase A (D-progress-033) and Phase B (D-progress-034) have shipped.
+Phase C (cancellation, structured concurrency) and Phase B+
+extensions (await inside try/catch/defer/match, async impl methods,
+async generics) are the remaining work.
 
 The infrastructure pieces touched by C2:
 
-| Piece | Phase A status |
+| Piece | Status |
 |---|---|
-| 1. State-machine class synthesis per `async func` | **Shipped (await-free bodies only)** |
-| 2. `<>1__state` / `<>t__builder` fields, parameters as fields | **Shipped** |
-| 3. Kickoff calls `builder.Start<SM>` and returns `builder.Task` | **Shipped** |
-| 4. `MoveNext` runs body and calls `SetResult` on completion | **Shipped** |
-| 5. `IAsyncStateMachine.SetStateMachine` forwards to builder | **Shipped** |
-| 6. Locals-that-cross-`await` promoted to fields | Phase B |
-| 7. `MoveNext` state-dispatch + `AwaitUnsafeOnCompleted` resume | Phase B |
-| 8. Exception flow through `SetException` | Phase B |
-| 9. `try`/`catch` / `defer` regions that span an `await` | Phase B |
-| 10. `CancellationToken` propagation | Phase C |
+| 1. State-machine class synthesis per `async func` | **Shipped (Phase A)** |
+| 2. `<>1__state` / `<>t__builder` fields, parameters as fields | **Shipped (Phase A)** |
+| 3. Kickoff calls `builder.Start<SM>` and returns `builder.Task` | **Shipped (Phase A)** |
+| 4. `MoveNext` runs body and calls `SetResult` on completion | **Shipped (Phase A)** |
+| 5. `IAsyncStateMachine.SetStateMachine` forwards to builder | **Shipped (Phase A)** |
+| 6. Locals-that-cross-`await` promoted to fields | **Shipped (Phase B, top-level only)** |
+| 7. `MoveNext` state-dispatch + `AwaitUnsafeOnCompleted` resume | **Shipped (Phase B)** |
+| 8. Exception flow through `SetException` | **Shipped (Phase B)** |
+| 9. `try`/`catch` / `defer` regions that span an `await` | Phase B+ |
+| 10. Match arms / control flow that span an `await` | Phase B+ |
+| 11. Async impl methods + async generics | Phase B+ |
+| 12. `CancellationToken` propagation | Phase C |
 
 Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
-lifetimes) are gated on Phase B / C landing.  Tier 6 items (CST
+lifetimes) are gated on Phase C landing.  Tier 6 items (CST
 formatter, format5+, Regex RE2, C4 phase 2/3) are on-demand.

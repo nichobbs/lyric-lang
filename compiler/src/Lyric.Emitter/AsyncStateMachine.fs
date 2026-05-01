@@ -30,6 +30,7 @@ open System.Collections.Generic
 open System.Reflection
 open System.Reflection.Emit
 open System.Runtime.CompilerServices
+open Lyric.Lexer
 open Lyric.Parser.Ast
 
 /// Walk a function body looking for any `EAwait` expression.  An
@@ -109,22 +110,209 @@ let bodyContainsAwait (fn: FunctionDecl) : bool =
     | Some (FBExpr e) -> exprHasAwait e
     | Some (FBBlock b) -> blockHasAwait b
 
-/// Returns true when this async function is eligible for Phase A
-/// state-machine lowering.  Currently:
-///   * top-level (handled at call site — caller passes only top-level fns)
-///   * non-generic (Reflection.Emit closed-generic Start/SetResult plumbing
-///     is Phase B work)
+/// Phase B safe-position checker: every `EAwait` in the body must
+/// appear at a "top-level" statement position so the IL stack is
+/// empty at the suspend point.  Awaits inside sub-expressions
+/// (e.g. `1 + await foo()`, `match await foo()`, `f(await g())`)
+/// would require stack-spilling that Phase B doesn't yet do.
+///
+/// Safe positions:
+///   * `EAwait inner` as the entire expression body of an FBExpr.
+///   * `EAwait inner` as the immediate Init of a top-level
+///     `val`/`let`/`var` declaration.
+///   * `EAwait inner` as the immediate Value of a top-level
+///     `SAssign` / `SReturn (Some _)`.
+///   * `EAwait inner` as the entire expression of a top-level
+///     `SExpr` / `SThrow`.
+///
+/// `inner` itself must contain no nested awaits (so the stack is
+/// empty at the suspend's `Leave`).
+///
+/// Statements that don't introduce sub-expression contexts —
+/// `SBreak`, `SContinue`, `SReturn None`, `SItem` — are always
+/// safe.  Statements that introduce nested control flow — `STry`,
+/// `SDefer`, `SFor`, `SWhile`, `SLoop`, `SScope` — are unsafe iff
+/// they (transitively) contain an `EAwait`.  Phase B+ will lift
+/// those restrictions piece by piece.
+let private isAwaitForm (e: Expr) : bool =
+    match e.Kind with
+    | EAwait inner -> not (exprHasAwait inner)
+    | _            -> false
+
+let private isSafeExprPosition (e: Expr) : bool =
+    isAwaitForm e || not (exprHasAwait e)
+
+let private isSafeStmt (s: Statement) : bool =
+    match s.Kind with
+    | SExpr e | SThrow e -> isSafeExprPosition e
+    | SLocal (LBVal (_, _, init))
+    | SLocal (LBLet (_, _, init))
+    | SLocal (LBVar (_, _, Some init)) -> isSafeExprPosition init
+    | SLocal (LBVar (_, _, None)) -> true
+    | SAssign (target, _, value) ->
+        not (exprHasAwait target) && isSafeExprPosition value
+    | SReturn None | SBreak _ | SContinue _ | SItem _ | SRule _ -> true
+    | SReturn (Some e) -> isSafeExprPosition e
+    | STry _ | SDefer _ | SFor _ | SWhile _ | SLoop _ | SScope _ ->
+        not (stmtHasAwait s)
+
+let allAwaitsSafe (fn: FunctionDecl) : bool =
+    match fn.Body with
+    | None -> true
+    | Some (FBExpr e) -> isSafeExprPosition e
+    | Some (FBBlock blk) -> blk.Statements |> List.forall isSafeStmt
+
+/// Returns true when this async function is eligible for the SM
+/// lowering (covers both Phase A — await-free body — and Phase B —
+/// awaits at safe top-level positions).  Currently:
+///   * top-level (caller responsibility)
+///   * non-generic
 ///   * non-instance (caller responsibility)
-///   * no internal `await`
-///   * no `@externTarget` annotation (FFI bypasses the body entirely)
-let isPhaseAEligible (fn: FunctionDecl) : bool =
+///   * either no body await (Phase A) or every await is at a safe
+///     top-level position (Phase B)
+///   * no `@externTarget` annotation
+let isAsyncSmEligible (fn: FunctionDecl) : bool =
     fn.Generics.IsNone
-    && not (bodyContainsAwait fn)
+    && allAwaitsSafe fn
     && not (fn.Annotations
             |> List.exists (fun a ->
                 match a.Name.Segments with
                 | ["externTarget"] -> true
                 | _ -> false))
+
+/// Phase A vs Phase B distinguisher (caller side decides which
+/// codegen path to take).  Phase B fires when the body contains
+/// awaits AND every await is at a safe position; Phase A fires
+/// when the body has no awaits.  When both predicates fire, the
+/// function is Phase A (the await-free path is simpler).
+let isPhaseB (fn: FunctionDecl) : bool =
+    bodyContainsAwait fn && allAwaitsSafe fn
+
+/// Legacy alias preserved so the M1.4 → Phase A migration in
+/// `Emitter.fs` keeps compiling.  Equivalent to "Phase A only" —
+/// caller routes Phase B separately.
+let isPhaseAEligible (fn: FunctionDecl) : bool =
+    isAsyncSmEligible fn && not (bodyContainsAwait fn)
+
+/// Walk the body and return the inner-task expressions of every
+/// `EAwait` in source order.  Phase B's pre-pass uses this to
+/// peek the awaiter type for each suspension point.  Awaits
+/// inside nested protected regions / non-safe positions never
+/// reach this function because `isPhaseB` is false for those
+/// functions; defensively the walk still descends into all sub-
+/// expressions so the collector works on any AST shape.
+let collectAwaitInners (fn: FunctionDecl) : Expr list =
+    let acc = ResizeArray<Expr>()
+    let rec walkExpr (e: Expr) : unit =
+        match e.Kind with
+        | EAwait inner ->
+            acc.Add inner
+            walkExpr inner
+        | ELiteral _ | EPath _ | ESelf | EResult | EError -> ()
+        | EInterpolated segs ->
+            for s in segs do
+                match s with
+                | ISText _ -> ()
+                | ISExpr e -> walkExpr e
+        | EParen e | ESpawn e | EOld e | EPropagate e | ETry e -> walkExpr e
+        | ETuple es | EList es -> for e in es do walkExpr e
+        | EIf (c, t, eOpt, _) ->
+            walkExpr c
+            walkBranch t
+            match eOpt with Some b -> walkBranch b | None -> ()
+        | EMatch (s, arms) ->
+            walkExpr s
+            for a in arms do
+                match a.Guard with Some g -> walkExpr g | None -> ()
+                walkBranch a.Body
+        | EForall (_, where, body) | EExists (_, where, body) ->
+            match where with Some w -> walkExpr w | None -> ()
+            walkExpr body
+        | ELambda (_, blk) -> walkBlock blk
+        | ECall (f, args) ->
+            walkExpr f
+            for a in args do
+                match a with
+                | CANamed (_, v, _) -> walkExpr v
+                | CAPositional v    -> walkExpr v
+        | ETypeApp (f, _) -> walkExpr f
+        | EIndex (r, idxs) ->
+            walkExpr r
+            for i in idxs do walkExpr i
+        | EMember (r, _) -> walkExpr r
+        | EPrefix (_, op) -> walkExpr op
+        | EBinop (_, l, r) -> walkExpr l; walkExpr r
+        | ERange rb ->
+            match rb with
+            | RBClosed (a, b) | RBHalfOpen (a, b) -> walkExpr a; walkExpr b
+            | RBLowerOpen a | RBUpperOpen a       -> walkExpr a
+        | EAssign (t, _, v) -> walkExpr t; walkExpr v
+        | EBlock b -> walkBlock b
+    and walkBranch (eob: ExprOrBlock) =
+        match eob with
+        | EOBExpr e  -> walkExpr e
+        | EOBBlock b -> walkBlock b
+    and walkBlock (b: Block) =
+        for s in b.Statements do walkStmt s
+    and walkStmt (s: Statement) =
+        match s.Kind with
+        | SExpr e | SThrow e -> walkExpr e
+        | SReturn (Some e) -> walkExpr e
+        | SReturn None | SBreak _ | SContinue _ -> ()
+        | SAssign (t, _, v) -> walkExpr t; walkExpr v
+        | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> walkExpr e
+        | SLocal (LBVar (_, _, Some e)) -> walkExpr e
+        | SLocal (LBVar (_, _, None)) -> ()
+        | STry (body, catches) ->
+            walkBlock body
+            for c in catches do walkBlock c.Body
+        | SDefer b | SScope (_, b) | SLoop (_, b) -> walkBlock b
+        | SFor (_, _, iter, body) -> walkExpr iter; walkBlock body
+        | SWhile (_, cond, body) -> walkExpr cond; walkBlock body
+        | SRule (lhs, rhs) -> walkExpr lhs; walkExpr rhs
+        | SItem _ -> ()
+    match fn.Body with
+    | None -> ()
+    | Some (FBExpr e) -> walkExpr e
+    | Some (FBBlock b) -> walkBlock b
+    List.ofSeq acc
+
+/// Collect top-level locals (`val`/`let`/`var name [: T] = …`) from
+/// the function body.  Phase B promotes every top-level local to
+/// an SM field.  Returns each local as `(name, typeAnnotationOpt)`
+/// in source order; nested declarations inside conditionals or
+/// loops are not currently promoted (Phase B+ work).  Locals
+/// whose binding pattern isn't a simple `name` (tuple destructure,
+/// pattern match) come back as `None` and disqualify the function
+/// from Phase B (caller checks for `None` to fall back to M1.4).
+type CollectedLocal =
+    { Name:        string
+      Annotation:  TypeExpr option
+      /// True when the binding is a `var` (mutable); informational only.
+      IsMutable:   bool
+      Span:        Span }
+
+let collectTopLevelLocals (fn: FunctionDecl) : CollectedLocal list option =
+    // Returns None if any local binding isn't a simple `name`.
+    let acc = ResizeArray<CollectedLocal>()
+    let mutable bail = false
+    let visit (s: Statement) =
+        match s.Kind with
+        | SLocal (LBVal ({ Kind = PBinding (name, None) }, ann, _)) ->
+            acc.Add { Name = name; Annotation = ann; IsMutable = false; Span = s.Span }
+        | SLocal (LBLet (name, ann, _)) ->
+            acc.Add { Name = name; Annotation = ann; IsMutable = false; Span = s.Span }
+        | SLocal (LBVar (name, ann, _)) ->
+            acc.Add { Name = name; Annotation = ann; IsMutable = true; Span = s.Span }
+        | SLocal _ -> bail <- true
+        | _ -> ()
+    let walkBlock (b: Block) =
+        for s in b.Statements do visit s
+    match fn.Body with
+    | None -> ()
+    | Some (FBExpr _) -> ()
+    | Some (FBBlock b) -> walkBlock b
+    if bail then None else Some (List.ofSeq acc)
 
 // ---------------------------------------------------------------------------
 // State-machine info shared across the three emit phases.
@@ -142,6 +330,17 @@ type SmParamField =
       Field: FieldBuilder
       /// CLR storage type (the "stripped" type — non-byref).
       Type:  Type }
+
+/// One promoted local — Lyric `val`/`let`/`var` whose lifetime
+/// straddles an `await`.  Stored as an SM field so its value
+/// survives `MoveNext` re-entries.  At MoveNext entry the field's
+/// value is copied into a regular IL local; at every suspend
+/// point (just before `AwaitUnsafeOnCompleted`) the IL local is
+/// copied back to the field.
+type SmPromotedLocal =
+    { LocalName:  string
+      LocalField: FieldBuilder
+      LocalType:  Type }
 
 /// Everything codegen needs to wire a state machine.
 type StateMachineInfo =
@@ -163,10 +362,56 @@ type StateMachineInfo =
       IsVoid: bool
       /// One field per parameter, in order.
       ParamFields: SmParamField list
+      /// One field per promoted local (Phase B only); `[]` for Phase A.
+      PromotedLocals: SmPromotedLocal list
       /// `MoveNext` method header.
       MoveNext: MethodBuilder
       /// `IAsyncStateMachine.SetStateMachine` method header.
       SetStateMachine: MethodBuilder }
+
+/// Per-MoveNext context threaded into `Codegen.FunctionCtx` so the
+/// `EAwait` handler can switch from the M1.4 blocking shim to the
+/// real Phase B suspend/resume protocol.  Populated by `Emitter.fs`
+/// at the start of MoveNext emission and consumed by Codegen each
+/// time it descends into an `EAwait` node.
+type SmAwaitInfo =
+    { /// The owning state machine.
+      Sm: StateMachineInfo
+      /// Counter incremented on each `EAwait` emit; the next slot
+      /// (state index) to allocate.  Tied to source-order traversal
+      /// of the body.
+      mutable NextAwaitIndex: int
+      /// Awaiter fields, populated lazily as each `EAwait` emits.
+      /// Keyed by state index (`0`..N-1`).  Lazy because the
+      /// awaiter type is only known after `emitExpr` on the inner
+      /// task expression returns its CLR type.
+      AwaiterFields: Dictionary<int, FieldBuilder>
+      /// One label per state index, pre-defined at MoveNext entry
+      /// and marked at the resume point inside the body during
+      /// `EAwait` emit.  The state-dispatch switch at MoveNext
+      /// entry targets these labels.
+      ResumeLabels: Label[]
+      /// The label suspend `leave`s to: jumps past the entire
+      /// try/catch + SetResult block, straight to the `ret`.
+      SuspendLeaveLabel: Label
+      /// Promoted-local IL-local + SM-field pairs.  At every suspend
+      /// point, each IL local is flushed to its field (`Ldarg.0;
+      /// Ldloc; Stfld`) so the value survives the cross-resume gap.
+      /// At MoveNext entry, fields are loaded back into the IL
+      /// locals (`Ldarg.0; Ldfld; Stloc`).  Body codegen still
+      /// reads/writes via `Ldloc`/`Stloc` on the IL local — promotion
+      /// is invisible to the regular emit pipeline.
+      PromotedShadows: ResizeArray<LocalBuilder * FieldBuilder> }
+
+/// Lazily define an awaiter field on the SM for the next state
+/// index.  Called from `EAwait` emit when each new state index is
+/// encountered.  Field name follows the C# Roslyn convention
+/// (`<>u__1`, `<>u__2`, …).
+let defineAwaiterField (sm: StateMachineInfo) (stateIndex: int) (awaiterTy: Type) : FieldBuilder =
+    sm.Type.DefineField(
+        sprintf "<>u__%d" (stateIndex + 1),
+        awaiterTy,
+        FieldAttributes.Public)
 
 let private iAsmType : Type = typeof<IAsyncStateMachine>
 
@@ -178,13 +423,20 @@ let private builderTypeFor (bareReturn: Type) (isVoid: bool) : Type =
 /// added as a top-level type on the module (distinct from the
 /// `<Program>` class) so it can be sealed independently.  Naming:
 /// `<funcName>__SM` plus a uniqueness suffix when overloads collide.
+///
+/// `localSpecs` is the list of (name, clrType) pairs for promoted
+/// locals (Phase B).  `[]` for a Phase A function.  Awaiter fields
+/// are defined lazily during MoveNext emit via
+/// `defineAwaiterField` because the awaiter's CLR type is only
+/// known after the inner task expression has been emitted.
 let defineStateMachine
         (md: ModuleBuilder)
         (nsName: string)
         (funcName: string)
         (uniq: int)
         (bareReturn: Type)
-        (paramSpecs: (string * Type) list) : StateMachineInfo =
+        (paramSpecs: (string * Type) list)
+        (localSpecs: (string * Type) list) : StateMachineInfo =
     let isVoid = bareReturn = typeof<Void>
     let builderTy = builderTypeFor bareReturn isVoid
     let typeName =
@@ -219,6 +471,22 @@ let defineStateMachine
                 else ty
             let f = tb.DefineField(name, storeTy, FieldAttributes.Public)
             { Name = name; Field = f; Type = storeTy })
+
+    let promotedLocals =
+        localSpecs
+        |> List.map (fun (name, ty) ->
+            let storeTy : Type =
+                if ty.IsByRef then
+                    match Option.ofObj (ty.GetElementType()) with
+                    | Some t -> t
+                    | None   -> ty
+                else ty
+            let f =
+                tb.DefineField(
+                    "<l>__" + name,
+                    storeTy,
+                    FieldAttributes.Public)
+            { LocalName = name; LocalField = f; LocalType = storeTy })
 
     let moveNext =
         tb.DefineMethod(
@@ -263,6 +531,7 @@ let defineStateMachine
       BareReturn      = bareReturn
       IsVoid          = isVoid
       ParamFields     = paramFields
+      PromotedLocals  = promotedLocals
       MoveNext        = moveNext
       SetStateMachine = setSm }
 

@@ -84,6 +84,97 @@ func main(): Unit {
 }
 """,
     "23"
+
+    "phaseB_await_inner_async_void",
+    // Phase B: async func body contains an `await` of another
+    // Lyric async function.  The inner is Phase A (sync body), so
+    // `inner().GetAwaiter().IsCompleted` is true and execution
+    // takes the fast path through the suspend/resume protocol —
+    // exercises the IL shape (state-dispatch switch, awaiter
+    // field, after-await label) without actually suspending.
+    """
+package E14
+async func inner(): Unit { println("inner") }
+async func outer(): Unit {
+  await inner()
+  println("outer")
+}
+func main(): Unit {
+  await outer()
+}
+""",
+    "inner\nouter"
+
+    "phaseB_two_awaits_void",
+    // Two await sites → state indices 0 and 1, two resume labels.
+    """
+package E14
+async func ping(): Unit { println("ping") }
+async func twoAwaits(): Unit {
+  await ping()
+  await ping()
+}
+func main(): Unit {
+  await twoAwaits()
+}
+""",
+    "ping\nping"
+
+    "phaseB_await_returns_int",
+    // Non-Unit return: `await` of a Task<Int> exercises the
+    // generic awaiter path + the result_local SetResult sequence.
+    """
+package E14
+async func mkValue(): Int = 42
+async func passes(): Int {
+  await mkValue()
+}
+func main(): Unit {
+  println(await passes())
+}
+""",
+    "42"
+
+    "phaseB_real_task_delay_suspends",
+    // Real BCL Task.Delay via auto-FFI on `extern type Task`.
+    // Task.Delay(ms) returns a Task that's NOT pre-completed when
+    // ms > 0, so the suspend/resume path runs end-to-end (state
+    // saved, AwaitUnsafeOnCompleted called, MoveNext re-entered
+    // when the timer fires).  Validates the IL emits a working
+    // suspension protocol — not just the structural shape.
+    """
+package E14
+extern type Task = "System.Threading.Tasks.Task"
+async func sleeps(ms: in Int): Unit {
+  await Task.Delay(ms)
+  println("woke")
+}
+func main(): Unit {
+  await sleeps(10)
+}
+""",
+    "woke"
+
+    "phaseB_promoted_local_across_await",
+    // Promoted local `val x` is read after an await — exercises
+    // the field-shadow protocol.  Body sequence:
+    //   1. Compute x = 21 + 21 (pre-await; stored to IL local +
+    //      flushed to SM field at suspend).
+    //   2. await ping() — synchronously completed, fast path.
+    //   3. Read x (loaded from IL local — value preserved).
+    """
+package E14
+async func ping(): Unit { println("ping") }
+async func computeAcrossAwait(): Unit {
+  val x: Int = 21 + 21
+  await ping()
+  println(x)
+}
+func main(): Unit {
+  await computeAcrossAwait()
+}
+""",
+    "ping\n42"
 ]
 
 let private behavioral =

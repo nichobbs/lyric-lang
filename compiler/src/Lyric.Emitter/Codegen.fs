@@ -130,7 +130,18 @@ type FunctionCtx =
       /// any name in this map, `EPath`/`SAssign`/`peek` route through
       /// `Ldarg.0; Ldfld <field>` instead of the regular `Params`
       /// lookup.  Empty in non-SM contexts (the common case).
-      SmFields: Dictionary<string, FieldInfo> }
+      SmFields: Dictionary<string, FieldInfo>
+      /// Pre-allocated IL locals for promoted locals in Phase B
+      /// state machines.  Keyed by Lyric local name; consumed by
+      /// `defineLocal` so the body's `SLocal name` reuses the
+      /// pre-allocated slot (whose value is loaded from the SM
+      /// field at MoveNext entry and saved back at every suspend).
+      mutable PreAllocatedLocals: Dictionary<string, LocalBuilder>
+      /// Phase B suspend/resume context.  When set, `EAwait` emits
+      /// the real `AwaitUnsafeOnCompleted` suspend/resume protocol
+      /// instead of the M1.4 `GetAwaiter().GetResult()` blocking
+      /// shim.
+      mutable SmAwaitInfo: Lyric.Emitter.AsyncStateMachine.SmAwaitInfo option }
 
 module FunctionCtx =
 
@@ -197,7 +208,9 @@ module FunctionCtx =
           ResolveType  = resolveType
           Lookup       = lookup
           Diags        = diags
-          SmFields     = Dictionary() }
+          SmFields     = Dictionary()
+          PreAllocatedLocals = Dictionary()
+          SmAwaitInfo  = None }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -206,7 +219,15 @@ module FunctionCtx =
         ctx.Scopes.Pop() |> ignore
 
     let defineLocal (ctx: FunctionCtx) (name: string) (ty: ClrType) : LocalBuilder =
-        let lb = ctx.IL.DeclareLocal(ty)
+        // Phase B promoted locals: reuse the pre-allocated IL local
+        // declared at MoveNext entry (whose value is shadow-copied to
+        // an SM field at suspend / restored at resume).  Falls back
+        // to a fresh `DeclareLocal` for every other case (regular
+        // funcs, Phase A SM bodies, locals not in the promoted set).
+        let lb =
+            match ctx.PreAllocatedLocals.TryGetValue name with
+            | true, pre -> pre
+            | _         -> ctx.IL.DeclareLocal(ty)
         let frame = ctx.Scopes.Peek()
         frame.[name] <- lb
         lb
@@ -1037,16 +1058,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         | _ ->
             failwith "E12 codegen: 'self' used outside of an impl method"
 
-    // ---- await (blocking shim per D035) -------------------------------
+    // ---- await -------------------------------------------------------
+    // Two emit modes:
+    //   * `ctx.SmAwaitInfo = None` — M1.4 blocking shim.  Emit the
+    //     Task[T]-shaped value, call `GetAwaiter().GetResult()`,
+    //     propagate the unwrapped type.  Used in `main` and other
+    //     non-async call sites, plus async funcs whose body is
+    //     ineligible for state-machine lowering.
+    //   * `ctx.SmAwaitInfo = Some info` — Phase B suspend/resume
+    //     protocol.  Stash the awaiter, branch on `IsCompleted`;
+    //     if not completed, save state + awaiter to SM fields,
+    //     flush promoted-local IL locals to SM fields, call
+    //     `builder.AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>`,
+    //     `Leave` to the suspend exit; on resume, reload the
+    //     awaiter from its field, clear it, set state back to -1,
+    //     fall through to `GetResult`.
 
     | EAwait inner ->
-        // Per the M1.4 blocking shim: emit the Task[T]-shaped value,
-        // call GetAwaiter().GetResult() and propagate the unwrapped
-        // type. When the inner expression's static type is a
-        // TypeBuilder-instantiated generic Task<T> (because T is a
-        // user-defined record/union still under construction), we
-        // can't call .GetMethod on it directly — we have to go
-        // through `TypeBuilder.GetMethod(constructed, openMethod)`.
         let taskTy = emitExpr ctx inner
         let isClosedGenericOnTaskBuilder =
             taskTy.IsGenericType
@@ -1060,8 +1088,6 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             then taskTy.GetGenericArguments().[0]
             else typeof<System.Void>
         let resolveGenericTask () =
-            // For Task<TypeBuilder...> we need TypeBuilder.GetMethod
-            // with the open-generic method.
             let openGetAwaiter =
                 let mi = typedefof<System.Threading.Tasks.Task<_>>.GetMethod("GetAwaiter")
                 match Option.ofObj mi with
@@ -1069,8 +1095,6 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | None -> failwith "E14 codegen: Task<>.GetAwaiter open-generic not found"
             let closedGetAwaiter =
                 TypeBuilder.GetMethod(taskTy, openGetAwaiter)
-            // The awaiter type is TaskAwaiter<elemTy>; resolve
-            // GetResult on its open generic.
             let openAwaiterTy =
                 typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
             let closedAwaiterTy = openAwaiterTy.MakeGenericType([| elemTy |])
@@ -1100,9 +1124,104 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Callvirt, getAwaiter)
         let awLoc = FunctionCtx.defineLocal ctx "__awaiter" awaiterTy
         il.Emit(OpCodes.Stloc, awLoc)
-        il.Emit(OpCodes.Ldloca, awLoc)
-        il.Emit(OpCodes.Call, getResult)
-        returnedTy
+
+        match ctx.SmAwaitInfo with
+        | None ->
+            // Blocking shim — call GetResult directly.
+            il.Emit(OpCodes.Ldloca, awLoc)
+            il.Emit(OpCodes.Call, getResult)
+            returnedTy
+        | Some smAwait ->
+            let stateIndex = smAwait.NextAwaitIndex
+            smAwait.NextAwaitIndex <- stateIndex + 1
+            // Lazily define the awaiter SM field for this site —
+            // the awaiter type wasn't known until `emitExpr` on
+            // the inner task expression returned its CLR type.
+            let awaiterField =
+                Lyric.Emitter.AsyncStateMachine.defineAwaiterField
+                    smAwait.Sm stateIndex awaiterTy
+            smAwait.AwaiterFields.[stateIndex] <- awaiterField
+            let resumeLabel = smAwait.ResumeLabels.[stateIndex]
+            let afterAwait = il.DefineLabel()
+
+            // Resolve `IsCompleted` on the awaiter.
+            let isCompletedGetter =
+                match Option.ofObj (awaiterTy.GetProperty("IsCompleted")) with
+                | Some p ->
+                    match Option.ofObj (p.GetGetMethod()) with
+                    | Some g -> g
+                    | None   -> failwithf "E14 codegen: %s.get_IsCompleted missing" awaiterTy.Name
+                | None -> failwithf "E14 codegen: %s.IsCompleted property missing" awaiterTy.Name
+            il.Emit(OpCodes.Ldloca, awLoc)
+            il.Emit(OpCodes.Call, isCompletedGetter)
+            il.Emit(OpCodes.Brtrue, afterAwait)
+
+            // ---- suspend path ----
+            // this.<>1__state = N
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldc_I4, stateIndex)
+            il.Emit(OpCodes.Stfld, smAwait.Sm.State)
+            // this.<>u__N = awaiter
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldloc, awLoc)
+            il.Emit(OpCodes.Stfld, awaiterField)
+            // Flush promoted IL locals back to their SM fields so the
+            // values survive the cross-resume gap.
+            for (lb, fld) in smAwait.PromotedShadows do
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldloc, lb)
+                il.Emit(OpCodes.Stfld, fld)
+            // builder.AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref awaiter, ref this)
+            let openAwaitUnsafe =
+                smAwait.Sm.BuilderType.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = "AwaitUnsafeOnCompleted"
+                    && m.IsGenericMethodDefinition
+                    && m.GetGenericArguments().Length = 2)
+            let closedAwaitUnsafe =
+                match openAwaitUnsafe with
+                | Some m ->
+                    m.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+                | None ->
+                    failwithf "BCL: %s.AwaitUnsafeOnCompleted<,> not found"
+                        smAwait.Sm.BuilderType.Name
+            // For a class state machine, `ref TStateMachine` must
+            // be the address of a *local* holding the SM reference,
+            // not `this` directly (`Ldarg_0` is the reference value,
+            // not its address).  Roslyn-equivalent pattern:
+            //   var sm = this;  builder.AwaitUnsafeOnCompleted(... ref sm);
+            let smLocal =
+                FunctionCtx.defineLocal ctx "__this_sm" (smAwait.Sm.Type :> System.Type)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Stloc, smLocal)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldflda, smAwait.Sm.Builder)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldflda, awaiterField)
+            il.Emit(OpCodes.Ldloca, smLocal)
+            il.Emit(OpCodes.Call, closedAwaitUnsafe)
+            il.Emit(OpCodes.Leave, smAwait.SuspendLeaveLabel)
+
+            // ---- resume label ----
+            il.MarkLabel(resumeLabel)
+            // awaiter = this.<>u__N
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, awaiterField)
+            il.Emit(OpCodes.Stloc, awLoc)
+            // this.<>u__N = default(TAwaiter)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldflda, awaiterField)
+            il.Emit(OpCodes.Initobj, awaiterTy)
+            // this.<>1__state = -1
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldc_I4_M1)
+            il.Emit(OpCodes.Stfld, smAwait.Sm.State)
+
+            // ---- after-await label (joined fast/slow path) ----
+            il.MarkLabel(afterAwait)
+            il.Emit(OpCodes.Ldloca, awLoc)
+            il.Emit(OpCodes.Call, getResult)
+            returnedTy
 
     // ---- result (in ensures clauses) ----------------------------------
     // `result` is a contextual keyword: inside `ensures:` it names the
