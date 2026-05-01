@@ -891,3 +891,43 @@ func parseSign(s: in String, sign: out Int): Bool {
 
 1 new regression test in `OutParamTests.fs`.
 All 305 emitter tests pass.
+
+
+### D-progress-022: field-store assignments + inout-of-record-field-store
+*claude/stdlib-ergonomics branch.*  Two related codegen gaps closed:
+
+**`recv.field = value`.**  The codegen previously rejected any
+`SAssign` whose target wasn't a single-segment EPath or an `EIndex`,
+so `c.count = c.count + 1` on a local record produced an internal
+"assignment target not yet supported" diagnostic.  The new
+`EMember (recv, fieldName)` branch in the SAssign matcher walks
+`ctx.Records` to find the `FieldBuilder` and emits `Stfld`.  Walking
+the records dict instead of calling `recvTy.GetField` sidesteps the
+"The invoked member is not supported before the type is created"
+exception — the receiver TypeBuilder is still under construction
+during user-function emission.
+
+**`inout c: Record; c.field = ...`.**  The same code path now handles
+the byref case "for free": `emitExpr ctx recv` already auto-
+dereferences a byref-typed receiver via `Ldind.Ref` on read, so the
+write side just sees a normal class reference on the stack.
+
+```lyric
+record Counter { count: Int }
+
+func bump(c: inout Counter): Unit {
+  c.count = c.count + 1
+}
+
+func main(): Unit {
+  val c = Counter(count = 5)
+  bump(c); bump(c)
+  println(c.count)            // 7
+}
+```
+
+2 new tests in `OutParamTests.fs`:
+- `field_store_on_local_record`
+- `inout_record_field_store`
+
+All 307 emitter tests pass.

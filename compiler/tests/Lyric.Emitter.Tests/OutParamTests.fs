@@ -232,6 +232,44 @@ func main(): Unit {
 }
 """,
     "1"
+
+    // Plain field-store on a local record (not just inout) — the
+    // SAssign EMember branch uses ctx.Records to find the FieldBuilder
+    // because GetField on a still-under-construction TypeBuilder
+    // would throw.
+    "field_store_on_local_record",
+    """
+package OP12
+record Counter { count: Int }
+
+func main(): Unit {
+  val c = Counter(count = 5)
+  c.count = c.count + 1
+  c.count = c.count + 10
+  println(c.count)
+}
+""",
+    "16"
+
+    // inout-of-record + field-store: the receiver is a byref to a
+    // record reference; emitExpr on the receiver auto-dereferences.
+    "inout_record_field_store",
+    """
+package OP13
+record Counter { count: Int }
+
+func bump(c: inout Counter): Unit {
+  c.count = c.count + 1
+}
+
+func main(): Unit {
+  val c = Counter(count = 5)
+  bump(c)
+  bump(c)
+  println(c.count)
+}
+""",
+    "7"
 ]
 
 let tests =

@@ -62,25 +62,13 @@ than substituting the source's id field type.  Promoted to follow-up.
 
 ### B3. ~~`out`/`inout` on record fields and array elements~~ — shipped
 
-Already loosened.  Both array elements and record fields work as `out`
-parameter targets:
-
-```lyric
-val xs = [10, 20, 30]
-setIt(xs[1])               // OK — Ldelema
-
-record Pt { x: Int, y: Int }
-val p = Pt(x = 1, y = 2)
-setIt(p.x)                 // OK — Ldflda
-```
-
-Two regression tests in `OutParamTests.fs` (`out_array_element_target`
-and `out_record_field_target`).
-
-Reading a record field through an `inout` parameter
-(`func bump(c: inout Counter): Unit { c.count = c.count + 1 }`) is
-**still bootstrap-grade** — the codegen has a path issue for the
-write-through-byref-of-record-field case.  Tracked as a follow-up.
+Both array elements (`xs[i]`) and record fields (`r.f`) work as `out`
+parameter targets via `Ldelema` / `Ldflda`.  The `inout`-of-record
+field-store case (`func bump(c: inout Counter): Unit { c.count = ... }`)
+also works now via the new `SAssign EMember` branch in codegen that
+walks `ctx.Records` to find the `FieldBuilder` directly (sidestepping
+`Type.GetField` on an unsealed TypeBuilder).  See
+`docs/10-bootstrap-progress.md` D-progress-022.
 
 ### B4. ~~`Std.File`: `Result[Unit, IOError]`~~ — shipped
 
