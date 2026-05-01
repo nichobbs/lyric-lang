@@ -69,9 +69,15 @@ module Type =
     let rec equiv (a: Type) (b: Type) : bool =
         match a, b with
         | TyError, _ | _, TyError                       -> true
+        // A free type variable matches anything — the bootstrap doesn't
+        // do real unification, so we treat `TyVar` like `TyError` for
+        // equivalence purposes and let codegen pick the actual binding
+        // at the call site.  Two named TyVars compare by name, which
+        // matters when checking the body of a polymorphic function.
+        | TyVar x, TyVar y                              -> x = y
+        | TyVar _, _ | _, TyVar _                       -> true
         | TyPrim x, TyPrim y                            -> x = y
         | TySelf, TySelf                                -> true
-        | TyVar x, TyVar y                              -> x = y
         | TyTuple xs, TyTuple ys                        ->
             List.length xs = List.length ys
             && List.forall2 equiv xs ys

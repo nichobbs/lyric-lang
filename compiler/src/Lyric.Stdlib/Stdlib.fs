@@ -105,6 +105,156 @@ type Format private () =
                        a3: obj | null) : string =
         System.String.Format(template, [| a0; a1; a2; a3 |])
 
+/// Generic helper for `Dictionary<K, V>` operations that don't fit
+/// directly into the FFI without out-parameters or rich Lyric
+/// inference.  All members are static and routed through Lyric's
+/// `extern type` + `@externTarget` machinery.
+[<Sealed; AbstractClass>]
+type MapHelpers<'K, 'V when 'K: not null> private () =
+
+    /// True if `m` contains `key`.  A drop-in replacement for the
+    /// open-generic `Dictionary`2.ContainsKey` once a Lyric program
+    /// has the required generic externs.
+    static member Has (m: System.Collections.Generic.Dictionary<'K, 'V>,
+                       key: 'K) : bool =
+        m.ContainsKey key
+
+    /// Return `m[key]` if present, otherwise the default value of `V`.
+    /// Pair with `Has` to build a `Result` / `Option` on the Lyric side
+    /// without out-params.  Avoids the JIT verifier issue that hits
+    /// when chaining ContainsKey + the indexer through `extern type`.
+    static member GetOrDefault (m: System.Collections.Generic.Dictionary<'K, 'V>,
+                                key: 'K) : 'V =
+        match m.TryGetValue key with
+        | true, v -> v
+        | _       -> Unchecked.defaultof<'V>
+
+    /// Set `m[key] = value` (insert or overwrite).
+    static member Put (m: System.Collections.Generic.Dictionary<'K, 'V>,
+                       key: 'K, value: 'V) : unit =
+        m.[key] <- value
+
+/// Generic exception-to-result helper.  The Lyric side calls
+/// `tryRunValue(() => bclThing(args))` to invoke an arbitrary
+/// throw-prone BCL operation; the F# wrapper catches and surfaces a
+/// `(IsValid, Value, Error)` triple.  Same shape as `Std.Parse` /
+/// `Std.File` but factored out so future stdlib modules don't each
+/// hand-roll their own try/catch wrappers in F#.
+[<Sealed; AbstractClass>]
+type TryHost<'T> private () =
+
+    /// True if invoking `action` returns without throwing.
+    static member RunIsValid (action: System.Func<'T>) : bool =
+        try
+            let _ = action.Invoke()
+            true
+        with _ -> false
+
+    /// Invoke `action` and return its result.  Returns
+    /// `default(T)` when the call throws — gate on `RunIsValid` first.
+    static member RunValue (action: System.Func<'T>) : 'T =
+        try action.Invoke()
+        with _ -> Unchecked.defaultof<'T>
+
+    /// Diagnostic message for the most recent failure observed by
+    /// `RunIsValid`.  Like `FileHost.ReadError`, invokes `action` again
+    /// to recover the message; pair with `RunIsValid` so the success
+    /// path doesn't pay this cost.
+    static member RunError (action: System.Func<'T>) : string =
+        try
+            let _ = action.Invoke()
+            ""
+        with e -> e.GetType().Name + ": " + e.Message
+
+/// Bootstrap-grade growable list of `int`.  Wraps `List<int>` so it
+/// can be exposed as a Lyric `extern type` — generics aren't visible
+/// across the FFI boundary today, so each element type gets its own
+/// concrete CLR class.
+[<Sealed>]
+type IntList() =
+    let backing = System.Collections.Generic.List<int>()
+    static member New () : IntList = IntList()
+    member _.Add (x: int) : unit = backing.Add x
+    member _.Get (i: int) : int = backing.[i]
+    member _.Set (i: int, x: int) : unit = backing.[i] <- x
+    member _.Length () : int = backing.Count
+    member _.HasItem (x: int) : bool = backing.Contains x
+    member _.RemoveAt (i: int) : unit = backing.RemoveAt i
+    member _.Clear () : unit = backing.Clear ()
+    member _.ToArr () : int[] = backing.ToArray ()
+
+/// Bootstrap-grade growable list of `string`.  See `IntList`.
+[<Sealed>]
+type StringList() =
+    let backing = System.Collections.Generic.List<string>()
+    static member New () : StringList = StringList()
+    member _.Add (x: string) : unit = backing.Add x
+    member _.Get (i: int) : string = backing.[i]
+    member _.Set (i: int, x: string) : unit = backing.[i] <- x
+    member _.Length () : int = backing.Count
+    member _.HasItem (x: string) : bool = backing.Contains x
+    member _.RemoveAt (i: int) : unit = backing.RemoveAt i
+    member _.Clear () : unit = backing.Clear ()
+    member _.ToArr () : string[] = backing.ToArray ()
+
+/// Bootstrap-grade growable list of `int64` (Lyric `Long`).
+[<Sealed>]
+type LongList() =
+    let backing = System.Collections.Generic.List<int64>()
+    static member New () : LongList = LongList()
+    member _.Add (x: int64) : unit = backing.Add x
+    member _.Get (i: int) : int64 = backing.[i]
+    member _.Set (i: int, x: int64) : unit = backing.[i] <- x
+    member _.Length () : int = backing.Count
+    member _.HasItem (x: int64) : bool = backing.Contains x
+    member _.RemoveAt (i: int) : unit = backing.RemoveAt i
+    member _.Clear () : unit = backing.Clear ()
+    member _.ToArr () : int64[] = backing.ToArray ()
+
+/// Bootstrap-grade hash map keyed on `string` with `int` values.
+/// Wraps `Dictionary<string, int>`.  Lookup returns a paired
+/// `Has` / `Get` shape so callers can gate on existence; Lyric has no
+/// out-params and the safe wrapper builds an `Option[Int]` from the
+/// pair.  See `Std.Collections` for the Lyric-side surface.
+[<Sealed>]
+type StringIntMap() =
+    let backing = System.Collections.Generic.Dictionary<string, int>()
+    static member New () : StringIntMap = StringIntMap()
+    member _.Put (key: string, value: int) : unit = backing.[key] <- value
+    member _.Has (key: string) : bool = backing.ContainsKey key
+    /// Returns `0` when `Has(key)` is false; callers must gate.
+    member _.Get (key: string) : int =
+        match backing.TryGetValue key with
+        | true, v -> v
+        | _       -> 0
+    member _.RemoveKey (key: string) : bool = backing.Remove key
+    member _.Length () : int = backing.Count
+    member _.Clear () : unit = backing.Clear ()
+    member _.Keys () : string[] =
+        let arr : string[] = Array.zeroCreate backing.Count
+        backing.Keys.CopyTo(arr, 0)
+        arr
+
+/// Bootstrap-grade hash map keyed on `string` with `string` values.
+/// See `StringIntMap`.
+[<Sealed>]
+type StringStringMap() =
+    let backing = System.Collections.Generic.Dictionary<string, string>()
+    static member New () : StringStringMap = StringStringMap()
+    member _.Put (key: string, value: string) : unit = backing.[key] <- value
+    member _.Has (key: string) : bool = backing.ContainsKey key
+    member _.Get (key: string) : string =
+        match backing.TryGetValue key with
+        | true, v -> v
+        | _       -> ""
+    member _.RemoveKey (key: string) : bool = backing.Remove key
+    member _.Length () : int = backing.Count
+    member _.Clear () : unit = backing.Clear ()
+    member _.Keys () : string[] =
+        let arr : string[] = Array.zeroCreate backing.Count
+        backing.Keys.CopyTo(arr, 0)
+        arr
+
 /// File I/O host shim.  Each operation catches host exceptions and
 /// returns a tuple-shaped pair (`IsValid` flag + value/message) so the
 /// Lyric-side caller can decide whether to wrap `Ok` or `Err`.  The

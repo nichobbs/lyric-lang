@@ -1049,6 +1049,11 @@ let private emitContractCheck
 // ---------------------------------------------------------------------------
 
 let private findClrType (qualifiedName: string) : System.Type option =
+    // Force-touch one type from `Lyric.Stdlib` so the assembly is in
+    // the AppDomain before we walk it — without this, the FFI resolver
+    // can't find host-side wrapper types like `Lyric.Stdlib.IntList`
+    // until some other code path has already loaded the assembly.
+    let _ = typeof<Lyric.Stdlib.Console>
     let direct = System.Type.GetType qualifiedName
     match Option.ofObj direct with
     | Some t -> Some t
@@ -1080,9 +1085,42 @@ let private paramsExactMatch
                 ok <- false
         ok
 
+/// Result of `@externTarget` lookup.  Constructors live on a separate
+/// reflection API (`ConstructorInfo`) from regular methods, so we can't
+/// fold them into the same `MethodInfo`-shaped return.
+type private ExternBclMember =
+    | EBMMethod of MethodInfo
+    | EBMCtor   of ConstructorInfo
+
 let private resolveExternTarget
         (target: string)
-        (paramTypes: System.Type array) : MethodInfo option =
+        (paramTypes: System.Type array) : ExternBclMember option =
+    // `Type.Method` — the dot before the last segment marks the type/
+    // member boundary.  `Type..ctor` (two consecutive dots) names a
+    // constructor: split before `..ctor` so the member name is `.ctor`.
+    let ctorMarker = "..ctor"
+    if target.EndsWith ctorMarker then
+        let typeName = target.Substring(0, target.Length - ctorMarker.Length)
+        match findClrType typeName with
+        | None -> None
+        | Some t ->
+            // Lyric's "newXyz" extern is conventionally `func() : Xyz`,
+            // so the receiver isn't a Lyric param and we use raw paramArity.
+            let arity = paramTypes.Length
+            let ctors = t.GetConstructors()
+            let exact =
+                ctors |> Array.tryFind (fun c ->
+                    let p = c.GetParameters()
+                    p.Length = arity
+                    && Array.forall2 (fun (pi: ParameterInfo) ex -> pi.ParameterType = ex)
+                                     p paramTypes)
+            match exact with
+            | Some c -> Some (EBMCtor c)
+            | None ->
+                ctors
+                |> Array.tryFind (fun c -> c.GetParameters().Length = arity)
+                |> Option.map EBMCtor
+    else
     let lastDot = target.LastIndexOf '.'
     if lastDot <= 0 then None
     else
@@ -1110,66 +1148,143 @@ let private resolveExternTarget
         let staticTyped =
             candidates memberName isStatic
             |> Array.tryFind (fun m -> paramsExactMatch m paramTypes)
-        match staticTyped with
-        | Some m -> Some m
-        | None ->
-            let staticArity =
-                candidates memberName isStatic
-                |> Array.tryFind (fun m -> m.GetParameters().Length = arity)
-            match staticArity with
+        let mi =
+            match staticTyped with
             | Some m -> Some m
-            | None when arity >= 1 ->
-                let instanceTyped =
-                    candidates memberName isInstance
-                    |> Array.tryFind (fun m ->
-                        paramsExactMatch m (Array.skip 1 paramTypes))
-                match instanceTyped with
+            | None ->
+                let staticArity =
+                    candidates memberName isStatic
+                    |> Array.tryFind (fun m -> m.GetParameters().Length = arity)
+                match staticArity with
                 | Some m -> Some m
-                | None ->
-                    let instanceArity =
+                | None when arity >= 1 ->
+                    let instanceTyped =
                         candidates memberName isInstance
-                        |> Array.tryFind (fun m -> m.GetParameters().Length = arity - 1)
-                    match instanceArity with
+                        |> Array.tryFind (fun m ->
+                            paramsExactMatch m (Array.skip 1 paramTypes))
+                    match instanceTyped with
                     | Some m -> Some m
                     | None ->
-                        let prop = t.GetProperty memberName
-                        match Option.ofObj prop with
-                        | Some p when p.CanRead ->
-                            Option.ofObj (p.GetGetMethod())
-                        | _ -> None
-            | None ->
-                let prop = t.GetProperty memberName
-                match Option.ofObj prop with
-                | Some p when p.CanRead ->
-                    Option.ofObj (p.GetGetMethod())
-                | _ -> None
+                        let instanceArity =
+                            candidates memberName isInstance
+                            |> Array.tryFind (fun m -> m.GetParameters().Length = arity - 1)
+                        match instanceArity with
+                        | Some m -> Some m
+                        | None ->
+                            let prop = t.GetProperty memberName
+                            match Option.ofObj prop with
+                            | Some p when p.CanRead ->
+                                Option.ofObj (p.GetGetMethod())
+                            | _ -> None
+                | None ->
+                    let prop = t.GetProperty memberName
+                    match Option.ofObj prop with
+                    | Some p when p.CanRead ->
+                        Option.ofObj (p.GetGetMethod())
+                    | _ -> None
+        mi |> Option.map EBMMethod
 
 let private emitExternCall
         (il: ILGenerator)
         (fn: FunctionDecl)
         (paramList: (string * System.Type) list)
+        (returnTy: System.Type)
+        (genericGtpbs: System.Type array)
         (resultLocal: LocalBuilder option)
         (exitLabel: Label)
         (target: string) : unit =
     let paramTypes =
         paramList |> List.map snd |> List.toArray
-    let mi =
+    let resolved =
         match resolveExternTarget target paramTypes with
         | Some m -> m
         | None ->
             failwithf "FFI: cannot resolve `@externTarget(\"%s\")` for `%s` (arity %d)"
                 target fn.Name paramTypes.Length
+    // For an extern targeting a method/ctor on a generic type, the
+    // resolver returned the OPEN definition (e.g. `List<T>::Add`).  At
+    // emission time we need to close the declaring type with the actual
+    // type args so the IL references `List<int>::Add` (or whatever the
+    // method's GTPB substitution produces).  The closed type lives in:
+    //   • paramTypes.[0] for instance members (the receiver param type
+    //     was already substituted by `TypeMap.toClrTypeWithGenerics`),
+    //   • returnTy for constructors (`new List<T>()` returns `List<T>`),
+    //   • paramTypes.[0] or returnTy for static methods on a generic
+    //     type — try receiver first, fall back to return.
+    let openClosedClr (openDeclaring: System.Type) : System.Type =
+        let pickFromParams () =
+            paramTypes
+            |> Array.tryFind (fun pt ->
+                pt.IsGenericType
+                && not pt.IsGenericTypeDefinition
+                && pt.GetGenericTypeDefinition() = openDeclaring)
+        let pickFromReturn () =
+            if returnTy.IsGenericType
+               && not returnTy.IsGenericTypeDefinition
+               && returnTy.GetGenericTypeDefinition() = openDeclaring
+            then Some returnTy else None
+        // Fallback: close the open declaring type with the user
+        // function's own GTPBs in declaration order.  Used for static
+        // helpers like `Lyric.Stdlib.MapHelpers`2.Has` whose declaring
+        // type doesn't appear in any Lyric param/return — the user-side
+        // function's `[K, V]` becomes the helper's `<K, V>`.
+        let pickFromGtpbs () =
+            let needed = openDeclaring.GetGenericArguments().Length
+            if genericGtpbs.Length = needed && needed > 0 then
+                try Some (openDeclaring.MakeGenericType genericGtpbs)
+                with _ -> None
+            else None
+        match pickFromParams () with
+        | Some t -> t
+        | None ->
+            match pickFromReturn () with
+            | Some t -> t
+            | None ->
+                match pickFromGtpbs () with
+                | Some t -> t
+                | None ->
+                    failwithf
+                        "FFI: cannot infer closed generic type for `@externTarget(\"%s\")` on `%s` — receiver / return type does not mention `%s`"
+                        target fn.Name openDeclaring.FullName
+    // `TypeBuilder.GetMethod` / `TypeBuilder.GetConstructor` are the
+    // Reflection.Emit-safe way to substitute when the closed type
+    // contains GenericTypeParameterBuilder instances.  Both also accept
+    // fully-resolved closed types (no TypeBuilder), so we can call them
+    // unconditionally.
+    let isOpenGenericDeclaring (declaring: System.Type | null) : bool =
+        match Option.ofObj declaring with
+        | Some d -> d.IsGenericTypeDefinition
+        | None   -> false
+    let unwrapDeclaring (declaring: System.Type | null) : System.Type =
+        match Option.ofObj declaring with
+        | Some d -> d
+        | None   -> failwithf "FFI: declaring type missing on extern target `%s`" target
+    let closedResolved =
+        match resolved with
+        | EBMMethod m when isOpenGenericDeclaring m.DeclaringType ->
+            let closedTy = openClosedClr (unwrapDeclaring m.DeclaringType)
+            EBMMethod (System.Reflection.Emit.TypeBuilder.GetMethod(closedTy, m))
+        | EBMCtor c when isOpenGenericDeclaring c.DeclaringType ->
+            let closedTy = openClosedClr (unwrapDeclaring c.DeclaringType)
+            EBMCtor (System.Reflection.Emit.TypeBuilder.GetConstructor(closedTy, c))
+        | other -> other
     // Push every Lyric parameter onto the stack in declaration order.
     paramList
     |> List.iteri (fun i _ -> il.Emit(OpCodes.Ldarg, i))
-    // Static methods + property getters use `call`; non-static
-    // instance methods use `callvirt`.
-    if mi.IsStatic then il.Emit(OpCodes.Call, mi)
-    else il.Emit(OpCodes.Callvirt, mi)
+    // Constructors get `newobj`; static methods + property getters use
+    // `call`; non-static instance methods use `callvirt`.
+    let pushedTy =
+        match closedResolved with
+        | EBMCtor c ->
+            il.Emit(OpCodes.Newobj, c)
+            c.DeclaringType
+        | EBMMethod m ->
+            if m.IsStatic then il.Emit(OpCodes.Call, m)
+            else il.Emit(OpCodes.Callvirt, m)
+            m.ReturnType
     // Stash the result + branch to exit, mirroring routeReturn's
     // shape but specialised so we don't need to thread that helper
     // through.
-    let pushedTy = mi.ReturnType
     if pushedTy = typeof<System.Void> then
         match resultLocal with
         | Some _ ->
@@ -1337,7 +1452,10 @@ let private emitFunctionBody
                         | AAName (_, AVString (s, _), _)       -> Some s
                         | _ -> None)
                 | _ -> None)
-        emitExternCall il fn paramList resultLocal exitLabel targetStr
+        let genericGtpbs =
+            if sg.Generics.IsEmpty then [||]
+            else mb.GetGenericArguments()
+        emitExternCall il fn paramList returnTy genericGtpbs resultLocal exitLabel targetStr
     | None ->
         if isVoidReturn then
             il.Emit(OpCodes.Br, exitLabel)
@@ -1492,9 +1610,29 @@ let private emitAssembly
         // ---- to the CLR type at typeIdToClr lookup time.  Failure
         // ---- to resolve surfaces as a build error rather than a
         // ---- silent fallback to obj.
+        //
+        // Generic externs (`extern type List[T] = "...List`1"`) bind
+        // the open generic definition.  `TypeMap.toClrTypeWith` then
+        // closes it via `MakeGenericType` whenever the user mentions
+        // `List[Int]`, etc.  We validate arity here so a mismatched
+        // declaration fails at compile time rather than as a confusing
+        // ArgumentException deep in `MakeGenericType`.
+        // Local extern types declared in this source file.
         for et in externTypeItems sf do
             match findClrType et.ClrName with
             | Some clr ->
+                let lyricArity =
+                    match et.Generics with
+                    | Some gp -> gp.Params.Length
+                    | None    -> 0
+                let clrArity =
+                    if clr.IsGenericTypeDefinition then
+                        clr.GetGenericArguments().Length
+                    else 0
+                if lyricArity <> clrArity then
+                    failwithf
+                        "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d"
+                        et.Name lyricArity et.ClrName clrArity
                 symbols.TryFind et.Name
                 |> Seq.tryHead
                 |> Option.bind Symbol.typeIdOpt
@@ -1502,6 +1640,25 @@ let private emitAssembly
             | None ->
                 failwithf "FFI: cannot resolve extern type '%s' = \"%s\" against the loaded AppDomain"
                     et.Name et.ClrName
+
+        // Extern types coming in via stdlib imports.  The user's
+        // symbol table has the imported `extern type` registered (so
+        // `List` etc. resolve as user-side names), but the local
+        // typeIdToClr map only knows about types declared in *this*
+        // source file.  Mirror each imported extern's CLR mapping so
+        // `TypeMap.toClrTypeWithGenerics` can close `List[Int]` /
+        // `Map[K, V]` etc.
+        for art in stdlibArtifacts do
+            for et in externTypeItems art.Source do
+                match findClrType et.ClrName with
+                | Some clr ->
+                    symbols.TryFind et.Name
+                    |> Seq.tryHead
+                    |> Option.bind Symbol.typeIdOpt
+                    |> Option.iter (fun id ->
+                        if not (typeIdToClr.ContainsKey id) then
+                            typeIdToClr.[id] <- clr)
+                | None -> ()
 
         // ---- imported tables — populated from `stdlibArtifact` ----
         let importedRecordTable     = Records.ImportedRecordTable()

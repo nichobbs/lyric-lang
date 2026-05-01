@@ -388,10 +388,55 @@ let private isBclType (t: ClrType) : bool =
     || (match Option.ofObj t.Namespace with
         | Some ns -> ns.StartsWith("System")
         | None    -> false)
+    // TypeBuilderInstantiation hides the namespace; consult the open
+    // generic definition so `Dictionary<gtpb_K, gtpb_V>` etc. still
+    // route through the BCL fallback dispatch.
+    || (t.IsGenericType
+        && not t.IsGenericTypeDefinition
+        && (let openTy = t.GetGenericTypeDefinition()
+            match Option.ofObj openTy.Namespace with
+            | Some ns -> ns.StartsWith("System")
+            | None    -> false))
 
 let private capitalizeFirst (s: string) : string =
     if String.IsNullOrEmpty s then s
     else string (Char.ToUpperInvariant s.[0]) + s.Substring(1)
+
+/// True if `recvTy` is a generic instantiation that mentions a
+/// `GenericTypeParameterBuilder` — i.e. we're inside a Lyric generic
+/// function being emitted.  `TypeBuilderInstantiation.GetMethods()`
+/// throws `NotSupportedException` for such types, so callers must
+/// route through `TypeBuilder.GetMethod` on the open definition.
+let private isGenericInstantiationOnGtpb (t: ClrType) : bool =
+    t.IsGenericType
+    && not t.IsGenericTypeDefinition
+    && t.GetGenericArguments() |> Array.exists (fun a ->
+        a :? System.Reflection.Emit.GenericTypeParameterBuilder)
+
+/// `recvTy.GetMethods()` that works even when recvTy is a
+/// TypeBuilderInstantiation (closed-on-GTPB generic).  For non-GTPB
+/// types this is just `recvTy.GetMethods()`; for GTPB instantiations
+/// we enumerate the open type's methods and return open handles —
+/// callers should pass each candidate through `closeBclMethod` to
+/// substitute the GTPBs once a name match is found.
+let private getRecvMethods (recvTy: ClrType) : MethodInfo array =
+    if isGenericInstantiationOnGtpb recvTy then
+        recvTy.GetGenericTypeDefinition().GetMethods()
+    else
+        recvTy.GetMethods()
+
+/// Close `openMi` against `recvTy` if `recvTy` is a TypeBuilder
+/// instantiation; otherwise return it unchanged.  Use after picking a
+/// method by name from `getRecvMethods` so the emitted call references
+/// the right closed signature.
+let private closeBclMethod (recvTy: ClrType) (openMi: MethodInfo) : MethodInfo =
+    if isGenericInstantiationOnGtpb recvTy
+       && obj.ReferenceEquals(openMi.DeclaringType, recvTy.GetGenericTypeDefinition())
+    then
+        try System.Reflection.Emit.TypeBuilder.GetMethod(recvTy, openMi)
+        with _ -> openMi
+    else
+        openMi
 
 /// Pick a non-static method on `recvTy` named `name` whose parameter
 /// types align with `argTys`.  Prefers exact equality, then assignability.
@@ -421,19 +466,34 @@ let private resolveBclMethod
         | None ->
             candidates
             |> Array.tryFind (fun m -> matches m (fun p a -> p.IsAssignableFrom a))
+    // For TypeBuilderInstantiation receivers (we're inside a Lyric
+    // generic function), `MethodOnTypeBuilderInstantiation` reports
+    // its `ParameterType` as the OPEN generic param (`TKey`) rather
+    // than the closed substitution (`gtpb_K`), so direct equality
+    // matching against `argTys` fails even when the call is well-
+    // formed.  In that case fall back to name + arity matching alone
+    // and trust the type checker to have ruled out shape mismatches.
+    let isTBIRecv = isGenericInstantiationOnGtpb recvTy
+    let candidateMethods =
+        getRecvMethods recvTy
+        |> Array.map (closeBclMethod recvTy)
     // 1) Exact-arity candidates.
     let exactArity =
-        recvTy.GetMethods()
+        candidateMethods
         |> Array.filter (fun m ->
             m.Name = name
             && not m.IsStatic
             && m.GetParameters().Length = argTys.Length)
+    let firstByArity () =
+        if isTBIRecv then exactArity |> Array.tryHead else None
     match tryResolve exactArity with
     | Some m -> Some (m, [||])
+    | None when (firstByArity ()).IsSome ->
+        Some ((firstByArity ()).Value, [||])
     | None ->
         // 2) Candidates with extra parameters that all have default values.
         let withDefaults =
-            recvTy.GetMethods()
+            candidateMethods
             |> Array.filter (fun m ->
                 m.Name = name
                 && not m.IsStatic
@@ -782,8 +842,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | None ->
                 failwith "E7 codegen: String::get_Chars not found"
         else
-            failwithf "E7 codegen: indexing on non-array / non-string %s"
-                recvTy.Name
+            // BCL indexer: any class with a `get_Item(<idx>)` method
+            // (List<T>, Dictionary<K, V>, etc.) supports `recv[idx]`.
+            let getItem =
+                recvTy.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = "get_Item"
+                    && m.GetParameters().Length = 1)
+            match getItem with
+            | Some m ->
+                il.Emit(OpCodes.Callvirt, m)
+                m.ReturnType
+            | None ->
+                failwithf "E7 codegen: indexing on non-array / non-string %s"
+                    recvTy.Name
 
     | EIndex (recv, idxs) when not (List.isEmpty idxs) ->
         // `a[i, j, …]` lowers to a chain of single-index loads:
@@ -1173,10 +1245,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 // Fall back to a method on the receiver's CLR type
                 // by reflection. This catches impl-method calls where
                 // we have a concrete target type.
+                // `TypeBuilderInstantiation.GetMethods` isn't supported,
+                // so when recvTy is a closed-on-GTPB generic (we're
+                // inside a Lyric generic function), enumerate methods
+                // on the open definition and substitute via
+                // `TypeBuilder.GetMethod` once we pick the right one.
                 let exact =
-                    recvTy.GetMethods()
+                    getRecvMethods recvTy
                     |> Array.tryFind (fun m ->
                         m.Name = methodName && not m.IsStatic)
+                    |> Option.map (closeBclMethod recvTy)
                 match exact with
                 | Some m -> Some (m, [||])
                 | None when isBclType recvTy ->
@@ -1384,8 +1462,14 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                     inferTypeArgsFromReturn info.Generics.Length
                                 let constructedCase =
                                     caseInfo.Type.MakeGenericType typeArgs
+                                let openCtor = caseInfo.Ctor
                                 let constructedCtor =
-                                    constructedCase.GetConstructors() |> Array.head
+                                    if typeArgs |> Array.exists (fun t ->
+                                          t :? System.Reflection.Emit.GenericTypeParameterBuilder)
+                                    then
+                                        System.Reflection.Emit.TypeBuilder.GetConstructor(constructedCase, openCtor)
+                                    else
+                                        constructedCase.GetConstructors() |> Array.head
                                 il.Emit(OpCodes.Newobj, constructedCtor)
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
@@ -1778,12 +1862,25 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                             | false, _ -> typeof<obj>)
                 |> List.toArray
             let constructedCase = caseInfo.Type.MakeGenericType typeArgs
-            // Find the matching ctor on the constructed type by
-            // parameter count + position-with-generic-substitution.
+            // Find the matching ctor on the constructed type.  When any
+            // typeArg is itself a TypeBuilder GTPB (we're inside a Lyric
+            // generic function being emitted), `constructedCase` is a
+            // `TypeBuilderInstantiation` whose `GetConstructors()` is
+            // not implemented — go through `TypeBuilder.GetConstructor`
+            // instead, which substitutes the open ctor handle.
+            let openCtor = caseInfo.Ctor
             let constructedCtor =
-                constructedCase.GetConstructors()
-                |> Array.find (fun c ->
-                    c.GetParameters().Length = caseInfo.Fields.Length)
+                if typeArgs |> Array.exists (fun t ->
+                       t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                       || (t.IsGenericType && not t.IsGenericTypeDefinition
+                           && t.GetGenericArguments() |> Array.exists (fun ga ->
+                                ga :? System.Reflection.Emit.GenericTypeParameterBuilder)))
+                then
+                    System.Reflection.Emit.TypeBuilder.GetConstructor(constructedCase, openCtor)
+                else
+                    constructedCase.GetConstructors()
+                    |> Array.find (fun c ->
+                        c.GetParameters().Length = caseInfo.Fields.Length)
             for argExpr in argExprs do
                 let _ = emitExpr ctx argExpr
                 ()
@@ -2040,10 +2137,42 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let rec bindLyricToClr (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
                 match lyricTy with
                 | Lyric.TypeChecker.TyVar n -> bindByName n argTy
-                | _ -> ()  // compound-shape inference deferred
+                | Lyric.TypeChecker.TyUser (_, lyricArgs) when not lyricArgs.IsEmpty
+                                                            && argTy.IsGenericType
+                                                            && not argTy.IsGenericTypeDefinition ->
+                    // Lyric `Foo[A, B]` paired with CLR `Foo<X, Y>` —
+                    // walk position-wise so a TyVar buried inside a
+                    // generic param slot still picks up its binding.
+                    // Crucial for FFI receivers like `m: GMap[K, V]`
+                    // where K / V never appear as standalone args.
+                    let clrGenArgs = argTy.GetGenericArguments()
+                    if clrGenArgs.Length = lyricArgs.Length then
+                        List.iteri
+                            (fun i la -> bindLyricToClr la clrGenArgs.[i])
+                            lyricArgs
+                | Lyric.TypeChecker.TySlice elem when argTy.IsArray ->
+                    let elemClr = argTy.GetElementType()
+                    match Option.ofObj elemClr with
+                    | Some et -> bindLyricToClr elem et
+                    | None    -> ()
+                | _ -> ()  // other compound shapes still deferred
             // Pair-wise emission with type-arg propagation.
             let lyricParamTypes =
                 sg.Params |> List.map (fun p -> p.Type) |> List.toArray
+            // Bind generic params from surrounding context first — see
+            // imported-generic path for rationale.  Restricted to
+            // compound return shapes so we don't bind a bare `TyVar`
+            // to whatever ExpectedType happens to be.
+            let isCompoundReturn =
+                match sg.Return with
+                | Lyric.TypeChecker.TyVar _ -> false
+                | _ -> true
+            if isCompoundReturn then
+                match ctx.ExpectedType with
+                | Some et -> bindLyricToClr sg.Return et
+                | None    -> ()
+                if ctx.ReturnType <> typeof<System.Void> then
+                    bindLyricToClr sg.Return ctx.ReturnType
             // Emit each arg into a temp local so we can issue boxing
             // AFTER inference resolves which generic parameter slots
             // end up as `obj` (where value-typed args need a `box`
@@ -2308,6 +2437,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         | _ -> ()
                     let lyricParamTypes =
                         sg.Params |> List.map (fun p -> p.Type) |> List.toArray
+                    // Bind generic params from the surrounding context
+                    // before processing args.  Restricted to compound
+                    // return shapes — `Foo[T]` paired with `Foo<int>`
+                    // safely binds `T = int`, but a bare `TyVar T`
+                    // would naively bind `T = ExpectedType` (which is
+                    // wrong when `Some(value = mapGetOrDefault(...))`
+                    // sets ExpectedType to `Option<int>` while the
+                    // inner call's return is just `V`).
+                    let isCompoundReturn =
+                        match sg.Return with
+                        | Lyric.TypeChecker.TyVar _ -> false
+                        | _ -> true
+                    if isCompoundReturn then
+                        match ctx.ExpectedType with
+                        | Some et -> bindLyricToClr sg.Return et
+                        | None    -> ()
+                        if ctx.ReturnType <> typeof<System.Void> then
+                            bindLyricToClr sg.Return ctx.ReturnType
                     // Emit each arg into a temp local so we can issue
                     // boxing AFTER inference resolves which generic
                     // parameter slots end up as `obj` (where value-

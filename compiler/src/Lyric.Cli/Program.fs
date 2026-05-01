@@ -80,12 +80,19 @@ let private writeRuntimeConfig (dllPath: string) : unit =
 
 /// Copy the F# stdlib shim + any precompiled `Lyric.Stdlib.<X>.dll`
 /// into `outDir` so `dotnet exec` resolves cross-assembly references.
+/// `FSharp.Core.dll` (next to the CLI binary) is also copied: any F#
+/// member on `Lyric.Stdlib` whose IL references FSharp.Core helpers
+/// (e.g. `Array.zeroCreate`) needs the assembly resolvable at runtime.
 let private copyStdlibArtifacts (outDir: string) : unit =
     match locateStdlibDll () with
     | Some src ->
         File.Copy(src, Path.Combine(outDir, "Lyric.Stdlib.dll"), overwrite = true)
     | None ->
         printErr "warning: Lyric.Stdlib.dll not found alongside the CLI; runtime resolution may fail"
+    let fsharpCore =
+        Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
+    if File.Exists fsharpCore then
+        File.Copy(fsharpCore, Path.Combine(outDir, "FSharp.Core.dll"), overwrite = true)
     for p in Lyric.Emitter.Emitter.stdlibAssemblyPaths () do
         if File.Exists p then
             let fname =

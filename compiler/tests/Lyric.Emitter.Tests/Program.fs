@@ -40,5 +40,6 @@ let main argv =
             EndToEndSmokeTests.tests
             BuiltinTests.tests
             StdFileTests.tests
+            CollectionTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

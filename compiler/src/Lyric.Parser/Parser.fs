@@ -3580,6 +3580,7 @@ and private parseExternTypeBody
     let startTok = Cursor.advance cursor   // 'extern'
     Cursor.advance cursor |> ignore        // 'type'
     let name, _ = readIdent cursor diags "extern type"
+    let generics = parseGenericParamsOpt cursor diags
     match Cursor.tryEatPunct Eq cursor with
     | Some _ -> ()
     | None ->
@@ -3595,9 +3596,10 @@ and private parseExternTypeBody
                 "expected a string literal naming the CLR type (e.g. \"System.DateTime\")"
                 (Cursor.peekSpan cursor)
             "<error>", Cursor.peekSpan cursor
-    { Name    = name
-      ClrName = clrName
-      Span    = joinSpans startTok.Span clrSpan }
+    { Name     = name
+      Generics = generics
+      ClrName  = clrName
+      Span     = joinSpans startTok.Span clrSpan }
 
 // ----- module-level val / scope_kind / test / property / fixture ----------
 

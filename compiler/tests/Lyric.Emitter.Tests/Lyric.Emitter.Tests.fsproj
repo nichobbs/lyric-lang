@@ -41,6 +41,7 @@
     <Compile Include="EndToEndSmokeTests.fs" />
     <Compile Include="BuiltinTests.fs" />
     <Compile Include="StdFileTests.fs" />
+    <Compile Include="CollectionTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
