@@ -2721,11 +2721,7 @@ let private emitAssembly
                 il.Emit(OpCodes.Ldarg_0)
                 il.Emit(OpCodes.Ldflda, sm.Builder)
                 il.Emit(OpCodes.Ldloc, exLocal)
-                let setException =
-                    match Option.ofObj (sm.BuilderType.GetMethod("SetException")) with
-                    | Some m -> m
-                    | None ->
-                        failwithf "BCL: %s.SetException not found" sm.BuilderType.Name
+                let setException = AsyncStateMachine.builderMember sm "SetException"
                 il.Emit(OpCodes.Call, setException)
                 il.Emit(OpCodes.Leave, afterTryLabel)
                 il.EndExceptionBlock()
@@ -2739,11 +2735,7 @@ let private emitAssembly
                 match phaseBResultLocal with
                 | Some loc -> il.Emit(OpCodes.Ldloc, loc)
                 | None     -> ()
-                let setResult =
-                    match Option.ofObj (sm.BuilderType.GetMethod("SetResult")) with
-                    | Some m -> m
-                    | None ->
-                        failwithf "BCL: %s.SetResult not found" sm.BuilderType.Name
+                let setResult = AsyncStateMachine.builderMember sm "SetResult"
                 il.Emit(OpCodes.Call, setResult)
                 il.Emit(OpCodes.Br, afterTryLabel)
                 // After try.

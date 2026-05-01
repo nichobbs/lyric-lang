@@ -610,7 +610,7 @@ let defineStateMachine
 /// construction).  In that case `BuilderType.GetMethod` raises
 /// `NotSupportedException` and we have to route through
 /// `TypeBuilder.GetMethod(closedType, openMethod)`.
-let private builderClosedOverTypeBuilder (sm: StateMachineInfo) : bool =
+let internal builderClosedOverTypeBuilder (sm: StateMachineInfo) : bool =
     sm.BuilderType.IsGenericType
     && sm.BuilderType.GetGenericArguments()
        |> Array.exists (fun a ->
@@ -624,7 +624,7 @@ let private builderNonGen  : Type = typeof<AsyncTaskMethodBuilder>
 /// `TypeBuilder.GetMethod` when `BuilderType` is closed over a
 /// TypeBuilder (`Type.GetMethod` throws NotSupportedException on
 /// such types).  Pass `getter=true` for property getters.
-let private builderMember
+let internal builderMember
         (sm: StateMachineInfo)
         (name: string) : MethodInfo =
     let isGenericClosedOverTb =
