@@ -2259,11 +2259,44 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         List.iteri
                             (fun i la -> bindLyricToClr la clrGenArgs.[i])
                             lyricArgs
-                | Lyric.TypeChecker.TySlice elem when argTy.IsArray ->
+                | Lyric.TypeChecker.TySlice elem
+                | Lyric.TypeChecker.TyArray (_, elem)
+                    when argTy.IsArray ->
                     let elemClr = argTy.GetElementType()
                     match Option.ofObj elemClr with
                     | Some et -> bindLyricToClr elem et
                     | None    -> ()
+                | Lyric.TypeChecker.TyNullable inner ->
+                    if argTy.IsGenericType
+                       && argTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+                    then bindLyricToClr inner (argTy.GetGenericArguments().[0])
+                    else bindLyricToClr inner argTy
+                | Lyric.TypeChecker.TyTuple lyricElems
+                    when argTy.IsGenericType ->
+                    let clrArgs = argTy.GetGenericArguments()
+                    if clrArgs.Length = lyricElems.Length then
+                        List.iteri
+                            (fun i le -> bindLyricToClr le clrArgs.[i])
+                            lyricElems
+                | Lyric.TypeChecker.TyFunction (lyricPs, lyricR, _) ->
+                    // `(T) -> U` paired with `Func<X, ..., Y>` — a HOF
+                    // call site like `mapInts(xs, { n -> ... })` binds
+                    // U from the lambda's return-type slot.  Without
+                    // this branch U would default to `obj` and the
+                    // call's reified instantiation would mismatch the
+                    // delegate's actual element type.
+                    if argTy.IsGenericType then
+                        let clrArgs = argTy.GetGenericArguments()
+                        let n = lyricPs.Length
+                        if clrArgs.Length = n then
+                            List.iteri
+                                (fun i lp -> bindLyricToClr lp clrArgs.[i])
+                                lyricPs
+                        elif clrArgs.Length = n + 1 then
+                            List.iteri
+                                (fun i lp -> bindLyricToClr lp clrArgs.[i])
+                                lyricPs
+                            bindLyricToClr lyricR clrArgs.[n]
                 | _ -> ()  // other compound shapes still deferred
             // Pair-wise emission with type-arg propagation.
             let lyricParamTypes =
