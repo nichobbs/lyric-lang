@@ -1264,3 +1264,53 @@ TypeChecker 100, Emitter 328, Lsp 5.
   through nested generics may have gaps).
 - `where T: Trait` constraints on record type params (parser
   accepts but the codegen doesn't yet enforce).
+
+
+### D-progress-030: @derive(Json) source-gen (Tier 2.3)
+*claude/define-language-spec-5DbnS branch.*  For each `pub record T`
+annotated `@derive(Json)`, the new
+`Lyric.Parser.JsonDerive.synthesizeItems` pass appends a
+`T.toJson(self): String` function that builds an RFC-8259
+JSON-object string by concatenating field-by-field renderings.
+
+```lyric
+@derive(Json)
+pub record Person { name: String, age: Int }
+
+func main(): Unit {
+  val p = Person(name = "Alice", age = 30)
+  println(Person.toJson(p))     // {"name":"Alice","age":30}
+}
+```
+
+**Per-field rendering.**
+
+- `Bool`, `Int`, `Long`, `UInt`, `ULong`, `Double`, `Float`,
+  `Char` → `toString(value)` (the polymorphic `toString` builtin
+  shipped in D-progress-011).
+- `String` → `"\"" + value + "\""` (no escaping yet).
+- Nested record with `@derive(Json)` → `<TypeName>.toJson(value)`
+  via UFCS-style dotted-name dispatch.
+- Anything else → `toString(value)` fallback.
+
+The derive pass collects every `@derive(Json)` record name first, so
+field-rendering logic can dispatch correctly to recursive `toJson`
+for known nested annotated records.
+
+**Tests.**  4 new tests in `JsonDeriveTests.fs`: basic int+string
+record, nested-records-dispatch, Bool field, and a non-annotated
+record verifying the synthesiser doesn't emit `toJson` when
+`@derive(Json)` is absent.
+
+All 687 tests across the five suites pass: Lexer 70, Parser 182,
+TypeChecker 100, Emitter 332, Lsp 5.
+
+**Bootstrap-grade scope** (deferred follow-ups):
+- Real String escaping (today doesn't escape `"`, `\`, control
+  chars).
+- `slice[T]` / array fields rendered as `[...]`.
+- `Option[T]` / `Result[T, E]` and other unions (need case-by-case
+  emission with case dispatch).
+- Inverse `fromJson` synthesis.
+- Generic records — `record Page[T]` doesn't yet get a
+  per-instantiation toJson.

@@ -4045,6 +4045,7 @@ let parse (source: string) : ParseResult =
               |> hoistInlineMethods
               |> Stubbable.synthesizeItems
               |> Wire.synthesizeItems diags
+              |> JsonDerive.synthesizeItems
           Span                 = joinSpans startSpan endSpan }
     // Package-level `import X as A` aliases are rewritten as a
     // post-parse AST transform — `A.foo` → `foo`, `A.Type[T]` → `Type[T]`,

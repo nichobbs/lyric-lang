@@ -1,0 +1,177 @@
+/// AST-level synthesis for `@derive(Json)` records (Tier 2.3 /
+/// D-progress-030).
+///
+/// For each `pub record T` (or `pub exposed record T`) annotated with
+/// `@derive(Json)`, the synthesiser appends a `T.toJson(self): String`
+/// function that builds an RFC-8259-conformant JSON string by
+/// concatenating field-by-field renderings.  Per-field renderings:
+///
+///   - `Bool`            → `"true"` / `"false"` via `toString`
+///   - `Int`, `Long`,
+///     `UInt`, `ULong`,
+///     `Double`, `Float`  → `toString(value)`
+///   - `String`           → `"\"" + value + "\""` (no escaping yet)
+///   - Nested record with `@derive(Json)`  → `<TypeName>.toJson(value)`
+///   - Anything else      → `toString(value)` as a best-effort fallback
+///
+/// Bootstrap-grade scope (D-progress-030 follow-ups):
+///   - Real String escaping (today's bootstrap doesn't escape `"` or
+///     `\` inside string fields).
+///   - Slice / Array fields (`slice[T]` should emit `[...]`).
+///   - Option / Result / other unions (need case-by-case dispatch).
+///   - `fromJson` synthesis (the inverse direction).
+///   - Generic records — the synthesised `toJson` is per-type and
+///     doesn't yet handle `record Page[T]` in a polymorphic way.
+module Lyric.Parser.JsonDerive
+
+open Lyric.Lexer
+open Lyric.Parser.Ast
+
+let private isDeriveJson (a: Annotation) : bool =
+    match a.Name.Segments with
+    | ["derive"] ->
+        a.Args
+        |> List.exists (fun arg ->
+            match arg with
+            | ABare (n, _) -> n = "Json"
+            | ALiteral (AVIdent (n, _), _) -> n = "Json"
+            | _ -> false)
+    | _ -> false
+
+let private hasDeriveJson (it: Item) : bool =
+    it.Annotations |> List.exists isDeriveJson
+
+let private mkPath (name: string) (span: Span) : ModulePath =
+    { Segments = [name]; Span = span }
+
+let private mkExpr (kind: ExprKind) (span: Span) : Expr =
+    { Kind = kind; Span = span }
+
+let private mkType (kind: TypeExprKind) (span: Span) : TypeExpr =
+    { Kind = kind; Span = span }
+
+let private strLit (s: string) (span: Span) : Expr =
+    mkExpr (ELiteral (LString s)) span
+
+/// True if `te` mentions another user record with `@derive(Json)`.
+/// Used to decide whether to dispatch to `<TypeName>.toJson(value)`
+/// or fall back to a primitive / `toString` rendering.
+let private nestedJsonTypeName
+        (deriveJsonRecords: Set<string>)
+        (te: TypeExpr) : string option =
+    match te.Kind with
+    | TRef p ->
+        match p.Segments with
+        | [name] when Set.contains name deriveJsonRecords -> Some name
+        | _ -> None
+    | _ -> None
+
+let private isStringField (te: TypeExpr) : bool =
+    match te.Kind with
+    | TRef { Segments = ["String"] } -> true
+    | _ -> false
+
+/// Build the body expression for one field's JSON rendering.
+let private renderFieldExpr
+        (deriveJsonRecords: Set<string>)
+        (selfExpr: Expr)
+        (field: FieldDecl) : Expr =
+    let span = field.Span
+    let access = mkExpr (EMember (selfExpr, field.Name)) span
+    match nestedJsonTypeName deriveJsonRecords field.Type with
+    | Some typeName ->
+        // `<TypeName>.toJson(self.<field>)` — the nested record's
+        // synthesised method is also a UFCS-style dotted function.
+        let callee =
+            mkExpr (EMember (mkExpr (EPath (mkPath typeName span)) span,
+                             "toJson")) span
+        mkExpr (ECall (callee, [CAPositional access])) span
+    | None when isStringField field.Type ->
+        // `"\"" + self.<field> + "\""` — bootstrap-grade: no
+        // escaping, just wrap in quotes.
+        let q = strLit "\"" span
+        let lhs = mkExpr (EBinop (BAdd, q, access)) span
+        mkExpr (EBinop (BAdd, lhs, q)) span
+    | None ->
+        // `toString(self.<field>)` — primitive fields, fallthrough.
+        let callee = mkExpr (EPath (mkPath "toString" span)) span
+        mkExpr (ECall (callee, [CAPositional access])) span
+
+let private synthesiseToJson
+        (deriveJsonRecords: Set<string>)
+        (rd: RecordDecl) : FunctionDecl =
+    let span = rd.Span
+    let fields =
+        rd.Members
+        |> List.choose (function
+            | RMField fd -> Some fd
+            | _ -> None)
+    let selfExpr = mkExpr ESelf span
+    // Build the body expression as a left-associative chain of `+`s.
+    let prefix = strLit "{" span
+    let suffix = strLit "}" span
+    let parts =
+        fields
+        |> List.mapi (fun i fd ->
+            let fieldName = strLit ("\"" + fd.Name + "\":") span
+            let value     = renderFieldExpr deriveJsonRecords selfExpr fd
+            let comma     = if i = 0 then strLit "" span else strLit "," span
+            // (comma + fieldName) + value
+            let labelled  = mkExpr (EBinop (BAdd, comma, fieldName)) span
+            mkExpr (EBinop (BAdd, labelled, value)) span)
+    let body =
+        let inner =
+            parts
+            |> List.fold
+                (fun acc part -> mkExpr (EBinop (BAdd, acc, part)) span)
+                prefix
+        mkExpr (EBinop (BAdd, inner, suffix)) span
+    let stringTy = mkType (TRef (mkPath "String" span)) span
+    let selfParam : Param =
+        { Mode    = PMIn
+          Name    = "self"
+          Type    = mkType (TRef (mkPath rd.Name span)) span
+          Default = None
+          Span    = span }
+    { DocComments = []
+      Annotations = []
+      Visibility  = Some (Pub span)
+      IsAsync     = false
+      Name        = rd.Name + ".toJson"
+      Generics    = None
+      Params      = [selfParam]
+      Return      = Some stringTy
+      Where       = None
+      Contracts   = []
+      Body        = Some (FBExpr body)
+      Span        = span }
+
+let synthesizeItems (items: Item list) : Item list =
+    // First pass: collect the names of every record with
+    // `@derive(Json)` so the per-field renderer knows which fields
+    // dispatch to a recursive `T.toJson(value)` call.
+    let deriveJsonRecords =
+        items
+        |> List.choose (fun it ->
+            if hasDeriveJson it then
+                match it.Kind with
+                | IRecord rd | IExposedRec rd -> Some rd.Name
+                | _ -> None
+            else None)
+        |> Set.ofList
+    if Set.isEmpty deriveJsonRecords then items
+    else
+        let result = ResizeArray<Item>(items)
+        for it in items do
+            if hasDeriveJson it then
+                match it.Kind with
+                | IRecord rd | IExposedRec rd ->
+                    let fn = synthesiseToJson deriveJsonRecords rd
+                    result.Add
+                        { DocComments = []
+                          Annotations = []
+                          Visibility  = Some (Pub rd.Span)
+                          Kind        = IFunc fn
+                          Span        = rd.Span }
+                | _ -> ()
+        List.ofSeq result
