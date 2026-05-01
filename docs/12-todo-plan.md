@@ -377,15 +377,46 @@ practical value.
 
 ### C7 — formatter (`lyric fmt`)
 
-Today's parser doesn't preserve trivia (whitespace, comments) — it
-produces a syntactic AST, not a CST.  A round-trip-faithful formatter
-needs either:
+Today's parser produces an AST — abstract syntax tree, no trivia.  A
+round-trip-faithful formatter needs source position info the AST
+doesn't carry.
 
-- A new CST layer with trivia attached to every token, OR
-- A printer that re-parses and reconstructs canonical formatting from
-  the AST alone (loses the user's idiomatic whitespace).
+**Decision (D-progress-029)**: ship a full CST layer; lowest priority
+of the Band C items decided so far.
 
-**Decision needed**: CST or canonical-form-only?
+**What ships eventually.**  A Concrete Syntax Tree where every token
+(including whitespace, blank lines, line comments, and doc comments)
+is a node, and the existing AST becomes a structured projection over
+the CST.  Roslyn / rust-analyzer / SwiftSyntax all use this shape.
+
+**Why full (a) instead of bootstrap (b').**  The CST is reusable for
+later tools — `lyric fix` / structural refactoring / a real LSP with
+rename-symbol — that all want token-position-faithful traversal.
+Building (b') first and (a) later means doing the formatter twice;
+the CST is the right end-state and we'd rather pay the cost once.
+
+**Implementation outline.**
+- Lexer attaches leading + trailing trivia (whitespace, comments)
+  to every token.
+- Parser builds CST nodes carrying tokens-with-trivia; the existing
+  `Lyric.Parser.Ast` types become a thin projection layer that
+  hides trivia from AST consumers (type checker, emitter,
+  AliasRewriter, doc generator).
+- Existing AST consumers stay unchanged — they call into the
+  projection layer.
+- `lyric fmt` walks the CST, rewrites the trivia between tokens to
+  canonical spacing, and re-serializes.
+
+**Effort.**  ~1500-2500 LOC of plumbing.  Lexer +30%, parser +50%,
+every AST consumer unchanged via the projection.  Multi-week project
+that touches every existing parser test (tests need updating to
+account for trivia attachment but their *assertions* about parsed
+shapes shouldn't change).
+
+**Priority.**  Lowest of the Band C items decided so far — `lyric
+fmt` itself isn't on the user-visible critical path until v1.0
+polish, and the CST infrastructure pays off most when LSP / refactor
+tools come online.
 
 ### C8 — package manager (`lyric.toml`)
 
