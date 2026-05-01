@@ -6,7 +6,7 @@
 @runtime_checked
 package Std.App
 
-import Std.Errors { IOError }
+import Std.Errors
 import Std.File as File
 
 pub opaque type Config {

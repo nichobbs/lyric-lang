@@ -2080,18 +2080,34 @@ let rec private ensureStdlibArtifact
                         { Source       = src
                           AssemblyName = assemblyName
                           OutputPath   = outPath }
-                    let _emitDiags =
+                    let emitDiags =
                         emitAssembly
                             stripped checked'.Signatures checked'.Symbols
                             req true depArtifacts
-                    // Match the original Std.Core path: ignore
-                    // type-checker / emitter diagnostics here so that
-                    // pre-existing stdlib-side issues (e.g. T0040 on
-                    // `slice[T].length`) don't take down user emits.
-                    // Surface them only if `Assembly.LoadFrom` then
-                    // fails — that's the real signal that the DLL
-                    // wasn't produced.
-                    if not (File.Exists outPath) then
+                    // Surface every error-level diagnostic from any
+                    // stage of the stdlib precompile.  Earlier
+                    // bootstrap state ignored these so user emits
+                    // wouldn't trip on pre-existing stdlib issues
+                    // (T0040 on `slice[T].length`, etc.); those have
+                    // since been fixed (PR #26 taught the type
+                    // checker about BCL members), so the resolver
+                    // can now be strict.  Each error is prefixed so
+                    // a user can tell their program from the
+                    // stdlib's contribution.
+                    let allDiags =
+                        parsed.Diagnostics
+                        @ checked'.Diagnostics
+                        @ emitDiags
+                    let stdErrors =
+                        allDiags
+                        |> List.filter (fun d -> d.Severity = DiagError)
+                        |> List.map (fun d ->
+                            { d with
+                                Message =
+                                    sprintf "[stdlib %s] %s" key d.Message })
+                    if not (List.isEmpty stdErrors) then
+                        Error stdErrors
+                    elif not (File.Exists outPath) then
                         let parserErrs =
                             parsed.Diagnostics
                             |> List.filter (fun d -> d.Severity = DiagError)
@@ -2192,8 +2208,13 @@ let emit (req: EmitRequest) : EmitResult =
         upstream
         |> List.exists (fun d ->
             d.Severity = DiagError && d.Code.StartsWith "P")
+    // If any stdlib precompile failed, skip user-side emit — running
+    // the emitter without populated import tables would crash with
+    // "unknown name" exceptions that mask the real diagnostic.
+    let importFatal =
+        importDiags |> List.exists (fun d -> d.Severity = DiagError)
 
-    if parserFatal then
+    if parserFatal || importFatal then
         { OutputPath = None; Diagnostics = upstream }
     else
         let emitDiags =

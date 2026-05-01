@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Time
 
-import Std.Errors { ParseError }
+import Std.Errors
 import Std.TimeHost as HostTime
 
 pub opaque type Instant {

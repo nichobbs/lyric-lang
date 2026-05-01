@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Stream
 
-import Std.Errors { IOError }
+import Std.Errors
 
 pub interface ByteReader {
   // Return up to maxBytes. An empty successful slice means EOF.

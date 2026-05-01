@@ -11,7 +11,7 @@
 // invalid) — callers gate `Value` behind `IsValid`.
 package Std.Parse
 
-import Std.Errors { ParseError }
+import Std.Errors
 
 // ---------------------------------------------------------------------------
 // Int parsing.
