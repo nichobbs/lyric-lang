@@ -420,12 +420,145 @@ tools come online.
 
 ### C8 — package manager (`lyric.toml`)
 
-Big undertaking.  Versioned packages, registry, lockfile, transitive
-resolution.  Today's stdlib resolver hard-codes a walk-the-repo lookup
-keyed on `LYRIC_STD_PATH` or relative directories.
+Today's stdlib resolver hardcodes a walk-the-repo lookup keyed on
+`LYRIC_STD_PATH`.  Real package management means declared
+dependencies, version resolution, lockfiles, registry, transitive
+resolution.
 
-**Decision needed**: ship a self-hosted registry, or piggyback on an
-existing one (NuGet, Cargo-style local-only)?
+**Decision (D-progress-030)**: piggyback on NuGet + embed contract
+metadata directly in the DLL.
+
+**Distribution = NuGet.**  Lyric packages publish as `.nupkg` files;
+the registry is nuget.org (or any standard NuGet feed including
+private GitHub Packages, Azure Artifacts, etc.).  `lyric.toml` is a
+thin manifest that the build pipeline lowers to `<PackageReference>`
+items in a generated `.csproj`; transitive resolution is `dotnet
+restore`.  Convention: Lyric-shipped packages use a `Lyric.*` prefix
+for namespace separation in search; a `lyric search` filter reads
+the embedded contract resource (below) to surface only Lyric
+packages.
+
+**Why not self-hosted (a).**  A real registry is its own product —
+auth, abuse handling, mirroring, takedowns, security incidents.
+Cargo / npm / nuget each represent 5+ years of dedicated team work.
+Lyric programs already produce .NET assemblies; piggybacking on the
+mature NuGet infrastructure costs ~weeks instead of years and gives
+us signing, mirroring, private feeds, search, credential helpers,
+and threat-model day one.
+
+**Why not local-only (c).**  Fine as a starting point but no
+third-party-package story; the community can't share libraries.
+Not a v1.0 endpoint.
+
+**Contract metadata = embedded resource.**  Per language reference
+§3.3, every package emits a `.lyric-contract` artifact alongside the
+DLL.  Rather than ship that as a separate file in the .nupkg, embed
+it as a managed resource on the DLL itself:
+
+- `<EmbeddedResource>` named `Lyric.Contract` on every emitted
+  assembly.
+- Format is a hand-rolled custom binary blob:
+  `<version><checksum><pub-decls>` — versioned, checksummed,
+  big-endian.  Modeled on F#'s `FSharpSignatureData` resource.
+- Reader lives in a small `Lyric.Contract` library that
+  `lyric build` (cross-package consumption) and
+  `lyric public-api-diff` (SemVer enforcement) both link.
+- AOT-clean: the resource is rooted because consumers reference it
+  by name via `Assembly.GetManifestResourceStream`.
+- Cross-package flow: download .nupkg → extract DLL →
+  `MetadataLoadContext.LoadFromAssemblyPath` → read
+  `Lyric.Contract` resource → done.  No sidecar files.
+
+**Rationale.**  Embedded metadata means the .nupkg ships only the
+DLL — fewer moving parts, no risk of contract / DLL drift, the same
+reader flow works for monorepo (no NuGet) and registry-fetched
+packages.  `MetadataLoadContext` is already in the codebase from the
+Cecil rewrite path so the infrastructure cost is low.
+
+---
+
+## Order of attack
+
+All Band C items now have decisions (above).  Sequenced for
+progress-per-session and dependency unblocking:
+
+### Tier 1 — half-session quick wins, no dependencies
+
+1. **C3 — const folding for range-subtype symbolic bounds.**  Closes
+   a known correctness gap (D-progress-003: bounds escape T0090 /
+   T0091 silently).  ~300 LOC + tests.
+2. **C4 phase 1 — strict-match auto-FFI.**  Resolve a name when
+   exactly one BCL overload matches by `(name, arg-arity, exact-
+   type-match)`.  Ergonomic win for the common case
+   (`xs.add(item)`); ambiguous calls still need `@externTarget` as
+   the escape hatch.
+3. **C5 Time expansion.**  IANA `zoneOf`, epoch-millis converters,
+   calendar arithmetic.  All thin FFI wrappers.
+
+### Tier 2 — mid-cost, high practical value
+
+4. **C6 wire blocks bootstrap-grade.**  Singleton + `@provided` +
+   multi-wire.  Combined with the already-shipped `@stubbable`,
+   unlocks worked-example #7's test-wire pattern + production
+   singleton DI.  ~1-1.5 sessions.
+5. **C5 Json source-gen.**  `@derive(Json)` on records synthesises
+   `toJson` / `fromJson` at compile time.  Unlocks REST services
+   without manual string concat.  ~1 session.
+
+### Tier 3 — package ecosystem
+
+6. **C8 — NuGet piggyback + embedded contract resource.**  Two
+   parts: contract-metadata embedded resource format (~1 session),
+   then `lyric.toml` manifest + `lyric publish` / `lyric restore`
+   wrappers around `dotnet pack` / `dotnet restore` (~1 session).
+   Lands the package ecosystem before async so external libraries
+   have somewhere to live while C2 is in flight.
+
+### Tier 4 — the tentpole
+
+7. **C2 — real async state machines.**  2-4 weeks.  The biggest
+   single item; unlocks downstream Tier-5 work.
+
+### Tier 5 — gated on C2
+
+8. **C5 Http expansion.**  Cancellation tokens, real timeouts,
+   redirect policy.  All want async-state-machine threading; doing
+   them on the blocking shim leaks when the shim is replaced.
+9. **C6 scoped wire lifetimes.**  `scoped` declarations + the
+   lifetime checker that rejects singleton-depends-on-scoped.
+   Wants `AsyncLocal<T>` scope propagation across `await`.
+
+### Tier 6 — long tail / not blocking v1.0
+
+10. **C7 — full CST formatter.**  Lowest priority per the C7
+    decision; the CST infrastructure mostly pays off for LSP /
+    refactor tools that come after the formatter itself.
+11. **B6 — `format5..N`.**  Only when a real program needs it.
+12. **C5 Regex RE2.**  Only when a real program is exposed to
+    attacker-controlled regex inputs.
+13. **C4 phase 2/3 — score-based matching, special shapes.**  Pulls
+    in as user programs hit cases that strict match misses.
+
+### Why this order
+
+- **Tier 1** maintains momentum with concrete improvements that
+  don't block on anything.  Cleans up known correctness / ergonomic
+  gaps in a single session each.
+- **Tier 2** lands the high-leverage feature work that combines with
+  already-shipped pieces (`@stubbable`, records).  After Tier 2 the
+  compiler can express test-wire patterns and JSON-serializable
+  REST DTOs end-to-end.
+- **Tier 3** ships the package ecosystem before the biggest single
+  feature.  External users can publish libraries against the v0.x
+  Lyric while C2 is in flight; the embedded contract format lands
+  in every emitted assembly from this point forward.
+- **Tier 4** is C2 alone — long-running, focused effort.  Putting
+  it after package management means the async release is shippable
+  as a versioned package upgrade once it lands.
+- **Tier 5** is the post-C2 cleanup that completes the Http /
+  wire-scope stories.
+- **Tier 6** is the work that doesn't gate v1.0 — formatter,
+  varargs polish, RE2, FFI fanciness — done on demand.
 
 ---
 
