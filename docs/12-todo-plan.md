@@ -23,27 +23,17 @@ Landed in this branch.  Bootstrap covers single-arity stubs with
 constant return values; recording / failing / argument-matching DSL
 deferred.  See `docs/10-bootstrap-progress.md` D-progress-016.
 
-### A3. LSP server (skeleton)
+### A3. ~~LSP server (skeleton)~~ — shipped (bootstrap-grade)
 
-`docs/05-implementation-plan.md` M3.3.  Bootstrap target: a
-`compiler/src/Lyric.Lsp` console-app that speaks
-`textDocument/didOpen` + `textDocument/didChange` + `textDocument/diagnostic`
-and surfaces the type checker's diagnostics on save.  Hover and
-go-to-definition come second.
+`compiler/src/Lyric.Lsp/` ships a console-app `lyric-lsp` that speaks
+push diagnostics over JSON-RPC stdio.  Initialize, didOpen,
+didChange (full sync), didClose, hover (placeholder), shutdown,
+exit are all wired.  The server lifts parse + type-check and
+publishes the resulting diagnostics; no IL emission.  See
+`docs/10-bootstrap-progress.md` D-progress-017.
 
-Approach:
-
-- Lift `Emitter.parseAndCheck` (or whatever name the entry point has) into
-  a callable function returning `(typedAst, diagnostics)` without writing
-  a PE.  The CLI's `lyric build` already needs this split for the build
-  cache; see if it's already factored.
-- New project `compiler/src/Lyric.Lsp/` referencing the existing
-  Lexer / Parser / TypeChecker projects.  Don't reference the Emitter —
-  the LSP shouldn't emit IL.
-- Use the official .NET LSP libraries (`Microsoft.VisualStudio.LanguageServer.Protocol` +
-  `StreamJsonRpc`) rather than rolling our own JSON-RPC.
-- Document the editor wire-up in a new
-  `compiler/src/Lyric.Lsp/README.md` with a VS Code minimal extension manifest.
+Real type-resolution-on-position hover, go-to-definition, completion,
+and incremental sync are Phase 3 follow-ups.
 
 ---
 

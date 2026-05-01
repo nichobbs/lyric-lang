@@ -676,3 +676,69 @@ synthesised AST is indistinguishable from a user-authored
   "no impl found" diagnostic later.
 
 5 end-to-end tests in `StubbableTests.fs`.
+
+
+### D-progress-017: bootstrap LSP server (`lyric-lsp`)
+*stdlib-ergonomics branch.*  Phase 3 M3.3 first pass.  Adds
+`compiler/src/Lyric.Lsp/` — a console-app that speaks the Microsoft
+Language Server Protocol's stdio JSON-RPC transport.  Editors point
+at the `lyric-lsp` binary and get push diagnostics on every save +
+keystroke.
+
+**Capabilities advertised in `initialize`.**
+- `textDocumentSync.openClose = true`
+- `textDocumentSync.change = 1` (full sync — re-parse on every change)
+- `hoverProvider = true`
+
+**Methods handled.**
+- `initialize` / `initialized` / `shutdown` / `exit`
+- `textDocument/didOpen` / `didChange` / `didClose`
+- `textDocument/hover` (placeholder reply; real position-resolved
+  type info is a Phase 3 follow-up)
+- Unknown requests reply with JSON-RPC `-32601 method not found`;
+  unknown notifications drop silently.
+
+**Diagnostic flow.**  On `didOpen` and `didChange` the server runs
+`Lyric.Parser.Parser.parse` and `Lyric.TypeChecker.Checker.check`
+on the buffer text and publishes the merged diagnostics list via
+`textDocument/publishDiagnostics`.  No IL emission — the LSP keeps
+per-keystroke latency low and never touches the build cache.
+Diagnostics are cleared explicitly on `didClose`.
+
+**Implementation notes.**
+
+- Three F# files: `JsonRpc.fs` (LSP framing + 2.0 message helpers
+  built on `System.Text.Json.Nodes`), `Server.fs` (request dispatch
+  + document store), `Program.fs` (stdio entry point).
+- No external NuGet libraries — `StreamJsonRpc` /
+  `OmniSharp.Extensions.LanguageServer` are heavyweight for what's
+  ultimately three primitive transport operations and we'd rather
+  not pin to a particular protocol-definitions package this early.
+- The full LSP message envelope is treated as a JsonNode tree
+  throughout; the field-extraction helpers (`prop` / `propStr` /
+  `propInt`) handle the F# 9 strict-nullness shape without leaking
+  the `JsonNode | null` annotations into Server.fs.
+
+**Tests.**  New project `compiler/tests/Lyric.Lsp.Tests/` with five
+end-to-end tests in `ProtocolTests.fs`:
+- initialize advertises the bootstrap capabilities
+- didOpen with broken source publishes diagnostics
+- didChange to clean source clears diagnostics
+- shutdown returns a response with matching id
+- unknown request gets JSON-RPC method-not-found error
+
+The test harness drives `Server.runLoop` in-process over a
+`MemoryStream` pair — no `dotnet exec` of the real LSP binary, just
+synthesised stdin frames in / stdout frames out.
+
+641 tests across all five suites pass (Lexer 70, Parser 182,
+TypeChecker 90, Emitter 294, Lsp 5).
+
+**Bootstrap-grade scope** (tracked, not blocking):
+- Hover is a placeholder.  Real position-to-type resolution needs
+  the type checker to surface a position-indexed view of bindings.
+- No completion, no go-to-definition, no signature help.
+- No incremental document sync (only full).
+- No workspace/configuration / file-watching support.
+- No status reporting back to the client (no `window/showMessage`
+  on stdlib-resolve failures).

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Lyric.Lsp</RootNamespace>
+    <AssemblyName>lyric-lsp</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="JsonRpc.fs" />
+    <Compile Include="Server.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
+    <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
+    <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+  </ItemGroup>
+
+</Project>
