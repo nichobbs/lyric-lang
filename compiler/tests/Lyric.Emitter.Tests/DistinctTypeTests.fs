@@ -368,4 +368,61 @@ func main(): Unit {
 """
             Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
             Expect.equal (stdout.TrimEnd()) "5000\n-1" "tryFrom on Long"
+
+        // C3: symbolic bounds via `pub val` constants now drive both
+        // the well-formedness check and the runtime range check
+        // (D-progress-025).
+        testCase "[range subtype with const-folded bounds enforces at runtime]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "RangeFold" """
+package RangeFold
+import Std.Core
+
+pub val MIN_AGE: Int = 0
+pub val MAX_AGE: Int = 150
+
+type Age = Int range MIN_AGE ..= MAX_AGE
+
+func main(): Unit {
+  match Age.tryFrom(99) {
+    case Ok(a)  -> println(a.value)
+    case Err(_) -> println("oor")
+  }
+  match Age.tryFrom(9999) {
+    case Ok(a)  -> println(a.value)
+    case Err(_) -> println("oor")
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "99\noor"
+                "const-folded bounds enforced at runtime"
+
+        // C3: arithmetic in bounds folds at compile time and the
+        // runtime check uses the folded literal.
+        testCase "[range subtype with arithmetic bound folds correctly]" <| fun () ->
+            let _, stdout, stderr, exitCode =
+                compileAndRun "RangeArith" """
+package RangeArith
+import Std.Core
+
+pub val PAGE_SIZE: Int = 100
+pub val MAX_PAGES: Int = 50
+
+type PageOffset = Int range 0 ..= PAGE_SIZE * MAX_PAGES - 1
+
+func main(): Unit {
+  match PageOffset.tryFrom(4999) {
+    case Ok(p)  -> println(p.value)
+    case Err(_) -> println("oor")
+  }
+  match PageOffset.tryFrom(5000) {
+    case Ok(p)  -> println(p.value)
+    case Err(_) -> println("oor")
+  }
+}
+"""
+            Expect.equal exitCode 0 (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) "4999\noor"
+                "PAGE_SIZE * MAX_PAGES - 1 folds to 4999 at compile time"
     ]

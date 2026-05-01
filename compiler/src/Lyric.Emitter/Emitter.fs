@@ -267,21 +267,25 @@ let private defineDistinctType
     let valueField =
         tb.DefineField("Value", underlyingClr, FieldAttributes.Public)
 
-    // Range-bound evaluation.  The bootstrap accepts integer literals
-    // only; symbolic bounds fall through to "no compile-time check".
-    // `upperExclusive` is true for `a ..< b` / `a .. b` half-open ranges.
-    let evalLiteral (e: Expr) : uint64 option =
-        match e.Kind with
-        | ELiteral (LInt (n, _)) -> Some n
-        | _ -> None
-    let literalBounds : (uint64 * uint64 * bool) option =
+    // Range-bound evaluation.  Defers to `ConstFold.tryFoldInt` so
+    // symbolic bounds (named consts, `MIN ..= cap - 1`, etc.) get
+    // folded the same way the well-formedness checker folds them.
+    // Bounds that the folder can't evaluate fall through to "no
+    // compile-time bound" — the type checker has already emitted
+    // T0093 for the user.  `upperExclusive` is true for `a ..< b`
+    // half-open ranges.
+    let evalConst (e: Expr) : int64 option =
+        match ConstFold.tryFoldInt symbols e with
+        | Ok v    -> Some v
+        | Error _ -> None
+    let literalBounds : (int64 * int64 * bool) option =
         match dt.Range with
         | Some (RBClosed(loExpr, hiExpr)) ->
-            match evalLiteral loExpr, evalLiteral hiExpr with
+            match evalConst loExpr, evalConst hiExpr with
             | Some lo, Some hi -> Some (lo, hi, false)
             | _ -> None
         | Some (RBHalfOpen(loExpr, hiExpr)) ->
-            match evalLiteral loExpr, evalLiteral hiExpr with
+            match evalConst loExpr, evalConst hiExpr with
             | Some lo, Some hi -> Some (lo, hi, true)
             | _ -> None
         | _ -> None
@@ -289,10 +293,10 @@ let private defineDistinctType
     // Emit `if x < lo || x op_hi hi goto failLbl`, where op_hi is `>`
     // for closed ranges and `>=` for half-open ranges.
     let emitBoundsCheck (il: ILGenerator) (failLbl: Label)
-            (lo: uint64) (hi: uint64) (upperExclusive: bool) : unit =
-        let emitConst (n: uint64) =
+            (lo: int64) (hi: int64) (upperExclusive: bool) : unit =
+        let emitConst (n: int64) =
             if underlyingClr = typeof<int64> then
-                il.Emit(OpCodes.Ldc_I8, int64 n)
+                il.Emit(OpCodes.Ldc_I8, n)
             else
                 il.Emit(OpCodes.Ldc_I4, int n)
         il.Emit(OpCodes.Ldarg_0)

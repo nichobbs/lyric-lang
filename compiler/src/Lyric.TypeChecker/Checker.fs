@@ -146,19 +146,22 @@ let private numericPrimitiveNames : Set<string> =
                  "UInt"; "ULong"; "UShort"; "UByte"
                  "Float"; "Double" ]
 
-/// Literal evaluator used when validating range bounds.  The bootstrap
-/// only accepts integer literals; symbolic bounds escape the check.
-let private literalIntValue (e: Expr) : uint64 option =
-    match e.Kind with
-    | ELiteral (LInt (n, _)) -> Some n
-    | _ -> None
+/// Render a `ConstFold.FoldError` for the T0093 diagnostic.
+let private describeFoldError (err: ConstFold.FoldError) : string =
+    match err with
+    | ConstFold.NotConstant -> "expression is not a compile-time integer constant"
+    | ConstFold.Cycle name  -> sprintf "constant '%s' references itself transitively" name
+    | ConstFold.Overflow    -> "integer overflow during constant evaluation"
+    | ConstFold.DivByZero   -> "division by zero in constant expression"
 
 /// Well-formedness check for a range subtype's underlying type and
-/// bounds.  Emits T0090 for inverted/empty bounds and T0091 for a
-/// non-numeric underlying type.  Symbolic (non-literal) bounds are
-/// accepted by the checker; the emitter skips the runtime check on
-/// them in the bootstrap.
+/// bounds.  Emits T0090 for inverted/empty bounds, T0091 for a
+/// non-numeric underlying type, and T0093 when a bound expression
+/// can't be folded to a compile-time integer constant via
+/// `ConstFold.tryFoldInt` (literal, named const, or arithmetic
+/// combination).
 let private checkDistinctType
+        (table: SymbolTable)
         (diags: ResizeArray<Diagnostic>)
         (dt: DistinctTypeDecl) : unit =
     match dt.Range with
@@ -175,23 +178,32 @@ let private checkDistinctType
                     dt.Name n)
                 dt.Span)
         | _ -> ()
+        let foldOrErr (e: Expr) : int64 option =
+            match ConstFold.tryFoldInt table e with
+            | Ok v -> Some v
+            | Error err ->
+                diags.Add(Diagnostic.error "T0093"
+                    (sprintf "range subtype '%s' has a symbolic bound that cannot be folded: %s"
+                        dt.Name (describeFoldError err))
+                    e.Span)
+                None
+        let checkClosed (lo: Expr) (hi: Expr) (sym: string) =
+            match foldOrErr lo, foldOrErr hi with
+            | Some loVal, Some hiVal ->
+                let invalid =
+                    match sym with
+                    | "..="  -> loVal > hiVal
+                    | "..<"  -> loVal >= hiVal
+                    | _      -> false
+                if invalid then
+                    diags.Add(Diagnostic.error "T0090"
+                        (sprintf "range subtype '%s' has empty bounds: %d %s %d"
+                            dt.Name loVal sym hiVal)
+                        dt.Span)
+            | _ -> ()
         match dt.Range with
-        | Some (RBClosed(lo, hi)) ->
-            match literalIntValue lo, literalIntValue hi with
-            | Some loVal, Some hiVal when loVal > hiVal ->
-                diags.Add(Diagnostic.error "T0090"
-                    (sprintf "range subtype '%s' has empty bounds: %d ..= %d (lo > hi)"
-                        dt.Name loVal hiVal)
-                    dt.Span)
-            | _ -> ()
-        | Some (RBHalfOpen(lo, hi)) ->
-            match literalIntValue lo, literalIntValue hi with
-            | Some loVal, Some hiVal when loVal >= hiVal ->
-                diags.Add(Diagnostic.error "T0090"
-                    (sprintf "range subtype '%s' has empty bounds: %d ..< %d (lo must be < hi)"
-                        dt.Name loVal hiVal)
-                    dt.Span)
-            | _ -> ()
+        | Some (RBClosed(lo, hi))   -> checkClosed lo hi "..="
+        | Some (RBHalfOpen(lo, hi)) -> checkClosed lo hi "..<"
         | _ -> ()
 
 /// Well-formedness check for a `where` clause: each bound's left side
@@ -314,7 +326,7 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     // time rather than letting the emitter happily produce dead code.
     for it in file.Items do
         match it.Kind with
-        | IDistinctType dt -> checkDistinctType diags dt
+        | IDistinctType dt -> checkDistinctType table diags dt
         | _ -> ()
 
     // T3: resolve signatures for every IFunc — both imported and user.

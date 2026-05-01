@@ -973,3 +973,58 @@ The CLI subcommand is `lyric doc <source.l> [-o out.md]`; without
 - No doctest extraction; the only thing rendered from `///` text is
   the verbatim body.
 - Method tables for `impl` blocks aren't yet rendered.
+
+
+### D-progress-024 (decision): real async state machines via hand-rolled IL
+Recorded as the C2 plan in `docs/12-todo-plan.md`.  See that doc for
+the rationale and rollout.
+
+### D-progress-025: const folding for range-subtype symbolic bounds (C3)
+*claude/define-language-spec-5DbnS branch.*  D-progress-003 noted that
+T0090 / T0091 only fired on integer-literal bounds; symbolic
+constants like `MIN_AGE ..= MAX_AGE` escaped both the well-formedness
+check and the runtime range check.  C3 ships option (b) of the C3
+decision tree (D-progress-025) — a constant folder over literals,
+named-const refs, and integer arithmetic.
+
+**Folder.**  New module
+`compiler/src/Lyric.TypeChecker/ConstFold.fs`:
+
+```fsharp
+type FoldError = NotConstant | Cycle of string | Overflow | DivByZero
+val tryFoldInt : SymbolTable -> Expr -> Result<int64, FoldError>
+```
+
+Walks `ELiteral (LInt n)`, `EParen`, `EPrefix (PreNeg, ...)`,
+`EBinop (BAdd / BSub / BMul / BDiv / BMod, ...)`, and
+`EPath { Segments = [name] }` resolving to `DKConst` or `DKVal`
+symbols.  Cycle detection via a `Set<string>` of currently-resolving
+names.  Arithmetic uses `Microsoft.FSharp.Core.Operators.Checked` so
+overflow is surfaced rather than silently wrapping.
+
+**Wire-up.**  `Checker.checkDistinctType` now folds each bound and
+emits a new T0093 diagnostic when the fold fails ("expression is not
+a compile-time integer constant", "constant 'A' references itself
+transitively", etc.); T0090 fires post-fold for inverted bounds.
+`Emitter.defineDistinctType`'s `evalLiteral` is replaced with an
+`evalConst` that calls the same folder; the runtime range-check IL
+now uses the folded value, so `tryFrom(9999)` on
+`type Age = Int range MIN_AGE ..= MAX_AGE` correctly returns `Err`.
+
+Lyric doesn't currently parse `const` declarations (only `pub val`
+at module level), so the folder accepts both `DKConst` and `DKVal`
+symbols — `pub val MIN_AGE: Int = 0` is treated as a compile-time
+constant when used in a range bound.
+
+**Tests.**  10 new tests in
+`compiler/tests/Lyric.TypeChecker.Tests/ConstFoldTests.fs` covering
+literal-only, named-const, transitive const, arithmetic-in-bounds,
+inverted-after-fold (T0090), cycle detection (T0093), and non-numeric
+underlying (T0091).  2 new e2e tests in `DistinctTypeTests.fs`
+verify the runtime range check uses the folded bounds.
+
+All 666 tests pass: Lexer 70, Parser 182, TypeChecker 100,
+Emitter 309, Lsp 5.
+
+**Bootstrap-grade scope** (option (c) follow-ups): function calls
+in bounds, `if`-in-bounds, float literals, mixed-width arithmetic.
