@@ -154,10 +154,17 @@ M3.4.  Today's stdlib resolver is hard-coded to walk-the-repo.  A real
 package manager fetches versioned packages from a registry, compiles
 them on first import, and caches the resulting DLLs.
 
-### C9. `lyric doc` documentation generator
+### C9. ~~`lyric doc` documentation generator~~ — bootstrap shipped
 
-M3.3.  Walk the typed AST, emit Markdown per package.  Cross-link
-references.  Could ship after wire and before formatter.
+`lyric doc <source.l> [-o out.md]` walks the parsed AST and emits
+Markdown describing the file's `pub` surface — package header,
+module-level doc, per-item signature + `///` body for every `pub func`,
+`pub record`, `pub union`, `pub enum`, `pub opaque type`,
+`pub interface`, `pub distinct type`, `pub type`, `pub const`.
+
+Cross-file roll-ups, anchor links, doctest extraction are
+**bootstrap-grade scope** — promoted to follow-ups.  See
+`docs/10-bootstrap-progress.md` D-progress-023.
 
 ---
 

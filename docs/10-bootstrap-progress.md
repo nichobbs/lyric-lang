@@ -931,3 +931,45 @@ func main(): Unit {
 - `inout_record_field_store`
 
 All 307 emitter tests pass.
+
+
+### D-progress-023: `lyric doc` Markdown generator (C9 bootstrap)
+*claude/stdlib-ergonomics branch.*  Phase 3 M3.3 first pass for the
+documentation tool.  Walks the parsed AST and emits Markdown for the
+`pub` surface of a single source file:
+
+```
+$ lyric doc demo.l
+# Package `Demo`
+
+Module-level doc body verbatim.
+
+### record `Point`
+```lyric
+pub record Point { pub x: Int, pub y: Int }
+```
+A 2-D point in the cartesian plane.
+
+### func `add`
+```lyric
+pub func add(a: in Int, b: in Int): Int
+```
+Compute the sum of two integers.
+```
+
+**Implementation.**  New `compiler/src/Lyric.Cli/Doc.fs` exposes
+`generate : SourceFile -> string`.  Per-item signature printers cover
+`pub func`, `pub record`, `pub exposed record`, `pub union`,
+`pub enum`, `pub opaque type`, `pub interface`, `pub distinct type`,
+`pub type`, `pub const`.  Package-private items are filtered out.
+
+The CLI subcommand is `lyric doc <source.l> [-o out.md]`; without
+`-o` it prints to stdout.
+
+**Bootstrap-grade scope** (follow-ups in C9):
+- One file at a time.  No package-level roll-ups across multiple `.l`
+  files; no transitive dependency graph.
+- No anchor links / Markdown TOCs — sections aren't cross-linked.
+- No doctest extraction; the only thing rendered from `///` text is
+  the verbatim body.
+- Method tables for `impl` blocks aren't yet rendered.
