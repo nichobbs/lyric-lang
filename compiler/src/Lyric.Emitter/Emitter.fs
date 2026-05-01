@@ -1456,6 +1456,7 @@ let private emitExternCall
 
 let private emitFunctionBody
         (mb: MethodBuilder)
+        (smInfo: AsyncStateMachine.StateMachineInfo option)
         (fn: FunctionDecl)
         (sg: ResolvedSignature)
         (lookup: TypeId -> System.Type option)
@@ -1499,15 +1500,20 @@ let private emitFunctionBody
     let bareReturnTy =
         TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
     let methodReturnTy =
-        if sg.IsAsync then toTaskType bareReturnTy else bareReturnTy
+        if sg.IsAsync && smInfo.IsNone then toTaskType bareReturnTy else bareReturnTy
     let returnTy = bareReturnTy
+    // In SM mode `MoveNext` has no params (only `this`); the user
+    // params live on the SM as fields and resolve via SmFields below.
     let paramList =
-        sg.Params
-        |> List.map (fun p ->
-            // Stored type matches the CLR slot (byref for out/inout).
-            // EPath access auto-dereferences via `loadParamValue`; call
-            // sites passing to byref params take addresses directly.
-            p.Name, paramClrType lookup genericSubst p)
+        match smInfo with
+        | Some _ -> []
+        | None ->
+            sg.Params
+            |> List.map (fun p ->
+                // Stored type matches the CLR slot (byref for out/inout).
+                // EPath access auto-dereferences via `loadParamValue`; call
+                // sites passing to byref params take addresses directly.
+                p.Name, paramClrType lookup genericSubst p)
     // Type-resolution closure used by lambda synthesis + val/var
     // ascription inside the body.  Seeded with the function's
     // generic-parameter names so `var v: V = ...` resolves V to the
@@ -1519,6 +1525,12 @@ let private emitFunctionBody
     let resolveTypeForCtx (te: TypeExpr) : System.Type =
         let lty = Resolver.resolveType symbols resolveCtxInner scratchDiagsInner te
         TypeMap.toClrTypeWithGenerics lookup genericSubst lty
+    // In SM mode, MoveNext is an instance method whose `this` is the
+    // SM instance; selfType becomes the SM type, isInstance is true.
+    let effectiveIsInstance, effectiveSelfType =
+        match smInfo with
+        | Some sm -> true, Some (sm.Type :> System.Type)
+        | None    -> isInstance, selfType
     let ctx =
         Codegen.FunctionCtx.make
             il returnTy paramList
@@ -1526,7 +1538,15 @@ let private emitFunctionBody
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes externTypeNames
-            isInstance selfType programType resolveTypeForCtx lookup diags
+            effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup diags
+    // Populate SmFields from the SM's parameter fields so EPath
+    // reads / SAssign writes route through `Ldarg.0; Ldfld <field>`
+    // instead of the regular `Ldarg N` parameter slot path.
+    match smInfo with
+    | Some sm ->
+        for pf in sm.ParamFields do
+            ctx.SmFields.[pf.Name] <- (pf.Field :> System.Reflection.FieldInfo)
+    | None -> ()
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -1654,35 +1674,42 @@ let private emitFunctionBody
         | CCEnsures (cond, _) ->
             emitContractCheck ctx cond (sprintf "%s: ensures failed" fn.Name)
         | _ -> ()
-    match resultLocal with
-    | Some loc -> il.Emit(OpCodes.Ldloc, loc)
-    | None     -> ()
-    if sg.IsAsync then
-        if isVoidReturn then
-            // Drop nothing; load Task.CompletedTask.
-            let taskTy = typeof<System.Threading.Tasks.Task>
-            let prop = taskTy.GetProperty("CompletedTask")
-            match Option.ofObj prop with
-            | Some p ->
-                let getter = p.GetGetMethod()
-                match Option.ofObj getter with
-                | Some g -> il.Emit(OpCodes.Call, g)
-                | None   -> failwith "Task.CompletedTask getter not found"
-            | None -> failwith "Task.CompletedTask property not found"
-        else
-            // `Task.FromResult<T>` lives on the non-generic Task
-            // class. Look up the open-generic method directly so
-            // we don't trip over TypeBuilder limitations when
-            // bareReturnTy is still under construction.
-            let fromResultGeneric =
-                let mi =
-                    typeof<System.Threading.Tasks.Task>
-                        .GetMethod("FromResult")
-                match Option.ofObj mi with
-                | Some m -> m.MakeGenericMethod([| bareReturnTy |])
-                | None   -> failwith "Task.FromResult<T> not found"
-            il.Emit(OpCodes.Call, fromResultGeneric)
-    il.Emit(OpCodes.Ret)
+    match smInfo with
+    | Some sm ->
+        // SM mode: emit the SetResult/Ret epilogue.  The user body
+        // produced its bare-typed value into `resultLocal` (or
+        // none, for void); the epilogue helper consumes it.
+        AsyncStateMachine.emitMoveNextEpilogue il sm resultLocal
+    | None ->
+        match resultLocal with
+        | Some loc -> il.Emit(OpCodes.Ldloc, loc)
+        | None     -> ()
+        if sg.IsAsync then
+            if isVoidReturn then
+                // Drop nothing; load Task.CompletedTask.
+                let taskTy = typeof<System.Threading.Tasks.Task>
+                let prop = taskTy.GetProperty("CompletedTask")
+                match Option.ofObj prop with
+                | Some p ->
+                    let getter = p.GetGetMethod()
+                    match Option.ofObj getter with
+                    | Some g -> il.Emit(OpCodes.Call, g)
+                    | None   -> failwith "Task.CompletedTask getter not found"
+                | None -> failwith "Task.CompletedTask property not found"
+            else
+                // `Task.FromResult<T>` lives on the non-generic Task
+                // class. Look up the open-generic method directly so
+                // we don't trip over TypeBuilder limitations when
+                // bareReturnTy is still under construction.
+                let fromResultGeneric =
+                    let mi =
+                        typeof<System.Threading.Tasks.Task>
+                            .GetMethod("FromResult")
+                    match Option.ofObj mi with
+                    | Some m -> m.MakeGenericMethod([| bareReturnTy |])
+                    | None   -> failwith "Task.FromResult<T> not found"
+                il.Emit(OpCodes.Call, fromResultGeneric)
+        il.Emit(OpCodes.Ret)
 
 /// Synthesise a host-runnable `Main(string[]) -> int` that calls the
 /// Lyric `main` function. If `main` returns `Unit`, Main returns 0;
@@ -2471,6 +2498,16 @@ let private emitAssembly
         // Pass B — emit bodies (free-standing funcs). Look up the body
         // target by arity-qualified key first so overloaded functions
         // each get their own MethodBuilder body.
+        //
+        // Async functions that are eligible for Phase A state-machine
+        // lowering route through `AsyncStateMachine.defineStateMachine`
+        // → kickoff stub on the user's MethodBuilder + a sibling SM
+        // class whose MoveNext carries the user's body.  Other async
+        // funcs (those with internal `await` or generics) keep the
+        // M1.4 `Task.FromResult` path until Phase B lands real
+        // suspend/resume.
+        let smTypesToFinalize = ResizeArray<TypeBuilder>()
+        let mutable smCounter = 0
         for fn in funcs do
             let arityKey = fn.Name + "/" + string fn.Params.Length
             let sg =
@@ -2486,14 +2523,51 @@ let private emitAssembly
                 match methodTable.TryGetValue arityKey with
                 | true, m -> m
                 | _       -> methodTable.[fn.Name]
-            emitFunctionBody
-                mb fn sg lookup
-                methodTable funcSigsTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable projectableTable
-                importedRecordTable importedUnionTable importedUnionCaseLookup
-                importedFuncTable importedDistinctTypeTable externTypeNames
-                false None
-                programTy symbols codegenDiags
+            let useSm =
+                sg.IsAsync && AsyncStateMachine.isPhaseAEligible fn
+            if useSm then
+                // Synthesise SM, emit kickoff into the user's MB,
+                // then emit MoveNext into the SM's MoveNext slot.
+                let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
+                let paramSpecs =
+                    sg.Params
+                    |> List.map (fun p ->
+                        p.Name, paramClrType lookup Map.empty p)
+                smCounter <- smCounter + 1
+                let sm =
+                    AsyncStateMachine.defineStateMachine
+                        ctx.Module nsName fn.Name smCounter
+                        bareReturn paramSpecs
+                // Kickoff body — copy each method arg into the SM
+                // field of the same name, call builder.Start, return
+                // the builder's Task.
+                let argIndices =
+                    sg.Params |> List.mapi (fun i _ -> i)
+                AsyncStateMachine.emitKickoff mb sm argIndices
+                // SetStateMachine — forwards to builder.SetStateMachine.
+                AsyncStateMachine.emitSetStateMachine sm
+                // MoveNext — runs the user body via the regular emit
+                // pipeline, with `SmFields` populated.  Since Phase A
+                // bodies have no internal awaits, MoveNext executes
+                // synchronously and falls through to SetResult.
+                emitFunctionBody
+                    sm.MoveNext (Some sm) fn sg lookup
+                    methodTable funcSigsTable recordTable enumTable enumCases
+                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    importedRecordTable importedUnionTable importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable externTypeNames
+                    false None
+                    programTy symbols codegenDiags
+                smTypesToFinalize.Add sm.Type
+            else
+                emitFunctionBody
+                    mb None fn sg lookup
+                    methodTable funcSigsTable recordTable enumTable enumCases
+                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    importedRecordTable importedUnionTable importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable externTypeNames
+                    false None
+                    programTy symbols codegenDiags
 
         // Pass B.5 — emit impl-method bodies as instance methods.
         for (fd, mb, sg) in implMethods do
@@ -2502,7 +2576,7 @@ let private emitAssembly
             // type (which we just set in Pass A.5).
             let selfTy = mb.DeclaringType
             emitFunctionBody
-                mb fd sg lookup
+                mb None fd sg lookup
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
@@ -2531,6 +2605,11 @@ let private emitAssembly
             for c in kv.Value.Cases do
                 c.Type.CreateType() |> ignore
             kv.Value.Type.CreateType() |> ignore
+        // Async state-machine types — created before programTy so the
+        // kickoff stubs in programTy can resolve their references at
+        // runtime.
+        for smTy in smTypesToFinalize do
+            smTy.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
         // Embed the `Lyric.Contract` managed resource describing this

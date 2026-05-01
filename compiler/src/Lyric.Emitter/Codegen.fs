@@ -123,7 +123,14 @@ type FunctionCtx =
       Lookup: Lyric.TypeChecker.TypeId -> System.Type option
       /// Codegen-phase diagnostics. Errors recorded here instead of
       /// throwing exceptions allow error recovery and structured reporting.
-      Diags: ResizeArray<Lyric.Lexer.Diagnostic> }
+      Diags: ResizeArray<Lyric.Lexer.Diagnostic>
+      /// State-machine parameter map.  When emitting `MoveNext` for
+      /// an async-state-machine class, parameters live as fields on
+      /// the SM (since `MoveNext`'s only argument is `this`).  For
+      /// any name in this map, `EPath`/`SAssign`/`peek` route through
+      /// `Ldarg.0; Ldfld <field>` instead of the regular `Params`
+      /// lookup.  Empty in non-SM contexts (the common case).
+      SmFields: Dictionary<string, FieldInfo> }
 
 module FunctionCtx =
 
@@ -189,7 +196,8 @@ module FunctionCtx =
           ProgramType  = programType
           ResolveType  = resolveType
           Lookup       = lookup
-          Diags        = diags }
+          Diags        = diags
+          SmFields     = Dictionary() }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -646,16 +654,19 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         match FunctionCtx.tryLookup ctx name with
         | Some lb -> lb.LocalType
         | None ->
-            match ctx.Params.TryGetValue name with
-            | true, (_, t) ->
-                // Byref params (out/inout) auto-dereference at the
-                // emit site; peek matches by peeling the `T&`.
-                if t.IsByRef then
-                    match Option.ofObj (t.GetElementType()) with
-                    | Some et -> et
-                    | None    -> t
-                else t
-            | _            -> typeof<obj>
+            match ctx.SmFields.TryGetValue name with
+            | true, f -> f.FieldType
+            | _ ->
+                match ctx.Params.TryGetValue name with
+                | true, (_, t) ->
+                    // Byref params (out/inout) auto-dereference at the
+                    // emit site; peek matches by peeling the `T&`.
+                    if t.IsByRef then
+                        match Option.ofObj (t.GetElementType()) with
+                        | Some et -> et
+                        | None    -> t
+                    else t
+                | _            -> typeof<obj>
     | EBinop (op, l, _) ->
         match op with
         | BAnd | BOr | BXor | BImplies
@@ -1576,13 +1587,19 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- variable read ------------------------------------------------
 
     | EPath { Segments = [name] } ->
-        // Order: parameter slot → local → enum case → nullary union
-        // case → fallthrough.
+        // Order: local → SM field (async state-machine MoveNext) →
+        // parameter slot → enum case → nullary union case → fallthrough.
         match FunctionCtx.tryLookup ctx name with
         | Some lb ->
             il.Emit(OpCodes.Ldloc, lb)
             lb.LocalType
         | None ->
+            match ctx.SmFields.TryGetValue name with
+            | true, f ->
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldfld, f)
+                f.FieldType
+            | _ ->
             match ctx.Params.TryGetValue name with
             | true, (idx, pty) ->
                 il.Emit(OpCodes.Ldarg, idx)
@@ -3516,6 +3533,13 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                 let _ = emitExpr ctx value
                 il.Emit(OpCodes.Stloc, lb)
             | None ->
+                match ctx.SmFields.TryGetValue name with
+                | true, f ->
+                    // Async state-machine field assignment.
+                    il.Emit(OpCodes.Ldarg_0)
+                    let _ = emitExpr ctx value
+                    il.Emit(OpCodes.Stfld, f)
+                | _ ->
                 match ctx.Params.TryGetValue name with
                 | true, (idx, pty) when pty.IsByRef ->
                     // Write through a byref param (out / inout).
