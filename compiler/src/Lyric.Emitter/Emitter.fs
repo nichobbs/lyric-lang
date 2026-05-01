@@ -1727,7 +1727,8 @@ let private emitAssembly
         (symbols: SymbolTable)
         (req: EmitRequest)
         (isLibrary: bool)
-        (stdlibArtifacts: StdlibArtifact list) : Diagnostic list =
+        (stdlibArtifacts: StdlibArtifact list)
+        (stdImports: ImportDecl list) : Diagnostic list =
     let funcs = functionItems sf
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
@@ -1820,6 +1821,30 @@ let private emitAssembly
         let importedUnionCaseLookup = Records.ImportedUnionCaseLookup()
         let importedFuncTable       = Records.ImportedFuncTable()
         let importedDistinctTypeTable = Records.ImportedDistinctTypeTable()
+        // Map a package's segments to the user-stated `ImportDecl`, if
+        // any.  The user might have written `import Std.Iter as IT` or
+        // `import Std.Collections.{newList as mkList}` — both forms
+        // need to register additional alias keys against the existing
+        // imported-func / union / record tables.  Transitive
+        // dependencies (artifacts pulled in via `Std.Iter`'s own
+        // imports rather than stated by the user) are unaliased.
+        let importByPath =
+            stdImports
+            |> List.map (fun i -> i.Path.Segments, i)
+            |> Map.ofList
+        // Selector-level aliases: `import Std.X.{foo as bar}` registers
+        // `bar` (and `bar/N`) as additional keys for `foo` in the
+        // imported-func table.  Returns the alias-name for a given
+        // imported function name, or `None` if the user didn't ask
+        // for one.
+        let selectorAliasFor (imp: ImportDecl) (origName: string) : string option =
+            match imp.Selector with
+            | Some (ISSingle item) when item.Name = origName -> item.Alias
+            | Some (ISGroup items) ->
+                items
+                |> List.tryFind (fun it -> it.Name = origName)
+                |> Option.bind (fun it -> it.Alias)
+            | _ -> None
         for artifact in stdlibArtifacts do
             let asm = artifact.Assembly
             let stdNs = String.concat "." artifact.Source.Package.Path.Segments
@@ -1828,6 +1853,8 @@ let private emitAssembly
                 else stdNs + "." + name
             let getType (n: string) : System.Type option =
                 Option.ofObj (asm.GetType n)
+            let userImport =
+                Map.tryFind artifact.Source.Package.Path.Segments importByPath
             // Resolver context against the artifact's symbol table —
             // used to resolve each declared field/parameter type to a
             // Lyric `Type`, which is what call-site type-arg inference
@@ -1946,21 +1973,35 @@ let private emitAssembly
                                 m.Name = fn.Name
                                 && m.GetParameters().Length = arity)
                         let arityKey = fn.Name + "/" + string arity
-                        match miOpt, Map.tryFind arityKey artifact.Signatures with
-                        | Some mi, Some sg ->
-                            let info =
-                                { Records.ImportedFuncInfo.Method = mi
-                                  Records.ImportedFuncInfo.Sig    = sg }
+                        let registerInfo (info: Records.ImportedFuncInfo) =
                             importedFuncTable.[fn.Name]  <- info
                             importedFuncTable.[arityKey] <- info
+                            // Bootstrap-grade alias semantics (D-progress-018):
+                            // selector alias `import X.{foo as bar}` adds
+                            // `bar` and `bar/N` keys for `foo`.  Package
+                            // aliases (`import X as A`) are handled at the
+                            // AST level by `AliasRewriter` before the type
+                            // checker runs, so no extra keys are needed
+                            // here.
+                            match userImport with
+                            | Some imp ->
+                                match selectorAliasFor imp fn.Name with
+                                | Some sa ->
+                                    importedFuncTable.[sa] <- info
+                                    importedFuncTable.[sa + "/" + string arity] <- info
+                                | None -> ()
+                            | None -> ()
+                        match miOpt, Map.tryFind arityKey artifact.Signatures with
+                        | Some mi, Some sg ->
+                            registerInfo
+                                { Records.ImportedFuncInfo.Method = mi
+                                  Records.ImportedFuncInfo.Sig    = sg }
                         | _ ->
                             match miOpt, Map.tryFind fn.Name artifact.Signatures with
                             | Some mi, Some sg ->
-                                let info =
+                                registerInfo
                                     { Records.ImportedFuncInfo.Method = mi
                                       Records.ImportedFuncInfo.Sig    = sg }
-                                importedFuncTable.[fn.Name]  <- info
-                                importedFuncTable.[arityKey] <- info
                             | _ -> ()
                     | _ -> ()
 
@@ -2022,6 +2063,100 @@ let private emitAssembly
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
+
+        // Projectable cycle detection (D026).  Build a directed graph
+        // of projectable opaque types, where an edge `A -> B` means
+        // "type A has a non-`@projectionBoundary` field referencing
+        // projectable B".  Cycles in that graph would cause infinite
+        // recursive view projection, so the language reference
+        // requires the user to mark at least one edge of every cycle
+        // with `@projectionBoundary`.  We DFS the graph and report a
+        // structured error pointing at the cycle.
+        let projectableNames =
+            projectableOpaques
+            |> Seq.map (fun (od, _) -> od.Name)
+            |> Set.ofSeq
+        let rec mentionedProjectables (te: TypeExpr) : string list =
+            match te.Kind with
+            | TRef p ->
+                match p.Segments with
+                | [name] when Set.contains name projectableNames -> [name]
+                | _ -> []
+            | TGenericApp (head, args) ->
+                let headHits =
+                    match head.Segments with
+                    | [name] when Set.contains name projectableNames -> [name]
+                    | _ -> []
+                let argHits =
+                    args
+                    |> List.collect (fun a ->
+                        match a with
+                        | TAType t -> mentionedProjectables t
+                        | TAValue _ -> [])
+                headHits @ argHits
+            | TArray (_, elem)
+            | TSlice elem
+            | TNullable elem
+            | TParen elem -> mentionedProjectables elem
+            | TTuple ts -> ts |> List.collect mentionedProjectables
+            | TFunction (ps, r) ->
+                (ps |> List.collect mentionedProjectables)
+                @ mentionedProjectables r
+            | _ -> []
+        let projectableEdges =
+            projectableOpaques
+            |> Seq.map (fun (od, _) ->
+                let outgoing =
+                    od.Members
+                    |> List.collect (fun m ->
+                        match m with
+                        | OMField fd when not (isProjectionBoundaryField fd) ->
+                            mentionedProjectables fd.Type
+                            |> List.map (fun target -> target, fd)
+                        | _ -> [])
+                od.Name, outgoing)
+            |> Map.ofSeq
+        let mutable projectableCycleErr : Diagnostic option = None
+        let visiting = HashSet<string>()
+        let visited  = HashSet<string>()
+        let rec dfs (path: string list) (node: string) =
+            if projectableCycleErr.IsSome then ()
+            elif visiting.Contains node then
+                // Found a cycle.  Pick the offending field span on
+                // the back-edge (the field that points from `path
+                // head` to `node`, closing the cycle).
+                let cycleSpan =
+                    match Map.tryFind (List.head path) projectableEdges with
+                    | Some edges ->
+                        edges
+                        |> List.tryFind (fun (target, _) -> target = node)
+                        |> Option.map (fun (_, fd) -> fd.Span)
+                        |> Option.defaultValue (List.head path |> fun _ -> Span.make Position.initial Position.initial)
+                    | None -> Span.make Position.initial Position.initial
+                let cyclePath =
+                    let prefix = List.rev path |> List.skipWhile ((<>) node)
+                    String.concat " -> " (prefix @ [node])
+                projectableCycleErr <-
+                    Some (err "T0092"
+                            (sprintf
+                                "projectable cycle detected (%s); mark at least one field with `@projectionBoundary` to break the cycle"
+                                cyclePath)
+                            cycleSpan)
+            elif visited.Contains node then ()
+            else
+                visiting.Add node |> ignore
+                match Map.tryFind node projectableEdges with
+                | Some edges ->
+                    for (target, _) in edges do
+                        dfs (node :: path) target
+                | None -> ()
+                visiting.Remove node |> ignore
+                visited.Add node |> ignore
+        for (od, _) in projectableOpaques do
+            dfs [] od.Name
+        match projectableCycleErr with
+        | Some d -> codegenDiags.Add d
+        | None -> ()
 
         // Projectable opaque types — synthesise `<Name>View` exposed
         // record + a `toView()` instance method.  Three staged passes
@@ -2449,10 +2584,16 @@ let rec private ensureStdlibArtifact
                         { Source       = src
                           AssemblyName = assemblyName
                           OutputPath   = outPath }
+                    let stdImportsHere =
+                        parsed.File.Imports
+                        |> List.filter (fun i ->
+                            match i.Path.Segments with
+                            | "Std" :: _ -> true
+                            | _ -> false)
                     let emitDiags =
                         emitAssembly
                             stripped checked'.Signatures checked'.Symbols
-                            req true depArtifacts
+                            req true depArtifacts stdImportsHere
                     // Surface every error-level diagnostic from any
                     // stage of the stdlib precompile.  Earlier
                     // bootstrap state ignored these so user emits
@@ -2521,14 +2662,14 @@ let stdlibAssemblyPaths () : string list =
 /// is left unchanged; only `Std.*` imports are stripped.
 let private resolveStdlibImports
         (sf: SourceFile)
-        : SourceFile * Item list * StdlibArtifact list * Diagnostic list =
+        : SourceFile * Item list * StdlibArtifact list * ImportDecl list * Diagnostic list =
     let stdImports, otherImps =
         sf.Imports
         |> List.partition (fun i ->
             match i.Path.Segments with
             | "Std" :: _ -> true
             | _ -> false)
-    if stdImports.IsEmpty then sf, [], [], []
+    if stdImports.IsEmpty then sf, [], [], [], []
     else
         let visited = HashSet<string>()
         let ordered = ResizeArray<StdlibArtifact>()
@@ -2562,12 +2703,57 @@ let private resolveStdlibImports
             visit imp.Path.Segments
         let artifacts = List.ofSeq ordered
         let items = artifacts |> List.collect (fun a -> a.Source.Items)
-        { sf with Imports = otherImps }, items, artifacts, List.ofSeq diags
+        // Selector aliases (`import X.{foo as bar}`) get cloned IFunc
+        // items so the type checker's signature map and symbol table
+        // recognise the alias name in expression position.  Package
+        // aliases (`import X as A`) are handled by `AliasRewriter`
+        // earlier in the pipeline (rewriting `A.foo` to `foo` etc.),
+        // so no synthesised items are needed for them.
+        let aliasItems = ResizeArray<Item>()
+        let mkAliasIFunc (origFn: FunctionDecl) (newName: string) : Item =
+            let cloned : FunctionDecl = { origFn with Name = newName; Body = None }
+            { DocComments = []
+              Annotations = []
+              Visibility  = origFn.Visibility
+              Kind        = IFunc cloned
+              Span        = origFn.Span }
+        let artifactByPath =
+            artifacts
+            |> List.map (fun a -> a.Source.Package.Path.Segments, a)
+            |> Map.ofList
+        for imp in stdImports do
+            match Map.tryFind imp.Path.Segments artifactByPath with
+            | None -> ()
+            | Some artifact ->
+                let pkgFuncs =
+                    artifact.Source.Items
+                    |> List.choose (fun it ->
+                        match it.Kind with
+                        | IFunc fn -> Some fn
+                        | _ -> None)
+                let aliasPairs =
+                    match imp.Selector with
+                    | Some (ISSingle item) ->
+                        match item.Alias with
+                        | Some a -> [ item.Name, a ]
+                        | None   -> []
+                    | Some (ISGroup items) ->
+                        items
+                        |> List.choose (fun it ->
+                            it.Alias |> Option.map (fun a -> it.Name, a))
+                    | None -> []
+                for (origName, aliasName) in aliasPairs do
+                    pkgFuncs
+                    |> List.tryFind (fun fn -> fn.Name = origName)
+                    |> Option.iter (fun fn ->
+                        aliasItems.Add(mkAliasIFunc fn aliasName))
+        let extendedItems = items @ List.ofSeq aliasItems
+        { sf with Imports = otherImps }, extendedItems, artifacts, stdImports, List.ofSeq diags
 
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
     let parsed   = parse req.Source
-    let resolved, importedItems, stdlibArtifacts, importDiags =
+    let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
         resolveStdlibImports parsed.File
     let checked' =
         Lyric.TypeChecker.Checker.checkWithImports resolved importedItems
@@ -2594,6 +2780,7 @@ let emit (req: EmitRequest) : EmitResult =
                 req
                 false
                 stdlibArtifacts
+                stdImports
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath

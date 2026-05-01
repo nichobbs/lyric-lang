@@ -173,6 +173,103 @@ func main(): Unit {
 }
 """,
     "110"
+
+    // B3: array element as an `out` target — the codegen takes the
+    // element's address (`Ldelema`), the callee writes through the
+    // byref, the caller sees the mutated slot.
+    "out_array_element_target",
+    """
+package OP9
+func setIt(x: out Int): Unit { x = 99 }
+
+func main(): Unit {
+  val xs = [10, 20, 30]
+  setIt(xs[1])
+  for x in xs { println(x) }
+}
+""",
+    "10\n99\n30"
+
+    // B3: record field as an `out` target — `Ldflda` produces the
+    // field address, the callee writes via the byref.
+    "out_record_field_target",
+    """
+package OP10
+record Pt { x: Int, y: Int }
+
+func setIt(t: out Int): Unit { t = 99 }
+
+func main(): Unit {
+  val p = Pt(x = 1, y = 2)
+  setIt(p.x)
+  println(p.x)
+  println(p.y)
+}
+""",
+    "99\n2"
+
+    // B5: definite-assignment propagates through match arms.  Every
+    // arm assigns `sign`, so the post-match state has it as
+    // definitely-assigned and the trailing `return true` doesn't
+    // trip T0086.
+    "out_da_through_match_all_arms_assign",
+    """
+package OP11
+func parseSign(s: in String, sign: out Int): Bool {
+  match s {
+    case "neg" -> { sign = -1 }
+    case "pos" -> { sign = 1 }
+    case _     -> { sign = 0 }
+  }
+  return true
+}
+
+func main(): Unit {
+  var v = 0
+  if parseSign("pos", v) {
+    println(v)
+  }
+}
+""",
+    "1"
+
+    // Plain field-store on a local record (not just inout) — the
+    // SAssign EMember branch uses ctx.Records to find the FieldBuilder
+    // because GetField on a still-under-construction TypeBuilder
+    // would throw.
+    "field_store_on_local_record",
+    """
+package OP12
+record Counter { count: Int }
+
+func main(): Unit {
+  val c = Counter(count = 5)
+  c.count = c.count + 1
+  c.count = c.count + 10
+  println(c.count)
+}
+""",
+    "16"
+
+    // inout-of-record + field-store: the receiver is a byref to a
+    // record reference; emitExpr on the receiver auto-dereferences.
+    "inout_record_field_store",
+    """
+package OP13
+record Counter { count: Int }
+
+func bump(c: inout Counter): Unit {
+  c.count = c.count + 1
+}
+
+func main(): Unit {
+  val c = Counter(count = 5)
+  bump(c)
+  bump(c)
+  println(c.count)
+}
+""",
+    "7"
 ]
 
 let tests =

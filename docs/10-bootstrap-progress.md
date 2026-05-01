@@ -742,3 +742,234 @@ TypeChecker 90, Emitter 294, Lsp 5).
 - No workspace/configuration / file-watching support.
 - No status reporting back to the client (no `window/showMessage`
   on stdlib-resolve failures).
+
+
+### D-progress-018: `import X as Y` alias semantics
+*claude/stdlib-ergonomics branch.*  Both flavours of alias documented in
+the language reference now work end-to-end:
+
+```lyric
+import Std.Collections.{newList as mkList, newMap as mkMap}
+import Std.Iter as I
+
+func main(): Unit {
+  val xs: List[Int] = mkList()                  // selector alias
+  xs.add(7)
+  val doubled = I.map(xs, { n: Int -> n * 2 }) // package alias
+  for y in doubled { println(y) }
+}
+```
+
+**Selector alias** (`import X.{foo as bar}`): handled in
+`Emitter.fs:resolveStdlibImports`.  Each aliased item is cloned as an
+extra `IFunc` Item with the alias name (and an empty body, since
+imported function bodies aren't re-checked) and added to the
+`importedItems` list passed to `Checker.checkWithImports`.  The
+type-checker then registers the alias name in its signature map and
+symbol table.  The emitter mirrors the rename into `importedFuncTable`
+under both the bare alias and `<alias>/<arity>` keys.
+
+**Package alias** (`import X as A`): handled by a new post-parse AST
+transform `Lyric.Parser.AliasRewriter`.  After parsing, every `EPath`,
+`EMember`, `TRef`, `TGenericApp`, `ConstraintRef`, and pattern-position
+`ModulePath` whose head segment matches a declared alias is collapsed
+to drop that head:
+
+- `Coll.foo` (`EMember (EPath ["Coll"], "foo")`) → `EPath ["foo"]`
+- `Coll.List[Int]` (`TGenericApp { Head = ["Coll"; "List"]; ... }`) →
+  `TGenericApp { Head = ["List"]; ... }`
+- `case Coll.Foo(...)` → `case Foo(...)`
+
+Once rewritten, the rest of the pipeline (type checker, codegen) is
+alias-blind.  This avoids duplicating the imported-call generic-
+inference logic and works uniformly for type, expression, and pattern
+positions.
+
+**Bootstrap-grade scope** (D-progress-018):
+- Aliases ADD names; they don't remove the originals.  `import X as A`
+  exposes `A.foo` *and* `foo`; `import X.{foo as bar}` exposes `bar`
+  *and* `foo`.  Tightening to the strict-rename behaviour is a follow-
+  up.
+- The `AliasRewriter` is scope-blind — a local variable named `Coll`
+  after `import X as Coll` would still get its references rewritten.
+  Users should pick alias names that don't shadow locals.
+- Aliases on non-`Std.*` user packages aren't yet wired through the
+  emitter's package resolver, so this only meaningfully fires for
+  stdlib imports today.
+
+5 end-to-end tests in `AliasTests.fs`.  All 646 tests across all five
+suites pass (Lexer 70, Parser 182, TypeChecker 90, Emitter 299, Lsp 5).
+
+
+### D-progress-019: `@projectionBoundary` cycle detection (D026)
+*claude/stdlib-ergonomics branch.*  D026 mandates that a `@projectable`
+graph cycle requires an explicit `@projectionBoundary` marker on at
+least one edge.  Without it the recursive view derivation diverges.
+
+**Detection.**  Before the projectable-view passes run, the emitter
+builds a directed graph of projectable opaque types where edges are
+non-`@projectionBoundary` fields whose source type mentions another
+projectable.  A DFS finds back-edges; the first back-edge produces a
+T0092 diagnostic that names the cycle path:
+
+```
+T0092 error [12:3]: projectable cycle detected (Team -> User -> Team);
+mark at least one field with `@projectionBoundary` to break the cycle
+```
+
+Self-loops are caught the same way (`Node -> Node`).
+
+**`mentionedProjectables`** walks compound type expressions
+(`slice[T]`, `T?`, `(A, B)`, `(P) -> R`, `Foo[T]`) so a field declared
+`members: slice[User]` participates in the graph.
+
+**Bootstrap-grade scope** (D026 follow-up): `@projectionBoundary(asId)`
+still leaves the source opaque type in the view rather than
+substituting the source's id-field type per the language reference's
+§7.3.  The annotation breaks the cycle, but the view's field type
+isn't the underlying ID — it's the opaque itself.  Tracked in
+`docs/12-todo-plan.md` Band B2 follow-up.
+
+3 new tests in `OpaqueTypeTests.fs`:
+- `projectable cycle without boundary is rejected`
+- `projectable cycle on self-loop is rejected`
+- `projectable cycle broken by @projectionBoundary builds`
+
+All 649 tests across all five suites pass.
+
+
+### D-progress-020: `()` lowers to a real ValueTuple; Std.File switches to Result[Unit, IOError]
+*claude/stdlib-ergonomics branch.*  The cross-assembly generic-Unit
+gap documented in D-progress-011 is fixed.  Two related changes:
+
+**Codegen.**  `ELiteral LUnit` previously emitted `Ldc_I4 0` and typed
+the result as `int32`.  That worked only because most Unit slots are
+discarded — the moment the value flowed into a generic position
+expecting `!0 = ValueTuple` (e.g. `Result_Ok<Unit, IOError>::.ctor(!0)`),
+the JIT raised `InvalidProgramException` on the param-type mismatch.
+
+The literal now materialises a real `System.ValueTuple` value via
+`Ldloca + Initobj + Ldloc` on a fresh local, matching the type's
+actual CLR shape (an empty struct).  `peekExprType` on `LUnit` updated
+to `typeof<ValueTuple>` so subsequent inference sees the right type.
+
+**Std.File surface.**  `writeText` and `createDir` now return
+`Result[Unit, IOError]` instead of the `Result[Bool, IOError]`
+bootstrap workaround.  Existing test cases match on `Ok(_)` / `Err(_)`
+so no test changes were needed — just the source surface promotion.
+
+All 304 emitter tests pass after the lowering change; the codegen
+update is otherwise transparent because previous code that flowed
+Unit through arithmetic (rare) still works (the integer path is
+gone but Unit values aren't used in arithmetic in practice).
+
+
+### D-progress-021: DA propagation through match arms
+*claude/stdlib-ergonomics branch.*  D-progress-014 noted that the
+definite-assignment analysis didn't enter `match` arms — functions
+that assigned an `out` param across all arms still tripped T0086 on
+the trailing fall-through.
+
+`StmtChecker.daExpr` now handles `EMatch` with the same join shape as
+`EIf`: every arm's body is analysed against the post-scrutinee DA
+state, and the post-match state is the intersection of every arm's
+contribution.  Empty match falls back to the post-scrutinee state.
+`EBlock` (a braced block in expression position) is also threaded
+through so block-style arm bodies (`case x -> { sign = 1 }`) propagate
+their assignments.
+
+```lyric
+func parseSign(s: in String, sign: out Int): Bool {
+  match s {
+    case "neg" -> { sign = -1 }
+    case "pos" -> { sign = 1 }
+    case _     -> { sign = 0 }
+  }
+  return true   // no T0086 — every arm assigned `sign`
+}
+```
+
+1 new regression test in `OutParamTests.fs`.
+All 305 emitter tests pass.
+
+
+### D-progress-022: field-store assignments + inout-of-record-field-store
+*claude/stdlib-ergonomics branch.*  Two related codegen gaps closed:
+
+**`recv.field = value`.**  The codegen previously rejected any
+`SAssign` whose target wasn't a single-segment EPath or an `EIndex`,
+so `c.count = c.count + 1` on a local record produced an internal
+"assignment target not yet supported" diagnostic.  The new
+`EMember (recv, fieldName)` branch in the SAssign matcher walks
+`ctx.Records` to find the `FieldBuilder` and emits `Stfld`.  Walking
+the records dict instead of calling `recvTy.GetField` sidesteps the
+"The invoked member is not supported before the type is created"
+exception — the receiver TypeBuilder is still under construction
+during user-function emission.
+
+**`inout c: Record; c.field = ...`.**  The same code path now handles
+the byref case "for free": `emitExpr ctx recv` already auto-
+dereferences a byref-typed receiver via `Ldind.Ref` on read, so the
+write side just sees a normal class reference on the stack.
+
+```lyric
+record Counter { count: Int }
+
+func bump(c: inout Counter): Unit {
+  c.count = c.count + 1
+}
+
+func main(): Unit {
+  val c = Counter(count = 5)
+  bump(c); bump(c)
+  println(c.count)            // 7
+}
+```
+
+2 new tests in `OutParamTests.fs`:
+- `field_store_on_local_record`
+- `inout_record_field_store`
+
+All 307 emitter tests pass.
+
+
+### D-progress-023: `lyric doc` Markdown generator (C9 bootstrap)
+*claude/stdlib-ergonomics branch.*  Phase 3 M3.3 first pass for the
+documentation tool.  Walks the parsed AST and emits Markdown for the
+`pub` surface of a single source file:
+
+```
+$ lyric doc demo.l
+# Package `Demo`
+
+Module-level doc body verbatim.
+
+### record `Point`
+```lyric
+pub record Point { pub x: Int, pub y: Int }
+```
+A 2-D point in the cartesian plane.
+
+### func `add`
+```lyric
+pub func add(a: in Int, b: in Int): Int
+```
+Compute the sum of two integers.
+```
+
+**Implementation.**  New `compiler/src/Lyric.Cli/Doc.fs` exposes
+`generate : SourceFile -> string`.  Per-item signature printers cover
+`pub func`, `pub record`, `pub exposed record`, `pub union`,
+`pub enum`, `pub opaque type`, `pub interface`, `pub distinct type`,
+`pub type`, `pub const`.  Package-private items are filtered out.
+
+The CLI subcommand is `lyric doc <source.l> [-o out.md]`; without
+`-o` it prints to stdout.
+
+**Bootstrap-grade scope** (follow-ups in C9):
+- One file at a time.  No package-level roll-ups across multiple `.l`
+  files; no transitive dependency graph.
+- No anchor links / Markdown TOCs — sections aren't cross-linked.
+- No doctest extraction; the only thing rendered from `///` text is
+  the verbatim body.
+- Method tables for `impl` blocks aren't yet rendered.

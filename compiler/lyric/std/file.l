@@ -53,18 +53,13 @@ pub func readText(path: in String): Result[String, IOError] {
 
 /// Write `text` to `path` (creating or replacing).
 ///
-/// Returns `Ok(true)` on success, `Err(InvalidPath)` for empty paths,
+/// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).
-///
-/// Returns `Result[Bool, IOError]` rather than `Result[Unit, …]` as a
-/// bootstrap workaround — the cross-assembly union codegen for
-/// generic-Unit instantiation produces invalid IL today.  Callers
-/// typically discard the inner `true`.
-pub func writeText(path: in String, text: in String): Result[Bool, IOError] {
+pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
   if path.length == 0 {
     Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   } else if hostWriteAllTextIsValid(path, text) {
-    Ok(value = true)
+    Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = hostWriteAllTextError(path, text)))
   }
@@ -81,15 +76,14 @@ pub func dirExists(path: in String): Bool {
 }
 
 /// Create the directory at `path` (and any missing parents).  No-op
-/// if it already exists.  Returns `Ok(true)` on success,
+/// if it already exists.  Returns `Ok(())` on success,
 /// `Err(InvalidPath)` for empty paths, or `Err(IoError)` if the host
-/// call fails.  See `writeText` for why the success arm is `Bool` and
-/// not `Unit`.
-pub func createDir(path: in String): Result[Bool, IOError] {
+/// call fails.
+pub func createDir(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   } else if hostCreateDirectoryIsValid(path) {
-    Ok(value = true)
+    Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "createDirectory failed"))
   }

@@ -633,7 +633,7 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
     | ELiteral (LInt (_, suffix)) -> intLiteralType suffix
     | ELiteral (LFloat (_, s))    -> floatLiteralType s
     | ELiteral (LChar _)          -> typeof<char>
-    | ELiteral LUnit              -> typeof<int32>
+    | ELiteral LUnit              -> typeof<System.ValueTuple>
     | EParen inner                -> peekExprType ctx inner
     | EPath { Segments = [name] } ->
         match FunctionCtx.tryLookup ctx name with
@@ -841,8 +841,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         typeof<char>
 
     | ELiteral LUnit ->
-        emitLdcI4 il 0
-        typeof<int32>
+        // `()` produces a `ValueTuple` (an empty struct), matching
+        // Lyric's `Unit` lowering in TypeMap.  Materialise via
+        // `Ldloca + Initobj + Ldloc` on a fresh local — the only way
+        // to put a value-typed empty struct on the evaluation stack.
+        // Critical when `()` flows into a generic position like
+        // `Result_Ok<Unit, E>::.ctor(!0)`; the case ctor expects a
+        // `ValueTuple` and rejected the previous `Ldc_I4 0`-based
+        // shape with `InvalidProgramException`.
+        let unitTy = typeof<System.ValueTuple>
+        let lb = il.DeclareLocal(unitTy)
+        il.Emit(OpCodes.Ldloca, lb)
+        il.Emit(OpCodes.Initobj, unitTy)
+        il.Emit(OpCodes.Ldloc, lb)
+        unitTy
 
     // ---- list literal -------------------------------------------------
 
@@ -3364,6 +3376,39 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                         codegenErrStmt ctx "E0003"
                             (sprintf "no `set_Item` indexer on %s for indexed assignment"
                                 recvTy.Name) s.Span
+            // Field-store: `recv.field = value`.  For a reference-type
+            // receiver (Lyric records lower to sealed CLR classes),
+            // we load the receiver, compute the value, then Stfld.
+            // Critical for the `inout c: Record; c.field = ...` shape
+            // where the receiver is a byref-of-class — the existing
+            // EMember read auto-dereferences via Ldind.Ref so the same
+            // `emitExpr ctx recv` lifting works on the write side.
+            //
+            // Walk `ctx.Records` to find the `FieldBuilder` directly;
+            // calling `recvTy.GetField` on a still-under-construction
+            // TypeBuilder would throw "The invoked member is not
+            // supported before the type is created."
+            | EMember (recv, fieldName) ->
+                let recvTy = emitExpr ctx recv
+                let recordInfo =
+                    ctx.Records.Values
+                    |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+                match recordInfo with
+                | Some r ->
+                    match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                    | Some f ->
+                        let valTy = emitExpr ctx value
+                        if not f.Type.IsValueType && valTy.IsValueType then
+                            il.Emit(OpCodes.Box, valTy)
+                        il.Emit(OpCodes.Stfld, f.Field)
+                    | None ->
+                        codegenErrStmt ctx "E0003"
+                            (sprintf "no field '%s' on record '%s' for assignment"
+                                fieldName r.Name) s.Span
+                | None ->
+                    codegenErrStmt ctx "E0003"
+                        (sprintf "field-store target '%s.%s' not yet supported (receiver type %s)"
+                            (sprintf "%A" recv.Kind) fieldName recvTy.Name) s.Span
             | _ ->
                 codegenErrStmt ctx "E0003"
                     (sprintf "assignment target not yet supported: %A" target.Kind) s.Span

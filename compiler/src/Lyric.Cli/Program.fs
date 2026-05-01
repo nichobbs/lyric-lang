@@ -771,6 +771,44 @@ let main (argv: string array) : int =
                 | "--" :: rest -> List.toArray rest
                 | _            -> List.toArray more
             run sourcePath userArgs
+    | "doc" :: rest ->
+        // `lyric doc <source.l> [-o out.md]` — emit Markdown describing
+        // the file's `pub` surface.  See Doc.fs for the bootstrap-grade
+        // scope; in particular we don't yet roll up across files.
+        let mutable explicitOut : string option = None
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "-o" :: out :: tail ->
+                explicitOut <- Some out
+                cursor <- tail
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
+        | [] ->
+            printErr "doc: missing source file"
+            1
+        | sourcePath :: _ ->
+            let source = File.ReadAllText sourcePath
+            let parsed = Lyric.Parser.Parser.parse source
+            // Surface parse errors but keep going — the doc generator
+            // only inspects the AST shape, which the parser produces
+            // even on partial recovery.
+            for d in parsed.Diagnostics do
+                if d.Severity = DiagError then printDiag d
+            let md = Lyric.Cli.Doc.generate parsed.File
+            match explicitOut with
+            | Some path ->
+                let dir = safeStr (Path.GetDirectoryName(Path.GetFullPath path)) "."
+                Directory.CreateDirectory dir |> ignore
+                File.WriteAllText(path, md)
+                printfn "wrote %s" path
+            | None ->
+                Console.Out.Write(md)
+            0
     | unknown :: _ ->
         printErr (sprintf "unknown command: %s" unknown)
         printUsage ()

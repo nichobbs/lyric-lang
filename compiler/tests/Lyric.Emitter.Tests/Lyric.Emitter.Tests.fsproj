@@ -45,6 +45,7 @@
     <Compile Include="OutParamTests.fs" />
     <Compile Include="IterTests.fs" />
     <Compile Include="StubbableTests.fs" />
+    <Compile Include="AliasTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

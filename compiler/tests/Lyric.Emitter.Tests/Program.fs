@@ -44,5 +44,6 @@ let main argv =
             OutParamTests.tests
             IterTests.tests
             StubbableTests.tests
+            AliasTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
