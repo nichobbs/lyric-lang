@@ -38,7 +38,11 @@ let create (desc: AssemblyDescriptor) : EmitContext =
     let asmName = AssemblyName(desc.Name)
     asmName.Version <- desc.Version
     // Reference the runtime's own Object/String/etc. via the
-    // currently-loaded mscorlib.
+    // currently-loaded CoreLib.  Native-AOT (`lyric build --aot`)
+    // post-processes the resulting PE to rewrite the
+    // `System.Private.CoreLib` reference name to `System.Runtime`
+    // before invoking `dotnet publish`; doing the rewrite at emit
+    // time would also affect non-AOT runs and is harder to validate.
     let coreAssembly = typeof<Object>.Assembly
     let asm = PersistedAssemblyBuilder(asmName, coreAssembly)
     let m = asm.DefineDynamicModule(desc.Name)

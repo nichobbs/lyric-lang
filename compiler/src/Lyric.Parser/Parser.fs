@@ -527,6 +527,42 @@ let rec private parsePrimaryExpr
         | Some lit -> mkExpr (ELiteral lit) tok.Span
         | None     -> mkExpr EError tok.Span
 
+    | TStringStart ->
+        // Interpolated string `"...${expr}..."` — collect alternating
+        // `TStringPart` literals and `TStringHoleStart`-bracketed
+        // expressions until we hit `TStringEnd`.  Lowers to an
+        // `EInterpolated` node carrying the segments; codegen turns
+        // each segment into a `String + value` chain.
+        let startTok = Cursor.advance cursor   // consume TStringStart
+        let segments = ResizeArray<InterpolatedSegment>()
+        let mutable closed = false
+        while not closed do
+            match (Cursor.peek cursor).Token with
+            | TStringPart s ->
+                let t = Cursor.advance cursor
+                if s.Length > 0 then
+                    segments.Add(ISText(s, t.Span))
+            | TStringHoleStart ->
+                Cursor.advance cursor |> ignore
+                let inner = parseExpr cursor diags
+                segments.Add(ISExpr inner)
+                match Cursor.tryEatPunct RBrace cursor with
+                | Some _ -> ()
+                | None ->
+                    err diags "P0150"
+                        "expected '}' to close interpolation hole"
+                        (Cursor.peekSpan cursor)
+            | TStringEnd ->
+                let _ = Cursor.advance cursor
+                closed <- true
+            | _ ->
+                err diags "P0151"
+                    "unexpected token inside interpolated string"
+                    (Cursor.peekSpan cursor)
+                closed <- true
+        mkExpr (EInterpolated (List.ofSeq segments))
+            (joinSpans startTok.Span (Cursor.peekSpan cursor))
+
     | TPunct LParen
             when (match (Cursor.peekAt cursor 1).Token with
                   | TIdent _ -> true
