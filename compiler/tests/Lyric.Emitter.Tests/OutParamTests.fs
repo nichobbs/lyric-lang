@@ -173,6 +173,40 @@ func main(): Unit {
 }
 """,
     "110"
+
+    // B3: array element as an `out` target — the codegen takes the
+    // element's address (`Ldelema`), the callee writes through the
+    // byref, the caller sees the mutated slot.
+    "out_array_element_target",
+    """
+package OP9
+func setIt(x: out Int): Unit { x = 99 }
+
+func main(): Unit {
+  val xs = [10, 20, 30]
+  setIt(xs[1])
+  for x in xs { println(x) }
+}
+""",
+    "10\n99\n30"
+
+    // B3: record field as an `out` target — `Ldflda` produces the
+    // field address, the callee writes via the byref.
+    "out_record_field_target",
+    """
+package OP10
+record Pt { x: Int, y: Int }
+
+func setIt(t: out Int): Unit { t = 99 }
+
+func main(): Unit {
+  val p = Pt(x = 1, y = 2)
+  setIt(p.x)
+  println(p.x)
+  println(p.y)
+}
+""",
+    "99\n2"
 ]
 
 let tests =

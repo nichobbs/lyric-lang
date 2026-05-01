@@ -60,23 +60,27 @@ underlying ID type) is still **bootstrap-grade**: today
 `@projectionBoundary` keeps the source opaque type in the view rather
 than substituting the source's id field type.  Promoted to follow-up.
 
-### B3. `out`/`inout` on record fields and array elements
+### B3. ~~`out`/`inout` on record fields and array elements~~ — shipped
 
-The codegen-side l-value rule already supports `EIndex` (Ldelema) and
-`EMember` (Ldflda) — that landed in PR #40 alongside string interpolation.
-But the type-checker T0085 rule still rejects compound lvalues at the
-source level.  Loosen `isAddressableLValue` and the codegen should follow.
-
-Verify:
+Already loosened.  Both array elements and record fields work as `out`
+parameter targets:
 
 ```lyric
-val xs = [0, 0]
-mutate(xs[0])               // currently T0085
+val xs = [10, 20, 30]
+setIt(xs[1])               // OK — Ldelema
 
-record Point { var x: Int; var y: Int }
-val p = Point(x = 0, y = 0)
-mutate(p.x)                 // currently T0085
+record Pt { x: Int, y: Int }
+val p = Pt(x = 1, y = 2)
+setIt(p.x)                 // OK — Ldflda
 ```
+
+Two regression tests in `OutParamTests.fs` (`out_array_element_target`
+and `out_record_field_target`).
+
+Reading a record field through an `inout` parameter
+(`func bump(c: inout Counter): Unit { c.count = c.count + 1 }`) is
+**still bootstrap-grade** — the codegen has a path issue for the
+write-through-byref-of-record-field case.  Tracked as a follow-up.
 
 ### B4. `Std.File`: `Result[Unit, IOError]` instead of `Result[Bool, IOError]`
 
