@@ -1157,14 +1157,35 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let resumeLabel = smAwait.ResumeLabels.[stateIndex]
             let afterAwait = il.DefineLabel()
 
-            // Resolve `IsCompleted` on the awaiter.
+            // Resolve `IsCompleted` on the awaiter.  For
+            // `TaskAwaiter<T>` closed over a TypeBuilder (a Lyric
+            // record/union still under construction),
+            // `Type.GetProperty` raises NotSupportedException; we
+            // route through `TypeBuilder.GetMethod` against the
+            // open-generic getter on `TaskAwaiter<>`.
+            let awaiterClosedOverTb =
+                awaiterTy.IsGenericType
+                && awaiterTy.GetGenericArguments()
+                   |> Array.exists (fun a ->
+                       a :? TypeBuilder
+                       || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
             let isCompletedGetter =
-                match Option.ofObj (awaiterTy.GetProperty("IsCompleted")) with
-                | Some p ->
-                    match Option.ofObj (p.GetGetMethod()) with
-                    | Some g -> g
-                    | None   -> failwithf "E14 codegen: %s.get_IsCompleted missing" awaiterTy.Name
-                | None -> failwithf "E14 codegen: %s.IsCompleted property missing" awaiterTy.Name
+                if awaiterClosedOverTb && awaiterTy.GetGenericTypeDefinition() = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>> then
+                    let openTaskAwaiter =
+                        typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+                    let openGetter =
+                        openTaskAwaiter.GetMethods()
+                        |> Array.tryFind (fun m -> m.Name = "get_IsCompleted")
+                    match openGetter with
+                    | Some m -> TypeBuilder.GetMethod(awaiterTy, m)
+                    | None -> failwithf "BCL: TaskAwaiter<>.get_IsCompleted not found"
+                else
+                    match Option.ofObj (awaiterTy.GetProperty("IsCompleted")) with
+                    | Some p ->
+                        match Option.ofObj (p.GetGetMethod()) with
+                        | Some g -> g
+                        | None   -> failwithf "E14 codegen: %s.get_IsCompleted missing" awaiterTy.Name
+                    | None -> failwithf "E14 codegen: %s.IsCompleted property missing" awaiterTy.Name
             il.Emit(OpCodes.Ldloca, awLoc)
             il.Emit(OpCodes.Call, isCompletedGetter)
             il.Emit(OpCodes.Brtrue, afterAwait)
@@ -1185,19 +1206,49 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 il.Emit(OpCodes.Ldloc, lb)
                 il.Emit(OpCodes.Stfld, fld)
             // builder.AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref awaiter, ref this)
-            let openAwaitUnsafe =
-                smAwait.Sm.BuilderType.GetMethods()
-                |> Array.tryFind (fun m ->
-                    m.Name = "AwaitUnsafeOnCompleted"
-                    && m.IsGenericMethodDefinition
-                    && m.GetGenericArguments().Length = 2)
+            // For builders closed over a TypeBuilder (e.g.
+            // `AsyncTaskMethodBuilder<MaybeBalance>` where
+            // MaybeBalance is a Lyric union under construction),
+            // `Type.GetMethods` raises NotSupportedException.
+            // Look up the method on the open-generic builder
+            // definition instead, then re-resolve via
+            // `TypeBuilder.GetMethod` and `MakeGenericMethod`.
+            let builderTy = smAwait.Sm.BuilderType
+            let builderClosedOverTb =
+                builderTy.IsGenericType
+                && builderTy.GetGenericArguments()
+                   |> Array.exists (fun a ->
+                       a :? TypeBuilder
+                       || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
             let closedAwaitUnsafe =
-                match openAwaitUnsafe with
-                | Some m ->
-                    m.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
-                | None ->
-                    failwithf "BCL: %s.AwaitUnsafeOnCompleted<,> not found"
-                        smAwait.Sm.BuilderType.Name
+                if builderClosedOverTb && builderTy.IsGenericType
+                   && builderTy.GetGenericTypeDefinition() = typedefof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder<_>> then
+                    let openBuilder = typedefof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder<_>>
+                    let openOnDef =
+                        openBuilder.GetMethods()
+                        |> Array.tryFind (fun m ->
+                            m.Name = "AwaitUnsafeOnCompleted"
+                            && m.IsGenericMethodDefinition
+                            && m.GetGenericArguments().Length = 2)
+                    let closedOnBuilder =
+                        match openOnDef with
+                        | Some m -> TypeBuilder.GetMethod(builderTy, m)
+                        | None ->
+                            failwithf "BCL: AsyncTaskMethodBuilder<>.AwaitUnsafeOnCompleted<,> not found"
+                    closedOnBuilder.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+                else
+                    let openAwaitUnsafe =
+                        builderTy.GetMethods()
+                        |> Array.tryFind (fun m ->
+                            m.Name = "AwaitUnsafeOnCompleted"
+                            && m.IsGenericMethodDefinition
+                            && m.GetGenericArguments().Length = 2)
+                    match openAwaitUnsafe with
+                    | Some m ->
+                        m.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+                    | None ->
+                        failwithf "BCL: %s.AwaitUnsafeOnCompleted<,> not found"
+                            builderTy.Name
             // For a class state machine, `ref TStateMachine` must
             // be the address of a *local* holding the SM reference,
             // not `this` directly (`Ldarg_0` is the reference value,

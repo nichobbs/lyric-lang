@@ -154,15 +154,26 @@ let rec private isSafeExprPosition (e: Expr) : bool =
     // terms (separate basic block), so an await at the branch's
     // top level is structurally fine.
     | EIf (cond, thenB, elseOpt, _) ->
-        (not (exprHasAwait cond))
+        // The cond's value is consumed by `brtrue` / `brfalse` —
+        // an `await` cond stashes its awaiter in a local before
+        // suspend, so the IL stack is empty at the suspend point;
+        // after resume, GetResult pushes the bool and the branch
+        // sees it normally.  Branches recurse via
+        // `isSafeExprOrBlock`.
+        isSafeExprPosition cond
         && isSafeExprOrBlock thenB
         && (match elseOpt with
             | Some b -> isSafeExprOrBlock b
             | None   -> true)
     | EMatch (scrut, arms) ->
-        (not (exprHasAwait scrut))
+        // Same story for the match scrutinee — it's `Stloc`'d to
+        // a temp before pattern matching, so the IL stack is
+        // empty at suspend.  Awaits inside scrutinees like
+        // `match await foo() { ... }` (the canonical Std.Http /
+        // BankingSmoke pattern) become safe via this case.
+        isSafeExprPosition scrut
         && arms |> List.forall (fun a ->
-            (match a.Guard with Some g -> not (exprHasAwait g) | None -> true)
+            (match a.Guard with Some g -> isSafeExprPosition g | None -> true)
             && isSafeExprOrBlock a.Body)
     // `EParen` and `EBlock` wrap expression flow without
     // introducing stack pressure on the await itself, so descend.

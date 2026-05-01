@@ -1696,6 +1696,36 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-041: C2 Phase B+ — awaits in `if`-cond and `match`-scrutinee positions
+*claude/c2-async-implementation-ZGU95 branch.*  Extends the
+safe-position predicate so `if await cond() { ... }` and `match
+await foo() { ... }` no longer fall back to M1.4.  Both forms
+are structurally safe because the IL stack is empty at the
+suspend point — the await stashes its awaiter to a local before
+suspend; the cond/scrutinee value is only on the stack
+immediately before `Stloc` (match) or `brfalse`/`brtrue` (if).
+
+The recursive `isSafeExprPosition` predicate now allows
+`isSafeExprPosition cond` (instead of `not (exprHasAwait cond)`)
+inside `EIf`, and similarly for `EMatch (scrut, arms)`.  This
+unlocks the canonical `Std.Http` and `BankingSmoke` patterns
+where `await` produces the value being matched on.
+
+Codegen also gained closed-generic-on-TypeBuilder fallbacks for
+`TaskAwaiter<T>::get_IsCompleted` (when `T` is a Lyric
+record/union still under construction) and for
+`AsyncTaskMethodBuilder<T>::AwaitUnsafeOnCompleted<,>` — both
+now route through `TypeBuilder.GetMethod` against the open-
+generic definition when the closing arg is itself a
+TypeBuilder.
+
+Two new tests: `phaseB_match_await_scrutinee` (canonical
+match-on-await pattern) and `phaseB_if_await_cond` (await in
+the boolean cond).  All 353 emitter tests pass (was 351;
++2 new).
+
+---
+
 ### D-progress-040: C2 Phase B for impl methods (body awaits + suspend/resume)
 *claude/c2-async-implementation-ZGU95 branch.*  Extends
 D-progress-038 (Phase A async impl methods) with the full

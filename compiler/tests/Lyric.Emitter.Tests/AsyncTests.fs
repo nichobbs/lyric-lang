@@ -225,6 +225,47 @@ func main(): Unit {
 """,
     "one\ntwo\nother"
 
+    "phaseB_match_await_scrutinee",
+    // Phase B+ (D-progress-041): `match await foo() { ... }`.
+    // The scrutinee evaluates the await (suspend/resume protocol),
+    // GetResult pushes the value, EMatch's emit Stloc's it to a
+    // temp before pattern matching — IL stack is empty at suspend.
+    // This is the canonical pattern in Std.Http and BankingSmoke.
+    """
+package E14
+async func get(): Int = 42
+async func dispatch(): String {
+  match await get() {
+    case 42 -> "fortytwo"
+    case _ -> "other"
+  }
+}
+func main(): Unit {
+  println(await dispatch())
+}
+""",
+    "fortytwo"
+
+    "phaseB_if_await_cond",
+    // Phase B+ (D-progress-041): `if (await cond()) then ... else
+    // ...`.  The bool value from the await drives the brfalse /
+    // brtrue.
+    """
+package E14
+async func truthy(): Bool = true
+async func runner(): Unit {
+  if await truthy() {
+    println("yes")
+  } else {
+    println("no")
+  }
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "yes"
+
     "phaseB_async_impl_method_with_await",
     // Phase B impl method — async instance method whose body
     // contains an `await`.  The kickoff lives on the record;
