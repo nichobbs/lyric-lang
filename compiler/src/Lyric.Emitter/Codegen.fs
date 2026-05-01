@@ -306,17 +306,16 @@ let private capitalizeFirst (s: string) : string =
 
 /// Pick a non-static method on `recvTy` named `name` whose parameter
 /// types align with `argTys`.  Prefers exact equality, then assignability.
+/// Resolve a BCL instance method by name and (leading) arg types.
+/// Returns (method, extra-default-params) where extra-default-params
+/// are the parameters beyond those supplied that have CLR default values.
+/// First tries exact-arity matches; if none, tries methods where the
+/// extra parameters all carry HasDefaultValue so the caller can push them.
 let private resolveBclMethod
         (recvTy: ClrType)
         (name: string)
         (argTys: ClrType array)
-        : MethodInfo option =
-    let candidates =
-        recvTy.GetMethods()
-        |> Array.filter (fun m ->
-            m.Name = name
-            && not m.IsStatic
-            && m.GetParameters().Length = argTys.Length)
+        : (MethodInfo * System.Reflection.ParameterInfo array) option =
     let matches (m: MethodInfo) (cmp: ClrType -> ClrType -> bool) =
         let pars = m.GetParameters()
         let mutable ok = true
@@ -324,15 +323,38 @@ let private resolveBclMethod
             if ok && not (cmp pars.[i].ParameterType argTys.[i]) then
                 ok <- false
         ok
-    let exact =
-        candidates
-        |> Array.tryFind (fun m -> matches m (fun p a -> p = a))
-    match exact with
-    | Some _ -> exact
+    let tryResolve (candidates: MethodInfo array) =
+        let exact =
+            candidates
+            |> Array.tryFind (fun m -> matches m (fun p a -> p = a))
+        match exact with
+        | Some m -> Some m
+        | None ->
+            candidates
+            |> Array.tryFind (fun m -> matches m (fun p a -> p.IsAssignableFrom a))
+    // 1) Exact-arity candidates.
+    let exactArity =
+        recvTy.GetMethods()
+        |> Array.filter (fun m ->
+            m.Name = name
+            && not m.IsStatic
+            && m.GetParameters().Length = argTys.Length)
+    match tryResolve exactArity with
+    | Some m -> Some (m, [||])
     | None ->
-        candidates
-        |> Array.tryFind (fun m ->
-            matches m (fun p a -> p.IsAssignableFrom a))
+        // 2) Candidates with extra parameters that all have default values.
+        let withDefaults =
+            recvTy.GetMethods()
+            |> Array.filter (fun m ->
+                m.Name = name
+                && not m.IsStatic
+                && m.GetParameters().Length > argTys.Length
+                && m.GetParameters()
+                   |> Array.skip argTys.Length
+                   |> Array.forall (fun p -> p.HasDefaultValue))
+        match tryResolve withDefaults with
+        | Some m -> Some (m, m.GetParameters() |> Array.skip argTys.Length)
+        | None -> None
 
 // ---------------------------------------------------------------------------
 // Literal helpers.
@@ -1047,9 +1069,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             ctx.Interfaces.Values
             |> Seq.collect (fun i -> i.Members |> List.map (fun m -> i, m))
             |> Seq.tryFind (fun (_, m) -> m.Name = methodName)
-        let mi : MethodInfo option =
+        // (method, extra-default-params): extra is [] except for BCL calls
+        // that match a method with more params than supplied args.
+        let miOpt : (MethodInfo * System.Reflection.ParameterInfo array) option =
             match ifaceMethod with
-            | Some (_, m) -> Some (m.Method :> MethodInfo)
+            | Some (_, m) -> Some (m.Method :> MethodInfo, [||])
             | None ->
                 // Fall back to a method on the receiver's CLR type
                 // by reflection. This catches impl-method calls where
@@ -1059,10 +1083,12 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     |> Array.tryFind (fun m ->
                         m.Name = methodName && not m.IsStatic)
                 match exact with
-                | Some _ -> exact
+                | Some m -> Some (m, [||])
                 | None when isBclType recvTy ->
                     // BCL fallback: lyric `s.trim()` -> CLR `String.Trim()`.
                     // Peek arg types so overloads can be resolved by shape.
+                    // resolveBclMethod also tries methods with extra HasDefaultValue
+                    // params, returning those extras so we can push their defaults.
                     let argTys =
                         args
                         |> List.map (fun a ->
@@ -1073,8 +1099,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         |> Array.ofList
                     resolveBclMethod recvTy (capitalizeFirst methodName) argTys
                 | None -> None
-        match mi with
-        | Some method ->
+        match miOpt with
+        | Some (method, extraParams) ->
             // For value-type instance methods the receiver must be a
             // managed pointer, not a value.  Stash the value to a temp
             // and reload its address, then dispatch via `call` (callvirt
@@ -1091,6 +1117,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | CAPositional ex | CANamed (_, ex, _) -> ex
                 let _ = emitExpr ctx payload
                 ()
+            // Push CLR default values for any extra parameters not supplied by the caller.
+            for p in extraParams do
+                match p.DefaultValue with
+                | null -> il.Emit(OpCodes.Ldnull)
+                | dv when p.ParameterType = typeof<bool> ->
+                    il.Emit(OpCodes.Ldc_I4, if unbox<bool> dv then 1 else 0)
+                | dv when p.ParameterType.IsEnum || p.ParameterType = typeof<int> ->
+                    il.Emit(OpCodes.Ldc_I4, unbox<int> dv)
+                | dv when p.ParameterType = typeof<string> ->
+                    il.Emit(OpCodes.Ldstr, unbox<string> dv)
+                | _ ->
+                    // Value-type default: zero-init via a temp local.
+                    let tmp = FunctionCtx.defineLocal ctx "__default" p.ParameterType
+                    il.Emit(OpCodes.Ldloca, tmp)
+                    il.Emit(OpCodes.Initobj, p.ParameterType)
+                    il.Emit(OpCodes.Ldloc, tmp)
             if useCallNotCallvirt then
                 il.Emit(OpCodes.Call, method)
             else

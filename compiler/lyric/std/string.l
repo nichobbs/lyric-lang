@@ -140,14 +140,15 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
   s.replace(oldValue, newValue)
 }
 
-// `split` is intentionally absent in v0.1.  The natural mapping is
-// `String.Split(string?, StringSplitOptions = None)`, but the bootstrap
-// codegen does not yet supply default-parameter values when picking a
-// BCL overload, and every 1-arg `String.Split` overload takes a `char`,
-// not a `String`.  Tracked for Phase 2 alongside default-arg support.
+// Split a string on a separator, returning a slice of the parts.
+// Maps to String.Split(string?) — available in .NET 5+.
+@pure
+pub func split(s: in String, separator: in String): slice[String] {
+  s.split(separator)
+}
 
-// `join` is paired with `split`; deferred for the same reason
-// (`slice[String]` codegen support and default-argument handling).
+// `join` is deferred: needs `slice[String]` as input which requires
+// additional BCL binding work (Array.join / String.Join).
 
 // ---------------------------------------------------------------------------
 // String comparison.
