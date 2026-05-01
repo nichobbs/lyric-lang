@@ -1,14 +1,14 @@
 // std/iter.l - Iterator helpers over `slice[T]`.
 //
-// Bootstrap-grade scope: helpers that don't require allocating a new
-// slice (`forEach`, `fold`, `any`, `all`, `count`, `find`, `sum`,
-// `min`, `max`, `contains`).  Allocating helpers (`map`, `filter`,
-// `take`, `drop`, `concat`) need either a host `Array.zeroCreate`
-// shim plus indexed assignment, or stable behaviour for `List[T]`
-// inside generic Lyric functions — both tracked as follow-ups.
+// Includes both non-allocating helpers (`forEach`, `fold`, `any`,
+// `all`, `count`, `find`, `sumInt`) and allocating helpers
+// (`map`, `filter`, `take`, `drop`, `concat`).  Allocating helpers
+// build a `List[T]` via the generic FFI in `Std.Collections`, then
+// return `list.toArray()` so the caller sees `slice[T]`.
 package Std.Iter
 
 import Std.Core
+import Std.Collections
 
 // =====================================================================
 // Side-effecting iteration.
@@ -75,6 +75,74 @@ pub func find[T](xs: in slice[T], pred: in (T) -> Bool): Option[T] {
     if pred(x) { return Some(value = x) }
   }
   return None
+}
+
+// =====================================================================
+// Allocating helpers — build a `List[T]` via Std.Collections then
+// return `.toArray()` so the result is a `slice[T]`.
+// =====================================================================
+
+/// Map each element through `f`, collecting the results into a fresh
+/// slice.  `mapTo([1, 2, 3], { n: Int -> n * 2 }) == [2, 4, 6]`.
+pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
+  val acc: List[U] = newList()
+  for x in xs {
+    acc.add(f(x))
+  }
+  return acc.toArray()
+}
+
+/// Keep only the elements that satisfy `pred`.
+pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T] {
+  val acc: List[T] = newList()
+  for x in xs {
+    if pred(x) {
+      acc.add(x)
+    }
+  }
+  return acc.toArray()
+}
+
+/// First `n` elements, or fewer if `xs.length < n`.  Negative `n`
+/// returns the empty slice (the inner counter never reaches a
+/// negative threshold).
+pub func take[T](xs: in slice[T], n: in Int): slice[T] {
+  val acc: List[T] = newList()
+  var i = 0
+  for x in xs {
+    if i < n {
+      acc.add(x)
+    }
+    i = i + 1
+  }
+  return acc.toArray()
+}
+
+/// Skip the first `n` elements.  Negative `n` returns a copy of the
+/// whole slice.
+pub func drop[T](xs: in slice[T], n: in Int): slice[T] {
+  val acc: List[T] = newList()
+  var i = 0
+  for x in xs {
+    if i >= n {
+      acc.add(x)
+    }
+    i = i + 1
+  }
+  return acc.toArray()
+}
+
+/// Concatenate two slices, allocating a fresh result.  Use repeatedly
+/// for variable-arity concat — `concat(concat(a, b), c)` etc.
+pub func concat[T](a: in slice[T], b: in slice[T]): slice[T] {
+  val acc: List[T] = newList()
+  for x in a {
+    acc.add(x)
+  }
+  for x in b {
+    acc.add(x)
+  }
+  return acc.toArray()
 }
 
 // =====================================================================

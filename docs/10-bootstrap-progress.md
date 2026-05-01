@@ -588,3 +588,157 @@ All 622 tests pass: Lexer 70, Parser 182, TypeChecker 90, Emitter 280.
   args to a temp; this is mostly defensive (T0085 should catch the
   bad shape at type-check time) but means a future rule loosening
   needs the spill semantics revisited.
+
+
+### D-progress-015: allocating iter helpers (`map` / `filter` / `take` / `drop` / `concat`)
+*stdlib-ergonomics branch.*  `Std.Iter` previously shipped only
+non-allocating helpers because the local-generic-call path's
+`bindLyricToClr` didn't recognise `TyFunction` — a HOF call site like
+`mapInts(xs, { n: Int -> n * 2 })` left `U` unbound and the
+`MakeGenericMethod` reified the callee with `<obj>` for the return-slot
+generic.  The mismatch shipped fine until the callee actually used `U`
+as a payload (`List<U>::Add`); the JIT linked Add to a `List<obj>`
+instance, the IL pushed an `int32`, and the runtime hit a NRE on the
+list's null backing array.
+
+**Fix.**  `Codegen.fs:bindLyricToClr` (local-generic-call variant) now
+mirrors the imported-call shape — `TyFunction`, `TyArray`, `TyNullable`,
+`TyTuple` all bind position-wise like the existing `TyUser` / `TySlice`
+cases.
+
+**Iter additions.**  Five allocating helpers in `compiler/lyric/std/iter.l`
+all built on `List[T]` from `Std.Collections` with `.toArray()` at the
+end:
+
+- `map[T, U](xs, f)`
+- `filter[T](xs, pred)`
+- `take[T](xs, n)`
+- `drop[T](xs, n)`
+- `concat[T](a, b)`
+
+9 end-to-end tests in `IterTests.fs`.  All 631 tests across the four
+suites pass (Lexer 70, Parser 182, TypeChecker 90, Emitter 289).
+
+### D-progress-016: `@stubbable` stub builder synthesis (bootstrap)
+*stdlib-ergonomics branch.*  Phase 2 M2.3.  Bootstrap-grade lowering
+for `@stubbable` interfaces — a sibling record + impl gets synthesised
+in the parser-output pipeline so subsequent type-check / codegen passes
+treat the stub like any other user type.
+
+For
+
+```lyric
+@stubbable
+pub interface Clock { func now(): Int }
+```
+
+the compiler appends:
+
+```lyric
+pub record ClockStub { pub now_value: Int }
+impl Clock for ClockStub { func now(): Int = self.now_value }
+```
+
+Callers construct directly via the record literal:
+
+```lyric
+val s = ClockStub(now_value = 42)
+val c: Clock = s
+```
+
+`Unit`-returning interface methods generate no field; the synthesised
+impl method body is an empty block.  Both `Unit` (the keyword form,
+parsed as `TUnit`) and `Unit` (the bare-name form, parsed as
+`TRef ["Unit"]`) are recognised so the user's preferred spelling works.
+
+**Implementation.**  New file
+`compiler/src/Lyric.Parser/Stubbable.fs` exposes
+`synthesizeItems : Item list -> Item list`.  `Parser.fs:parse` invokes
+it after the existing `hoistInlineMethods` pass so the fully-cooked
+item list reaches the type checker.  No emitter changes — the
+synthesised AST is indistinguishable from a user-authored
+`record + impl` pair.
+
+**Bootstrap-grade scope** (tracked, not blocking):
+
+- Generic interfaces (`@stubbable interface Repo[T] { ... }`) are
+  skipped — generic stubs need generic `impl`s with generic field types.
+- Methods with `Self` in return or param positions are skipped —
+  `Self` would refer back to the synthesised stub, but the synthesis
+  pass runs once over a static interface body without resolving
+  back-references.
+- Async methods are skipped — the bootstrap can't yet synthesise
+  `Task[T]`-shaped fields.  Recording / failing / argument-matching
+  builder DSL (`.returning { ... }` etc. per language reference §10
+  / D016) is also out of scope.  Methods that fall outside the
+  supported subset stay in the interface untouched; if the user
+  actually invokes them via the stub they'll surface a normal
+  "no impl found" diagnostic later.
+
+5 end-to-end tests in `StubbableTests.fs`.
+
+
+### D-progress-017: bootstrap LSP server (`lyric-lsp`)
+*stdlib-ergonomics branch.*  Phase 3 M3.3 first pass.  Adds
+`compiler/src/Lyric.Lsp/` — a console-app that speaks the Microsoft
+Language Server Protocol's stdio JSON-RPC transport.  Editors point
+at the `lyric-lsp` binary and get push diagnostics on every save +
+keystroke.
+
+**Capabilities advertised in `initialize`.**
+- `textDocumentSync.openClose = true`
+- `textDocumentSync.change = 1` (full sync — re-parse on every change)
+- `hoverProvider = true`
+
+**Methods handled.**
+- `initialize` / `initialized` / `shutdown` / `exit`
+- `textDocument/didOpen` / `didChange` / `didClose`
+- `textDocument/hover` (placeholder reply; real position-resolved
+  type info is a Phase 3 follow-up)
+- Unknown requests reply with JSON-RPC `-32601 method not found`;
+  unknown notifications drop silently.
+
+**Diagnostic flow.**  On `didOpen` and `didChange` the server runs
+`Lyric.Parser.Parser.parse` and `Lyric.TypeChecker.Checker.check`
+on the buffer text and publishes the merged diagnostics list via
+`textDocument/publishDiagnostics`.  No IL emission — the LSP keeps
+per-keystroke latency low and never touches the build cache.
+Diagnostics are cleared explicitly on `didClose`.
+
+**Implementation notes.**
+
+- Three F# files: `JsonRpc.fs` (LSP framing + 2.0 message helpers
+  built on `System.Text.Json.Nodes`), `Server.fs` (request dispatch
+  + document store), `Program.fs` (stdio entry point).
+- No external NuGet libraries — `StreamJsonRpc` /
+  `OmniSharp.Extensions.LanguageServer` are heavyweight for what's
+  ultimately three primitive transport operations and we'd rather
+  not pin to a particular protocol-definitions package this early.
+- The full LSP message envelope is treated as a JsonNode tree
+  throughout; the field-extraction helpers (`prop` / `propStr` /
+  `propInt`) handle the F# 9 strict-nullness shape without leaking
+  the `JsonNode | null` annotations into Server.fs.
+
+**Tests.**  New project `compiler/tests/Lyric.Lsp.Tests/` with five
+end-to-end tests in `ProtocolTests.fs`:
+- initialize advertises the bootstrap capabilities
+- didOpen with broken source publishes diagnostics
+- didChange to clean source clears diagnostics
+- shutdown returns a response with matching id
+- unknown request gets JSON-RPC method-not-found error
+
+The test harness drives `Server.runLoop` in-process over a
+`MemoryStream` pair — no `dotnet exec` of the real LSP binary, just
+synthesised stdin frames in / stdout frames out.
+
+641 tests across all five suites pass (Lexer 70, Parser 182,
+TypeChecker 90, Emitter 294, Lsp 5).
+
+**Bootstrap-grade scope** (tracked, not blocking):
+- Hover is a placeholder.  Real position-to-type resolution needs
+  the type checker to surface a position-indexed view of bindings.
+- No completion, no go-to-definition, no signature help.
+- No incremental document sync (only full).
+- No workspace/configuration / file-watching support.
+- No status reporting back to the client (no `window/showMessage`
+  on stdlib-resolve failures).
