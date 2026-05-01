@@ -47,10 +47,19 @@ let private bindPattern
         // diagnostic — the binding is silently dropped.
         ()
 
+/// Build a GenericContext seeded with the enclosing function's
+/// generic-parameter names so `var v: V = ...` resolves V correctly
+/// inside a generic function body.
+let private mkGenericCtx (genericNames: string list) : GenericContext =
+    let ctx = GenericContext()
+    if not genericNames.IsEmpty then ctx.Push genericNames
+    ctx
+
 let rec checkStatement
         (scope: Scope)
         (table: SymbolTable)
         (sigs:  Map<string, ResolvedSignature>)
+        (genericNames: string list)
         (returnType: Type)
         (diags: ResizeArray<Diagnostic>)
         (stmt:  Statement)
@@ -62,7 +71,7 @@ let rec checkStatement
         let bindType =
             match declType with
             | Some te ->
-                let ctx = GenericContext()
+                let ctx = mkGenericCtx genericNames
                 let declT = Resolver.resolveType table ctx diags te
                 if not (Type.equiv declT initType) then
                     err diags "T0060"
@@ -82,7 +91,7 @@ let rec checkStatement
         let bindType =
             match declType with
             | Some te ->
-                let ctx = GenericContext()
+                let ctx = mkGenericCtx genericNames
                 let declT = Resolver.resolveType table ctx diags te
                 if init.IsSome && not (Type.equiv declT initType) then
                     err diags "T0061"
@@ -99,7 +108,7 @@ let rec checkStatement
         let bindType =
             match declType with
             | Some te ->
-                let ctx = GenericContext()
+                let ctx = mkGenericCtx genericNames
                 let declT = Resolver.resolveType table ctx diags te
                 if not (Type.equiv declT initType) then
                     err diags "T0062"
@@ -157,7 +166,7 @@ let rec checkStatement
     | SDefer blk
     | SScope(_, blk)
     | SLoop(_, blk) ->
-        checkBlock scope table sigs returnType diags blk |> ignore
+        checkBlock scope table sigs genericNames returnType diags blk |> ignore
 
     | SFor(_, pat, iter, body) ->
         let iterType = inferExpr scope table sigs diags iter
@@ -170,7 +179,7 @@ let rec checkStatement
             | _ -> TyError
         scope.Push()
         bindPattern scope diags pat elemType
-        checkBlock scope table sigs returnType diags body |> ignore
+        checkBlock scope table sigs genericNames returnType diags body |> ignore
         scope.Pop()
 
     | SWhile(_, cond, body) ->
@@ -180,17 +189,17 @@ let rec checkStatement
                 (sprintf "while-condition must be Bool (got %s)"
                     (Type.render condT))
                 stmt.Span
-        checkBlock scope table sigs returnType diags body |> ignore
+        checkBlock scope table sigs genericNames returnType diags body |> ignore
 
     | STry(body, catches) ->
-        checkBlock scope table sigs returnType diags body |> ignore
+        checkBlock scope table sigs genericNames returnType diags body |> ignore
         for c in catches do
             scope.Push()
             match c.Bind with
             | Some name ->
                 scope.Add({ Name = name; Type = TyError; IsMutable = false })
             | None -> ()
-            checkBlock scope table sigs returnType diags c.Body |> ignore
+            checkBlock scope table sigs genericNames returnType diags c.Body |> ignore
             scope.Pop()
 
     | SItem _ ->
@@ -208,6 +217,7 @@ and checkBlock
         (scope: Scope)
         (table: SymbolTable)
         (sigs:  Map<string, ResolvedSignature>)
+        (genericNames: string list)
         (returnType: Type)
         (diags: ResizeArray<Diagnostic>)
         (blk:   Block)
@@ -219,10 +229,170 @@ and checkBlock
         | SExpr e ->
             lastExprType <- inferExpr scope table sigs diags e
         | _ ->
-            checkStatement scope table sigs returnType diags stmt
+            checkStatement scope table sigs genericNames returnType diags stmt
             lastExprType <- TyPrim PtUnit
     scope.Pop()
     lastExprType
+
+// ---------------------------------------------------------------------------
+// Definite-assignment analysis for `out` parameters.
+//
+// Each `out` parameter must be assigned along every normal-completion
+// path through the function body — both before any `return` and at
+// the implicit fall-through exit.  Loops are treated weakly (their
+// bodies may not run, so don't strengthen the post-state); branches
+// intersect.
+// ---------------------------------------------------------------------------
+
+/// Set of out-param names that are definitely assigned at the current
+/// program point.
+type private DASet = Set<string>
+
+/// Lookup of out-param names declared on a function.  Empty for
+/// functions that don't have any out params (so the analysis is a
+/// no-op for them).
+let private outParamNames (sg: ResolvedSignature) : Set<string> =
+    sg.Params
+    |> List.choose (fun p ->
+        if p.Mode = PMOut then Some p.Name else None)
+    |> Set.ofList
+
+/// Out-params that the called function assigns through its parameters
+/// — i.e. our local `var` becomes definitely assigned after the call
+/// because the callee writes to it via byref.
+let private outArgsAssigned
+        (sigs: Map<string, ResolvedSignature>)
+        (call: Expr) : Set<string> =
+    match call.Kind with
+    | ECall (fn, args) ->
+        let sigOpt =
+            match fn.Kind with
+            | EPath { Segments = [name] } ->
+                match Map.tryFind name sigs with
+                | Some s -> Some s
+                | None ->
+                    Map.tryFind (name + "/" + string args.Length) sigs
+            | _ -> None
+        match sigOpt with
+        | None -> Set.empty
+        | Some sg ->
+            List.zip sg.Params args
+            |> List.choose (fun (p, a) ->
+                if p.Mode = PMOut then
+                    let payload =
+                        match a with
+                        | CAPositional e -> e
+                        | CANamed (_, e, _) -> e
+                    match payload.Kind with
+                    | EPath { Segments = [n] } -> Some n
+                    | _ -> None
+                else None)
+            |> Set.ofList
+    | _ -> Set.empty
+
+let rec private daBlock
+        (sigs:    Map<string, ResolvedSignature>)
+        (outs:    Set<string>)
+        (diags:   ResizeArray<Diagnostic>)
+        (initial: DASet)
+        (blk:     Block) : DASet =
+    let mutable cur = initial
+    for s in blk.Statements do
+        cur <- daStatement sigs outs diags cur s
+    cur
+
+and private daStatement
+        (sigs:  Map<string, ResolvedSignature>)
+        (outs:  Set<string>)
+        (diags: ResizeArray<Diagnostic>)
+        (cur:   DASet)
+        (s:     Statement) : DASet =
+    match s.Kind with
+    | SAssign (target, _, value) ->
+        let cur' = daExpr sigs outs diags cur value
+        match target.Kind with
+        | EPath { Segments = [name] } when Set.contains name outs ->
+            Set.add name cur'
+        | _ -> cur'
+    | SLocal (LBVal (_, _, init)) ->
+        daExpr sigs outs diags cur init
+    | SLocal (LBLet (_, _, init)) ->
+        daExpr sigs outs diags cur init
+    | SLocal (LBVar (_, _, Some init)) ->
+        daExpr sigs outs diags cur init
+    | SLocal (LBVar (_, _, None)) ->
+        cur
+    | SExpr e ->
+        daExpr sigs outs diags cur e
+    | SReturn rOpt ->
+        let cur' =
+            match rOpt with
+            | Some e -> daExpr sigs outs diags cur e
+            | None   -> cur
+        let missing = Set.difference outs cur'
+        if not missing.IsEmpty then
+            err diags "T0086"
+                (sprintf "out parameter(s) not assigned before return: %s"
+                    (missing |> Set.toList |> String.concat ", "))
+                s.Span
+        // Returns don't propagate forward — pretend everything is
+        // assigned so downstream code doesn't complain about
+        // unreachable paths.
+        outs
+    | SWhile (_, cond, body) ->
+        let afterCond = daExpr sigs outs diags cur cond
+        // Body may run zero times; ignore its DA contribution.
+        let _ = daBlock sigs outs diags afterCond body
+        afterCond
+    | SLoop (_, body) ->
+        let _ = daBlock sigs outs diags cur body
+        cur
+    | SFor (_, _, iter, body) ->
+        let afterIter = daExpr sigs outs diags cur iter
+        let _ = daBlock sigs outs diags afterIter body
+        afterIter
+    | SBreak _ | SContinue _ -> cur
+    | SDefer body ->
+        daBlock sigs outs diags cur body
+    | _ -> cur
+
+and private daExpr
+        (sigs:  Map<string, ResolvedSignature>)
+        (outs:  Set<string>)
+        (diags: ResizeArray<Diagnostic>)
+        (cur:   DASet)
+        (e:     Expr) : DASet =
+    match e.Kind with
+    | ECall (_, args) ->
+        let cur' =
+            args
+            |> List.fold (fun s a ->
+                match a with
+                | CAPositional ex
+                | CANamed (_, ex, _) -> daExpr sigs outs diags s ex)
+                cur
+        // A call that takes our out-param-by-ref counts as assigning
+        // that name.  Same for inout (it both reads + writes), but we
+        // only track `out` because inout requires prior init (not DA).
+        Set.union cur' (Set.intersect outs (outArgsAssigned sigs e))
+    | EBinop (_, l, r) ->
+        let cur'  = daExpr sigs outs diags cur l
+        daExpr sigs outs diags cur' r
+    | EPrefix (_, x) -> daExpr sigs outs diags cur x
+    | EParen x -> daExpr sigs outs diags cur x
+    | EIf (cond, thenBranch, elseOpt, _) ->
+        let afterCond = daExpr sigs outs diags cur cond
+        let daBranch (b: ExprOrBlock) =
+            match b with
+            | EOBExpr  e -> daExpr sigs outs diags afterCond e
+            | EOBBlock blk -> daBlock sigs outs diags afterCond blk
+        let afterThen = daBranch thenBranch
+        let afterElse =
+            match elseOpt with
+            | Some b -> daBranch b
+            | None   -> afterCond  // no else means this branch may not run
+        Set.intersect afterThen afterElse
+    | _ -> cur
 
 /// Check a function declaration's body. Pushes parameters into a
 /// fresh scope, type-checks the body, and verifies the body's value
@@ -267,7 +437,7 @@ let checkFunctionBody
                 fn.Span
     | Some (FBBlock blk) ->
         let bodyType =
-            checkBlock scope table sigs sig'.Return diags blk
+            checkBlock scope table sigs sig'.Generics sig'.Return diags blk
         // A trailing expression whose type matches the return type
         // is treated as the function's value (Lyric is expression-
         // oriented). Bodies that end in a return / throw produce
@@ -281,3 +451,15 @@ let checkFunctionBody
                     "function body trailing expression has type %s but declared return type is %s"
                     (Type.render bodyType) (Type.render sig'.Return))
                 fn.Span
+        // Definite-assignment check: every `out` parameter must be
+        // written along the implicit fall-through exit.  Early
+        // returns (`SReturn`) check assignment at their own sites.
+        let outs = outParamNames sig'
+        if not outs.IsEmpty then
+            let finalDA = daBlock sigs outs diags Set.empty blk
+            let missing = Set.difference outs finalDA
+            if not missing.IsEmpty then
+                err diags "T0086"
+                    (sprintf "out parameter(s) not assigned along fall-through exit: %s"
+                        (missing |> Set.toList |> String.concat ", "))
+                    fn.Span

@@ -64,16 +64,20 @@ extern type Map[K, V] = "System.Collections.Generic.Dictionary`2"
 @externTarget("System.Collections.Generic.Dictionary`2..ctor")
 pub func newMap[K, V](): Map[K, V] = ()
 
-@externTarget("Lyric.Stdlib.MapHelpers`2.GetOrDefault")
-func mapGetOrDefaultRaw[K, V](m: in Map[K, V], key: in K): V = ()
+/// Direct binding to `Dictionary.TryGetValue` via FFI — the canonical
+/// .NET "lookup with sentinel" API.  Now that `out` parameters are
+/// supported across the FFI boundary, this is a one-liner; previously
+/// we routed through a `MapHelpers.Has` + `GetOrDefault` pair.
+@externTarget("System.Collections.Generic.Dictionary`2.TryGetValue")
+pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
 
 /// Lookup `key` in `m`.  Returns `Some(value)` if present, `None` if
-/// missing.  Lyric-side wrapper around `containsKey` + a safe getter
-/// until first-class out-params land — `Dictionary.TryGetValue` would
-/// otherwise need an `out` parameter the bootstrap doesn't support.
+/// missing.  Lyric-side wrapper around `tryGetValue` so callers see
+/// the idiomatic `Option[V]` shape.
 pub func mapGet[K, V](m: in Map[K, V], key: in K): Option[V] {
-  if m.containsKey(key) {
-    Some(value = mapGetOrDefaultRaw(m, key))
+  var value: V = default()
+  if tryGetValue(m, key, value) {
+    Some(value = value)
   } else {
     None
   }

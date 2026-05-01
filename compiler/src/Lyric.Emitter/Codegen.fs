@@ -640,7 +640,14 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         | Some lb -> lb.LocalType
         | None ->
             match ctx.Params.TryGetValue name with
-            | true, (_, t) -> t
+            | true, (_, t) ->
+                // Byref params (out/inout) auto-dereference at the
+                // emit site; peek matches by peeling the `T&`.
+                if t.IsByRef then
+                    match Option.ofObj (t.GetElementType()) with
+                    | Some et -> et
+                    | None    -> t
+                else t
             | _            -> typeof<obj>
     | EBinop (op, l, _) ->
         match op with
@@ -667,6 +674,10 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         match name with
         | "toString" -> typeof<string>
         | "format1" | "format2" | "format3" | "format4" -> typeof<string>
+        | "default" ->
+            match ctx.ExpectedType with
+            | Some t -> t
+            | None   -> typeof<obj>
         | _ ->
         // Calls to a known func / delegate-typed local return a
         // predictable type that inference upstream needs to see.
@@ -1405,7 +1416,18 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             match ctx.Params.TryGetValue name with
             | true, (idx, pty) ->
                 il.Emit(OpCodes.Ldarg, idx)
-                pty
+                if pty.IsByRef then
+                    let elem =
+                        match Option.ofObj (pty.GetElementType()) with
+                        | Some t -> t
+                        | None   -> typeof<obj>
+                    // Unboxed read of `T&`: `Ldobj` for value-typed
+                    // structs / enums, `Ldind.Ref` for reference types.
+                    if elem.IsValueType then il.Emit(OpCodes.Ldobj, elem)
+                    else il.Emit(OpCodes.Ldind_Ref)
+                    elem
+                else
+                    pty
             | _ ->
                 match ctx.EnumCases.TryGetValue name with
                 | true, (info, c) ->
@@ -2045,6 +2067,26 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Call, mi)
         typeof<string>
 
+    // ---- default[T]() builtin -----------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = ["default"] } }, []) ->
+        // Picks its CLR type from the surrounding `ExpectedType` hint
+        // (set by val ascription, byref pre-fill, etc.).  Without a
+        // hint we fall back to `obj` and `Ldnull`; the user typically
+        // adds a `var v: T = default()` ascription in that case.
+        let ty =
+            match ctx.ExpectedType with
+            | Some t when not (t = typeof<obj>) -> t
+            | _ -> typeof<obj>
+        if ty.IsValueType then
+            let tmp = FunctionCtx.defineLocal ctx "__default" ty
+            il.Emit(OpCodes.Ldloca, tmp)
+            il.Emit(OpCodes.Initobj, ty)
+            il.Emit(OpCodes.Ldloc, tmp)
+        else
+            il.Emit(OpCodes.Ldnull)
+        ty
+
     // ---- toString builtin ---------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = ["toString"] } }, [arg]) ->
@@ -2089,7 +2131,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                        && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
                     then Some paramTypes.[i]
                     else None
+                let isByRef =
+                    i < paramTypes.Length && paramTypes.[i].IsByRef
                 match payload.Kind, expectedDelegateTy with
+                | _ when isByRef ->
+                    // Byref param (out / inout) — push the address of
+                    // the argument's storage instead of its value.
+                    emitAddressOf ctx payload paramTypes.[i]
                 | ELambda (lps, body), Some dt ->
                     emitLambdaWith ctx lps body (Some dt) |> ignore
                 | ELambda (lps, body), None ->
@@ -2177,18 +2225,34 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // AFTER inference resolves which generic parameter slots
             // end up as `obj` (where value-typed args need a `box`
             // instruction inserted between the arg and the call).
+            let lyricParamModes =
+                sg.Params |> List.map (fun p -> p.Mode) |> List.toArray
             let argLocals =
                 args
                 |> List.mapi (fun i a ->
                     let payload =
                         match a with
                         | CAPositional ex | CANamed (_, ex, _) -> ex
-                    let argTy = emitExpr ctx payload
-                    if i < lyricParamTypes.Length then
-                        bindLyricToClr lyricParamTypes.[i] argTy
-                    let lb = FunctionCtx.defineLocal ctx ("__gen_arg_" + string i) argTy
-                    il.Emit(OpCodes.Stloc, lb)
-                    lb, argTy)
+                    let isByRef =
+                        i < lyricParamModes.Length
+                        && (lyricParamModes.[i] = PMOut
+                            || lyricParamModes.[i] = PMInout)
+                    if isByRef then
+                        // Don't emit a value here — we'll take the
+                        // address at the load step.  Bind T from the
+                        // arg's `peek` so inference still resolves V.
+                        if i < lyricParamTypes.Length then
+                            bindLyricToClr lyricParamTypes.[i] (peekExprType ctx payload)
+                        // Stash the original payload so the load step
+                        // can dispatch through `emitAddressOf`.
+                        None, payload, typeof<obj>
+                    else
+                        let argTy = emitExpr ctx payload
+                        if i < lyricParamTypes.Length then
+                            bindLyricToClr lyricParamTypes.[i] argTy
+                        let lb = FunctionCtx.defineLocal ctx ("__gen_arg_" + string i) argTy
+                        il.Emit(OpCodes.Stloc, lb)
+                        Some lb, payload, argTy)
             // Default any unbound generic params to `obj` so we still
             // produce well-formed IL even when inference can't see far
             // enough into a body to fix T.
@@ -2209,18 +2273,30 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let substParamTypes =
                 sg.Params
                 |> List.map (fun p ->
-                    Lyric.Emitter.TypeMap.toClrTypeWithGenerics
-                        ctx.Lookup substMap p.Type)
+                    let bare =
+                        Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                            ctx.Lookup substMap p.Type
+                    match p.Mode with
+                    | PMOut | PMInout -> bare.MakeByRefType()
+                    | PMIn            -> bare)
                 |> List.toArray
             argLocals
-            |> List.iteri (fun i (lb, argTy) ->
-                il.Emit(OpCodes.Ldloc, lb)
-                if i < substParamTypes.Length then
-                    let pt = substParamTypes.[i]
-                    if not pt.IsValueType && argTy.IsValueType then
-                        il.Emit(OpCodes.Box, argTy)
-                    elif pt.IsValueType && (argTy = typeof<obj>) then
-                        il.Emit(OpCodes.Unbox_Any, pt))
+            |> List.iteri (fun i (lbOpt, payload, argTy) ->
+                if i < substParamTypes.Length && substParamTypes.[i].IsByRef then
+                    // Byref arg — take the address of the original
+                    // payload directly (no temp).  `lbOpt` is `None`
+                    // for these args.
+                    emitAddressOf ctx payload substParamTypes.[i]
+                else
+                    match lbOpt with
+                    | Some lb -> il.Emit(OpCodes.Ldloc, lb)
+                    | None    -> ()
+                    if i < substParamTypes.Length then
+                        let pt = substParamTypes.[i]
+                        if not pt.IsValueType && argTy.IsValueType then
+                            il.Emit(OpCodes.Box, argTy)
+                        elif pt.IsValueType && (argTy = typeof<obj>) then
+                            il.Emit(OpCodes.Unbox_Any, pt))
             il.Emit(OpCodes.Call, constructed)
             let returnedTy =
                 Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
@@ -2364,17 +2440,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         let payload =
                             match a with
                             | CAPositional ex | CANamed (_, ex, _) -> ex
-                        let saved = ctx.ExpectedType
-                        if i < paramTypes.Length then
-                            ctx.ExpectedType <- Some paramTypes.[i]
-                        let argTy = emitExpr ctx payload
-                        ctx.ExpectedType <- saved
-                        if i < paramTypes.Length then
-                            let pt = paramTypes.[i]
-                            if pt = typeof<obj> && argTy.IsValueType then
-                                il.Emit(OpCodes.Box, argTy)
-                            elif pt.IsValueType && (argTy = typeof<obj>) then
-                                il.Emit(OpCodes.Unbox_Any, pt))
+                        if i < paramTypes.Length && paramTypes.[i].IsByRef then
+                            emitAddressOf ctx payload paramTypes.[i]
+                        else
+                            let saved = ctx.ExpectedType
+                            if i < paramTypes.Length then
+                                ctx.ExpectedType <- Some paramTypes.[i]
+                            let argTy = emitExpr ctx payload
+                            ctx.ExpectedType <- saved
+                            if i < paramTypes.Length then
+                                let pt = paramTypes.[i]
+                                if pt = typeof<obj> && argTy.IsValueType then
+                                    il.Emit(OpCodes.Box, argTy)
+                                elif pt.IsValueType && (argTy = typeof<obj>) then
+                                    il.Emit(OpCodes.Unbox_Any, pt))
                     il.Emit(OpCodes.Call, mi)
                     if mi.ReturnType = typeof<System.Void> then typeof<System.Void>
                     else mi.ReturnType
@@ -2455,22 +2534,29 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         | None    -> ()
                         if ctx.ReturnType <> typeof<System.Void> then
                             bindLyricToClr sg.Return ctx.ReturnType
-                    // Emit each arg into a temp local so we can issue
-                    // boxing AFTER inference resolves which generic
-                    // parameter slots end up as `obj` (where value-
-                    // typed args need a `box` instruction inserted).
+                    let lyricParamModes =
+                        sg.Params |> List.map (fun p -> p.Mode) |> List.toArray
                     let argLocals =
                         args
                         |> List.mapi (fun i a ->
                             let payload =
                                 match a with
                                 | CAPositional ex | CANamed (_, ex, _) -> ex
-                            let argTy = emitExpr ctx payload
-                            if i < lyricParamTypes.Length then
-                                bindLyricToClr lyricParamTypes.[i] argTy
-                            let lb = FunctionCtx.defineLocal ctx ("__imp_arg_" + string i) argTy
-                            il.Emit(OpCodes.Stloc, lb)
-                            lb, argTy)
+                            let isByRef =
+                                i < lyricParamModes.Length
+                                && (lyricParamModes.[i] = PMOut
+                                    || lyricParamModes.[i] = PMInout)
+                            if isByRef then
+                                if i < lyricParamTypes.Length then
+                                    bindLyricToClr lyricParamTypes.[i] (peekExprType ctx payload)
+                                None, payload, typeof<obj>
+                            else
+                                let argTy = emitExpr ctx payload
+                                if i < lyricParamTypes.Length then
+                                    bindLyricToClr lyricParamTypes.[i] argTy
+                                let lb = FunctionCtx.defineLocal ctx ("__imp_arg_" + string i) argTy
+                                il.Emit(OpCodes.Stloc, lb)
+                                Some lb, payload, argTy)
                     let resolvedBindings =
                         bindings
                         |> Array.map (function
@@ -2481,22 +2567,32 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     let substMap =
                         List.zip genericNames (List.ofArray resolvedBindings)
                         |> Map.ofList
-                    // Substituted CLR param types — guides boxing.
+                    // Substituted CLR param types — guides boxing AND
+                    // the byref dispatch (out/inout become `T&`).
                     let substParamTypes =
                         sg.Params
                         |> List.map (fun p ->
-                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
-                                ctx.Lookup substMap p.Type)
+                            let bare =
+                                Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                    ctx.Lookup substMap p.Type
+                            match p.Mode with
+                            | PMOut | PMInout -> bare.MakeByRefType()
+                            | PMIn            -> bare)
                         |> List.toArray
                     argLocals
-                    |> List.iteri (fun i (lb, argTy) ->
-                        il.Emit(OpCodes.Ldloc, lb)
-                        if i < substParamTypes.Length then
-                            let pt = substParamTypes.[i]
-                            if not pt.IsValueType && argTy.IsValueType then
-                                il.Emit(OpCodes.Box, argTy)
-                            elif pt.IsValueType && (argTy = typeof<obj>) then
-                                il.Emit(OpCodes.Unbox_Any, pt))
+                    |> List.iteri (fun i (lbOpt, payload, argTy) ->
+                        if i < substParamTypes.Length && substParamTypes.[i].IsByRef then
+                            emitAddressOf ctx payload substParamTypes.[i]
+                        else
+                            match lbOpt with
+                            | Some lb -> il.Emit(OpCodes.Ldloc, lb)
+                            | None    -> ()
+                            if i < substParamTypes.Length then
+                                let pt = substParamTypes.[i]
+                                if not pt.IsValueType && argTy.IsValueType then
+                                    il.Emit(OpCodes.Box, argTy)
+                                elif pt.IsValueType && (argTy = typeof<obj>) then
+                                    il.Emit(OpCodes.Unbox_Any, pt))
                     il.Emit(OpCodes.Call, constructed)
                     Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
                         ctx.Lookup substMap sg.Return
@@ -2947,6 +3043,48 @@ and private emitMatch
     il.MarkLabel(endLbl)
     defaultArg resultTy typeof<int32>
 
+and emitAddressOf (ctx: FunctionCtx) (e: Expr) (paramTy: ClrType) : unit =
+    // Emit `e`'s storage address — used to fulfil a byref (out / inout)
+    // parameter slot.  Currently supports:
+    //   • named local — `Ldloca`
+    //   • named param — if itself byref, `Ldarg` (already an address);
+    //                   non-byref params are spilled to a temp and we
+    //                   take the temp's address (loses round-trip
+    //                   semantics, but the type checker rejects this
+    //                   shape elsewhere)
+    // Other shapes (`a[i]`, `r.f`) are tractable but not yet wired —
+    // emit a diagnostic and Ldnull-equivalent so codegen continues.
+    let il = ctx.IL
+    match e.Kind with
+    | EPath { Segments = [name] } ->
+        match FunctionCtx.tryLookup ctx name with
+        | Some lb ->
+            il.Emit(OpCodes.Ldloca, lb)
+        | None ->
+            match ctx.Params.TryGetValue name with
+            | true, (idx, pty) when pty.IsByRef ->
+                il.Emit(OpCodes.Ldarg, idx)
+            | true, (idx, pty) ->
+                // Spill a value param to a temp + take its address.
+                // The mutation through this address is invisible
+                // to the caller — type checker rejects this case.
+                let tmp = FunctionCtx.defineLocal ctx ("__byref_" + name) pty
+                il.Emit(OpCodes.Ldarg, idx)
+                il.Emit(OpCodes.Stloc, tmp)
+                il.Emit(OpCodes.Ldloca, tmp)
+            | _ ->
+                ctx.Diags.Add
+                    (Lyric.Lexer.Diagnostic.error "E0085"
+                        (sprintf "argument to byref parameter must be a mutable variable, got '%s'" name)
+                        e.Span)
+                il.Emit(OpCodes.Ldnull)
+    | _ ->
+        ctx.Diags.Add
+            (Lyric.Lexer.Diagnostic.error "E0085"
+                "argument to byref parameter must be a mutable variable"
+                e.Span)
+        il.Emit(OpCodes.Ldnull)
+
 and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     let il = ctx.IL
     match s.Kind with
@@ -2981,17 +3119,38 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             il.Emit(OpCodes.Pop)
 
     | SLocal (LBVar (name, annot, initOpt)) ->
+        // Push the type ascription as the ExpectedType hint while
+        // emitting the initialiser — same as `val`, so `var v: Int =
+        // default()` makes `default()` pick `Int` instead of `obj`.
+        let saved = ctx.ExpectedType
+        match annot with
+        | Some te ->
+            try ctx.ExpectedType <- Some (ctx.ResolveType te)
+            with _ -> ()
+        | None -> ()
         let initTy =
             match initOpt with
             | Some init ->
                 let it = emitExpr ctx init
                 Some it
             | None -> None
-        // Without inference, default-typed `var` falls back to int32
-        // so the slot has *some* CLR type. Annotation handling lands
-        // when TypeMap can consult the type checker.
-        let slotTy = defaultArg initTy typeof<int32>
-        ignore annot
+        ctx.ExpectedType <- saved
+        // The local's CLR type prefers the annotation when present so
+        // out-param call sites can still take the address of an
+        // initialiser that happened to peek as `obj` (e.g. a generic
+        // `default()`).  Falls back to the initialiser type, then to
+        // int32 (legacy default) when neither is available.
+        let annotTy =
+            match annot with
+            | Some te ->
+                try Some (ctx.ResolveType te)
+                with _ -> None
+            | None -> None
+        let slotTy =
+            match annotTy, initTy with
+            | Some t, _      -> t
+            | None,   Some t -> t
+            | None,   None   -> typeof<int32>
         let lb = FunctionCtx.defineLocal ctx name slotTy
         match initOpt with
         | Some _ -> il.Emit(OpCodes.Stloc, lb)
@@ -3018,8 +3177,20 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                 let _ = emitExpr ctx value
                 il.Emit(OpCodes.Stloc, lb)
             | None ->
-                codegenErrStmt ctx "E0003"
-                    (sprintf "assignment to unknown name '%s'" name) s.Span
+                match ctx.Params.TryGetValue name with
+                | true, (idx, pty) when pty.IsByRef ->
+                    // Write through a byref param (out / inout).
+                    let elem =
+                        match Option.ofObj (pty.GetElementType()) with
+                        | Some t -> t
+                        | None   -> typeof<obj>
+                    il.Emit(OpCodes.Ldarg, idx)
+                    let _ = emitExpr ctx value
+                    if elem.IsValueType then il.Emit(OpCodes.Stobj, elem)
+                    else il.Emit(OpCodes.Stind_Ref)
+                | _ ->
+                    codegenErrStmt ctx "E0003"
+                        (sprintf "assignment to unknown name '%s'" name) s.Span
         | None ->
             codegenErrStmt ctx "E0003"
                 (sprintf "assignment target not yet supported: %A" target.Kind) s.Span
@@ -3043,8 +3214,32 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                 let _ = emitExpr ctx synthetic
                 il.Emit(OpCodes.Stloc, lb)
             | None ->
-                codegenErrStmt ctx "E0003"
-                    (sprintf "compound-assign to unknown name '%s'" name) s.Span
+                match ctx.Params.TryGetValue name with
+                | true, (idx, pty) when pty.IsByRef ->
+                    // Compound write through a byref param.  Reuse the
+                    // EBinop path: peek the param's value, combine with
+                    // `value`, write back through the pointer.
+                    let elem =
+                        match Option.ofObj (pty.GetElementType()) with
+                        | Some t -> t
+                        | None   -> typeof<obj>
+                    let bop =
+                        match op with
+                        | AssPlus    -> BAdd
+                        | AssMinus   -> BSub
+                        | AssStar    -> BMul
+                        | AssSlash   -> BDiv
+                        | AssPercent -> BMod
+                        | AssEq      -> BAdd  // already handled
+                    let synthetic : Expr =
+                        { Kind = EBinop (bop, target, value); Span = s.Span }
+                    il.Emit(OpCodes.Ldarg, idx)
+                    let _ = emitExpr ctx synthetic
+                    if elem.IsValueType then il.Emit(OpCodes.Stobj, elem)
+                    else il.Emit(OpCodes.Stind_Ref)
+                | _ ->
+                    codegenErrStmt ctx "E0003"
+                        (sprintf "compound-assign to unknown name '%s'" name) s.Span
         | _ ->
             codegenErrStmt ctx "E0003"
                 (sprintf "compound-assign target not yet supported: %A" target.Kind) s.Span

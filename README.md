@@ -92,7 +92,13 @@ lists and hash maps backed by the BCL; access via method-style
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`,
 `assert`, `toString(x)` (any value → String), `format1`/`format2`/
-`format3`/`format4` (`String.Format`-style with `{0}` placeholders).
+`format3`/`format4` (`String.Format`-style with `{0}` placeholders),
+`default()` (zero-init for the surrounding ascribed type).
+
+`func name(p: out T)` and `func name(p: inout T)` lower to CLR byref
+parameters; arguments must be named-variable l-values, and a
+definite-assignment analysis ensures every `out` param is written
+on every path before return.
 
 The compiler resolves `import Std.X` by locating the matching `.l` source in
 the `lyric/std/` directory, compiling it on demand, and linking the produced

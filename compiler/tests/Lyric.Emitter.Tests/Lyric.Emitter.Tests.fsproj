@@ -42,6 +42,7 @@
     <Compile Include="BuiltinTests.fs" />
     <Compile Include="StdFileTests.fs" />
     <Compile Include="CollectionTests.fs" />
+    <Compile Include="OutParamTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

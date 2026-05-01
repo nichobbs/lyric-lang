@@ -951,6 +951,25 @@ let private populateTryIntoMethod
             | None -> None
         | _ -> None
 
+/// Lower a Lyric param's CLR shape, accounting for `out` / `inout`:
+/// both lower to `T&` (managed pointer); `out` additionally gets an
+/// `[Out]` ParameterAttributes flag in metadata so .NET-side callers
+/// see it as a C#-style `out` parameter.
+let internal paramClrType
+        (lookup: TypeId -> System.Type option)
+        (genericSubst: Map<string, System.Type>)
+        (p: ResolvedParam) : System.Type =
+    let bare = TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type
+    match p.Mode with
+    | PMOut | PMInout -> bare.MakeByRefType()
+    | PMIn            -> bare
+
+let internal paramAttrs (p: ResolvedParam) : ParameterAttributes =
+    match p.Mode with
+    | PMOut   -> ParameterAttributes.Out
+    | PMInout -> ParameterAttributes.None
+    | PMIn    -> ParameterAttributes.None
+
 /// Define a static method header on `programTy` matching the resolved
 /// signature. Body is filled in by `emitFunctionBody` afterwards.
 let private defineMethodHeader
@@ -962,7 +981,7 @@ let private defineMethodHeader
         // Non-generic fast path — single-call signature.
         let paramTypes =
             sg.Params
-            |> List.map (fun p -> TypeMap.toClrTypeWith lookup p.Type)
+            |> List.map (paramClrType lookup Map.empty)
             |> List.toArray
         let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
         let returnType =
@@ -975,7 +994,7 @@ let private defineMethodHeader
                 paramTypes)
         sg.Params
         |> List.iteri (fun i p ->
-            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+            mb.DefineParameter(i + 1, paramAttrs p, p.Name) |> ignore)
         mb
     else
         // Generic method — reify type parameters as proper .NET generic
@@ -994,8 +1013,7 @@ let private defineMethodHeader
             |> Map.ofList
         let paramTypes =
             sg.Params
-            |> List.map (fun p ->
-                TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type)
+            |> List.map (paramClrType lookup genericSubst)
             |> List.toArray
         let bareReturn =
             TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
@@ -1005,7 +1023,7 @@ let private defineMethodHeader
         mb.SetReturnType returnType
         sg.Params
         |> List.iteri (fun i p ->
-            mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+            mb.DefineParameter(i + 1, paramAttrs p, p.Name) |> ignore)
         mb
 
 /// Emit a function body. Handles three shapes: an explicit block, an
@@ -1350,9 +1368,17 @@ let private emitFunctionBody
     let paramList =
         sg.Params
         |> List.map (fun p ->
-            p.Name, TypeMap.toClrTypeWithGenerics lookup genericSubst p.Type)
-    // Type-resolution closure used by lambda synthesis inside the body.
+            // Stored type matches the CLR slot (byref for out/inout).
+            // EPath access auto-dereferences via `loadParamValue`; call
+            // sites passing to byref params take addresses directly.
+            p.Name, paramClrType lookup genericSubst p)
+    // Type-resolution closure used by lambda synthesis + val/var
+    // ascription inside the body.  Seeded with the function's
+    // generic-parameter names so `var v: V = ...` resolves V to the
+    // method's GTPB instead of falling through to TyError / obj.
     let resolveCtxInner = GenericContext()
+    if not sg.Generics.IsEmpty then
+        resolveCtxInner.Push sg.Generics
     let scratchDiagsInner = ResizeArray<Diagnostic>()
     let resolveTypeForCtx (te: TypeExpr) : System.Type =
         let lty = Resolver.resolveType symbols resolveCtxInner scratchDiagsInner te
