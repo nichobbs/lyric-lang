@@ -53,7 +53,10 @@ deferred to Phase 3 by design.
 | `toString` polymorphic builtin | **Shipped** | (real-world-stdlib) |
 | `format1`..`format4` (String.Format wrappers) | **Shipped** | (real-world-stdlib) |
 | `Std.File` (readText / writeText / fileExists / createDir) | **Shipped** | (real-world-stdlib) |
-| `Std.Collections` (IntList / StringList / LongList / *Map) | **Shipped** | (collections) |
+| `Std.Collections` (IntList / StringList / LongList / *Map) | **Shipped** | (collections, superseded by generic-ffi) |
+| Generic `extern type` + `@externTarget` (FFI generics) | **Shipped** | (generic-ffi) |
+| BCL method dispatch on extern-typed receivers | **Shipped** | (generic-ffi) |
+| Indexer dispatch (`xs[i]` / `m[k]`) on BCL containers | **Shipped** | (generic-ffi) |
 | `tryInto` synthesis on projectable views | **Shipped** | (already in M2.2) |
 | `defer` + `return` (br→leave inside try) | **Shipped** | (already in M2.2) |
 | `@projectionBoundary` cycle handling | not started | — |
@@ -353,3 +356,105 @@ map types in one program.
 - `tryGet` returning `Option[V]` once out-params land.
 - More element types (`Bool`, `Double`) as programs need them — adding
   one is ~5 lines of F# + ~10 lines of `extern` declarations.
+
+### D-progress-013: generic FFI (`extern type List[T]` / `Map[K, V]`)
+*generic-ffi branch.*  Replaces D-progress-012's monomorphised
+collection wrappers with proper generic FFI:
+
+```lyric
+extern type List[T] = "System.Collections.Generic.List`1"
+extern type Map[K, V] = "System.Collections.Generic.Dictionary`2"
+
+@externTarget("System.Collections.Generic.List`1..ctor")
+pub func newList[T](): List[T] = ()
+
+func main(): Unit {
+  val xs: List[Int] = newList()
+  xs.add(10)            // BCL Add(T)
+  println(xs[0])        // BCL get_Item(int)
+  println(xs.count)     // BCL get_Count
+}
+```
+
+**Layer 1 — generic `extern type`.**  `ExternTypeDecl` carries an
+optional `Generics` list; the parser accepts `extern type Foo[T] = "..."`,
+the type checker registers the arity, and the emitter validates that
+the target CLR type's arity matches.  `TypeMap.toClrTypeWith` already
+called `MakeGenericType` for `TyUser(id, args)`, so wiring the open
+generic into `typeIdToClr` makes `List[Int]` close correctly.
+
+Cross-package: `Emitter.fs` now mirrors imported extern types from
+each `stdlibArtifact.Source` into the user's `typeIdToClr` map.
+Without this, `val xs: List[Int]` resolved to `obj` because the
+user's typeIdToClr had no entry for `List`.
+
+**Layer 2 — generic `@externTarget` functions.**
+
+```lyric
+@externTarget("System.Collections.Generic.List`1.Add")
+pub func listAdd[T](xs: in List[T], item: in T): Unit = ()
+```
+
+- Constructor support: `Type..ctor` target syntax routes to a
+  `ConstructorInfo` and emits `Newobj` instead of `Call`/`Callvirt`.
+- Generic-method substitution: when the open BCL declaring type is a
+  generic definition, `emitExternCall` closes it via
+  `TypeBuilder.GetMethod` / `GetConstructor`, deriving the closing
+  type args from the receiver param's CLR type, the return type, or
+  (for static helpers like `Lyric.Stdlib.MapHelpers`2.Has`) the
+  enclosing function's GTPB array.
+- Type-checker permissiveness: `Type.equiv` treats a free `TyVar` as
+  matching any concrete type, lifting the previous T0043 `argument
+  type mismatch` for generic-call sites that already worked at codegen
+  time.
+- Inference improvement: `bindLyricToClr` recursively walks compound
+  types so `m: Map[K, V]` paired with `Dictionary<string, int>` binds
+  `K=string, V=int`.  Plus a context-driven pre-binding step: a
+  no-arg generic call's missing type args fall back to the val
+  ascription's `ExpectedType` or the enclosing function's `ReturnType`,
+  restricted to compound returns so a bare `TyVar` isn't bound to
+  whatever the outer expected type is.
+
+**Layer 3 — BCL method dispatch + indexer + helpers.**
+
+- `m.add(k, v)`, `m.containsKey(k)`, `xs.add(item)`, `xs.contains(x)`,
+  `xs.count`, `xs.toArray()` etc. all work on extern-typed receivers
+  via the existing BCL-method dispatch path.  Two extensions:
+  - `getRecvMethods` / `closeBclMethod` walk the open generic's
+    methods when the receiver is a TypeBuilderInstantiation
+    (`TypeBuilderInstantiation.GetMethods()` is unsupported).
+  - `isBclType` consults the open generic when the receiver is a
+    closed instantiation, so `Dictionary<gtpb_K, gtpb_V>` still routes
+    through the BCL fallback dispatch.
+  - For TBI receivers, name + arity matching alone suffices —
+    `MethodOnTypeBuilderInstantiation.ParameterType` reports the open
+    generic param (`TKey`) rather than the closed substitution
+    (`gtpb_K`), so direct equality matching never succeeds.
+
+- `xs[i]` and `m[k]`: `EIndex` codegen now falls back to a
+  `get_Item(idx)` lookup when the receiver isn't an array or string.
+
+- TypeBuilderInstantiation in cross-assembly union case construction:
+  generic case ctors (`Some<gtpb_V>::.ctor`) get closed via
+  `TypeBuilder.GetConstructor` rather than `GetConstructors()` (which
+  throws on TBI).  Lets `Some(value = mapGetOrDefault(m, key))` inside
+  a generic Lyric function body produce valid IL.
+
+- New `Lyric.Stdlib.MapHelpers<K, V>` static helper: `Has`,
+  `GetOrDefault`, `Put`.  Lyric's `mapGet[K, V](m, key) : Option[V]`
+  composes `Has` + `GetOrDefault` to build the option without needing
+  out-parameters.
+
+**Result.**  `Std.Collections` is now ~70 lines: two `extern type`
+declarations, two constructors, three helper externs, one `mapGet`.
+Everything else comes for free via BCL dispatch.  The previous
+monomorphised `IntList` / `StringList` / `LongList` / `StringIntMap`
+/ `StringStringMap` types and per-type-suffixed function names are
+retired (the F#-side wrapper classes remain for now in case anyone
+still references them, but they're unused from Lyric).
+
+10 end-to-end tests in `CollectionTests.fs` exercise the full
+surface using the idiomatic `xs.add(...)` / `m["key"]` syntax,
+including a "dedup via map" pattern that mixes both types in one
+program.  All 614 tests across the four suites pass (Lexer 70,
+Parser 182, TypeChecker 90, Emitter 272).

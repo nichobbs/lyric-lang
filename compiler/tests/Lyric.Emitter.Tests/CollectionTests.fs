@@ -1,10 +1,11 @@
-/// End-to-end tests for `Std.Collections` — bootstrap-grade growable
-/// lists (`IntList` / `StringList` / `LongList`) and hash maps
-/// (`StringIntMap` / `StringStringMap`).
+/// End-to-end tests for `Std.Collections` — generic growable lists
+/// (`List[T]`) and hash maps (`Map[K, V]`), both backed by BCL
+/// generics via the FFI.
 ///
-/// Each type-parameterisation is its own concrete CLR class until
-/// generics-over-FFI lands; the Lyric-side surface is monomorphised
-/// (`addInt`, `getString`, …) accordingly.
+/// Most operations come from BCL method dispatch (`xs.add`, `xs[i]`,
+/// `m.containsKey`, `m[k]`, `m.count`).  The Lyric-side surface only
+/// adds the constructor (`newList` / `newMap`) and `mapGet` returning
+/// `Option[V]` (which would otherwise need out-params).
 module Lyric.Emitter.Tests.CollectionTests
 
 open Expecto
@@ -18,189 +19,177 @@ let private mk (label: string, source: string, expected: string) : Test =
 
 let private cases : (string * string * string) list = [
 
-    "intlist_add_and_get",
+    "list_int_method_style",
     """
 package CL1
 import Std.Collections
 
 func main(): Unit {
-  val xs = newIntList()
-  addInt(xs, 10)
-  addInt(xs, 20)
-  addInt(xs, 30)
-  println(intListLength(xs))
-  println(getInt(xs, 0))
-  println(getInt(xs, 1))
-  println(getInt(xs, 2))
+  val xs: List[Int] = newList()
+  xs.add(10)
+  xs.add(20)
+  xs.add(30)
+  println(xs.count)
+  println(xs[0])
+  println(xs[1])
+  println(xs[2])
 }
 """,
     "3\n10\n20\n30"
 
-    "intlist_set_overwrites",
+    "list_int_contains_remove",
     """
 package CL2
 import Std.Collections
 
 func main(): Unit {
-  val xs = newIntList()
-  addInt(xs, 1)
-  addInt(xs, 2)
-  setInt(xs, 0, 99)
-  println(getInt(xs, 0))
-  println(getInt(xs, 1))
+  val xs: List[Int] = newList()
+  xs.add(5)
+  xs.add(7)
+  xs.add(9)
+  if xs.contains(7) { println("yes") }
+  if not xs.contains(4) { println("no-4") }
+  xs.removeAt(1)
+  println(xs.count)
+  println(xs[1])
 }
 """,
-    "99\n2"
+    "yes\nno-4\n2\n9"
 
-    "intlist_contains_and_remove",
+    "list_int_to_array_iterates",
     """
 package CL3
 import Std.Collections
 
 func main(): Unit {
-  val xs = newIntList()
-  addInt(xs, 5)
-  addInt(xs, 7)
-  addInt(xs, 9)
-  if intListContains(xs, 7) { println("yes") }
-  if not intListContains(xs, 4) { println("no-4") }
-  intListRemoveAt(xs, 1)
-  println(intListLength(xs))
-  println(getInt(xs, 1))
-}
-""",
-    "yes\nno-4\n2\n9"
-
-    "intlist_to_slice_iterates",
-    """
-package CL4
-import Std.Collections
-
-func main(): Unit {
-  val xs = newIntList()
-  addInt(xs, 100)
-  addInt(xs, 200)
-  addInt(xs, 300)
-  for v in intListToSlice(xs) {
+  val xs: List[Int] = newList()
+  xs.add(100)
+  xs.add(200)
+  xs.add(300)
+  for v in xs.toArray() {
     println(v)
   }
 }
 """,
     "100\n200\n300"
 
-    "stringlist_add_and_get",
+    "list_string_basic",
     """
-package CL5
+package CL4
 import Std.Collections
 
 func main(): Unit {
-  val xs = newStringList()
-  addString(xs, "alpha")
-  addString(xs, "beta")
-  addString(xs, "gamma")
-  for s in stringListToSlice(xs) {
+  val xs: List[String] = newList()
+  xs.add("alpha")
+  xs.add("beta")
+  xs.add("gamma")
+  for s in xs.toArray() {
     println(s)
   }
 }
 """,
     "alpha\nbeta\ngamma"
 
-    "longlist_round_trip",
+    "list_long_round_trip",
     """
-package CL6
+package CL5
 import Std.Core
 import Std.Collections
 import Std.Parse
 
 func main(): Unit {
-  val xs = newLongList()
+  val xs: List[Long] = newList()
   match tryParseLong("9000000000") {
-    case Ok(v)  -> addLong(xs, v)
+    case Ok(v)  -> xs.add(v)
     case Err(_) -> println("err")
   }
   match tryParseLong("1") {
-    case Ok(v)  -> addLong(xs, v)
+    case Ok(v)  -> xs.add(v)
     case Err(_) -> println("err")
   }
-  println(longListLength(xs))
-  println(getLong(xs, 0))
-  println(getLong(xs, 1))
+  println(xs.count)
+  println(xs[0])
+  println(xs[1])
 }
 """,
     "2\n9000000000\n1"
 
-    "stringintmap_put_get_has",
+    "map_string_int_basic",
     """
-package CL7
+package CL6
+import Std.Core
 import Std.Collections
 
 func main(): Unit {
-  val m = newStringIntMap()
-  putStringInt(m, "alice", 30)
-  putStringInt(m, "bob", 25)
-  println(stringIntMapLength(m))
-  if hasStringIntKey(m, "alice") {
-    println(getStringIntRaw(m, "alice"))
+  val m: Map[String, Int] = newMap()
+  m.add("alice", 30)
+  m.add("bob", 25)
+  println(m.count)
+  match mapGet(m, "alice") {
+    case Some(v) -> println(v)
+    case None    -> println("missing")
   }
-  if not hasStringIntKey(m, "carol") {
-    println("missing")
+  match mapGet(m, "carol") {
+    case Some(v) -> println(v)
+    case None    -> println("missing")
   }
 }
 """,
     "2\n30\nmissing"
 
-    "stringintmap_overwrite_and_remove",
+    "map_remove_and_index",
     """
-package CL8
+package CL7
 import Std.Collections
 
 func main(): Unit {
-  val m = newStringIntMap()
-  putStringInt(m, "x", 1)
-  putStringInt(m, "x", 2)
-  println(getStringIntRaw(m, "x"))
-  if removeStringIntKey(m, "x") { println("removed") }
-  println(stringIntMapLength(m))
+  val m: Map[String, Int] = newMap()
+  m.add("x", 1)
+  println(m["x"])
+  if m.remove("x") { println("removed") }
+  println(m.count)
 }
 """,
-    "2\nremoved\n0"
+    "1\nremoved\n0"
 
-    "stringstringmap_keys_iterate",
+    "map_string_string_get_via_option",
     """
-package CL9
+package CL8
+import Std.Core
 import Std.Collections
 
 func main(): Unit {
-  val m = newStringStringMap()
-  putStringString(m, "host", "example.com")
-  putStringString(m, "port", "443")
-  println(stringStringMapLength(m))
-  if hasStringStringKey(m, "host") {
-    println(getStringStringRaw(m, "host"))
+  val m: Map[String, String] = newMap()
+  m.add("host", "example.com")
+  m.add("port", "443")
+  println(m.count)
+  match mapGet(m, "host") {
+    case Some(v) -> println(v)
+    case None    -> println("missing")
   }
 }
 """,
     "2\nexample.com"
 
-    "intlist_dedup_via_map",
-    // Practical test: build a deduplicated string list using the map
-    // as a "have I seen this?" set.  Exercises both collection types
-    // in the same program.
+    // End-to-end: build a deduplicated string list using a `Map[String, Int]`
+    // as a "have I seen this?" set.  Exercises both generic types in
+    // the same program with method-style dispatch.
+    "list_dedup_via_map",
     """
-package CL10
+package CL9
 import Std.Collections
 
 func main(): Unit {
-  val seen = newStringIntMap()
-  val outxs = newStringList()
+  val seen: Map[String, Int] = newMap()
+  val outxs: List[String] = newList()
   val raw  = ["a", "b", "a", "c", "b", "d"]
   for s in raw {
-    if not hasStringIntKey(seen, s) {
-      putStringInt(seen, s, 1)
-      addString(outxs, s)
+    if not seen.containsKey(s) {
+      seen.add(s, 1)
+      outxs.add(s)
     }
   }
-  for s in stringListToSlice(outxs) {
+  for s in outxs.toArray() {
     println(s)
   }
 }
@@ -210,4 +199,5 @@ func main(): Unit {
 
 let tests =
     testSequenced
-    <| testList "Std.Collections (IntList / StringList / *Map)" (cases |> List.map mk)
+    <| testList "Std.Collections (generic List / Map via BCL dispatch)"
+                (cases |> List.map mk)

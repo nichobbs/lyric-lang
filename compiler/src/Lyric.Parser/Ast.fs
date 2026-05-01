@@ -454,6 +454,11 @@ and ExternPackageDecl =
 /// allow construction outside the FFI boundary.
 and ExternTypeDecl =
     { Name:        string
+      /// Optional generic parameters (e.g. `extern type List[T] = ...`).
+      /// The number of params equals the BCL definition's arity; the
+      /// emitter validates that `findClrType` returns a generic type
+      /// definition with matching arity.
+      Generics:    GenericParams option
       ClrName:     string
       Span:        Span }
 

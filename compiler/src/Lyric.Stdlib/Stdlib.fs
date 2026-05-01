@@ -105,6 +105,67 @@ type Format private () =
                        a3: obj | null) : string =
         System.String.Format(template, [| a0; a1; a2; a3 |])
 
+/// Generic helper for `Dictionary<K, V>` operations that don't fit
+/// directly into the FFI without out-parameters or rich Lyric
+/// inference.  All members are static and routed through Lyric's
+/// `extern type` + `@externTarget` machinery.
+[<Sealed; AbstractClass>]
+type MapHelpers<'K, 'V when 'K: not null> private () =
+
+    /// True if `m` contains `key`.  A drop-in replacement for the
+    /// open-generic `Dictionary`2.ContainsKey` once a Lyric program
+    /// has the required generic externs.
+    static member Has (m: System.Collections.Generic.Dictionary<'K, 'V>,
+                       key: 'K) : bool =
+        m.ContainsKey key
+
+    /// Return `m[key]` if present, otherwise the default value of `V`.
+    /// Pair with `Has` to build a `Result` / `Option` on the Lyric side
+    /// without out-params.  Avoids the JIT verifier issue that hits
+    /// when chaining ContainsKey + the indexer through `extern type`.
+    static member GetOrDefault (m: System.Collections.Generic.Dictionary<'K, 'V>,
+                                key: 'K) : 'V =
+        match m.TryGetValue key with
+        | true, v -> v
+        | _       -> Unchecked.defaultof<'V>
+
+    /// Set `m[key] = value` (insert or overwrite).
+    static member Put (m: System.Collections.Generic.Dictionary<'K, 'V>,
+                       key: 'K, value: 'V) : unit =
+        m.[key] <- value
+
+/// Generic exception-to-result helper.  The Lyric side calls
+/// `tryRunValue(() => bclThing(args))` to invoke an arbitrary
+/// throw-prone BCL operation; the F# wrapper catches and surfaces a
+/// `(IsValid, Value, Error)` triple.  Same shape as `Std.Parse` /
+/// `Std.File` but factored out so future stdlib modules don't each
+/// hand-roll their own try/catch wrappers in F#.
+[<Sealed; AbstractClass>]
+type TryHost<'T> private () =
+
+    /// True if invoking `action` returns without throwing.
+    static member RunIsValid (action: System.Func<'T>) : bool =
+        try
+            let _ = action.Invoke()
+            true
+        with _ -> false
+
+    /// Invoke `action` and return its result.  Returns
+    /// `default(T)` when the call throws — gate on `RunIsValid` first.
+    static member RunValue (action: System.Func<'T>) : 'T =
+        try action.Invoke()
+        with _ -> Unchecked.defaultof<'T>
+
+    /// Diagnostic message for the most recent failure observed by
+    /// `RunIsValid`.  Like `FileHost.ReadError`, invokes `action` again
+    /// to recover the message; pair with `RunIsValid` so the success
+    /// path doesn't pay this cost.
+    static member RunError (action: System.Func<'T>) : string =
+        try
+            let _ = action.Invoke()
+            ""
+        with e -> e.GetType().Name + ": " + e.Message
+
 /// Bootstrap-grade growable list of `int`.  Wraps `List<int>` so it
 /// can be exposed as a Lyric `extern type` — generics aren't visible
 /// across the FFI boundary today, so each element type gets its own

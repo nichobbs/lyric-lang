@@ -86,8 +86,9 @@ Available stdlib modules: `Std.Core` (Result, Option, built-in ops),
 `Std.Parse` (tryParseInt, tryParseLong, tryParseDouble, tryParseBool),
 `Std.Errors` (ParseError, IOError, HttpError),
 `Std.File` (readText / writeText / fileExists / createDir),
-`Std.Collections` (`IntList`, `StringList`, `LongList`, `StringIntMap`,
-`StringStringMap` — growable lists and hash maps backed by the BCL).
+`Std.Collections` (`List[T]` and `Map[K, V]` — generic growable
+lists and hash maps backed by the BCL; access via method-style
+`xs.add(item)` / `m[key]` / `m.containsKey(key)` / `xs.count`).
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`,
 `assert`, `toString(x)` (any value → String), `format1`/`format2`/
