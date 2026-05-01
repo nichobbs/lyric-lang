@@ -4040,7 +4040,10 @@ let parse (source: string) : ParseResult =
           FileLevelAnnotations = fileAnnotations
           Package              = packageDecl
           Imports              = imports
-          Items                = hoistInlineMethods items
+          Items                =
+              items
+              |> hoistInlineMethods
+              |> Stubbable.synthesizeItems
           Span                 = joinSpans startSpan endSpan }
 
     { File        = file

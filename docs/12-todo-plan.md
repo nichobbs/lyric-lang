@@ -12,70 +12,16 @@ this doc is the *next-N-sessions* tactical view.
 
 ## Band A — active queue (this session and the next)
 
-### A1. Allocating iter helpers on `slice[T]`
+### A1. ~~Allocating iter helpers on `slice[T]`~~ — shipped
 
-`map`, `filter`, `take`, `drop`, `concat` over `slice[T]`.  Currently
-`std/iter.l` only ships the non-allocating helpers (`forEach`, `fold`,
-`all`, `any`, `count`, `find`, `sumInt`).  The blocker the comment cites
-is "stable behaviour for `List[T]` inside generic Lyric functions"; PR
-#41's `out`-param + `Dictionary.TryGetValue` work means generic FFI now
-crosses the call-site boundary cleanly, so the path forward is:
+Landed in this branch (`feat: allocating iter helpers ...`).  See
+`docs/10-bootstrap-progress.md` D-progress-015 for the writeup.
 
-```lyric
-pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
-  val out: List[U] = newList()
-  for x in xs { out.add(f(x)) }
-  return out.toArray()
-}
-```
+### A2. ~~`@stubbable` stub builder synthesis~~ — shipped (bootstrap-grade)
 
-Three things to verify and likely fix:
-
-- `newList[U]()` inside a generic Lyric function should close `List<gtpb_U>`
-  off the enclosing function's GTPB.  Already works for non-generic
-  closure under D-progress-013; needs a smoke test for the generic case.
-- `xs.toArray()` on a `List[T]` where T is a GTPB should return `T[]`,
-  matching `slice[T]`.  TBI dispatch path (D-progress-013) covers this
-  but the closing-substitution must use the enclosing function's GTPB
-  array, not a fresh `MakeGenericMethod`.
-- The `(T) -> U` function-type parameter — `iter.l` already uses these
-  in `forEach` / `fold`, so the lowering exists; just need to confirm
-  the closure-as-callee still works when the closure is called inside
-  a loop building a `List[U]`.
-
-If the generic case lights up cleanly, add `take[T]` (allocates `List<T>`,
-adds the first `n`, returns `toArray()`), `drop[T]` (skip-then-add),
-`concat[T]` (two `List.AddRange` calls), and `filter[T]`.
-
-### A2. `@stubbable` stub builder synthesis
-
-`docs/05-implementation-plan.md` M2.3.  Parser already accepts the
-annotation (`StmtChecker.fs:213` notes it's parsed-but-not-checked);
-codegen never sees it.  Bootstrap-grade target:
-
-For an interface declared
-
-```lyric
-@stubbable
-pub interface Clock { func now(): Instant }
-```
-
-the compiler synthesises (at codegen time, before the user's emit):
-
-```lyric
-pub record ClockStub {
-  // auto-generated stub state
-}
-
-pub func clockStubReturning(now: in Instant): ClockStub { ... }
-pub func clockStubFailing(now: in String): ClockStub { ... }
-```
-
-plus the `impl Clock for ClockStub` glue.  Worked-example #7 in
-`docs/02-worked-examples.md` is the conformance target.
-
-Defer the recording-style API (`recording()` / `verify()`) to Phase 3 —
-needs a runtime call-log type that's harder to synthesise generically.
+Landed in this branch.  Bootstrap covers single-arity stubs with
+constant return values; recording / failing / argument-matching DSL
+deferred.  See `docs/10-bootstrap-progress.md` D-progress-016.
 
 ### A3. LSP server (skeleton)
 

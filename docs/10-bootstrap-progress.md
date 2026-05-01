@@ -588,3 +588,91 @@ All 622 tests pass: Lexer 70, Parser 182, TypeChecker 90, Emitter 280.
   args to a temp; this is mostly defensive (T0085 should catch the
   bad shape at type-check time) but means a future rule loosening
   needs the spill semantics revisited.
+
+
+### D-progress-015: allocating iter helpers (`map` / `filter` / `take` / `drop` / `concat`)
+*stdlib-ergonomics branch.*  `Std.Iter` previously shipped only
+non-allocating helpers because the local-generic-call path's
+`bindLyricToClr` didn't recognise `TyFunction` — a HOF call site like
+`mapInts(xs, { n: Int -> n * 2 })` left `U` unbound and the
+`MakeGenericMethod` reified the callee with `<obj>` for the return-slot
+generic.  The mismatch shipped fine until the callee actually used `U`
+as a payload (`List<U>::Add`); the JIT linked Add to a `List<obj>`
+instance, the IL pushed an `int32`, and the runtime hit a NRE on the
+list's null backing array.
+
+**Fix.**  `Codegen.fs:bindLyricToClr` (local-generic-call variant) now
+mirrors the imported-call shape — `TyFunction`, `TyArray`, `TyNullable`,
+`TyTuple` all bind position-wise like the existing `TyUser` / `TySlice`
+cases.
+
+**Iter additions.**  Five allocating helpers in `compiler/lyric/std/iter.l`
+all built on `List[T]` from `Std.Collections` with `.toArray()` at the
+end:
+
+- `map[T, U](xs, f)`
+- `filter[T](xs, pred)`
+- `take[T](xs, n)`
+- `drop[T](xs, n)`
+- `concat[T](a, b)`
+
+9 end-to-end tests in `IterTests.fs`.  All 631 tests across the four
+suites pass (Lexer 70, Parser 182, TypeChecker 90, Emitter 289).
+
+### D-progress-016: `@stubbable` stub builder synthesis (bootstrap)
+*stdlib-ergonomics branch.*  Phase 2 M2.3.  Bootstrap-grade lowering
+for `@stubbable` interfaces — a sibling record + impl gets synthesised
+in the parser-output pipeline so subsequent type-check / codegen passes
+treat the stub like any other user type.
+
+For
+
+```lyric
+@stubbable
+pub interface Clock { func now(): Int }
+```
+
+the compiler appends:
+
+```lyric
+pub record ClockStub { pub now_value: Int }
+impl Clock for ClockStub { func now(): Int = self.now_value }
+```
+
+Callers construct directly via the record literal:
+
+```lyric
+val s = ClockStub(now_value = 42)
+val c: Clock = s
+```
+
+`Unit`-returning interface methods generate no field; the synthesised
+impl method body is an empty block.  Both `Unit` (the keyword form,
+parsed as `TUnit`) and `Unit` (the bare-name form, parsed as
+`TRef ["Unit"]`) are recognised so the user's preferred spelling works.
+
+**Implementation.**  New file
+`compiler/src/Lyric.Parser/Stubbable.fs` exposes
+`synthesizeItems : Item list -> Item list`.  `Parser.fs:parse` invokes
+it after the existing `hoistInlineMethods` pass so the fully-cooked
+item list reaches the type checker.  No emitter changes — the
+synthesised AST is indistinguishable from a user-authored
+`record + impl` pair.
+
+**Bootstrap-grade scope** (tracked, not blocking):
+
+- Generic interfaces (`@stubbable interface Repo[T] { ... }`) are
+  skipped — generic stubs need generic `impl`s with generic field types.
+- Methods with `Self` in return or param positions are skipped —
+  `Self` would refer back to the synthesised stub, but the synthesis
+  pass runs once over a static interface body without resolving
+  back-references.
+- Async methods are skipped — the bootstrap can't yet synthesise
+  `Task[T]`-shaped fields.  Recording / failing / argument-matching
+  builder DSL (`.returning { ... }` etc. per language reference §10
+  / D016) is also out of scope.  Methods that fall outside the
+  supported subset stay in the interface untouched; if the user
+  actually invokes them via the stub they'll surface a normal
+  "no impl found" diagnostic later.
+
+5 end-to-end tests in `StubbableTests.fs`.
