@@ -790,6 +790,42 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Ldstr, s)
         typeof<string>
 
+    | EInterpolated segments ->
+        // Lower to a `String.Concat(obj[])` call so an arbitrary
+        // segment count works without the binary-Concat overload
+        // ladder.  Build an obj[] of length N, populate each slot,
+        // then call.  Empty segment list → "".
+        match segments with
+        | [] ->
+            il.Emit(OpCodes.Ldstr, "")
+            typeof<string>
+        | _ ->
+            let n = List.length segments
+            emitLdcI4 il n
+            il.Emit(OpCodes.Newarr, typeof<obj>)
+            segments
+            |> List.iteri (fun i seg ->
+                il.Emit(OpCodes.Dup)
+                emitLdcI4 il i
+                let segTy =
+                    match seg with
+                    | ISText (s, _) ->
+                        il.Emit(OpCodes.Ldstr, s)
+                        typeof<string>
+                    | ISExpr e ->
+                        emitExpr ctx e
+                if segTy.IsValueType then il.Emit(OpCodes.Box, segTy)
+                il.Emit(OpCodes.Stelem_Ref))
+            let concatArr =
+                typeof<System.String>
+                    .GetMethod("Concat", [| typeof<obj[]> |])
+            match Option.ofObj concatArr with
+            | Some m ->
+                il.Emit(OpCodes.Call, m)
+                typeof<string>
+            | None ->
+                failwith "String.Concat(object[]) not found"
+
     | ELiteral (LBool b) ->
         emitLdcI4 il (if b then 1 else 0)
         typeof<bool>
@@ -3077,8 +3113,9 @@ and emitAddressOf (ctx: FunctionCtx) (e: Expr) (paramTy: ClrType) : unit =
     //                   take the temp's address (loses round-trip
     //                   semantics, but the type checker rejects this
     //                   shape elsewhere)
-    // Other shapes (`a[i]`, `r.f`) are tractable but not yet wired —
-    // emit a diagnostic and Ldnull-equivalent so codegen continues.
+    //   • array element `xs[i]` — `Ldelema <T>`
+    //   • record field `r.f`     — `Ldflda <FieldInfo>`
+    //   • distinct-type `.value` — `Ldflda` on the backing field
     let il = ctx.IL
     match e.Kind with
     | EPath { Segments = [name] } ->
@@ -3103,10 +3140,53 @@ and emitAddressOf (ctx: FunctionCtx) (e: Expr) (paramTy: ClrType) : unit =
                         (sprintf "argument to byref parameter must be a mutable variable, got '%s'" name)
                         e.Span)
                 il.Emit(OpCodes.Ldnull)
+    | EIndex (recv, [idx]) ->
+        // Array element address: push receiver (must be `T[]`), push
+        // index (Int32), then `Ldelema <T>`.  Only array receivers
+        // are addressable — `Dictionary[K, V]` etc. expose only
+        // `set_Item` and aren't supported here.
+        let recvTy = emitExpr ctx recv
+        if recvTy.IsArray then
+            let _ = emitExpr ctx idx
+            let elemTy =
+                match Option.ofObj (recvTy.GetElementType()) with
+                | Some t -> t
+                | None   -> typeof<obj>
+            il.Emit(OpCodes.Ldelema, elemTy)
+        else
+            ctx.Diags.Add
+                (Lyric.Lexer.Diagnostic.error "E0085"
+                    (sprintf "indexed argument to byref parameter requires an array, got %s" recvTy.Name)
+                    e.Span)
+            il.Emit(OpCodes.Ldnull)
+    | EMember (recv, fieldName) ->
+        // Record / distinct-type field address.
+        let recvTy = emitExpr ctx recv
+        let recordHit =
+            ctx.Records.Values
+            |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
+            |> Option.bind (fun r ->
+                r.Fields |> List.tryFind (fun f -> f.Name = fieldName))
+        match recordHit with
+        | Some f ->
+            il.Emit(OpCodes.Ldflda, f.Field)
+        | None ->
+            let distinctHit =
+                ctx.DistinctTypes.Values
+                |> Seq.tryFind (fun d -> (d.Type :> ClrType) = recvTy)
+            match distinctHit with
+            | Some d when fieldName = "value" ->
+                il.Emit(OpCodes.Ldflda, d.ValueField)
+            | _ ->
+                ctx.Diags.Add
+                    (Lyric.Lexer.Diagnostic.error "E0085"
+                        (sprintf "field '%s' on %s is not addressable" fieldName recvTy.Name)
+                        e.Span)
+                il.Emit(OpCodes.Ldnull)
     | _ ->
         ctx.Diags.Add
             (Lyric.Lexer.Diagnostic.error "E0085"
-                "argument to byref parameter must be a mutable variable"
+                "argument to byref parameter must be a mutable l-value (variable, array element, or field)"
                 e.Span)
         il.Emit(OpCodes.Ldnull)
 

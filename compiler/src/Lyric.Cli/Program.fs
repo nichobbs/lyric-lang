@@ -241,6 +241,329 @@ let private build (sourcePath: string) (outPath: string) (force: bool) : int =
         printErr (sprintf "%s: build failed" sourcePath)
         1
 
+/// Detect the host RID (e.g. `linux-x64`) by inspecting
+/// `System.Runtime.InteropServices.RuntimeInformation`.  Used to
+/// drive `dotnet publish -r <RID>` for native-AOT builds when the
+/// user doesn't pass an explicit `--rid`.
+let private hostRid () : string =
+    let arch =
+        match System.Runtime.InteropServices.RuntimeInformation.OSArchitecture with
+        | System.Runtime.InteropServices.Architecture.X64   -> "x64"
+        | System.Runtime.InteropServices.Architecture.Arm64 -> "arm64"
+        | System.Runtime.InteropServices.Architecture.X86   -> "x86"
+        | other -> other.ToString().ToLowerInvariant()
+    let os =
+        if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform
+              System.Runtime.InteropServices.OSPlatform.Linux then "linux"
+        elif System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform
+                System.Runtime.InteropServices.OSPlatform.OSX then "osx"
+        elif System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform
+                System.Runtime.InteropServices.OSPlatform.Windows then "win"
+        else "linux"
+    sprintf "%s-%s" os arch
+
+/// Run `dotnet publish` against a generated wrapper csproj that
+/// references the user's emitted Lyric DLL + every cached
+/// `Lyric.Stdlib.<X>.dll`, then copy the produced native binary to
+/// `targetBinPath`.  Returns 0 on success.
+///
+/// AOT trims aggressively, so we set `IlcInvariantGlobalization` and
+/// `JsonSerializerIsReflectionEnabledByDefault=true` to keep the
+/// `System.Text.Json` paths Lyric's `Std.Json` uses operational.  If
+/// a user program uses paths that the trimmer rejects, the publish
+/// will surface warnings — for now we accept those as-is rather than
+/// scaffolding a full descriptor file.
+let private publishAot
+        (lyricDll: string)
+        (targetBinPath: string)
+        (rid: string) : int =
+    let lyricDir =
+        safeStr (Path.GetDirectoryName(Path.GetFullPath lyricDll)) "."
+    let lyricName =
+        safeStr (Path.GetFileNameWithoutExtension lyricDll) "out"
+    // Scratch directory for the generated csproj + Program.cs + the
+    // copied DLLs.  Per-invocation; `dotnet publish` writes the
+    // native binary into `<scratch>/bin/Release/<tfm>/<RID>/native/`.
+    let scratch =
+        Path.Combine(Path.GetTempPath(),
+                     "lyric-aot-" + Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory scratch |> ignore
+    let aotName = "lyric_aot_wrapper"
+
+    // Find FSharp.Core next to the CLI binary; required by Lyric.Stdlib.
+    let cliDir = AppContext.BaseDirectory
+    let copyIfExists (src: string) =
+        if File.Exists src then
+            let fname =
+                safeStr (Path.GetFileName src) ""
+            if fname <> "" then
+                File.Copy(src, Path.Combine(scratch, fname), overwrite = true)
+
+    /// Make the emitted Lyric PE consumable by .NET ref packs.  Two
+    /// rewrites happen on the metadata in-place (preserving the
+    /// file size + all offsets):
+    ///
+    /// 1. **AssemblyRef name**: `System.Private.CoreLib` →
+    ///    `System.Runtime` (zero-padded to the same length so the
+    ///    string-heap offsets following it stay valid).  The .NET
+    ///    targeting pack ships `System.Runtime.dll` as a contract
+    ///    facade; `System.Private.CoreLib` is the implementation
+    ///    name and isn't shipped as a reference assembly.
+    ///
+    /// 2. **AssemblyRef version**: 9.0.0.0 → ref-pack version
+    ///    (typically 10.0.0.0 in current SDKs).  Bumps the version
+    ///    so the C# compiler doesn't trip `CS0012` on a missing
+    ///    `System.Runtime, Version=9.0.0.0` reference.  Forward-
+    ///    compatible since runtime types are unchanged.
+    ///
+    /// Both rewrites are idempotent: running the patcher on an
+    /// already-patched file is a no-op.
+    let rewriteCoreLibRefs (path: string) : unit =
+        if not (File.Exists path) then () else
+        let oldName = "System.Private.CoreLib"
+        let newName = "System.Runtime"
+        let oldBytes = System.Text.Encoding.UTF8.GetBytes oldName
+        let newBytes = System.Text.Encoding.UTF8.GetBytes newName
+        let bytes = File.ReadAllBytes path
+        let mutable i = 0
+        let mutable patchedName = false
+        while i <= bytes.Length - oldBytes.Length do
+            let mutable matches = true
+            let mutable k = 0
+            while matches && k < oldBytes.Length do
+                if bytes.[i + k] <> oldBytes.[k] then matches <- false
+                k <- k + 1
+            if matches then
+                for j in 0 .. newBytes.Length - 1 do
+                    bytes.[i + j] <- newBytes.[j]
+                for j in newBytes.Length .. oldBytes.Length - 1 do
+                    bytes.[i + j] <- 0uy
+                patchedName <- true
+                i <- i + oldBytes.Length
+            else
+                i <- i + 1
+        // Use System.Reflection.Metadata to walk the AssemblyRef
+        // table and patch each row's `MajorVersion` field in place.
+        // The PEReader closes its underlying stream when disposed; we
+        // run this AFTER the name-rewrite so both edits are flushed
+        // together at the end.
+        let mutable patchedVersion = false
+        try
+            use ms = new System.IO.MemoryStream(bytes)
+            use peReader =
+                new System.Reflection.PortableExecutable.PEReader(ms)
+            let mdStart = peReader.PEHeaders.MetadataStartOffset
+            let mdSize  = peReader.PEHeaders.MetadataSize
+            // Conservative byte-pattern scan limited to the metadata
+            // block: replace `09 00 00 00 00 00 00 00` (version
+            // 9.0.0.0 little-endian) with `0A 00 00 00 00 00 00 00`
+            // (10.0.0.0).  Only the AssemblyRef table laid 4-USHORT
+            // versions adjacent like this, so a stray match in some
+            // other table row is extremely unlikely.
+            let v9 = [| 9uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy |]
+            let mutable j = mdStart
+            let mdEnd = mdStart + mdSize - v9.Length
+            while j <= mdEnd do
+                let mutable matches = true
+                let mutable k = 0
+                while matches && k < v9.Length do
+                    if bytes.[j + k] <> v9.[k] then matches <- false
+                    k <- k + 1
+                if matches then
+                    bytes.[j] <- 10uy
+                    patchedVersion <- true
+                    j <- j + v9.Length
+                else
+                    j <- j + 1
+        with _ -> ()
+        if patchedName || patchedVersion then
+            File.WriteAllBytes(path, bytes)
+
+    copyIfExists lyricDll
+    copyIfExists (Path.Combine(cliDir, "Lyric.Stdlib.dll"))
+    copyIfExists (Path.Combine(cliDir, "FSharp.Core.dll"))
+    for p in Lyric.Emitter.Emitter.stdlibAssemblyPaths () do
+        copyIfExists p
+
+    // Rewrite the `System.Private.CoreLib` reference name in every
+    // Lyric-emitted DLL we copied — the user's main PE plus each
+    // `Lyric.Stdlib.<X>.dll` from the stdlib precompile cache.
+    // `Lyric.Stdlib.dll` (built by F#) and `FSharp.Core.dll` already
+    // reference `System.Runtime`, so the no-match path is a fast
+    // scan; the patcher is idempotent.
+    for f in Directory.GetFiles(scratch, "*.dll") do
+        rewriteCoreLibRefs f
+
+    // Generate a tiny Program.cs that calls the user program's static
+    // `Main(string[])` entrypoint via reflection.  Direct C# binding
+    // (e.g. `Aot1.Program.Main(args)`) trips `CS0012` because the
+    // user's Lyric-emitted PE references `System.Private.CoreLib`
+    // directly while the C# compiler's targeting pack references
+    // `System.Runtime`.  Reflection sidesteps the static-type
+    // dependency entirely; AOT's trimmer keeps the type root via
+    // `DynamicDependency`.
+    //
+    // We sniff the entry type from the Lyric DLL's metadata so the
+    // wrapper can hard-code the type name into the `DynamicDependency`
+    // attribute (saving the trimmer from rooting an arbitrary type).
+    let asm = System.Reflection.Assembly.LoadFrom lyricDll
+    let mainCandidate =
+        asm.GetTypes()
+        |> Array.tryPick (fun t ->
+            if not (t.Name = "Program") then None
+            else
+                let m = t.GetMethod("Main", [| typeof<string[]> |])
+                match Option.ofObj m with
+                | Some _ -> Some t.FullName
+                | None   -> None)
+    let mainTypeFullName : string =
+        match mainCandidate with
+        | Some n ->
+            match Option.ofObj n with
+            | Some s -> s
+            | None   -> failwithf "AOT: anonymous Program type in %s" lyricDll
+        | None ->
+            failwithf "AOT: no `Program.Main(string[])` found in %s" lyricDll
+    let lyricAssemblyName =
+        match Option.ofObj (asm.GetName().Name) with
+        | Some s -> s
+        | None   -> lyricName
+    // Generate a Program.cs that statically calls into the Lyric
+    // entrypoint.  We need a static reference so AOT can root the
+    // method (Assembly.LoadFrom is unsupported under PublishAot).
+    // The C# compiler's CS0012 on `System.Private.CoreLib` is
+    // suppressed via `<NoWarn>` plus `<ResolveAssemblyReferenceUseUnresolvedAssemblies>`
+    // — see the csproj.
+    let programCsPath = Path.Combine(scratch, "Program.cs")
+    let programCs =
+        "// Generated AOT wrapper — calls into the Lyric-emitted entrypoint.\n"
+        + "internal static class Program {\n"
+        + "    public static int Main(string[] args) {\n"
+        + "        " + mainTypeFullName + ".Main(args);\n"
+        + "        return 0;\n"
+        + "    }\n"
+        + "}\n"
+    File.WriteAllText(programCsPath, programCs)
+    let _ = lyricAssemblyName  // currently unused; AOT static path
+
+    // Generate the csproj.  References every DLL in the scratch dir.
+    let dlls =
+        Directory.GetFiles(scratch, "*.dll")
+        |> Array.map Path.GetFileName
+        |> Array.choose Option.ofObj
+    // Reference each Lyric DLL statically so the C# compiler binds
+    // against them and AOT can trace + root the entrypoint.  Direct
+    // references trip `CS0012` because the Lyric-emitted PE references
+    // `System.Private.CoreLib` directly while the C# compiler's
+    // targeting pack exposes the BCL via `System.Runtime`.  Suppress
+    // the warning + force unresolved-assembly tolerance.
+    let refLine (f: string) : string =
+        let stem =
+            match Option.ofObj (Path.GetFileNameWithoutExtension f) with
+            | Some s -> s
+            | None   -> ""
+        "    <Reference Include=\"" + stem + "\"><HintPath>" + f + "</HintPath></Reference>"
+    let referenceLines =
+        dlls
+        |> Array.map refLine
+        |> String.concat "\n"
+    // The byte-rewriter above bumps every AssemblyRef version
+    // pattern from `9.0.0.0` to `10.0.0.0` to match what the .NET 10
+    // ref pack ships.  Target net10.0 here so the C# compiler binds
+    // against the same version.
+    let tfm = "net10.0"
+    let csproj =
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+        + "  <PropertyGroup>\n"
+        + "    <OutputType>Exe</OutputType>\n"
+        + "    <TargetFramework>" + tfm + "</TargetFramework>\n"
+        + "    <PublishAot>true</PublishAot>\n"
+        + "    <InvariantGlobalization>true</InvariantGlobalization>\n"
+        + "    <RootNamespace>LyricAot</RootNamespace>\n"
+        + "    <AssemblyName>" + aotName + "</AssemblyName>\n"
+        + "    <RuntimeIdentifier>" + rid + "</RuntimeIdentifier>\n"
+        + "    <SelfContained>true</SelfContained>\n"
+        + "    <!-- The Lyric-emitted PE references `System.Private.CoreLib`\n"
+        + "         directly; the C# compiler's targeting pack exposes the\n"
+        + "         BCL via `System.Runtime`.  Suppress the resulting\n"
+        + "         CS0012 + IL warnings; the runtime types resolve fine. -->\n"
+        + "    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>\n"
+        + "    <NoWarn>$(NoWarn);CS0012;CS1701;CS1702;IL2026;IL3050;IL3000;IL2104</NoWarn>\n"
+        + "    <ResolveAssemblyReferenceIgnoreOverrideWarning>true</ResolveAssemblyReferenceIgnoreOverrideWarning>\n"
+        + "  </PropertyGroup>\n"
+        + "  <PropertyGroup>\n"
+        + "    <!-- Std.Json uses System.Text.Json reflection paths; keep them. -->\n"
+        + "    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>\n"
+        + "  </PropertyGroup>\n"
+        + "  <ItemGroup>\n"
+        + referenceLines + "\n"
+        + "  </ItemGroup>\n"
+        + "</Project>\n"
+    let csprojPath = Path.Combine(scratch, aotName + ".csproj")
+    File.WriteAllText(csprojPath, csproj)
+
+    // Run `dotnet publish`.  Stream stdout / stderr through so the
+    // user sees AOT warnings live.
+    printfn "AOT: publishing for %s ..." rid
+    let psi = Diagnostics.ProcessStartInfo()
+    psi.FileName <- "dotnet"
+    psi.ArgumentList.Add "publish"
+    psi.ArgumentList.Add csprojPath
+    psi.ArgumentList.Add "-c"
+    psi.ArgumentList.Add "Release"
+    psi.ArgumentList.Add "-r"
+    psi.ArgumentList.Add rid
+    psi.ArgumentList.Add "--nologo"
+    psi.UseShellExecute <- false
+    let proc =
+        match Option.ofObj (Diagnostics.Process.Start psi) with
+        | Some p -> p
+        | None   ->
+            printErr "AOT: failed to start dotnet publish"
+            exit 1
+    use _ = proc
+    proc.WaitForExit()
+    if proc.ExitCode <> 0 then
+        printErr (sprintf "AOT: dotnet publish exited %d" proc.ExitCode)
+        printErr "AOT: bootstrap-grade — known to fail when the Lyric-emitted PE's"
+        printErr "AOT: CoreLib reference doesn't survive the .NET ref-pack version bump."
+        printErr "AOT: tracked as a follow-up; non-AOT builds continue to work."
+        proc.ExitCode
+    else
+        // Find the produced native binary.  AOT puts it at
+        // `<scratch>/bin/Release/<tfm>/<rid>/publish/<aotName>[.exe]`.
+        let publishDir =
+            Path.Combine(scratch, "bin", "Release", tfm, rid, "publish")
+        let exeSuffix =
+            if rid.StartsWith "win" then ".exe" else ""
+        let producedBin =
+            Path.Combine(publishDir, aotName + exeSuffix)
+        if not (File.Exists producedBin) then
+            printErr (sprintf "AOT: expected native binary not found at %s" producedBin)
+            1
+        else
+            // Copy the binary to the user's requested output path.
+            let finalDir =
+                safeStr (Path.GetDirectoryName(Path.GetFullPath targetBinPath)) "."
+            Directory.CreateDirectory finalDir |> ignore
+            File.Copy(producedBin, targetBinPath, overwrite = true)
+            // Make the binary executable on POSIX.
+            if not (rid.StartsWith "win") then
+                try
+                    let psi = Diagnostics.ProcessStartInfo()
+                    psi.FileName <- "chmod"
+                    psi.ArgumentList.Add "+x"
+                    psi.ArgumentList.Add targetBinPath
+                    psi.UseShellExecute <- false
+                    psi.RedirectStandardOutput <- true
+                    psi.RedirectStandardError <- true
+                    match Option.ofObj (Diagnostics.Process.Start psi) with
+                    | Some p -> p.WaitForExit()
+                    | None   -> ()
+                with _ -> ()
+            printfn "AOT: produced %s" targetBinPath
+            0
+
 /// Build to a temp directory and `dotnet exec` the produced PE.
 let private run (sourcePath: string) (args: string array) : int =
     let tmp =
@@ -275,12 +598,16 @@ let private run (sourcePath: string) (args: string array) : int =
 
 let private printUsage () : unit =
     printErr "Usage:"
-    printErr "  lyric build <source.l> [-o <output.dll>] [--force]"
+    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric --version"
     printErr ""
     printErr "  build is incremental — re-running with the same source +"
     printErr "  stdlib closure skips the emit; pass --force to rebuild."
+    printErr ""
+    printErr "  --aot               compile to a native, self-contained binary"
+    printErr "                      (passes through dotnet publish)."
+    printErr "  --rid <RID>         target RID for AOT (default: host RID)."
 
 [<EntryPoint>]
 let main (argv: string array) : int =
@@ -295,12 +622,20 @@ let main (argv: string array) : int =
     | "build" :: rest ->
         let mutable force = false
         let mutable explicitOut : string option = None
+        let mutable aot = false
+        let mutable rid : string option = None
         let mutable positional : string list = []
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
             match cursor with
             | "--force" :: tail ->
                 force <- true
+                cursor <- tail
+            | "--aot" :: tail ->
+                aot <- true
+                cursor <- tail
+            | "--rid" :: r :: tail ->
+                rid <- Some r
                 cursor <- tail
             | "-o" :: out :: tail ->
                 explicitOut <- Some out
@@ -315,17 +650,42 @@ let main (argv: string array) : int =
             printUsage ()
             1
         | sourcePath :: _ ->
-            let outPath =
-                match explicitOut with
-                | Some o -> o
-                | None ->
-                    // Default: <source-dir>/<basename>.dll
+            let dllOutPath =
+                match explicitOut, aot with
+                | Some o, false -> o
+                | Some o, true ->
+                    // For AOT, treat the explicit output as the
+                    // *native binary*; the intermediate DLL goes to a
+                    // sibling .dll.
+                    let dir =
+                        safeStr (Path.GetDirectoryName(Path.GetFullPath o)) "."
+                    let stem =
+                        safeStr (Path.GetFileNameWithoutExtension o) "out"
+                    Path.Combine(dir, stem + ".dll")
+                | None, _ ->
                     let dir =
                         safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
-            build sourcePath outPath force
+            let buildExit = build sourcePath dllOutPath force
+            if buildExit <> 0 then buildExit
+            elif not aot then 0
+            else
+                let nativePath =
+                    match explicitOut with
+                    | Some o -> o
+                    | None ->
+                        let dir =
+                            safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
+                        let name =
+                            safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
+                        Path.Combine(dir, name)
+                let chosenRid =
+                    match rid with
+                    | Some r -> r
+                    | None   -> hostRid ()
+                publishAot dllOutPath nativePath chosenRid
     | "run" :: rest ->
         match rest with
         | [] ->

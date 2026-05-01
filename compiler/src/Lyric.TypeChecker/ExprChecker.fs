@@ -419,6 +419,15 @@ let rec inferExpr
         // expression results, literals, etc. that the codegen can't
         // address.  Bug if T0085 fires on a syntactically-valid
         // mutable target the codegen actually accepts (rare).
+        let isAddressableLValue (e: Expr) : bool =
+            match e.Kind with
+            // Named local / param.
+            | EPath { Segments = [_] } -> true
+            // Array element `xs[i]` (single index).
+            | EIndex (_, [_]) -> true
+            // Record / distinct-type field `r.f`.
+            | EMember (_, _) -> true
+            | _ -> false
         let validateModeArg (p: ResolvedParam) (arg: CallArg) =
             match p.Mode with
             | PMOut | PMInout ->
@@ -426,11 +435,9 @@ let rec inferExpr
                     match arg with
                     | CAPositional e -> e
                     | CANamed (_, e, _) -> e
-                match payload.Kind with
-                | EPath { Segments = [_] } -> ()
-                | _ ->
+                if not (isAddressableLValue payload) then
                     err diags "T0085"
-                        (sprintf "argument to %s parameter '%s' must be a mutable variable, not an expression result"
+                        (sprintf "argument to %s parameter '%s' must be a mutable l-value (variable, array element, or field)"
                             (match p.Mode with PMOut -> "out" | _ -> "inout") p.Name)
                         payload.Span
             | _ -> ()
