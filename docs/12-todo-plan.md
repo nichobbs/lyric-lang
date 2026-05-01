@@ -248,17 +248,43 @@ real use case.
 
 ### C4 — reflection-driven FFI
 
-Today's FFI requires `extern type` + `@externTarget` per function.  A
-reflection-driven path (`extern type Url = "System.Uri"` then call any
-method without a per-method declaration) needs:
+Today's FFI requires a per-method `@externTarget` declaration.  Auto-
+FFI would let the codegen resolve `xs.add(item)` against the BCL type
+directly, dropping the boilerplate.
 
-- A way to surface BCL members as if they were Lyric-side functions.
-- Out-parameter / Span / extension-method semantics decided.
-- A trim-friendly story for AOT (reflection trimming would otherwise
-  remove uncited members).
+**Decision (D-progress-026)**: ship aggressive auto-FFI with phased
+resolver complexity.
 
-**Decision needed**: how aggressive should the reflection layer be,
-and where does the AOT-vs-flexibility tradeoff land?
+The reflection happens at Lyric *compile time* — `System.Reflection`
+on the F#-side codegen looks up `List<T>::Add`, the emitter writes a
+fully-resolved `Callvirt` MethodRef into the user's PE.  AOT
+trimming sees the static reference and roots it the same way it
+roots a `@externTarget`-declared method.  The Cecil contract-rewrite
+already handles the assembly-identity story.
+
+**Phased rollout.**
+
+- Phase 1 — strict match.  Resolve a name only when there's exactly
+  one viable overload by `(name, arg-arity, exact-type-match)`.
+  Ambiguous calls still need `@externTarget` to disambiguate.
+- Phase 2 — score-based matching with principled coercion rules.
+  Each Lyric→CLR coercion (Int↔int/long/double, String↔string,
+  records↔class refs, unboxing/boxing, widening, nullable conversion)
+  contributes a "distance" score; the resolver picks the lowest-cost
+  match.  Tie → ambiguity diagnostic listing the candidates.
+- Phase 3 — special shapes: out-params (already in via D-progress-014),
+  by-ref structs, `Span<T>` / `ReadOnlySpan<T>`, default args,
+  `params T[]`, extension methods, explicit interface
+  implementations.
+
+**Rationale.**  AOT-friendly (compile-time-resolved refs, no runtime
+reflection in user PE), big ergonomic win for the common case, and
+the explicit `@externTarget` route stays available as the escape
+hatch when the resolver can't disambiguate.
+
+**Out of scope.**  Wrong-overload silent failures need a "show all
+viable candidates" diagnostic mode and IDE completion against the
+auto-discovered surface — both Phase 4 work.
 
 ### C5 — stdlib expansion
 
