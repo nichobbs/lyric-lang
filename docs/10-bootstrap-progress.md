@@ -1696,6 +1696,34 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-040: C2 Phase B for impl methods (body awaits + suspend/resume)
+*claude/c2-async-implementation-ZGU95 branch.*  Extends
+D-progress-038 (Phase A async impl methods) with the full
+suspend/resume protocol from D-progress-034 (Phase B).  An
+`async impl` method whose body contains awaits at safe
+top-level positions now lowers to a state machine identical in
+shape to free-standing Phase B funcs, with the `("self",
+recordTy)` prepend already established in D-progress-038.
+
+The Pass B.5 path now mirrors Pass B's three-way dispatch:
+Phase A (await-free body), Phase B (body awaits, locals
+promoted via existing helper), or M1.4 fallback.  Both paths
+share the `buildParamSpecs` helper that prepends `self`.
+
+One new test (`phaseB_async_impl_method_with_await`) — an
+impl method that `await`s a free-standing async func and then
+prints, validating that:
+
+- The kickoff is an instance method on the record.
+- The SM stores `this` (the record) into its `self` field.
+- The SM's `MoveNext` runs the body with `ESelf` resolving via
+  `SmFields["self"]` and the `await` triggering the
+  suspend/resume IL pattern.
+
+All 351 emitter tests pass (was 350; +1 new).
+
+---
+
 ### D-progress-039: Std.Time expansion — comparison + duration arithmetic + ISO-8601 formatting
 *claude/c2-async-implementation-ZGU95 branch.*  Closes a deferred
 follow-up from D-progress-027 (initial Std.Time C5 / Tier 1.3
@@ -1897,8 +1925,9 @@ The infrastructure pieces touched by C2:
 | 11. `for` loops + nested-local promotion through loop bodies | Phase B++ |
 | 12. `try`/`catch` / `defer` regions that span an `await` | Phase B++ |
 | 13. Async impl methods (Phase A — await-free body) | **Shipped (D-progress-038)** |
-| 14. Async impl methods (Phase B — body awaits) + async generics | Phase B++ |
-| 15. `CancellationToken` propagation | Phase C |
+| 14. Async impl methods (Phase B — body awaits) | **Shipped (D-progress-040)** |
+| 15. Async generics | Phase B++ |
+| 16. `CancellationToken` propagation | Phase C |
 
 Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
 lifetimes) are gated on Phase C landing.  Tier 6 items (CST

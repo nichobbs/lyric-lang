@@ -225,6 +225,29 @@ func main(): Unit {
 """,
     "one\ntwo\nother"
 
+    "phaseB_async_impl_method_with_await",
+    // Phase B impl method — async instance method whose body
+    // contains an `await`.  The kickoff lives on the record;
+    // the SM has a `self` field plus an awaiter slot for the
+    // suspend/resume protocol.  Validates D-progress-040 (Phase
+    // B for impl methods).
+    """
+package E14
+record Counter { v: Int }
+async func inner(): Unit { println("inner") }
+interface Tagger { async func tag(): Unit }
+impl Tagger for Counter {
+  async func tag(): Unit {
+    await inner()
+    println("after")
+  }
+}
+func main(): Unit {
+  await Counter(v = 1).tag()
+}
+""",
+    "inner\nafter"
+
     "phaseB_async_impl_method",
     // Async impl method (Phase A on an instance method).  The
     // kickoff lives on the user's record (instance method), the
