@@ -327,12 +327,53 @@ across all RID targets.  Tracked as a follow-up.
 
 ### C6 — wire blocks (compile-time DI)
 
-Significant feature.  Parser accepts `wire { ... }` already; semantics
-are not implemented.  Needs a graph algorithm + lifetime checker.
-Design sketched in `docs/01-language-reference.md` §11.
+Parser accepts `wire { ... }` already; semantics not implemented.
 
-**Decision needed**: full Phase 3 commitment or partial bootstrap
-(no scopes, no lifetime checker, just the basic resolution)?
+**Decision (D-progress-028)**: ship bootstrap-grade — singleton +
+`@provided` + multi-wire — defer everything else from §10 to follow-
+ups.
+
+**What ships.**
+- `singleton name: T = init` — one instance per wire, constructed in
+  topological order at `bootstrap` time.
+- `@provided name: T` — caller supplies via `bootstrap(...)` args.
+- `expose name` — name appears as a field on the wire's bootstrap-
+  result record.
+- Multi-wire — one program can declare `ProductionWire` + `TestWire`
+  side-by-side; each gets its own `<WireName>.bootstrap(...)`
+  factory + result record.
+- The compiler topo-sorts the dependency graph and reports a clear
+  diagnostic on cycles.
+
+**Implementation outline.**  A new pre-emit pass over `IWire` items
+synthesises:
+1. A record `<WireName>` with one field per `expose`d component.
+2. A static factory `<WireName>.bootstrap(provided: ...) : <WireName>`
+   whose body constructs every singleton in topo order, then returns
+   the record literal with the `expose`d names as fields.
+3. The factory's IL just chains the `init` expressions (already
+   parsed as Lyric `Expr`) using the prior singletons as in-scope
+   bindings.
+
+**Deferred follow-ups (full §10 / option (a) coverage).**
+- **Per-`scoped` lifetimes** — `scoped` declarations attached to a
+  `scope_kind` (Request, Transaction, Tenant, …).  Needs an
+  `AsyncLocal<T>` propagation story.  Coupled to C2's real
+  async state machines; threading scope through the blocking shim
+  would leak when the shim is replaced.
+- **Lifetime checker** — reject singleton-depends-on-scoped at
+  compile time (Dagger-style).  Trivial when only singletons exist
+  (the bootstrap version), real graph-coloring problem once scopes
+  land.
+- **`@bind`-style multiple-impls-of-an-interface** registration.
+- **Async-local scope tracking** for HTTP frameworks /
+  database integrations.  Gated on C2.
+
+**Rationale.**  (b) covers the test-wire pattern from worked-example
+#7 (the `@stubbable` story is only useful with wire support) and the
+production-singleton case.  Per-Request scopes ride along when C2
+lands.  Cuts ~70% of the implementation cost of (a) for ~80% of the
+practical value.
 
 ### C7 — formatter (`lyric fmt`)
 
