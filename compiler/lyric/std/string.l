@@ -92,12 +92,9 @@ pub func substring(s: in String, start: in Int): String
   return s.substring(start)
 }
 
-// Return the substring bounded by start and length.  Named
-// `substringOfLength` (not a `substring` overload) because the
-// bootstrap codegen keys methods by name only — function overloading
-// by parameter shape is a Phase 2 item.
+// Return the substring bounded by start and character count.
 @pure
-pub func substringOfLength(s: in String, start: in Int, count: in Int): String
+pub func substring(s: in String, start: in Int, count: in Int): String
   requires: start >= 0
   requires: count >= 0
   requires: start + count <= s.length
@@ -128,13 +125,13 @@ pub func toLower(s: in String): String {
 // Repeat a string n times.
 @pure
 pub func repeat(s: in String, count: in Int): String {
-  var acc = ""
+  var result = ""
   var i = 0
   while i < count {
-    acc = acc + s
+    result = result + s
     i += 1
   }
-  return acc
+  return result
 }
 
 // Replace all occurrences of a substring with another.

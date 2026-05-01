@@ -63,6 +63,30 @@ func combine(a: Int, b: in Int): Int = a + b
 func main(): Unit { println(combine(40, 2)) }
 """,
     "42"
+
+    // `result` is a contextual keyword — reserved in `ensures:` clauses
+    // but usable as an ordinary local-variable name everywhere else.
+    "result_as_local_variable",
+    """
+package SS6
+func join(a: in String, b: in String): String {
+  var result = a + "-" + b
+  return result
+}
+func main(): Unit {
+  println(join("foo", "bar"))
+}
+""",
+    "foo-bar"
+
+    // `result` is a valid function-parameter name.
+    "result_as_param_name",
+    """
+package SS7
+func echo(result: in String): String = result
+func main(): Unit { println(echo("ok")) }
+""",
+    "ok"
 ]
 
 let tests =

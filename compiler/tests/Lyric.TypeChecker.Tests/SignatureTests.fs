@@ -99,9 +99,16 @@ let tests =
                 pub func c(): Bool = true
             """
             let r = parseAndCheck src
-            Expect.equal r.Signatures.Count 3 "three signatures"
+            // Each function has both a bare-name key and an arity-qualified "name/N" key.
+            let bareKeys =
+                r.Signatures
+                |> Map.toSeq
+                |> Seq.filter (fun (k, _) -> not (k.Contains "/"))
+                |> Seq.length
+            Expect.equal bareKeys 3 "three bare-name signatures"
             for n in ["a"; "b"; "c"] do
                 Expect.isTrue (r.Signatures.ContainsKey n) (sprintf "%s present" n)
+                Expect.isTrue (r.Signatures.ContainsKey (n + "/0")) (sprintf "%s/0 present" n)
         }
 
         test "where clause referencing unknown type parameter triggers T0050" {

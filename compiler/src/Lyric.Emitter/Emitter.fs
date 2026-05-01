@@ -1624,13 +1624,31 @@ let private emitAssembly
                 for it in artifact.Source.Items do
                     match it.Kind with
                     | IFunc fn ->
-                        match Option.ofObj (progTy.GetMethod fn.Name),
-                              Map.tryFind fn.Name artifact.Signatures with
+                        // Use GetMethods + filter by name and param count so that
+                        // same-name overloads don't cause AmbiguousMatchException.
+                        let arity = fn.Params.Length
+                        let miOpt =
+                            progTy.GetMethods()
+                            |> Array.tryFind (fun m ->
+                                m.Name = fn.Name
+                                && m.GetParameters().Length = arity)
+                        let arityKey = fn.Name + "/" + string arity
+                        match miOpt, Map.tryFind arityKey artifact.Signatures with
                         | Some mi, Some sg ->
-                            importedFuncTable.[fn.Name] <-
+                            let info =
                                 { Records.ImportedFuncInfo.Method = mi
                                   Records.ImportedFuncInfo.Sig    = sg }
-                        | _ -> ()
+                            importedFuncTable.[fn.Name]  <- info
+                            importedFuncTable.[arityKey] <- info
+                        | _ ->
+                            match miOpt, Map.tryFind fn.Name artifact.Signatures with
+                            | Some mi, Some sg ->
+                                let info =
+                                    { Records.ImportedFuncInfo.Method = mi
+                                      Records.ImportedFuncInfo.Sig    = sg }
+                                importedFuncTable.[fn.Name]  <- info
+                                importedFuncTable.[arityKey] <- info
+                            | _ -> ()
                     | _ -> ()
 
         for rd in recordItems sf do
@@ -1764,21 +1782,31 @@ let private emitAssembly
                 typeof<obj>)
 
         // Pass A — define every header.
+        // Keys: bare `name` (last-wins, for backward-compat call-site
+        // lookup without arity info) AND `name/N` (arity-qualified, so
+        // Pass B always finds the right MethodBuilder when two functions
+        // share a name but differ in parameter count).
         let methodTable = Dictionary<string, MethodBuilder>()
         let funcSigsTable = Dictionary<string, ResolvedSignature>()
         for fn in funcs do
-            match Map.tryFind fn.Name sigs with
-            | Some sg ->
-                let mb = defineMethodHeader programTy lookup fn sg
-                methodTable.[fn.Name] <- mb
-                funcSigsTable.[fn.Name] <- sg
-            | None ->
-                let synthSig : ResolvedSignature =
-                    { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
-                      IsAsync = false; Span = fn.Span }
-                let mb = defineMethodHeader programTy lookup fn synthSig
-                funcSigsTable.[fn.Name] <- synthSig
-                methodTable.[fn.Name] <- mb
+            // Prefer arity-qualified key so overloaded functions each get
+            // the right resolved signature; fall back to bare name for
+            // modules that don't have overloads.
+            let arityKey = fn.Name + "/" + string fn.Params.Length
+            let sg =
+                match Map.tryFind arityKey sigs with
+                | Some s -> s
+                | None ->
+                    match Map.tryFind fn.Name sigs with
+                    | Some s -> s
+                    | None ->
+                        { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
+                          IsAsync = false; Span = fn.Span }
+            let mb = defineMethodHeader programTy lookup fn sg
+            methodTable.[fn.Name]  <- mb
+            methodTable.[arityKey] <- mb
+            funcSigsTable.[fn.Name]  <- sg
+            funcSigsTable.[arityKey] <- sg
 
         // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
         // attach interface methods to Bar's TypeBuilder, both as
@@ -1894,16 +1922,26 @@ let private emitAssembly
                 // The type checker has already surfaced a diagnostic.
                 ()
 
-        // Pass B — emit bodies (free-standing funcs).
+        // Pass B — emit bodies (free-standing funcs). Look up the body
+        // target by arity-qualified key first so overloaded functions
+        // each get their own MethodBuilder body.
         for fn in funcs do
+            let arityKey = fn.Name + "/" + string fn.Params.Length
             let sg =
-                match Map.tryFind fn.Name sigs with
+                match Map.tryFind arityKey sigs with
                 | Some s -> s
                 | None ->
-                    { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
-                      IsAsync = false; Span = fn.Span }
+                    match Map.tryFind fn.Name sigs with
+                    | Some s -> s
+                    | None ->
+                        { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
+                          IsAsync = false; Span = fn.Span }
+            let mb =
+                match methodTable.TryGetValue arityKey with
+                | true, m -> m
+                | _       -> methodTable.[fn.Name]
             emitFunctionBody
-                methodTable.[fn.Name] fn sg lookup
+                mb fn sg lookup
                 methodTable funcSigsTable recordTable enumTable enumCases
                 unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup

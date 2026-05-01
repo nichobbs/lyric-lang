@@ -490,19 +490,35 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         match items with
         | [] -> typeof<obj[]>
         | first :: _ -> (peekExprType ctx first).MakeArrayType()
-    | ECall ({ Kind = EPath { Segments = [name] } }, _) ->
+    | ECall ({ Kind = EPath { Segments = [name] } }, args) ->
         // Calls to a known func / delegate-typed local return a
         // predictable type that inference upstream needs to see.
-        match ctx.Funcs.TryGetValue name with
-        | true, mb ->
+        // Prefer arity-qualified key for overloaded functions.
+        let arityKey = name + "/" + string args.Length
+        let mbOpt =
+            match ctx.Funcs.TryGetValue arityKey with
+            | true, m -> Some m
+            | _ ->
+                match ctx.Funcs.TryGetValue name with
+                | true, m -> Some m
+                | _ -> None
+        match mbOpt with
+        | Some mb ->
             try mb.ReturnType
             with _ -> typeof<obj>
-        | _ ->
-            match ctx.ImportedFuncs.TryGetValue name with
-            | true, info ->
+        | None ->
+            let importedInfoOpt =
+                match ctx.ImportedFuncs.TryGetValue (name + "/" + string args.Length) with
+                | true, info -> Some info
+                | _ ->
+                    match ctx.ImportedFuncs.TryGetValue name with
+                    | true, info -> Some info
+                    | _ -> None
+            match importedInfoOpt with
+            | Some info ->
                 try info.Method.ReturnType
                 with _ -> typeof<obj>
-            | _ ->
+            | None ->
                 // Delegate-typed local / param: invoke returns the
                 // last generic arg (Func<…,R>) or void (Action).
                 let delTy =
@@ -823,14 +839,31 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         returnedTy
 
     // ---- result (in ensures clauses) ----------------------------------
+    // `result` is a contextual keyword: inside `ensures:` it names the
+    // function's return value (ResultLocal); everywhere else it is an
+    // ordinary local/parameter name.  To tell the cases apart, prefer
+    // a user-declared local or parameter named "result" — if one is in
+    // scope it was explicitly bound and should shadow the magic meaning.
+    // Only fall back to ResultLocal when no such binding exists, which
+    // in practice means we are in an ensures post-condition.
 
     | EResult ->
-        match ctx.ResultLocal with
-        | Some loc ->
-            il.Emit(OpCodes.Ldloc, loc)
-            loc.LocalType
+        match FunctionCtx.tryLookup ctx "result" with
+        | Some lb ->
+            il.Emit(OpCodes.Ldloc, lb)
+            lb.LocalType
         | None ->
-            failwith "E15 codegen: 'result' used outside of an ensures clause"
+            match ctx.Params.TryGetValue "result" with
+            | true, (idx, pty) ->
+                il.Emit(OpCodes.Ldarg, idx)
+                pty
+            | _ ->
+                match ctx.ResultLocal with
+                | Some loc ->
+                    il.Emit(OpCodes.Ldloc, loc)
+                    loc.LocalType
+                | None ->
+                    failwith "E15 codegen: 'result' used outside an ensures clause and no local/param named 'result'"
 
     // ---- old() — Phase 4 work, rejected here --------------------------
 
@@ -1738,8 +1771,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // ---- user-defined call --------------------------------------------
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
-        when ctx.Funcs.ContainsKey name ->
-        let mb = ctx.Funcs.[name]
+        when ctx.Funcs.ContainsKey name
+          || ctx.Funcs.ContainsKey (name + "/" + string args.Length) ->
+        // Prefer the arity-qualified key so overloaded functions resolve
+        // to the right overload; fall back to bare name for single-def
+        // functions registered without the arity suffix.
+        let arityKey = name + "/" + string args.Length
+        let mb =
+            match ctx.Funcs.TryGetValue arityKey with
+            | true, m -> m
+            | _       -> ctx.Funcs.[name]
         let paramTypes =
             mb.GetParameters() |> Array.map (fun p -> p.ParameterType)
         let isGeneric = mb.IsGenericMethodDefinition
@@ -1788,7 +1829,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // trust `MethodBuilder.GetParameters()` before the host
             // type is sealed, so type-arg inference works at the
             // Lyric-signature level instead.
-            let sg = ctx.FuncSigs.[name]
+            let sgKey =
+                match ctx.FuncSigs.TryGetValue(name + "/" + string args.Length) with
+                | true, _ -> name + "/" + string args.Length
+                | _ -> name
+            let sg = ctx.FuncSigs.[sgKey]
             let genericNames = sg.Generics
             let bindings : ClrType option array =
                 Array.create genericNames.Length None
@@ -1974,8 +2019,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // Generic imported methods follow the same shape as local
             // generic methods: walk the Lyric signature, observe arg
             // CLR types, then `MakeGenericMethod`.
-            match ctx.ImportedFuncs.TryGetValue name with
-            | true, info ->
+            // Prefer arity-qualified key so overloaded imports resolve correctly.
+            let importedInfoOpt =
+                match ctx.ImportedFuncs.TryGetValue (name + "/" + string args.Length) with
+                | true, info -> Some info
+                | _ ->
+                    match ctx.ImportedFuncs.TryGetValue name with
+                    | true, info -> Some info
+                    | _ -> None
+            match importedInfoOpt with
+            | Some info ->
                 let mi = info.Method
                 let sg = info.Sig
                 if sg.Generics.IsEmpty then
@@ -2604,14 +2657,24 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         failwithf "E3 codegen does not yet handle this local pattern: %A" s.Kind
 
     | SAssign (target, AssEq, value) ->
-        match target.Kind with
-        | EPath { Segments = [name] } ->
+        // `result` as an assignment target is the contextual keyword for
+        // the return value in ensures clauses, but is also a valid local
+        // variable name.  Map EResult to "result" so that
+        // `var result = …; result = result + x` compiles like any other
+        // local-variable assignment.
+        let targetName =
+            match target.Kind with
+            | EPath { Segments = [name] } -> Some name
+            | EResult -> Some "result"
+            | _ -> None
+        match targetName with
+        | Some name ->
             match FunctionCtx.tryLookup ctx name with
             | Some lb ->
                 let _ = emitExpr ctx value
                 il.Emit(OpCodes.Stloc, lb)
             | None -> failwithf "E3 codegen: assignment to unknown name '%s'" name
-        | _ ->
+        | None ->
             failwithf "E3 codegen: assignment target not yet supported: %A" target.Kind
 
     | SAssign (target, op, value) ->

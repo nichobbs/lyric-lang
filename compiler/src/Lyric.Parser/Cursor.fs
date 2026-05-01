@@ -98,3 +98,21 @@ let tryEatIdent (c: Cursor) : (string * Span) option =
         c.I <- c.I + 1
         Some (name, span)
     | _ -> None
+
+/// Like `tryEatIdent` but also accepts a small set of contextual keywords
+/// that are reserved only in specific expression positions (`result` in
+/// `ensures:` clauses) and are valid as ordinary identifiers everywhere
+/// else — binding targets, function parameters, record fields, etc.
+let tryEatIdentOrContextual (c: Cursor) : (string * Span) option =
+    match peekToken c with
+    | TIdent name ->
+        let span = peekSpan c
+        c.I <- c.I + 1
+        Some (name, span)
+    | TKeyword KwResult ->
+        // `result` is only special inside `ensures:` expressions; it is a
+        // perfectly valid local-variable / parameter name everywhere else.
+        let span = peekSpan c
+        c.I <- c.I + 1
+        Some ("result", span)
+    | _ -> None

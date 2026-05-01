@@ -1994,6 +1994,14 @@ and private parsePrimaryPattern
                         first.Span
                 mkPat (PParen first) (joinSpans tok.Span endSpan)
 
+    // `result` is a contextual keyword — valid as a binding name in
+    // patterns (e.g. `case Ok(result) ->`), even though it is also the
+    // magic name for the return value inside `ensures:` clauses.
+    | TKeyword KwResult ->
+        let span = tok.Span
+        Cursor.advance cursor |> ignore
+        mkPat (PBinding("result", None)) span
+
     | TIdent _ ->
         let path = parseModulePath cursor diags
         match Cursor.peekToken cursor with
@@ -2250,7 +2258,9 @@ and private readIdent
         (diags:  ResizeArray<Diagnostic>)
         (whatFor: string)
         : string * Span =
-    match Cursor.tryEatIdent cursor with
+    // Contextual keywords (currently `result`) are valid in binding
+    // positions, so tryEatIdentOrContextual accepts them too.
+    match Cursor.tryEatIdentOrContextual cursor with
     | Some (n, s) -> n, s
     | None ->
         let span = Cursor.peekSpan cursor
