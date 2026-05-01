@@ -266,6 +266,28 @@ func main(): Unit {
 """,
     "yes"
 
+    "phaseB_await_returns_user_record",
+    // Phase B with a Lyric record as the bare return type — the
+    // builder is `AsyncTaskMethodBuilder<UserRecord>` closed over
+    // a TypeBuilder still under construction.  Validates that
+    // `builderMember` / `Start` / `AwaitUnsafeOnCompleted` /
+    // `TaskAwaiter<T>::IsCompleted` lookups all route through
+    // `TypeBuilder.GetMethod` correctly (D-progress-040 + 041
+    // robustness).
+    """
+package E14
+record Box { value: Int }
+async func mkBox(): Box = Box(value = 99)
+async func nested(): Box {
+  await mkBox()
+}
+func main(): Unit {
+  val b = await nested()
+  println(b.value)
+}
+""",
+    "99"
+
     "phaseB_nested_local_in_while_loop",
     // Phase B++ (D-progress-042): `val y` declared inside a
     // while-loop body, used after the await.  `collectPromotableLocals`
