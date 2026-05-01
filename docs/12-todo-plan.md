@@ -214,11 +214,37 @@ region correctly.
 
 `type X = Int range MIN ..= cap` requires constant folding to evaluate
 the symbolic bounds at compile time before the well-formedness checker
-runs (D-progress-003).  Constant folding is a non-trivial pass that
-also unlocks compile-time generic value-arg evaluation.
+runs (D-progress-003).
 
-**Decision needed**: scope of constant folding (literals + arithmetic
-only?  full pure-expression evaluation?  recursion limits?).
+**Decision (D-progress-025)**: ship named-constant + arithmetic folding.
+
+A new `Lyric.TypeChecker.ConstFold` module exposes
+`tryFoldInt : SymbolTable -> Expr -> Result<int64, FoldError>`.  The
+folder walks:
+
+- `ELiteral (LInt n)` → the literal
+- `EPath { Segments = [name] }` resolving to a `DKConst` symbol →
+  recurse on the const's `Init` (with cycle detection via a set of
+  names currently being resolved)
+- `EBinop` for `+ - * / %` and `EPrefix` for unary `-` over folded
+  operands, with checked-arithmetic overflow detection
+
+Two call sites change: the range-bound well-formedness checker
+(T0090 / T0091) calls the folder so symbolic bounds are validated
+against the folded value, and the emitter's runtime range-check
+IL emission uses the folded constant directly.
+
+**Rationale.**  Catches the practical patterns (`MIN_AGE ..= MAX_AGE`,
+`0 ..= PAGE_SIZE * MAX_PAGES - 1`) without opening the door to "what
+counts as a pure function call?" — the design space option (c) would
+expand into.  Effort is bounded (~300 LOC + tests, ~half-session).
+A new T0093 fires when a bound expression can't be folded, replacing
+today's silent escape.
+
+**Out of scope.**  Function calls in bounds (`max(a, b)`), `if`-in-
+bounds, float literals, mixed-width arithmetic.  All of those land
+when option (c)'s full pure-expression folder ships, gated on a
+real use case.
 
 ### C4 — reflection-driven FFI
 
