@@ -2577,7 +2577,7 @@ let private emitAssembly
                    && (not usePhaseA)
                    && AsyncStateMachine.isAsyncSmEligible fn
                    && AsyncStateMachine.isPhaseB fn then
-                    match AsyncStateMachine.collectTopLevelLocals fn with
+                    match AsyncStateMachine.collectPromotableLocals fn with
                     | None -> None
                     | Some locals ->
                         // Locals must have annotations Phase B can
@@ -2779,7 +2779,7 @@ let private emitAssembly
                 if asyncSmEligible
                    && (not usePhaseA)
                    && AsyncStateMachine.isPhaseB fd then
-                    match AsyncStateMachine.collectTopLevelLocals fd with
+                    match AsyncStateMachine.collectPromotableLocals fd with
                     | None -> None
                     | Some locals ->
                         let resolveCtx = GenericContext()

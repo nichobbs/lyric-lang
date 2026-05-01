@@ -266,6 +266,29 @@ func main(): Unit {
 """,
     "yes"
 
+    "phaseB_nested_local_in_while_loop",
+    // Phase B++ (D-progress-042): `val y` declared inside a
+    // while-loop body, used after the await.  `collectPromotableLocals`
+    // walks one level into loop bodies and registers `y` for
+    // promotion alongside the top-level `i`.
+    """
+package E14
+async func ping(): Unit { println("ping") }
+async func loopWithLocal(): Unit {
+  var i: Int = 0
+  while i < 2 {
+    val y: Int = i + 10
+    await ping()
+    println(y)
+    i = i + 1
+  }
+}
+func main(): Unit {
+  await loopWithLocal()
+}
+""",
+    "ping\n10\nping\n11"
+
     "phaseB_async_impl_method_with_await",
     // Phase B impl method — async instance method whose body
     // contains an `await`.  The kickoff lives on the record;

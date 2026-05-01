@@ -206,32 +206,20 @@ and private isSafeStmt (s: Statement) : bool =
     // directly.  `for` loops aren't yet covered because they
     // bind an iteration variable per iteration (would need
     // nested-local promotion).
+    // Phase B++ (D-progress-042): `while` and `loop` bodies may
+    // contain `SLocal` declarations.  Their locals are promoted
+    // to SM fields by `collectPromotableLocals` (which walks one
+    // level into loop bodies); the IL preserves their values
+    // across the cross-resume gap via the existing field-shadow
+    // protocol.  `for` loops still require iteration-variable
+    // promotion plumbing not yet implemented.
     | SWhile (_, cond, body) ->
         (not (exprHasAwait cond))
         && (body.Statements |> List.forall isSafeStmt)
-        && (body |> bodyHasNoLocalDecls)
     | SLoop (_, body) ->
-        (body.Statements |> List.forall isSafeStmt)
-        && (body |> bodyHasNoLocalDecls)
+        body.Statements |> List.forall isSafeStmt
     | STry _ | SDefer _ | SFor _ | SScope _ ->
         not (stmtHasAwait s)
-
-/// True when a block contains no `SLocal` declarations (transitively
-/// scanning into nested blocks).  Phase B+ permits awaits inside
-/// `while`/`loop` bodies only when no local declarations live there
-/// — promotion of nested locals to SM fields is Phase B++ work.
-and private bodyHasNoLocalDecls (b: Block) : bool =
-    let rec stmtOk (s: Statement) : bool =
-        match s.Kind with
-        | SLocal _ -> false
-        | SFor (_, _, _, body) | SWhile (_, _, body) | SLoop (_, body)
-        | SDefer body | SScope (_, body) ->
-            body.Statements |> List.forall stmtOk
-        | STry (body, catches) ->
-            (body.Statements |> List.forall stmtOk)
-            && catches |> List.forall (fun c -> c.Body.Statements |> List.forall stmtOk)
-        | _ -> true
-    b.Statements |> List.forall stmtOk
 
 let allAwaitsSafe (fn: FunctionDecl) : bool =
     match fn.Body with
@@ -385,6 +373,50 @@ let collectTopLevelLocals (fn: FunctionDecl) : CollectedLocal list option =
         | _ -> ()
     let walkBlock (b: Block) =
         for s in b.Statements do visit s
+    match fn.Body with
+    | None -> ()
+    | Some (FBExpr _) -> ()
+    | Some (FBBlock b) -> walkBlock b
+    if bail then None else Some (List.ofSeq acc)
+
+/// Collect locals that need promotion when an async body contains
+/// awaits inside `while`/`loop` bodies.  Each loop body's locals
+/// are scanned one level deep — this lets `while cond { val x = …;
+/// await foo(x) }` work without blanket-promoting deeply nested
+/// declarations.  Top-level locals are also included (one pass
+/// instead of two).  Names are deduplicated; if the same name is
+/// declared in two scopes the first occurrence wins (subsequent
+/// declarations reuse the same SM field, which is the standard
+/// Roslyn pattern for "hoisted local" variables).
+let collectPromotableLocals (fn: FunctionDecl) : CollectedLocal list option =
+    let acc = ResizeArray<CollectedLocal>()
+    let seen = HashSet<string>()
+    let mutable bail = false
+    let consider (s: Statement) =
+        match s.Kind with
+        | SLocal (LBVal ({ Kind = PBinding (name, None) }, ann, _)) when not (seen.Contains name) ->
+            seen.Add name |> ignore
+            acc.Add { Name = name; Annotation = ann; IsMutable = false; Span = s.Span }
+        | SLocal (LBLet (name, ann, _)) when not (seen.Contains name) ->
+            seen.Add name |> ignore
+            acc.Add { Name = name; Annotation = ann; IsMutable = false; Span = s.Span }
+        | SLocal (LBVar (name, ann, _)) when not (seen.Contains name) ->
+            seen.Add name |> ignore
+            acc.Add { Name = name; Annotation = ann; IsMutable = true; Span = s.Span }
+        | SLocal _ -> bail <- true
+        | _ -> ()
+    let rec walkBlock (b: Block) =
+        for s in b.Statements do
+            consider s
+            match s.Kind with
+            // Recurse into loops so iteration-body locals get
+            // promoted alongside the top-level ones.  We do *not*
+            // recurse into `if`/`match`/`try` bodies because they
+            // don't require their locals to survive across an
+            // await (each branch runs to completion before next
+            // iteration's body re-enters the same SLocal site).
+            | SWhile (_, _, body) | SLoop (_, body) -> walkBlock body
+            | _ -> ()
     match fn.Body with
     | None -> ()
     | Some (FBExpr _) -> ()

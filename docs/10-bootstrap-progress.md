@@ -1696,6 +1696,43 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-042: C2 Phase B++ — nested locals in while/loop bodies (one level deep)
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the
+"no nested locals" restriction from D-progress-037.  A new
+`collectPromotableLocals` collector walks one level into
+`SWhile` and `SLoop` bodies (in addition to the top level),
+registering nested locals for promotion to SM fields alongside
+the top-level ones.
+
+```lyric
+async func loopWithLocal(): Unit {
+  var i: Int = 0
+  while i < 2 {
+    val y: Int = i + 10   // nested local — promoted in this commit
+    await ping()
+    println(y)            // y survives the cross-resume gap
+    i = i + 1
+  }
+}
+```
+
+The IL emit pipeline is unchanged — the existing `defineLocal`
+mechanism picks up the pre-allocated IL local, the body's
+`Stloc x` initializes it, and the suspend's IL-local-to-SM-field
+flush captures its value.  Each name is deduplicated (first
+declaration wins) so two scopes that bind the same name share
+the SM field — Roslyn's standard "hoisted local" pattern.
+
+`for` loops still aren't covered: the iteration variable lives
+inside the `for` block but with per-iteration semantics that
+need the runtime IEnumerator to survive the cross-resume gap
+too.  Phase B+++ will tackle those.
+
+One new test (`phaseB_nested_local_in_while_loop`).  All 354
+emitter tests pass.
+
+---
+
 ### D-progress-041: C2 Phase B+ — awaits in `if`-cond and `match`-scrutinee positions
 *claude/c2-async-implementation-ZGU95 branch.*  Extends the
 safe-position predicate so `if await cond() { ... }` and `match
