@@ -176,6 +176,20 @@ func main(): Unit {
 }
 """,
     "a\nb\nc"
+
+    // Exercises Std.String.join: split then re-join with a different separator.
+    "import_std_string_join",
+    """
+package SI11
+import Std.Core
+import Std.String
+
+func main(): Unit {
+  val parts = split("a,b,c", ",")
+  println(join(" | ", parts))
+}
+""",
+    "a | b | c"
 ]
 
 let tests =

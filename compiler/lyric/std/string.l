@@ -147,8 +147,19 @@ pub func split(s: in String, separator: in String): slice[String] {
   s.split(separator)
 }
 
-// `join` is deferred: needs `slice[String]` as input which requires
-// additional BCL binding work (Array.join / String.Join).
+// Join a slice of strings with a separator.
+// Pure-Lyric implementation using slice indexing; avoids BCL static-method dispatch.
+@pure
+pub func join(separator: in String, parts: in slice[String]): String {
+  var result = ""
+  var i = 0
+  while i < parts.length {
+    if i > 0 { result = result + separator }
+    result = result + parts[i]
+    i += 1
+  }
+  return result
+}
 
 // ---------------------------------------------------------------------------
 // String comparison.
