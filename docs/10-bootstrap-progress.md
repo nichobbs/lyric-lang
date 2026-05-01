@@ -45,6 +45,11 @@ deferred to Phase 3 by design.
 | Cross-assembly union-case type-arg inference from return type | **Shipped** | (this branch) |
 | UFCS-style static dispatch (`Type.method(args)`) | **Shipped** | (this branch) |
 | `panic` / `expect` / `assert` builtins | **Shipped** | (this branch) |
+| Function overloading by arity | **Shipped** | (stdlib-ergonomics) |
+| BCL default-argument emission | **Shipped** | (stdlib-ergonomics) |
+| `slice[T]` as function parameter type | **Shipped** | (stdlib-ergonomics) |
+| Codegen diagnostics (E0003/E0004/E0012) replacing failwithf | **Shipped** | (stdlib-ergonomics) |
+| `Std.String` full surface (split, join, substring overload) | **Shipped** | (stdlib-ergonomics) |
 | `tryInto` synthesis on projectable views | not started | — |
 | `defer` + `return` (br→leave inside try) | not started | — |
 | `@projectionBoundary` cycle handling | not started | — |
@@ -189,3 +194,52 @@ diagnostic + exit 1 instead of a stack trace.
 **Bootstrap-grade scope of the CLI**: no incremental builds, no
 build cache (each invocation reparses everything), no `--release`
 flag, no AOT.  These are tracked Phase 3 follow-ups.
+
+### D-progress-010: stdlib ergonomics — arity overloading, BCL defaults, codegen diagnostics, slice params, LYRIC_STD_PATH
+*stdlib-ergonomics branch.*  Five related improvements shipped together:
+
+**1. Function overloading by arity.**  The symbol table, type checker, and
+emitter now support multiple definitions of the same function name with
+different parameter counts.  Signatures are stored under both a bare name key
+(`foo`) and an arity-qualified key (`foo/2`); the T0001 duplicate-function
+diagnostic fires only when the same arity is re-declared.  The `importedFuncTable`
+in the emitter uses `GetMethods() |> Array.tryFind` (filtered by name + param
+count) instead of `GetMethod(name)` which throws `AmbiguousMatchException` when
+overloads exist.  This unblocked `Std.String.substring` (1-arg and 2-arg
+overloads) and the arity-aware call-site lookup for imported functions.
+
+**2. BCL default-argument handling.**  `resolveBclMethod` in `Codegen.fs` now
+accepts overloaded BCL candidates whose extra parameters all have `HasDefaultValue
+= true`.  The call site emits the right constant for each skipped parameter
+(`Ldnull` for reference types, `Ldc_I4` for booleans/ints/enums, `Ldstr` for
+strings, `Initobj` + `Ldloc` for structs).  This makes `String.Split(string?)`
+callable as `split(s, sep)` — no BCL overload wrangling required in `.l` source.
+
+**3. Codegen diagnostic threading.**  `FunctionCtx` gained a `Diags:
+ResizeArray<Diagnostic>` field that all nested emit calls share.  Internal
+`failwithf` calls for unsupported constructs were converted to structured
+diagnostic appends (`E0003`, `E0004`, `E0012`).  A `codegenErr` helper emits
+`ldnull` + `typeof<obj>` to keep the IL stream legal when continuing past an
+error; `codegenErrStmt` skips IL emission entirely.  `emitAssembly` now returns
+these diagnostics alongside the output path so the CLI surfaces them in
+`<code> error [line:col]: msg` form.
+
+**4. `slice[T]` as function parameter type.**  The type resolver now maps
+`slice[T]` in parameter position to the CLR type `T[]`.  Callers can pass
+array literals `[1, 2, 3]` to functions declared `(xs: in slice[Int])`, and
+`for x in xs` / `xs.length` / `xs[i]` all work across the boundary.
+
+**5. LYRIC_STD_PATH environment variable.**  Both the emitter's stdlib
+resolver (`locateStdlibFile`) and the CLI's build-cache fingerprinter
+(`BuildCache.locateStdlibFiles`) now check `LYRIC_STD_PATH` before walking
+up the directory tree.  Setting this variable to the `compiler/lyric/std/`
+directory lets the compiler find stdlib sources in out-of-tree or installed
+setups without requiring the repo layout.
+
+**Also updated in this session**: `Std.String.split` (BCL `String.Split`),
+`Std.String.join` (pure-Lyric slice iteration), two-arg `substring` overload,
+`repeat` body fix, and the CLI incremental build cache (`lyric build` is now
+a no-op when source + stdlib + compiler binary are unchanged).
+
+The status table above moves `slice[T]` function params from "not started" to
+**Shipped**, and the `Std.String` module now exposes its full planned surface.
