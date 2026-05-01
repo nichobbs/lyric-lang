@@ -47,6 +47,7 @@
     <Compile Include="StubbableTests.fs" />
     <Compile Include="AliasTests.fs" />
     <Compile Include="AutoFfiTests.fs" />
+    <Compile Include="StdTimeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

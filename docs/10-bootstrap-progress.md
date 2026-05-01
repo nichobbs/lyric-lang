@@ -1084,3 +1084,41 @@ Emitter 313, Lsp 5.
   ref structs, `Span<T>` / `ReadOnlySpan<T>`, default args,
   `params T[]`, extension methods, explicit interface
   implementations.
+
+
+### D-progress-027: Std.Time expansion (C5 / Tier 1.3)
+*claude/define-language-spec-5DbnS branch.*  Closes the Std.Time
+gaps documented in `docs/10-stdlib-plan.md` Phase 5: calendar
+arithmetic, epoch-to-Instant conversion, and IANA timezone lookup.
+
+**New surface in `compiler/lyric/std/time.l`.**
+
+```lyric
+addMonths(t: in Instant, n: in Int): Instant      // BCL day-of-month-preserving
+addYears(t: in Instant, n: in Int): Instant
+addDays(t: in Instant, n: in Double): Instant
+
+fromEpochMillis(n: in Long): Instant              // Unix-epoch -> Instant
+fromEpochSeconds(n: in Long): Instant
+
+extern type DateTimeOffset = "System.DateTimeOffset"
+extern type TimeZone = "System.TimeZoneInfo"
+
+hostFindTimeZone(id: in String): TimeZone         // IANA / Windows tz lookup
+```
+
+The epoch helpers compose two BCL calls (`DateTimeOffset.From*` then
+`.UtcDateTime`) so callers see a single one-shot helper.
+
+6 new tests in `compiler/tests/Lyric.Emitter.Tests/StdTimeTests.fs`
+covering each of the new helpers plus a UTC-tz lookup smoke.
+
+All 676 tests pass: Lexer 70, Parser 182, TypeChecker 100,
+Emitter 319, Lsp 5.
+
+**Bootstrap-grade scope** (deferred follow-ups):
+- Tz projection ops: `inZone(t, tz)`, `utcFromZoned(t, tz)`,
+  DST-aware comparison.
+- Real `Duration` arithmetic library (Lyric-side `+` / `-` operators
+  on `Duration` rather than `since` / `plus` named helpers).
+- ISO 8601 emission (parsing already lands via `parseOptInstant`).

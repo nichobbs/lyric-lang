@@ -77,3 +77,71 @@ pub func totalMillis(d: in Duration): Double = ()
 
 @externTarget("System.TimeSpan.TotalSeconds")
 pub func totalSeconds(d: in Duration): Double = ()
+
+// =====================================================================
+// Calendar arithmetic.
+//
+// `addMonths` / `addYears` use BCL `DateTime.AddMonths` / `AddYears`
+// semantics, which preserve day-of-month where possible
+// (e.g. Jan 31 + 1 month → Feb 28 / 29) — that's a safer default
+// than naive 30-day-per-month addition.  Returns the new `Instant`.
+// =====================================================================
+
+@externTarget("System.DateTime.AddMonths")
+pub func addMonths(t: in Instant, n: in Int): Instant = ()
+
+@externTarget("System.DateTime.AddYears")
+pub func addYears(t: in Instant, n: in Int): Instant = ()
+
+@externTarget("System.DateTime.AddDays")
+pub func addDays(t: in Instant, n: in Double): Instant = ()
+
+// =====================================================================
+// Epoch conversions (Unix milliseconds <-> DateTime).
+//
+// Routes through `DateTimeOffset.FromUnixTimeMilliseconds` and
+// `DateTimeOffset.UtcDateTime`, then back via `ToUnixTimeMilliseconds`.
+// Matching extern aliases live alongside `Instant` so the user sees
+// the conversion as a one-call operation.
+// =====================================================================
+
+extern type DateTimeOffset = "System.DateTimeOffset"
+
+@externTarget("System.DateTimeOffset.FromUnixTimeMilliseconds")
+pub func dtoFromEpochMillis(n: in Long): DateTimeOffset = ()
+
+@externTarget("System.DateTimeOffset.FromUnixTimeSeconds")
+pub func dtoFromEpochSeconds(n: in Long): DateTimeOffset = ()
+
+@externTarget("System.DateTimeOffset.UtcDateTime")
+pub func dtoUtcDateTime(d: in DateTimeOffset): Instant = ()
+
+/// Construct an `Instant` from a Unix epoch-millis value.  Lyric-side
+/// composes the two BCL calls so callers see a single helper.
+pub func fromEpochMillis(n: in Long): Instant {
+  dtoUtcDateTime(dtoFromEpochMillis(n))
+}
+
+/// Construct an `Instant` from a Unix epoch-seconds value.
+pub func fromEpochSeconds(n: in Long): Instant {
+  dtoUtcDateTime(dtoFromEpochSeconds(n))
+}
+
+// =====================================================================
+// IANA / Windows timezone lookup.
+//
+// `System.TimeZoneInfo.FindSystemTimeZoneById` is the cross-platform
+// IANA-name lookup on .NET Core+ (`America/New_York`, `Europe/London`
+// etc. all resolve on Linux/macOS; on Windows it understands both
+// IANA and Windows-style identifiers).  Returns `Result[TimeZone,
+// IOError]` so users handle bad ids cleanly rather than catching
+// the host's `TimeZoneNotFoundException`.
+//
+// Bootstrap-grade: only the lookup itself; the projection ops
+// (UTC <-> zoned, DST detection) wait until programs need them.
+// =====================================================================
+
+extern type TimeZone = "System.TimeZoneInfo"
+
+@externTarget("System.TimeZoneInfo.FindSystemTimeZoneById")
+pub func hostFindTimeZone(id: in String): TimeZone = ()
