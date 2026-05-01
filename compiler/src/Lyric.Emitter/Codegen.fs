@@ -325,6 +325,8 @@ let private format1 = formatMethod 1
 let private format2 = formatMethod 2
 let private format3 = formatMethod 3
 let private format4 = formatMethod 4
+let private format5 = formatMethod 5
+let private format6 = formatMethod 6
 
 /// Lookup a static method on `Lyric.Stdlib.Parse` by name.  Each Lyric
 /// builtin (`hostParseIntIsValid`, `hostParseIntValue`, …) routes to
@@ -712,7 +714,8 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         // ctx.Funcs) take precedence so peek matches the actual emit.
         match name with
         | "toString" -> typeof<string>
-        | "format1" | "format2" | "format3" | "format4" -> typeof<string>
+        | "format1" | "format2" | "format3" | "format4"
+        | "format5" | "format6" -> typeof<string>
         | "default" ->
             match ctx.ExpectedType with
             | Some t -> t
@@ -2441,7 +2444,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when (name = "format1" || name = "format2"
-              || name = "format3" || name = "format4")
+              || name = "format3" || name = "format4"
+              || name = "format5" || name = "format6")
           && args.Length = (int (name.[name.Length - 1]) - int '0') + 1 ->
         let arity = args.Length - 1
         let payloads =
@@ -2461,6 +2465,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | 2 -> format2.Value
             | 3 -> format3.Value
             | 4 -> format4.Value
+            | 5 -> format5.Value
+            | 6 -> format6.Value
             | n -> failwithf "format arity %d not supported" n
         il.Emit(OpCodes.Call, mi)
         typeof<string>

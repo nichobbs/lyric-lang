@@ -87,10 +87,12 @@ intersection — same shape as `if`/`else` — so a function that assigns
 an `out` param in every arm has the param marked definitely-assigned
 after the match.  See `docs/10-bootstrap-progress.md` D-progress-021.
 
-### B6. `format5..N`
+### B6. ~~`format5..N`~~ — shipped
 
-D-progress-011 ships `format1..4`.  Add `format5` and `format6` if a
-real program needs them; otherwise wait for a varargs story.
+`format5` and `format6` shipped (D-progress-035).  Both type-check
+in `ExprChecker.fs` (one extra `TyError` payload per arity) and
+codegen routes through new `Lyric.Stdlib.Format::Of5`/`Of6` static
+helpers.  Format arities beyond 6 wait for a varargs story.
 
 ---
 

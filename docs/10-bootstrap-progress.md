@@ -1695,6 +1695,24 @@ All 342 emitter tests pass (was 340; +5 new).  Lexer/Parser/
 TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
+
+### D-progress-035: B6 — `format5` / `format6` arity-specialised String.Format wrappers
+*claude/c2-async-implementation-ZGU95 branch.*  Closes a deferred
+follow-up from D-progress-011 (which shipped `format1..4`).  Lyric
+has no varargs, so each format arity is its own builtin name; the
+type checker special-cases them in `ExprChecker.fs` and the
+emitter routes the call through the matching
+`Lyric.Stdlib.Format::OfN` static method.
+
+```lyric
+println(format5("[{0},{1},{2},{3},{4}]", 1, 2, 3, 4, 5))
+println(format6("[{0},{1},{2},{3},{4},{5}]", 1, 2, 3, 4, 5, 6))
+```
+
+Two new tests in `BuiltinTests.fs` (`format5_multi_placeholder`,
+`format6_multi_placeholder`).  Format arities beyond 6 wait for
+a varargs story.
+
 ---
 
 ## C2 — real async state machines: status

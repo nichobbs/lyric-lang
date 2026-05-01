@@ -105,6 +105,23 @@ type Format private () =
                        a3: obj | null) : string =
         System.String.Format(template, [| a0; a1; a2; a3 |])
 
+    static member Of5 (template: string,
+                       a0: obj | null,
+                       a1: obj | null,
+                       a2: obj | null,
+                       a3: obj | null,
+                       a4: obj | null) : string =
+        System.String.Format(template, [| a0; a1; a2; a3; a4 |])
+
+    static member Of6 (template: string,
+                       a0: obj | null,
+                       a1: obj | null,
+                       a2: obj | null,
+                       a3: obj | null,
+                       a4: obj | null,
+                       a5: obj | null) : string =
+        System.String.Format(template, [| a0; a1; a2; a3; a4; a5 |])
+
 /// Generic helper for `Dictionary<K, V>` operations that don't fit
 /// directly into the FFI without out-parameters or rich Lyric
 /// inference.  All members are static and routed through Lyric's
