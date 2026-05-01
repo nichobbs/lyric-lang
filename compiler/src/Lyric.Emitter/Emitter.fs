@@ -2029,6 +2029,12 @@ let private segmentToFileBase (seg: string) : string =
 
 /// Walk up the directory tree from `startDir` looking for the `.l`
 /// file backing the given `Std.X[.Y…]` package.
+/// Locate the `.l` source for a stdlib package segment list.
+/// Search order:
+///   1. `LYRIC_STD_PATH` env var, if set — allows installed/out-of-tree setups.
+///   2. Walk up the directory tree from `startDir` (the CLI binary's base
+///      directory) looking for a `lyric/std/` subdirectory — works when the
+///      binary lives inside the source tree.
 let private locateStdlibFile
         (startDir: string)
         (segments: string list) : string option =
@@ -2038,14 +2044,26 @@ let private locateStdlibFile
             rest
             |> List.map segmentToFileBase
             |> String.concat "_"
-        let mutable dir = Some (DirectoryInfo(startDir))
-        let mutable found : string option = None
-        while found.IsNone && dir.IsSome do
-            let d = dir.Value
-            let candidate = Path.Combine(d.FullName, "lyric", "std", baseName + ".l")
-            if File.Exists candidate then found <- Some candidate
-            dir <- d.Parent |> Option.ofObj
-        found
+        let fileName = baseName + ".l"
+        // 1) LYRIC_STD_PATH override.
+        let envHit =
+            match Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_STD_PATH") with
+            | Some p ->
+                let candidate = Path.Combine(p, fileName)
+                if File.Exists candidate then Some candidate else None
+            | None -> None
+        match envHit with
+        | Some _ -> envHit
+        | None ->
+            // 2) Walk up from the binary's base directory.
+            let mutable dir = Some (DirectoryInfo(startDir))
+            let mutable found : string option = None
+            while found.IsNone && dir.IsSome do
+                let d = dir.Value
+                let candidate = Path.Combine(d.FullName, "lyric", "std", fileName)
+                if File.Exists candidate then found <- Some candidate
+                dir <- d.Parent |> Option.ofObj
+            found
     | _ -> None
 
 /// Recursively ensure that the given `Std.X[.Y…]` package is compiled,

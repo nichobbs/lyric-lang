@@ -124,19 +124,28 @@ module private BuildCache =
             appendString sha path
             appendBytes sha (File.ReadAllBytes path)
 
-    /// Walk up from `startDir` looking for `lyric/std/`; returns the
-    /// alphabetically-sorted list of `.l` files inside or `[]`.
+    /// Locate the `lyric/std/` directory for cache fingerprinting.
+    /// Checks `LYRIC_STD_PATH` first; falls back to walking up from `startDir`.
     let private locateStdlibFiles (startDir: string) : string list =
-        let mutable dir = Some (DirectoryInfo(startDir))
-        let mutable found : string option = None
-        while found.IsNone && (Option.isSome dir) do
-            match dir with
-            | Some d ->
-                let candidate = Path.Combine(d.FullName, "lyric", "std")
-                if Directory.Exists candidate then found <- Some candidate
-                dir <- Option.ofObj d.Parent
-            | None -> ()
-        match found with
+        let envDir =
+            match Option.ofObj (Environment.GetEnvironmentVariable "LYRIC_STD_PATH") with
+            | Some p when Directory.Exists p -> Some p
+            | _ -> None
+        let foundDir =
+            match envDir with
+            | Some d -> Some d
+            | None ->
+                let mutable dir = Some (DirectoryInfo(startDir))
+                let mutable found : string option = None
+                while found.IsNone && (Option.isSome dir) do
+                    match dir with
+                    | Some d ->
+                        let candidate = Path.Combine(d.FullName, "lyric", "std")
+                        if Directory.Exists candidate then found <- Some candidate
+                        dir <- Option.ofObj d.Parent
+                    | None -> ()
+                found
+        match foundDir with
         | Some stdDir ->
             Directory.GetFiles(stdDir, "*.l")
             |> Array.sort
