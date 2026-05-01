@@ -83,7 +83,13 @@ func main(): Unit {
 
 Available stdlib modules: `Std.Core` (Result, Option, built-in ops),
 `Std.String` (trim, split, join, case conversion, substring, …),
-`Std.Parse` (tryParseInt, tryParseLong), `Std.Errors` (ParseError, IOError, HttpError).
+`Std.Parse` (tryParseInt, tryParseLong, tryParseDouble, tryParseBool),
+`Std.Errors` (ParseError, IOError, HttpError),
+`Std.File` (readText / writeText / fileExists / createDir).
+
+Codegen builtins (no import needed): `println`, `panic`, `expect`,
+`assert`, `toString(x)` (any value → String), `format1`/`format2`/
+`format3`/`format4` (`String.Format`-style with `{0}` placeholders).
 
 The compiler resolves `import Std.X` by locating the matching `.l` source in
 the `lyric/std/` directory, compiling it on demand, and linking the produced

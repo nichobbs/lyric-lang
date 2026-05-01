@@ -38,5 +38,7 @@ let main argv =
             NegativePatternTests.tests
             InlineMethodTests.tests
             EndToEndSmokeTests.tests
+            BuiltinTests.tests
+            StdFileTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

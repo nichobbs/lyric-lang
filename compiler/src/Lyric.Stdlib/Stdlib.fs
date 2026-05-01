@@ -36,6 +36,18 @@ type Console private () =
         | null    -> System.Console.WriteLine("()")
         | nonNull -> System.Console.WriteLine(nonNull.ToString())
 
+    /// Convert any value to its string representation.  Routes through
+    /// `Object.ToString()`; nulls map to `"()"` for symmetry with
+    /// `PrintlnAny`.  The emitter emits this when the user calls the
+    /// Lyric-side `toString(x)` builtin.
+    static member ToStr (value: obj | null) : string =
+        match value with
+        | null    -> "()"
+        | nonNull ->
+            match nonNull.ToString() with
+            | null -> ""
+            | s    -> s
+
 /// Contract / test-harness intrinsics. Lyric's `expect` / `assert`
 /// raise on failure; in Phase 1 we wire both to a single
 /// `LyricAssertionException` so callers can catch via the FFI.
@@ -64,6 +76,108 @@ type Contracts private () =
     /// emitter will mark its Lyric type as Never).
     static member Panic (msg: string) : unit =
         raise (LyricAssertionException("panic: " + msg))
+
+/// String formatting backed by `System.String.Format`.  Supports
+/// .NET-style `{0}`, `{1}`, … placeholders.  Up to four args today;
+/// add more overloads if/when programs need them.  Lyric has no
+/// varargs syntax, so each arity is a separate static member.
+[<Sealed; AbstractClass>]
+type Format private () =
+
+    static member Of1 (template: string, a0: obj | null) : string =
+        System.String.Format(template, a0)
+
+    static member Of2 (template: string,
+                       a0: obj | null,
+                       a1: obj | null) : string =
+        System.String.Format(template, a0, a1)
+
+    static member Of3 (template: string,
+                       a0: obj | null,
+                       a1: obj | null,
+                       a2: obj | null) : string =
+        System.String.Format(template, a0, a1, a2)
+
+    static member Of4 (template: string,
+                       a0: obj | null,
+                       a1: obj | null,
+                       a2: obj | null,
+                       a3: obj | null) : string =
+        System.String.Format(template, [| a0; a1; a2; a3 |])
+
+/// File I/O host shim.  Each operation catches host exceptions and
+/// returns a tuple-shaped pair (`IsValid` flag + value/message) so the
+/// Lyric-side caller can decide whether to wrap `Ok` or `Err`.  The
+/// pair-of-statics shape is deliberate: Lyric has no out-params and we
+/// don't want host exceptions to escape across the FFI boundary.
+///
+/// The error message is normalised to `<exception type>: <message>` so
+/// callers can include it in `IoError(path, message)` without needing
+/// the exception object itself.
+[<Sealed; AbstractClass>]
+type FileHost private () =
+
+    /// Probe whether `path` names an existing regular file.  Returns
+    /// false for invalid paths (no exception escapes).
+    static member Exists (path: string) : bool =
+        try System.IO.File.Exists(path)
+        with _ -> false
+
+    /// True if `ReadValue(path)` would succeed.  Performs the read and
+    /// throws away the result — a bootstrap convenience until Lyric
+    /// gets out-parameters.  Callers that gate on this then call
+    /// `ReadValue` are paying the IO cost twice.
+    static member ReadIsValid (path: string) : bool =
+        try
+            let _ = System.IO.File.ReadAllText(path)
+            true
+        with _ -> false
+
+    /// Read the file at `path` as UTF-8 text.  Returns `""` on any
+    /// host error; callers should gate on `ReadIsValid`.
+    static member ReadValue (path: string) : string =
+        try System.IO.File.ReadAllText(path)
+        with _ -> ""
+
+    /// Diagnostic message for the most recent failure observed by
+    /// `ReadIsValid` — hand-rolled because the F# `try` above swallows
+    /// the exception. Calling this when the previous read succeeded
+    /// returns `""`.
+    static member ReadError (path: string) : string =
+        try
+            let _ = System.IO.File.ReadAllText(path)
+            ""
+        with e -> e.GetType().Name + ": " + e.Message
+
+    /// Write `text` to `path` (overwriting if it exists).  Returns
+    /// true on success, false if the host call threw.
+    static member WriteIsValid (path: string, text: string) : bool =
+        try
+            System.IO.File.WriteAllText(path, text)
+            true
+        with _ -> false
+
+    /// Diagnostic message paired with `WriteIsValid`.  Like `ReadError`,
+    /// invokes the operation a second time to recover the message.
+    /// Use when surfacing a write failure to a `Result.Err` arm.
+    static member WriteError (path: string, text: string) : string =
+        try
+            System.IO.File.WriteAllText(path, text)
+            ""
+        with e -> e.GetType().Name + ": " + e.Message
+
+    /// Probe whether `path` names an existing directory.
+    static member DirectoryExists (path: string) : bool =
+        try System.IO.Directory.Exists(path)
+        with _ -> false
+
+    /// Create the directory (and any missing parents).  No-op if it
+    /// already exists.  Returns true on success.
+    static member CreateDirectoryIsValid (path: string) : bool =
+        try
+            let _ = System.IO.Directory.CreateDirectory(path)
+            true
+        with _ -> false
 
 /// Numeric / bool parsing routed through `int.TryParse` etc.  The pair
 /// `IsValid` / `Value` is a bootstrap-grade workaround for not having

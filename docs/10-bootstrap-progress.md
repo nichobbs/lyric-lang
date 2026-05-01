@@ -50,8 +50,11 @@ deferred to Phase 3 by design.
 | `slice[T]` as function parameter type | **Shipped** | (stdlib-ergonomics) |
 | Codegen diagnostics (E0003/E0004/E0012) replacing failwithf | **Shipped** | (stdlib-ergonomics) |
 | `Std.String` full surface (split, join, substring overload) | **Shipped** | (stdlib-ergonomics) |
-| `tryInto` synthesis on projectable views | not started | — |
-| `defer` + `return` (br→leave inside try) | not started | — |
+| `toString` polymorphic builtin | **Shipped** | (real-world-stdlib) |
+| `format1`..`format4` (String.Format wrappers) | **Shipped** | (real-world-stdlib) |
+| `Std.File` (readText / writeText / fileExists / createDir) | **Shipped** | (real-world-stdlib) |
+| `tryInto` synthesis on projectable views | **Shipped** | (already in M2.2) |
+| `defer` + `return` (br→leave inside try) | **Shipped** | (already in M2.2) |
 | `@projectionBoundary` cycle handling | not started | — |
 | Real async state machines | deferred | — |
 | Reflection-driven FFI | not started | — |
@@ -243,3 +246,55 @@ a no-op when source + stdlib + compiler binary are unchanged).
 
 The status table above moves `slice[T]` function params from "not started" to
 **Shipped**, and the `Std.String` module now exposes its full planned surface.
+
+### D-progress-011: real-world stdlib — toString, format, Std.File
+*real-world-stdlib branch.*  Three small additions that close the
+"can I write a script today?" gap:
+
+**1. `toString(x): String`.**  Polymorphic codegen builtin that routes
+through `Lyric.Stdlib.Console::ToStr(obj)` with auto-boxing for value
+types.  Handles every primitive (Int, Long, Bool, Char, Double) plus
+records and union cases via their default `Object.ToString()`.  String
+inputs pass through unchanged (no boxing, no host call).  Closes the
+"how do I print an Int that came from elsewhere?" papercut — previously
+the only paths were `+` concatenation onto a string LHS or routing
+through `println` directly.
+
+**2. `format1`/`format2`/`format3`/`format4` (template, args…) -> String.**
+Arity-specialised wrappers over `System.String.Format` with `{0}`,
+`{1}`, … placeholders.  Lyric has no varargs, so each arity is a
+distinct name; codegen routes to `Lyric.Stdlib.Format::OfN(string,
+obj…)` with auto-boxing.  Lets users build interpolated strings without
+dozens of `+` concatenations.  Add `format5`+ when programs need them.
+
+**3. `Std.File`.**  Bootstrap-grade file I/O wrapper:
+`fileExists(path) : Bool`, `readText(path) : Result[String, IOError]`,
+`writeText(path, text) : Result[Bool, IOError]`,
+`dirExists(path) : Bool`,
+`createDir(path) : Result[Bool, IOError]`.  Routes through new
+`hostFile*` builtins resolved to static methods on `Lyric.Stdlib.FileHost`,
+which catches host exceptions and surfaces a `(IsValid, Value, Error)`
+triple — same pattern as `Std.Parse`.  No exception escapes the FFI
+boundary.
+
+The success arms return `Result[Bool, IOError]` (carrying `true`)
+rather than `Result[Unit, IOError]` because the cross-assembly union
+codegen for generic-Unit instantiation produces invalid IL today (`Ok`
+constructor on `Result_Ok<int32, IOError>` fails JIT verification).
+Tracked as a follow-up; `Bool` is the natural bootstrap stand-in.
+
+Two pre-existing items moved to **Shipped** during this session: `tryInto`
+on projectable views (already implemented as Pass D in
+`populateTryIntoMethod` and exercised by three tests in
+`OpaqueTypeTests.fs`), and `defer` + `return` inside try regions
+(already correct via `ctx.TryDepth` + `OpCodes.Leave` and exercised by
+`defer_runs_on_early_return_*` in `DeferTests.fs`).  The progress doc
+table is updated to reflect their actual state.
+
+**Bootstrap-grade scope**:
+- `format` is fixed-arity 1..4 — no real varargs.
+- `Std.File` returns `Result[Bool, IOError]` not `Result[Unit, IOError]`
+  on success.
+- No `List[T]` / `Map[K, V]` collections — the natural next step.  A
+  pure-Lyric `Std.Collections` slice-grow API was scoped but punted
+  pending generics polish.

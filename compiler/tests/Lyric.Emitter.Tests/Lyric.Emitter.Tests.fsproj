@@ -39,6 +39,8 @@
     <Compile Include="NegativePatternTests.fs" />
     <Compile Include="InlineMethodTests.fs" />
     <Compile Include="EndToEndSmokeTests.fs" />
+    <Compile Include="BuiltinTests.fs" />
+    <Compile Include="StdFileTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

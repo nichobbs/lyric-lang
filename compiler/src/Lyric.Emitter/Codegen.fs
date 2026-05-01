@@ -265,6 +265,31 @@ let private printlnAny : Lazy<MethodInfo> =
         | Some m -> m
         | None   -> failwith "Lyric.Stdlib.Console::PrintlnAny(object) not found")
 
+let private toStr : Lazy<MethodInfo> =
+    lazy (
+        let consoleTy = typeof<Lyric.Stdlib.Console>
+        let mi = consoleTy.GetMethod("ToStr", [| typeof<obj> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwith "Lyric.Stdlib.Console::ToStr(object) not found")
+
+let private formatMethod (arity: int) : Lazy<MethodInfo> =
+    lazy (
+        let formatTy = typeof<Lyric.Stdlib.Format>
+        let methodName = sprintf "Of%d" arity
+        let paramTys =
+            Array.append [| typeof<string> |]
+                         (Array.create arity typeof<obj>)
+        let mi = formatTy.GetMethod(methodName, paramTys)
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwithf "Lyric.Stdlib.Format::%s not found" methodName)
+
+let private format1 = formatMethod 1
+let private format2 = formatMethod 2
+let private format3 = formatMethod 3
+let private format4 = formatMethod 4
+
 /// Lookup a static method on `Lyric.Stdlib.Parse` by name.  Each Lyric
 /// builtin (`hostParseIntIsValid`, `hostParseIntValue`, …) routes to
 /// the matching CLR static.
@@ -284,6 +309,36 @@ let private hostParseBuiltins : Map<string, Lazy<MethodInfo>> =
         "hostParseLongValue",     parseHostMethod "LongValue"
         "hostParseDoubleIsValid", parseHostMethod "DoubleIsValid"
         "hostParseDoubleValue",   parseHostMethod "DoubleValue"
+    ]
+
+/// Lookup a static method on `Lyric.Stdlib.FileHost` by name, with the
+/// given parameter types.  Each Lyric `hostFile*` builtin routes here.
+let private fileHostMethod (name: string) (paramTys: System.Type array) : Lazy<MethodInfo> =
+    lazy (
+        let ty = typeof<Lyric.Stdlib.FileHost>
+        let mi = ty.GetMethod(name, paramTys)
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwithf "Lyric.Stdlib.FileHost::%s not found" name)
+
+let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
+    Map.ofList [
+        "hostFileExists",
+            fileHostMethod "Exists" [| typeof<string> |]
+        "hostReadAllTextIsValid",
+            fileHostMethod "ReadIsValid" [| typeof<string> |]
+        "hostReadAllTextValue",
+            fileHostMethod "ReadValue" [| typeof<string> |]
+        "hostReadAllTextError",
+            fileHostMethod "ReadError" [| typeof<string> |]
+        "hostWriteAllTextIsValid",
+            fileHostMethod "WriteIsValid" [| typeof<string>; typeof<string> |]
+        "hostWriteAllTextError",
+            fileHostMethod "WriteError" [| typeof<string>; typeof<string> |]
+        "hostDirectoryExists",
+            fileHostMethod "DirectoryExists" [| typeof<string> |]
+        "hostCreateDirectoryIsValid",
+            fileHostMethod "CreateDirectoryIsValid" [| typeof<string> |]
     ]
 
 /// Lookup a static method on `Lyric.Stdlib.Contracts` by name (used
@@ -547,6 +602,12 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         | [] -> typeof<obj[]>
         | first :: _ -> (peekExprType ctx first).MakeArrayType()
     | ECall ({ Kind = EPath { Segments = [name] } }, args) ->
+        // Builtins with a known result type (codegen-only, not in
+        // ctx.Funcs) take precedence so peek matches the actual emit.
+        match name with
+        | "toString" -> typeof<string>
+        | "format1" | "format2" | "format3" | "format4" -> typeof<string>
+        | _ ->
         // Calls to a known func / delegate-typed local return a
         // predictable type that inference upstream needs to see.
         // Prefer arity-qualified key for overloaded functions.
@@ -1802,6 +1863,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.Emit(OpCodes.Call, mi)
         mi.ReturnType
 
+    // ---- std.file host builtins ---------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when Map.containsKey name hostFileBuiltins ->
+        for a in args do
+            let payload =
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex
+            let _ = emitExpr ctx payload
+            ()
+        let mi = (Map.find name hostFileBuiltins).Value
+        il.Emit(OpCodes.Call, mi)
+        mi.ReturnType
+
     // ---- panic / expect / assert builtins ------------------------------
 
     | ECall ({ Kind = EPath { Segments = ["panic"] } }, [arg]) ->
@@ -1844,6 +1919,49 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             boxIfValue il argTy
             il.Emit(OpCodes.Call, printlnAny.Value)
         typeof<System.Void>
+
+    // ---- format1..4 builtins ------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when (name = "format1" || name = "format2"
+              || name = "format3" || name = "format4")
+          && args.Length = (int (name.[name.Length - 1]) - int '0') + 1 ->
+        let arity = args.Length - 1
+        let payloads =
+            args |> List.map (fun a ->
+                match a with
+                | CAPositional ex | CANamed (_, ex, _) -> ex)
+        // Template (first arg) — must be String; emitter trusts the
+        // type checker.
+        let _ = emitExpr ctx (List.head payloads)
+        // Each remaining arg is boxed to obj for String.Format.
+        for p in List.tail payloads do
+            let argTy = emitExpr ctx p
+            boxIfValue il argTy
+        let mi =
+            match arity with
+            | 1 -> format1.Value
+            | 2 -> format2.Value
+            | 3 -> format3.Value
+            | 4 -> format4.Value
+            | n -> failwithf "format arity %d not supported" n
+        il.Emit(OpCodes.Call, mi)
+        typeof<string>
+
+    // ---- toString builtin ---------------------------------------------
+
+    | ECall ({ Kind = EPath { Segments = ["toString"] } }, [arg]) ->
+        let payload =
+            match arg with
+            | CAPositional ex | CANamed (_, ex, _) -> ex
+        let argTy = emitExpr ctx payload
+        if argTy = typeof<string> then
+            // Already a string — no boxing or call needed.
+            ()
+        else
+            boxIfValue il argTy
+            il.Emit(OpCodes.Call, toStr.Value)
+        typeof<string>
 
     // ---- user-defined call --------------------------------------------
 

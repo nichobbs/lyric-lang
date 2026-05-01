@@ -64,6 +64,21 @@ let private codegenBuiltinType (name: string) : Type option =
         // else through Console.PrintlnAny(obj) with auto-boxing.  The
         // type checker mirrors that by accepting any single argument.
         Some (TyFunction([TyError], TyPrim PtUnit, false))
+    | "toString" ->
+        // Polymorphic in its argument like `println`; codegen routes
+        // through Console.ToStr(obj) with auto-boxing for value types.
+        Some (TyFunction([TyError], TyPrim PtString, false))
+    // `format1`/`format2`/`format3`/`format4` are arity-specialised
+    // String.Format wrappers.  Lyric has no varargs, so each arity is
+    // a separate name; codegen routes to Format.Of1..Of4.
+    | "format1" ->
+        Some (TyFunction([TyPrim PtString; TyError], TyPrim PtString, false))
+    | "format2" ->
+        Some (TyFunction([TyPrim PtString; TyError; TyError], TyPrim PtString, false))
+    | "format3" ->
+        Some (TyFunction([TyPrim PtString; TyError; TyError; TyError], TyPrim PtString, false))
+    | "format4" ->
+        Some (TyFunction([TyPrim PtString; TyError; TyError; TyError; TyError], TyPrim PtString, false))
     | "panic" ->
         Some (TyFunction([TyPrim PtString], TyPrim PtNever, false))
     | "expect" ->
@@ -76,6 +91,20 @@ let private codegenBuiltinType (name: string) : Type option =
     | "hostParseLongValue"     -> Some (TyFunction([TyPrim PtString], TyPrim PtLong, false))
     | "hostParseDoubleIsValid" -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
     | "hostParseDoubleValue"   -> Some (TyFunction([TyPrim PtString], TyPrim PtDouble, false))
+
+    // File I/O host helpers.
+    | "hostFileExists"          -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+    | "hostReadAllTextIsValid"  -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+    | "hostReadAllTextValue"    -> Some (TyFunction([TyPrim PtString], TyPrim PtString, false))
+    | "hostReadAllTextError"    -> Some (TyFunction([TyPrim PtString], TyPrim PtString, false))
+    | "hostWriteAllTextIsValid" ->
+        Some (TyFunction([TyPrim PtString; TyPrim PtString], TyPrim PtBool, false))
+    | "hostWriteAllTextError"   ->
+        Some (TyFunction([TyPrim PtString; TyPrim PtString], TyPrim PtString, false))
+    | "hostDirectoryExists"     -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+    | "hostCreateDirectoryIsValid" ->
+        Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
+
     | _ -> None
 
 let private resolvePath

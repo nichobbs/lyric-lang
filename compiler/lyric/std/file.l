@@ -1,157 +1,96 @@
-// std/file.l - Result-based file operations.
+// std/file.l - Bootstrap-grade file I/O.
 //
-// This package is the safe wrapper over the trusted System.IO externs
-// declared in std/io.l. It performs cheap validation before entering
-// the host boundary and converts any escaping Bug into IOError.
-
+// Routes through `hostFile*` builtins resolved by the emitter to static
+// methods on `Lyric.Stdlib.FileHost`.  Each operation catches host
+// exceptions on the F# side and surfaces a `Result[T, IOError]` to
+// callers — no exception escapes the FFI boundary.
+//
+// Pair-of-statics shape (`*IsValid` + `*Value` / `*Error`) is the same
+// bootstrap workaround used by `Std.Parse`: Lyric has no out-parameters,
+// so we expose two host calls and accept the cost of doing the IO twice
+// when surfacing the error message.  Collapses to a single TryRead /
+// TryWrite once Lyric grows out-params or real exception-to-Result
+// translation.
 @runtime_checked
 package Std.File
 
 import Std.Errors
-import System.IO as HostIO
 
-// Shared path validation for public file APIs. Empty paths are
-// recoverable caller input errors, not precondition Bugs, so the public
-// functions return Err instead of relying on `requires:`.
-@pure
-func invalidPath(path: in String): Option[IOError] {
+/// Probe whether a regular file exists at `path`.
+///
+/// Empty / invalid paths return false (matches common existence-probe
+/// semantics).  No exception is propagated — host failures are
+/// indistinguishable from "doesn't exist" here; use `readText` for
+/// distinguishable errors.
+///
+/// Named `fileExists` rather than the more idiomatic `exists` because
+/// `exists` is a soft keyword (predicate-logic quantifier) reserved for
+/// `requires` / `ensures` clauses.
+pub func fileExists(path: in String): Bool {
   if path.length == 0 {
-    return Some(value = InvalidPath(path = path, reason = "path must not be empty"))
+    false
+  } else {
+    hostFileExists(path)
   }
-  return None
 }
 
-/// Check whether a file exists at the given path.
+/// Read the entire contents of `path` as UTF-8 text.
 ///
-/// Invalid or empty paths return false to match common existence-probe
-/// semantics. This function does not distinguish "not found" from
-/// "path cannot be represented"; opening APIs return richer IOError
-/// values.
-pub func exists(path: in String): Bool {
-  if path.length == 0 {
-    return false
-  }
-  return HostIO.fileExists(path)
-}
-
-/// Read the entire contents of a text file.
-///
-/// # Preconditions as data
-/// - `path` must be non-empty; empty paths return `Err(InvalidPath)`.
-/// - `path` should name a readable file; missing files return
-///   `Err(FileNotFound)` before the host read is attempted.
-///
-/// # Errors
-/// - `InvalidPath`: path is syntactically unusable by the stdlib.
-/// - `FileNotFound`: no file exists at the path when checked.
-/// - `PermissionDenied`: reserved for host errors that can be
-///   classified precisely.
-/// - `IoError`: encoding, race, device, and other host failures.
+/// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
+/// the host probe says the file doesn't exist, and `Err(IoError)` for
+/// any other host failure (encoding, permission, device, …).
 pub func readText(path: in String): Result[String, IOError] {
-  match invalidPath(path) {
-    case Some(e) -> return Err(error = e)
-    case None -> ()
-  }
-
-  if not HostIO.fileExists(path) {
-    return Err(error = FileNotFound(path = path))
-  }
-
-  return try {
-    Ok(value = HostIO.readAllText(path))
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+  if path.length == 0 {
+    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  } else if not hostFileExists(path) {
+    Err(error = FileNotFound(path = path))
+  } else if hostReadAllTextIsValid(path) {
+    Ok(value = hostReadAllTextValue(path))
+  } else {
+    Err(error = IoError(path = path, message = hostReadAllTextError(path)))
   }
 }
 
-/// Write a complete text file.
+/// Write `text` to `path` (creating or replacing).
 ///
-/// # Preconditions as data
-/// - `path` must be non-empty; empty paths return `Err(InvalidPath)`.
+/// Returns `Ok(true)` on success, `Err(InvalidPath)` for empty paths,
+/// or `Err(IoError)` for any host failure (permission, disk-full, …).
 ///
-/// # Behavior
-/// Creates or replaces the destination according to the host IO
-/// boundary contract.
-///
-/// # Errors
-/// - `InvalidPath`: path is syntactically unusable by the stdlib.
-/// - `PermissionDenied`: reserved for classified access failures.
-/// - `IoError`: disk-full, encoding, race, device, and other host
-///   failures.
-pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
-  match invalidPath(path) {
-    case Some(e) -> return Err(error = e)
-    case None -> ()
-  }
-
-  return try {
-    HostIO.writeAllText(path, text)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+/// Returns `Result[Bool, IOError]` rather than `Result[Unit, …]` as a
+/// bootstrap workaround — the cross-assembly union codegen for
+/// generic-Unit instantiation produces invalid IL today.  Callers
+/// typically discard the inner `true`.
+pub func writeText(path: in String, text: in String): Result[Bool, IOError] {
+  if path.length == 0 {
+    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  } else if hostWriteAllTextIsValid(path, text) {
+    Ok(value = true)
+  } else {
+    Err(error = IoError(path = path, message = hostWriteAllTextError(path, text)))
   }
 }
 
-/// Read the entire contents of a file as bytes.
-///
-/// # Preconditions as data
-/// - `path` must be non-empty; empty paths return `Err(InvalidPath)`.
-/// - `path` should name a readable file; missing files return
-///   `Err(FileNotFound)` before the host read is attempted.
-///
-/// # Errors
-/// - `InvalidPath`: path is syntactically unusable by the stdlib.
-/// - `FileNotFound`: no file exists at the path when checked.
-/// - `PermissionDenied`: reserved for classified access failures.
-/// - `IoError`: race, device, and other host failures.
-///
-/// The returned slice is owned by the caller and has non-negative
-/// length per the extern contract.
-pub func readBytes(path: in String): Result[slice[Byte], IOError] {
-  match invalidPath(path) {
-    case Some(e) -> return Err(error = e)
-    case None -> ()
-  }
-
-  if not HostIO.fileExists(path) {
-    return Err(error = FileNotFound(path = path))
-  }
-
-  return try {
-    Ok(value = HostIO.readAllBytes(path))
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+/// Probe whether `path` names an existing directory.  Returns false
+/// for empty paths and host errors.
+pub func dirExists(path: in String): Bool {
+  if path.length == 0 {
+    false
+  } else {
+    hostDirectoryExists(path)
   }
 }
 
-/// Write bytes to a file.
-///
-/// # Preconditions as data
-/// - `path` must be non-empty; empty paths return `Err(InvalidPath)`.
-/// - `bytes` must be a valid slice.
-///
-/// # Behavior
-/// Creates or replaces the destination according to the host IO
-/// boundary contract.
-///
-/// # Errors
-/// - `InvalidPath`: path is syntactically unusable by the stdlib.
-/// - `PermissionDenied`: reserved for classified access failures.
-/// - `IoError`: disk-full, race, device, and other host failures.
-pub func writeBytes(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
-  match invalidPath(path) {
-    case Some(e) -> return Err(error = e)
-    case None -> ()
-  }
-
-  return try {
-    HostIO.writeAllBytes(path, bytes)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+/// Create the directory at `path` (and any missing parents).  No-op
+/// if it already exists.  Returns `Ok(true)` on success,
+/// `Err(InvalidPath)` for empty paths, or `Err(IoError)` if the host
+/// call fails.  See `writeText` for why the success arm is `Bool` and
+/// not `Unit`.
+pub func createDir(path: in String): Result[Bool, IOError] {
+  if path.length == 0 {
+    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  } else if hostCreateDirectoryIsValid(path) {
+    Ok(value = true)
+  } else {
+    Err(error = IoError(path = path, message = "createDirectory failed"))
   }
 }
-
-// Future: copy, move, append, truncate, metadata (size, modified time,
-// permissions), and stream-opening helpers. Keep destructive operations
-// explicit in both this safe wrapper and the std/io.l trusted boundary.
