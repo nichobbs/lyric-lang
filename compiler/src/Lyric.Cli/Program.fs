@@ -299,85 +299,161 @@ let private publishAot
             if fname <> "" then
                 File.Copy(src, Path.Combine(scratch, fname), overwrite = true)
 
-    /// Make the emitted Lyric PE consumable by .NET ref packs.  Two
-    /// rewrites happen on the metadata in-place (preserving the
-    /// file size + all offsets):
+    /// Use Mono.Cecil to rewrite the AssemblyRef table on a Lyric-
+    /// emitted PE so it's consumable by `dotnet publish` /
+    /// native-AOT.  Two changes per CoreLib reference:
     ///
-    /// 1. **AssemblyRef name**: `System.Private.CoreLib` →
-    ///    `System.Runtime` (zero-padded to the same length so the
-    ///    string-heap offsets following it stay valid).  The .NET
-    ///    targeting pack ships `System.Runtime.dll` as a contract
-    ///    facade; `System.Private.CoreLib` is the implementation
-    ///    name and isn't shipped as a reference assembly.
+    ///   * `System.Private.CoreLib` → `System.Runtime` (the
+    ///     publishable contract assembly).
+    ///   * version + PublicKeyToken set to the contract identity
+    ///     `Version=10.0.0.0, PKT=b03f5f7f11d50a3a` (matches the
+    ///     SDK 10 ref pack's `System.Runtime.dll`).
     ///
-    /// 2. **AssemblyRef version**: 9.0.0.0 → ref-pack version
-    ///    (typically 10.0.0.0 in current SDKs).  Bumps the version
-    ///    so the C# compiler doesn't trip `CS0012` on a missing
-    ///    `System.Runtime, Version=9.0.0.0` reference.  Forward-
-    ///    compatible since runtime types are unchanged.
+    /// Skipping `System.Private.CoreLib` rows or programs without
+    /// CoreLib refs is a no-op.  Cecil rewrites blob heap entries
+    /// (PKT) cleanly; the byte-rewriter we used to ship couldn't.
+    /// Rewrite per-`TypeRef` AssemblyRef pointers in the user PE so
+    /// each runtime type lands on its correct contract assembly:
     ///
-    /// Both rewrites are idempotent: running the patcher on an
-    /// already-patched file is a no-op.
+    ///   * `System.Object`, `System.String`, primitives →
+    ///     `System.Runtime`.
+    ///   * `System.Collections.Generic.Dictionary<,>`,
+    ///     `System.Collections.Generic.List<>` etc. →
+    ///     `System.Collections`.
+    ///   * `System.Net.HttpListener` → `System.Net.HttpListener`.
+    ///   * `System.Text.Json.JsonDocument` → `System.Text.Json`.
+    ///   * etc.
+    ///
+    /// The `typeContract` map is the source of truth.  Lyric's
+    /// emitter writes every reference as `System.Private.CoreLib` (the
+    /// runtime implementation assembly) because that's what
+    /// `typeof<>` resolves to; AOT needs the contract identity each
+    /// type was originally declared in.  We probe the .NET ref pack
+    /// for each contract assembly's name+version+PKT.
     let rewriteCoreLibRefs (path: string) : unit =
         if not (File.Exists path) then () else
-        let oldName = "System.Private.CoreLib"
-        let newName = "System.Runtime"
-        let oldBytes = System.Text.Encoding.UTF8.GetBytes oldName
-        let newBytes = System.Text.Encoding.UTF8.GetBytes newName
-        let bytes = File.ReadAllBytes path
-        let mutable i = 0
-        let mutable patchedName = false
-        while i <= bytes.Length - oldBytes.Length do
-            let mutable matches = true
-            let mutable k = 0
-            while matches && k < oldBytes.Length do
-                if bytes.[i + k] <> oldBytes.[k] then matches <- false
-                k <- k + 1
-            if matches then
-                for j in 0 .. newBytes.Length - 1 do
-                    bytes.[i + j] <- newBytes.[j]
-                for j in newBytes.Length .. oldBytes.Length - 1 do
-                    bytes.[i + j] <- 0uy
-                patchedName <- true
-                i <- i + oldBytes.Length
-            else
-                i <- i + 1
-        // Use System.Reflection.Metadata to walk the AssemblyRef
-        // table and patch each row's `MajorVersion` field in place.
-        // The PEReader closes its underlying stream when disposed; we
-        // run this AFTER the name-rewrite so both edits are flushed
-        // together at the end.
-        let mutable patchedVersion = false
         try
-            use ms = new System.IO.MemoryStream(bytes)
-            use peReader =
-                new System.Reflection.PortableExecutable.PEReader(ms)
-            let mdStart = peReader.PEHeaders.MetadataStartOffset
-            let mdSize  = peReader.PEHeaders.MetadataSize
-            // Conservative byte-pattern scan limited to the metadata
-            // block: replace `09 00 00 00 00 00 00 00` (version
-            // 9.0.0.0 little-endian) with `0A 00 00 00 00 00 00 00`
-            // (10.0.0.0).  Only the AssemblyRef table laid 4-USHORT
-            // versions adjacent like this, so a stray match in some
-            // other table row is extremely unlikely.
-            let v9 = [| 9uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy |]
-            let mutable j = mdStart
-            let mdEnd = mdStart + mdSize - v9.Length
-            while j <= mdEnd do
-                let mutable matches = true
-                let mutable k = 0
-                while matches && k < v9.Length do
-                    if bytes.[j + k] <> v9.[k] then matches <- false
-                    k <- k + 1
-                if matches then
-                    bytes.[j] <- 10uy
-                    patchedVersion <- true
-                    j <- j + v9.Length
+            let dotnetRoot =
+                let env = Environment.GetEnvironmentVariable "DOTNET_ROOT"
+                match Option.ofObj env with
+                | Some s -> s
+                | None   -> "/root/.dotnet"
+            let refPackBase =
+                Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref")
+            let refPackDir : string option =
+                if not (Directory.Exists refPackBase) then None
                 else
-                    j <- j + 1
-        with _ -> ()
-        if patchedName || patchedVersion then
-            File.WriteAllBytes(path, bytes)
+                    let packVer = sprintf "%d.0" Environment.Version.Major
+                    Directory.GetDirectories refPackBase
+                    |> Array.tryPick (fun d ->
+                        let folder = Path.GetFileName d
+                        match Option.ofObj folder with
+                        | Some f when f.StartsWith packVer ->
+                            let tfm =
+                                Path.Combine(d, "ref",
+                                    sprintf "net%d.0" Environment.Version.Major)
+                            if Directory.Exists tfm then Some tfm else None
+                        | _ -> None)
+            // Build a "type FullName → contract assembly identity" map
+            // by indexing every public type in every ref-pack DLL
+            // (excluding aliases / forwarders so we get the contract
+            // that actually declares each type).
+            let typeContract = System.Collections.Generic.Dictionary<string, Mono.Cecil.AssemblyNameReference>()
+            match refPackDir with
+            | None -> ()
+            | Some dir ->
+                let mlcResolver =
+                    System.Reflection.PathAssemblyResolver(
+                        Directory.GetFiles(dir, "*.dll"))
+                use mlc =
+                    new System.Reflection.MetadataLoadContext(mlcResolver)
+                for dll in Directory.GetFiles(dir, "*.dll") do
+                    try
+                        let asm = mlc.LoadFromAssemblyPath dll
+                        let asmName = asm.GetName()
+                        let nameRef =
+                            Mono.Cecil.AssemblyNameReference(
+                                asmName.Name,
+                                asmName.Version)
+                        let pkt =
+                            match Option.ofObj (asmName.GetPublicKeyToken()) with
+                            | Some bs -> bs
+                            | None    -> [||]
+                        if pkt.Length > 0 then
+                            nameRef.PublicKeyToken <- pkt
+                        for t in asm.GetExportedTypes() do
+                            // Record only the contract that DECLARES
+                            // the type (not the type-forwarders that
+                            // also surface in System.Runtime's
+                            // exported types).
+                            try
+                                let typeAsmName =
+                                    safeStr (t.Assembly.GetName().Name) ""
+                                let typeName = safeStr t.FullName ""
+                                let asmRefName = safeStr asmName.Name ""
+                                if typeAsmName = asmRefName
+                                   && typeName <> ""
+                                   && not (typeContract.ContainsKey typeName)
+                                then
+                                    typeContract.[typeName] <- nameRef
+                            with _ -> ()
+                    with _ -> ()
+            // Open the user PE with Cecil and rewrite each TypeRef's
+            // Scope to point at the matching contract assembly.
+            let parameters = Mono.Cecil.ReaderParameters()
+            parameters.InMemory <- true
+            (use modu =
+                Mono.Cecil.ModuleDefinition.ReadModule(path, parameters)
+             let assemblyByName =
+                System.Collections.Generic.Dictionary<string, Mono.Cecil.AssemblyNameReference>()
+             let getOrAddAssemblyRef (target: Mono.Cecil.AssemblyNameReference) =
+                match assemblyByName.TryGetValue target.Name with
+                | true, existing -> existing
+                | _ ->
+                    let r =
+                        Mono.Cecil.AssemblyNameReference(
+                            target.Name, target.Version)
+                    if not (isNull target.PublicKeyToken) then
+                        r.PublicKeyToken <- target.PublicKeyToken
+                    modu.AssemblyReferences.Add r
+                    assemblyByName.[target.Name] <- r
+                    r
+             // Pre-populate the dictionary with whatever's already
+             // referenced so we don't add duplicates.
+             for r in modu.AssemblyReferences do
+                if not (assemblyByName.ContainsKey r.Name) then
+                    assemblyByName.[r.Name] <- r
+             let mutable patched = false
+             // Walk all TypeRefs.  Cecil exposes them indirectly via
+             // module.GetTypeReferences().
+             for tref in modu.GetTypeReferences() do
+                let scopeName =
+                    match Option.ofObj tref.Scope with
+                    | Some s -> s.Name
+                    | None   -> ""
+                if scopeName = "System.Private.CoreLib"
+                   || scopeName = "System.Runtime" then
+                    match typeContract.TryGetValue tref.FullName with
+                    | true, contract ->
+                        let asmRef = getOrAddAssemblyRef contract
+                        tref.Scope <- asmRef
+                        patched <- true
+                    | _ ->
+                        // Fall back to System.Runtime when we don't
+                        // know the proper contract — better than
+                        // leaving CoreLib in place.
+                        match typeContract.TryGetValue "System.Object" with
+                        | true, contract ->
+                            let asmRef = getOrAddAssemblyRef contract
+                            tref.Scope <- asmRef
+                            patched <- true
+                        | _ -> ()
+             if patched then
+                let tmp = path + ".aot-rewrite.tmp"
+                modu.Write tmp
+                File.Move(tmp, path, overwrite = true))
+        with e ->
+            eprintfn "AOT rewrite: %s on %s" e.Message path
 
     copyIfExists lyricDll
     copyIfExists (Path.Combine(cliDir, "Lyric.Stdlib.dll"))
@@ -525,9 +601,6 @@ let private publishAot
     proc.WaitForExit()
     if proc.ExitCode <> 0 then
         printErr (sprintf "AOT: dotnet publish exited %d" proc.ExitCode)
-        printErr "AOT: bootstrap-grade — known to fail when the Lyric-emitted PE's"
-        printErr "AOT: CoreLib reference doesn't survive the .NET ref-pack version bump."
-        printErr "AOT: tracked as a follow-up; non-AOT builds continue to work."
         proc.ExitCode
     else
         // Find the produced native binary.  AOT puts it at
