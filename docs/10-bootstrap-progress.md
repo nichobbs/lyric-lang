@@ -1314,3 +1314,66 @@ TypeChecker 100, Emitter 332, Lsp 5.
 - Inverse `fromJson` synthesis.
 - Generic records — `record Page[T]` doesn't yet get a
   per-instantiation toJson.
+
+
+### D-progress-031: embedded Lyric.Contract resource (C8 part 1 / Tier 3.1)
+*claude/define-language-spec-5DbnS branch.*  Every emitted Lyric
+assembly now carries a managed resource named `Lyric.Contract`
+describing its `pub` surface.  Downstream tooling — cross-package
+import resolution, `lyric public-api-diff`, the future
+`lyric search` filter on NuGet — reads the resource via
+`ContractMeta.readFromAssembly` instead of re-parsing source or
+sidecar files.
+
+**Format** (bootstrap-grade JSON; switches to a hand-rolled binary
+later when downstream consumers exist + parse latency matters):
+
+```json
+{
+  "packageName": "MyApp",
+  "version": "0.1.0",
+  "decls": [
+    {"kind":"record","name":"User","repr":"pub record User { name: String, age: Int }"},
+    {"kind":"func","name":"greet","repr":"pub func greet(u: in User): String"},
+    {"kind":"func","name":"User.toJson","repr":"pub func User.toJson(self: in User): String"}
+  ]
+}
+```
+
+Each declaration's `repr` is a free-form canonical string suitable
+for diff display.
+
+**Implementation.**
+
+- New module `compiler/src/Lyric.Emitter/ContractMeta.fs` with:
+  - `buildContract : SourceFile -> string -> Contract` walks the
+    parsed AST and emits one `ContractDecl` per `pub` item.
+  - `toJson : Contract -> string` hand-rolled JSON serialiser.
+  - `embedIntoAssembly : string -> string -> unit` post-processes
+    the emitted PE via Mono.Cecil, adding (or replacing) the
+    `Lyric.Contract` `EmbeddedResource` and writing back atomically
+    via a `.tmp` rename.
+  - `readFromAssembly : string -> string option` reads the resource
+    through Cecil for downstream tooling.
+- The emitter calls `embedIntoAssembly` after `Backend.save`.
+  Cecil failures surface as a non-fatal E0900 warning (the IL is
+  already on disk).
+- Lyric.Emitter takes a Mono.Cecil package reference (already
+  pulled in by Lyric.Cli for the AOT path).
+
+**Tests.**  2 new tests in `ContractMetaTests.fs`:
+- `contract resource is embedded in every emitted DLL`
+- `non-pub items are excluded`
+
+All 689 tests pass.
+
+**Bootstrap-grade scope** (C8 part 2 deferred):
+- The `lyric.toml` manifest + `lyric publish` / `lyric restore`
+  wrappers around `dotnet pack` / `dotnet restore` are still
+  pending.  This first part lands the contract format + embedding
+  mechanism; the package-manager glue wraps next.
+- JSON format → hand-rolled binary (modeled on F#'s
+  `FSharpSignatureData` resource) once parse latency matters.
+- The `repr` strings are canonical-but-free-form; a real
+  structural format with field-by-field type info comes when
+  `lyric public-api-diff` lands.

@@ -2533,6 +2533,23 @@ let private emitAssembly
             kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
+        // Embed the `Lyric.Contract` managed resource describing this
+        // assembly's `pub` surface.  Cross-package consumption + the
+        // future `lyric public-api-diff` / `lyric search` tooling
+        // reads it via `ContractMeta.readFromAssembly`.  Best-effort:
+        // a Cecil failure shouldn't fail the build (the IL is
+        // already on disk); surface as a non-fatal warning if it
+        // happens.
+        try
+            let contract = ContractMeta.buildContract sf "0.1.0"
+            ContractMeta.embedIntoAssembly req.OutputPath (ContractMeta.toJson contract)
+        with e ->
+            codegenDiags.Add
+                { Severity = DiagWarning
+                  Code     = "E0900"
+                  Message  =
+                    sprintf "could not embed Lyric.Contract resource: %s" e.Message
+                  Span     = sf.Span }
         List.ofSeq codegenDiags
 
 // ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@
     <Compile Include="WireTests.fs" />
     <Compile Include="GenericRecordTests.fs" />
     <Compile Include="JsonDeriveTests.fs" />
+    <Compile Include="ContractMetaTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
