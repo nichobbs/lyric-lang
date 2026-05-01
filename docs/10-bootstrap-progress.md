@@ -836,3 +836,29 @@ isn't the underlying ID — it's the opaque itself.  Tracked in
 - `projectable cycle broken by @projectionBoundary builds`
 
 All 649 tests across all five suites pass.
+
+
+### D-progress-020: `()` lowers to a real ValueTuple; Std.File switches to Result[Unit, IOError]
+*claude/stdlib-ergonomics branch.*  The cross-assembly generic-Unit
+gap documented in D-progress-011 is fixed.  Two related changes:
+
+**Codegen.**  `ELiteral LUnit` previously emitted `Ldc_I4 0` and typed
+the result as `int32`.  That worked only because most Unit slots are
+discarded — the moment the value flowed into a generic position
+expecting `!0 = ValueTuple` (e.g. `Result_Ok<Unit, IOError>::.ctor(!0)`),
+the JIT raised `InvalidProgramException` on the param-type mismatch.
+
+The literal now materialises a real `System.ValueTuple` value via
+`Ldloca + Initobj + Ldloc` on a fresh local, matching the type's
+actual CLR shape (an empty struct).  `peekExprType` on `LUnit` updated
+to `typeof<ValueTuple>` so subsequent inference sees the right type.
+
+**Std.File surface.**  `writeText` and `createDir` now return
+`Result[Unit, IOError]` instead of the `Result[Bool, IOError]`
+bootstrap workaround.  Existing test cases match on `Ok(_)` / `Err(_)`
+so no test changes were needed — just the source surface promotion.
+
+All 304 emitter tests pass after the lowering change; the codegen
+update is otherwise transparent because previous code that flowed
+Unit through arithmetic (rare) still works (the integer path is
+gone but Unit values aren't used in arithmetic in practice).

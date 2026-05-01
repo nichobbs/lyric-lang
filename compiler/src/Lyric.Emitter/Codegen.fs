@@ -633,7 +633,7 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
     | ELiteral (LInt (_, suffix)) -> intLiteralType suffix
     | ELiteral (LFloat (_, s))    -> floatLiteralType s
     | ELiteral (LChar _)          -> typeof<char>
-    | ELiteral LUnit              -> typeof<int32>
+    | ELiteral LUnit              -> typeof<System.ValueTuple>
     | EParen inner                -> peekExprType ctx inner
     | EPath { Segments = [name] } ->
         match FunctionCtx.tryLookup ctx name with
@@ -841,8 +841,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         typeof<char>
 
     | ELiteral LUnit ->
-        emitLdcI4 il 0
-        typeof<int32>
+        // `()` produces a `ValueTuple` (an empty struct), matching
+        // Lyric's `Unit` lowering in TypeMap.  Materialise via
+        // `Ldloca + Initobj + Ldloc` on a fresh local — the only way
+        // to put a value-typed empty struct on the evaluation stack.
+        // Critical when `()` flows into a generic position like
+        // `Result_Ok<Unit, E>::.ctor(!0)`; the case ctor expects a
+        // `ValueTuple` and rejected the previous `Ldc_I4 0`-based
+        // shape with `InvalidProgramException`.
+        let unitTy = typeof<System.ValueTuple>
+        let lb = il.DeclareLocal(unitTy)
+        il.Emit(OpCodes.Ldloca, lb)
+        il.Emit(OpCodes.Initobj, unitTy)
+        il.Emit(OpCodes.Ldloc, lb)
+        unitTy
 
     // ---- list literal -------------------------------------------------
 

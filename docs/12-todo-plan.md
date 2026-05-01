@@ -82,13 +82,15 @@ Reading a record field through an `inout` parameter
 **still bootstrap-grade** — the codegen has a path issue for the
 write-through-byref-of-record-field case.  Tracked as a follow-up.
 
-### B4. `Std.File`: `Result[Unit, IOError]` instead of `Result[Bool, IOError]`
+### B4. ~~`Std.File`: `Result[Unit, IOError]`~~ — shipped
 
-D-progress-011 documents that the cross-assembly generic-Unit
-instantiation produces invalid IL today (`Result_Ok<int32, IOError>`
-fails JIT verification).  The bootstrap stand-in is `Bool` carrying
-`true`.  Fix the union codegen so `Unit` works as a generic arg, then
-swap `Std.File`'s success arms over.
+`Std.File.writeText` and `Std.File.createDir` now return
+`Result[Unit, IOError]` directly (no more `Bool` stand-in).  The
+underlying fix in `Codegen.fs` makes the `()` literal lower to a real
+`ValueTuple` value via `Ldloca + Initobj + Ldloc`, replacing the
+broken `Ldc_I4 0` shape that caused `InvalidProgramException` on
+generic-Unit instantiations.  See `docs/10-bootstrap-progress.md`
+D-progress-020.
 
 ### B5. DA propagation through `match` arms
 
