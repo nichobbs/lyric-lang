@@ -61,15 +61,29 @@ let private registerItem
               DeclSpan    = it.Span
               Visibility  = it.Visibility }
         // Duplicate-name check: same name, same kind class.
-        match table.TryFindOne(name) with
-        | Some prior when Symbol.isType prior = Symbol.isType sym ->
-            err diags "T0001"
-                (sprintf "duplicate %s name '%s' (previously declared at line %d)"
-                    (if Symbol.isType sym then "type" else "value")
-                    name
-                    prior.DeclSpan.Start.Line)
-                it.Span
-        | _ -> ()
+        // Exception: DKFunc entries with DIFFERENT arity are overloads — allowed.
+        // Two DKFunc entries with the same arity are still a duplicate error.
+        let isFuncOverload =
+            match sym.Kind with
+            | DKFunc newFn ->
+                table.TryFind name
+                |> Seq.forall (fun prior ->
+                    match prior.Kind with
+                    | DKFunc priorFn -> priorFn.Params.Length <> newFn.Params.Length
+                    | _ -> true)
+                && table.TryFind name |> Seq.exists (fun s ->
+                    match s.Kind with DKFunc _ -> true | _ -> false)
+            | _ -> false
+        if not isFuncOverload then
+            match table.TryFindOne(name) with
+            | Some prior when Symbol.isType prior = Symbol.isType sym ->
+                err diags "T0001"
+                    (sprintf "duplicate %s name '%s' (previously declared at line %d)"
+                        (if Symbol.isType sym then "type" else "value")
+                        name
+                        prior.DeclSpan.Start.Line)
+                    it.Span
+            | _ -> ()
         table.Add(sym)
         sym
 
@@ -304,13 +318,21 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
         | _ -> ()
 
     // T3: resolve signatures for every IFunc — both imported and user.
+    // Each function is registered under both `name` (bare, last-wins)
+    // and `name/N` (arity-qualified) so overloaded functions each have
+    // a unique key while single-definition functions still resolve by
+    // bare name at callsites.
     let signatures =
         Seq.append (List.toSeq importedItems) (List.toSeq file.Items)
         |> Seq.choose (fun it ->
             match it.Kind with
             | IFunc fn ->
-                Some (fn.Name, resolveFunctionSig table diags fn)
+                let sg = resolveFunctionSig table diags fn
+                Some (fn.Name, fn.Params.Length, sg)
             | _ -> None)
+        |> Seq.collect (fun (name, arity, sg) ->
+            [ (name, sg)
+              (name + "/" + string arity, sg) ])
         |> Map.ofSeq
 
     // T5: check each function's body against its resolved signature —
@@ -319,7 +341,12 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     for it in file.Items do
         match it.Kind with
         | IFunc fn ->
-            match Map.tryFind fn.Name signatures with
+            let arityKey = fn.Name + "/" + string fn.Params.Length
+            let sgOpt =
+                match Map.tryFind arityKey signatures with
+                | Some s -> Some s
+                | None   -> Map.tryFind fn.Name signatures
+            match sgOpt with
             | Some s -> StmtChecker.checkFunctionBody table signatures diags fn s
             | None -> ()
         | _ -> ()

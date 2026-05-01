@@ -146,6 +146,60 @@ func main(): Unit {
 }
 """,
     "15"
+
+    // slice[T] as a function parameter type — verify TypeMap resolves it to T[]
+    // and the emitter emits correct Ldelem / ldlen instructions.
+    "slice_as_function_param",
+    """
+package SL1
+func sumSlice(xs: in slice[Int]): Int {
+  var total = 0
+  var i = 0
+  while i < xs.length {
+    total += xs[i]
+    i += 1
+  }
+  return total
+}
+func main(): Unit {
+  println(sumSlice([1, 2, 3, 4, 5]))
+}
+""",
+    "15"
+
+    // slice[String] function parameter and for-in iteration.
+    "slice_string_param_forin",
+    """
+package SL2
+func printAll(xs: in slice[String]): Unit {
+  for x in xs { println(x) }
+}
+func main(): Unit {
+  printAll(["hello", "world", "!"])
+}
+""",
+    "hello\nworld\n!"
+
+    // Pure-Lyric join: demonstrates slice indexing with a mutable counter
+    // and returning a constructed string.
+    "slice_manual_join",
+    """
+package SL3
+func join(separator: in String, parts: in slice[String]): String {
+  var result = ""
+  var i = 0
+  while i < parts.length {
+    if i > 0 { result = result + separator }
+    result = result + parts[i]
+    i += 1
+  }
+  return result
+}
+func main(): Unit {
+  println(join(", ", ["a", "b", "c"]))
+}
+""",
+    "a, b, c"
 ]
 
 let tests =

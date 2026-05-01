@@ -92,12 +92,9 @@ pub func substring(s: in String, start: in Int): String
   return s.substring(start)
 }
 
-// Return the substring bounded by start and length.  Named
-// `substringOfLength` (not a `substring` overload) because the
-// bootstrap codegen keys methods by name only — function overloading
-// by parameter shape is a Phase 2 item.
+// Return the substring bounded by start and character count.
 @pure
-pub func substringOfLength(s: in String, start: in Int, count: in Int): String
+pub func substring(s: in String, start: in Int, count: in Int): String
   requires: start >= 0
   requires: count >= 0
   requires: start + count <= s.length
@@ -128,13 +125,13 @@ pub func toLower(s: in String): String {
 // Repeat a string n times.
 @pure
 pub func repeat(s: in String, count: in Int): String {
-  var acc = ""
+  var result = ""
   var i = 0
   while i < count {
-    acc = acc + s
+    result = result + s
     i += 1
   }
-  return acc
+  return result
 }
 
 // Replace all occurrences of a substring with another.
@@ -143,14 +140,26 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
   s.replace(oldValue, newValue)
 }
 
-// `split` is intentionally absent in v0.1.  The natural mapping is
-// `String.Split(string?, StringSplitOptions = None)`, but the bootstrap
-// codegen does not yet supply default-parameter values when picking a
-// BCL overload, and every 1-arg `String.Split` overload takes a `char`,
-// not a `String`.  Tracked for Phase 2 alongside default-arg support.
+// Split a string on a separator, returning a slice of the parts.
+// Maps to String.Split(string?) — available in .NET 5+.
+@pure
+pub func split(s: in String, separator: in String): slice[String] {
+  s.split(separator)
+}
 
-// `join` is paired with `split`; deferred for the same reason
-// (`slice[String]` codegen support and default-argument handling).
+// Join a slice of strings with a separator.
+// Pure-Lyric implementation using slice indexing; avoids BCL static-method dispatch.
+@pure
+pub func join(separator: in String, parts: in slice[String]): String {
+  var result = ""
+  var i = 0
+  while i < parts.length {
+    if i > 0 { result = result + separator }
+    result = result + parts[i]
+    i += 1
+  }
+  return result
+}
 
 // ---------------------------------------------------------------------------
 // String comparison.

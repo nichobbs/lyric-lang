@@ -158,6 +158,38 @@ func main(): Unit {
 }
 """,
     "ok: 42\nerr: invalid format: 'abc' (expected integer)\nerr: invalid format: '' (expected integer)"
+
+    // Exercises Std.String.split (String.Split(string?)) which requires the
+    // BCL default-argument resolver to handle the separator overload correctly.
+    // The for-in loop over slice[String] exercises array-backed iteration.
+    "import_std_string_split",
+    """
+package SI10
+import Std.Core
+import Std.String
+
+func main(): Unit {
+  val parts = split("a,b,c", ",")
+  for p in parts {
+    println(p)
+  }
+}
+""",
+    "a\nb\nc"
+
+    // Exercises Std.String.join: split then re-join with a different separator.
+    "import_std_string_join",
+    """
+package SI11
+import Std.Core
+import Std.String
+
+func main(): Unit {
+  val parts = split("a,b,c", ",")
+  println(join(" | ", parts))
+}
+""",
+    "a | b | c"
 ]
 
 let tests =

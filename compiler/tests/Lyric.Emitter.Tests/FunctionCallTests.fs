@@ -103,6 +103,33 @@ func sum4(a: in Int, b: in Int, c: in Int, d: in Int): Int { return a + b + c + 
 func main(): Unit { println(sum4(1, 2, 3, 4)) }
 """,
     "10"
+
+    // Overloading by arity — two functions with the same name but
+    // different parameter counts must each emit a body and be callable.
+    "arity_overload_two_and_three_params",
+    """
+package E4_OL
+func add(x: in Int, y: in Int): Int = x + y
+func add(x: in Int, y: in Int, z: in Int): Int = x + y + z
+func main(): Unit {
+  println(add(1, 2))
+  println(add(1, 2, 3))
+}
+""",
+    "3\n6"
+
+    // One-arg overload alongside two-arg.
+    "arity_overload_one_and_two_params",
+    """
+package E4_OL2
+func negate(x: in Int): Int = 0 - x
+func negate(x: in Int, scale: in Int): Int = 0 - (x * scale)
+func main(): Unit {
+  println(negate(5))
+  println(negate(5, 3))
+}
+""",
+    "-5\n-15"
 ]
 
 let tests =

@@ -45,19 +45,23 @@ let create (desc: AssemblyDescriptor) : EmitContext =
     { Assembly = asm; Module = m; Descriptor = desc }
 
 /// Emit the runtimeconfig.json that lets `dotnet exec out.dll` find a
-/// suitable .NET 9 host. Without this file the runtime aborts with
-/// "no runtimeconfig.json present" before the entry point runs.
+/// suitable .NET host. The framework version is derived from the runtime
+/// the compiler itself is running on so the emitted PE and its config
+/// always match the host without hardcoding a version number.
 let private writeRuntimeConfig (path: string) : unit =
-    let config = """{
-  "runtimeOptions": {
-    "tfm": "net9.0",
-    "framework": {
-      "name": "Microsoft.NETCore.App",
-      "version": "9.0.0"
-    }
-  }
-}
-"""
+    let v   = System.Environment.Version          // e.g. {9,0,3}
+    let tfm = sprintf "net%d.0" v.Major           // "net9.0"
+    let ver = sprintf "%d.%d.%d" v.Major v.Minor v.Build   // "9.0.3"
+    let config =
+        "{\n"
+        + "  \"runtimeOptions\": {\n"
+        + "    \"tfm\": \"" + tfm + "\",\n"
+        + "    \"framework\": {\n"
+        + "      \"name\": \"Microsoft.NETCore.App\",\n"
+        + "      \"version\": \"" + ver + "\"\n"
+        + "    }\n"
+        + "  }\n"
+        + "}\n"
     File.WriteAllText(path, config)
 
 /// Finalise the assembly to disk. The optional `entryPoint` becomes
