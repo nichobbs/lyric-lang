@@ -96,12 +96,17 @@ real program needs them; otherwise wait for a varargs story.
 
 ## Band C — Phase 2/3 polish (medium term)
 
-### C1. `parseInt` / `parseLong` / `parseDouble` collapsing into `tryParse[T]`
+### C1. ~~`parseInt` / `parseLong` / `parseDouble` collapsing into `tryParse`~~ — shipped
 
-D-progress-004.  Today's pair is `xxxIsValid(s)` + `xxxValue(s)` because
-Lyric had no out-params when `parse.l` shipped.  PR #40's out-params now
-make `tryParse[T](s: in String, value: out T): Bool` straightforward; the
-parse host class collapses to one method per primitive.
+`parse.l` is now built directly on the BCL's `Int32.TryParse` /
+`Int64.TryParse` / `Double.TryParse` / `Boolean.TryParse` family via FFI
+out-params (D-progress-014).  The IsValid + Value pair on the host
+side is gone for parse.
+
+A unified generic `tryParse[T]` requiring type-driven BCL-method dispatch
+is a separate follow-up (would need codegen to pick the right BCL
+TryParse method based on the closing `T`).  Per-primitive
+`parseOptInt` / `parseOptLong` etc. work fine for the bootstrap.
 
 ### C2. Real async state machines
 
@@ -165,6 +170,101 @@ module-level doc, per-item signature + `///` body for every `pub func`,
 Cross-file roll-ups, anchor links, doctest extraction are
 **bootstrap-grade scope** — promoted to follow-ups.  See
 `docs/10-bootstrap-progress.md` D-progress-023.
+
+---
+
+## Decisions needed before further Band C work
+
+The remaining Band C items each require a design decision before they
+can be implemented.  Each is too large for a single-shot session
+without input.
+
+### C2 — real async state machines
+
+The bootstrap currently lowers `async` / `await` to a blocking
+`.GetAwaiter().GetResult()` shim (M1.4 D035).  A real state-machine
+lowering needs either:
+
+- (a) Hand-rolled state-machine codegen in the F# emitter — significant
+  IL work but no runtime dependency.
+- (b) A thin wrapper over F#'s `task { }` builder via FFI, leaning on
+  the existing F# computation expression machinery — less new IL, but
+  pins us to the F# runtime.
+- (c) Defer until self-hosting; ship the blocking shim as the v1.0
+  story and call out async-as-blocking in the language reference.
+
+**Decision needed**: which path?
+
+### C3 — range-subtype symbolic bounds
+
+`type X = Int range MIN ..= cap` requires constant folding to evaluate
+the symbolic bounds at compile time before the well-formedness checker
+runs (D-progress-003).  Constant folding is a non-trivial pass that
+also unlocks compile-time generic value-arg evaluation.
+
+**Decision needed**: scope of constant folding (literals + arithmetic
+only?  full pure-expression evaluation?  recursion limits?).
+
+### C4 — reflection-driven FFI
+
+Today's FFI requires `extern type` + `@externTarget` per function.  A
+reflection-driven path (`extern type Url = "System.Uri"` then call any
+method without a per-method declaration) needs:
+
+- A way to surface BCL members as if they were Lyric-side functions.
+- Out-parameter / Span / extension-method semantics decided.
+- A trim-friendly story for AOT (reflection trimming would otherwise
+  remove uncited members).
+
+**Decision needed**: how aggressive should the reflection layer be,
+and where does the AOT-vs-flexibility tradeoff land?
+
+### C5 — stdlib expansion
+
+Concrete sub-items, each pickable independently:
+
+- **`Std.Time`** is mostly complete (DateTime + TimeSpan via FFI).
+  IANA tz lookup, calendar arithmetic, and "since epoch" helpers are
+  the remaining gaps.
+- **`Std.Json`** is a stub.  Real JSON requires a source-generator
+  pass over user records, OR reflection-driven serialisation (which
+  conflicts with C4).
+- **`Std.Http`** has the basics; cancellation, timeouts, and redirect
+  policy are next.
+- **`Std.Regex`** dispatches to the BCL's ECMA regex.  RE2-compatible
+  semantics would require a separate engine (or a pinned NuGet).
+
+**Decision needed**: pick which stdlib gaps to close first.
+
+### C6 — wire blocks (compile-time DI)
+
+Significant feature.  Parser accepts `wire { ... }` already; semantics
+are not implemented.  Needs a graph algorithm + lifetime checker.
+Design sketched in `docs/01-language-reference.md` §11.
+
+**Decision needed**: full Phase 3 commitment or partial bootstrap
+(no scopes, no lifetime checker, just the basic resolution)?
+
+### C7 — formatter (`lyric fmt`)
+
+Today's parser doesn't preserve trivia (whitespace, comments) — it
+produces a syntactic AST, not a CST.  A round-trip-faithful formatter
+needs either:
+
+- A new CST layer with trivia attached to every token, OR
+- A printer that re-parses and reconstructs canonical formatting from
+  the AST alone (loses the user's idiomatic whitespace).
+
+**Decision needed**: CST or canonical-form-only?
+
+### C8 — package manager (`lyric.toml`)
+
+Big undertaking.  Versioned packages, registry, lockfile, transitive
+resolution.  Today's stdlib resolver hard-codes a walk-the-repo lookup
+keyed on `LYRIC_STD_PATH` or relative directories.
+
+**Decision needed**: ship a self-hosted registry, or piggyback on an
+existing one (NuGet, Cargo-style local-only)?
 
 ---
 
