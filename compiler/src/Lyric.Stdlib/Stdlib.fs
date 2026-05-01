@@ -264,6 +264,92 @@ type StringStringMap() =
 /// The error message is normalised to `<exception type>: <message>` so
 /// callers can include it in `IoError(path, message)` without needing
 /// the exception object itself.
+/// Thin host helpers that dodge the `default-parameter` shape on a
+/// few BCL APIs whose canonical overloads only ship as
+/// `Method(input, options = default)`.  Lyric's FFI default-arg
+/// emit works for primitives but not always for unmanaged structs
+/// like `JsonDocumentOptions`; this layer is a stable workaround.
+[<Sealed; AbstractClass>]
+type JsonHost private () =
+
+    /// Parse a JSON document from a UTF-16 string with default
+    /// `JsonDocumentOptions`.
+    static member Parse (input: string) : System.Text.Json.JsonDocument =
+        System.Text.Json.JsonDocument.Parse(input)
+
+    /// Encode `s` as a JSON-string literal (including surrounding
+    /// quotes).  Backslashes / quotes / control characters are
+    /// escaped via the BCL's `JsonEncodedText`.
+    static member EncodeString (s: string) : string =
+        let encoded = System.Text.Json.JsonEncodedText.Encode(s)
+        "\"" + encoded.ToString() + "\""
+
+/// HTTP server helpers wrapping `System.Net.HttpListener`.  The
+/// canonical loop is `nextContext` (blocking) → inspect / respond →
+/// `respondClose`.  Prefixes follow the HttpListener convention:
+/// `http://localhost:8080/api/`.
+[<Sealed; AbstractClass>]
+type HttpServerHost private () =
+
+    static member StartListener (prefix: string) : System.Net.HttpListener =
+        let l = new System.Net.HttpListener()
+        l.Prefixes.Add(prefix)
+        l.Start()
+        l
+
+    static member NextContext (l: System.Net.HttpListener) : System.Net.HttpListenerContext =
+        l.GetContext()
+
+    static member StopListener (l: System.Net.HttpListener) : unit =
+        l.Stop()
+
+    static member RequestMethod (c: System.Net.HttpListenerContext) : string =
+        try c.Request.HttpMethod with _ -> "GET"
+
+    static member RequestPath (c: System.Net.HttpListenerContext) : string =
+        try
+            match Option.ofObj c.Request.Url with
+            | Some uri -> uri.AbsolutePath
+            | None     -> "/"
+        with _ -> "/"
+
+    /// Read the request body as a UTF-8 string (or `""` if there's no
+    /// body / the BCL hands us a null stream).  Wrapped in `try` so a
+    /// transport-level error doesn't crash the accept loop.
+    static member RequestBody (c: System.Net.HttpListenerContext) : string =
+        try
+            let req = c.Request
+            let s = req.InputStream
+            use reader = new System.IO.StreamReader(s, req.ContentEncoding)
+            reader.ReadToEnd()
+        with _ -> ""
+
+    /// Reply with a status code + plaintext body.  Sets
+    /// `Content-Type: text/plain; charset=utf-8` and closes the
+    /// response.  Suitable for simple endpoints; a JSON helper sits
+    /// next to this with `application/json`.
+    static member RespondText
+            (c: System.Net.HttpListenerContext, status: int, body: string) : unit =
+        let resp = c.Response
+        resp.StatusCode <- status
+        resp.ContentType <- "text/plain; charset=utf-8"
+        let bytes = System.Text.Encoding.UTF8.GetBytes(body)
+        resp.ContentLength64 <- int64 bytes.Length
+        resp.OutputStream.Write(bytes, 0, bytes.Length)
+        resp.OutputStream.Close()
+        resp.Close()
+
+    static member RespondJson
+            (c: System.Net.HttpListenerContext, status: int, body: string) : unit =
+        let resp = c.Response
+        resp.StatusCode <- status
+        resp.ContentType <- "application/json; charset=utf-8"
+        let bytes = System.Text.Encoding.UTF8.GetBytes(body)
+        resp.ContentLength64 <- int64 bytes.Length
+        resp.OutputStream.Write(bytes, 0, bytes.Length)
+        resp.OutputStream.Close()
+        resp.Close()
+
 [<Sealed; AbstractClass>]
 type FileHost private () =
 

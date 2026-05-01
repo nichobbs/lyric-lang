@@ -1,95 +1,128 @@
 // std/parse.l - Safe parsing for primitive types.
 //
-// All `tryParse*` functions return Result[T, ParseError] to enforce
-// explicit error handling. The `parse*` convenience functions panic on
-// failure and should be reserved for trusted literals or startup code.
+// Two families of converters:
 //
-// Numeric parsing routes through host builtins (`hostParseIntIsValid`,
-// `hostParseIntValue`, …) that the emitter resolves to static methods
-// on `Lyric.Stdlib.Parse`.  Until Lyric grows real out-parameters the
-// host pair is `IsValid` (returns Bool) + `Value` (returns 0 on
-// invalid) — callers gate `Value` behind `IsValid`.
+//   tryParseXxx(s) : Result[T, ParseError]
+//     The original error-rich shape — keeps the input + reason for
+//     callers that want to surface a useful diagnostic.
+//
+//   parseOptXxx(s) : Option[T]
+//     Newer, route through the BCL's `TryParse` family via FFI
+//     out-params for a single-pass `Some(value)` / `None` shape.
+//
+//   parseXxx(s) : T   (panicking)
+//     Reserved for trusted literals or startup code; calls
+//     `tryParseXxx` and panics with the `ParseError`'s message on
+//     failure.
 package Std.Parse
 
+import Std.Core
 import Std.Errors
 
-// ---------------------------------------------------------------------------
-// Int parsing.
-// ---------------------------------------------------------------------------
+// =====================================================================
+// FFI to the BCL TryParse family — single host call decides validity
+// + value via an `out` parameter.  Used by the Lyric-side `parseOpt*`
+// wrappers; not generally meant for direct use.
+// =====================================================================
 
-// Parse a string as an Int. Returns Err on invalid format or overflow.
+@externTarget("System.Int32.TryParse")
+pub func hostTryParseInt(s: in String, value: out Int): Bool = ()
+
+@externTarget("System.Int64.TryParse")
+pub func hostTryParseLong(s: in String, value: out Long): Bool = ()
+
+@externTarget("System.Double.TryParse")
+pub func hostTryParseDouble(s: in String, value: out Double): Bool = ()
+
+@externTarget("System.Boolean.TryParse")
+pub func hostTryParseBool(s: in String, value: out Bool): Bool = ()
+
+// =====================================================================
+// Option-returning parsers — preferred for new code.
+// =====================================================================
+
+pub func parseOptInt(s: in String): Option[Int] {
+  var v: Int = default()
+  if hostTryParseInt(s, v) { Some(value = v) } else { None }
+}
+
+pub func parseOptLong(s: in String): Option[Long] {
+  var v: Long = default()
+  if hostTryParseLong(s, v) { Some(value = v) } else { None }
+}
+
+pub func parseOptDouble(s: in String): Option[Double] {
+  var v: Double = default()
+  if hostTryParseDouble(s, v) { Some(value = v) } else { None }
+}
+
+pub func parseOptBool(s: in String): Option[Bool] {
+  var v: Bool = default()
+  if hostTryParseBool(s, v) { Some(value = v) } else { None }
+}
+
+// =====================================================================
+// Result-returning parsers — keep `ParseError` context for callers
+// that want to surface a user-facing diagnostic.  Compose `parseOpt*`
+// with a `Some` / `None` → `Ok` / `Err` lift.
+// =====================================================================
+
 pub func tryParseInt(s: in String): Result[Int, ParseError] {
-  if hostParseIntIsValid(s) {
-    Ok(value = hostParseIntValue(s))
-  } else {
-    Err(error = InvalidFormat(input = s, expected = "integer"))
+  match parseOptInt(s) {
+    case Some(v) -> Ok(value = v)
+    case None    -> Err(error = InvalidFormat(input = s, expected = "integer"))
   }
 }
-
-// Parse a string as an Int, panic on failure.
-pub func parseInt(s: in String): Int {
-  match tryParseInt(s) {
-    case Ok(value) -> value
-    case Err(e) -> panic(ParseError.message(e))
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Long parsing.
-// ---------------------------------------------------------------------------
 
 pub func tryParseLong(s: in String): Result[Long, ParseError] {
-  if hostParseLongIsValid(s) {
-    Ok(value = hostParseLongValue(s))
-  } else {
-    Err(error = InvalidFormat(input = s, expected = "long"))
+  match parseOptLong(s) {
+    case Some(v) -> Ok(value = v)
+    case None    -> Err(error = InvalidFormat(input = s, expected = "long"))
+  }
+}
+
+pub func tryParseDouble(s: in String): Result[Double, ParseError] {
+  match parseOptDouble(s) {
+    case Some(v) -> Ok(value = v)
+    case None    -> Err(error = InvalidFormat(input = s, expected = "double"))
+  }
+}
+
+pub func tryParseBool(s: in String): Result[Bool, ParseError] {
+  match parseOptBool(s) {
+    case Some(v) -> Ok(value = v)
+    case None    -> Err(error = InvalidFormat(input = s, expected = "true or false"))
+  }
+}
+
+// =====================================================================
+// Panicking convenience family.
+// =====================================================================
+
+pub func parseInt(s: in String): Int {
+  match tryParseInt(s) {
+    case Ok(v)  -> v
+    case Err(e) -> panic(ParseError.message(e))
   }
 }
 
 pub func parseLong(s: in String): Long {
   match tryParseLong(s) {
-    case Ok(value) -> value
+    case Ok(v)  -> v
     case Err(e) -> panic(ParseError.message(e))
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Double parsing.
-// ---------------------------------------------------------------------------
-
-pub func tryParseDouble(s: in String): Result[Double, ParseError] {
-  if hostParseDoubleIsValid(s) {
-    Ok(value = hostParseDoubleValue(s))
-  } else {
-    Err(error = InvalidFormat(input = s, expected = "double"))
   }
 }
 
 pub func parseDouble(s: in String): Double {
   match tryParseDouble(s) {
-    case Ok(value) -> value
+    case Ok(v)  -> v
     case Err(e) -> panic(ParseError.message(e))
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Bool parsing.
-// ---------------------------------------------------------------------------
-
-pub func tryParseBool(s: in String): Result[Bool, ParseError] {
-  val lower = s.trim().toLower()
-  if lower == "true" {
-    Ok(value = true)
-  } else if lower == "false" {
-    Ok(value = false)
-  } else {
-    Err(error = InvalidFormat(input = s, expected = "true or false"))
   }
 }
 
 pub func parseBool(s: in String): Bool {
   match tryParseBool(s) {
-    case Ok(value) -> value
+    case Ok(v)  -> v
     case Err(e) -> panic(ParseError.message(e))
   }
 }

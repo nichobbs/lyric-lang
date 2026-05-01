@@ -72,9 +72,10 @@ module Type =
         // A free type variable matches anything — the bootstrap doesn't
         // do real unification, so we treat `TyVar` like `TyError` for
         // equivalence purposes and let codegen pick the actual binding
-        // at the call site.  Two named TyVars compare by name, which
-        // matters when checking the body of a polymorphic function.
-        | TyVar x, TyVar y                              -> x = y
+        // at the call site.  This includes the `TyVar B`-vs-`TyVar T`
+        // case (different name → still compatible across call sites)
+        // because the wrong-comparison branch would emit a spurious
+        // T0060 / T0043 on calls like `val xs: List[B] = newList()`.
         | TyVar _, _ | _, TyVar _                       -> true
         | TyPrim x, TyPrim y                            -> x = y
         | TySelf, TySelf                                -> true

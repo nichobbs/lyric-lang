@@ -1,93 +1,79 @@
-// std/time.l - time values, clocks, and timers.
+// std/time.l - Time and date primitives.
 //
-// Time is split between pure value wrappers (Instant, Duration) and an
-// injectable Clock interface. Code that needs testability should depend
-// on Clock rather than constructing SystemClock internally.
-
-@runtime_checked
+// Two `extern type` aliases over `System.DateTime` and
+// `System.TimeSpan`; the rest of the surface is `@externTarget`
+// helpers around the canonical BCL operations (UTC now, parsing,
+// arithmetic).
+//
+// All times are UTC unless stated otherwise.  The wrapper
+// deliberately avoids local-time conversion to keep behaviour
+// reproducible across machines.
 package Std.Time
 
-import Std.Errors
-import Std.TimeHost as HostTime
+import Std.Core
 
-pub opaque type Instant {
-  handle: HostTime.InstantHandle
+extern type Instant  = "System.DateTime"
+extern type Duration = "System.TimeSpan"
+
+// =====================================================================
+// Construction.
+// =====================================================================
+
+/// Current UTC time.
+@externTarget("System.DateTime.UtcNow")
+pub func now(): Instant = ()
+
+/// `TimeSpan.Zero` — useful as a fold initial value.
+@externTarget("System.TimeSpan.Zero")
+pub func zeroDuration(): Duration = ()
+
+/// Parse an ISO-8601-ish timestamp; returns `None` if the BCL refuses.
+@externTarget("System.DateTime.TryParse")
+pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
+
+pub func parseOptInstant(s: in String): Option[Instant] {
+  var v: Instant = default()
+  if hostTryParseInstant(s, v) { Some(value = v) } else { None }
 }
 
-pub opaque type Duration {
-  handle: HostTime.DurationHandle
-}
+// =====================================================================
+// Duration constructors (in fractional milliseconds, seconds, etc.).
+// =====================================================================
 
-pub interface Clock {
-  func now(): Instant
-}
+@externTarget("System.TimeSpan.FromMilliseconds")
+pub func millis(n: in Double): Duration = ()
 
-pub opaque type SystemClock {
-  marker: Unit
-}
+@externTarget("System.TimeSpan.FromSeconds")
+pub func seconds(n: in Double): Duration = ()
 
-/// Construct the host-backed system clock.
-///
-/// This is explicit so application wires can inject it and tests can
-/// substitute a stub Clock.
-pub func SystemClock.make(): SystemClock {
-  return SystemClock(marker = ())
-}
+@externTarget("System.TimeSpan.FromMinutes")
+pub func minutes(n: in Double): Duration = ()
 
-/// Return the current UTC instant from the host clock.
-pub func SystemClock.now(clock: in SystemClock): Instant {
-  return Instant(handle = HostTime.nowUtc())
-}
+@externTarget("System.TimeSpan.FromHours")
+pub func hours(n: in Double): Duration = ()
 
-/// Parse an ISO 8601 instant.
-///
-/// # Preconditions as data
-/// - `text` must be non-empty.
-///
-/// # Errors
-/// - `InvalidFormat`: empty or invalid ISO 8601 text.
-pub func Instant.fromIso8601(text: in String): Result[Instant, ParseError] {
-  if text.length == 0 {
-    return Err(error = InvalidFormat(input = text, expected = "ISO 8601 instant"))
-  }
+@externTarget("System.TimeSpan.FromDays")
+pub func days(n: in Double): Duration = ()
 
-  return try {
-    Ok(value = Instant(handle = HostTime.parseInstantIso8601(text)))
-  } catch Bug as b {
-    Err(error = InvalidFormat(input = text, expected = "ISO 8601 instant"))
-  }
-}
+// =====================================================================
+// Duration arithmetic.
+//
+// `op_Subtraction` between two `DateTime`s yields a `TimeSpan`.
+// Lyric users see `since(later, earlier)` to avoid op-name surprise.
+// =====================================================================
 
-/// Format an instant as ISO 8601 UTC text.
-@pure
-pub func Instant.toIso8601(value: in Instant): String {
-  return HostTime.instantToIso8601(value.handle)
-}
+@externTarget("System.DateTime.op_Subtraction")
+pub func since(later: in Instant, earlier: in Instant): Duration = ()
 
-/// Construct a non-negative duration from seconds.
-pub func Duration.seconds(n: in Long): Duration
-  requires: n >= 0
-{
-  return Duration.millis(n * 1000)
-}
+@externTarget("System.DateTime.op_Addition")
+pub func plus(t: in Instant, d: in Duration): Instant = ()
 
-/// Construct a non-negative duration from milliseconds.
-pub func Duration.millis(n: in Long): Duration
-  requires: n >= 0
-{
-  return Duration(handle = HostTime.durationFromMillis(n))
-}
+// =====================================================================
+// Inspection.
+// =====================================================================
 
-/// Return the total whole milliseconds in a duration.
-@pure
-pub func Duration.totalMillis(value: in Duration): Long {
-  return HostTime.durationTotalMillis(value.handle)
-}
+@externTarget("System.TimeSpan.TotalMilliseconds")
+pub func totalMillis(d: in Duration): Double = ()
 
-/// Sleep asynchronously for a duration.
-///
-/// Timer failures are host Bugs at the moment; cancellation-aware sleep
-/// belongs with Phase 5 cancellation-token work.
-pub async func Timer.sleepAsync(d: in Duration): Unit {
-  await HostTime.sleep(d.handle)
-}
+@externTarget("System.TimeSpan.TotalSeconds")
+pub func totalSeconds(d: in Duration): Double = ()

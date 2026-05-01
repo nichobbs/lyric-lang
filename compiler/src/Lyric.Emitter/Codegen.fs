@@ -1667,6 +1667,31 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         | BXor ->
             il.Emit(OpCodes.Xor)
             opTy
+        | BEq when lt = typeof<string> && rt = typeof<string> ->
+            // String equality: `Ceq` would compare by reference.  Route
+            // through `String.op_Equality(string, string)` so the
+            // common path matches user expectation.
+            let opEq =
+                typeof<System.String>
+                    .GetMethod("op_Equality", [| typeof<string>; typeof<string> |])
+            match Option.ofObj opEq with
+            | Some m ->
+                il.Emit(OpCodes.Call, m)
+                typeof<bool>
+            | None ->
+                il.Emit(OpCodes.Ceq)
+                typeof<bool>
+        | BNeq when lt = typeof<string> && rt = typeof<string> ->
+            let opNeq =
+                typeof<System.String>
+                    .GetMethod("op_Inequality", [| typeof<string>; typeof<string> |])
+            match Option.ofObj opNeq with
+            | Some m ->
+                il.Emit(OpCodes.Call, m)
+                typeof<bool>
+            | None ->
+                il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq)
+                typeof<bool>
         | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
         | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
         | BLt  ->
@@ -3192,8 +3217,43 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                     codegenErrStmt ctx "E0003"
                         (sprintf "assignment to unknown name '%s'" name) s.Span
         | None ->
-            codegenErrStmt ctx "E0003"
-                (sprintf "assignment target not yet supported: %A" target.Kind) s.Span
+            // Indexed assignment `recv[idx] = value`: array → Stelem,
+            // BCL container → `set_Item(idx, value)`.
+            match target.Kind with
+            | EIndex (recv, [idx]) ->
+                let recvTy = emitExpr ctx recv
+                if recvTy.IsArray then
+                    let _ = emitExpr ctx idx
+                    let valTy = emitExpr ctx value
+                    let elemTy =
+                        match Option.ofObj (recvTy.GetElementType()) with
+                        | Some t -> t
+                        | None   -> typeof<obj>
+                    if not elemTy.IsValueType && valTy.IsValueType then
+                        il.Emit(OpCodes.Box, valTy)
+                    il.Emit(OpCodes.Stelem, elemTy)
+                else
+                    // Look up `set_Item(idx, value)` on the receiver
+                    // type — covers Dictionary, List, etc.
+                    let setItem =
+                        getRecvMethods recvTy
+                        |> Array.tryFind (fun m ->
+                            m.Name = "set_Item"
+                            && not m.IsStatic
+                            && m.GetParameters().Length = 2)
+                        |> Option.map (closeBclMethod recvTy)
+                    match setItem with
+                    | Some m ->
+                        let _ = emitExpr ctx idx
+                        let _ = emitExpr ctx value
+                        il.Emit(OpCodes.Callvirt, m)
+                    | None ->
+                        codegenErrStmt ctx "E0003"
+                            (sprintf "no `set_Item` indexer on %s for indexed assignment"
+                                recvTy.Name) s.Span
+            | _ ->
+                codegenErrStmt ctx "E0003"
+                    (sprintf "assignment target not yet supported: %A" target.Kind) s.Span
 
     | SAssign (target, op, value) ->
         // Compound assignment: lower to `target = target <op> value`.
