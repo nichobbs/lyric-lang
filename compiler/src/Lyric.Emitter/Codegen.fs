@@ -115,7 +115,10 @@ type FunctionCtx =
       /// `TypeId -> CLR Type` lookup used by reified-generic codegen
       /// when it needs to compute a substituted CLR type from a Lyric
       /// `TyUser(id, …)` reference.
-      Lookup: Lyric.TypeChecker.TypeId -> System.Type option }
+      Lookup: Lyric.TypeChecker.TypeId -> System.Type option
+      /// Codegen-phase diagnostics. Errors recorded here instead of
+      /// throwing exceptions allow error recovery and structured reporting.
+      Diags: ResizeArray<Lyric.Lexer.Diagnostic> }
 
 module FunctionCtx =
 
@@ -142,7 +145,8 @@ module FunctionCtx =
             (selfType: ClrType option)
             (programType: TypeBuilder)
             (resolveType: Lyric.Parser.Ast.TypeExpr -> System.Type)
-            (lookup: Lyric.TypeChecker.TypeId -> System.Type option) : FunctionCtx =
+            (lookup: Lyric.TypeChecker.TypeId -> System.Type option)
+            (diags: ResizeArray<Lyric.Lexer.Diagnostic>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
         let p = Dictionary<string, int * ClrType>()
@@ -177,7 +181,8 @@ module FunctionCtx =
           TryDepth     = 0
           ProgramType  = programType
           ResolveType  = resolveType
-          Lookup       = lookup }
+          Lookup       = lookup
+          Diags        = diags }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -210,6 +215,35 @@ module FunctionCtx =
 
     let currentLoop (ctx: FunctionCtx) : LoopFrame option =
         if ctx.Loops.Count = 0 then None else Some (ctx.Loops.Peek())
+
+// ---------------------------------------------------------------------------
+// Codegen error helpers.
+//
+// Use these instead of `failwithf` for user-visible errors so that
+// the emitter can continue, collect all errors, and return them as
+// structured Diagnostic values instead of crashing with an exception.
+// ---------------------------------------------------------------------------
+
+/// Record a codegen error diagnostic and emit `ldnull` so that the
+/// evaluation stack stays balanced.  Returns `typeof<obj>` as the
+/// fallback CLR type.  Use in expression-context errors.
+let private codegenErr
+        (ctx:  FunctionCtx)
+        (code: string)
+        (msg:  string)
+        (span: Lyric.Lexer.Span) : ClrType =
+    ctx.Diags.Add(Lyric.Lexer.Diagnostic.error code msg span)
+    ctx.IL.Emit(OpCodes.Ldnull)
+    typeof<obj>
+
+/// Record a codegen error diagnostic in statement context.
+/// Does not emit any IL (the statement is simply dropped).
+let private codegenErrStmt
+        (ctx:  FunctionCtx)
+        (code: string)
+        (msg:  string)
+        (span: Lyric.Lexer.Span) : unit =
+    ctx.Diags.Add(Lyric.Lexer.Diagnostic.error code msg span)
 
 // ---------------------------------------------------------------------------
 // Stdlib bindings.
@@ -1142,8 +1176,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             else
                 method.ReturnType
         | None ->
-            failwithf "E12 codegen: no method '%s' on %s"
-                methodName recvTy.Name
+            codegenErr ctx "E0012"
+                (sprintf "no method '%s' on type %s" methodName recvTy.Name) e.Span
 
     // ---- field access -------------------------------------------------
 
@@ -1294,7 +1328,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 il.Emit(OpCodes.Newobj, constructedCtor)
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
-                            failwithf "E4 codegen: unknown name '%s'" name
+                            codegenErr ctx "E0004"
+                                (sprintf "unknown name '%s'" name) e.Span
 
     | EPath { Segments = [enumName; caseName] }
         when ctx.Enums.ContainsKey enumName ->
@@ -2201,7 +2236,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
                         ctx.Lookup substMap sg.Return
             | _ ->
-                failwithf "E4 codegen: unknown name '%s'" name
+                codegenErr ctx "E0004"
+                    (sprintf "unknown name '%s'" name) e.Span
 
     // ---- lambda expression --------------------------------------------
 
@@ -2209,7 +2245,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         emitLambdaWith ctx params' body None
 
     | _ ->
-        failwithf "E3 codegen does not yet handle expression: %A" e.Kind
+        codegenErr ctx "E0003"
+            (sprintf "expression form not yet supported in this version: %A" e.Kind) e.Span
 
 /// Synthesise a static lambda method on `ctx.ProgramType` and emit a
 /// delegate instance pointing to it. `expectedTy` (when Some) is the
@@ -2278,7 +2315,7 @@ and private emitLambdaWith
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes
-            false None ctx.ProgramType ctx.ResolveType ctx.Lookup
+            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
     // single-exit discipline.
@@ -2715,9 +2752,12 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             | Some lb ->
                 let _ = emitExpr ctx value
                 il.Emit(OpCodes.Stloc, lb)
-            | None -> failwithf "E3 codegen: assignment to unknown name '%s'" name
+            | None ->
+                codegenErrStmt ctx "E0003"
+                    (sprintf "assignment to unknown name '%s'" name) s.Span
         | None ->
-            failwithf "E3 codegen: assignment target not yet supported: %A" target.Kind
+            codegenErrStmt ctx "E0003"
+                (sprintf "assignment target not yet supported: %A" target.Kind) s.Span
 
     | SAssign (target, op, value) ->
         // Compound assignment: lower to `target = target <op> value`.
@@ -2737,9 +2777,12 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                     { Kind = EBinop (bop, target, value); Span = s.Span }
                 let _ = emitExpr ctx synthetic
                 il.Emit(OpCodes.Stloc, lb)
-            | None -> failwithf "E3 codegen: compound-assign to unknown name '%s'" name
+            | None ->
+                codegenErrStmt ctx "E0003"
+                    (sprintf "compound-assign to unknown name '%s'" name) s.Span
         | _ ->
-            failwithf "E3 codegen: compound-assign target not yet supported: %A" target.Kind
+            codegenErrStmt ctx "E0003"
+                (sprintf "compound-assign target not yet supported: %A" target.Kind) s.Span
 
     | SReturn None ->
         // Branch to the synthesised single exit if one was set up;
@@ -2867,7 +2910,8 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         failwith "E14 codegen: bare SDefer reached emitStatement (block emit should have hoisted it)"
 
     | _ ->
-        failwithf "E3 codegen does not yet handle statement: %A" s.Kind
+        codegenErrStmt ctx "E0003"
+            (sprintf "statement form not yet supported in this version: %A" s.Kind) s.Span
 
 and emitBlock (ctx: FunctionCtx) (blk: Block) : unit =
     FunctionCtx.pushScope ctx

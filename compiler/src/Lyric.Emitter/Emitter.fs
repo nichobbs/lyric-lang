@@ -1209,7 +1209,8 @@ let private emitFunctionBody
         (isInstance: bool)
         (selfType: System.Type option)
         (programType: TypeBuilder)
-        (symbols: SymbolTable) : unit =
+        (symbols: SymbolTable)
+        (diags: ResizeArray<Diagnostic>) : unit =
     let il = mb.GetILGenerator()
     // For an async function the *body* still computes a value of
     // the bare return type; the wrapping into `Task<T>` only kicks
@@ -1248,7 +1249,7 @@ let private emitFunctionBody
             interfaces distinctTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes
-            isInstance selfType programType resolveTypeForCtx lookup
+            isInstance selfType programType resolveTypeForCtx lookup diags
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -1473,6 +1474,7 @@ let private emitAssembly
               Version     = Version(0, 1, 0, 0)
               OutputPath  = req.OutputPath }
         let ctx = Backend.create desc
+        let codegenDiags = ResizeArray<Diagnostic>()
         let nsName = String.concat "." sf.Package.Path.Segments
         let typeName =
             if String.IsNullOrEmpty nsName then "Program"
@@ -1947,7 +1949,7 @@ let private emitAssembly
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable
                 false None
-                programTy symbols
+                programTy symbols codegenDiags
 
         // Pass B.5 — emit impl-method bodies as instance methods.
         for (fd, mb, sg) in implMethods do
@@ -1962,7 +1964,7 @@ let private emitAssembly
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable
                 true
-                (Option.ofObj selfTy) programTy symbols
+                (Option.ofObj selfTy) programTy symbols codegenDiags
 
         let lyricMainOpt =
             if isLibrary then None
@@ -1987,7 +1989,7 @@ let private emitAssembly
             kv.Value.Type.CreateType() |> ignore
         programTy.CreateType() |> ignore
         Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
-        []
+        List.ofSeq codegenDiags
 
 // ---------------------------------------------------------------------------
 // Stdlib precompilation.
