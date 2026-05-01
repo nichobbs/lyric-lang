@@ -57,6 +57,10 @@ deferred to Phase 3 by design.
 | Generic `extern type` + `@externTarget` (FFI generics) | **Shipped** | (generic-ffi) |
 | BCL method dispatch on extern-typed receivers | **Shipped** | (generic-ffi) |
 | Indexer dispatch (`xs[i]` / `m[k]`) on BCL containers | **Shipped** | (generic-ffi) |
+| `out` / `inout` parameters with CLR byref lowering | **Shipped** | (out-params) |
+| Definite-assignment analysis for `out` params | **Shipped** | (out-params) |
+| `default[T]()` builtin (zero-init via expected type) | **Shipped** | (out-params) |
+| `Dictionary.TryGetValue` etc. callable directly via FFI | **Shipped** | (out-params) |
 | `tryInto` synthesis on projectable views | **Shipped** | (already in M2.2) |
 | `defer` + `return` (br→leave inside try) | **Shipped** | (already in M2.2) |
 | `@projectionBoundary` cycle handling | not started | — |
@@ -458,3 +462,129 @@ surface using the idiomatic `xs.add(...)` / `m["key"]` syntax,
 including a "dedup via map" pattern that mixes both types in one
 program.  All 614 tests across the four suites pass (Lexer 70,
 Parser 182, TypeChecker 90, Emitter 272).
+
+### D-progress-014: out / inout parameters with definite-assignment analysis
+*out-params branch.*  `out` and `inout` parameters now lower to CLR
+byref slots end-to-end:
+
+```lyric
+import Std.Core
+import Std.Collections
+
+func main(): Unit {
+  val m: Map[String, Int] = newMap()
+  m.add("alice", 30)
+  match mapGet(m, "alice") {
+    case Some(v) -> println(v)        // → 30
+    case None    -> println("missing")
+  }
+}
+```
+
+`mapGet` is now ~5 lines on top of `Dictionary.TryGetValue`:
+
+```lyric
+@externTarget("System.Collections.Generic.Dictionary`2.TryGetValue")
+pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
+
+pub func mapGet[K, V](m: in Map[K, V], key: in K): Option[V] {
+  var value: V = default()
+  if tryGetValue(m, key, value) {
+    Some(value = value)
+  } else {
+    None
+  }
+}
+```
+
+**Layer 1 — emitter byref lowering.**  `paramClrType` lifted to
+module scope; lowers `out p: T` and `inout p: T` to `T&` for both
+`MethodBuilder.SetParameters` and the function body's `paramList`.
+`out` additionally gets `ParameterAttributes.Out` so .NET callers see
+the canonical C# `out` shape.
+
+**Layer 2 — body codegen.**  `EPath` reading a byref parameter emits
+`Ldarg + Ldobj` (value type) or `Ldarg + Ldind.Ref` (ref type) — the
+auto-dereference is invisible at the Lyric source level.  `SAssign`
+to a byref parameter emits `Ldarg + value + Stobj/Stind.Ref` so
+writes flow through the pointer.  `peekExprType` peels `T&` to `T`
+so other code paths (`println(v)` on a byref param, etc.) still see
+the underlying type.
+
+**Layer 3 — call-site address-taking.**  New `emitAddressOf` helper
+recognises `EPath name` as an addressable l-value: locals get
+`Ldloca`; already-byref parameters pass through with `Ldarg`; non-
+byref params spill to a temp (rare; the type checker rejects this at
+the source level via T0085 anyway).  Wired into all three user-call
+paths (non-generic local, generic local, non-generic imported,
+generic imported).
+
+**Layer 4 — type-checker l-value rule (T0085).**  `out`/`inout`
+arguments must be a single-segment `EPath` (a named local or
+parameter) — passing a literal, expression result, or compound
+target fails at type-check time.  Direct user calls bypass the
+`TyFunction` representation (which drops param-mode info) and
+consult the resolved signature directly.
+
+**Layer 5 — definite-assignment analysis (T0086).**  Implemented in
+`StmtChecker.fs`:
+- A `DASet` tracks which `out` params are definitely assigned at the
+  current program point.
+- Sequential statements update the set monotonically.
+- `if`/`else` joins via set intersection (one-armed `if` keeps only
+  the cond-state contribution).
+- Loops are weak — body contributions don't strengthen the post-
+  state, since the body may run zero times.
+- `return` checks all `out` params are assigned before the branch
+  and "consumes" the path (no propagation forward).
+- Calls that pass a name to an `out` param of the callee count as
+  assigning that name (forwarding case).
+- Function exit (fall-through) checks all `out` params one final
+  time.
+
+The fall-through and per-return checks combined catch:
+- `out` param never written
+- One branch of an `if` writes, the other doesn't
+- Early `return` skips an assignment
+
+**Layer 6 — `default[T]()` builtin.**  Codegen-only generic helper
+that picks its CLR type from `ctx.ExpectedType` (val ascription,
+record-field default, etc.).  Emits `Initobj` + `Ldloc` for value
+types, `Ldnull` for reference types.  Required to initialise an
+`out`-bound `var` before the call.
+
+**Layer 7 — generic-context plumbing.**  Two infrastructure tweaks
+that this work needed:
+- `StmtChecker.checkBlock` / `checkStatement` now thread the enclosing
+  function's generic-parameter names so `var v: V = ...` resolves V
+  inside a generic body.
+- `Emitter.emitFunctionBody`'s `resolveCtxInner` is seeded with
+  `sg.Generics` so the codegen-side ResolveType also recognises the
+  function's GTPBs.
+
+**FFI integration.**  `Std.Collections.mapGet` rewritten as the four-
+line wrapper shown above.  `MapHelpers<K, V>.GetOrDefault` retired
+from the Lyric-side surface (the F# class is still in
+`Lyric.Stdlib.dll` for backwards-compat in case someone references it
+directly via FFI).
+
+8 end-to-end tests in `OutParamTests.fs`:
+- `out_param_basic`, `inout_param_increments`
+- DA: `out_da_both_branches`, `out_da_early_return_with_assign`,
+  `out_da_forwarded`
+- FFI: `ffi_dictionary_try_get_value`
+- Builtin: `default_picks_type_from_ascription`
+- Practical: `inout_accumulator`
+
+All 622 tests pass: Lexer 70, Parser 182, TypeChecker 90, Emitter 280.
+
+**Bootstrap-grade scope** (tracked, not blocking):
+- `out` / `inout` arguments must be a named local / parameter — array
+  elements, record fields, and tuple elements aren't yet addressable.
+- DA analysis doesn't yet propagate through `match` / pattern
+  bindings; functions that assign in a match arm and rely on it must
+  fall through after the match instead of returning inside.
+- The l-value rule on the codegen side spills non-byref-param value
+  args to a temp; this is mostly defensive (T0085 should catch the
+  bad shape at type-check time) but means a future rule loosening
+  needs the spill semantics revisited.

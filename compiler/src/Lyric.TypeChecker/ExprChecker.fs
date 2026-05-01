@@ -81,6 +81,14 @@ let private codegenBuiltinType (name: string) : Type option =
         Some (TyFunction([TyPrim PtString; TyError; TyError; TyError; TyError], TyPrim PtString, false))
     | "panic" ->
         Some (TyFunction([TyPrim PtString], TyPrim PtNever, false))
+    | "default" ->
+        // Polymorphic in its return — codegen reads `ctx.ExpectedType`
+        // to pick the actual CLR type and emits the right zero-init
+        // (`Initobj` for value types, `Ldnull` for refs).  The
+        // type checker accepts the call; downstream call sites
+        // (val ascription, byref out-arg pre-fill) push their
+        // expected type into `ExpectedType`.
+        Some (TyFunction([], TyError, false))
     | "expect" ->
         Some (TyFunction([TyPrim PtBool; TyPrim PtString], TyPrim PtUnit, false))
     | "assert" ->
@@ -394,6 +402,56 @@ let rec inferExpr
         let argTypes = args |> List.map (function
                                           | CAPositional e -> infer e
                                           | CANamed(_, e, _) -> infer e)
+        // Direct user calls bypass `TyFunction` so the param-mode info
+        // from the resolved signature flows in (out/inout args have
+        // an l-value rule we want to enforce; `TyFunction` drops mode
+        // information).
+        let directSig =
+            match fn.Kind with
+            | EPath { Segments = [name] } ->
+                match Map.tryFind name sigs with
+                | Some s -> Some s
+                | None ->
+                    Map.tryFind (name + "/" + string args.Length) sigs
+            | _ -> None
+        // Out / inout args must be addressable l-values — a direct
+        // local / parameter reference.  This guards against passing
+        // expression results, literals, etc. that the codegen can't
+        // address.  Bug if T0085 fires on a syntactically-valid
+        // mutable target the codegen actually accepts (rare).
+        let validateModeArg (p: ResolvedParam) (arg: CallArg) =
+            match p.Mode with
+            | PMOut | PMInout ->
+                let payload =
+                    match arg with
+                    | CAPositional e -> e
+                    | CANamed (_, e, _) -> e
+                match payload.Kind with
+                | EPath { Segments = [_] } -> ()
+                | _ ->
+                    err diags "T0085"
+                        (sprintf "argument to %s parameter '%s' must be a mutable variable, not an expression result"
+                            (match p.Mode with PMOut -> "out" | _ -> "inout") p.Name)
+                        payload.Span
+            | _ -> ()
+        match directSig with
+        | Some s ->
+            if List.length s.Params <> List.length args then
+                err diags "T0042"
+                    (sprintf "expected %d argument(s), got %d"
+                        (List.length s.Params) (List.length args))
+                    e.Span
+            else
+                List.iter2 validateModeArg s.Params args
+                List.iter2 (fun (p: ResolvedParam) a ->
+                    if not (Type.equiv p.Type a) then
+                        err diags "T0043"
+                            (sprintf "argument type %s does not match parameter type %s"
+                                (Type.render a) (Type.render p.Type))
+                            e.Span)
+                    s.Params argTypes
+            s.Return
+        | None ->
         match fnT with
         | TyFunction(paramTypes, ret, _) ->
             if List.length paramTypes <> List.length argTypes then
