@@ -182,18 +182,33 @@ without input.
 ### C2 — real async state machines
 
 The bootstrap currently lowers `async` / `await` to a blocking
-`.GetAwaiter().GetResult()` shim (M1.4 D035).  A real state-machine
-lowering needs either:
+`.GetAwaiter().GetResult()` shim (M1.4 D035).
 
-- (a) Hand-rolled state-machine codegen in the F# emitter — significant
-  IL work but no runtime dependency.
-- (b) A thin wrapper over F#'s `task { }` builder via FFI, leaning on
-  the existing F# computation expression machinery — less new IL, but
-  pins us to the F# runtime.
-- (c) Defer until self-hosting; ship the blocking shim as the v1.0
-  story and call out async-as-blocking in the language reference.
+**Decision (D-progress-024)**: ship hand-rolled state-machine IL.
 
-**Decision needed**: which path?
+For each `async func`, the emitter synthesises an `IAsyncStateMachine`
+struct/class with a state field, locals-that-cross-`await` promoted to
+fields, and a `MoveNext` that dispatches on state.  Each `await`
+saves state, calls
+`AwaitUnsafeOnCompleted`, and returns.  Exceptions route through
+`AsyncTaskMethodBuilder<T>.SetException`; the function returns the
+builder's `Task<T>`.
+
+**Rationale.**  AOT-friendly (BCL types only, no runtime pin), the
+shape the language reference promises, the only path to real
+non-blocking concurrent I/O without adopting a thread-pool fake.
+Option (b)'s F# `task { }` builder is a compile-time CE expansion,
+not a runtime-importable API — it isn't really viable as stated.
+Option (c) (defer) ships v1.0 with ornamental async that breaks under
+fan-out workloads; not acceptable for a v1.0 promise.
+
+**Bootstrap-grade scope.**  Cancellation tokens and structured
+concurrency scopes follow once the basic state-machine lowering is
+stable.  Try/catch and defer regions that span an `await` are the
+two trickiest edge cases — the existing defer / try-leave plumbing
+(D-progress-001) gives us a starting point but each await inside a
+try region needs the state-machine restore to enter the protected
+region correctly.
 
 ### C3 — range-subtype symbolic bounds
 
