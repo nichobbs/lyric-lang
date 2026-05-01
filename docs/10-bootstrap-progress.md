@@ -862,3 +862,32 @@ All 304 emitter tests pass after the lowering change; the codegen
 update is otherwise transparent because previous code that flowed
 Unit through arithmetic (rare) still works (the integer path is
 gone but Unit values aren't used in arithmetic in practice).
+
+
+### D-progress-021: DA propagation through match arms
+*claude/stdlib-ergonomics branch.*  D-progress-014 noted that the
+definite-assignment analysis didn't enter `match` arms — functions
+that assigned an `out` param across all arms still tripped T0086 on
+the trailing fall-through.
+
+`StmtChecker.daExpr` now handles `EMatch` with the same join shape as
+`EIf`: every arm's body is analysed against the post-scrutinee DA
+state, and the post-match state is the intersection of every arm's
+contribution.  Empty match falls back to the post-scrutinee state.
+`EBlock` (a braced block in expression position) is also threaded
+through so block-style arm bodies (`case x -> { sign = 1 }`) propagate
+their assignments.
+
+```lyric
+func parseSign(s: in String, sign: out Int): Bool {
+  match s {
+    case "neg" -> { sign = -1 }
+    case "pos" -> { sign = 1 }
+    case _     -> { sign = 0 }
+  }
+  return true   // no T0086 — every arm assigned `sign`
+}
+```
+
+1 new regression test in `OutParamTests.fs`.
+All 305 emitter tests pass.

@@ -92,12 +92,12 @@ broken `Ldc_I4 0` shape that caused `InvalidProgramException` on
 generic-Unit instantiations.  See `docs/10-bootstrap-progress.md`
 D-progress-020.
 
-### B5. DA propagation through `match` arms
+### B5. ~~DA propagation through `match` arms~~ — shipped
 
-D-progress-014.  The definite-assignment analysis joins `if`/`else` via
-set intersection but doesn't yet enter pattern arms.  Means functions
-that assign an `out` param inside a `match` arm and rely on it must fall
-through after the match — they can't `return` from inside.
+`daExpr` now handles `EMatch` and `EBlock`.  Match arms join via set
+intersection — same shape as `if`/`else` — so a function that assigns
+an `out` param in every arm has the param marked definitely-assigned
+after the match.  See `docs/10-bootstrap-progress.md` D-progress-021.
 
 ### B6. `format5..N`
 

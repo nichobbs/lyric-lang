@@ -207,6 +207,31 @@ func main(): Unit {
 }
 """,
     "99\n2"
+
+    // B5: definite-assignment propagates through match arms.  Every
+    // arm assigns `sign`, so the post-match state has it as
+    // definitely-assigned and the trailing `return true` doesn't
+    // trip T0086.
+    "out_da_through_match_all_arms_assign",
+    """
+package OP11
+func parseSign(s: in String, sign: out Int): Bool {
+  match s {
+    case "neg" -> { sign = -1 }
+    case "pos" -> { sign = 1 }
+    case _     -> { sign = 0 }
+  }
+  return true
+}
+
+func main(): Unit {
+  var v = 0
+  if parseSign("pos", v) {
+    println(v)
+  }
+}
+""",
+    "1"
 ]
 
 let tests =

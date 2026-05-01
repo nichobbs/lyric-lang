@@ -392,6 +392,26 @@ and private daExpr
             | Some b -> daBranch b
             | None   -> afterCond  // no else means this branch may not run
         Set.intersect afterThen afterElse
+    | EMatch (scrutinee, arms) ->
+        // Same join shape as `if`/`else`: arms run in mutually
+        // exclusive branches and the post-state is the intersection
+        // of every arm's DA contribution.  An empty match has no
+        // arms — vacuously assigns nothing past the scrutinee.
+        let afterScrut = daExpr sigs outs diags cur scrutinee
+        let armEnds =
+            arms
+            |> List.map (fun arm ->
+                let body =
+                    match arm.Body with
+                    | EOBExpr e   -> daExpr sigs outs diags afterScrut e
+                    | EOBBlock b  -> daBlock sigs outs diags afterScrut b
+                body)
+        match armEnds with
+        | []      -> afterScrut
+        | first :: rest ->
+            rest |> List.fold Set.intersect first
+    | EBlock blk ->
+        daBlock sigs outs diags cur blk
     | _ -> cur
 
 /// Check a function declaration's body. Pushes parameters into a
