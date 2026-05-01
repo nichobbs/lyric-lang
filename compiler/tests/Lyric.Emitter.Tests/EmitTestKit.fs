@@ -65,6 +65,13 @@ let prepareOutputDir (name: string) : string =
     let dir = Path.Combine(Path.GetTempPath(), "lyric-emit-" + name + "-" + Guid.NewGuid().ToString("N"))
     Directory.CreateDirectory(dir) |> ignore
     File.Copy(stdlibDll (), Path.Combine(dir, "Lyric.Stdlib.dll"), overwrite = true)
+    // FSharp.Core needs to be next to the user program so any F#
+    // method on Lyric.Stdlib whose IL touches FSharp.Core helpers
+    // (e.g. `Array.zeroCreate`) resolves at runtime.
+    let fsharpCore =
+        Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
+    if File.Exists fsharpCore then
+        File.Copy(fsharpCore, Path.Combine(dir, "FSharp.Core.dll"), overwrite = true)
     copyAllStdlibDlls dir
     dir
 

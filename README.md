@@ -85,7 +85,9 @@ Available stdlib modules: `Std.Core` (Result, Option, built-in ops),
 `Std.String` (trim, split, join, case conversion, substring, …),
 `Std.Parse` (tryParseInt, tryParseLong, tryParseDouble, tryParseBool),
 `Std.Errors` (ParseError, IOError, HttpError),
-`Std.File` (readText / writeText / fileExists / createDir).
+`Std.File` (readText / writeText / fileExists / createDir),
+`Std.Collections` (`IntList`, `StringList`, `LongList`, `StringIntMap`,
+`StringStringMap` — growable lists and hash maps backed by the BCL).
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`,
 `assert`, `toString(x)` (any value → String), `format1`/`format2`/

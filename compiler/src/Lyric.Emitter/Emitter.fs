@@ -1049,6 +1049,11 @@ let private emitContractCheck
 // ---------------------------------------------------------------------------
 
 let private findClrType (qualifiedName: string) : System.Type option =
+    // Force-touch one type from `Lyric.Stdlib` so the assembly is in
+    // the AppDomain before we walk it — without this, the FFI resolver
+    // can't find host-side wrapper types like `Lyric.Stdlib.IntList`
+    // until some other code path has already loaded the assembly.
+    let _ = typeof<Lyric.Stdlib.Console>
     let direct = System.Type.GetType qualifiedName
     match Option.ofObj direct with
     | Some t -> Some t

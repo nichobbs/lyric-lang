@@ -53,6 +53,7 @@ deferred to Phase 3 by design.
 | `toString` polymorphic builtin | **Shipped** | (real-world-stdlib) |
 | `format1`..`format4` (String.Format wrappers) | **Shipped** | (real-world-stdlib) |
 | `Std.File` (readText / writeText / fileExists / createDir) | **Shipped** | (real-world-stdlib) |
+| `Std.Collections` (IntList / StringList / LongList / *Map) | **Shipped** | (collections) |
 | `tryInto` synthesis on projectable views | **Shipped** | (already in M2.2) |
 | `defer` + `return` (br→leave inside try) | **Shipped** | (already in M2.2) |
 | `@projectionBoundary` cycle handling | not started | — |
@@ -295,6 +296,60 @@ table is updated to reflect their actual state.
 - `format` is fixed-arity 1..4 — no real varargs.
 - `Std.File` returns `Result[Bool, IOError]` not `Result[Unit, IOError]`
   on success.
-- No `List[T]` / `Map[K, V]` collections — the natural next step.  A
-  pure-Lyric `Std.Collections` slice-grow API was scoped but punted
-  pending generics polish.
+
+### D-progress-012: Std.Collections — growable lists and hash maps via FFI
+*collections branch.*  `Std.Collections` exposes mutable, host-backed
+collections without waiting for user-side generics polish.  The
+implementation rides on the existing `extern type` + `@externTarget`
+FFI mechanism (FFI v2, PR #33):
+
+- **Element-monomorphised wrappers on the host side.**  Each
+  `(element type)` combination is its own concrete CLR class on
+  `Lyric.Stdlib`: `IntList`, `StringList`, `LongList`, `StringIntMap`,
+  `StringStringMap`.  Each wraps the obvious BCL backing
+  (`List<int>`, `Dictionary<string, string>`, …) and exposes
+  `New / Add / Get / Set / Length / HasItem / RemoveAt / Clear /
+  ToArr` (lists) or `New / Put / Has / Get / RemoveKey / Length /
+  Clear / Keys` (maps).
+
+- **Lyric-side declarations in `lyric/std/collections.l`.**  Each
+  CLR class gets an `extern type IntList = "Lyric.Stdlib.IntList"`
+  declaration plus one `@externTarget` function per operation.
+  Receiver-as-first-param convention matches the existing FFI
+  resolver's instance-method handling — no new mechanism needed.
+
+- **Naming.**  Per-type-suffixed names (`addInt`, `getStringIntRaw`,
+  `keysStringStringMap`) until generics let us collapse to a single
+  surface.  Verbose but unambiguous and survives intersecting imports.
+
+- **Map lookup shape.**  `getXxxRaw` returns 0 / "" for missing keys
+  (host's `Dictionary.TryGetValue` collapsed); callers must gate on
+  `hasXxxKey` first.  Same workaround `Std.Parse` uses — Lyric has no
+  out-params.  Once it does, `tryGet : Map -> Key -> Option[Value]`
+  collapses both calls.
+
+**Two infrastructure fixes shipped alongside.**
+
+1. `findClrType` now force-touches `Lyric.Stdlib.Console` before
+   walking `AppDomain.CurrentDomain.GetAssemblies()`.  The Lyric.Stdlib
+   assembly used to be loaded lazily on first contract check, which
+   meant the FFI resolver couldn't find host-side wrapper types until
+   *after* some other code path triggered the load.
+
+2. The CLI's `copyStdlibArtifacts` and the test kit's
+   `prepareOutputDir` now copy `FSharp.Core.dll` into the user's
+   output directory.  F# methods on `Lyric.Stdlib` whose IL touches
+   FSharp.Core helpers (`Array.zeroCreate`, used by the maps' `Keys()`
+   method) need the assembly resolvable at `dotnet exec` time, and the
+   generated `runtimeconfig.json` doesn't reference it.
+
+10 end-to-end tests in `CollectionTests.fs` cover the full surface
+including a practical "dedup via map" pattern that uses both list and
+map types in one program.
+
+**Pending follow-ups** (tracked, not blocking):
+- Real generic `List[T]` / `Map[K, V]` once user-defined generics
+  become first-class enough to expose across FFI.
+- `tryGet` returning `Option[V]` once out-params land.
+- More element types (`Bool`, `Double`) as programs need them — adding
+  one is ~5 lines of F# + ~10 lines of `extern` declarations.
