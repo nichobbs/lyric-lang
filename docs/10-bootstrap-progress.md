@@ -1696,6 +1696,72 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-068: C2 Phase C — CancellationToken propagation
+*claude/c2-phase-c-cancellation branch.*  Lifts the
+documented-deferral on Phase C (D-progress-059) by shipping
+real cancellation primitives.  Async functions can now accept
+a `CancellationToken`, awaitees can honour it cooperatively,
+and the structured-concurrency-via-`defer` pattern ensures
+sources are cancelled + disposed on scope exit.
+
+What ships:
+
+- **`Std.Task` rewrite**: replaces the previous opaque-type
+  stubs with real `extern type` bindings to the BCL's
+  `System.Threading.Tasks.Task`,
+  `System.Threading.CancellationToken`, and
+  `System.Threading.CancellationTokenSource`.  All operations
+  route through `@externTarget`s on a new
+  `Lyric.Stdlib.CancelHost` static class.
+- **Token construction**: `noCancellation()` (the
+  never-cancelled sentinel), `makeCancelSource()`,
+  `makeCancelSourceTimeout(ms)` (auto-cancel after a deadline),
+  `sourceToken(src)`, `cancelSource(src)`,
+  `disposeSource(src)`.
+- **Token observation**: `isCancelled(token)`,
+  `throwIfCancelled(token)` (cooperative throw point).
+- **Cancellable delay**: `delayWithCancel(ms, token)` —
+  `Task.Delay` overload that accepts a token; on cancellation
+  before the timer fires, the awaiting state machine resumes
+  with `OperationCanceledException` (caught as `Exception` on
+  the Lyric side).  `delay(ms)` (non-cancellable) still
+  available for callers that don't have a token.
+
+Six new tests in `CancellationTests.fs` covering: `noCancellation`
+returns false; source.make/cancel observability; cooperative
+`throwIfCancelled`; `delayWithCancel` cancellation propagation
+through suspend/resume; auto-timeout source; and the
+structured-concurrency-via-`defer` pattern (`val src =
+makeCancelSource(); defer { cancelSource(src);
+disposeSource(src) }`).  All 416 emitter tests pass (was 411;
++6 — note: 5 cancel tests + 1 structured-concurrency).
+
+Bootstrap-grade scope — Phase 4 follow-ups:
+
+- **AsyncLocal scope flow**: a token doesn't auto-flow to
+  child async funcs the way `AsyncLocal<T>` does in C#.
+  Callers must thread the token explicitly.  AsyncLocal
+  routing requires SM-level integration that's beyond the
+  Phase B+++ surface.
+- **`spawn` + `awaitAll`**: structured concurrency in the
+  language sense (parent task waits for all children, joins
+  on cancellation) needs a dedicated `spawn` primitive.
+  Today's helper-shaped `withScope` would need
+  generic-async-lambda type inference that's deferred
+  (D-progress-059 async-generic SM).
+- **`OperationCanceledException` distinguishability**: today
+  the user catches `Exception`; a Phase 4 revision can wire
+  a Lyric-side `Cancelled` union case so cancellation flows
+  separately from generic errors.
+
+The end-to-end shape — ship a token, cancel cooperatively, run
+cleanup on scope exit — covers the practical Std.Http
+cancellation / timeout use cases that motivated the Phase C
+work in the first place; that follow-up (D-progress-059
+"Std.Http full surface") is now unblocked.
+
+---
+
 ### D-progress-067: Protected type — DEFERRED follow-up notes
 *claude/c2-async-implementation-ZGU95 branch.*  Phase 3
 deliverable §"protected type with barrier semantics" remains
