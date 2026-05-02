@@ -8,9 +8,12 @@
   <ItemGroup>
     <Compile Include="SymbolTableTests.fs" />
     <Compile Include="ResolverTests.fs" />
+    <Compile Include="AdditionalResolverTests.fs" />
     <Compile Include="SignatureTests.fs" />
     <Compile Include="ExprCheckerTests.fs" />
+    <Compile Include="AdditionalExprCheckerTests.fs" />
     <Compile Include="StmtCheckerTests.fs" />
+    <Compile Include="AdditionalStmtCheckerTests.fs" />
     <Compile Include="ConstFoldTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

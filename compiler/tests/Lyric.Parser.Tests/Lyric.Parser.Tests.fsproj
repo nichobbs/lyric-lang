@@ -22,6 +22,7 @@
     <Compile Include="AdditionalStatementTests.fs" />
     <Compile Include="RemainingItemTests.fs" />
     <Compile Include="DiagnosticTests.fs" />
+    <Compile Include="SynthesizerTests.fs" />
     <Compile Include="WorkedExampleSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
