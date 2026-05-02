@@ -62,9 +62,10 @@ let private runWith (inputs: string list) : JsonNode list =
 let private prop (n: JsonNode) (path: string) : JsonNode option =
     match n with
     | :? JsonObject as o ->
-        match o.TryGetPropertyValue path with
-        | true, v -> Option.ofObj v
-        | _ -> None
+        // Explicit byref disambiguates between the .NET 10 2-arg and
+        // 3-arg `TryGetPropertyValue` overloads.
+        let mutable v : JsonNode | null = null
+        if o.TryGetPropertyValue(path, &v) then Option.ofObj v else None
     | _ -> None
 
 let private propStr (n: JsonNode) (path: string) : string =

@@ -71,12 +71,16 @@ to that branch. Never push elsewhere without explicit permission.
 
 ### Tools and build
 
-The bootstrap compiler (Phase 1, in F# on .NET 9) lives in `compiler/`:
+The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
 
 - `compiler/Lyric.sln` — the solution.
-- `compiler/global.json` — pins SDK to 9.0.x.
-- `compiler/Directory.Build.props` — `TargetFramework=net9.0`,
+- `compiler/global.json` — pins SDK to 10.0.x.
+- `compiler/Directory.Build.props` — `TargetFramework=net10.0`,
   `TreatWarningsAsErrors=true`, `Nullable=enable`.
+- `.claude/hooks/session-start.sh` — bootstraps the SDK + runtime
+  pinned by `compiler/global.json` into `~/.dotnet` so Claude Code
+  on the web sessions can build / test without manual setup.
+  Idempotent.
 - `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.TypeChecker/` — the type checker (Phase 1, milestone M1.2, complete).

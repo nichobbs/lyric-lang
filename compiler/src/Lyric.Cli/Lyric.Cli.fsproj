@@ -26,7 +26,7 @@
          right PublicKeyToken).  Byte-level rewrite can't fix up the
          PKT blob heap; Cecil handles it cleanly. -->
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
-    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="9.0.0" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.0" />
   </ItemGroup>
 
 </Project>

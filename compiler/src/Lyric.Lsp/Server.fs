@@ -205,14 +205,19 @@ let private identifierAt (text: string) (pos: Position) : (string * Span) option
                           End   = { Line = pos.Line; Column = endCol + 1;   Offset = 0 } }
                     Some (ident, span)
 
+let private tryGetProperty (o: JsonObject) (name: string) : JsonNode | null =
+    // .NET 10 added a 3-arg overload of `TryGetPropertyValue`, which
+    // breaks F#'s ability to tuple-destructure the (bool * JsonNode)
+    // out-pair on the 2-arg call without a type hint.  Explicit byref
+    // here disambiguates and produces identical IL.
+    let mutable v : JsonNode | null = null
+    if o.TryGetPropertyValue(name, &v) then v else null
+
 let private nodeAt (n: JsonNode | null) (path: string) : JsonNode | null =
     match Option.ofObj n with
     | Some node ->
         match node with
-        | :? JsonObject as o ->
-            match o.TryGetPropertyValue path with
-            | true, v -> v
-            | _ -> null
+        | :? JsonObject as o -> tryGetProperty o path
         | _ -> null
     | None -> null
 
@@ -231,18 +236,12 @@ let dispatch
         (msg: JsonNode) : bool =
     let methodNode =
         match msg with
-        | :? JsonObject as o ->
-            match o.TryGetPropertyValue "method" with
-            | true, v -> v
-            | _ -> null
+        | :? JsonObject as o -> tryGetProperty o "method"
         | _ -> null
     let method' = asStr methodNode
     let id =
         match msg with
-        | :? JsonObject as o ->
-            match o.TryGetPropertyValue "id" with
-            | true, v -> v
-            | _ -> null
+        | :? JsonObject as o -> tryGetProperty o "id"
         | _ -> null
     let params' = nodeAt msg "params"
     match method' with

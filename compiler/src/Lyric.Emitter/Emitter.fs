@@ -1433,7 +1433,36 @@ let private emitExternCall
                 else il.Emit(OpCodes.Callvirt, m)
             m.ReturnType
         | EBMField f ->
-            il.Emit(OpCodes.Ldsfld, f)
+            // .NET 10's `PersistedAssemblyBuilder` calls
+            // `FieldInfo.GetModifiedFieldType()` while emitting an
+            // `Ldsfld` token, which throws `NotSupportedException` on
+            // BCL-loaded `RuntimeFieldInfo` instances.  For literal
+            // (`const`) fields — `Math.PI`, `Math.E`, `Math.Tau`,
+            // primitives' min/max — there's no reason to emit a
+            // field reference at all: read the constant value at
+            // codegen time and bake it in via the appropriate `Ldc.*`.
+            if f.IsLiteral then
+                let raw = f.GetRawConstantValue()
+                match raw with
+                | :? double as v -> il.Emit(OpCodes.Ldc_R8, v)
+                | :? single as v -> il.Emit(OpCodes.Ldc_R4, v)
+                | :? int64  as v -> il.Emit(OpCodes.Ldc_I8, v)
+                | :? int32  as v -> il.Emit(OpCodes.Ldc_I4, v)
+                | :? int16  as v -> il.Emit(OpCodes.Ldc_I4, int v)
+                | :? sbyte  as v -> il.Emit(OpCodes.Ldc_I4, int v)
+                | :? uint64 as v -> il.Emit(OpCodes.Ldc_I8, int64 v)
+                | :? uint32 as v -> il.Emit(OpCodes.Ldc_I4, int v)
+                | :? uint16 as v -> il.Emit(OpCodes.Ldc_I4, int v)
+                | :? byte   as v -> il.Emit(OpCodes.Ldc_I4, int v)
+                | :? bool   as v -> il.Emit(OpCodes.Ldc_I4, if v then 1 else 0)
+                | :? string as v -> il.Emit(OpCodes.Ldstr, v)
+                | _ ->
+                    // Unsupported literal shape — fall back to the
+                    // direct field reference and let the runtime
+                    // surface the exception with full context.
+                    il.Emit(OpCodes.Ldsfld, f)
+            else
+                il.Emit(OpCodes.Ldsfld, f)
             f.FieldType
     // Stash the result + branch to exit, mirroring routeReturn's
     // shape but specialised so we don't need to thread that helper
