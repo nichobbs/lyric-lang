@@ -514,6 +514,21 @@ type HttpClientHost private () =
     static member ReadBodyBytes (response: System.Net.Http.HttpResponseMessage) : System.Threading.Tasks.Task<byte[]> =
         response.Content.ReadAsByteArrayAsync()
 
+/// `System.Random` helpers used by `Std.Random`.  `System.Random`
+/// has overloaded `Next` methods that auto-FFI's strict-match
+/// can resolve, but the seeded constructor and the boolean
+/// helper need their own thin wrappers (D-progress-055).
+[<Sealed; AbstractClass>]
+type RandomHost private () =
+
+    static member Make (seed: int) : System.Random =
+        new System.Random(seed)
+
+    static member NextBool (rng: System.Random) : bool =
+        // 50/50 split; cheaper than NextDouble + comparison and
+        // matches the C# `rng.Next(2) == 1` idiom.
+        rng.Next(2) = 1
+
 /// HTTP server helpers wrapping `System.Net.HttpListener`.  The
 /// canonical loop is `nextContext` (blocking) → inspect / respond →
 /// `respondClose`.  Prefixes follow the HttpListener convention:

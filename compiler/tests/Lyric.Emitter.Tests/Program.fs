@@ -54,5 +54,6 @@ let main argv =
             TryCatchTests.tests
             StdHttpTests.tests
             StdMathTests.tests
+            StdRandomTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

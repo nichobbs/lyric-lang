@@ -1696,6 +1696,28 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-055: Std.Random — pseudorandom number generation
+*claude/deferred-items-round4 branch.*  New `Std.Random`
+package wraps `System.Random` for pseudorandom number
+generation.  Surface area:
+
+- `sharedRandom()` — process-shared instance via
+  `System.Random.Shared`.
+- `makeRandom(seed: Int)` — seeded instance via a thin
+  `Lyric.Stdlib.RandomHost.Make` wrapper.
+- `nextInt(rng)` / `nextIntBelow(rng, max)` /
+  `nextIntRange(rng, min, max)` / `nextLong(rng)` — random
+  integers.
+- `nextDouble(rng)` — random `[0, 1)` double.
+- `nextBool(rng)` — random `true`/`false` via
+  `Lyric.Stdlib.RandomHost.NextBool`.
+
+Three new tests in `StdRandomTests.fs`.  Seeded RNGs make the
+`nextIntRange` test deterministic.  All 388 emitter tests pass
+(was 385; +3 new).
+
+---
+
 ### D-progress-054: Std.Math — new BCL-backed numeric utilities module
 *claude/deferred-items-round4 branch.*  New `Std.Math` package
 exposes `System.Math` / `System.Double` BCL statics through
