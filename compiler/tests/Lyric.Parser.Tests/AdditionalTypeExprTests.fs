@@ -76,11 +76,14 @@ let tests =
 
         // ----- range refinement compositions -----
 
-        test "nullable refined type" {
-            let t = parseClean "Int range 0 ..= 10 ?"
+        test "refined type inside a tuple" {
+            let t = parseClean "(Int range 0 ..= 10, String)"
             match t.Kind with
-            | TNullable { Kind = TRefined _ } -> ()
-            | other -> failtestf "expected TNullable TRefined, got %A" other
+            | TTuple [a; _] ->
+                match a.Kind with
+                | TRefined _ -> ()
+                | other -> failtestf "first: %A" other
+            | other -> failtestf "expected TTuple, got %A" other
         }
 
         test "tuple with nullable element" {
