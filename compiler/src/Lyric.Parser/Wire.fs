@@ -255,21 +255,82 @@ let private synthesiseBootstrap
       Body        = Some body
       Span        = wd.Span }
 
+/// Per-scoped-member factory function (D-progress-072).  A
+/// `scoped[Request] db: Conn = makeConn()` member becomes a
+/// `pub func <WireName>.scoped<Name>(): T` function that returns
+/// a fresh instance on every call.  Callers in request-handler
+/// code call this once per request to instantiate the scoped
+/// dependency; the resulting value's lifetime matches the
+/// request scope (the caller is responsible for cleanup, typically
+/// via `defer`).
+let private synthesiseScopedFactory
+        (wd: WireDecl)
+        (name: string)
+        (ty: TypeExpr)
+        (init: Expr)
+        (sp: Span) : FunctionDecl =
+    let body =
+        FBBlock
+            { Statements = [ { Kind = SExpr init; Span = sp } ]
+              Span       = sp }
+    { DocComments = []
+      Annotations = []
+      Visibility  = Some (Pub sp)
+      IsAsync     = false
+      Name        = wd.Name + ".scoped" + name
+      Generics    = None
+      Params      = []
+      Return      = Some ty
+      Where       = None
+      Contracts   = []
+      Body        = Some body
+      Span        = sp }
+
+/// Lifetime checker (D-progress-072).  Singletons are constructed
+/// once at bootstrap time; their `init` expressions cannot
+/// reference scoped names because a scoped value's lifetime is
+/// per-request, not per-program.  Capturing one in a singleton
+/// would smuggle a request-scoped resource into the global graph.
+let private checkSingletonScopedRefs
+        (diags: ResizeArray<Diagnostic>)
+        (wd: WireDecl) : unit =
+    let scopedNames =
+        wd.Members
+        |> List.choose (function
+            | WMScoped (_, name, _, _, _) -> Some name
+            | _ -> None)
+        |> Set.ofList
+    if not (Set.isEmpty scopedNames) then
+        for m in wd.Members do
+            match m with
+            | WMSingleton (singletonName, _, init, sp) ->
+                let refs = referencedNames init
+                let badRefs = Set.intersect refs scopedNames
+                if not (Set.isEmpty badRefs) then
+                    let names = badRefs |> Set.toList |> String.concat ", "
+                    err diags "P0261"
+                        (sprintf "wire '%s': singleton '%s' references scoped name(s): %s — singletons cannot capture per-scope values"
+                            wd.Name singletonName names)
+                        sp
+            | _ -> ()
+
 let synthesizeItems
         (diags: ResizeArray<Diagnostic>)
         (items: Item list) : Item list =
     // For each `IWire` we emit a record + factory carrying the same
     // name, ordered as `[record, IWire (kept for parser tests),
-    // bootstrap]`.  The ordering matters: SymbolTable returns the
-    // first symbol on `TryFindOne`, so putting the synthesised record
-    // ahead of the original IWire ensures `Resolver.resolveType` for
-    // `TRef [WireName]` lands on `DKRecord` rather than `DKWire` (the
-    // latter isn't a type).  Keeping the IWire item in the list lets
-    // the parser's own item-shape tests continue to assert on it.
+    // bootstrap, scoped factories...]`.  The ordering matters:
+    // SymbolTable returns the first symbol on `TryFindOne`, so
+    // putting the synthesised record ahead of the original IWire
+    // ensures `Resolver.resolveType` for `TRef [WireName]` lands on
+    // `DKRecord` rather than `DKWire` (the latter isn't a type).
+    // Keeping the IWire item in the list lets the parser's own
+    // item-shape tests continue to assert on it.
     let result = ResizeArray<Item>()
     for it in items do
         match it.Kind with
         | IWire wd ->
+            checkSingletonScopedRefs diags wd
             let recordDecl = synthesiseWireRecord wd
             let bootstrap  = synthesiseBootstrap diags wd
             result.Add
@@ -285,5 +346,17 @@ let synthesizeItems
                   Visibility  = None
                   Kind        = IFunc bootstrap
                   Span        = wd.Span }
+            // Scoped factories — one per `WMScoped` member.
+            for m in wd.Members do
+                match m with
+                | WMScoped (_, name, ty, init, sp) ->
+                    let factory = synthesiseScopedFactory wd name ty init sp
+                    result.Add
+                        { DocComments = []
+                          Annotations = []
+                          Visibility  = Some (Pub sp)
+                          Kind        = IFunc factory
+                          Span        = sp }
+                | _ -> ()
         | _ -> result.Add it
     List.ofSeq result

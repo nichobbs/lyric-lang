@@ -59,5 +59,7 @@ let main argv =
             PropertyTestingTests.tests
             CancellationTests.tests
             StructuredConcurrencyTests.tests
+            AsyncLocalTests.tests
+            MockingTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

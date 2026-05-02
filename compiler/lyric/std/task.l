@@ -199,3 +199,44 @@ pub func cancelScope(s: in Scope): Unit = ()
 /// from a `defer { ... }`.
 @externTarget("Lyric.Stdlib.TaskScopeHost.Dispose")
 pub func disposeScope(s: in Scope): Unit = ()
+
+// =====================================================================
+// AsyncLocal-backed ambient cancellation (D-progress-071).
+//
+// `currentToken()` reads an ambient slot that flows naturally
+// across `await` boundaries via .NET's `AsyncLocal<T>`.
+// `installToken(token)` writes to that slot and returns the
+// previous value so the caller can restore on exit:
+//
+//     val previous = installToken(scopeToken(sc))
+//     defer { restoreToken(previous) }
+//
+// Async children can then call `currentToken()` to inherit the
+// scope's cancellation token without threading it through every
+// signature.  `hasAmbient()` returns true when a non-default
+// token is installed; useful for libraries that want to fall
+// back to "no cancellation" when the caller didn't supply one.
+// =====================================================================
+
+/// Read the ambient cancellation token.  Returns the
+/// never-cancelled `CancellationToken.None` when no scope is
+/// active.
+@externTarget("Lyric.Stdlib.AmbientHost.Current")
+pub func currentToken(): CancellationToken = ()
+
+/// Install `token` as the ambient.  Returns the previous value;
+/// callers should `defer { restoreToken(previous) }` so the slot
+/// is restored on scope exit (success or exception).
+@externTarget("Lyric.Stdlib.AmbientHost.SetCurrent")
+pub func installToken(token: in CancellationToken): CancellationToken = ()
+
+/// Restore the ambient slot to `previous`.  Idempotent when
+/// `previous` is the same value already installed.
+@externTarget("Lyric.Stdlib.AmbientHost.Restore")
+pub func restoreToken(previous: in CancellationToken): Unit = ()
+
+/// True when the ambient slot holds a non-default token.  Used by
+/// libraries to detect whether to honour the ambient or fall back
+/// to no-cancellation semantics.
+@externTarget("Lyric.Stdlib.AmbientHost.HasAmbient")
+pub func hasAmbient(): Bool = ()
