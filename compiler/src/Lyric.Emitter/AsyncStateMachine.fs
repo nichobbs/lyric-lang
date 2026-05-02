@@ -178,13 +178,17 @@ let rec private isSafeExprPosition (e: Expr) : bool =
     // `EParen` and `EBlock` wrap expression flow without
     // introducing stack pressure on the await itself, so descend.
     | EParen inner -> isSafeExprPosition inner
-    | EBlock blk   -> blk.Statements |> List.forall isSafeStmt
+    // EBlock inside an expression context (e.g. `return try {...} catch
+    // ...`).  Use the stricter `isSafeStmtNested` so STry+await falls
+    // back to the M1.4 blocking shim — the duplicated-post-await
+    // emit only handles statement-form STry, not try-as-expression.
+    | EBlock blk   -> blk.Statements |> List.forall isSafeStmtNested
     | _ -> false
 
 and private isSafeExprOrBlock (eob: ExprOrBlock) : bool =
     match eob with
     | EOBExpr e  -> isSafeExprPosition e
-    | EOBBlock b -> b.Statements |> List.forall isSafeStmt
+    | EOBBlock b -> b.Statements |> List.forall isSafeStmtNested
 
 and private isSafeStmt (s: Statement) : bool =
     match s.Kind with
@@ -218,8 +222,71 @@ and private isSafeStmt (s: Statement) : bool =
         && (body.Statements |> List.forall isSafeStmt)
     | SLoop (_, body) ->
         body.Statements |> List.forall isSafeStmt
-    | STry _ | SDefer _ | SFor _ | SScope _ ->
+    // Phase B+++ (D-progress-056): STry with one trailing await in
+    // body and no awaits in catches lowers to the duplicated-post-
+    // await pattern.  Pre-stmts execute only on the first-time path;
+    // resume re-enters a duplicate user try whose body is just the
+    // GetResult.  Catches are emitted twice (once per .try copy).
+    | STry (body, catches) ->
+        if not (stmtHasAwait s) then true
+        elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
+        else isPhaseBPlusPlusPlusTryAwaitBody body
+    | SDefer _ | SFor _ | SScope _ ->
         not (stmtHasAwait s)
+
+/// Like `isSafeStmt` but stricter: rejects STry with await in body.
+/// Used inside expression contexts (try-as-expression / EBlock-in-
+/// expression) where the duplicated-post-await emit isn't wired
+/// through the EBlock codegen path.
+and private isSafeStmtNested (s: Statement) : bool =
+    match s.Kind with
+    | STry _ -> not (stmtHasAwait s)
+    | _ -> isSafeStmt s
+
+/// True when this Try body fits the Phase B+++ "single-trailing-
+/// await" shape: pre-stmts are await-free and at safe positions,
+/// last stmt is a top-level await (val/let/var binding, SAssign,
+/// SReturn, or bare SExpr).
+and private isPhaseBPlusPlusPlusTryAwaitBody (body: Block) : bool =
+    if not (blockHasAwait body) then false
+    else
+        let stmts = body.Statements
+        match List.tryLast stmts with
+        | None -> false
+        | Some last when not (stmtIsTopLevelAwait last) -> false
+        | Some _ ->
+            let preLen = List.length stmts - 1
+            let pre = List.truncate preLen stmts
+            (not (pre |> List.exists stmtHasAwait))
+            && (pre |> List.forall isSafeStmt)
+
+and private stmtIsTopLevelAwait (s: Statement) : bool =
+    // Phase B+++ scope: bare await statement or `val/let/var name =
+    // await ...` binding.  SAssign / SReturn whose value is an
+    // await fall back to the M1.4 blocking shim until follow-up
+    // work plumbs the post-result store/return into the try-await
+    // duplicated emit.
+    let rec exprIsAwait (e: Expr) =
+        match e.Kind with
+        | EAwait _ -> true
+        | EParen inner -> exprIsAwait inner
+        | _ -> false
+    match s.Kind with
+    | SExpr e -> exprIsAwait e
+    | SLocal (LBVal ({ Kind = PBinding (_, None) }, _, init))
+    | SLocal (LBLet (_, _, init))
+    | SLocal (LBVar (_, _, Some init)) -> exprIsAwait init
+    | _ -> false
+
+/// Public re-export so Codegen.fs's STry handler can detect the
+/// Phase B+++ shape at emit time.  Mirrors `isPhaseBPlusPlusPlusTryAwaitBody`.
+let isTryAwaitBodyShape (body: Block) (catches: CatchClause list) : bool =
+    if not (blockHasAwait body) then false
+    elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
+    else isPhaseBPlusPlusPlusTryAwaitBody body
+
+/// Public re-export of `stmtIsTopLevelAwait` for Codegen.fs.
+let isStmtTopLevelAwait (s: Statement) : bool = stmtIsTopLevelAwait s
 
 let allAwaitsSafe (fn: FunctionDecl) : bool =
     match fn.Body with

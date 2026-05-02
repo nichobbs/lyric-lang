@@ -819,6 +819,40 @@ let private makeDelegateTy (paramTys: ClrType[]) (retTy: ClrType) : ClrType =
         | n -> failwithf "Delegate lowering: Func<%d> not supported" n
 
 // ---------------------------------------------------------------------------
+// Catch-type name → CLR System.Type resolver.  Module-level so both
+// the statement-form STry handler and the EBlock try-as-expression
+// path share the same alias table.
+// ---------------------------------------------------------------------------
+
+let resolveCatchTypeName (typeName: string) : System.Type =
+    match typeName with
+    | "Bug" | "Exception" | "Error" -> typeof<System.Exception>
+    | "ArgumentException" | "Argument" -> typeof<System.ArgumentException>
+    | "ArgumentNullException" | "NullArgument" -> typeof<System.ArgumentNullException>
+    | "InvalidOperationException" | "InvalidOperation" -> typeof<System.InvalidOperationException>
+    | "NotSupportedException" | "NotSupported" -> typeof<System.NotSupportedException>
+    | "IOException" | "IO" -> typeof<System.IO.IOException>
+    | "FileNotFoundException" | "FileNotFound" -> typeof<System.IO.FileNotFoundException>
+    | "FormatException" | "Format" -> typeof<System.FormatException>
+    | "OverflowException" | "Overflow" -> typeof<System.OverflowException>
+    | "DivideByZeroException" | "DivideByZero" -> typeof<System.DivideByZeroException>
+    | "TimeoutException" | "Timeout" -> typeof<System.TimeoutException>
+    | _ ->
+        let asms = System.AppDomain.CurrentDomain.GetAssemblies()
+        let found =
+            asms
+            |> Array.tryPick (fun a ->
+                try
+                    a.GetTypes()
+                    |> Array.tryFind (fun t ->
+                        t.Name = typeName
+                        || t.FullName = typeName)
+                with _ -> None)
+        match found with
+        | Some t when typeof<System.Exception>.IsAssignableFrom(t) -> t
+        | _ -> typeof<System.Exception>
+
+// ---------------------------------------------------------------------------
 // Expression / statement emission.
 // ---------------------------------------------------------------------------
 
@@ -4118,77 +4152,41 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // <bind>] { … }`.  Each catch's `<Type>` resolves via the
         // catch-type map below; unknown types fall back to
         // `System.Exception` so callers can still trap any bug.
-        // Awaits inside the try body fall back to the M1.4 blocking
-        // shim (the suspend's `Leave` would need protected-region
-        // re-entry on resume — Phase B+++ work).
+        // D-progress-056: when the function is in Phase B SM mode and
+        // the body fits the "single trailing await" shape, route to
+        // the duplicated-post-await emit so the suspend's `Leave`
+        // exits all protected regions cleanly and the resume label
+        // sits between two `.try` copies (no branch-into-protected-
+        // region IL is required).
         let il = ctx.IL
-        let resolveCatchType (typeName: string) : System.Type =
-            match typeName with
-            | "Bug"
-            | "Exception"
-            | "Error" -> typeof<System.Exception>
-            // Common BCL exception aliases — match without forcing
-            // users to walk the assembly-search path for the
-            // canonical names.
-            | "ArgumentException"
-            | "Argument" -> typeof<System.ArgumentException>
-            | "ArgumentNullException"
-            | "NullArgument" -> typeof<System.ArgumentNullException>
-            | "InvalidOperationException"
-            | "InvalidOperation" -> typeof<System.InvalidOperationException>
-            | "NotSupportedException"
-            | "NotSupported" -> typeof<System.NotSupportedException>
-            | "IOException"
-            | "IO" -> typeof<System.IO.IOException>
-            | "FileNotFoundException"
-            | "FileNotFound" -> typeof<System.IO.FileNotFoundException>
-            | "FormatException"
-            | "Format" -> typeof<System.FormatException>
-            | "OverflowException"
-            | "Overflow" -> typeof<System.OverflowException>
-            | "DivideByZeroException"
-            | "DivideByZero" -> typeof<System.DivideByZeroException>
-            | "TimeoutException"
-            | "Timeout" -> typeof<System.TimeoutException>
-            | _ ->
-                // Walk every loaded assembly looking for a CLR class
-                // by short or full name.  Falls back to Exception
-                // when nothing matches; keeps this code permissive
-                // until a richer Lyric-side exception story lands.
-                let asms = System.AppDomain.CurrentDomain.GetAssemblies()
-                let found =
-                    asms
-                    |> Array.tryPick (fun a ->
-                        try
-                            a.GetTypes()
-                            |> Array.tryFind (fun t ->
-                                t.Name = typeName
-                                || t.FullName = typeName)
-                        with _ -> None)
-                match found with
-                | Some t when typeof<System.Exception>.IsAssignableFrom(t) -> t
-                | _ -> typeof<System.Exception>
-        let endLabel = il.BeginExceptionBlock()
-        ctx.TryDepth <- ctx.TryDepth + 1
-        FunctionCtx.pushScope ctx
-        emitBlock ctx body
-        FunctionCtx.popScope ctx
-        ctx.TryDepth <- ctx.TryDepth - 1
-        for c in catches do
-            let exTy = resolveCatchType c.Type
-            il.BeginCatchBlock(exTy)
+        let resolveCatchType = resolveCatchTypeName
+        let isPhaseBPlusPlusPlusTryAwait =
+            ctx.SmAwaitInfo.IsSome
+            && Lyric.Emitter.AsyncStateMachine.isTryAwaitBodyShape body catches
+        if isPhaseBPlusPlusPlusTryAwait then
+            emitTryAwaitDuplicated ctx body catches resolveCatchType
+        else
+            let endLabel = il.BeginExceptionBlock()
+            ctx.TryDepth <- ctx.TryDepth + 1
             FunctionCtx.pushScope ctx
-            match c.Bind with
-            | Some name ->
-                let lb = FunctionCtx.defineLocal ctx name exTy
-                il.Emit(OpCodes.Stloc, lb)
-            | None ->
-                // No binding — pop the exception value off the stack.
-                il.Emit(OpCodes.Pop)
-            emitBlock ctx c.Body
+            emitBlock ctx body
             FunctionCtx.popScope ctx
-        il.EndExceptionBlock()
-        ignore endLabel
+            ctx.TryDepth <- ctx.TryDepth - 1
+            for c in catches do
+                let exTy = resolveCatchType c.Type
+                il.BeginCatchBlock(exTy)
+                FunctionCtx.pushScope ctx
+                match c.Bind with
+                | Some name ->
+                    let lb = FunctionCtx.defineLocal ctx name exTy
+                    il.Emit(OpCodes.Stloc, lb)
+                | None ->
+                    // No binding — pop the exception value off the stack.
+                    il.Emit(OpCodes.Pop)
+                emitBlock ctx c.Body
+                FunctionCtx.popScope ctx
+            il.EndExceptionBlock()
+            ignore endLabel
 
     | _ ->
         codegenErrStmt ctx "E0003"
@@ -4230,3 +4228,377 @@ and emitStatementsWithDeferTail
         | _ ->
             emitStatement ctx s
             emitStatementsWithDeferTail ctx rest tail
+
+/// Phase B+++ try/catch + await emit (D-progress-056).
+///
+/// User code: `try { pre...; val r = await foo() } catch (T e) { handler }`
+/// (or bare `await foo()` / `let`/`var`-bind variant; pre may be empty).
+///
+/// IL shape:
+///
+///     // === First user .try (pre + await suspend-or-inline + bind) ===
+///     .try {
+///         <pre>
+///         <emit inner expr>            // → Task[<T>] on stack
+///         callvirt GetAwaiter
+///         stloc awaiterLoc
+///         ldloca awaiterLoc
+///         call IsCompleted
+///         brtrue InlineAfterAwait
+///         // suspend
+///         this.<>1__state = N
+///         this.<>u__N = awaiterLoc
+///         flush promoted locals
+///         smLocal = this
+///         this.<>builder.AwaitUnsafeOnCompleted<,>(ref awaiter, ref smLocal)
+///         leave afterTryLabel       // exits both the user try and outer auto-try
+///       InlineAfterAwait:
+///         ldloca awaiterLoc; call GetResult
+///         <stloc-or-pop binding>
+///         leave AfterFirstUserTry
+///     } catch (T) {
+///         <emit catch handler>
+///         leave AfterFirstUserTry
+///     }
+///   AfterFirstUserTry:
+///     br AfterUserTry            // skip the resume + second try copy
+///
+///     // === Resume entry (outside both user trys, inside outer auto-try) ===
+///   resumeLabel:                  // == smAwait.ResumeLabels[N]
+///     awaiterLoc = this.<>u__N
+///     this.<>u__N = default
+///     this.<>1__state = -1
+///
+///     // === Second user .try (just GetResult + bind) ===
+///     .try {
+///         ldloca awaiterLoc; call GetResult
+///         <stloc-or-pop binding>
+///         leave AfterSecondUserTry
+///     } catch (T) {
+///         <emit catch handler>     // duplicated body
+///         leave AfterSecondUserTry
+///     }
+///   AfterSecondUserTry:
+///   AfterUserTry:
+and private emitTryAwaitDuplicated
+        (ctx: FunctionCtx)
+        (body: Block)
+        (catches: CatchClause list)
+        (resolveCatchType: string -> System.Type) : unit =
+    let il = ctx.IL
+    let smAwait =
+        match ctx.SmAwaitInfo with
+        | Some s -> s
+        | None   -> failwith "internal: emitTryAwaitDuplicated requires SmAwaitInfo"
+
+    // Split body into pre-stmts + the trailing await statement.
+    let preStmts, awaitStmt =
+        match List.tryLast body.Statements with
+        | Some last ->
+            let preLen = List.length body.Statements - 1
+            (List.truncate preLen body.Statements, last)
+        | None -> failwith "internal: emitTryAwaitDuplicated: empty try body"
+
+    // Extract the `inner` Task expression from the await statement,
+    // peeking through any EParen wrappers.  Also remember the binding
+    // shape so we can stloc / pop correctly after GetResult.
+    let rec unwrapAwait (e: Expr) : Expr =
+        match e.Kind with
+        | EAwait inner -> inner
+        | EParen p -> unwrapAwait p
+        | _ -> failwith "internal: unwrapAwait: not an await expression"
+    let bindName : string option =
+        match awaitStmt.Kind with
+        | SExpr _ -> None
+        | SLocal (LBVal ({ Kind = PBinding (n, None) }, _, _))
+        | SLocal (LBLet (n, _, _))
+        | SLocal (LBVar (n, _, Some _)) -> Some n
+        | _ -> failwith "internal: emitTryAwaitDuplicated: unexpected await stmt shape"
+    let innerExpr : Expr =
+        match awaitStmt.Kind with
+        | SExpr e -> unwrapAwait e
+        | SLocal (LBVal (_, _, init))
+        | SLocal (LBLet (_, _, init))
+        | SLocal (LBVar (_, _, Some init)) -> unwrapAwait init
+        | _ -> failwith "internal: emitTryAwaitDuplicated: unexpected await stmt shape"
+    let bindAnnot : TypeExpr option =
+        match awaitStmt.Kind with
+        | SLocal (LBVal (_, ann, _))
+        | SLocal (LBLet (_, ann, _))
+        | SLocal (LBVar (_, ann, Some _)) -> ann
+        | _ -> None
+
+    // Allocate the await's state index up front; the resume label
+    // is the same one the global Switch dispatch was wired to.
+    let stateIndex = smAwait.NextAwaitIndex
+    smAwait.NextAwaitIndex <- stateIndex + 1
+    let resumeLabel = smAwait.ResumeLabels.[stateIndex]
+
+    // Emit the inner-expression once (as part of the first .try
+    // body) to discover the awaiter / GetResult / returned types.
+    // We capture them by allocating a side-channel: emit the inner
+    // expression in a helper that returns the resolved methods.
+
+    // Forward labels.
+    let afterFirstUserTry = il.DefineLabel()
+    let afterSecondUserTry = il.DefineLabel()
+    let afterUserTry = il.DefineLabel()
+    let inlineAfterAwait = il.DefineLabel()
+
+    // Awaiter local — allocated at function scope so both .try
+    // copies can address it.
+    let awaiterLocalRef : LocalBuilder ref = ref (Unchecked.defaultof<LocalBuilder>)
+    let awaiterTyRef    : System.Type ref = ref typeof<obj>
+    let getResultRef    : MethodInfo ref  = ref (Unchecked.defaultof<MethodInfo>)
+    let returnedTyRef   : System.Type ref = ref typeof<System.Void>
+    let awaiterFieldRef : FieldBuilder ref = ref (Unchecked.defaultof<FieldBuilder>)
+
+    // ---- First user try: pre + compute-awaiter + suspend-or-inline-bind ----
+    il.BeginExceptionBlock() |> ignore
+    ctx.TryDepth <- ctx.TryDepth + 1
+    FunctionCtx.pushScope ctx
+
+    // Pre stmts.
+    for s in preStmts do
+        emitStatement ctx s
+
+    // Push the inner Task expression.
+    let savedExpected = ctx.ExpectedType
+    match bindAnnot with
+    | Some te ->
+        try ctx.ExpectedType <- Some (ctx.ResolveType te)
+        with _ -> ()
+    | None -> ()
+    let taskTy = emitExpr ctx innerExpr
+    ctx.ExpectedType <- savedExpected
+
+    let isClosedGenericOnTaskBuilder =
+        taskTy.IsGenericType
+        && (taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>)
+        && (taskTy.GetGenericArguments() |> Array.exists (fun t ->
+                t :? TypeBuilder
+                || (t.IsGenericType && t.GetGenericArguments() |> Array.exists (fun a -> a :? TypeBuilder))))
+    let elemTy =
+        if taskTy.IsGenericType
+           && taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>
+        then taskTy.GetGenericArguments().[0]
+        else typeof<System.Void>
+    let resolveGenericTask () =
+        let openGetAwaiter =
+            let mi = typedefof<System.Threading.Tasks.Task<_>>.GetMethod("GetAwaiter")
+            match Option.ofObj mi with
+            | Some m -> m
+            | None -> failwith "E14 codegen: Task<>.GetAwaiter open-generic not found"
+        let closedGetAwaiter = TypeBuilder.GetMethod(taskTy, openGetAwaiter)
+        let openAwaiterTy = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+        let closedAwaiterTy = openAwaiterTy.MakeGenericType([| elemTy |])
+        let openGetResult =
+            let mi = openAwaiterTy.GetMethod("GetResult")
+            match Option.ofObj mi with
+            | Some m -> m
+            | None -> failwith "E14 codegen: TaskAwaiter<>.GetResult not found"
+        let closedGetResult = TypeBuilder.GetMethod(closedAwaiterTy, openGetResult)
+        closedGetAwaiter, closedAwaiterTy, closedGetResult, elemTy
+    let getAwaiter, awaiterTy, getResult, returnedTy =
+        if isClosedGenericOnTaskBuilder then resolveGenericTask ()
+        else
+            let ga =
+                match Option.ofObj (taskTy.GetMethod("GetAwaiter")) with
+                | Some m -> m
+                | None -> failwithf "E14 codegen: %s.GetAwaiter not found" taskTy.Name
+            let aw = ga.ReturnType
+            let gr =
+                match Option.ofObj (aw.GetMethod("GetResult")) with
+                | Some m -> m
+                | None -> failwithf "E14 codegen: %s.GetResult not found" aw.Name
+            ga, aw, gr, gr.ReturnType
+
+    il.Emit(OpCodes.Callvirt, getAwaiter)
+    let awaiterLocal = FunctionCtx.defineLocal ctx "__awaiter_try" awaiterTy
+    il.Emit(OpCodes.Stloc, awaiterLocal)
+    awaiterLocalRef := awaiterLocal
+    awaiterTyRef    := awaiterTy
+    getResultRef    := getResult
+    returnedTyRef   := returnedTy
+
+    // Define the awaiter SM field for this state index.
+    let awaiterField =
+        Lyric.Emitter.AsyncStateMachine.defineAwaiterField
+            smAwait.Sm stateIndex awaiterTy
+    smAwait.AwaiterFields.[stateIndex] <- awaiterField
+    awaiterFieldRef := awaiterField
+
+    // IsCompleted check.
+    let awaiterClosedOverTb =
+        awaiterTy.IsGenericType
+        && awaiterTy.GetGenericArguments()
+           |> Array.exists (fun a ->
+               a :? TypeBuilder
+               || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
+    let isCompletedGetter =
+        if awaiterClosedOverTb
+           && awaiterTy.GetGenericTypeDefinition()
+              = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>> then
+            let openTaskAwaiter = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+            let openGetter =
+                openTaskAwaiter.GetMethods()
+                |> Array.tryFind (fun m -> m.Name = "get_IsCompleted")
+            match openGetter with
+            | Some m -> TypeBuilder.GetMethod(awaiterTy, m)
+            | None -> failwith "BCL: TaskAwaiter<>.get_IsCompleted not found"
+        else
+            match Option.ofObj (awaiterTy.GetProperty("IsCompleted")) with
+            | Some p ->
+                match Option.ofObj (p.GetGetMethod()) with
+                | Some g -> g
+                | None -> failwithf "E14 codegen: %s.get_IsCompleted missing" awaiterTy.Name
+            | None -> failwithf "E14 codegen: %s.IsCompleted property missing" awaiterTy.Name
+
+    il.Emit(OpCodes.Ldloca, awaiterLocal)
+    il.Emit(OpCodes.Call, isCompletedGetter)
+    il.Emit(OpCodes.Brtrue, inlineAfterAwait)
+
+    // ---- suspend path ----
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldc_I4, stateIndex)
+    il.Emit(OpCodes.Stfld, smAwait.Sm.State)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldloc, awaiterLocal)
+    il.Emit(OpCodes.Stfld, awaiterField)
+    for (lb, fld) in smAwait.PromotedShadows do
+        il.Emit(OpCodes.Ldarg_0)
+        il.Emit(OpCodes.Ldloc, lb)
+        il.Emit(OpCodes.Stfld, fld)
+    let builderTy = smAwait.Sm.BuilderType
+    let builderClosedOverTb =
+        builderTy.IsGenericType
+        && builderTy.GetGenericArguments()
+           |> Array.exists (fun a ->
+               a :? TypeBuilder
+               || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
+    let closedAwaitUnsafe =
+        if builderClosedOverTb && builderTy.IsGenericType
+           && builderTy.GetGenericTypeDefinition()
+              = typedefof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder<_>> then
+            let openBuilder = typedefof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder<_>>
+            let openOnDef =
+                openBuilder.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = "AwaitUnsafeOnCompleted"
+                    && m.IsGenericMethodDefinition
+                    && m.GetGenericArguments().Length = 2)
+            let closedOnBuilder =
+                match openOnDef with
+                | Some m -> TypeBuilder.GetMethod(builderTy, m)
+                | None ->
+                    failwith "BCL: AsyncTaskMethodBuilder<>.AwaitUnsafeOnCompleted<,> not found"
+            closedOnBuilder.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+        else
+            let openAwaitUnsafe =
+                builderTy.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = "AwaitUnsafeOnCompleted"
+                    && m.IsGenericMethodDefinition
+                    && m.GetGenericArguments().Length = 2)
+            match openAwaitUnsafe with
+            | Some m -> m.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+            | None -> failwithf "BCL: %s.AwaitUnsafeOnCompleted<,> not found" builderTy.Name
+    let smLocal =
+        FunctionCtx.defineLocal ctx "__this_sm_try" (smAwait.Sm.Type :> System.Type)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Stloc, smLocal)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldflda, smAwait.Sm.Builder)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldflda, awaiterField)
+    il.Emit(OpCodes.Ldloca, smLocal)
+    il.Emit(OpCodes.Call, closedAwaitUnsafe)
+    il.Emit(OpCodes.Leave, smAwait.SuspendLeaveLabel)
+
+    // ---- inline-after-await (awaiter was already complete) ----
+    il.MarkLabel(inlineAfterAwait)
+    il.Emit(OpCodes.Ldloca, awaiterLocal)
+    il.Emit(OpCodes.Call, getResult)
+    // Bind into the local (or pop for bare-await).
+    match bindName, returnedTy = typeof<System.Void> with
+    | Some name, false ->
+        let lb = FunctionCtx.defineLocal ctx name returnedTy
+        il.Emit(OpCodes.Stloc, lb)
+    | None, true -> ()         // bare await on a Task (Unit)
+    | None, false ->
+        il.Emit(OpCodes.Pop)   // bare await of Task<T>: discard
+    | Some _, true ->
+        // val r = await sayHi() — Lyric type-checker disallows
+        // this normally, but be defensive.
+        ()
+    il.Emit(OpCodes.Leave, afterFirstUserTry)
+
+    FunctionCtx.popScope ctx
+    ctx.TryDepth <- ctx.TryDepth - 1
+
+    // ---- Catches for first user try ----
+    for c in catches do
+        let exTy = resolveCatchType c.Type
+        il.BeginCatchBlock(exTy)
+        FunctionCtx.pushScope ctx
+        match c.Bind with
+        | Some name ->
+            let lb = FunctionCtx.defineLocal ctx name exTy
+            il.Emit(OpCodes.Stloc, lb)
+        | None -> il.Emit(OpCodes.Pop)
+        emitBlock ctx c.Body
+        FunctionCtx.popScope ctx
+        il.Emit(OpCodes.Leave, afterFirstUserTry)
+    il.EndExceptionBlock()
+
+    il.MarkLabel(afterFirstUserTry)
+    il.Emit(OpCodes.Br, afterUserTry)
+
+    // ---- Resume entry (outside both user trys) ----
+    il.MarkLabel(resumeLabel)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldfld, awaiterField)
+    il.Emit(OpCodes.Stloc, awaiterLocal)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldflda, awaiterField)
+    il.Emit(OpCodes.Initobj, awaiterTy)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldc_I4_M1)
+    il.Emit(OpCodes.Stfld, smAwait.Sm.State)
+
+    // ---- Second user try (just GetResult + bind) ----
+    il.BeginExceptionBlock() |> ignore
+    ctx.TryDepth <- ctx.TryDepth + 1
+    FunctionCtx.pushScope ctx
+
+    il.Emit(OpCodes.Ldloca, awaiterLocal)
+    il.Emit(OpCodes.Call, getResult)
+    match bindName, returnedTy = typeof<System.Void> with
+    | Some name, false ->
+        let lb = FunctionCtx.defineLocal ctx name returnedTy
+        il.Emit(OpCodes.Stloc, lb)
+    | None, true -> ()
+    | None, false -> il.Emit(OpCodes.Pop)
+    | Some _, true -> ()
+    il.Emit(OpCodes.Leave, afterSecondUserTry)
+
+    FunctionCtx.popScope ctx
+    ctx.TryDepth <- ctx.TryDepth - 1
+
+    // Catches duplicated for the second user try.
+    for c in catches do
+        let exTy = resolveCatchType c.Type
+        il.BeginCatchBlock(exTy)
+        FunctionCtx.pushScope ctx
+        match c.Bind with
+        | Some name ->
+            let lb = FunctionCtx.defineLocal ctx name exTy
+            il.Emit(OpCodes.Stloc, lb)
+        | None -> il.Emit(OpCodes.Pop)
+        emitBlock ctx c.Body
+        FunctionCtx.popScope ctx
+        il.Emit(OpCodes.Leave, afterSecondUserTry)
+    il.EndExceptionBlock()
+
+    il.MarkLabel(afterSecondUserTry)
+    il.MarkLabel(afterUserTry)

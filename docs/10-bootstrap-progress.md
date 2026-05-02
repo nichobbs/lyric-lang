@@ -1696,6 +1696,63 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-056: C2 Phase B+++ — try/catch + await with real suspension
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the M1.4
+fallback for `try { ... await ... } catch ...` patterns where
+the body's only await sits at a top-level trailing position
+(`await foo()` bare or `val r = await foo()`) and catches are
+await-free.  The resulting IL uses a duplicated-post-await
+shape: the user try is emitted twice — once for the first-time
+path (pre-stmts → compute awaiter → suspend-or-inline-getResult
+→ bind) and once for the resume path (just GetResult + bind),
+with the resume label sitting between the two `.try` copies so
+the global state-dispatch switch doesn't have to branch into a
+protected region.  Both copies attach the user's catch
+handlers so GetResult-from-faulted-task and pre-stmt
+exceptions both flow through the user catch.
+
+Implementation:
+- `Lyric.Emitter.AsyncStateMachine.isSafeStmt` STry case:
+  return true when body fits the single-trailing-await shape
+  AND catches are await-free; otherwise the function falls
+  back to M1.4.  A new public `isTryAwaitBodyShape` re-exports
+  the predicate for codegen.
+- New `isSafeStmtNested` variant rejects STry+await inside
+  expression contexts (try-as-expression / EBlock-in-
+  expression) so `return try { await ... } catch ...` keeps
+  using the M1.4 blocking shim until try-as-expression+await
+  gets its own duplicated-emit path.
+- Codegen.fs: extracted catch-type alias resolver to module-
+  level `resolveCatchTypeName`; statement-form STry handler
+  now routes to new `emitTryAwaitDuplicated` when SmAwaitInfo
+  is set and body matches the Phase B+++ shape.  The duplicated
+  emitter inlines the first-try (pre + compute-awaiter +
+  IsCompleted check + suspend or fall-through-to-GetResult +
+  bind), marks the resume label between the two copies, then
+  emits the second-try (just GetResult + bind), with catch
+  handlers duplicated for both copies.
+
+Bootstrap-grade scope:
+- Single trailing await per try body (the canonical
+  `try { await foo() } catch ...` pattern from Std.Http).
+- Multiple awaits in one try body, post-await statements,
+  awaits inside catches, awaits inside defer, nested try+await,
+  SAssign+await, and SReturn+await all fall back to M1.4.
+- Catch handler bodies are duplicated in IL (no shared label —
+  blocked by IL's "no branch into protected region" rule).
+  Code-size hit is acceptable for the bootstrap.
+
+Four new tests in `AsyncTests.fs`:
+`phaseBPlusPlusPlus_try_await_no_throw`,
+`phaseBPlusPlusPlus_try_await_pre_stmts`,
+`phaseBPlusPlusPlus_try_await_caught` (the awaitable throws —
+caught by user handler), and
+`phaseBPlusPlusPlus_try_await_real_suspend` (Task.Delay forces
+the resume path).  All 392 emitter tests pass (was 388; +4 new).
+Lexer/Parser/TypeChecker suites unchanged at 70/182/100.
+
+---
+
 ### D-progress-055: Std.Random — pseudorandom number generation
 *claude/deferred-items-round4 branch.*  New `Std.Random`
 package wraps `System.Random` for pseudorandom number

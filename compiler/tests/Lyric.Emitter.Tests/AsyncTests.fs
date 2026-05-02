@@ -395,6 +395,102 @@ func main(): Unit {
 }
 """,
     "ping\nping\nping"
+
+    "phaseBPlusPlusPlus_try_await_no_throw",
+    // Phase B+++ (D-progress-056): trailing `await` inside a `try`
+    // body lowers to the duplicated-post-await pattern.  Awaitable
+    // doesn't throw; the GetResult value is bound to `r` and
+    // discarded as the try exits via Leave.  Catches must not be
+    // entered.
+    """
+package E14
+async func sayHi(): Unit { println("hi from try") }
+async func runner(): Unit {
+  try {
+    await sayHi()
+  } catch Exception as e {
+    println("oops")
+  }
+  println("after")
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "hi from try\nafter"
+
+    "phaseBPlusPlusPlus_try_await_pre_stmts",
+    // Pre-stmts in the try body run on the first-time path only;
+    // resume re-enters a duplicated try whose body is just
+    // GetResult.  This test exercises a Task-completes-synchronously
+    // path so resume is never taken — but the IL is still emitted
+    // and must verify.
+    """
+package E14
+async func answer(): Int = 42
+async func runner(): Unit {
+  try {
+    println("before")
+    val r = await answer()
+    val ignored = r
+  } catch Exception as e {
+    println("err")
+  }
+  println("done")
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "before\ndone"
+
+    "phaseBPlusPlusPlus_try_await_caught",
+    // Awaitable throws via panic propagated through Task; the
+    // user `catch` traps it.  Validates that GetResult's exception
+    // is caught by the surrounding user catch handler in the
+    // first-time path.
+    """
+package E14
+async func bomb(): Int { panic("boom") ; return 0 }
+async func runner(): Unit {
+  try {
+    val r = await bomb()
+    val ignored = r
+  } catch Exception as e {
+    println("caught")
+  }
+  println("after")
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "caught\nafter"
+
+    "phaseBPlusPlusPlus_try_await_real_suspend",
+    // Real BCL Task.Delay forces the suspend/resume path: the
+    // Task is NOT pre-completed at the IsCompleted check, so the
+    // first-time .try Leaves to the outer end, the SM is parked,
+    // the timer fires, MoveNext re-enters, dispatch jumps to the
+    // resume label between the two .try copies, and the second
+    // .try drains GetResult.  Catches must not be entered.
+    """
+package E14
+extern type Task = "System.Threading.Tasks.Task"
+async func runner(): Unit {
+  try {
+    println("before-delay")
+    await Task.Delay(10)
+  } catch Exception as e {
+    println("err")
+  }
+  println("after-try")
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "before-delay\nafter-try"
 ]
 
 let private behavioral =
