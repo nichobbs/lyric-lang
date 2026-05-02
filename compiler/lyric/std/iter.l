@@ -159,3 +159,89 @@ pub func sumInt(xs: in slice[Int]): Int {
   }
   return total
 }
+
+/// Sum every element of a `slice[Long]`.  Empty slices return 0.
+pub func sumLong(xs: in slice[Long]): Long {
+  var total: Long = 0i64
+  for x in xs {
+    total = total + x
+  }
+  return total
+}
+
+/// Sum every element of a `slice[Double]`.  Empty slices return 0.0.
+pub func sumDouble(xs: in slice[Double]): Double {
+  var total: Double = 0.0
+  for x in xs {
+    total = total + x
+  }
+  return total
+}
+
+/// Return the smallest Int in `xs`.  `None` for empty slices.
+pub func iterMinInt(xs: in slice[Int]): Option[Int] {
+  if xs.length == 0 {
+    return None
+  }
+  var best: Int = xs[0]
+  for x in xs {
+    if x < best {
+      best = x
+    }
+  }
+  return Some(value = best)
+}
+
+/// Return the largest Int in `xs`.  `None` for empty slices.
+pub func iterMaxInt(xs: in slice[Int]): Option[Int] {
+  if xs.length == 0 {
+    return None
+  }
+  var best: Int = xs[0]
+  for x in xs {
+    if x > best {
+      best = x
+    }
+  }
+  return Some(value = best)
+}
+
+/// Return the smallest Long in `xs`.  `None` for empty slices.
+pub func minLong(xs: in slice[Long]): Option[Long] {
+  if xs.length == 0 {
+    return None
+  }
+  var best: Long = xs[0]
+  for x in xs {
+    if x < best {
+      best = x
+    }
+  }
+  return Some(value = best)
+}
+
+/// Return the largest Long in `xs`.  `None` for empty slices.
+pub func maxLong(xs: in slice[Long]): Option[Long] {
+  if xs.length == 0 {
+    return None
+  }
+  var best: Long = xs[0]
+  for x in xs {
+    if x > best {
+      best = x
+    }
+  }
+  return Some(value = best)
+}
+
+/// Reverse a `slice[T]` into a fresh slice; the original is unchanged.
+pub func reverse[T](xs: in slice[T]): slice[T] {
+  val acc: List[T] = newList()
+  val n: Int = xs.length
+  var i: Int = 0
+  while i < n {
+    acc.add(xs[n - 1 - i])
+    i = i + 1
+  }
+  return acc.toArray()
+}

@@ -449,6 +449,86 @@ type JsonHost private () =
                 sb.Append('"').Append(encoded.ToString()).Append('"') |> ignore
             sb.Append(']').ToString()
 
+/// HTTP client helpers wrapping `System.Net.Http`.  Extern-package
+/// declarations in Lyric source can't currently route to BCL
+/// methods directly (they parse + type-check but never reach
+/// codegen with a target method).  These thin static shims give
+/// `Std.HttpHost` something concrete to `@externTarget` against
+/// (D-progress-052).
+[<Sealed; AbstractClass>]
+type HttpClientHost private () =
+
+    static member DefaultClient () : System.Net.Http.HttpClient =
+        new System.Net.Http.HttpClient()
+
+    static member MakeRequest (httpMethod: string, url: string) : System.Net.Http.HttpRequestMessage =
+        new System.Net.Http.HttpRequestMessage(
+            new System.Net.Http.HttpMethod(httpMethod),
+            url)
+
+    static member WithHeader (
+            request: System.Net.Http.HttpRequestMessage,
+            key: string,
+            value: string) : System.Net.Http.HttpRequestMessage =
+        request.Headers.TryAddWithoutValidation(key, value) |> ignore
+        request
+
+    static member WithStringBody (
+            request: System.Net.Http.HttpRequestMessage,
+            contentType: string,
+            body: string) : System.Net.Http.HttpRequestMessage =
+        request.Content <- new System.Net.Http.StringContent(
+            body,
+            System.Text.Encoding.UTF8,
+            contentType)
+        request
+
+    static member Send (
+            client: System.Net.Http.HttpClient,
+            request: System.Net.Http.HttpRequestMessage) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
+        client.SendAsync(request)
+
+    static member Get (
+            client: System.Net.Http.HttpClient,
+            url: string) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
+        client.GetAsync(url)
+
+    static member PostString (
+            client: System.Net.Http.HttpClient,
+            url: string,
+            body: string,
+            contentType: string) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
+        let content =
+            new System.Net.Http.StringContent(
+                body,
+                System.Text.Encoding.UTF8,
+                contentType)
+        client.PostAsync(url, content)
+
+    static member StatusCode (response: System.Net.Http.HttpResponseMessage) : int =
+        int response.StatusCode
+
+    static member ReadBodyText (response: System.Net.Http.HttpResponseMessage) : System.Threading.Tasks.Task<string> =
+        response.Content.ReadAsStringAsync()
+
+    static member ReadBodyBytes (response: System.Net.Http.HttpResponseMessage) : System.Threading.Tasks.Task<byte[]> =
+        response.Content.ReadAsByteArrayAsync()
+
+/// `System.Random` helpers used by `Std.Random`.  `System.Random`
+/// has overloaded `Next` methods that auto-FFI's strict-match
+/// can resolve, but the seeded constructor and the boolean
+/// helper need their own thin wrappers (D-progress-055).
+[<Sealed; AbstractClass>]
+type RandomHost private () =
+
+    static member Make (seed: int) : System.Random =
+        new System.Random(seed)
+
+    static member NextBool (rng: System.Random) : bool =
+        // 50/50 split; cheaper than NextDouble + comparison and
+        // matches the C# `rng.Next(2) == 1` idiom.
+        rng.Next(2) = 1
+
 /// HTTP server helpers wrapping `System.Net.HttpListener`.  The
 /// canonical loop is `nextContext` (blocking) → inspect / respond →
 /// `respondClose`.  Prefixes follow the HttpListener convention:

@@ -115,7 +115,7 @@ pub func Url.toString(url: in Url): String {
 /// `sendAsync`, not by this pure request-shaping helper.
 pub func request(method: in HttpMethod, url: in Url): HttpRequest {
   return HttpRequest(
-    handle = HostHttp.makeRequest(methodName(method), url.value),
+    handle = HostHttp.hostMakeRequest(methodName(method), url.value),
     url = url.value
   )
 }
@@ -132,7 +132,7 @@ pub func withHeader(
   requires: key.length > 0
 {
   return HttpRequest(
-    handle = HostHttp.withHeader(request.handle, key, value),
+    handle = HostHttp.hostWithHeader(request.handle, key, value),
     url = request.url
   )
 }
@@ -143,7 +143,7 @@ pub func withHeader(
 /// JSON. Source-generated JSON encoders will feed this in later phases.
 pub func withJsonBody(request: in HttpRequest, json: in String): HttpRequest {
   return HttpRequest(
-    handle = HostHttp.withStringBody(request.handle, "application/json", json),
+    handle = HostHttp.hostWithStringBody(request.handle, "application/json", json),
     url = request.url
   )
 }
@@ -151,7 +151,7 @@ pub func withJsonBody(request: in HttpRequest, json: in String): HttpRequest {
 /// Attach a plain UTF-8 text body.
 pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
   return HttpRequest(
-    handle = HostHttp.withStringBody(request.handle, "text/plain; charset=utf-8", text),
+    handle = HostHttp.hostWithStringBody(request.handle, "text/plain; charset=utf-8", text),
     url = request.url
   )
 }
@@ -172,7 +172,7 @@ pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
 /// helpers or `ensureSuccess`.
 pub async func sendAsync(request: in HttpRequest): Result[HttpResponse, HttpError] {
   return try {
-    val response = await HostHttp.send(HostHttp.defaultClient(), request.handle)
+    val response = await HostHttp.hostSend(HostHttp.hostDefaultClient(), request.handle)
     Ok(value = HttpResponse(handle = response, url = request.url))
   } catch Bug as b {
     Err(error = ConnectionFailed(url = request.url, message = b.message))
@@ -192,7 +192,7 @@ pub async func getAsync(url: in String): Result[HttpResponse, HttpError] {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) ->
       return try {
-        val response = await HostHttp.get(HostHttp.defaultClient(), parsed.value)
+        val response = await HostHttp.hostGet(HostHttp.hostDefaultClient(), parsed.value)
         Ok(value = HttpResponse(handle = response, url = parsed.value))
       } catch Bug as b {
         Err(error = ConnectionFailed(url = parsed.value, message = b.message))
@@ -213,8 +213,8 @@ pub async func postAsync(
     case Err(e) -> return Err(error = e)
     case Ok(parsed) ->
       return try {
-        val response = await HostHttp.postString(
-          HostHttp.defaultClient(),
+        val response = await HostHttp.hostPostString(
+          HostHttp.hostDefaultClient(),
           parsed.value,
           body,
           "text/plain; charset=utf-8"
@@ -233,7 +233,7 @@ pub async func postAsync(
 /// Return the numeric HTTP status code.
 @pure
 pub func HttpResponse.statusCode(response: in HttpResponse): Int {
-  return HostHttp.statusCode(response.handle)
+  return HostHttp.hostStatusCode(response.handle)
 }
 
 /// Return true for 2xx status codes.
@@ -275,7 +275,7 @@ pub func HttpResponse.ensureSuccess(response: in HttpResponse): Result[HttpRespo
 ///   failures.
 pub async func HttpResponse.bodyText(response: in HttpResponse): Result[String, IOError] {
   return try {
-    Ok(value = await HostHttp.readBodyText(response.handle))
+    Ok(value = await HostHttp.hostReadBodyText(response.handle))
   } catch Bug as b {
     Err(error = IoError(path = response.url, message = b.message))
   }
@@ -287,7 +287,7 @@ pub async func HttpResponse.bodyText(response: in HttpResponse): Result[String, 
 /// - `IoError`: host body read, cancellation, or stream failures.
 pub async func HttpResponse.bodyBytes(response: in HttpResponse): Result[slice[Byte], IOError] {
   return try {
-    Ok(value = await HostHttp.readBodyBytes(response.handle))
+    Ok(value = await HostHttp.hostReadBodyBytes(response.handle))
   } catch Bug as b {
     Err(error = IoError(path = response.url, message = b.message))
   }
@@ -304,13 +304,13 @@ pub async func HttpResponse.bodyBytes(response: in HttpResponse): Result[slice[B
 /// implemented without smuggling in hidden effects.
 pub async func retry(
   request: in HttpRequest,
-  maxAttempts: in Nat,
+  maxAttempts: in Int,
   backoffMs: in Long
 ): Result[HttpResponse, HttpError]
   requires: maxAttempts > 0
   requires: backoffMs >= 0
 {
-  var attempts = 0
+  var attempts: Int = 0
   var last: Result[HttpResponse, HttpError] =
     Err(error = ConnectionFailed(url = request.url, message = "not attempted"))
   while attempts < maxAttempts {

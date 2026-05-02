@@ -134,6 +134,58 @@ func main(): Unit {
 }
 """,
     "1\n2\n3"
+
+    "iter_sumLong",
+    """
+package I7
+import Std.Core
+import Std.Iter
+func main(): Unit {
+  println(toString(sumLong([1i64, 2i64, 3i64])))
+}
+""",
+    "6"
+
+    "iter_iterMaxInt",
+    """
+package I8
+import Std.Core
+import Std.Iter
+func main(): Unit {
+  match iterMaxInt([3, 1, 4, 1, 5, 9, 2, 6]) {
+    case None -> println("empty")
+    case Some(v) -> println(toString(v))
+  }
+}
+""",
+    "9"
+
+    "iter_iterMinInt_empty",
+    """
+package I9
+import Std.Core
+import Std.Iter
+func main(): Unit {
+  val xs: slice[Int] = []
+  match iterMinInt(xs) {
+    case None -> println("empty")
+    case Some(v) -> println(toString(v))
+  }
+}
+""",
+    "empty"
+
+    "iter_reverse",
+    """
+package I10
+import Std.Core
+import Std.Iter
+func main(): Unit {
+  val r = reverse([1, 2, 3])
+  for x in r { println(toString(x)) }
+}
+""",
+    "3\n2\n1"
 ]
 
 let tests =
