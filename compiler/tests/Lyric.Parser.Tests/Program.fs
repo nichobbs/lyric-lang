@@ -20,6 +20,7 @@ let main argv =
             InterfaceImplTests.tests
             StatementAndControlFlowTests.tests
             AdditionalStatementTests.tests
+            AdditionalControlFlowTests.tests
             RemainingItemTests.tests
             DiagnosticTests.tests
             SynthesizerTests.tests

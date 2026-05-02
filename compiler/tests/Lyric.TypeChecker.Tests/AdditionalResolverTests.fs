@@ -100,4 +100,69 @@ let tests =
                 (Type.render (TyFunction([TyPrim PtInt; TyPrim PtBool], TyPrim PtUnit, true)))
                 "async (Int, Bool) -> Unit" "async fn"
         }
+
+        test "Type.render for tuples and arrays" {
+            Expect.equal
+                (Type.render (TyTuple [TyPrim PtInt; TyPrim PtBool]))
+                "(Int, Bool)" "binary tuple"
+            Expect.equal
+                (Type.render (TyTuple []))
+                "()" "empty tuple"
+            Expect.equal
+                (Type.render (TyArray(Some 4, TyPrim PtChar)))
+                "array[4, Char]" "fixed-size array"
+            Expect.equal
+                (Type.render (TyArray(None, TyPrim PtByte)))
+                "array[?, Byte]" "size-elided array"
+        }
+
+        test "Type.render for self / type variables / error" {
+            Expect.equal (Type.render TySelf) "Self" "Self"
+            Expect.equal (Type.render (TyVar "T")) "T" "TyVar"
+            Expect.equal (Type.render TyError) "<error>" "TyError"
+        }
+
+        test "Type.equiv on tuples and arrays" {
+            Expect.isTrue
+                (Type.equiv
+                    (TyTuple [TyPrim PtInt; TyPrim PtBool])
+                    (TyTuple [TyPrim PtInt; TyPrim PtBool]))
+                "tuples of same shape are equiv"
+            Expect.isFalse
+                (Type.equiv
+                    (TyTuple [TyPrim PtInt])
+                    (TyTuple [TyPrim PtInt; TyPrim PtBool]))
+                "tuples of different arity are not equiv"
+            Expect.isTrue
+                (Type.equiv
+                    (TyArray(Some 3, TyPrim PtInt))
+                    (TyArray(Some 3, TyPrim PtInt)))
+                "arrays of same size+element are equiv"
+            Expect.isFalse
+                (Type.equiv
+                    (TyArray(Some 3, TyPrim PtInt))
+                    (TyArray(Some 4, TyPrim PtInt)))
+                "arrays of different sizes are not equiv"
+        }
+
+        test "Type.equiv: TyVar matches anything (no real unification yet)" {
+            Expect.isTrue
+                (Type.equiv (TyVar "T") (TyPrim PtInt))
+                "TyVar T equiv Int (treated like TyError)"
+            Expect.isTrue
+                (Type.equiv (TyVar "A") (TyVar "B"))
+                "TyVar A equiv TyVar B"
+        }
+
+        test "Type.primFromString round-trip" {
+            for p in
+                [ PtBool; PtByte; PtInt; PtLong
+                  PtUInt; PtULong; PtNat; PtFloat
+                  PtDouble; PtChar; PtString; PtUnit; PtNever ] do
+                let s = Type.primName p
+                let back = Type.primFromString s
+                Expect.equal back (Some p) (sprintf "%s round-trips" s)
+            Expect.isNone (Type.primFromString "NotAPrim")
+                "unknown name returns None"
+        }
     ]
