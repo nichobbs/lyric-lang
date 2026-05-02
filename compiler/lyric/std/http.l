@@ -9,6 +9,7 @@ package Std.Http
 
 import Std.Errors
 import Std.HttpHost as HostHttp
+import Std.Task
 
 // ---------------------------------------------------------------------------
 // HTTP request and response types.
@@ -324,7 +325,177 @@ pub async func retry(
   return last
 }
 
-// Future: timeout(request, durationMs) and followRedirects(response)
-// need Clock/Duration and redirect policy types from Phase 5. Keep
-// those out of the Phase 4 core to avoid hidden global timers or
-// implicit redirect behavior.
+// ---------------------------------------------------------------------------
+// Phase C cancellation / timeout / redirect (D-progress-070).
+// ---------------------------------------------------------------------------
+
+/// Send a request with explicit cancellation.  Pass a token from
+/// `Std.Task.makeCancelSource()` (or a structured-concurrency
+/// `Std.Task.Scope`) so the host honours cancellation requests
+/// while the request is in flight.
+///
+/// # Errors
+/// - `ConnectionFailed`: classified for cancellations as well as
+///   transport failures (the message includes "cancelled" when
+///   the token signalled).
+pub async func sendWithCancelAsync(
+  request: in HttpRequest,
+  token: in CancellationToken
+): Result[HttpResponse, HttpError] {
+  return try {
+    val response = await HostHttp.hostSendWithCancel(
+      HostHttp.hostDefaultClient(),
+      request.handle,
+      token)
+    Ok(value = HttpResponse(handle = response, url = request.url))
+  } catch Bug as b {
+    Err(error = ConnectionFailed(url = request.url, message = b.message))
+  }
+}
+
+/// Send a request with a timeout in milliseconds.  An auto-cancelling
+/// `CancellationTokenSource` fires after `timeoutMs`; the request is
+/// cancelled, surfacing as `ConnectionFailed` with a "cancelled"
+/// message.  The source is disposed when the call returns.
+pub async func sendWithTimeoutAsync(
+  request: in HttpRequest,
+  timeoutMs: in Int
+): Result[HttpResponse, HttpError]
+  requires: timeoutMs > 0
+{
+  val src = makeCancelSourceTimeout(timeoutMs)
+  val tok = sourceToken(src)
+  defer { disposeSource(src) }
+  return try {
+    val response = await HostHttp.hostSendWithCancel(
+      HostHttp.hostDefaultClient(),
+      request.handle,
+      tok)
+    Ok(value = HttpResponse(handle = response, url = request.url))
+  } catch Bug as b {
+    Err(error = ConnectionFailed(url = request.url, message = b.message))
+  }
+}
+
+/// GET a URL with explicit cancellation.
+pub async func getWithCancelAsync(
+  url: in String,
+  token: in CancellationToken
+): Result[HttpResponse, HttpError] {
+  match Url.tryFrom(url) {
+    case Err(e) -> return Err(error = e)
+    case Ok(parsed) ->
+      return try {
+        val response = await HostHttp.hostGetWithCancel(
+          HostHttp.hostDefaultClient(),
+          parsed.value,
+          token)
+        Ok(value = HttpResponse(handle = response, url = parsed.value))
+      } catch Bug as b {
+        Err(error = ConnectionFailed(url = parsed.value, message = b.message))
+      }
+  }
+}
+
+/// GET a URL with a timeout.  Same shape as `sendWithTimeoutAsync`.
+pub async func getWithTimeoutAsync(
+  url: in String,
+  timeoutMs: in Int
+): Result[HttpResponse, HttpError]
+  requires: timeoutMs > 0
+{
+  val src = makeCancelSourceTimeout(timeoutMs)
+  val tok = sourceToken(src)
+  defer { disposeSource(src) }
+  return await getWithCancelAsync(url, tok)
+}
+
+/// POST a UTF-8 text body to a URL with explicit cancellation.
+pub async func postWithCancelAsync(
+  url: in String,
+  body: in String,
+  token: in CancellationToken
+): Result[HttpResponse, HttpError] {
+  match Url.tryFrom(url) {
+    case Err(e) -> return Err(error = e)
+    case Ok(parsed) ->
+      return try {
+        val response = await HostHttp.hostPostStringWithCancel(
+          HostHttp.hostDefaultClient(),
+          parsed.value,
+          body,
+          "text/plain; charset=utf-8",
+          token)
+        Ok(value = HttpResponse(handle = response, url = parsed.value))
+      } catch Bug as b {
+        Err(error = ConnectionFailed(url = parsed.value, message = b.message))
+      }
+  }
+}
+
+/// POST a UTF-8 text body to a URL with a timeout.
+pub async func postWithTimeoutAsync(
+  url: in String,
+  body: in String,
+  timeoutMs: in Int
+): Result[HttpResponse, HttpError]
+  requires: timeoutMs > 0
+{
+  val src = makeCancelSourceTimeout(timeoutMs)
+  val tok = sourceToken(src)
+  defer { disposeSource(src) }
+  return await postWithCancelAsync(url, body, tok)
+}
+
+/// Read the response body as text, honouring cancellation.  Same
+/// `IoError` discipline as `bodyText`.
+pub async func HttpResponse.bodyTextWithCancel(
+  response: in HttpResponse,
+  token: in CancellationToken
+): Result[String, IOError] {
+  return try {
+    Ok(value = await HostHttp.hostReadBodyTextWithCancel(response.handle, token))
+  } catch Bug as b {
+    Err(error = IoError(path = response.url, message = b.message))
+  }
+}
+
+/// Look up a single response header by name.  Returns `None` when
+/// the header isn't present.  Both response-level and content-level
+/// header collections are consulted.
+pub func HttpResponse.header(
+  response: in HttpResponse,
+  name: in String
+): Option[String] {
+  val v = HostHttp.hostResponseHeader(response.handle, name)
+  if v.length == 0 {
+    None
+  } else {
+    Some(value = v)
+  }
+}
+
+/// Construct an `HttpClient` that follows up to `maxRedirects`
+/// redirects automatically.  Pair with `sendAsync` / `sendWithCancelAsync`
+/// when the caller wants follow-redirect behaviour without
+/// inspecting 3xx responses themselves.
+///
+/// Bootstrap-grade: per-request redirect policy and richer hooks
+/// (e.g. log every hop) are Phase 4 follow-ups.
+pub func clientWithRedirects(maxRedirects: in Int): HostHttp.HttpClient
+  requires: maxRedirects >= 0
+{
+  return HostHttp.hostClientWithRedirects(maxRedirects)
+}
+
+/// Construct an `HttpClient` that does NOT follow redirects.
+/// Useful for callers that want to inspect 3xx responses
+/// themselves (e.g. capturing the `Location` header via
+/// `HttpResponse.header(...)`).
+pub func clientNoRedirects(): HostHttp.HttpClient {
+  return HostHttp.hostClientNoRedirects()
+}
+
+// Future: scoped HttpClient (per-Scope cancellation flow) needs the
+// AsyncLocal<T> propagation from D-progress-059's Phase 4 follow-up;
+// today users thread tokens explicitly via `sendWithCancelAsync`.

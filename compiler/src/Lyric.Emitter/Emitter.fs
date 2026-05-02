@@ -1583,6 +1583,20 @@ let private emitFunctionBody
     // through this exit.
     let exitLabel = il.DefineLabel()
     let isVoidReturn = returnTy = typeof<System.Void>
+    // FFI bug fix (D-progress-070 follow-up): when the function is
+    // `async` AND has an `@externTarget`, the host method already
+    // returns a `Task[<T>]`.  Wrapping the body's value in
+    // `Task.FromResult<T>` at exit would double-wrap, producing
+    // `Task<Task<T>>` and silently dropping cancellation /
+    // exception semantics.  Track this and skip the wrap when
+    // it applies.
+    let isExternAsync =
+        sg.IsAsync
+        && fn.Annotations
+           |> List.exists (fun a ->
+               match a.Name.Segments with
+               | ["externTarget"] -> true
+               | _ -> false)
     // Phase B passes its own pre-allocated result local so the
     // surrounding SetResult block can load from it after the body
     // `Leave`s NormalDone.
@@ -1590,8 +1604,20 @@ let private emitFunctionBody
         match phaseBExit with
         | Some pb -> pb.ResultLocal
         | None    ->
-            if isVoidReturn then None
-            else Some (il.DeclareLocal(returnTy))
+            if isVoidReturn && not isExternAsync then None
+            else
+                // For `isExternAsync`, allocate the local as
+                // `Task[<T>]` (the host method's actual return type)
+                // so the Stloc is well-typed and the exit code can
+                // return it directly without wrapping.
+                let slotTy =
+                    if isExternAsync then
+                        if isVoidReturn then
+                            typeof<System.Threading.Tasks.Task>
+                        else
+                            typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| returnTy |])
+                    else returnTy
+                Some (il.DeclareLocal(slotTy))
     ctx.ReturnLabel <- Some exitLabel
     ctx.ResultLocal <- resultLocal
 
@@ -1746,7 +1772,13 @@ let private emitFunctionBody
         | Some loc -> il.Emit(OpCodes.Ldloc, loc)
         | None     -> ()
         if sg.IsAsync then
-            if isVoidReturn then
+            if isExternAsync then
+                // Body already produced a `Task[<T>]` via the host
+                // call; loading the result local from above is
+                // sufficient.  Skip the FromResult wrap so we don't
+                // double-wrap into `Task<Task<T>>`.
+                ()
+            elif isVoidReturn then
                 // Drop nothing; load Task.CompletedTask.
                 let taskTy = typeof<System.Threading.Tasks.Task>
                 let prop = taskTy.GetProperty("CompletedTask")
