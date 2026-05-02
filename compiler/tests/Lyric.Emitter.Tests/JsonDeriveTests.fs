@@ -97,6 +97,48 @@ func main(): Unit {
 }
 """,
     "{\"msg\":\"line1\\nline2\"}"
+
+    "json_derive_int_slice_field",
+    // Phase 3 (D-progress-043): slice[Int] field rendering.
+    """
+package J7
+@derive(Json)
+pub record Page {
+  total: Int
+  items: slice[Int]
+}
+func main(): Unit {
+  println(Page.toJson(Page(total = 3, items = [10, 20, 30])))
+}
+""",
+    "{\"total\":3,\"items\":[10,20,30]}"
+
+    "json_derive_string_slice_field",
+    // String slice elements get JsonEncodedText.Encode'd individually.
+    """
+package J8
+@derive(Json)
+pub record Tags {
+  values: slice[String]
+}
+func main(): Unit {
+  println(Tags.toJson(Tags(values = ["a", "b\\nc", "\"q\""])))
+}
+""",
+    "{\"values\":[\"a\",\"b\\\\nc\",\"\\u0022q\\u0022\"]}"
+
+    "json_derive_bool_slice_field",
+    """
+package J9
+@derive(Json)
+pub record Flags {
+  values: slice[Bool]
+}
+func main(): Unit {
+  println(Flags.toJson(Flags(values = [true, false, true])))
+}
+""",
+    "{\"values\":[true,false,true]}"
 ]
 
 let tests =

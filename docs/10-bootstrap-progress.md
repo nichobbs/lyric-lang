@@ -1696,6 +1696,51 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-043: `@derive(Json)` — primitive slice fields render as JSON arrays
+*claude/deferred-items-continuation branch.*  Closes a deferred
+follow-up from D-progress-030.  `slice[Int]` / `slice[Long]` /
+`slice[Double]` / `slice[Bool]` / `slice[String]` fields on a
+`@derive(Json)` record now render as canonical JSON array
+literals (`[1,2,3]`, `["a","b"]`, etc.) instead of falling
+through to the `toString` rendering (which produced `Int32[]`
+or similar BCL-name garbage).
+
+**Implementation.**  Five new
+`Lyric.Stdlib.JsonHost::Render<T>Slice` static helpers
+(`RenderIntSlice` / `RenderLongSlice` / `RenderDoubleSlice` /
+`RenderBoolSlice` / `RenderStringSlice`) walk the array element-
+by-element, inserting `,` separators and emitting the element-
+specific encoding:
+
+- Integers / longs / doubles → `Convert.ToString` with
+  invariant-culture, round-trip "R" format for doubles.
+- Booleans → `"true"` / `"false"` literals.
+- Strings → `JsonEncodedText.Encode` (per-element, with
+  surrounding quotes).
+
+`JsonDerive.synthesizeItems` now appends one
+`@externTarget("Lyric.Stdlib.JsonHost.Render<T>Slice")` shim per
+primitive type to every source file containing a `@derive(Json)`
+record (unconditionally — unused helpers cost only a metadata
+row).  `slicePrimitiveHelper` in the same module pattern-matches
+the field's `TSlice` / `TArray` element type and routes the
+field renderer through the matching shim.
+
+**Bootstrap-grade scope.**  Slices of user-defined records (with
+their own `@derive(Json)`), nested slices (`slice[slice[Int]]`),
+and `Option[T]` / `Result[T, E]` fields still fall through to
+`toString` — Phase 4 work.  The synthesised
+`Render<T>Slice` shims are unconditional; on assemblies with no
+slice-field records they're dead code (a few bytes of metadata).
+
+**Tests.**  Three new cases in `JsonDeriveTests.fs`:
+`json_derive_int_slice_field`, `json_derive_string_slice_field`
+(exercises String escaping including `\n`, `"`),
+`json_derive_bool_slice_field`.  All 358 emitter tests pass
+(was 355; +3 new).
+
+---
+
 ### D-progress-042: C2 Phase B++ — nested locals in while/loop bodies (one level deep)
 *claude/c2-async-implementation-ZGU95 branch.*  Lifts the
 "no nested locals" restriction from D-progress-037.  A new

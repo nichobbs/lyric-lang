@@ -71,6 +71,28 @@ let private isStringField (te: TypeExpr) : bool =
     | TRef { Segments = ["String"] } -> true
     | _ -> false
 
+/// Detect a `slice[T]` / `array[N, T]` field whose element type is
+/// a primitive Lyric value: `Int`, `Long`, `Double`, `Bool`,
+/// `String`.  Returns `Some helperName` (e.g. `"__lyricJsonRenderIntSlice"`)
+/// when the synthesiser should route through the matching
+/// `Lyric.Stdlib.JsonHost::Render…Slice` static.  `None` falls
+/// through to the existing `toString` rendering, which doesn't
+/// produce valid JSON for arrays but at least keeps the
+/// synthesiser type-safe for non-primitive slices.
+let private slicePrimitiveHelper (te: TypeExpr) : string option =
+    let elemHelper (elem: TypeExpr) : string option =
+        match elem.Kind with
+        | TRef { Segments = ["Int"] }    -> Some "__lyricJsonRenderIntSlice"
+        | TRef { Segments = ["Long"] }   -> Some "__lyricJsonRenderLongSlice"
+        | TRef { Segments = ["Double"] } -> Some "__lyricJsonRenderDoubleSlice"
+        | TRef { Segments = ["Bool"] }   -> Some "__lyricJsonRenderBoolSlice"
+        | TRef { Segments = ["String"] } -> Some "__lyricJsonRenderStringSlice"
+        | _ -> None
+    match te.Kind with
+    | TSlice elem -> elemHelper elem
+    | TArray (_, elem) -> elemHelper elem
+    | _ -> None
+
 /// Build the body expression for one field's JSON rendering.
 let private renderFieldExpr
         (deriveJsonRecords: Set<string>)
@@ -95,9 +117,18 @@ let private renderFieldExpr
         let callee = mkExpr (EPath (mkPath "__lyricJsonEscape" span)) span
         mkExpr (ECall (callee, [CAPositional access])) span
     | None ->
-        // `toString(self.<field>)` — primitive fields, fallthrough.
-        let callee = mkExpr (EPath (mkPath "toString" span)) span
-        mkExpr (ECall (callee, [CAPositional access])) span
+        match slicePrimitiveHelper field.Type with
+        | Some helperName ->
+            // `__lyricJsonRender<T>Slice(self.<field>)` — routes
+            // through `Lyric.Stdlib.JsonHost::Render<T>Slice`,
+            // emitting a valid `[a, b, c]` JSON array literal
+            // with proper quoting for String elements.
+            let callee = mkExpr (EPath (mkPath helperName span)) span
+            mkExpr (ECall (callee, [CAPositional access])) span
+        | None ->
+            // `toString(self.<field>)` — primitive fields, fallthrough.
+            let callee = mkExpr (EPath (mkPath "toString" span)) span
+            mkExpr (ECall (callee, [CAPositional access])) span
 
 let private synthesiseToJson
         (deriveJsonRecords: Set<string>)
@@ -206,6 +237,70 @@ let synthesizeItems (items: Item list) : Item list =
               Visibility  = None
               Kind        = IFunc escFn
               Span        = firstSpan }
+        // Synthesise per-primitive slice renderers.  Each one is
+        // an extern target on `Lyric.Stdlib.JsonHost::Render<T>Slice`
+        // accepting a `slice[T]` and returning a `[a, b, c]` JSON
+        // array literal.  Defined unconditionally because the
+        // synthesiser doesn't yet pre-scan field types — unused
+        // helpers cost a few bytes of metadata but no IL.
+        let mkSliceHelper
+                (helperName: string)
+                (clrName: string)
+                (elemTy: TypeExpr) : Item =
+            let sliceTy =
+                mkType (TSlice elemTy) firstSpan
+            let ann : Annotation =
+                { Name = mkPath "externTarget" firstSpan
+                  Args =
+                    [ ALiteral
+                        (AVString (clrName, firstSpan),
+                         firstSpan) ]
+                  Span = firstSpan }
+            let fn : FunctionDecl =
+                { DocComments = []
+                  Annotations = [ ann ]
+                  Visibility  = None
+                  IsAsync     = false
+                  Name        = helperName
+                  Generics    = None
+                  Params      =
+                    [ { Mode    = PMIn
+                        Name    = "s"
+                        Type    = sliceTy
+                        Default = None
+                        Span    = firstSpan } ]
+                  Return      = Some stringTy
+                  Where       = None
+                  Contracts   = []
+                  Body        = Some (FBExpr (mkExpr (ELiteral LUnit) firstSpan))
+                  Span        = firstSpan }
+            { DocComments = []
+              Annotations = []
+              Visibility  = None
+              Kind        = IFunc fn
+              Span        = firstSpan }
+        let mkRefTy (name: string) =
+            mkType (TRef (mkPath name firstSpan)) firstSpan
+        result.Add (mkSliceHelper
+            "__lyricJsonRenderIntSlice"
+            "Lyric.Stdlib.JsonHost.RenderIntSlice"
+            (mkRefTy "Int"))
+        result.Add (mkSliceHelper
+            "__lyricJsonRenderLongSlice"
+            "Lyric.Stdlib.JsonHost.RenderLongSlice"
+            (mkRefTy "Long"))
+        result.Add (mkSliceHelper
+            "__lyricJsonRenderDoubleSlice"
+            "Lyric.Stdlib.JsonHost.RenderDoubleSlice"
+            (mkRefTy "Double"))
+        result.Add (mkSliceHelper
+            "__lyricJsonRenderBoolSlice"
+            "Lyric.Stdlib.JsonHost.RenderBoolSlice"
+            (mkRefTy "Bool"))
+        result.Add (mkSliceHelper
+            "__lyricJsonRenderStringSlice"
+            "Lyric.Stdlib.JsonHost.RenderStringSlice"
+            (mkRefTy "String"))
         for it in items do
             if hasDeriveJson it then
                 match it.Kind with
