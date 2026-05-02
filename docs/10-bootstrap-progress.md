@@ -1696,6 +1696,26 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-065: Tutorial documentation — guided newcomer intro
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships
+`docs/13-tutorial.md`, a 30-minute walkthrough that takes a
+beginner from Hello World through records, sum types,
+generics, async/await, file I/O + JSON, and the three new
+testing modules (D-progress-063 / 064).  Each section is a
+small, runnable program; the README's reading-order is
+updated to put the tutorial after the overview (00 → 13 →
+02 → 01 → 03).
+
+The tutorial intentionally avoids the spec's exhaustiveness;
+it's a gateway, not a reference.  Cross-references point
+readers to the language reference, decision log, and
+worked-examples gallery for depth.  Future revisions will
+grow domain-focused chapters (REST services, contract-driven
+domain modelling) once the relevant Phase 2/3 features
+mature.
+
+---
+
 ### D-progress-064: Std.Testing.Property — property-based testing
 *claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships
 a bootstrap-grade property-based testing surface so users can
