@@ -1696,6 +1696,29 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-054: Std.Math — new BCL-backed numeric utilities module
+*claude/deferred-items-round4 branch.*  New `Std.Math` package
+exposes `System.Math` / `System.Double` BCL statics through
+`@externTarget` annotations.  Surface area:
+
+- **Constants.**  `pi()` / `e()` / `tau()`.
+- **Absolute value.**  `absInt` / `absLong` / `absDouble`.
+- **Pairwise min/max.**  `minPairInt` / `maxPairInt` / `minPairLong`
+  / `maxPairLong` / `minPairDouble` / `maxPairDouble`.
+- **Powers / roots / logs.**  `pow` / `sqrt` / `cbrt` / `ln` /
+  `log10` / `log2` / `exp`.
+- **Trigonometry (radians).**  `sin` / `cos` / `tan` / `asin` /
+  `acos` / `atan` / `atan2`.
+- **Rounding.**  `floor` / `ceiling` / `round` / `truncate`
+  (banker's rounding via `System.Math.Round`).
+- **Sign / classification.**  `signInt` / `signLong` /
+  `signDouble`; `isNaN` / `isInfinity` / `isFinite`.
+
+Six new tests in `StdMathTests.fs`.  All 385 emitter tests pass
+(was 379; +6 new).
+
+---
+
 ### D-progress-053: Std.Iter expansion — sumLong, sumDouble, iterMin/Max, reverse
 *claude/deferred-items-round4 branch.*  Closes a deferred
 follow-up — the `Std.Iter` surface previously only had `sumInt`

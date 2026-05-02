@@ -53,5 +53,6 @@ let main argv =
             ContractMetaTests.tests
             TryCatchTests.tests
             StdHttpTests.tests
+            StdMathTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

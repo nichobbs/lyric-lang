@@ -54,6 +54,7 @@
     <Compile Include="ContractMetaTests.fs" />
     <Compile Include="TryCatchTests.fs" />
     <Compile Include="StdHttpTests.fs" />
+    <Compile Include="StdMathTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
