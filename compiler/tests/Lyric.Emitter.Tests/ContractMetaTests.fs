@@ -74,4 +74,70 @@ func main(): Unit { println(shown(Visible(x = 1))) }
                         "package-private record absent"
                     Expect.isFalse (json.Contains "helper")
                         "package-private func absent"
+
+        testCase "[parseFromJson round-trips toJson]" <| fun () ->
+            let original : ContractMeta.Contract =
+                { PackageName = "Demo"
+                  Version = "1.2.3"
+                  Decls = [
+                    { Kind = "func"; Name = "f"; Repr = "(x: in Int): Int" }
+                    { Kind = "record"; Name = "R"; Repr = "{ a: Int, b: String }" }
+                  ] }
+            let json = ContractMeta.toJson original
+            match ContractMeta.parseFromJson json with
+            | None -> failtest "parseFromJson should round-trip"
+            | Some parsed ->
+                Expect.equal parsed.PackageName "Demo" "packageName"
+                Expect.equal parsed.Version "1.2.3" "version"
+                Expect.equal parsed.Decls.Length 2 "decl count"
+                Expect.equal parsed.Decls.[0].Name "f" "first decl name"
+                Expect.equal parsed.Decls.[1].Kind "record" "second decl kind"
+
+        testCase "[diffContracts detects added/removed/changed]" <| fun () ->
+            let oldC : ContractMeta.Contract =
+                { PackageName = "Demo"
+                  Version = "1.0.0"
+                  Decls = [
+                    { Kind = "func"; Name = "keep"; Repr = "(x: in Int): Int" }
+                    { Kind = "func"; Name = "modify"; Repr = "(x: in Int): Int" }
+                    { Kind = "func"; Name = "drop"; Repr = "(): Unit" }
+                  ] }
+            let newC : ContractMeta.Contract =
+                { PackageName = "Demo"
+                  Version = "1.1.0"
+                  Decls = [
+                    { Kind = "func"; Name = "keep"; Repr = "(x: in Int): Int" }
+                    { Kind = "func"; Name = "modify"; Repr = "(x: in Long): Int" }
+                    { Kind = "func"; Name = "added"; Repr = "(): Unit" }
+                  ] }
+            let entries = ContractMeta.diffContracts oldC newC
+            let kinds =
+                entries
+                |> List.map (function
+                    | ContractMeta.DiffAdded d   -> "+ " + d.Name
+                    | ContractMeta.DiffRemoved d -> "- " + d.Name
+                    | ContractMeta.DiffChanged (o, _) -> "~ " + o.Name)
+            Expect.equal kinds.Length 3 "added + removed + changed"
+            Expect.contains kinds "+ added" "new func added"
+            Expect.contains kinds "- drop" "old func removed"
+            Expect.contains kinds "~ modify" "func signature changed"
+            Expect.isTrue (ContractMeta.hasBreakingChanges entries)
+                "removed/changed entries are breaking"
+
+        testCase "[diffContracts identifies additive-only as non-breaking]" <| fun () ->
+            let oldC : ContractMeta.Contract =
+                { PackageName = "Demo"
+                  Version = "1.0.0"
+                  Decls = [ { Kind = "func"; Name = "f"; Repr = "()" } ] }
+            let newC : ContractMeta.Contract =
+                { PackageName = "Demo"
+                  Version = "1.1.0"
+                  Decls = [
+                    { Kind = "func"; Name = "f"; Repr = "()" }
+                    { Kind = "func"; Name = "g"; Repr = "()" }
+                  ] }
+            let entries = ContractMeta.diffContracts oldC newC
+            Expect.equal entries.Length 1 "one added"
+            Expect.isFalse (ContractMeta.hasBreakingChanges entries)
+                "added-only is non-breaking"
     ]

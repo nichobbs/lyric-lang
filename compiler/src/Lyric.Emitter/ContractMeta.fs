@@ -243,3 +243,107 @@ let readFromAssembly (dllPath: string) : string option =
             Some (Encoding.UTF8.GetString(er.GetResourceData()))
         | _ -> None
     | None -> None
+
+/// Parse the JSON payload back to a `Contract` value.  Uses
+/// `System.Text.Json` (already loaded via the stdlib) for
+/// robustness against future format additions; the schema mirrors
+/// `toJson` above.  Returns `None` on parse failure.
+let parseFromJson (json: string) : Contract option =
+    try
+        use doc = System.Text.Json.JsonDocument.Parse(json)
+        let root = doc.RootElement
+        let pkg =
+            match root.TryGetProperty("packageName") with
+            | true, e -> e.GetString()
+            | _ -> ""
+        let ver =
+            match root.TryGetProperty("version") with
+            | true, e -> e.GetString()
+            | _ -> "0.0.0"
+        let safeStr (s: string | null) (fallback: string) : string =
+            match Option.ofObj s with
+            | Some v -> v
+            | None   -> fallback
+        let decls =
+            match root.TryGetProperty("decls") with
+            | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                [ for el in arr.EnumerateArray() do
+                    let kind =
+                        match el.TryGetProperty("kind") with
+                        | true, e -> safeStr (e.GetString()) ""
+                        | _ -> ""
+                    let name =
+                        match el.TryGetProperty("name") with
+                        | true, e -> safeStr (e.GetString()) ""
+                        | _ -> ""
+                    let repr =
+                        match el.TryGetProperty("repr") with
+                        | true, e -> safeStr (e.GetString()) ""
+                        | _ -> ""
+                    yield { Kind = kind; Name = name; Repr = repr } ]
+            | _ -> []
+        let pkgStr = safeStr pkg ""
+        let verStr = safeStr ver "0.0.0"
+        Some { PackageName = pkgStr; Version = verStr; Decls = decls }
+    with _ -> None
+
+/// Diff result for `lyric public-api-diff`.  Each variant carries
+/// enough info to render a human-readable line.  Removed/changed
+/// entries are SemVer-major-bump-worthy; Added entries are minor-
+/// bump-worthy.
+type ContractDiffEntry =
+    | DiffAdded   of ContractDecl
+    | DiffRemoved of ContractDecl
+    | DiffChanged of oldDecl: ContractDecl * newDecl: ContractDecl
+
+let private declKey (d: ContractDecl) = (d.Kind, d.Name)
+
+/// Compute a structural diff between two contracts.  Decls keyed
+/// by (Kind, Name) — adding a record and removing a same-named
+/// function counts as both an Added and a Removed.
+let diffContracts
+        (oldC: Contract) (newC: Contract) : ContractDiffEntry list =
+    let oldByKey =
+        oldC.Decls
+        |> List.map (fun d -> declKey d, d)
+        |> Map.ofList
+    let newByKey =
+        newC.Decls
+        |> List.map (fun d -> declKey d, d)
+        |> Map.ofList
+    let allKeys =
+        Set.union (oldByKey |> Map.toList |> List.map fst |> Set.ofList)
+                  (newByKey |> Map.toList |> List.map fst |> Set.ofList)
+    [ for key in allKeys do
+        match Map.tryFind key oldByKey, Map.tryFind key newByKey with
+        | Some o, Some n when o.Repr <> n.Repr -> yield DiffChanged (o, n)
+        | Some _, Some _ -> ()  // unchanged
+        | None, Some n -> yield DiffAdded n
+        | Some o, None -> yield DiffRemoved o
+        | None, None -> () ]
+    |> List.sortBy (fun entry ->
+        let kind, name =
+            match entry with
+            | DiffAdded d -> 0, declKey d
+            | DiffRemoved d -> 1, declKey d
+            | DiffChanged (o, _) -> 2, declKey o
+        (kind, name))
+
+/// Returns true when the diff contains breaking changes
+/// (Removed or Changed).  Added-only diffs are a SemVer minor bump.
+let hasBreakingChanges (entries: ContractDiffEntry list) : bool =
+    entries
+    |> List.exists (function
+        | DiffRemoved _ | DiffChanged _ -> true
+        | DiffAdded _ -> false)
+
+/// Render a single diff entry as a human-readable line.
+let renderDiffEntry (entry: ContractDiffEntry) : string =
+    match entry with
+    | DiffAdded d ->
+        sprintf "  + %s %s : %s" d.Kind d.Name d.Repr
+    | DiffRemoved d ->
+        sprintf "  - %s %s : %s" d.Kind d.Name d.Repr
+    | DiffChanged (o, n) ->
+        sprintf "  ~ %s %s\n      old: %s\n      new: %s"
+            o.Kind o.Name o.Repr n.Repr

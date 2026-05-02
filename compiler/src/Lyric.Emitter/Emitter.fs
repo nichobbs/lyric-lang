@@ -1620,30 +1620,48 @@ let private emitFunctionBody
     let emitBodyBlock (blk: Block) =
         let stmts = blk.Statements
         Codegen.FunctionCtx.pushScope ctx
-        // Split out the last statement so the value-producing case can
-        // route through `routeReturn`.  Defers in the prefix wrap both
-        // the prefix tail and the last-statement handler in try/finally
-        // via `emitStatementsWithDefer`.
-        let prefix, lastOpt =
-            match List.tryLast stmts with
-            | None      -> [], None
-            | Some last -> List.take (List.length stmts - 1) stmts, Some last
-        let emitLast () =
-            match lastOpt with
-            | None -> ()
-            | Some last ->
-                if not isVoidReturn then
-                    match last.Kind with
-                    | SExpr e ->
-                        let t = Codegen.emitExpr ctx e
-                        routeReturn t
-                    | _ -> Codegen.emitStatement ctx last
-                else
-                    Codegen.emitStatement ctx last
-        Codegen.emitStatementsWithDeferTail ctx prefix emitLast
-        Codegen.FunctionCtx.popScope ctx
-        if isVoidReturn then
+        // Phase B+++ defer-await trailing pattern (D-progress-057):
+        // when the body matches `[pre-defer]; defer { cleanup };
+        // [between]; trailing-await`, route to the duplicated-emit
+        // path so cleanup runs once on scope exit (not on suspend).
+        // Restricted to Unit-returning async funcs: the trailing
+        // await's value isn't routed through `routeReturn`.
+        let phaseBPlusPlusPlusDefer =
+            if not isVoidReturn then None
+            elif ctx.SmAwaitInfo.IsNone then None
+            else AsyncStateMachine.tryMatchDeferAwaitTrailingShape stmts
+        match phaseBPlusPlusPlusDefer with
+        | Some (preDefer, deferBody, between, awaitStmt) ->
+            for s in preDefer do
+                Codegen.emitStatement ctx s
+            Codegen.emitDeferAwaitDuplicated ctx deferBody between awaitStmt
+            Codegen.FunctionCtx.popScope ctx
             il.Emit(OpCodes.Br, exitLabel)
+        | None ->
+            // Split out the last statement so the value-producing case can
+            // route through `routeReturn`.  Defers in the prefix wrap both
+            // the prefix tail and the last-statement handler in try/finally
+            // via `emitStatementsWithDefer`.
+            let prefix, lastOpt =
+                match List.tryLast stmts with
+                | None      -> [], None
+                | Some last -> List.take (List.length stmts - 1) stmts, Some last
+            let emitLast () =
+                match lastOpt with
+                | None -> ()
+                | Some last ->
+                    if not isVoidReturn then
+                        match last.Kind with
+                        | SExpr e ->
+                            let t = Codegen.emitExpr ctx e
+                            routeReturn t
+                        | _ -> Codegen.emitStatement ctx last
+                    else
+                        Codegen.emitStatement ctx last
+            Codegen.emitStatementsWithDeferTail ctx prefix emitLast
+            Codegen.FunctionCtx.popScope ctx
+            if isVoidReturn then
+                il.Emit(OpCodes.Br, exitLabel)
 
     match fn.Body with
     | _ when fn.Annotations

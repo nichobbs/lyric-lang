@@ -134,11 +134,12 @@ dotnet run --project tests/Lyric.Emitter.Tests
 - [07-references.md](docs/07-references.md) — external standards and prior art
 - [08-contract-semantics.md](docs/08-contract-semantics.md) — operational semantics for `requires` / `ensures` / `invariant`
 - [09-msil-emission.md](docs/09-msil-emission.md) — how Lyric lowers to MSIL on .NET
+- [13-tutorial.md](docs/13-tutorial.md) — guided introduction for newcomers (Phase 3 / D-progress-065)
 - [grammar.ebnf](docs/grammar.ebnf) — formal grammar (Phase 0 deliverable #4)
 
 ## Reading order
 
-Newcomers: 00 → 02 → 01 → 03.
+Newcomers: 00 → 13 → 02 → 01 → 03.
 Implementers: 01 → 05 → 06.
 Reviewers: 03 → 04 → 06.
 

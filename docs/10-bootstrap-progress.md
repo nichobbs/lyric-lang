@@ -1696,6 +1696,535 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-067: Protected type — DEFERRED follow-up notes
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3
+deliverable §"protected type with barrier semantics" remains
+deferred.  Today's parser already accepts `protected type`
+(with `PMField`, `PMInvariant`, `PMEntry`, `PMFunc` members)
+and the type checker registers it as `DKProtected`, but the
+emitter has no codegen for the construct.
+
+A correct implementation requires:
+
+- **Class lowering**: emit a synthesised CLR class wrapping
+  the protected state with a Monitor/`object` instance lock.
+- **Entry/method synthesis**: each `entry name(...)` and
+  `pub func name(...)` becomes a method whose body is
+  wrapped in `Monitor.Enter(this) ... try { ... } finally
+  { Monitor.Exit(this) }`.
+- **Barrier evaluation**: `entry foo(...) when <cond> { ... }`
+  evaluates `<cond>` before entering the critical section.
+  Bootstrap semantics: if false, throw a "barrier not met"
+  exception (Ada-style condition-variable waiting + queue
+  signalling lands in Phase 4 alongside structured
+  concurrency scopes).
+- **Invariant checking**: `invariant: <cond>` re-evaluates
+  on entry exit (D008 / contract semantics).
+
+Estimated effort: 2-3 sessions for bootstrap-grade
+(synchronous lock + barrier-throw); full Ada-style
+condition-variable queues are gated on the C2 Phase C
+real-cancellation work since both want
+`AsyncLocal<T>`-style scope plumbing.
+
+Coupled deferrals (already documented elsewhere):
+- C2 Phase C cancellation (D-progress-059)
+- C6 scoped wire lifetimes (gated on Phase C)
+- Std.Http full surface (gated on Phase C)
+
+---
+
+### D-progress-066: LSP — completion, hover, go-to-definition
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the
+bootstrap LSP from diagnostics-only to a usable triple:
+
+- **Hover** (`textDocument/hover`): given a cursor position,
+  identifies the identifier under the cursor (lexer-style
+  `[A-Za-z_][A-Za-z0-9_]*` boundary scan), looks it up against
+  the parsed file's top-level items, and returns a markdown-
+  formatted summary including `pub`/`async` modifiers and any
+  `///` doc comments.  Non-identifier positions return an
+  empty result.
+- **Completion** (`textDocument/completion`): returns every
+  top-level item in the current file as a `CompletionItem`
+  with `label`, `kind` (mapped from Lyric item kind to
+  CompletionItemKind), and `detail` (the same one-line
+  summary used for hover).  Triggered by `.` plus on-demand
+  invocation.
+- **Go-to-definition** (`textDocument/definition`): same
+  identifier lookup as hover, returns a `Location` pointing
+  at the matching item's full span (so editors can jump
+  directly to the declaration).
+
+Capabilities advertised in `initialize`:
+`completionProvider` (with `.` trigger char and
+`resolveProvider: false`), `definitionProvider: true`, plus
+the existing `hoverProvider: true` and `textDocumentSync`.
+
+Implementation notes:
+- New helper `identifierAt` does a 1D string scan of the
+  document (no re-tokenisation) — ASCII-fast for the common
+  case; UTF-16 surrogate pairs split mid-identifier are a
+  pathological case the bootstrap doesn't handle.
+- `itemSummary` and `itemName` produce per-item-kind one-line
+  signatures; both share the same render so hover/completion
+  stay consistent.
+- All three handlers re-parse the document on each request.
+  Incremental parsing + resolved-AST caching is a Phase 4
+  follow-up.
+
+Bootstrap-grade scope:
+- **Cross-file imports** aren't surfaced — completion only
+  shows the current file's top-level names.  An imported
+  `Std.Json.toJson(...)` call doesn't auto-complete to
+  `toJson` from `Std.Json`.
+- **Scope-aware ranking** (in-scope locals, parameter names,
+  match bindings) isn't done — only top-level items appear.
+- **Type-aware hover** (showing the actual resolved type
+  instead of just the syntactic signature) requires running
+  the full type checker per request and threading the result
+  to the position-lookup; deferred.
+
+Four new tests in `ProtocolTests.fs`:
+`initialize advertises completion + definition`,
+`completion lists top-level items`, `hover on an identifier
+returns its summary`, and `definition on an identifier
+returns its location`.  All 9 LSP tests pass (was 5; +4 new).
+
+---
+
+### D-progress-065: Tutorial documentation — guided newcomer intro
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships
+`docs/13-tutorial.md`, a 30-minute walkthrough that takes a
+beginner from Hello World through records, sum types,
+generics, async/await, file I/O + JSON, and the three new
+testing modules (D-progress-063 / 064).  Each section is a
+small, runnable program; the README's reading-order is
+updated to put the tutorial after the overview (00 → 13 →
+02 → 01 → 03).
+
+The tutorial intentionally avoids the spec's exhaustiveness;
+it's a gateway, not a reference.  Cross-references point
+readers to the language reference, decision log, and
+worked-examples gallery for depth.  Future revisions will
+grow domain-focused chapters (REST services, contract-driven
+domain modelling) once the relevant Phase 2/3 features
+mature.
+
+---
+
+### D-progress-064: Std.Testing.Property — property-based testing
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships
+a bootstrap-grade property-based testing surface so users can
+assert invariants hold across many random inputs without
+writing per-input loops by hand.
+
+`Std.Testing.Property` (`lyric/std/testing_property.l`):
+- `forAllIntRange(rng, min, max, n, prop)` — runs `prop: (Int)
+  -> Bool` on `n` random Int samples in `[min, max)`, panicking
+  with the failing input on the first counterexample.
+- `forAllBool(rng, n, prop)` — Bool inputs.
+- `forAllDouble(rng, n, prop)` — Double inputs in `[0, 1)`.
+- `forAllIntPair(rng, min, max, n, prop)` — `(Int, Int)` pairs
+  for binary properties (commutativity, associativity, etc.).
+
+The caller passes a seeded `Random` from `Std.Random`, making
+runs deterministic and reproducible.  Properties are written
+as bare lambdas (`{ x: Int -> ... }`) so the syntactic
+overhead matches Lyric's existing higher-order helpers in
+`Std.Iter`.
+
+Bootstrap-grade scope:
+- No shrinking (the failing input is reported as-is, not
+  reduced).
+- No `Gen[T]` type-class — each scalar gets its own
+  `forAll<Type>` helper rather than a composable generator
+  monad.
+- Slice / record / generic-T inputs aren't yet supported
+  (would need a type-driven generator for each).
+
+Four new tests in `PropertyTestingTests.fs` covering Int
+addition commutativity, even-doubling, Bool double-negation,
+and Double range bounds.  All 411 emitter tests pass (was
+407; +4 new).
+
+---
+
+### D-progress-063: Std.Testing + Std.Testing.Snapshot — built-in test utilities
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships a
+bootstrap-grade testing surface so Lyric programs can write their
+own tests without rolling assertion helpers each time.
+
+`Std.Testing` (`lyric/std/testing.l`):
+- `assertEqual(actual, expected, label)` — panics on string mismatch
+  with a structured "expected/actual" message.
+- `assertEqualInt(actual, expected, label)` — same for `Int` values
+  (sidesteps `toString` boilerplate).
+- `assertTrue(cond, label)` — generic boolean assertion.
+
+`Std.Testing.Snapshot` (`lyric/std/testing_snapshot.l`):
+- `snapshot(label, actual): Result[Bool, IOError]` — compares
+  `actual` against `snapshots/<label>.txt`.  First run: creates
+  the file (after best-effort `createDir("snapshots")`) and
+  returns `Ok(true)` so the author reviews and commits.  Later
+  runs: `Ok(true)` on match, `Ok(false)` on mismatch.  IO errors
+  surface as `Err`.
+- `snapshotMatch(label, actual): Unit` — convenience wrapper
+  that panics on mismatch or IO error; CI lands here.
+
+Bootstrap-grade scope: snapshot directory hard-coded to
+`snapshots/` relative to the working directory; multi-line
+captures are byte-for-byte compared (no normalisation); diff
+rendering is the caller's job (panic message just says
+"mismatch").  Property-based generators and a richer xUnit-style
+discovery layer remain Phase 3 follow-ups.
+
+Four new tests in `SnapshotTestingTests.fs`:
+first-run-writes-snapshot, matching-second-run, mismatched-second-
+run, and snapshotMatch-panics.  All 407 emitter tests pass (was
+403; +4 new).
+
+---
+
+### D-progress-062: lyric public-api-diff for SemVer enforcement
+*claude/c2-async-implementation-ZGU95 branch.*  Ships the
+`lyric public-api-diff <old.dll> <new.dll>` CLI command that
+reads the embedded `Lyric.Contract` resource from each DLL,
+parses both contracts, and reports added / removed / changed
+public declarations with a SemVer hint.  Exit codes:
+
+- `0` — no changes OR additive only (minor-bump-worthy).
+- `2` — breaking changes (Removed or Changed).  CI gates can
+  trigger major-version bumps on `2`.
+- `1` — usage / IO error (bad path, missing contract resource).
+
+Implementation:
+- `Lyric.Emitter.ContractMeta.parseFromJson` deserialises the
+  JSON-serialised `Contract` payload via `System.Text.Json`,
+  with null-safe string handling so `string | null` returns
+  from `JsonElement.GetString()` don't propagate.
+- `diffContracts` keys decls by `(Kind, Name)` and emits
+  `DiffAdded` / `DiffRemoved` / `DiffChanged` entries; sorted
+  Added → Removed → Changed for deterministic output.
+- `hasBreakingChanges` predicate flags Removed / Changed; CLI
+  exit code derives from this.
+- `renderDiffEntry` prints with `+` / `-` / `~` prefixes;
+  Changed entries show old and new repr on indented lines.
+- CLI command `public-api-diff` in `Lyric.Cli/Program.fs`;
+  `printUsage` updated.
+
+Four new tests in `ContractMetaTests.fs`:
+`parseFromJson round-trips toJson`,
+`diffContracts detects added/removed/changed`,
+`diffContracts identifies additive-only as non-breaking`,
+plus the existing two contract-embedding tests.  All 403
+emitter tests pass (was 400; +3 new).
+
+End-to-end CLI smoke (manual):
+```
+lyric build v1.l -o v1.dll
+lyric build v2.l -o v2.dll
+lyric public-api-diff v1.dll v2.dll  # exit 2 on breaking
+```
+
+---
+
+### D-progress-061: C4 Phase 2 — score-based auto-FFI matching
+*claude/c2-async-implementation-ZGU95 branch.*  Replaces C4
+Phase 1's strict exact-match auto-FFI dispatch with a
+principled score-based picker.  Each per-parameter coercion
+contributes a numeric distance:
+
+- exact match: 0
+- assignable (e.g. derived → base, interface impl): 1
+- Int → Long widening: 2
+- Int / Long → Double widening: 3
+- Int → float32 / Double → float32: 4
+- value-type → object boxing: 5
+- object → value-type unboxing: 6
+
+The candidate with the lowest total cost wins; tied minimums
+surface as an ambiguity diagnostic that lists every viable
+arity-matched overload so users can disambiguate via an
+explicit `@externTarget`.  The IL emit applies the matching
+coercion (`Conv_I8`, `Conv_R8`, `Conv_R4`, `Box`, `Unbox_Any`)
+per-arg before `Call`.
+
+Two new tests in `AutoFfiTests.fs`:
+`auto_ffi_int_to_long_widening` (asserts the score-based pick
+still resolves `Math.Min(int, int)` exactly when both args are
+Int; widening doesn't kick in unless needed) and
+`auto_ffi_score_based_diagnostic` (`Math.Sign(long)` resolves
+to the long-arg overload via score-based pick — a previously-
+unsupported case under Phase 1).  All 400 emitter tests pass
+(was 398; +2 new).
+
+---
+
+### D-progress-060: Std.Json fromJson — slice + nested-record support
+*claude/c2-async-implementation-ZGU95 branch.*  Extends the
+synthesised `<Record>.fromJson(s: in String): <Record>` to
+records whose fields include primitive slices
+(`slice[Int|Long|Double|Bool|String]`) and nested
+`@derive(Json)` records.  Today's bootstrap restricted
+synthesis to records whose fields were all primitive
+Int/Long/Double/Bool/String; deriving Json on a record with a
+nested-record or slice-of-primitive field skipped fromJson
+generation entirely (toJson kept working).
+
+Implementation:
+- `Lyric.Stdlib.JsonHost`: new `GetIntSlice`, `GetLongSlice`,
+  `GetDoubleSlice`, `GetBoolSlice`, `GetStringSlice` reader
+  helpers (each writes the field's array via an out param,
+  returning `false` + an empty array on miss); new
+  `GetSubObject` reader returning the matching sub-document's
+  raw JSON-text representation; `HasField` and
+  `GetSubArrayElements` helpers staged for future
+  Option-typed and slice-of-record support.
+- `Lyric.Parser.JsonDerive`: `primitiveSliceFromJsonHelper`
+  picks the matching `__lyricJsonGet<T>Slice` shim;
+  `classifyField` returns `FsPrimitive` /
+  `FsPrimitiveSlice` / `FsNestedRecord` for the three
+  shapes the synthesiser handles; the ctor-time stmts
+  emit one of three patterns (primitive `var name=default;
+  helper(s, "name", name)`, slice same shape with the
+  Slice-suffixed helper, nested `var name__sub="{}";
+  GetSubObject(s, "name", name__sub); val name =
+  Inner.fromJson(name__sub)`).  The recursive `Inner.fromJson`
+  call uses the same `EMember (EPath Inner, "fromJson")`
+  shape as the existing toJson recursion.
+- New extern shims appended unconditionally per source file
+  alongside the existing `__lyricJsonGetInt`/etc:
+  `__lyricJsonGetIntSlice`, `__lyricJsonGetLongSlice`,
+  `__lyricJsonGetDoubleSlice`, `__lyricJsonGetBoolSlice`,
+  `__lyricJsonGetStringSlice`, `__lyricJsonGetSubObject`.
+
+Bootstrap-grade scope:
+- Slices of `@derive(Json)` records (`slice[Inner]`),
+  `Option[T]` fields, generic types, and records mixing
+  Inner with non-primitive non-derive-Json types still skip
+  fromJson generation (synthesiser returns `None`).
+- Missing/wrongly-typed fields still default-initialise on
+  the Lyric side (helper returns `false`, ignored).
+
+Three new tests in `JsonDeriveTests.fs`:
+`json_derive_fromJson_int_slice` (slice[Int] + slice[String]
+fields round-trip through GetIntSlice / GetStringSlice),
+`json_derive_fromJson_nested_record` (User with nested
+Address recursively decoded via Address.fromJson(subStr)),
+`json_derive_fromJson_double_slice` (slice[Double] round-trip).
+All 398 emitter tests pass (was 395; +3 new).
+
+---
+
+### D-progress-059: C2 outstanding items — deferred follow-up notes
+*claude/c2-async-implementation-ZGU95 branch.*  Three Phase B+++/
+Phase C items remain after D-progress-056-058: stack-spilling
+for awaits in sub-expression positions (`f(await g())`, `1 +
+await foo()`), async generic functions (closed-generic SM on
+TypeBuilder), and Phase C `CancellationToken` propagation +
+structured-concurrency scopes.  The M1.4 blocking shim already
+emits correct (just blocking, not real-suspending) IL for
+every shape we don't route through Phase B, so these are
+deferred without correctness risk:
+
+- **Stack-spilling.**  Today an EAwait nested inside an
+  ECall/EBinop/etc. fails the safe-position check and routes
+  through M1.4.  Lifting the suspend to handle non-empty IL
+  stack at the `Leave` site requires either an AST-rewrite
+  pass that promotes each non-trivial sub-expression to a
+  preceding `val __spill_N = await ...` statement, or
+  emit-time stack-spilling that flushes the partial-stack
+  contents to fresh SM fields before suspend.  Both are
+  multi-day implementation efforts; users can write the
+  rewrite manually today.
+
+- **Async generic functions.**  `async func id[T](x: in T): T`
+  routes through M1.4 because `isAsyncSmEligible` rejects
+  `fn.Generics`.  A real Phase A/B SM for generic async
+  requires defining the SM as a generic `TypeBuilder` whose
+  type parameters mirror the function's, then constructing
+  the closed-generic SM at the kickoff site via
+  `TypeBuilder.GetConstructor`/`GetField` against the open
+  definitions.  The infrastructure is sketched in the
+  closed-over-TypeBuilder workarounds in Codegen.fs; full
+  wiring is a 1-2 day effort and not needed for correctness
+  (M1.4 wraps via `Task.FromResult<T>`).
+
+- **Phase C cancellation.**  `CancellationToken` propagation
+  through the SM and structured-concurrency scopes (Lyric's
+  `scope` blocks with `cancel`) require a token-flowing
+  design across both the SM emit AND the runtime — both the
+  SM (so MoveNext checks for cancellation at suspend points)
+  and the surface API (so call sites pass tokens implicitly).
+  Gated on the full Phase B+++ landing.
+
+These items are tracked here rather than in
+`docs/12-todo-plan.md` so the bootstrap-progress thread stays
+self-contained.
+
+---
+
+### D-progress-058: C2 Phase B+++ — for-loop awaits with real suspension
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the M1.4
+fallback for `for x in slice { ... await ... }` patterns where
+the iter expression is await-free and the body's awaits sit at
+safe top-level positions.  Iterator state (the slice array, the
+index counter, and the loop-bound element) all become SM fields
+when the body contains an award, so their values survive the
+cross-resume gap.
+
+Implementation:
+- `Lyric.Emitter.AsyncStateMachine.isSafeStmt` SFor case: a
+  for-in with single-name binding, await-free iter expression,
+  and a body whose stmts pass `safeStmtList` is now safe.
+- `Codegen.fs` SFor handler detects "Phase B + body has await"
+  via the new `hasAwaitInBlock` re-export and routes to a
+  field-backed emit: define `<for>__iter_<name>`,
+  `<for>__idx_<name>`, `<for>__elem_<name>` fields on the SM
+  type, stash the iter into the iter field, drive the loop via
+  Ldfld/Stfld throughout, and bind the loop variable through
+  `ctx.SmFields.[name]` so body emit reads/writes the element
+  field naturally.
+- Index increment goes through Ldfld/Add/Stfld; the loop's
+  `ContinueLabel` is the increment site (consistent with
+  Lyric's `continue` semantics).
+
+Bootstrap-grade scope:
+- Single-name `for x in iter` only (matches today's codegen
+  restriction).
+- Iter expression must be await-free.
+- Body's awaits must sit at safe top-level positions
+  (`safeStmtList`).
+- Pattern-binding for-loops, await-bearing iter expressions,
+  and nested defer/try inside the body fall back to M1.4.
+
+One new test in `AsyncTests.fs`:
+`phaseBPlusPlusPlus_for_await_basic` — `for n in items { await
+Task.Delay(2); println(toString(n)) }` exercises real
+suspension on each iteration, with field-backed iter/idx/elem
+preserving state across resume.  All 395 emitter tests pass
+(was 394; +1 new).
+
+---
+
+### D-progress-057: C2 Phase B+++ — defer + await with real suspension
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the
+M1.4 fallback for `defer { cleanup }; ...; await foo()` patterns
+where the defer body is await-free, the trailing await is a
+top-level safe-position stmt, and pre/between stmts are
+await-free.  Today's `isSafeStmt` only checked the defer body's
+awaits — not whether subsequent stmts contained awaits — so an
+async func with a `defer { ... }; await Task.Delay(10)` would
+pass safety, route through Phase B, and emit IL that suspended
+out of a `.try/.finally` (running the finally on suspend, then
+trying to resume INTO the protected region — `InvalidProgramException`).
+
+This entry tightens the safety check AND adds a proper emit:
+
+- `Lyric.Emitter.AsyncStateMachine.safeStmtList` walks each
+  stmt list with positional state.  Once an `SDefer` is
+  encountered, subsequent stmts must satisfy the duplicated-
+  emit constraint (zero awaits OR exactly one trailing
+  top-level await preceded by award-free stmts).  Recursive
+  through SLoop / SWhile bodies.
+- `tryMatchDeferAwaitTrailingShape` returns the
+  `(preDefer, deferBody, between, awaitStmt)` split when the
+  function body fits the duplicated-emit pattern.
+- `Codegen.emitDeferAwaitDuplicated` emits the IL: pre-defer
+  stmts run unprotected, then a first `.try` (between stmts +
+  awaiter compute + suspend-or-inline-getResult) with a
+  synthetic catch that runs the cleanup body and rethrows;
+  on first-time normal exit, cleanup runs after the `.try`
+  before branching past the resume copy.  Resume entry sits
+  outside both `.try`s (wired to the global state-dispatch
+  switch) and re-enters a duplicated `.try` whose body is
+  just `GetResult` + bind, again with cleanup-on-catch +
+  rethrow and cleanup-on-normal-exit.
+- `Emitter.fs` `emitBodyBlock` detects the trailing-await
+  defer shape before falling through to the existing
+  `emitStatementsWithDeferTail` flow, restricted to
+  Unit-returning async functions for the bootstrap (the
+  trailing await's value isn't routed through `routeReturn`).
+
+Bootstrap-grade scope:
+- Defer body must be await-free.
+- Body must have exactly one defer.
+- Trailing await must be the function body's last stmt
+  (bare `await foo()` or `val r = await foo()`).
+- Pre-defer / between-defer-and-await stmts must be
+  await-free.
+- Function must return Unit.
+- Multiple defers, defers in nested blocks, defers around
+  multiple awaits, defers in non-Unit-returning funcs all
+  fall back to M1.4.
+
+Two new tests in `AsyncTests.fs`:
+`phaseBPlusPlusPlus_defer_await_no_throw` (defer-then-await,
+real `Task.Delay` suspension, cleanup runs after resume) and
+`phaseBPlusPlusPlus_defer_await_pre_defer_stmt` (a stmt
+before the defer, a between stmt, and a real-suspension
+trailing await).  All 394 emitter tests pass (was 392; +2 new).
+
+---
+
+### D-progress-056: C2 Phase B+++ — try/catch + await with real suspension
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the M1.4
+fallback for `try { ... await ... } catch ...` patterns where
+the body's only await sits at a top-level trailing position
+(`await foo()` bare or `val r = await foo()`) and catches are
+await-free.  The resulting IL uses a duplicated-post-await
+shape: the user try is emitted twice — once for the first-time
+path (pre-stmts → compute awaiter → suspend-or-inline-getResult
+→ bind) and once for the resume path (just GetResult + bind),
+with the resume label sitting between the two `.try` copies so
+the global state-dispatch switch doesn't have to branch into a
+protected region.  Both copies attach the user's catch
+handlers so GetResult-from-faulted-task and pre-stmt
+exceptions both flow through the user catch.
+
+Implementation:
+- `Lyric.Emitter.AsyncStateMachine.isSafeStmt` STry case:
+  return true when body fits the single-trailing-await shape
+  AND catches are await-free; otherwise the function falls
+  back to M1.4.  A new public `isTryAwaitBodyShape` re-exports
+  the predicate for codegen.
+- New `isSafeStmtNested` variant rejects STry+await inside
+  expression contexts (try-as-expression / EBlock-in-
+  expression) so `return try { await ... } catch ...` keeps
+  using the M1.4 blocking shim until try-as-expression+await
+  gets its own duplicated-emit path.
+- Codegen.fs: extracted catch-type alias resolver to module-
+  level `resolveCatchTypeName`; statement-form STry handler
+  now routes to new `emitTryAwaitDuplicated` when SmAwaitInfo
+  is set and body matches the Phase B+++ shape.  The duplicated
+  emitter inlines the first-try (pre + compute-awaiter +
+  IsCompleted check + suspend or fall-through-to-GetResult +
+  bind), marks the resume label between the two copies, then
+  emits the second-try (just GetResult + bind), with catch
+  handlers duplicated for both copies.
+
+Bootstrap-grade scope:
+- Single trailing await per try body (the canonical
+  `try { await foo() } catch ...` pattern from Std.Http).
+- Multiple awaits in one try body, post-await statements,
+  awaits inside catches, awaits inside defer, nested try+await,
+  SAssign+await, and SReturn+await all fall back to M1.4.
+- Catch handler bodies are duplicated in IL (no shared label —
+  blocked by IL's "no branch into protected region" rule).
+  Code-size hit is acceptable for the bootstrap.
+
+Four new tests in `AsyncTests.fs`:
+`phaseBPlusPlusPlus_try_await_no_throw`,
+`phaseBPlusPlusPlus_try_await_pre_stmts`,
+`phaseBPlusPlusPlus_try_await_caught` (the awaitable throws —
+caught by user handler), and
+`phaseBPlusPlusPlus_try_await_real_suspend` (Task.Delay forces
+the resume path).  All 392 emitter tests pass (was 388; +4 new).
+Lexer/Parser/TypeChecker suites unchanged at 70/182/100.
+
+---
+
 ### D-progress-055: Std.Random — pseudorandom number generation
 *claude/deferred-items-round4 branch.*  New `Std.Random`
 package wraps `System.Random` for pseudorandom number

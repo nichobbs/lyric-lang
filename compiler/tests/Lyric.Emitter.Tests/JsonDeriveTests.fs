@@ -220,6 +220,67 @@ func main(): Unit {
 }
 """,
     "{\"items\":[{\"name\":\"a\",\"count\":1},{\"name\":\"b\",\"count\":2}]}"
+
+    "json_derive_fromJson_int_slice",
+    // D-progress-060: fromJson now handles `slice[Int]` (and other
+    // primitive slices) via __lyricJsonGetIntSlice / etc.
+    """
+package J14
+@derive(Json)
+pub record Bag {
+  ids: slice[Int]
+  names: slice[String]
+}
+func main(): Unit {
+  val b = Bag.fromJson("{\"ids\":[1,2,3],\"names\":[\"x\",\"y\"]}")
+  println(toString(b.ids[0] + b.ids[1] + b.ids[2]))
+  println(b.names[0])
+  println(b.names[1])
+}
+""",
+    "6\nx\ny"
+
+    "json_derive_fromJson_nested_record",
+    // D-progress-060: fromJson on a record containing a nested
+    // @derive(Json) record field reads the sub-object as raw JSON
+    // text and recurses through Inner.fromJson(subStr).
+    """
+package J15
+@derive(Json)
+pub record Address {
+  city: String
+  zip: Int
+}
+@derive(Json)
+pub record User {
+  name: String
+  address: Address
+}
+func main(): Unit {
+  val u = User.fromJson("{\"name\":\"Alice\",\"address\":{\"city\":\"Wellington\",\"zip\":6011}}")
+  println(u.name)
+  println(u.address.city)
+  println(toString(u.address.zip))
+}
+""",
+    "Alice\nWellington\n6011"
+
+    "json_derive_fromJson_double_slice",
+    // Double-slice round-trip exercises the GetDoubleSlice helper.
+    """
+package J16
+@derive(Json)
+pub record Stats {
+  values: slice[Double]
+}
+func main(): Unit {
+  val s = Stats.fromJson("{\"values\":[1.5,2.25,3.0]}")
+  println(toString(s.values[0]))
+  println(toString(s.values[1]))
+  println(toString(s.values[2]))
+}
+""",
+    "1.5\n2.25\n3"
 ]
 
 let tests =
