@@ -530,6 +530,83 @@ func main(): Unit {
 """,
     "10\n20\n30\ndone"
 
+    "stack_spill_await_in_call_arg",
+    // D-progress-074: `f(await g())` — a previously-M1.4 shape lifts
+    // to Phase B via the AST-rewrite spilling pass.  The rewrite
+    // hoists `await g()` to a preceding `val __spill_0 = await g()`
+    // binding and replaces the call arg with the spill local.  The
+    // existing Phase B safe-position emit then runs unchanged.
+    """
+package E14
+async func produce(): Int = 21
+async func runner(): Unit {
+  println(toString(await produce() + 1))
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "22"
+
+    "stack_spill_two_await_args",
+    // Two awaits in a single call: each gets spilled to its own
+    // synthesised local.  The spill-local for the first await must
+    // survive across the second await's suspend (when running with a
+    // real Task), so it's promoted to an SM field.  Here both inner
+    // calls return synchronously so the suspend path is the fast
+    // already-completed branch.
+    """
+package E14
+async func a(): Int = 5
+async func b(): Int = 7
+async func runner(): Unit {
+  println(toString(await a() + await b()))
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "12"
+
+    "stack_spill_await_in_binop",
+    // `n + await foo()` — the await sits in the right operand of a
+    // binary op.  Spilled to `val __spill_0 = await foo()`, the binop
+    // becomes `n + __spill_0`.
+    """
+package E14
+async func foo(): Int = 30
+async func runner(n: in Int): Unit {
+  val total: Int = n + await foo()
+  println(toString(total))
+}
+func main(): Unit {
+  await runner(12)
+}
+""",
+    "42"
+
+    "stack_spill_real_suspend_through_call_arg",
+    // Real BCL Task.Delay-based suspend going through the spilled
+    // path: `await Task.Delay(10)` returns a Task[Unit] whose result
+    // is `()`.  We use a value-returning real-async pattern instead
+    // (an inline async helper that delegates) to exercise the
+    // spilled call-arg + non-pre-completed task combination.
+    """
+package E14
+extern type Task = "System.Threading.Tasks.Task"
+async func slow(): Int {
+  await Task.Delay(10)
+  return 99
+}
+async func runner(): Unit {
+  println(toString(await slow() + 1))
+}
+func main(): Unit {
+  await runner()
+}
+""",
+    "100"
+
     "phaseBPlusPlusPlus_try_await_real_suspend",
     // Real BCL Task.Delay forces the suspend/resume path: the
     // Task is NOT pre-completed at the IsCompleted check, so the
@@ -598,8 +675,54 @@ func main(): Unit {
         let nField = sm.GetField "n"
         Expect.isNotNull nField "param field 'n' present"
 
+/// D-progress-074: stack-spilling rewrite synthesises
+/// `__spill_<n>` SM-promoted locals when an async body has awaits in
+/// non-safe sub-expression positions.  This guard test reflects on
+/// the emitted assembly to confirm those fields exist on the SM
+/// type, catching regressions where the rewrite stops firing.
+let private stackSpillSmShape : Test =
+    testCase "[stack_spill_sm_shape] spill fields appear on SM" <| fun () ->
+        let label = "AsyncSpillShape"
+        let source = """
+package E14
+async func produce(): Int = 21
+async func runner(): Unit {
+  println(toString(await produce() + 1))
+}
+func main(): Unit {
+  await runner()
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source       = source
+              AssemblyName = label
+              OutputPath   = dll }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let smTypes =
+            asm.GetTypes()
+            |> Array.filter (fun t ->
+                typeof<System.Runtime.CompilerServices.IAsyncStateMachine>.IsAssignableFrom(t))
+        let runnerSm =
+            smTypes
+            |> Array.tryFind (fun t -> t.Name.Contains "runner")
+        match runnerSm with
+        | None ->
+            failwith "expected an SM type for `runner`"
+        | Some sm ->
+            // Promoted locals follow the `<l>__<name>` convention.
+            let spillField = sm.GetField "<l>__<__spill_0>"
+            let candidate =
+                if spillField <> null then spillField
+                else sm.GetField "<l>____spill_0"
+            Expect.isNotNull candidate
+                "rewrite should promote __spill_0 to an SM field"
+
 let tests =
     testList "async tests" [
         behavioral
         smShape
+        stackSpillSmShape
     ]

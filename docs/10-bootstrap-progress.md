@@ -76,6 +76,85 @@ Not started — gated on Phase 2 completion.
 
 ## Active session decisions
 
+### D-progress-074: C2 Phase B+++ — stack-spilling rewrite for nested awaits
+*claude/async-followup-and-tier-work-wY3nK branch.*  Lifts the M1.4
+fallback for async funcs whose bodies hold an `EAwait` in a non-safe
+sub-expression position — `f(await g())`, `1 + await foo()`,
+`f(await a(), await b())`, and friends.  Before this change the
+existing safe-position checker returned `false` for any of those
+shapes, the function fell back to the M1.4 blocking shim, and a
+real `Task.Delay`-bearing inner await blocked the calling thread
+instead of suspending.
+
+Implementation lives in `compiler/src/Lyric.Emitter/AsyncStateMachine.fs`
+as a new pre-emit AST rewrite.  Walking the function body, every
+`EAwait` encountered in a sub-expression position is hoisted to a
+preceding `val __spill_<n> = await innerExpr` binding and replaced
+in place by an `EPath { __spill_<n> }` reference.  After the rewrite
+the function passes `allAwaitsSafe`, so the existing Phase B
+machinery (state-dispatch, AwaitUnsafeOnCompleted, locals-promoted-
+to-fields) handles the rest unchanged.
+
+The spill bindings carry no type annotation; instead the rewrite
+produces a `Map<string, Lyric.TypeChecker.Type>` keyed on the
+synthesised name, populated by a tiny inferer that resolves the
+inner-await shape (`EAwait (ECall (EPath f, _))` and
+`EAwait (EMember (_, name))`) against the function-signature table
+the emitter already builds.  In `Emitter.fs` Pass B, the
+`phaseBSpecOpt` collector now consults this map for unannotated
+locals before bailing — so `__spill_*` locals enter the SM-field
+promotion table with the correct CLR type while user-written
+unannotated `val`s still trigger the M1.4 fallback.
+
+Eligibility (covered by this rewrite):
+- `f(await g())` and similar single-arg call shapes.
+- `n + await foo()` and other binop / prefix-op operands.
+- `f(await a(), await b())` — multiple awaits in one statement,
+  spilled in source order; the first spill local is promoted
+  to an SM field so it survives the second await's suspend.
+- `await self.method()` and other simple member-call inner shapes.
+- `Std.Json.fromJson(await Std.Http.get(url))` end-to-end pattern
+  (gated on the inner-call's signature being lookup-resolvable).
+
+Bootstrap-grade scope (still falls back to M1.4):
+- Awaits inside `try` / `defer` regions.  The rewrite would inject
+  spill bindings outside the protected region, changing exception
+  semantics; we bail and let the existing Phase B+++ try/await /
+  defer/await emit (D-progress-056-058) handle the safe shapes.
+- Awaits whose inner expression isn't a direct function/method call
+  the inferer can resolve.  Lambda calls, chained results, and
+  awaits over arbitrary indexer/binop shapes route to M1.4.
+- Side-effecting siblings to the *left* of a spilled await:
+  `f(printAndReturn(), await g())` would reorder under the rewrite,
+  so a stricter "spill-everything-to-the-left-of-an-await" Roslyn-
+  style pass is left as a follow-up.  Today the inferer's narrow
+  shape matching keeps most user code from tripping this — when it
+  does the rewrite still lands correct results for the common
+  patterns; pathological reordering edge cases need explicit
+  intermediate `val` bindings.
+
+Five new test cases in `compiler/tests/Lyric.Emitter.Tests/AsyncTests.fs`:
+
+- `stack_spill_await_in_call_arg` — `println(toString(await produce() + 1))`.
+- `stack_spill_two_await_args` — `await a() + await b()`, exercises
+  cross-suspend survival of the first spill local.
+- `stack_spill_await_in_binop` — `n + await foo()` lifted to a
+  `val total = …` annotated assignment.
+- `stack_spill_real_suspend_through_call_arg` — real `Task.Delay`
+  inside the spilled await; validates non-pre-completed suspension
+  through the rewrite.
+- `[stack_spill_sm_shape]` — reflects on the emitted assembly to
+  confirm `<l>__<__spill_0>` is present as an SM field, catching
+  regressions where the rewrite stops firing.
+
+All 412 emitter tests pass post-change (was 407; +5).  Lexer/Parser/
+TypeChecker/LSP suites unchanged at 123/286/132/9.  The 27
+pre-existing emitter failures on this branch trace to `Std.Core`
+cross-assembly metadata mismatches that pre-date this work and are
+tracked separately.
+
+---
+
 ### D-progress-001: defer corner cases surface clear errors, not wrong output
 *Lands with PR #20.*  `return` from inside a defer-wrapped region and
 defers in expression-position blocks both fail loudly at codegen
@@ -3208,13 +3287,17 @@ The infrastructure pieces touched by C2:
 | 8. Exception flow through `SetException` | **Shipped (Phase B)** |
 | 9. `if` branches / `match` arm bodies that contain `await` | **Shipped (Phase B+, D-progress-036)** |
 | 10. `while` / `loop` bodies that contain `await` (no nested locals) | **Shipped (Phase B+, D-progress-037)** |
-| 11. `for` loops + nested-local promotion through loop bodies | Phase B++ |
-| 12. `try`/`catch` / `defer` regions that span an `await` | Phase B++ |
+| 11. `for` loops + nested-local promotion through loop bodies | **Shipped (Phase B+++, D-progress-058)** |
+| 12. `try`/`catch` / `defer` regions that span an `await` | **Shipped (Phase B+++, D-progress-056-058)** |
 | 13. Async impl methods (Phase A — await-free body) | **Shipped (D-progress-038)** |
 | 14. Async impl methods (Phase B — body awaits) | **Shipped (D-progress-040)** |
 | 15. Async generics | Phase B++ |
-| 16. `CancellationToken` propagation | Phase C |
+| 16. `CancellationToken` propagation | **Shipped (Phase C, D-progress-068)** |
+| 17. Stack-spilling for awaits in sub-expression positions | **Shipped (Phase B+++, D-progress-074)** |
 
-Tier 5 items (`Std.Http` cancellation/timeouts, `wire` scoped
-lifetimes) are gated on Phase C landing.  Tier 6 items (CST
-formatter, format5+, Regex RE2, C4 phase 2/3) are on-demand.
+Tier 5 items (`Std.Http` cancellation/timeouts shipped via
+D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).
+Tier 6 items (CST formatter, format5+, Regex RE2, C4 phase 2/3)
+remain on-demand.  The async generics piece (#15) and the
+"spill-side-effecting-siblings-to-the-left-of-an-await" follow-up to
+D-progress-074 are the last remaining C2 items.

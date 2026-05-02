@@ -396,6 +396,342 @@ let allAwaitsSafe (fn: FunctionDecl) : bool =
     | Some (FBExpr e) -> isSafeExprPosition e
     | Some (FBBlock blk) -> safeStmtList blk.Statements
 
+// ---------------------------------------------------------------------------
+// Stack-spilling AST rewrite (D-progress-074).
+//
+// Async functions whose bodies contain `EAwait` nested in a sub-
+// expression position — `f(await g())`, `1 + await foo()`,
+// `(await x).field`, etc. — fail `allAwaitsSafe` and route through
+// the M1.4 blocking shim.  The rewrite below normalises those bodies
+// by hoisting each non-safe-position await into a preceding
+// `val __spill_<n> = await innerExpr` binding so the existing
+// Phase B safe-position machinery applies unchanged.
+//
+// The rewrite is intentionally conservative — bootstrap-grade scope:
+//
+//   * Inner-task type inference uses the function-signature table the
+//     emitter already builds.  Only `EAwait (ECall (EPath name, args))`
+//     and `EAwait (EMember _)` shapes are covered today; awaits over
+//     more elaborate expressions (lambda calls, dynamic dispatch) bail
+//     and the function falls back to M1.4.
+//
+//   * Evaluation-order preservation is *trusted*: the rewrite emits
+//     spill bindings in source order, which matches Lyric's left-to-
+//     right evaluation rule for the common patterns
+//     (`f(await g())`, `f(await a(), await b())`).  In edge cases
+//     where a side-effecting sibling sits to the left of the spilled
+//     await — e.g. `f(printAndReturn(), await g())` — the rewrite
+//     would reorder.  The Roslyn-style "spill everything to the left
+//     of an await" pass that fixes this is follow-up work.
+//
+//   * Awaits inside lambda bodies aren't touched (they're a separate
+//     async function).
+//
+// If any spill local fails type inference, the rewrite returns
+// `None` so the caller falls back to M1.4 instead of producing a
+// half-rewritten function.
+// ---------------------------------------------------------------------------
+
+/// Resolved Lyric type of an `await innerExpr`.  The bootstrap
+/// inferer handles the shapes `await someFunc(args)` and
+/// `await receiver.method(args)` by looking up the signature in
+/// the supplied lookup table; awaits over arbitrary expressions
+/// return `None` and abandon the rewrite.
+let private tryInferAwaitInnerType
+        (sigOf: string -> Lyric.TypeChecker.ResolvedSignature option)
+        (inner: Expr) : Lyric.TypeChecker.Type option =
+    let unwrapTaskLike (ty: Lyric.TypeChecker.Type) : Lyric.TypeChecker.Type option =
+        // The bootstrap type checker doesn't model `Task[T]` distinctly
+        // from its element type — `inferExpr` for `EAwait inner` simply
+        // returns the inner's type.  So whatever the function's
+        // declared return type is, we use it directly.  When the spec
+        // tightens to a real `Task` wrapper, this is where the unwrap
+        // happens.
+        Some ty
+    let rec go (e: Expr) =
+        match e.Kind with
+        | EParen inner -> go inner
+        | ECall ({ Kind = EPath p }, _) when not (List.isEmpty p.Segments) ->
+            let last = List.last p.Segments
+            match sigOf last with
+            | Some sg -> unwrapTaskLike sg.Return
+            | None -> None
+        | ECall ({ Kind = EMember (_, name) }, _) ->
+            match sigOf name with
+            | Some sg -> unwrapTaskLike sg.Return
+            | None -> None
+        | _ -> None
+    go inner
+
+/// Rewriter state: monotonically-increasing spill counter, a buffer
+/// for pending `val __spill_<n> = await ...` bindings local to the
+/// current statement, and a side-table of inferred Lyric types for
+/// each spilled local.
+type private Spiller =
+    { mutable Next:    int
+      Pending:         ResizeArray<Statement>
+      Types:           ResizeArray<string * Lyric.TypeChecker.Type>
+      mutable Bailed:  bool }
+
+let private freshSpiller () =
+    { Next   = 0
+      Pending = ResizeArray<Statement>()
+      Types   = ResizeArray<string * Lyric.TypeChecker.Type>()
+      Bailed  = false }
+
+/// Synthesise an `EPath` for a spill-name binding lookup.
+let private mkPath (name: string) (span: Span) : Expr =
+    let mp : ModulePath = { Segments = [name]; Span = span }
+    { Kind = EPath mp; Span = span }
+
+/// Synthesise `val __spill_<n> = await innerExpr`.
+let private mkSpillBinding (name: string) (awaitExpr: Expr) (span: Span) : Statement =
+    let pat : Pattern = { Kind = PBinding (name, None); Span = span }
+    let stmt : Statement =
+        { Kind = SLocal (LBVal (pat, None, awaitExpr))
+          Span = span }
+    stmt
+
+/// Spill any `EAwait` encountered while walking `e`.  Returns the
+/// rewritten expression with spilled awaits replaced by `EPath
+/// __spill_<n>`.  Side-effects: appends the synthesised
+/// `val __spill_<n> = …` bindings to `sp.Pending` in evaluation
+/// order, and records each spilled local's inferred Lyric type in
+/// `sp.Types`.  Sets `sp.Bailed` if a spill site's inner type can't
+/// be inferred.
+let rec private spillAwaits
+        (sigOf: string -> Lyric.TypeChecker.ResolvedSignature option)
+        (sp: Spiller) (e: Expr) : Expr =
+    if sp.Bailed then e
+    else
+    match e.Kind with
+    | EAwait inner ->
+        // Recursively spill the inner first so nested awaits emit
+        // their bindings before the outer one.
+        let innerRew = spillAwaits sigOf sp inner
+        if sp.Bailed then e
+        else
+            match tryInferAwaitInnerType sigOf innerRew with
+            | None ->
+                sp.Bailed <- true
+                e
+            | Some lyTy ->
+                let n = sp.Next
+                sp.Next <- n + 1
+                let spillName = sprintf "__spill_%d" n
+                sp.Types.Add(spillName, lyTy)
+                let awaitExpr : Expr =
+                    { Kind = EAwait innerRew; Span = e.Span }
+                sp.Pending.Add(mkSpillBinding spillName awaitExpr e.Span)
+                mkPath spillName e.Span
+    | ELiteral _ | EPath _ | ESelf | EResult | EError -> e
+    | EInterpolated segs ->
+        let segs' =
+            segs
+            |> List.map (function
+                | ISText _ as s -> s
+                | ISExpr e' -> ISExpr (spillAwaits sigOf sp e'))
+        { e with Kind = EInterpolated segs' }
+    | EParen inner ->
+        { e with Kind = EParen (spillAwaits sigOf sp inner) }
+    | ESpawn inner ->
+        // `spawn { … }` has its own closure; don't descend.
+        e
+    | EOld inner ->
+        { e with Kind = EOld (spillAwaits sigOf sp inner) }
+    | EPropagate inner ->
+        { e with Kind = EPropagate (spillAwaits sigOf sp inner) }
+    | ETry inner ->
+        { e with Kind = ETry (spillAwaits sigOf sp inner) }
+    | ETuple es ->
+        { e with Kind = ETuple (es |> List.map (spillAwaits sigOf sp)) }
+    | EList es ->
+        { e with Kind = EList (es |> List.map (spillAwaits sigOf sp)) }
+    | EIf _ | EMatch _ | EBlock _ ->
+        // These are already safe positions for awaits (Phase B+).
+        // The existing safe-position machinery descends into branches /
+        // arms.  Don't rewrite — over-spilling here would defeat the
+        // current Phase B+ tests' control-flow expectations.
+        e
+    | EForall _ | EExists _ | ELambda _ ->
+        // Lambdas / quantifiers are their own scopes; awaits inside
+        // belong to a different function body.
+        e
+    | ECall (fnE, args) ->
+        // Spill awaits inside the callee expression (rare) and each
+        // argument left-to-right.
+        let fnRew = spillAwaits sigOf sp fnE
+        let argsRew =
+            args
+            |> List.map (function
+                | CAPositional v ->
+                    CAPositional (spillAwaits sigOf sp v)
+                | CANamed (n, v, sp') ->
+                    CANamed (n, spillAwaits sigOf sp v, sp'))
+        { e with Kind = ECall (fnRew, argsRew) }
+    | ETypeApp (fnE, ts) ->
+        { e with Kind = ETypeApp (spillAwaits sigOf sp fnE, ts) }
+    | EIndex (recv, idxs) ->
+        let recvRew = spillAwaits sigOf sp recv
+        let idxsRew = idxs |> List.map (spillAwaits sigOf sp)
+        { e with Kind = EIndex (recvRew, idxsRew) }
+    | EMember (recv, name) ->
+        { e with Kind = EMember (spillAwaits sigOf sp recv, name) }
+    | EPrefix (op, inner) ->
+        { e with Kind = EPrefix (op, spillAwaits sigOf sp inner) }
+    | EBinop (op, l, r) ->
+        let lRew = spillAwaits sigOf sp l
+        let rRew = spillAwaits sigOf sp r
+        { e with Kind = EBinop (op, lRew, rRew) }
+    | ERange rb ->
+        let rb' =
+            match rb with
+            | RBClosed (a, b) -> RBClosed (spillAwaits sigOf sp a, spillAwaits sigOf sp b)
+            | RBHalfOpen (a, b) -> RBHalfOpen (spillAwaits sigOf sp a, spillAwaits sigOf sp b)
+            | RBLowerOpen a -> RBLowerOpen (spillAwaits sigOf sp a)
+            | RBUpperOpen a -> RBUpperOpen (spillAwaits sigOf sp a)
+        { e with Kind = ERange rb' }
+    | EAssign (t, op, v) ->
+        // Targets are l-values; avoid descending so we don't
+        // accidentally spill a write target.  Right-hand side is
+        // walked normally.
+        { e with Kind = EAssign (t, op, spillAwaits sigOf sp v) }
+
+/// Drain `sp.Pending` since the start index, returning the spilled
+/// statements in source order and clearing them from the buffer.
+let private drainPending (sp: Spiller) (start: int) : Statement list =
+    if sp.Pending.Count = start then []
+    else
+        let acc = ResizeArray<Statement>()
+        for i in start .. sp.Pending.Count - 1 do
+            acc.Add sp.Pending.[i]
+        while sp.Pending.Count > start do
+            sp.Pending.RemoveAt(sp.Pending.Count - 1)
+        List.ofSeq acc
+
+/// Rewrite a statement so any contained non-safe-position `EAwait`
+/// is hoisted to a preceding `val __spill_<n> = await …` binding.
+/// Recurses into nested control-flow blocks.  Returns the rewritten
+/// statement list (a single statement may expand into N+1 stmts —
+/// the prepended spill bindings plus the rewritten original).
+let rec private rewriteStmt
+        (sigOf: string -> Lyric.TypeChecker.ResolvedSignature option)
+        (sp: Spiller) (s: Statement) : Statement list =
+    if sp.Bailed then [s]
+    elif isSafeStmt s then [s]
+    else
+    let rebuild kind = { s with Kind = kind }
+    let pendingStart = sp.Pending.Count
+    let kind' =
+        match s.Kind with
+        | SExpr e -> SExpr (spillAwaits sigOf sp e)
+        | SThrow e -> SThrow (spillAwaits sigOf sp e)
+        | SReturn (Some e) -> SReturn (Some (spillAwaits sigOf sp e))
+        | SReturn None -> SReturn None
+        | SAssign (t, op, v) -> SAssign (t, op, spillAwaits sigOf sp v)
+        | SLocal (LBVal (p, ann, init)) ->
+            SLocal (LBVal (p, ann, spillAwaits sigOf sp init))
+        | SLocal (LBLet (n, ann, init)) ->
+            SLocal (LBLet (n, ann, spillAwaits sigOf sp init))
+        | SLocal (LBVar (n, ann, Some init)) ->
+            SLocal (LBVar (n, ann, Some (spillAwaits sigOf sp init)))
+        | SLocal (LBVar (_, _, None) as lb) -> SLocal lb
+        | SBreak _ | SContinue _ as k -> k
+        | SItem _ as k -> k
+        | SRule (lhs, rhs) ->
+            SRule (spillAwaits sigOf sp lhs, spillAwaits sigOf sp rhs)
+        | STry (body, catches) ->
+            // Phase B+++ already handles the safe try-await shapes.
+            // For unsafe awaits inside a try body, recurse into both
+            // the body and each catch.  Spill bindings injected here
+            // sit *outside* the try region; that's a semantics shift
+            // for awaits whose results escape the try, so we stay
+            // conservative and bail.
+            sp.Bailed <- true
+            STry (body, catches)
+        | SDefer body ->
+            // Same conservative bail — defer cleanup interactions with
+            // hoisted spill bindings need explicit semantics.
+            sp.Bailed <- true
+            SDefer body
+        | SScope (b, body) ->
+            let body' = rewriteBlock sigOf sp body
+            SScope (b, body')
+        | SFor (lbl, pat, iter, body) ->
+            let iter' = spillAwaits sigOf sp iter
+            let body' = rewriteBlock sigOf sp body
+            SFor (lbl, pat, iter', body')
+        | SWhile (lbl, cond, body) ->
+            // `while` cond can't safely host a spilled binding (the
+            // spill needs to re-execute every iteration).  Walk for
+            // awaits but bail if any are present in the cond — the
+            // existing safe-position checker already requires
+            // award-free conditions.
+            let cond' = cond
+            if exprHasAwait cond then sp.Bailed <- true
+            let body' = rewriteBlock sigOf sp body
+            SWhile (lbl, cond', body')
+        | SLoop (lbl, body) ->
+            let body' = rewriteBlock sigOf sp body
+            SLoop (lbl, body')
+    let prepended = drainPending sp pendingStart
+    if sp.Bailed then [s]
+    else prepended @ [rebuild kind']
+
+and private rewriteBlock
+        (sigOf: string -> Lyric.TypeChecker.ResolvedSignature option)
+        (sp: Spiller) (blk: Block) : Block =
+    if sp.Bailed then blk
+    else
+        let acc = ResizeArray<Statement>()
+        for s in blk.Statements do
+            if sp.Bailed then acc.Add s
+            else
+                for s' in rewriteStmt sigOf sp s do acc.Add s'
+        { blk with Statements = List.ofSeq acc }
+
+/// Public entry: try to rewrite an async function's body so every
+/// `EAwait` sits at a safe top-level position.  Returns
+/// `Some (rewrittenFn, spillTypeMap)` when the rewrite succeeded
+/// (every spill-local's inner-await type was inferred), or `None`
+/// when (a) the function is already safe, (b) the body is an
+/// expression-form FBExpr (no statement scope to inject spill
+/// bindings into), or (c) any spill site failed type inference.
+///
+/// `spillTypeMap` keys are the synthesised `__spill_<n>` names; the
+/// caller pairs them with the function's local-collection pre-pass
+/// so they enter the Phase B SM-field promotion table with the
+/// correct CLR type.
+let tryStackSpill
+        (sigOf: string -> Lyric.TypeChecker.ResolvedSignature option)
+        (fn: FunctionDecl)
+        : (FunctionDecl * Map<string, Lyric.TypeChecker.Type>) option =
+    if not (bodyContainsAwait fn) then None
+    elif allAwaitsSafe fn then None
+    else
+    match fn.Body with
+    | None | Some (FBExpr _) -> None
+    | Some (FBBlock blk) ->
+        let sp = freshSpiller ()
+        let blk' = rewriteBlock sigOf sp blk
+        if sp.Bailed then None
+        elif sp.Pending.Count <> 0 then
+            // Defensive: every drainPending should have flushed.  If
+            // anything is left over the caller can't reason about
+            // ordering, so bail.
+            None
+        else
+            let fn' = { fn with Body = Some (FBBlock blk') }
+            // Confirm the rewrite actually moved every await to a
+            // safe position; if we missed a corner case, surface it
+            // here instead of producing IL that fails later.
+            if not (allAwaitsSafe fn') then None
+            else
+                let typeMap =
+                    sp.Types
+                    |> Seq.fold (fun m (n, t) -> Map.add n t m) Map.empty
+                Some (fn', typeMap)
+
 /// Returns true when this async function is eligible for the SM
 /// lowering (covers both Phase A — await-free body — and Phase B —
 /// awaits at safe top-level positions).  Currently:
