@@ -1696,6 +1696,49 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-062: lyric public-api-diff for SemVer enforcement
+*claude/c2-async-implementation-ZGU95 branch.*  Ships the
+`lyric public-api-diff <old.dll> <new.dll>` CLI command that
+reads the embedded `Lyric.Contract` resource from each DLL,
+parses both contracts, and reports added / removed / changed
+public declarations with a SemVer hint.  Exit codes:
+
+- `0` — no changes OR additive only (minor-bump-worthy).
+- `2` — breaking changes (Removed or Changed).  CI gates can
+  trigger major-version bumps on `2`.
+- `1` — usage / IO error (bad path, missing contract resource).
+
+Implementation:
+- `Lyric.Emitter.ContractMeta.parseFromJson` deserialises the
+  JSON-serialised `Contract` payload via `System.Text.Json`,
+  with null-safe string handling so `string | null` returns
+  from `JsonElement.GetString()` don't propagate.
+- `diffContracts` keys decls by `(Kind, Name)` and emits
+  `DiffAdded` / `DiffRemoved` / `DiffChanged` entries; sorted
+  Added → Removed → Changed for deterministic output.
+- `hasBreakingChanges` predicate flags Removed / Changed; CLI
+  exit code derives from this.
+- `renderDiffEntry` prints with `+` / `-` / `~` prefixes;
+  Changed entries show old and new repr on indented lines.
+- CLI command `public-api-diff` in `Lyric.Cli/Program.fs`;
+  `printUsage` updated.
+
+Four new tests in `ContractMetaTests.fs`:
+`parseFromJson round-trips toJson`,
+`diffContracts detects added/removed/changed`,
+`diffContracts identifies additive-only as non-breaking`,
+plus the existing two contract-embedding tests.  All 403
+emitter tests pass (was 400; +3 new).
+
+End-to-end CLI smoke (manual):
+```
+lyric build v1.l -o v1.dll
+lyric build v2.l -o v2.dll
+lyric public-api-diff v1.dll v2.dll  # exit 2 on breaking
+```
+
+---
+
 ### D-progress-061: C4 Phase 2 — score-based auto-FFI matching
 *claude/c2-async-implementation-ZGU95 branch.*  Replaces C4
 Phase 1's strict exact-match auto-FFI dispatch with a

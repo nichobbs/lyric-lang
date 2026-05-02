@@ -683,6 +683,8 @@ let private printUsage () : unit =
     printErr "Usage:"
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
+    printErr "  lyric doc   <source.l> [-o out.md]"
+    printErr "  lyric public-api-diff <old.dll> <new.dll>"
     printErr "  lyric --version"
     printErr ""
     printErr "  build is incremental — re-running with the same source +"
@@ -691,6 +693,10 @@ let private printUsage () : unit =
     printErr "  --aot               compile to a native, self-contained binary"
     printErr "                      (passes through dotnet publish)."
     printErr "  --rid <RID>         target RID for AOT (default: host RID)."
+    printErr ""
+    printErr "  public-api-diff exits 0 (no changes), 0 (additive), or 2"
+    printErr "                  (breaking — Removed/Changed); use 2 in CI to gate"
+    printErr "                  major-version bumps."
 
 [<EntryPoint>]
 let main (argv: string array) : int =
@@ -819,6 +825,69 @@ let main (argv: string array) : int =
             | None ->
                 Console.Out.Write(md)
             0
+    | "public-api-diff" :: rest ->
+        // `lyric public-api-diff <old.dll> <new.dll>` — read the
+        // embedded `Lyric.Contract` resource from each assembly,
+        // diff the public surface, and report Added / Removed /
+        // Changed declarations with SemVer hints.  Exits 0 on
+        // backwards-compatible changes (Added-only) or 2 on
+        // breaking changes (Removed / Changed).  Exit 1 reserved
+        // for usage / IO errors.  D-progress-062.
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
+        | [oldDll; newDll] ->
+            if not (File.Exists oldDll) then
+                printErr (sprintf "public-api-diff: '%s' not found" oldDll)
+                1
+            elif not (File.Exists newDll) then
+                printErr (sprintf "public-api-diff: '%s' not found" newDll)
+                1
+            else
+                let readContract (path: string) =
+                    match Lyric.Emitter.ContractMeta.readFromAssembly path with
+                    | None ->
+                        printErr (sprintf "public-api-diff: '%s' has no Lyric.Contract resource" path)
+                        None
+                    | Some json ->
+                        match Lyric.Emitter.ContractMeta.parseFromJson json with
+                        | Some c -> Some c
+                        | None ->
+                            printErr (sprintf "public-api-diff: '%s' has malformed contract metadata" path)
+                            None
+                match readContract oldDll, readContract newDll with
+                | Some oldC, Some newC ->
+                    let entries =
+                        Lyric.Emitter.ContractMeta.diffContracts oldC newC
+                    if List.isEmpty entries then
+                        printfn "No public-API changes between %s and %s"
+                            oldC.Version newC.Version
+                        0
+                    else
+                        printfn "Public-API diff: %s %s -> %s %s"
+                            oldC.PackageName oldC.Version
+                            newC.PackageName newC.Version
+                        for entry in entries do
+                            printfn "%s"
+                                (Lyric.Emitter.ContractMeta.renderDiffEntry entry)
+                        if Lyric.Emitter.ContractMeta.hasBreakingChanges entries then
+                            printfn ""
+                            printfn "SemVer: BREAKING — bump the major version."
+                            2
+                        else
+                            printfn ""
+                            printfn "SemVer: backwards-compatible — bump the minor version."
+                            0
+                | _ -> 1
+        | _ ->
+            printErr "public-api-diff: expected `lyric public-api-diff <old.dll> <new.dll>`"
+            1
     | unknown :: _ ->
         printErr (sprintf "unknown command: %s" unknown)
         printUsage ()
