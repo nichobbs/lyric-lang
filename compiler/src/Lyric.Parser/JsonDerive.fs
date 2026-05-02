@@ -271,6 +271,42 @@ let private primitiveFromJsonHelper (te: TypeExpr) : (string * TypeExpr) option 
     | TRef { Segments = ["String"] } -> Some ("__lyricJsonGetString", te)
     | _ -> None
 
+/// Map a `slice[Primitive]` field type to the matching
+/// `__lyricJsonGet<T>Slice` shim.  Returns `None` for non-primitive
+/// element types (those need a per-element decoder loop, handled
+/// separately by the synthesiser via record-slice helpers).
+let private primitiveSliceFromJsonHelper (te: TypeExpr) : (string * TypeExpr) option =
+    match te.Kind with
+    | TSlice inner ->
+        match inner.Kind with
+        | TRef { Segments = ["Int"] }    -> Some ("__lyricJsonGetIntSlice", te)
+        | TRef { Segments = ["Long"] }   -> Some ("__lyricJsonGetLongSlice", te)
+        | TRef { Segments = ["Double"] } -> Some ("__lyricJsonGetDoubleSlice", te)
+        | TRef { Segments = ["Bool"] }   -> Some ("__lyricJsonGetBoolSlice", te)
+        | TRef { Segments = ["String"] } -> Some ("__lyricJsonGetStringSlice", te)
+        | _ -> None
+    | _ -> None
+
+/// Field-shape classification for `fromJson` synthesis.
+type private FieldShape =
+    | FsPrimitive of helperName: string
+    | FsPrimitiveSlice of helperName: string
+    | FsNestedRecord of recName: string
+
+let private classifyField
+        (deriveJsonRecords: Set<string>)
+        (te: TypeExpr) : FieldShape option =
+    match primitiveFromJsonHelper te with
+    | Some (h, _) -> Some (FsPrimitive h)
+    | None ->
+    match primitiveSliceFromJsonHelper te with
+    | Some (h, _) -> Some (FsPrimitiveSlice h)
+    | None ->
+    match te.Kind with
+    | TRef { Segments = [name] } when deriveJsonRecords.Contains name ->
+        Some (FsNestedRecord name)
+    | _ -> None
+
 /// Synthesise `<RecName>.fromJson(s: String): <RecName>` when
 /// every field is a primitive Lyric type the
 /// `__lyricJsonGet<T>` shims handle.  Records with non-primitive
@@ -291,54 +327,102 @@ let private primitiveFromJsonHelper (te: TypeExpr) : (string * TypeExpr) option 
 /// Missing or wrongly-typed fields default-initialise (the
 /// extern shim returns false but we ignore the return).  Future
 /// revisions can return `Result` / `Option` instead.
-let private synthesiseFromJsonOpt (rd: RecordDecl) : FunctionDecl option =
+let private synthesiseFromJsonOpt
+        (deriveJsonRecords: Set<string>)
+        (rd: RecordDecl) : FunctionDecl option =
     let span = rd.Span
     let fields =
         rd.Members
         |> List.choose (function
             | RMField fd -> Some fd
             | _ -> None)
-    // All fields must be primitive — otherwise skip fromJson
-    // for this record entirely.
+    // Classify every field; skip fromJson synthesis if any field
+    // has a shape we don't yet support (e.g. Option, slices of
+    // records, generic types).
     let perField =
         fields
-        |> List.map (fun f -> f, primitiveFromJsonHelper f.Type)
+        |> List.map (fun f -> f, classifyField deriveJsonRecords f.Type)
     if perField |> List.exists (fun (_, h) -> h.IsNone) then None
     elif List.isEmpty fields then None
     else
         let stringTy = mkType (TRef (mkPath "String" span)) span
         let recordTy = mkType (TRef (mkPath rd.Name span)) span
         let stmts = ResizeArray<Statement>()
-        for (fd, helperOpt) in perField do
-            let helperName, valueTy =
-                match helperOpt with
-                | Some pair -> pair
+        let defaultCallExpr () =
+            mkExpr (ECall (mkExpr (EPath (mkPath "default" span)) span, [])) span
+        for (fd, shapeOpt) in perField do
+            let shape =
+                match shapeOpt with
+                | Some s -> s
                 | None -> failwith "unreachable"
-            // var <fieldName>: T = default()
-            let defaultCall =
-                mkExpr
-                    (ECall
-                        (mkExpr (EPath (mkPath "default" span)) span,
-                         []))
-                    span
-            stmts.Add
-                { Kind =
-                    SLocal (LBVar
-                        (fd.Name, Some valueTy, Some defaultCall))
-                  Span = span }
-            // __lyricJsonGet<T>(s, "<fd.Name>", <fd.Name>); the
-            // out-arg position takes the local by reference via
-            // an EPath argument.
-            let helperCall =
-                let callee =
-                    mkExpr (EPath (mkPath helperName span)) span
-                let args =
-                    [ CAPositional (mkExpr (EPath (mkPath "s" span)) span)
-                      CAPositional (strLit fd.Name span)
-                      CAPositional (mkExpr (EPath (mkPath fd.Name span)) span) ]
-                mkExpr (ECall (callee, args)) span
-            stmts.Add
-                { Kind = SExpr helperCall; Span = span }
+            match shape with
+            | FsPrimitive helperName ->
+                // var <name>: T = default(); __lyricJsonGet<T>(s, "<name>", <name>)
+                stmts.Add
+                    { Kind =
+                        SLocal (LBVar (fd.Name, Some fd.Type, Some (defaultCallExpr ())))
+                      Span = span }
+                let helperCall =
+                    let callee = mkExpr (EPath (mkPath helperName span)) span
+                    let args =
+                        [ CAPositional (mkExpr (EPath (mkPath "s" span)) span)
+                          CAPositional (strLit fd.Name span)
+                          CAPositional (mkExpr (EPath (mkPath fd.Name span)) span) ]
+                    mkExpr (ECall (callee, args)) span
+                stmts.Add { Kind = SExpr helperCall; Span = span }
+            | FsPrimitiveSlice helperName ->
+                // Same shape as primitive; the helper's out-param
+                // type is `slice[T]` (mapped to `T[]` on the CLR
+                // side).  `default()` produces a null `T[]` ref;
+                // the host shim overwrites it with an array on hit
+                // OR an empty array on miss.
+                stmts.Add
+                    { Kind =
+                        SLocal (LBVar (fd.Name, Some fd.Type, Some (defaultCallExpr ())))
+                      Span = span }
+                let helperCall =
+                    let callee = mkExpr (EPath (mkPath helperName span)) span
+                    let args =
+                        [ CAPositional (mkExpr (EPath (mkPath "s" span)) span)
+                          CAPositional (strLit fd.Name span)
+                          CAPositional (mkExpr (EPath (mkPath fd.Name span)) span) ]
+                    mkExpr (ECall (callee, args)) span
+                stmts.Add { Kind = SExpr helperCall; Span = span }
+            | FsNestedRecord recName ->
+                // var <name>__sub: String = "{}"
+                // __lyricJsonGetSubObject(s, "<name>", <name>__sub)
+                // val <name>: Inner = Inner.fromJson(<name>__sub)
+                let subName = fd.Name + "__sub"
+                stmts.Add
+                    { Kind =
+                        SLocal (LBVar
+                            (subName,
+                             Some stringTy,
+                             Some (strLit "{}" span)))
+                      Span = span }
+                let getSubCall =
+                    let callee =
+                        mkExpr (EPath (mkPath "__lyricJsonGetSubObject" span)) span
+                    let args =
+                        [ CAPositional (mkExpr (EPath (mkPath "s" span)) span)
+                          CAPositional (strLit fd.Name span)
+                          CAPositional (mkExpr (EPath (mkPath subName span)) span) ]
+                    mkExpr (ECall (callee, args)) span
+                stmts.Add { Kind = SExpr getSubCall; Span = span }
+                let recurseCall =
+                    let callee =
+                        mkExpr
+                            (EMember
+                                (mkExpr (EPath (mkPath recName span)) span,
+                                 "fromJson"))
+                            span
+                    let args =
+                        [ CAPositional (mkExpr (EPath (mkPath subName span)) span) ]
+                    mkExpr (ECall (callee, args)) span
+                stmts.Add
+                    { Kind =
+                        SLocal (LBLet (fd.Name, Some fd.Type, recurseCall))
+                      Span = span }
         // Construct: <RecName>(f1 = f1, f2 = f2, ...)
         let ctorArgs =
             fields
@@ -691,6 +775,35 @@ let synthesizeItems (items: Item list) : Item list =
             "__lyricJsonGetString"
             "Lyric.Stdlib.JsonHost.GetString"
             (mkRefTy "String"))
+        // Slice + sub-object readers — landed alongside D-progress-060
+        // so nested `@derive(Json)` records and primitive-slice fields
+        // get a working `fromJson` path.
+        let mkSliceTy elemRefName =
+            mkType (TSlice (mkRefTy elemRefName)) firstSpan
+        result.Add (mkGetShim
+            "__lyricJsonGetIntSlice"
+            "Lyric.Stdlib.JsonHost.GetIntSlice"
+            (mkSliceTy "Int"))
+        result.Add (mkGetShim
+            "__lyricJsonGetLongSlice"
+            "Lyric.Stdlib.JsonHost.GetLongSlice"
+            (mkSliceTy "Long"))
+        result.Add (mkGetShim
+            "__lyricJsonGetDoubleSlice"
+            "Lyric.Stdlib.JsonHost.GetDoubleSlice"
+            (mkSliceTy "Double"))
+        result.Add (mkGetShim
+            "__lyricJsonGetBoolSlice"
+            "Lyric.Stdlib.JsonHost.GetBoolSlice"
+            (mkSliceTy "Bool"))
+        result.Add (mkGetShim
+            "__lyricJsonGetStringSlice"
+            "Lyric.Stdlib.JsonHost.GetStringSlice"
+            (mkSliceTy "String"))
+        result.Add (mkGetShim
+            "__lyricJsonGetSubObject"
+            "Lyric.Stdlib.JsonHost.GetSubObject"
+            (mkRefTy "String"))
         for it in items do
             if hasDeriveJson it then
                 match it.Kind with
@@ -703,7 +816,7 @@ let synthesizeItems (items: Item list) : Item list =
                           Visibility  = Some (Pub rd.Span)
                           Kind        = IFunc fn
                           Span        = rd.Span }
-                    match synthesiseFromJsonOpt rd with
+                    match synthesiseFromJsonOpt deriveJsonRecords rd with
                     | Some fnFrom ->
                         result.Add
                             { DocComments = []

@@ -1696,6 +1696,110 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-060: Std.Json fromJson — slice + nested-record support
+*claude/c2-async-implementation-ZGU95 branch.*  Extends the
+synthesised `<Record>.fromJson(s: in String): <Record>` to
+records whose fields include primitive slices
+(`slice[Int|Long|Double|Bool|String]`) and nested
+`@derive(Json)` records.  Today's bootstrap restricted
+synthesis to records whose fields were all primitive
+Int/Long/Double/Bool/String; deriving Json on a record with a
+nested-record or slice-of-primitive field skipped fromJson
+generation entirely (toJson kept working).
+
+Implementation:
+- `Lyric.Stdlib.JsonHost`: new `GetIntSlice`, `GetLongSlice`,
+  `GetDoubleSlice`, `GetBoolSlice`, `GetStringSlice` reader
+  helpers (each writes the field's array via an out param,
+  returning `false` + an empty array on miss); new
+  `GetSubObject` reader returning the matching sub-document's
+  raw JSON-text representation; `HasField` and
+  `GetSubArrayElements` helpers staged for future
+  Option-typed and slice-of-record support.
+- `Lyric.Parser.JsonDerive`: `primitiveSliceFromJsonHelper`
+  picks the matching `__lyricJsonGet<T>Slice` shim;
+  `classifyField` returns `FsPrimitive` /
+  `FsPrimitiveSlice` / `FsNestedRecord` for the three
+  shapes the synthesiser handles; the ctor-time stmts
+  emit one of three patterns (primitive `var name=default;
+  helper(s, "name", name)`, slice same shape with the
+  Slice-suffixed helper, nested `var name__sub="{}";
+  GetSubObject(s, "name", name__sub); val name =
+  Inner.fromJson(name__sub)`).  The recursive `Inner.fromJson`
+  call uses the same `EMember (EPath Inner, "fromJson")`
+  shape as the existing toJson recursion.
+- New extern shims appended unconditionally per source file
+  alongside the existing `__lyricJsonGetInt`/etc:
+  `__lyricJsonGetIntSlice`, `__lyricJsonGetLongSlice`,
+  `__lyricJsonGetDoubleSlice`, `__lyricJsonGetBoolSlice`,
+  `__lyricJsonGetStringSlice`, `__lyricJsonGetSubObject`.
+
+Bootstrap-grade scope:
+- Slices of `@derive(Json)` records (`slice[Inner]`),
+  `Option[T]` fields, generic types, and records mixing
+  Inner with non-primitive non-derive-Json types still skip
+  fromJson generation (synthesiser returns `None`).
+- Missing/wrongly-typed fields still default-initialise on
+  the Lyric side (helper returns `false`, ignored).
+
+Three new tests in `JsonDeriveTests.fs`:
+`json_derive_fromJson_int_slice` (slice[Int] + slice[String]
+fields round-trip through GetIntSlice / GetStringSlice),
+`json_derive_fromJson_nested_record` (User with nested
+Address recursively decoded via Address.fromJson(subStr)),
+`json_derive_fromJson_double_slice` (slice[Double] round-trip).
+All 398 emitter tests pass (was 395; +3 new).
+
+---
+
+### D-progress-059: C2 outstanding items — deferred follow-up notes
+*claude/c2-async-implementation-ZGU95 branch.*  Three Phase B+++/
+Phase C items remain after D-progress-056-058: stack-spilling
+for awaits in sub-expression positions (`f(await g())`, `1 +
+await foo()`), async generic functions (closed-generic SM on
+TypeBuilder), and Phase C `CancellationToken` propagation +
+structured-concurrency scopes.  The M1.4 blocking shim already
+emits correct (just blocking, not real-suspending) IL for
+every shape we don't route through Phase B, so these are
+deferred without correctness risk:
+
+- **Stack-spilling.**  Today an EAwait nested inside an
+  ECall/EBinop/etc. fails the safe-position check and routes
+  through M1.4.  Lifting the suspend to handle non-empty IL
+  stack at the `Leave` site requires either an AST-rewrite
+  pass that promotes each non-trivial sub-expression to a
+  preceding `val __spill_N = await ...` statement, or
+  emit-time stack-spilling that flushes the partial-stack
+  contents to fresh SM fields before suspend.  Both are
+  multi-day implementation efforts; users can write the
+  rewrite manually today.
+
+- **Async generic functions.**  `async func id[T](x: in T): T`
+  routes through M1.4 because `isAsyncSmEligible` rejects
+  `fn.Generics`.  A real Phase A/B SM for generic async
+  requires defining the SM as a generic `TypeBuilder` whose
+  type parameters mirror the function's, then constructing
+  the closed-generic SM at the kickoff site via
+  `TypeBuilder.GetConstructor`/`GetField` against the open
+  definitions.  The infrastructure is sketched in the
+  closed-over-TypeBuilder workarounds in Codegen.fs; full
+  wiring is a 1-2 day effort and not needed for correctness
+  (M1.4 wraps via `Task.FromResult<T>`).
+
+- **Phase C cancellation.**  `CancellationToken` propagation
+  through the SM and structured-concurrency scopes (Lyric's
+  `scope` blocks with `cancel`) require a token-flowing
+  design across both the SM emit AND the runtime — both the
+  SM (so MoveNext checks for cancellation at suspend points)
+  and the surface API (so call sites pass tokens implicitly).
+  Gated on the full Phase B+++ landing.
+
+These items are tracked here rather than in
+`docs/12-todo-plan.md` so the bootstrap-progress thread stays
+self-contained.
+
+---
+
 ### D-progress-058: C2 Phase B+++ — for-loop awaits with real suspension
 *claude/c2-async-implementation-ZGU95 branch.*  Lifts the M1.4
 fallback for `for x in slice { ... await ... }` patterns where

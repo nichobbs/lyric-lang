@@ -449,6 +449,184 @@ type JsonHost private () =
                 sb.Append('"').Append(encoded.ToString()).Append('"') |> ignore
             sb.Append(']').ToString()
 
+    // -------- fromJson slice / sub-object readers --------
+    //
+    // Per-element-type slice readers + a generic sub-object reader
+    // that returns the matching field as a JSON-encoded string so
+    // the synthesised `Inner.fromJson(subStr)` call can recurse.
+    // All readers return `false` and leave `value` at `default(T)`
+    // when the field is missing or the type doesn't match — the
+    // synthesiser ignores the return value (the caller then sees a
+    // default-initialised array / empty string and constructs the
+    // record with a default field value).
+
+    static member GetIntSlice
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<int[]>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
+                let arr = ResizeArray<int>()
+                for el in e.EnumerateArray() do
+                    let mutable v = 0
+                    if el.TryGetInt32(&v) then arr.Add(v)
+                value <- arr.ToArray()
+                true
+            else
+                value <- Array.empty<int>
+                false
+        with _ ->
+            value <- Array.empty<int>
+            false
+
+    static member GetLongSlice
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<int64[]>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
+                let arr = ResizeArray<int64>()
+                for el in e.EnumerateArray() do
+                    let mutable v = 0L
+                    if el.TryGetInt64(&v) then arr.Add(v)
+                value <- arr.ToArray()
+                true
+            else
+                value <- Array.empty<int64>
+                false
+        with _ ->
+            value <- Array.empty<int64>
+            false
+
+    static member GetDoubleSlice
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<double[]>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
+                let arr = ResizeArray<double>()
+                for el in e.EnumerateArray() do
+                    let mutable v = 0.0
+                    if el.TryGetDouble(&v) then arr.Add(v)
+                value <- arr.ToArray()
+                true
+            else
+                value <- Array.empty<double>
+                false
+        with _ ->
+            value <- Array.empty<double>
+            false
+
+    static member GetBoolSlice
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<bool[]>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
+                let arr = ResizeArray<bool>()
+                for el in e.EnumerateArray() do
+                    match el.ValueKind with
+                    | System.Text.Json.JsonValueKind.True  -> arr.Add(true)
+                    | System.Text.Json.JsonValueKind.False -> arr.Add(false)
+                    | _ -> ()
+                value <- arr.ToArray()
+                true
+            else
+                value <- Array.empty<bool>
+                false
+        with _ ->
+            value <- Array.empty<bool>
+            false
+
+    static member GetStringSlice
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<string[]>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
+                let arr = ResizeArray<string>()
+                for el in e.EnumerateArray() do
+                    if el.ValueKind = System.Text.Json.JsonValueKind.String then
+                        let raw = el.GetString()
+                        match Option.ofObj raw with
+                        | Some s -> arr.Add(s)
+                        | None   -> arr.Add("")
+                value <- arr.ToArray()
+                true
+            else
+                value <- Array.empty<string>
+                false
+        with _ ->
+            value <- Array.empty<string>
+            false
+
+    /// Extract a sub-object field as its raw JSON-text representation.
+    /// Used by the synthesiser for nested `@derive(Json)` record
+    /// fields: `field: Inner` → call `GetSubObject(s, "field",
+    /// subStr)` and recurse on `Inner.fromJson(subStr)`.
+    static member GetSubObject
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && (e.ValueKind = System.Text.Json.JsonValueKind.Object
+                   || e.ValueKind = System.Text.Json.JsonValueKind.Array) then
+                value <- e.GetRawText()
+                true
+            else
+                value <- "{}"
+                false
+        with _ ->
+            value <- "{}"
+            false
+
+    /// Returns true when `name` is a present, non-null field on the
+    /// JSON document.  Used by Option-typed fields to distinguish
+    /// `None` (missing/null) from `Some` (present + parseable).
+    static member HasField (json: string, name: string) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            doc.RootElement.TryGetProperty(name, &e)
+            && e.ValueKind <> System.Text.Json.JsonValueKind.Null
+
+        with _ -> false
+
+    /// Read a sub-array field's elements as raw JSON strings.  Used
+    /// by `slice[Inner]` field synthesis where each element needs
+    /// to recurse via `Inner.fromJson(elemStr)`.
+    static member GetSubArrayElements
+            (json: string, name: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<string[]>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
+                let arr = ResizeArray<string>()
+                for el in e.EnumerateArray() do
+                    arr.Add(el.GetRawText())
+                value <- arr.ToArray()
+                true
+            else
+                value <- Array.empty<string>
+                false
+        with _ ->
+            value <- Array.empty<string>
+            false
+
 /// HTTP client helpers wrapping `System.Net.Http`.  Extern-package
 /// declarations in Lyric source can't currently route to BCL
 /// methods directly (they parse + type-check but never reach
