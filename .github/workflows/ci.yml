@@ -13,6 +13,13 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    env:
+      # `[Lyric.*]*` instruments every type in our source assemblies;
+      # `[*.Tests]*` keeps the test projects themselves out of the
+      # numerator/denominator so the report measures product code only.
+      COVERLET_INCLUDE: '[Lyric.*]*'
+      COVERLET_EXCLUDE: '[*.Tests]*'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +27,12 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: compiler/global.json
+
+      - name: Install coverage tools
+        run: |
+          dotnet tool install --global coverlet.console
+          dotnet tool install --global dotnet-reportgenerator-globaltool
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Restore
         working-directory: compiler
@@ -29,21 +42,96 @@ jobs:
         working-directory: compiler
         run: dotnet build Lyric.sln --configuration Debug --no-restore
 
-      - name: Lexer tests
+      - name: Lexer tests (with coverage)
         working-directory: compiler
-        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
+        run: |
+          mkdir -p coverage
+          coverlet tests/Lyric.Lexer.Tests/bin/Debug/net9.0/Lyric.Lexer.Tests.dll \
+            --target dotnet \
+            --targetargs "tests/Lyric.Lexer.Tests/bin/Debug/net9.0/Lyric.Lexer.Tests.dll" \
+            --format cobertura \
+            --output coverage/lexer.cobertura.xml \
+            --include "${COVERLET_INCLUDE}" \
+            --exclude "${COVERLET_EXCLUDE}"
 
-      - name: Parser tests
+      - name: Parser tests (with coverage)
         working-directory: compiler
-        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
+        run: |
+          coverlet tests/Lyric.Parser.Tests/bin/Debug/net9.0/Lyric.Parser.Tests.dll \
+            --target dotnet \
+            --targetargs "tests/Lyric.Parser.Tests/bin/Debug/net9.0/Lyric.Parser.Tests.dll" \
+            --format cobertura \
+            --output coverage/parser.cobertura.xml \
+            --include "${COVERLET_INCLUDE}" \
+            --exclude "${COVERLET_EXCLUDE}"
 
-      - name: Type-checker tests
+      - name: Type-checker tests (with coverage)
         working-directory: compiler
-        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
+        run: |
+          coverlet tests/Lyric.TypeChecker.Tests/bin/Debug/net9.0/Lyric.TypeChecker.Tests.dll \
+            --target dotnet \
+            --targetargs "tests/Lyric.TypeChecker.Tests/bin/Debug/net9.0/Lyric.TypeChecker.Tests.dll" \
+            --format cobertura \
+            --output coverage/typechecker.cobertura.xml \
+            --include "${COVERLET_INCLUDE}" \
+            --exclude "${COVERLET_EXCLUDE}"
 
-      - name: Emitter tests
+      - name: Emitter tests (with coverage)
         working-directory: compiler
-        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
+        run: |
+          coverlet tests/Lyric.Emitter.Tests/bin/Debug/net9.0/Lyric.Emitter.Tests.dll \
+            --target dotnet \
+            --targetargs "tests/Lyric.Emitter.Tests/bin/Debug/net9.0/Lyric.Emitter.Tests.dll" \
+            --format cobertura \
+            --output coverage/emitter.cobertura.xml \
+            --include "${COVERLET_INCLUDE}" \
+            --exclude "${COVERLET_EXCLUDE}"
+
+      - name: Generate coverage report
+        if: always()
+        working-directory: compiler
+        run: |
+          # Merge every per-test-project Cobertura file into one report.
+          # `MarkdownSummaryGithub` is tuned for `$GITHUB_STEP_SUMMARY`.
+          if compgen -G 'coverage/*.cobertura.xml' > /dev/null; then
+            reportgenerator \
+              -reports:'coverage/*.cobertura.xml' \
+              -targetdir:coverage/report \
+              -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
+          else
+            echo "No cobertura files found; skipping report."
+          fi
+
+      - name: Append coverage to job summary
+        if: always()
+        working-directory: compiler
+        run: |
+          if [ -f coverage/report/SummaryGithub.md ]; then
+            {
+              echo "## Code coverage"
+              echo
+              cat coverage/report/SummaryGithub.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No coverage summary produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Print coverage summary to log
+        if: always()
+        working-directory: compiler
+        run: |
+          if [ -f coverage/report/Summary.txt ]; then
+            cat coverage/report/Summary.txt
+          fi
+
+      - name: Upload coverage report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: compiler/coverage/report/
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Smoke-test the CLI on examples
         working-directory: compiler
