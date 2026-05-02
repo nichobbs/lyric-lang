@@ -56,6 +56,7 @@
     <Compile Include="StdHttpTests.fs" />
     <Compile Include="StdMathTests.fs" />
     <Compile Include="StdRandomTests.fs" />
+    <Compile Include="SnapshotTestingTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

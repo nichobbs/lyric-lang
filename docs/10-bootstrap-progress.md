@@ -1696,6 +1696,42 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-063: Std.Testing + Std.Testing.Snapshot — built-in test utilities
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships a
+bootstrap-grade testing surface so Lyric programs can write their
+own tests without rolling assertion helpers each time.
+
+`Std.Testing` (`lyric/std/testing.l`):
+- `assertEqual(actual, expected, label)` — panics on string mismatch
+  with a structured "expected/actual" message.
+- `assertEqualInt(actual, expected, label)` — same for `Int` values
+  (sidesteps `toString` boilerplate).
+- `assertTrue(cond, label)` — generic boolean assertion.
+
+`Std.Testing.Snapshot` (`lyric/std/testing_snapshot.l`):
+- `snapshot(label, actual): Result[Bool, IOError]` — compares
+  `actual` against `snapshots/<label>.txt`.  First run: creates
+  the file (after best-effort `createDir("snapshots")`) and
+  returns `Ok(true)` so the author reviews and commits.  Later
+  runs: `Ok(true)` on match, `Ok(false)` on mismatch.  IO errors
+  surface as `Err`.
+- `snapshotMatch(label, actual): Unit` — convenience wrapper
+  that panics on mismatch or IO error; CI lands here.
+
+Bootstrap-grade scope: snapshot directory hard-coded to
+`snapshots/` relative to the working directory; multi-line
+captures are byte-for-byte compared (no normalisation); diff
+rendering is the caller's job (panic message just says
+"mismatch").  Property-based generators and a richer xUnit-style
+discovery layer remain Phase 3 follow-ups.
+
+Four new tests in `SnapshotTestingTests.fs`:
+first-run-writes-snapshot, matching-second-run, mismatched-second-
+run, and snapshotMatch-panics.  All 407 emitter tests pass (was
+403; +4 new).
+
+---
+
 ### D-progress-062: lyric public-api-diff for SemVer enforcement
 *claude/c2-async-implementation-ZGU95 branch.*  Ships the
 `lyric public-api-diff <old.dll> <new.dll>` CLI command that
