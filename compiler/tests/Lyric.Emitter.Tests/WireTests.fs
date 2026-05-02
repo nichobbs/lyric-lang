@@ -108,6 +108,34 @@ func main(): Unit {
 }
 """,
     "real\ntest"
+
+    "wire_scoped_factory_synth",
+    // D-progress-072: scoped lifetimes synthesise per-scope
+    // factory functions.  `scoped[Request] req: ReqCtx = ...`
+    // becomes `pub func RequestWire.scopedreq(): ReqCtx`.
+    // Each call returns a fresh instance; the lifetime is the
+    // request, not the program.
+    """
+package WR5
+record ReqCtx { id: Int }
+
+wire RequestWire {
+  @provided baseId: Int
+  singleton clock: Int = baseId
+  scoped[Request] req: ReqCtx = ReqCtx(id = 101)
+  expose clock
+}
+
+func main(): Unit {
+  val w = RequestWire.bootstrap(1)
+  println(toString(w.clock))
+  val r1 = RequestWire.scopedreq()
+  val r2 = RequestWire.scopedreq()
+  println(toString(r1.id))
+  println(toString(r2.id))
+}
+""",
+    "1\n101\n101"
 ]
 
 let tests =

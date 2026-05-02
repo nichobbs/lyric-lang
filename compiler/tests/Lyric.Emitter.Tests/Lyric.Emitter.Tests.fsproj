@@ -60,6 +60,8 @@
     <Compile Include="PropertyTestingTests.fs" />
     <Compile Include="CancellationTests.fs" />
     <Compile Include="StructuredConcurrencyTests.fs" />
+    <Compile Include="AsyncLocalTests.fs" />
+    <Compile Include="MockingTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
