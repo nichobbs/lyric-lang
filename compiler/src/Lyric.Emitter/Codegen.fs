@@ -2286,12 +2286,21 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // not implemented — go through `TypeBuilder.GetConstructor`
             // instead, which substitutes the open ctor handle.
             let openCtor = caseInfo.Ctor
+            // Extend the GTPB-check to also catch TypeBuilder typeArgs:
+            // when constructing e.g. `Some(value = userRec)` where
+            // `userRec` is itself a Lyric record under construction in
+            // this assembly, `MakeGenericType([| userRec |])` produces
+            // a TypeBuilderInstantiation whose `GetConstructors` is
+            // also unsupported (D-progress-050).
+            let isTypeBuilderArg (t: ClrType) : bool =
+                t :? System.Reflection.Emit.TypeBuilder
+                || t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                || (t.IsGenericType && not t.IsGenericTypeDefinition
+                    && t.GetGenericArguments() |> Array.exists (fun ga ->
+                        ga :? System.Reflection.Emit.TypeBuilder
+                        || ga :? System.Reflection.Emit.GenericTypeParameterBuilder))
             let constructedCtor =
-                if typeArgs |> Array.exists (fun t ->
-                       t :? System.Reflection.Emit.GenericTypeParameterBuilder
-                       || (t.IsGenericType && not t.IsGenericTypeDefinition
-                           && t.GetGenericArguments() |> Array.exists (fun ga ->
-                                ga :? System.Reflection.Emit.GenericTypeParameterBuilder)))
+                if typeArgs |> Array.exists isTypeBuilderArg
                 then
                     System.Reflection.Emit.TypeBuilder.GetConstructor(constructedCase, openCtor)
                 else

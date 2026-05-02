@@ -1696,6 +1696,41 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-050: TypeBuilder-arg fallback for imported variant ctor + LYRIC_DEBUG
+*claude/deferred-items-round3 branch.*  Two related bits of polish.
+
+**TypeBuilder-arg fallback.**  `Codegen.fs`'s imported variant
+ctor path (e.g. `Some(value = userRec)` where `userRec` is a
+Lyric record under construction in this assembly) called
+`constructedCase.GetConstructors()` whenever no typeArg was a
+`GenericTypeParameterBuilder`.  But typeArgs can also be plain
+`TypeBuilder` instances when the user wires a same-package
+record into an imported generic union — `MakeGenericType` then
+returns a `TypeBuilderInstantiation` whose `GetConstructors()`
+raises `NotSupportedException` ("Specified method is not
+supported").  The fallback now also catches `TypeBuilder` and
+nested-`TypeBuilder` typeArgs and routes through
+`TypeBuilder.GetConstructor`.
+
+**`LYRIC_DEBUG` env var.**  When set, the CLI's `internal
+error: …` printout is followed by the original exception's
+stack trace.  Crucial for diagnosing reflection failures that
+otherwise surface as a bare "Specified method is not
+supported" message.
+
+The TypeBuilder-arg fix unblocks a chunk of `Std.Http` (which
+returns `Result[HttpResponseMessage, HttpError]` constructed
+via `Ok(value = …)` / `Err(error = …)` from imported
+`Std.Core`).  Std.Http still hits a separate "Object.GetAwaiter"
+issue when extern-package async calls don't surface their
+`Task<T>` static type — tracked as a Phase B+++ follow-up.
+
+No new tests (the fix is structural; existing tests don't
+reproduce the closed-generic-on-record case).  All 371 emitter
+tests pass.
+
+---
+
 ### D-progress-049: try-as-expression — `return try { … } catch …`
 *claude/deferred-items-round3 branch.*  Builds on D-progress-048
 to allow `try { … } catch …` in expression position.  This is
