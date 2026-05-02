@@ -1696,6 +1696,24 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-053: Std.Iter expansion — sumLong, sumDouble, iterMin/Max, reverse
+*claude/deferred-items-round4 branch.*  Closes a deferred
+follow-up — the `Std.Iter` surface previously only had `sumInt`
+for numeric reduction.  New helpers:
+
+- `sumLong(xs: slice[Long]): Long` / `sumDouble(xs: slice[Double]): Double`.
+- `iterMinInt` / `iterMaxInt` / `iterMinLong` / `iterMaxLong`
+  returning `Option[T]` (`None` for empty slices).  Names are
+  `iter`-prefixed because `Std.Core` already has a private
+  `maxInt` that conflicts.
+- `reverse[T](xs: slice[T]): slice[T]` — generic, allocates a
+  fresh slice via `List[T]` accumulator + `toArray`.
+
+Four new tests in `IterTests.fs`.  All 379 emitter tests pass
+(was 375; +4 new).
+
+---
+
 ### D-progress-052: Std.Http unblock — refactor extern-package to @externTarget shims
 *claude/deferred-items-round4 branch.*  Closes the
 "Object.GetAwaiter not found" failure that blocked
