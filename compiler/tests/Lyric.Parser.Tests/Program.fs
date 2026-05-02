@@ -22,6 +22,7 @@ let main argv =
             AdditionalStatementTests.tests
             RemainingItemTests.tests
             DiagnosticTests.tests
+            SynthesizerTests.tests
             WorkedExampleSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
