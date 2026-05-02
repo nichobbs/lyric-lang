@@ -1696,6 +1696,43 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-064: Std.Testing.Property — property-based testing
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships
+a bootstrap-grade property-based testing surface so users can
+assert invariants hold across many random inputs without
+writing per-input loops by hand.
+
+`Std.Testing.Property` (`lyric/std/testing_property.l`):
+- `forAllIntRange(rng, min, max, n, prop)` — runs `prop: (Int)
+  -> Bool` on `n` random Int samples in `[min, max)`, panicking
+  with the failing input on the first counterexample.
+- `forAllBool(rng, n, prop)` — Bool inputs.
+- `forAllDouble(rng, n, prop)` — Double inputs in `[0, 1)`.
+- `forAllIntPair(rng, min, max, n, prop)` — `(Int, Int)` pairs
+  for binary properties (commutativity, associativity, etc.).
+
+The caller passes a seeded `Random` from `Std.Random`, making
+runs deterministic and reproducible.  Properties are written
+as bare lambdas (`{ x: Int -> ... }`) so the syntactic
+overhead matches Lyric's existing higher-order helpers in
+`Std.Iter`.
+
+Bootstrap-grade scope:
+- No shrinking (the failing input is reported as-is, not
+  reduced).
+- No `Gen[T]` type-class — each scalar gets its own
+  `forAll<Type>` helper rather than a composable generator
+  monad.
+- Slice / record / generic-T inputs aren't yet supported
+  (would need a type-driven generator for each).
+
+Four new tests in `PropertyTestingTests.fs` covering Int
+addition commutativity, even-doubling, Bool double-negation,
+and Double range bounds.  All 411 emitter tests pass (was
+407; +4 new).
+
+---
+
 ### D-progress-063: Std.Testing + Std.Testing.Snapshot — built-in test utilities
 *claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships a
 bootstrap-grade testing surface so Lyric programs can write their

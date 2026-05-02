@@ -57,6 +57,7 @@
     <Compile Include="StdMathTests.fs" />
     <Compile Include="StdRandomTests.fs" />
     <Compile Include="SnapshotTestingTests.fs" />
+    <Compile Include="PropertyTestingTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
