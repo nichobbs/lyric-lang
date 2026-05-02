@@ -93,6 +93,26 @@ let private slicePrimitiveHelper (te: TypeExpr) : string option =
     | TArray (_, elem) -> elemHelper elem
     | _ -> None
 
+/// Detect a `slice[Rec]` / `array[N, Rec]` field whose element
+/// type is a user record with `@derive(Json)`.  Returns the
+/// record name when matched; the synthesiser then routes through
+/// a per-record `__lyricJsonRender<RecName>Slice` helper that
+/// loops over the slice and calls `<RecName>.toJson` per element.
+let private sliceRecordHelper
+        (deriveJsonRecords: Set<string>)
+        (te: TypeExpr) : string option =
+    let elem (e: TypeExpr) : string option =
+        match e.Kind with
+        | TRef p ->
+            match p.Segments with
+            | [name] when Set.contains name deriveJsonRecords -> Some name
+            | _ -> None
+        | _ -> None
+    match te.Kind with
+    | TSlice e -> elem e
+    | TArray (_, e) -> elem e
+    | _ -> None
+
 /// Build the body expression for one field's JSON rendering.
 let private renderFieldExpr
         (deriveJsonRecords: Set<string>)
@@ -126,9 +146,21 @@ let private renderFieldExpr
             let callee = mkExpr (EPath (mkPath helperName span)) span
             mkExpr (ECall (callee, [CAPositional access])) span
         | None ->
-            // `toString(self.<field>)` — primitive fields, fallthrough.
-            let callee = mkExpr (EPath (mkPath "toString" span)) span
-            mkExpr (ECall (callee, [CAPositional access])) span
+            match sliceRecordHelper deriveJsonRecords field.Type with
+            | Some recName ->
+                // `__lyricJsonRender<RecName>Slice(self.<field>)` —
+                // synthesised per-record helper that loops over
+                // the slice and dispatches to `<RecName>.toJson`
+                // per element.  The helper is appended to the
+                // source file by `synthesizeItems`.
+                let helperName =
+                    "__lyricJsonRender" + recName + "Slice"
+                let callee = mkExpr (EPath (mkPath helperName span)) span
+                mkExpr (ECall (callee, [CAPositional access])) span
+            | None ->
+                // `toString(self.<field>)` — primitive fields, fallthrough.
+                let callee = mkExpr (EPath (mkPath "toString" span)) span
+                mkExpr (ECall (callee, [CAPositional access])) span
 
 let private synthesiseToJson
         (deriveJsonRecords: Set<string>)
@@ -301,10 +333,136 @@ let synthesizeItems (items: Item list) : Item list =
             "__lyricJsonRenderStringSlice"
             "Lyric.Stdlib.JsonHost.RenderStringSlice"
             (mkRefTy "String"))
+        // Per-record slice helpers — one `__lyricJsonRender<Rec>Slice`
+        // function per `@derive(Json)` record so fields of type
+        // `slice[Rec]` can lower to `__lyricJsonRender<Rec>Slice
+        // (self.<field>)`.  The body is a hand-rolled `while` loop
+        // that calls `<Rec>.toJson(items[i])` on each element.
+        let mkRecordSliceHelper (recName: string) (recSpan: Span) : Item =
+            let elemTy = mkType (TRef (mkPath recName recSpan)) recSpan
+            let sliceTy = mkType (TSlice elemTy) recSpan
+            let intTy = mkType (TRef (mkPath "Int" recSpan)) recSpan
+            let strLitInline (s: string) = strLit s recSpan
+            let pathExpr name = mkExpr (EPath (mkPath name recSpan)) recSpan
+            // var result: String = "["
+            let resultDecl =
+                { Kind =
+                    SLocal (LBVar
+                        ("result",
+                         Some stringTy,
+                         Some (strLitInline "[")))
+                  Span = recSpan }
+            // var i: Int = 0
+            let iDecl =
+                { Kind =
+                    SLocal (LBVar
+                        ("i",
+                         Some intTy,
+                         Some (mkExpr (ELiteral (LInt (0UL, NoIntSuffix))) recSpan)))
+                  Span = recSpan }
+            // while i < items.length { ... }
+            let lengthAccess =
+                mkExpr (EMember (pathExpr "items", "length")) recSpan
+            let cond =
+                mkExpr (EBinop (BLt, pathExpr "i", lengthAccess)) recSpan
+            // if i > 0 { result = result + "," }
+            let zeroLit = mkExpr (ELiteral (LInt (0UL, NoIntSuffix))) recSpan
+            let iGtZero =
+                mkExpr (EBinop (BGt, pathExpr "i", zeroLit)) recSpan
+            let appendComma =
+                { Kind =
+                    SAssign
+                        (pathExpr "result", AssEq,
+                         mkExpr
+                             (EBinop (BAdd, pathExpr "result",
+                                       strLitInline ","))
+                             recSpan)
+                  Span = recSpan }
+            let ifCommaThenBlock : Block =
+                { Statements = [ appendComma ]; Span = recSpan }
+            let ifComma : Statement =
+                { Kind =
+                    SExpr
+                        (mkExpr
+                            (EIf (iGtZero,
+                                  EOBBlock ifCommaThenBlock,
+                                  None,
+                                  false))
+                            recSpan)
+                  Span = recSpan }
+            // result = result + <Rec>.toJson(items[i])
+            let toJsonCall =
+                let callee =
+                    mkExpr
+                        (EMember (pathExpr recName, "toJson"))
+                        recSpan
+                let arg =
+                    mkExpr
+                        (EIndex (pathExpr "items", [ pathExpr "i" ]))
+                        recSpan
+                mkExpr (ECall (callee, [ CAPositional arg ])) recSpan
+            let appendJson =
+                { Kind =
+                    SAssign
+                        (pathExpr "result", AssEq,
+                         mkExpr
+                             (EBinop (BAdd, pathExpr "result", toJsonCall))
+                             recSpan)
+                  Span = recSpan }
+            // i = i + 1
+            let oneLit = mkExpr (ELiteral (LInt (1UL, NoIntSuffix))) recSpan
+            let bumpI =
+                { Kind =
+                    SAssign
+                        (pathExpr "i", AssEq,
+                         mkExpr
+                             (EBinop (BAdd, pathExpr "i", oneLit))
+                             recSpan)
+                  Span = recSpan }
+            let whileBody : Block =
+                { Statements = [ ifComma; appendJson; bumpI ]
+                  Span       = recSpan }
+            let whileStmt =
+                { Kind = SWhile (None, cond, whileBody)
+                  Span = recSpan }
+            // result + "]"
+            let bodyExpr =
+                mkExpr
+                    (EBinop (BAdd, pathExpr "result", strLitInline "]"))
+                    recSpan
+            let bodyExprStmt =
+                { Kind = SExpr bodyExpr; Span = recSpan }
+            let bodyBlock : Block =
+                { Statements = [ resultDecl; iDecl; whileStmt; bodyExprStmt ]
+                  Span       = recSpan }
+            let fn : FunctionDecl =
+                { DocComments = []
+                  Annotations = []
+                  Visibility  = None
+                  IsAsync     = false
+                  Name        = "__lyricJsonRender" + recName + "Slice"
+                  Generics    = None
+                  Params      =
+                    [ { Mode    = PMIn
+                        Name    = "items"
+                        Type    = sliceTy
+                        Default = None
+                        Span    = recSpan } ]
+                  Return      = Some stringTy
+                  Where       = None
+                  Contracts   = []
+                  Body        = Some (FBBlock bodyBlock)
+                  Span        = recSpan }
+            { DocComments = []
+              Annotations = []
+              Visibility  = None
+              Kind        = IFunc fn
+              Span        = recSpan }
         for it in items do
             if hasDeriveJson it then
                 match it.Kind with
                 | IRecord rd | IExposedRec rd ->
+                    result.Add (mkRecordSliceHelper rd.Name rd.Span)
                     let fn = synthesiseToJson deriveJsonRecords rd
                     result.Add
                         { DocComments = []

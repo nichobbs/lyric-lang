@@ -139,6 +139,31 @@ func main(): Unit {
 }
 """,
     "{\"values\":[true,false,true]}"
+
+    "json_derive_record_slice_field",
+    // D-progress-044: slice of @derive(Json) records lowers to a
+    // synthesised __lyricJsonRender<RecName>Slice helper that
+    // loops the slice and dispatches to <RecName>.toJson per
+    // element.
+    """
+package J10
+@derive(Json)
+pub record Item {
+  name: String
+  count: Int
+}
+@derive(Json)
+pub record Bag {
+  items: slice[Item]
+}
+func main(): Unit {
+  println(Bag.toJson(Bag(items = [
+    Item(name = "a", count = 1),
+    Item(name = "b", count = 2)
+  ])))
+}
+""",
+    "{\"items\":[{\"name\":\"a\",\"count\":1},{\"name\":\"b\",\"count\":2}]}"
 ]
 
 let tests =

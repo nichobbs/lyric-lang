@@ -1696,6 +1696,46 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-044: `@derive(Json)` — nested-record slice fields
+*claude/deferred-items-continuation branch.*  Builds on
+D-progress-043 to handle `slice[Rec]` / `array[N, Rec]` fields
+where `Rec` is itself a record with `@derive(Json)`.  Where
+primitive-slice fields use a fixed F#-side BCL helper, nested-
+record slices get a per-record synthesised Lyric helper:
+
+```lyric
+@derive(Json)
+pub record Item { name: String; count: Int }
+@derive(Json)
+pub record Bag { items: slice[Item] }
+
+// Synthesised:
+//   func __lyricJsonRenderItemSlice(items: in slice[Item]): String {
+//     var result: String = "["
+//     var i: Int = 0
+//     while i < items.length {
+//       if i > 0 { result = result + "," }
+//       result = result + Item.toJson(items[i])
+//       i = i + 1
+//     }
+//     result + "]"
+//   }
+```
+
+`JsonDerive.synthesizeItems` emits one such helper per
+`@derive(Json)` record, before the record's own `toJson`.  The
+field renderer's `sliceRecordHelper` detects the field's element
+type and routes through the synthesised name.
+
+**Bootstrap-grade scope.**  Slices of nested records work, but
+nested slices (`slice[slice[Item]]`) and `Option`/`Result`-typed
+fields still fall through to `toString` — Phase 4 work.
+
+One new test (`json_derive_record_slice_field`).  All 359 emitter
+tests pass.
+
+---
+
 ### D-progress-043: `@derive(Json)` — primitive slice fields render as JSON arrays
 *claude/deferred-items-continuation branch.*  Closes a deferred
 follow-up from D-progress-030.  `slice[Int]` / `slice[Long]` /
