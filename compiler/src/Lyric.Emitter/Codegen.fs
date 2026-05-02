@@ -4602,3 +4602,320 @@ and private emitTryAwaitDuplicated
 
     il.MarkLabel(afterSecondUserTry)
     il.MarkLabel(afterUserTry)
+
+/// Phase B+++ defer + await emit (D-progress-057).
+///
+/// User code:
+///     [pre-defer stmts (await-free)]
+///     defer { cleanup-body (await-free) }
+///     [between stmts (await-free)]
+///     trailing-top-level-await
+///
+/// Lowered to a duplicated-post-await pattern with manual cleanup
+/// (no IL `.finally` — we can't run cleanup on suspend, only on
+/// real scope exits):
+///
+///     <pre-defer stmts>            // unprotected, before defer "registers"
+///     .try {
+///         <between stmts>
+///         <compute awaiter>
+///         if !IsCompleted: suspend; Leave SuspendLeaveLabel
+///         GetResult; bind; Leave AfterFirstUserTry
+///     } catch (Exception e) {
+///         <cleanup-body>
+///         rethrow
+///     }
+///   AfterFirstUserTry:
+///     <cleanup-body>            // first-time normal exit
+///     Br AfterScope
+///
+///   ResumeLabel:
+///     awaiter = field; clear field; state = -1
+///     .try {
+///         GetResult; bind; Leave AfterSecondUserTry
+///     } catch (Exception e) {
+///         <cleanup-body>          // duplicated
+///         rethrow
+///     }
+///   AfterSecondUserTry:
+///     <cleanup-body>              // resume normal exit
+///   AfterScope:
+and emitDeferAwaitDuplicated
+        (ctx: FunctionCtx)
+        (deferBody: Block)
+        (between: Statement list)
+        (awaitStmt: Statement) : unit =
+    let il = ctx.IL
+    let smAwait =
+        match ctx.SmAwaitInfo with
+        | Some s -> s
+        | None   -> failwith "internal: emitDeferAwaitDuplicated requires SmAwaitInfo"
+
+    let rec unwrapAwait (e: Expr) : Expr =
+        match e.Kind with
+        | EAwait inner -> inner
+        | EParen p -> unwrapAwait p
+        | _ -> failwith "internal: unwrapAwait: not an await expression"
+    let bindName : string option =
+        match awaitStmt.Kind with
+        | SExpr _ -> None
+        | SLocal (LBVal ({ Kind = PBinding (n, None) }, _, _))
+        | SLocal (LBLet (n, _, _))
+        | SLocal (LBVar (n, _, Some _)) -> Some n
+        | _ -> failwith "internal: emitDeferAwaitDuplicated: unexpected await stmt shape"
+    let innerExpr : Expr =
+        match awaitStmt.Kind with
+        | SExpr e -> unwrapAwait e
+        | SLocal (LBVal (_, _, init))
+        | SLocal (LBLet (_, _, init))
+        | SLocal (LBVar (_, _, Some init)) -> unwrapAwait init
+        | _ -> failwith "internal: emitDeferAwaitDuplicated: unexpected await stmt shape"
+    let bindAnnot : TypeExpr option =
+        match awaitStmt.Kind with
+        | SLocal (LBVal (_, ann, _))
+        | SLocal (LBLet (_, ann, _))
+        | SLocal (LBVar (_, ann, Some _)) -> ann
+        | _ -> None
+
+    let stateIndex = smAwait.NextAwaitIndex
+    smAwait.NextAwaitIndex <- stateIndex + 1
+    let resumeLabel = smAwait.ResumeLabels.[stateIndex]
+
+    let afterFirstUserTry = il.DefineLabel()
+    let afterSecondUserTry = il.DefineLabel()
+    let afterScope = il.DefineLabel()
+    let inlineAfterAwait = il.DefineLabel()
+
+    let emitCleanup () =
+        // Defer body runs; the body may declare locals — push a fresh
+        // scope so they don't leak.
+        emitBlock ctx deferBody
+
+    // ---- First user .try ----
+    il.BeginExceptionBlock() |> ignore
+    ctx.TryDepth <- ctx.TryDepth + 1
+    FunctionCtx.pushScope ctx
+
+    // Between-defer-and-await stmts run inside the protected region.
+    for s in between do
+        emitStatement ctx s
+
+    // Push the inner Task expression.
+    let savedExpected = ctx.ExpectedType
+    match bindAnnot with
+    | Some te ->
+        try ctx.ExpectedType <- Some (ctx.ResolveType te)
+        with _ -> ()
+    | None -> ()
+    let taskTy = emitExpr ctx innerExpr
+    ctx.ExpectedType <- savedExpected
+
+    let isClosedGenericOnTaskBuilder =
+        taskTy.IsGenericType
+        && (taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>)
+        && (taskTy.GetGenericArguments() |> Array.exists (fun t ->
+                t :? TypeBuilder
+                || (t.IsGenericType && t.GetGenericArguments() |> Array.exists (fun a -> a :? TypeBuilder))))
+    let elemTy =
+        if taskTy.IsGenericType
+           && taskTy.GetGenericTypeDefinition() = typedefof<System.Threading.Tasks.Task<_>>
+        then taskTy.GetGenericArguments().[0]
+        else typeof<System.Void>
+    let resolveGenericTask () =
+        let openGetAwaiter =
+            let mi = typedefof<System.Threading.Tasks.Task<_>>.GetMethod("GetAwaiter")
+            match Option.ofObj mi with
+            | Some m -> m
+            | None -> failwith "E14 codegen: Task<>.GetAwaiter open-generic not found"
+        let closedGetAwaiter = TypeBuilder.GetMethod(taskTy, openGetAwaiter)
+        let openAwaiterTy = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+        let closedAwaiterTy = openAwaiterTy.MakeGenericType([| elemTy |])
+        let openGetResult =
+            let mi = openAwaiterTy.GetMethod("GetResult")
+            match Option.ofObj mi with
+            | Some m -> m
+            | None -> failwith "E14 codegen: TaskAwaiter<>.GetResult not found"
+        let closedGetResult = TypeBuilder.GetMethod(closedAwaiterTy, openGetResult)
+        closedGetAwaiter, closedAwaiterTy, closedGetResult, elemTy
+    let getAwaiter, awaiterTy, getResult, returnedTy =
+        if isClosedGenericOnTaskBuilder then resolveGenericTask ()
+        else
+            let ga =
+                match Option.ofObj (taskTy.GetMethod("GetAwaiter")) with
+                | Some m -> m
+                | None -> failwithf "E14 codegen: %s.GetAwaiter not found" taskTy.Name
+            let aw = ga.ReturnType
+            let gr =
+                match Option.ofObj (aw.GetMethod("GetResult")) with
+                | Some m -> m
+                | None -> failwithf "E14 codegen: %s.GetResult not found" aw.Name
+            ga, aw, gr, gr.ReturnType
+
+    il.Emit(OpCodes.Callvirt, getAwaiter)
+    let awaiterLocal = FunctionCtx.defineLocal ctx "__awaiter_defer" awaiterTy
+    il.Emit(OpCodes.Stloc, awaiterLocal)
+
+    let awaiterField =
+        Lyric.Emitter.AsyncStateMachine.defineAwaiterField
+            smAwait.Sm stateIndex awaiterTy
+    smAwait.AwaiterFields.[stateIndex] <- awaiterField
+
+    // IsCompleted check.
+    let awaiterClosedOverTb =
+        awaiterTy.IsGenericType
+        && awaiterTy.GetGenericArguments()
+           |> Array.exists (fun a ->
+               a :? TypeBuilder
+               || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
+    let isCompletedGetter =
+        if awaiterClosedOverTb
+           && awaiterTy.GetGenericTypeDefinition()
+              = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>> then
+            let openTaskAwaiter = typedefof<System.Runtime.CompilerServices.TaskAwaiter<_>>
+            let openGetter =
+                openTaskAwaiter.GetMethods()
+                |> Array.tryFind (fun m -> m.Name = "get_IsCompleted")
+            match openGetter with
+            | Some m -> TypeBuilder.GetMethod(awaiterTy, m)
+            | None -> failwith "BCL: TaskAwaiter<>.get_IsCompleted not found"
+        else
+            match Option.ofObj (awaiterTy.GetProperty("IsCompleted")) with
+            | Some p ->
+                match Option.ofObj (p.GetGetMethod()) with
+                | Some g -> g
+                | None -> failwithf "E14 codegen: %s.get_IsCompleted missing" awaiterTy.Name
+            | None -> failwithf "E14 codegen: %s.IsCompleted property missing" awaiterTy.Name
+
+    il.Emit(OpCodes.Ldloca, awaiterLocal)
+    il.Emit(OpCodes.Call, isCompletedGetter)
+    il.Emit(OpCodes.Brtrue, inlineAfterAwait)
+
+    // Suspend.
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldc_I4, stateIndex)
+    il.Emit(OpCodes.Stfld, smAwait.Sm.State)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldloc, awaiterLocal)
+    il.Emit(OpCodes.Stfld, awaiterField)
+    for (lb, fld) in smAwait.PromotedShadows do
+        il.Emit(OpCodes.Ldarg_0)
+        il.Emit(OpCodes.Ldloc, lb)
+        il.Emit(OpCodes.Stfld, fld)
+    let builderTy = smAwait.Sm.BuilderType
+    let builderClosedOverTb =
+        builderTy.IsGenericType
+        && builderTy.GetGenericArguments()
+           |> Array.exists (fun a ->
+               a :? TypeBuilder
+               || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
+    let closedAwaitUnsafe =
+        if builderClosedOverTb && builderTy.IsGenericType
+           && builderTy.GetGenericTypeDefinition()
+              = typedefof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder<_>> then
+            let openBuilder = typedefof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder<_>>
+            let openOnDef =
+                openBuilder.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = "AwaitUnsafeOnCompleted"
+                    && m.IsGenericMethodDefinition
+                    && m.GetGenericArguments().Length = 2)
+            let closedOnBuilder =
+                match openOnDef with
+                | Some m -> TypeBuilder.GetMethod(builderTy, m)
+                | None ->
+                    failwith "BCL: AsyncTaskMethodBuilder<>.AwaitUnsafeOnCompleted<,> not found"
+            closedOnBuilder.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+        else
+            let openAwaitUnsafe =
+                builderTy.GetMethods()
+                |> Array.tryFind (fun m ->
+                    m.Name = "AwaitUnsafeOnCompleted"
+                    && m.IsGenericMethodDefinition
+                    && m.GetGenericArguments().Length = 2)
+            match openAwaitUnsafe with
+            | Some m -> m.MakeGenericMethod([| awaiterTy; (smAwait.Sm.Type :> System.Type) |])
+            | None -> failwithf "BCL: %s.AwaitUnsafeOnCompleted<,> not found" builderTy.Name
+    let smLocal =
+        FunctionCtx.defineLocal ctx "__this_sm_defer" (smAwait.Sm.Type :> System.Type)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Stloc, smLocal)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldflda, smAwait.Sm.Builder)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldflda, awaiterField)
+    il.Emit(OpCodes.Ldloca, smLocal)
+    il.Emit(OpCodes.Call, closedAwaitUnsafe)
+    il.Emit(OpCodes.Leave, smAwait.SuspendLeaveLabel)
+
+    // Inline-after-await: awaiter was already complete.
+    il.MarkLabel(inlineAfterAwait)
+    il.Emit(OpCodes.Ldloca, awaiterLocal)
+    il.Emit(OpCodes.Call, getResult)
+    match bindName, returnedTy = typeof<System.Void> with
+    | Some name, false ->
+        let lb = FunctionCtx.defineLocal ctx name returnedTy
+        il.Emit(OpCodes.Stloc, lb)
+    | None, true -> ()
+    | None, false -> il.Emit(OpCodes.Pop)
+    | Some _, true -> ()
+    il.Emit(OpCodes.Leave, afterFirstUserTry)
+
+    FunctionCtx.popScope ctx
+    ctx.TryDepth <- ctx.TryDepth - 1
+
+    // Synthetic catch: cleanup + rethrow.
+    il.BeginCatchBlock(typeof<System.Exception>)
+    FunctionCtx.pushScope ctx
+    il.Emit(OpCodes.Pop)  // discard exception value (Rethrow uses CLR's currentException)
+    emitCleanup ()
+    il.Emit(OpCodes.Rethrow)
+    FunctionCtx.popScope ctx
+    il.EndExceptionBlock()
+
+    il.MarkLabel(afterFirstUserTry)
+    // First-time normal exit: cleanup runs then jump past the resume copy.
+    emitCleanup ()
+    il.Emit(OpCodes.Br, afterScope)
+
+    // Resume entry (outside both .try blocks).
+    il.MarkLabel(resumeLabel)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldfld, awaiterField)
+    il.Emit(OpCodes.Stloc, awaiterLocal)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldflda, awaiterField)
+    il.Emit(OpCodes.Initobj, awaiterTy)
+    il.Emit(OpCodes.Ldarg_0)
+    il.Emit(OpCodes.Ldc_I4_M1)
+    il.Emit(OpCodes.Stfld, smAwait.Sm.State)
+
+    // Second user .try: just GetResult + bind.
+    il.BeginExceptionBlock() |> ignore
+    ctx.TryDepth <- ctx.TryDepth + 1
+    FunctionCtx.pushScope ctx
+
+    il.Emit(OpCodes.Ldloca, awaiterLocal)
+    il.Emit(OpCodes.Call, getResult)
+    match bindName, returnedTy = typeof<System.Void> with
+    | Some name, false ->
+        let lb = FunctionCtx.defineLocal ctx name returnedTy
+        il.Emit(OpCodes.Stloc, lb)
+    | None, true -> ()
+    | None, false -> il.Emit(OpCodes.Pop)
+    | Some _, true -> ()
+    il.Emit(OpCodes.Leave, afterSecondUserTry)
+
+    FunctionCtx.popScope ctx
+    ctx.TryDepth <- ctx.TryDepth - 1
+
+    il.BeginCatchBlock(typeof<System.Exception>)
+    FunctionCtx.pushScope ctx
+    il.Emit(OpCodes.Pop)
+    emitCleanup ()
+    il.Emit(OpCodes.Rethrow)
+    FunctionCtx.popScope ctx
+    il.EndExceptionBlock()
+
+    il.MarkLabel(afterSecondUserTry)
+    emitCleanup ()
+    il.MarkLabel(afterScope)

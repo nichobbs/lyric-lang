@@ -219,9 +219,9 @@ and private isSafeStmt (s: Statement) : bool =
     // promotion plumbing not yet implemented.
     | SWhile (_, cond, body) ->
         (not (exprHasAwait cond))
-        && (body.Statements |> List.forall isSafeStmt)
+        && safeStmtList body.Statements
     | SLoop (_, body) ->
-        body.Statements |> List.forall isSafeStmt
+        safeStmtList body.Statements
     // Phase B+++ (D-progress-056): STry with one trailing await in
     // body and no awaits in catches lowers to the duplicated-post-
     // await pattern.  Pre-stmts execute only on the first-time path;
@@ -242,6 +242,51 @@ and private isSafeStmtNested (s: Statement) : bool =
     match s.Kind with
     | STry _ -> not (stmtHasAwait s)
     | _ -> isSafeStmt s
+
+/// Walks a stmt list enforcing the Phase B / B+++ "scope-positional"
+/// rules: every stmt is `isSafeStmt`, AND if the list contains a
+/// `defer { ... }`, the stmts that follow it satisfy the
+/// duplicated-emit defer-await constraint — either entirely
+/// award-free, or exactly one trailing top-level await preceded by
+/// award-free stmts.
+///
+/// Recursive into loop/while bodies because a defer inside a loop's
+/// body still needs to obey the rule within its own scope.
+and private safeStmtList (stmts: Statement list) : bool =
+    if not (stmts |> List.forall isSafeStmt) then false
+    else
+        let arr = List.toArray stmts
+        let n = arr.Length
+        let mutable firstDefer = -1
+        let mutable i = 0
+        while firstDefer = -1 && i < n do
+            (match arr.[i].Kind with
+             | SDefer _ -> firstDefer <- i
+             | _ -> ())
+            i <- i + 1
+        if firstDefer = -1 then
+            // No defer at this level — recurse into nested loop/while
+            // body scopes that haven't been checked by `isSafeStmt`.
+            stmts
+            |> List.forall (fun s ->
+                match s.Kind with
+                | SWhile (_, _, body) | SLoop (_, body) ->
+                    safeStmtList body.Statements
+                | _ -> true)
+        else
+            // Stmts after the first defer.
+            let afterCount = n - firstDefer - 1
+            if afterCount = 0 then true
+            else
+                let mutable awaits = 0
+                for j in firstDefer + 1 .. n - 1 do
+                    if stmtHasAwait arr.[j] then awaits <- awaits + 1
+                if awaits = 0 then true
+                elif awaits = 1 then
+                    // Must be at the last position AND a top-level await.
+                    let last = arr.[n - 1]
+                    stmtHasAwait last && stmtIsTopLevelAwait last
+                else false
 
 /// True when this Try body fits the Phase B+++ "single-trailing-
 /// await" shape: pre-stmts are await-free and at safe positions,
@@ -285,6 +330,47 @@ let isTryAwaitBodyShape (body: Block) (catches: CatchClause list) : bool =
     elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
     else isPhaseBPlusPlusPlusTryAwaitBody body
 
+/// Detect the Phase B+++ defer-await trailing pattern in a function
+/// body.  Returns `Some (preDefer, deferBody, between, awaitStmt)`
+/// when the function body matches:
+///
+///     [pre-defer await-free stmts...]
+///     defer { await-free body }
+///     [between-defer-and-await await-free stmts...]
+///     trailing top-level await statement
+///
+/// Returns `None` otherwise.  The codegen path bypasses the regular
+/// `try/finally` defer emit and routes through the duplicated-post-
+/// await pattern, with cleanup running at scope exit (success or
+/// exception) but NOT at the suspend point.
+let tryMatchDeferAwaitTrailingShape (stmts: Statement list)
+    : (Statement list * Block * Statement list * Statement) option =
+    let deferIdx =
+        stmts
+        |> List.tryFindIndex (fun s ->
+            match s.Kind with SDefer _ -> true | _ -> false)
+    match deferIdx with
+    | None -> None
+    | Some di ->
+        let deferStmt = stmts.[di]
+        let deferBody =
+            match deferStmt.Kind with
+            | SDefer b -> b
+            | _ -> failwith "unreachable"
+        if blockHasAwait deferBody then None
+        else
+            let preDefer = List.take di stmts
+            let after = List.skip (di + 1) stmts
+            if preDefer |> List.exists stmtHasAwait then None
+            elif List.isEmpty after then None
+            else
+                let last = List.last after
+                if not (stmtIsTopLevelAwait last) then None
+                else
+                    let between = List.take (List.length after - 1) after
+                    if between |> List.exists stmtHasAwait then None
+                    else Some (preDefer, deferBody, between, last)
+
 /// Public re-export of `stmtIsTopLevelAwait` for Codegen.fs.
 let isStmtTopLevelAwait (s: Statement) : bool = stmtIsTopLevelAwait s
 
@@ -292,7 +378,7 @@ let allAwaitsSafe (fn: FunctionDecl) : bool =
     match fn.Body with
     | None -> true
     | Some (FBExpr e) -> isSafeExprPosition e
-    | Some (FBBlock blk) -> blk.Statements |> List.forall isSafeStmt
+    | Some (FBBlock blk) -> safeStmtList blk.Statements
 
 /// Returns true when this async function is eligible for the SM
 /// lowering (covers both Phase A — await-free body — and Phase B —

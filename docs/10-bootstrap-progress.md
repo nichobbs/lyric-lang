@@ -1696,6 +1696,66 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-057: C2 Phase B+++ — defer + await with real suspension
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the
+M1.4 fallback for `defer { cleanup }; ...; await foo()` patterns
+where the defer body is await-free, the trailing await is a
+top-level safe-position stmt, and pre/between stmts are
+await-free.  Today's `isSafeStmt` only checked the defer body's
+awaits — not whether subsequent stmts contained awaits — so an
+async func with a `defer { ... }; await Task.Delay(10)` would
+pass safety, route through Phase B, and emit IL that suspended
+out of a `.try/.finally` (running the finally on suspend, then
+trying to resume INTO the protected region — `InvalidProgramException`).
+
+This entry tightens the safety check AND adds a proper emit:
+
+- `Lyric.Emitter.AsyncStateMachine.safeStmtList` walks each
+  stmt list with positional state.  Once an `SDefer` is
+  encountered, subsequent stmts must satisfy the duplicated-
+  emit constraint (zero awaits OR exactly one trailing
+  top-level await preceded by award-free stmts).  Recursive
+  through SLoop / SWhile bodies.
+- `tryMatchDeferAwaitTrailingShape` returns the
+  `(preDefer, deferBody, between, awaitStmt)` split when the
+  function body fits the duplicated-emit pattern.
+- `Codegen.emitDeferAwaitDuplicated` emits the IL: pre-defer
+  stmts run unprotected, then a first `.try` (between stmts +
+  awaiter compute + suspend-or-inline-getResult) with a
+  synthetic catch that runs the cleanup body and rethrows;
+  on first-time normal exit, cleanup runs after the `.try`
+  before branching past the resume copy.  Resume entry sits
+  outside both `.try`s (wired to the global state-dispatch
+  switch) and re-enters a duplicated `.try` whose body is
+  just `GetResult` + bind, again with cleanup-on-catch +
+  rethrow and cleanup-on-normal-exit.
+- `Emitter.fs` `emitBodyBlock` detects the trailing-await
+  defer shape before falling through to the existing
+  `emitStatementsWithDeferTail` flow, restricted to
+  Unit-returning async functions for the bootstrap (the
+  trailing await's value isn't routed through `routeReturn`).
+
+Bootstrap-grade scope:
+- Defer body must be await-free.
+- Body must have exactly one defer.
+- Trailing await must be the function body's last stmt
+  (bare `await foo()` or `val r = await foo()`).
+- Pre-defer / between-defer-and-await stmts must be
+  await-free.
+- Function must return Unit.
+- Multiple defers, defers in nested blocks, defers around
+  multiple awaits, defers in non-Unit-returning funcs all
+  fall back to M1.4.
+
+Two new tests in `AsyncTests.fs`:
+`phaseBPlusPlusPlus_defer_await_no_throw` (defer-then-await,
+real `Task.Delay` suspension, cleanup runs after resume) and
+`phaseBPlusPlusPlus_defer_await_pre_defer_stmt` (a stmt
+before the defer, a between stmt, and a real-suspension
+trailing await).  All 394 emitter tests pass (was 392; +2 new).
+
+---
+
 ### D-progress-056: C2 Phase B+++ — try/catch + await with real suspension
 *claude/c2-async-implementation-ZGU95 branch.*  Lifts the M1.4
 fallback for `try { ... await ... } catch ...` patterns where

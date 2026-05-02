@@ -467,6 +467,46 @@ func main(): Unit {
 """,
     "caught\nafter"
 
+    "phaseBPlusPlusPlus_defer_await_no_throw",
+    // Phase B+++ (D-progress-057): `defer { cleanup }; await foo()`
+    // — cleanup is registered on entry, await suspends, cleanup
+    // runs once on scope exit (normal completion).  Must NOT
+    // double-run cleanup at the suspend point.
+    """
+package E14
+extern type Task = "System.Threading.Tasks.Task"
+async func runner(): Unit {
+  defer { println("cleanup") }
+  println("before-await")
+  await Task.Delay(10)
+}
+func main(): Unit {
+  await runner()
+  println("after")
+}
+""",
+    "before-await\ncleanup\nafter"
+
+    "phaseBPlusPlusPlus_defer_await_pre_defer_stmt",
+    // Pre-defer stmts run unconditionally; defer registers; between-
+    // defer-and-await stmts are inside the protected region; await
+    // suspends; cleanup runs at scope exit.
+    """
+package E14
+extern type Task = "System.Threading.Tasks.Task"
+async func runner(): Unit {
+  println("pre-defer")
+  defer { println("cleanup") }
+  println("between")
+  await Task.Delay(5)
+}
+func main(): Unit {
+  await runner()
+  println("done")
+}
+""",
+    "pre-defer\nbetween\ncleanup\ndone"
+
     "phaseBPlusPlusPlus_try_await_real_suspend",
     // Real BCL Task.Delay forces the suspend/resume path: the
     // Task is NOT pre-completed at the IsCompleted check, so the
