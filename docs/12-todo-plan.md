@@ -536,26 +536,31 @@ progress-per-session and dependency unblocking:
 
 ### Tier 4 — the tentpole
 
-8. **C2 — real async state machines.**  2-4 weeks.  The biggest
-   single item; unlocks downstream Tier-5 work.
+8. **C2 — real async state machines.**  Phases A / B / B+ / B++ /
+   B+++ / C all shipped.  Async generic funcs (closed-generic SM on
+   `TypeBuilder`) are the last remaining sub-item; outside of that
+   the only loose end is the Roslyn-style "spill-side-effecting-
+   siblings-to-the-left-of-an-await" follow-up to the Phase B+++
+   stack-spilling rewrite.
    - **Phase A — shipped (D-progress-033).**  Real
      `IAsyncStateMachine` synthesis for await-free async bodies.
-     Replaces the M1.4 `Task.FromResult` shim with spec-correct
-     state-machine IL ready for suspend/resume to layer on top.
    - **Phase B — shipped (D-progress-034).**  Real
      `AwaitUnsafeOnCompleted` protocol with state dispatch,
      exception flow through `SetException`, and locals promoted
-     to fields.  Awaits at safe top-level statement positions
-     (no nesting in sub-expressions, no try/catch/defer/match
-     spanning the await) lower to the canonical Roslyn-equivalent
-     IL pattern.
-   - **Phase B+ — follow-up.**  Awaits inside try/catch / defer
-     / match arms / loop bodies (resume must re-enter protected
-     regions); async impl methods (instance methods on records);
-     async generic funcs (closed-generic SM on `TypeBuilder`);
-     stack-spilling for nested awaits (`f(await g())`).
-   - **Phase C — gated on B+.**  `CancellationToken` propagation
-     and structured-concurrency scopes.
+     to fields.
+   - **Phase B+ / B++ / B+++ — shipped.**  Awaits inside if /
+     match (D-progress-036, 041), while/loop bodies
+     (D-progress-037, 042), try/catch (D-progress-056), defer
+     (D-progress-057), for-loops (D-progress-058), async impl
+     methods (D-progress-038, 040), and stack-spilling for
+     nested awaits (D-progress-074).
+   - **Phase C — shipped.**  `CancellationToken` propagation
+     (D-progress-068), structured-concurrency scopes
+     (D-progress-069), AsyncLocal ambient cancellation
+     (D-progress-071).
+   - **Remaining.**  Async generic funcs (closed-generic SM on
+     `TypeBuilder`); side-effecting-sibling spill ordering for
+     the rare `f(printAndReturn(), await g())` pattern.
 
 ### Tier 5 — gated on C2
 

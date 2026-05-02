@@ -2619,21 +2619,58 @@ let private emitAssembly
             // Phase A: async funcs whose body has no internal `await`.
             let usePhaseA =
                 sg.IsAsync && AsyncStateMachine.isPhaseAEligible fn
+            // Stack-spilling rewrite (D-progress-074): when an async
+            // body has awaits in non-safe sub-expression positions
+            // (`f(await g())`, `1 + await foo()`, …), try to hoist
+            // each into a preceding `val __spill_N = await …` binding
+            // so the existing Phase B safe-position machinery applies
+            // unchanged.  Returns the rewritten function plus a map of
+            // spill-local names → inferred Lyric types.
+            let sigOfForSpill (name: string) =
+                match funcSigsTable.TryGetValue name with
+                | true, s -> Some s
+                | _ ->
+                    match importedFuncTable.TryGetValue name with
+                    | true, info -> Some info.Sig
+                    | _ -> None
+            let stackSpillResult =
+                if sg.IsAsync
+                   && (not usePhaseA)
+                   && fn.Generics.IsNone
+                   && (not (fn.Annotations
+                           |> List.exists (fun a ->
+                               match a.Name.Segments with
+                               | ["externTarget"] -> true
+                               | _ -> false)))
+                   && (not (AsyncStateMachine.isPhaseB fn)) then
+                    AsyncStateMachine.tryStackSpill sigOfForSpill fn
+                else None
+            let fnForPhaseB =
+                match stackSpillResult with
+                | Some (fn', _) -> fn'
+                | None -> fn
+            let spillLocalTypes : Map<string, Lyric.TypeChecker.Type> =
+                match stackSpillResult with
+                | Some (_, tm) -> tm
+                | None -> Map.empty
             // Phase B: async funcs with awaits at safe top-level
             // statement positions, whose locals (if any) are simple-
             // name bindings with type annotations we can resolve.
             let phaseBSpecOpt =
                 if sg.IsAsync
                    && (not usePhaseA)
-                   && AsyncStateMachine.isAsyncSmEligible fn
-                   && AsyncStateMachine.isPhaseB fn then
-                    match AsyncStateMachine.collectPromotableLocals fn with
+                   && AsyncStateMachine.isAsyncSmEligible fnForPhaseB
+                   && AsyncStateMachine.isPhaseB fnForPhaseB then
+                    match AsyncStateMachine.collectPromotableLocals fnForPhaseB with
                     | None -> None
                     | Some locals ->
                         // Locals must have annotations Phase B can
                         // resolve; without them we don't know the
                         // CLR field type.  Fall back to M1.4 if any
-                        // local is unannotated.
+                        // local is unannotated — except for the
+                        // synthesised `__spill_*` locals introduced by
+                        // the stack-spilling rewrite, whose types come
+                        // from `spillLocalTypes`.
                         let resolveCtx = GenericContext()
                         let scratchDiags = ResizeArray<Diagnostic>()
                         let resolved =
@@ -2645,7 +2682,11 @@ let private emitAssembly
                                         Resolver.resolveType
                                             symbols resolveCtx scratchDiags te
                                     Some (l.Name, TypeMap.toClrTypeWith lookup lty)
-                                | None -> None)
+                                | None ->
+                                    match Map.tryFind l.Name spillLocalTypes with
+                                    | Some lty ->
+                                        Some (l.Name, TypeMap.toClrTypeWith lookup lty)
+                                    | None -> None)
                         if List.length resolved = List.length locals then
                             Some resolved
                         else None
@@ -2710,7 +2751,7 @@ let private emitAssembly
                     preLocals.[pl.LocalName] <- lb
                 // Define labels.
                 let awaitCount =
-                    AsyncStateMachine.collectAwaitInners fn |> List.length
+                    AsyncStateMachine.collectAwaitInners fnForPhaseB |> List.length
                 let resumeLabels =
                     Array.init awaitCount (fun _ -> il.DefineLabel())
                 let bodyStartLabel = il.DefineLabel()
@@ -2748,7 +2789,7 @@ let private emitAssembly
                       PreLocals   = preLocals
                       ResultLocal = phaseBResultLocal }
                 emitFunctionBody
-                    sm.MoveNext (Some sm) (Some phaseBExit) fn sg lookup
+                    sm.MoveNext (Some sm) (Some phaseBExit) fnForPhaseB sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
                     unionTable unionCaseLookup interfaceTable distinctTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
