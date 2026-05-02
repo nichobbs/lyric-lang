@@ -872,6 +872,83 @@ type HttpClientHost private () =
     static member ReadBodyBytes (response: System.Net.Http.HttpResponseMessage) : System.Threading.Tasks.Task<byte[]> =
         response.Content.ReadAsByteArrayAsync()
 
+    // -------- Phase C cancellation-aware overloads (D-progress-070) --------
+    //
+    // Each overload mirrors its non-cancellable counterpart but
+    // accepts a `CancellationToken` that the underlying BCL call
+    // honours.  Cancellation surfaces as `OperationCanceledException`
+    // (which Lyric catches as `Bug` / `Exception`); the user-facing
+    // `Std.Http` wrappers convert that into `HttpError.ConnectionFailed`
+    // with a "cancelled" message so the Result discipline is preserved.
+
+    static member SendWithCancel (
+            client: System.Net.Http.HttpClient,
+            request: System.Net.Http.HttpRequestMessage,
+            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
+        client.SendAsync(request, token)
+
+    static member GetWithCancel (
+            client: System.Net.Http.HttpClient,
+            url: string,
+            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
+        client.GetAsync(url, token)
+
+    static member PostStringWithCancel (
+            client: System.Net.Http.HttpClient,
+            url: string,
+            body: string,
+            contentType: string,
+            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
+        let content =
+            new System.Net.Http.StringContent(
+                body,
+                System.Text.Encoding.UTF8,
+                contentType)
+        client.PostAsync(url, content, token)
+
+    static member ReadBodyTextWithCancel (
+            response: System.Net.Http.HttpResponseMessage,
+            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<string> =
+        response.Content.ReadAsStringAsync(token)
+
+    static member ReadBodyBytesWithCancel (
+            response: System.Net.Http.HttpResponseMessage,
+            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<byte[]> =
+        response.Content.ReadAsByteArrayAsync(token)
+
+    /// Construct an `HttpClient` that follows redirects automatically.
+    /// Bootstrap-grade scope: the Lyric-side wrapper exposes this as
+    /// `clientWithRedirects(maxRedirects)`; full per-request redirect
+    /// policy lands in Phase 4 alongside a richer Std.Http surface.
+    static member ClientWithRedirects (maxRedirects: int) : System.Net.Http.HttpClient =
+        let handler = new System.Net.Http.HttpClientHandler()
+        handler.AllowAutoRedirect <- true
+        handler.MaxAutomaticRedirections <- maxRedirects
+        new System.Net.Http.HttpClient(handler)
+
+    /// Construct an `HttpClient` that does NOT follow redirects.
+    /// Useful for callers that want to inspect 3xx responses.
+    static member ClientNoRedirects () : System.Net.Http.HttpClient =
+        let handler = new System.Net.Http.HttpClientHandler()
+        handler.AllowAutoRedirect <- false
+        new System.Net.Http.HttpClient(handler)
+
+    /// Read a single response header by name, returning the first
+    /// value or `""` if the header isn't present.  Used by the
+    /// Lyric-side `responseHeader` helper.
+    static member ResponseHeader (
+            response: System.Net.Http.HttpResponseMessage,
+            name: string) : string =
+        let firstOf (vs: System.Collections.Generic.IEnumerable<string>) : string =
+            match Seq.tryHead vs with
+            | Some s -> s
+            | None   -> ""
+        let mutable values : System.Collections.Generic.IEnumerable<string> = Unchecked.defaultof<_>
+        let outRef = &values
+        if response.Headers.TryGetValues(name, &outRef) then firstOf outRef
+        elif response.Content.Headers.TryGetValues(name, &outRef) then firstOf outRef
+        else ""
+
 /// `System.Random` helpers used by `Std.Random`.  `System.Random`
 /// has overloaded `Next` methods that auto-FFI's strict-match
 /// can resolve, but the seeded constructor and the boolean

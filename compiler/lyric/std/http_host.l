@@ -13,6 +13,8 @@
 @axiom("System.Net.Http operations conform to their documented .NET contracts")
 package Std.HttpHost
 
+import Std.Task
+
 extern type HttpClient          = "System.Net.Http.HttpClient"
 extern type HttpRequestMessage  = "System.Net.Http.HttpRequestMessage"
 extern type HttpResponseMessage = "System.Net.Http.HttpResponseMessage"
@@ -65,3 +67,54 @@ pub async func hostReadBodyText(response: in HttpResponseMessage): String = ()
 
 @externTarget("Lyric.Stdlib.HttpClientHost.ReadBodyBytes")
 pub async func hostReadBodyBytes(response: in HttpResponseMessage): slice[Byte] = ()
+
+// ---------------------------------------------------------------------------
+// Phase C cancellation-aware overloads (D-progress-070).  Each mirrors
+// its non-cancellable counterpart and accepts a `CancellationToken` from
+// `Std.Task` (re-imported above) that the BCL HttpClient honours.
+// Cancellation surfaces as `OperationCanceledException` in the host,
+// caught as `Bug` on the Lyric side and surfaced as
+// `HttpError.ConnectionFailed` (with the message describing
+// cancellation).
+// ---------------------------------------------------------------------------
+
+@externTarget("Lyric.Stdlib.HttpClientHost.SendWithCancel")
+pub async func hostSendWithCancel(
+  client: in HttpClient,
+  request: in HttpRequestMessage,
+  token: in CancellationToken
+): HttpResponseMessage = ()
+
+@externTarget("Lyric.Stdlib.HttpClientHost.GetWithCancel")
+pub async func hostGetWithCancel(
+  client: in HttpClient,
+  url: in String,
+  token: in CancellationToken
+): HttpResponseMessage = ()
+
+@externTarget("Lyric.Stdlib.HttpClientHost.PostStringWithCancel")
+pub async func hostPostStringWithCancel(
+  client: in HttpClient,
+  url: in String,
+  body: in String,
+  contentType: in String,
+  token: in CancellationToken
+): HttpResponseMessage = ()
+
+@externTarget("Lyric.Stdlib.HttpClientHost.ReadBodyTextWithCancel")
+pub async func hostReadBodyTextWithCancel(
+  response: in HttpResponseMessage,
+  token: in CancellationToken
+): String = ()
+
+@externTarget("Lyric.Stdlib.HttpClientHost.ClientWithRedirects")
+pub func hostClientWithRedirects(maxRedirects: in Int): HttpClient = ()
+
+@externTarget("Lyric.Stdlib.HttpClientHost.ClientNoRedirects")
+pub func hostClientNoRedirects(): HttpClient = ()
+
+@externTarget("Lyric.Stdlib.HttpClientHost.ResponseHeader")
+pub func hostResponseHeader(
+  response: in HttpResponseMessage,
+  name: in String
+): String = ()

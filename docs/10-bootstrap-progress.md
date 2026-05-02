@@ -1696,6 +1696,88 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-070: C5 — Std.Http full surface (cancellation, timeout, redirect, headers)
+*claude/std-http-full-surface branch.*  Lifts the Phase-C-gated
+deferral on Std.Http's full surface (D-progress-059, D-progress-068,
+D-progress-069 follow-ups).  Adds explicit cancellation-token
+overloads, timeout-bounded helpers, redirect-policy client
+factories, and response-header lookup; the cancellation propagates
+correctly through the FFI boundary.
+
+Also fixes a pre-existing FFI codegen bug (silent `Task<Task<T>>`
+double-wrap on async-`@externTarget` functions whose host method
+already returns a `Task[<T>]`).  Without the fix, every
+`Std.HttpHost` async helper that fanned out to
+`Lyric.Stdlib.HttpClientHost` was returning a `Task<Task<T>>`; the
+caller's await unwrapped one layer and treated the inner Task as
+the bare result, silently dropping cancellation /
+exception semantics.  Both `hostSend` / `hostGet` (existing) and
+the new `hostSendWithCancel` / `hostGetWithCancel` etc. are now
+correct.
+
+What ships:
+
+- **`Lyric.Stdlib.HttpClientHost`** new statics:
+  - `SendWithCancel(client, request, token)`,
+    `GetWithCancel(client, url, token)`,
+    `PostStringWithCancel(client, url, body, contentType, token)` —
+    cancellation-aware host calls.
+  - `ReadBodyTextWithCancel(response, token)`,
+    `ReadBodyBytesWithCancel(response, token)` — body reads honour
+    cancellation.
+  - `ClientWithRedirects(maxRedirects)`,
+    `ClientNoRedirects()` — redirect-policy factories.
+  - `ResponseHeader(response, name)` — single-header lookup.
+- **`Std.HttpHost`** new bindings: imports `Std.Task` (for the
+  `CancellationToken` extern), adds `hostSendWithCancel`,
+  `hostGetWithCancel`, `hostPostStringWithCancel`,
+  `hostReadBodyTextWithCancel`, `hostClientWithRedirects`,
+  `hostClientNoRedirects`, `hostResponseHeader`.
+- **`Std.Http`** new user-facing wrappers:
+  - `sendWithCancelAsync(request, token)`,
+    `sendWithTimeoutAsync(request, timeoutMs)` — request-level
+    cancellation / timeout (timeout uses an auto-cancel source via
+    `defer { disposeSource(src) }`).
+  - `getWithCancelAsync` / `getWithTimeoutAsync`,
+    `postWithCancelAsync` / `postWithTimeoutAsync` — convenience.
+  - `HttpResponse.bodyTextWithCancel(response, token)` —
+    cancellable body read.
+  - `HttpResponse.header(response, name): Option[String]` — header
+    lookup; returns `None` when the header is absent.
+  - `clientWithRedirects(maxRedirects)`, `clientNoRedirects()` —
+    redirect-policy client factories.
+
+Bootstrap-grade scope — Phase 4 follow-ups:
+
+- **Per-request redirect policy** (e.g., reject specific schemes,
+  log every hop) — today the redirect behavior is fixed at client
+  construction time.
+- **Connection-pool / handler reuse** — each
+  `hostDefaultClient()` constructs a fresh `HttpClient`; pooling
+  needs an AsyncLocal-style scoped client.
+- **JSON body deserialisation helper** — users today read
+  `bodyText` then call `Inner.fromJson(text)` from
+  `@derive(Json)` records.  An `HttpResponse.bodyJson<T>(...)`
+  helper would need typechecker surface for `Task<T>` to thread
+  the deserialise through cancellation cleanly.
+- **`OperationCanceledException` distinguishability** — surfaces
+  as `HttpError.ConnectionFailed` with the cancellation message;
+  a Phase 4 union-case revision could distinguish.
+
+Four new tests in `StdHttpTests.fs`:
+`http_send_with_cancel_pre_cancelled`,
+`http_get_with_cancel_pre_cancelled`,
+`http_post_with_cancel_pre_cancelled`,
+`http_client_redirect_factories_construct`.  All 426 emitter tests
+pass (was 422; +4 new).
+
+This unblocks user programs that need timeout-bounded HTTP calls
+and integrates with the Phase C structured-concurrency surface
+(`Std.Task.Scope`) so an HTTP request can be scoped to a parent
+cancellation source.
+
+---
+
 ### D-progress-069: Structured concurrency — Scope + scopeSpawn + awaitAll
 *claude/structured-concurrency branch.*  Lifts the
 documented Phase C deferral on structured concurrency

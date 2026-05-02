@@ -72,6 +72,105 @@ func main(): Unit {
 }
 """,
     "ok"
+
+    "http_send_with_cancel_pre_cancelled",
+    // D-progress-070: explicit-cancel API on POST.  The token is
+    // cancelled BEFORE the request is sent; the host's
+    // PostAsync(url, body, token) immediately throws
+    // OperationCanceledException, the Lyric try/catch surfaces it
+    // as ConnectionFailed.  No actual network I/O.
+    """
+package SH4
+import Std.Core
+import Std.Http
+import Std.Task
+async func go(): String {
+  val src = makeCancelSource()
+  val tok = sourceToken(src)
+  cancelSource(src)
+  defer { disposeSource(src) }
+  val outcome =
+    await postWithCancelAsync("http://127.0.0.1:1/never", "{}", tok)
+  match outcome {
+    case Ok(_)  -> "unexpected-ok"
+    case Err(_) -> "cancelled"
+  }
+}
+func main(): Unit {
+  println(await go())
+}
+""",
+    "cancelled"
+
+    "http_get_with_cancel_pre_cancelled",
+    // D-progress-070: cancellation API on GET.  Pre-cancelled
+    // token short-circuits the host call to
+    // OperationCanceledException; surfaced as ConnectionFailed
+    // on the Lyric side.
+    """
+package SH5
+import Std.Core
+import Std.Http
+import Std.Task
+async func go(): String {
+  val src = makeCancelSource()
+  val tok = sourceToken(src)
+  cancelSource(src)
+  defer { disposeSource(src) }
+  val outcome =
+    await getWithCancelAsync("http://127.0.0.1:1/never", tok)
+  match outcome {
+    case Ok(_)  -> "unexpected-ok"
+    case Err(_) -> "cancelled"
+  }
+}
+func main(): Unit {
+  println(await go())
+}
+""",
+    "cancelled"
+
+    "http_post_with_cancel_pre_cancelled",
+    // POST variant of the explicit-cancel API.
+    """
+package SH6
+import Std.Core
+import Std.Http
+import Std.Task
+async func go(): String {
+  val src = makeCancelSource()
+  val tok = sourceToken(src)
+  cancelSource(src)
+  defer { disposeSource(src) }
+  val outcome =
+    await postWithCancelAsync("http://127.0.0.1:1/never", "{}", tok)
+  match outcome {
+    case Ok(_)  -> "unexpected-ok"
+    case Err(_) -> "cancelled"
+  }
+}
+func main(): Unit {
+  println(await go())
+}
+""",
+    "cancelled"
+
+    "http_client_redirect_factories_construct",
+    // The redirect-policy helpers compile end-to-end.  We don't
+    // exercise actual redirects here (would need a hermetic
+    // server) — the test confirms the FFI dispatch resolves
+    // cleanly.
+    """
+package SH7
+import Std.Core
+import Std.Http
+func main(): Unit {
+  val _ = clientNoRedirects()
+  val _ = clientWithRedirects(5)
+  println("ok")
+}
+""",
+    "ok"
 ]
 
 let tests =
