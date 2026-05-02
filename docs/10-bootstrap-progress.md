@@ -1696,6 +1696,65 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-066: LSP — completion, hover, go-to-definition
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the
+bootstrap LSP from diagnostics-only to a usable triple:
+
+- **Hover** (`textDocument/hover`): given a cursor position,
+  identifies the identifier under the cursor (lexer-style
+  `[A-Za-z_][A-Za-z0-9_]*` boundary scan), looks it up against
+  the parsed file's top-level items, and returns a markdown-
+  formatted summary including `pub`/`async` modifiers and any
+  `///` doc comments.  Non-identifier positions return an
+  empty result.
+- **Completion** (`textDocument/completion`): returns every
+  top-level item in the current file as a `CompletionItem`
+  with `label`, `kind` (mapped from Lyric item kind to
+  CompletionItemKind), and `detail` (the same one-line
+  summary used for hover).  Triggered by `.` plus on-demand
+  invocation.
+- **Go-to-definition** (`textDocument/definition`): same
+  identifier lookup as hover, returns a `Location` pointing
+  at the matching item's full span (so editors can jump
+  directly to the declaration).
+
+Capabilities advertised in `initialize`:
+`completionProvider` (with `.` trigger char and
+`resolveProvider: false`), `definitionProvider: true`, plus
+the existing `hoverProvider: true` and `textDocumentSync`.
+
+Implementation notes:
+- New helper `identifierAt` does a 1D string scan of the
+  document (no re-tokenisation) — ASCII-fast for the common
+  case; UTF-16 surrogate pairs split mid-identifier are a
+  pathological case the bootstrap doesn't handle.
+- `itemSummary` and `itemName` produce per-item-kind one-line
+  signatures; both share the same render so hover/completion
+  stay consistent.
+- All three handlers re-parse the document on each request.
+  Incremental parsing + resolved-AST caching is a Phase 4
+  follow-up.
+
+Bootstrap-grade scope:
+- **Cross-file imports** aren't surfaced — completion only
+  shows the current file's top-level names.  An imported
+  `Std.Json.toJson(...)` call doesn't auto-complete to
+  `toJson` from `Std.Json`.
+- **Scope-aware ranking** (in-scope locals, parameter names,
+  match bindings) isn't done — only top-level items appear.
+- **Type-aware hover** (showing the actual resolved type
+  instead of just the syntactic signature) requires running
+  the full type checker per request and threading the result
+  to the position-lookup; deferred.
+
+Four new tests in `ProtocolTests.fs`:
+`initialize advertises completion + definition`,
+`completion lists top-level items`, `hover on an identifier
+returns its summary`, and `definition on an identifier
+returns its location`.  All 9 LSP tests pass (was 5; +4 new).
+
+---
+
 ### D-progress-065: Tutorial documentation — guided newcomer intro
 *claude/c2-async-implementation-ZGU95 branch.*  Phase 3 ships
 `docs/13-tutorial.md`, a 30-minute walkthrough that takes a

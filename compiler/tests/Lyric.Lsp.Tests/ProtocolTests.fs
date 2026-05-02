@@ -201,4 +201,129 @@ let tests =
                 | None -> failtest "expected error payload"
                 | Some err ->
                     Expect.equal (propInt err "code") -32601 "method-not-found"
+
+        testCase "initialize advertises completion + definition (D-progress-066)" <| fun () ->
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let resp = out.[0]
+            match prop resp "result"
+                  |> Option.bind (fun r -> prop r "capabilities") with
+            | Some caps ->
+                Expect.isSome (prop caps "completionProvider")
+                    "completionProvider declared"
+                Expect.isSome (prop caps "definitionProvider")
+                    "definitionProvider declared"
+            | None -> failtest "no capabilities"
+
+        testCase "completion lists top-level items" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func greet(name: in String): String { name }\n"
+                + "pub record User { name: String }\n"
+                + "func main(): Unit { println(\"hi\") }\n"
+            let comp = JsonObject()
+            comp.["jsonrpc"] <- JsonValue.Create "2.0"
+            comp.["id"]      <- JsonValue.Create 5
+            comp.["method"]  <- JsonValue.Create "textDocument/completion"
+            let cp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            cp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 0
+            pos.["character"] <- JsonValue.Create 0
+            cp.["position"] <- pos :> JsonNode
+            comp.["params"]  <- cp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    comp.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 5)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some (:? JsonArray as a) ->
+                let labels =
+                    a
+                    |> Seq.choose (fun n ->
+                        match Option.ofObj n with
+                        | Some node -> Some (propStr node "label")
+                        | None -> None)
+                    |> Seq.toList
+                Expect.contains labels "greet" "func name listed"
+                Expect.contains labels "User" "record name listed"
+                Expect.contains labels "main" "main listed"
+            | _ -> failtest "completion result missing or not an array"
+
+        testCase "hover on an identifier returns its summary" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func greet(name: in String): String { name }\n"
+                + "func main(): Unit { greet(\"x\") }\n"
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 8
+            req.["method"]  <- JsonValue.Create "textDocument/hover"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            // Line 2 (0-indexed) col 22 — middle of "greet" call
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 22
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 8)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                match prop res "contents" with
+                | Some contents ->
+                    let v = propStr contents "value"
+                    Expect.stringContains v "greet" "hover mentions the func name"
+                | None -> failtest "no contents on hover"
+            | None -> failtest "hover response missing"
+
+        testCase "definition on an identifier returns its location" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func greet(name: in String): String { name }\n"
+                + "func main(): Unit { greet(\"x\") }\n"
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 9
+            req.["method"]  <- JsonValue.Create "textDocument/definition"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 22
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 9)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                Expect.equal (propStr res "uri") "file:///t.l" "uri echoed"
+                Expect.isSome (prop res "range") "range present"
+            | None -> failtest "definition response missing"
     ]

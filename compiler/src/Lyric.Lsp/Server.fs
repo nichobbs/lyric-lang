@@ -90,6 +90,14 @@ let private initializeResult () : JsonNode =
     sync.["change"]    <- JsonValue.Create 1
     caps.["textDocumentSync"] <- sync :> JsonNode
     caps.["hoverProvider"]    <- JsonValue.Create true
+    // D-progress-066: completion + go-to-def land alongside hover.
+    let completion = JsonObject()
+    completion.["resolveProvider"] <- JsonValue.Create false
+    let triggerChars = JsonArray()
+    triggerChars.Add(JsonValue.Create ".")
+    completion.["triggerCharacters"] <- triggerChars :> JsonNode
+    caps.["completionProvider"] <- completion :> JsonNode
+    caps.["definitionProvider"] <- JsonValue.Create true
     let info = JsonObject()
     info.["name"]    <- JsonValue.Create "lyric-lsp"
     info.["version"] <- JsonValue.Create "0.1.0"
@@ -97,6 +105,105 @@ let private initializeResult () : JsonNode =
     r.["capabilities"] <- caps :> JsonNode
     r.["serverInfo"]   <- info :> JsonNode
     r :> JsonNode
+
+// ---------------------------------------------------------------------------
+// Position / item lookup helpers (D-progress-066).
+//
+// LSP positions are 0-based line/character; Lyric's `Position` is
+// 1-based.  `lspToLyric` does the conversion; `posInSpan` checks
+// whether a Lyric span contains a Lyric position.
+// ---------------------------------------------------------------------------
+
+let private lspToLyric (line: int) (character: int) : Position =
+    { Line = line + 1; Column = character + 1; Offset = 0 }
+
+let private posInSpan (p: Position) (s: Span) : bool =
+    let cmp (a: Position) (b: Position) =
+        if a.Line <> b.Line then compare a.Line b.Line
+        else compare a.Column b.Column
+    cmp s.Start p <= 0 && cmp p s.End < 0
+
+/// Render a `pub`-surface item to a one-line summary suitable for
+/// hover / completion display.
+let private itemSummary (it: Lyric.Parser.Ast.Item) : string =
+    let visPrefix =
+        match it.Visibility with
+        | Some _ -> "pub "
+        | None   -> ""
+    match it.Kind with
+    | Lyric.Parser.Ast.IFunc fn ->
+        let asyncTag = if fn.IsAsync then "async " else ""
+        sprintf "%s%sfunc %s(...)" visPrefix asyncTag fn.Name
+    | Lyric.Parser.Ast.IRecord rd ->
+        sprintf "%srecord %s" visPrefix rd.Name
+    | Lyric.Parser.Ast.IExposedRec rd ->
+        sprintf "%sexposed record %s" visPrefix rd.Name
+    | Lyric.Parser.Ast.IUnion ud ->
+        sprintf "%sunion %s" visPrefix ud.Name
+    | Lyric.Parser.Ast.IEnum ed ->
+        sprintf "%senum %s" visPrefix ed.Name
+    | Lyric.Parser.Ast.IOpaque od ->
+        sprintf "%sopaque type %s" visPrefix od.Name
+    | Lyric.Parser.Ast.IInterface iface ->
+        sprintf "%sinterface %s" visPrefix iface.Name
+    | Lyric.Parser.Ast.IConst cd ->
+        sprintf "%sconst %s" visPrefix cd.Name
+    | Lyric.Parser.Ast.ITypeAlias ta ->
+        sprintf "%salias %s" visPrefix ta.Name
+    | Lyric.Parser.Ast.IDistinctType dt ->
+        sprintf "%sdistinct type %s" visPrefix dt.Name
+    | Lyric.Parser.Ast.IExternType et ->
+        sprintf "extern type %s" et.Name
+    | _ -> "(item)"
+
+/// Item name for completion / lookup keying.
+let private itemName (it: Lyric.Parser.Ast.Item) : string option =
+    match it.Kind with
+    | Lyric.Parser.Ast.IFunc fn -> Some fn.Name
+    | Lyric.Parser.Ast.IRecord rd | Lyric.Parser.Ast.IExposedRec rd -> Some rd.Name
+    | Lyric.Parser.Ast.IUnion ud -> Some ud.Name
+    | Lyric.Parser.Ast.IEnum ed -> Some ed.Name
+    | Lyric.Parser.Ast.IOpaque od -> Some od.Name
+    | Lyric.Parser.Ast.IInterface iface -> Some iface.Name
+    | Lyric.Parser.Ast.IConst cd -> Some cd.Name
+    | Lyric.Parser.Ast.ITypeAlias ta -> Some ta.Name
+    | Lyric.Parser.Ast.IDistinctType dt -> Some dt.Name
+    | Lyric.Parser.Ast.IExternType et -> Some et.Name
+    | _ -> None
+
+/// Identifier-like span at the given position, or None when the
+/// position lies on whitespace / non-identifier text.  Identifiers
+/// are recognised by the Lyric lexer's identifier rule
+/// (`[A-Za-z_][A-Za-z0-9_]*`); we re-implement the test here
+/// without re-tokenising the buffer.
+let private identifierAt (text: string) (pos: Position) : (string * Span) option =
+    // Convert 1-based line/col to a 0-based offset in `text`.
+    let lines = text.Split('\n')
+    if pos.Line < 1 || pos.Line > lines.Length then None
+    else
+        let line = lines.[pos.Line - 1]
+        let col = pos.Column - 1
+        if col < 0 || col > line.Length then None
+        else
+            let isIdChar (c: char) =
+                System.Char.IsLetterOrDigit c || c = '_'
+            // Find the identifier boundaries.
+            let mutable startCol = col
+            while startCol > 0 && isIdChar line.[startCol - 1] do
+                startCol <- startCol - 1
+            let mutable endCol = col
+            while endCol < line.Length && isIdChar line.[endCol] do
+                endCol <- endCol + 1
+            if startCol = endCol then None
+            else
+                let ident = line.Substring(startCol, endCol - startCol)
+                // First char must be an identifier-start (letter/_).
+                if not (System.Char.IsLetter ident.[0] || ident.[0] = '_') then None
+                else
+                    let span : Span =
+                        { Start = { Line = pos.Line; Column = startCol + 1; Offset = 0 }
+                          End   = { Line = pos.Line; Column = endCol + 1;   Offset = 0 } }
+                    Some (ident, span)
 
 let private nodeAt (n: JsonNode | null) (path: string) : JsonNode | null =
     match Option.ofObj n with
@@ -201,17 +308,135 @@ let dispatch
         true
 
     | "textDocument/hover" ->
-        // Bootstrap-grade hover — always returns a one-line "Lyric"
-        // placeholder.  Real type-resolution-on-position is a Phase 3
-        // follow-up; the server returns *something* so editors don't
-        // log a "method not found" warning.
+        // D-progress-066: real hover.  Look up the identifier at
+        // the cursor in the parsed AST; if it matches a top-level
+        // item, format its summary + doc comments.  Falls back to
+        // an empty result for non-identifier positions.
+        let td  = nodeAt params' "textDocument"
+        let uri = asStr (nodeAt td "uri")
+        let posNode = nodeAt params' "position"
+        let intAt (parent: JsonNode | null) (key: string) : int =
+            let raw : JsonNode | null = nodeAt parent key
+            match Option.ofObj raw with
+            | None -> 0
+            | Some n ->
+                try n.GetValue<int>()
+                with _ -> 0
+        let line = intAt posNode "line"
+        let chr  = intAt posNode "character"
         let result =
-            let o = JsonObject()
-            let contents = JsonObject()
-            contents.["kind"]  <- JsonValue.Create "markdown"
-            contents.["value"] <- JsonValue.Create "_Lyric LSP — hover not yet implemented._"
-            o.["contents"] <- contents :> JsonNode
-            o :> JsonNode
+            match store.TryGet uri with
+            | None -> JsonObject() :> JsonNode
+            | Some text ->
+                let p = lspToLyric line chr
+                match identifierAt text p with
+                | None -> JsonObject() :> JsonNode
+                | Some (ident, span) ->
+                    let parsed = Parser.parse text
+                    let matchItem =
+                        parsed.File.Items
+                        |> List.tryFind (fun it ->
+                            match itemName it with
+                            | Some n -> n = ident
+                            | None -> false)
+                    match matchItem with
+                    | None -> JsonObject() :> JsonNode
+                    | Some it ->
+                        let summary = itemSummary it
+                        let docLines =
+                            it.DocComments
+                            |> List.map (fun dc -> dc.Text.Trim())
+                        let body =
+                            if List.isEmpty docLines then summary
+                            else summary + "\n\n" + String.concat "\n" docLines
+                        let o = JsonObject()
+                        let contents = JsonObject()
+                        contents.["kind"]  <- JsonValue.Create "markdown"
+                        contents.["value"] <- JsonValue.Create ("```lyric\n" + body + "\n```")
+                        o.["contents"] <- contents :> JsonNode
+                        o.["range"]    <- toLspRange span
+                        o :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
+    | "textDocument/completion" ->
+        // D-progress-066: completion returns every top-level item
+        // declared in the current file.  Cross-file imports + scope-
+        // aware ranking land in a follow-up; this gets the editor a
+        // useful baseline immediately.
+        let td  = nodeAt params' "textDocument"
+        let uri = asStr (nodeAt td "uri")
+        let result =
+            match store.TryGet uri with
+            | None -> JsonArray() :> JsonNode
+            | Some text ->
+                let parsed = Parser.parse text
+                let items = JsonArray()
+                for it in parsed.File.Items do
+                    match itemName it with
+                    | Some n ->
+                        let entry = JsonObject()
+                        entry.["label"] <- JsonValue.Create n
+                        // 3 = Function, 7 = Class, 13 = Enum, 22 = Struct.
+                        // Map item kinds → CompletionItemKind.
+                        let kindCode =
+                            match it.Kind with
+                            | Lyric.Parser.Ast.IFunc _ -> 3
+                            | Lyric.Parser.Ast.IRecord _
+                            | Lyric.Parser.Ast.IExposedRec _ -> 22
+                            | Lyric.Parser.Ast.IUnion _ -> 7
+                            | Lyric.Parser.Ast.IEnum _ -> 13
+                            | Lyric.Parser.Ast.IOpaque _ -> 22
+                            | Lyric.Parser.Ast.IInterface _ -> 8
+                            | Lyric.Parser.Ast.IConst _ -> 21
+                            | Lyric.Parser.Ast.IExternType _ -> 7
+                            | _ -> 1
+                        entry.["kind"]   <- JsonValue.Create kindCode
+                        entry.["detail"] <- JsonValue.Create (itemSummary it)
+                        items.Add entry
+                    | None -> ()
+                items :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
+    | "textDocument/definition" ->
+        // D-progress-066: go-to-definition.  Look up the identifier
+        // at the cursor; return a `Location` pointing at the
+        // matching top-level item's span.
+        let td  = nodeAt params' "textDocument"
+        let uri = asStr (nodeAt td "uri")
+        let posNode = nodeAt params' "position"
+        let intAt (parent: JsonNode | null) (key: string) : int =
+            let raw : JsonNode | null = nodeAt parent key
+            match Option.ofObj raw with
+            | None -> 0
+            | Some n ->
+                try n.GetValue<int>()
+                with _ -> 0
+        let line = intAt posNode "line"
+        let chr  = intAt posNode "character"
+        let result =
+            match store.TryGet uri with
+            | None -> JsonArray() :> JsonNode
+            | Some text ->
+                let p = lspToLyric line chr
+                match identifierAt text p with
+                | None -> JsonArray() :> JsonNode
+                | Some (ident, _) ->
+                    let parsed = Parser.parse text
+                    let matchItem =
+                        parsed.File.Items
+                        |> List.tryFind (fun it ->
+                            match itemName it with
+                            | Some n -> n = ident
+                            | None -> false)
+                    match matchItem with
+                    | None -> JsonArray() :> JsonNode
+                    | Some it ->
+                        let loc = JsonObject()
+                        loc.["uri"]   <- JsonValue.Create uri
+                        loc.["range"] <- toLspRange it.Span
+                        loc :> JsonNode
         writeMessage output (mkResponse id result)
         true
 
