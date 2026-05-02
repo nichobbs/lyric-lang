@@ -1696,6 +1696,191 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-046: `@derive(Json)` — synthesised `fromJson` for primitive-only records
+*claude/deferred-items-continuation branch.*  Closes a deferred
+follow-up from D-progress-030.  Records whose fields are all
+primitive Lyric types (`Int`, `Long`, `Double`, `Bool`,
+`String`) now get a synthesised
+`<RecName>.fromJson(s: in String): <RecName>` paired with the
+existing `toJson`.
+
+**Synthesis.**  Each primitive field gets a `var <fd>: T =
+default()` followed by a call to a per-type `__lyricJsonGet<T>`
+shim that writes the parsed value via an `out` parameter:
+
+```lyric
+pub func User.fromJson(s: in String): User {
+  var name: String = default()
+  __lyricJsonGetString(s, "name", name)
+  var age: Int = default()
+  __lyricJsonGetInt(s, "age", age)
+  var active: Bool = default()
+  __lyricJsonGetBool(s, "active", active)
+  User(name = name, age = age, active = active)
+}
+```
+
+The five `__lyricJsonGet<T>` shims are appended unconditionally
+to every source file containing a `@derive(Json)` record (a
+small metadata cost but no IL when unused).  Each shim is an
+`@externTarget` to `Lyric.Stdlib.JsonHost::Get<T>`, which
+re-parses the JSON document on every call (bootstrap-grade — a
+future revision can pass a parsed handle).
+
+**Eligibility (Phase 1 punt).**  `fromJson` is synthesised only
+when every field has a primitive type.  Records with nested
+`@derive(Json)` records, slices, or `Option[T]` fields skip
+`fromJson` entirely (their `toJson` still ships).  Phase 2
+extends the synthesis to handle these.
+
+**Bootstrap-grade scope.**
+- Missing / wrongly-typed fields default-initialise.  The
+  per-field shim returns `false` on failure, but the synthesised
+  body ignores the return — a future revision threads the
+  failure into a `Result[<RecName>, JsonError]` return type.
+- Re-parsing per field is wasteful for large documents.  A
+  Phase 2 revision passes a `JsonDocument` handle through the
+  shims.
+
+One new test (`json_derive_fromJson_primitive`).  All 362 emitter
+tests pass.
+
+---
+
+### D-progress-045: `@derive(Json)` — Option fields render as `null` / value (with codegen fix)
+*claude/deferred-items-continuation branch.*  Closes a deferred
+follow-up from D-progress-030.  `Option[T]` fields on a
+`@derive(Json)` record now render as `null` (for `None`) or the
+inner T's encoding (for `Some(value=x)`).
+
+**Synthesis.**  `JsonDerive` detects `Option[T]` via a new
+`optionInnerType` helper and emits a recursive
+`renderAccessExpr` that falls through to a synthesised match:
+
+```lyric
+match self.<field> {
+  case None     -> "null"
+  case Some(v)  -> renderAccessExpr v innerType
+}
+```
+
+`renderAccessExpr` is itself recursive, so the inner T's
+rendering follows the same dispatch chain as a top-level field
+(primitives → `toString`, String → `__lyricJsonEscape`,
+@derive(Json) records → `<TypeName>.toJson`, primitive slices
+→ `__lyricJsonRender<T>Slice`, etc.).
+
+**Codegen fix uncovered along the way.**  Pattern matching on
+record-field-of-imported-generic-union (e.g. `match t.label {
+case None -> ... ; case Some(v) -> ... }` where
+`label: Option[String]`) silently failed: both arms' isinst
+tests returned false, dropping into the dummy-default fallthrough
+and producing an empty string from the match.  Root cause: when
+constructing a non-generic record (`Tag(label = None)`), the
+arg-emit path didn't set `ctx.ExpectedType` to the field's CLR
+type before evaluating `None`.  `inferTypeArgsFromReturn`
+defaulted to `obj`, producing a `None<obj>` instance — incompatible
+with the field's declared `Option<string>` static type when
+later pattern-tested against `None<string>`.
+
+The fix is one block in `Codegen.fs`: the non-generic record
+construction path now sets `ctx.ExpectedType <- Some f.Type`
+around each arg's emit, mirroring the function-call path's
+existing behaviour.  Restores the expected type for nullary
+union-case construction across record fields.
+
+**Tests.**  Two new cases in `JsonDeriveTests.fs`:
+`json_derive_option_int_field` and `json_derive_option_string_field`,
+each exercising both `Some` and `None` constructions.  All 361
+emitter tests pass (was 359; +2 new).
+
+---
+
+### D-progress-044: `@derive(Json)` — nested-record slice fields
+*claude/deferred-items-continuation branch.*  Builds on
+D-progress-043 to handle `slice[Rec]` / `array[N, Rec]` fields
+where `Rec` is itself a record with `@derive(Json)`.  Where
+primitive-slice fields use a fixed F#-side BCL helper, nested-
+record slices get a per-record synthesised Lyric helper:
+
+```lyric
+@derive(Json)
+pub record Item { name: String; count: Int }
+@derive(Json)
+pub record Bag { items: slice[Item] }
+
+// Synthesised:
+//   func __lyricJsonRenderItemSlice(items: in slice[Item]): String {
+//     var result: String = "["
+//     var i: Int = 0
+//     while i < items.length {
+//       if i > 0 { result = result + "," }
+//       result = result + Item.toJson(items[i])
+//       i = i + 1
+//     }
+//     result + "]"
+//   }
+```
+
+`JsonDerive.synthesizeItems` emits one such helper per
+`@derive(Json)` record, before the record's own `toJson`.  The
+field renderer's `sliceRecordHelper` detects the field's element
+type and routes through the synthesised name.
+
+**Bootstrap-grade scope.**  Slices of nested records work, but
+nested slices (`slice[slice[Item]]`) and `Option`/`Result`-typed
+fields still fall through to `toString` — Phase 4 work.
+
+One new test (`json_derive_record_slice_field`).  All 359 emitter
+tests pass.
+
+---
+
+### D-progress-043: `@derive(Json)` — primitive slice fields render as JSON arrays
+*claude/deferred-items-continuation branch.*  Closes a deferred
+follow-up from D-progress-030.  `slice[Int]` / `slice[Long]` /
+`slice[Double]` / `slice[Bool]` / `slice[String]` fields on a
+`@derive(Json)` record now render as canonical JSON array
+literals (`[1,2,3]`, `["a","b"]`, etc.) instead of falling
+through to the `toString` rendering (which produced `Int32[]`
+or similar BCL-name garbage).
+
+**Implementation.**  Five new
+`Lyric.Stdlib.JsonHost::Render<T>Slice` static helpers
+(`RenderIntSlice` / `RenderLongSlice` / `RenderDoubleSlice` /
+`RenderBoolSlice` / `RenderStringSlice`) walk the array element-
+by-element, inserting `,` separators and emitting the element-
+specific encoding:
+
+- Integers / longs / doubles → `Convert.ToString` with
+  invariant-culture, round-trip "R" format for doubles.
+- Booleans → `"true"` / `"false"` literals.
+- Strings → `JsonEncodedText.Encode` (per-element, with
+  surrounding quotes).
+
+`JsonDerive.synthesizeItems` now appends one
+`@externTarget("Lyric.Stdlib.JsonHost.Render<T>Slice")` shim per
+primitive type to every source file containing a `@derive(Json)`
+record (unconditionally — unused helpers cost only a metadata
+row).  `slicePrimitiveHelper` in the same module pattern-matches
+the field's `TSlice` / `TArray` element type and routes the
+field renderer through the matching shim.
+
+**Bootstrap-grade scope.**  Slices of user-defined records (with
+their own `@derive(Json)`), nested slices (`slice[slice[Int]]`),
+and `Option[T]` / `Result[T, E]` fields still fall through to
+`toString` — Phase 4 work.  The synthesised
+`Render<T>Slice` shims are unconditional; on assemblies with no
+slice-field records they're dead code (a few bytes of metadata).
+
+**Tests.**  Three new cases in `JsonDeriveTests.fs`:
+`json_derive_int_slice_field`, `json_derive_string_slice_field`
+(exercises String escaping including `\n`, `"`),
+`json_derive_bool_slice_field`.  All 358 emitter tests pass
+(was 355; +3 new).
+
+---
+
 ### D-progress-042: C2 Phase B++ — nested locals in while/loop bodies (one level deep)
 *claude/c2-async-implementation-ZGU95 branch.*  Lifts the
 "no nested locals" restriction from D-progress-037.  A new

@@ -314,6 +314,141 @@ type JsonHost private () =
         let encoded = System.Text.Json.JsonEncodedText.Encode(s)
         "\"" + encoded.ToString() + "\""
 
+    // -------- Slice / array rendering for `@derive(Json)` --------
+    //
+    // Per-element-type helpers because Lyric's stdlib FFI has no
+    // first-class generic delegate dispatch.  Each primitive slice
+    // gets its own renderer that emits a comma-separated `[...]`
+    // JSON array literal.  Elements that are themselves objects
+    // (records / `obj[]` slices via auto-boxing) route through
+    // `RenderObjSlice` which calls `EncodeString` on String / falls
+    // through to `Convert.ToString` for everything else.
+
+    static member RenderIntSlice (items: int[] | null) : string =
+        match Option.ofObj items with
+        | None    -> "[]"
+        | Some xs ->
+            let sb = System.Text.StringBuilder("[")
+            for i = 0 to xs.Length - 1 do
+                if i > 0 then sb.Append(',') |> ignore
+                sb.Append(string xs.[i]) |> ignore
+            sb.Append(']').ToString()
+
+    static member RenderLongSlice (items: int64[] | null) : string =
+        match Option.ofObj items with
+        | None    -> "[]"
+        | Some xs ->
+            let sb = System.Text.StringBuilder("[")
+            for i = 0 to xs.Length - 1 do
+                if i > 0 then sb.Append(',') |> ignore
+                sb.Append(string xs.[i]) |> ignore
+            sb.Append(']').ToString()
+
+    static member RenderDoubleSlice (items: double[] | null) : string =
+        match Option.ofObj items with
+        | None    -> "[]"
+        | Some xs ->
+            let sb = System.Text.StringBuilder("[")
+            for i = 0 to xs.Length - 1 do
+                if i > 0 then sb.Append(',') |> ignore
+                // Use round-trip "R" so 1.5 → "1.5" not "1.5000000000000002".
+                sb.Append(xs.[i].ToString("R", System.Globalization.CultureInfo.InvariantCulture))
+                |> ignore
+            sb.Append(']').ToString()
+
+    static member RenderBoolSlice (items: bool[] | null) : string =
+        match Option.ofObj items with
+        | None    -> "[]"
+        | Some xs ->
+            let sb = System.Text.StringBuilder("[")
+            for i = 0 to xs.Length - 1 do
+                if i > 0 then sb.Append(',') |> ignore
+                sb.Append(if xs.[i] then "true" else "false") |> ignore
+            sb.Append(']').ToString()
+
+    // -------- fromJson primitive field readers --------
+    //
+    // Per-primitive-type out-param helpers used by the synthesiser
+    // (D-progress-046).  Each reader takes a JSON string + property
+    // name and writes the parsed value via an `out` parameter,
+    // returning `true` on success.  Re-parsing the document per
+    // call is wasteful but avoids exposing JsonDocument across
+    // the FFI boundary; the synthesiser is bootstrap-grade and a
+    // future revision can pass a parsed handle.
+
+    static member GetInt (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
+                e.TryGetInt32(&value)
+            else false
+        with _ -> false
+
+    static member GetLong (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int64>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
+                e.TryGetInt64(&value)
+            else false
+        with _ -> false
+
+    static member GetDouble (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<double>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
+                e.TryGetDouble(&value)
+            else false
+        with _ -> false
+
+    static member GetBool (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<bool>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e) then
+                match e.ValueKind with
+                | System.Text.Json.JsonValueKind.True  -> value <- true ; true
+                | System.Text.Json.JsonValueKind.False -> value <- false ; true
+                | _ -> false
+            else false
+        with _ -> false
+
+    static member GetString (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.String then
+                let raw = e.GetString()
+                value <-
+                    match Option.ofObj raw with
+                    | Some s -> s
+                    | None   -> ""
+                true
+            else false
+        with _ -> false
+
+    static member RenderStringSlice (items: (string | null)[] | null) : string =
+        match Option.ofObj items with
+        | None    -> "[]"
+        | Some xs ->
+            let sb = System.Text.StringBuilder("[")
+            for i = 0 to xs.Length - 1 do
+                if i > 0 then sb.Append(',') |> ignore
+                let raw = xs.[i]
+                let s : string =
+                    match Option.ofObj raw with
+                    | Some v -> v
+                    | None   -> ""
+                let encoded = System.Text.Json.JsonEncodedText.Encode(s)
+                sb.Append('"').Append(encoded.ToString()).Append('"') |> ignore
+            sb.Append(']').ToString()
+
 /// HTTP server helpers wrapping `System.Net.HttpListener`.  The
 /// canonical loop is `nextContext` (blocking) → inspect / respond →
 /// `respondClose`.  Prefixes follow the HttpListener convention:

@@ -2348,7 +2348,17 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 il.Emit(OpCodes.Stloc, lb)
                 argLocals.Add(Some lb, argExpr, argTy)
             else
+                // Set ExpectedType to the field's CLR type so nullary
+                // union-case construction (`None` for `Option[String]`,
+                // `Empty` for `List[Int]`, etc.) closes its type
+                // parameters correctly per D-progress-045.  Without
+                // this hint, `inferTypeArgsFromReturn` defaults to
+                // `obj`, which produces a None<obj> instance that
+                // fails the closed-generic pattern test downstream.
+                let saved = ctx.ExpectedType
+                ctx.ExpectedType <- Some f.Type
                 let _ = emitExpr ctx argExpr
+                ctx.ExpectedType <- saved
                 argLocals.Add(None, argExpr, typeof<obj>)
         if not isGeneric then
             il.Emit(OpCodes.Newobj, info.Ctor)
