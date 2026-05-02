@@ -1696,6 +1696,49 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-058: C2 Phase B+++ — for-loop awaits with real suspension
+*claude/c2-async-implementation-ZGU95 branch.*  Lifts the M1.4
+fallback for `for x in slice { ... await ... }` patterns where
+the iter expression is await-free and the body's awaits sit at
+safe top-level positions.  Iterator state (the slice array, the
+index counter, and the loop-bound element) all become SM fields
+when the body contains an award, so their values survive the
+cross-resume gap.
+
+Implementation:
+- `Lyric.Emitter.AsyncStateMachine.isSafeStmt` SFor case: a
+  for-in with single-name binding, await-free iter expression,
+  and a body whose stmts pass `safeStmtList` is now safe.
+- `Codegen.fs` SFor handler detects "Phase B + body has await"
+  via the new `hasAwaitInBlock` re-export and routes to a
+  field-backed emit: define `<for>__iter_<name>`,
+  `<for>__idx_<name>`, `<for>__elem_<name>` fields on the SM
+  type, stash the iter into the iter field, drive the loop via
+  Ldfld/Stfld throughout, and bind the loop variable through
+  `ctx.SmFields.[name]` so body emit reads/writes the element
+  field naturally.
+- Index increment goes through Ldfld/Add/Stfld; the loop's
+  `ContinueLabel` is the increment site (consistent with
+  Lyric's `continue` semantics).
+
+Bootstrap-grade scope:
+- Single-name `for x in iter` only (matches today's codegen
+  restriction).
+- Iter expression must be await-free.
+- Body's awaits must sit at safe top-level positions
+  (`safeStmtList`).
+- Pattern-binding for-loops, await-bearing iter expressions,
+  and nested defer/try inside the body fall back to M1.4.
+
+One new test in `AsyncTests.fs`:
+`phaseBPlusPlusPlus_for_await_basic` — `for n in items { await
+Task.Delay(2); println(toString(n)) }` exercises real
+suspension on each iteration, with field-backed iter/idx/elem
+preserving state across resume.  All 395 emitter tests pass
+(was 394; +1 new).
+
+---
+
 ### D-progress-057: C2 Phase B+++ — defer + await with real suspension
 *claude/c2-async-implementation-ZGU95 branch.*  Lifts the
 M1.4 fallback for `defer { cleanup }; ...; await foo()` patterns

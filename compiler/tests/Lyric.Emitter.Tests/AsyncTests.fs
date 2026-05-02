@@ -507,6 +507,29 @@ func main(): Unit {
 """,
     "pre-defer\nbetween\ncleanup\ndone"
 
+    "phaseBPlusPlusPlus_for_await_basic",
+    // Phase B+++ (D-progress-058): `await` inside a `for x in ...`
+    // body.  The iterator slice, the loop index, and the loop
+    // variable `x` are field-backed on the SM so their values
+    // survive the cross-resume gap.  Real Task.Delay forces real
+    // suspension on each iteration.
+    """
+package E14
+extern type Task = "System.Threading.Tasks.Task"
+async func runner(): Unit {
+  val items: slice[Int] = [10, 20, 30]
+  for n in items {
+    await Task.Delay(2)
+    println(toString(n))
+  }
+}
+func main(): Unit {
+  await runner()
+  println("done")
+}
+""",
+    "10\n20\n30\ndone"
+
     "phaseBPlusPlusPlus_try_await_real_suspend",
     // Real BCL Task.Delay forces the suspend/resume path: the
     // Task is NOT pre-completed at the IsCompleted check, so the

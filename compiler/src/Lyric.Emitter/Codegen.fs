@@ -4092,6 +4092,11 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // `for x in slice { body }` lowers to a counter + ldelem loop.
         // The iter is presumed to be a slice/array (CLR T[]); other
         // iterables land in E7.
+        // D-progress-058: when the body contains an `await`, route
+        // the iterator slice, the index, and the element through
+        // SM fields so their values survive the cross-resume gap.
+        // Field-backed access via `SmFields[name]` lets the body
+        // emit naturally use `name` without seeing the field shape.
         let iterTy = emitExpr ctx iter
         if not iterTy.IsArray then
             failwithf "E3 codegen: for-in expects an array/slice, got %A" iterTy
@@ -4099,6 +4104,79 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             match Option.ofObj (iterTy.GetElementType()) with
             | Some t -> t
             | None   -> typeof<obj>
+        let bodyHasAwait = Lyric.Emitter.AsyncStateMachine.hasAwaitInBlock body
+        let usePhaseBPromotion =
+            ctx.SmAwaitInfo.IsSome && bodyHasAwait
+        if usePhaseBPromotion then
+            let smAwait = ctx.SmAwaitInfo.Value
+            let sm = smAwait.Sm
+            let arrField =
+                sm.Type.DefineField(
+                    "<for>__iter_" + name,
+                    iterTy,
+                    System.Reflection.FieldAttributes.Public)
+            let idxField =
+                sm.Type.DefineField(
+                    "<for>__idx_" + name,
+                    typeof<int32>,
+                    System.Reflection.FieldAttributes.Public)
+            let elemField =
+                sm.Type.DefineField(
+                    "<for>__elem_" + name,
+                    elemTy,
+                    System.Reflection.FieldAttributes.Public)
+            // Stash iter (currently on stack) into arrField via a temp.
+            let tmpIter = il.DeclareLocal(iterTy)
+            il.Emit(OpCodes.Stloc, tmpIter)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldloc, tmpIter)
+            il.Emit(OpCodes.Stfld, arrField)
+            // idx = 0
+            il.Emit(OpCodes.Ldarg_0)
+            emitLdcI4 il 0
+            il.Emit(OpCodes.Stfld, idxField)
+            let lblHead = il.DefineLabel()
+            let lblIncr = il.DefineLabel()
+            let lblEnd  = il.DefineLabel()
+            FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblIncr; TryDepthAtFrame = ctx.TryDepth }
+            il.MarkLabel(lblHead)
+            // if (idx >= length) goto end
+            il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, idxField)
+            il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, arrField)
+            il.Emit(OpCodes.Ldlen)
+            il.Emit(OpCodes.Conv_I4)
+            il.Emit(OpCodes.Bge, lblEnd)
+            // elem = arr[idx]
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, arrField)
+            il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, idxField)
+            il.Emit(OpCodes.Ldelem, elemTy)
+            il.Emit(OpCodes.Stfld, elemField)
+            // Make `name` resolvable as a SM field for body emission;
+            // EPath/SAssign route through ctx.SmFields when no IL
+            // local of the same name is in scope.
+            FunctionCtx.pushScope ctx
+            let savedField =
+                match ctx.SmFields.TryGetValue name with
+                | true, f -> Some f
+                | _ -> None
+            ctx.SmFields.[name] <- (elemField :> FieldInfo)
+            emitBlock ctx body
+            (match savedField with
+             | Some f -> ctx.SmFields.[name] <- f
+             | None -> ctx.SmFields.Remove(name) |> ignore)
+            FunctionCtx.popScope ctx
+            // idx <- idx + 1
+            il.MarkLabel(lblIncr)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, idxField)
+            emitLdcI4 il 1
+            il.Emit(OpCodes.Add)
+            il.Emit(OpCodes.Stfld, idxField)
+            il.Emit(OpCodes.Br, lblHead)
+            il.MarkLabel(lblEnd)
+            FunctionCtx.popLoop ctx
+        else
         let arrLocal = FunctionCtx.defineLocal ctx ("__iter_" + name) iterTy
         il.Emit(OpCodes.Stloc, arrLocal)
         let idxLocal = FunctionCtx.defineLocal ctx ("__idx_" + name) typeof<int32>

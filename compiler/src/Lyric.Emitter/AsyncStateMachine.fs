@@ -103,6 +103,10 @@ and private stmtHasAwait (s: Statement) : bool =
     | SRule (lhs, rhs) -> exprHasAwait lhs || exprHasAwait rhs
     | SItem _ -> false
 
+/// Public re-export so Codegen.fs's SFor handler can detect a body
+/// containing an await (Phase B+++ for-await routing).
+let hasAwaitInBlock (b: Block) : bool = blockHasAwait b
+
 /// Top-level entry: does this function's body contain any `await`?
 let bodyContainsAwait (fn: FunctionDecl) : bool =
     match fn.Body with
@@ -231,7 +235,19 @@ and private isSafeStmt (s: Statement) : bool =
         if not (stmtHasAwait s) then true
         elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
         else isPhaseBPlusPlusPlusTryAwaitBody body
-    | SDefer _ | SFor _ | SScope _ ->
+    // Phase B+++ (D-progress-058): `for x in iter { body }` with an
+    // award in body.  Iterator state (slice, index) and the loop
+    // variable are field-backed so they survive cross-resume.
+    // Single-name-binding shape only (matches today's codegen
+    // restriction).  Iter expression is await-free.
+    | SFor (_, { Kind = PBinding (_, None) }, iter, body) ->
+        if not (stmtHasAwait s) then true
+        else
+            (not (exprHasAwait iter))
+            && safeStmtList body.Statements
+    | SFor _ ->
+        not (stmtHasAwait s)
+    | SDefer _ | SScope _ ->
         not (stmtHasAwait s)
 
 /// Like `isSafeStmt` but stricter: rejects STry with await in body.
