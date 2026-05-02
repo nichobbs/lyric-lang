@@ -536,40 +536,35 @@ progress-per-session and dependency unblocking:
 
 ### Tier 4 — the tentpole
 
-8. **C2 — real async state machines.**  Phases A / B / B+ / B++ /
-   B+++ / C all shipped.  Async generic funcs (closed-generic SM on
-   `TypeBuilder`) are the last remaining sub-item; outside of that
-   the only loose end is the Roslyn-style "spill-side-effecting-
-   siblings-to-the-left-of-an-await" follow-up to the Phase B+++
-   stack-spilling rewrite.
-   - **Phase A — shipped (D-progress-033).**  Real
-     `IAsyncStateMachine` synthesis for await-free async bodies.
-   - **Phase B — shipped (D-progress-034).**  Real
-     `AwaitUnsafeOnCompleted` protocol with state dispatch,
-     exception flow through `SetException`, and locals promoted
-     to fields.
+8. **C2 — real async state machines.**  ~~All phases shipped.~~
+   Free-standing async funcs land Phase A / B / B+ / B++ / B+++ /
+   C plus generic-async (D-progress-075) and the spill-prior-
+   siblings ordering follow-up (D-progress-076).  Only generic
+   instance impl methods remain — out of scope absent a real user
+   demand; the impl-method emit path doesn't carry SM-side
+   `defineGenericParameters` plumbing.
+   - **Phase A — shipped (D-progress-033).**
+   - **Phase B — shipped (D-progress-034).**
    - **Phase B+ / B++ / B+++ — shipped.**  Awaits inside if /
      match (D-progress-036, 041), while/loop bodies
      (D-progress-037, 042), try/catch (D-progress-056), defer
      (D-progress-057), for-loops (D-progress-058), async impl
-     methods (D-progress-038, 040), and stack-spilling for
-     nested awaits (D-progress-074).
+     methods (D-progress-038, 040), stack-spilling for nested
+     awaits (D-progress-074), generic async funcs (D-progress-075),
+     and spill-prior-siblings ordering (D-progress-076).
    - **Phase C — shipped.**  `CancellationToken` propagation
      (D-progress-068), structured-concurrency scopes
      (D-progress-069), AsyncLocal ambient cancellation
      (D-progress-071).
-   - **Remaining.**  Async generic funcs (closed-generic SM on
-     `TypeBuilder`); side-effecting-sibling spill ordering for
-     the rare `f(printAndReturn(), await g())` pattern.
 
-### Tier 5 — gated on C2
+### Tier 5 — gated on C2 — both shipped
 
-9. **C5 Http expansion.**  Cancellation tokens, real timeouts,
-   redirect policy.  All want async-state-machine threading; doing
-   them on the blocking shim leaks when the shim is replaced.
-10. **C6 scoped wire lifetimes.**  `scoped` declarations + the
-    lifetime checker that rejects singleton-depends-on-scoped.
-    Wants `AsyncLocal<T>` scope propagation across `await`.
+9. **C5 Http expansion** — shipped via D-progress-070
+   (cancellation tokens, real timeouts, redirect policy on
+   `Std.Http`).
+10. **C6 scoped wire lifetimes** — shipped via D-progress-072
+    (`scoped[Request]` synthesises per-scope factories +
+    singleton-references-scoped lifetime checker).
 
 ### Tier 6 — long tail / not blocking v1.0
 
