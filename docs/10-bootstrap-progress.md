@@ -1696,6 +1696,35 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-051: try/catch — common BCL exception type aliases
+*claude/deferred-items-round3 branch.*  Extends D-progress-048's
+catch-type resolver to recognise short aliases for common BCL
+exception types without forcing users to type the fully
+qualified CLR name:
+
+| Lyric name | CLR exception |
+|---|---|
+| `Bug` / `Exception` / `Error` | `System.Exception` |
+| `ArgumentException` / `Argument` | `System.ArgumentException` |
+| `ArgumentNullException` / `NullArgument` | `System.ArgumentNullException` |
+| `InvalidOperationException` / `InvalidOperation` | `System.InvalidOperationException` |
+| `NotSupportedException` / `NotSupported` | `System.NotSupportedException` |
+| `IOException` / `IO` | `System.IO.IOException` |
+| `FileNotFoundException` / `FileNotFound` | `System.IO.FileNotFoundException` |
+| `FormatException` / `Format` | `System.FormatException` |
+| `OverflowException` / `Overflow` | `System.OverflowException` |
+| `DivideByZeroException` / `DivideByZero` | `System.DivideByZeroException` |
+| `TimeoutException` / `Timeout` | `System.TimeoutException` |
+
+Anything else falls through to the existing reflective walk
+across loaded assemblies.
+
+One new test (`try_catch_specific_exception_type`) catches a
+`FormatException` raised by `Int32.Parse("not a number")`.  All
+372 emitter tests pass.
+
+---
+
 ### D-progress-050: TypeBuilder-arg fallback for imported variant ctor + LYRIC_DEBUG
 *claude/deferred-items-round3 branch.*  Two related bits of polish.
 

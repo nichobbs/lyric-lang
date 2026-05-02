@@ -4127,6 +4127,29 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             | "Bug"
             | "Exception"
             | "Error" -> typeof<System.Exception>
+            // Common BCL exception aliases — match without forcing
+            // users to walk the assembly-search path for the
+            // canonical names.
+            | "ArgumentException"
+            | "Argument" -> typeof<System.ArgumentException>
+            | "ArgumentNullException"
+            | "NullArgument" -> typeof<System.ArgumentNullException>
+            | "InvalidOperationException"
+            | "InvalidOperation" -> typeof<System.InvalidOperationException>
+            | "NotSupportedException"
+            | "NotSupported" -> typeof<System.NotSupportedException>
+            | "IOException"
+            | "IO" -> typeof<System.IO.IOException>
+            | "FileNotFoundException"
+            | "FileNotFound" -> typeof<System.IO.FileNotFoundException>
+            | "FormatException"
+            | "Format" -> typeof<System.FormatException>
+            | "OverflowException"
+            | "Overflow" -> typeof<System.OverflowException>
+            | "DivideByZeroException"
+            | "DivideByZero" -> typeof<System.DivideByZeroException>
+            | "TimeoutException"
+            | "Timeout" -> typeof<System.TimeoutException>
             | _ ->
                 // Walk every loaded assembly looking for a CLR class
                 // by short or full name.  Falls back to Exception

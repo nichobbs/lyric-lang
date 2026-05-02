@@ -127,6 +127,25 @@ func main(): Unit {
 """,
     "-7"
 
+    "try_catch_specific_exception_type",
+    // D-progress-051: extended catch-type resolver covers common
+    // BCL exception aliases — InvalidOperation, IO, Format, etc.
+    // — without forcing the user to type the full CLR name.
+    """
+package T8
+extern type Int32 = "System.Int32"
+func main(): Unit {
+  var r: Int = 0
+  try {
+    r = Int32.Parse("not a number")
+  } catch FormatException as e {
+    r = -1
+  }
+  println(toString(r))
+}
+""",
+    "-1"
+
     "try_as_expression_with_await",
     // `return try { await … } catch …` — the canonical Std.Http
     // shape.  Synchronously-completing Task takes the fast path
