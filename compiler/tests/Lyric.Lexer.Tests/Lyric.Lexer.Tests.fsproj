@@ -18,12 +18,17 @@
     <Compile Include="KeywordTests.fs" />
     <Compile Include="IdentifierTests.fs" />
     <Compile Include="IntLiteralTests.fs" />
+    <Compile Include="NumericEdgeTests.fs" />
     <Compile Include="FloatLiteralTests.fs" />
     <Compile Include="StringLiteralTests.fs" />
     <Compile Include="StringInterpolationTests.fs" />
+    <Compile Include="EscapeTests.fs" />
+    <Compile Include="CharLiteralTests.fs" />
     <Compile Include="CommentTests.fs" />
     <Compile Include="PunctuationTests.fs" />
     <Compile Include="StmtEndTests.fs" />
+    <Compile Include="SuppressionRulesTests.fs" />
+    <Compile Include="SpanTests.fs" />
     <Compile Include="SmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -10,13 +10,18 @@
     <Compile Include="FileHeadTests.fs" />
     <Compile Include="ItemHeadTests.fs" />
     <Compile Include="TypeExprTests.fs" />
+    <Compile Include="AdditionalTypeExprTests.fs" />
     <Compile Include="PatternTests.fs" />
+    <Compile Include="AdditionalPatternTests.fs" />
     <Compile Include="ExprTests.fs" />
+    <Compile Include="AdditionalExprTests.fs" />
     <Compile Include="ItemBodyTests.fs" />
     <Compile Include="FunctionDeclTests.fs" />
     <Compile Include="InterfaceImplTests.fs" />
     <Compile Include="StatementAndControlFlowTests.fs" />
+    <Compile Include="AdditionalStatementTests.fs" />
     <Compile Include="RemainingItemTests.fs" />
+    <Compile Include="DiagnosticTests.fs" />
     <Compile Include="WorkedExampleSmokeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -1,0 +1,70 @@
+module Lyric.Lexer.Tests.EscapeTests
+
+open Expecto
+open Lyric.Lexer
+open Lyric.Lexer.Tests.TestHelpers
+
+let tests =
+    testList "escape sequences" [
+
+        test "every recognised single-char escape inside a string" {
+            // \\0 is U+0000 (NUL); \\$ is a literal '$'; the rest are
+            // the usual C-family meanings.
+            let pairs : (string * string) list =
+                [ "\"\\n\"",  "\n"
+                  "\"\\r\"",  "\r"
+                  "\"\\t\"",  "\t"
+                  "\"\\0\"",  "\u0000"
+                  "\"\\\\\"", "\\"
+                  "\"\\\"\"", "\""
+                  "\"\\'\"",  "'"
+                  "\"\\$\"",  "$" ]
+            for src, expected in pairs do
+                Expect.equal (tokensClean src) [TString expected] src
+        }
+
+        test "unicode escape with one to six hex digits" {
+            let cases : (string * string) list =
+                [ "\"\\u{0}\"",      "\u0000"
+                  "\"\\u{41}\"",     "A"
+                  "\"\\u{1F600}\"",  "\U0001F600" ]
+            for src, expected in cases do
+                Expect.equal (tokensClean src) [TString expected] src
+        }
+
+        test "escaped dollar prevents interpolation" {
+            // \\$ is a literal `$`. The next `{` does not open a hole.
+            let actual = tokensClean "\"x = \\${value}\""
+            Expect.equal actual [TString "x = ${value}"] "no hole"
+        }
+
+        test "unknown escape inside string is a diagnostic but lexing continues" {
+            let toks, diags = lexBoth "\"a\\qb\""
+            Expect.isNonEmpty diags "expected diagnostic"
+            Expect.equal (List.head diags).Code "L0023" "diag code"
+            // The unknown escape still produces a token.
+            match toks with
+            | [TString _] -> ()
+            | other -> failtestf "expected one TString, got %A" other
+        }
+
+        test "unicode escape with too-large codepoint emits L0022" {
+            // 0x110000 is just past the Unicode max of 0x10FFFF.
+            let _, diags = lexBoth "\"\\u{110000}\""
+            let codes = diags |> List.map (fun d -> d.Code)
+            Expect.contains codes "L0022" "too-large codepoint"
+        }
+
+        test "escape sequences inside triple-quoted string" {
+            let src = "\"\"\"a\\nb\"\"\""
+            Expect.equal (tokensClean src) [TTripleString "a\nb"]
+                "newline escape in triple"
+        }
+
+        test "raw string does not process escapes" {
+            // r"\n\t" is a four-character raw string.
+            let src = "r\"\\n\\t\""
+            Expect.equal (tokensClean src) [TRawString "\\n\\t"]
+                "raw escapes are literal"
+        }
+    ]

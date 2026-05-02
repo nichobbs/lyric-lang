@@ -10,13 +10,18 @@ let main argv =
             FileHeadTests.tests
             ItemHeadTests.tests
             TypeExprTests.tests
+            AdditionalTypeExprTests.tests
             PatternTests.tests
+            AdditionalPatternTests.tests
             ExprTests.tests
+            AdditionalExprTests.tests
             ItemBodyTests.tests
             FunctionDeclTests.tests
             InterfaceImplTests.tests
             StatementAndControlFlowTests.tests
+            AdditionalStatementTests.tests
             RemainingItemTests.tests
+            DiagnosticTests.tests
             WorkedExampleSmokeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
