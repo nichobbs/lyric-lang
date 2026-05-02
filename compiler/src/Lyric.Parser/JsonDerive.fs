@@ -113,6 +113,94 @@ let private sliceRecordHelper
     | TArray (_, e) -> elem e
     | _ -> None
 
+/// Detect `Option[T]` — a generic application whose head is the
+/// `Option` union (single segment, no qualifier).  Returns the
+/// inner T when matched.  Used by the field renderer to lower
+/// `Option[T]` fields to a `match … { case None → "null" ; case
+/// Some(v) → render(v) }` synthesis.
+let private optionInnerType (te: TypeExpr) : TypeExpr option =
+    match te.Kind with
+    | TGenericApp (head, args) ->
+        match head.Segments with
+        | ["Option"] ->
+            args
+            |> List.tryHead
+            |> Option.bind (function
+                | TAType t -> Some t
+                | TAValue _ -> None)
+        | _ -> None
+    | _ -> None
+
+/// Render `access` (an expression of static type `te`) as a JSON
+/// fragment.  Recursive — used both for top-level field
+/// rendering and for the inner type of `Option[T]`.
+let rec private renderAccessExpr
+        (deriveJsonRecords: Set<string>)
+        (access: Expr)
+        (te: TypeExpr) : Expr =
+    let span = access.Span
+    match nestedJsonTypeName deriveJsonRecords te with
+    | Some typeName ->
+        let callee =
+            mkExpr (EMember (mkExpr (EPath (mkPath typeName span)) span,
+                             "toJson")) span
+        mkExpr (ECall (callee, [CAPositional access])) span
+    | None when isStringField te ->
+        let callee = mkExpr (EPath (mkPath "__lyricJsonEscape" span)) span
+        mkExpr (ECall (callee, [CAPositional access])) span
+    | None ->
+        match slicePrimitiveHelper te with
+        | Some helperName ->
+            let callee = mkExpr (EPath (mkPath helperName span)) span
+            mkExpr (ECall (callee, [CAPositional access])) span
+        | None ->
+            match sliceRecordHelper deriveJsonRecords te with
+            | Some recName ->
+                let helperName =
+                    "__lyricJsonRender" + recName + "Slice"
+                let callee = mkExpr (EPath (mkPath helperName span)) span
+                mkExpr (ECall (callee, [CAPositional access])) span
+            | None ->
+                match optionInnerType te with
+                | Some innerTy ->
+                    // D-progress-045: `Option[T]` field lowers to
+                    //   match access {
+                    //     case None     -> "null"
+                    //     case Some(v)  -> renderAccessExpr v innerTy
+                    //   }
+                    // Recursive `renderAccessExpr` on `v` reuses
+                    // every other case (primitive / String / nested
+                    // record / slice).
+                    let vBinding : Pattern =
+                        { Kind = PBinding ("__lyric_json_v", None)
+                          Span = span }
+                    // Match the parser's shape for `case None ->` —
+                    // a nullary constructor parses as `PBinding`,
+                    // not `PConstructor`.  Otherwise the codegen
+                    // routes match correctly but downstream
+                    // handling diverges (only `PBinding` triggers
+                    // the `alwaysMatches`-aware union-case test).
+                    let nonePat : Pattern =
+                        { Kind = PBinding ("None", None)
+                          Span = span }
+                    let somePat : Pattern =
+                        { Kind = PConstructor (mkPath "Some" span, [vBinding])
+                          Span = span }
+                    let nullExpr = strLit "null" span
+                    let vAccess =
+                        mkExpr (EPath (mkPath "__lyric_json_v" span)) span
+                    let innerExpr =
+                        renderAccessExpr deriveJsonRecords vAccess innerTy
+                    let arms : MatchArm list =
+                        [ { Pattern = nonePat; Guard = None
+                            Body = EOBExpr nullExpr; Span = span }
+                          { Pattern = somePat; Guard = None
+                            Body = EOBExpr innerExpr; Span = span } ]
+                    mkExpr (EMatch (access, arms)) span
+                | None ->
+                    let callee = mkExpr (EPath (mkPath "toString" span)) span
+                    mkExpr (ECall (callee, [CAPositional access])) span
+
 /// Build the body expression for one field's JSON rendering.
 let private renderFieldExpr
         (deriveJsonRecords: Set<string>)
@@ -120,47 +208,7 @@ let private renderFieldExpr
         (field: FieldDecl) : Expr =
     let span = field.Span
     let access = mkExpr (EMember (selfExpr, field.Name)) span
-    match nestedJsonTypeName deriveJsonRecords field.Type with
-    | Some typeName ->
-        // `<TypeName>.toJson(self.<field>)` — the nested record's
-        // synthesised method is also a UFCS-style dotted function.
-        let callee =
-            mkExpr (EMember (mkExpr (EPath (mkPath typeName span)) span,
-                             "toJson")) span
-        mkExpr (ECall (callee, [CAPositional access])) span
-    | None when isStringField field.Type ->
-        // `__lyricJsonEscape(self.<field>)` — routes through the
-        // BCL's `JsonEncodedText.Encode` via the stdlib's JsonHost
-        // helper, surrounding-quotes-included.  The synthesised
-        // extern target is appended once per source file by
-        // `synthesizeItems`.
-        let callee = mkExpr (EPath (mkPath "__lyricJsonEscape" span)) span
-        mkExpr (ECall (callee, [CAPositional access])) span
-    | None ->
-        match slicePrimitiveHelper field.Type with
-        | Some helperName ->
-            // `__lyricJsonRender<T>Slice(self.<field>)` — routes
-            // through `Lyric.Stdlib.JsonHost::Render<T>Slice`,
-            // emitting a valid `[a, b, c]` JSON array literal
-            // with proper quoting for String elements.
-            let callee = mkExpr (EPath (mkPath helperName span)) span
-            mkExpr (ECall (callee, [CAPositional access])) span
-        | None ->
-            match sliceRecordHelper deriveJsonRecords field.Type with
-            | Some recName ->
-                // `__lyricJsonRender<RecName>Slice(self.<field>)` —
-                // synthesised per-record helper that loops over
-                // the slice and dispatches to `<RecName>.toJson`
-                // per element.  The helper is appended to the
-                // source file by `synthesizeItems`.
-                let helperName =
-                    "__lyricJsonRender" + recName + "Slice"
-                let callee = mkExpr (EPath (mkPath helperName span)) span
-                mkExpr (ECall (callee, [CAPositional access])) span
-            | None ->
-                // `toString(self.<field>)` — primitive fields, fallthrough.
-                let callee = mkExpr (EPath (mkPath "toString" span)) span
-                mkExpr (ECall (callee, [CAPositional access])) span
+    renderAccessExpr deriveJsonRecords access field.Type
 
 let private synthesiseToJson
         (deriveJsonRecords: Set<string>)

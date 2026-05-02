@@ -1696,6 +1696,55 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-045: `@derive(Json)` — Option fields render as `null` / value (with codegen fix)
+*claude/deferred-items-continuation branch.*  Closes a deferred
+follow-up from D-progress-030.  `Option[T]` fields on a
+`@derive(Json)` record now render as `null` (for `None`) or the
+inner T's encoding (for `Some(value=x)`).
+
+**Synthesis.**  `JsonDerive` detects `Option[T]` via a new
+`optionInnerType` helper and emits a recursive
+`renderAccessExpr` that falls through to a synthesised match:
+
+```lyric
+match self.<field> {
+  case None     -> "null"
+  case Some(v)  -> renderAccessExpr v innerType
+}
+```
+
+`renderAccessExpr` is itself recursive, so the inner T's
+rendering follows the same dispatch chain as a top-level field
+(primitives → `toString`, String → `__lyricJsonEscape`,
+@derive(Json) records → `<TypeName>.toJson`, primitive slices
+→ `__lyricJsonRender<T>Slice`, etc.).
+
+**Codegen fix uncovered along the way.**  Pattern matching on
+record-field-of-imported-generic-union (e.g. `match t.label {
+case None -> ... ; case Some(v) -> ... }` where
+`label: Option[String]`) silently failed: both arms' isinst
+tests returned false, dropping into the dummy-default fallthrough
+and producing an empty string from the match.  Root cause: when
+constructing a non-generic record (`Tag(label = None)`), the
+arg-emit path didn't set `ctx.ExpectedType` to the field's CLR
+type before evaluating `None`.  `inferTypeArgsFromReturn`
+defaulted to `obj`, producing a `None<obj>` instance — incompatible
+with the field's declared `Option<string>` static type when
+later pattern-tested against `None<string>`.
+
+The fix is one block in `Codegen.fs`: the non-generic record
+construction path now sets `ctx.ExpectedType <- Some f.Type`
+around each arg's emit, mirroring the function-call path's
+existing behaviour.  Restores the expected type for nullary
+union-case construction across record fields.
+
+**Tests.**  Two new cases in `JsonDeriveTests.fs`:
+`json_derive_option_int_field` and `json_derive_option_string_field`,
+each exercising both `Some` and `None` constructions.  All 361
+emitter tests pass (was 359; +2 new).
+
+---
+
 ### D-progress-044: `@derive(Json)` — nested-record slice fields
 *claude/deferred-items-continuation branch.*  Builds on
 D-progress-043 to handle `slice[Rec]` / `array[N, Rec]` fields

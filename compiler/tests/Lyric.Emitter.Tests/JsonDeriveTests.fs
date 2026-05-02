@@ -140,6 +140,41 @@ func main(): Unit {
 """,
     "{\"values\":[true,false,true]}"
 
+    "json_derive_option_int_field",
+    // D-progress-045: Option[T] fields render as `null` for None
+    // and the inner T's renderer for Some(value).
+    """
+package J11
+import Std.Core
+@derive(Json)
+pub record Item {
+  name: String
+  count: Option[Int]
+}
+func main(): Unit {
+  println(Item.toJson(Item(name = "a", count = Some(value = 7))))
+  println(Item.toJson(Item(name = "b", count = None)))
+}
+""",
+    "{\"name\":\"a\",\"count\":7}\n{\"name\":\"b\",\"count\":null}"
+
+    "json_derive_option_string_field",
+    // Option[String] uses the same JsonEncodedText escaping as
+    // a non-Option String field, when present.
+    """
+package J12
+import Std.Core
+@derive(Json)
+pub record Tag {
+  label: Option[String]
+}
+func main(): Unit {
+  println(Tag.toJson(Tag(label = Some(value = "hi"))))
+  println(Tag.toJson(Tag(label = None)))
+}
+""",
+    "{\"label\":\"hi\"}\n{\"label\":null}"
+
     "json_derive_record_slice_field",
     // D-progress-044: slice of @derive(Json) records lowers to a
     // synthesised __lyricJsonRender<RecName>Slice helper that
