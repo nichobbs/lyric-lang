@@ -2286,12 +2286,21 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // not implemented — go through `TypeBuilder.GetConstructor`
             // instead, which substitutes the open ctor handle.
             let openCtor = caseInfo.Ctor
+            // Extend the GTPB-check to also catch TypeBuilder typeArgs:
+            // when constructing e.g. `Some(value = userRec)` where
+            // `userRec` is itself a Lyric record under construction in
+            // this assembly, `MakeGenericType([| userRec |])` produces
+            // a TypeBuilderInstantiation whose `GetConstructors` is
+            // also unsupported (D-progress-050).
+            let isTypeBuilderArg (t: ClrType) : bool =
+                t :? System.Reflection.Emit.TypeBuilder
+                || t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                || (t.IsGenericType && not t.IsGenericTypeDefinition
+                    && t.GetGenericArguments() |> Array.exists (fun ga ->
+                        ga :? System.Reflection.Emit.TypeBuilder
+                        || ga :? System.Reflection.Emit.GenericTypeParameterBuilder))
             let constructedCtor =
-                if typeArgs |> Array.exists (fun t ->
-                       t :? System.Reflection.Emit.GenericTypeParameterBuilder
-                       || (t.IsGenericType && not t.IsGenericTypeDefinition
-                           && t.GetGenericArguments() |> Array.exists (fun ga ->
-                                ga :? System.Reflection.Emit.GenericTypeParameterBuilder)))
+                if typeArgs |> Array.exists isTypeBuilderArg
                 then
                     System.Reflection.Emit.TypeBuilder.GetConstructor(constructedCase, openCtor)
                 else
@@ -2809,8 +2818,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let returnedTy =
                 Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
                     ctx.Lookup substMap sg.Return
-            if returnedTy = typeof<System.Void> then typeof<System.Void>
-            else returnedTy
+            let actualTy =
+                if sg.IsAsync then
+                    // The MethodBuilder's return type is `Task[<T>]`
+                    // even though `sg.Return` is the bare `T`.  The
+                    // IL stack carries the wrapped Task — surface
+                    // that to the caller (especially `EAwait`, which
+                    // expects to call `GetAwaiter` on a Task).  This
+                    // matches the non-generic async-call path where
+                    // `mb.ReturnType` already includes the wrap.
+                    if returnedTy = typeof<System.Void> then
+                        typeof<System.Threading.Tasks.Task>
+                    else
+                        typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| returnedTy |])
+                else
+                    returnedTy
+            if actualTy = typeof<System.Void> then typeof<System.Void>
+            else actualTy
 
     // ---- delegate / higher-order call ---------------------------------
 
@@ -3112,6 +3136,99 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | ELambda (params', body) ->
         emitLambdaWith ctx params' body None
+
+    // ---- block expression (D-progress-049) ----------------------------
+    //
+    // Diverging-statement wrappers like `return …` / `throw …` /
+    // `break` / `continue` and `try { … } catch …` parse as
+    // single-statement EBlock when the user wrote them in expression
+    // position.  Most of them produce no value (type Never); `try`
+    // is the exception — its body's last expr OR catch's last expr
+    // becomes the block's value.
+
+    | EBlock blk ->
+        let stmts = blk.Statements
+        match stmts with
+        | [{ Kind = STry (body, catches) }] ->
+            // Emit a try-as-expression: stash the body's tail value
+            // (and each catch's tail value) into a single result
+            // local; load it after the protected region closes.
+            // The result type peeks from the body's last SExpr.
+            let resultTy =
+                match List.tryLast body.Statements with
+                | Some { Kind = SExpr last } -> peekExprType ctx last
+                | _ -> typeof<obj>
+            let resultLoc =
+                FunctionCtx.defineLocal ctx "__try_expr_result" resultTy
+            let il = ctx.IL
+            let endLabel = il.BeginExceptionBlock()
+            ctx.TryDepth <- ctx.TryDepth + 1
+            FunctionCtx.pushScope ctx
+            // Body: emit statements, last SExpr leaves value on stack.
+            let lastIdx = List.length body.Statements - 1
+            body.Statements
+            |> List.iteri (fun i stmt ->
+                if i = lastIdx then
+                    match stmt.Kind with
+                    | SExpr ex ->
+                        let _ = emitExpr ctx ex
+                        il.Emit(OpCodes.Stloc, resultLoc)
+                    | _ -> emitStatement ctx stmt
+                else emitStatement ctx stmt)
+            FunctionCtx.popScope ctx
+            ctx.TryDepth <- ctx.TryDepth - 1
+            // Catch handlers: same shape — last SExpr → result local.
+            for c in catches do
+                let exTy =
+                    match c.Type with
+                    | "Bug" | "Exception" | "Error" -> typeof<System.Exception>
+                    | _ -> typeof<System.Exception>
+                il.BeginCatchBlock(exTy)
+                FunctionCtx.pushScope ctx
+                match c.Bind with
+                | Some name ->
+                    let lb = FunctionCtx.defineLocal ctx name exTy
+                    il.Emit(OpCodes.Stloc, lb)
+                | None -> il.Emit(OpCodes.Pop)
+                let cLastIdx = List.length c.Body.Statements - 1
+                c.Body.Statements
+                |> List.iteri (fun i stmt ->
+                    if i = cLastIdx then
+                        match stmt.Kind with
+                        | SExpr ex ->
+                            let _ = emitExpr ctx ex
+                            il.Emit(OpCodes.Stloc, resultLoc)
+                        | _ -> emitStatement ctx stmt
+                    else emitStatement ctx stmt)
+                FunctionCtx.popScope ctx
+            il.EndExceptionBlock()
+            ignore endLabel
+            il.Emit(OpCodes.Ldloc, resultLoc)
+            resultTy
+        | _ ->
+            // Multi-stmt or non-try EBlock: emit statements, last
+            // SExpr's value on the stack (else void).  Diverging
+            // statements (return/throw/break/continue) push a fallback
+            // null/zero so the surrounding expression's stack stays
+            // balanced — they don't actually return, so the value is
+            // never observed at runtime.
+            FunctionCtx.pushScope ctx
+            let lastIdx = List.length stmts - 1
+            let mutable resultTy = typeof<System.Void>
+            stmts
+            |> List.iteri (fun i stmt ->
+                if i = lastIdx then
+                    match stmt.Kind with
+                    | SExpr ex -> resultTy <- emitExpr ctx ex
+                    | SReturn _ | SThrow _ | SBreak _ | SContinue _ ->
+                        emitStatement ctx stmt
+                        // Stack-balance dummy: unreachable in practice.
+                        il.Emit(OpCodes.Ldnull)
+                        resultTy <- typeof<obj>
+                    | _ -> emitStatement ctx stmt
+                else emitStatement ctx stmt)
+            FunctionCtx.popScope ctx
+            resultTy
 
     | _ ->
         codegenErr ctx "E0003"
@@ -3995,6 +4112,83 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // (see `emitStatementsWithDefer`).  Reaching this branch means
         // a defer escaped its surrounding block — treat as a bug.
         failwith "E14 codegen: bare SDefer reached emitStatement (block emit should have hoisted it)"
+
+    | STry (body, catches) ->
+        // D-progress-048: statement-form `try { … } catch <Type> [as
+        // <bind>] { … }`.  Each catch's `<Type>` resolves via the
+        // catch-type map below; unknown types fall back to
+        // `System.Exception` so callers can still trap any bug.
+        // Awaits inside the try body fall back to the M1.4 blocking
+        // shim (the suspend's `Leave` would need protected-region
+        // re-entry on resume — Phase B+++ work).
+        let il = ctx.IL
+        let resolveCatchType (typeName: string) : System.Type =
+            match typeName with
+            | "Bug"
+            | "Exception"
+            | "Error" -> typeof<System.Exception>
+            // Common BCL exception aliases — match without forcing
+            // users to walk the assembly-search path for the
+            // canonical names.
+            | "ArgumentException"
+            | "Argument" -> typeof<System.ArgumentException>
+            | "ArgumentNullException"
+            | "NullArgument" -> typeof<System.ArgumentNullException>
+            | "InvalidOperationException"
+            | "InvalidOperation" -> typeof<System.InvalidOperationException>
+            | "NotSupportedException"
+            | "NotSupported" -> typeof<System.NotSupportedException>
+            | "IOException"
+            | "IO" -> typeof<System.IO.IOException>
+            | "FileNotFoundException"
+            | "FileNotFound" -> typeof<System.IO.FileNotFoundException>
+            | "FormatException"
+            | "Format" -> typeof<System.FormatException>
+            | "OverflowException"
+            | "Overflow" -> typeof<System.OverflowException>
+            | "DivideByZeroException"
+            | "DivideByZero" -> typeof<System.DivideByZeroException>
+            | "TimeoutException"
+            | "Timeout" -> typeof<System.TimeoutException>
+            | _ ->
+                // Walk every loaded assembly looking for a CLR class
+                // by short or full name.  Falls back to Exception
+                // when nothing matches; keeps this code permissive
+                // until a richer Lyric-side exception story lands.
+                let asms = System.AppDomain.CurrentDomain.GetAssemblies()
+                let found =
+                    asms
+                    |> Array.tryPick (fun a ->
+                        try
+                            a.GetTypes()
+                            |> Array.tryFind (fun t ->
+                                t.Name = typeName
+                                || t.FullName = typeName)
+                        with _ -> None)
+                match found with
+                | Some t when typeof<System.Exception>.IsAssignableFrom(t) -> t
+                | _ -> typeof<System.Exception>
+        let endLabel = il.BeginExceptionBlock()
+        ctx.TryDepth <- ctx.TryDepth + 1
+        FunctionCtx.pushScope ctx
+        emitBlock ctx body
+        FunctionCtx.popScope ctx
+        ctx.TryDepth <- ctx.TryDepth - 1
+        for c in catches do
+            let exTy = resolveCatchType c.Type
+            il.BeginCatchBlock(exTy)
+            FunctionCtx.pushScope ctx
+            match c.Bind with
+            | Some name ->
+                let lb = FunctionCtx.defineLocal ctx name exTy
+                il.Emit(OpCodes.Stloc, lb)
+            | None ->
+                // No binding — pop the exception value off the stack.
+                il.Emit(OpCodes.Pop)
+            emitBlock ctx c.Body
+            FunctionCtx.popScope ctx
+        il.EndExceptionBlock()
+        ignore endLabel
 
     | _ ->
         codegenErrStmt ctx "E0003"

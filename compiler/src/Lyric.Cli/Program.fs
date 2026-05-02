@@ -221,6 +221,16 @@ let private build (sourcePath: string) (outPath: string) (force: bool) : int =
             // with `1` instead of a stack trace.
             hadError <- true
             printErr (sprintf "internal error: %s" e.Message)
+            // Stack trace surfaced when LYRIC_DEBUG is set — useful
+            // when the bare message ("Specified method is not
+            // supported") doesn't pinpoint the failing reflection
+            // call.
+            match Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_DEBUG") with
+            | None -> ()
+            | Some _ ->
+                match Option.ofObj e.StackTrace with
+                | Some st -> printErr st
+                | None    -> ()
             { OutputPath  = None
               Diagnostics = [] }
     for d in result.Diagnostics do

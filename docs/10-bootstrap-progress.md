@@ -1696,6 +1696,163 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-051: try/catch — common BCL exception type aliases
+*claude/deferred-items-round3 branch.*  Extends D-progress-048's
+catch-type resolver to recognise short aliases for common BCL
+exception types without forcing users to type the fully
+qualified CLR name:
+
+| Lyric name | CLR exception |
+|---|---|
+| `Bug` / `Exception` / `Error` | `System.Exception` |
+| `ArgumentException` / `Argument` | `System.ArgumentException` |
+| `ArgumentNullException` / `NullArgument` | `System.ArgumentNullException` |
+| `InvalidOperationException` / `InvalidOperation` | `System.InvalidOperationException` |
+| `NotSupportedException` / `NotSupported` | `System.NotSupportedException` |
+| `IOException` / `IO` | `System.IO.IOException` |
+| `FileNotFoundException` / `FileNotFound` | `System.IO.FileNotFoundException` |
+| `FormatException` / `Format` | `System.FormatException` |
+| `OverflowException` / `Overflow` | `System.OverflowException` |
+| `DivideByZeroException` / `DivideByZero` | `System.DivideByZeroException` |
+| `TimeoutException` / `Timeout` | `System.TimeoutException` |
+
+Anything else falls through to the existing reflective walk
+across loaded assemblies.
+
+One new test (`try_catch_specific_exception_type`) catches a
+`FormatException` raised by `Int32.Parse("not a number")`.  All
+372 emitter tests pass.
+
+---
+
+### D-progress-050: TypeBuilder-arg fallback for imported variant ctor + LYRIC_DEBUG
+*claude/deferred-items-round3 branch.*  Two related bits of polish.
+
+**TypeBuilder-arg fallback.**  `Codegen.fs`'s imported variant
+ctor path (e.g. `Some(value = userRec)` where `userRec` is a
+Lyric record under construction in this assembly) called
+`constructedCase.GetConstructors()` whenever no typeArg was a
+`GenericTypeParameterBuilder`.  But typeArgs can also be plain
+`TypeBuilder` instances when the user wires a same-package
+record into an imported generic union — `MakeGenericType` then
+returns a `TypeBuilderInstantiation` whose `GetConstructors()`
+raises `NotSupportedException` ("Specified method is not
+supported").  The fallback now also catches `TypeBuilder` and
+nested-`TypeBuilder` typeArgs and routes through
+`TypeBuilder.GetConstructor`.
+
+**`LYRIC_DEBUG` env var.**  When set, the CLI's `internal
+error: …` printout is followed by the original exception's
+stack trace.  Crucial for diagnosing reflection failures that
+otherwise surface as a bare "Specified method is not
+supported" message.
+
+The TypeBuilder-arg fix unblocks a chunk of `Std.Http` (which
+returns `Result[HttpResponseMessage, HttpError]` constructed
+via `Ok(value = …)` / `Err(error = …)` from imported
+`Std.Core`).  Std.Http still hits a separate "Object.GetAwaiter"
+issue when extern-package async calls don't surface their
+`Task<T>` static type — tracked as a Phase B+++ follow-up.
+
+No new tests (the fix is structural; existing tests don't
+reproduce the closed-generic-on-record case).  All 371 emitter
+tests pass.
+
+---
+
+### D-progress-049: try-as-expression — `return try { … } catch …`
+*claude/deferred-items-round3 branch.*  Builds on D-progress-048
+to allow `try { … } catch …` in expression position.  This is
+the canonical `Std.Http` shape (`return try { val r = await
+…; Ok(...) } catch Bug as b { Err(...) }`) — the parser already
+wrapped it as `EBlock { Statements = [STry …] }`, but the
+codegen previously reported "expression form not yet supported
+in this version: EBlock".
+
+The new `EBlock` handler in `emitExpr`:
+- For a single-statement EBlock containing `STry`, allocates a
+  result local, peeks the body's last `SExpr`'s type for the
+  result CLR type, then emits the protected region.  Both the
+  body's last expression and each catch's last expression
+  Stloc into the result local; after `EndExceptionBlock` the
+  surrounding expression Ldloc's the value.
+- For multi-statement / non-try EBlock, emits each stmt with
+  the last `SExpr`'s value left on the stack (mirrors
+  `emitBranchValue`).  Diverging stmts (return/throw/break/
+  continue) push a `null` stack-balance dummy that's
+  unreachable in practice.
+
+Three new tests in `TryCatchTests.fs` cover the basic body /
+catch / await-inside-body shapes.  All 371 emitter tests pass
+(was 368; +3 new).
+
+---
+
+### D-progress-048: statement-form `try { … } catch <Type> [as <bind>] { … }`
+*claude/deferred-items-round3 branch.*  Closes a deferred
+follow-up — `try { … } catch …` as a statement form previously
+hit `E0003: statement form not yet supported in this version:
+STry`.  Implementation lands in the regular `emitStatement`
+match arm:
+
+- `BeginExceptionBlock` opens the protected region.
+- The body emits inside `pushScope` / `popScope` with
+  `ctx.TryDepth` incremented so any `return` / `break` /
+  `continue` routes through `Leave`.
+- For each catch clause, `BeginCatchBlock(<exType>)` is followed
+  by either `Stloc <bind>` (when the user provided `as
+  <name>`) or `Pop` (when not), then the catch body.
+- `EndExceptionBlock` closes the region.
+
+The catch type name resolves via a small built-in mapping:
+`Bug` / `Exception` / `Error` → `System.Exception`.  Any other
+name walks every loaded assembly via reflection looking for a
+short-or-full-name match assignable to `System.Exception`,
+falling back to `System.Exception` itself when nothing matches.
+
+Awaits inside the try body fall back to the M1.4 blocking shim
+(real Phase B suspension would need protected-region re-entry
+on resume — Phase B+++ work).  Synchronously-completing
+`await`s work fine inside try via the blocking-shim fast path.
+
+Four new tests in `TryCatchTests.fs` cover no-throw, panic-
+caught, no-bind, and `try` + `await` combinations.  All 368
+emitter tests pass (was 364; +4 new).
+
+---
+
+### D-progress-047: async generic call sites surface `Task[<T>]` correctly
+*claude/deferred-items-round3 branch.*  Closes a deferred
+follow-up from D-progress-024 (C2 async work).  Calls to async
+generic functions like `id[T](x: in T): T` previously surfaced
+the bare `T` (substituted) as the call-site static type, even
+though the IL stack carries the wrapped `Task[<T>]`.  Downstream
+`EAwait` then resolved `GetAwaiter` against `int32` /
+`obj` / etc. and crashed at compile time with errors like
+`Int32.GetAwaiter not found`.
+
+The fix is one block in `Codegen.fs`'s reified-generic call
+path: after substituting the generic bindings into `sg.Return`,
+wrap the resulting CLR type in `Task[<T>]` (or non-generic
+`Task` for `Unit`) when `sg.IsAsync`.  This mirrors the
+non-generic async-call path where `mb.ReturnType` already
+includes the wrap.
+
+`await id(42)` now correctly emits `GetAwaiter` against
+`Task<int>` and unwraps to `int`.
+
+**Bootstrap-grade scope.**  Generic async funcs themselves
+still go through the M1.4 wrapper path (the SM doesn't yet
+emit closed-generic SM types on `TypeBuilder` — that's a
+larger Phase C item).  The blocking shim works correctly for
+synchronously-completing tasks; real suspension on generic
+async funcs awaits the SM-generic plumbing.
+
+One new test (`phaseB_async_generic`) covering Int and String
+type arguments.  All 364 emitter tests pass (was 363; +1 new).
+
+---
+
 ### D-progress-046: `@derive(Json)` — synthesised `fromJson` for primitive-only records
 *claude/deferred-items-continuation branch.*  Closes a deferred
 follow-up from D-progress-030.  Records whose fields are all

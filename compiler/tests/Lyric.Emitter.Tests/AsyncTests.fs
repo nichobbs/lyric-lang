@@ -311,6 +311,24 @@ func main(): Unit {
 """,
     "ping\n10\nping\n11"
 
+    "phaseB_async_generic",
+    // D-progress-047: async generic function calls now return
+    // their wrapped `Task[<T>]` static type at the call site so
+    // `await` resolves `GetAwaiter` correctly.  Generic async
+    // funcs themselves still go through the M1.4 wrapper path
+    // (the SM doesn't yet emit closed-generic SM types on
+    // TypeBuilder); the fix is purely on the call-site type
+    // surfacing.
+    """
+package E14
+async func id[T](x: in T): T = x
+func main(): Unit {
+  println(await id(42))
+  println(await id("hi"))
+}
+""",
+    "42\nhi"
+
     "phaseB_async_impl_method_with_await",
     // Phase B impl method — async instance method whose body
     // contains an `await`.  The kickoff lives on the record;
