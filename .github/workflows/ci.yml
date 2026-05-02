@@ -42,79 +42,100 @@ jobs:
         working-directory: compiler
         run: dotnet build Lyric.sln --configuration Debug --no-restore
 
-      - name: Lexer tests (with coverage)
+      # ----------------------------------------------------------------
+      # Tests run normally first — these gates determine build pass/fail.
+      # Coverage is then collected as a best-effort second pass below;
+      # if coverlet hits a snag (F#/Expecto edge case, version drift),
+      # the build still passes and the coverage step just skips its
+      # report.
+      # ----------------------------------------------------------------
+
+      - name: Lexer tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
+
+      - name: Parser tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
+
+      - name: Type-checker tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
+
+      - name: Emitter tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
+
+      - name: Collect coverage (best-effort)
+        id: coverage
+        if: always()
+        continue-on-error: true
         working-directory: compiler
         run: |
+          set +e
           mkdir -p coverage
-          coverlet tests/Lyric.Lexer.Tests/bin/Debug/net9.0/Lyric.Lexer.Tests.dll \
-            --target dotnet \
-            --targetargs "tests/Lyric.Lexer.Tests/bin/Debug/net9.0/Lyric.Lexer.Tests.dll" \
-            --format cobertura \
-            --output coverage/lexer.cobertura.xml \
-            --include "${COVERLET_INCLUDE}" \
-            --exclude "${COVERLET_EXCLUDE}"
 
-      - name: Parser tests (with coverage)
-        working-directory: compiler
-        run: |
-          coverlet tests/Lyric.Parser.Tests/bin/Debug/net9.0/Lyric.Parser.Tests.dll \
-            --target dotnet \
-            --targetargs "tests/Lyric.Parser.Tests/bin/Debug/net9.0/Lyric.Parser.Tests.dll" \
-            --format cobertura \
-            --output coverage/parser.cobertura.xml \
-            --include "${COVERLET_INCLUDE}" \
-            --exclude "${COVERLET_EXCLUDE}"
-
-      - name: Type-checker tests (with coverage)
-        working-directory: compiler
-        run: |
-          coverlet tests/Lyric.TypeChecker.Tests/bin/Debug/net9.0/Lyric.TypeChecker.Tests.dll \
-            --target dotnet \
-            --targetargs "tests/Lyric.TypeChecker.Tests/bin/Debug/net9.0/Lyric.TypeChecker.Tests.dll" \
-            --format cobertura \
-            --output coverage/typechecker.cobertura.xml \
-            --include "${COVERLET_INCLUDE}" \
-            --exclude "${COVERLET_EXCLUDE}"
-
-      - name: Emitter tests (with coverage)
-        working-directory: compiler
-        run: |
-          coverlet tests/Lyric.Emitter.Tests/bin/Debug/net9.0/Lyric.Emitter.Tests.dll \
-            --target dotnet \
-            --targetargs "tests/Lyric.Emitter.Tests/bin/Debug/net9.0/Lyric.Emitter.Tests.dll" \
-            --format cobertura \
-            --output coverage/emitter.cobertura.xml \
-            --include "${COVERLET_INCLUDE}" \
-            --exclude "${COVERLET_EXCLUDE}"
+          # Discover every test DLL under tests/*.Tests and run each
+          # through coverlet. A failure on a single project is logged
+          # but doesn't stop the others — the merged report shows
+          # whatever was successfully measured.
+          status=0
+          for proj in tests/*.Tests; do
+            name=$(basename "$proj" | tr '[:upper:]' '[:lower:]' \
+              | sed 's/^lyric\.//; s/\.tests$//')
+            dll="$proj/bin/Debug/net9.0/$(basename "$proj").dll"
+            if [ ! -f "$dll" ]; then
+              echo "::warning::test dll not found: $dll"
+              continue
+            fi
+            echo "=== coverage: $name ==="
+            coverlet "$dll" \
+              --target dotnet \
+              --targetargs "$dll" \
+              --format cobertura \
+              --output "coverage/${name}.cobertura.xml" \
+              --include "${COVERLET_INCLUDE}" \
+              --exclude "${COVERLET_EXCLUDE}" \
+              --verbosity normal
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "::warning::coverlet exited $rc for $name"
+              status=$rc
+            fi
+          done
+          # Surface a single overall status but never fail the step
+          # (continue-on-error is set, but be explicit).
+          echo "coverlet_status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Generate coverage report
         if: always()
         working-directory: compiler
         run: |
-          # Merge every per-test-project Cobertura file into one report.
-          # `MarkdownSummaryGithub` is tuned for `$GITHUB_STEP_SUMMARY`.
-          if compgen -G 'coverage/*.cobertura.xml' > /dev/null; then
-            reportgenerator \
-              -reports:'coverage/*.cobertura.xml' \
-              -targetdir:coverage/report \
-              -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
-          else
+          shopt -s nullglob
+          files=(coverage/*.cobertura.xml)
+          if [ ${#files[@]} -eq 0 ]; then
             echo "No cobertura files found; skipping report."
+            exit 0
           fi
+          reportgenerator \
+            -reports:'coverage/*.cobertura.xml' \
+            -targetdir:coverage/report \
+            -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
 
       - name: Append coverage to job summary
         if: always()
         working-directory: compiler
         run: |
-          if [ -f coverage/report/SummaryGithub.md ]; then
-            {
-              echo "## Code coverage"
-              echo
+          {
+            echo "## Code coverage"
+            echo
+            if [ -f coverage/report/SummaryGithub.md ]; then
               cat coverage/report/SummaryGithub.md
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No coverage summary produced." >> "$GITHUB_STEP_SUMMARY"
-          fi
+            else
+              echo "_Coverage data not produced for this build._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Print coverage summary to log
         if: always()
@@ -122,6 +143,8 @@ jobs:
         run: |
           if [ -f coverage/report/Summary.txt ]; then
             cat coverage/report/Summary.txt
+          else
+            echo "(no coverage summary)"
           fi
 
       - name: Upload coverage report artifact
