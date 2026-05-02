@@ -53,6 +53,7 @@
     <Compile Include="JsonDeriveTests.fs" />
     <Compile Include="ContractMetaTests.fs" />
     <Compile Include="TryCatchTests.fs" />
+    <Compile Include="StdHttpTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

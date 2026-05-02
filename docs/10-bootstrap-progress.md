@@ -1696,6 +1696,61 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-052: Std.Http unblock — refactor extern-package to @externTarget shims
+*claude/deferred-items-round4 branch.*  Closes the
+"Object.GetAwaiter not found" failure that blocked
+`import Std.Http` end-to-end.
+
+**Root cause.**  `Std.HttpHost` declared its host primitives
+inside `extern package System.Net.Http { ... }` blocks.  Lyric's
+`extern package` mechanism is parsed and type-checked but never
+reaches the emitter with an actionable target — the precompiled
+`Lyric.Stdlib.HttpHost.dll` ends up with NO static methods.
+Calls to `HostHttp.send(...)` (after `import Std.HttpHost as
+HostHttp` alias rewriting) collapse to bare `send(...)` which
+no symbol table knows about; `codegenErr` then surfaces a
+fallback `obj` static type, and downstream `EAwait` crashes
+trying to find `Object.GetAwaiter`.
+
+**Fix.**  Refactor `compiler/lyric/std/http_host.l` to declare
+each host primitive as a top-level `pub func` with an
+`@externTarget("Lyric.Stdlib.HttpClientHost.<Member>")`
+annotation.  Each one routes to a new
+`Lyric.Stdlib.HttpClientHost` static helper class on the F#
+side that wraps the corresponding `System.Net.Http.HttpClient`
+operation:
+
+| Lyric (host_http.l) | F# (Stdlib.fs) | BCL |
+|---|---|---|
+| `hostDefaultClient(): HttpClient` | `HttpClientHost.DefaultClient` | `new HttpClient()` |
+| `hostMakeRequest(method, url): HttpRequestMessage` | `HttpClientHost.MakeRequest` | `new HttpRequestMessage(method, url)` |
+| `hostWithHeader(req, key, value)` | `HttpClientHost.WithHeader` | `req.Headers.TryAddWithoutValidation` |
+| `hostWithStringBody(req, ct, body)` | `HttpClientHost.WithStringBody` | `req.Content = StringContent(...)` |
+| `hostSend(client, req): Task<HttpResponseMessage>` | `HttpClientHost.Send` | `client.SendAsync(req)` |
+| `hostGet(client, url)` | `HttpClientHost.Get` | `client.GetAsync(url)` |
+| `hostPostString(client, url, body, ct)` | `HttpClientHost.PostString` | `client.PostAsync(...)` |
+| `hostStatusCode(resp): Int` | `HttpClientHost.StatusCode` | `int resp.StatusCode` |
+| `hostReadBodyText(resp): String` | `HttpClientHost.ReadBodyText` | `resp.Content.ReadAsStringAsync()` |
+| `hostReadBodyBytes(resp): slice[Byte]` | `HttpClientHost.ReadBodyBytes` | `resp.Content.ReadAsByteArrayAsync()` |
+
+The `host*` prefix is necessary because the alias rewriter
+(`import Std.HttpHost as HostHttp`) collapses `HostHttp.foo(...)`
+to bare `foo(...)`, and `Std.Http`'s user-facing wrappers
+(`send` / `withHeader` / etc.) would otherwise collide.
+`Std.Http` is updated to call the prefixed names.
+
+**Side fix.**  `Std.Http.retry`'s `attempts` counter previously
+used `Nat`, which the type checker rejects in arithmetic with
+literal `Int 0`.  Switched to `Int` to match the comparison
+shape; range-subtype literal-coercion is a separate Phase 4
+follow-up.
+
+**Tests.**  3 new cases in `StdHttpTests.fs` exercise URL
+parsing (success + failure) and request construction without
+network I/O.  All 375 emitter tests pass (was 372; +3 new).
+
+---
+
 ### D-progress-051: try/catch — common BCL exception type aliases
 *claude/deferred-items-round3 branch.*  Extends D-progress-048's
 catch-type resolver to recognise short aliases for common BCL
