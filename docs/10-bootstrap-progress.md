@@ -1696,6 +1696,34 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-049: try-as-expression — `return try { … } catch …`
+*claude/deferred-items-round3 branch.*  Builds on D-progress-048
+to allow `try { … } catch …` in expression position.  This is
+the canonical `Std.Http` shape (`return try { val r = await
+…; Ok(...) } catch Bug as b { Err(...) }`) — the parser already
+wrapped it as `EBlock { Statements = [STry …] }`, but the
+codegen previously reported "expression form not yet supported
+in this version: EBlock".
+
+The new `EBlock` handler in `emitExpr`:
+- For a single-statement EBlock containing `STry`, allocates a
+  result local, peeks the body's last `SExpr`'s type for the
+  result CLR type, then emits the protected region.  Both the
+  body's last expression and each catch's last expression
+  Stloc into the result local; after `EndExceptionBlock` the
+  surrounding expression Ldloc's the value.
+- For multi-statement / non-try EBlock, emits each stmt with
+  the last `SExpr`'s value left on the stack (mirrors
+  `emitBranchValue`).  Diverging stmts (return/throw/break/
+  continue) push a `null` stack-balance dummy that's
+  unreachable in practice.
+
+Three new tests in `TryCatchTests.fs` cover the basic body /
+catch / await-inside-body shapes.  All 371 emitter tests pass
+(was 368; +3 new).
+
+---
+
 ### D-progress-048: statement-form `try { … } catch <Type> [as <bind>] { … }`
 *claude/deferred-items-round3 branch.*  Closes a deferred
 follow-up — `try { … } catch …` as a statement form previously

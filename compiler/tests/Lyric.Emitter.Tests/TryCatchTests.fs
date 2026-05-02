@@ -88,6 +88,65 @@ func main(): Unit {
 }
 """,
     "99"
+
+    "try_as_expression_basic",
+    // D-progress-049: `try { … } catch …` in expression position
+    // (e.g. `return try { ... } catch ...`).  Each tail expression
+    // (body's last stmt + each catch's last stmt) leaves its value
+    // in a result local; the surrounding expression sees the
+    // unified value after the protected region closes.
+    """
+package T5
+func work(): Int {
+  return try {
+    21 + 21
+  } catch Bug as b {
+    -1
+  }
+}
+func main(): Unit {
+  println(toString(work()))
+}
+""",
+    "42"
+
+    "try_as_expression_catch_path",
+    """
+package T6
+func boom(): Int { panic("nope") }
+func work(): Int {
+  return try {
+    boom()
+  } catch Bug as b {
+    -7
+  }
+}
+func main(): Unit {
+  println(toString(work()))
+}
+""",
+    "-7"
+
+    "try_as_expression_with_await",
+    // `return try { await … } catch …` — the canonical Std.Http
+    // shape.  Synchronously-completing Task takes the fast path
+    // through the M1.4 blocking shim; the exception flow runs
+    // through the surrounding catch.
+    """
+package T7
+async func mkInt(): Int = 55
+async func doit(): Int {
+  return try {
+    await mkInt()
+  } catch Bug as b {
+    -1
+  }
+}
+func main(): Unit {
+  println(toString(await doit()))
+}
+""",
+    "55"
 ]
 
 let tests =

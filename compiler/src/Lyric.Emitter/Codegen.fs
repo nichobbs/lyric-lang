@@ -3128,6 +3128,99 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | ELambda (params', body) ->
         emitLambdaWith ctx params' body None
 
+    // ---- block expression (D-progress-049) ----------------------------
+    //
+    // Diverging-statement wrappers like `return …` / `throw …` /
+    // `break` / `continue` and `try { … } catch …` parse as
+    // single-statement EBlock when the user wrote them in expression
+    // position.  Most of them produce no value (type Never); `try`
+    // is the exception — its body's last expr OR catch's last expr
+    // becomes the block's value.
+
+    | EBlock blk ->
+        let stmts = blk.Statements
+        match stmts with
+        | [{ Kind = STry (body, catches) }] ->
+            // Emit a try-as-expression: stash the body's tail value
+            // (and each catch's tail value) into a single result
+            // local; load it after the protected region closes.
+            // The result type peeks from the body's last SExpr.
+            let resultTy =
+                match List.tryLast body.Statements with
+                | Some { Kind = SExpr last } -> peekExprType ctx last
+                | _ -> typeof<obj>
+            let resultLoc =
+                FunctionCtx.defineLocal ctx "__try_expr_result" resultTy
+            let il = ctx.IL
+            let endLabel = il.BeginExceptionBlock()
+            ctx.TryDepth <- ctx.TryDepth + 1
+            FunctionCtx.pushScope ctx
+            // Body: emit statements, last SExpr leaves value on stack.
+            let lastIdx = List.length body.Statements - 1
+            body.Statements
+            |> List.iteri (fun i stmt ->
+                if i = lastIdx then
+                    match stmt.Kind with
+                    | SExpr ex ->
+                        let _ = emitExpr ctx ex
+                        il.Emit(OpCodes.Stloc, resultLoc)
+                    | _ -> emitStatement ctx stmt
+                else emitStatement ctx stmt)
+            FunctionCtx.popScope ctx
+            ctx.TryDepth <- ctx.TryDepth - 1
+            // Catch handlers: same shape — last SExpr → result local.
+            for c in catches do
+                let exTy =
+                    match c.Type with
+                    | "Bug" | "Exception" | "Error" -> typeof<System.Exception>
+                    | _ -> typeof<System.Exception>
+                il.BeginCatchBlock(exTy)
+                FunctionCtx.pushScope ctx
+                match c.Bind with
+                | Some name ->
+                    let lb = FunctionCtx.defineLocal ctx name exTy
+                    il.Emit(OpCodes.Stloc, lb)
+                | None -> il.Emit(OpCodes.Pop)
+                let cLastIdx = List.length c.Body.Statements - 1
+                c.Body.Statements
+                |> List.iteri (fun i stmt ->
+                    if i = cLastIdx then
+                        match stmt.Kind with
+                        | SExpr ex ->
+                            let _ = emitExpr ctx ex
+                            il.Emit(OpCodes.Stloc, resultLoc)
+                        | _ -> emitStatement ctx stmt
+                    else emitStatement ctx stmt)
+                FunctionCtx.popScope ctx
+            il.EndExceptionBlock()
+            ignore endLabel
+            il.Emit(OpCodes.Ldloc, resultLoc)
+            resultTy
+        | _ ->
+            // Multi-stmt or non-try EBlock: emit statements, last
+            // SExpr's value on the stack (else void).  Diverging
+            // statements (return/throw/break/continue) push a fallback
+            // null/zero so the surrounding expression's stack stays
+            // balanced — they don't actually return, so the value is
+            // never observed at runtime.
+            FunctionCtx.pushScope ctx
+            let lastIdx = List.length stmts - 1
+            let mutable resultTy = typeof<System.Void>
+            stmts
+            |> List.iteri (fun i stmt ->
+                if i = lastIdx then
+                    match stmt.Kind with
+                    | SExpr ex -> resultTy <- emitExpr ctx ex
+                    | SReturn _ | SThrow _ | SBreak _ | SContinue _ ->
+                        emitStatement ctx stmt
+                        // Stack-balance dummy: unreachable in practice.
+                        il.Emit(OpCodes.Ldnull)
+                        resultTy <- typeof<obj>
+                    | _ -> emitStatement ctx stmt
+                else emitStatement ctx stmt)
+            FunctionCtx.popScope ctx
+            resultTy
+
     | _ ->
         codegenErr ctx "E0003"
             (sprintf "expression form not yet supported in this version: %A" e.Kind) e.Span
