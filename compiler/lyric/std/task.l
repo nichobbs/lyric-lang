@@ -27,6 +27,7 @@ import Std.Errors
 extern type Task   = "System.Threading.Tasks.Task"
 extern type CancellationToken       = "System.Threading.CancellationToken"
 extern type CancellationTokenSource = "System.Threading.CancellationTokenSource"
+extern type Scope                   = "Lyric.Stdlib.LyricTaskScope"
 
 // =====================================================================
 // Construction helpers.
@@ -108,3 +109,93 @@ pub func delay(ms: in Int): Task = ()
 /// `Exception` on the Lyric side).  Phase C / D-progress-068.
 @externTarget("Lyric.Stdlib.TaskHost.DelayWithCancel")
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
+
+// =====================================================================
+// Structured concurrency.  Phase C / D-progress-069.
+//
+// A `Scope` owns a `CancellationTokenSource` and a list of spawned
+// child tasks.  Spawning a task registers it as a child; if any
+// child fails, the scope's source is cancelled so siblings observe
+// and bail.  The canonical pattern:
+//
+//     async func parent(): Unit {
+//       val scope = makeScope()
+//       defer {
+//         cancelScope(scope)
+//         disposeScope(scope)
+//       }
+//       val tok = scopeToken(scope)
+//       spawn(scope, child1(tok))
+//       spawn(scope, child2(tok))
+//       try {
+//         await awaitAll(scope)
+//       } catch Exception as e {
+//         println("at least one child failed")
+//       }
+//     }
+//
+// Bootstrap-grade scope: only Unit-returning child tasks (`Task`,
+// not `Task[T]`) are accepted by `spawn`; typed-result aggregation
+// remains a Phase 4 follow-up.  AsyncLocal flow (so children see
+// the scope's token without explicit threading) is deferred.
+// =====================================================================
+
+/// Construct a fresh scope.  The scope owns a cancellation source
+/// and an empty children list; spawn child tasks against it via
+/// `spawn`, then `await awaitAll(scope)` to join them.  Always
+/// pair construction with `defer { cancelScope(scope);
+/// disposeScope(scope) }` so the source is released on scope exit.
+@externTarget("Lyric.Stdlib.TaskScopeHost.MakeScope")
+pub func makeScope(): Scope = ()
+
+/// Project the scope's cancellation token.  Pass to child tasks
+/// so they observe scope-level cancellation requests.
+@externTarget("Lyric.Stdlib.TaskScopeHost.ScopeToken")
+pub func scopeToken(s: in Scope): CancellationToken = ()
+
+/// Register an existing `Task` as a child of the scope.  Lyric's
+/// type system doesn't yet surface `Task` values from async-func
+/// calls (the typechecker erases the wrapper), so this overload
+/// is mainly used for tasks the user obtains via host helpers
+/// such as `delayWithCancel(ms, token)` whose declared return
+/// type is `Task`.  Phase 4 follow-up: surface Task[T] from
+/// async-func calls so this is the primary spawn path.
+@externTarget("Lyric.Stdlib.TaskScopeHost.Add")
+pub func scopeAdd(s: in Scope, child: in Task): Unit = ()
+
+/// Spawn a zero-arg closure on the thread pool, scoped to `scope`.
+/// The closure runs synchronously on a thread-pool thread; it can
+/// poll `isCancelled(scopeToken(scope))` or call
+/// `throwIfCancelled(scopeToken(scope))` to honour cancellation.
+///
+/// Named `scopeSpawn` rather than the more idiomatic `spawn`
+/// because `spawn` is a soft keyword reserved for the future
+/// `spawn expr` syntactic form (`ESpawn` in the parser AST).
+///
+/// Bootstrap-grade scope: closures can't `await` directly (the
+/// Phase B state machine doesn't synthesise async lambdas), so
+/// async I/O inside the closure auto-awaits via the M1.4 blocking
+/// shim — which still runs concurrently with siblings since each
+/// closure has its own thread-pool task.  Phase 4 follow-up: real
+/// async lambdas with cooperative suspension.
+@externTarget("Lyric.Stdlib.TaskScopeHost.SpawnAction")
+pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit = ()
+
+/// Wait for every registered child to complete.  When any child
+/// fails the call rethrows the underlying exception so the
+/// caller's `try/catch` surfaces it; the scope's source has
+/// already been cancelled at the moment of failure (eagerly, via
+/// a per-child continuation in the host) so siblings observing
+/// the token will have started winding down.
+@externTarget("Lyric.Stdlib.TaskScopeHost.AwaitAll")
+pub func awaitAll(s: in Scope): Task = ()
+
+/// Explicitly cancel the scope's source.  Idempotent.  Useful
+/// for defer-based cleanup that signals children to abort.
+@externTarget("Lyric.Stdlib.TaskScopeHost.Cancel")
+pub func cancelScope(s: in Scope): Unit = ()
+
+/// Release the scope's underlying source.  Always safe to call
+/// from a `defer { ... }`.
+@externTarget("Lyric.Stdlib.TaskScopeHost.Dispose")
+pub func disposeScope(s: in Scope): Unit = ()

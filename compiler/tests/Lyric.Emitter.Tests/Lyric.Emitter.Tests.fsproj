@@ -59,6 +59,7 @@
     <Compile Include="SnapshotTestingTests.fs" />
     <Compile Include="PropertyTestingTests.fs" />
     <Compile Include="CancellationTests.fs" />
+    <Compile Include="StructuredConcurrencyTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

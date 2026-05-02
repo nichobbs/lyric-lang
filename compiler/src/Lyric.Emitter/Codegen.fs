@@ -3055,20 +3055,29 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         let payload =
                             match a with
                             | CAPositional ex | CANamed (_, ex, _) -> ex
+                        let expectedDelegateTy =
+                            if i < paramTypes.Length
+                               && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
+                            then Some paramTypes.[i]
+                            else None
                         if i < paramTypes.Length && paramTypes.[i].IsByRef then
                             emitAddressOf ctx payload paramTypes.[i]
                         else
-                            let saved = ctx.ExpectedType
-                            if i < paramTypes.Length then
-                                ctx.ExpectedType <- Some paramTypes.[i]
-                            let argTy = emitExpr ctx payload
-                            ctx.ExpectedType <- saved
-                            if i < paramTypes.Length then
-                                let pt = paramTypes.[i]
-                                if pt = typeof<obj> && argTy.IsValueType then
-                                    il.Emit(OpCodes.Box, argTy)
-                                elif pt.IsValueType && (argTy = typeof<obj>) then
-                                    il.Emit(OpCodes.Unbox_Any, pt))
+                            match payload.Kind, expectedDelegateTy with
+                            | ELambda (lps, body), Some dt ->
+                                emitLambdaWith ctx lps body (Some dt) |> ignore
+                            | _ ->
+                                let saved = ctx.ExpectedType
+                                if i < paramTypes.Length then
+                                    ctx.ExpectedType <- Some paramTypes.[i]
+                                let argTy = emitExpr ctx payload
+                                ctx.ExpectedType <- saved
+                                if i < paramTypes.Length then
+                                    let pt = paramTypes.[i]
+                                    if pt = typeof<obj> && argTy.IsValueType then
+                                        il.Emit(OpCodes.Box, argTy)
+                                    elif pt.IsValueType && (argTy = typeof<obj>) then
+                                        il.Emit(OpCodes.Unbox_Any, pt))
                     il.Emit(OpCodes.Call, mi)
                     if mi.ReturnType = typeof<System.Void> then typeof<System.Void>
                     else mi.ReturnType
