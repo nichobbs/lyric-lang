@@ -1696,6 +1696,88 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-069: Structured concurrency — Scope + scopeSpawn + awaitAll
+*claude/structured-concurrency branch.*  Lifts the
+documented Phase C deferral on structured concurrency
+(D-progress-059, D-progress-068 follow-ups) by shipping a
+`Scope` type that owns a cancellation source and a list of
+spawned children.  When any child fails, the scope's source is
+cancelled automatically so siblings observing the token bail.
+Pairs with `defer` for guaranteed cleanup on every scope exit.
+
+What ships:
+
+- **`LyricTaskScope`** F# host class — owns a
+  `CancellationTokenSource` and a thread-safe `List<Task>`.  Each
+  registered child gets a per-task continuation that cancels
+  the source on first failure (`NotOnRanToCompletion` filter)
+  so cancellation is eager.
+- **`TaskScopeHost`** statics — `MakeScope`, `ScopeToken`, `Add`
+  (existing-task overload), `SpawnAction` (closure overload),
+  `AwaitAll` (snapshot the list and `Task.WhenAll`), `Cancel`,
+  `Dispose`.
+- **`Std.Task`** new surface — `extern type Scope =
+  "Lyric.Stdlib.LyricTaskScope"`; `makeScope`, `scopeToken`,
+  `scopeAdd(scope, task)`, `scopeSpawn(scope, () -> Unit)`,
+  `awaitAll(scope)`, `cancelScope(scope)`, `disposeScope(scope)`.
+- **Imported-func call site fix** — when a Lyric function
+  imported from another package takes a delegate-typed param
+  (e.g. `() -> Unit`), the call-site emitter now passes the
+  expected delegate type to `emitLambdaWith` so the lambda is
+  lowered with the correct return type.  Fixed an
+  `InvalidProgramException` bug where lambdas through imported
+  functions defaulted to `Object` return.
+
+The canonical structured-concurrency pattern reads:
+
+```
+async func parent(): Unit {
+  val sc = makeScope()
+  defer {
+    cancelScope(sc)
+    disposeScope(sc)
+  }
+  val tok = scopeToken(sc)
+  scopeAdd(sc, delayWithCancel(100, tok))
+  scopeAdd(sc, delayWithCancel(200, tok))
+  await awaitAll(sc)  // throws if any child failed
+}
+```
+
+Six new tests in `StructuredConcurrencyTests.fs`:
+add-delay-tasks-complete, empty-scope-completes,
+explicit-cancel-propagates, spawn-action-count-matches,
+failure-cancels-siblings, and the canonical pattern via
+defer-based cleanup.  All 422 emitter tests pass (was 416 in
+PR #54; +6 new).
+
+Bootstrap-grade scope — Phase 4 follow-ups:
+
+- **Async closures**: Lyric closures can't `await` directly
+  (the Phase B state machine doesn't synthesise async lambdas
+  yet).  Closures spawned via `scopeSpawn` run synchronously
+  on a thread-pool thread; async I/O inside the closure
+  auto-awaits via the M1.4 blocking shim — concurrency still
+  comes from each closure having its own task, but each task
+  blocks while it waits.
+- **AsyncLocal scope flow**: tokens are threaded explicitly;
+  child async funcs don't auto-discover the scope's token via
+  `AsyncLocal<T>`-style runtime ambient lookup.
+- **Typed-result aggregation**: `scopeAdd` accepts `Task` only,
+  not `Task[T]`; collecting typed results from spawned children
+  needs Lyric typechecker support for surfacing
+  `Task[T]` values from async-func calls.
+- **`OperationCanceledException` distinguishability**:
+  cancellation lands as `Exception` (the user's catch).  A
+  Lyric-side `Cancelled` union case is Phase 4.
+
+Together with Phase C cancellation tokens (D-progress-068),
+this completes the bootstrap-grade structured-concurrency
+surface promised by the language reference §11 / `docs/12-todo-
+plan.md` C6 follow-ups.
+
+---
+
 ### D-progress-068: C2 Phase C — CancellationToken propagation
 *claude/c2-phase-c-cancellation branch.*  Lifts the
 documented-deferral on Phase C (D-progress-059) by shipping

@@ -231,6 +231,122 @@ type CancelHost private () =
     static member Dispose (src: System.Threading.CancellationTokenSource) : unit =
         src.Dispose()
 
+/// A structured-concurrency scope.  Holds a `CancellationTokenSource`
+/// (for cancelling spawned children when the scope exits abnormally)
+/// and a list of registered child tasks.  When any single child
+/// faults or is cancelled, the scope's source is cancelled so
+/// siblings observe the request and bail.
+///
+/// Phase C / D-progress-069 — pairs with `TaskScopeHost` below.
+type LyricTaskScope() =
+    let source = new System.Threading.CancellationTokenSource()
+    let tasks  = System.Collections.Generic.List<System.Threading.Tasks.Task>()
+    let lockObj = obj ()
+    let mutable disposed = false
+
+    member _.Source = source
+    member _.Token  = source.Token
+
+    /// Register `task` as a child of this scope.  Attaches a
+    /// continuation that cancels the source on first failure so
+    /// siblings observe and bail.  Idempotent on disposed scopes —
+    /// disposed scopes silently swallow new spawns (the scope's
+    /// `awaitAll` has already returned).
+    member this.Add (task: System.Threading.Tasks.Task) : unit =
+        lock lockObj (fun () ->
+            if not disposed then tasks.Add(task))
+        // Continuation runs OUT of band; we attach unconditionally
+        // so even tasks added post-dispose still cancel the (already
+        // cancelled) source if they happen to fault.
+        task.ContinueWith(
+            System.Action<System.Threading.Tasks.Task>(fun t ->
+                if t.IsFaulted || t.IsCanceled then
+                    try source.Cancel() with _ -> ()),
+            System.Threading.Tasks.TaskContinuationOptions.NotOnRanToCompletion)
+        |> ignore
+
+    /// Cancel every spawned child.  Idempotent.
+    member _.Cancel () : unit =
+        try source.Cancel() with _ -> ()
+
+    /// Snapshot the current task list — used by AwaitAll to take a
+    /// stable view that won't see post-snapshot spawns.
+    member _.Snapshot () : System.Threading.Tasks.Task array =
+        lock lockObj (fun () -> tasks.ToArray())
+
+    /// Dispose the underlying source.  Subsequent `Add`s are
+    /// silently dropped.
+    member _.Dispose () : unit =
+        lock lockObj (fun () -> disposed <- true)
+        try source.Dispose() with _ -> ()
+
+/// `Std.Task.Scope` operations.  Lyric's `extern type Scope =
+/// "Lyric.Stdlib.LyricTaskScope"` plus `@externTarget` annotations
+/// route to these statics.  See `lyric/std/task.l` for the surface
+/// API.
+[<Sealed; AbstractClass>]
+type TaskScopeHost private () =
+
+    /// Construct a fresh scope with its own token source and an
+    /// empty task list.
+    static member MakeScope () : LyricTaskScope =
+        new LyricTaskScope()
+
+    /// The scope's cancellation token.  Pass to spawned children
+    /// so they observe scope-level cancellation requests.
+    static member ScopeToken (scope: LyricTaskScope) : System.Threading.CancellationToken =
+        scope.Token
+
+    /// Register `task` as a child of `scope`.  Failure of any
+    /// registered task cancels the scope's source automatically.
+    static member Add (scope: LyricTaskScope, task: System.Threading.Tasks.Task) : unit =
+        scope.Add(task)
+
+    /// Spawn an `Action` (zero-arg `() -> unit` closure) as a
+    /// thread-pool task scoped to `scope`.  Lyric's `() -> Unit`
+    /// closures lower to `System.Action`, so user code passes a
+    /// bare lambda.  Useful when the work is CPU-bound or
+    /// honours cancellation by polling `throwIfCancelled(token)`
+    /// manually.
+    static member SpawnAction (scope: LyricTaskScope, action: System.Action) : unit =
+        let token = scope.Token
+        let task = System.Threading.Tasks.Task.Run((fun () -> action.Invoke()), token)
+        scope.Add(task)
+
+    /// Variant for closures that Lyric's typechecker lowers to
+    /// `Func<unit>` (zero-arg, Unit-returning) instead of `Action`.
+    /// The lambda emitter peeks the body's last expression's type;
+    /// when that's `Unit` (i.e. `System.ValueTuple`) the resulting
+    /// delegate is `Func<ValueTuple>` rather than `Action`, so we
+    /// expose a parallel host method to receive it.
+    static member SpawnFunc (scope: LyricTaskScope, fn: System.Func<System.ValueTuple>) : unit =
+        let token = scope.Token
+        let task = System.Threading.Tasks.Task.Run((fun () -> fn.Invoke() |> ignore), token)
+        scope.Add(task)
+
+    /// Wait for every registered child to complete.  When any
+    /// child fails (`Task.WhenAll` re-raises the AggregateException),
+    /// the scope's source has already been cancelled by the
+    /// per-child continuation; surrogates that honoured the token
+    /// will have started winding down.  This call still throws the
+    /// underlying exception so the user's `try { ... } catch ...`
+    /// surfaces it.
+    static member AwaitAll (scope: LyricTaskScope) : System.Threading.Tasks.Task =
+        let snapshot = scope.Snapshot()
+        if snapshot.Length = 0 then
+            System.Threading.Tasks.Task.CompletedTask
+        else
+            System.Threading.Tasks.Task.WhenAll(snapshot)
+
+    /// Cancel the scope's source — every child task observing the
+    /// token sees `IsCancellationRequested = true`.
+    static member Cancel (scope: LyricTaskScope) : unit =
+        scope.Cancel()
+
+    /// Dispose the scope.  Safe to call from `defer { ... }`.
+    static member Dispose (scope: LyricTaskScope) : unit =
+        scope.Dispose()
+
 /// `(IsValid, Value, Error)` triple.  Same shape as `Std.Parse` /
 /// `Std.File` but factored out so future stdlib modules don't each
 /// hand-roll their own try/catch wrappers in F#.
