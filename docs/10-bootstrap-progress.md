@@ -1696,6 +1696,38 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-061: C4 Phase 2 — score-based auto-FFI matching
+*claude/c2-async-implementation-ZGU95 branch.*  Replaces C4
+Phase 1's strict exact-match auto-FFI dispatch with a
+principled score-based picker.  Each per-parameter coercion
+contributes a numeric distance:
+
+- exact match: 0
+- assignable (e.g. derived → base, interface impl): 1
+- Int → Long widening: 2
+- Int / Long → Double widening: 3
+- Int → float32 / Double → float32: 4
+- value-type → object boxing: 5
+- object → value-type unboxing: 6
+
+The candidate with the lowest total cost wins; tied minimums
+surface as an ambiguity diagnostic that lists every viable
+arity-matched overload so users can disambiguate via an
+explicit `@externTarget`.  The IL emit applies the matching
+coercion (`Conv_I8`, `Conv_R8`, `Conv_R4`, `Box`, `Unbox_Any`)
+per-arg before `Call`.
+
+Two new tests in `AutoFfiTests.fs`:
+`auto_ffi_int_to_long_widening` (asserts the score-based pick
+still resolves `Math.Min(int, int)` exactly when both args are
+Int; widening doesn't kick in unless needed) and
+`auto_ffi_score_based_diagnostic` (`Math.Sign(long)` resolves
+to the long-arg overload via score-based pick — a previously-
+unsupported case under Phase 1).  All 400 emitter tests pass
+(was 398; +2 new).
+
+---
+
 ### D-progress-060: Std.Json fromJson — slice + nested-record support
 *claude/c2-async-implementation-ZGU95 branch.*  Extends the
 synthesised `<Record>.fromJson(s: in String): <Record>` to

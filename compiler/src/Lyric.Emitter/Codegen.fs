@@ -1487,13 +1487,15 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         if info.Method.ReturnType = typeof<System.Void> then typeof<System.Void>
         else info.Method.ReturnType
 
-    // ---- C4 phase 1: strict-match auto-FFI on extern-type static methods.
+    // ---- C4 phase 1+2: score-based auto-FFI on extern-type static methods.
     // ---- For `ExternTypeName.method(args)` where `ExternTypeName` is
     // ---- registered as a Lyric extern type and no explicit
     // ---- `@externTarget` covers it, search the CLR type's static
-    // ---- methods and resolve when exactly one overload matches by
-    // ---- (name | PascalCase, arg-arity, exact-type-match).  Ambiguous
-    // ---- calls fall through and surface as a normal "no impl" error.
+    // ---- methods.  Each candidate's per-parameter coercion score
+    // ---- is summed; the lowest-total-cost candidate wins.  Ties
+    // ---- surface as an ambiguity diagnostic.  Phase 2 widens the
+    // ---- accepted shapes (Int→Long, Int→Double, boxing/unboxing,
+    // ---- assignment compatibility) over Phase 1's exact match.
     | ECall ({ Kind = EMember ({ Kind = EPath { Segments = [head] } }, methodName) }, args)
         when ctx.ExternTypeNames.ContainsKey head ->
         let recvTy = ctx.ExternTypeNames.[head]
@@ -1509,65 +1511,112 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 il.Emit(OpCodes.Stloc, lb)
                 lb, argTy)
         let argTys = argLocals |> List.map snd |> List.toArray
-        // Try `methodName` and PascalCase-`methodName`; require exactly
-        // one viable overload by exact type match for the strict-phase
-        // bootstrap.  Ambiguous matches fall through with no resolution.
         let candidatesForName (n: string) =
             recvTy.GetMethods()
             |> Array.filter (fun m ->
                 m.Name = n
                 && m.IsStatic
                 && m.GetParameters().Length = argTys.Length)
-        let matches (m: System.Reflection.MethodInfo) (cmp: ClrType -> ClrType -> bool) =
+        // Per-arg coercion cost.  `None` = incompatible (skip
+        // candidate).  Lower numbers = better fit.
+        let coercionCost (paramTy: ClrType) (argTy: ClrType) : int option =
+            if paramTy = argTy then Some 0
+            elif paramTy.IsAssignableFrom(argTy) then Some 1
+            elif paramTy = typeof<int64> && argTy = typeof<int> then Some 2
+            elif paramTy = typeof<double> && argTy = typeof<int> then Some 3
+            elif paramTy = typeof<double> && argTy = typeof<int64> then Some 3
+            elif paramTy = typeof<float32> && argTy = typeof<int> then Some 4
+            elif paramTy = typeof<float32> && argTy = typeof<double> then Some 4
+            elif paramTy = typeof<obj> && argTy.IsValueType then Some 5
+            elif paramTy.IsValueType && argTy = typeof<obj> then Some 6
+            else None
+        let candidateCost (m: System.Reflection.MethodInfo) : int option =
             let pars = m.GetParameters()
+            let mutable total = 0
             let mutable ok = true
             for i in 0 .. argTys.Length - 1 do
-                if ok && not (cmp pars.[i].ParameterType argTys.[i]) then
-                    ok <- false
-            ok
-        let pickStrict (cands: System.Reflection.MethodInfo array) =
-            // Strict: prefer exact match; if exactly one assignable,
-            // accept that too (covers Int32 → object boxing, etc.).
-            let exact =
+                if ok then
+                    match coercionCost pars.[i].ParameterType argTys.[i] with
+                    | Some c -> total <- total + c
+                    | None -> ok <- false
+            if ok then Some total else None
+        // Score-based pick: lowest total cost; tie → ambiguous.
+        let pickByScore (cands: System.Reflection.MethodInfo array) =
+            let scored =
                 cands
-                |> Array.filter (fun m -> matches m (fun p a -> p = a))
-            match exact with
-            | [| m |] -> Some m
-            | _ ->
-                let assignable =
-                    cands
-                    |> Array.filter (fun m -> matches m (fun p a -> p.IsAssignableFrom a))
-                match assignable with
-                | [| m |] -> Some m
-                | _ -> None
+                |> Array.choose (fun m ->
+                    match candidateCost m with
+                    | Some c -> Some (m, c)
+                    | None   -> None)
+            if Array.isEmpty scored then None
+            else
+                let minCost = scored |> Array.map snd |> Array.min
+                let winners =
+                    scored
+                    |> Array.filter (fun (_, c) -> c = minCost)
+                match winners with
+                | [| m, _ |] -> Some m
+                | _ -> None  // ambiguous tie
         let pasc = capitalizeFirst methodName
         let resolved =
-            match pickStrict (candidatesForName methodName) with
+            match pickByScore (candidatesForName methodName) with
             | Some m -> Some m
             | None when pasc <> methodName ->
-                pickStrict (candidatesForName pasc)
+                pickByScore (candidatesForName pasc)
             | None -> None
         match resolved with
         | Some mi ->
-            // Re-load each arg from its temp local; if the param
-            // expects an obj and the arg is a value type, box.
+            // Re-load each arg from its temp local with the right
+            // numeric / boxing conversion based on the param type.
             let pars = mi.GetParameters()
+            let emitCoercion (paramTy: ClrType) (argTy: ClrType) =
+                if paramTy = argTy then ()
+                elif paramTy = typeof<int64> && argTy = typeof<int> then
+                    il.Emit(OpCodes.Conv_I8)
+                elif paramTy = typeof<double> && argTy = typeof<int> then
+                    il.Emit(OpCodes.Conv_R8)
+                elif paramTy = typeof<double> && argTy = typeof<int64> then
+                    il.Emit(OpCodes.Conv_R8)
+                elif paramTy = typeof<float32> && argTy = typeof<int> then
+                    il.Emit(OpCodes.Conv_R4)
+                elif paramTy = typeof<float32> && argTy = typeof<double> then
+                    il.Emit(OpCodes.Conv_R4)
+                elif paramTy = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy)
+                elif paramTy.IsValueType && argTy = typeof<obj> then
+                    il.Emit(OpCodes.Unbox_Any, paramTy)
             argLocals
             |> List.iteri (fun i (lb, argTy) ->
                 il.Emit(OpCodes.Ldloc, lb)
-                let pt = pars.[i].ParameterType
-                if pt = typeof<obj> && argTy.IsValueType then
-                    il.Emit(OpCodes.Box, argTy))
+                emitCoercion pars.[i].ParameterType argTy)
             il.Emit(OpCodes.Call, mi)
             if mi.ReturnType = typeof<System.Void> then typeof<System.Void>
             else mi.ReturnType
         | None ->
-            // Unresolved — pop everything we already emitted for args
-            // by surfacing a structured diagnostic instead of leaving
-            // the stack in an inconsistent state.
+            // Unresolved — surface a structured diagnostic.  Show all
+            // viable arity-matched overloads if the failure was a tie,
+            // otherwise note "no match".
+            let allArityMatches =
+                Array.append
+                    (candidatesForName methodName)
+                    (if pasc <> methodName then candidatesForName pasc else [||])
+            let extra =
+                if Array.isEmpty allArityMatches then ""
+                else
+                    let sigs =
+                        allArityMatches
+                        |> Array.map (fun m ->
+                            let ps =
+                                m.GetParameters()
+                                |> Array.map (fun p -> p.ParameterType.Name)
+                                |> String.concat ", "
+                            sprintf "  - %s(%s) -> %s"
+                                m.Name ps m.ReturnType.Name)
+                        |> String.concat "\n"
+                    sprintf "; viable overloads:\n%s" sigs
             codegenErr ctx "E0004"
-                (sprintf "auto-FFI: no unique static method '%s' on %s matching the supplied arg types"
-                    methodName recvTy.FullName)
+                (sprintf "auto-FFI: no unique static method '%s' on %s matching the supplied arg types%s"
+                    methodName recvTy.FullName extra)
                 e.Span
 
     // ---- method-style call (callvirt on interface or class method) ----
