@@ -366,6 +366,73 @@ type JsonHost private () =
                 sb.Append(if xs.[i] then "true" else "false") |> ignore
             sb.Append(']').ToString()
 
+    // -------- fromJson primitive field readers --------
+    //
+    // Per-primitive-type out-param helpers used by the synthesiser
+    // (D-progress-046).  Each reader takes a JSON string + property
+    // name and writes the parsed value via an `out` parameter,
+    // returning `true` on success.  Re-parsing the document per
+    // call is wasteful but avoids exposing JsonDocument across
+    // the FFI boundary; the synthesiser is bootstrap-grade and a
+    // future revision can pass a parsed handle.
+
+    static member GetInt (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
+                e.TryGetInt32(&value)
+            else false
+        with _ -> false
+
+    static member GetLong (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int64>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
+                e.TryGetInt64(&value)
+            else false
+        with _ -> false
+
+    static member GetDouble (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<double>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
+                e.TryGetDouble(&value)
+            else false
+        with _ -> false
+
+    static member GetBool (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<bool>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e) then
+                match e.ValueKind with
+                | System.Text.Json.JsonValueKind.True  -> value <- true ; true
+                | System.Text.Json.JsonValueKind.False -> value <- false ; true
+                | _ -> false
+            else false
+        with _ -> false
+
+    static member GetString (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(json)
+            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if doc.RootElement.TryGetProperty(name, &e)
+               && e.ValueKind = System.Text.Json.JsonValueKind.String then
+                let raw = e.GetString()
+                value <-
+                    match Option.ofObj raw with
+                    | Some s -> s
+                    | None   -> ""
+                true
+            else false
+        with _ -> false
+
     static member RenderStringSlice (items: (string | null)[] | null) : string =
         match Option.ofObj items with
         | None    -> "[]"

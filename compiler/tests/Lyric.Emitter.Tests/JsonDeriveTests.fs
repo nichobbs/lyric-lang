@@ -175,6 +175,27 @@ func main(): Unit {
 """,
     "{\"label\":\"hi\"}\n{\"label\":null}"
 
+    "json_derive_fromJson_primitive",
+    // D-progress-046: synthesised `<RecName>.fromJson(s): <RecName>`
+    // for records with primitive-only fields.  Missing or wrongly-
+    // typed fields default-initialise.
+    """
+package J13
+@derive(Json)
+pub record User {
+  name: String
+  age: Int
+  active: Bool
+}
+func main(): Unit {
+  val u = User.fromJson("{\"name\":\"Alice\",\"age\":30,\"active\":true}")
+  println(u.name)
+  println(toString(u.age))
+  println(toString(u.active))
+}
+""",
+    "Alice\n30\nTrue"
+
     "json_derive_record_slice_field",
     // D-progress-044: slice of @derive(Json) records lowers to a
     // synthesised __lyricJsonRender<RecName>Slice helper that

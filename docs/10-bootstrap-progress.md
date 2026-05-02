@@ -1696,6 +1696,57 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-046: `@derive(Json)` — synthesised `fromJson` for primitive-only records
+*claude/deferred-items-continuation branch.*  Closes a deferred
+follow-up from D-progress-030.  Records whose fields are all
+primitive Lyric types (`Int`, `Long`, `Double`, `Bool`,
+`String`) now get a synthesised
+`<RecName>.fromJson(s: in String): <RecName>` paired with the
+existing `toJson`.
+
+**Synthesis.**  Each primitive field gets a `var <fd>: T =
+default()` followed by a call to a per-type `__lyricJsonGet<T>`
+shim that writes the parsed value via an `out` parameter:
+
+```lyric
+pub func User.fromJson(s: in String): User {
+  var name: String = default()
+  __lyricJsonGetString(s, "name", name)
+  var age: Int = default()
+  __lyricJsonGetInt(s, "age", age)
+  var active: Bool = default()
+  __lyricJsonGetBool(s, "active", active)
+  User(name = name, age = age, active = active)
+}
+```
+
+The five `__lyricJsonGet<T>` shims are appended unconditionally
+to every source file containing a `@derive(Json)` record (a
+small metadata cost but no IL when unused).  Each shim is an
+`@externTarget` to `Lyric.Stdlib.JsonHost::Get<T>`, which
+re-parses the JSON document on every call (bootstrap-grade — a
+future revision can pass a parsed handle).
+
+**Eligibility (Phase 1 punt).**  `fromJson` is synthesised only
+when every field has a primitive type.  Records with nested
+`@derive(Json)` records, slices, or `Option[T]` fields skip
+`fromJson` entirely (their `toJson` still ships).  Phase 2
+extends the synthesis to handle these.
+
+**Bootstrap-grade scope.**
+- Missing / wrongly-typed fields default-initialise.  The
+  per-field shim returns `false` on failure, but the synthesised
+  body ignores the return — a future revision threads the
+  failure into a `Result[<RecName>, JsonError]` return type.
+- Re-parsing per field is wasteful for large documents.  A
+  Phase 2 revision passes a `JsonDocument` handle through the
+  shims.
+
+One new test (`json_derive_fromJson_primitive`).  All 362 emitter
+tests pass.
+
+---
+
 ### D-progress-045: `@derive(Json)` — Option fields render as `null` / value (with codegen fix)
 *claude/deferred-items-continuation branch.*  Closes a deferred
 follow-up from D-progress-030.  `Option[T]` fields on a

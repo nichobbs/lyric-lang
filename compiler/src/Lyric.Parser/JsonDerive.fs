@@ -259,6 +259,124 @@ let private synthesiseToJson
       Body        = Some (FBExpr body)
       Span        = span }
 
+/// Map a primitive Lyric `TypeExpr` to the matching
+/// `__lyricJsonGet<T>` shim name + the field's CLR type
+/// expression for the synthesised `var <field>: T = default()`.
+let private primitiveFromJsonHelper (te: TypeExpr) : (string * TypeExpr) option =
+    match te.Kind with
+    | TRef { Segments = ["Int"] }    -> Some ("__lyricJsonGetInt", te)
+    | TRef { Segments = ["Long"] }   -> Some ("__lyricJsonGetLong", te)
+    | TRef { Segments = ["Double"] } -> Some ("__lyricJsonGetDouble", te)
+    | TRef { Segments = ["Bool"] }   -> Some ("__lyricJsonGetBool", te)
+    | TRef { Segments = ["String"] } -> Some ("__lyricJsonGetString", te)
+    | _ -> None
+
+/// Synthesise `<RecName>.fromJson(s: String): <RecName>` when
+/// every field is a primitive Lyric type the
+/// `__lyricJsonGet<T>` shims handle.  Records with non-primitive
+/// fields (nested @derive(Json) records, slices, Option) skip
+/// `fromJson` synthesis — Phase 2 (D-progress-046 follow-ups).
+///
+/// The synthesised body is straight-line:
+///
+///     pub func <RecName>.fromJson(s: in String): <RecName> {
+///       var f1: T1 = default()
+///       __lyricJsonGet<T1>(s, "f1", f1)   // ignore success/fail
+///       var f2: T2 = default()
+///       __lyricJsonGet<T2>(s, "f2", f2)
+///       ...
+///       <RecName>(f1 = f1, f2 = f2, ...)
+///     }
+///
+/// Missing or wrongly-typed fields default-initialise (the
+/// extern shim returns false but we ignore the return).  Future
+/// revisions can return `Result` / `Option` instead.
+let private synthesiseFromJsonOpt (rd: RecordDecl) : FunctionDecl option =
+    let span = rd.Span
+    let fields =
+        rd.Members
+        |> List.choose (function
+            | RMField fd -> Some fd
+            | _ -> None)
+    // All fields must be primitive — otherwise skip fromJson
+    // for this record entirely.
+    let perField =
+        fields
+        |> List.map (fun f -> f, primitiveFromJsonHelper f.Type)
+    if perField |> List.exists (fun (_, h) -> h.IsNone) then None
+    elif List.isEmpty fields then None
+    else
+        let stringTy = mkType (TRef (mkPath "String" span)) span
+        let recordTy = mkType (TRef (mkPath rd.Name span)) span
+        let stmts = ResizeArray<Statement>()
+        for (fd, helperOpt) in perField do
+            let helperName, valueTy =
+                match helperOpt with
+                | Some pair -> pair
+                | None -> failwith "unreachable"
+            // var <fieldName>: T = default()
+            let defaultCall =
+                mkExpr
+                    (ECall
+                        (mkExpr (EPath (mkPath "default" span)) span,
+                         []))
+                    span
+            stmts.Add
+                { Kind =
+                    SLocal (LBVar
+                        (fd.Name, Some valueTy, Some defaultCall))
+                  Span = span }
+            // __lyricJsonGet<T>(s, "<fd.Name>", <fd.Name>); the
+            // out-arg position takes the local by reference via
+            // an EPath argument.
+            let helperCall =
+                let callee =
+                    mkExpr (EPath (mkPath helperName span)) span
+                let args =
+                    [ CAPositional (mkExpr (EPath (mkPath "s" span)) span)
+                      CAPositional (strLit fd.Name span)
+                      CAPositional (mkExpr (EPath (mkPath fd.Name span)) span) ]
+                mkExpr (ECall (callee, args)) span
+            stmts.Add
+                { Kind = SExpr helperCall; Span = span }
+        // Construct: <RecName>(f1 = f1, f2 = f2, ...)
+        let ctorArgs =
+            fields
+            |> List.map (fun fd ->
+                CANamed
+                    (fd.Name,
+                     mkExpr (EPath (mkPath fd.Name span)) span,
+                     span))
+        let ctorCall =
+            mkExpr
+                (ECall
+                    (mkExpr (EPath (mkPath rd.Name span)) span,
+                     ctorArgs))
+                span
+        stmts.Add
+            { Kind = SExpr ctorCall; Span = span }
+        let body : Block =
+            { Statements = List.ofSeq stmts; Span = span }
+        let selfParam : Param =
+            { Mode    = PMIn
+              Name    = "s"
+              Type    = stringTy
+              Default = None
+              Span    = span }
+        Some
+            { DocComments = []
+              Annotations = []
+              Visibility  = Some (Pub span)
+              IsAsync     = false
+              Name        = rd.Name + ".fromJson"
+              Generics    = None
+              Params      = [selfParam]
+              Return      = Some recordTy
+              Where       = None
+              Contracts   = []
+              Body        = Some (FBBlock body)
+              Span        = span }
+
 let synthesizeItems (items: Item list) : Item list =
     // First pass: collect the names of every record with
     // `@derive(Json)` so the per-field renderer knows which fields
@@ -506,6 +624,73 @@ let synthesizeItems (items: Item list) : Item list =
               Visibility  = None
               Kind        = IFunc fn
               Span        = recSpan }
+        // fromJson primitive shims — added unconditionally per
+        // D-progress-046.  See `synthesiseFromJsonOpt` for the
+        // per-record `fromJson` synthesis itself.
+        let mkGetShim
+                (helperName: string)
+                (clrName: string)
+                (valueTy: TypeExpr) : Item =
+            let ann : Annotation =
+                { Name = mkPath "externTarget" firstSpan
+                  Args =
+                    [ ALiteral
+                        (AVString (clrName, firstSpan), firstSpan) ]
+                  Span = firstSpan }
+            let boolTy = mkType (TRef (mkPath "Bool" firstSpan)) firstSpan
+            let fn : FunctionDecl =
+                { DocComments = []
+                  Annotations = [ ann ]
+                  Visibility  = None
+                  IsAsync     = false
+                  Name        = helperName
+                  Generics    = None
+                  Params      =
+                    [ { Mode    = PMIn
+                        Name    = "s"
+                        Type    = stringTy
+                        Default = None
+                        Span    = firstSpan }
+                      { Mode    = PMIn
+                        Name    = "name"
+                        Type    = stringTy
+                        Default = None
+                        Span    = firstSpan }
+                      { Mode    = PMOut
+                        Name    = "value"
+                        Type    = valueTy
+                        Default = None
+                        Span    = firstSpan } ]
+                  Return      = Some boolTy
+                  Where       = None
+                  Contracts   = []
+                  Body        = Some (FBExpr (mkExpr (ELiteral LUnit) firstSpan))
+                  Span        = firstSpan }
+            { DocComments = []
+              Annotations = []
+              Visibility  = None
+              Kind        = IFunc fn
+              Span        = firstSpan }
+        result.Add (mkGetShim
+            "__lyricJsonGetInt"
+            "Lyric.Stdlib.JsonHost.GetInt"
+            (mkRefTy "Int"))
+        result.Add (mkGetShim
+            "__lyricJsonGetLong"
+            "Lyric.Stdlib.JsonHost.GetLong"
+            (mkRefTy "Long"))
+        result.Add (mkGetShim
+            "__lyricJsonGetDouble"
+            "Lyric.Stdlib.JsonHost.GetDouble"
+            (mkRefTy "Double"))
+        result.Add (mkGetShim
+            "__lyricJsonGetBool"
+            "Lyric.Stdlib.JsonHost.GetBool"
+            (mkRefTy "Bool"))
+        result.Add (mkGetShim
+            "__lyricJsonGetString"
+            "Lyric.Stdlib.JsonHost.GetString"
+            (mkRefTy "String"))
         for it in items do
             if hasDeriveJson it then
                 match it.Kind with
@@ -518,5 +703,14 @@ let synthesizeItems (items: Item list) : Item list =
                           Visibility  = Some (Pub rd.Span)
                           Kind        = IFunc fn
                           Span        = rd.Span }
+                    match synthesiseFromJsonOpt rd with
+                    | Some fnFrom ->
+                        result.Add
+                            { DocComments = []
+                              Annotations = []
+                              Visibility  = Some (Pub rd.Span)
+                              Kind        = IFunc fnFrom
+                              Span        = rd.Span }
+                    | None -> ()
                 | _ -> ()
         List.ofSeq result
