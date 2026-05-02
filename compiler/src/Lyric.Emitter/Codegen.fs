@@ -4011,6 +4011,60 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // a defer escaped its surrounding block — treat as a bug.
         failwith "E14 codegen: bare SDefer reached emitStatement (block emit should have hoisted it)"
 
+    | STry (body, catches) ->
+        // D-progress-048: statement-form `try { … } catch <Type> [as
+        // <bind>] { … }`.  Each catch's `<Type>` resolves via the
+        // catch-type map below; unknown types fall back to
+        // `System.Exception` so callers can still trap any bug.
+        // Awaits inside the try body fall back to the M1.4 blocking
+        // shim (the suspend's `Leave` would need protected-region
+        // re-entry on resume — Phase B+++ work).
+        let il = ctx.IL
+        let resolveCatchType (typeName: string) : System.Type =
+            match typeName with
+            | "Bug"
+            | "Exception"
+            | "Error" -> typeof<System.Exception>
+            | _ ->
+                // Walk every loaded assembly looking for a CLR class
+                // by short or full name.  Falls back to Exception
+                // when nothing matches; keeps this code permissive
+                // until a richer Lyric-side exception story lands.
+                let asms = System.AppDomain.CurrentDomain.GetAssemblies()
+                let found =
+                    asms
+                    |> Array.tryPick (fun a ->
+                        try
+                            a.GetTypes()
+                            |> Array.tryFind (fun t ->
+                                t.Name = typeName
+                                || t.FullName = typeName)
+                        with _ -> None)
+                match found with
+                | Some t when typeof<System.Exception>.IsAssignableFrom(t) -> t
+                | _ -> typeof<System.Exception>
+        let endLabel = il.BeginExceptionBlock()
+        ctx.TryDepth <- ctx.TryDepth + 1
+        FunctionCtx.pushScope ctx
+        emitBlock ctx body
+        FunctionCtx.popScope ctx
+        ctx.TryDepth <- ctx.TryDepth - 1
+        for c in catches do
+            let exTy = resolveCatchType c.Type
+            il.BeginCatchBlock(exTy)
+            FunctionCtx.pushScope ctx
+            match c.Bind with
+            | Some name ->
+                let lb = FunctionCtx.defineLocal ctx name exTy
+                il.Emit(OpCodes.Stloc, lb)
+            | None ->
+                // No binding — pop the exception value off the stack.
+                il.Emit(OpCodes.Pop)
+            emitBlock ctx c.Body
+            FunctionCtx.popScope ctx
+        il.EndExceptionBlock()
+        ignore endLabel
+
     | _ ->
         codegenErrStmt ctx "E0003"
             (sprintf "statement form not yet supported in this version: %A" s.Kind) s.Span

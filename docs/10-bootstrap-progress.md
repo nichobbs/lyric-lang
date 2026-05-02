@@ -1696,6 +1696,39 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-048: statement-form `try { … } catch <Type> [as <bind>] { … }`
+*claude/deferred-items-round3 branch.*  Closes a deferred
+follow-up — `try { … } catch …` as a statement form previously
+hit `E0003: statement form not yet supported in this version:
+STry`.  Implementation lands in the regular `emitStatement`
+match arm:
+
+- `BeginExceptionBlock` opens the protected region.
+- The body emits inside `pushScope` / `popScope` with
+  `ctx.TryDepth` incremented so any `return` / `break` /
+  `continue` routes through `Leave`.
+- For each catch clause, `BeginCatchBlock(<exType>)` is followed
+  by either `Stloc <bind>` (when the user provided `as
+  <name>`) or `Pop` (when not), then the catch body.
+- `EndExceptionBlock` closes the region.
+
+The catch type name resolves via a small built-in mapping:
+`Bug` / `Exception` / `Error` → `System.Exception`.  Any other
+name walks every loaded assembly via reflection looking for a
+short-or-full-name match assignable to `System.Exception`,
+falling back to `System.Exception` itself when nothing matches.
+
+Awaits inside the try body fall back to the M1.4 blocking shim
+(real Phase B suspension would need protected-region re-entry
+on resume — Phase B+++ work).  Synchronously-completing
+`await`s work fine inside try via the blocking-shim fast path.
+
+Four new tests in `TryCatchTests.fs` cover no-throw, panic-
+caught, no-bind, and `try` + `await` combinations.  All 368
+emitter tests pass (was 364; +4 new).
+
+---
+
 ### D-progress-047: async generic call sites surface `Task[<T>]` correctly
 *claude/deferred-items-round3 branch.*  Closes a deferred
 follow-up from D-progress-024 (C2 async work).  Calls to async

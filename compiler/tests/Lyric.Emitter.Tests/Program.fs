@@ -51,5 +51,6 @@ let main argv =
             GenericRecordTests.tests
             JsonDeriveTests.tests
             ContractMetaTests.tests
+            TryCatchTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
