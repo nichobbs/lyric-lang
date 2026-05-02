@@ -8,7 +8,7 @@ open Lyric.Parser.Parser
 /// Locate `docs/02-worked-examples.md` from the test binary's working
 /// directory. We walk up parent directories until the file is found
 /// (typical structure is `compiler/tests/Lyric.Parser.Tests/bin/Debug/
-/// net9.0/`, so the doc lives five levels up).
+/// net10.0/`, so the doc lives five levels up).
 let private locateWorkedExamples () : string =
     let mutable dir = Some (DirectoryInfo(System.AppContext.BaseDirectory))
     let mutable found : string option = None

@@ -53,9 +53,9 @@ let create (desc: AssemblyDescriptor) : EmitContext =
 /// the compiler itself is running on so the emitted PE and its config
 /// always match the host without hardcoding a version number.
 let private writeRuntimeConfig (path: string) : unit =
-    let v   = System.Environment.Version          // e.g. {9,0,3}
-    let tfm = sprintf "net%d.0" v.Major           // "net9.0"
-    let ver = sprintf "%d.%d.%d" v.Major v.Minor v.Build   // "9.0.3"
+    let v   = System.Environment.Version          // e.g. {10,0,7}
+    let tfm = sprintf "net%d.0" v.Major           // "net10.0"
+    let ver = sprintf "%d.%d.%d" v.Major v.Minor v.Build   // "10.0.7"
     let config =
         "{\n"
         + "  \"runtimeOptions\": {\n"
