@@ -167,6 +167,70 @@ type TaskHost private () =
     static member Delay (ms: int) : System.Threading.Tasks.Task =
         System.Threading.Tasks.Task.Delay(ms)
 
+    /// `Task.Delay(ms, token)` — same as `Delay` but cooperatively
+    /// cancellable via the supplied token.  Throws
+    /// `OperationCanceledException` (caught as `Exception` on the
+    /// Lyric side) when the token is cancelled before the timer
+    /// fires.  Phase C / D-progress-068.
+    static member DelayWithCancel
+            (ms: int,
+             token: System.Threading.CancellationToken)
+            : System.Threading.Tasks.Task =
+        System.Threading.Tasks.Task.Delay(ms, token)
+
+/// Cancellation primitives wrapping `System.Threading.Cancellation*`.
+/// Each helper is a thin static so the Lyric-side `Std.Task` can
+/// route `@externTarget` annotations to deterministic targets
+/// without exposing struct details (`CancellationToken` is a struct
+/// in the BCL; we surface it as an opaque object via a
+/// `CancellationToken | null` boundary the FFI handles).
+[<Sealed; AbstractClass>]
+type CancelHost private () =
+
+    /// Construct a fresh `CancellationTokenSource`.
+    static member MakeSource () : System.Threading.CancellationTokenSource =
+        new System.Threading.CancellationTokenSource()
+
+    /// Construct a `CancellationTokenSource` that auto-cancels after
+    /// `ms` milliseconds.  Used by `withTimeout` for deadline-shaped
+    /// scopes.
+    static member MakeSourceTimeout (ms: int) : System.Threading.CancellationTokenSource =
+        new System.Threading.CancellationTokenSource(ms)
+
+    /// Project a token from a source.  The token is a value type
+    /// in the BCL but boxes through the FFI cleanly.
+    static member SourceToken
+            (src: System.Threading.CancellationTokenSource)
+            : System.Threading.CancellationToken =
+        src.Token
+
+    /// Request cancellation.  Idempotent: subsequent calls are
+    /// no-ops.
+    static member Cancel (src: System.Threading.CancellationTokenSource) : unit =
+        src.Cancel()
+
+    /// Returns true once the token's source has been cancelled.
+    static member IsCancellationRequested
+            (token: System.Threading.CancellationToken) : bool =
+        token.IsCancellationRequested
+
+    /// Cooperative throw point.  Async loops can call this between
+    /// iterations to honour cancellation without an outright suspend.
+    static member ThrowIfCancellationRequested
+            (token: System.Threading.CancellationToken) : unit =
+        token.ThrowIfCancellationRequested()
+
+    /// A token that is never cancelled — equivalent to
+    /// `CancellationToken.None`.  Used by call sites that don't
+    /// have a real token to pass.
+    static member None () : System.Threading.CancellationToken =
+        System.Threading.CancellationToken.None
+
+    /// Dispose the source, releasing any unmanaged resources.
+    /// Safe to call from `defer { dispose(src) }` blocks.
+    static member Dispose (src: System.Threading.CancellationTokenSource) : unit =
+        src.Dispose()
+
 /// `(IsValid, Value, Error)` triple.  Same shape as `Std.Parse` /
 /// `Std.File` but factored out so future stdlib modules don't each
 /// hand-roll their own try/catch wrappers in F#.

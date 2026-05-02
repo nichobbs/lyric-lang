@@ -57,5 +57,6 @@ let main argv =
             StdRandomTests.tests
             SnapshotTestingTests.tests
             PropertyTestingTests.tests
+            CancellationTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
