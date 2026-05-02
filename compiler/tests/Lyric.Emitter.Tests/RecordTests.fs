@@ -83,6 +83,27 @@ func main(): Unit {
 }
 """,
     "11"
+
+    "non_generic_record_with_imported_union_field",
+    // D-progress-045 codegen fix: non-generic record with a
+    // generic-imported-union field correctly closes the union's
+    // type parameter to the field's declared type.  Previously,
+    // `Tag(label = None)` constructed `None<obj>` because
+    // `ctx.ExpectedType` wasn't set during arg emit, and the
+    // closed-generic `isinst None<string>` test then failed,
+    // dropping match arms into the default fallthrough.
+    """
+package E5R
+import Std.Core
+record Wrap { value: Option[Int] }
+func main(): Unit {
+  val w1 = Wrap(value = Some(value = 7))
+  val w2 = Wrap(value = None)
+  println(match w1.value { case None -> "none"; case Some(n) -> toString(n) })
+  println(match w2.value { case None -> "none"; case Some(n) -> toString(n) })
+}
+""",
+    "7\nnone"
 ]
 
 let tests =
