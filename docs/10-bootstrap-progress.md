@@ -1696,6 +1696,44 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-067: Protected type — DEFERRED follow-up notes
+*claude/c2-async-implementation-ZGU95 branch.*  Phase 3
+deliverable §"protected type with barrier semantics" remains
+deferred.  Today's parser already accepts `protected type`
+(with `PMField`, `PMInvariant`, `PMEntry`, `PMFunc` members)
+and the type checker registers it as `DKProtected`, but the
+emitter has no codegen for the construct.
+
+A correct implementation requires:
+
+- **Class lowering**: emit a synthesised CLR class wrapping
+  the protected state with a Monitor/`object` instance lock.
+- **Entry/method synthesis**: each `entry name(...)` and
+  `pub func name(...)` becomes a method whose body is
+  wrapped in `Monitor.Enter(this) ... try { ... } finally
+  { Monitor.Exit(this) }`.
+- **Barrier evaluation**: `entry foo(...) when <cond> { ... }`
+  evaluates `<cond>` before entering the critical section.
+  Bootstrap semantics: if false, throw a "barrier not met"
+  exception (Ada-style condition-variable waiting + queue
+  signalling lands in Phase 4 alongside structured
+  concurrency scopes).
+- **Invariant checking**: `invariant: <cond>` re-evaluates
+  on entry exit (D008 / contract semantics).
+
+Estimated effort: 2-3 sessions for bootstrap-grade
+(synchronous lock + barrier-throw); full Ada-style
+condition-variable queues are gated on the C2 Phase C
+real-cancellation work since both want
+`AsyncLocal<T>`-style scope plumbing.
+
+Coupled deferrals (already documented elsewhere):
+- C2 Phase C cancellation (D-progress-059)
+- C6 scoped wire lifetimes (gated on Phase C)
+- Std.Http full surface (gated on Phase C)
+
+---
+
 ### D-progress-066: LSP — completion, hover, go-to-definition
 *claude/c2-async-implementation-ZGU95 branch.*  Lifts the
 bootstrap LSP from diagnostics-only to a usable triple:
