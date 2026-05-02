@@ -1696,6 +1696,38 @@ TypeChecker/LSP suites unchanged at 70/182/100/5.  Total: 699
 tests pass.
 
 
+### D-progress-047: async generic call sites surface `Task[<T>]` correctly
+*claude/deferred-items-round3 branch.*  Closes a deferred
+follow-up from D-progress-024 (C2 async work).  Calls to async
+generic functions like `id[T](x: in T): T` previously surfaced
+the bare `T` (substituted) as the call-site static type, even
+though the IL stack carries the wrapped `Task[<T>]`.  Downstream
+`EAwait` then resolved `GetAwaiter` against `int32` /
+`obj` / etc. and crashed at compile time with errors like
+`Int32.GetAwaiter not found`.
+
+The fix is one block in `Codegen.fs`'s reified-generic call
+path: after substituting the generic bindings into `sg.Return`,
+wrap the resulting CLR type in `Task[<T>]` (or non-generic
+`Task` for `Unit`) when `sg.IsAsync`.  This mirrors the
+non-generic async-call path where `mb.ReturnType` already
+includes the wrap.
+
+`await id(42)` now correctly emits `GetAwaiter` against
+`Task<int>` and unwraps to `int`.
+
+**Bootstrap-grade scope.**  Generic async funcs themselves
+still go through the M1.4 wrapper path (the SM doesn't yet
+emit closed-generic SM types on `TypeBuilder` — that's a
+larger Phase C item).  The blocking shim works correctly for
+synchronously-completing tasks; real suspension on generic
+async funcs awaits the SM-generic plumbing.
+
+One new test (`phaseB_async_generic`) covering Int and String
+type arguments.  All 364 emitter tests pass (was 363; +1 new).
+
+---
+
 ### D-progress-046: `@derive(Json)` — synthesised `fromJson` for primitive-only records
 *claude/deferred-items-continuation branch.*  Closes a deferred
 follow-up from D-progress-030.  Records whose fields are all

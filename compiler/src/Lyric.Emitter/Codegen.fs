@@ -2809,8 +2809,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let returnedTy =
                 Lyric.Emitter.TypeMap.toClrReturnTypeWithGenerics
                     ctx.Lookup substMap sg.Return
-            if returnedTy = typeof<System.Void> then typeof<System.Void>
-            else returnedTy
+            let actualTy =
+                if sg.IsAsync then
+                    // The MethodBuilder's return type is `Task[<T>]`
+                    // even though `sg.Return` is the bare `T`.  The
+                    // IL stack carries the wrapped Task — surface
+                    // that to the caller (especially `EAwait`, which
+                    // expects to call `GetAwaiter` on a Task).  This
+                    // matches the non-generic async-call path where
+                    // `mb.ReturnType` already includes the wrap.
+                    if returnedTy = typeof<System.Void> then
+                        typeof<System.Threading.Tasks.Task>
+                    else
+                        typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| returnedTy |])
+                else
+                    returnedTy
+            if actualTy = typeof<System.Void> then typeof<System.Void>
+            else actualTy
 
     // ---- delegate / higher-order call ---------------------------------
 
