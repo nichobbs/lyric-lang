@@ -3410,13 +3410,33 @@ The infrastructure pieces touched by C2:
 | 17. Stack-spilling for awaits in sub-expression positions | **Shipped (Phase B+++, D-progress-074)** |
 | 18. Spill-prior-siblings ordering preservation | **Shipped (Phase B+++, D-progress-076)** |
 
-C2 is now **complete** for all free-standing async funcs and the
-existing impl-method shapes.  The only remaining sub-piece is
-generic **impl** methods (instance methods on records / opaque
-types whose enclosing impl block carries its own generics) — the
-impl-method emit path doesn't yet thread an SM-side
-`defineGenericParameters` call.  Out of scope for the bootstrap
-absent a real user demand.
+C2 is **complete** for every shape Lyric currently supports.  The
+single remaining bullet — generic **impl** methods (e.g.
+`impl[T] Foo for Bar[T] { async func twiddle(x: in T): T = x }`)
+— is gated on infrastructure that pre-dates async and is genuinely
+orthogonal to C2:
+
+- **Generic interface methods** are not yet modelled.
+  `Lyric.Emitter/Emitter.fs:208`'s interface-method definition
+  uses `tb.DefineMethod` without `DefineGenericParameters`, so an
+  interface method declared with `[T]` couldn't be implemented as
+  a real generic method anywhere.
+- **Impl-block-level generics** (the `[ GenericParams ]` slot on
+  `ImplDecl` per `docs/grammar.ebnf:572`) are recognised by the
+  parser but discarded by both the type checker
+  (`Lyric.TypeChecker/Checker.fs:134` returns `None` for `IImpl`
+  in the symbol-collection pass) and the emitter (Pass A.5 ignores
+  `impl.Generics`).
+- **The stdlib doesn't use the construct** (a repo-wide grep for
+  `impl[` / generic impl methods returns zero hits).
+
+Adding async-state-machine support on top of these is futile until
+the underlying generic-impl-methods feature ships — that work is
+tracked as a separate Phase 2 follow-up rather than as remaining
+C2 scope.  When/if it lands, the SM-side wiring is mechanical:
+extend `defineStateMachineHeader`'s caller to thread impl-block +
+method-level GTPBs, mirror the free-standing generic path
+(D-progress-075), and re-use the same `kickoffBuilder*` helpers.
 
 Tier 5 items (`Std.Http` cancellation/timeouts shipped via
 D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).

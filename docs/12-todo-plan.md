@@ -539,10 +539,14 @@ progress-per-session and dependency unblocking:
 8. **C2 — real async state machines.**  ~~All phases shipped.~~
    Free-standing async funcs land Phase A / B / B+ / B++ / B+++ /
    C plus generic-async (D-progress-075) and the spill-prior-
-   siblings ordering follow-up (D-progress-076).  Only generic
-   instance impl methods remain — out of scope absent a real user
-   demand; the impl-method emit path doesn't carry SM-side
-   `defineGenericParameters` plumbing.
+   siblings ordering follow-up (D-progress-076).  C2 is **done**
+   for every async shape Lyric currently supports.  Generic instance
+   impl methods (`impl[T] Foo for Bar[T]`) are gated on the
+   underlying generic-impl-methods feature gap, NOT on async work
+   — see the C2 status table in `docs/10-bootstrap-progress.md`
+   for why the SM-side wiring is mechanical once the type checker /
+   interface emitter / impl-block emitter learn to pass through
+   impl-block + method-level generics.  Tracked under Tier 6 below.
    - **Phase A — shipped (D-progress-033).**
    - **Phase B — shipped (D-progress-034).**
    - **Phase B+ / B++ / B+++ — shipped.**  Awaits inside if /
@@ -576,6 +580,18 @@ progress-per-session and dependency unblocking:
     attacker-controlled regex inputs.
 14. **C4 phase 2/3 — score-based matching, special shapes.**  Pulls
     in as user programs hit cases that strict match misses.
+15. **Generic interface methods + impl-block generics.**  The
+    grammar accepts `impl[T] Foo for Bar[T] { func[U] foo(): U }`
+    but neither the type checker nor the emitter wires the generics
+    through (`Lyric.TypeChecker/Checker.fs:134` skips `IImpl` in
+    symbol collection; `Lyric.Emitter/Emitter.fs`'s interface
+    method definition uses `tb.DefineMethod` without
+    `DefineGenericParameters`; Pass A.5 ignores `impl.Generics`).
+    Zero stdlib usage today.  When this lands, the async SM
+    extension is mechanical: extend the impl-method `defineState
+    MachineHeader` caller to thread impl-block + method-level
+    GTPBs and re-use the free-standing path's `kickoffBuilder*`
+    helpers.
 
 ### Why this order
 
