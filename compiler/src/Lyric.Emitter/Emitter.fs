@@ -2756,6 +2756,16 @@ let private emitAssembly
                 |> List.tryFind (fun it -> it.Name = origName)
                 |> Option.bind (fun it -> it.Alias)
             | _ -> None
+        // Cross-artifact selector aliases: when the user writes
+        // `import Std.Collections.{newList as mkList}` and `newList`
+        // actually lives in a transitively-imported package
+        // (e.g., `Std.CollectionsHost`), the alias should still
+        // resolve.  Collect every (origName, aliasName) pair across
+        // user imports so the artifact-processing loop below can
+        // apply it to whichever artifact actually owns `origName`.
+        let crossAliasFor (origName: string) : string option =
+            stdImports
+            |> List.tryPick (fun imp -> selectorAliasFor imp origName)
         for artifact in stdlibArtifacts do
             let asm = artifact.Assembly
             let stdNs = String.concat "." artifact.Source.Package.Path.Segments
@@ -2893,14 +2903,17 @@ let private emitAssembly
                             // aliases (`import X as A`) are handled at the
                             // AST level by `AliasRewriter` before the type
                             // checker runs, so no extra keys are needed
-                            // here.
-                            match userImport with
-                            | Some imp ->
-                                match selectorAliasFor imp fn.Name with
-                                | Some sa ->
-                                    importedFuncTable.[sa] <- info
-                                    importedFuncTable.[sa + "/" + string arity] <- info
-                                | None -> ()
+                            // here.  `crossAliasFor` lets the alias
+                            // resolve even when `foo` lives in a
+                            // transitively-imported kernel package the
+                            // user didn't directly state — e.g.
+                            // `import Std.Collections.{newList as mkList}`
+                            // when `newList` was relocated to
+                            // `Std.CollectionsHost`.
+                            match crossAliasFor fn.Name with
+                            | Some sa ->
+                                importedFuncTable.[sa] <- info
+                                importedFuncTable.[sa + "/" + string arity] <- info
                             | None -> ()
                         match miOpt, Map.tryFind arityKey artifact.Signatures with
                         | Some mi, Some sg ->
@@ -4339,14 +4352,34 @@ let rec private ensureStdlibArtifact
                     if needsCore then ["Std"; "Core"] :: stdImports
                     else stdImports
                 let mutable depDiags : Diagnostic list = []
+                // Transitive closure: when iter.l imports Std.Collections
+                // and Std.Collections imports Std.CollectionsHost, the
+                // typechecker for iter.l needs items from BOTH levels —
+                // otherwise extern types declared only in the kernel
+                // (e.g., `List[T]` in `Std.CollectionsHost`) aren't in
+                // scope for iter.l.  Walks each artifact's own stdlib
+                // imports recursively, deduping by package path.
                 let depArtifacts =
-                    allDeps
-                    |> List.choose (fun s ->
-                        match ensureStdlibArtifact s with
-                        | Ok a -> Some a
-                        | Error ds ->
-                            depDiags <- depDiags @ ds
-                            None)
+                    let visited = HashSet<string>()
+                    let ordered = ResizeArray<StdlibArtifact>()
+                    let rec walk (segs: string list) : unit =
+                        let key = packageKey segs
+                        if visited.Add key then
+                            match ensureStdlibArtifact segs with
+                            | Ok a ->
+                                let nestedDeps =
+                                    a.Source.Imports
+                                    |> List.choose (fun i ->
+                                        match i.Path.Segments with
+                                        | "Std" :: _ when i.Path.Segments <> segments ->
+                                            Some i.Path.Segments
+                                        | _ -> None)
+                                for d in nestedDeps do walk d
+                                ordered.Add a
+                            | Error ds ->
+                                depDiags <- depDiags @ ds
+                    for d in allDeps do walk d
+                    List.ofSeq ordered
                 if not depDiags.IsEmpty then Error depDiags
                 else
                     // Strip the cross-stdlib imports — they're handled
@@ -4511,32 +4544,36 @@ let private resolveStdlibImports
             artifacts
             |> List.map (fun a -> a.Source.Package.Path.Segments, a)
             |> Map.ofList
+        // Selector-alias lookup looks across all transitively-loaded
+        // artifacts, not just the user-imported one.  This lets
+        // `import Std.Collections.{newList as mkList}` resolve even
+        // when `newList` lives in the kernel (`Std.CollectionsHost`)
+        // that `Std.Collections` re-exposes via its own import.
+        let allFuncs =
+            artifacts
+            |> List.collect (fun a ->
+                a.Source.Items
+                |> List.choose (fun it ->
+                    match it.Kind with
+                    | IFunc fn -> Some fn
+                    | _ -> None))
         for imp in stdImports do
-            match Map.tryFind imp.Path.Segments artifactByPath with
-            | None -> ()
-            | Some artifact ->
-                let pkgFuncs =
-                    artifact.Source.Items
+            let aliasPairs =
+                match imp.Selector with
+                | Some (ISSingle item) ->
+                    match item.Alias with
+                    | Some a -> [ item.Name, a ]
+                    | None   -> []
+                | Some (ISGroup items) ->
+                    items
                     |> List.choose (fun it ->
-                        match it.Kind with
-                        | IFunc fn -> Some fn
-                        | _ -> None)
-                let aliasPairs =
-                    match imp.Selector with
-                    | Some (ISSingle item) ->
-                        match item.Alias with
-                        | Some a -> [ item.Name, a ]
-                        | None   -> []
-                    | Some (ISGroup items) ->
-                        items
-                        |> List.choose (fun it ->
-                            it.Alias |> Option.map (fun a -> it.Name, a))
-                    | None -> []
-                for (origName, aliasName) in aliasPairs do
-                    pkgFuncs
-                    |> List.tryFind (fun fn -> fn.Name = origName)
-                    |> Option.iter (fun fn ->
-                        aliasItems.Add(mkAliasIFunc fn aliasName))
+                        it.Alias |> Option.map (fun a -> it.Name, a))
+                | None -> []
+            for (origName, aliasName) in aliasPairs do
+                allFuncs
+                |> List.tryFind (fun fn -> fn.Name = origName)
+                |> Option.iter (fun fn ->
+                    aliasItems.Add(mkAliasIFunc fn aliasName))
         let extendedItems = items @ List.ofSeq aliasItems
         { sf with Imports = otherImps }, extendedItems, artifacts, stdImports, List.ofSeq diags
 

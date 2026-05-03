@@ -455,7 +455,7 @@ Tier 6 in `docs/12-todo-plan.md`.
 
 ## Q022: Generic-aware re-export, opaque wrapping, and BCL dispatch
 
-**Status:** OPEN — gating the final 5 declarations of D038 P0/4b (`compiler/lyric/std/collections.l`).
+**Status:** PARTIALLY RESOLVED. The practical blocker — `collections.l`'s 5 declarations couldn't migrate to `_kernel/` — was unblocked without implementing `pub use` proper. The work landed in PR #93 (transitive symbol propagation in the artifact compiler + cross-artifact selector-alias resolution); the kernel-boundary ratchet is now at 0. Sub-questions 1-4 below remain open as language work for future stdlib evolution.
 
 **Question:** What is the supported pattern for moving a generic `extern type` (e.g., `List[T] = "System.Collections.Generic.List`1"`) from a public stdlib package into the audited `_kernel/` extern boundary while keeping the user-facing API ergonomic?
 
@@ -479,12 +479,17 @@ D038 closed P0/4b with one file unmigrated: `collections.l`. Its `extern type Li
 **Constraints:**
 
 - Must not break the existing `xs.add(item)`, `xs.count`, `xs[i]` user-facing surface for `List[T]` / `Map[K, V]`.
-- Must allow the 5 declarations in `collections.l` to move into `_kernel/`.
+- ~~Must allow the 5 declarations in `collections.l` to move into `_kernel/`.~~ Achieved in PR #93 via transitive symbol propagation (no new language feature required).
 - Should not require special-casing `List` / `Map` in the compiler — the pattern should generalize to future opaque-wrapped generic externs.
 
-**Recommendation:** Pick (1) `pub use` first since it's the smallest piece (probably 1-2 days of typechecker work to make the re-export path actually re-export). With `pub use` working, the migration of `collections.l` is mechanical (relocate to `_kernel/`, add `pub use Std.CollectionsHost.{List, Map, newList, ...}` in `collections.l`). Sub-questions 2-4 can wait until a future stdlib needs opaque-wrapped generic externs.
+**Recommendation:** Original recommendation (do `pub use` first) was overtaken: PR #93 found that `collections.l` could be relocated by making the *artifact compiler* propagate transitive symbols, without changing language semantics. The remaining sub-questions become relevant only when:
 
-**Revisions:** None.
+- A future module wants `pub use Std.X.Y` to expose a single named symbol (instead of relying on transitive walking — the latter exposes everything from the kernel package, which is fine for kernel boundaries but coarse for general use).
+- A future module wants opaque wrapping of a generic `extern type` with method dispatch on the wrapper — this still hits the M1.4 codegen limitations described above.
+
+**Revisions:**
+
+- 2026-05-04: Practical blocker resolved by PR #93 without implementing `pub use`. Status flipped from OPEN to PARTIALLY RESOLVED.
 
 ---
 

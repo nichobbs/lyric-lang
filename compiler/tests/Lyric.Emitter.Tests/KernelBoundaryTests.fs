@@ -83,10 +83,11 @@ let private surveyExterns () : int * int =
 ///    44 — P0/4b batch 2: math.l + time.l split into native
 ///         trampolines (math.l, time.l) and `_kernel/{math,time}_host.l`
 ///     5 — P0/4b batch 3: json.l split, task.l moved.
-///         Remaining 5 are `collections.l`'s `extern type List[T]`
-///         and `Map[K, V]` plus their constructors and TryGetValue,
-///         which can't move without `pub use` re-export support.
-let private outsideCeiling : int = 5
+///     0 — Q022 fix: collections.l's externs moved to
+///         `_kernel/collections_host.l`; transitive symbol
+///         propagation in the artifact compiler + cross-artifact
+///         selector-alias resolution land in Emitter.fs.
+let private outsideCeiling : int = 0
 
 /// Soft cap on the total extern surface across the whole stdlib.
 /// Decision F (D038): hard cap of 150 at v1.0.  Currently reported
