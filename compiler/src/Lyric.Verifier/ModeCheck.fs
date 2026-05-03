@@ -259,6 +259,102 @@ let private checkAxiomBodies
             | None -> ()
         | _ -> ()
 
+/// V0006: in proof-required code, a `forall`/`exists` must quantify
+/// over a *finitely enumerable* domain
+/// (`08-contract-semantics.md` §6.3, `15-phase-4-proof-plan.md` §3.1).
+///
+/// M4.1 enforcement: reject quantifiers whose binder type is `Int`,
+/// `Long`, `Nat`, `Float`, `Double`, or `String` without a refinement.
+/// Bounded slices, sets, enums, range subtypes, and `Bool` are
+/// admissible.
+let private checkQuantifierDomains
+        (diags: ResizeArray<Diagnostic>)
+        (fileLevel: VerificationLevel)
+        (file: SourceFile) : unit =
+
+    let isUnboundedDomain (te: TypeExpr) : bool =
+        match te.Kind with
+        | TRef p ->
+            match p.Segments with
+            | [name] ->
+                match name with
+                | "Int" | "Long" | "Nat" | "Float" | "Double" | "String"
+                | "UInt" | "ULong" -> true
+                | _ -> false
+            | _ -> false
+        | TGenericApp _ | TArray _ | TSlice _ -> false
+        | TRefined _ -> false  // a range subtype: bounded
+        | _ -> false
+
+    let rec walkExpr (e: Expr) : unit =
+        match e.Kind with
+        | EForall(binders, where, body) | EExists(binders, where, body) ->
+            for b in binders do
+                if isUnboundedDomain b.Type then
+                    diags.Add(
+                        Diagnostic.error "V0006"
+                            (sprintf "quantifier binder '%s' has unbounded domain in proof-required code; constrain to a slice, set, range subtype, or finite enum"
+                                b.Name)
+                            b.Span)
+            (match where with Some w -> walkExpr w | None -> ())
+            walkExpr body
+        | EParen inner | EOld inner | ETry inner | EAwait inner
+        | ESpawn inner | EPropagate inner -> walkExpr inner
+        | ETuple xs | EList xs -> xs |> List.iter walkExpr
+        | EIf(c, t, eOpt, _) ->
+            walkExpr c
+            walkExprOrBlock t
+            (match eOpt with Some x -> walkExprOrBlock x | None -> ())
+        | EMatch(s, arms) ->
+            walkExpr s
+            for arm in arms do
+                walkExprOrBlock arm.Body
+                match arm.Guard with Some g -> walkExpr g | None -> ()
+        | ECall(fn, args) ->
+            walkExpr fn
+            for a in args do
+                match a with
+                | CANamed(_, v, _) | CAPositional v -> walkExpr v
+        | ETypeApp(fn, _) -> walkExpr fn
+        | EIndex(r, ix) -> walkExpr r; ix |> List.iter walkExpr
+        | EMember(r, _) -> walkExpr r
+        | EPrefix(_, x) -> walkExpr x
+        | EBinop(_, l, r) -> walkExpr l; walkExpr r
+        | EAssign(t, _, v) -> walkExpr t; walkExpr v
+        | EBlock blk ->
+            for st in blk.Statements do
+                match st.Kind with
+                | SExpr x | SAssign(_, _, x) | SReturn(Some x) | SThrow x -> walkExpr x
+                | SLocal lb ->
+                    match lb with
+                    | LBVal(_, _, init) | LBLet(_, _, init) -> walkExpr init
+                    | LBVar(_, _, Some init) -> walkExpr init
+                    | LBVar(_, _, None) -> ()
+                | _ -> ()
+        | _ -> ()
+
+    and walkExprOrBlock (eob: ExprOrBlock) =
+        match eob with
+        | EOBExpr x -> walkExpr x
+        | EOBBlock b ->
+            for st in b.Statements do
+                match st.Kind with
+                | SExpr x | SAssign(_, _, x) | SReturn(Some x) | SThrow x -> walkExpr x
+                | _ -> ()
+
+    let walkContractClauses (cs: ContractClause list) =
+        for c in cs do
+            match c with
+            | CCRequires(e, _) | CCEnsures(e, _) | CCWhen(e, _) | CCDecreases(e, _) ->
+                walkExpr e
+            | CCRaises _ -> ()
+
+    for it in file.Items do
+        match it.Kind with
+        | IFunc fn when fn |> levelOfFunction fileLevel |> VerificationLevel.isProofRequired ->
+            walkContractClauses fn.Contracts
+        | _ -> ()
+
 /// Top-level entry: returns mode-check diagnostics for `file` plus
 /// the resolved file level.  Caller decides whether to proceed to
 /// VC generation (the rule of thumb is: any V0001/V0002/V0004 error
@@ -276,4 +372,5 @@ let checkFile (file: SourceFile) : VerificationLevel * Diagnostic list =
             | IFunc fn -> checkFunction diags level callees fn
             | _        -> ()
         checkAxiomBodies diags level file
+        checkQuantifierDomains diags level file
         level, List.ofSeq diags

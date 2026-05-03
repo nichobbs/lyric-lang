@@ -80,4 +80,65 @@ let tests =
             let _, diags = parseAndCheck src
             Expect.isTrue (hasDiag "V0005" diags) "expected V0005"
         }
+
+        test "forall over Int in proof-required code is V0006" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func bad(x: Int): Int
+                  ensures: forall (k: Int) { k == k }
+                {
+                  return x
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isTrue (hasDiag "V0006" diags) "expected V0006"
+        }
+
+        test "forall over a slice in proof-required code is fine" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func ok(xs: slice[Int]): Int
+                  ensures: forall (k: slice[Int]) { true }
+                {
+                  return 0
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isFalse (hasDiag "V0006" diags) "no V0006 for slice quantifier"
+        }
+
+        test "forall over a Bool is admissible" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func ok(x: Bool): Bool
+                  ensures: forall (b: Bool) { b or not b }
+                {
+                  return x
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isFalse (hasDiag "V0006" diags) "no V0006 for Bool quantifier"
+        }
+
+        test "@runtime_checked package admits unbounded quantifiers" {
+            // V0006 only fires inside proof-required modules.
+            let src = """
+                @runtime_checked
+                package P
+
+                pub func f(x: Int): Int
+                  ensures: forall (k: Int) { k == k }
+                {
+                  return x
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isFalse (hasDiag "V0006" diags) "runtime-checked is unrestricted"
+        }
     ]

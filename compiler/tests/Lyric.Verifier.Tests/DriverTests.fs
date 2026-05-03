@@ -80,4 +80,63 @@ let tests =
             let summary = prove src
             Expect.equal (ProofSummary.totalCount summary) 0 "axiom skipped"
         }
+
+        test "demonstrably wrong contract does not discharge" {
+            // `result < 0` for `x + 1` with `x >= 0` is false.  The
+            // outcome should be either a counterexample (z3 present)
+            // or unknown (no solver).  Either way, NOT discharged.
+            let src = """
+                @proof_required
+                package P
+
+                pub func wrong(x: Int): Int
+                  requires: x >= 0
+                  ensures: result < 0
+                {
+                  return x + 1
+                }
+                """
+            let summary = prove src
+            Expect.equal (ProofSummary.totalCount summary) 1 "one obligation"
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Discharged ->
+                failtest "wrong contract should not discharge"
+            | Counterexample _ | Unknown _ -> ()
+            Expect.isTrue (ProofSummary.hasFailure summary) "expected failure flag"
+        }
+
+        test "multiple proof-required functions all run" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func a(x: Int): Int
+                  ensures: result == x
+                { return x }
+
+                pub func b(x: Bool): Bool
+                  ensures: result == x
+                { return x }
+
+                pub func c(): Int
+                  ensures: result == 42
+                { return 42 }
+                """
+            let summary = prove src
+            Expect.equal (ProofSummary.totalCount summary) 3 "three goals"
+            Expect.equal (ProofSummary.dischargedCount summary) 3 "all discharge"
+        }
+
+        test "level transitions from runtime to proof do not run when level is wrong" {
+            let src = """
+                @axiom
+                package P
+                @axiom
+                pub func opaque(x: Int): Int
+                """
+            let summary = prove src
+            // Axiom level is not proof-required, so no goals.
+            Expect.equal (ProofSummary.totalCount summary) 0 "axiom level produces no VCs"
+        }
     ]
