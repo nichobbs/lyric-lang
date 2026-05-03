@@ -2511,6 +2511,46 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // + `TypeBuilder.GetConstructor` produce the constructed ctor
     // ref; otherwise the args fall back to `obj` per the existing
     // erasure path (M1.4 monomorphisation parity with records).
+    //
+    // `Box[Int]()` (D-progress-088): explicit type-arg syntax parses
+    // as `ECall(EIndex(EPath{Box}, [EPath{Int}]), [])`.  The
+    // EIndex-as-type-app dispatch resolves each index expression as
+    // a type and closes the generic ctor.
+    | ECall ({ Kind = EIndex ({ Kind = EPath { Segments = [name] } }, idxs) }, [])
+        when ctx.ProtectedTypes.ContainsKey name
+             && not (List.isEmpty idxs)
+             && not (List.isEmpty ctx.ProtectedTypes.[name].Generics) ->
+        let info = ctx.ProtectedTypes.[name]
+        // Resolve each index Expr as a CLR type.  The common form
+        // `Box[Int]` parses each arg as `EPath { name }`, so we
+        // build a synthetic `TypeExpr.TRef` and route it through
+        // the regular `ctx.ResolveType` pipeline; that handles
+        // primitives, user types, and qualified paths uniformly.
+        let resolveIdxAsType (idx: Expr) : ClrType =
+            match idx.Kind with
+            | EPath path ->
+                let teKind = TRef path
+                let te : TypeExpr = { Kind = teKind; Span = idx.Span }
+                ctx.ResolveType te
+            | _ ->
+                failwithf
+                    "E5 codegen: %s[%A] — only bare type names \
+                     are supported in generic-protected-type \
+                     construction (no nested expressions)" name idx
+        let typeArgs =
+            idxs |> List.map resolveIdxAsType |> List.toArray
+        if typeArgs.Length <> info.Generics.Length then
+            failwithf
+                "E5 codegen: %s[…] expects %d type argument(s), got %d"
+                name info.Generics.Length typeArgs.Length
+        let openDef = info.Type :> System.Type
+        let constructed = openDef.MakeGenericType typeArgs
+        let constructedCtor =
+            System.Reflection.Emit.TypeBuilder.GetConstructor(
+                constructed, info.Ctor)
+        il.Emit(OpCodes.Newobj, constructedCtor)
+        constructed
+
     | ECall ({ Kind = EPath { Segments = [name] } }, [])
         when ctx.ProtectedTypes.ContainsKey name ->
         let info = ctx.ProtectedTypes.[name]
