@@ -80,7 +80,9 @@ let private surveyExterns () : int * int =
 ///   139 — P0/4c PR introducing this ratchet (2026-05)
 ///   103 — P0/4b batch 1: io.l, parse.l, testing_mocking.l,
 ///         regex.l, random.l, http_server.l moved into _kernel/
-let private outsideCeiling : int = 103
+///    44 — P0/4b batch 2: math.l + time.l split into native
+///         trampolines (math.l, time.l) and `_kernel/{math,time}_host.l`
+let private outsideCeiling : int = 44
 
 /// Soft cap on the total extern surface across the whole stdlib.
 /// Decision F (D038): hard cap of 150 at v1.0.  Currently reported
