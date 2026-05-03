@@ -51,3 +51,33 @@ pub func absish(x: Int): Int
       case 0 -> 0
       case n -> n
     }
+
+// Decision 3a / 4a: loop with an `invariant:` clause and a `var`
+// counter.  The wp emits establish + preserve + post sub-goals;
+// the var-mutation flows through forward env-substitution; the
+// post-loop env havoc's `i` so the conclude wp uses a fresh
+// `i$loopout` constrained only by `i >= 0` and `not (i < 10)`.
+pub func sumZero(): Int
+  ensures: result >= 0
+{
+  var i: Int = 0
+  while i < 10
+    invariant: i >= 0
+  {
+    i = i + 1
+  }
+  return i
+}
+
+// Decision 1c / 2: record construction + field access reasoning.
+// `Amount` is encoded as an SMT-LIB datatype `(declare-datatypes
+// ((Amount 0)) (((Amount (value Int)))))`; the post-condition
+// reduces to a structural identity Z3 closes immediately.
+pub record Amount { value: Int }
+
+pub func makeAmount(c: Int): Amount
+  requires: c > 0
+  ensures: result.value == c
+{
+  return Amount(value = c)
+}

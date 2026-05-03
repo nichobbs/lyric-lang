@@ -89,7 +89,9 @@ let private writeSmtToDisk
 /// End-to-end: parse + mode-check + VC-gen + discharge.  Carries
 /// `imports` (loaded by `Lyric.Verifier.Imports.loadMany`) through
 /// to the mode checker (V0001) and the VC generator (cross-package
-/// call rule).
+/// call rule).  When `proofDir` is `Some d`, a cache file
+/// `<d>/cache.json` carries discharged outcomes across runs and a
+/// persistent z3 session is reused across goals (decision 5c).
 let proveSourceWithImports
         (source: string)
         (proofDir: string option)
@@ -129,12 +131,21 @@ let proveSourceWithImports
           Results     = [] }
     else
 
+    // Persistent z3 session + content-hashed goal cache when a
+    // proof directory is configured (decision 5c).  Falls through
+    // to the per-goal `discharge` path when no session is
+    // available (no z3 binary, or no proofDir to anchor the
+    // cache).
+    let cachePath =
+        proofDir
+        |> Option.map (fun d -> Path.Combine(d, "cache.json"))
     let results =
-        goals
-        |> List.map (fun g ->
-            let outcome = discharge g
-            let smtPath = writeSmtToDisk proofDir g
-            { Goal = g; Outcome = outcome; SmtPath = smtPath })
+        Solver.withSession cachePath (fun dischargeFn ->
+            goals
+            |> List.map (fun g ->
+                let outcome = dischargeFn g
+                let smtPath = writeSmtToDisk proofDir g
+                { Goal = g; Outcome = outcome; SmtPath = smtPath }))
 
     let resultDiags =
         results

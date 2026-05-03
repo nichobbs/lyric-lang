@@ -11,6 +11,7 @@ let main argv =
             VcirTests.tests
             SmtTests.tests
             SolverTests.tests
+            ImportsTests.tests
             DriverTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

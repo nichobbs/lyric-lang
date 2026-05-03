@@ -116,54 +116,88 @@ let private freeVars (t: Term) : (string * Sort) list =
     go t
     List.ofSeq result
 
-/// Render a single goal as a self-contained SMT-LIB v2.6 file.
-let renderGoal (g: Goal) : string =
+/// Render a SMT-LIB session preamble: the logic + option +
+/// `Unit` datatype.  Sent once per persistent z3 session
+/// (decision 5c) and shared across goals.
+let renderPreamble () : string =
+    let sb = StringBuilder()
+    sb.Append "(set-logic ALL)\n" |> ignore
+    sb.Append "(set-option :produce-models true)\n" |> ignore
+    sb.Append "(declare-datatypes ((Unit 0)) (((unit))))\n" |> ignore
+    sb.ToString()
+
+/// Render the goal-scoped block: shared symbol declarations,
+/// per-goal `declare-const` for free variables, and the negated-
+/// implication assert.  Wrapped in `(push)` / `(pop)` by the
+/// caller so the persistent z3 context can discharge the next
+/// goal cleanly.
+///
+/// `declaredSymbols` is the set of symbol names already emitted
+/// in this session — datatypes / declare-fun lines for symbols in
+/// that set are skipped.  Returns the new set after this goal's
+/// declarations are added.
+let renderGoalBlock
+        (declaredSymbols: Set<string>)
+        (g: Goal) : string * Set<string> =
     let sb = StringBuilder()
     let appendln (s: string) = sb.Append(s).Append('\n') |> ignore
 
-    appendln "(set-logic ALL)"
-    appendln "(set-option :produce-models true)"
     appendln (sprintf "; goal: %s" g.Label)
     appendln (sprintf "; kind: %s" (GoalKind.display g.Kind))
 
-    // Declare the Unit datatype since we reference it in primitives.
-    appendln "(declare-datatypes ((Unit 0)) (((unit))))"
-
-    // Declare each user-symbol once.
+    let mutable declared = declaredSymbols
+    // Declarations that are stable across goals (datatypes,
+    // declare-fun for user symbols) live *outside* the push so
+    // they remain in scope after pop.  Idempotency by name.
     for sym in g.Symbols do
         match sym with
         | UserFun(name, paramSorts, resultSort) ->
-            let paramText =
-                paramSorts |> List.map renderSort |> String.concat " "
-            appendln (sprintf "(declare-fun %s (%s) %s)"
-                        (sanitizeIdent name) paramText (renderSort resultSort))
+            let key = "fun:" + name
+            if not (Set.contains key declared) then
+                declared <- Set.add key declared
+                let paramText =
+                    paramSorts |> List.map renderSort |> String.concat " "
+                appendln (sprintf "(declare-fun %s (%s) %s)"
+                            (sanitizeIdent name) paramText (renderSort resultSort))
         | Datatype(name, ctors) ->
-            let ctorText =
-                ctors
-                |> List.map (fun (cname, fields) ->
-                    let fieldText =
-                        fields
-                        |> List.map (fun (fname, fsort) ->
-                            sprintf "(%s %s)"
-                                (sanitizeIdent fname)
-                                (renderSort fsort))
-                        |> String.concat " "
-                    sprintf "(%s %s)" (sanitizeIdent cname) fieldText)
-                |> String.concat " "
-            appendln (sprintf "(declare-datatypes ((%s 0)) ((%s)))"
-                        (sanitizeIdent name) ctorText)
+            let key = "dt:" + name
+            if not (Set.contains key declared) then
+                declared <- Set.add key declared
+                let ctorText =
+                    ctors
+                    |> List.map (fun (cname, fields) ->
+                        let fieldText =
+                            fields
+                            |> List.map (fun (fname, fsort) ->
+                                sprintf "(%s %s)"
+                                    (sanitizeIdent fname)
+                                    (renderSort fsort))
+                            |> String.concat " "
+                        sprintf "(%s %s)" (sanitizeIdent cname) fieldText)
+                    |> String.concat " "
+                appendln (sprintf "(declare-datatypes ((%s 0)) ((%s)))"
+                            (sanitizeIdent name) ctorText)
 
-    // Free variables: the goal references parameters and `result` as
-    // TVars; declare each as a `(declare-const ...)`.
+    // Per-goal section: push, declare-const free variables, assert,
+    // check-sat + get-model, pop.
+    appendln "(push 1)"
     let claim = Goal.asImplication g
     let frees = freeVars claim
     for (name, sort) in frees do
         appendln (sprintf "(declare-const %s %s)"
                     (sanitizeIdent name) (renderSort sort))
-
-    // Negate the implication and ask for unsat.
     appendln (sprintf "(assert (not %s))" (renderTerm claim))
     appendln "(check-sat)"
     appendln "(get-model)"
+    appendln "(pop 1)"
 
-    sb.ToString()
+    sb.ToString(), declared
+
+/// Render a single goal as a self-contained SMT-LIB v2.6 file.
+/// Used by the `--proof-dir` writer (so each goal lives in its own
+/// `.smt2` file) and by the per-goal subprocess fallback when no
+/// persistent session is in use.
+let renderGoal (g: Goal) : string =
+    let preamble = renderPreamble ()
+    let body, _ = renderGoalBlock Set.empty g
+    preamble + body
