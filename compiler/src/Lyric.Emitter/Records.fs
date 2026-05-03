@@ -166,6 +166,56 @@ type ProjectableInfo =
 type ProjectableTable = Dictionary<string, ProjectableInfo>
 
 // ---------------------------------------------------------------------------
+// Protected types (D-progress-079).
+//
+// Bootstrap-grade lowering per the C2/D-progress-067 outline:
+//   * One private CLR class per `protected type T { ... }`.
+//   * One public field per `var`/`let`/immutable declaration.
+//   * One private `<>__lock : object` field used as the Monitor target.
+//   * Default ctor that allocates `<>__lock` and runs each field's init
+//     expression (or leaves it as `default(T)` when no init).
+//   * Per `entry name(...)` / `func name(...)` member: a public instance
+//     method whose body is wrapped in
+//       try { Monitor.Enter(this.<>__lock); <barrier?>; <user body>;
+//             <invariant?> } finally { Monitor.Exit(this.<>__lock) }
+//   * `when:` barriers throw `LyricAssertionException` on false (Ada-
+//     style condition-variable waiting + queue signalling lands when the
+//     C2 Phase C scope plumbing is mature; see D-progress-067).
+//   * `invariant:` clauses re-evaluate inside the try after the body
+//     produces its return value — same `emitContractCheck` machinery
+//     the regular function-body path already uses for ensures clauses.
+// ---------------------------------------------------------------------------
+
+/// One protected-type entry or func member, lowered to a CLR
+/// instance method with the Monitor wrapper.
+type ProtectedMethod =
+    { Name:    string
+      Method:  MethodBuilder
+      /// `true` for `entry`, `false` for `func`.  Both lock today;
+      /// per `06-open-questions.md` Q008 the func-side may relax to
+      /// `ReaderWriterLockSlim` once a real workload exercises the
+      /// distinction.
+      IsEntry: bool }
+
+/// A `var`/`let`/immutable field on a protected type, exposed so
+/// the implicit-self desugar can synthesise `self.<name>` member
+/// access against the underlying FieldBuilder.
+type ProtectedField =
+    { Name:  string
+      Type:  ClrType
+      Field: FieldBuilder }
+
+type ProtectedTypeInfo =
+    { Name:       string
+      Type:       TypeBuilder
+      Ctor:       ConstructorBuilder
+      LockField:  FieldBuilder
+      Fields:     ProtectedField list
+      Methods:    ProtectedMethod list }
+
+type ProtectedTypeTable = Dictionary<string, ProtectedTypeInfo>
+
+// ---------------------------------------------------------------------------
 // Imported types and functions — pulled in from a precompiled package
 // (e.g. `Lyric.Stdlib.Core.dll` via `import Std.Core`).  These mirror
 // the local-emit shapes above but use runtime-reflection types because

@@ -62,5 +62,6 @@ let main argv =
             AsyncLocalTests.tests
             MockingTests.tests
             RestoredPackageE2ETests.tests
+            ProtectedTypeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
