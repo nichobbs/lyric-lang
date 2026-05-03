@@ -89,6 +89,105 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-081: Phase 4 verifier — M4.1 polish (call rule, match, assert, V0006)
+
+*claude/phase-4-proof-plan-tVGu7 branch (continuation of D-progress-080).*
+Brings the M4.1 verifier from "skeleton wired end-to-end" to "small
+real proofs run."  53 verifier tests; all pass.
+
+**Hoare call rule (`docs/08-contract-semantics.md` §10.4).**
+`TranslateResult` and `WpResult` gain an `Assumed: Term list` track
+alongside `SideConds`.  At every call site to a known callee `g`:
+
+* `g`'s `requires:` clauses are translated, substituted with caller
+  args, and added as **side goals** that must hold before the call.
+* `g`'s `ensures:` clauses are translated with `result := TApp(g, args)`
+  and the params substituted with the caller's args, then added as
+  **assumed hypotheses** for the surrounding wp computation.
+
+Side goals (preconditions) get the un-augmented hypothesis set so
+the assumption isn't circular at the call site itself.  Without this
+rule, the `wp` of `return id(x)` is opaque to the discharger because
+`id(x)` carries no syntactic relationship to `x`; with it, the
+assumption `id(x) == x` flows through and the wrapper's
+`result == x` postcondition closes.
+
+**Match support (M4.1 fragment).**  An `EMatch` arm in a function
+body or contract translates to a nested
+`ite(matches(scrutinee, P_i), arm_i, ...)` chain.  Patterns supported
+this milestone:
+
+* `case _` — wildcard, always matches.
+* `case n` — bare binding, always matches; binds `n` to the
+  scrutinee's term.
+* `case 0` — literal equality.
+* `case (paren_pat)` — passes through.
+
+Constructor / record / tuple patterns are V0027 warnings (treated
+as no-match).  When the last reached arm has an unconditional
+pattern, the chain collapses to that body directly so Z3 sees a
+clean `(ite (= x 0) 0 x)` rather than an `(ite ... (ite true x ?))`
+shape with a stray uninterpreted fallthrough sort.
+
+**`assert φ` in body.**  An `SExpr (ECall (EPath ["assert"], [φ]))`
+inside a proof-required body now:
+
+1. Translates φ into the IR.
+2. Emits φ as a side goal (V0008 if not provable).
+3. Adds φ to the assumed hypotheses for the rest of the block.
+
+Standard Hoare encoding for assertions.  Wrong assertions produce a
+counterexample exactly like wrong ensures.
+
+**V0006 quantifier-domain enforcement.**  `forall`/`exists` over
+unbounded domains (`Int`, `Long`, `Nat`, `Float`, `Double`, `String`,
+`UInt`, `ULong`) inside proof-required contract clauses are now
+rejected with a fix-it message pointing at slices, sets, range
+subtypes, or finite enums.  Bounded slices (`slice[T]`), `Bool`, and
+range-refined types are admissible.  `@runtime_checked` code remains
+unrestricted (V0006 only fires inside proof-required modules).
+
+**Counterexample pretty-printer.**  `parseModel` extracts
+`(define-fun NAME () SORT VALUE)` clauses from Z3's `(get-model)`
+output; `renderCounterexample` renders them as `name : sort = value`
+lines.  V0008 diagnostics now show:
+
+```
+V0008 error: postcondition of wrong — proof failed
+  x : Int = 0
+```
+
+instead of the raw Z3 model dump.
+
+**Trivial discharger strengthened.**  Closes `true`, `P ⇒ P`,
+reflexive `(= a a)` / `(<= a a)` / `(>= a a)` / `(iff a a)`,
+`(ite c a a)`, conjunctions of any of the above, and
+`(=> P Q)` where Q closes given `P :: hypotheses`.  Still no full
+solver, but enough to handle most identity-style postconditions
+without requiring z3 in CI.
+
+**Inline range refinement.**  A parameter typed
+`Int range 0 ..= 100` now lifts to `SInt` with a closed-range
+hypothesis — Z3 sees `(declare-const x Int)` plus `(<= 0 x)` and
+`(<= x 100)` in the goal's antecedent.  Distinct types declared as
+`type Age = Int range 0 ..= 150` lift to a separate `SDatatype`
+sort (M4.2 work to bridge the two).
+
+**CI wiring (`.github/workflows/ci.yml`).**
+
+* Apt-installs `z3` before the test phase so non-trivial arithmetic
+  VCs in the verifier suite + smoke tests can discharge.
+* Adds a "Verifier tests" step after the CLI tests step.
+* The examples smoke-tester routes `@proof_required` files (detected
+  via first-line grep) through `lyric prove` instead of `lyric
+  build` — `prove_demo.l` is verifier-only and intentionally has no
+  `func main`.
+
+**Examples.**  `examples/prove_demo.l` ships a five-function tour
+(identity, tautology, bumped-by-1 under a precondition, cross-
+function call rule, inline-range arithmetic).  All five
+discharge.
+
 ### D-progress-080: Phase 4 verifier — M4.1 skeleton
 
 *claude/phase-4-proof-plan-tVGu7 branch.*  Lifts Phase 4 from
