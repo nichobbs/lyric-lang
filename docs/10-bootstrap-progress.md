@@ -89,6 +89,226 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-085: Phase 4 verifier — M4.1 polish (call rule, match, assert, V0006)
+
+*claude/phase-4-proof-plan-tVGu7 branch (continuation of D-progress-084).*
+Brings the M4.1 verifier from "skeleton wired end-to-end" to "small
+real proofs run."  63 verifier tests; all pass.
+
+**Hoare call rule (`docs/08-contract-semantics.md` §10.4).**
+`TranslateResult` and `WpResult` gain an `Assumed: Term list` track
+alongside `SideConds`.  At every call site to a known callee `g`:
+
+* `g`'s `requires:` clauses are translated, substituted with caller
+  args, and added as **side goals** that must hold before the call.
+* `g`'s `ensures:` clauses are translated with `result := TApp(g, args)`
+  and the params substituted with the caller's args, then added as
+  **assumed hypotheses** for the surrounding wp computation.
+
+Side goals (preconditions) get the un-augmented hypothesis set so
+the assumption isn't circular at the call site itself.  Without this
+rule, the `wp` of `return id(x)` is opaque to the discharger because
+`id(x)` carries no syntactic relationship to `x`; with it, the
+assumption `id(x) == x` flows through and the wrapper's
+`result == x` postcondition closes.
+
+**Match support (M4.1 fragment).**  An `EMatch` arm in a function
+body or contract translates to a nested
+`ite(matches(scrutinee, P_i), arm_i, ...)` chain.  Patterns supported
+this milestone:
+
+* `case _` — wildcard, always matches.
+* `case n` — bare binding, always matches; binds `n` to the
+  scrutinee's term.
+* `case 0` — literal equality.
+* `case (paren_pat)` — passes through.
+
+Constructor / record / tuple patterns are V0027 warnings (treated
+as no-match).  When the last reached arm has an unconditional
+pattern, the chain collapses to that body directly so Z3 sees a
+clean `(ite (= x 0) 0 x)` rather than an `(ite ... (ite true x ?))`
+shape with a stray uninterpreted fallthrough sort.
+
+**`assert φ` in body.**  An `SExpr (ECall (EPath ["assert"], [φ]))`
+inside a proof-required body now:
+
+1. Translates φ into the IR.
+2. Emits φ as a side goal (V0008 if not provable).
+3. Adds φ to the assumed hypotheses for the rest of the block.
+
+Standard Hoare encoding for assertions.  Wrong assertions produce a
+counterexample exactly like wrong ensures.
+
+**V0006 quantifier-domain enforcement.**  `forall`/`exists` over
+unbounded domains (`Int`, `Long`, `Nat`, `Float`, `Double`, `String`,
+`UInt`, `ULong`) inside proof-required contract clauses are now
+rejected with a fix-it message pointing at slices, sets, range
+subtypes, or finite enums.  Bounded slices (`slice[T]`), `Bool`, and
+range-refined types are admissible.  `@runtime_checked` code remains
+unrestricted (V0006 only fires inside proof-required modules).
+
+**Counterexample pretty-printer.**  `parseModel` extracts
+`(define-fun NAME () SORT VALUE)` clauses from Z3's `(get-model)`
+output; `renderCounterexample` renders them as `name : sort = value`
+lines.  V0008 diagnostics now show:
+
+```
+V0008 error: postcondition of wrong — proof failed
+  x : Int = 0
+```
+
+instead of the raw Z3 model dump.
+
+**Trivial discharger strengthened.**  Closes `true`, `P ⇒ P`,
+reflexive `(= a a)` / `(<= a a)` / `(>= a a)` / `(iff a a)`,
+`(ite c a a)`, conjunctions of any of the above, and
+`(=> P Q)` where Q closes given `P :: hypotheses`.  Still no full
+solver, but enough to handle most identity-style postconditions
+without requiring z3 in CI.
+
+**Inline range refinement.**  A parameter typed
+`Int range 0 ..= 100` now lifts to `SInt` with a closed-range
+hypothesis — Z3 sees `(declare-const x Int)` plus `(<= 0 x)` and
+`(<= x 100)` in the goal's antecedent.  Distinct types declared as
+`type Age = Int range 0 ..= 150` lift to a separate `SDatatype`
+sort (M4.2 work to bridge the two).
+
+**CI wiring (`.github/workflows/ci.yml`).**
+
+* Apt-installs `z3` before the test phase so non-trivial arithmetic
+  VCs in the verifier suite + smoke tests can discharge.
+* Adds a "Verifier tests" step after the CLI tests step.
+* The examples smoke-tester routes `@proof_required` files (detected
+  via first-line grep) through `lyric prove` instead of `lyric
+  build` — `prove_demo.l` is verifier-only and intentionally has no
+  `func main`.
+
+**Examples.**  `examples/prove_demo.l` ships a five-function tour
+(identity, tautology, bumped-by-1 under a precondition, cross-
+function call rule, inline-range arithmetic).  All five
+discharge.
+
+### D-progress-084: Phase 4 verifier — M4.1 skeleton
+
+*claude/phase-4-proof-plan-tVGu7 branch.*  Lifts Phase 4 from
+"planned" (`docs/15-phase-4-proof-plan.md`) to "M4.1 partial".  The
+verifier is wired end-to-end (parse → mode-check → VC-gen → SMT-LIB
+emission → discharge → CLI summary) at bootstrap-grade fidelity.
+A new `lyric prove <source.l>` subcommand exposes it.
+
+**New project** — `compiler/src/Lyric.Verifier/`:
+
+- `Mode.fs` — parses `@runtime_checked` / `@proof_required[(modifier)]`
+  / `@axiom` file-level annotations into `VerificationLevel`.
+  Conflict diagnostics: V0010 (multiple level annotations), V0011
+  (unknown modifier).
+- `ModeCheck.fs` — implements the V0001/V0002/V0004/V0005 dispatch
+  rules from `15-phase-4-proof-plan.md` §3.1.  For each function in
+  a proof-required package: rejects calls into non-pure
+  runtime-checked callees (V0002), `await`/`spawn` (V0002),
+  `unsafe` blocks outside `@proof_required(unsafe_blocks_allowed)`
+  (V0003), `@axiom`-with-body (V0004), and loops without an
+  `invariant:` clause (V0005).  V0001 (cross-package level
+  violation) is deferred until the contract-metadata reader for
+  proof-required packages lands.
+- `Vcir.fs` — solver-agnostic Lyric-VC IR per the plan's §6.  Sorts
+  cover `Bool`, `Int`, `BitVec n`, `Float32/64`, `String`,
+  parameterised datatypes, `Slice`, and uninterpreted sorts.  Terms
+  cover variables, literals, builtins (`and`/`or`/`not`/arithmetic/
+  comparisons/`ite`/quantifiers), `let`, user-function applications,
+  and `forall`/`exists`.  Capture-avoiding substitution is built in.
+- `Theory.fs` — Lyric `TypeExpr` → `Sort` mapping plus a
+  `RangeBoundKind` for refined integers (`Int range a ..= b` lifts to
+  `SInt` with a constant-folded `[a, b]` hypothesis).  Lyric `BinOp`/
+  `PrefixOp` → `Vcir.Builtin`.
+- `VCGen.fs` — wp/sp calculus over the *imperative* fragment per the
+  plan's §5.  Function bodies of shape `= expr` or `{ let* ; return e }`
+  produce a `Pre ⇒ wp(body, Post)` goal plus side conditions.
+  `result` and parameter-old snapshots are bound into the env.
+  Quantifiers translate to `TForall`/`TExists`; calls translate to
+  `TApp` so the SMT layer can declare them once.  Loops, `match`,
+  full `var`/`if`-with-blocks, and `old(e)` over non-path expressions
+  are flagged with V0022/V0024/V0025/V0026 warnings and treated as
+  uninterpreted (M4.2 work).
+- `Smt.fs` — SMT-LIB v2.6 emitter.  Renders the `Unit` datatype, the
+  free variables of the goal as `(declare-const ...)`, every collected
+  user function as `(declare-fun ...)`, and `(assert (not …))` of the
+  goal's implication shape, followed by `(check-sat)` + `(get-model)`.
+- `Solver.fs` — back-end.  Two paths:
+  * A *trivial syntactic discharger* that closes goals of shape
+    `true`, reflexive `(= a a)`, `P ⇒ P`, conjunctions/disjunctions
+    of these, or any conclusion that appears verbatim among the
+    hypotheses.  Handles the most common bootstrap-test cases
+    without any solver dependency.
+  * An optional *Z3 shell-out*: if `LYRIC_Z3` is set or `z3` is on
+    `$PATH`, the emitter pipes the SMT-LIB blob to it and parses
+    the first line of stdout (`unsat`/`sat`/`unknown`).  The
+    `Microsoft.Z3` NuGet bindings are intentionally avoided so the
+    AOT path stays clean (per `15-phase-4-proof-plan.md` §7.1
+    carve-out).
+- `Driver.fs` — `proveSource` / `proveFile` end-to-end entry.
+  Returns a `ProofSummary { Level; Diagnostics; Results }` plus
+  per-goal `SmtPath` for the optional `target/proofs/<label>.smt2`
+  file.  Discharged goals are silent; failed goals raise V0008
+  (with up to six lines of counterexample preamble) and V0007 for
+  `unknown`.
+
+**CLI** — `compiler/src/Lyric.Cli/Program.fs` gains a `prove`
+subcommand:
+
+```
+lyric prove <source.l> [--proof-dir <dir>] [--verbose]
+```
+
+`--proof-dir` defaults to `<source-dir>/target/proofs/`.  `--verbose`
+prints the per-goal outcome and the SMT path.  Exit code is 0 on
+all-discharged-no-errors, 1 otherwise.  `lyric build` is unchanged.
+
+**Tests** — `compiler/tests/Lyric.Verifier.Tests/` (28 Expecto
+tests across `ModeTests`, `ModeCheckTests`, `VcirTests`, `SmtTests`,
+`DriverTests`).  Coverage:
+
+- VerificationLevel parsing for every annotation form including
+  `@proof_required(unsafe_blocks_allowed|checked_arithmetic)`.
+- The dispatch checker's V0002 / V0004 / V0005 emission and absence
+  in the corresponding well-formed cases.
+- Vcir IR: `mkAnd`/`mkOr` neutral elements, capture-avoiding `subst`,
+  forall-binder shadowing, `Goal.asImplication` shape.
+- SMT-LIB v2.6 emission: required headers, `declare-const` for free
+  variables, `declare-fun` for user symbols, negated-implication
+  wrapping.
+- End-to-end driver: identity functions, body-less `@axiom`
+  (no VC), constant-bool postcondition, `nop` with no contracts.
+
+**Bootstrap-grade limits explicitly carried into M4.2/M4.3:**
+
+- VC generator covers only `let`/`val`-then-`return` shapes — `var`,
+  `match`, multi-statement blocks with side effects, and loops are
+  warning-only and produce trivially-true `wp`s.
+- `old(e)` only resolves for `e = path-to-parameter`; arbitrary
+  `old` expressions are warning V0021 and treated as current.
+- Quantifier domains aren't enforced as decidable (V0006 deferred).
+- No record/union/opaque datatype declarations are emitted into the
+  SMT context — datatype reasoning is M4.2 work.
+- Cross-package contract reading is not wired (V0001 deferred); the
+  call graph only sees in-file callees.
+- Counterexample reporting is the raw Z3 model text, not the
+  Lyric-typed pretty-printed form §9.1 will ship.
+
+These are tracked into M4.2/M4.3 per the plan and intentionally
+ship as is so the architecture is exercised end-to-end at the
+bootstrap milestone.
+
+**Files touched:** `compiler/Lyric.sln` (added two projects),
+`compiler/src/Lyric.Cli/Lyric.Cli.fsproj` (verifier ProjectReference),
+`compiler/src/Lyric.Cli/Program.fs` (`prove` subcommand + usage),
+`compiler/src/Lyric.Verifier/*` (new), `compiler/tests/Lyric.Verifier.Tests/*`
+(new), `CLAUDE.md` (verifier description in the project layout
+section), `docs/15-phase-4-proof-plan.md` (already shipped in
+PR #75 — referenced from this entry).
+
+---
+
 ### D-progress-083: protected types — `SemaphoreSlim` for entry-only types (Q008 split)
 *claude/protected-type-semaphore branch.*  Closes the second half
 of Q008's lock-flavour decision (`docs/09-msil-emission.md` §17.4):

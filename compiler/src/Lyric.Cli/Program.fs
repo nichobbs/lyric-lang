@@ -697,6 +697,7 @@ let private printUsage () : unit =
     printErr "Usage:"
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
+    printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose]"
     printErr "  lyric doc   <source.l> [-o out.md]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
     printErr "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <pkg-dir>]"
@@ -851,6 +852,71 @@ let main (argv: string array) : int =
                 | "--" :: rest -> List.toArray rest
                 | _            -> List.toArray more
             run sourcePath userArgs
+    | "prove" :: rest ->
+        // `lyric prove <source.l> [--proof-dir <dir>] [--verbose]`
+        // — Phase 4 verifier (M4.1 fragment).  Runs the mode-dispatch
+        // check (V0001/V0002/V0004), generates VCs for every
+        // proof-required function, and discharges them via the
+        // trivial syntactic checker or a `z3` binary on `$PATH`.
+        let mutable proofDir : string option = None
+        let mutable verbose = false
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "--proof-dir" :: dir :: tail ->
+                proofDir <- Some dir
+                cursor <- tail
+            | "--verbose" :: tail | "-v" :: tail ->
+                verbose <- true
+                cursor <- tail
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
+        | [] ->
+            printErr "prove: missing source file"
+            1
+        | sourcePath :: _ ->
+            if not (File.Exists sourcePath) then
+                printErr (sprintf "prove: source file not found: %s" sourcePath)
+                1
+            else
+            let resolvedProofDir =
+                match proofDir with
+                | Some d -> Some d
+                | None ->
+                    let dir =
+                        safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
+                    Some (Path.Combine(dir, "target", "proofs"))
+            let summary =
+                Lyric.Verifier.Driver.proveFile sourcePath resolvedProofDir
+            for d in summary.Diagnostics do
+                printDiag d
+            let total = Lyric.Verifier.Driver.ProofSummary.totalCount summary
+            let discharged =
+                Lyric.Verifier.Driver.ProofSummary.dischargedCount summary
+            if Lyric.Verifier.Mode.VerificationLevel.isProofRequired summary.Level then
+                printfn "%d/%d obligations discharged (%s)"
+                    discharged total
+                    (Lyric.Verifier.Mode.VerificationLevel.display summary.Level)
+            else
+                printfn "no proof obligations: package is %s"
+                    (Lyric.Verifier.Mode.VerificationLevel.display summary.Level)
+            if verbose then
+                for r in summary.Results do
+                    printfn "  [%s] %s -> %s"
+                        r.Goal.Label
+                        (Lyric.Verifier.Vcir.GoalKind.display r.Goal.Kind)
+                        (Lyric.Verifier.Solver.displayOutcome r.Outcome)
+                    match r.SmtPath with
+                    | Some p -> printfn "    smt: %s" p
+                    | None -> ()
+            let summaryFailed =
+                Lyric.Verifier.Driver.ProofSummary.hasFailure summary
+                || Lyric.Verifier.Driver.ProofSummary.hasErrorDiag summary
+            if summaryFailed then 1 else 0
     | "doc" :: rest ->
         // `lyric doc <source.l> [-o out.md]` — emit Markdown describing
         // the file's `pub` surface.  See Doc.fs for the bootstrap-grade
