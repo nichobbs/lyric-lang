@@ -685,6 +685,8 @@ let private printUsage () : unit =
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric doc   <source.l> [-o out.md]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
+    printErr "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <pkg-dir>]"
+    printErr "  lyric restore [--manifest <lyric.toml>]"
     printErr "  lyric --version"
     printErr ""
     printErr "  build is incremental — re-running with the same source +"
@@ -697,6 +699,13 @@ let private printUsage () : unit =
     printErr "  public-api-diff exits 0 (no changes), 0 (additive), or 2"
     printErr "                  (breaking — Removed/Changed); use 2 in CI to gate"
     printErr "                  major-version bumps."
+    printErr ""
+    printErr "  publish wraps `dotnet pack` against a generated .csproj that"
+    printErr "          embeds your pre-built Lyric DLL into a .nupkg under"
+    printErr "          lib/net10.0/.  Run `lyric build` first."
+    printErr "  restore wraps `dotnet restore` over `[dependencies]` from"
+    printErr "          lyric.toml so transitive .nupkg packages land in the"
+    printErr "          NuGet cache."
 
 [<EntryPoint>]
 let main (argv: string array) : int =
@@ -888,6 +897,78 @@ let main (argv: string array) : int =
         | _ ->
             printErr "public-api-diff: expected `lyric public-api-diff <old.dll> <new.dll>`"
             1
+    | "publish" :: rest ->
+        // `lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <out>]`
+        // — wrap `dotnet pack` over a generated `.csproj` that
+        // embeds the pre-built Lyric DLL into a .nupkg under
+        // lib/net10.0/.  D-progress-077.
+        let mutable manifestPath : string option = None
+        let mutable dllOverride : string option = None
+        let mutable outputDir : string option = None
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "--manifest" :: m :: tail -> manifestPath <- Some m; cursor <- tail
+            | "--dll" :: d :: tail -> dllOverride <- Some d; cursor <- tail
+            | "-o" :: o :: tail -> outputDir <- Some o; cursor <- tail
+            | unknown :: tail ->
+                printErr (sprintf "publish: unrecognised flag '%s'" unknown)
+                cursor <- tail
+            | [] -> ()
+        let mfPath = Option.defaultValue "lyric.toml" manifestPath
+        let mfFull = Path.GetFullPath mfPath
+        match Lyric.Cli.Manifest.parseFile mfFull with
+        | Error e ->
+            printErr (Lyric.Cli.Manifest.renderError mfPath e)
+            1
+        | Ok manifest ->
+            let manifestDir = safeStr (Path.GetDirectoryName mfFull) "."
+            let dllPath =
+                match dllOverride with
+                | Some d -> Path.GetFullPath d
+                | None   -> Lyric.Cli.Pack.defaultDllPath manifest manifestDir
+            let outDir =
+                match outputDir with
+                | Some o -> Path.GetFullPath o
+                | None   -> Lyric.Cli.Pack.defaultPackOutputDir manifest manifestDir
+            match Lyric.Cli.Pack.runPack manifest manifestDir dllPath outDir false with
+            | Ok nupkg ->
+                printfn "wrote %s" nupkg
+                0
+            | Error msg ->
+                printErr msg
+                1
+    | "restore" :: rest ->
+        // `lyric restore [--manifest <lyric.toml>]` — wrap `dotnet
+        // restore` over a generated `.csproj` declaring the
+        // `[dependencies]` from lyric.toml.  Transitive resolution
+        // populates the NuGet cache; consumption from `lyric build`
+        // is a separate follow-up.  D-progress-077.
+        let mutable manifestPath : string option = None
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "--manifest" :: m :: tail -> manifestPath <- Some m; cursor <- tail
+            | unknown :: tail ->
+                printErr (sprintf "restore: unrecognised flag '%s'" unknown)
+                cursor <- tail
+            | [] -> ()
+        let mfPath = Option.defaultValue "lyric.toml" manifestPath
+        let mfFull = Path.GetFullPath mfPath
+        match Lyric.Cli.Manifest.parseFile mfFull with
+        | Error e ->
+            printErr (Lyric.Cli.Manifest.renderError mfPath e)
+            1
+        | Ok manifest ->
+            let manifestDir = safeStr (Path.GetDirectoryName mfFull) "."
+            match Lyric.Cli.Pack.runRestore manifest manifestDir false with
+            | Ok () ->
+                printfn "restore: %d packages declared in %s"
+                    (List.length manifest.Dependencies) mfPath
+                0
+            | Error msg ->
+                printErr msg
+                1
     | unknown :: _ ->
         printErr (sprintf "unknown command: %s" unknown)
         printUsage ()
