@@ -1,33 +1,33 @@
-/// Phase 1 minimal standard library, exposed as a small set of static
-/// methods that the emitter can target. Each method's CLR signature
-/// matches the Lyric-side declaration that the emitter will eventually
-/// inject into the symbol table:
+/// Host-side stdlib shim — methods the emitter targets directly when
+/// a Lyric construct can't be expressed in pure Lyric (or whose
+/// pure-Lyric form is bootstrap-grade per D035 / D038). Each entry
+/// is justified by something the language can't yet express:
 ///
-///   func println(s: in String): Unit
-///   func print  (s: in String): Unit
-///   func expect (cond: in Bool, msg: in String): Unit
-///   func assert (cond: in Bool): Unit
-///   func panic  (msg: in String): Never
+///   - Null-aware `obj` formatting (`PrintlnAny`, `ToStr`): no Lyric
+///     surface for `obj | null` discrimination.
+///   - Out-parameter readers (`JsonHost.Get*`, `Parse.*Value`):
+///     Lyric has no out-params.
+///   - Try/catch wrappers (`FileHost.*`, `TryHost.*`): no try/catch
+///     bridging across the FFI boundary yet.
+///   - Concurrency primitives (`LyricTaskScope`, `AmbientHost`):
+///     `protected type` deferred to Phase 3.
 ///
-/// The emitter calls these by emitting `call void
-/// [Lyric.Stdlib]Lyric.Stdlib.Console::Println(string)` etc. They are
-/// deliberately thin wrappers over the BCL: the goal is to give the
-/// emitter a stable, predictable target it can resolve at codegen
-/// time, not to ship a real stdlib.
+/// Trivial wrappers (`println(string) -> Console.WriteLine(string)`,
+/// integer math) have been hoisted out: see
+/// `docs/14-native-stdlib-plan.md` §6 P0 for the migration log.
+///
+/// The kernel target (Decision F) is ≤150 declarations here.
 namespace Lyric.Stdlib
 
 open System
 
-/// Console output. The two methods correspond to Lyric's
-/// `std.io.println` / `std.io.print`.
+/// Console helpers that need null-aware behaviour. Plain
+/// `println(string)` and `print(string)` route directly to
+/// `System.Console.WriteLine` / `System.Console.Write`; the helpers
+/// below survive only because Lyric can't yet express the
+/// `null -> "()"` discrimination without out-params.
 [<Sealed; AbstractClass>]
 type Console private () =
-
-    static member Println (s: string) : unit =
-        System.Console.WriteLine(s)
-
-    static member Print (s: string) : unit =
-        System.Console.Write(s)
 
     /// `println` overload for non-string values — emits `ToString()`.
     /// Used when the emitter needs to format an integer, bool, etc.

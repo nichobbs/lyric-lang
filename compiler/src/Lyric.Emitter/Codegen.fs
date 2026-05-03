@@ -287,11 +287,15 @@ let private codegenErrStmt
 
 let private printlnString : Lazy<MethodInfo> =
     lazy (
-        let consoleTy = typeof<Lyric.Stdlib.Console>
-        let mi = consoleTy.GetMethod("Println", [| typeof<string> |])
+        // Per `docs/14-native-stdlib-plan.md` §3 (kernel surface):
+        // string `println` routes directly to `System.Console.WriteLine`.
+        // Non-string arguments still fall back to the F#-side
+        // `PrintlnAny`/`ToStr` because of their `null -> "()"` semantics.
+        let consoleTy = typeof<System.Console>
+        let mi = consoleTy.GetMethod("WriteLine", [| typeof<string> |])
         match Option.ofObj mi with
         | Some m -> m
-        | None   -> failwith "Lyric.Stdlib.Console::Println(string) not found")
+        | None   -> failwith "System.Console::WriteLine(string) not found")
 
 let private printlnAny : Lazy<MethodInfo> =
     lazy (
