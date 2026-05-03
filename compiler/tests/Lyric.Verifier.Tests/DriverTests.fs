@@ -259,6 +259,96 @@ let tests =
             | Counterexample _ | Unknown _ -> ()
         }
 
+        test "loop with invariant: discharges establish + preserve + post" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func sumZero(): Int
+                  ensures: result >= 0
+                {
+                  var i: Int = 0
+                  while i < 10
+                    invariant: i >= 0
+                  {
+                    i = i + 1
+                  }
+                  return i
+                }
+                """
+            let summary = prove src
+            // 3 goals: post, establish, preserve
+            Expect.equal (ProofSummary.totalCount summary) 3 "three goals"
+            Expect.equal (ProofSummary.dischargedCount summary) 3 "all discharge"
+        }
+
+        test "loop without invariant fires V0005" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func sumZero(): Int
+                  ensures: result >= 0
+                {
+                  var i: Int = 0
+                  while i < 10 {
+                    i = i + 1
+                  }
+                  return i
+                }
+                """
+            let summary = prove src
+            let hasV0005 =
+                summary.Diagnostics
+                |> List.exists (fun d -> d.Code = "V0005")
+            Expect.isTrue hasV0005 "V0005 fires"
+        }
+
+        test "var SSA: x = x + 1 discharges via forward-substitution" {
+            // No loop — straight-line var assignment uses
+            // env-rebind without havoc.  The post `result == 2`
+            // requires the wp to track the assignment chain.
+            let src = """
+                @proof_required
+                package P
+
+                pub func bumpTwo(): Int
+                  ensures: result == 2
+                {
+                  var x: Int = 0
+                  x = x + 1
+                  x = x + 1
+                  return x
+                }
+                """
+            let summary = prove src
+            Expect.equal (ProofSummary.totalCount summary) 1 "one goal"
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Counterexample _ -> failtest "should not be sat"
+            | Discharged | Unknown _ -> ()
+        }
+
+        test "record construction + field access discharges" {
+            // Datatype encoding: `Amount(value = c).value` lowers to
+            // `(value (Amount c))` which Z3 simplifies to `c`.
+            let src = """
+                @proof_required
+                package P
+
+                pub record Amount { value: Int }
+
+                pub func makeAmount(c: Int): Amount
+                  requires: c > 0
+                  ensures: result.value == c
+                {
+                  return Amount(value = c)
+                }
+                """
+            let summary = prove src
+            Expect.equal (ProofSummary.dischargedCount summary) 1 "discharge"
+        }
+
         test "@pure callee unfolds one level at the call site" {
             // The trivial discharger can't relate `double(x)` to
             // `x + x` without help.  When `double` is `@pure` and

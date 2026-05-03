@@ -95,6 +95,111 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-089: Phase 4 verifier — M4.2 (cross-package + loops + var SSA + cache)
+
+*claude/phase-4-proof-plan-tVGu7 branch (continuation of
+D-progress-085, M4.1 polish).*  Lands the five M4.2 decisions
+confirmed in interview with the user:
+
+**1c — `Lyric.Contract` format-2.**  Bumps the embedded JSON to
+`formatVersion: 2` with `level` per package and `pure` /
+`requires` / `ensures` / `body` / `params` per declaration.
+Format-1 payloads round-trip via safe defaults; existing test
+fixtures use new `ContractMeta.Contract.legacy` /
+`ContractDecl.basic` factories.
+
+**2 (modified) — `Lyric.Proof` opaque binary resource.**  A
+separate embedded resource (custom binary layout: `LYPRF` magic +
+format byte + length-prefixed strings + length-prefixed lists)
+carrying record / union / enum / opaque type representations.
+Marked `Private` so it stays out of public-resource listings.
+Cecil-based embed/extract mirrors `ContractMeta`.  Honors the
+design intent: opaque-type representational privacy is preserved
+for runtime/source consumers; proof consumers see through the
+cell deliberately.
+
+**V0001 cross-package level violation.**  New
+`Lyric.Verifier.Imports` module loads both resources from a list
+of DLL paths.  `ModeCheck.checkFileWithImports` walks the file's
+`Imports`, resolves each to its level, and fires V0001 when a
+`@proof_required` package directly imports a `@runtime_checked`
+package.
+
+**Cross-package Hoare call rule + `@pure` unfold.**  `Env` gains
+`Imports` and `Datatypes`.  The `ECall` translator falls back to
+`Imports.findDeclByLeaf` when the local table misses, parses the
+serialised requires/ensures/body via `parseExprFromString`, and
+applies the standard call rule: side-goal the precondition,
+assume the postcondition (with `result := TApp(name, args)`),
+emit `g(args) == body` for `@pure` callees.
+
+**Datatype encoding.**  `registerDatatype` emits SMT-LIB
+`declare-datatypes` for records / unions / enums / opaques on
+first reference.  `EMember` short-circuits to a typed
+`(field receiver)` selector when the receiver sort is a known
+datatype; falls back to `$field.name` otherwise.  `ECall`
+short-circuits to a typed datatype constructor when the name
+matches a record / union case / enum case (named-arg reordering
+by field-list position).
+
+**Decision 3a — loop `invariant:` trailing-clause syntax.**
+
+```
+while c
+  invariant: i >= 0
+  invariant: i <= n
+{ ... }
+```
+
+The parser inserts each clause as a leading `SInvariant`
+statement inside the body block, so the existing `Block` shape
+is unchanged; consumers outside the verifier treat them as no-
+ops.  V0005 now fires only on loops without any invariant.
+
+**Loop wp encoding (§5.3).**  For
+`while c invariant: ι { S }; rest`:
+
+* Establish: side-goal `ι` at the loop point.
+* Preserve: side-goal `ι ∧ c ⇒ wp(realBody, ι)`.
+* Conclude: `wp(rest, Q)` continues under `ι ∧ ¬c`, with loop-
+  modified vars havoc'd to fresh `<name>$loopout` symbols.
+
+**Decision 4a — `var` SSA via forward env-substitution.**  `var`
+bindings now bind like `let`; `SAssign(EPath x, op, value)` re-
+binds `name` to the new translated term.  Compound ops `+=`,
+`-=` etc. expand against the current `x` term.  Loop havoc
+converts modified `var`s to fresh symbolic values constrained
+only by `ι ∧ ¬c` after the loop.
+
+**Decision 5c — goal cache + persistent z3 session.**
+
+* Persistent z3 process per `Driver.proveSourceWithImports`
+  invocation.  Preamble (`set-logic ALL`, `set-option`, `Unit`
+  datatype) sent once.  Each goal: `(push 1) ... (pop 1)` so the
+  declared-const stack is per-goal but datatype + declare-fun
+  declarations persist across goals.
+* Content-hashed cache at `target/<P>/proofs/cache.json`.  Each
+  entry: `{ "<sha256-of-smtlib + z3-version>": "unsat" | "sat:..."
+  | "unknown:..." }`.  Different Z3 versions invalidate the
+  cache automatically.
+* `LYRIC_VERIFY_DEBUG=1` enables session-lifecycle trace.
+
+**End-to-end demo** (`examples/prove_demo.l`) now ships 12
+obligations covering identity, tautology, bumped-by-1,
+cross-function call rule, inline range, assert, match, `@pure`
+unfold, loop establish/preserve/post, var SSA, and record
+construction + field access.  All 12 discharge.
+
+**Backwards-compat:** every M4.1 entry point retained as an
+alias forwarding to the M4.2 imports/cache-aware version with
+`[]` / `None`.
+
+**Tests.**  71 verifier-suite tests (was 63; +8 covering loops,
+var SSA, record encoding, cross-package import shapes).  All
+1141 tests pass solution-wide.
+
+---
+
 ### D-progress-088: protected types — `Box[Int]()` explicit-type-arg construction
 *claude/protected-type-explicit-type-args branch.*  Closes the
 remaining D-progress-086 follow-up: generic protected types can now

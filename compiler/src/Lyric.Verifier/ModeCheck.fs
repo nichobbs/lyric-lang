@@ -123,6 +123,7 @@ let private collectCalls
                 visitExpr iter; visitBlock body
             | SLoop(_, body)     -> visitBlock body
             | SExpr x            -> visitExpr x
+            | SInvariant x       -> visitExpr x
             | SRule(l, r)        -> visitExpr l; visitExpr r
             | SItem _            -> ()
 
@@ -144,25 +145,28 @@ let private collectMissingLoopInvariants
             | ["invariant"] -> true
             | _ -> false)
 
+    // True when a loop body's first statements include at least
+    // one `SInvariant` clause — the parser inserts these at the
+    // head of the body for `while ... invariant: φ { ... }` syntax
+    // (D-progress-086).
+    let bodyHasInvariant (body: Block) : bool =
+        body.Statements
+        |> List.exists (fun s ->
+            match s.Kind with SInvariant _ -> true | _ -> false)
+
     let rec walkBlock (blk: Block) =
         for st in blk.Statements do
             match st.Kind with
             | SFor(_, _, _, body) | SWhile(_, _, body) | SLoop(_, body) ->
-                // Loop annotations live alongside the body's items.
-                // For now we look for an `@invariant(...)` annotation
-                // attached to the loop's enclosing item annotations.
-                // The parser doesn't yet attach loop-level
-                // annotations, so M4.1 reports V0005 on every loop in
-                // proof-required code.  Once the loop-invariant
-                // syntax lands the check inspects the actual clause.
-                let span = st.Span
-                diags.Add(
-                    Diagnostic.error "V0005"
-                        (sprintf "loop in proof-required function '%s' lacks an `invariant:` clause" fnName)
-                        span)
+                if not (bodyHasInvariant body) then
+                    diags.Add(
+                        Diagnostic.error "V0005"
+                            (sprintf "loop in proof-required function '%s' lacks an `invariant:` clause" fnName)
+                            st.Span)
                 walkBlock body
             | SItem _ | SBreak _ | SContinue _ -> ()
             | SLocal _ | SAssign _ | SReturn _ | SThrow _ | SExpr _ | SRule _ -> ()
+            | SInvariant _ -> ()
             | STry(body, catches) ->
                 walkBlock body
                 for c in catches do walkBlock c.Body

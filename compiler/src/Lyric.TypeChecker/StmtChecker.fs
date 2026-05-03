@@ -157,6 +157,13 @@ let rec checkStatement
 
     | SBreak _ | SContinue _ -> ()
 
+    | SInvariant e ->
+        // Loop `invariant:` clause — type-check the expression for
+        // diagnostics only.  The verifier consumes it; the runtime
+        // checker treats it as a no-op.
+        let _ = inferExpr scope table sigs diags e
+        ()
+
     | SExpr e ->
         // Expression statement: infer for diagnostic side effects;
         // discard the value.

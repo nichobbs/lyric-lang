@@ -211,6 +211,7 @@ and private rewriteStatement (aliases: Set<string>) (s: Statement) : Statement =
         | SWhile (l, c, body) ->
             SWhile (l, rewriteExpr aliases c, rewriteBlock aliases body)
         | SLoop (l, body) -> SLoop (l, rewriteBlock aliases body)
+        | SInvariant e -> SInvariant (rewriteExpr aliases e)
         | SExpr e -> SExpr (rewriteExpr aliases e)
         | SRule (lhs, rhs) ->
             SRule (rewriteExpr aliases lhs, rewriteExpr aliases rhs)
