@@ -1061,6 +1061,81 @@ this slice.
 
 ---
 
+## D038: Native stdlib over BCL wrappers — phased migration
+
+**Status:** ACCEPTED
+
+**Decision:** The stdlib's *implementation depth* migrates from
+"Lyric API surface over BCL types and an F# shim" (D035 / the
+`10-stdlib-plan.md` "BCL underneath" stance) to "Lyric API surface
+over Lyric implementations down to a small audited extern kernel."
+The phased plan, language-gap inventory, module-by-module table,
+validation strategy, and perf budgets live in
+`docs/14-native-stdlib-plan.md`. Seven sub-decisions resolved
+together, summarised here:
+
+| Sub-decision | Resolution |
+|---|---|
+| **A: G3 timing** | A1 — land `where` clauses before native module work. |
+| **B: HashMap collisions** | B2 — chaining for first cut. |
+| **C: Perf budget** | C1 — "reasonable" (~2-5× BCL). |
+| **D: Naming** | A — replace (`Std.List[T]` is native; `Std.Bcl.List[T]` for raw BCL). |
+| **E: Tracking** | E1 — D038 (this entry); Q021 opened for G3 specifically. |
+| **F: Kernel cap** | 150 extern declarations as a v1.0 release gate. |
+| **G: Start order** | P0 immediately; G3 begins toward end of P0. |
+
+**Alternatives considered:**
+
+- **Status quo (D035 indefinitely).** Keep the F# shim as the stdlib
+  implementation; add to it as needed. Rejected: forfeits the
+  verification surface (each shim entry is a reasoning black box for
+  the prover), forfeits the range-subtype perf payoff, and pushes
+  the entire stdlib reimplementation cost into Phase 5 self-hosting.
+- **All-Lyric stdlib (no kernel).** Implement everything in Lyric,
+  including transcendentals, regex, JSON tokenizer, TLS. Rejected:
+  multi-year reimplementation of mature, hardware-tuned BCL surfaces
+  with no language-level payoff. Every language has a syscall floor;
+  pretending otherwise is a lie.
+- **Pivot per-module without a plan.** Convert modules opportunistically
+  as language features land. Rejected: leads to inconsistent
+  treatment across the stdlib and no shared budget for the externs
+  that remain. The §3 kernel-and-cap structure forces explicit
+  trade-offs.
+
+**Rationale:**
+
+- **Verification surface.** Native data structures carry invariants
+  (`length >= 0`, `length <= capacity`) the prover sees and uses;
+  `@axiom`-marked extern targets are reasoning black boxes. This is
+  load-bearing for Phase 4 (`docs/05-implementation-plan.md`).
+- **Range-subtype payoff.** A native `List[T]` indexed via
+  `Int range 0 ..= length - 1` discharges bounds checks at compile
+  time per `01-language-reference.md` §2.7. Wrapped BCL types
+  cannot tell this story.
+- **Self-hosting (Phase 5).** Doing data structures in Lyric earlier
+  de-risks the Phase 5 rewrite of the bootstrap compiler in Lyric.
+- **Audit cost is finite.** A hard cap of 150 extern declarations
+  (Decision F) keeps the trusted boundary tractable.
+- **Bootstrap-grade is not v1.0.** D035 explicitly framed the F#
+  shim as a Phase 1 / M1.4 expedient. D038 sets the direction for
+  the post-bootstrap stdlib without contradicting D035.
+
+**Relation to D035:** D038 does not supersede D035. D035 governs
+M1.4-era lowerings (generics, async, FFI shim) shipped in
+*bootstrap-grade* form; D038 governs how those shims are dismantled
+once the language features needed to replace them land. The F# shim
+shrinks across P0-P3 of the §6 plan; the residual is the audited
+kernel of §3.
+
+**Relation to `10-stdlib-plan.md`:** That doc owns *what* the stdlib
+offers (API surface, error model, phasing of Result/Option). D038 +
+`14-native-stdlib-plan.md` own *how deep* each surface is implemented
+in Lyric. Both docs coexist; cross-references added.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

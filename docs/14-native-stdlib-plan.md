@@ -366,105 +366,28 @@ verifiability and perf headroom.
 
 ---
 
-## 10. Decisions required (open)
+## 10. Decisions (resolved)
 
-These need explicit answers before P0 is closed.
+All seven decisions resolved on 2026-05-03; see `docs/03-decision-log.md`
+D038 for the umbrella record. Resolutions reproduced inline.
 
-### Decision A: Order of G3 vs. P0
+| ID | Resolved | Summary |
+|---|---|---|
+| **A** | **A1** | Land G3 (`where` clauses) before any native module work. P0 cleanup proceeds independently; P2 (containers/sort/hash) waits for G3. |
+| **B** | **B2** | HashMap uses chaining for the first cut. Revisit B1 (open addressing) in Phase 3 if benchmarks demand. |
+| **C** | **C1** | "Reasonable" perf budget — §8 "Reasonable target" column (~2-5× BCL). Verifiability and self-hosting are the wins; peak perf is not the differentiator. |
+| **D** | **A (replace)** | Native impl takes the canonical name (`Std.List[T]`); raw BCL access available via `Std.Bcl.List[T]` for users who explicitly want it. Pre-1.0 breakage is acceptable. |
+| **E** | **E1** | Decision log entry D038 added. **Q021** opened in `docs/06-open-questions.md` for G3 specifically; G1/G2/G4 stay tracked in this doc as pure compiler work. |
+| **F** | **150** | Hard cap of 150 extern declarations. Treated as a v1.0 release gate. Expansion past 150 requires this doc to be amended. |
+| **G** | **P0 then G3** | Begin P0 immediately (no language changes required). G3 work begins in parallel with P0's last steps so it lands before P1's primitives consume it. |
 
-`where` clause support (G3) is the single largest gating item (§4.1).
-We can either:
+### Resolved order of operations
 
-- **A1.** Land G3 *before* any native module work begins. P0/P1 just do
-  the cheap moves; P2 starts only once `where` clauses work. Cleanest;
-  3-4 weeks of language work up front.
-- **A2.** Land G3 in parallel with P0 cosmetic work. Saves elapsed time;
-  risks P0 work needing rebase.
-- **A3.** Defer G3 entirely; ship native `IntList`, `StringList`,
-  `IntIntMap`, `StringIntMap` etc. Avoids a language change but
-  re-creates the very `IntList`/`StringList` mess we're trying to
-  delete (`Stdlib.fs:446-528`). **Strongly disrecommended.**
-
-**Recommendation:** A1.
-**You decide:** ___
-
-### Decision B: HashMap collision strategy
-
-- **B1.** Open addressing (linear probing). Fewer allocations, better
-  cache behaviour, harder to get right on resize / deletion (tombstone
-  management).
-- **B2.** Chaining (per-bucket linked list). Easier to implement
-  correctly; more allocation; matches `System.Collections.Generic.Dictionary`'s
-  internal design.
-
-**Recommendation:** B2 for the first cut (correctness > perf for v1.0);
-revisit in Phase 3 if benchmarks demand B1. The native `Std.HashMap` is
-allowed to be slower than BCL `Dictionary` in absolute terms (§8) so
-chaining is fine.
-**You decide:** ___
-
-### Decision C: Performance budget for native containers
-
-How close to BCL must native impls run on day one?
-
-- **C1. Reasonable.** §8 "Reasonable target" column. ~2-5× BCL across
-  the table. Ships v1.0; optimise later.
-- **C2. Aggressive.** §8 "Aggressive" column. ~1.5-2× BCL across the
-  table. Adds 4-6 weeks of perf engineering per module.
-- **C3. Match BCL.** Within 20%. Adds 3-6 months of perf engineering;
-  effectively a research project. **Disrecommended for v1.0.**
-
-**Recommendation:** C1. Verifiability and self-hosting are the wins;
-peak perf on `HashMap.put` is not what differentiates Lyric.
-**You decide:** ___
-
-### Decision D: Naming / migration route
-
-Per §9: replace (Route A) or versioned (Route B)?
-
-**Recommendation:** A.
-**You decide:** ___
-
-### Decision E: Doc home + decision log entry
-
-This plan currently lives at `docs/14-native-stdlib-plan.md`. Two
-follow-ups:
-
-- **E1.** Should the high-level direction also get a decision log
-  entry (`D038: Native stdlib over BCL wrappers`)? D-log is
-  append-only; this is a redirection of D035 / `10-stdlib-plan.md`'s
-  "BCL underneath" stance.
-- **E2.** Should the four open boundary primitives (G1-G4 from §4.1)
-  open as Q021-Q024 in `docs/06-open-questions.md`, or stay tracked
-  here? Q011 (stdlib API surface) is "DEFERRED — Phase 3"; the
-  primitive questions are more concrete.
-
-**Recommendation:** E1 yes (one entry referencing this plan). E2: open
-Q021 only for G3 (`where` clause activation) — that's the language
-decision; G1/G2/G4 are pure compiler work, not design.
-**You decide:** ___
-
-### Decision F: Kernel size budget
-
-§3 estimates ≤120 extern declarations. Should we pick a hard upper
-bound and treat it as a release gate, or leave it advisory?
-
-**Recommendation:** Hard cap of 150 for v1.0. Auditing 150 externs is
-tractable; auditing 500 is not. The cap forces us to push back on
-"just one more extern" pressure during stdlib growth.
-**You decide:** ___
-
-### Decision G: When to start
-
-- **G-now.** Begin P0 immediately on this branch. No language work
-  needed for P0; it's purely cleanup + reorganisation + doc.
-- **G-after-A.** Wait until Decision A is resolved; start everything
-  together.
-
-**Recommendation:** G-now for P0 specifically (it's already de-risked
-and improves the codebase regardless of A). Defer P1+ until A is
-resolved.
-**You decide:** ___
+1. **P0 (now)** — cleanup + `_kernel/` reorganisation. No language changes. See §6 P0.
+2. **G3** — `where`-clause support with the D034 marker set. Begins toward end of P0; tracked as Q021.
+3. **P1** — boundary primitives G1, G2, G4 (G3 already landed in step 2).
+4. **P2** — native containers, sort, hash, all relying on G3.
+5. **P3, P4** — as §6.
 
 ---
 
@@ -487,7 +410,6 @@ resolved.
   (the emitter team owns those).
 - Phase 4 proof-system integration. The native stdlib feeds it; the
   proof work itself is `docs/05-implementation-plan.md` Phase 4.
-- A decision log entry. That's pending Decision E.
 - Migration paths for downstream Lyric users. None exist yet; we're
   pre-1.0.
 
@@ -498,7 +420,10 @@ resolved.
 - `docs/10-stdlib-plan.md` — API surface plan (this doc's sibling).
 - `docs/05-implementation-plan.md` — phasing.
 - `docs/03-decision-log.md` — D034 (constraint markers), D035 (M1.4
-  scope cuts including the F# shim's bootstrap-grade status).
+  scope cuts including the F# shim's bootstrap-grade status), D038
+  (this plan's umbrella decision).
+- `docs/06-open-questions.md` Q021 — `where`-clause activation
+  (the G3 gating item).
 - `docs/09-msil-emission.md` — the lowering rules the boundary
   primitives in §4 will follow.
 - `docs/04-out-of-scope.md` — reflection rejection (relevant to why we
