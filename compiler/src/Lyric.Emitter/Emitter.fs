@@ -967,6 +967,34 @@ let private rwExitReadMI     = rwLockMethod "ExitReadLock"
 let private rwEnterWriteMI   = rwLockMethod "EnterWriteLock"
 let private rwExitWriteMI    = rwLockMethod "ExitWriteLock"
 
+/// Static cache of `System.Threading.SemaphoreSlim` lookups.  Used
+/// for the entry-only branch of Q008's lock-flavour decision: a
+/// protected type that declares no `func` members never benefits
+/// from concurrent reads, so the wrapper drops the
+/// reader-writer-lock cost in favour of a binary
+/// `SemaphoreSlim(1, 1)` (D-progress-083).
+let private semaphoreTy : System.Type = typeof<System.Threading.SemaphoreSlim>
+
+let private semaphoreCtor : Lazy<ConstructorInfo> =
+    lazy (
+        match Option.ofObj (semaphoreTy.GetConstructor([| typeof<int>; typeof<int> |])) with
+        | Some c -> c
+        | None -> failwith "BCL: SemaphoreSlim(int, int) ctor not found")
+
+let private semaphoreWaitMI : Lazy<MethodInfo> =
+    lazy (
+        // SemaphoreSlim has multiple `Wait` overloads — pick the
+        // parameterless one which blocks until the slot is free.
+        match Option.ofObj (semaphoreTy.GetMethod("Wait", [||])) with
+        | Some m -> m
+        | None -> failwith "BCL: SemaphoreSlim.Wait() not found")
+
+let private semaphoreReleaseMI : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (semaphoreTy.GetMethod("Release", [||])) with
+        | Some m -> m
+        | None -> failwith "BCL: SemaphoreSlim.Release() not found")
+
 /// Stash collected during Pass A so Pass B can emit each entry/func's
 /// body wrapped in the lock + barrier + invariant scaffolding.
 ///
@@ -1090,16 +1118,24 @@ let private defineProtectedTypeOnto
         |> Set.ofList
 
     // Lock field — private object, allocated in the ctor.
-    // Lock field — uses `ReaderWriterLockSlim` so concurrent `func`
-    // calls take a read lock and `entry` calls take a write lock
-    // (D-progress-081 / Q008).  Entry-only protected types currently
-    // also use the RWLock for uniformity; switching to
-    // `SemaphoreSlim` for the entry-only case is a minor follow-up
-    // when the perf delta starts showing up in real workloads.
+    // Lock field — Q008 lock-flavour split (D-progress-083):
+    //   * Types with at least one `func` use
+    //     `ReaderWriterLockSlim` so concurrent func reads can run
+    //     in parallel; `entry` calls take the write lock.
+    //   * Entry-only types use a binary `SemaphoreSlim(1, 1)`, a
+    //     simpler always-exclusive lock that's cheaper than the
+    //     reader-writer pair for the no-concurrent-reads case.
+    let usesRwLock =
+        pd.Members
+        |> List.exists (fun m ->
+            match m with
+            | PMFunc _ -> true
+            | _ -> false)
+    let lockFieldType = if usesRwLock then rwLockTy else semaphoreTy
     let lockField =
         tb.DefineField(
             "<>__lock",
-            rwLockTy,
+            lockFieldType,
             FieldAttributes.Private ||| FieldAttributes.InitOnly)
 
     // Default no-arg ctor.  Initializes lock, then every field's
@@ -1122,7 +1158,15 @@ let private defineProtectedTypeOnto
         | Some c -> c
         | None   -> failwith "object's no-arg ctor not found"
     cil.Emit(OpCodes.Ldarg_0)
-    cil.Emit(OpCodes.Newobj, rwLockCtor.Value)
+    if usesRwLock then
+        cil.Emit(OpCodes.Newobj, rwLockCtor.Value)
+    else
+        // SemaphoreSlim(initialCount = 1, maxCount = 1) is the
+        // binary-lock shape — Wait blocks until the single slot is
+        // free; Release returns it.
+        cil.Emit(OpCodes.Ldc_I4_1)
+        cil.Emit(OpCodes.Ldc_I4_1)
+        cil.Emit(OpCodes.Newobj, semaphoreCtor.Value)
     cil.Emit(OpCodes.Stfld, lockField)
     // Field initializers + Ret are emitted in Pass B (the
     // user-written init expressions need a FunctionCtx, which only
@@ -1160,12 +1204,13 @@ let private defineProtectedTypeOnto
               Records.ProtectedField.Type  = fb.FieldType
               Records.ProtectedField.Field = fb })
     let info : Records.ProtectedTypeInfo =
-        { Name      = pd.Name
-          Type      = tb
-          Ctor      = ctor
-          LockField = lockField
-          Fields    = protectedFields
-          Methods   = [] } // methods filled below; pending records the live mb list
+        { Name       = pd.Name
+          Type       = tb
+          Ctor       = ctor
+          LockField  = lockField
+          UsesRwLock = usesRwLock
+          Fields     = protectedFields
+          Methods    = [] } // methods filled below; pending records the live mb list
 
     let defineMethodPair (name: string) (paramList: Param list)
                           (returnTy: TypeExpr option) : MethodBuilder * MethodBuilder * System.Type[] * System.Type =
@@ -3818,15 +3863,25 @@ let private emitAssembly
                     true (Some (p.Owner.Type :> System.Type))
                     programTy wrapResolveType lookup codegenDiags
 
-            // Acquire lock: write mode for `entry`, read mode for
-            // `func` (D-progress-081 / Q008).  Concurrent func
-            // calls can run in parallel; entries are exclusive.
-            let acquireMI =
-                if p.IsEntry then rwEnterWriteMI.Value
-                else rwEnterReadMI.Value
-            let releaseMI =
-                if p.IsEntry then rwExitWriteMI.Value
-                else rwExitReadMI.Value
+            // Acquire lock per Q008's flavour split (D-progress-081
+            // for the RWLock pair, D-progress-083 for the
+            // entry-only SemaphoreSlim case):
+            //   * RWLock types: entries take the write lock; funcs
+            //     take the read lock so concurrent reads run in
+            //     parallel.
+            //   * SemaphoreSlim types (entry-only): every call
+            //     takes the single binary-lock slot via Wait().
+            let acquireMI, releaseMI =
+                if p.Owner.UsesRwLock then
+                    let acq =
+                        if p.IsEntry then rwEnterWriteMI.Value
+                        else rwEnterReadMI.Value
+                    let rel =
+                        if p.IsEntry then rwExitWriteMI.Value
+                        else rwExitReadMI.Value
+                    acq, rel
+                else
+                    semaphoreWaitMI.Value, semaphoreReleaseMI.Value
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, p.LockField)
             il.Emit(OpCodes.Callvirt, acquireMI)

@@ -210,6 +210,14 @@ type ProtectedTypeInfo =
       Type:       TypeBuilder
       Ctor:       ConstructorBuilder
       LockField:  FieldBuilder
+      /// `true` iff the protected type declares at least one `func`
+      /// member.  Per Q008 (`docs/09-msil-emission.md` §17.4) this
+      /// drives the lock-flavour split: types with funcs use
+      /// `ReaderWriterLockSlim` (entries take the write lock; funcs
+      /// take the read lock for concurrent reads); entry-only types
+      /// use a binary `SemaphoreSlim(1, 1)` that's cheaper for the
+      /// always-exclusive case.
+      UsesRwLock: bool
       Fields:     ProtectedField list
       Methods:    ProtectedMethod list }
 
