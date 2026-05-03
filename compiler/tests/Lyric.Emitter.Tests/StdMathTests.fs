@@ -83,6 +83,88 @@ func main(): Unit {
 }
 """,
     "False\nTrue"
+
+    "math_abs_long",
+    """
+package SM7
+import Std.Math
+func main(): Unit {
+  println(toString(absLong(-7i64)))
+  println(toString(absLong(7i64)))
+}
+""",
+    "7\n7"
+
+    "math_pair_min_max_long",
+    """
+package SM8
+import Std.Math
+func main(): Unit {
+  println(toString(minPairLong(3i64, 9i64)))
+  println(toString(maxPairLong(3i64, 9i64)))
+}
+""",
+    "3\n9"
+
+    "math_sign_long",
+    """
+package SM9
+import Std.Math
+func main(): Unit {
+  println(toString(signLong(-3i64)))
+  println(toString(signLong(0i64)))
+  println(toString(signLong(5i64)))
+}
+""",
+    "-1\n0\n1"
+
+    "math_gcd",
+    """
+package SM10
+import Std.Math
+func main(): Unit {
+  println(toString(gcd(12, 18)))
+  println(toString(gcd(7, 13)))
+  println(toString(gcd(0, 5)))
+  println(toString(gcd(0, 0)))
+}
+""",
+    "6\n1\n5\n0"
+
+    "math_gcd_long",
+    """
+package SM11
+import Std.Math
+func main(): Unit {
+  println(toString(gcdLong(48i64, 36i64)))
+  println(toString(gcdLong(1000000007i64, 998244353i64)))
+}
+""",
+    "12\n1"
+
+    "math_lcm",
+    """
+package SM12
+import Std.Math
+func main(): Unit {
+  println(toString(lcm(4, 6)))
+  println(toString(lcm(7, 13)))
+  println(toString(lcm(0, 5)))
+  println(toString(lcm(5, 0)))
+}
+""",
+    "12\n91\n0\n0"
+
+    "math_lcm_long",
+    """
+package SM13
+import Std.Math
+func main(): Unit {
+  println(toString(lcmLong(4i64, 6i64)))
+  println(toString(lcmLong(15i64, 25i64)))
+}
+""",
+    "12\n75"
 ]
 
 let tests =
