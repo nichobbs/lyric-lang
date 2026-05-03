@@ -1,36 +1,30 @@
 // std/time.l - Time and date primitives.
 //
-// Two `extern type` aliases over `System.DateTime` and
-// `System.TimeSpan`; the rest of the surface is `@externTarget`
-// helpers around the canonical BCL operations (UTC now, parsing,
-// arithmetic).
+// User-facing wrappers over `Std.TimeHost` (in `_kernel/`), which
+// owns the trusted boundary against `System.DateTime`,
+// `System.TimeSpan`, `System.DateTimeOffset`, and
+// `System.TimeZoneInfo`.  See `docs/14-native-stdlib-plan.md` §6 P0/4.
 //
-// All times are UTC unless stated otherwise.  The wrapper
-// deliberately avoids local-time conversion to keep behaviour
+// All times are UTC unless stated otherwise.  The wrappers
+// deliberately avoid local-time conversion to keep behaviour
 // reproducible across machines.
+
 package Std.Time
 
 import Std.Core
-
-extern type Instant  = "System.DateTime"
-extern type Duration = "System.TimeSpan"
+import Std.TimeHost     // brings `Instant`, `Duration`, … and `host*` fns into scope
 
 // =====================================================================
 // Construction.
 // =====================================================================
 
 /// Current UTC time.
-@externTarget("System.DateTime.UtcNow")
-pub func now(): Instant = ()
+pub func now(): Instant { hostNow() }
 
 /// `TimeSpan.Zero` — useful as a fold initial value.
-@externTarget("System.TimeSpan.Zero")
-pub func zeroDuration(): Duration = ()
+pub func zeroDuration(): Duration { hostZeroDuration() }
 
 /// Parse an ISO-8601-ish timestamp; returns `None` if the BCL refuses.
-@externTarget("System.DateTime.TryParse")
-pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
-
 pub func parseOptInstant(s: in String): Option[Instant] {
   var v: Instant = default()
   if hostTryParseInstant(s, v) { Some(value = v) } else { None }
@@ -40,20 +34,11 @@ pub func parseOptInstant(s: in String): Option[Instant] {
 // Duration constructors (in fractional milliseconds, seconds, etc.).
 // =====================================================================
 
-@externTarget("System.TimeSpan.FromMilliseconds")
-pub func millis(n: in Double): Duration = ()
-
-@externTarget("System.TimeSpan.FromSeconds")
-pub func seconds(n: in Double): Duration = ()
-
-@externTarget("System.TimeSpan.FromMinutes")
-pub func minutes(n: in Double): Duration = ()
-
-@externTarget("System.TimeSpan.FromHours")
-pub func hours(n: in Double): Duration = ()
-
-@externTarget("System.TimeSpan.FromDays")
-pub func days(n: in Double): Duration = ()
+pub func millis(n: in Double): Duration  { hostMillis(n) }
+pub func seconds(n: in Double): Duration { hostSeconds(n) }
+pub func minutes(n: in Double): Duration { hostMinutes(n) }
+pub func hours(n: in Double): Duration   { hostHours(n) }
+pub func days(n: in Double): Duration    { hostDays(n) }
 
 // =====================================================================
 // Duration arithmetic.
@@ -62,21 +47,20 @@ pub func days(n: in Double): Duration = ()
 // Lyric users see `since(later, earlier)` to avoid op-name surprise.
 // =====================================================================
 
-@externTarget("System.DateTime.op_Subtraction")
-pub func since(later: in Instant, earlier: in Instant): Duration = ()
+pub func since(later: in Instant, earlier: in Instant): Duration {
+  hostSince(later, earlier)
+}
 
-@externTarget("System.DateTime.op_Addition")
-pub func plus(t: in Instant, d: in Duration): Instant = ()
+pub func plus(t: in Instant, d: in Duration): Instant {
+  hostPlus(t, d)
+}
 
 // =====================================================================
 // Inspection.
 // =====================================================================
 
-@externTarget("System.TimeSpan.TotalMilliseconds")
-pub func totalMillis(d: in Duration): Double = ()
-
-@externTarget("System.TimeSpan.TotalSeconds")
-pub func totalSeconds(d: in Duration): Double = ()
+pub func totalMillis(d: in Duration): Double  { hostTotalMillis(d) }
+pub func totalSeconds(d: in Duration): Double { hostTotalSeconds(d) }
 
 // =====================================================================
 // Calendar arithmetic.
@@ -87,14 +71,17 @@ pub func totalSeconds(d: in Duration): Double = ()
 // than naive 30-day-per-month addition.  Returns the new `Instant`.
 // =====================================================================
 
-@externTarget("System.DateTime.AddMonths")
-pub func addMonths(t: in Instant, n: in Int): Instant = ()
+pub func addMonths(t: in Instant, n: in Int): Instant {
+  hostAddMonths(t, n)
+}
 
-@externTarget("System.DateTime.AddYears")
-pub func addYears(t: in Instant, n: in Int): Instant = ()
+pub func addYears(t: in Instant, n: in Int): Instant {
+  hostAddYears(t, n)
+}
 
-@externTarget("System.DateTime.AddDays")
-pub func addDays(t: in Instant, n: in Double): Instant = ()
+pub func addDays(t: in Instant, n: in Double): Instant {
+  hostAddDays(t, n)
+}
 
 // =====================================================================
 // Epoch conversions (Unix milliseconds <-> DateTime).
@@ -105,16 +92,17 @@ pub func addDays(t: in Instant, n: in Double): Instant = ()
 // the conversion as a one-call operation.
 // =====================================================================
 
-extern type DateTimeOffset = "System.DateTimeOffset"
+pub func dtoFromEpochMillis(n: in Long): DateTimeOffset {
+  hostDtoFromEpochMillis(n)
+}
 
-@externTarget("System.DateTimeOffset.FromUnixTimeMilliseconds")
-pub func dtoFromEpochMillis(n: in Long): DateTimeOffset = ()
+pub func dtoFromEpochSeconds(n: in Long): DateTimeOffset {
+  hostDtoFromEpochSeconds(n)
+}
 
-@externTarget("System.DateTimeOffset.FromUnixTimeSeconds")
-pub func dtoFromEpochSeconds(n: in Long): DateTimeOffset = ()
-
-@externTarget("System.DateTimeOffset.UtcDateTime")
-pub func dtoUtcDateTime(d: in DateTimeOffset): Instant = ()
+pub func dtoUtcDateTime(d: in DateTimeOffset): Instant {
+  hostDtoUtcDateTime(d)
+}
 
 /// Construct an `Instant` from a Unix epoch-millis value.  Lyric-side
 /// composes the two BCL calls so callers see a single helper.
@@ -141,10 +129,9 @@ pub func fromEpochSeconds(n: in Long): Instant {
 // (UTC <-> zoned, DST detection) wait until programs need them.
 // =====================================================================
 
-extern type TimeZone = "System.TimeZoneInfo"
-
-@externTarget("System.TimeZoneInfo.FindSystemTimeZoneById")
-pub func hostFindTimeZone(id: in String): TimeZone = ()
+pub func findTimeZone(id: in String): TimeZone {
+  hostFindTimeZone(id)
+}
 
 // =====================================================================
 // Comparison.
@@ -155,26 +142,33 @@ pub func hostFindTimeZone(id: in String): TimeZone = ()
 // where operators don't always lower cleanly.
 // =====================================================================
 
-@externTarget("System.DateTime.op_LessThan")
-pub func instantBefore(a: in Instant, b: in Instant): Bool = ()
+pub func instantBefore(a: in Instant, b: in Instant): Bool {
+  hostInstantBefore(a, b)
+}
 
-@externTarget("System.DateTime.op_GreaterThan")
-pub func instantAfter(a: in Instant, b: in Instant): Bool = ()
+pub func instantAfter(a: in Instant, b: in Instant): Bool {
+  hostInstantAfter(a, b)
+}
 
-@externTarget("System.DateTime.op_Equality")
-pub func instantEquals(a: in Instant, b: in Instant): Bool = ()
+pub func instantEquals(a: in Instant, b: in Instant): Bool {
+  hostInstantEquals(a, b)
+}
 
-@externTarget("System.TimeSpan.op_LessThan")
-pub func durationLess(a: in Duration, b: in Duration): Bool = ()
+pub func durationLess(a: in Duration, b: in Duration): Bool {
+  hostDurationLess(a, b)
+}
 
-@externTarget("System.TimeSpan.op_GreaterThan")
-pub func durationGreater(a: in Duration, b: in Duration): Bool = ()
+pub func durationGreater(a: in Duration, b: in Duration): Bool {
+  hostDurationGreater(a, b)
+}
 
-@externTarget("System.TimeSpan.op_Addition")
-pub func addDurations(a: in Duration, b: in Duration): Duration = ()
+pub func addDurations(a: in Duration, b: in Duration): Duration {
+  hostAddDurations(a, b)
+}
 
-@externTarget("System.TimeSpan.op_Subtraction")
-pub func subDurations(a: in Duration, b: in Duration): Duration = ()
+pub func subDurations(a: in Duration, b: in Duration): Duration {
+  hostSubDurations(a, b)
+}
 
 // =====================================================================
 // ISO-8601 formatting.
@@ -184,9 +178,6 @@ pub func subDurations(a: in Duration, b: in Duration): Duration = ()
 // Instants).  The "o" format specifier guarantees the inverse round
 // trip via `parseOptInstant`.
 // =====================================================================
-
-@externTarget("System.Convert.ToString")
-func hostInstantToString(value: in Instant): String = ()
 
 /// Format an `Instant` as an ISO-8601 round-trippable string.
 pub func toIsoString(t: in Instant): String {
