@@ -190,6 +190,40 @@ let tests =
             | Discharged | Unknown _ -> ()
         }
 
+        test "non-@pure callee does NOT unfold (only post is assumed)" {
+            // Without @pure, the verifier sees only the
+            // postcondition `result == x + x` for the callee, not
+            // the body.  The wrapper here would fail to discharge
+            // because there's no postcondition on `helper` to
+            // assume — only the post-as-assumption mechanism applies.
+            // This is the soundness boundary: only @pure may be
+            // unfolded.
+            let src = """
+                @proof_required
+                package P
+
+                pub func helper(x: Int): Int = x + x
+
+                pub func wrapper(x: Int): Int
+                  ensures: result == helper(x)
+                  = x + x
+                """
+            let summary = prove src
+            // The post `result == helper(x)` at the call site
+            // becomes `(x+x) == helper(x)` which Z3 proves only if
+            // it can see the body — which it can't since helper
+            // isn't @pure and has no contract.  Outcome: not
+            // Discharged via the trivial discharger; either Unknown
+            // (no z3) or Counterexample (z3 finds a model).
+            let r =
+                summary.Results
+                |> List.find (fun r -> r.Goal.Label.StartsWith "wrapper")
+            match r.Outcome with
+            | Discharged ->
+                failtest "non-@pure callee should not be unfolded"
+            | Counterexample _ | Unknown _ -> ()
+        }
+
         test "@pure callee unfolds one level at the call site" {
             // The trivial discharger can't relate `double(x)` to
             // `x + x` without help.  When `double` is `@pure` and

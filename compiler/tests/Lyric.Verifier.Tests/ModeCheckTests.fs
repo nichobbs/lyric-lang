@@ -126,6 +126,36 @@ let tests =
             Expect.isFalse (hasDiag "V0006" diags) "no V0006 for Bool quantifier"
         }
 
+        test "exists over Int in proof-required code is also V0006" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func bad(x: Int): Bool
+                  ensures: exists (k: Int) { k == x }
+                {
+                  return true
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isTrue (hasDiag "V0006" diags) "V0006 also fires on exists"
+        }
+
+        test "nested forall with one bounded and one unbounded binder is V0006" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func bad(xs: slice[Int]): Bool
+                  ensures: forall (xs: slice[Int], k: Int) { k == k }
+                {
+                  return true
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isTrue (hasDiag "V0006" diags) "unbounded k in nested forall"
+        }
+
         test "@runtime_checked package admits unbounded quantifiers" {
             // V0006 only fires inside proof-required modules.
             let src = """
