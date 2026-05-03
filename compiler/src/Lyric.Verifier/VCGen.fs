@@ -850,7 +850,7 @@ let rec private wpExpr
       Diags     = diags }
 
 /// wp over a function body (FBExpr or FBBlock with simple shape).
-let wpBody
+let rec wpBody
         (env: Env)
         (resultSort: SortInfo)
         (q: Term -> Term)
@@ -933,12 +933,203 @@ let wpBody
                       SideGoals = inner.SideGoals
                       Assumed = initT.Assumed @ inner.Assumed
                       Diags = initDiags @ inner.Diags }
-                | LBVar _ ->
+                | LBVar(name, _, Some init) ->
+                    // Decision 4a (M4.2): `var` bindings work like
+                    // `let` for the purposes of forward-substitution
+                    // wp.  Re-assignments later in the block produce
+                    // a fresh entry in the env (handled in the
+                    // SAssign arm), which is the SSA-without-counter
+                    // shape — sound for straight-line code; loops
+                    // need an explicit havoc step (handled in the
+                    // SWhile arm).
+                    let initT, initDiags = translateExpr env init
+                    let info =
+                        let s = Term.sortOf initT.Term
+                        { Sort = s; Range = RBKNone }
+                    let env' = Env.bindTerm name initT.Term info env
+                    let inner = walk env' rest
+                    { Wp = inner.Wp
+                      SideGoals = inner.SideGoals
+                      Assumed = initT.Assumed @ inner.Assumed
+                      Diags = initDiags @ inner.Diags }
+                | LBVar(name, _, None) ->
+                    // Uninitialised var: bind to a fresh symbolic
+                    // value of the right sort (via TVar).  This is
+                    // sound because the type checker requires the
+                    // var to be assigned before any use.
+                    let info =
+                        // Best-effort: SInt for unannotated.
+                        { Sort = SInt; Range = RBKNone }
+                    let env' = Env.bind name info env
+                    let inner = walk env' rest
+                    inner
+            | { Kind = SAssign(target, op, value) } :: rest ->
+                // Decision 4a forward-substitution: `x = e2` rebinds
+                // `x` in the env to `translate(e2)`.  Compound ops
+                // (`+=` etc.) lower to `x = x + e2` shape using the
+                // current `x` term.  Anything other than a single
+                // identifier on the lhs is a bootstrap limitation
+                // (records, indexers — M4.2+ work).
+                match target.Kind with
+                | EPath p when (match p.Segments with [_] -> true | _ -> false) ->
+                    let name = List.head p.Segments
+                    let rhsT, rhsDiags = translateExpr env value
+                    let combined =
+                        match op with
+                        | AssEq -> rhsT.Term
+                        | _ ->
+                            let existing =
+                                Env.lookup name env
+                                |> Option.defaultValue (TVar(name, SInt))
+                            let bin =
+                                match op with
+                                | AssPlus    -> BOpAdd
+                                | AssMinus   -> BOpSub
+                                | AssStar    -> BOpMul
+                                | AssSlash   -> BOpDiv
+                                | AssPercent -> BOpMod
+                                | AssEq      -> BOpAdd
+                            TBuiltin(bin, [existing; rhsT.Term])
+                    let info =
+                        Env.lookupSort name env
+                        |> Option.defaultValue
+                            { Sort = Term.sortOf combined; Range = RBKNone }
+                    let env' = Env.bindTerm name combined info env
+                    let inner = walk env' rest
+                    { Wp        = inner.Wp
+                      SideGoals = inner.SideGoals
+                      Assumed   = rhsT.Assumed @ inner.Assumed
+                      Diags     = rhsDiags @ inner.Diags }
+                | _ ->
                     let diag =
-                        Diagnostic.warning "V0025"
-                            "`var` bindings not yet supported in M4.1 verifier"
-                            (List.head stmts).Span
-                    { Wp = Term.trueT; SideGoals = []; Assumed = []; Diags = [diag] }
+                        Diagnostic.warning "V0026"
+                            "complex assignment target not yet supported in proof body"
+                            target.Span
+                    let inner = walk env rest
+                    { Wp = inner.Wp
+                      SideGoals = inner.SideGoals
+                      Assumed = inner.Assumed
+                      Diags = diag :: inner.Diags }
+            | { Kind = SWhile(_, cond, body) } as loopStmt :: rest ->
+                // Loop encoding (`15-phase-4-proof-plan.md` §5.3 +
+                // decision 3a).  The parser prepends each
+                // `invariant: φ` as an SInvariant statement at the
+                // head of the body block, so the wp walker pulls them
+                // out here:
+                //
+                //   ι := conjunction of leading SInvariant clauses
+                //   establish: side-goal `ι` at the loop point.
+                //   preserve:  side-goal `ι ∧ c ⇒ wp(realBody, ι)`.
+                //   conclude:  `wp(rest, Q)` continues under the
+                //              assumption `ι ∧ ¬c` (havoc is bootstrap-
+                //              grade — the conclude env carries the
+                //              current vars; full havoc lands with
+                //              the SSA pass, decision 4a).
+                let isInvariant (s: Statement) =
+                    match s.Kind with SInvariant _ -> true | _ -> false
+                let invStmts, realBody =
+                    body.Statements |> List.partition isInvariant
+                let invTriples =
+                    invStmts
+                    |> List.choose (fun s ->
+                        match s.Kind with
+                        | SInvariant e -> Some e
+                        | _ -> None)
+                    |> List.map (translateContract env)
+                let invTerms = invTriples |> List.map (fun (t, _, _) -> t)
+                let invDiags =
+                    invTriples |> List.collect (fun (_, _, d) -> d)
+                let iotaT = Term.mkAnd invTerms
+
+                // wp(realBody, ι): emit a side goal that the body
+                // re-establishes the invariant.  Use a fresh inner
+                // wpBody walk under the same env (no var mutation
+                // tracking yet).
+                let realBodyBlock = { body with Statements = realBody }
+                let condT, condDiags = translateExpr env cond
+                let preserveQ (_: Term) : Term = iotaT
+                let bodyWp =
+                    wpBody env resultSort preserveQ (FBBlock realBodyBlock)
+                // The preserve side goal: under `ι ∧ c`, the body's
+                // wp must hold (which equals ι by construction of
+                // preserveQ).  We package this as one goal.
+                let preserveCond =
+                    Term.mkImplies
+                        (Term.mkAnd [iotaT; condT.Term])
+                        bodyWp.Wp
+
+                // Decision 4a — havoc step.  Find every name in the
+                // env whose body assignment changes its term, and
+                // rebind it to a fresh universal `<name>$loopout`
+                // value in the env that wp(rest, Q) sees.  The
+                // post-loop assumptions `ι ∧ ¬c` then constrain the
+                // havoc'd vars.  Bootstrap shape: we walk the body's
+                // SAssign targets directly (no transitive aliasing
+                // analysis).
+                let modifiedVars =
+                    let names = ResizeArray<string>()
+                    let rec walkBlk (b: Block) =
+                        for s in b.Statements do walkSt s
+                    and walkSt (s: Statement) =
+                        match s.Kind with
+                        | SAssign(t, _, _) ->
+                            match t.Kind with
+                            | EPath p ->
+                                match p.Segments with
+                                | [n] -> names.Add n
+                                | _ -> ()
+                            | _ -> ()
+                        | STry(b, _) | SDefer b
+                        | SScope(_, b) | SLoop(_, b) -> walkBlk b
+                        | SFor(_, _, _, b) | SWhile(_, _, b) -> walkBlk b
+                        | _ -> ()
+                    walkBlk realBodyBlock
+                    names |> Seq.distinct |> List.ofSeq
+                let envAfterHavoc =
+                    modifiedVars
+                    |> List.fold
+                        (fun env name ->
+                            let info =
+                                Env.lookupSort name env
+                                |> Option.defaultValue
+                                    { Sort = SInt; Range = RBKNone }
+                            let havocName = sprintf "%s$loopout" name
+                            Env.bindTerm name
+                                (TVar(havocName, info.Sort)) info env)
+                        env
+                // Re-translate the loop's invariant + condition in
+                // the post-havoc env so the assumptions `ι ∧ ¬c`
+                // reference the havoc'd names.
+                let iotaPostT, _, _ =
+                    let acc =
+                        invStmts
+                        |> List.choose (fun s ->
+                            match s.Kind with
+                            | SInvariant e -> Some e
+                            | _ -> None)
+                        |> List.map (translateContract envAfterHavoc)
+                    let ts = acc |> List.map (fun (t, _, _) -> t)
+                    let ass = acc |> List.collect (fun (_, a, _) -> a)
+                    let ds  = acc |> List.collect (fun (_, _, d) -> d)
+                    Term.mkAnd ts, ass, ds
+                let condPostT, _ = translateExpr envAfterHavoc cond
+                let postLoopAssumed =
+                    [ iotaPostT; Term.mkNot condPostT.Term ]
+                let inner = walk envAfterHavoc rest
+
+                { Wp        = inner.Wp
+                  SideGoals =
+                      (iotaT, GKLoopEstablish, loopStmt.Span)
+                      :: (preserveCond, GKLoopPreserve, loopStmt.Span)
+                      :: bodyWp.SideGoals
+                      @  inner.SideGoals
+                  Assumed   =
+                      condT.Assumed
+                      @ bodyWp.Assumed
+                      @ postLoopAssumed
+                      @ inner.Assumed
+                  Diags     =
+                      invDiags @ condDiags @ bodyWp.Diags @ inner.Diags }
             | st :: _ ->
                 let diag =
                     Diagnostic.warning "V0026"

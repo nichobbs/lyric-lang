@@ -1318,14 +1318,20 @@ and private parseStatement
                 "expected 'in' in for-loop"
                 (Cursor.peekSpan cursor)
         let iter = parseExpr cursor diags
-        let body = parseBlock cursor diags
+        let invariants = parseLoopInvariants cursor diags
+        let body =
+            parseBlock cursor diags
+            |> prependLoopInvariants invariants
         mkStmt (SFor(None, pat, iter, body))
             (joinSpans startSpan body.Span)
 
     | TKeyword KwWhile ->
         Cursor.advance cursor |> ignore
         let cond = parseExpr cursor diags
-        let body = parseBlock cursor diags
+        let invariants = parseLoopInvariants cursor diags
+        let body =
+            parseBlock cursor diags
+            |> prependLoopInvariants invariants
         mkStmt (SWhile(None, cond, body))
             (joinSpans startSpan body.Span)
 
@@ -2265,6 +2271,41 @@ and private parseInvariantClause
     let expr = parseExpr cursor diags
     { Expr = expr
       Span = joinSpans startTok.Span expr.Span }
+
+/// Parse zero-or-more `invariant: <expr>` clauses between a loop's
+/// header and its body block.  Trailing-clause syntax — Phase 4
+/// decision 3a, see `docs/15-phase-4-proof-plan.md`.  Tolerates
+/// STMT_END separators between clauses (e.g. when the user puts
+/// each `invariant:` on its own line).
+and private parseLoopInvariants
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : InvariantClause list =
+    let xs = ResizeArray<InvariantClause>()
+    let mutable keepGoing = true
+    while keepGoing do
+        Cursor.skipStmtEnds cursor |> ignore
+        match Cursor.peekToken cursor with
+        | TKeyword KwInvariant ->
+            xs.Add(parseInvariantClause cursor diags)
+        | _ -> keepGoing <- false
+    List.ofSeq xs
+
+/// Prepend a list of loop `invariant:` clauses to a body block as
+/// `SInvariant` statements so downstream consumers (the verifier
+/// in particular) see them in source order.
+and private prependLoopInvariants
+        (invariants: InvariantClause list)
+        (body: Block) : Block =
+    if List.isEmpty invariants then body
+    else
+        let invStmts =
+            invariants
+            |> List.map (fun inv ->
+                { Kind = SInvariant inv.Expr
+                  Span = inv.Span })
+        { body with
+            Statements = invStmts @ body.Statements }
 
 // ---------------------------------------------------------------------------
 // P5b: type-shaped item bodies.

@@ -918,6 +918,7 @@ and private desugarStmts
                 currentShadow <- Set.add n currentShadow
                 SLocal (LBVar (n, ann, None))
             | SBreak _ | SContinue _ | SItem _ -> s.Kind
+            | SInvariant e -> SInvariant (recurExpr e)
             | SRule (lhs, rhs) ->
                 SRule (recurExpr lhs, recurExpr rhs)
             | STry (body, catches) ->

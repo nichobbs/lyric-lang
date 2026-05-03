@@ -653,6 +653,11 @@ and StatementKind =
     | SFor         of label: string option * pat: Pattern * iter: Expr * body: Block
     | SWhile       of label: string option * cond: Expr * body: Block
     | SLoop        of label: string option * body: Block        // `do { … }`
+    /// `invariant: φ` clause attached to a loop.  The parser
+    /// inserts these as the first statements of the loop body so the
+    /// existing `Block` shape is unchanged.  Consumers outside the
+    /// verifier treat them as no-ops.  (Phase 4 / D-progress-086.)
+    | SInvariant   of ContractExpr
     | SExpr        of Expr
     /// `lhs -> rhs` — stub-builder DSL rule entry inside a `{ … }`
     /// lambda body, e.g. `it.findById(x) -> Some(y)`. Carried as an

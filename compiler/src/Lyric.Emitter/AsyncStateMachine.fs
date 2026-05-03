@@ -101,6 +101,7 @@ and private stmtHasAwait (s: Statement) : bool =
     | SFor (_, _, iter, body) -> exprHasAwait iter || blockHasAwait body
     | SWhile (_, cond, body) -> exprHasAwait cond || blockHasAwait body
     | SRule (lhs, rhs) -> exprHasAwait lhs || exprHasAwait rhs
+    | SInvariant _ -> false  // proof-only; never contains await
     | SItem _ -> false
 
 /// Public re-export so Codegen.fs's SFor handler can detect a body
@@ -204,6 +205,7 @@ and private isSafeStmt (s: Statement) : bool =
     | SAssign (target, _, value) ->
         not (exprHasAwait target) && isSafeExprPosition value
     | SReturn None | SBreak _ | SContinue _ | SItem _ | SRule _ -> true
+    | SInvariant _ -> true
     | SReturn (Some e) -> isSafeExprPosition e
     // Phase B+ control-flow extensions: `while` and `loop` whose
     // body statements are each in safe position (and whose
@@ -729,6 +731,7 @@ let rec private rewriteStmt
             SLocal (LBVar (n, ann, Some (spillAwaits sigOf sp init)))
         | SLocal (LBVar (_, _, None) as lb) -> SLocal lb
         | SBreak _ | SContinue _ as k -> k
+        | SInvariant _ as k -> k
         | SItem _ as k -> k
         | SRule (lhs, rhs) ->
             SRule (spillAwaits sigOf sp lhs, spillAwaits sigOf sp rhs)
@@ -937,6 +940,7 @@ let collectAwaitInners (fn: FunctionDecl) : Expr list =
         | SFor (_, _, iter, body) -> walkExpr iter; walkBlock body
         | SWhile (_, cond, body) -> walkExpr cond; walkBlock body
         | SRule (lhs, rhs) -> walkExpr lhs; walkExpr rhs
+        | SInvariant _ -> ()
         | SItem _ -> ()
     match fn.Body with
     | None -> ()
