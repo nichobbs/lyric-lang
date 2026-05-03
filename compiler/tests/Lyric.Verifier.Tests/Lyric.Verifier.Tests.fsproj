@@ -10,6 +10,7 @@
     <Compile Include="ModeCheckTests.fs" />
     <Compile Include="VcirTests.fs" />
     <Compile Include="SmtTests.fs" />
+    <Compile Include="SolverTests.fs" />
     <Compile Include="DriverTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -10,6 +10,7 @@ let main argv =
             ModeCheckTests.tests
             VcirTests.tests
             SmtTests.tests
+            SolverTests.tests
             DriverTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

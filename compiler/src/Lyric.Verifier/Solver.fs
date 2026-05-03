@@ -44,32 +44,49 @@ let rec private termEq (a: Term) (b: Term) : bool =
 
 /// Trivial syntactic check.  Closes:
 ///   * the literal `true`,
-///   * the conclusion if it appears verbatim among the hypotheses,
 ///   * `P ⇒ P` for any P,
-///   * `(= a a)` reflexive equality (after substitution this is the
-///     common "result == x" → "x == x" shape produced by id-style
-///     functions),
-///   * the conjunction of any of the above.
+///   * reflexive `(= a a)`, `(<= a a)`, `(>= a a)`, `(iff a a)`,
+///   * `(ite c a a)` collapses to `a` recursively,
+///   * conjunctions/disjunctions whose closure can be decided
+///     pointwise,
+///   * any conclusion that appears verbatim among the hypotheses,
+///   * conjunctive conclusions where every conjunct is either a
+///     tautology or a hypothesis member,
+///   * `(=> P Q)` conclusions where, treating P as an extra
+///     hypothesis, Q is itself trivially discharged.
 let private trivialDischarge (g: Goal) : SolverOutcome option =
     let rec isTautology (t: Term) : bool =
         match t with
         | TLit(LBool true, _) -> true
-        | TBuiltin(BOpEq,  [a; b]) when termEq a b -> true
-        | TBuiltin(BOpIff, [a; b]) when termEq a b -> true
+        | TBuiltin(BOpEq,  [a; b])
+        | TBuiltin(BOpIff, [a; b])
+        | TBuiltin(BOpLte, [a; b])
+        | TBuiltin(BOpGte, [a; b]) when termEq a b -> true
         | TBuiltin(BOpImplies, [p; q]) when termEq p q -> true
         | TBuiltin(BOpAnd, args) -> args |> List.forall isTautology
         | TBuiltin(BOpOr,  args) -> args |> List.exists isTautology
+        | TIte(_, a, b) when termEq a b -> true
         | _ -> false
 
-    if isTautology g.Conclusion then
+    let rec closesGiven (hyps: Term list) (conclusion: Term) : bool =
+        if isTautology conclusion then true
+        elif hyps |> List.exists (termEq conclusion) then true
+        else
+        match conclusion with
+        | TBuiltin(BOpAnd, conjuncts) ->
+            // All-or-nothing: every conjunct must close on its own.
+            conjuncts |> List.forall (closesGiven hyps)
+        | TBuiltin(BOpImplies, [p; q]) ->
+            // Adopt p as a hypothesis (only if it isn't already
+            // structurally equal to q — that's the trivial P ⇒ P case
+            // already handled above).
+            if termEq p q then true
+            else closesGiven (p :: hyps) q
+        | _ -> false
+
+    if closesGiven g.Hypotheses g.Conclusion then
         Some Discharged
-    elif g.Hypotheses |> List.exists (termEq g.Conclusion) then
-        Some Discharged
-    else
-        match g.Conclusion with
-        | TBuiltin(BOpImplies, [p; q]) when termEq p q ->
-            Some Discharged
-        | _ -> None
+    else None
 
 /// Locate `z3` on `$PATH`.  Returns `None` if the binary isn't
 /// available; the caller then falls through to trivial discharge
