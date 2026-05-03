@@ -600,14 +600,17 @@ progress-per-session and dependency unblocking:
     attacker-controlled regex inputs.
 14. **C4 phase 2/3 — score-based matching, special shapes.**  Pulls
     in as user programs hit cases that strict match misses.
-15. **C8 build-time consumer of restored packages.**  `lyric
-    build` today walks the in-tree stdlib via `LYRIC_STD_PATH`;
-    once a real Lyric package is published to NuGet (D-progress-077
-    landed the publish/restore wrappers), the build needs to read
-    the restored DLL's embedded `Lyric.Contract` resource
-    (D-progress-031) and feed its surface into the import resolver
-    instead of re-parsing source.  ~1 session once a real
-    third-party package exists to drive the test loop.
+15. ~~**C8 build-time consumer of restored packages.**~~ — shipped
+    via D-progress-078.  `lyric build --manifest <lyric.toml>` (or
+    auto-discovered next to the source) now resolves
+    `import <Pkg>` declarations against restored Lyric packages
+    by reading their embedded `Lyric.Contract` resource
+    (D-progress-031), without needing to re-parse the package's
+    source.  Cross-package symbol references inside a contract
+    Repr (e.g. `Result[Int, ParseError]` from `Std.Core`) still
+    require the consumer's source to also `import Std.Core`;
+    enriching the contract format with explicit re-exports is a
+    follow-up.
 16. **Generic interface methods + impl-block generics.**  The
     grammar accepts `impl[T] Foo for Bar[T] { func[U] foo(): U }`
     but neither the type checker nor the emitter wires the generics

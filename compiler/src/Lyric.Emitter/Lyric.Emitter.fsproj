@@ -9,6 +9,7 @@
     <Compile Include="TypeMap.fs" />
     <Compile Include="Records.fs" />
     <Compile Include="ContractMeta.fs" />
+    <Compile Include="RestoredPackages.fs" />
     <Compile Include="AsyncStateMachine.fs" />
     <Compile Include="Codegen.fs" />
     <Compile Include="Emitter.fs" />

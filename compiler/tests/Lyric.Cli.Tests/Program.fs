@@ -8,5 +8,6 @@ let main argv =
         testList "Lyric.Cli" [
             ManifestTests.tests
             PackTests.tests
+            RestoredPackagesTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
