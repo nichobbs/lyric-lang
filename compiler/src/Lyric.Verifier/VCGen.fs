@@ -258,24 +258,35 @@ let rec translateExpr (env: Env) (e: Expr)
                 // can do equational reasoning on the body.
                 // (`15-phase-4-proof-plan.md` §5.5; one-level unfold.)
                 let pureUnfold : Term list =
-                    if isPure decl then
+                    if not (isPure decl) then []
+                    else
+                    let bodyExprOpt =
                         match decl.Body with
-                        | Some(FBExpr e) ->
-                            // Translate body in a fresh env that has
-                            // the params bound, then substitute caller
-                            // args for the formal parameters.
-                            let pureEnv =
-                                decl.Params
-                                |> List.fold
-                                    (fun env p ->
-                                        let info = sortOfTypeExpr p.Type
-                                        Env.bind p.Name info env)
-                                    (Env.empty ())
-                            let bodyT, _ = translateExpr pureEnv e
-                            let bodySubst = Term.subst paramSubst bodyT.Term
-                            [ TBuiltin(BOpEq, [callTerm; bodySubst]) ]
-                        | _ -> []
-                    else []
+                        | Some(FBExpr e) -> Some e
+                        // Block-form `{ return e }` is treated as
+                        // FBExpr e for the purposes of unfold.
+                        | Some(FBBlock blk) ->
+                            match blk.Statements with
+                            | [{ Kind = SReturn(Some e) }] -> Some e
+                            | [{ Kind = SExpr e }]         -> Some e
+                            | _ -> None
+                        | None -> None
+                    match bodyExprOpt with
+                    | None -> []
+                    | Some bodyExpr ->
+                        // Translate body in a fresh env that has
+                        // the params bound, then substitute caller
+                        // args for the formal parameters.
+                        let pureEnv =
+                            decl.Params
+                            |> List.fold
+                                (fun env p ->
+                                    let info = sortOfTypeExpr p.Type
+                                    Env.bind p.Name info env)
+                                (Env.empty ())
+                        let bodyT, _ = translateExpr pureEnv bodyExpr
+                        let bodySubst = Term.subst paramSubst bodyT.Term
+                        [ TBuiltin(BOpEq, [callTerm; bodySubst]) ]
 
                 // Translate every requires clause into a side
                 // condition (substituted with the caller's args).
