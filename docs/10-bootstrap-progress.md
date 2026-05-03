@@ -89,6 +89,35 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-083: protected types — `SemaphoreSlim` for entry-only types (Q008 split)
+*claude/protected-type-semaphore branch.*  Closes the second half
+of Q008's lock-flavour decision (`docs/09-msil-emission.md` §17.4):
+protected types that declare no `func` members now lock through a
+binary `SemaphoreSlim(1, 1)` instead of the heavier
+`ReaderWriterLockSlim`.  Mixed types (with at least one `func`)
+keep the RWLock from D-progress-081 so concurrent reads still run
+in parallel.
+
+The split is detected at codegen time by scanning `pd.Members` for
+any `PMFunc`.  `defineProtectedTypeOnto` carries the boolean
+through to `Records.ProtectedTypeInfo.UsesRwLock`; Pass A picks
+the `<>__lock` field's CLR type accordingly and emits the right
+`Newobj` in the synthesised default ctor; Pass B's wrapper
+acquires `EnterWriteLock`/`EnterReadLock` (RWLock) or `Wait()`
+(SemaphoreSlim) and matches with `ExitWriteLock`/`ExitReadLock` or
+`Release()` in the finally.
+
+One new structural test in `ProtectedTypeTests.fs`:
+- `[lock_flavour]` reflects on the emitted assembly to confirm an
+  entry-only `protected type EntryOnly { entry tick() … }` carries
+  `<>__lock : SemaphoreSlim` while a mixed
+  `protected type Mixed { entry tick() …; func get() … }` carries
+  `<>__lock : ReaderWriterLockSlim`.
+
+All 462 tests pass post-change (was 461; +1 net new).
+
+---
+
 ### D-progress-082: protected types — diagnose `protected type Foo[T]` instead of crashing
 *claude/protected-type-generics branch.*  Generic protected types
 remain a follow-up tracked under D-progress-079, but the previous

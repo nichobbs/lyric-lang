@@ -6,6 +6,8 @@
 /// the expected total.
 module Lyric.Emitter.Tests.ProtectedTypeTests
 
+open System.IO
+open System.Reflection
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
@@ -275,6 +277,69 @@ func main(): Unit { () }
 """
         "E920"
 
+/// D-progress-083: confirm the entry-only lock-flavour split.
+/// `Counter` declares only `entry` members so its `<>__lock` field
+/// is a `SemaphoreSlim`; `Box` mixes `entry` and `func` so its
+/// `<>__lock` is a `ReaderWriterLockSlim`.
+let private lockFlavourSplit : Test =
+    testCase "[lock_flavour] entry-only -> SemaphoreSlim, mixed -> ReaderWriterLockSlim" <| fun () ->
+        let label = "ProtectedLockFlavour"
+        let source = """
+package E14
+
+protected type EntryOnly {
+  var count: Int
+  entry tick() { count = count + 1 }
+}
+
+protected type Mixed {
+  var count: Int
+  entry tick() { count = count + 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val a = EntryOnly()
+  val b = Mixed()
+  a.tick()
+  b.tick()
+  println(toString(b.get()))
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source           = source
+              AssemblyName     = label
+              OutputPath       = dll
+              RestoredPackages = [] }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let entryTy =
+            asm.GetTypes()
+            |> Array.find (fun t -> t.Name = "EntryOnly")
+        let mixedTy =
+            asm.GetTypes()
+            |> Array.find (fun t -> t.Name = "Mixed")
+        let entryLock =
+            match Option.ofObj
+                    (entryTy.GetField(
+                        "<>__lock",
+                        BindingFlags.NonPublic ||| BindingFlags.Instance)) with
+            | Some f -> f
+            | None -> failwith "entry-only lock field not present"
+        let mixedLock =
+            match Option.ofObj
+                    (mixedTy.GetField(
+                        "<>__lock",
+                        BindingFlags.NonPublic ||| BindingFlags.Instance)) with
+            | Some f -> f
+            | None -> failwith "mixed lock field not present"
+        Expect.equal entryLock.FieldType typeof<System.Threading.SemaphoreSlim>
+            "entry-only protected types use SemaphoreSlim"
+        Expect.equal mixedLock.FieldType typeof<System.Threading.ReaderWriterLockSlim>
+            "mixed (entry + func) protected types use ReaderWriterLockSlim"
+
 let tests =
     testList "protected types (D-progress-079)"
-        ((cases |> List.map mk) @ [ genericNotYetEmitted ])
+        ((cases |> List.map mk) @ [ genericNotYetEmitted; lockFlavourSplit ])
