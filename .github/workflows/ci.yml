@@ -66,6 +66,14 @@ jobs:
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
 
+      - name: LSP tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Lsp.Tests --no-build --configuration Debug
+
+      - name: CLI tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration Debug
+
       - name: Collect coverage (best-effort)
         id: coverage
         if: always()
@@ -83,7 +91,7 @@ jobs:
           for proj in tests/*.Tests; do
             name=$(basename "$proj" | tr '[:upper:]' '[:lower:]' \
               | sed 's/^lyric\.//; s/\.tests$//')
-            dll="$proj/bin/Debug/net9.0/$(basename "$proj").dll"
+            dll="$proj/bin/Debug/net10.0/$(basename "$proj").dll"
             if [ ! -f "$dll" ]; then
               echo "::warning::test dll not found: $dll"
               continue

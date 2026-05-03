@@ -7,6 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Manifest.fs" />
+    <Compile Include="Pack.fs" />
     <Compile Include="Doc.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

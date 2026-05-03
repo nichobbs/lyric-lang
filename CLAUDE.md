@@ -92,9 +92,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
   runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
   `ManagedPEBuilder`.
+- `compiler/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`
+  parses `lyric.toml`; `Pack.fs` lowers it to a generated `.csproj` for
+  `lyric publish` / `lyric restore`; `Program.fs` is the command dispatch.
 - `compiler/tests/Lyric.Lexer.Tests/`, `compiler/tests/Lyric.Parser.Tests/`,
-  `compiler/tests/Lyric.TypeChecker.Tests/`, and
-  `compiler/tests/Lyric.Emitter.Tests/` — Expecto-based tests (console-app
+  `compiler/tests/Lyric.TypeChecker.Tests/`,
+  `compiler/tests/Lyric.Emitter.Tests/`, `compiler/tests/Lyric.Lsp.Tests/`,
+  and `compiler/tests/Lyric.Cli.Tests/` — Expecto-based tests (console-app
   projects; F# does not coexist cleanly with the new Microsoft.Testing.Platform
   xunit runner — Expecto is the F#-native alternative).
 
@@ -107,6 +111,8 @@ dotnet run --project tests/Lyric.Lexer.Tests
 dotnet run --project tests/Lyric.Parser.Tests
 dotnet run --project tests/Lyric.TypeChecker.Tests
 dotnet run --project tests/Lyric.Emitter.Tests
+dotnet run --project tests/Lyric.Lsp.Tests
+dotnet run --project tests/Lyric.Cli.Tests
 ```
 
 M1.4 (in progress) layers contract elaboration, async, FFI, variant-bearing

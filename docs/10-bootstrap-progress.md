@@ -76,6 +76,102 @@ Not started — gated on Phase 2 completion.
 
 ## Active session decisions
 
+### D-progress-077: C8 part 2 — `lyric.toml` manifest + `lyric publish` / `lyric restore`
+*claude/c8-package-manager branch.*  Closes the second half of C8
+(D-progress-030 / 031).  Lyric packages now describe themselves in
+a `lyric.toml` manifest and ship through NuGet via two thin
+wrappers around `dotnet pack` / `dotnet restore`.
+
+**Manifest schema** (`compiler/src/Lyric.Cli/Manifest.fs`):
+
+```toml
+[package]
+name = "Lyric.Json"
+version = "0.5.2"
+description = "JSON utilities"
+authors = ["alice", "bob"]
+license = "MIT"
+repository = "https://example.com/repo"
+
+[build]
+sources = ["src/main.l"]   # optional
+out = "dist"                # optional; defaults to pkg/
+
+[dependencies]
+"Lyric.Std" = "1.0.0"
+"Lyric.Time" = "0.3.1"
+```
+
+The TOML subset is intentionally tight (key=value, [tables], string
+/int/bool/array of strings, comments) — exactly what the bootstrap
+manifest needs.  Hand-rolled parser; no new package dependencies.
+A structured `ManifestError` (`MissingFile`, `ParseError`,
+`MissingField`, `InvalidFieldType`) feeds friendly diagnostics
+through `renderError`.
+
+**`lyric publish` flow** (`compiler/src/Lyric.Cli/Pack.fs`):
+
+1. Read `lyric.toml` (or `--manifest <path>`).
+2. Locate the user's pre-built DLL — `bin/<sanitised-name>.dll` by
+   default, override with `--dll <path>`.  `lyric build` is the
+   user's responsibility.
+3. Generate a throw-away `.csproj` under `.lyric/<name>-pack/` that
+   targets `net10.0`, sets `<PackageId>` / `<Version>`, attaches
+   optional `<Authors>` / `<Description>` / `<License>` /
+   `<RepositoryUrl>`, forwards `[dependencies]` as
+   `<PackageReference>` items, and embeds the pre-built DLL via
+   `<None Include="…" Pack="true" PackagePath="lib/net10.0/…" />`.
+4. Shell out to `dotnet pack --configuration Release --output <dir>`
+   (default `pkg/`, override with `-o`).
+5. Print the resulting `.nupkg` path on success.
+
+The embedded `Lyric.Contract` resource (D-progress-031) survives
+intact — verified end-to-end during smoke-testing.
+
+**`lyric restore` flow**:
+
+1. Read `lyric.toml`.
+2. Generate a `.csproj` under `.lyric/<name>-restore/` declaring
+   only the `<PackageReference>` items.
+3. Shell out to `dotnet restore`; transitive resolution populates
+   the standard NuGet cache.
+4. Report `restore: <N> packages declared`.
+
+`lyric build`-time consumption of restored packages is a separate
+follow-up — today's stdlib resolver still uses `LYRIC_STD_PATH`.
+The build wrapper will lower the manifest's `[dependencies]` into
+the same `<PackageReference>` shape the restore step uses, then
+read each restored DLL's `Lyric.Contract` resource (already
+shipped) for cross-package import resolution.
+
+**New test project**: `compiler/tests/Lyric.Cli.Tests/` — first
+test suite specifically for the CLI.  21 tests across
+`ManifestTests.fs` (round-trip parse, error shapes, string
+escapes, dependency sort, comments, duplicate-key rejection) and
+`PackTests.fs` (csproj template asserts, default path conventions,
+runPack DLL-missing error).  CI now runs LSP + Cli alongside the
+existing four suites and the coverage path was updated from a
+stale `net9.0/` to `net10.0/` (silently no-op'ing since the .NET
+10 migration).
+
+All 1045 tests pass (was 1024; +21 new in the new Cli suite).
+
+**Bootstrap-grade scope**:
+- The build-time consumer of restored packages — making `lyric
+  build` actually use a NuGet-restored Lyric package — is the next
+  C8 follow-up.  Reading the embedded `Lyric.Contract` resource
+  through `MetadataLoadContext` is already shipped
+  (D-progress-031); the missing piece is the call-site dispatch
+  that today routes through the in-tree stdlib resolver.
+- TOML support deliberately stops short of arrays-of-tables,
+  multi-line strings, datetimes, hex literals.  Bigger TOML follows
+  when a real package needs it.
+- `lyric publish` doesn't yet roll the user's source through the
+  build automatically; a `--build` flag that runs `lyric build`
+  first lands when packaging multi-file projects becomes routine.
+
+---
+
 ### D-progress-076: C2 Phase B+++ — spill-prior-siblings ordering (D-progress-074 follow-up)
 *claude/c2-finalize-generics-and-spill-order branch.*  Closes the
 documented evaluation-order caveat from D-progress-074: when a

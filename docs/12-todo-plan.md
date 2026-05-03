@@ -525,14 +525,15 @@ progress-per-session and dependency unblocking:
    `toJson` / `fromJson` at compile time.  Unlocks REST services
    without manual string concat.  ~1 session.
 
-### Tier 3 — package ecosystem
+### Tier 3 — package ecosystem — shipped
 
-7. **C8 — NuGet piggyback + embedded contract resource.**  Two
-   parts: contract-metadata embedded resource format (~1 session),
-   then `lyric.toml` manifest + `lyric publish` / `lyric restore`
-   wrappers around `dotnet pack` / `dotnet restore` (~1 session).
-   Lands the package ecosystem before async so external libraries
-   have somewhere to live while C2 is in flight.
+7. **C8 — NuGet piggyback + embedded contract resource.**  Both
+   parts shipped.  Embedded `Lyric.Contract` resource per
+   D-progress-031; `lyric.toml` manifest + `lyric publish` /
+   `lyric restore` wrappers per D-progress-077.  Build-time
+   consumption of restored packages — making `lyric build` actually
+   use a NuGet-restored Lyric package via its embedded contract
+   resource — is the remaining C8 follow-up tracked under Tier 6.
 
 ### Tier 4 — the tentpole
 
@@ -580,7 +581,15 @@ progress-per-session and dependency unblocking:
     attacker-controlled regex inputs.
 14. **C4 phase 2/3 — score-based matching, special shapes.**  Pulls
     in as user programs hit cases that strict match misses.
-15. **Generic interface methods + impl-block generics.**  The
+15. **C8 build-time consumer of restored packages.**  `lyric
+    build` today walks the in-tree stdlib via `LYRIC_STD_PATH`;
+    once a real Lyric package is published to NuGet (D-progress-077
+    landed the publish/restore wrappers), the build needs to read
+    the restored DLL's embedded `Lyric.Contract` resource
+    (D-progress-031) and feed its surface into the import resolver
+    instead of re-parsing source.  ~1 session once a real
+    third-party package exists to drive the test loop.
+16. **Generic interface methods + impl-block generics.**  The
     grammar accepts `impl[T] Foo for Bar[T] { func[U] foo(): U }`
     but neither the type checker nor the emitter wires the generics
     through (`Lyric.TypeChecker/Checker.fs:134` skips `IImpl` in
