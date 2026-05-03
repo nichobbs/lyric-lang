@@ -17,6 +17,17 @@ let private mk (label: string, source: string, expected: string) : Test =
         Expect.equal (stdout.TrimEnd()) expected
             "stdout matches expected"
 
+/// Source that's expected to fail compilation with a specific
+/// diagnostic code.  Used by the generic-protected-type case which
+/// surfaces `E920` while codegen + call-site type-arg dispatch
+/// are tracked as a follow-up.
+let private mkExpectErrorCode (label: string) (source: string) (code: string) : Test =
+    testCase (sprintf "[%s]" label) <| fun () ->
+        let result, _, _, _ = compileAndRun label source
+        let codes = result.Diagnostics |> List.map (fun d -> d.Code)
+        Expect.contains codes code
+            (sprintf "expected diagnostic %s; got: %A" code codes)
+
 let private cases : (string * string * string) list = [
 
     "pt_basic_counter",
@@ -248,6 +259,22 @@ func main(): Unit {
     "blocked"
 ]
 
+let private genericNotYetEmitted =
+    mkExpectErrorCode
+        "pt_generic_not_yet_emitted"
+        """
+package E14
+
+protected type Box[T] {
+  var value: T
+  entry put(v: in T) { value = v }
+  func get(): T { return value }
+}
+
+func main(): Unit { () }
+"""
+        "E920"
+
 let tests =
     testList "protected types (D-progress-079)"
-        (cases |> List.map mk)
+        ((cases |> List.map mk) @ [ genericNotYetEmitted ])
