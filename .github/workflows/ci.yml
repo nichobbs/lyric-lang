@@ -28,6 +28,9 @@ jobs:
         with:
           global-json-file: compiler/global.json
 
+      - name: Install Z3 (for the Phase 4 verifier smoke tests)
+        run: sudo apt-get update && sudo apt-get install -y z3
+
       - name: Install coverage tools
         run: |
           dotnet tool install --global coverlet.console
@@ -73,6 +76,10 @@ jobs:
       - name: CLI tests
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration Debug
+
+      - name: Verifier tests
+        working-directory: compiler
+        run: dotnet run --project tests/Lyric.Verifier.Tests --no-build --configuration Debug
 
       - name: Collect coverage (best-effort)
         id: coverage
@@ -169,6 +176,14 @@ jobs:
         run: |
           set -euo pipefail
           for ex in ../examples/*.l; do
-            echo "=== build $ex ==="
-            dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force
+            # Files annotated `@proof_required` are verifier-only;
+            # run them through `lyric prove` instead of `lyric build`
+            # (they intentionally have no `func main`).
+            if head -n 1 "$ex" | grep -q '^@proof_required'; then
+              echo "=== prove $ex ==="
+              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex"
+            else
+              echo "=== build $ex ==="
+              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force
+            fi
           done
