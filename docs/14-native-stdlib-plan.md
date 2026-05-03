@@ -266,11 +266,20 @@ No language changes. Doable today.
      `_kernel/{math,time}_host.l`. Ratchet 103 → 44.
    * **P0/4b batch 3 (PR #86):** `json.l` split, `task.l` moved.
      Ratchet 44 → 5.
-   * **`collections.l` (5 decls)** retained at the top level pending
-     `pub use` re-exports or an opaque-wrap pattern that handles
-     generic-typed values cleanly. See `docs/06-open-questions.md`
-     Q022 for the language-level work needed; closing Q022 lets the
-     ratchet drop to 0.
+   * **P0/4b finale (PR #93):** `collections.l` migrated.
+     `extern type List[T]`, `Map[K, V]` and their constructors plus
+     `tryGetValue` move to `_kernel/collections_host.l`. Required
+     two compiler fixes — both in `Lyric.Emitter/Emitter.fs`:
+     (a) the artifact compiler's typechecker now sees a transitive
+     closure of stdlib deps' items, so iter.l (which imports
+     `Std.Collections`) sees `List[T]` from `Std.CollectionsHost`;
+     (b) selector-alias resolution now walks across all loaded
+     artifacts, so `import Std.Collections.{newList as mkList}`
+     keeps working even though `newList` actually lives in the
+     kernel package. **Ratchet 5 → 0.** Q022 partially resolved
+     (the practical blocker is gone; `pub use` proper and opaque
+     wrapping with generic params remain as language work for
+     future stdlibs).
 5. ✅ **Document the kernel** in `compiler/lyric/std/_kernel/README.md`
    plus the §3 / §6 sections of this doc. Cross-references to the
    decision log (D038) and open-questions doc (Q022) in place.

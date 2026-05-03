@@ -56,21 +56,12 @@ recurses into this subdirectory. Top-level files shadow same-name
 kernel files on collision so a future native rewrite of a kernel
 module wins without manual cleanup.
 
-## Documented exception
-
-`compiler/lyric/std/collections.l` keeps its 5 extern declarations
-(`extern type List[T]`, `extern type Map[K, V]`, plus the three
-constructors and `tryGetValue`) at the top level instead of in
-`_kernel/`. Migrating them requires either functioning `pub use`
-re-exports for generic types, or full opaque wrapping of
-`List[T]` / `Map[K, V]` — both blocked on M1.4 limitations
-documented as `docs/06-open-questions.md` Q022. The ratchet
-ceiling sits at 5 to encode this exception; closing Q022 lets
-the ratchet drop to 0.
-
 ## See also
 
 - `docs/14-native-stdlib-plan.md` §3 — kernel contents & rationale
 - `docs/14-native-stdlib-plan.md` §6 P0 — migration log
 - `docs/03-decision-log.md` D038 — umbrella decision (Resolution F)
-- `docs/06-open-questions.md` Q022 — collections-migration blocker
+- `docs/06-open-questions.md` Q022 — language work for `pub use`
+  proper and opaque wrapping with generic params (partially
+  resolved: the practical collections.l blocker is fixed without
+  these features)
