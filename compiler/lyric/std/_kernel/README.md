@@ -30,6 +30,23 @@ across the whole kernel**. Auditing 150 is tractable; auditing 500
 is not. PRs that push the count toward the cap should justify each
 new declaration in their description.
 
+## Enforcement (the ratchet)
+
+`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs` runs
+on every CI build:
+
+- **`extern declarations outside _kernel/ never grow`**: hard
+  assertion. Any PR that adds `@externTarget`, `extern type`, or
+  `extern package` outside `_kernel/` flips the test red. Migrate
+  the declaration here instead.
+- **`kernel total reported`**: today informational. Reports the
+  combined extern surface; Decision F's hard cap of 150 becomes a
+  blocking assertion at v1.0.
+
+When a PR moves declarations into `_kernel/` (or rewrites them in
+pure Lyric), it should also drop `outsideCeiling` in
+`KernelBoundaryTests.fs` so the ratchet stays meaningful.
+
 ## Discovery
 
 The build/test machinery (`Emitter.fs::locateStdlibFile`,

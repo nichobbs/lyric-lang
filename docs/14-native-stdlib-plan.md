@@ -248,14 +248,22 @@ No language changes. Doable today.
 4. 🟡 **Establish `compiler/lyric/std/_kernel/*.l`** as the audited
    extern boundary. Move every `@externTarget` declaration into this
    subdirectory. Add a CI lint that rejects new `@externTarget`s
-   outside `_kernel/`. *(P0/4a: directory created, four already-pure-
-   extern files (`environment_host`, `http_host`, `log_host`,
-   `time_host`) moved, file-discovery in `Emitter.fs`,
-   `Cli/Program.fs`, and `StdlibSeedTests.fs` updated to recurse and
-   prefer top-level on collision. Subsequent P0/4b PRs handle the
-   mixed-content files (`math.l`, `time.l`, `task.l`, `http.l`,
-   `json.l`, etc.) one or two at a time. CI lint deferred to P0/4c
-   once the kernel is substantially populated.)*
+   outside `_kernel/`.
+   * **P0/4a (PR #73):** directory created, four already-pure-extern
+     files (`environment_host`, `http_host`, `log_host`, `time_host`)
+     moved. File-discovery in `Emitter.fs`, `Cli/Program.fs`, and
+     `StdlibSeedTests.fs` updated to recurse and prefer top-level on
+     collision.
+   * **P0/4c (this step):** ratchet test
+     `KernelBoundaryTests.fs` enforces "extern declarations outside
+     `_kernel/` never grow" (currently 139 — the ceiling drops as
+     migrations land) and reports the total against Decision F's
+     soft cap of 150 (becomes hard at v1.0).
+   * **P0/4b:** remaining mixed-content files (`math.l`, `time.l`,
+     `task.l`, `http.l`, `json.l`, `regex.l`, `random.l`, `parse.l`,
+     `collections.l`, `io.l`, `http_server.l`, `testing_mocking.l`)
+     migrated one or two at a time, each PR dropping the ratchet
+     ceiling.
 5. **Document the kernel** in this doc and in
    `docs/10-stdlib-plan.md`. Cross-reference. *(In progress: this
    subsection + `compiler/lyric/std/_kernel/README.md` ship in P0/4a.)*
