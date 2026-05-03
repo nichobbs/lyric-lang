@@ -1028,6 +1028,7 @@ let private defineProtectedTypeOnto
         (nsName: string)
         (symbols: SymbolTable)
         (lookup: TypeId -> System.Type option)
+        (codegenDiags: ResizeArray<Diagnostic>)
         (pd: ProtectedTypeDecl)
         : Records.ProtectedTypeInfo
           * ProtectedMethodPending list
@@ -1040,8 +1041,28 @@ let private defineProtectedTypeOnto
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Sealed,
             typeof<obj>)
+    // Generic protected types (`protected type Foo[T]`) are recognised
+    // by the parser but the emitter doesn't yet wire a generic SM:
+    // even with `tb.DefineGenericParameters(...)` and field-type
+    // substitution in place, the call-site dispatch needs to treat
+    // `Foo[Int]()` (which parses as `ECall(EIndex(EPath, [Int]), [])`,
+    // not `ETypeApp`) as a generic ctor invocation.  Wiring the
+    // EIndex-as-type-app path is material follow-up work; until then
+    // we surface an `E920` and the user gets a clear "not yet
+    // supported" diagnostic rather than a runtime crash.
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
+    match pd.Generics with
+    | Some gs when not gs.Params.IsEmpty ->
+        codegenDiags.Add
+            (err "E920"
+                 (sprintf
+                    "generic `protected type %s[…]` not yet emitted (parser \
+                     accepts the syntax; codegen + call-site type-arg \
+                     dispatch are tracked under D-progress-079 follow-ups)"
+                    pd.Name)
+                 pd.Span)
+    | _ -> ()
 
     // Fields — every PFVar/PFLet/PFImmutable becomes a public field.
     let fieldDecls =
@@ -2876,7 +2897,7 @@ let private emitAssembly
         let protectedCtorsPending = ResizeArray<ProtectedCtorPending>()
         for pd in protectedItems sf do
             let info, pending, ctorPending =
-                defineProtectedTypeOnto ctx.Module nsName symbols lookup pd
+                defineProtectedTypeOnto ctx.Module nsName symbols lookup codegenDiags pd
             protectedTable.[pd.Name] <- info
             for p in pending do protectedPending.Add p
             protectedCtorsPending.Add ctorPending

@@ -89,6 +89,52 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-082: protected types — diagnose `protected type Foo[T]` instead of crashing
+*claude/protected-type-generics branch.*  Generic protected types
+remain a follow-up tracked under D-progress-079, but the previous
+state silently mishandled them: `defineProtectedTypeOnto` never
+called `tb.DefineGenericParameters`, so a user-written `protected
+type Box[T] { var value: T … }` would happily emit a CLR class
+with a field `value: !!0` referencing a nonexistent type
+parameter, then explode with `InvalidProgramException` at JIT
+time.  The bootstrap now surfaces a structured `E920` diagnostic
+at codegen time instead, naming the protected type and pointing
+at the tracked follow-up:
+
+```
+E920 error [3:1]: generic `protected type Box[…]` not yet emitted
+(parser accepts the syntax; codegen + call-site type-arg
+dispatch are tracked under D-progress-079 follow-ups)
+```
+
+The two pieces still missing for full generic-protected-type
+support:
+
+- **Pass A wiring**: define `tb.DefineGenericParameters(names)` and
+  thread the resulting `name → GTPB` substitution map through
+  field-type / param-type / return-type lookup via
+  `TypeMap.toClrTypeWithGenerics`.  Method-body emission needs
+  `emitFunctionBody` to recover the GTPBs from
+  `selfType.GetGenericArguments()` when the method is non-generic
+  but its declaring type is.
+- **Call-site dispatch for `Box[Int]()`**: the construction syntax
+  parses as `ECall (EIndex (EPath {Box}, [Int]), [])` (note: the
+  `[Int]` slot is parsed as `EIndex`, not `ETypeApp`, because
+  Lyric's surface grammar can't tell the two apart at the call
+  site).  A new dispatch arm needs to detect "EIndex over a
+  generic-protected-type path" and emit `Newobj` against
+  `Box.MakeGenericType([| Int |]).GetConstructor`.  Generic
+  records have an analogous problem solved via type-arg inference
+  from the field-init args; the protected-type ctor takes no args
+  so the type args have to come from explicit syntax or a LHS
+  annotation (`val b: Box[Int] = Box()`).
+
+One new test in `ProtectedTypeTests.fs`: `pt_generic_not_yet_emitted`
+asserts the new E920 fires.  All 461 tests pass post-change
+(was 460; +1 net new).
+
+---
+
 ### D-progress-081: protected types — `ReaderWriterLockSlim` (Q008)
 *claude/protected-type-rwlock branch.*  Closes another follow-up
 from D-progress-079: protected-type wrappers now lift the lock
