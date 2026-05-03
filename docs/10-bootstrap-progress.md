@@ -89,11 +89,11 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
-### D-progress-081: Phase 4 verifier — M4.1 polish (call rule, match, assert, V0006)
+### D-progress-085: Phase 4 verifier — M4.1 polish (call rule, match, assert, V0006)
 
-*claude/phase-4-proof-plan-tVGu7 branch (continuation of D-progress-080).*
+*claude/phase-4-proof-plan-tVGu7 branch (continuation of D-progress-084).*
 Brings the M4.1 verifier from "skeleton wired end-to-end" to "small
-real proofs run."  53 verifier tests; all pass.
+real proofs run."  63 verifier tests; all pass.
 
 **Hoare call rule (`docs/08-contract-semantics.md` §10.4).**
 `TranslateResult` and `WpResult` gain an `Assumed: Term list` track
@@ -188,7 +188,7 @@ sort (M4.2 work to bridge the two).
 function call rule, inline-range arithmetic).  All five
 discharge.
 
-### D-progress-080: Phase 4 verifier — M4.1 skeleton
+### D-progress-084: Phase 4 verifier — M4.1 skeleton
 
 *claude/phase-4-proof-plan-tVGu7 branch.*  Lifts Phase 4 from
 "planned" (`docs/15-phase-4-proof-plan.md`) to "M4.1 partial".  The
@@ -306,6 +306,193 @@ bootstrap milestone.
 (new), `CLAUDE.md` (verifier description in the project layout
 section), `docs/15-phase-4-proof-plan.md` (already shipped in
 PR #75 — referenced from this entry).
+
+---
+
+### D-progress-083: protected types — `SemaphoreSlim` for entry-only types (Q008 split)
+*claude/protected-type-semaphore branch.*  Closes the second half
+of Q008's lock-flavour decision (`docs/09-msil-emission.md` §17.4):
+protected types that declare no `func` members now lock through a
+binary `SemaphoreSlim(1, 1)` instead of the heavier
+`ReaderWriterLockSlim`.  Mixed types (with at least one `func`)
+keep the RWLock from D-progress-081 so concurrent reads still run
+in parallel.
+
+The split is detected at codegen time by scanning `pd.Members` for
+any `PMFunc`.  `defineProtectedTypeOnto` carries the boolean
+through to `Records.ProtectedTypeInfo.UsesRwLock`; Pass A picks
+the `<>__lock` field's CLR type accordingly and emits the right
+`Newobj` in the synthesised default ctor; Pass B's wrapper
+acquires `EnterWriteLock`/`EnterReadLock` (RWLock) or `Wait()`
+(SemaphoreSlim) and matches with `ExitWriteLock`/`ExitReadLock` or
+`Release()` in the finally.
+
+One new structural test in `ProtectedTypeTests.fs`:
+- `[lock_flavour]` reflects on the emitted assembly to confirm an
+  entry-only `protected type EntryOnly { entry tick() … }` carries
+  `<>__lock : SemaphoreSlim` while a mixed
+  `protected type Mixed { entry tick() …; func get() … }` carries
+  `<>__lock : ReaderWriterLockSlim`.
+
+All 462 tests pass post-change (was 461; +1 net new).
+
+---
+
+### D-progress-082: protected types — diagnose `protected type Foo[T]` instead of crashing
+*claude/protected-type-generics branch.*  Generic protected types
+remain a follow-up tracked under D-progress-079, but the previous
+state silently mishandled them: `defineProtectedTypeOnto` never
+called `tb.DefineGenericParameters`, so a user-written `protected
+type Box[T] { var value: T … }` would happily emit a CLR class
+with a field `value: !!0` referencing a nonexistent type
+parameter, then explode with `InvalidProgramException` at JIT
+time.  The bootstrap now surfaces a structured `E920` diagnostic
+at codegen time instead, naming the protected type and pointing
+at the tracked follow-up:
+
+```
+E920 error [3:1]: generic `protected type Box[…]` not yet emitted
+(parser accepts the syntax; codegen + call-site type-arg
+dispatch are tracked under D-progress-079 follow-ups)
+```
+
+The two pieces still missing for full generic-protected-type
+support:
+
+- **Pass A wiring**: define `tb.DefineGenericParameters(names)` and
+  thread the resulting `name → GTPB` substitution map through
+  field-type / param-type / return-type lookup via
+  `TypeMap.toClrTypeWithGenerics`.  Method-body emission needs
+  `emitFunctionBody` to recover the GTPBs from
+  `selfType.GetGenericArguments()` when the method is non-generic
+  but its declaring type is.
+- **Call-site dispatch for `Box[Int]()`**: the construction syntax
+  parses as `ECall (EIndex (EPath {Box}, [Int]), [])` (note: the
+  `[Int]` slot is parsed as `EIndex`, not `ETypeApp`, because
+  Lyric's surface grammar can't tell the two apart at the call
+  site).  A new dispatch arm needs to detect "EIndex over a
+  generic-protected-type path" and emit `Newobj` against
+  `Box.MakeGenericType([| Int |]).GetConstructor`.  Generic
+  records have an analogous problem solved via type-arg inference
+  from the field-init args; the protected-type ctor takes no args
+  so the type args have to come from explicit syntax or a LHS
+  annotation (`val b: Box[Int] = Box()`).
+
+One new test in `ProtectedTypeTests.fs`: `pt_generic_not_yet_emitted`
+asserts the new E920 fires.  All 461 tests pass post-change
+(was 460; +1 net new).
+
+---
+
+### D-progress-081: protected types — `ReaderWriterLockSlim` (Q008)
+*claude/protected-type-rwlock branch.*  Closes another follow-up
+from D-progress-079: protected-type wrappers now lift the lock
+field from `object` (Monitor) to
+`System.Threading.ReaderWriterLockSlim` so concurrent `func` calls
+can take a read lock while `entry` calls take a write lock.
+Matches the Q008 resolution recorded in
+`docs/09-msil-emission.md` §17.4.
+
+Lowering changes:
+- Lock field `<>__lock : object` → `<>__lock : ReaderWriterLockSlim`.
+- Default ctor allocates via `Newobj ReaderWriterLockSlim::.ctor()`
+  instead of `Newobj Object::.ctor()`.
+- Public wrapper IL switches `Monitor.Enter / Exit` to
+  `Callvirt EnterWriteLock / ExitWriteLock` for entries and
+  `Callvirt EnterReadLock / ExitReadLock` for funcs.  Both pairs
+  release in the `finally` so an exception inside the unsafe
+  inner releases the lock cleanly.
+
+The bootstrap currently uses `ReaderWriterLockSlim` uniformly,
+even for entry-only protected types; switching entry-only types
+to `SemaphoreSlim` (the second half of Q008's resolution) is a
+minor follow-up — the perf delta only shows up under contention
+that no Lyric workload yet exercises.
+
+One new test in `ProtectedTypeTests.fs`:
+- `pt_rwlock_func_reads` — `Counter` with two `func` reads
+  alongside an `entry add`; smoke-confirms the RWLock acquire/
+  release pattern works for both modes.  Concurrent execution
+  isn't directly tested deterministically; the IL shape proves
+  the lock-mode dispatch.
+
+All 1066 tests pass (was 1065; +1 net new).
+
+---
+
+### D-progress-080: protected types — barriers + invariants + field initializers
+*claude/protected-type-followups branch.*  Closes three of the five
+follow-ups documented under D-progress-079:
+
+- **`when: <cond>` barriers** evaluate before the unsafe inner is
+  invoked.  False throws `LyricAssertionException` carrying a
+  `<method>: barrier failed` message — the bootstrap doesn't yet
+  do Ada-style condition-variable waiting (`docs/06-open-questions.md`
+  Q008 gates that on Phase C scope plumbing).  Each barrier
+  expression is desugared the same way entry/func bodies are: bare
+  field references rewrite to `self.<field>` so `when: count > 0`
+  works without explicit `self.` prefixes.
+- **`invariant: <cond>` checks** re-evaluate after every entry/func
+  body returns its value, still inside the lock and the outer try.
+  False throws `LyricAssertionException` carrying a
+  `<TypeName>: invariant failed` message — per language reference
+  §7.4 an invariant violation is an unrecoverable bug.  Multiple
+  invariants combine as a sequence of independent checks.
+- **Per-field initializers** — `var count: Int = 100` now actually
+  runs the initializer in the synthesised default ctor.  Pass A
+  emits the ctor prologue (`base ctor` call + lock alloc) and
+  leaves the IL generator open; Pass B (new step "Pass B.7" in
+  `Emitter.fs`) finishes each ctor by emitting `Ldarg.0; <expr>;
+  Stfld <field>` for every initializer with a real `FunctionCtx`
+  in scope, then writes `Ret`.
+
+**Wrapper IL** — the public method wrapper now lays out as:
+
+```il
+Monitor.Enter(this.<>__lock)
+.try {
+  <when: barriers — throw if false>
+  result = <unsafe>__name(this, args...)
+  <invariant: checks — throw if false>
+  leave end
+} finally {
+  Monitor.Exit(this.<>__lock)
+}
+end:
+[ldloc result]
+ret
+```
+
+The wrapper's barrier + invariant emit uses
+`Codegen.FunctionCtx.make` against the wrapper's IL generator with
+`isInstance = true` and `selfType = <protected type>`, so
+`emitContractCheck` evaluates each desugared expression in the
+correct lexical context.
+
+**Tests** (1065 total, +5 net new in
+`tests/Lyric.Emitter.Tests/ProtectedTypeTests.fs`):
+- `pt_field_initializer` — `var count: Int = 100` starts at 100.
+- `pt_invariant_holds_silently` — happy-path invariant passes
+  through every entry/func.
+- `pt_invariant_violation_throws` — invariant trips on
+  `count >= 0` after `decr` drops below zero; main catches via
+  `try/catch Exception as e` and prints `boom`.
+- `pt_when_barrier_satisfied` — barrier holds; entry runs.
+- `pt_when_barrier_throws_when_false` — barrier fails; wrapper
+  throws BEFORE calling the unsafe inner.
+
+**Bootstrap-grade scope** (still future work):
+- **Concurrent reads on `func`** — every `func` still takes the
+  same exclusive Monitor.  `ReaderWriterLockSlim` lift lands when
+  a real workload exercises the distinction (Q008).
+- **`protected type Foo[T]` generics** — Pass A doesn't yet define
+  generic params on the synthesised TypeBuilder; mirror the C2
+  generic-async path (D-progress-075) when needed.
+- **Ada-style barrier waiting** — gated on Phase C scope
+  plumbing; bootstrap consumers fall back to caller-side retry
+  loops or accept the throw-on-false semantics.
+
+---
 
 ### D-progress-079: protected types — bootstrap-grade Monitor wrap
 *claude/protected-type-bootstrap branch.*  Lifts the Phase-3

@@ -6,6 +6,8 @@
 /// the expected total.
 module Lyric.Emitter.Tests.ProtectedTypeTests
 
+open System.IO
+open System.Reflection
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
@@ -16,6 +18,17 @@ let private mk (label: string, source: string, expected: string) : Test =
             (sprintf "exit 0 (stderr=%s)" stderr)
         Expect.equal (stdout.TrimEnd()) expected
             "stdout matches expected"
+
+/// Source that's expected to fail compilation with a specific
+/// diagnostic code.  Used by the generic-protected-type case which
+/// surfaces `E920` while codegen + call-site type-arg dispatch
+/// are tracked as a follow-up.
+let private mkExpectErrorCode (label: string) (source: string) (code: string) : Test =
+    testCase (sprintf "[%s]" label) <| fun () ->
+        let result, _, _, _ = compileAndRun label source
+        let codes = result.Diagnostics |> List.map (fun d -> d.Code)
+        Expect.contains codes code
+            (sprintf "expected diagnostic %s; got: %A" code codes)
 
 let private cases : (string * string * string) list = [
 
@@ -96,8 +109,237 @@ func main(): Unit {
 }
 """,
     "99"
+
+    "pt_field_initializer",
+    // Per-field initializer: `var count: Int = 100` runs in the
+    // synthesised default ctor so `Counter()` starts with count=100
+    // rather than zero (D-progress-079 follow-up).
+    """
+package E14
+
+protected type Counter {
+  var count: Int = 100
+  entry tick() { count = count + 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val c = Counter()
+  c.tick()
+  c.tick()
+  println(toString(c.get()))
+}
+""",
+    "102"
+
+    "pt_invariant_holds_silently",
+    // Invariant evaluates after every entry/func body returns;
+    // when the body keeps the predicate true, the run completes
+    // normally and prints the final state.
+    """
+package E14
+
+protected type Counter {
+  var count: Int
+
+  invariant: count >= 0
+
+  entry tick() { count = count + 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val c = Counter()
+  c.tick()
+  c.tick()
+  c.tick()
+  println(toString(c.get()))
+}
+""",
+    "3"
+
+    "pt_invariant_violation_throws",
+    // Invariant fails after `decr` drops `count` below zero.  The
+    // wrapper throws `LyricAssertionException` after the unsafe
+    // body returns; main catches via try/catch and prints
+    // "boom" instead of the bogus result.
+    """
+package E14
+
+protected type Counter {
+  var count: Int
+
+  invariant: count >= 0
+
+  entry decr() { count = count - 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val c = Counter()
+  try {
+    c.decr()
+    println(toString(c.get()))
+  } catch Exception as e {
+    println("boom")
+  }
+}
+""",
+    "boom"
+
+    "pt_when_barrier_satisfied",
+    // Happy-path barrier: `when: count > 0` holds, decr runs.
+    """
+package E14
+
+protected type Bag {
+  var count: Int = 5
+  entry decr() when: count > 0 { count = count - 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val b = Bag()
+  b.decr()
+  b.decr()
+  println(toString(b.get()))
+}
+""",
+    "3"
+
+    "pt_rwlock_func_reads",
+    // D-progress-081: concurrent `func` calls take the read lock,
+    // entries take the write lock.  Single-threaded smoke confirms
+    // both sides still produce the right result through the
+    // RWLock acquire/release pattern; the underlying concurrency
+    // benefit isn't directly observable in a deterministic test.
+    """
+package E14
+
+protected type Counter {
+  var count: Int = 1
+
+  entry add(n: in Int) { count = count + n }
+
+  func get(): Int { return count }
+  func doubled(): Int { return count * 2 }
+}
+
+func main(): Unit {
+  val c = Counter()
+  c.add(4)
+  println(toString(c.get()))
+  println(toString(c.doubled()))
+}
+""",
+    "5\n10"
+
+    "pt_when_barrier_throws_when_false",
+    // Barrier-not-met: `when: count > 0` is false at call time,
+    // so the wrapper throws BEFORE invoking the unsafe inner.
+    // Bootstrap-grade scope per `06-open-questions.md` Q008 —
+    // Ada-style condition-variable waiting lands once Phase C
+    // scope plumbing is mature.
+    """
+package E14
+
+protected type Bag {
+  var count: Int
+  entry take() when: count > 0 { count = count - 1 }
+}
+
+func main(): Unit {
+  val b = Bag()
+  try {
+    b.take()
+    println("took")
+  } catch Exception as e {
+    println("blocked")
+  }
+}
+""",
+    "blocked"
 ]
+
+let private genericNotYetEmitted =
+    mkExpectErrorCode
+        "pt_generic_not_yet_emitted"
+        """
+package E14
+
+protected type Box[T] {
+  var value: T
+  entry put(v: in T) { value = v }
+  func get(): T { return value }
+}
+
+func main(): Unit { () }
+"""
+        "E920"
+
+/// D-progress-083: confirm the entry-only lock-flavour split.
+/// `Counter` declares only `entry` members so its `<>__lock` field
+/// is a `SemaphoreSlim`; `Box` mixes `entry` and `func` so its
+/// `<>__lock` is a `ReaderWriterLockSlim`.
+let private lockFlavourSplit : Test =
+    testCase "[lock_flavour] entry-only -> SemaphoreSlim, mixed -> ReaderWriterLockSlim" <| fun () ->
+        let label = "ProtectedLockFlavour"
+        let source = """
+package E14
+
+protected type EntryOnly {
+  var count: Int
+  entry tick() { count = count + 1 }
+}
+
+protected type Mixed {
+  var count: Int
+  entry tick() { count = count + 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val a = EntryOnly()
+  val b = Mixed()
+  a.tick()
+  b.tick()
+  println(toString(b.get()))
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source           = source
+              AssemblyName     = label
+              OutputPath       = dll
+              RestoredPackages = [] }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let entryTy =
+            asm.GetTypes()
+            |> Array.find (fun t -> t.Name = "EntryOnly")
+        let mixedTy =
+            asm.GetTypes()
+            |> Array.find (fun t -> t.Name = "Mixed")
+        let entryLock =
+            match Option.ofObj
+                    (entryTy.GetField(
+                        "<>__lock",
+                        BindingFlags.NonPublic ||| BindingFlags.Instance)) with
+            | Some f -> f
+            | None -> failwith "entry-only lock field not present"
+        let mixedLock =
+            match Option.ofObj
+                    (mixedTy.GetField(
+                        "<>__lock",
+                        BindingFlags.NonPublic ||| BindingFlags.Instance)) with
+            | Some f -> f
+            | None -> failwith "mixed lock field not present"
+        Expect.equal entryLock.FieldType typeof<System.Threading.SemaphoreSlim>
+            "entry-only protected types use SemaphoreSlim"
+        Expect.equal mixedLock.FieldType typeof<System.Threading.ReaderWriterLockSlim>
+            "mixed (entry + func) protected types use ReaderWriterLockSlim"
 
 let tests =
     testList "protected types (D-progress-079)"
-        (cases |> List.map mk)
+        ((cases |> List.map mk) @ [ genericNotYetEmitted; lockFlavourSplit ])

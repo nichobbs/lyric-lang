@@ -944,28 +944,56 @@ let private desugarFunctionBody
     | FBExpr e -> FBExpr (desugarSelfFields fieldNames paramNames e)
     | FBBlock b -> FBBlock (desugarBlock fieldNames paramNames b)
 
-/// Static cache of `System.Threading.Monitor::Enter / Exit` so the
-/// per-method emit can grab them without re-resolving.
-let private monitorEnterMI : Lazy<MethodInfo> =
-    lazy (
-        let monitorTy = typeof<System.Threading.Monitor>
-        let candidates = monitorTy.GetMethods()
-        let m =
-            candidates
-            |> Array.tryFind (fun m ->
-                m.Name = "Enter"
-                && m.GetParameters().Length = 1
-                && (m.GetParameters().[0].ParameterType = typeof<obj>))
-        match m with
-        | Some m -> m
-        | None -> failwith "BCL: Monitor.Enter(object) not found")
+/// Static cache of `System.Threading.ReaderWriterLockSlim` lookups
+/// — protected-type wrappers acquire write mode for entries and
+/// read mode for funcs (D-progress-081 / Q008).
+let private rwLockTy : System.Type = typeof<System.Threading.ReaderWriterLockSlim>
 
-let private monitorExitMI : Lazy<MethodInfo> =
+let private rwLockCtor : Lazy<ConstructorInfo> =
     lazy (
-        let monitorTy = typeof<System.Threading.Monitor>
-        match Option.ofObj (monitorTy.GetMethod("Exit", [| typeof<obj> |])) with
+        match Option.ofObj (rwLockTy.GetConstructor([||])) with
+        | Some c -> c
+        | None -> failwith "BCL: ReaderWriterLockSlim() ctor not found")
+
+let private rwLockMethod (name: string) : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (rwLockTy.GetMethod(name, [||])) with
         | Some m -> m
-        | None -> failwith "BCL: Monitor.Exit(object) not found")
+        | None ->
+            failwithf "BCL: ReaderWriterLockSlim.%s() not found" name)
+
+let private rwEnterReadMI    = rwLockMethod "EnterReadLock"
+let private rwExitReadMI     = rwLockMethod "ExitReadLock"
+let private rwEnterWriteMI   = rwLockMethod "EnterWriteLock"
+let private rwExitWriteMI    = rwLockMethod "ExitWriteLock"
+
+/// Static cache of `System.Threading.SemaphoreSlim` lookups.  Used
+/// for the entry-only branch of Q008's lock-flavour decision: a
+/// protected type that declares no `func` members never benefits
+/// from concurrent reads, so the wrapper drops the
+/// reader-writer-lock cost in favour of a binary
+/// `SemaphoreSlim(1, 1)` (D-progress-083).
+let private semaphoreTy : System.Type = typeof<System.Threading.SemaphoreSlim>
+
+let private semaphoreCtor : Lazy<ConstructorInfo> =
+    lazy (
+        match Option.ofObj (semaphoreTy.GetConstructor([| typeof<int>; typeof<int> |])) with
+        | Some c -> c
+        | None -> failwith "BCL: SemaphoreSlim(int, int) ctor not found")
+
+let private semaphoreWaitMI : Lazy<MethodInfo> =
+    lazy (
+        // SemaphoreSlim has multiple `Wait` overloads — pick the
+        // parameterless one which blocks until the slot is free.
+        match Option.ofObj (semaphoreTy.GetMethod("Wait", [||])) with
+        | Some m -> m
+        | None -> failwith "BCL: SemaphoreSlim.Wait() not found")
+
+let private semaphoreReleaseMI : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (semaphoreTy.GetMethod("Release", [||])) with
+        | Some m -> m
+        | None -> failwith "BCL: SemaphoreSlim.Release() not found")
 
 /// Stash collected during Pass A so Pass B can emit each entry/func's
 /// body wrapped in the lock + barrier + invariant scaffolding.
@@ -990,11 +1018,32 @@ type private ProtectedMethodPending =
       Fn:           FunctionDecl
       Sg:           ResolvedSignature
       IsEntry:      bool
-      Invariants:   InvariantClause list
+      /// Desugared `when: <expr>` barrier conditions — evaluated
+      /// before the unsafe inner runs.  False throws
+      /// `LyricAssertionException` so the bootstrap surfaces a
+      /// "barrier not met" runtime error (Ada-style condition-
+      /// variable waiting is gated on Phase C scope plumbing —
+      /// see `06-open-questions.md` Q008).
+      Barriers:     Expr list
+      /// Desugared `invariant: <expr>` clauses — evaluated after
+      /// the unsafe inner returns, still inside the lock and the
+      /// outer try.  False throws `LyricAssertionException`.
+      Invariants:   Expr list
       Owner:        Records.ProtectedTypeInfo
       LockField:    FieldBuilder
       ParamTypes:   System.Type[]
       ReturnType:   System.Type }
+
+/// Pending ctor IL for a protected type — field initializers are
+/// user-written Lyric expressions that need `Codegen.emitExpr`'s
+/// FunctionCtx, which only becomes available in Pass B.  Pass A
+/// stops the ctor IL after the lock allocation; Pass B picks up
+/// the open ILGenerator, emits each `Stfld` against the field's
+/// init expression, then writes `Ret`.
+type private ProtectedCtorPending =
+    { Owner:        Records.ProtectedTypeInfo
+      Ctor:         ConstructorBuilder
+      Initializers: (string * FieldBuilder * Expr) list }
 
 /// Synthesise the CLR class scaffolding for a `protected type`:
 /// fields per `var`/`let`/immutable, a private `<>__lock : object`
@@ -1007,8 +1056,11 @@ let private defineProtectedTypeOnto
         (nsName: string)
         (symbols: SymbolTable)
         (lookup: TypeId -> System.Type option)
+        (codegenDiags: ResizeArray<Diagnostic>)
         (pd: ProtectedTypeDecl)
-        : Records.ProtectedTypeInfo * ProtectedMethodPending list =
+        : Records.ProtectedTypeInfo
+          * ProtectedMethodPending list
+          * ProtectedCtorPending =
     let fullName =
         if String.IsNullOrEmpty nsName then pd.Name
         else nsName + "." + pd.Name
@@ -1017,8 +1069,28 @@ let private defineProtectedTypeOnto
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Sealed,
             typeof<obj>)
+    // Generic protected types (`protected type Foo[T]`) are recognised
+    // by the parser but the emitter doesn't yet wire a generic SM:
+    // even with `tb.DefineGenericParameters(...)` and field-type
+    // substitution in place, the call-site dispatch needs to treat
+    // `Foo[Int]()` (which parses as `ECall(EIndex(EPath, [Int]), [])`,
+    // not `ETypeApp`) as a generic ctor invocation.  Wiring the
+    // EIndex-as-type-app path is material follow-up work; until then
+    // we surface an `E920` and the user gets a clear "not yet
+    // supported" diagnostic rather than a runtime crash.
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
+    match pd.Generics with
+    | Some gs when not gs.Params.IsEmpty ->
+        codegenDiags.Add
+            (err "E920"
+                 (sprintf
+                    "generic `protected type %s[…]` not yet emitted (parser \
+                     accepts the syntax; codegen + call-site type-arg \
+                     dispatch are tracked under D-progress-079 follow-ups)"
+                    pd.Name)
+                 pd.Span)
+    | _ -> ()
 
     // Fields — every PFVar/PFLet/PFImmutable becomes a public field.
     let fieldDecls =
@@ -1046,10 +1118,24 @@ let private defineProtectedTypeOnto
         |> Set.ofList
 
     // Lock field — private object, allocated in the ctor.
+    // Lock field — Q008 lock-flavour split (D-progress-083):
+    //   * Types with at least one `func` use
+    //     `ReaderWriterLockSlim` so concurrent func reads can run
+    //     in parallel; `entry` calls take the write lock.
+    //   * Entry-only types use a binary `SemaphoreSlim(1, 1)`, a
+    //     simpler always-exclusive lock that's cheaper than the
+    //     reader-writer pair for the no-concurrent-reads case.
+    let usesRwLock =
+        pd.Members
+        |> List.exists (fun m ->
+            match m with
+            | PMFunc _ -> true
+            | _ -> false)
+    let lockFieldType = if usesRwLock then rwLockTy else semaphoreTy
     let lockField =
         tb.DefineField(
             "<>__lock",
-            typeof<obj>,
+            lockFieldType,
             FieldAttributes.Private ||| FieldAttributes.InitOnly)
 
     // Default no-arg ctor.  Initializes lock, then every field's
@@ -1072,21 +1158,40 @@ let private defineProtectedTypeOnto
         | Some c -> c
         | None   -> failwith "object's no-arg ctor not found"
     cil.Emit(OpCodes.Ldarg_0)
-    cil.Emit(OpCodes.Newobj, objCtorNonNull)
+    if usesRwLock then
+        cil.Emit(OpCodes.Newobj, rwLockCtor.Value)
+    else
+        // SemaphoreSlim(initialCount = 1, maxCount = 1) is the
+        // binary-lock shape — Wait blocks until the single slot is
+        // free; Release returns it.
+        cil.Emit(OpCodes.Ldc_I4_1)
+        cil.Emit(OpCodes.Ldc_I4_1)
+        cil.Emit(OpCodes.Newobj, semaphoreCtor.Value)
     cil.Emit(OpCodes.Stfld, lockField)
-    cil.Emit(OpCodes.Ret)
+    // Field initializers + Ret are emitted in Pass B (the
+    // user-written init expressions need a FunctionCtx, which only
+    // becomes available after the function tables are populated).
+    // Pass A leaves the IL generator open here.
 
     // Method headers — one per PMEntry / PMFunc.  Bodies emit in
     // Pass B once the FunctionCtx wiring is available.
     let mutable pending : ProtectedMethodPending list = []
     let mutable methods : Records.ProtectedMethod list = []
 
-    let invariants =
+    let invariantClauses =
         pd.Members
         |> List.choose (fun m ->
             match m with
             | PMInvariant inv -> Some inv
             | _ -> None)
+    // Invariants reference fields with bare names (`count <= 100`),
+    // so desugar each clause expression once with the protected
+    // type's field names + an empty shadow set (no params in
+    // scope when an invariant evaluates).
+    let desugaredInvariants =
+        invariantClauses
+        |> List.map (fun inv ->
+            desugarSelfFields fieldNames Set.empty inv.Expr)
 
     // We need to construct the Records.ProtectedTypeInfo first so the
     // pending records can carry an `Owner` reference, but ctor + lock
@@ -1099,12 +1204,13 @@ let private defineProtectedTypeOnto
               Records.ProtectedField.Type  = fb.FieldType
               Records.ProtectedField.Field = fb })
     let info : Records.ProtectedTypeInfo =
-        { Name      = pd.Name
-          Type      = tb
-          Ctor      = ctor
-          LockField = lockField
-          Fields    = protectedFields
-          Methods   = [] } // methods filled below; pending records the live mb list
+        { Name       = pd.Name
+          Type       = tb
+          Ctor       = ctor
+          LockField  = lockField
+          UsesRwLock = usesRwLock
+          Fields     = protectedFields
+          Methods    = [] } // methods filled below; pending records the live mb list
 
     let defineMethodPair (name: string) (paramList: Param list)
                           (returnTy: TypeExpr option) : MethodBuilder * MethodBuilder * System.Type[] * System.Type =
@@ -1168,13 +1274,23 @@ let private defineProtectedTypeOnto
     let paramNamesOf (ps: Param list) : Set<string> =
         ps |> List.map (fun p -> p.Name) |> Set.ofList
 
+    let extractBarriers (paramNames: Set<string>) (contracts: ContractClause list) : Expr list =
+        contracts
+        |> List.choose (fun c ->
+            match c with
+            | CCWhen (cond, _) ->
+                Some (desugarSelfFields fieldNames paramNames cond)
+            | _ -> None)
+
     for m in pd.Members do
         match m with
         | PMEntry ed ->
             let publicMb, unsafeMb, pTys, bareRet =
                 defineMethodPair ed.Name ed.Params ed.Return
+            let pNames = paramNamesOf ed.Params
             let desugaredBody =
-                desugarFunctionBody fieldNames (paramNamesOf ed.Params) ed.Body
+                desugarFunctionBody fieldNames pNames ed.Body
+            let entryBarriers = extractBarriers pNames ed.Contracts
             let synthFn : FunctionDecl =
                 { DocComments = []; Annotations = []
                   Visibility  = ed.Visibility
@@ -1200,7 +1316,8 @@ let private defineProtectedTypeOnto
                       Fn         = synthFn
                       Sg         = synthSig
                       IsEntry    = true
-                      Invariants = invariants
+                      Barriers   = entryBarriers
+                      Invariants = desugaredInvariants
                       Owner      = info
                       LockField  = lockField
                       ParamTypes = pTys
@@ -1209,13 +1326,14 @@ let private defineProtectedTypeOnto
             let publicMb, unsafeMb, pTys, bareRet =
                 defineMethodPair fn.Name fn.Params fn.Return
             let synthSig = synthSigOf fn.Params fn.Return fn.IsAsync fn.Span
+            let pNames = paramNamesOf fn.Params
             let desugaredFn =
                 match fn.Body with
                 | Some body ->
                     { fn with
-                        Body = Some (desugarFunctionBody fieldNames
-                                        (paramNamesOf fn.Params) body) }
+                        Body = Some (desugarFunctionBody fieldNames pNames body) }
                 | None -> fn
+            let funcBarriers = extractBarriers pNames fn.Contracts
             methods <-
                 methods
                 @ [ { Records.ProtectedMethod.Name    = fn.Name
@@ -1228,7 +1346,8 @@ let private defineProtectedTypeOnto
                       Fn         = desugaredFn
                       Sg         = synthSig
                       IsEntry    = false
-                      Invariants = invariants
+                      Barriers   = funcBarriers
+                      Invariants = desugaredInvariants
                       Owner      = info
                       LockField  = lockField
                       ParamTypes = pTys
@@ -1236,7 +1355,15 @@ let private defineProtectedTypeOnto
         | _ -> ()
 
     let infoFinal = { info with Methods = methods }
-    infoFinal, pending
+    let initializers =
+        fieldEntries
+        |> List.choose (fun (n, fb, init) ->
+            init |> Option.map (fun e -> n, fb, e))
+    let ctorPending : ProtectedCtorPending =
+        { Owner = infoFinal
+          Ctor  = ctor
+          Initializers = initializers }
+    infoFinal, pending, ctorPending
 
 /// Generate the sibling exposed record for a `@projectable` opaque type.
 /// The view contains every non-`@hidden` field of the opaque type and
@@ -2812,11 +2939,13 @@ let private emitAssembly
         // Monitor.Enter / try / finally / Monitor.Exit wrap.
         let protectedTable = Records.ProtectedTypeTable()
         let protectedPending = ResizeArray<ProtectedMethodPending>()
+        let protectedCtorsPending = ResizeArray<ProtectedCtorPending>()
         for pd in protectedItems sf do
-            let info, pending =
-                defineProtectedTypeOnto ctx.Module nsName symbols lookup pd
+            let info, pending, ctorPending =
+                defineProtectedTypeOnto ctx.Module nsName symbols lookup codegenDiags pd
             protectedTable.[pd.Name] <- info
             for p in pending do protectedPending.Add p
+            protectedCtorsPending.Add ctorPending
             // Register a stub `RecordInfo` so the existing record-call
             // dispatch at `Codegen.fs` line ~2401 picks up `Counter()`
             // construction without needing a separate dispatch arm.
@@ -3683,11 +3812,14 @@ let private emitAssembly
                 true
                 (Some (p.Owner.Type :> System.Type)) programTy symbols codegenDiags
 
-            // Emit the public wrapper.  Pattern:
+            // Emit the public wrapper.  Pattern (with barriers +
+            // invariants from D-progress-079 follow-ups):
             //
             //     Monitor.Enter(this.<>__lock)
             //     .try {
+            //       <when: barrier checks — throw if false>
             //       result = <unsafe>__name(this, args...)
+            //       <invariant: checks — throw if false>
             //       leave end
             //     } finally {
             //       Monitor.Exit(this.<>__lock)
@@ -3702,13 +3834,67 @@ let private emitAssembly
                 else None
             let endLabel = il.DefineLabel()
 
-            // Acquire lock: Monitor.Enter(this.<>__lock).
+            // Build a FunctionCtx for the wrapper so the barrier /
+            // invariant expressions (which reference `self.<field>`
+            // after desugaring) lower correctly.  Param names map
+            // 1:1 to CLR arg slots — `argShift = 1` for `this`.
+            let wrapResolveCtx = GenericContext()
+            let wrapScratchDiags = ResizeArray<Diagnostic>()
+            let wrapResolveType (te: TypeExpr) : System.Type =
+                let lty =
+                    Resolver.resolveType
+                        symbols wrapResolveCtx wrapScratchDiags te
+                TypeMap.toClrTypeWith lookup lty
+            let wrapParams =
+                List.zip p.Fn.Params (List.ofArray p.ParamTypes)
+                |> List.map (fun (par, ty) -> par.Name, ty)
+            let wrapCtx =
+                Codegen.FunctionCtx.make
+                    il p.ReturnType wrapParams
+                    methodTable funcSigsTable recordTable
+                    enumTable enumCases
+                    unionTable unionCaseLookup
+                    interfaceTable distinctTable protectedTable
+                    projectableTable
+                    importedRecordTable importedUnionTable
+                    importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable
+                    externTypeNames
+                    true (Some (p.Owner.Type :> System.Type))
+                    programTy wrapResolveType lookup codegenDiags
+
+            // Acquire lock per Q008's flavour split (D-progress-081
+            // for the RWLock pair, D-progress-083 for the
+            // entry-only SemaphoreSlim case):
+            //   * RWLock types: entries take the write lock; funcs
+            //     take the read lock so concurrent reads run in
+            //     parallel.
+            //   * SemaphoreSlim types (entry-only): every call
+            //     takes the single binary-lock slot via Wait().
+            let acquireMI, releaseMI =
+                if p.Owner.UsesRwLock then
+                    let acq =
+                        if p.IsEntry then rwEnterWriteMI.Value
+                        else rwEnterReadMI.Value
+                    let rel =
+                        if p.IsEntry then rwExitWriteMI.Value
+                        else rwExitReadMI.Value
+                    acq, rel
+                else
+                    semaphoreWaitMI.Value, semaphoreReleaseMI.Value
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, p.LockField)
-            il.Emit(OpCodes.Call, monitorEnterMI.Value)
+            il.Emit(OpCodes.Callvirt, acquireMI)
 
             // Open try.
             il.BeginExceptionBlock() |> ignore
+
+            // Barrier checks (from `when: <cond>` clauses).  False
+            // throws — the bootstrap doesn't yet do Ada-style queue
+            // waiting (see `06-open-questions.md` Q008).
+            for barrier in p.Barriers do
+                emitContractCheck wrapCtx barrier
+                    (sprintf "%s: barrier failed" p.Fn.Name)
 
             // Forward `this` + each arg to the unsafe inner.
             il.Emit(OpCodes.Ldarg_0)
@@ -3722,14 +3908,23 @@ let private emitAssembly
             | Some loc -> il.Emit(OpCodes.Stloc, loc)
             | None     -> ()
 
+            // Invariant checks — every protected-type-level
+            // `invariant: <cond>` is re-evaluated after the entry/
+            // func body returns (still inside the lock).  Per
+            // §7.4 of the language reference, an invariant
+            // violation is an unrecoverable bug.
+            for inv in p.Invariants do
+                emitContractCheck wrapCtx inv
+                    (sprintf "%s: invariant failed" p.Owner.Name)
+
             // Leave to the post-try region.
             il.Emit(OpCodes.Leave, endLabel)
 
-            // Finally: release the lock.
+            // Finally: release the lock in matching mode.
             il.BeginFinallyBlock()
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, p.LockField)
-            il.Emit(OpCodes.Call, monitorExitMI.Value)
+            il.Emit(OpCodes.Callvirt, releaseMI)
             il.EndExceptionBlock()
 
             // End label, then load result + ret.
@@ -3738,6 +3933,43 @@ let private emitAssembly
             | Some loc -> il.Emit(OpCodes.Ldloc, loc)
             | None     -> ()
             il.Emit(OpCodes.Ret)
+
+        // Pass B.7 — finish protected-type ctors with field
+        // initializers + Ret (D-progress-079 follow-up).  Pass A
+        // emitted the ctor prologue (`base ctor` call + lock alloc)
+        // but left the IL generator open so the user-written field
+        // init expressions can be lowered with a real FunctionCtx
+        // in scope.  Each `var x: T = expr` initialiser becomes
+        // `Ldarg.0; <emit expr>; Stfld x` here.
+        for cp in protectedCtorsPending do
+            let cil = cp.Ctor.GetILGenerator()
+            if not (List.isEmpty cp.Initializers) then
+                let resolveCtxCtor = GenericContext()
+                let scratchDiagsCtor = ResizeArray<Diagnostic>()
+                let resolveTypeForCtorCtx (te: TypeExpr) : System.Type =
+                    let lty =
+                        Resolver.resolveType
+                            symbols resolveCtxCtor scratchDiagsCtor te
+                    TypeMap.toClrTypeWith lookup lty
+                let ctorCtx =
+                    Codegen.FunctionCtx.make
+                        cil typeof<System.Void> []
+                        methodTable funcSigsTable recordTable
+                        enumTable enumCases
+                        unionTable unionCaseLookup
+                        interfaceTable distinctTable protectedTable
+                        projectableTable
+                        importedRecordTable importedUnionTable
+                        importedUnionCaseLookup
+                        importedFuncTable importedDistinctTypeTable
+                        externTypeNames
+                        true (Some (cp.Owner.Type :> System.Type))
+                        programTy resolveTypeForCtorCtx lookup codegenDiags
+                for (name, fb, expr) in cp.Initializers do
+                    cil.Emit(OpCodes.Ldarg_0)
+                    let _ = Codegen.emitExpr ctorCtx expr
+                    cil.Emit(OpCodes.Stfld, fb)
+            cil.Emit(OpCodes.Ret)
 
         let lyricMainOpt =
             if isLibrary then None
@@ -3830,9 +4062,17 @@ let private segmentToFileBase (seg: string) : string =
 ///   2. Walk up the directory tree from `startDir` (the CLI binary's base
 ///      directory) looking for a `lyric/std/` subdirectory — works when the
 ///      binary lives inside the source tree.
+///
+/// Within each candidate stdlib directory, look first at the top level
+/// (`lyric/std/<file>`) and then in the kernel boundary
+/// (`lyric/std/_kernel/<file>`) per `docs/14-native-stdlib-plan.md`
+/// §6 P0/4. Top-level wins on collision so a future native rewrite of
+/// a kernel module shadows the old extern surface without manual cleanup.
 let private locateStdlibFile
         (startDir: string)
         (segments: string list) : string option =
+    let firstExisting (paths: string list) : string option =
+        paths |> List.tryFind File.Exists
     match segments with
     | "Std" :: rest when not (List.isEmpty rest) ->
         let baseName =
@@ -3840,13 +4080,14 @@ let private locateStdlibFile
             |> List.map segmentToFileBase
             |> String.concat "_"
         let fileName = baseName + ".l"
+        let candidatesIn (root: string) : string list =
+            [ Path.Combine(root, fileName)
+              Path.Combine(root, "_kernel", fileName) ]
         // 1) LYRIC_STD_PATH override.
         let envHit =
             match Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_STD_PATH") with
-            | Some p ->
-                let candidate = Path.Combine(p, fileName)
-                if File.Exists candidate then Some candidate else None
-            | None -> None
+            | Some p -> firstExisting (candidatesIn p)
+            | None   -> None
         match envHit with
         | Some _ -> envHit
         | None ->
@@ -3855,8 +4096,9 @@ let private locateStdlibFile
             let mutable found : string option = None
             while found.IsNone && dir.IsSome do
                 let d = dir.Value
-                let candidate = Path.Combine(d.FullName, "lyric", "std", fileName)
-                if File.Exists candidate then found <- Some candidate
+                let stdRoot = Path.Combine(d.FullName, "lyric", "std")
+                if Directory.Exists stdRoot then
+                    found <- firstExisting (candidatesIn stdRoot)
                 dir <- d.Parent |> Option.ofObj
             found
     | _ -> None

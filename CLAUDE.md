@@ -102,7 +102,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   into the existing import pipeline.  `lyric prove <source.l>` runs the
   Phase 4 verifier (M4.1 fragment).
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
-  see `docs/15-phase-4-proof-plan.md` and the D-progress-080/081
+  see `docs/15-phase-4-proof-plan.md` and the D-progress-084/085
   entries in `docs/10-bootstrap-progress.md`).  `Mode.fs` parses
   `@runtime_checked` / `@proof_required[(modifier)]` / `@axiom`
   package-level annotations into a `VerificationLevel`.  `ModeCheck.fs`
