@@ -236,22 +236,29 @@ on it. **No incremental cost.**
 
 No language changes. Doable today.
 
-1. **Move trivial `@externTarget` math wrappers to native Lyric.**
-   `absInt`, `min`/`max`, `gcd`, `lcm`, integer `pow`. ~100 LoC.
-2. **Remove obsolete monomorphic shims.** Delete `IntList`,
+1. ✅ **Move trivial `@externTarget` math wrappers to native Lyric.**
+   `absInt`, `min`/`max`, `gcd`, `lcm`. ~100 LoC. *(PR #68.)*
+2. ✅ **Remove obsolete monomorphic shims.** Deleted `IntList`,
    `StringList`, `LongList`, `StringIntMap`, `StringStringMap` from
-   `Stdlib.fs`. Migrate any callers to the generic `List[T]` /
-   `Map[K, V]` extern types. ~150 LoC removed.
-3. **Convert trivial `Console.Println` / `Print` / `Format.Of1..6` to
-   `@externTarget` declarations** so the F# shim only exists for
-   things that genuinely can't be expressed in a one-line Lyric
-   declaration.
-4. **Establish `compiler/lyric/std/_kernel/*.l`** as the audited
+   `Stdlib.fs`. ~89 LoC removed. *(PR #70.)*
+3. 🟡 **Convert trivial `Console.Println` / `Print` / `Format.Of1..6` to
+   `@externTarget` declarations.** *(PR #71 covered the Console arms;
+   `Format.Of1..6` deferred to a follow-up because the emitter would need
+   to pack `object[]` for arity 4-6.)*
+4. 🟡 **Establish `compiler/lyric/std/_kernel/*.l`** as the audited
    extern boundary. Move every `@externTarget` declaration into this
    subdirectory. Add a CI lint that rejects new `@externTarget`s
-   outside `_kernel/`.
+   outside `_kernel/`. *(P0/4a: directory created, four already-pure-
+   extern files (`environment_host`, `http_host`, `log_host`,
+   `time_host`) moved, file-discovery in `Emitter.fs`,
+   `Cli/Program.fs`, and `StdlibSeedTests.fs` updated to recurse and
+   prefer top-level on collision. Subsequent P0/4b PRs handle the
+   mixed-content files (`math.l`, `time.l`, `task.l`, `http.l`,
+   `json.l`, etc.) one or two at a time. CI lint deferred to P0/4c
+   once the kernel is substantially populated.)*
 5. **Document the kernel** in this doc and in
-   `docs/10-stdlib-plan.md`. Cross-reference.
+   `docs/10-stdlib-plan.md`. Cross-reference. *(In progress: this
+   subsection + `compiler/lyric/std/_kernel/README.md` ship in P0/4a.)*
 
 **Exit criterion:** F# `Stdlib.fs` shrinks by ≥30%; all remaining
 externs are concentrated in `_kernel/`. No new language features

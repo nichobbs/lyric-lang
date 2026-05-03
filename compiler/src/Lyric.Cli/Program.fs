@@ -154,7 +154,9 @@ module private BuildCache =
                 found
         match foundDir with
         | Some stdDir ->
-            Directory.GetFiles(stdDir, "*.l")
+            // Recursive: kernel-boundary files live under `_kernel/`
+            // (see `docs/14-native-stdlib-plan.md` §6 P0/4).
+            Directory.GetFiles(stdDir, "*.l", SearchOption.AllDirectories)
             |> Array.sort
             |> List.ofArray
         | None -> []
