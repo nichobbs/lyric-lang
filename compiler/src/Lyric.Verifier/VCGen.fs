@@ -448,6 +448,27 @@ let wpBody
                   SideGoals = []
                   Assumed = []
                   Diags = [] }
+            | { Kind = SExpr ({ Kind = ECall(callee, [arg]) } as callExpr) } :: rest
+                when (match callee.Kind with
+                      | EPath p ->
+                          (match p.Segments with
+                           | ["assert"] -> true
+                           | _ -> false)
+                      | _ -> false) ->
+                // `assert φ` — translate φ, emit it as a side goal,
+                // then add it to the assumed hypotheses for the rest
+                // of the block.  This is the standard Hoare encoding
+                // for assertions.
+                let argExpr =
+                    match arg with
+                    | CAPositional v   -> v
+                    | CANamed(_, v, _) -> v
+                let phi, phiDiags = translateExpr env argExpr
+                let inner = walk env rest
+                { Wp        = inner.Wp
+                  SideGoals = (phi.Term, GKAssertion, callExpr.Span) :: inner.SideGoals
+                  Assumed   = phi.Term :: phi.Assumed @ inner.Assumed
+                  Diags     = phiDiags @ inner.Diags }
             | { Kind = SLocal lb } :: rest ->
                 match lb with
                 | LBVal(pat, _, init) ->

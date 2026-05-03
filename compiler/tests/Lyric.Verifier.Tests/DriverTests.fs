@@ -190,6 +190,29 @@ let tests =
             | Discharged | Unknown _ -> ()
         }
 
+        test "assert phi in body produces a side goal AND assumes phi" {
+            // The assertion `x == x` is a tautology (closes via the
+            // trivial discharger); the post-assertion assumption
+            // `x == x` doesn't change anything here, but the assert
+            // mechanism is exercised end-to-end.
+            let src = """
+                @proof_required
+                package P
+
+                pub func ok(x: Int): Int
+                  ensures: result == x
+                {
+                  assert(x == x)
+                  return x
+                }
+                """
+            let summary = prove src
+            // Two goals: the postcondition and the assert side-goal.
+            Expect.equal (ProofSummary.totalCount summary) 2 "two goals"
+            Expect.equal (ProofSummary.dischargedCount summary) 2 "both discharge"
+            Expect.isFalse (ProofSummary.hasFailure summary) "no failure"
+        }
+
         test "call rule: caller's required precondition flows into side goal" {
             // id requires `x >= 0`; wrapper calls id(z) with `z >= 0`
             // in scope.  The discharger sees the side condition
