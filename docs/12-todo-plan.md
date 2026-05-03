@@ -648,9 +648,88 @@ the actual session order followed:
 
 ---
 
-## Band D — long-horizon (Phase 4+)
+## Band D — Phase 4 proof system (in progress)
 
-- SMT-backed proof system (Phase 4)
+M4.1 + M4.2 core shipped (D-progress-085 / 089); see the Phase 4
+status table in `docs/10-bootstrap-progress.md`. The remainder
+splits into "M4.2 close-out" (small, unblocks the M4.2 exit
+criteria) and "M4.3" (the v2.0 release scope).
+
+### D1. M4.2 close-out
+
+1. **`std.core.proof` subpackage.** Create `compiler/lyric/std/proof.l`
+   with the `List[T]` / `Result[T,E]` operations whose contracts
+   the verifier discharges; M4.2 exit criterion requires
+   self-verification. Sized as a half-to-one-session deliverable
+   once the contract surface is decided.
+2. **`--allow-unverified` flag.** Add to `lyric prove` in
+   `compiler/src/Lyric.Cli/`. Default behaviour stays "error on
+   `unknown`"; the flag downgrades to a warning and exits 0. ~50
+   LOC + 2-3 driver tests.
+3. **Pagination-helper or token-bucket end-to-end proof.** Pick
+   one worked example from `docs/02-worked-examples.md`, add the
+   loop invariants, prove. Replaces the
+   `examples/prove_demo.l` integration test as the M4.2
+   demonstration. Likely surfaces 1-2 missing wp/sp rules.
+4. **Verification regression suite to 200.** Currently 83 verifier
+   tests across `compiler/tests/Lyric.Verifier.Tests/`. Target 200
+   per `docs/15-phase-4-proof-plan.md` §13. Bias toward the
+   negative-counterexample bucket (today: light) and the
+   soundness-anti-axiom bucket (today: zero).
+
+### D2. M4.3 — v2.0 release work
+
+5. **Counterexample reporting + trace reconstruction.** Today only
+   parses `name : sort = value` bindings from `(get-model)`. M4.3
+   wants a step-trace from the failing assertion back to the
+   originating contract clause, plus heuristic suggestions
+   ("strengthen this `requires:`", "add this loop invariant").
+6. **`lyric prove --explain --goal <n>` mode.** Per
+   `15-phase-4-proof-plan.md` §9.4.
+7. **`lyric prove --json` schema.** Frozen public surface; needs a
+   schema doc and a regression test that fails when the schema
+   drifts.
+8. **LSP V0007/V0008 integration.** Hover-rendered counterexamples
+   + code-action fix-its for the suggestion list.
+9. **`@proof_required(checked_arithmetic)` mode** (§5.4).
+10. **`unsafe { ... }` + `assert φ` end-to-end.** V0003 / V0009 in
+    the diagnostic surface; assertion lowering to a side-VC.
+11. **Banking-example proof tutorial chapter** in
+    `docs/13-tutorial.md`.
+12. **`docs/16-axiom-audit.md`** — list every `@axiom` the stdlib
+    ships with its rationale.
+13. **Contract-aware `lyric public-api-diff`.** A SemVer minor that
+    *strengthens* a `requires:` (or weakens an `ensures:`) is
+    breaking. Spec already in `01-language-reference.md` §11; M4.3
+    is the first time the tooling can detect it.
+14. **CVC5 solver-swap parity.** Feature-flag build that runs ≥95 %
+    of the M4.2 corpus through CVC5.
+
+### D3. Q021 follow-ups (audit-surfaced)
+
+15. **Q021 #5 — user-defined interface constraints.** Today's
+    `Codegen.fs:630` `satisfiesMarker` only knows D034 markers;
+    user interfaces fall through to `_ -> false` and the build
+    aborts with a misleading B0001 even when the candidate type
+    implements the interface. Either (a) reject user-interface
+    constraints at the type checker until codegen learns interface
+    lookup, or (b) extend `satisfiesMarker` to walk
+    `ClrType.GetInterfaces()`. Choose (a) for the bootstrap; (b)
+    can land with the Phase 5 stdlib re-host.
+16. **Distinct-types `derives` propagation.** `DistinctTypeInfo`
+    doesn't snapshot the `derives` list, so `f[Age] where Age:
+    Hash` rejects even when `type Age = Int derives Hash`.
+    Comment at `Codegen.fs:626-629` acknowledges this. Half-session
+    fix once Q021 #5 is decided.
+17. **`09-msil-emission.md` §9.4 update.** Spec says marker
+    constraints lower to interface dispatch; bootstrap actually
+    uses a closed lookup table in `Codegen.fs:satisfiesMarker`.
+    Either retrofit interface dispatch (bigger) or correct the
+    spec to reflect the shipped lowering (smaller; preferred for
+    the bootstrap).
+
+## Band E — long-horizon (Phase 5+)
+
 - Self-hosting port (Phase 5)
 - JVM backend (Phase 6+)
 - ISO standardisation (Phase 6+)

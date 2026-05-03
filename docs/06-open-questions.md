@@ -425,7 +425,7 @@ Tier 6 in `docs/12-todo-plan.md`.
 
 ## Q021: `where`-clause activation in the bootstrap compiler
 
-**Status:** OPEN — gating the native stdlib (D038, `docs/14-native-stdlib-plan.md` §4.1 G3).
+**Status:** PARTIALLY RESOLVED — sub-questions 1-4 shipped against the D034 marker set; sub-question 5 (user-defined interface constraints) is parser/checker-accepted but **not enforced at codegen** and is a footgun. Distinct types' `derives` lists also do not yet propagate through `satisfiesMarker`.
 
 **Question:** What is the concrete plan to lift the Phase 1 deferral of `where` clauses with the D034 marker set, so that native `Std.HashMap[K, V] where K: Hash + Equals`, `Std.Sort[T] where T: Compare`, etc. become expressible in Lyric source?
 
@@ -449,7 +449,20 @@ Tier 6 in `docs/12-todo-plan.md`.
 
 **Recommendation:** Single-PR design proposal under `docs/proposals/q021-where-clauses.md` covering sub-questions 1-5, then implementation. Estimated 3-4 weeks of compiler work (per `14-native-stdlib-plan.md` §4.1). Begin toward end of P0 of the native stdlib migration so it lands before P1 needs it.
 
-**Revisions:** None.
+**Resolution status (2026-05-03 audit):**
+
+1. **Type checker.** SHIPPED. `Lyric.TypeChecker/Checker.fs:214` (`checkWhereClause`) plumbs the parser-level `where` clause through to definition-time well-formedness checks: `T0050` for unknown type parameters, `T0051` for unknown markers / non-interface constraints. No stub-throw.
+2. **Marker dispatch lowering.** PARTIAL / divergence from §9.4. The bootstrap does **not** define interface types per marker; instead `Lyric.Emitter/Codegen.fs:630` (`satisfiesMarker`) is a closed lookup table mapping each D034 marker name to a predicate over the candidate CLR type. Enforcement is by predicate at the call site (see #4), not by interface dispatch. Pragmatically equivalent for primitive monomorphisations, but `09-msil-emission.md` §9.4's "interface dispatch" wording overstates what shipped — update §9.4 or the emission story when interfaces actually do the work.
+3. **Built-in primitive coverage.** SHIPPED. `satisfiesMarker` (Codegen.fs:630-645) hard-codes the auto-satisfaction table: `Add/Sub/Mul/Div/Mod` → numeric primitives, `Compare` → ordered primitives + `String`, `Hash`/`Equals`/`Default` → any primitive or `String`.
+4. **Monomorphisation interaction.** SHIPPED. `Lyric.Emitter/Codegen.fs:3043` and `:3368` invoke `checkBounds` immediately before `MakeGenericMethod`, raising `B0001` (build-aborting `failwithf`) when an inferred type-arg fails its declared marker. No interface dispatch, no runtime indirection — direct predicate check at codegen, then a fully-resolved `Callvirt` to the monomorphised target.
+5. **User-defined interface constraints.** NOT SHIPPED — silent footgun. The type checker accepts `where T: SomeInterface` (Checker.fs:233-238 admits any in-scope `DKInterface` symbol) but the codegen-side `satisfiesMarker` only recognises the D034 marker names; any user interface name falls through to the wildcard `_ -> false` branch (Codegen.fs:645) and `B0001`s **even when the candidate type implements the interface**. The diagnostic message blames the user, not the missing emitter feature. Treat as a high-priority bug: either (a) reject user-interface constraints at the type checker until the emitter learns interface implementation lookup, or (b) extend `satisfiesMarker` to walk `ClrType.GetInterfaces()` for user interfaces.
+
+**Additional gap surfaced during the audit:** Locally-declared distinct types (`type Age = Int derives Compare, Hash`) don't carry their `derives` list onto `DistinctTypeInfo`, so `satisfiesMarker` falls through to "is this a primitive?" (which the wrapping CLR struct isn't) and rejects them. Comment at Codegen.fs:626-629 acknowledges this. Ranged subtypes hit the same path. This blocks `f[Age] where Age: Hash` patterns — a likely paper cut for the native stdlib. Track as a follow-up under Q021 rather than a new question.
+
+**Implication for D038 / native stdlib G3.** The marker-only path covers `HashMap[K, V] where K: Hash + Equals` and `Sort[T] where T: Compare` for primitive `K`/`V`/`T`. The G3 gating item from `14-native-stdlib-plan.md` is therefore unblocked **for primitive instantiations**. Distinct-typed and user-interface-constrained instantiations remain blocked until #5 and the distinct-types gap close.
+
+**Revisions:**
+- 2026-05-03: Audit against the shipped compiler. Sub-questions 1, 3, 4 confirmed SHIPPED; #2 reclassified PARTIAL (lookup table, not interface dispatch); #5 reclassified NOT SHIPPED with the silent-B0001 footgun called out. Distinct-types/derives gap added as a follow-up. Status flipped from OPEN to PARTIALLY RESOLVED.
 
 ---
 

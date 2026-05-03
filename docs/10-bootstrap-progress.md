@@ -90,10 +90,137 @@ deferred to Phase 3 by design.
   follow-up.
 - Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
   tools need token-position-faithful traversal (decision: D-progress-029).
+- Property-based testing (`Std.Testing.Property`) — bootstrap shipped
+  (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
+  `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`
+  for determinism. Shrinking, composable generators, and xunit-style
+  discovery deferred.
+- Snapshot testing (`Std.Testing.Snapshot`) — bootstrap shipped
+  (D-progress-063): `snapshot(label, actual)` first-run-writes /
+  later-run-compares against `snapshots/<label>.txt`,
+  `snapshotMatch(label, actual)` panic-on-mismatch wrapper. Hard-coded
+  snapshot directory, no diff rendering, no normalization — Phase 3
+  follow-ups.
+
+### Phase 4 — proof system (in progress)
+
+| Milestone | Status | Lands in |
+|---|---|---|
+| M4.1 — VC skeleton, arithmetic, range encoding, axiom registration, mode-dispatch, `lyric prove` CLI | **Shipped** | D-progress-085 |
+| M4.2 — loop encoding (establish/preserve/conclude), V0005 invariant gate, var SSA, datatype encoding (record/union/opaque), `EMember` field selectors, `@pure` unfold, persistent z3 + content-hashed goal cache, cross-package contract reading + V0001 level-violation diagnostic | **Shipped** | D-progress-089 (PR #90) |
+| M4.2 — quantifiers (`forall`/`exists`), trigger inference, V0006 decidable-fragment enforcement | **Shipped** | (V0006 in `ModeCheck.fs`; `TForall`/`TExists` in `Vcir.fs`; `EForall`/`EExists` translation in `VCGen.fs`) |
+| M4.2 — `std.core.proof` standard-library subpackage | **Not shipped** | — |
+| M4.2 — `--allow-unverified` CLI flag (escape hatch on `unknown`) | **Not shipped** | — |
+| M4.2 — 200-test verification regression suite | **Partial** | 83 verifier tests today (`Lyric.Verifier.Tests`); target 200 |
+| M4.3 — counterexample reporting + trace reconstruction + suggestion heuristics | **Partial** | M4.1 emits `name : sort = value` bindings parsed from `(get-model)`; full trace + suggestion heuristic deferred |
+| M4.3 — `lyric prove --explain --goal <n>` mode | **Not shipped** | — |
+| M4.3 — `lyric prove --json` schema (frozen public surface) | **Not shipped** | — |
+| M4.3 — LSP integration: V0007/V0008 hover counterexamples + code actions | **Not shipped** | — |
+| M4.3 — `@proof_required(checked_arithmetic)` mode | **Not shipped** | — |
+| M4.3 — `unsafe { ... }` + `assert φ` end-to-end (V0003, V0009) | **Not shipped** | — |
+| M4.3 — banking-example proof tutorial chapter | **Not shipped** | — |
+| M4.3 — `docs/16-axiom-audit.md` | **Not shipped** | — |
+| M4.3 — contract-aware `lyric public-api-diff` (strengthened `requires:` / weakened `ensures:` as breaking) | **Not shipped** | — |
+| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Not shipped** | — |
+
+The end-to-end `examples/prove_demo.l` (12 obligations covering identity,
+tautology, bumped-by-1, cross-function call rule, inline range, assert,
+match, `@pure` unfold, loop establish/preserve/post, var SSA, record
+construction + field access) discharges under the shipped pipeline; it's
+the de facto integration test that the M4.2 exit-criterion worked example
+(pagination-helper or token-bucket from `02-worked-examples.md`) is meant
+to replace. Not done yet.
 
 ---
 
 ## Active session decisions
+
+### D-progress-090: Implementation-vs-plan audit — M4.2, Q021, Phase 3 testing
+
+*claude/review-implementation-plan-1MZgA branch.* Documentation-only
+delta. Reconciles `docs/05-implementation-plan.md`,
+`docs/06-open-questions.md`, and this file against the shipped
+compiler / stdlib for three buckets that had drifted out of sync.
+
+**Phase 3 testing surface — both shipped, status surfaced.**
+`Std.Testing.Property` (D-progress-064) and `Std.Testing.Snapshot`
+(D-progress-063) shipped during the C2 async tail but neither was
+called out in the Phase 3 status block. Added bullets above, both
+labelled bootstrap-grade with the deferred follow-ups (shrinking,
+composable generators, xunit discovery, snapshot diff/normalisation,
+configurable snapshot dir).
+
+**Phase 4 status — new table.** No Phase 4 status block existed.
+Added one above with M4.1 / M4.2 / M4.3 broken out per
+`docs/15-phase-4-proof-plan.md` §12. Findings:
+
+- **M4.1: shipped** (D-progress-085).
+- **M4.2 core: shipped** (D-progress-089) — loops with explicit
+  invariant (`while c invariant: ι`), establish/preserve/conclude
+  sub-VCs (`VCGen.fs:1014-1129`), V0005 invariant gate
+  (`ModeCheck.fs:132-170`), var SSA (forward env-substitution), full
+  record / union / opaque datatype encoding via SMT-LIB
+  `declare-datatypes` with typed selectors, `@pure` cross-package
+  unfold, persistent z3 session + content-hashed cache at
+  `target/<P>/proofs/cache.json`, V0001 cross-package level
+  violation.
+- **M4.2 quantifiers: shipped.** `EForall` / `EExists` IR shapes
+  (`Vcir.fs:97-98`), translation in `VCGen.fs:573-616`, V0006
+  decidable-fragment enforcement with finite-domain checks
+  (`ModeCheckTests.fs:84-156` covers unbounded-Int rejection +
+  bounded acceptance). The "M4.2 quantifier coverage uncertain"
+  note in any prior planning doc is obsolete.
+- **M4.2 not shipped:** `std.core.proof` subpackage (no
+  `lyric/std/proof.l` exists), `--allow-unverified` CLI flag (no
+  match for the string in `compiler/src/Lyric.Cli/`), and the
+  200-test verification regression target (83 verifier tests today
+  across `Lyric.Verifier.Tests/`'s 8 files: ModeTests 8, ModeCheck
+  11, Imports 6, Vcir 7, Smt 8, Solver 14, Driver 29).
+- **M4.3 not shipped** in its entirety — counterexamples currently
+  produce `name : sort = value` bindings parsed from `(get-model)`
+  but no trace reconstruction, no suggestion heuristic, no
+  `--explain --goal <n>`, no `--json` schema, no LSP V0007/V0008
+  integration, no `@proof_required(checked_arithmetic)` mode, no
+  `unsafe { ... }` + `assert φ` end-to-end (V0003 / V0009 not in
+  the diagnostic surface), no axiom-audit doc, no
+  contract-aware `public-api-diff`, no CVC5 solver-swap.
+
+**Q021 — flipped OPEN → PARTIALLY RESOLVED.** Audit found the
+parser / type-checker / emitter all carry where-clause work that
+the OPEN status didn't credit:
+
+- Sub-questions 1, 3, 4 SHIPPED with file:line evidence in
+  `06-open-questions.md` (revision note appended).
+- Sub-question 2 reclassified PARTIAL: D034 markers are enforced
+  via a closed lookup table in `Codegen.fs:630` (`satisfiesMarker`)
+  rather than the interface-dispatch model
+  `09-msil-emission.md` §9.4 implies. Pragmatically equivalent for
+  primitive monomorphisations; `09-msil-emission.md` §9.4 should be
+  updated to match shipped reality (separate follow-up — not in
+  this commit).
+- Sub-question 5 reclassified NOT SHIPPED: user-defined interface
+  constraints parse and type-check but `satisfiesMarker` falls
+  through to `_ -> false` for any non-marker name (Codegen.fs:645),
+  so `f[Impl]` where `Impl` implements `SomeInterface` aborts the
+  build with a misleading B0001. Bug, not a deferral.
+- Distinct-types/derives gap surfaced as a Q021 follow-up: locally-
+  declared distinct types' `derives` lists aren't snapshotted on
+  `DistinctTypeInfo`, so `f[Age] where Age: Hash` rejects even when
+  the source declares `derives Hash`. Comment at Codegen.fs:626-629
+  acknowledges this.
+
+**D038 native-stdlib G3 implication.** The marker-only path covers
+`HashMap[K, V] where K: Hash + Equals` and `Sort[T] where T:
+Compare` for primitive instantiations — i.e. P1 of the migration
+is unblocked for primitives. Distinct-typed and user-interface-
+constrained instantiations remain blocked on Q021#5 + the
+distinct-types gap.
+
+**No code changes in this entry.** Tests still 1141 passing
+solution-wide (last measured under D-progress-089). Documentation
+correction only.
+
+---
 
 ### D-progress-089: Phase 4 verifier — M4.2 (cross-package + loops + var SSA + cache)
 
