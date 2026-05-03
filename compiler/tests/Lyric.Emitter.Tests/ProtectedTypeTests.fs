@@ -194,6 +194,33 @@ func main(): Unit {
 """,
     "3"
 
+    "pt_rwlock_func_reads",
+    // D-progress-081: concurrent `func` calls take the read lock,
+    // entries take the write lock.  Single-threaded smoke confirms
+    // both sides still produce the right result through the
+    // RWLock acquire/release pattern; the underlying concurrency
+    // benefit isn't directly observable in a deterministic test.
+    """
+package E14
+
+protected type Counter {
+  var count: Int = 1
+
+  entry add(n: in Int) { count = count + n }
+
+  func get(): Int { return count }
+  func doubled(): Int { return count * 2 }
+}
+
+func main(): Unit {
+  val c = Counter()
+  c.add(4)
+  println(toString(c.get()))
+  println(toString(c.doubled()))
+}
+""",
+    "5\n10"
+
     "pt_when_barrier_throws_when_false",
     // Barrier-not-met: `when: count > 0` is false at call time,
     // so the wrapper throws BEFORE invoking the unsafe inner.

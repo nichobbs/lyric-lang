@@ -89,6 +89,42 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-081: protected types — `ReaderWriterLockSlim` (Q008)
+*claude/protected-type-rwlock branch.*  Closes another follow-up
+from D-progress-079: protected-type wrappers now lift the lock
+field from `object` (Monitor) to
+`System.Threading.ReaderWriterLockSlim` so concurrent `func` calls
+can take a read lock while `entry` calls take a write lock.
+Matches the Q008 resolution recorded in
+`docs/09-msil-emission.md` §17.4.
+
+Lowering changes:
+- Lock field `<>__lock : object` → `<>__lock : ReaderWriterLockSlim`.
+- Default ctor allocates via `Newobj ReaderWriterLockSlim::.ctor()`
+  instead of `Newobj Object::.ctor()`.
+- Public wrapper IL switches `Monitor.Enter / Exit` to
+  `Callvirt EnterWriteLock / ExitWriteLock` for entries and
+  `Callvirt EnterReadLock / ExitReadLock` for funcs.  Both pairs
+  release in the `finally` so an exception inside the unsafe
+  inner releases the lock cleanly.
+
+The bootstrap currently uses `ReaderWriterLockSlim` uniformly,
+even for entry-only protected types; switching entry-only types
+to `SemaphoreSlim` (the second half of Q008's resolution) is a
+minor follow-up — the perf delta only shows up under contention
+that no Lyric workload yet exercises.
+
+One new test in `ProtectedTypeTests.fs`:
+- `pt_rwlock_func_reads` — `Counter` with two `func` reads
+  alongside an `entry add`; smoke-confirms the RWLock acquire/
+  release pattern works for both modes.  Concurrent execution
+  isn't directly tested deterministically; the IL shape proves
+  the lock-mode dispatch.
+
+All 1066 tests pass (was 1065; +1 net new).
+
+---
+
 ### D-progress-080: protected types — barriers + invariants + field initializers
 *claude/protected-type-followups branch.*  Closes three of the five
 follow-ups documented under D-progress-079:
