@@ -95,6 +95,38 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-088: protected types — `Box[Int]()` explicit-type-arg construction
+*claude/protected-type-explicit-type-args branch.*  Closes the
+remaining D-progress-086 follow-up: generic protected types can now
+be constructed with explicit type-arg syntax, no LHS annotation
+required.
+
+`Box[Int]()` parses as
+`ECall(EIndex(EPath{Box}, [EPath{Int}]), [])`.  A new dispatch arm
+in `Codegen.fs`, ordered before the existing LHS-driven
+construction arm, matches that shape when the path resolves to a
+known generic protected type and at least one index expression is
+present.  Each index `Expr` is wrapped as a synthetic
+`TypeExpr.TRef` and routed through the existing `ctx.ResolveType`
+pipeline, so primitives (`Int`, `String`), user types, and
+qualified paths resolve uniformly.  `MakeGenericType` +
+`TypeBuilder.GetConstructor` then close the open ctor handle.
+
+Type-arity mismatches surface as a deliberate `failwithf`
+diagnostic so a malformed `Box[Int, String]()` doesn't silently
+crash inside `MakeGenericType`.  Nested/computed type expressions
+(`Box[List[Int]]()`) also work transitively because `TRef` /
+`TGenericApp` resolution is recursive.
+
+One new test in `ProtectedTypeTests.fs`:
+
+- `pt_generic_explicit_type_arg` exercises `val b = Box[Int]()`
+  (no LHS annotation), confirms `b.put(7)` + `b.get()` round-trip.
+
+All 467 emitter tests pass post-change (was 466; +1 net new).
+
+---
+
 ### D-progress-087: protected types — Ada-style barrier waiting via tri-modal lock selection
 *claude/protected-type-barrier-wait branch.*  Closes the second half
 of Q008's lock-flavour decision (`docs/06-open-questions.md`,

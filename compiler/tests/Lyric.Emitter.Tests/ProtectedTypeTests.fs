@@ -277,6 +277,30 @@ func main(): Unit {
 """,
     "42"
 
+    "pt_generic_explicit_type_arg",
+    // D-progress-088: explicit `Box[Int]()` syntax (parses as
+    // `ECall(EIndex(EPath, [Int]), [])`) closes the generic ctor
+    // without needing an LHS type annotation.  Each index Expr is
+    // resolved as a TypeExpr through `ctx.ResolveType`, then the
+    // closed type is constructed via `MakeGenericType` /
+    // `TypeBuilder.GetConstructor`.
+    """
+package E14
+
+protected type Box[T] {
+  var value: T
+  entry put(v: in T) { value = v }
+  func get(): T { return value }
+}
+
+func main(): Unit {
+  val b = Box[Int]()
+  b.put(7)
+  println(toString(b.get()))
+}
+""",
+    "7"
+
     "pt_generic_string",
     // Same shape as `pt_generic_int` but closed against a reference
     // type — confirms the GTPB substitution doesn't accidentally
