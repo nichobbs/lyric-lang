@@ -190,6 +190,41 @@ let tests =
             | Discharged | Unknown _ -> ()
         }
 
+        test "return-type range bound is checked at body return" {
+            // Identity from [0, 100] to [0, 100]: trivially valid.
+            let src = """
+                @proof_required
+                package P
+
+                pub func ok(x: Int range 0 ..= 100): Int range 0 ..= 100
+                  = x
+                """
+            let summary = prove src
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Counterexample _ ->
+                failtest "identity into the same range should hold"
+            | Discharged | Unknown _ -> ()
+        }
+
+        test "wrong return-type range produces a counterexample" {
+            // Returning x: Int range 0 ..= 100 as Int range 50 ..= 60
+            // should fail (x might be e.g. 48).
+            let src = """
+                @proof_required
+                package P
+
+                pub func bad(x: Int range 0 ..= 100): Int range 50 ..= 60
+                  = x
+                """
+            let summary = prove src
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Discharged ->
+                failtest "must NOT discharge — bound mismatch"
+            | Counterexample _ | Unknown _ -> ()
+        }
+
         test "non-@pure callee does NOT unfold (only post is assumed)" {
             // Without @pure, the verifier sees only the
             // postcondition `result == x + x` for the callee, not

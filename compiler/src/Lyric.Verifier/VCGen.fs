@@ -747,11 +747,28 @@ let goalsForFunction
             // Function with no body: treated as @axiom.  No VCs.
             FBExpr { Kind = ELiteral Literal.LUnit; Span = decl.Span }
 
+    // Return-type range bound: if the return type is a refined
+    // range subtype, fold its `[lo, hi]` constraint into the
+    // postcondition the wp computation chases.
+    let returnRangeHyps (resultExpr: Term) : Term list =
+        match resultSort.Range with
+        | RBKNone -> []
+        | RBKClosed(lo, hi) ->
+            [ TBuiltin(BOpLte, [TLit(LInt lo, SInt); resultExpr])
+              TBuiltin(BOpLte, [resultExpr; TLit(LInt hi, SInt)]) ]
+        | RBKHalfOpen(lo, hi) ->
+            [ TBuiltin(BOpLte, [TLit(LInt lo, SInt); resultExpr])
+              TBuiltin(BOpLt,  [resultExpr; TLit(LInt hi, SInt)]) ]
+
     let wpRes =
         wpBody envWithOld resultSort
             (fun resultExpr ->
-                // Substitute `result` into postTerm.
-                Term.subst (Map.ofList [("result", resultExpr)]) postTerm)
+                // Substitute `result` into postTerm and add the
+                // return-type range bound, if any.
+                let userPost =
+                    Term.subst (Map.ofList [("result", resultExpr)]) postTerm
+                let rangeBounds = returnRangeHyps resultExpr
+                Term.mkAnd (userPost :: rangeBounds))
             body
 
     // Hypothesis set for the post goal:
