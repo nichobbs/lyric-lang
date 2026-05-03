@@ -77,6 +77,15 @@ let private enumItems (sf: SourceFile) : EnumDecl list =
         | IEnum e -> Some e
         | _ -> None)
 
+/// Pull every top-level `IProtected` out of a parsed source file
+/// (D-progress-079).
+let private protectedItems (sf: SourceFile) : ProtectedTypeDecl list =
+    sf.Items
+    |> List.choose (fun it ->
+        match it.Kind with
+        | IProtected p -> Some p
+        | _ -> None)
+
 /// Pull every top-level `IUnion` out of a parsed source file.
 let private unionItems (sf: SourceFile) : UnionDecl list =
     sf.Items
@@ -752,6 +761,482 @@ let private defineRecordOnto
       Records.RecordInfo.Fields   = fields
       Records.RecordInfo.Ctor     = ctor
       Records.RecordInfo.Generics = typeParamNames }
+
+// ---------------------------------------------------------------------------
+// Protected types (D-progress-079).
+//
+// Bootstrap-grade lowering: synthesise a sealed CLR class wrapping
+// the protected state with a `Monitor`-based lock.  Every entry /
+// func is emitted as a public instance method whose body runs
+// inside `Monitor.Enter(lock); try { … } finally { Monitor.Exit(lock) }`.
+// `when:` barriers throw `LyricAssertionException` on false (Ada-
+// style condition-variable waiting is gated on Phase C scope
+// plumbing — see D-progress-067).  `invariant:` clauses re-evaluate
+// after each entry/func body returns its value.
+// ---------------------------------------------------------------------------
+
+/// Rewrite a protected-type entry/func body so bare references to
+/// the protected type's own fields desugar into `self.<field>`
+/// member accesses.  Per `docs/01-language-reference.md` §7.4, code
+/// inside a `protected type` body treats its fields as implicitly
+/// in-scope; the bootstrap codegen has no implicit-self lookup, so
+/// we lower at the AST level before handing the body to
+/// `emitFunctionBody`.  The rewrite skips bindings that the user's
+/// scope shadows (parameter names, local `val`/`var` declarations).
+let rec private desugarSelfFields
+        (fieldNames: Set<string>)
+        (shadowed: Set<string>)
+        (e: Expr) : Expr =
+    let recur = desugarSelfFields fieldNames shadowed
+    let recurBlock blk : Block =
+        let newStmts = desugarStmts fieldNames shadowed blk.Statements
+        { blk with Statements = newStmts }
+    let recurBranch (b: ExprOrBlock) : ExprOrBlock =
+        match b with
+        | EOBExpr  e -> EOBExpr  (recur e)
+        | EOBBlock b -> EOBBlock (recurBlock b)
+    match e.Kind with
+    | EPath { Segments = [name] } when fieldNames.Contains name
+                                       && not (shadowed.Contains name) ->
+        let selfExpr : Expr = { Kind = ESelf; Span = e.Span }
+        { e with Kind = EMember (selfExpr, name) }
+    | EPath _ | ELiteral _ | ESelf | EResult | EError -> e
+    | EInterpolated segs ->
+        let segs' =
+            segs
+            |> List.map (function
+                | ISText _ as t -> t
+                | ISExpr e -> ISExpr (recur e))
+        { e with Kind = EInterpolated segs' }
+    | EParen inner -> { e with Kind = EParen (recur inner) }
+    | ESpawn inner -> { e with Kind = ESpawn (recur inner) }
+    | EOld inner -> { e with Kind = EOld (recur inner) }
+    | EAwait inner -> { e with Kind = EAwait (recur inner) }
+    | EPropagate inner -> { e with Kind = EPropagate (recur inner) }
+    | ETry inner -> { e with Kind = ETry (recur inner) }
+    | ETuple es -> { e with Kind = ETuple (es |> List.map recur) }
+    | EList es -> { e with Kind = EList (es |> List.map recur) }
+    | EIf (c, t, eOpt, tf) ->
+        let c' = recur c
+        let t' = recurBranch t
+        let e' =
+            match eOpt with
+            | Some b -> Some (recurBranch b)
+            | None -> None
+        { e with Kind = EIf (c', t', e', tf) }
+    | EMatch (s, arms) ->
+        let s' = recur s
+        let arms' =
+            arms
+            |> List.map (fun a ->
+                let g' = a.Guard |> Option.map recur
+                let body' = recurBranch a.Body
+                { a with Guard = g'; Body = body' })
+        { e with Kind = EMatch (s', arms') }
+    | EForall (b, w, body) ->
+        let w' = w |> Option.map recur
+        { e with Kind = EForall (b, w', recur body) }
+    | EExists (b, w, body) ->
+        let w' = w |> Option.map recur
+        { e with Kind = EExists (b, w', recur body) }
+    | ELambda (ps, blk) ->
+        let lambdaParamNames =
+            ps
+            |> List.map (fun p -> p.Name)
+            |> Set.ofList
+        let inner = Set.union shadowed lambdaParamNames
+        { e with Kind = ELambda (ps, desugarBlock fieldNames inner blk) }
+    | ECall (fnE, args) ->
+        let fnE' = recur fnE
+        let args' =
+            args
+            |> List.map (function
+                | CAPositional v -> CAPositional (recur v)
+                | CANamed (n, v, sp) -> CANamed (n, recur v, sp))
+        { e with Kind = ECall (fnE', args') }
+    | ETypeApp (fnE, ts) -> { e with Kind = ETypeApp (recur fnE, ts) }
+    | EIndex (recv, idxs) ->
+        { e with Kind = EIndex (recur recv, idxs |> List.map recur) }
+    | EMember (recv, name) ->
+        { e with Kind = EMember (recur recv, name) }
+    | EPrefix (op, inner) ->
+        { e with Kind = EPrefix (op, recur inner) }
+    | EBinop (op, l, r) ->
+        { e with Kind = EBinop (op, recur l, recur r) }
+    | ERange rb ->
+        let rb' =
+            match rb with
+            | RBClosed   (a, b) -> RBClosed   (recur a, recur b)
+            | RBHalfOpen (a, b) -> RBHalfOpen (recur a, recur b)
+            | RBLowerOpen a     -> RBLowerOpen (recur a)
+            | RBUpperOpen a     -> RBUpperOpen (recur a)
+        { e with Kind = ERange rb' }
+    | EAssign (t, op, v) ->
+        { e with Kind = EAssign (recur t, op, recur v) }
+    | EBlock b ->
+        { e with Kind = EBlock (desugarBlock fieldNames shadowed b) }
+
+and private desugarBlock
+        (fieldNames: Set<string>)
+        (shadowed: Set<string>)
+        (b: Block) : Block =
+    { b with Statements = desugarStmts fieldNames shadowed b.Statements }
+
+and private desugarStmts
+        (fieldNames: Set<string>)
+        (shadowed: Set<string>)
+        (stmts: Statement list) : Statement list =
+    let mutable currentShadow = shadowed
+    [ for s in stmts ->
+        let recurExpr = desugarSelfFields fieldNames currentShadow
+        let recurBlk b = desugarBlock fieldNames currentShadow b
+        let kind' =
+            match s.Kind with
+            | SExpr e -> SExpr (recurExpr e)
+            | SThrow e -> SThrow (recurExpr e)
+            | SReturn (Some e) -> SReturn (Some (recurExpr e))
+            | SReturn None -> SReturn None
+            | SAssign (t, op, v) ->
+                SAssign (recurExpr t, op, recurExpr v)
+            | SLocal (LBVal (p, ann, init)) ->
+                let init' = recurExpr init
+                // After the local binds, shadow any introduced names
+                // for subsequent stmts in the same block.
+                match p.Kind with
+                | PBinding (n, _) -> currentShadow <- Set.add n currentShadow
+                | _ -> ()
+                SLocal (LBVal (p, ann, init'))
+            | SLocal (LBLet (n, ann, init)) ->
+                let init' = recurExpr init
+                currentShadow <- Set.add n currentShadow
+                SLocal (LBLet (n, ann, init'))
+            | SLocal (LBVar (n, ann, Some init)) ->
+                let init' = recurExpr init
+                currentShadow <- Set.add n currentShadow
+                SLocal (LBVar (n, ann, Some init'))
+            | SLocal (LBVar (n, ann, None)) ->
+                currentShadow <- Set.add n currentShadow
+                SLocal (LBVar (n, ann, None))
+            | SBreak _ | SContinue _ | SItem _ -> s.Kind
+            | SRule (lhs, rhs) ->
+                SRule (recurExpr lhs, recurExpr rhs)
+            | STry (body, catches) ->
+                let body' = recurBlk body
+                let catches' =
+                    catches
+                    |> List.map (fun c -> { c with Body = recurBlk c.Body })
+                STry (body', catches')
+            | SDefer body -> SDefer (recurBlk body)
+            | SScope (b, body) -> SScope (b, recurBlk body)
+            | SFor (lbl, pat, iter, body) ->
+                SFor (lbl, pat, recurExpr iter, recurBlk body)
+            | SWhile (lbl, cond, body) ->
+                SWhile (lbl, recurExpr cond, recurBlk body)
+            | SLoop (lbl, body) ->
+                SLoop (lbl, recurBlk body)
+        { s with Kind = kind' } ]
+
+let private desugarFunctionBody
+        (fieldNames: Set<string>)
+        (paramNames: Set<string>)
+        (body: FunctionBody) : FunctionBody =
+    match body with
+    | FBExpr e -> FBExpr (desugarSelfFields fieldNames paramNames e)
+    | FBBlock b -> FBBlock (desugarBlock fieldNames paramNames b)
+
+/// Static cache of `System.Threading.Monitor::Enter / Exit` so the
+/// per-method emit can grab them without re-resolving.
+let private monitorEnterMI : Lazy<MethodInfo> =
+    lazy (
+        let monitorTy = typeof<System.Threading.Monitor>
+        let candidates = monitorTy.GetMethods()
+        let m =
+            candidates
+            |> Array.tryFind (fun m ->
+                m.Name = "Enter"
+                && m.GetParameters().Length = 1
+                && (m.GetParameters().[0].ParameterType = typeof<obj>))
+        match m with
+        | Some m -> m
+        | None -> failwith "BCL: Monitor.Enter(object) not found")
+
+let private monitorExitMI : Lazy<MethodInfo> =
+    lazy (
+        let monitorTy = typeof<System.Threading.Monitor>
+        match Option.ofObj (monitorTy.GetMethod("Exit", [| typeof<obj> |])) with
+        | Some m -> m
+        | None -> failwith "BCL: Monitor.Exit(object) not found")
+
+/// Stash collected during Pass A so Pass B can emit each entry/func's
+/// body wrapped in the lock + barrier + invariant scaffolding.
+///
+/// Two methods are defined per entry/func:
+///   * `PublicMb` — the user-callable method (`incr` / `take` / etc.).
+///     Pass B emits its body as a thin wrapper that acquires
+///     `<>__lock` via `Monitor.Enter`, calls into the private
+///     `UnsafeMb`, and releases the lock in a finally.
+///   * `UnsafeMb` — the private `<unsafe>__<name>` method holding
+///     the user's actual body.  Emitted via the regular
+///     `emitFunctionBody` pipeline so contracts / control flow /
+///     async / FFI all work uniformly.
+///
+/// Barrier (`when:`) and invariant checks live on the wrapper —
+/// barriers run before delegating to the unsafe inner; invariants
+/// run after the inner returns its value (still inside the lock,
+/// inside the try/finally, before the `leave`).
+type private ProtectedMethodPending =
+    { PublicMb:     MethodBuilder
+      UnsafeMb:     MethodBuilder
+      Fn:           FunctionDecl
+      Sg:           ResolvedSignature
+      IsEntry:      bool
+      Invariants:   InvariantClause list
+      Owner:        Records.ProtectedTypeInfo
+      LockField:    FieldBuilder
+      ParamTypes:   System.Type[]
+      ReturnType:   System.Type }
+
+/// Synthesise the CLR class scaffolding for a `protected type`:
+/// fields per `var`/`let`/immutable, a private `<>__lock : object`
+/// field, a default no-arg constructor that allocates the lock and
+/// runs each field's initializer (or default-zero-initialises),
+/// and one public method header per entry/func member.  Returns the
+/// `ProtectedTypeInfo` plus the list of pending method bodies.
+let private defineProtectedTypeOnto
+        (md: ModuleBuilder)
+        (nsName: string)
+        (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
+        (pd: ProtectedTypeDecl)
+        : Records.ProtectedTypeInfo * ProtectedMethodPending list =
+    let fullName =
+        if String.IsNullOrEmpty nsName then pd.Name
+        else nsName + "." + pd.Name
+    let tb =
+        md.DefineType(
+            fullName,
+            TypeAttributes.Public ||| TypeAttributes.Sealed,
+            typeof<obj>)
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+
+    // Fields — every PFVar/PFLet/PFImmutable becomes a public field.
+    let fieldDecls =
+        pd.Members
+        |> List.choose (fun m ->
+            match m with
+            | PMField pf -> Some pf
+            | _ -> None)
+    let fieldEntries =
+        fieldDecls
+        |> List.map (fun pf ->
+            let name, ty, init =
+                match pf with
+                | PFVar (n, t, init, _)
+                | PFLet (n, t, init, _) -> n, t, init
+                | PFImmutable fd -> fd.Name, fd.Type, None
+            let lty =
+                Resolver.resolveType symbols resolveCtx scratchDiags ty
+            let cty = TypeMap.toClrTypeWith lookup lty
+            let fb = tb.DefineField(name, cty, FieldAttributes.Public)
+            name, fb, init)
+    let fieldNames =
+        fieldEntries
+        |> List.map (fun (n, _, _) -> n)
+        |> Set.ofList
+
+    // Lock field — private object, allocated in the ctor.
+    let lockField =
+        tb.DefineField(
+            "<>__lock",
+            typeof<obj>,
+            FieldAttributes.Private ||| FieldAttributes.InitOnly)
+
+    // Default no-arg ctor.  Initializes lock, then every field's
+    // initializer (when present); fields without an initializer keep
+    // CLR's default zero-init.
+    let ctor =
+        tb.DefineConstructor(
+            MethodAttributes.Public,
+            CallingConventions.Standard,
+            [||])
+    let cil = ctor.GetILGenerator()
+    cil.Emit(OpCodes.Ldarg_0)
+    let objCtor = typeof<obj>.GetConstructor([||])
+    match Option.ofObj objCtor with
+    | Some c -> cil.Emit(OpCodes.Call, c)
+    | None   -> failwith "object's no-arg ctor not found"
+    // this.<>__lock = new object()
+    let objCtorNonNull =
+        match Option.ofObj objCtor with
+        | Some c -> c
+        | None   -> failwith "object's no-arg ctor not found"
+    cil.Emit(OpCodes.Ldarg_0)
+    cil.Emit(OpCodes.Newobj, objCtorNonNull)
+    cil.Emit(OpCodes.Stfld, lockField)
+    cil.Emit(OpCodes.Ret)
+
+    // Method headers — one per PMEntry / PMFunc.  Bodies emit in
+    // Pass B once the FunctionCtx wiring is available.
+    let mutable pending : ProtectedMethodPending list = []
+    let mutable methods : Records.ProtectedMethod list = []
+
+    let invariants =
+        pd.Members
+        |> List.choose (fun m ->
+            match m with
+            | PMInvariant inv -> Some inv
+            | _ -> None)
+
+    // We need to construct the Records.ProtectedTypeInfo first so the
+    // pending records can carry an `Owner` reference, but ctor + lock
+    // depend on values defined above.  Build a forward `info` and let
+    // the F# closure capture work it out.
+    let protectedFields : Records.ProtectedField list =
+        fieldEntries
+        |> List.map (fun (n, fb, _) ->
+            { Records.ProtectedField.Name  = n
+              Records.ProtectedField.Type  = fb.FieldType
+              Records.ProtectedField.Field = fb })
+    let info : Records.ProtectedTypeInfo =
+        { Name      = pd.Name
+          Type      = tb
+          Ctor      = ctor
+          LockField = lockField
+          Fields    = protectedFields
+          Methods   = [] } // methods filled below; pending records the live mb list
+
+    let defineMethodPair (name: string) (paramList: Param list)
+                          (returnTy: TypeExpr option) : MethodBuilder * MethodBuilder * System.Type[] * System.Type =
+        let pTys =
+            paramList
+            |> List.map (fun p ->
+                let lty = Resolver.resolveType symbols resolveCtx scratchDiags p.Type
+                let bare = TypeMap.toClrTypeWith lookup lty
+                match p.Mode with
+                | PMOut | PMInout -> bare.MakeByRefType()
+                | PMIn            -> bare)
+            |> List.toArray
+        let bareRet =
+            match returnTy with
+            | Some t ->
+                let lty = Resolver.resolveType symbols resolveCtx scratchDiags t
+                TypeMap.toClrReturnTypeWith lookup lty
+            | None -> typeof<System.Void>
+        let publicMb =
+            tb.DefineMethod(
+                name,
+                MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                bareRet,
+                pTys)
+        let unsafeMb =
+            tb.DefineMethod(
+                "<unsafe>__" + name,
+                MethodAttributes.Private ||| MethodAttributes.HideBySig,
+                bareRet,
+                pTys)
+        paramList
+        |> List.iteri (fun i p ->
+            publicMb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore
+            unsafeMb.DefineParameter(i + 1, ParameterAttributes.None, p.Name) |> ignore)
+        publicMb, unsafeMb, pTys, bareRet
+
+    let synthSigOf (paramList: Param list) (returnTy: TypeExpr option) (isAsync: bool)
+                   (span: Span) : ResolvedSignature =
+        { Generics = []
+          Bounds   = []
+          Params   =
+            paramList
+            |> List.map (fun p ->
+                let lty =
+                    Resolver.resolveType
+                        symbols resolveCtx scratchDiags p.Type
+                { Name    = p.Name
+                  Type    = lty
+                  Mode    = p.Mode
+                  Default = p.Default.IsSome
+                  Span    = p.Span })
+          Return =
+            match returnTy with
+            | Some t ->
+                Resolver.resolveType
+                    symbols resolveCtx scratchDiags t
+            | None -> Lyric.TypeChecker.TyPrim Lyric.TypeChecker.PtUnit
+          IsAsync = isAsync
+          Span    = span }
+
+    let paramNamesOf (ps: Param list) : Set<string> =
+        ps |> List.map (fun p -> p.Name) |> Set.ofList
+
+    for m in pd.Members do
+        match m with
+        | PMEntry ed ->
+            let publicMb, unsafeMb, pTys, bareRet =
+                defineMethodPair ed.Name ed.Params ed.Return
+            let desugaredBody =
+                desugarFunctionBody fieldNames (paramNamesOf ed.Params) ed.Body
+            let synthFn : FunctionDecl =
+                { DocComments = []; Annotations = []
+                  Visibility  = ed.Visibility
+                  IsAsync     = false
+                  Name        = ed.Name
+                  Generics    = None
+                  Params      = ed.Params
+                  Return      = ed.Return
+                  Where       = None
+                  Contracts   = ed.Contracts
+                  Body        = Some desugaredBody
+                  Span        = ed.Span }
+            let synthSig = synthSigOf ed.Params ed.Return false ed.Span
+            methods <-
+                methods
+                @ [ { Records.ProtectedMethod.Name    = ed.Name
+                      Records.ProtectedMethod.Method  = publicMb
+                      Records.ProtectedMethod.IsEntry = true } ]
+            pending <-
+                pending
+                @ [ { PublicMb   = publicMb
+                      UnsafeMb   = unsafeMb
+                      Fn         = synthFn
+                      Sg         = synthSig
+                      IsEntry    = true
+                      Invariants = invariants
+                      Owner      = info
+                      LockField  = lockField
+                      ParamTypes = pTys
+                      ReturnType = bareRet } ]
+        | PMFunc fn ->
+            let publicMb, unsafeMb, pTys, bareRet =
+                defineMethodPair fn.Name fn.Params fn.Return
+            let synthSig = synthSigOf fn.Params fn.Return fn.IsAsync fn.Span
+            let desugaredFn =
+                match fn.Body with
+                | Some body ->
+                    { fn with
+                        Body = Some (desugarFunctionBody fieldNames
+                                        (paramNamesOf fn.Params) body) }
+                | None -> fn
+            methods <-
+                methods
+                @ [ { Records.ProtectedMethod.Name    = fn.Name
+                      Records.ProtectedMethod.Method  = publicMb
+                      Records.ProtectedMethod.IsEntry = false } ]
+            pending <-
+                pending
+                @ [ { PublicMb   = publicMb
+                      UnsafeMb   = unsafeMb
+                      Fn         = desugaredFn
+                      Sg         = synthSig
+                      IsEntry    = false
+                      Invariants = invariants
+                      Owner      = info
+                      LockField  = lockField
+                      ParamTypes = pTys
+                      ReturnType = bareRet } ]
+        | _ -> ()
+
+    let infoFinal = { info with Methods = methods }
+    infoFinal, pending
 
 /// Generate the sibling exposed record for a `@projectable` opaque type.
 /// The view contains every non-`@hidden` field of the opaque type and
@@ -1532,6 +2017,7 @@ let private emitFunctionBody
         (unionCases: Records.UnionCaseLookup)
         (interfaces: Records.InterfaceTable)
         (distinctTypes: Records.DistinctTypeTable)
+        (protectedTypes: Records.ProtectedTypeTable)
         (projectables: Records.ProjectableTable)
         (importedRecords: Records.ImportedRecordTable)
         (importedUnions: Records.ImportedUnionTable)
@@ -1609,7 +2095,7 @@ let private emitFunctionBody
         Codegen.FunctionCtx.make
             il returnTy paramList
             funcs funcSigs records enums enumCases unions unionCases
-            interfaces distinctTypes projectables
+            interfaces distinctTypes protectedTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes externTypeNames
             effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup diags
@@ -2320,6 +2806,47 @@ let private emitAssembly
             recordTable.[od.Name] <- info
             if isProjectable od then projectableOpaques.Add(od, info)
 
+        // Pass A.4 — synthesise CLR class scaffolding for every
+        // `protected type` (D-progress-079).  Returns a list of
+        // pending method bodies that Pass B emits inside the
+        // Monitor.Enter / try / finally / Monitor.Exit wrap.
+        let protectedTable = Records.ProtectedTypeTable()
+        let protectedPending = ResizeArray<ProtectedMethodPending>()
+        for pd in protectedItems sf do
+            let info, pending =
+                defineProtectedTypeOnto ctx.Module nsName symbols lookup pd
+            protectedTable.[pd.Name] <- info
+            for p in pending do protectedPending.Add p
+            // Register a stub `RecordInfo` so the existing record-call
+            // dispatch at `Codegen.fs` line ~2401 picks up `Counter()`
+            // construction without needing a separate dispatch arm.
+            // `Fields = []` makes the call expect zero args; the
+            // synthesised default ctor matches that.
+            // Populate the stub RecordInfo with the protected type's
+            // field metadata so `self.count` member-access dispatch
+            // (which looks up `RecordInfo.Fields`) finds the right
+            // FieldBuilder.  `Fields = []` would still let
+            // `Counter()` construction work but would crash on any
+            // implicit-self field reference inside an entry/func body
+            // after the AST desugar.
+            let stubFields =
+                info.Fields
+                |> List.map (fun pf ->
+                    { Records.RecordField.Name      = pf.Name
+                      Records.RecordField.Type      = pf.Type
+                      Records.RecordField.LyricType = Lyric.TypeChecker.TyError
+                      Records.RecordField.Field     = pf.Field })
+            recordTable.[pd.Name] <-
+                { Records.RecordInfo.Name     = info.Name
+                  Records.RecordInfo.Type     = info.Type
+                  Records.RecordInfo.Fields   = stubFields
+                  Records.RecordInfo.Ctor     = info.Ctor
+                  Records.RecordInfo.Generics = [] }
+            symbols.TryFind pd.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type)
+
         let interfaceTable = Records.InterfaceTable()
         for id in interfaceItems sf do
             let info = defineInterface ctx.Module nsName symbols lookup id
@@ -2805,7 +3332,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) None fn sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -2898,7 +3425,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) (Some phaseBExit) fnForPhaseB sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -2944,7 +3471,7 @@ let private emitAssembly
                 emitFunctionBody
                     mb None None fn sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3018,7 +3545,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) None fd sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3080,7 +3607,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) (Some phaseBExit) fd sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3122,11 +3649,95 @@ let private emitAssembly
                 emitFunctionBody
                     mb None None fd sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable projectableTable
+                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     true
                     (Option.ofObj selfTy) programTy symbols codegenDiags
+
+        // Pass B.6 — emit protected-type method bodies (D-progress-079).
+        //
+        // Two methods per entry/func:
+        //   * `<unsafe>__<name>`: emitted via `emitFunctionBody` so
+        //     contracts / control flow / async / FFI all behave
+        //     uniformly with regular impl-method bodies.  Runs WITH
+        //     the lock held — its caller (the public wrapper) handles
+        //     the Monitor.Enter/Exit pair.
+        //   * Public `<name>` wrapper: hand-emitted IL that loads
+        //     `this.<>__lock`, calls Monitor.Enter, opens a try, calls
+        //     the unsafe inner with the user's args, stashes the
+        //     return value (if any) in a local, leaves to an exit
+        //     label, and releases the lock in a finally.  The
+        //     `leave`-out-of-try shape sidesteps the CLR rule that
+        //     forbids `ret` inside a protected region.
+        for p in protectedPending do
+            // Emit the unsafe inner via the regular function-body
+            // pipeline.  `isInstance = true`, `selfType` = the
+            // protected type.
+            emitFunctionBody
+                p.UnsafeMb None None p.Fn p.Sg lookup
+                methodTable funcSigsTable recordTable enumTable enumCases
+                unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                importedRecordTable importedUnionTable importedUnionCaseLookup
+                importedFuncTable importedDistinctTypeTable externTypeNames
+                true
+                (Some (p.Owner.Type :> System.Type)) programTy symbols codegenDiags
+
+            // Emit the public wrapper.  Pattern:
+            //
+            //     Monitor.Enter(this.<>__lock)
+            //     .try {
+            //       result = <unsafe>__name(this, args...)
+            //       leave end
+            //     } finally {
+            //       Monitor.Exit(this.<>__lock)
+            //     }
+            //   end:
+            //     [ldloc result]
+            //     ret
+            let il = p.PublicMb.GetILGenerator()
+            let returnsValue = p.ReturnType <> typeof<System.Void>
+            let resultLocal =
+                if returnsValue then Some (il.DeclareLocal(p.ReturnType))
+                else None
+            let endLabel = il.DefineLabel()
+
+            // Acquire lock: Monitor.Enter(this.<>__lock).
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, p.LockField)
+            il.Emit(OpCodes.Call, monitorEnterMI.Value)
+
+            // Open try.
+            il.BeginExceptionBlock() |> ignore
+
+            // Forward `this` + each arg to the unsafe inner.
+            il.Emit(OpCodes.Ldarg_0)
+            for i in 0 .. p.ParamTypes.Length - 1 do
+                il.Emit(OpCodes.Ldarg, i + 1)
+            il.Emit(OpCodes.Call, p.UnsafeMb)
+
+            // Stash the return value (if any) so finally can run
+            // before we propagate it.
+            match resultLocal with
+            | Some loc -> il.Emit(OpCodes.Stloc, loc)
+            | None     -> ()
+
+            // Leave to the post-try region.
+            il.Emit(OpCodes.Leave, endLabel)
+
+            // Finally: release the lock.
+            il.BeginFinallyBlock()
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, p.LockField)
+            il.Emit(OpCodes.Call, monitorExitMI.Value)
+            il.EndExceptionBlock()
+
+            // End label, then load result + ret.
+            il.MarkLabel endLabel
+            match resultLocal with
+            | Some loc -> il.Emit(OpCodes.Ldloc, loc)
+            | None     -> ()
+            il.Emit(OpCodes.Ret)
 
         let lyricMainOpt =
             if isLibrary then None

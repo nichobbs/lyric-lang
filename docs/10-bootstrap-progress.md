@@ -69,22 +69,124 @@ deferred to Phase 3 by design.
 | `@stubbable` stub builder synthesis | **Shipped** | (D-progress-016; call counters D-progress-073) |
 | Stdlib expansion (collections, time, json, http) | **Shipped** | (Std.Time / Json / Http / Math / Random / Testing — D-progress-027..072) |
 
-### Phase 3 — package ecosystem + tooling (in progress)
-- Package manager — `lyric.toml` + `lyric publish` / `lyric restore` shipped
+### Phase 3 — package ecosystem + tooling (substantially shipped)
+- Package manager — `lyric.toml` + `lyric publish` / `lyric restore` +
+  build-time consumer of restored Lyric packages all shipped
   (D-progress-031 embedded contract resource; D-progress-077 manifest
-  + publish/restore wrappers).  Build-time consumer of restored Lyric
-  packages is the remaining loop, tracked under Tier 6.
+  + publish/restore wrappers; D-progress-078 build-time consumer).
 - LSP — push-diagnostics + completion / hover / go-to-definition shipped
   (D-progress-017, 066).
 - Documentation generator (`lyric doc`) — bootstrap shipped (D-progress-023).
 - SemVer enforcement (`lyric public-api-diff`) — shipped (D-progress-062).
 - Tutorial — shipped (D-progress-065).
+- Protected types — bootstrap-grade Monitor wrap shipped
+  (D-progress-079); `when:` barriers + `invariant:` checks tracked as
+  follow-ups gated on Phase C scope plumbing.
 - Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
   tools need token-position-faithful traversal (decision: D-progress-029).
 
 ---
 
 ## Active session decisions
+
+### D-progress-079: protected types — bootstrap-grade Monitor wrap
+*claude/protected-type-bootstrap branch.*  Lifts the Phase-3
+`protected type` deliverable from "deferred" (D-progress-067) to
+shipped at bootstrap grade.  `protected type T { var/let
+fields, invariants, entry / func members }` now lowers to a
+sealed CLR class with structurally-enforced mutual exclusion,
+matching the language reference §7.4 contract.
+
+**Lowering** (`compiler/src/Lyric.Emitter/Emitter.fs`
+`defineProtectedTypeOnto`):
+
+- One sealed CLR class per `protected type T`.
+- One public field per `var` / `let` / immutable declaration.
+- One private `<>__lock : object` field, allocated by the ctor.
+- A no-arg default ctor that calls `object.ctor()` and
+  initialises `<>__lock = new object()`.  Per-field initialisers
+  in the source are not yet wired (default-zero initialisation
+  for now — bootstrap-grade scope).
+- Two methods per `entry name(...)` / `pub func name(...)`:
+  * Public wrapper `<name>(args)` whose hand-emitted IL acquires
+    `Monitor.Enter(this.<>__lock)`, opens a `try`, calls into the
+    private inner with the user's args, stashes the return value
+    in a local, leaves to a post-try label, and releases the lock
+    in a finally.  The `leave`-out-of-try shape sidesteps the CLR
+    rule that forbids `ret` inside a protected region.
+  * Private `<unsafe>__<name>(args)` carrying the user's actual
+    body, emitted via the regular `emitFunctionBody` pipeline so
+    contracts / control flow / async / FFI all work uniformly.
+
+**AST desugar** — per the language reference §7.4, code inside a
+protected type body treats its fields as implicitly in-scope.
+The bootstrap codegen has no implicit-self lookup, so a new
+`desugarSelfFields` pass walks each entry/func body before
+`defineMethodPair` runs and rewrites bare `EPath {x}` references
+to `EMember (ESelf, x)` whenever `x` matches a protected-type
+field name and isn't shadowed by a parameter or local binding.
+
+**Call-site dispatch**:
+
+- Construction (`Counter()` ⇒ `Newobj Counter::.ctor()`) routes
+  through a new `ECall (EPath {name}, [])` arm in `Codegen.fs`
+  that fires when `ctx.ProtectedTypes.ContainsKey name`.  This
+  short-circuits the existing record-construction path which
+  would expect one arg per field.
+- Method dispatch (`c.incr()` ⇒ `Callvirt Counter::incr`) routes
+  through a new short-circuit at the top of `ECall (EMember
+  (recv, methodName), args)`'s handler: `ctx.ProtectedTypes` is
+  scanned for a type whose CLR `Type` matches `recv`'s static
+  type, and the matching `ProtectedMethod.Method` is invoked
+  via `Callvirt`.  Routes here before the reflection-based
+  `getRecvMethods recvTy` path, which would throw
+  `NotSupportedException` against the unsealed TypeBuilder.
+- Field access (`self.count` after the desugar) routes through
+  the existing record-field-read path because protected types
+  are also registered in `recordTable` as a stub `RecordInfo`
+  carrying the protected type's field metadata.
+
+`Codegen.FunctionCtx` gains a `ProtectedTypes:
+ProtectedTypeTable` field threaded through `FunctionCtx.make`
+(plus the lambda-context constructor) and `emitFunctionBody`.
+
+**Tests**: 3 new end-to-end cases in
+`tests/Lyric.Emitter.Tests/ProtectedTypeTests.fs`:
+- `pt_basic_counter` — `Counter` with `incr` / `decr` / `get`
+  exercises construction, mutating entries, and a value-returning
+  func through the lock wrap.
+- `pt_multiple_protected_types_in_same_module` — two protected
+  types coexist; covers Pass A's iteration order + per-type
+  `<>__lock` field naming.
+- `pt_func_returns_value` — catches a regression where the
+  wrapper forgets to `Ldloc` the saved result before `Ret`.
+
+All 1062 tests pass post-change (was 1059; +3 net new).
+
+**Bootstrap-grade scope** (deferred follow-ups):
+- **`when:` barriers** are not yet evaluated.  Today every entry
+  acquires the lock immediately; the spec's barrier-blocks-until-
+  true semantics needs `Monitor.Wait` / condition-variable queues
+  that gate on the C2 Phase C structured-concurrency scope
+  plumbing (see `docs/06-open-questions.md` Q008).  Bootstrap
+  consumers that depend on barrier semantics fall back to manual
+  state checks inside the entry body.
+- **`invariant:` clauses** are not yet evaluated after entry/func
+  exit.  `emitContractCheck` is wired and ready; threading the
+  invariant list into the wrapper between the unsafe call and the
+  finally is mechanical follow-up work.
+- **Per-field initializers** (e.g. `var count: Int = 100`) are
+  parsed but ignored — fields default-zero-initialise.
+- **Concurrent reads on `func`** (`docs/06-open-questions.md`
+  Q008's `ReaderWriterLockSlim` story) — every `func` takes the
+  same exclusive `Monitor` today.  Lifting to a reader-writer lock
+  lands when a real workload exercises the distinction.
+- **`protected type Foo[T]` generics** — Pass A doesn't yet
+  define generic params on the synthesised TypeBuilder; the C2
+  generic-async path (D-progress-075) showed the pattern when
+  this is needed.
+
+---
 
 ### D-progress-078: C8 build-time consumer of restored Lyric packages
 *claude/c8-build-consumes-restored-packages branch.*  Closes the
@@ -2307,9 +2409,11 @@ work in the first place; that follow-up (D-progress-059
 
 ---
 
-### D-progress-067: Protected type — DEFERRED follow-up notes
-*claude/c2-async-implementation-ZGU95 branch.*  Phase 3
-deliverable §"protected type with barrier semantics" remains
+### D-progress-067: Protected type — DEFERRED follow-up notes (SUPERSEDED by D-progress-079)
+*claude/c2-async-implementation-ZGU95 branch.*  Bootstrap-grade
+codegen for `protected type` shipped under D-progress-079; this
+entry is preserved for the deferral context but the §"protected
+type with barrier semantics" deliverable is no longer fully
 deferred.  Today's parser already accepts `protected type`
 (with `PMField`, `PMInvariant`, `PMEntry`, `PMFunc` members)
 and the type checker registers it as `DKProtected`, but the

@@ -64,6 +64,12 @@ type FunctionCtx =
       Interfaces: Lyric.Emitter.Records.InterfaceTable
       /// Distinct types and range subtypes, keyed by name.
       DistinctTypes: Lyric.Emitter.Records.DistinctTypeTable
+      /// Same-package `protected type` definitions (D-progress-079),
+      /// keyed by name.  Method-call dispatch on a protected receiver
+      /// short-circuits via this table — `getRecvMethods` against an
+      /// unsealed TypeBuilder throws, so we route through the
+      /// pre-built `ProtectedMethod.Method` MethodBuilder instead.
+      ProtectedTypes: Lyric.Emitter.Records.ProtectedTypeTable
       /// Projectable opaque types, keyed by opaque type name.
       Projectables: Lyric.Emitter.Records.ProjectableTable
       /// Imported records from precompiled packages (e.g. Std.Core).
@@ -158,6 +164,7 @@ module FunctionCtx =
             (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
             (distinctTypes: Lyric.Emitter.Records.DistinctTypeTable)
+            (protectedTypes: Lyric.Emitter.Records.ProtectedTypeTable)
             (projectables: Lyric.Emitter.Records.ProjectableTable)
             (importedRecords: Lyric.Emitter.Records.ImportedRecordTable)
             (importedUnions: Lyric.Emitter.Records.ImportedUnionTable)
@@ -191,6 +198,7 @@ module FunctionCtx =
           UnionCases   = unionCases
           Interfaces   = interfaces
           DistinctTypes = distinctTypes
+          ProtectedTypes = protectedTypes
           Projectables = projectables
           ImportedRecords     = importedRecords
           ImportedUnions      = importedUnions
@@ -1627,6 +1635,35 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | ECall ({ Kind = EMember (recv, methodName) }, args) ->
         let recvTy = emitExpr ctx recv
+        // D-progress-079: protected-type method dispatch.  The
+        // receiver is already on the stack; route to the public
+        // wrapper MethodBuilder via callvirt so the lock acquire +
+        // release happens around the user's body.  Routes here
+        // before the record-UFCS short-circuit because protected
+        // types ALSO sit in `ctx.Records` (as a stub for ctor
+        // dispatch) — without this branch the UFCS path would
+        // mis-resolve `c.incr()` against `Counter.incr` UFCS that
+        // doesn't exist.
+        let protectedHit : (Lyric.Emitter.Records.ProtectedMethod) option =
+            ctx.ProtectedTypes
+            |> Seq.tryPick (fun kv ->
+                if (kv.Value.Type :> System.Type) = recvTy then
+                    kv.Value.Methods
+                    |> List.tryFind (fun m -> m.Name = methodName)
+                else None)
+        match protectedHit with
+        | Some pm ->
+            // Receiver is already on the stack; emit args next.
+            for a in args do
+                let payload =
+                    match a with
+                    | CAPositional ex | CANamed (_, ex, _) -> ex
+                let _ = emitExpr ctx payload
+                ()
+            il.Emit(OpCodes.Callvirt, pm.Method)
+            if pm.Method.ReturnType = typeof<System.Void> then typeof<System.Void>
+            else pm.Method.ReturnType
+        | None ->
         // D037: methods declared inline in a record / opaque body
         // hoist to top-level UFCS-style `<TypeName>.<methodName>`
         // functions.  When the receiver is a known local record /
@@ -2401,6 +2438,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             info.Type.MakeGenericType typeArgs
 
     // ---- record construction ------------------------------------------
+
+    // Protected-type construction (D-progress-079) routes through
+    // the no-arg synthesised default ctor before the regular all-
+    // fields record ctor path runs (which would expect one arg per
+    // field).  `Counter()` ⇒ `Newobj Counter::.ctor()`.
+    | ECall ({ Kind = EPath { Segments = [name] } }, [])
+        when ctx.ProtectedTypes.ContainsKey name ->
+        let info = ctx.ProtectedTypes.[name]
+        il.Emit(OpCodes.Newobj, info.Ctor)
+        info.Type :> ClrType
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when ctx.Records.ContainsKey name ->
@@ -3394,6 +3441,7 @@ and private emitLambdaWith
             lambdaIL retTy paramPairs
             ctx.Funcs ctx.FuncSigs ctx.Records ctx.Enums ctx.EnumCases
             ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
+            ctx.ProtectedTypes
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
