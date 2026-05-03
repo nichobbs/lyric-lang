@@ -408,6 +408,36 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ---
 
+## Q021: `where`-clause activation in the bootstrap compiler
+
+**Status:** OPEN — gating the native stdlib (D038, `docs/14-native-stdlib-plan.md` §4.1 G3).
+
+**Question:** What is the concrete plan to lift the Phase 1 deferral of `where` clauses with the D034 marker set, so that native `Std.HashMap[K, V] where K: Hash + Equals`, `Std.Sort[T] where T: Compare`, etc. become expressible in Lyric source?
+
+**Context:**
+
+`docs/05-implementation-plan.md` §"Language subset for Phase 1" explicitly defers generic constraints. D034 fixes the closed marker set (`Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod`). D038 commits to native stdlib data structures; G3 in `14-native-stdlib-plan.md` §4.1 names this lift as the single largest gating item before P2 of the migration can begin.
+
+**Sub-questions:**
+
+1. **Type checker.** Does the existing `where`-clause parser surface (already accepted in syntax) plumb through to the type checker, or is it a stub that throws on first use?
+2. **Marker dispatch lowering.** Per `docs/09-msil-emission.md` §9.4, generic constraints lower to interface dispatch on the marker interfaces. Are those interface types defined yet for the D034 markers?
+3. **Built-in primitive coverage.** `Int`, `Long`, `String`, `Double` need to auto-satisfy `Hash`, `Equals`, `Compare`, `Default`. Where in the type checker / stdlib registration should that auto-satisfaction live?
+4. **Monomorphisation interaction.** D035 documents per-call-site monomorphisation as the bootstrap strategy. Does monomorphisation of `f[T] where T: Hash` reduce to "find the concrete `T`, look up its `Hash` impl, inline a direct call"? Confirm before implementing.
+5. **User-defined interface constraints.** D034 admits user-defined interfaces as `where` constraints. Same path as marker dispatch, or separate?
+
+**Constraints:**
+
+- Must not destabilise existing M1.4 monomorphisation (D035).
+- Must produce code that the AOT-first principle (`docs/09-msil-emission.md` §1) accepts.
+- Should match the precedence chosen by D034: mark the type checker's slot for new markers as closed; reject `where T: Iterable` (etc.) at parse / resolve time per D034's "closed list" language.
+
+**Recommendation:** Single-PR design proposal under `docs/proposals/q021-where-clauses.md` covering sub-questions 1-5, then implementation. Estimated 3-4 weeks of compiler work (per `14-native-stdlib-plan.md` §4.1). Begin toward end of P0 of the native stdlib migration so it lands before P1 needs it.
+
+**Revisions:** None.
+
+---
+
 ## How to resolve these questions
 
 Phase 0 work assigns each question to an owner. Resolution happens in any of:
