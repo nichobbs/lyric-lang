@@ -631,6 +631,83 @@ func main(): Unit {
 }
 """,
     "before-delay\nafter-try"
+
+    "phaseB_generic_async_phaseA",
+    // D-progress-075: generic async funcs now lower to a real
+    // generic IAsyncStateMachine instead of the M1.4 Task.FromResult
+    // shim.  This case exercises Phase A (await-free body) on a
+    // single-type-param generic.
+    """
+package E14
+async func id[T](x: in T): T = x
+func main(): Unit {
+  println(await id(42))
+  println(await id("hi"))
+}
+""",
+    "42\nhi"
+
+    "phaseB_generic_async_phaseB_with_await",
+    // Phase B + generics: an async generic body that contains an
+    // `await`.  The SM is a generic class; the kickoff (inside
+    // the user's generic method) closes the SM via `MakeGenericType`
+    // over the user method's GTPB and routes Newobj / Stfld via
+    // `TypeBuilder.GetConstructor` / `TypeBuilder.GetField`.
+    """
+package E14
+async func produce(): Int = 99
+async func wrap[T](x: in T): T {
+  val _: Int = await produce()
+  return x
+}
+func main(): Unit {
+  println(toString(await wrap(7)))
+}
+""",
+    "7"
+
+    "stack_spill_preserves_left_to_right_order",
+    // D-progress-076 follow-up: when a side-effecting sibling sits
+    // to the left of an awaited expression in the same statement,
+    // the spill rewrite hoists that sibling FIRST so its observable
+    // effects fire before the await suspends.  Without the prior-
+    // sibling spill, the rewrite would reorder
+    // `add(sideEffect(), await produce())` into
+    // `val s = await produce(); add(sideEffect(), s)` — flipping
+    // the print order.  The fix hoists `sideEffect()` to a `__tmp_*`
+    // before the await spill so the original left-to-right order is
+    // preserved.
+    """
+package E14
+async func produce(): Int = 5
+func sideEffect(): Int {
+  println("called")
+  return 10
+}
+func add(a: in Int, b: in Int): Int = a + b
+async func runner(): Int {
+  return add(sideEffect(), await produce())
+}
+func main(): Unit {
+  println(toString(await runner()))
+}
+""",
+    "called\n15"
+
+    "phaseB_generic_async_two_type_params",
+    // Generic async with two type parameters — confirms
+    // `MakeGenericType` over multiple arg slots and that
+    // SM-side fields close correctly across all of them.
+    """
+package E14
+async func zip[A, B](a: in A, b: in B): A {
+  return a
+}
+func main(): Unit {
+  println(toString(await zip(123, "ignored")))
+}
+""",
+    "123"
 ]
 
 let private behavioral =
@@ -720,9 +797,47 @@ func main(): Unit {
             Expect.isNotNull candidate
                 "rewrite should promote __spill_0 to an SM field"
 
+/// D-progress-075: generic async funcs lower to a generic SM
+/// class.  This guard test reflects on the emitted assembly to
+/// confirm the SM type carries one generic parameter for a single-
+/// type-param async func, catching regressions where the routing
+/// flag flips back to the M1.4 wrapper.
+let private genericSmShape : Test =
+    testCase "[generic_sm_shape] generic async emits generic SM" <| fun () ->
+        let label = "AsyncGenericSmShape"
+        let source = """
+package E14
+async func id[T](x: in T): T = x
+func main(): Unit {
+  println(toString(await id(42)))
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source       = source
+              AssemblyName = label
+              OutputPath   = dll }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let smTypes =
+            asm.GetTypes()
+            |> Array.filter (fun t ->
+                typeof<System.Runtime.CompilerServices.IAsyncStateMachine>.IsAssignableFrom(t))
+        let idSm =
+            smTypes |> Array.tryFind (fun t -> t.Name.Contains "id")
+        match idSm with
+        | None -> failwith "expected an SM type for `id`"
+        | Some sm ->
+            Expect.isTrue sm.IsGenericTypeDefinition
+                "id's SM should be a generic type definition"
+            Expect.equal (sm.GetGenericArguments().Length) 1
+                "id's SM should have one generic parameter"
+
 let tests =
     testList "async tests" [
         behavioral
         smShape
         stackSpillSmShape
+        genericSmShape
     ]

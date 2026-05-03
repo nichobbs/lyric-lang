@@ -492,6 +492,21 @@ let private mkSpillBinding (name: string) (awaitExpr: Expr) (span: Span) : State
           Span = span }
     stmt
 
+/// Conservative "no observable side effects" predicate.  Used by the
+/// spill-prior-siblings rule (D-progress-076 follow-up) to decide
+/// which left-of-an-await siblings to leave in place vs. hoist into
+/// a `val __tmp_<n> = expr` binding so the original left-to-right
+/// evaluation order survives the await rewrite.
+let rec private isSideEffectFreeExpr (e: Expr) : bool =
+    match e.Kind with
+    | ELiteral _ | EPath _ | ESelf | EResult | EError -> true
+    | EParen inner -> isSideEffectFreeExpr inner
+    // Treat the rest as potentially side-effecting: function calls,
+    // member loads (could throw on null receiver), index ops, prefix
+    // ops, binops, etc.  Over-spilling here is harmless — at worst we
+    // synthesise a redundant local — but under-spilling reorders.
+    | _ -> false
+
 /// Spill any `EAwait` encountered while walking `e`.  Returns the
 /// rewritten expression with spilled awaits replaced by `EPath
 /// __spill_<n>`.  Side-effects: appends the synthesised
@@ -544,9 +559,9 @@ let rec private spillAwaits
     | ETry inner ->
         { e with Kind = ETry (spillAwaits sigOf sp inner) }
     | ETuple es ->
-        { e with Kind = ETuple (es |> List.map (spillAwaits sigOf sp)) }
+        { e with Kind = ETuple (spillSiblings sigOf sp es) }
     | EList es ->
-        { e with Kind = EList (es |> List.map (spillAwaits sigOf sp)) }
+        { e with Kind = EList (spillSiblings sigOf sp es) }
     | EIf _ | EMatch _ | EBlock _ ->
         // These are already safe positions for awaits (Phase B+).
         // The existing safe-position machinery descends into branches /
@@ -558,31 +573,50 @@ let rec private spillAwaits
         // belong to a different function body.
         e
     | ECall (fnE, args) ->
-        // Spill awaits inside the callee expression (rare) and each
-        // argument left-to-right.
-        let fnRew = spillAwaits sigOf sp fnE
-        let argsRew =
+        // Pull out each arg's expression so the spill-prior rule can
+        // see them as a single sibling list, then thread them back in
+        // order with their original named/positional shape preserved.
+        let argExprs =
             args
             |> List.map (function
-                | CAPositional v ->
-                    CAPositional (spillAwaits sigOf sp v)
-                | CANamed (n, v, sp') ->
-                    CANamed (n, spillAwaits sigOf sp v, sp'))
-        { e with Kind = ECall (fnRew, argsRew) }
+                | CAPositional v -> v
+                | CANamed (_, v, _) -> v)
+            |> List.toArray
+        let argsRew =
+            // Treat the callee as a sibling positioned before all args
+            // so a side-effecting callee gets spilled when an arg
+            // contains an await.
+            let combined = (fnE :: List.ofArray argExprs) |> spillSiblings sigOf sp
+            match combined with
+            | [] -> [||], fnE
+            | fnRew :: argTail -> List.toArray argTail, fnRew
+        let argTail, fnRew = argsRew
+        let argsOut =
+            args
+            |> List.mapi (fun i a ->
+                let rew = argTail.[i]
+                match a with
+                | CAPositional _ -> CAPositional rew
+                | CANamed (n, _, sp') -> CANamed (n, rew, sp'))
+        { e with Kind = ECall (fnRew, argsOut) }
     | ETypeApp (fnE, ts) ->
         { e with Kind = ETypeApp (spillAwaits sigOf sp fnE, ts) }
     | EIndex (recv, idxs) ->
-        let recvRew = spillAwaits sigOf sp recv
-        let idxsRew = idxs |> List.map (spillAwaits sigOf sp)
-        { e with Kind = EIndex (recvRew, idxsRew) }
+        // `xs[i, j]` — receiver evaluates first, then each index left-
+        // to-right.  Treat `recv :: idxs` as a single sibling list.
+        let combined = (recv :: idxs) |> spillSiblings sigOf sp
+        match combined with
+        | [] -> e
+        | recvRew :: idxsRew ->
+            { e with Kind = EIndex (recvRew, idxsRew) }
     | EMember (recv, name) ->
         { e with Kind = EMember (spillAwaits sigOf sp recv, name) }
     | EPrefix (op, inner) ->
         { e with Kind = EPrefix (op, spillAwaits sigOf sp inner) }
     | EBinop (op, l, r) ->
-        let lRew = spillAwaits sigOf sp l
-        let rRew = spillAwaits sigOf sp r
-        { e with Kind = EBinop (op, lRew, rRew) }
+        match spillSiblings sigOf sp [l; r] with
+        | [lRew; rRew] -> { e with Kind = EBinop (op, lRew, rRew) }
+        | _ -> e
     | ERange rb ->
         let rb' =
             match rb with
@@ -596,6 +630,64 @@ let rec private spillAwaits
         // accidentally spill a write target.  Right-hand side is
         // walked normally.
         { e with Kind = EAssign (t, op, spillAwaits sigOf sp v) }
+
+/// Apply the spill-prior-siblings rule (D-progress-076 follow-up):
+/// when a list of sibling sub-expressions contains an `EAwait`,
+/// every preceding side-effecting sibling is hoisted to a
+/// `val __tmp_<n> = expr` binding before the await is hoisted, so
+/// the original left-to-right evaluation order survives the
+/// rewrite.  Pure siblings (literals, paths, parens-of-pure)
+/// stay in place — over-spilling here is harmless but unnecessary.
+///
+/// Sets `sp.Bailed` when a side-effecting sibling needs spilling
+/// but its CLR type can't be inferred.
+and private spillSiblings
+        (sigOf: string -> Lyric.TypeChecker.ResolvedSignature option)
+        (sp: Spiller) (es: Expr list) : Expr list =
+    if sp.Bailed then es
+    else
+    let arr = List.toArray es
+    let n = arr.Length
+    let mutable lastAwait = -1
+    for i in 0 .. n - 1 do
+        if exprHasAwait arr.[i] then lastAwait <- i
+    if lastAwait < 0 then
+        // No awaits anywhere in this sibling list — descend normally.
+        es |> List.map (spillAwaits sigOf sp)
+    else
+        let result = ResizeArray<Expr>()
+        for i in 0 .. n - 1 do
+            if sp.Bailed then result.Add arr.[i]
+            elif i >= lastAwait || exprHasAwait arr.[i] || isSideEffectFreeExpr arr.[i] then
+                // At-or-after the last await: regular spill (the
+                // EAwait branch handles its own hoisting).  Sibling
+                // contains an award: regular spill.  Pure sibling:
+                // safe to leave in place.
+                result.Add (spillAwaits sigOf sp arr.[i])
+            else
+                // Side-effecting sibling to the left of an await —
+                // hoist into a `val __tmp_<n> = expr` so its side
+                // effects fire BEFORE the await suspends.
+                let exprRew = spillAwaits sigOf sp arr.[i]
+                if sp.Bailed then result.Add exprRew
+                else
+                    match tryInferAwaitInnerType sigOf exprRew with
+                    | None ->
+                        sp.Bailed <- true
+                        result.Add exprRew
+                    | Some lyTy ->
+                        let nIdx = sp.Next
+                        sp.Next <- nIdx + 1
+                        let tmpName = sprintf "__tmp_%d" nIdx
+                        sp.Types.Add(tmpName, lyTy)
+                        let pat : Pattern =
+                            { Kind = PBinding (tmpName, None); Span = exprRew.Span }
+                        let stmt : Statement =
+                            { Kind = SLocal (LBVal (pat, None, exprRew))
+                              Span = exprRew.Span }
+                        sp.Pending.Add stmt
+                        result.Add (mkPath tmpName exprRew.Span)
+        List.ofSeq result
 
 /// Drain `sp.Pending` since the start index, returning the spilled
 /// statements in source order and clearing them from the buffer.
@@ -736,14 +828,19 @@ let tryStackSpill
 /// lowering (covers both Phase A — await-free body — and Phase B —
 /// awaits at safe top-level positions).  Currently:
 ///   * top-level (caller responsibility)
-///   * non-generic
-///   * non-instance (caller responsibility)
+///   * non-instance (caller responsibility) — generic instance
+///     impl methods still route to the M1.4 shim
 ///   * either no body await (Phase A) or every await is at a safe
 ///     top-level position (Phase B)
 ///   * no `@externTarget` annotation
+///
+/// Generic top-level async funcs are eligible: the kickoff site
+/// closes the SM via `MakeGenericType` against the user method's
+/// own GTPBs, and MoveNext IL references SM-side generic params
+/// the JIT closes at runtime.  See `defineStateMachineHeader` /
+/// `emitKickoff` and the free-standing async path in `Emitter.fs`.
 let isAsyncSmEligible (fn: FunctionDecl) : bool =
-    fn.Generics.IsNone
-    && allAwaitsSafe fn
+    allAwaitsSafe fn
     && not (fn.Annotations
             |> List.exists (fun a ->
                 match a.Name.Segments with
@@ -960,6 +1057,16 @@ type SmPromotedLocal =
 type StateMachineInfo =
     { /// The synthesised SM type.
       Type: TypeBuilder
+      /// SM's own generic type parameters (mirrors the user
+      /// function's `Generics`).  Empty for non-generic async funcs.
+      /// When non-empty, the kickoff site (which runs inside the
+      /// user's generic method) closes the SM via
+      /// `sm.Type.MakeGenericType(userMethodTypeParams)` and routes
+      /// every `Newobj` / `Stfld` / `Ldfld` / call through
+      /// `TypeBuilder.GetConstructor` / `TypeBuilder.GetField` /
+      /// `TypeBuilder.GetMethod` against that closed instance.  See
+      /// `closedSmType`, `smField`, `smCtor`, `smMethod`.
+      GenericParams: GenericTypeParameterBuilder[]
       /// Default no-arg constructor on the SM (used by the kickoff).
       Ctor: ConstructorBuilder
       /// `<>state : int` field.
@@ -1033,26 +1140,32 @@ let private builderTypeFor (bareReturn: Type) (isVoid: bool) : Type =
     if isVoid then typeof<AsyncTaskMethodBuilder>
     else typedefof<AsyncTaskMethodBuilder<_>>.MakeGenericType([| bareReturn |])
 
-/// Build the SM class for a single async function.  The class is
-/// added as a top-level type on the module (distinct from the
-/// `<Program>` class) so it can be sealed independently.  Naming:
-/// `<funcName>__SM` plus a uniqueness suffix when overloads collide.
+/// SM-class header — the bare TypeBuilder plus its (possibly empty)
+/// generic-parameter builders.  Generic async funcs first define
+/// the SM's own `GenericTypeParameterBuilder[]` here, then the
+/// caller builds a `name -> SmGenericParam` substitution map and
+/// uses it when computing CLR types for fields / locals / return.
+type StateMachineHeader =
+    { Type:          TypeBuilder
+      GenericParams: GenericTypeParameterBuilder[] }
+
+/// Step 1 of SM definition — define the type and (when the user
+/// function is generic) its generic parameters.  The caller uses
+/// `header.GenericParams` to build a `Map<string, Type>` from each
+/// generic name to the SM-side parameter, then computes
+/// `paramSpecs` / `localSpecs` / `bareReturn` against that map and
+/// passes everything to `defineStateMachineBody` which finishes the
+/// SM type.
 ///
-/// `localSpecs` is the list of (name, clrType) pairs for promoted
-/// locals (Phase B).  `[]` for a Phase A function.  Awaiter fields
-/// are defined lazily during MoveNext emit via
-/// `defineAwaiterField` because the awaiter's CLR type is only
-/// known after the inner task expression has been emitted.
-let defineStateMachine
+/// For non-generic async funcs, callers can keep using
+/// `defineStateMachine` (the tail-end thin wrapper that bundles
+/// header + body for the `genericParamNames = []` case).
+let defineStateMachineHeader
         (md: ModuleBuilder)
         (nsName: string)
         (funcName: string)
         (uniq: int)
-        (bareReturn: Type)
-        (paramSpecs: (string * Type) list)
-        (localSpecs: (string * Type) list) : StateMachineInfo =
-    let isVoid = bareReturn = typeof<Void>
-    let builderTy = builderTypeFor bareReturn isVoid
+        (genericParamNames: string list) : StateMachineHeader =
     let typeName =
         let baseName = sprintf "<%s>__SM_%d" funcName uniq
         if String.IsNullOrEmpty nsName then baseName
@@ -1065,6 +1178,32 @@ let defineStateMachine
             ||| TypeAttributes.BeforeFieldInit,
             typeof<obj>,
             [| iAsmType |])
+    let genParams =
+        if List.isEmpty genericParamNames then [||]
+        else tb.DefineGenericParameters(List.toArray genericParamNames)
+    { Type = tb; GenericParams = genParams }
+
+/// Step 2 of SM definition — add fields, the default ctor, and the
+/// MoveNext / SetStateMachine method headers, then hook them into
+/// `IAsyncStateMachine`.  All CLR types in `bareReturn` /
+/// `paramSpecs` / `localSpecs` must already be expressed in terms
+/// of `header.GenericParams` (not the user method's generic
+/// parameters) for generic async; non-generic callers pass plain
+/// CLR types as before.
+///
+/// `localSpecs` is the list of (name, clrType) pairs for promoted
+/// locals (Phase B).  `[]` for a Phase A function.  Awaiter fields
+/// are defined lazily during MoveNext emit via
+/// `defineAwaiterField` because the awaiter's CLR type is only
+/// known after the inner task expression has been emitted.
+let defineStateMachineBody
+        (header: StateMachineHeader)
+        (bareReturn: Type)
+        (paramSpecs: (string * Type) list)
+        (localSpecs: (string * Type) list) : StateMachineInfo =
+    let tb = header.Type
+    let isVoid = bareReturn = typeof<Void>
+    let builderTy = builderTypeFor bareReturn isVoid
     let stateField =
         tb.DefineField("<>1__state", typeof<int>, FieldAttributes.Public)
     let builderField =
@@ -1138,6 +1277,7 @@ let defineStateMachine
     tb.DefineMethodOverride(setSm, iasSet)
 
     { Type            = tb
+      GenericParams   = header.GenericParams
       Ctor            = defaultCtor
       State           = stateField
       Builder         = builderField
@@ -1149,21 +1289,40 @@ let defineStateMachine
       MoveNext        = moveNext
       SetStateMachine = setSm }
 
+/// Legacy entry point kept for non-generic call sites — combines
+/// header + body in one call.  Generic async funcs use the split
+/// form so they can build a CLR-type substitution against the
+/// header's generic parameters before computing field types.
+let defineStateMachine
+        (md: ModuleBuilder)
+        (nsName: string)
+        (funcName: string)
+        (uniq: int)
+        (bareReturn: Type)
+        (paramSpecs: (string * Type) list)
+        (localSpecs: (string * Type) list) : StateMachineInfo =
+    let header = defineStateMachineHeader md nsName funcName uniq []
+    defineStateMachineBody header bareReturn paramSpecs localSpecs
+
 // ---------------------------------------------------------------------------
 // IL helpers.
 // ---------------------------------------------------------------------------
 
 /// True when `BuilderType` is `AsyncTaskMethodBuilder<T>` closed
-/// over a TypeBuilder (i.e. a Lyric record/union still under
-/// construction).  In that case `BuilderType.GetMethod` raises
+/// over an unbaked argument — a TypeBuilder (Lyric record/union
+/// still under construction) or a GenericTypeParameterBuilder
+/// (an SM-side generic param the JIT will substitute at runtime).
+/// In either case `BuilderType.GetMethod` raises
 /// `NotSupportedException` and we have to route through
 /// `TypeBuilder.GetMethod(closedType, openMethod)`.
 let internal builderClosedOverTypeBuilder (sm: StateMachineInfo) : bool =
+    let isUnbaked (t: Type) =
+        t :? TypeBuilder || t :? GenericTypeParameterBuilder
     sm.BuilderType.IsGenericType
     && sm.BuilderType.GetGenericArguments()
        |> Array.exists (fun a ->
-           a :? TypeBuilder
-           || (a.IsGenericType && a.GetGenericArguments() |> Array.exists (fun b -> b :? TypeBuilder)))
+           isUnbaked a
+           || (a.IsGenericType && a.GetGenericArguments() |> Array.exists isUnbaked))
 
 let private builderOpenDef : Type = typedefof<AsyncTaskMethodBuilder<_>>
 let private builderNonGen  : Type = typeof<AsyncTaskMethodBuilder>
@@ -1242,6 +1401,93 @@ let private builderStart (sm: StateMachineInfo) : MethodInfo =
 // Kickoff body.
 // ---------------------------------------------------------------------------
 
+/// True when this SM is generic (mirrors a generic user function).
+let isGenericSm (sm: StateMachineInfo) : bool =
+    sm.GenericParams.Length > 0
+
+/// Closed builder type at a kickoff site.  For non-generic SMs the
+/// SM's stored `BuilderType` is already fully closed; for generic
+/// SMs the stored type is `AsyncTaskMethodBuilder<R>` where `R` is
+/// open over the SM's generic parameters and we close it again
+/// against the user-method-context return type.
+let private closedKickoffBuilderType (sm: StateMachineInfo) (kickoffBareReturn: Type) : Type =
+    if not (isGenericSm sm) then sm.BuilderType
+    elif sm.IsVoid then sm.BuilderType
+    else typedefof<AsyncTaskMethodBuilder<_>>.MakeGenericType([| kickoffBareReturn |])
+
+/// True when `kickoffBuilderTy` is `AsyncTaskMethodBuilder<R>`
+/// closed over a TypeBuilder / GenericTypeParameterBuilder, in
+/// which case `Type.GetMethod` raises NotSupportedException and
+/// we have to route through `TypeBuilder.GetMethod`.  For
+/// fully-closed-over-BCL-types instances (e.g.
+/// `AsyncTaskMethodBuilder<int>`) the regular `Type.GetMethod`
+/// path works.
+let private kickoffBuilderClosedOverTb (kickoffBuilderTy: Type) : bool =
+    kickoffBuilderTy.IsGenericType
+    && kickoffBuilderTy.GetGenericTypeDefinition() = builderOpenDef
+    && (kickoffBuilderTy.GetGenericArguments()
+        |> Array.exists (fun a ->
+            a :? TypeBuilder
+            || a :? GenericTypeParameterBuilder
+            || (a.IsGenericType
+                && a.GetGenericArguments()
+                   |> Array.exists (fun b ->
+                       b :? TypeBuilder
+                       || b :? GenericTypeParameterBuilder))))
+
+/// `AsyncTaskMethodBuilder[<R>]::Create` resolved against the
+/// kickoff-context closed builder type.  Mirrors `builderCreate`
+/// but without an `sm` dependency.
+let private kickoffBuilderCreate (kickoffBuilderTy: Type) : MethodInfo =
+    if kickoffBuilderClosedOverTb kickoffBuilderTy then
+        match Option.ofObj (builderOpenDef.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
+        | Some m -> TypeBuilder.GetMethod(kickoffBuilderTy, m)
+        | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Create not found"
+    else
+        match Option.ofObj (kickoffBuilderTy.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
+        | Some m -> m
+        | None   -> failwithf "BCL: %s.Create not found" kickoffBuilderTy.Name
+
+/// `AsyncTaskMethodBuilder[<R>]::<member>` lookup against the
+/// kickoff-context closed builder type.  Mirrors `builderMember`.
+let private kickoffBuilderMember (kickoffBuilderTy: Type) (name: string) : MethodInfo =
+    if kickoffBuilderClosedOverTb kickoffBuilderTy then
+        let candidates = builderOpenDef.GetMethods()
+        let openMI =
+            candidates
+            |> Array.tryFind (fun m -> m.Name = name)
+            |> Option.orElseWith (fun () ->
+                candidates |> Array.tryFind (fun m -> m.Name = "get_" + name))
+        match openMI with
+        | Some m -> TypeBuilder.GetMethod(kickoffBuilderTy, m)
+        | None ->
+            failwithf "BCL: %s.%s not found (open def lookup)" kickoffBuilderTy.Name name
+    else
+        match Option.ofObj (kickoffBuilderTy.GetMethod(name)) with
+        | Some m -> m
+        | None ->
+            match Option.ofObj (kickoffBuilderTy.GetMethod("get_" + name)) with
+            | Some m -> m
+            | None -> failwithf "BCL: %s.%s not found" kickoffBuilderTy.Name name
+
+/// `AsyncTaskMethodBuilder[<R>]::Start<TSm>(ref TSm)` closed over
+/// the kickoff-side SM type.  Mirrors `builderStart`.
+let private kickoffBuilderStart (kickoffBuilderTy: Type) (closedSmTy: Type) : MethodInfo =
+    let openStart =
+        if kickoffBuilderClosedOverTb kickoffBuilderTy then
+            let openOnDef =
+                match Option.ofObj
+                          (builderOpenDef.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
+                | Some m -> m
+                | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Start not found"
+            TypeBuilder.GetMethod(kickoffBuilderTy, openOnDef)
+        else
+            match Option.ofObj
+                      (kickoffBuilderTy.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
+            | Some m -> m
+            | None   -> failwithf "BCL: %s.Start not found" kickoffBuilderTy.Name
+    openStart.MakeGenericMethod([| closedSmTy |])
+
 /// Emit the user's async function body — now a kickoff stub.  Layout:
 ///
 ///     var sm    = new <SM>()
@@ -1252,33 +1498,54 @@ let private builderStart (sm: StateMachineInfo) : MethodInfo =
 ///     sm.<>builder.Start<<SM>>(ref sm)
 ///     return sm.<>builder.Task
 ///
-/// The `builder.Task` lookup is special-cased: when `BuilderType` is
-/// non-generic the property is `Task` (returns `Task`); when generic
-/// it's `Task` (returns `Task<R>`).  Both resolve via `get_Task`.
+/// `userGenericArgs` is `[||]` for non-generic async funcs and the
+/// user-method's `GenericTypeParameterBuilder[]` (cast to `Type[]`)
+/// for generic async funcs.  When non-empty, every field / ctor /
+/// method reference on the SM routes through `TypeBuilder.GetX`
+/// against the closed-over-user-method-types instantiation, and
+/// the builder is re-closed against the user-method-context bare
+/// return.
+///
+/// `kickoffBareReturn` is the user-method-context bare return type
+/// (e.g. for `async func id[T](x: T): T` it's the user method's
+/// `T` builder, not the SM's `T`).  Required only for generic SMs;
+/// non-generic callers can pass `sm.BareReturn`.
 let emitKickoff
         (kickoffMb: MethodBuilder)
         (sm: StateMachineInfo)
+        (userGenericArgs: Type[])
+        (kickoffBareReturn: Type)
         (paramArgIndices: int list) : unit =
     let il = kickoffMb.GetILGenerator()
-    let smLocal = il.DeclareLocal(sm.Type)
+    let closedSm =
+        if Array.isEmpty userGenericArgs then sm.Type :> Type
+        else sm.Type.MakeGenericType(userGenericArgs)
+    let smField (openF: FieldBuilder) : FieldInfo =
+        if Array.isEmpty userGenericArgs then openF :> FieldInfo
+        else TypeBuilder.GetField(closedSm, openF)
+    let smCtor : ConstructorInfo =
+        if Array.isEmpty userGenericArgs then sm.Ctor :> ConstructorInfo
+        else TypeBuilder.GetConstructor(closedSm, sm.Ctor)
+    let kickoffBuilderTy = closedKickoffBuilderType sm kickoffBareReturn
+    let smLocal = il.DeclareLocal(closedSm)
 
     // Phase A keeps the SM as a class (sealed reference type), so
     // `newobj` on its default ctor matches C# class-mode (debug-build)
     // emission.  Struct-mode (`initobj` on a value-typed slot) is the
     // C# release-build shape; we'll switch when locals start needing
     // promotion to fields and we want to avoid the heap allocation.
-    il.Emit(OpCodes.Newobj, sm.Ctor)
+    il.Emit(OpCodes.Newobj, smCtor)
     il.Emit(OpCodes.Stloc, smLocal)
 
     // sm.<>builder = AsyncTaskMethodBuilder.Create()
     il.Emit(OpCodes.Ldloc, smLocal)
-    il.Emit(OpCodes.Call, builderCreate sm)
-    il.Emit(OpCodes.Stfld, sm.Builder)
+    il.Emit(OpCodes.Call, kickoffBuilderCreate kickoffBuilderTy)
+    il.Emit(OpCodes.Stfld, smField sm.Builder)
 
     // sm.<>state = -1
     il.Emit(OpCodes.Ldloc, smLocal)
     il.Emit(OpCodes.Ldc_I4_M1)
-    il.Emit(OpCodes.Stfld, sm.State)
+    il.Emit(OpCodes.Stfld, smField sm.State)
 
     // Copy each parameter into its SM field.  `paramArgIndices` matches
     // `sm.ParamFields` element-for-element; the caller is responsible
@@ -1287,22 +1554,22 @@ let emitKickoff
     |> List.iter (fun (pf, argIdx) ->
         il.Emit(OpCodes.Ldloc, smLocal)
         il.Emit(OpCodes.Ldarg, argIdx)
-        il.Emit(OpCodes.Stfld, pf.Field))
+        il.Emit(OpCodes.Stfld, smField pf.Field))
 
     // sm.<>builder.Start<SM>(ref sm)
     // `Start` is an instance method on a struct builder — ldflda
     // gives us `&sm.<>builder` as a managed pointer.
     il.Emit(OpCodes.Ldloc, smLocal)
-    il.Emit(OpCodes.Ldflda, sm.Builder)
+    il.Emit(OpCodes.Ldflda, smField sm.Builder)
     il.Emit(OpCodes.Ldloca, smLocal)
-    il.Emit(OpCodes.Call, builderStart sm)
+    il.Emit(OpCodes.Call, kickoffBuilderStart kickoffBuilderTy closedSm)
 
     // return sm.<>builder.Task — `builderMember` routes through
     // `TypeBuilder.GetMethod` when the closing arg is a Lyric
     // record/union still under construction.
     il.Emit(OpCodes.Ldloc, smLocal)
-    il.Emit(OpCodes.Ldflda, sm.Builder)
-    let taskGetter = builderMember sm "Task"
+    il.Emit(OpCodes.Ldflda, smField sm.Builder)
+    let taskGetter = kickoffBuilderMember kickoffBuilderTy "Task"
     il.Emit(OpCodes.Call, taskGetter)
     il.Emit(OpCodes.Ret)
 

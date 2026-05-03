@@ -1538,10 +1538,21 @@ let private emitFunctionBody
     // Recover the per-method generic substitution from the MethodBuilder
     // so `TyVar T` references in param/return positions resolve to the
     // GenericTypeParameterBuilder we stamped down in `defineMethodHeader`.
+    //
+    // SM mode: `mb` is `sm.MoveNext` (a non-generic instance method on
+    // the SM type), so `mb.GetGenericArguments()` is `[||]`.  For generic
+    // async, the user-method generics map to the SM's own GTPBs (the
+    // ones the JIT closes at runtime against whatever the kickoff site
+    // passed to `MakeGenericType`).
     let genericSubst : Map<string, System.Type> =
         if sg.Generics.IsEmpty then Map.empty
         else
-            let gtpbs = mb.GetGenericArguments()
+            let gtpbs : System.Type[] =
+                match smInfo with
+                | Some sm when sm.GenericParams.Length > 0 ->
+                    sm.GenericParams |> Array.map (fun g -> g :> System.Type)
+                | _ ->
+                    mb.GetGenericArguments()
             sg.Generics
             |> List.mapi (fun i name -> name, gtpbs.[i])
             |> Map.ofList
@@ -2721,20 +2732,60 @@ let private emitAssembly
                         else None
                 else None
 
+            // For generic async funcs, resolve the user-method GTPBs
+            // and build two parallel `name -> Type` substitutions:
+            //   * `userGenericSubst` — name → user method's GTPB.
+            //     Used to compute the kickoff-context bare return,
+            //     param types, and local types (these reference the
+            //     user method's own generic params).
+            //   * `smGenericSubst` — name → SM's GTPB.  Used to
+            //     compute the SM-context types stored on the SM
+            //     fields and consumed inside MoveNext.
+            // Each substitution is fed through TypeMap with the
+            // existing `lookup`.
+            let isGenericAsync =
+                sg.IsAsync && (not (List.isEmpty sg.Generics))
+            let userTypeParamArgs : System.Type[] =
+                if isGenericAsync then mb.GetGenericArguments() else [||]
+            let userGenericSubst : Map<string, System.Type> =
+                if isGenericAsync then
+                    sg.Generics
+                    |> List.mapi (fun i name ->
+                        name, userTypeParamArgs.[i])
+                    |> Map.ofList
+                else Map.empty
             if usePhaseA then
-                let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
-                let paramSpecs =
+                smCounter <- smCounter + 1
+                let header =
+                    AsyncStateMachine.defineStateMachineHeader
+                        ctx.Module nsName fn.Name smCounter sg.Generics
+                let smGenericSubst : Map<string, System.Type> =
+                    if isGenericAsync then
+                        sg.Generics
+                        |> List.mapi (fun i name ->
+                            name, header.GenericParams.[i] :> System.Type)
+                        |> Map.ofList
+                    else Map.empty
+                // SM-side types: fields + bare return reference SM's
+                // own generic params (so MoveNext IL writes the open
+                // tokens that the JIT closes at runtime).
+                let smBareReturn =
+                    TypeMap.toClrReturnTypeWithGenerics lookup smGenericSubst sg.Return
+                let smParamSpecs =
                     sg.Params
                     |> List.map (fun p ->
-                        p.Name, paramClrType lookup Map.empty p)
-                smCounter <- smCounter + 1
+                        p.Name, paramClrType lookup smGenericSubst p)
                 let sm =
-                    AsyncStateMachine.defineStateMachine
-                        ctx.Module nsName fn.Name smCounter
-                        bareReturn paramSpecs []
+                    AsyncStateMachine.defineStateMachineBody
+                        header smBareReturn smParamSpecs []
+                // Kickoff-side bare return: substitutes against
+                // `userGenericSubst` so the closed builder type's R
+                // matches the user method's own GTPB.
+                let kickoffBareReturn =
+                    TypeMap.toClrReturnTypeWithGenerics lookup userGenericSubst sg.Return
                 let argIndices =
                     sg.Params |> List.mapi (fun i _ -> i)
-                AsyncStateMachine.emitKickoff mb sm argIndices
+                AsyncStateMachine.emitKickoff mb sm userTypeParamArgs kickoffBareReturn argIndices
                 AsyncStateMachine.emitSetStateMachine sm
                 emitFunctionBody
                     sm.MoveNext (Some sm) None fn sg lookup
@@ -2751,19 +2802,31 @@ let private emitAssembly
                 // `SetException`, and locals promoted to fields so
                 // values survive cross-resume gaps.
                 let localSpecs = phaseBSpecOpt.Value
-                let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
-                let paramSpecs =
+                smCounter <- smCounter + 1
+                let header =
+                    AsyncStateMachine.defineStateMachineHeader
+                        ctx.Module nsName fn.Name smCounter sg.Generics
+                let smGenericSubst : Map<string, System.Type> =
+                    if isGenericAsync then
+                        sg.Generics
+                        |> List.mapi (fun i name ->
+                            name, header.GenericParams.[i] :> System.Type)
+                        |> Map.ofList
+                    else Map.empty
+                let smBareReturn =
+                    TypeMap.toClrReturnTypeWithGenerics lookup smGenericSubst sg.Return
+                let smParamSpecs =
                     sg.Params
                     |> List.map (fun p ->
-                        p.Name, paramClrType lookup Map.empty p)
-                smCounter <- smCounter + 1
+                        p.Name, paramClrType lookup smGenericSubst p)
                 let sm =
-                    AsyncStateMachine.defineStateMachine
-                        ctx.Module nsName fn.Name smCounter
-                        bareReturn paramSpecs localSpecs
+                    AsyncStateMachine.defineStateMachineBody
+                        header smBareReturn smParamSpecs localSpecs
+                let kickoffBareReturn =
+                    TypeMap.toClrReturnTypeWithGenerics lookup userGenericSubst sg.Return
                 let argIndices =
                     sg.Params |> List.mapi (fun i _ -> i)
-                AsyncStateMachine.emitKickoff mb sm argIndices
+                AsyncStateMachine.emitKickoff mb sm userTypeParamArgs kickoffBareReturn argIndices
                 AsyncStateMachine.emitSetStateMachine sm
                 // MoveNext — emit structural code (promote-load,
                 // dispatch, try/catch, SetResult) around the body.
@@ -2790,7 +2853,7 @@ let private emitAssembly
                 // Pre-allocate result local for non-void returns.
                 let phaseBResultLocal =
                     if sm.IsVoid then None
-                    else Some (il.DeclareLocal(bareReturn))
+                    else Some (il.DeclareLocal(smBareReturn))
                 // Promote-load: SM fields → IL locals.
                 for (lb, fld) in promotedShadows do
                     il.Emit(OpCodes.Ldarg_0)
@@ -2889,6 +2952,7 @@ let private emitAssembly
             let asyncSmEligible =
                 sg.IsAsync
                 && AsyncStateMachine.isAsyncSmEligible fd
+                && fd.Generics.IsNone   // impl-method path doesn't carry SM-side generics yet
                 && (not (isNull selfTy))
             // Phase A — impl method, await-free body.
             let usePhaseA =
@@ -2934,7 +2998,7 @@ let private emitAssembly
                         ctx.Module nsName ("self_" + fd.Name) smCounter
                         bareReturn paramSpecs []
                 let argIndices = paramSpecs |> List.mapi (fun i _ -> i)
-                AsyncStateMachine.emitKickoff mb sm argIndices
+                AsyncStateMachine.emitKickoff mb sm [||] sm.BareReturn argIndices
                 AsyncStateMachine.emitSetStateMachine sm
                 emitFunctionBody
                     sm.MoveNext (Some sm) None fd sg lookup
@@ -2959,7 +3023,7 @@ let private emitAssembly
                         ctx.Module nsName ("self_" + fd.Name) smCounter
                         bareReturn paramSpecs localSpecs
                 let argIndices = paramSpecs |> List.mapi (fun i _ -> i)
-                AsyncStateMachine.emitKickoff mb sm argIndices
+                AsyncStateMachine.emitKickoff mb sm [||] sm.BareReturn argIndices
                 AsyncStateMachine.emitSetStateMachine sm
                 let il = sm.MoveNext.GetILGenerator()
                 let promotedShadows = ResizeArray<LocalBuilder * FieldBuilder>()

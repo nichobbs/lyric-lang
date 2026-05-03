@@ -76,6 +76,120 @@ Not started — gated on Phase 2 completion.
 
 ## Active session decisions
 
+### D-progress-076: C2 Phase B+++ — spill-prior-siblings ordering (D-progress-074 follow-up)
+*claude/c2-finalize-generics-and-spill-order branch.*  Closes the
+documented evaluation-order caveat from D-progress-074: when a
+side-effecting sibling sat to the left of an awaited expression in
+the same statement (`add(sideEffect(), await produce())`), the
+stack-spilling rewrite would hoist `await produce()` to a
+preceding `val __spill_0 = await produce()` binding and reorder
+the call to `add(sideEffect(), __spill_0)`, flipping the user-
+visible print order between the sibling and the awaited body.
+
+The spill walker (`spillSiblings` in `AsyncStateMachine.fs`) now
+applies a Roslyn-style rule to every multi-sibling node — `ECall`
+args (with the callee treated as the leftmost sibling), `EBinop`
+operands, `EIndex` receiver + indices, `ETuple`, `EList`.  It
+finds the rightmost sibling containing an `EAwait` and, for every
+left-of-that-position sibling that is NOT side-effect-free
+(literal / path / `paren-of-pure`), hoists it into a synthesised
+`val __tmp_<n> = expr` binding ahead of the await spill.  The
+prior-spill local enters the same SM-field promotion table as
+`__spill_*` locals so its value survives across subsequent
+suspends.
+
+Bootstrap-grade scope (still bails to M1.4 when the inferer can't
+classify):
+- The same `tryInferAwaitInnerType` shape lookup is reused for
+  prior-sibling typing, so a side-effecting sibling whose CLR type
+  isn't a direct function/method call signature lookup falls back
+  to the M1.4 blocking shim.  Most user code uses ECall shapes the
+  inferer handles (`sideEffect()`, `obj.method()`).
+
+One new test in `AsyncTests.fs`:
+- `stack_spill_preserves_left_to_right_order` — runs
+  `add(sideEffect(), await produce())` and asserts the output is
+  `called\n15` (sideEffect's `println("called")` fires before the
+  await), not the reordered `15\ncalled`.
+
+All 1024 tests pass post-change (was 1019; +5 net across this
+session's three D-progress entries).  The Tier-4 C2 work is now
+fully complete — async generics shipped (D-progress-075) and the
+last evaluation-order edge case from D-progress-074 closed here.
+
+---
+
+### D-progress-075: C2 Phase B+++ — generic async funcs (closed-generic SM on TypeBuilder)
+*claude/c2-finalize-generics-and-spill-order branch.*  Last C2
+sub-item.  `async func id[T](x: in T): T` and friends used to fall
+through `isAsyncSmEligible`'s `fn.Generics.IsNone` guard onto the
+M1.4 `Task.FromResult<T>` wrapper; now they get a real generic
+`IAsyncStateMachine` class whose own type parameters mirror the
+function's, with the kickoff site closing the SM via
+`TypeBuilder.GetConstructor` / `GetField` / `GetMethod` against
+the user-method's GTPB instantiation.
+
+Implementation:
+- `AsyncStateMachine.defineStateMachine` is split into
+  `defineStateMachineHeader` (defines the TypeBuilder and its
+  generic parameter builders) and `defineStateMachineBody` (adds
+  fields / methods / IAsyncStateMachine hooks once the caller has
+  computed CLR types against the SM's own GTPBs).  The legacy
+  one-shot `defineStateMachine` wrapper is kept for non-generic
+  callers.
+- Both Phase A and Phase B free-standing emit paths now build two
+  parallel `Map<string, Type>` substitutions per generic async
+  func: `userGenericSubst` (for the kickoff-context bare return
+  and the closed builder type) and `smGenericSubst` (for the SM-
+  side fields and the `MoveNext` body).
+- `emitKickoff` accepts `userGenericArgs: Type[]` plus a
+  `kickoffBareReturn: Type` and routes every `Newobj` / `Stfld` /
+  `Ldfld` / `Ldflda` on the SM through `TypeBuilder.GetField` /
+  `TypeBuilder.GetConstructor` against `sm.Type.MakeGenericType
+  (userGenericArgs)`.  The builder's `Create` / `Start` / `Task`
+  reflection routes through new `kickoffBuilderCreate` /
+  `kickoffBuilderStart` / `kickoffBuilderMember` helpers that
+  consult a kickoff-context closed builder type.
+- `builderClosedOverTypeBuilder` extended to recognise
+  `GenericTypeParameterBuilder` (not just `TypeBuilder`) as an
+  unbaked generic argument so `MoveNext`'s
+  `SetException`/`SetResult`/`AwaitUnsafeOnCompleted` lookups go
+  through `TypeBuilder.GetMethod` for SM-context-closed builders.
+- `emitFunctionBody`'s per-method `genericSubst` recovery now
+  pulls the SM's GTPBs when emitting MoveNext on a generic SM
+  (the `MoveNext` MethodBuilder itself is non-generic; the
+  generic params live on the SM type).
+- `isAsyncSmEligible` drops the `fn.Generics.IsNone` restriction.
+  The impl-method emit path keeps a local guard
+  (`fd.Generics.IsNone`) since generic instance methods aren't
+  modelled there yet.
+
+Three new test cases in `AsyncTests.fs`:
+- `phaseB_generic_async_phaseA` — `async func id[T](x: in T): T = x`
+  exercises the await-free generic SM end-to-end (used to fall
+  back to M1.4).
+- `phaseB_generic_async_phaseB_with_await` — generic async whose
+  body contains an inner `await produce()`; validates the closed-
+  generic SM survives suspend/resume (`MakeGenericType` over the
+  user method's GTPB closes correctly across the cross-resume gap).
+- `phaseB_generic_async_two_type_params` — two-parameter generic
+  async, validates `MakeGenericType` over multiple arg slots.
+- Plus a `[generic_sm_shape]` reflection-based regression guard
+  that asserts `id`'s SM type is a generic type definition with
+  exactly one generic parameter.
+
+Bootstrap-grade scope (still routes to M1.4):
+- Generic async **impl** methods on records / opaque types.  The
+  impl-method emit path doesn't yet thread an SM-side
+  `defineGenericParameters` call, and an instance method's `self`
+  field would also need to participate in the SM's generic
+  instantiation.  Out of scope for this session.
+
+All 442→443 emitter tests pass post-change before D-progress-076,
+1024 total across all suites after.
+
+---
+
 ### D-progress-074: C2 Phase B+++ — stack-spilling rewrite for nested awaits
 *claude/async-followup-and-tier-work-wY3nK branch.*  Lifts the M1.4
 fallback for async funcs whose bodies hold an `EAwait` in a non-safe
@@ -3291,13 +3405,40 @@ The infrastructure pieces touched by C2:
 | 12. `try`/`catch` / `defer` regions that span an `await` | **Shipped (Phase B+++, D-progress-056-058)** |
 | 13. Async impl methods (Phase A — await-free body) | **Shipped (D-progress-038)** |
 | 14. Async impl methods (Phase B — body awaits) | **Shipped (D-progress-040)** |
-| 15. Async generics | Phase B++ |
+| 15. Async generics (free-standing) | **Shipped (Phase B+++, D-progress-075)** |
 | 16. `CancellationToken` propagation | **Shipped (Phase C, D-progress-068)** |
 | 17. Stack-spilling for awaits in sub-expression positions | **Shipped (Phase B+++, D-progress-074)** |
+| 18. Spill-prior-siblings ordering preservation | **Shipped (Phase B+++, D-progress-076)** |
+
+C2 is **complete** for every shape Lyric currently supports.  The
+single remaining bullet — generic **impl** methods (e.g.
+`impl[T] Foo for Bar[T] { async func twiddle(x: in T): T = x }`)
+— is gated on infrastructure that pre-dates async and is genuinely
+orthogonal to C2:
+
+- **Generic interface methods** are not yet modelled.
+  `Lyric.Emitter/Emitter.fs:208`'s interface-method definition
+  uses `tb.DefineMethod` without `DefineGenericParameters`, so an
+  interface method declared with `[T]` couldn't be implemented as
+  a real generic method anywhere.
+- **Impl-block-level generics** (the `[ GenericParams ]` slot on
+  `ImplDecl` per `docs/grammar.ebnf:572`) are recognised by the
+  parser but discarded by both the type checker
+  (`Lyric.TypeChecker/Checker.fs:134` returns `None` for `IImpl`
+  in the symbol-collection pass) and the emitter (Pass A.5 ignores
+  `impl.Generics`).
+- **The stdlib doesn't use the construct** (a repo-wide grep for
+  `impl[` / generic impl methods returns zero hits).
+
+Adding async-state-machine support on top of these is futile until
+the underlying generic-impl-methods feature ships — that work is
+tracked as a separate Phase 2 follow-up rather than as remaining
+C2 scope.  When/if it lands, the SM-side wiring is mechanical:
+extend `defineStateMachineHeader`'s caller to thread impl-block +
+method-level GTPBs, mirror the free-standing generic path
+(D-progress-075), and re-use the same `kickoffBuilder*` helpers.
 
 Tier 5 items (`Std.Http` cancellation/timeouts shipped via
 D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).
 Tier 6 items (CST formatter, format5+, Regex RE2, C4 phase 2/3)
-remain on-demand.  The async generics piece (#15) and the
-"spill-side-effecting-siblings-to-the-left-of-an-await" follow-up to
-D-progress-074 are the last remaining C2 items.
+remain on-demand.
