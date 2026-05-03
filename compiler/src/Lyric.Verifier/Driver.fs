@@ -50,14 +50,20 @@ let private outcomeToDiag (g: Goal) (outcome: SolverOutcome) : Diagnostic option
     | Discharged ->
         None
     | Counterexample model ->
-        let snippet =
-            model.Split('\n')
-            |> Array.truncate 6
-            |> String.concat "\n"
+        let bindings = parseModel model
+        let body =
+            if List.isEmpty bindings then
+                let raw =
+                    model.Split('\n')
+                    |> Array.truncate 6
+                    |> String.concat "\n"
+                sprintf "raw model:\n%s" raw
+            else
+                renderCounterexample bindings
         Some
             (Diagnostic.error "V0008"
                 (sprintf "%s — proof failed (counterexample below)\n%s"
-                    (GoalKind.display g.Kind) snippet)
+                    (GoalKind.display g.Kind) body)
                 g.Origin)
     | Unknown reason ->
         Some

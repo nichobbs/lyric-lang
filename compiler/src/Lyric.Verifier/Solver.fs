@@ -24,6 +24,68 @@ type SolverOutcome =
     | Counterexample of model: string
     | Unknown        of reason: string
 
+/// Parsed shape of a Z3 `(get-model)` block.  Values are kept as the
+/// raw S-expression text so we can later swap the formatter out for
+/// the Lyric-typed pretty-printer §9.1 calls for.
+type CounterexampleBinding =
+    { Name:  string
+      Sort:  string
+      Value: string }
+
+/// Pull `(define-fun NAME () SORT VAL)` clauses out of a Z3 model
+/// blob.  Best-effort: unrecognised lines are skipped silently.
+let parseModel (modelText: string) : CounterexampleBinding list =
+    let lines = modelText.Split('\n') |> Array.toList
+    let rec loop acc remaining =
+        match remaining with
+        | [] -> List.rev acc
+        | (line: string) :: rest ->
+            let trimmed = line.Trim()
+            if trimmed.StartsWith "(define-fun " then
+                // Form: (define-fun NAME () SORT
+                //          VALUE)
+                let header = trimmed.Substring("(define-fun ".Length)
+                let parts = header.Split([|' '|], 4, System.StringSplitOptions.RemoveEmptyEntries)
+                match parts with
+                | [| name; "()"; sort; _ |] | [| name; "()"; sort |] ->
+                    // Value is the next line(s) up to the closing paren.
+                    let valueLines =
+                        rest
+                        |> List.takeWhile (fun (l: string) ->
+                            not (l.TrimEnd().EndsWith ")"))
+                    let lastLine =
+                        rest
+                        |> List.skip (List.length valueLines)
+                        |> List.tryHead
+                        |> Option.defaultValue ""
+                    let allValueText =
+                        valueLines @ [lastLine]
+                        |> List.map (fun s -> s.Trim())
+                        |> String.concat " "
+                    // Strip trailing ')'.
+                    let value =
+                        let v = allValueText.TrimEnd()
+                        if v.EndsWith ")" then
+                            v.Substring(0, v.Length - 1).TrimEnd()
+                        else v
+                    let consumed = List.length valueLines + 1
+                    loop ({ Name = name; Sort = sort; Value = value } :: acc)
+                         (List.skip consumed rest)
+                | _ -> loop acc rest
+            else
+                loop acc rest
+    loop [] lines
+
+/// Render a parsed counterexample into the `name = value` form that
+/// the plan's §9.3 human output calls for.  Each binding is one line.
+let renderCounterexample (bindings: CounterexampleBinding list) : string =
+    if List.isEmpty bindings then "(no model bindings)"
+    else
+        bindings
+        |> List.map (fun b ->
+            sprintf "  %s : %s = %s" b.Name b.Sort b.Value)
+        |> String.concat "\n"
+
 /// Structural term equality, used by the trivial discharger.  Two
 /// terms are equal iff they have the same shape and every leaf
 /// matches.  Sort tags are compared too — variables of different

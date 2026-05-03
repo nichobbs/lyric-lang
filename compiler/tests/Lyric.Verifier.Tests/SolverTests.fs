@@ -95,4 +95,51 @@ let tests =
             Expect.stringContains (displayOutcome (Counterexample "(x 5)")) "counterexample" "ce"
             Expect.stringContains (displayOutcome (Unknown "no solver")) "unknown" "unk"
         }
+
+        test "parseModel extracts a single binding" {
+            let modelText = """
+sat
+(
+  (define-fun x () Int
+    7)
+)
+"""
+            let bindings = parseModel modelText
+            Expect.equal (List.length bindings) 1 "one binding"
+            let b = List.head bindings
+            Expect.equal b.Name  "x"   "name"
+            Expect.equal b.Sort  "Int" "sort"
+            Expect.equal b.Value "7"   "value"
+        }
+
+        test "parseModel extracts multiple bindings" {
+            let modelText = """
+sat
+(
+  (define-fun x () Int
+    0)
+  (define-fun y () Int
+    5)
+  (define-fun b () Bool
+    false)
+)
+"""
+            let bindings = parseModel modelText
+            Expect.equal (List.length bindings) 3 "three"
+            Expect.equal (List.map (fun b -> b.Name) bindings) ["x"; "y"; "b"] "names"
+        }
+
+        test "renderCounterexample formats bindings as name : sort = value" {
+            let bindings =
+                [ { Name = "x"; Sort = "Int"; Value = "0" }
+                  { Name = "y"; Sort = "Int"; Value = "5" } ]
+            let rendered = renderCounterexample bindings
+            Expect.stringContains rendered "x : Int = 0" "x"
+            Expect.stringContains rendered "y : Int = 5" "y"
+        }
+
+        test "renderCounterexample handles empty list gracefully" {
+            let rendered = renderCounterexample []
+            Expect.stringContains rendered "no model bindings" "empty"
+        }
     ]
