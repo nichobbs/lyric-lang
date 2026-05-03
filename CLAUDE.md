@@ -95,6 +95,11 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
 - `compiler/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`
   parses `lyric.toml`; `Pack.fs` lowers it to a generated `.csproj` for
   `lyric publish` / `lyric restore`; `Program.fs` is the command dispatch.
+  `lyric build --manifest <lyric.toml>` resolves `import <Pkg>` declarations
+  against restored Lyric packages (D-progress-078) via the
+  `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
+  embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
+  into the existing import pipeline.
 - `compiler/tests/Lyric.Lexer.Tests/`, `compiler/tests/Lyric.Parser.Tests/`,
   `compiler/tests/Lyric.TypeChecker.Tests/`,
   `compiler/tests/Lyric.Emitter.Tests/`, `compiler/tests/Lyric.Lsp.Tests/`,

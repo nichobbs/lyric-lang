@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="ManifestTests.fs" />
     <Compile Include="PackTests.fs" />
+    <Compile Include="RestoredPackagesTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

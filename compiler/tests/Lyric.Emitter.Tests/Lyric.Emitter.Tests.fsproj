@@ -62,6 +62,7 @@
     <Compile Include="StructuredConcurrencyTests.fs" />
     <Compile Include="AsyncLocalTests.fs" />
     <Compile Include="MockingTests.fs" />
+    <Compile Include="RestoredPackageE2ETests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

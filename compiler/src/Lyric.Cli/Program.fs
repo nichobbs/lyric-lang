@@ -195,7 +195,18 @@ module private BuildCache =
 /// and the build cache says the existing output is up to date, the
 /// emit is skipped entirely and the CLI just confirms the cached
 /// hit.
-let private build (sourcePath: string) (outPath: string) (force: bool) : int =
+///
+/// `restoredPackageRefs` lists the restored Lyric packages this
+/// build can resolve non-`Std.*` imports against
+/// (D-progress-077 follow-up).  The CLI fills it from
+/// `lyric.toml`'s `[dependencies]` when `--manifest` is supplied
+/// (or `lyric.toml` is auto-discovered next to the source); empty
+/// list otherwise.
+let private build
+        (sourcePath: string)
+        (outPath: string)
+        (force: bool)
+        (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list) : int =
     if (not force) && BuildCache.isFresh sourcePath outPath then
         printfn "up to date %s" outPath
         0
@@ -207,9 +218,10 @@ let private build (sourcePath: string) (outPath: string) (force: bool) : int =
     let assemblyName =
         safeStr (Path.GetFileNameWithoutExtension outPath) "out"
     let req : Emitter.EmitRequest =
-        { Source       = source
-          AssemblyName = assemblyName
-          OutputPath   = outPath }
+        { Source           = source
+          AssemblyName     = assemblyName
+          OutputPath       = outPath
+          RestoredPackages = restoredPackageRefs }
     let mutable hadError = false
     let result =
         try
@@ -660,7 +672,7 @@ let private run (sourcePath: string) (args: string array) : int =
     // Always force-build for `run` — the temp dir is fresh each
     // invocation so the cache check would always miss anyway, and
     // writing the sidecar there is wasted IO.
-    let buildExit = build sourcePath outPath true
+    let buildExit = build sourcePath outPath true []
     if buildExit <> 0 then buildExit
     else
         let psi = Diagnostics.ProcessStartInfo()
@@ -681,7 +693,7 @@ let private run (sourcePath: string) (args: string array) : int =
 
 let private printUsage () : unit =
     printErr "Usage:"
-    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>]"
+    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric doc   <source.l> [-o out.md]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
@@ -722,6 +734,7 @@ let main (argv: string array) : int =
         let mutable explicitOut : string option = None
         let mutable aot = false
         let mutable rid : string option = None
+        let mutable manifestArg : string option = None
         let mutable positional : string list = []
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
@@ -734,6 +747,9 @@ let main (argv: string array) : int =
                 cursor <- tail
             | "--rid" :: r :: tail ->
                 rid <- Some r
+                cursor <- tail
+            | "--manifest" :: m :: tail ->
+                manifestArg <- Some m
                 cursor <- tail
             | "-o" :: out :: tail ->
                 explicitOut <- Some out
@@ -766,7 +782,44 @@ let main (argv: string array) : int =
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
-            let buildExit = build sourcePath dllOutPath force
+            // Locate `lyric.toml`: explicit `--manifest` first; if
+            // absent, look next to the source file.  When found,
+            // resolve every `[dependencies]` entry to its restored
+            // DLL via the standard NuGet cache convention so
+            // `import <Pkg>` declarations resolve at build time
+            // (D-progress-077 follow-up).
+            let restoredPackageRefs =
+                let manifestPath =
+                    match manifestArg with
+                    | Some m -> Some (Path.GetFullPath m)
+                    | None ->
+                        let dir =
+                            safeStr
+                                (Path.GetDirectoryName(Path.GetFullPath sourcePath))
+                                "."
+                        let candidate = Path.Combine(dir, "lyric.toml")
+                        if File.Exists candidate then Some candidate else None
+                match manifestPath with
+                | None -> []
+                | Some path ->
+                    match Lyric.Cli.Manifest.parseFile path with
+                    | Error e ->
+                        printErr (Lyric.Cli.Manifest.renderError path e)
+                        []
+                    | Ok manifest ->
+                        manifest.Dependencies
+                        |> List.choose (fun dep ->
+                            match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
+                            | Some dll ->
+                                Some
+                                    { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
+                                      Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
+                                      Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                            | None ->
+                                printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
+                                                  dep.Name dep.Version)
+                                None)
+            let buildExit = build sourcePath dllOutPath force restoredPackageRefs
             if buildExit <> 0 then buildExit
             elif not aot then 0
             else

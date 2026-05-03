@@ -86,6 +86,88 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-078: C8 build-time consumer of restored Lyric packages
+*claude/c8-build-consumes-restored-packages branch.*  Closes the
+last C8 follow-up tracked in `docs/12-todo-plan.md` Tier 6 #15:
+`lyric build` now resolves `import <Pkg>` declarations against
+restored Lyric packages by reading their embedded
+`Lyric.Contract` resource (D-progress-031), without needing to
+re-parse the package's source.  End-to-end loop: a publisher runs
+`lyric publish` (D-progress-077), a consumer runs `lyric restore`
+to populate the standard NuGet cache, and `lyric build --manifest
+<lyric.toml>` (or auto-discovered next to the source) reads the
+manifest's `[dependencies]`, locates each restored DLL via the
+NuGet cache convention, and feeds the contract surface into the
+import resolver.
+
+**New module** `compiler/src/Lyric.Emitter/RestoredPackages.fs`:
+- `RestoredPackageRef` — name + version + absolute DLL path; the
+  CLI fills it from `lyric.toml` after running `lyric restore`.
+- `tryLocateRestoredDll` — resolves
+  `<NUGET_PACKAGES or ~/.nuget/packages>/<lower(name)>/<version>/
+  lib/net10.0/<name>.dll`.
+- `synthesiseSource` — pastes each contract decl's `Repr` string
+  under a `package <name>` header, producing a parseable Lyric
+  source.  `pub func` items are bodyless (the parser already
+  accepts that shape — same as interface signatures and externs);
+  records / unions / enums carry their full structural shape;
+  interfaces get a synthesised empty `{}` body so they parse.
+- `loadRestoredPackage` — reads the contract resource, synthesises
+  the source, parses + type-checks it on its own, and pairs the
+  result with the loaded `Assembly`.  Errors are surfaced as a
+  structured `RestoredLoadError` (`DllMissing`,
+  `NoContractResource`, `MalformedContract`,
+  `SynthesisDiagnostics`) rendered as a single `E901` diagnostic.
+
+**Emitter integration** (`compiler/src/Lyric.Emitter/Emitter.fs`):
+- `EmitRequest` gains an optional `RestoredPackages:
+  RestoredPackageRef list` field (defaults to `[]` so existing
+  callers keep compiling; `mkEmitRequest` is the convenience
+  constructor that omits it).
+- New private `resolveRestoredImports` runs before the existing
+  `resolveStdlibImports`.  It indexes restored packages by full
+  package name, partitions the user's imports into matched-non-Std
+  vs. other, loads each matched package's `RestoredArtifact`, and
+  splices the result into the same `StdlibArtifact` list the
+  downstream import-table population already consumes.
+- `emit` merges the restored + stdlib artifact lists and threads
+  them through the existing pipeline unchanged.
+
+**CLI integration** (`compiler/src/Lyric.Cli/Program.fs`):
+- `lyric build` accepts `--manifest <lyric.toml>` and auto-
+  discovers `lyric.toml` next to the source when the flag is
+  absent.  For each `[dependencies]` entry it calls
+  `tryLocateRestoredDll`; missing DLLs print a friendly
+  "run `lyric restore` first" message before the build attempts
+  the emit.
+
+**Tests** (1052 pass, +7 net new):
+- 5 new unit tests in `tests/Lyric.Cli.Tests/RestoredPackagesTests.fs`:
+  `synthesiseSource` produces the right shape, `tryLocateRestoredDll`
+  honours `NUGET_PACKAGES`, `loadRestoredPackage` round-trips a
+  real Lyric DLL, structured errors for missing-DLL +
+  no-contract-resource cases.
+- 2 new end-to-end smoke tests in
+  `tests/Lyric.Emitter.Tests/RestoredPackageE2ETests.fs`: the
+  consumer-imports-restored-package happy path (build a
+  `Lyric.Greeter` package → stage in fake NuGet cache → build +
+  run consumer → assert stdout) and the missing-restored-package
+  diagnostic (E901 surfaces, no output PE).
+
+**Bootstrap-grade scope** (still future work):
+- The synthesised contract source can't reference identifiers
+  outside the package's own surface — cross-package symbols inside
+  a contract Repr (e.g. `Result[Int, ParseError]` from `Std.Core`)
+  surface as a regular `T0001 unknown name` diagnostic when the
+  consumer's source hasn't also imported the underlying package.
+  Enriching the contract format with explicit re-exports is a
+  follow-up.
+- `lyric publish` still requires a `func main()` in the publisher
+  source; library-shaped packages need an `IsLibrary = true` flag
+  on `EmitRequest` (separate small follow-up).
+- `--manifest` auto-discovery walks one level up from the source;
+  a real workspace search would walk further.
+
 ### D-progress-077: C8 part 2 — `lyric.toml` manifest + `lyric publish` / `lyric restore`
 *claude/c8-package-manager branch.*  Closes the second half of C8
 (D-progress-030 / 031).  Lyric packages now describe themselves in

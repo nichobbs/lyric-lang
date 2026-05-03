@@ -24,7 +24,21 @@ type EmitResult =
 type EmitRequest =
     { Source:       string
       AssemblyName: string
-      OutputPath:   string }
+      OutputPath:   string
+      /// Restored Lyric packages this build can resolve non-`Std.*`
+      /// imports against (D-progress-077 follow-up).  The CLI
+      /// populates this list from `lyric.toml`'s `[dependencies]`
+      /// after running `lyric restore`.  Defaults to empty so
+      /// existing call sites keep compiling.
+      RestoredPackages: RestoredPackages.RestoredPackageRef list }
+
+/// Backwards-compat constructor for callers that don't carry a
+/// manifest — synonymous with `{ Source = ...; ...; RestoredPackages = [] }`.
+let mkEmitRequest (source: string) (assemblyName: string) (outputPath: string) : EmitRequest =
+    { Source = source
+      AssemblyName = assemblyName
+      OutputPath = outputPath
+      RestoredPackages = [] }
 
 let private err (code: string) (msg: string) (span: Span) : Diagnostic =
     Diagnostic.error code msg span
@@ -3304,9 +3318,10 @@ let rec private ensureStdlibArtifact
                         "Lyric.Stdlib." + (List.tail segments |> String.concat "")
                     let outPath = Path.Combine(stdlibCacheDir, assemblyName + ".dll")
                     let req =
-                        { Source       = src
-                          AssemblyName = assemblyName
-                          OutputPath   = outPath }
+                        { Source           = src
+                          AssemblyName     = assemblyName
+                          OutputPath       = outPath
+                          RestoredPackages = [] }
                     let stdImportsHere =
                         parsed.File.Imports
                         |> List.filter (fun i ->
@@ -3473,24 +3488,101 @@ let private resolveStdlibImports
         let extendedItems = items @ List.ofSeq aliasItems
         { sf with Imports = otherImps }, extendedItems, artifacts, stdImports, List.ofSeq diags
 
+/// Resolve `import <Pkg>` declarations against the restored Lyric
+/// packages declared in the user's `lyric.toml`.  Mirrors
+/// `resolveStdlibImports` but for non-`Std.*` imports: each user
+/// import whose first segment matches a restored package name pulls
+/// that package's RestoredArtifact + items into the artifact list,
+/// then strips the matching imports from the SourceFile.
+///
+/// Restored packages whose loading fails surface as fatal `E901`
+/// diagnostics that abort the emit (same shape as a failing
+/// `ensureStdlibArtifact`).
+///
+/// The restored-package artifact is converted to the same internal
+/// `StdlibArtifact` record the rest of the emitter consumes, so the
+/// downstream import-table population in `emitAssembly` works
+/// unchanged.
+let private resolveRestoredImports
+        (sf: SourceFile)
+        (refs: RestoredPackages.RestoredPackageRef list)
+        : SourceFile * Item list * StdlibArtifact list * Diagnostic list =
+    if List.isEmpty refs then sf, [], [], []
+    else
+        // Index restored packages by both their full name (`Lyric.Greeter`)
+        // and their leading segment (`Lyric`).  An `import Lyric.Greeter`
+        // matches by full name; the leading-segment fallback is used for
+        // shorter `import Greeter`-style aliases when the user's manifest
+        // dep is just `Greeter = "..."`.
+        let byFullName =
+            refs
+            |> List.map (fun r -> r.Name, r)
+            |> Map.ofList
+        let importMatches (segments: string list) : RestoredPackages.RestoredPackageRef option =
+            let key = String.concat "." segments
+            Map.tryFind key byFullName
+        let nonStdImports, otherImps =
+            sf.Imports
+            |> List.partition (fun i ->
+                match i.Path.Segments with
+                | "Std" :: _ -> false
+                | segs -> Option.isSome (importMatches segs))
+        if List.isEmpty nonStdImports then sf, [], [], []
+        else
+            let diags = ResizeArray<Diagnostic>()
+            let artifacts = ResizeArray<StdlibArtifact>()
+            let importedItems = ResizeArray<Item>()
+            let visited = HashSet<string>()
+            for imp in nonStdImports do
+                match importMatches imp.Path.Segments with
+                | None -> ()  // shouldn't happen — partition checked
+                | Some ref' ->
+                    if visited.Add ref'.Name then
+                        match RestoredPackages.loadRestoredPackage ref' with
+                        | Error e ->
+                            diags.Add (RestoredPackages.toDiagnostic e)
+                        | Ok ra ->
+                            let asArtifact : StdlibArtifact =
+                                { AssemblyPath = ra.AssemblyPath
+                                  Assembly     = ra.Assembly
+                                  Source       = ra.Source
+                                  Symbols      = ra.Symbols
+                                  Signatures   = ra.Signatures }
+                            artifacts.Add asArtifact
+                            for it in ra.Source.Items do importedItems.Add it
+            { sf with Imports = otherImps },
+            List.ofSeq importedItems,
+            List.ofSeq artifacts,
+            List.ofSeq diags
+
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
     let parsed   = parse req.Source
+    // Restored Lyric packages (D-progress-077 follow-up) resolve
+    // first so the `Std.*` resolver below sees a SourceFile with
+    // the matching non-`Std` imports already stripped.
+    let afterRestored, restoredImportedItems, restoredArtifacts, restoredDiags =
+        resolveRestoredImports parsed.File req.RestoredPackages
     let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
-        resolveStdlibImports parsed.File
+        resolveStdlibImports afterRestored
+    let mergedImportedItems = restoredImportedItems @ importedItems
+    let mergedArtifacts = restoredArtifacts @ stdlibArtifacts
     let checked' =
-        Lyric.TypeChecker.Checker.checkWithImports resolved importedItems
+        Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
 
-    let upstream = parsed.Diagnostics @ importDiags @ checked'.Diagnostics
+    let upstream =
+        parsed.Diagnostics @ restoredDiags @ importDiags @ checked'.Diagnostics
     let parserFatal =
         upstream
         |> List.exists (fun d ->
             d.Severity = DiagError && d.Code.StartsWith "P")
-    // If any stdlib precompile failed, skip user-side emit — running
-    // the emitter without populated import tables would crash with
-    // "unknown name" exceptions that mask the real diagnostic.
+    // If any stdlib / restored precompile failed, skip user-side
+    // emit — running the emitter without populated import tables
+    // would crash with "unknown name" exceptions that mask the
+    // real diagnostic.
     let importFatal =
-        importDiags |> List.exists (fun d -> d.Severity = DiagError)
+        (restoredDiags @ importDiags)
+        |> List.exists (fun d -> d.Severity = DiagError)
 
     if parserFatal || importFatal then
         { OutputPath = None; Diagnostics = upstream }
@@ -3502,7 +3594,7 @@ let emit (req: EmitRequest) : EmitResult =
                 checked'.Symbols
                 req
                 false
-                stdlibArtifacts
+                mergedArtifacts
                 stdImports
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
