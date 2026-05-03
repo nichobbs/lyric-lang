@@ -80,14 +80,89 @@ deferred to Phase 3 by design.
 - SemVer enforcement (`lyric public-api-diff`) — shipped (D-progress-062).
 - Tutorial — shipped (D-progress-065).
 - Protected types — bootstrap-grade Monitor wrap shipped
-  (D-progress-079); `when:` barriers + `invariant:` checks tracked as
-  follow-ups gated on Phase C scope plumbing.
+  (D-progress-079); `when:` barriers + `invariant:` checks +
+  `ReaderWriterLockSlim`/`SemaphoreSlim` lock-flavour split + generic
+  protected types (`Box[T]`) all shipped under D-progress-080 / 081 /
+  083 / 086.  Ada-style condition-variable barrier waiting still gated
+  on Phase C scope plumbing — bootstrap throws on barrier-not-met.
 - Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
   tools need token-position-faithful traversal (decision: D-progress-029).
 
 ---
 
 ## Active session decisions
+
+### D-progress-086: protected types — generic `Box[T]` via LHS-driven inference
+*claude/protected-type-generics-impl branch.*  Closes the first half
+of the D-progress-082 follow-up: `protected type Box[T] { var value:
+T; entry put(v: in T); func get(): T }` now lowers to a real CLR
+generic class, replacing the `E920` diagnostic with a working emit
+path.
+
+Decision per Q008 follow-up: ship Option A (LHS-driven inference)
+rather than Option B (`Box[Int]()` EIndex-as-type-app).  Option A
+mirrors the nullary union-case path (`val o: Option[Int] = None`)
+that's already in the bootstrap and reuses the existing
+`ctx.ExpectedType` plumbing — `val b: Box[Int] = Box()` reads the
+expected closed CLR type, calls `MakeGenericType` against the open
+TypeBuilder, and looks up the constructed ctor through
+`TypeBuilder.GetConstructor`.  EIndex-as-type-app is tracked as
+follow-up but isn't in the critical path for bootstrap consumers.
+
+Implementation in three pieces:
+
+- **Pass A** (`defineProtectedTypeOnto` in `Emitter.fs`):
+  `tb.DefineGenericParameters(typeParamNames)` produces the GTPBs;
+  a `name → GTPB` substitution map is threaded through field-type,
+  method param-type, and method return-type lookups via
+  `TypeMap.toClrTypeWithGenerics` / `toClrReturnTypeWithGenerics`.
+  The `Records.ProtectedTypeInfo.Generics` field is added so call
+  sites can detect the generic case.
+- **Body emit** (`emitFunctionBody`): synthesised entry/func
+  signatures carry the class's type-parameter names in
+  `sg.Generics`; the GTPB recovery falls back to
+  `selfType.GetGenericArguments()` when the method itself isn't
+  generic but its declaring class is.  This lets `var x: T` and
+  `return value` references resolve to the right GTPB.
+- **Call sites** (`Codegen.fs`):
+  - **Construction**: `ECall (EPath {name}, [])` for a generic
+    protected type reads `ctx.ExpectedType`; if it's a closed
+    generic of the same open def, `MakeGenericType` +
+    `TypeBuilder.GetConstructor` produce the constructed ctor ref;
+    otherwise the args fall back to `obj` (M1.4 erasure parity).
+  - **Method dispatch**: the protected-method picker compares the
+    receiver's open generic def (via `GetGenericTypeDefinition`)
+    against `info.Type`.  For a closed receiver,
+    `TypeBuilder.GetMethod(recvTy, openMb)` produces the
+    constructed method ref.  A new `substituteGenericArgs` helper
+    rebinds the open method's `ReturnType` against the closed
+    receiver's generic args so downstream consumers (boxing on
+    `toString`, expected-type propagation) see the substituted
+    type instead of the bare GTPB.
+  - **Wrapper IL** (`Pass B.6`): the lock-field `Ldfld` and the
+    `<unsafe>__name` `Call` rebind onto the type instantiated on
+    its own GTPBs (`TypeBuilder.GetField` /
+    `TypeBuilder.GetMethod`).  Without the rebind, the JIT throws
+    `InvalidOperationException: Could not execute the method
+    because either the method itself or the containing type is not
+    fully instantiated.`
+
+Two new tests in `ProtectedTypeTests.fs` (replacing the
+`pt_generic_not_yet_emitted` E920 test):
+
+- `pt_generic_int` exercises a `Box[Int]` round-trip
+  (value-type closure).
+- `pt_generic_string` does the same for `Box[String]`
+  (reference-type closure).
+
+All 463 tests pass post-change (was 462; +1 net new — removed the
+E920 test, added two generic round-trip tests).
+
+The remaining piece — `Box[Int]()` EIndex-as-type-app dispatch — is
+deferred until a bootstrap consumer actually needs to construct a
+generic protected type without an LHS type annotation.
+
+---
 
 ### D-progress-085: Phase 4 verifier — M4.1 polish (call rule, match, assert, V0006)
 

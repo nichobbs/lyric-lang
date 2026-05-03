@@ -1069,28 +1069,34 @@ let private defineProtectedTypeOnto
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Sealed,
             typeof<obj>)
-    // Generic protected types (`protected type Foo[T]`) are recognised
-    // by the parser but the emitter doesn't yet wire a generic SM:
-    // even with `tb.DefineGenericParameters(...)` and field-type
-    // substitution in place, the call-site dispatch needs to treat
-    // `Foo[Int]()` (which parses as `ECall(EIndex(EPath, [Int]), [])`,
-    // not `ETypeApp`) as a generic ctor invocation.  Wiring the
-    // EIndex-as-type-app path is material follow-up work; until then
-    // we surface an `E920` and the user gets a clear "not yet
-    // supported" diagnostic rather than a runtime crash.
+    // Generic protected types (`protected type Foo[T]`) define their
+    // CLR generic parameters here.  Construction goes through the
+    // LHS-driven inference path: `val b: Box[Int] = Box()` reads the
+    // expected CLR type from `ctx.ExpectedType` and closes via
+    // `MakeGenericType` at the call site.  Method dispatch on a
+    // closed receiver routes via `TypeBuilder.GetMethod` so the
+    // `Callvirt` instruction targets the constructed method ref.
+    let typeParamNames : string list =
+        match pd.Generics with
+        | Some gs -> gs.Params |> List.map (function
+                                            | GPType(name, _)
+                                            | GPValue(name, _, _) -> name)
+        | None    -> []
+    let isGeneric = not typeParamNames.IsEmpty
+    let typeGtpbs : System.Type[] =
+        if isGeneric then
+            tb.DefineGenericParameters(typeParamNames |> List.toArray)
+            |> Array.map (fun g -> g :> System.Type)
+        else [||]
+    let typeParamSubst : Map<string, System.Type> =
+        if isGeneric then
+            typeParamNames
+            |> List.mapi (fun i n -> n, typeGtpbs.[i])
+            |> Map.ofList
+        else Map.empty
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
-    match pd.Generics with
-    | Some gs when not gs.Params.IsEmpty ->
-        codegenDiags.Add
-            (err "E920"
-                 (sprintf
-                    "generic `protected type %s[…]` not yet emitted (parser \
-                     accepts the syntax; codegen + call-site type-arg \
-                     dispatch are tracked under D-progress-079 follow-ups)"
-                    pd.Name)
-                 pd.Span)
-    | _ -> ()
+    if isGeneric then resolveCtx.Push(typeParamNames)
 
     // Fields — every PFVar/PFLet/PFImmutable becomes a public field.
     let fieldDecls =
@@ -1109,7 +1115,8 @@ let private defineProtectedTypeOnto
                 | PFImmutable fd -> fd.Name, fd.Type, None
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags ty
-            let cty = TypeMap.toClrTypeWith lookup lty
+            let cty =
+                TypeMap.toClrTypeWithGenerics lookup typeParamSubst lty
             let fb = tb.DefineField(name, cty, FieldAttributes.Public)
             name, fb, init)
     let fieldNames =
@@ -1210,7 +1217,8 @@ let private defineProtectedTypeOnto
           LockField  = lockField
           UsesRwLock = usesRwLock
           Fields     = protectedFields
-          Methods    = [] } // methods filled below; pending records the live mb list
+          Methods    = [] // methods filled below; pending records the live mb list
+          Generics   = typeParamNames }
 
     let defineMethodPair (name: string) (paramList: Param list)
                           (returnTy: TypeExpr option) : MethodBuilder * MethodBuilder * System.Type[] * System.Type =
@@ -1218,7 +1226,8 @@ let private defineProtectedTypeOnto
             paramList
             |> List.map (fun p ->
                 let lty = Resolver.resolveType symbols resolveCtx scratchDiags p.Type
-                let bare = TypeMap.toClrTypeWith lookup lty
+                let bare =
+                    TypeMap.toClrTypeWithGenerics lookup typeParamSubst lty
                 match p.Mode with
                 | PMOut | PMInout -> bare.MakeByRefType()
                 | PMIn            -> bare)
@@ -1227,7 +1236,7 @@ let private defineProtectedTypeOnto
             match returnTy with
             | Some t ->
                 let lty = Resolver.resolveType symbols resolveCtx scratchDiags t
-                TypeMap.toClrReturnTypeWith lookup lty
+                TypeMap.toClrReturnTypeWithGenerics lookup typeParamSubst lty
             | None -> typeof<System.Void>
         let publicMb =
             tb.DefineMethod(
@@ -1249,7 +1258,12 @@ let private defineProtectedTypeOnto
 
     let synthSigOf (paramList: Param list) (returnTy: TypeExpr option) (isAsync: bool)
                    (span: Span) : ResolvedSignature =
-        { Generics = []
+        // For methods on a generic protected type, expose the class's
+        // type-parameter names as `sg.Generics` so `emitFunctionBody`
+        // can resolve `T` references in param / return / body
+        // positions to the GTPBs (recovered from `selfType` since the
+        // synthesised method itself isn't generic).
+        { Generics = typeParamNames
           Bounds   = []
           Params   =
             paramList
@@ -2180,7 +2194,23 @@ let private emitFunctionBody
                 | Some sm when sm.GenericParams.Length > 0 ->
                     sm.GenericParams |> Array.map (fun g -> g :> System.Type)
                 | _ ->
-                    mb.GetGenericArguments()
+                    let methodGtpbs = mb.GetGenericArguments()
+                    if methodGtpbs.Length = sg.Generics.Length then
+                        methodGtpbs
+                    else
+                        // Methods on a generic class that aren't
+                        // themselves generic (e.g. protected-type
+                        // entries / funcs synthesised in
+                        // `defineProtectedTypeOnto`) carry the class
+                        // generics in `sg.Generics`.  Recover the
+                        // GTPBs from the enclosing class via
+                        // `selfType.GetGenericArguments()`.
+                        match selfType with
+                        | Some st when st.IsGenericType
+                                       && st.GetGenericArguments().Length
+                                          = sg.Generics.Length ->
+                            st.GetGenericArguments()
+                        | _ -> methodGtpbs
             sg.Generics
             |> List.mapi (fun i name -> name, gtpbs.[i])
             |> Map.ofList
@@ -3882,8 +3912,34 @@ let private emitAssembly
                     acq, rel
                 else
                     semaphoreWaitMI.Value, semaphoreReleaseMI.Value
+            // Generic-type self-references: when emitting IL inside a
+            // generic class, member references (Ldfld <>__lock,
+            // Call <unsafe>__name) must target the type instantiated
+            // on its own GTPBs — not the open generic definition.
+            // `TypeBuilder.GetField` / `GetMethod` rebind the open
+            // FieldBuilder / MethodBuilder onto the constructed-on-own-
+            // GTPBs type so the JIT closes them correctly when called
+            // on an actual closed instance.
+            let lockFieldRef : System.Reflection.FieldInfo =
+                if p.Owner.Generics.IsEmpty then
+                    p.LockField :> System.Reflection.FieldInfo
+                else
+                    let openDef = p.Owner.Type :> System.Type
+                    let selfClosed =
+                        openDef.MakeGenericType(openDef.GetGenericArguments())
+                    System.Reflection.Emit.TypeBuilder.GetField(
+                        selfClosed, p.LockField)
+            let unsafeMethodRef : System.Reflection.MethodInfo =
+                if p.Owner.Generics.IsEmpty then
+                    p.UnsafeMb :> System.Reflection.MethodInfo
+                else
+                    let openDef = p.Owner.Type :> System.Type
+                    let selfClosed =
+                        openDef.MakeGenericType(openDef.GetGenericArguments())
+                    System.Reflection.Emit.TypeBuilder.GetMethod(
+                        selfClosed, p.UnsafeMb)
             il.Emit(OpCodes.Ldarg_0)
-            il.Emit(OpCodes.Ldfld, p.LockField)
+            il.Emit(OpCodes.Ldfld, lockFieldRef)
             il.Emit(OpCodes.Callvirt, acquireMI)
 
             // Open try.
@@ -3900,7 +3956,7 @@ let private emitAssembly
             il.Emit(OpCodes.Ldarg_0)
             for i in 0 .. p.ParamTypes.Length - 1 do
                 il.Emit(OpCodes.Ldarg, i + 1)
-            il.Emit(OpCodes.Call, p.UnsafeMb)
+            il.Emit(OpCodes.Call, unsafeMethodRef)
 
             // Stash the return value (if any) so finally can run
             // before we propagate it.
@@ -3923,7 +3979,7 @@ let private emitAssembly
             // Finally: release the lock in matching mode.
             il.BeginFinallyBlock()
             il.Emit(OpCodes.Ldarg_0)
-            il.Emit(OpCodes.Ldfld, p.LockField)
+            il.Emit(OpCodes.Ldfld, lockFieldRef)
             il.Emit(OpCodes.Callvirt, releaseMI)
             il.EndExceptionBlock()
 

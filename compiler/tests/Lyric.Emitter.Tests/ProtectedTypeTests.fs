@@ -19,17 +19,6 @@ let private mk (label: string, source: string, expected: string) : Test =
         Expect.equal (stdout.TrimEnd()) expected
             "stdout matches expected"
 
-/// Source that's expected to fail compilation with a specific
-/// diagnostic code.  Used by the generic-protected-type case which
-/// surfaces `E920` while codegen + call-site type-arg dispatch
-/// are tracked as a follow-up.
-let private mkExpectErrorCode (label: string) (source: string) (code: string) : Test =
-    testCase (sprintf "[%s]" label) <| fun () ->
-        let result, _, _, _ = compileAndRun label source
-        let codes = result.Diagnostics |> List.map (fun d -> d.Code)
-        Expect.contains codes code
-            (sprintf "expected diagnostic %s; got: %A" code codes)
-
 let private cases : (string * string * string) list = [
 
     "pt_basic_counter",
@@ -259,12 +248,16 @@ func main(): Unit {
 }
 """,
     "blocked"
-]
 
-let private genericNotYetEmitted =
-    mkExpectErrorCode
-        "pt_generic_not_yet_emitted"
-        """
+    "pt_generic_int",
+    // D-progress-079 follow-up: generic protected types lower via
+    // LHS-driven inference — `val b: Box[Int] = Box()` reads the
+    // expected CLR type from `ctx.ExpectedType` and closes the
+    // open generic Box<> via `MakeGenericType(int)`.  The entry +
+    // func dispatch then routes through `TypeBuilder.GetMethod` so
+    // the constructed `Box<int>::put` / `Box<int>::get` is the
+    // Callvirt target.
+    """
 package E14
 
 protected type Box[T] {
@@ -273,9 +266,35 @@ protected type Box[T] {
   func get(): T { return value }
 }
 
-func main(): Unit { () }
-"""
-        "E920"
+func main(): Unit {
+  val b: Box[Int] = Box()
+  b.put(42)
+  println(toString(b.get()))
+}
+""",
+    "42"
+
+    "pt_generic_string",
+    // Same shape as `pt_generic_int` but closed against a reference
+    // type — confirms the GTPB substitution doesn't accidentally
+    // bake in a value-type-only path.
+    """
+package E14
+
+protected type Box[T] {
+  var value: T
+  entry put(v: in T) { value = v }
+  func get(): T { return value }
+}
+
+func main(): Unit {
+  val b: Box[String] = Box()
+  b.put("hello")
+  println(b.get())
+}
+""",
+    "hello"
+]
 
 /// D-progress-083: confirm the entry-only lock-flavour split.
 /// `Counter` declares only `entry` members so its `<>__lock` field
@@ -342,4 +361,4 @@ func main(): Unit {
 
 let tests =
     testList "protected types (D-progress-079)"
-        ((cases |> List.map mk) @ [ genericNotYetEmitted; lockFlavourSplit ])
+        ((cases |> List.map mk) @ [ lockFlavourSplit ])
