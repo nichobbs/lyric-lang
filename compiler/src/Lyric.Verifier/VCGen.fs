@@ -16,6 +16,7 @@ module Lyric.Verifier.VCGen
 
 open Lyric.Lexer
 open Lyric.Parser.Ast
+open Lyric.Emitter
 open Lyric.Verifier.Vcir
 open Lyric.Verifier.Theory
 open Lyric.Verifier.Mode
@@ -28,6 +29,15 @@ type Env =
     { Vars:     Map<string, Term>
       Sorts:    Map<string, SortInfo>
       Callees:  Map<string, FunctionDecl>
+      /// Cross-package contract metadata for callees defined in
+      /// imported assemblies.  Looked up by leaf name when the
+      /// local `Callees` table doesn't have the symbol
+      /// (D-progress-086 cross-package call rule).
+      Imports:  Imports.ImportedPackage list
+      /// Datatype definitions in scope — local file records / unions
+      /// / enums / opaques, plus imported types via ProofMeta.
+      /// Indexed by leaf name.
+      Datatypes: Map<string, ProofMeta.ProofType>
       Symbols:  ResizeArray<SymbolDecl> }
 
 module Env =
@@ -36,6 +46,8 @@ module Env =
         { Vars     = Map.empty
           Sorts    = Map.empty
           Callees  = Map.empty
+          Imports  = []
+          Datatypes = Map.empty
           Symbols  = ResizeArray<SymbolDecl>() }
 
     let bind (name: string) (info: SortInfo) (env: Env) : Env =
@@ -63,6 +75,41 @@ type TranslateResult =
     { Term:        Term
       SideConds:   Term list
       Assumed:     Term list }
+
+/// Resolve a `ProofType` field's source-level type-string into a
+/// Sort by re-parsing.  Used by the datatype encoder.
+let private fieldSortOf (f: ProofMeta.ProofField) : Sort =
+    let te, _ = Lyric.Parser.Parser.parseTypeFromString f.TypeRepr
+    (sortOfTypeExpr te).Sort
+
+/// Register a datatype declaration in the environment's symbol
+/// list once.  Idempotent: re-registering the same datatype is a
+/// no-op.  The Smt emitter filters duplicates as a backstop.
+let registerDatatype (env: Env) (pt: ProofMeta.ProofType) : unit =
+    let already =
+        env.Symbols
+        |> Seq.exists (fun s ->
+            match s with
+            | Datatype(n, _) -> n = pt.Name
+            | _ -> false)
+    if already then ()
+    else
+    let ctors =
+        match pt.Kind with
+        | ProofMeta.PTKRecord fs ->
+            [ pt.Name,
+                fs |> List.map (fun f -> f.Name, fieldSortOf f) ]
+        | ProofMeta.PTKOpaque fs ->
+            [ pt.Name,
+                fs |> List.map (fun f -> f.Name, fieldSortOf f) ]
+        | ProofMeta.PTKUnion cases ->
+            cases
+            |> List.map (fun c ->
+                c.Name,
+                c.Fields |> List.map (fun f -> f.Name, fieldSortOf f))
+        | ProofMeta.PTKEnum cs ->
+            cs |> List.map (fun n -> n, [])
+    env.Symbols.Add(Datatype(pt.Name, ctors))
 
 /// Translate a literal to an IR literal/term.
 let private translateLit (lit: Literal) : Term =
@@ -236,6 +283,81 @@ let rec translateExpr (env: Env) (e: Expr)
                 match p.Segments with
                 | [n] -> n
                 | xs  -> String.concat "." xs
+            // Datatype constructor short-circuit: when `name`
+            // matches a known record / union case, emit a typed
+            // `(<ctor> <args>)` term and register the datatype.
+            // This requires the args to be in declared-field order;
+            // named-arg call sites have to be reordered.  For
+            // records, we reorder by matching the named args to the
+            // record's field list; for unions we look up the case
+            // across every union datatype.
+            let datatypeCtor =
+                let asRecord () =
+                    match Map.tryFind name env.Datatypes with
+                    | Some pt ->
+                        match pt.Kind with
+                        | ProofMeta.PTKRecord fs
+                        | ProofMeta.PTKOpaque fs ->
+                            // Build a name -> arg term map from the
+                            // named call args.  Positional args fill
+                            // in declaration order.
+                            let namedMap =
+                                args
+                                |> List.zip argTerms
+                                |> List.choose (fun (t, a) ->
+                                    match a with
+                                    | CANamed(n, _, _) -> Some (n, t)
+                                    | _ -> None)
+                                |> Map.ofList
+                            let positional =
+                                args
+                                |> List.zip argTerms
+                                |> List.choose (fun (t, a) ->
+                                    match a with
+                                    | CAPositional _ -> Some t
+                                    | _ -> None)
+                            let mutable posIdx = 0
+                            let ordered =
+                                fs
+                                |> List.map (fun f ->
+                                    match Map.tryFind f.Name namedMap with
+                                    | Some t -> t
+                                    | None ->
+                                        if posIdx < List.length positional then
+                                            let t = List.item posIdx positional
+                                            posIdx <- posIdx + 1
+                                            t
+                                        else
+                                            TVar("?missing." + f.Name, fieldSortOf f))
+                            registerDatatype env pt
+                            Some (TApp(pt.Name, ordered, SDatatype(pt.Name, [])))
+                        | _ -> None
+                    | None -> None
+                let asUnionCase () =
+                    env.Datatypes
+                    |> Map.toSeq
+                    |> Seq.tryPick (fun (_, pt) ->
+                        match pt.Kind with
+                        | ProofMeta.PTKUnion cases ->
+                            cases
+                            |> List.tryFind (fun c -> c.Name = name)
+                            |> Option.map (fun c -> pt, c)
+                        | ProofMeta.PTKEnum cs when cs |> List.contains name ->
+                            Some (pt, { ProofMeta.ProofCase.Name = name; ProofMeta.ProofCase.Fields = [] })
+                        | _ -> None)
+                    |> Option.map (fun (pt, c) ->
+                        registerDatatype env pt
+                        TApp(c.Name, argTerms, SDatatype(pt.Name, [])))
+                match asRecord () with
+                | Some t -> Some t
+                | None   -> asUnionCase ()
+            match datatypeCtor with
+            | Some ctorTerm ->
+                { Term      = ctorTerm
+                  SideConds = argSides
+                  Assumed   = argAssumed },
+                List.concat argDiags
+            | None ->
             match Map.tryFind name env.Callees with
             | Some decl ->
                 let resultSort =
@@ -325,12 +447,126 @@ let rec translateExpr (env: Env) (e: Expr)
                   Assumed   = argAssumed @ postConds @ pureUnfold },
                 List.concat argDiags
             | None ->
-                // Free function — leave as TApp with an inferred sort.
-                let term = TApp(name, argTerms, SUninterp ("call." + name))
-                { Term      = term
-                  SideConds = argSides
-                  Assumed   = argAssumed },
-                List.concat argDiags
+                // No local callee — try the cross-package import
+                // table.  D-progress-086.
+                match Imports.findDeclByLeaf env.Imports name with
+                | None ->
+                    // Free function — leave as TApp with an inferred sort.
+                    let term = TApp(name, argTerms, SUninterp ("call." + name))
+                    { Term      = term
+                      SideConds = argSides
+                      Assumed   = argAssumed },
+                    List.concat argDiags
+                | Some(_, importedDecl) ->
+                    // Resolve param sorts from the textual type strings
+                    // saved in the contract metadata.
+                    let parseTypeStr (s: string) : SortInfo =
+                        let te, _ = Lyric.Parser.Parser.parseTypeFromString s
+                        sortOfTypeExpr te
+                    let paramInfos =
+                        importedDecl.Params
+                        |> List.map (fun (n, ty) -> n, parseTypeStr ty)
+                    let paramSorts =
+                        paramInfos |> List.map (fun (_, info) -> info.Sort)
+                    // Result sort: the contract Repr's `: <type>` is
+                    // currently parseable only via re-parsing the
+                    // function declaration as a whole, which is
+                    // brittle.  As a bootstrap shortcut, the verifier
+                    // re-parses the Repr as a function-decl-sized
+                    // surface using `parseFromString` is unavailable;
+                    // we degrade to an uninterpreted result sort when
+                    // the metadata lacks an explicit return-type
+                    // string.  This gets refined as M4.2 work — for
+                    // now most cross-package callees are bool/int
+                    // returns, which the user's contract still
+                    // exercises through the post equation.
+                    let resultSort =
+                        // Best-effort: pull the colon-prefixed return
+                        // type out of the Repr string.  e.g.
+                        //   "pub func foo(x: in Int): Int requires: ..."
+                        // The substring after the params' closing ')'
+                        // and before the next clause keyword, if any.
+                        let r = importedDecl.Repr
+                        let idxClose = r.IndexOf ')'
+                        if idxClose < 0 then SUninterp ("call." + name)
+                        else
+                            let tail = r.Substring(idxClose + 1).TrimStart()
+                            if tail.StartsWith ":" then
+                                let stripped = tail.Substring(1).TrimStart()
+                                let cut =
+                                    let idxSpace = stripped.IndexOf ' '
+                                    let idxNewline = stripped.IndexOf '\n'
+                                    let candidates =
+                                        [ if idxSpace >= 0 then yield idxSpace
+                                          if idxNewline >= 0 then yield idxNewline
+                                          yield stripped.Length ]
+                                    List.min candidates
+                                let tyStr = stripped.Substring(0, cut)
+                                if tyStr = "" then SUninterp ("call." + name)
+                                else (parseTypeStr tyStr).Sort
+                            else SUninterp ("call." + name)
+
+                    env.Symbols.Add(UserFun(name, paramSorts, resultSort))
+                    let callTerm = TApp(name, argTerms, resultSort)
+
+                    // Substitution: imported param names → caller args.
+                    let paramSubst : Map<string, Term> =
+                        List.zip paramInfos argTerms
+                        |> List.fold
+                            (fun acc ((pn, _), arg) -> Map.add pn arg acc)
+                            Map.empty
+
+                    // Build an env in which the imported params are bound
+                    // so we can translate the requires/ensures strings.
+                    let mkImportedEnv () =
+                        paramInfos
+                        |> List.fold
+                            (fun env (n, info) -> Env.bind n info env)
+                            (Env.empty ())
+                    let innerEnv = mkImportedEnv ()
+
+                    let parseClause (s: string) : Expr option =
+                        try
+                            let e, diags = Lyric.Parser.Parser.parseExprFromString s
+                            let hasErr =
+                                diags |> List.exists (fun d -> d.Severity = DiagError)
+                            if hasErr then None else Some e
+                        with _ -> None
+
+                    let preConds =
+                        importedDecl.Requires
+                        |> List.choose parseClause
+                        |> List.map (fun pre ->
+                            let r, _ = translateExpr innerEnv pre
+                            Term.subst paramSubst r.Term)
+
+                    let postConds =
+                        importedDecl.Ensures
+                        |> List.choose parseClause
+                        |> List.map (fun post ->
+                            let resultEnv =
+                                { innerEnv with
+                                    Vars  = Map.add "result" callTerm innerEnv.Vars
+                                    Sorts = Map.add "result" { Sort = resultSort; Range = RBKNone } innerEnv.Sorts }
+                            let r, _ = translateExpr resultEnv post
+                            Term.subst paramSubst r.Term)
+
+                    // Cross-package @pure unfold using the serialised
+                    // body string (D-progress-086).
+                    let pureUnfold : Term list =
+                        if not importedDecl.Pure then []
+                        else
+                            match importedDecl.Body |> Option.bind parseClause with
+                            | None -> []
+                            | Some bodyExpr ->
+                                let bodyT, _ = translateExpr innerEnv bodyExpr
+                                let bodySubst = Term.subst paramSubst bodyT.Term
+                                [ TBuiltin(BOpEq, [callTerm; bodySubst]) ]
+
+                    { Term      = callTerm
+                      SideConds = argSides @ preConds
+                      Assumed   = argAssumed @ postConds @ pureUnfold },
+                    List.concat argDiags
         | _ ->
             single (TVar("?call", SUninterp "call"))
 
@@ -381,14 +617,49 @@ let rec translateExpr (env: Env) (e: Expr)
         bodyDiags @ whereDiags
 
     | EMember(receiver, name) ->
-        // `e.field` — model as an uninterpreted selector application.
-        // Datatype-level field access is M4.2 work.
+        // `e.field` — when the receiver's sort is a known datatype
+        // and the field exists in the proof-meta record, emit a
+        // typed `(<field> <receiver>)` selector and register the
+        // datatype declaration so the SMT layer's
+        // `declare-datatypes` includes it.  Falls back to an
+        // uninterpreted `$field.name` selector when the type isn't
+        // visible to the verifier (cross-package opaque without
+        // ProofMeta, or non-datatype types).
         let rT, rDiags = translateExpr env receiver
-        let resultSort = SUninterp ("field." + name)
-        let term = TApp("$field." + name, [rT.Term], resultSort)
-        { Term      = term
-          SideConds = rT.SideConds
-          Assumed   = rT.Assumed }, rDiags
+        let recvSort = Term.sortOf rT.Term
+        let dtName =
+            match recvSort with
+            | SDatatype(n, _) -> Some n
+            | _ -> None
+        let typedSelector =
+            dtName
+            |> Option.bind (fun n ->
+                Map.tryFind n env.Datatypes
+                |> Option.bind (fun pt ->
+                    match pt.Kind with
+                    | ProofMeta.PTKRecord fs
+                    | ProofMeta.PTKOpaque fs ->
+                        fs
+                        |> List.tryFind (fun f -> f.Name = name)
+                        |> Option.map (fun f -> n, pt, f)
+                    | _ -> None))
+        match typedSelector with
+        | Some(dtName, pt, field) ->
+            let fieldSort =
+                let te, _ = Lyric.Parser.Parser.parseTypeFromString field.TypeRepr
+                (sortOfTypeExpr te).Sort
+            // Register the datatype declaration on first use.
+            registerDatatype env pt
+            let term = TApp(name, [rT.Term], fieldSort)
+            { Term      = term
+              SideConds = rT.SideConds
+              Assumed   = rT.Assumed }, rDiags
+        | None ->
+            let resultSort = SUninterp ("field." + name)
+            let term = TApp("$field." + name, [rT.Term], resultSort)
+            { Term      = term
+              SideConds = rT.SideConds
+              Assumed   = rT.Assumed }, rDiags
 
     | EBlock blk ->
         // Single-expression block: just translate the trailing expr.
@@ -806,12 +1077,32 @@ let goalsForFunction
     mainGoal :: sideGoals, diags
 
 /// Top-level entry: walk every proof-required function in a file
-/// and emit the Goals.
-let goalsForFile (file: SourceFile) (level: VerificationLevel)
+/// and emit the Goals.  `imports` carries cross-package contract
+/// metadata loaded by `Lyric.Verifier.Imports` (D-progress-086);
+/// pass `[]` for callers that don't yet wire it in.
+let goalsForFileWithImports
+        (file: SourceFile)
+        (level: VerificationLevel)
+        (imports: Imports.ImportedPackage list)
         : Goal list * Diagnostic list =
 
     if not (VerificationLevel.isProofRequired level) then [], []
     else
+    // Local datatypes: build a mini ProofMeta from the file's
+    // record / union / enum / opaque items.
+    let localProofMeta = ProofMeta.buildProofMeta file ""
+    let datatypes : Map<string, ProofMeta.ProofType> =
+        let local =
+            localProofMeta.Types
+            |> List.map (fun t -> t.Name, t)
+        let importedTypes =
+            imports
+            |> List.collect (fun ip ->
+                match ip.Proof with
+                | None -> []
+                | Some pm ->
+                    pm.Types |> List.map (fun t -> t.Name, t))
+        Map.ofList (local @ importedTypes)
     let env0 =
         let callees =
             file.Items
@@ -820,7 +1111,10 @@ let goalsForFile (file: SourceFile) (level: VerificationLevel)
                 | IFunc fn -> Some (fn.Name, fn)
                 | _        -> None)
             |> Map.ofList
-        { Env.empty () with Callees = callees }
+        { Env.empty () with
+            Callees   = callees
+            Imports   = imports
+            Datatypes = datatypes }
     let allGoals, allDiags =
         file.Items
         |> List.choose (fun it ->
@@ -834,3 +1128,11 @@ let goalsForFile (file: SourceFile) (level: VerificationLevel)
         |> List.map (goalsForFunction env0)
         |> List.unzip
     List.concat allGoals, List.concat allDiags
+
+/// Backwards-compatible alias for callers that haven't been
+/// updated to pass an imports list.
+let goalsForFile
+        (file: SourceFile)
+        (level: VerificationLevel)
+        : Goal list * Diagnostic list =
+    goalsForFileWithImports file level []

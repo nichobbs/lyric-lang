@@ -4016,6 +4016,20 @@ let private emitAssembly
                   Message  =
                     sprintf "could not embed Lyric.Contract resource: %s" e.Message
                   Span     = sf.Span }
+        // Also embed the proof-only `Lyric.Proof` binary resource
+        // (D-progress-086).  Same best-effort guard as above; the
+        // resource is verifier-internal and a missing one only
+        // degrades cross-package proofs.
+        try
+            let proofMeta = ProofMeta.buildProofMeta sf "0.1.0"
+            ProofMeta.embedIntoAssembly req.OutputPath (ProofMeta.toBytes proofMeta)
+        with e ->
+            codegenDiags.Add
+                { Severity = DiagWarning
+                  Code     = "E0901"
+                  Message  =
+                    sprintf "could not embed Lyric.Proof resource: %s" e.Message
+                  Span     = sf.Span }
         List.ofSeq codegenDiags
 
 // ---------------------------------------------------------------------------

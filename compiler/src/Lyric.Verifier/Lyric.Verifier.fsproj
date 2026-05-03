@@ -7,6 +7,7 @@
   <ItemGroup>
     <Compile Include="Mode.fs" />
     <Compile Include="Vcir.fs" />
+    <Compile Include="Imports.fs" />
     <Compile Include="Theory.fs" />
     <Compile Include="ModeCheck.fs" />
     <Compile Include="VCGen.fs" />
@@ -19,6 +20,7 @@
     <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
     <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
     <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+    <ProjectReference Include="..\Lyric.Emitter\Lyric.Emitter.fsproj" />
   </ItemGroup>
 
 </Project>

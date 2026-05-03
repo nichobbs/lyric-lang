@@ -76,13 +76,10 @@ func main(): Unit { println(shown(Visible(x = 1))) }
                         "package-private func absent"
 
         testCase "[parseFromJson round-trips toJson]" <| fun () ->
-            let original : ContractMeta.Contract =
-                { PackageName = "Demo"
-                  Version = "1.2.3"
-                  Decls = [
-                    { Kind = "func"; Name = "f"; Repr = "(x: in Int): Int" }
-                    { Kind = "record"; Name = "R"; Repr = "{ a: Int, b: String }" }
-                  ] }
+            let original =
+                ContractMeta.Contract.legacy "Demo" "1.2.3"
+                    [ ContractMeta.ContractDecl.basic "func"   "f" "(x: in Int): Int"
+                      ContractMeta.ContractDecl.basic "record" "R" "{ a: Int, b: String }" ]
             let json = ContractMeta.toJson original
             match ContractMeta.parseFromJson json with
             | None -> failtest "parseFromJson should round-trip"
@@ -94,22 +91,16 @@ func main(): Unit { println(shown(Visible(x = 1))) }
                 Expect.equal parsed.Decls.[1].Kind "record" "second decl kind"
 
         testCase "[diffContracts detects added/removed/changed]" <| fun () ->
-            let oldC : ContractMeta.Contract =
-                { PackageName = "Demo"
-                  Version = "1.0.0"
-                  Decls = [
-                    { Kind = "func"; Name = "keep"; Repr = "(x: in Int): Int" }
-                    { Kind = "func"; Name = "modify"; Repr = "(x: in Int): Int" }
-                    { Kind = "func"; Name = "drop"; Repr = "(): Unit" }
-                  ] }
-            let newC : ContractMeta.Contract =
-                { PackageName = "Demo"
-                  Version = "1.1.0"
-                  Decls = [
-                    { Kind = "func"; Name = "keep"; Repr = "(x: in Int): Int" }
-                    { Kind = "func"; Name = "modify"; Repr = "(x: in Long): Int" }
-                    { Kind = "func"; Name = "added"; Repr = "(): Unit" }
-                  ] }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0"
+                    [ ContractMeta.ContractDecl.basic "func" "keep"   "(x: in Int): Int"
+                      ContractMeta.ContractDecl.basic "func" "modify" "(x: in Int): Int"
+                      ContractMeta.ContractDecl.basic "func" "drop"   "(): Unit" ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0"
+                    [ ContractMeta.ContractDecl.basic "func" "keep"   "(x: in Int): Int"
+                      ContractMeta.ContractDecl.basic "func" "modify" "(x: in Long): Int"
+                      ContractMeta.ContractDecl.basic "func" "added"  "(): Unit" ]
             let entries = ContractMeta.diffContracts oldC newC
             let kinds =
                 entries
@@ -125,17 +116,13 @@ func main(): Unit { println(shown(Visible(x = 1))) }
                 "removed/changed entries are breaking"
 
         testCase "[diffContracts identifies additive-only as non-breaking]" <| fun () ->
-            let oldC : ContractMeta.Contract =
-                { PackageName = "Demo"
-                  Version = "1.0.0"
-                  Decls = [ { Kind = "func"; Name = "f"; Repr = "()" } ] }
-            let newC : ContractMeta.Contract =
-                { PackageName = "Demo"
-                  Version = "1.1.0"
-                  Decls = [
-                    { Kind = "func"; Name = "f"; Repr = "()" }
-                    { Kind = "func"; Name = "g"; Repr = "()" }
-                  ] }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0"
+                    [ ContractMeta.ContractDecl.basic "func" "f" "()" ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0"
+                    [ ContractMeta.ContractDecl.basic "func" "f" "()"
+                      ContractMeta.ContractDecl.basic "func" "g" "()" ]
             let entries = ContractMeta.diffContracts oldC newC
             Expect.equal entries.Length 1 "one added"
             Expect.isFalse (ContractMeta.hasBreakingChanges entries)
