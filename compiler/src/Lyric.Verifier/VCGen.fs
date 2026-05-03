@@ -54,12 +54,15 @@ module Env =
     let lookupSort (name: string) (env: Env) : SortInfo option =
         Map.tryFind name env.Sorts
 
-/// Translation result from an expression: a Term plus a list of
-/// `must-hold` side conditions (e.g. `g(args)`'s precondition at
-/// the call site).
+/// Translation result from an expression: a Term, side conditions
+/// (must-hold obligations such as a callee's precondition at the
+/// call site), and assumed facts (a callee's postcondition substituted
+/// at the call site, per the call rule `08-contract-semantics.md`
+/// §10.4).
 type TranslateResult =
     { Term:        Term
-      SideConds:   Term list }
+      SideConds:   Term list
+      Assumed:     Term list }
 
 /// Translate a literal to an IR literal/term.
 let private translateLit (lit: Literal) : Term =
@@ -73,13 +76,23 @@ let private translateLit (lit: Literal) : Term =
     | Literal.LChar c           -> TLit(LInt(int64 c), SInt)
     | Literal.LUnit             -> TLit(LUnit, SDatatype("Unit", []))
 
+/// Combine two translation results:  union the side conditions and
+/// assumptions; the term is replaced by the supplied combiner.
+let private combine
+        (a: TranslateResult)
+        (b: TranslateResult)
+        (mkTerm: Term -> Term -> Term) : TranslateResult =
+    { Term      = mkTerm a.Term b.Term
+      SideConds = a.SideConds @ b.SideConds
+      Assumed   = a.Assumed   @ b.Assumed }
+
 /// Translate a Lyric expression to a Lyric-VC term.  For the M4.1
 /// fragment we assume the expression is in the contract sub-language;
 /// constructs outside that sub-language land in `failures`.
 let rec translateExpr (env: Env) (e: Expr)
         : TranslateResult * Diagnostic list =
 
-    let single t = { Term = t; SideConds = [] }, []
+    let single t = { Term = t; SideConds = []; Assumed = [] }, []
 
     match e.Kind with
     | ELiteral lit -> single (translateLit lit)
@@ -109,7 +122,7 @@ let rec translateExpr (env: Env) (e: Expr)
                 Diagnostic.error "V0020"
                     "`result` is only valid inside `ensures:` clauses"
                     e.Span
-            { Term = TVar("result", SUninterp "result"); SideConds = [] }, [diag]
+            { Term = TVar("result", SUninterp "result"); SideConds = []; Assumed = [] }, [diag]
 
     | EOld inner ->
         // `old(e)` — for M4.1 we look up an entry in the env keyed by
@@ -150,21 +163,25 @@ let rec translateExpr (env: Env) (e: Expr)
                     Diagnostic.warning "V0022"
                         "block branches in contract expressions not yet supported in M4.1"
                         e.Span
-                { Term = Term.trueT; SideConds = [] }, [diag]
+                { Term = Term.trueT; SideConds = []; Assumed = [] }, [diag]
         let tT, tDiags = asExpr t
         let eT, eDiags =
             match eOpt with
             | Some branch -> asExpr branch
-            | None        -> { Term = TLit(LUnit, SDatatype("Unit", [])); SideConds = [] }, []
+            | None        -> { Term = TLit(LUnit, SDatatype("Unit", [])); SideConds = []; Assumed = [] }, []
         let term = TIte(cT.Term, tT.Term, eT.Term)
-        { Term = term; SideConds = cT.SideConds @ tT.SideConds @ eT.SideConds },
+        { Term      = term
+          SideConds = cT.SideConds @ tT.SideConds @ eT.SideConds
+          Assumed   = cT.Assumed   @ tT.Assumed   @ eT.Assumed },
         cDiags @ tDiags @ eDiags
 
     | EPrefix(op, x) ->
         let xT, xDiags = translateExpr env x
         match builtinOfPrefix op with
         | Some b ->
-            { Term = TBuiltin(b, [xT.Term]); SideConds = xT.SideConds }, xDiags
+            { Term      = TBuiltin(b, [xT.Term])
+              SideConds = xT.SideConds
+              Assumed   = xT.Assumed }, xDiags
         | None ->
             single (TVar("?prefix", SUninterp "prefix"))
 
@@ -174,27 +191,31 @@ let rec translateExpr (env: Env) (e: Expr)
         match builtinOfBinop op with
         | Some b ->
             let term = TBuiltin(b, [lT.Term; rT.Term])
-            { Term = term; SideConds = lT.SideConds @ rT.SideConds },
+            { Term      = term
+              SideConds = lT.SideConds @ rT.SideConds
+              Assumed   = lT.Assumed   @ rT.Assumed },
             lDiags @ rDiags
         | None ->
             let diag =
                 Diagnostic.warning "V0023"
                     "binary operator not yet modelled in proof translation"
                     e.Span
-            { Term = TVar("?binop", SUninterp "binop"); SideConds = [] },
+            { Term = TVar("?binop", SUninterp "binop"); SideConds = []; Assumed = [] },
             diag :: (lDiags @ rDiags)
 
     | ECall(fn, args) ->
         // Resolve callee by name and emit a TApp + its precondition
-        // as a side condition (call rule, §10.4).
+        // as a side condition + its postcondition as an assumption
+        // (call rule §10.4).
         let argResults, argDiags =
             args
             |> List.map (fun a ->
                 match a with
                 | CANamed(_, v, _) | CAPositional v -> translateExpr env v)
             |> List.unzip
-        let argTerms = argResults |> List.map (fun r -> r.Term)
-        let argSides = argResults |> List.collect (fun r -> r.SideConds) // already list
+        let argTerms   = argResults |> List.map (fun r -> r.Term)
+        let argSides   = argResults |> List.collect (fun r -> r.SideConds)
+        let argAssumed = argResults |> List.collect (fun r -> r.Assumed)
         match fn.Kind with
         | EPath p ->
             let name =
@@ -211,13 +232,56 @@ let rec translateExpr (env: Env) (e: Expr)
                     decl.Params
                     |> List.map (fun p -> (sortOfTypeExpr p.Type).Sort)
                 env.Symbols.Add(UserFun(name, paramSorts, resultSort))
-                let term = TApp(name, argTerms, resultSort)
-                { Term = term; SideConds = argSides },
+                let callTerm = TApp(name, argTerms, resultSort)
+
+                // Build a substitution map: param[i].Name → argTerms[i].
+                let paramSubst : Map<string, Term> =
+                    List.zip decl.Params argTerms
+                    |> List.fold (fun acc (p, arg) -> Map.add p.Name arg acc) Map.empty
+
+                // Translate every requires clause into a side
+                // condition (substituted with the caller's args).
+                let mkInnerEnv () =
+                    decl.Params
+                    |> List.fold
+                        (fun env p ->
+                            let info = sortOfTypeExpr p.Type
+                            Env.bind p.Name info env)
+                        (Env.empty ())
+                let innerEnv = mkInnerEnv ()
+                let preConds =
+                    decl.Contracts
+                    |> List.choose (fun c ->
+                        match c with CCRequires(e, _) -> Some e | _ -> None)
+                    |> List.choose (fun pre ->
+                        let r, _ = translateExpr innerEnv pre
+                        Some (Term.subst paramSubst r.Term))
+
+                // Translate every ensures clause and substitute
+                // both params and `result := callTerm`.
+                let postConds =
+                    decl.Contracts
+                    |> List.choose (fun c ->
+                        match c with CCEnsures(e, _) -> Some e | _ -> None)
+                    |> List.choose (fun post ->
+                        let resultEnv =
+                            { innerEnv with
+                                Vars  = Map.add "result" callTerm innerEnv.Vars
+                                Sorts = Map.add "result" { Sort = resultSort; Range = RBKNone } innerEnv.Sorts }
+                        let r, _ = translateExpr resultEnv post
+                        Some (Term.subst paramSubst r.Term))
+
+                { Term      = callTerm
+                  SideConds = argSides @ preConds
+                  Assumed   = argAssumed @ postConds },
                 List.concat argDiags
             | None ->
                 // Free function — leave as TApp with an inferred sort.
                 let term = TApp(name, argTerms, SUninterp ("call." + name))
-                { Term = term; SideConds = argSides }, List.concat argDiags
+                { Term      = term
+                  SideConds = argSides
+                  Assumed   = argAssumed },
+                List.concat argDiags
         | _ ->
             single (TVar("?call", SUninterp "call"))
 
@@ -241,7 +305,7 @@ let rec translateExpr (env: Env) (e: Expr)
             match whereT with
             | Some wt -> Term.mkImplies wt bodyT.Term
             | None    -> bodyT.Term
-        { Term = TForall(binderSorts, [], inner); SideConds = [] },
+        { Term = TForall(binderSorts, [], inner); SideConds = []; Assumed = [] },
         bodyDiags @ whereDiags
 
     | EExists(binders, where, body) ->
@@ -264,7 +328,7 @@ let rec translateExpr (env: Env) (e: Expr)
             match whereT with
             | Some wt -> Term.mkAnd [wt; bodyT.Term]
             | None    -> bodyT.Term
-        { Term = TExists(binderSorts, inner); SideConds = [] },
+        { Term = TExists(binderSorts, inner); SideConds = []; Assumed = [] },
         bodyDiags @ whereDiags
 
     | EMember(receiver, name) ->
@@ -273,7 +337,9 @@ let rec translateExpr (env: Env) (e: Expr)
         let rT, rDiags = translateExpr env receiver
         let resultSort = SUninterp ("field." + name)
         let term = TApp("$field." + name, [rT.Term], resultSort)
-        { Term = term; SideConds = rT.SideConds }, rDiags
+        { Term      = term
+          SideConds = rT.SideConds
+          Assumed   = rT.Assumed }, rDiags
 
     | EBlock blk ->
         // Single-expression block: just translate the trailing expr.
@@ -296,7 +362,7 @@ let rec translateExpr (env: Env) (e: Expr)
             Diagnostic.warning "V0024"
                 "expression construct not yet modelled in proof translation"
                 e.Span
-        { Term = TVar("?expr", SUninterp "expr"); SideConds = [] }, [diag]
+        { Term = TVar("?expr", SUninterp "expr"); SideConds = []; Assumed = [] }, [diag]
 
 /// Translate a contract clause's expression, conjoining any side
 /// conditions into the main term.
@@ -325,9 +391,12 @@ let private bindParam (env: Env) (p: Param) : Env * Term list =
 /// returns `Term.trueT` for the wp (so the goal will fail to
 /// discharge unless the postcondition is itself trivial).
 type WpResult =
-    { Wp:    Term
+    { Wp:        Term
       SideGoals: (Term * GoalKind * Span) list
-      Diags: Diagnostic list }
+      /// Hypotheses to add to the goal — typically the postconditions
+      /// of called functions (call rule §10.4).
+      Assumed:   Term list
+      Diags:     Diagnostic list }
 
 let rec private wpExpr
         (env: Env)
@@ -340,7 +409,10 @@ let rec private wpExpr
     let sideGoals =
         translation.SideConds
         |> List.map (fun side -> side, GKAssertion, e.Span)
-    { Wp = wp; SideGoals = sideGoals; Diags = diags }
+    { Wp        = wp
+      SideGoals = sideGoals
+      Assumed   = translation.Assumed
+      Diags     = diags }
 
 /// wp over a function body (FBExpr or FBBlock with simple shape).
 let wpBody
@@ -366,6 +438,7 @@ let wpBody
             | [] ->
                 { Wp = q (TLit(LUnit, SDatatype("Unit", [])))
                   SideGoals = []
+                  Assumed = []
                   Diags = [] }
             | [{ Kind = SReturn(Some e) }]
             | [{ Kind = SExpr e }] ->
@@ -373,6 +446,7 @@ let wpBody
             | [{ Kind = SReturn None }] ->
                 { Wp = q (TLit(LUnit, SDatatype("Unit", [])))
                   SideGoals = []
+                  Assumed = []
                   Diags = [] }
             | { Kind = SLocal lb } :: rest ->
                 match lb with
@@ -390,6 +464,7 @@ let wpBody
                     let inner = walk env' rest
                     { Wp = inner.Wp
                       SideGoals = inner.SideGoals
+                      Assumed = initT.Assumed @ inner.Assumed
                       Diags = initDiags @ inner.Diags }
                 | LBLet(name, _, init) ->
                     let initT, initDiags = translateExpr env init
@@ -400,19 +475,20 @@ let wpBody
                     let inner = walk env' rest
                     { Wp = inner.Wp
                       SideGoals = inner.SideGoals
+                      Assumed = initT.Assumed @ inner.Assumed
                       Diags = initDiags @ inner.Diags }
                 | LBVar _ ->
                     let diag =
                         Diagnostic.warning "V0025"
                             "`var` bindings not yet supported in M4.1 verifier"
                             (List.head stmts).Span
-                    { Wp = Term.trueT; SideGoals = []; Diags = [diag] }
+                    { Wp = Term.trueT; SideGoals = []; Assumed = []; Diags = [diag] }
             | st :: _ ->
                 let diag =
                     Diagnostic.warning "V0026"
                         "statement form not yet supported in M4.1 verifier"
                         st.Span
-                { Wp = Term.trueT; SideGoals = []; Diags = [diag] }
+                { Wp = Term.trueT; SideGoals = []; Assumed = []; Diags = [diag] }
 
         walk env stmts
 
@@ -486,7 +562,7 @@ let goalsForFunction
                 Term.subst (Map.ofList [("result", resultExpr)]) postTerm)
             body
 
-    let hypotheses = paramHyps @ [preTerm]
+    let hypotheses = paramHyps @ [preTerm] @ wpRes.Assumed
 
     let mainGoal =
         { Hypotheses = hypotheses
@@ -496,10 +572,13 @@ let goalsForFunction
           Kind       = GKPostcondition decl.Name
           Label      = sprintf "%s$post" decl.Name }
 
+    // Side goals (callee preconditions) get the *non-assumed*
+    // hypotheses — assuming a callee's post here would be circular.
+    let sideHyps = paramHyps @ [preTerm]
     let sideGoals =
         wpRes.SideGoals
         |> List.map (fun (term, kind, span) ->
-            { Hypotheses = hypotheses
+            { Hypotheses = sideHyps
               Conclusion = term
               Symbols    = List.ofSeq env0.Symbols
               Origin     = span

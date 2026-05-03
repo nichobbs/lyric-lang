@@ -139,4 +139,49 @@ let tests =
             // Axiom level is not proof-required, so no goals.
             Expect.equal (ProofSummary.totalCount summary) 0 "axiom level produces no VCs"
         }
+
+        test "call rule: caller postcondition uses callee's ensures" {
+            // wrapper's post `result == x` is dischargeable only
+            // because we assume id's post `result == x` at the call
+            // site (call rule §10.4).  Without the call rule, the
+            // wrapper VC would be opaque to the discharger.
+            let src = """
+                @proof_required
+                package P
+
+                pub func id(x: Int): Int
+                  ensures: result == x
+                { return x }
+
+                pub func wrapper(x: Int): Int
+                  ensures: result == x
+                { return id(x) }
+                """
+            let summary = prove src
+            Expect.equal (ProofSummary.dischargedCount summary) 2 "both"
+            Expect.isFalse (ProofSummary.hasFailure summary) "no failure"
+        }
+
+        test "call rule: caller's required precondition flows into side goal" {
+            // id requires `x >= 0`; wrapper calls id(z) with `z >= 0`
+            // in scope.  The discharger sees the side condition
+            // `z >= 0` as a hypothesis (caller's pre) and closes it
+            // via membership.
+            let src = """
+                @proof_required
+                package P
+
+                pub func id(x: Int): Int
+                  requires: x >= 0
+                  ensures: result == x
+                { return x }
+
+                pub func wrapper(z: Int): Int
+                  requires: z >= 0
+                  ensures: result == z
+                { return id(z) }
+                """
+            let summary = prove src
+            Expect.isFalse (ProofSummary.hasFailure summary) "no failure"
+        }
     ]
