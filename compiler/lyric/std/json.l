@@ -4,42 +4,33 @@
 // string / integer / boolean leaves.  Serialization is hand-rolled
 // for now (build the string yourself); a real `serialize` lands
 // when generic `JsonSerializer.Serialize<T>` is wired through.
+//
+// Externs live in `_kernel/json_host.l` (`Std.JsonHost`); this file
+// is pure trampolines + Option-returning safe wrappers.
+
 package Std.Json
 
 import Std.Core
-
-extern type JsonDoc     = "System.Text.Json.JsonDocument"
-extern type JsonElement = "System.Text.Json.JsonElement"
+import Std.JsonHost     // brings `JsonDoc`, `JsonElement`, and `host*` fns into scope
 
 // =====================================================================
 // Parsing.
 // =====================================================================
 
-// Routed through `Lyric.Stdlib.JsonHost.Parse` instead of the BCL
-// `JsonDocument.Parse(string, JsonDocumentOptions = default)`
-// directly: the FFI default-arg emit for `JsonDocumentOptions` still
-// produces invalid IL.  The host wrapper is a one-liner and the
-// indirection collapses if/when default-arg emit is fixed for
-// arbitrary structs.
-@externTarget("Lyric.Stdlib.JsonHost.Parse")
-pub func parseJson(s: in String): JsonDoc = ()
+pub func parseJson(s: in String): JsonDoc { hostParseJson(s) }
 
-@externTarget("System.Text.Json.JsonDocument.RootElement")
-pub func rootElement(d: in JsonDoc): JsonElement = ()
+pub func rootElement(d: in JsonDoc): JsonElement { hostRootElement(d) }
 
 // =====================================================================
 // Walking the tree.
 //
-// `getProperty(elem, "name")` returns the named property's element;
-// throws if the name doesn't exist (use `tryGetProperty` for the
-// safe variant).
+// `getProperty(elem, "name")` throws if the name doesn't exist; use
+// `tryGetProperty` for the Option-returning variant.
 // =====================================================================
 
-@externTarget("System.Text.Json.JsonElement.GetProperty")
-pub func getProperty(elem: in JsonElement, name: in String): JsonElement = ()
-
-@externTarget("System.Text.Json.JsonElement.TryGetProperty")
-pub func hostTryGetProperty(elem: in JsonElement, name: in String, out_: out JsonElement): Bool = ()
+pub func getProperty(elem: in JsonElement, name: in String): JsonElement {
+  hostGetProperty(elem, name)
+}
 
 pub func tryGetProperty(elem: in JsonElement, name: in String): Option[JsonElement] {
   var v: JsonElement = default()
@@ -49,35 +40,20 @@ pub func tryGetProperty(elem: in JsonElement, name: in String): Option[JsonEleme
 // =====================================================================
 // Leaf accessors.
 //
-// All `GetXyz` methods on `JsonElement` throw if the kind is wrong.
+// All `getXyz` methods on `JsonElement` throw if the kind is wrong.
 // Use the `tryGet*` family for safer extraction.
 // =====================================================================
 
-@externTarget("System.Text.Json.JsonElement.GetString")
-pub func getString(elem: in JsonElement): String = ()
-
-@externTarget("System.Text.Json.JsonElement.GetInt32")
-pub func getInt32(elem: in JsonElement): Int = ()
-
-@externTarget("System.Text.Json.JsonElement.GetInt64")
-pub func getInt64(elem: in JsonElement): Long = ()
-
-@externTarget("System.Text.Json.JsonElement.GetBoolean")
-pub func getBoolean(elem: in JsonElement): Bool = ()
-
-@externTarget("System.Text.Json.JsonElement.GetDouble")
-pub func getDouble(elem: in JsonElement): Double = ()
-
-@externTarget("System.Text.Json.JsonElement.TryGetInt32")
-pub func hostTryGetInt32(elem: in JsonElement, value: out Int): Bool = ()
+pub func getString(elem: in JsonElement): String   { hostGetString(elem) }
+pub func getInt32(elem: in JsonElement): Int       { hostGetInt32(elem) }
+pub func getInt64(elem: in JsonElement): Long      { hostGetInt64(elem) }
+pub func getBoolean(elem: in JsonElement): Bool    { hostGetBoolean(elem) }
+pub func getDouble(elem: in JsonElement): Double   { hostGetDouble(elem) }
 
 pub func tryGetInt(elem: in JsonElement): Option[Int] {
   var v: Int = default()
   if hostTryGetInt32(elem, v) { Some(value = v) } else { None }
 }
-
-@externTarget("System.Text.Json.JsonElement.TryGetInt64")
-pub func hostTryGetInt64(elem: in JsonElement, value: out Long): Bool = ()
 
 pub func tryGetLong(elem: in JsonElement): Option[Long] {
   var v: Long = default()
@@ -91,9 +67,5 @@ pub func tryGetLong(elem: in JsonElement): Option[Long] {
 // =====================================================================
 
 /// Wrap a string value as a JSON literal — escapes quotes and
-/// backslashes, surrounds with `"` characters.  Routes through
-/// `Lyric.Stdlib.JsonHost.EncodeString` (the BCL's
-/// `JsonEncodedText.Encode` returns a struct that's awkward to
-/// bridge directly).
-@externTarget("Lyric.Stdlib.JsonHost.EncodeString")
-pub func encodeString(s: in String): String = ()
+/// backslashes, surrounds with `"` characters.
+pub func encodeString(s: in String): String { hostEncodeString(s) }
