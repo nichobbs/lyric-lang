@@ -162,6 +162,34 @@ let tests =
             Expect.isFalse (ProofSummary.hasFailure summary) "no failure"
         }
 
+        test "inline range refinement adds bound hypotheses to the goal" {
+            // `Int range 0 ..= 100` should add `0 <= x` and `x <= 100`
+            // as hypotheses; combined with the trivial discharger, the
+            // postcondition `result >= 0` reduces to `x >= 0`, which
+            // is implied by the lower bound (so trivially closes via
+            // hypothesis match if z3 isn't around — and via z3 if it is).
+            let src = """
+                @proof_required
+                package P
+
+                pub func clamp(x: Int range 0 ..= 100): Int
+                  ensures: result >= 0
+                {
+                  return x
+                }
+                """
+            let summary = prove src
+            // The goal only discharges with z3 (since `result >= 0`
+            // doesn't appear verbatim and isn't reflexive); accept
+            // either Discharged (z3 present) or Unknown (no solver).
+            Expect.equal (ProofSummary.totalCount summary) 1 "one goal"
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Counterexample _ ->
+                failtest "range bound should make this provable"
+            | Discharged | Unknown _ -> ()
+        }
+
         test "call rule: caller's required precondition flows into side goal" {
             // id requires `x >= 0`; wrapper calls id(z) with `z >= 0`
             // in scope.  The discharger sees the side condition
