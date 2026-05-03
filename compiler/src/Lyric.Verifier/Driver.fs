@@ -86,11 +86,14 @@ let private writeSmtToDisk
         File.WriteAllText(path, Smt.renderGoal g)
         Some path
 
-/// End-to-end: parse + mode-check + VC-gen + discharge.  This entry
-/// point is what the `lyric prove` CLI subcommand invokes.
-let proveSource
+/// End-to-end: parse + mode-check + VC-gen + discharge.  Carries
+/// `imports` (loaded by `Lyric.Verifier.Imports.loadMany`) through
+/// to the mode checker (V0001) and the VC generator (cross-package
+/// call rule).
+let proveSourceWithImports
         (source: string)
-        (proofDir: string option) : ProofSummary =
+        (proofDir: string option)
+        (imports: Imports.ImportedPackage list) : ProofSummary =
 
     let parsed = Lyric.Parser.Parser.parse source
     let parseDiags = parsed.Diagnostics
@@ -105,7 +108,7 @@ let proveSource
           Results     = [] }
     else
 
-    let level, modeDiags = ModeCheck.checkFile parsed.File
+    let level, modeDiags = ModeCheck.checkFileWithImports parsed.File imports
 
     if not (Mode.VerificationLevel.isProofRequired level) then
         // Pass-through: nothing to verify.  Report the level so
@@ -115,7 +118,7 @@ let proveSource
           Results     = [] }
     else
 
-    let goals, vcDiags = VCGen.goalsForFile parsed.File level
+    let goals, vcDiags = VCGen.goalsForFileWithImports parsed.File level imports
 
     let modeFatal =
         modeDiags |> List.exists (fun d -> d.Severity = DiagError)
@@ -141,7 +144,26 @@ let proveSource
       Diagnostics = parseDiags @ modeDiags @ vcDiags @ resultDiags
       Results     = results }
 
-/// Convenience: prove an on-disk source file.  Used by the CLI.
-let proveFile (path: string) (proofDir: string option) : ProofSummary =
+/// Backwards-compatible alias for callers without an imports list.
+let proveSource
+        (source: string)
+        (proofDir: string option) : ProofSummary =
+    proveSourceWithImports source proofDir []
+
+/// Convenience: prove an on-disk source file.  `dllImports` is the
+/// list of restored / built dependency .dll paths the verifier
+/// reads `Lyric.Contract` + `Lyric.Proof` resources from to apply
+/// V0001 / cross-package call rule / cross-package datatype
+/// encoding.
+let proveFileWithImports
+        (path: string)
+        (proofDir: string option)
+        (dllImports: string list) : ProofSummary =
     let source = File.ReadAllText path
-    proveSource source proofDir
+    let imports, importDiags = Imports.loadMany dllImports
+    let summary = proveSourceWithImports source proofDir imports
+    { summary with
+        Diagnostics = importDiags @ summary.Diagnostics }
+
+let proveFile (path: string) (proofDir: string option) : ProofSummary =
+    proveFileWithImports path proofDir []

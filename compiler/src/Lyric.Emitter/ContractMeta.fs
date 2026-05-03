@@ -1,19 +1,27 @@
 /// Contract metadata format + embed/extract for cross-package
-/// consumption (Tier 3 / D-progress-031).
+/// consumption (Tier 3 / D-progress-031, format-2 in D-progress-086).
 ///
 /// Per the C8 decision (D-progress-030 in `docs/12-todo-plan.md`),
 /// every emitted Lyric assembly carries a managed resource named
 /// `Lyric.Contract` describing its `pub` surface.  Downstream
 /// tooling — `lyric build`'s cross-package import resolution,
-/// `lyric public-api-diff`, `lyric search` — reads the resource to
-/// learn what a `.dll` exports without having to re-parse the
-/// source.
+/// `lyric public-api-diff`, `lyric search`, and the Phase 4
+/// verifier — reads the resource to learn what a `.dll` exports
+/// without having to re-parse the source.
 ///
-/// Bootstrap-grade format: JSON-as-UTF-8.  The eventual hand-rolled
-/// binary layout (modeled on F#'s `FSharpSignatureData`) drops in
-/// later when (a) we have downstream consumers actually reading the
-/// resource and (b) JSON parsing latency becomes a real concern.
-/// JSON keeps the format human-readable and trivially debugged.
+/// Format-2 (D-progress-086) extends the schema with:
+///
+/// * `formatVersion: 2` at the top level.
+/// * `level` per package: `runtime_checked` | `proof_required[(modifier)]` | `axiom`.
+/// * `pure: true` on per-decl entries that carry the `@pure` annotation.
+/// * `requires` / `ensures`: source-level strings of the contract clauses.
+/// * `body`: source-level string of `@pure` function bodies (so
+///   cross-package callers can unfold one level).
+/// * `params`: structured parameter list (name + type-string + mode)
+///   so consumers can rebind for substitution.
+///
+/// Format-1 payloads continue to round-trip; missing fields default
+/// to `runtime_checked` / `pure: false` / no clauses / no body.
 module Lyric.Emitter.ContractMeta
 
 open System
@@ -21,19 +29,70 @@ open System.IO
 open System.Text
 open Lyric.Parser.Ast
 
-/// One serialised public declaration.  Kept structural — no
-/// `Lyric.TypeChecker.Type` references — so the metadata is
-/// self-contained and the consumer doesn't need to re-resolve.
+let private FORMAT_VERSION = 2
+
+/// One serialised public declaration.
+///
+/// `Repr` is the canonical signature, free-form, used for diff
+/// rendering.  The structured fields below are what the verifier
+/// (and future consumers) read for actual reasoning.
 type ContractDecl =
     { Kind:     string         // "func" | "record" | "union" | "enum" | …
       Name:     string
-      Repr:     string }       // canonical signature / shape, free-form
+      Repr:     string         // canonical signature / shape, free-form
+      /// `@pure` annotation present on this declaration.
+      Pure:     bool
+      /// Source-level strings of the function's `requires:` clauses.
+      /// Empty for non-functions.
+      Requires: string list
+      /// Source-level strings of the function's `ensures:` clauses.
+      Ensures:  string list
+      /// Source-level string of the function's body (only populated
+      /// when `Pure = true` and the body is an expression form
+      /// suitable for one-level unfolding).
+      Body:     string option
+      /// Structured parameters: (name, type-string).  Lets a consumer
+      /// rebind locals without re-parsing `Repr`.
+      Params:   (string * string) list }
 
 /// Serialised contract for one emitted assembly.
 type Contract =
-    { PackageName: string
-      Version:     string
-      Decls:       ContractDecl list }
+    { PackageName:   string
+      Version:       string
+      /// Verification level: `runtime_checked` (default) /
+      /// `proof_required` / `proof_required(unsafe_blocks_allowed)` /
+      /// `proof_required(checked_arithmetic)` / `axiom`.
+      Level:         string
+      FormatVersion: int
+      Decls:         ContractDecl list }
+
+module ContractDecl =
+
+    /// A `ContractDecl` value with no proof-related metadata —
+    /// equivalent to a format-1 entry.  Useful for legacy test
+    /// fixtures and decls of kinds that never carry contracts
+    /// (records, enums, …).
+    let basic (kind: string) (name: string) (repr: string) : ContractDecl =
+        { Kind     = kind
+          Name     = name
+          Repr     = repr
+          Pure     = false
+          Requires = []
+          Ensures  = []
+          Body     = None
+          Params   = [] }
+
+module Contract =
+
+    /// A `Contract` value with no level / proof-related metadata —
+    /// equivalent to a format-1 payload.  Useful for legacy
+    /// fixtures.
+    let legacy (pkg: string) (ver: string) (decls: ContractDecl list) : Contract =
+        { PackageName   = pkg
+          Version       = ver
+          Level         = "runtime_checked"
+          FormatVersion = 1
+          Decls         = decls }
 
 let private renderTypeExpr (te: TypeExpr) : string =
     let rec go (te: TypeExpr) =
@@ -78,7 +137,126 @@ let private genericsRepr (g: GenericParams option) : string =
 let private modeStr (m: ParamMode) : string =
     match m with PMIn -> "in" | PMOut -> "out" | PMInout -> "inout"
 
+/// Return the source-text of an annotation if its head matches one
+/// of the proof-related names (`pure`, `axiom`, `runtime_checked`,
+/// `proof_required`).
+let private hasAnnotation (name: string) (anns: Annotation list) : bool =
+    anns |> List.exists (fun a ->
+        match a.Name.Segments with
+        | [seg] -> seg = name
+        | _     -> false)
+
+/// Best-effort: re-render a Lyric expression (contract clause body
+/// or @pure function body) as a single-line source string.  Mirrors
+/// the parser's expression grammar at low fidelity but is round-
+/// trippable through `parseExprFromString` for the common shapes
+/// proof-required code uses (literals, identifiers, binops, calls,
+/// member access, `result`, `old(_)`, and `if`/`match` exprs).
+let renderExpr (e: Expr) : string =
+    let rec lit l =
+        match l with
+        | Literal.LBool true     -> "true"
+        | Literal.LBool false    -> "false"
+        | Literal.LInt(v, _)     -> string v
+        | Literal.LFloat(v, _)   -> string v
+        | Literal.LString s
+        | Literal.LTripleString s
+        | Literal.LRawString s   -> sprintf "\"%s\"" (s.Replace("\"", "\\\""))
+        | Literal.LChar c        -> sprintf "'\\u{%04x}'" c
+        | Literal.LUnit          -> "()"
+    let binopStr op =
+        match op with
+        | BAdd -> "+" | BSub -> "-" | BMul -> "*" | BDiv -> "/" | BMod -> "%"
+        | BAnd -> "and" | BOr -> "or" | BXor -> "xor"
+        | BEq -> "==" | BNeq -> "!=" | BLt -> "<" | BLte -> "<="
+        | BGt -> ">"  | BGte -> ">=" | BCoalesce -> "??" | BImplies -> "implies"
+    let prefixStr op =
+        match op with PreNeg -> "-" | PreNot -> "not " | PreRef -> "&"
+    let rec go (e: Expr) =
+        match e.Kind with
+        | ELiteral l            -> lit l
+        | EPath p               -> String.concat "." p.Segments
+        | EParen inner          -> "(" + go inner + ")"
+        | EResult               -> "result"
+        | ESelf                 -> "self"
+        | EOld inner            -> "old(" + go inner + ")"
+        | EBinop(op, l, r)      -> sprintf "(%s %s %s)" (go l) (binopStr op) (go r)
+        | EPrefix(op, x)        -> prefixStr op + go x
+        | EMember(r, n)         -> go r + "." + n
+        | ECall(fn, args)       ->
+            let argStr =
+                args
+                |> List.map (function
+                    | CANamed(_, v, _) -> go v
+                    | CAPositional v   -> go v)
+                |> String.concat ", "
+            go fn + "(" + argStr + ")"
+        | EIf(c, t, eOpt, _) ->
+            let tBranch =
+                match t with EOBExpr x -> go x | EOBBlock _ -> "{ ... }"
+            let eBranch =
+                match eOpt with
+                | Some(EOBExpr x) -> " else " + go x
+                | _ -> ""
+            sprintf "if %s then %s%s" (go c) tBranch eBranch
+        | EMatch(scrut, arms) ->
+            let armStr =
+                arms
+                |> List.map (fun arm ->
+                    let body =
+                        match arm.Body with
+                        | EOBExpr x -> go x
+                        | EOBBlock _ -> "{ ... }"
+                    let pat = goPat arm.Pattern
+                    sprintf "case %s -> %s" pat body)
+                |> String.concat " | "
+            sprintf "match %s { %s }" (go scrut) armStr
+        | _ -> "<unsupported>"
+    and goPat (p: Pattern) =
+        match p.Kind with
+        | PWildcard       -> "_"
+        | PLiteral l      -> lit l
+        | PBinding(n, _)  -> n
+        | PParen inner    -> "(" + goPat inner + ")"
+        | _ -> "<pat>"
+    go e
+
+/// Whether a function declaration's body can be unfolded as part of
+/// a contract metadata payload — only expression-form or
+/// single-return-statement bodies are eligible (the verifier's
+/// pure-unfold rule covers exactly these shapes).
+let private bodyForUnfold (fn: FunctionDecl) : string option =
+    match fn.Body with
+    | Some(FBExpr e) -> Some (renderExpr e)
+    | Some(FBBlock blk) ->
+        match blk.Statements with
+        | [{ Kind = SReturn(Some e) }]
+        | [{ Kind = SExpr e }] -> Some (renderExpr e)
+        | _ -> None
+    | None -> None
+
+let private contractClauseStrings (cs: ContractClause list)
+        : string list * string list =
+    let req =
+        cs |> List.choose (function
+            | CCRequires(e, _) -> Some (renderExpr e)
+            | _ -> None)
+    let ens =
+        cs |> List.choose (function
+            | CCEnsures(e, _) -> Some (renderExpr e)
+            | _ -> None)
+    req, ens
+
 let private declOf (it: Item) : ContractDecl option =
+    let mkDefault kind name repr =
+        { Kind     = kind
+          Name     = name
+          Repr     = repr
+          Pure     = false
+          Requires = []
+          Ensures  = []
+          Body     = None
+          Params   = [] }
     if not (isPub it.Visibility) then None
     else
         match it.Kind with
@@ -93,10 +271,32 @@ let private declOf (it: Item) : ContractDecl option =
                 | Some te -> ": " + renderTypeExpr te
                 | None    -> ""
             let asyncTok = if fn.IsAsync then "async " else ""
+            let pureTok =
+                if hasAnnotation "pure" fn.Annotations then "@pure " else ""
+            let req, ens = contractClauseStrings fn.Contracts
+            let contractsStr =
+                let pieces =
+                    (req |> List.map (fun s -> "requires: " + s))
+                    @ (ens |> List.map (fun s -> "ensures: " + s))
+                if List.isEmpty pieces then "" else " " + String.concat "; " pieces
             let repr =
-                sprintf "%spub func %s%s(%s)%s"
-                    asyncTok fn.Name (genericsRepr fn.Generics) ps ret
-            Some { Kind = "func"; Name = fn.Name; Repr = repr }
+                sprintf "%s%spub func %s%s(%s)%s%s"
+                    pureTok asyncTok fn.Name (genericsRepr fn.Generics)
+                    ps ret contractsStr
+            let isPure = hasAnnotation "pure" fn.Annotations
+            let body = if isPure then bodyForUnfold fn else None
+            let paramsStruct =
+                fn.Params
+                |> List.map (fun p -> p.Name, renderTypeExpr p.Type)
+            Some
+                { Kind     = "func"
+                  Name     = fn.Name
+                  Repr     = repr
+                  Pure     = isPure
+                  Requires = req
+                  Ensures  = ens
+                  Body     = body
+                  Params   = paramsStruct }
         | IRecord rd | IExposedRec rd ->
             let fs =
                 rd.Members
@@ -109,7 +309,7 @@ let private declOf (it: Item) : ContractDecl option =
             let repr =
                 sprintf "pub record %s%s { %s }"
                     rd.Name (genericsRepr rd.Generics) fs
-            Some { Kind = "record"; Name = rd.Name; Repr = repr }
+            Some (mkDefault "record" rd.Name repr)
         | IUnion ud ->
             let cs =
                 ud.Cases
@@ -126,41 +326,72 @@ let private declOf (it: Item) : ContractDecl option =
             let repr =
                 sprintf "pub union %s%s { %s }"
                     ud.Name (genericsRepr ud.Generics) cs
-            Some { Kind = "union"; Name = ud.Name; Repr = repr }
+            Some (mkDefault "union" ud.Name repr)
         | IEnum ed ->
             let cs =
                 ed.Cases
                 |> List.map (fun c -> "case " + c.Name)
                 |> String.concat "; "
             let repr = sprintf "pub enum %s { %s }" ed.Name cs
-            Some { Kind = "enum"; Name = ed.Name; Repr = repr }
+            Some (mkDefault "enum" ed.Name repr)
         | IOpaque od ->
-            Some { Kind = "opaque"; Name = od.Name
-                   Repr = sprintf "pub opaque type %s%s" od.Name (genericsRepr od.Generics) }
+            Some (mkDefault "opaque" od.Name
+                    (sprintf "pub opaque type %s%s" od.Name (genericsRepr od.Generics)))
         | IInterface id ->
-            Some { Kind = "interface"; Name = id.Name
-                   Repr = sprintf "pub interface %s%s" id.Name (genericsRepr id.Generics) }
+            Some (mkDefault "interface" id.Name
+                    (sprintf "pub interface %s%s" id.Name (genericsRepr id.Generics)))
         | IDistinctType d ->
-            Some { Kind = "distinct"; Name = d.Name
-                   Repr = sprintf "pub distinct type %s = %s"
-                            d.Name (renderTypeExpr d.Underlying) }
+            Some (mkDefault "distinct" d.Name
+                    (sprintf "pub distinct type %s = %s"
+                        d.Name (renderTypeExpr d.Underlying)))
         | ITypeAlias ta ->
-            Some { Kind = "alias"; Name = ta.Name
-                   Repr = sprintf "pub type %s = %s"
-                            ta.Name (renderTypeExpr ta.RHS) }
+            Some (mkDefault "alias" ta.Name
+                    (sprintf "pub type %s = %s"
+                        ta.Name (renderTypeExpr ta.RHS)))
         | IConst c ->
-            Some { Kind = "const"; Name = c.Name
-                   Repr = sprintf "pub const %s: %s = ..."
-                            c.Name (renderTypeExpr c.Type) }
+            Some (mkDefault "const" c.Name
+                    (sprintf "pub const %s: %s = ..." c.Name (renderTypeExpr c.Type)))
         | _ -> None
+
+/// Resolve a source file's verification level into the canonical
+/// string that goes into the contract's `level` field.
+let private levelOfFile (sf: SourceFile) : string =
+    let anns = sf.FileLevelAnnotations
+    let findOne name =
+        anns |> List.tryFind (fun a ->
+            match a.Name.Segments with
+            | [seg] -> seg = name
+            | _     -> false)
+    match findOne "axiom" with
+    | Some _ -> "axiom"
+    | None ->
+        match findOne "proof_required" with
+        | Some ann ->
+            let modifier =
+                ann.Args |> List.tryPick (fun arg ->
+                    match arg with
+                    | ABare(name, _) -> Some name
+                    | _              -> None)
+            match modifier with
+            | Some "unsafe_blocks_allowed" ->
+                "proof_required(unsafe_blocks_allowed)"
+            | Some "checked_arithmetic" ->
+                "proof_required(checked_arithmetic)"
+            | _ -> "proof_required"
+        | None ->
+            match findOne "runtime_checked" with
+            | Some _ -> "runtime_checked"
+            | None   -> "runtime_checked"
 
 /// Walk a `SourceFile` and produce the contract metadata for it.
 let buildContract (sf: SourceFile) (version: string) : Contract =
     let pkg = String.concat "." sf.Package.Path.Segments
     let decls = sf.Items |> List.choose declOf
-    { PackageName = pkg
-      Version     = version
-      Decls       = decls }
+    { PackageName   = pkg
+      Version       = version
+      Level         = levelOfFile sf
+      FormatVersion = FORMAT_VERSION
+      Decls         = decls }
 
 let private escape (s: string) : string =
     let sb = StringBuilder(s.Length + 2)
@@ -176,21 +407,67 @@ let private escape (s: string) : string =
         | c -> sb.Append c |> ignore
     sb.ToString()
 
+/// Render a string list as a JSON array of strings.
+let private renderStringArray (xs: string list) : string =
+    let sb = StringBuilder()
+    sb.Append "[" |> ignore
+    xs |> List.iteri (fun i s ->
+        if i > 0 then sb.Append "," |> ignore
+        sb.Append "\"" |> ignore
+        sb.Append (escape s) |> ignore
+        sb.Append "\"" |> ignore)
+    sb.Append "]" |> ignore
+    sb.ToString()
+
+let private renderParams (ps: (string * string) list) : string =
+    let sb = StringBuilder()
+    sb.Append "[" |> ignore
+    ps |> List.iteri (fun i (n, ty) ->
+        if i > 0 then sb.Append "," |> ignore
+        sb.Append (sprintf "{\"name\":\"%s\",\"type\":\"%s\"}"
+                    (escape n) (escape ty)) |> ignore)
+    sb.Append "]" |> ignore
+    sb.ToString()
+
+let private renderDecl (d: ContractDecl) : string =
+    let sb = StringBuilder()
+    sb.Append (sprintf "{\"kind\":\"%s\",\"name\":\"%s\",\"repr\":\"%s\""
+                (escape d.Kind) (escape d.Name) (escape d.Repr))
+        |> ignore
+    if d.Pure then
+        sb.Append ",\"pure\":true" |> ignore
+    if not (List.isEmpty d.Requires) then
+        sb.Append (sprintf ",\"requires\":%s" (renderStringArray d.Requires))
+            |> ignore
+    if not (List.isEmpty d.Ensures) then
+        sb.Append (sprintf ",\"ensures\":%s" (renderStringArray d.Ensures))
+            |> ignore
+    match d.Body with
+    | Some body ->
+        sb.Append (sprintf ",\"body\":\"%s\"" (escape body)) |> ignore
+    | None -> ()
+    if not (List.isEmpty d.Params) then
+        sb.Append (sprintf ",\"params\":%s" (renderParams d.Params))
+            |> ignore
+    sb.Append "}" |> ignore
+    sb.ToString()
+
 /// Render a `Contract` as JSON.  Hand-rolled to avoid pulling in
-/// System.Text.Json on every emit (it's already loaded via the
-/// stdlib but the explicit serializer wiring is cleaner here).
+/// System.Text.Json on every emit.  Format-2 (D-progress-086).
 let toJson (c: Contract) : string =
     let sb = StringBuilder(1024)
     sb.Append "{\n" |> ignore
+    sb.Append (sprintf "  \"formatVersion\": %d,\n" c.FormatVersion) |> ignore
     sb.Append (sprintf "  \"packageName\": \"%s\",\n" (escape c.PackageName)) |> ignore
     sb.Append (sprintf "  \"version\": \"%s\",\n" (escape c.Version)) |> ignore
+    sb.Append (sprintf "  \"level\": \"%s\",\n" (escape c.Level)) |> ignore
     sb.Append "  \"decls\": [\n" |> ignore
     c.Decls
     |> List.iteri (fun i d ->
         let comma = if i = 0 then "" else ",\n"
         sb.Append comma |> ignore
-        sb.Append (sprintf "    {\"kind\":\"%s\",\"name\":\"%s\",\"repr\":\"%s\"}"
-                    (escape d.Kind) (escape d.Name) (escape d.Repr)) |> ignore)
+        sb.Append "    " |> ignore
+        sb.Append (renderDecl d) |> ignore)
     sb.Append "\n  ]\n}\n" |> ignore
     sb.ToString()
 
@@ -245,46 +522,88 @@ let readFromAssembly (dllPath: string) : string option =
     | None -> None
 
 /// Parse the JSON payload back to a `Contract` value.  Uses
-/// `System.Text.Json` (already loaded via the stdlib) for
-/// robustness against future format additions; the schema mirrors
-/// `toJson` above.  Returns `None` on parse failure.
+/// `System.Text.Json` for robustness against future format
+/// additions.  Format-1 payloads (no `formatVersion`, no `level`,
+/// no per-decl `pure`/`requires`/`ensures`/`body`/`params`) parse
+/// with safe defaults: `runtime_checked` level, all decls non-pure,
+/// no clauses, no body, no params.
 let parseFromJson (json: string) : Contract option =
     try
         use doc = System.Text.Json.JsonDocument.Parse(json)
         let root = doc.RootElement
-        let pkg =
-            match root.TryGetProperty("packageName") with
-            | true, e -> e.GetString()
-            | _ -> ""
-        let ver =
-            match root.TryGetProperty("version") with
-            | true, e -> e.GetString()
-            | _ -> "0.0.0"
         let safeStr (s: string | null) (fallback: string) : string =
             match Option.ofObj s with
             | Some v -> v
             | None   -> fallback
+        let getStr name fallback =
+            match root.TryGetProperty(name: string) with
+            | true, e -> safeStr (e.GetString()) fallback
+            | _ -> fallback
+        let getStrInElem (el: System.Text.Json.JsonElement) name fallback =
+            match el.TryGetProperty(name: string) with
+            | true, e -> safeStr (e.GetString()) fallback
+            | _ -> fallback
+        let getStrArrayInElem (el: System.Text.Json.JsonElement) name : string list =
+            match el.TryGetProperty(name: string) with
+            | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                [ for inner in arr.EnumerateArray() do
+                    yield safeStr (inner.GetString()) "" ]
+            | _ -> []
+        let getOptStrInElem (el: System.Text.Json.JsonElement) name : string option =
+            match el.TryGetProperty(name: string) with
+            | true, e -> Option.ofObj (e.GetString())
+            | _ -> None
+        let getBoolInElem (el: System.Text.Json.JsonElement) name : bool =
+            match el.TryGetProperty(name: string) with
+            | true, e -> e.ValueKind = System.Text.Json.JsonValueKind.True
+            | _ -> false
+        let getParamsInElem (el: System.Text.Json.JsonElement) : (string * string) list =
+            match el.TryGetProperty("params") with
+            | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                [ for inner in arr.EnumerateArray() do
+                    let n = getStrInElem inner "name" ""
+                    let t = getStrInElem inner "type" ""
+                    yield n, t ]
+            | _ -> []
+        let formatVersion =
+            match root.TryGetProperty("formatVersion") with
+            | true, e ->
+                match e.ValueKind with
+                | System.Text.Json.JsonValueKind.Number ->
+                    e.GetInt32()
+                | _ -> 1
+            | _ -> 1
+        let pkgStr = getStr "packageName" ""
+        let verStr = getStr "version" "0.0.0"
+        let level  = getStr "level" "runtime_checked"
         let decls =
             match root.TryGetProperty("decls") with
             | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
                 [ for el in arr.EnumerateArray() do
-                    let kind =
-                        match el.TryGetProperty("kind") with
-                        | true, e -> safeStr (e.GetString()) ""
-                        | _ -> ""
-                    let name =
-                        match el.TryGetProperty("name") with
-                        | true, e -> safeStr (e.GetString()) ""
-                        | _ -> ""
-                    let repr =
-                        match el.TryGetProperty("repr") with
-                        | true, e -> safeStr (e.GetString()) ""
-                        | _ -> ""
-                    yield { Kind = kind; Name = name; Repr = repr } ]
+                    let kind     = getStrInElem el "kind" ""
+                    let name     = getStrInElem el "name" ""
+                    let repr     = getStrInElem el "repr" ""
+                    let pure'    = getBoolInElem el "pure"
+                    let reqs     = getStrArrayInElem el "requires"
+                    let ens      = getStrArrayInElem el "ensures"
+                    let body     = getOptStrInElem el "body"
+                    let parms    = getParamsInElem el
+                    yield
+                        { Kind     = kind
+                          Name     = name
+                          Repr     = repr
+                          Pure     = pure'
+                          Requires = reqs
+                          Ensures  = ens
+                          Body     = body
+                          Params   = parms } ]
             | _ -> []
-        let pkgStr = safeStr pkg ""
-        let verStr = safeStr ver "0.0.0"
-        Some { PackageName = pkgStr; Version = verStr; Decls = decls }
+        Some
+            { PackageName   = pkgStr
+              Version       = verStr
+              Level         = level
+              FormatVersion = formatVersion
+              Decls         = decls }
     with _ -> None
 
 /// Diff result for `lyric public-api-diff`.  Each variant carries

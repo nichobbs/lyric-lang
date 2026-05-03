@@ -33,14 +33,12 @@ let tests =
     testList "Lyric.Emitter.RestoredPackages" [
 
         testCase "synthesiseSource pastes Reprs under a package header" <| fun () ->
-            let contract : ContractMeta.Contract =
-                { PackageName = "Lyric.Greeter"
-                  Version     = "0.1.0"
-                  Decls =
-                    [ { Kind = "func"; Name = "greet"
-                        Repr = "pub func greet(name: in String): String" }
-                      { Kind = "interface"; Name = "Sayable"
-                        Repr = "pub interface Sayable" } ] }
+            let contract =
+                ContractMeta.Contract.legacy "Lyric.Greeter" "0.1.0"
+                    [ ContractMeta.ContractDecl.basic
+                        "func" "greet" "pub func greet(name: in String): String"
+                      ContractMeta.ContractDecl.basic
+                        "interface" "Sayable" "pub interface Sayable" ]
             let source = synthesiseSource contract
             Expect.stringContains source "package Lyric.Greeter" "package header"
             Expect.stringContains source

@@ -355,12 +355,57 @@ let private checkQuantifierDomains
             walkContractClauses fn.Contracts
         | _ -> ()
 
+/// V0001: a `@proof_required` package may not directly import a
+/// `@runtime_checked` package — the proof would be unsound because
+/// the runtime-checked callee's contracts aren't VC-discharged.
+/// (`08-contract-semantics.md` §3.1 partial order.)
+///
+/// `imports` carries every successfully loaded
+/// `Lyric.Verifier.Imports.ImportedPackage`.  Imports the verifier
+/// couldn't resolve (no DLL on disk, no contract resource) are
+/// silently skipped — we conservatively assume opaque/legacy
+/// imports are okay rather than spamming false positives.
+let private checkImportLevels
+        (diags: ResizeArray<Diagnostic>)
+        (fileLevel: VerificationLevel)
+        (file: SourceFile)
+        (imports: Imports.ImportedPackage list) : unit =
+
+    if not (VerificationLevel.isProofRequired fileLevel) then ()
+    else
+    for imp in file.Imports do
+        let pkgPath =
+            match imp.Path.Segments with
+            | xs when not (List.isEmpty xs) -> String.concat "." xs
+            | _ -> ""
+        if pkgPath = "" then ()
+        else
+        match imports |> List.tryFind (fun ip -> ip.Name = pkgPath) with
+        | None -> ()  // unresolved — silently pass
+        | Some ip ->
+            let calleeLevel = Imports.levelStringToMode ip.Contract.Level
+            // RuntimeChecked callees are inadmissible from
+            // proof-required code (per the partial order).  Axiom
+            // is admissible.  Other proof-required levels are
+            // admissible.
+            match calleeLevel with
+            | RuntimeChecked ->
+                diags.Add(
+                    Diagnostic.error "V0001"
+                        (sprintf "proof-required package may not import @runtime_checked package '%s'; mark callees @axiom or shift to @runtime_checked"
+                            pkgPath)
+                        imp.Span)
+            | _ -> ()
+
 /// Top-level entry: returns mode-check diagnostics for `file` plus
 /// the resolved file level.  Caller decides whether to proceed to
 /// VC generation (the rule of thumb is: any V0001/V0002/V0004 error
 /// stops the pipeline; V0005 is a warning shape today and will be
 /// promoted to error once the loop-invariant syntax lands).
-let checkFile (file: SourceFile) : VerificationLevel * Diagnostic list =
+let checkFileWithImports
+        (file: SourceFile)
+        (imports: Imports.ImportedPackage list)
+        : VerificationLevel * Diagnostic list =
     let level, levelDiags = levelOfFile file
     let diags = ResizeArray<Diagnostic>(levelDiags)
     if not (VerificationLevel.isProofRequired level) then
@@ -373,4 +418,11 @@ let checkFile (file: SourceFile) : VerificationLevel * Diagnostic list =
             | _        -> ()
         checkAxiomBodies diags level file
         checkQuantifierDomains diags level file
+        checkImportLevels diags level file imports
         level, List.ofSeq diags
+
+/// Backwards-compatible alias for the existing call sites that
+/// don't yet pass imports.  Equivalent to `checkFileWithImports`
+/// with an empty import list.
+let checkFile (file: SourceFile) : VerificationLevel * Diagnostic list =
+    checkFileWithImports file []
