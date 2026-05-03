@@ -190,6 +190,31 @@ let tests =
             | Discharged | Unknown _ -> ()
         }
 
+        test "match with literal + binding patterns produces a runnable VC" {
+            // M4.1 supports wildcard, literal, and bare-binding
+            // patterns.  The post here is `result == x or result == 0`,
+            // which holds by case analysis: when x == 0 we return 0,
+            // else we return x.
+            let src = """
+                @proof_required
+                package P
+
+                pub func absish(x: Int): Int
+                  ensures: result == x or result == 0
+                  = match x {
+                      case 0 -> 0
+                      case n -> n
+                    }
+                """
+            let summary = prove src
+            Expect.equal (ProofSummary.totalCount summary) 1 "one goal"
+            // Either Discharged (via z3) or Unknown (without).
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Counterexample _ -> failtest "match should not produce a counterexample"
+            | Discharged | Unknown _ -> ()
+        }
+
         test "assert phi in body produces a side goal AND assumes phi" {
             // The assertion `x == x` is a tautology (closes via the
             // trivial discharger); the post-assertion assumption

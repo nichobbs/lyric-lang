@@ -76,6 +76,20 @@ let private translateLit (lit: Literal) : Term =
     | Literal.LChar c           -> TLit(LInt(int64 c), SInt)
     | Literal.LUnit             -> TLit(LUnit, SDatatype("Unit", []))
 
+/// Cheap structural equality on Terms — used by the match
+/// translator to recognise unconditional `true` patterns.
+let rec private termEqInternal (a: Term) (b: Term) : bool =
+    match a, b with
+    | TVar(n1, s1), TVar(n2, s2) -> n1 = n2 && s1 = s2
+    | TLit(l1, _),  TLit(l2, _)  -> l1 = l2
+    | TBuiltin(o1, xs), TBuiltin(o2, ys) ->
+        o1 = o2 && List.length xs = List.length ys
+        && List.forall2 termEqInternal xs ys
+    | TApp(n1, xs, _), TApp(n2, ys, _) ->
+        n1 = n2 && List.length xs = List.length ys
+        && List.forall2 termEqInternal xs ys
+    | _ -> false
+
 /// Combine two translation results:  union the side conditions and
 /// assumptions; the term is replaced by the supplied combiner.
 let private combine
@@ -353,6 +367,114 @@ let rec translateExpr (env: Env) (e: Expr)
         | Some last -> translateExpr env last
         | None ->
             single (TLit(LUnit, SDatatype("Unit", [])))
+
+    | EMatch(scrutinee, arms) ->
+        // M4.1 fragment: handle wildcard, literal, and bare-binding
+        // patterns.  Constructor / record / tuple patterns are
+        // M4.2 work and fall through to a warning.
+        //
+        // Encoding: nested ite over the arms' match conditions,
+        // with each arm's body translated under an env extended by
+        // the pattern's bindings.
+        let scrutT, scrutDiags = translateExpr env scrutinee
+        let scrutTerm = scrutT.Term
+
+        let rec matchCond (pat: Pattern) (subject: Term) : Term option =
+            match pat.Kind with
+            | PWildcard -> Some Term.trueT
+            | PBinding(_, None) -> Some Term.trueT
+            | PBinding(_, Some inner) -> matchCond inner subject
+            | PLiteral lit ->
+                Some (TBuiltin(BOpEq, [subject; translateLit lit]))
+            | PParen inner -> matchCond inner subject
+            | _ -> None
+
+        let rec patternBindings (pat: Pattern) (subject: Term) : (string * Term) list =
+            match pat.Kind with
+            | PBinding(name, None)        -> [(name, subject)]
+            | PBinding(name, Some inner)  -> (name, subject) :: patternBindings inner subject
+            | PParen inner                -> patternBindings inner subject
+            | _ -> []
+
+        let mutable allDiags = scrutDiags
+        let mutable allSides = scrutT.SideConds
+        let mutable allAssumed = scrutT.Assumed
+
+        let translateArm (arm: MatchArm) : Term =
+            let bindings = patternBindings arm.Pattern scrutTerm
+            let env' =
+                bindings
+                |> List.fold
+                    (fun envAcc (name, term) ->
+                        let info = { Sort = Term.sortOf term; Range = RBKNone }
+                        Env.bindTerm name term info envAcc)
+                    env
+            let body, bodyDiags =
+                match arm.Body with
+                | EOBExpr x -> translateExpr env' x
+                | EOBBlock _ ->
+                    let d =
+                        Diagnostic.warning "V0028"
+                            "block-form match arm bodies not yet supported in M4.1 verifier"
+                            arm.Span
+                    { Term = TVar("?matchblock", SUninterp "matchblock")
+                      SideConds = []
+                      Assumed = [] }, [d]
+            allDiags <- allDiags @ bodyDiags
+            allSides <- allSides @ body.SideConds
+            allAssumed <- allAssumed @ body.Assumed
+            body.Term
+
+        // Walk arms; once a pattern matches unconditionally
+        // (`PWildcard` or bare `PBinding`), the remaining arms are
+        // unreachable and we use that arm's body directly as the
+        // tail of the ite chain.  This avoids emitting a fallthrough
+        // sort for exhaustive matches.
+        let rec build (arms: MatchArm list) : Term =
+            match arms with
+            | [] ->
+                // Non-exhaustive match — emit a sound-but-uninterpreted
+                // fallback.  Z3 will reject this with an error so the
+                // user sees a clear "non-exhaustive match" signal.
+                let d =
+                    Diagnostic.warning "V0029"
+                        "match in proof-required code is not exhaustive against the M4.1-supported pattern set"
+                        e.Span
+                allDiags <- allDiags @ [d]
+                TVar("?match.fallthrough", Term.sortOf scrutTerm)
+            | [arm] ->
+                // Last arm: if the pattern always matches, no ite
+                // needed — the arm's body is the result.
+                match matchCond arm.Pattern scrutTerm with
+                | Some t when termEqInternal t Term.trueT ->
+                    translateArm arm
+                | Some cond ->
+                    TIte(cond, translateArm arm, build [])
+                | None ->
+                    let d =
+                        Diagnostic.warning "V0027"
+                            "match arm pattern not yet supported in M4.1 verifier"
+                            arm.Span
+                    allDiags <- allDiags @ [d]
+                    build []
+            | arm :: rest ->
+                match matchCond arm.Pattern scrutTerm with
+                | Some t when termEqInternal t Term.trueT ->
+                    // This arm catches everything; the remaining
+                    // arms are dead.  Emit just this arm's body.
+                    translateArm arm
+                | Some cond ->
+                    TIte(cond, translateArm arm, build rest)
+                | None ->
+                    let d =
+                        Diagnostic.warning "V0027"
+                            "match arm pattern not yet supported in M4.1 verifier"
+                            arm.Span
+                    allDiags <- allDiags @ [d]
+                    build rest
+
+        let term = build arms
+        { Term = term; SideConds = allSides; Assumed = allAssumed }, allDiags
 
     | _ ->
         // Unsupported in M4.1 — emit a placeholder to keep the
