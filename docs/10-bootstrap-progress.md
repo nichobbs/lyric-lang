@@ -63,14 +63,24 @@ deferred to Phase 3 by design.
 | `Dictionary.TryGetValue` etc. callable directly via FFI | **Shipped** | (out-params) |
 | `tryInto` synthesis on projectable views | **Shipped** | (already in M2.2) |
 | `defer` + `return` (br→leave inside try) | **Shipped** | (already in M2.2) |
-| `@projectionBoundary` cycle handling | not started | — |
-| Real async state machines | deferred | — |
-| Reflection-driven FFI | not started | — |
-| `@stubbable` stub builder synthesis | not started | — |
-| Stdlib expansion (collections, time, json, http) | partial | — |
+| `@projectionBoundary` cycle handling | **Shipped** | (D-progress-019, T0092 diagnostic) |
+| Real async state machines | **Shipped** | (C2 chain D-progress-033..076; closed out by PR #62) |
+| Reflection-driven FFI | **Shipped** | (C4 phase 1 D-progress-026; phase 2 D-progress-061) |
+| `@stubbable` stub builder synthesis | **Shipped** | (D-progress-016; call counters D-progress-073) |
+| Stdlib expansion (collections, time, json, http) | **Shipped** | (Std.Time / Json / Http / Math / Random / Testing — D-progress-027..072) |
 
-### Phase 3 / 4 / 5
-Not started — gated on Phase 2 completion.
+### Phase 3 — package ecosystem + tooling (in progress)
+- Package manager — `lyric.toml` + `lyric publish` / `lyric restore` shipped
+  (D-progress-031 embedded contract resource; D-progress-077 manifest
+  + publish/restore wrappers).  Build-time consumer of restored Lyric
+  packages is the remaining loop, tracked under Tier 6.
+- LSP — push-diagnostics + completion / hover / go-to-definition shipped
+  (D-progress-017, 066).
+- Documentation generator (`lyric doc`) — bootstrap shipped (D-progress-023).
+- SemVer enforcement (`lyric public-api-diff`) — shipped (D-progress-062).
+- Tutorial — shipped (D-progress-065).
+- Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
+  tools need token-position-faithful traversal (decision: D-progress-029).
 
 ---
 
