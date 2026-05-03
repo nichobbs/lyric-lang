@@ -205,21 +205,45 @@ type ProtectedField =
       Type:  ClrType
       Field: FieldBuilder }
 
+/// Tri-modal lock flavour selection per Q008 + D-progress-087:
+///   * `PLSemaphore` — entry-only, no `when:` barriers.  Cheapest:
+///     binary `SemaphoreSlim(1, 1)`.  Every call takes the slot via
+///     `Wait()` / `Release()` (D-progress-083).
+///   * `PLRwLock` — declares at least one `func` AND no `when:`
+///     barriers.  Funcs take the read lock for concurrent reads;
+///     entries take the write lock (D-progress-081).
+///   * `PLMonitor` — declares at least one `when:` barrier on any
+///     entry / func.  Funcs lose concurrent reads (Monitor is the
+///     only BCL primitive that supports `Wait` / `PulseAll` for
+///     Ada-style condition-variable waiting).  Entries call
+///     `Monitor.PulseAll` after the body so blocked callers wake
+///     and re-evaluate their barriers (D-progress-087).
+type ProtectedLockFlavour =
+    | PLSemaphore
+    | PLRwLock
+    | PLMonitor
+
 type ProtectedTypeInfo =
-    { Name:       string
-      Type:       TypeBuilder
-      Ctor:       ConstructorBuilder
-      LockField:  FieldBuilder
-      /// `true` iff the protected type declares at least one `func`
-      /// member.  Per Q008 (`docs/09-msil-emission.md` §17.4) this
-      /// drives the lock-flavour split: types with funcs use
-      /// `ReaderWriterLockSlim` (entries take the write lock; funcs
-      /// take the read lock for concurrent reads); entry-only types
-      /// use a binary `SemaphoreSlim(1, 1)` that's cheaper for the
-      /// always-exclusive case.
-      UsesRwLock: bool
-      Fields:     ProtectedField list
-      Methods:    ProtectedMethod list }
+    { Name:        string
+      /// Open generic definition for `protected type Foo[T]`; the
+      /// concrete CLR type for non-generic protected types.
+      Type:        TypeBuilder
+      Ctor:        ConstructorBuilder
+      LockField:   FieldBuilder
+      /// Tri-modal lock-flavour split per Q008 + D-progress-087.
+      /// Drives the lock field's CLR type, the ctor's `Newobj`
+      /// argument, and the wrapper's acquire / release / barrier
+      /// shape.
+      LockFlavour: ProtectedLockFlavour
+      Fields:      ProtectedField list
+      Methods:     ProtectedMethod list
+      /// User-declared type-parameter names in declaration order, or
+      /// `[]` for non-generic protected types.  Drives call-site
+      /// `MakeGenericType` for `Box()` construction (closed via
+      /// `ctx.ExpectedType` per D-progress-079 follow-up: LHS-driven
+      /// type-arg inference) and `TypeBuilder.GetMethod` for
+      /// dispatching method calls on closed receivers.
+      Generics:    string list }
 
 type ProtectedTypeTable = Dictionary<string, ProtectedTypeInfo>
 

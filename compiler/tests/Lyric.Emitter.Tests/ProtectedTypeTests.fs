@@ -19,17 +19,6 @@ let private mk (label: string, source: string, expected: string) : Test =
         Expect.equal (stdout.TrimEnd()) expected
             "stdout matches expected"
 
-/// Source that's expected to fail compilation with a specific
-/// diagnostic code.  Used by the generic-protected-type case which
-/// surfaces `E920` while codegen + call-site type-arg dispatch
-/// are tracked as a follow-up.
-let private mkExpectErrorCode (label: string) (source: string) (code: string) : Test =
-    testCase (sprintf "[%s]" label) <| fun () ->
-        let result, _, _, _ = compileAndRun label source
-        let codes = result.Diagnostics |> List.map (fun d -> d.Code)
-        Expect.contains codes code
-            (sprintf "expected diagnostic %s; got: %A" code codes)
-
 let private cases : (string * string * string) list = [
 
     "pt_basic_counter",
@@ -235,11 +224,14 @@ func main(): Unit {
     "5\n10"
 
     "pt_when_barrier_throws_when_false",
-    // Barrier-not-met: `when: count > 0` is false at call time,
-    // so the wrapper throws BEFORE invoking the unsafe inner.
-    // Bootstrap-grade scope per `06-open-questions.md` Q008 —
-    // Ada-style condition-variable waiting lands once Phase C
-    // scope plumbing is mature.
+    // Barrier-not-met in a single-threaded program: the wrapper
+    // calls `Monitor.Wait(lock, timeoutMs)` and re-evaluates when
+    // signalled.  With no other thread to satisfy the barrier the
+    // wait times out (D-progress-087) and the wrapper throws —
+    // catch reports "blocked".  See Q008 for the bootstrap timeout
+    // semantics; Ada specifies infinite waits, the bootstrap uses
+    // a finite timeout to keep single-threaded misuses observable
+    // rather than deadlocked.
     """
 package E14
 
@@ -259,12 +251,16 @@ func main(): Unit {
 }
 """,
     "blocked"
-]
 
-let private genericNotYetEmitted =
-    mkExpectErrorCode
-        "pt_generic_not_yet_emitted"
-        """
+    "pt_generic_int",
+    // D-progress-079 follow-up: generic protected types lower via
+    // LHS-driven inference — `val b: Box[Int] = Box()` reads the
+    // expected CLR type from `ctx.ExpectedType` and closes the
+    // open generic Box<> via `MakeGenericType(int)`.  The entry +
+    // func dispatch then routes through `TypeBuilder.GetMethod` so
+    // the constructed `Box<int>::put` / `Box<int>::get` is the
+    // Callvirt target.
+    """
 package E14
 
 protected type Box[T] {
@@ -273,16 +269,70 @@ protected type Box[T] {
   func get(): T { return value }
 }
 
-func main(): Unit { () }
-"""
-        "E920"
+func main(): Unit {
+  val b: Box[Int] = Box()
+  b.put(42)
+  println(toString(b.get()))
+}
+""",
+    "42"
 
-/// D-progress-083: confirm the entry-only lock-flavour split.
-/// `Counter` declares only `entry` members so its `<>__lock` field
-/// is a `SemaphoreSlim`; `Box` mixes `entry` and `func` so its
-/// `<>__lock` is a `ReaderWriterLockSlim`.
+    "pt_generic_explicit_type_arg",
+    // D-progress-088: explicit `Box[Int]()` syntax (parses as
+    // `ECall(EIndex(EPath, [Int]), [])`) closes the generic ctor
+    // without needing an LHS type annotation.  Each index Expr is
+    // resolved as a TypeExpr through `ctx.ResolveType`, then the
+    // closed type is constructed via `MakeGenericType` /
+    // `TypeBuilder.GetConstructor`.
+    """
+package E14
+
+protected type Box[T] {
+  var value: T
+  entry put(v: in T) { value = v }
+  func get(): T { return value }
+}
+
+func main(): Unit {
+  val b = Box[Int]()
+  b.put(7)
+  println(toString(b.get()))
+}
+""",
+    "7"
+
+    "pt_generic_string",
+    // Same shape as `pt_generic_int` but closed against a reference
+    // type — confirms the GTPB substitution doesn't accidentally
+    // bake in a value-type-only path.
+    """
+package E14
+
+protected type Box[T] {
+  var value: T
+  entry put(v: in T) { value = v }
+  func get(): T { return value }
+}
+
+func main(): Unit {
+  val b: Box[String] = Box()
+  b.put("hello")
+  println(b.get())
+}
+""",
+    "hello"
+]
+
+/// D-progress-087: confirm the tri-modal lock-flavour split.
+///   * `EntryOnly` declares only `entry` members and no `when:`
+///     barriers → `<>__lock : SemaphoreSlim`.
+///   * `Mixed` mixes `entry` + `func` and no barriers →
+///     `<>__lock : ReaderWriterLockSlim` (concurrent reads).
+///   * `Barriered` declares a `when:` barrier on an entry → forced
+///     to `<>__lock : Object` (Monitor) so the wrapper can call
+///     `Monitor.Wait` / `Monitor.PulseAll` for Ada-style waiting.
 let private lockFlavourSplit : Test =
-    testCase "[lock_flavour] entry-only -> SemaphoreSlim, mixed -> ReaderWriterLockSlim" <| fun () ->
+    testCase "[lock_flavour] tri-modal: SemaphoreSlim / RWLock / Monitor (object)" <| fun () ->
         let label = "ProtectedLockFlavour"
         let source = """
 package E14
@@ -298,9 +348,15 @@ protected type Mixed {
   func get(): Int { return count }
 }
 
+protected type Barriered {
+  var count: Int
+  entry take() when: count > 0 { count = count - 1 }
+}
+
 func main(): Unit {
   val a = EntryOnly()
   val b = Mixed()
+  val c = Barriered()
   a.tick()
   b.tick()
   println(toString(b.get()))
@@ -315,31 +371,79 @@ func main(): Unit {
               RestoredPackages = [] }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
-        let entryTy =
-            asm.GetTypes()
-            |> Array.find (fun t -> t.Name = "EntryOnly")
-        let mixedTy =
-            asm.GetTypes()
-            |> Array.find (fun t -> t.Name = "Mixed")
-        let entryLock =
+        let lockOf (typeName: string) : System.Type =
+            let ty =
+                asm.GetTypes()
+                |> Array.find (fun t -> t.Name = typeName)
             match Option.ofObj
-                    (entryTy.GetField(
+                    (ty.GetField(
                         "<>__lock",
                         BindingFlags.NonPublic ||| BindingFlags.Instance)) with
-            | Some f -> f
-            | None -> failwith "entry-only lock field not present"
-        let mixedLock =
-            match Option.ofObj
-                    (mixedTy.GetField(
-                        "<>__lock",
-                        BindingFlags.NonPublic ||| BindingFlags.Instance)) with
-            | Some f -> f
-            | None -> failwith "mixed lock field not present"
-        Expect.equal entryLock.FieldType typeof<System.Threading.SemaphoreSlim>
+            | Some f -> f.FieldType
+            | None -> failwithf "%s lock field not present" typeName
+        Expect.equal (lockOf "EntryOnly") typeof<System.Threading.SemaphoreSlim>
             "entry-only protected types use SemaphoreSlim"
-        Expect.equal mixedLock.FieldType typeof<System.Threading.ReaderWriterLockSlim>
+        Expect.equal (lockOf "Mixed") typeof<System.Threading.ReaderWriterLockSlim>
             "mixed (entry + func) protected types use ReaderWriterLockSlim"
+        Expect.equal (lockOf "Barriered") typeof<obj>
+            "barrier-bearing protected types use Monitor (object lock)"
+
+/// D-progress-087: confirm Ada-style barrier waiting actually wakes
+/// blocked callers when another thread updates the protected-type
+/// state.  Compiles a `Bag` with `entry take() when: count > 0`,
+/// kicks off a Task that blocks on an empty bag, then has the main
+/// thread call `add(1)` after a brief delay.  The worker should
+/// unblock + complete; if the wake mechanism is broken it'd time
+/// out instead.
+let private adaStyleWakeOnBarrier : Test =
+    testCase "[barrier_wait_wakes_on_state_change]" <| fun () ->
+        let label = "ProtectedBarrierWake"
+        let source = """
+package E14
+
+protected type Bag {
+  var count: Int
+  entry add(n: in Int) { count = count + n }
+  entry take() when: count > 0 { count = count - 1 }
+}
+
+func main(): Unit { () }
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source           = source
+              AssemblyName     = label
+              OutputPath       = dll
+              RestoredPackages = [] }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let bagTy = asm.GetTypes() |> Array.find (fun t -> t.Name = "Bag")
+        let bag = System.Activator.CreateInstance(bagTy)
+        let getMethod (name: string) : System.Reflection.MethodInfo =
+            match Option.ofObj (bagTy.GetMethod(name)) with
+            | Some m -> m
+            | None -> failwithf "Bag.%s not found" name
+        let addM  = getMethod "add"
+        let takeM = getMethod "take"
+        // Worker blocks on the empty bag's barrier.
+        use workerDone = new System.Threading.ManualResetEventSlim(false)
+        let workerTask = System.Threading.Tasks.Task.Run(fun () ->
+            takeM.Invoke(bag, [||]) |> ignore
+            workerDone.Set())
+        // Give the worker a chance to enter Monitor.Wait, then signal
+        // by adding to the bag.  PulseAll in the entry wrapper wakes
+        // the waiter; it re-checks the barrier (now true) and runs.
+        System.Threading.Thread.Sleep(100)
+        addM.Invoke(bag, [| box 1 |]) |> ignore
+        let woke = workerDone.Wait(System.TimeSpan.FromSeconds 2.0)
+        Expect.isTrue woke
+            "worker should wake after add(1) signals the barrier"
+        // Surface any exception from the task so a bad IL emit
+        // doesn't silently masquerade as a wake failure.
+        if workerTask.IsFaulted then
+            failwithf "worker task faulted: %A" workerTask.Exception
 
 let tests =
     testList "protected types (D-progress-079)"
-        ((cases |> List.map mk) @ [ genericNotYetEmitted; lockFlavourSplit ])
+        ((cases |> List.map mk) @ [ lockFlavourSplit; adaStyleWakeOnBarrier ])

@@ -996,6 +996,57 @@ let private semaphoreReleaseMI : Lazy<MethodInfo> =
         | Some m -> m
         | None -> failwith "BCL: SemaphoreSlim.Release() not found")
 
+/// Static cache of `System.Threading.Monitor` lookups — used as the
+/// single-lock primitive for protected types that declare `when:`
+/// barriers (D-progress-087).  The barrier wrapper threads through
+/// `Monitor.Enter` / `Monitor.Wait(obj, int)` / `Monitor.PulseAll` /
+/// `Monitor.Exit` so blocked callers wake on state change and re-
+/// evaluate their barriers.
+let private monitorTy : System.Type = typeof<System.Threading.Monitor>
+
+let private monitorEnterMI : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (monitorTy.GetMethod("Enter", [| typeof<obj> |])) with
+        | Some m -> m
+        | None -> failwith "BCL: Monitor.Enter(object) not found")
+
+let private monitorExitMI : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (monitorTy.GetMethod("Exit", [| typeof<obj> |])) with
+        | Some m -> m
+        | None -> failwith "BCL: Monitor.Exit(object) not found")
+
+let private monitorPulseAllMI : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (monitorTy.GetMethod("PulseAll", [| typeof<obj> |])) with
+        | Some m -> m
+        | None -> failwith "BCL: Monitor.PulseAll(object) not found")
+
+/// `Monitor.Wait(object, int millisecondsTimeout)`.  The bootstrap
+/// uses a finite timeout so a single-threaded program calling an
+/// entry whose barrier never resolves throws an
+/// `LyricAssertionException` instead of deadlocking the test suite.
+/// The Ada language semantics specify infinite waits; the bootstrap
+/// timeout is a `06-open-questions.md` Q008 follow-up tracked under
+/// D-progress-087.
+let private monitorWaitMI : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj
+                (monitorTy.GetMethod("Wait", [| typeof<obj>; typeof<int> |])) with
+        | Some m -> m
+        | None -> failwith "BCL: Monitor.Wait(object, int) not found")
+
+/// Bootstrap-grade barrier-wait timeout in milliseconds.  Long enough
+/// for multi-threaded tests where one task satisfies the barrier after
+/// a brief delay (give the OS scheduler some slack); short enough for
+/// single-threaded "barrier never resolves" cases to surface as a
+/// runtime exception rather than a deadlock.  Tracked under
+/// `06-open-questions.md` Q008 — Ada specifies infinite waits; the
+/// finite timeout is a bootstrap concession to keep test suites
+/// terminating.
+[<Literal>]
+let private barrierWaitTimeoutMs = 1000
+
 /// Stash collected during Pass A so Pass B can emit each entry/func's
 /// body wrapped in the lock + barrier + invariant scaffolding.
 ///
@@ -1070,28 +1121,34 @@ let private defineProtectedTypeOnto
             fullName,
             TypeAttributes.Public ||| TypeAttributes.Sealed,
             typeof<obj>)
-    // Generic protected types (`protected type Foo[T]`) are recognised
-    // by the parser but the emitter doesn't yet wire a generic SM:
-    // even with `tb.DefineGenericParameters(...)` and field-type
-    // substitution in place, the call-site dispatch needs to treat
-    // `Foo[Int]()` (which parses as `ECall(EIndex(EPath, [Int]), [])`,
-    // not `ETypeApp`) as a generic ctor invocation.  Wiring the
-    // EIndex-as-type-app path is material follow-up work; until then
-    // we surface an `E920` and the user gets a clear "not yet
-    // supported" diagnostic rather than a runtime crash.
+    // Generic protected types (`protected type Foo[T]`) define their
+    // CLR generic parameters here.  Construction goes through the
+    // LHS-driven inference path: `val b: Box[Int] = Box()` reads the
+    // expected CLR type from `ctx.ExpectedType` and closes via
+    // `MakeGenericType` at the call site.  Method dispatch on a
+    // closed receiver routes via `TypeBuilder.GetMethod` so the
+    // `Callvirt` instruction targets the constructed method ref.
+    let typeParamNames : string list =
+        match pd.Generics with
+        | Some gs -> gs.Params |> List.map (function
+                                            | GPType(name, _)
+                                            | GPValue(name, _, _) -> name)
+        | None    -> []
+    let isGeneric = not typeParamNames.IsEmpty
+    let typeGtpbs : System.Type[] =
+        if isGeneric then
+            tb.DefineGenericParameters(typeParamNames |> List.toArray)
+            |> Array.map (fun g -> g :> System.Type)
+        else [||]
+    let typeParamSubst : Map<string, System.Type> =
+        if isGeneric then
+            typeParamNames
+            |> List.mapi (fun i n -> n, typeGtpbs.[i])
+            |> Map.ofList
+        else Map.empty
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
-    match pd.Generics with
-    | Some gs when not gs.Params.IsEmpty ->
-        codegenDiags.Add
-            (err "E920"
-                 (sprintf
-                    "generic `protected type %s[…]` not yet emitted (parser \
-                     accepts the syntax; codegen + call-site type-arg \
-                     dispatch are tracked under D-progress-079 follow-ups)"
-                    pd.Name)
-                 pd.Span)
-    | _ -> ()
+    if isGeneric then resolveCtx.Push(typeParamNames)
 
     // Fields — every PFVar/PFLet/PFImmutable becomes a public field.
     let fieldDecls =
@@ -1110,7 +1167,8 @@ let private defineProtectedTypeOnto
                 | PFImmutable fd -> fd.Name, fd.Type, None
             let lty =
                 Resolver.resolveType symbols resolveCtx scratchDiags ty
-            let cty = TypeMap.toClrTypeWith lookup lty
+            let cty =
+                TypeMap.toClrTypeWithGenerics lookup typeParamSubst lty
             let fb = tb.DefineField(name, cty, FieldAttributes.Public)
             name, fb, init)
     let fieldNames =
@@ -1119,20 +1177,41 @@ let private defineProtectedTypeOnto
         |> Set.ofList
 
     // Lock field — private object, allocated in the ctor.
-    // Lock field — Q008 lock-flavour split (D-progress-083):
-    //   * Types with at least one `func` use
-    //     `ReaderWriterLockSlim` so concurrent func reads can run
-    //     in parallel; `entry` calls take the write lock.
-    //   * Entry-only types use a binary `SemaphoreSlim(1, 1)`, a
-    //     simpler always-exclusive lock that's cheaper than the
-    //     reader-writer pair for the no-concurrent-reads case.
-    let usesRwLock =
+    // Lock field — Q008 tri-modal lock-flavour split:
+    //   * `PLMonitor` (D-progress-087) — any `when:` barrier on any
+    //     entry / func.  Single `obj` lock; barrier wrapper uses
+    //     `Monitor.Wait` / `Monitor.PulseAll` for Ada-style
+    //     condition-variable waiting.  Funcs lose concurrent reads
+    //     since `Monitor` is the only BCL primitive with Wait/Pulse.
+    //   * `PLRwLock` (D-progress-081) — declares at least one `func`
+    //     AND no barriers.  Funcs take the read lock; entries take
+    //     the write lock.
+    //   * `PLSemaphore` (D-progress-083) — entry-only AND no
+    //     barriers.  Binary `SemaphoreSlim(1, 1)`.
+    let hasBarriers =
+        pd.Members
+        |> List.exists (fun m ->
+            let contracts =
+                match m with
+                | PMEntry ed -> ed.Contracts
+                | PMFunc fn  -> fn.Contracts
+                | _ -> []
+            contracts |> List.exists (function CCWhen _ -> true | _ -> false))
+    let hasFuncs =
         pd.Members
         |> List.exists (fun m ->
             match m with
             | PMFunc _ -> true
             | _ -> false)
-    let lockFieldType = if usesRwLock then rwLockTy else semaphoreTy
+    let lockFlavour =
+        if hasBarriers then Records.PLMonitor
+        elif hasFuncs then Records.PLRwLock
+        else Records.PLSemaphore
+    let lockFieldType =
+        match lockFlavour with
+        | Records.PLMonitor   -> typeof<obj>
+        | Records.PLRwLock    -> rwLockTy
+        | Records.PLSemaphore -> semaphoreTy
     let lockField =
         tb.DefineField(
             "<>__lock",
@@ -1153,15 +1232,18 @@ let private defineProtectedTypeOnto
     match Option.ofObj objCtor with
     | Some c -> cil.Emit(OpCodes.Call, c)
     | None   -> failwith "object's no-arg ctor not found"
-    // this.<>__lock = new object()
     let objCtorNonNull =
         match Option.ofObj objCtor with
         | Some c -> c
         | None   -> failwith "object's no-arg ctor not found"
     cil.Emit(OpCodes.Ldarg_0)
-    if usesRwLock then
+    match lockFlavour with
+    | Records.PLMonitor ->
+        // Plain `new object()` — Monitor methods take any reference.
+        cil.Emit(OpCodes.Newobj, objCtorNonNull)
+    | Records.PLRwLock ->
         cil.Emit(OpCodes.Newobj, rwLockCtor.Value)
-    else
+    | Records.PLSemaphore ->
         // SemaphoreSlim(initialCount = 1, maxCount = 1) is the
         // binary-lock shape — Wait blocks until the single slot is
         // free; Release returns it.
@@ -1205,13 +1287,14 @@ let private defineProtectedTypeOnto
               Records.ProtectedField.Type  = fb.FieldType
               Records.ProtectedField.Field = fb })
     let info : Records.ProtectedTypeInfo =
-        { Name       = pd.Name
-          Type       = tb
-          Ctor       = ctor
-          LockField  = lockField
-          UsesRwLock = usesRwLock
-          Fields     = protectedFields
-          Methods    = [] } // methods filled below; pending records the live mb list
+        { Name        = pd.Name
+          Type        = tb
+          Ctor        = ctor
+          LockField   = lockField
+          LockFlavour = lockFlavour
+          Fields      = protectedFields
+          Methods     = [] // methods filled below; pending records the live mb list
+          Generics    = typeParamNames }
 
     let defineMethodPair (name: string) (paramList: Param list)
                           (returnTy: TypeExpr option) : MethodBuilder * MethodBuilder * System.Type[] * System.Type =
@@ -1219,7 +1302,8 @@ let private defineProtectedTypeOnto
             paramList
             |> List.map (fun p ->
                 let lty = Resolver.resolveType symbols resolveCtx scratchDiags p.Type
-                let bare = TypeMap.toClrTypeWith lookup lty
+                let bare =
+                    TypeMap.toClrTypeWithGenerics lookup typeParamSubst lty
                 match p.Mode with
                 | PMOut | PMInout -> bare.MakeByRefType()
                 | PMIn            -> bare)
@@ -1228,7 +1312,7 @@ let private defineProtectedTypeOnto
             match returnTy with
             | Some t ->
                 let lty = Resolver.resolveType symbols resolveCtx scratchDiags t
-                TypeMap.toClrReturnTypeWith lookup lty
+                TypeMap.toClrReturnTypeWithGenerics lookup typeParamSubst lty
             | None -> typeof<System.Void>
         let publicMb =
             tb.DefineMethod(
@@ -1250,7 +1334,12 @@ let private defineProtectedTypeOnto
 
     let synthSigOf (paramList: Param list) (returnTy: TypeExpr option) (isAsync: bool)
                    (span: Span) : ResolvedSignature =
-        { Generics = []
+        // For methods on a generic protected type, expose the class's
+        // type-parameter names as `sg.Generics` so `emitFunctionBody`
+        // can resolve `T` references in param / return / body
+        // positions to the GTPBs (recovered from `selfType` since the
+        // synthesised method itself isn't generic).
+        { Generics = typeParamNames
           Bounds   = []
           Params   =
             paramList
@@ -2181,7 +2270,23 @@ let private emitFunctionBody
                 | Some sm when sm.GenericParams.Length > 0 ->
                     sm.GenericParams |> Array.map (fun g -> g :> System.Type)
                 | _ ->
-                    mb.GetGenericArguments()
+                    let methodGtpbs = mb.GetGenericArguments()
+                    if methodGtpbs.Length = sg.Generics.Length then
+                        methodGtpbs
+                    else
+                        // Methods on a generic class that aren't
+                        // themselves generic (e.g. protected-type
+                        // entries / funcs synthesised in
+                        // `defineProtectedTypeOnto`) carry the class
+                        // generics in `sg.Generics`.  Recover the
+                        // GTPBs from the enclosing class via
+                        // `selfType.GetGenericArguments()`.
+                        match selfType with
+                        | Some st when st.IsGenericType
+                                       && st.GetGenericArguments().Length
+                                          = sg.Generics.Length ->
+                            st.GetGenericArguments()
+                        | _ -> methodGtpbs
             sg.Generics
             |> List.mapi (fun i name -> name, gtpbs.[i])
             |> Map.ofList
@@ -3864,16 +3969,43 @@ let private emitAssembly
                     true (Some (p.Owner.Type :> System.Type))
                     programTy wrapResolveType lookup codegenDiags
 
-            // Acquire lock per Q008's flavour split (D-progress-081
-            // for the RWLock pair, D-progress-083 for the
-            // entry-only SemaphoreSlim case):
-            //   * RWLock types: entries take the write lock; funcs
-            //     take the read lock so concurrent reads run in
-            //     parallel.
-            //   * SemaphoreSlim types (entry-only): every call
-            //     takes the single binary-lock slot via Wait().
+            // Generic-type self-references: when emitting IL inside a
+            // generic class, member references (Ldfld <>__lock,
+            // Call <unsafe>__name) must target the type instantiated
+            // on its own GTPBs — not the open generic definition.
+            // `TypeBuilder.GetField` / `GetMethod` rebind the open
+            // FieldBuilder / MethodBuilder onto the constructed-on-own-
+            // GTPBs type so the JIT closes them correctly when called
+            // on an actual closed instance.
+            let lockFieldRef : System.Reflection.FieldInfo =
+                if p.Owner.Generics.IsEmpty then
+                    p.LockField :> System.Reflection.FieldInfo
+                else
+                    let openDef = p.Owner.Type :> System.Type
+                    let selfClosed =
+                        openDef.MakeGenericType(openDef.GetGenericArguments())
+                    System.Reflection.Emit.TypeBuilder.GetField(
+                        selfClosed, p.LockField)
+            let unsafeMethodRef : System.Reflection.MethodInfo =
+                if p.Owner.Generics.IsEmpty then
+                    p.UnsafeMb :> System.Reflection.MethodInfo
+                else
+                    let openDef = p.Owner.Type :> System.Type
+                    let selfClosed =
+                        openDef.MakeGenericType(openDef.GetGenericArguments())
+                    System.Reflection.Emit.TypeBuilder.GetMethod(
+                        selfClosed, p.UnsafeMb)
+
+            // Acquire lock per Q008's tri-modal split:
+            //   * `PLMonitor` (D-progress-087): `Monitor.Enter`.
+            //   * `PLRwLock` (D-progress-081): `EnterWriteLock` for
+            //     entries, `EnterReadLock` for funcs.
+            //   * `PLSemaphore` (D-progress-083): `Wait()`.
             let acquireMI, releaseMI =
-                if p.Owner.UsesRwLock then
+                match p.Owner.LockFlavour with
+                | Records.PLMonitor ->
+                    monitorEnterMI.Value, monitorExitMI.Value
+                | Records.PLRwLock ->
                     let acq =
                         if p.IsEntry then rwEnterWriteMI.Value
                         else rwEnterReadMI.Value
@@ -3881,27 +4013,67 @@ let private emitAssembly
                         if p.IsEntry then rwExitWriteMI.Value
                         else rwExitReadMI.Value
                     acq, rel
-                else
+                | Records.PLSemaphore ->
                     semaphoreWaitMI.Value, semaphoreReleaseMI.Value
             il.Emit(OpCodes.Ldarg_0)
-            il.Emit(OpCodes.Ldfld, p.LockField)
-            il.Emit(OpCodes.Callvirt, acquireMI)
+            il.Emit(OpCodes.Ldfld, lockFieldRef)
+            il.Emit(OpCodes.Call, acquireMI)
 
             // Open try.
             il.BeginExceptionBlock() |> ignore
 
-            // Barrier checks (from `when: <cond>` clauses).  False
-            // throws — the bootstrap doesn't yet do Ada-style queue
-            // waiting (see `06-open-questions.md` Q008).
-            for barrier in p.Barriers do
-                emitContractCheck wrapCtx barrier
-                    (sprintf "%s: barrier failed" p.Fn.Name)
+            // Barriers (`when: <cond>` clauses):
+            //   * `PLMonitor`: emit a wait-loop that re-evaluates each
+            //     barrier under the held Monitor; on false, calls
+            //     `Monitor.Wait(lock, timeoutMs)` and re-checks when
+            //     signalled.  Timeout returns false → throw a barrier
+            //     diagnostic so a single-threaded program with a
+            //     barrier that never resolves fails loudly instead of
+            //     deadlocking the test suite.  D-progress-087.
+            //   * Other flavours: barriers can't appear (lock-flavour
+            //     selection routes any barrier-bearing type to
+            //     `PLMonitor`), so the loop is unused.
+            if p.Owner.LockFlavour = Records.PLMonitor
+               && not (List.isEmpty p.Barriers) then
+                let checkLabel = il.DefineLabel()
+                let bodyLabel  = il.DefineLabel()
+                let waitLabel  = il.DefineLabel()
+                let throwLabel = il.DefineLabel()
+                il.MarkLabel checkLabel
+                // Evaluate every barrier; on the first false, branch
+                // to the wait sub-block.  All-true falls through to
+                // bodyLabel.
+                for barrier in p.Barriers do
+                    let _ = Codegen.emitExpr wrapCtx barrier
+                    il.Emit(OpCodes.Brfalse, waitLabel)
+                il.Emit(OpCodes.Br, bodyLabel)
+                // Wait sub-block: Monitor.Wait(lock, timeoutMs);
+                //   timeout (Wait returns false) → throw;
+                //   signalled  (Wait returns true)  → re-check.
+                il.MarkLabel waitLabel
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldfld, lockFieldRef)
+                il.Emit(OpCodes.Ldc_I4, barrierWaitTimeoutMs)
+                il.Emit(OpCodes.Call, monitorWaitMI.Value)
+                il.Emit(OpCodes.Brfalse, throwLabel)
+                il.Emit(OpCodes.Br, checkLabel)
+                il.MarkLabel throwLabel
+                il.Emit(OpCodes.Ldstr,
+                        sprintf "%s: barrier wait timed out after %dms"
+                                p.Fn.Name barrierWaitTimeoutMs)
+                il.Emit(OpCodes.Newobj, lyricAssertCtor.Value)
+                il.Emit(OpCodes.Throw)
+                il.MarkLabel bodyLabel
+            else
+                for barrier in p.Barriers do
+                    emitContractCheck wrapCtx barrier
+                        (sprintf "%s: barrier failed" p.Fn.Name)
 
             // Forward `this` + each arg to the unsafe inner.
             il.Emit(OpCodes.Ldarg_0)
             for i in 0 .. p.ParamTypes.Length - 1 do
                 il.Emit(OpCodes.Ldarg, i + 1)
-            il.Emit(OpCodes.Call, p.UnsafeMb)
+            il.Emit(OpCodes.Call, unsafeMethodRef)
 
             // Stash the return value (if any) so finally can run
             // before we propagate it.
@@ -3918,14 +4090,25 @@ let private emitAssembly
                 emitContractCheck wrapCtx inv
                     (sprintf "%s: invariant failed" p.Owner.Name)
 
+            // PLMonitor entries call `Monitor.PulseAll` after the body
+            // so any callers blocked on a barrier wake and re-check
+            // their conditions.  Funcs don't pulse — they don't mutate
+            // state, so no barrier could newly become true.
+            if p.Owner.LockFlavour = Records.PLMonitor && p.IsEntry then
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldfld, lockFieldRef)
+                il.Emit(OpCodes.Call, monitorPulseAllMI.Value)
+
             // Leave to the post-try region.
             il.Emit(OpCodes.Leave, endLabel)
 
             // Finally: release the lock in matching mode.
             il.BeginFinallyBlock()
             il.Emit(OpCodes.Ldarg_0)
-            il.Emit(OpCodes.Ldfld, p.LockField)
-            il.Emit(OpCodes.Callvirt, releaseMI)
+            il.Emit(OpCodes.Ldfld, lockFieldRef)
+            match p.Owner.LockFlavour with
+            | Records.PLMonitor   -> il.Emit(OpCodes.Call, releaseMI)
+            | _                   -> il.Emit(OpCodes.Callvirt, releaseMI)
             il.EndExceptionBlock()
 
             // End label, then load result + ret.

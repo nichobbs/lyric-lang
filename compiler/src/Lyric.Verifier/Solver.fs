@@ -131,6 +131,15 @@ let private trivialDischarge (g: Goal) : SolverOutcome option =
         | TIte(_, a, b) when termEq a b -> true
         | _ -> false
 
+    // Flatten an `And` term into its individual conjuncts (recursing
+    // into nested ands).  Used when adopting an implication's
+    // antecedent as a hypothesis: `(p ∧ q) ⇒ p` should close because
+    // `p` is one of the conjuncts after flattening.
+    let rec flattenAnd (t: Term) : Term list =
+        match t with
+        | TBuiltin(BOpAnd, args) -> args |> List.collect flattenAnd
+        | _ -> [t]
+
     let rec closesGiven (hyps: Term list) (conclusion: Term) : bool =
         if isTautology conclusion then true
         elif hyps |> List.exists (termEq conclusion) then true
@@ -142,9 +151,11 @@ let private trivialDischarge (g: Goal) : SolverOutcome option =
         | TBuiltin(BOpImplies, [p; q]) ->
             // Adopt p as a hypothesis (only if it isn't already
             // structurally equal to q — that's the trivial P ⇒ P case
-            // already handled above).
+            // already handled above).  Conjunctive antecedents are
+            // flattened so `(p ∧ q) ⇒ p` closes via the `p`-in-hyps
+            // path on the recursion.
             if termEq p q then true
-            else closesGiven (p :: hyps) q
+            else closesGiven (flattenAnd p @ hyps) q
         | _ -> false
 
     if closesGiven g.Hypotheses g.Conclusion then

@@ -509,40 +509,35 @@ Cecil rewrite path so the infrastructure cost is low.
 All Band C items now have decisions (above).  Sequenced for
 progress-per-session and dependency unblocking:
 
-### Tier 1 — half-session quick wins, no dependencies
+### Tier 1 — half-session quick wins — shipped
 
-1. **C3 — const folding for range-subtype symbolic bounds.**  Closes
-   a known correctness gap (D-progress-003: bounds escape T0090 /
-   T0091 silently).  ~300 LOC + tests.
-2. **C4 phase 1 — strict-match auto-FFI.**  Resolve a name when
-   exactly one BCL overload matches by `(name, arg-arity, exact-
-   type-match)`.  Ergonomic win for the common case
-   (`xs.add(item)`); ambiguous calls still need `@externTarget` as
-   the escape hatch.
-3. **C5 Time expansion.**  IANA `zoneOf`, epoch-millis converters,
-   calendar arithmetic.  All thin FFI wrappers.
+1. ~~**C3 — const folding for range-subtype symbolic bounds.**~~ —
+   shipped via D-progress-025 (named-const lookup with cycle
+   detection, `+ - * / %` arithmetic with overflow checks; the
+   well-formedness checker T0090 / T0091 / new T0093 and the
+   emitter's range-check IL both consume the folded value).
+2. ~~**C4 phase 1 — strict-match auto-FFI.**~~ — shipped per the
+   C4 entry above (single-overload-by-arity-and-type resolution
+   for `recv.method(args)`; ambiguous calls still take
+   `@externTarget`).
+3. ~~**C5 Time expansion.**~~ — shipped per the C5 entry above
+   (IANA `zoneOf`, epoch-millis converters, calendar arithmetic
+   all live in `Std.Time`).
 
-### Tier 2 — mid-cost, high practical value
+### Tier 2 — mid-cost, high practical value — shipped
 
-4. **C6 wire blocks bootstrap-grade.**  Singleton + `@provided` +
-   multi-wire.  Combined with the already-shipped `@stubbable`,
-   unlocks worked-example #7's test-wire pattern + production
-   singleton DI.  ~1-1.5 sessions.
-5. **Reified generic records (`record Box[T] { value: T }`).**  Today
-   `record` declarations are non-generic at the CLR level — the
-   parser accepts `Box[T]` but the emitter's type-arg inference and
-   field-access lowering produce `InvalidProgramException` at
-   runtime.  Reified generic functions (PR #f8c04fe) and unions
-   (PR #9ad8962) already landed; records are the missing third leg.
-   Fresh re-implementation on top of the current main; the April-30
-   `claude/generic-records` branch (PR #43) is too far behind to
-   rebase cleanly so we'll do this from scratch.  Ordered before C5
-   Json source-gen because Json benefits from generic record support
-   (e.g. `record Page[T] { items: slice[T], total: Int }`).
-   ~1 session.
-6. **C5 Json source-gen.**  `@derive(Json)` on records synthesises
-   `toJson` / `fromJson` at compile time.  Unlocks REST services
-   without manual string concat.  ~1 session.
+4. ~~**C6 wire blocks bootstrap-grade.**~~ — shipped per the C6
+   entry above (singleton + `@provided` + multi-wire; combined
+   with `@stubbable` unlocks worked-example #7's test-wire
+   pattern + production singleton DI).
+5. ~~**Reified generic records (`record Box[T] { value: T }`).**~~ —
+   shipped via D-progress-029 (`record` declarations are now
+   reified at the CLR level; field-access lowering and type-arg
+   inference both work end-to-end).
+6. ~~**C5 Json source-gen.**~~ — shipped via D-progress-030 +
+   D-progress-032 (`@derive(Json)` synthesises `toJson` /
+   `fromJson` at compile time, with real String escaping landing
+   in the follow-up).
 
 ### Tier 3 — package ecosystem — shipped
 
@@ -626,24 +621,30 @@ progress-per-session and dependency unblocking:
 
 ### Why this order
 
-- **Tier 1** maintains momentum with concrete improvements that
-  don't block on anything.  Cleans up known correctness / ergonomic
+Tiers 1–5 are all shipped — see the strikethrough entries above for
+the corresponding D-progress numbers.  The original rationale, which
+the actual session order followed:
+
+- **Tier 1** maintained momentum with concrete improvements that
+  didn't block on anything.  Cleaned up known correctness / ergonomic
   gaps in a single session each.
-- **Tier 2** lands the high-leverage feature work that combines with
+- **Tier 2** landed the high-leverage feature work that combined with
   already-shipped pieces (`@stubbable`, records).  After Tier 2 the
-  compiler can express test-wire patterns and JSON-serializable
+  compiler could express test-wire patterns and JSON-serializable
   REST DTOs end-to-end.
-- **Tier 3** ships the package ecosystem before the biggest single
-  feature.  External users can publish libraries against the v0.x
-  Lyric while C2 is in flight; the embedded contract format lands
-  in every emitted assembly from this point forward.
-- **Tier 4** is C2 alone — long-running, focused effort.  Putting
-  it after package management means the async release is shippable
-  as a versioned package upgrade once it lands.
-- **Tier 5** is the post-C2 cleanup that completes the Http /
+- **Tier 3** shipped the package ecosystem before the biggest single
+  feature.  External users can now publish libraries against v0.x
+  Lyric; the embedded contract format lands in every emitted
+  assembly from D-progress-031 forward.
+- **Tier 4** was C2 alone — long-running, focused effort.  Putting
+  it after package management meant the async release was shippable
+  as a versioned package upgrade once it landed.
+- **Tier 5** was the post-C2 cleanup that completed the Http /
   wire-scope stories.
 - **Tier 6** is the work that doesn't gate v1.0 — formatter,
-  varargs polish, RE2, FFI fanciness — done on demand.
+  varargs polish, RE2, FFI fanciness, generic interface methods +
+  impl-block generics — done on demand as bootstrap consumers
+  surface real needs.
 
 ---
 

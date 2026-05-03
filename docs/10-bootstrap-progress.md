@@ -80,8 +80,14 @@ deferred to Phase 3 by design.
 - SemVer enforcement (`lyric public-api-diff`) — shipped (D-progress-062).
 - Tutorial — shipped (D-progress-065).
 - Protected types — bootstrap-grade Monitor wrap shipped
-  (D-progress-079); `when:` barriers + `invariant:` checks tracked as
-  follow-ups gated on Phase C scope plumbing.
+  (D-progress-079); `when:` barriers + `invariant:` checks +
+  `ReaderWriterLockSlim`/`SemaphoreSlim` lock-flavour split + generic
+  protected types (`Box[T]`) + Ada-style condition-variable barrier
+  waiting all shipped under D-progress-080 / 081 / 083 / 086 / 087.
+  Bootstrap concession: barrier waits use a finite timeout (currently
+  1s) so single-threaded misuses surface as exceptions instead of
+  deadlocks; Ada's infinite-wait semantics are tracked as Q008
+  follow-up.
 - Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
   tools need token-position-faithful traversal (decision: D-progress-029).
 
@@ -89,7 +95,7 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
-### D-progress-087: Phase 4 verifier — M4.2 (cross-package + loops + var SSA + cache)
+### D-progress-089: Phase 4 verifier — M4.2 (cross-package + loops + var SSA + cache)
 
 *claude/phase-4-proof-plan-tVGu7 branch (continuation of
 D-progress-085, M4.1 polish).*  Lands the five M4.2 decisions
@@ -191,6 +197,202 @@ alias forwarding to the M4.2 imports/cache-aware version with
 **Tests.**  71 verifier-suite tests (was 63; +8 covering loops,
 var SSA, record encoding, cross-package import shapes).  All
 1141 tests pass solution-wide.
+
+---
+
+### D-progress-088: protected types — `Box[Int]()` explicit-type-arg construction
+*claude/protected-type-explicit-type-args branch.*  Closes the
+remaining D-progress-086 follow-up: generic protected types can now
+be constructed with explicit type-arg syntax, no LHS annotation
+required.
+
+`Box[Int]()` parses as
+`ECall(EIndex(EPath{Box}, [EPath{Int}]), [])`.  A new dispatch arm
+in `Codegen.fs`, ordered before the existing LHS-driven
+construction arm, matches that shape when the path resolves to a
+known generic protected type and at least one index expression is
+present.  Each index `Expr` is wrapped as a synthetic
+`TypeExpr.TRef` and routed through the existing `ctx.ResolveType`
+pipeline, so primitives (`Int`, `String`), user types, and
+qualified paths resolve uniformly.  `MakeGenericType` +
+`TypeBuilder.GetConstructor` then close the open ctor handle.
+
+Type-arity mismatches surface as a deliberate `failwithf`
+diagnostic so a malformed `Box[Int, String]()` doesn't silently
+crash inside `MakeGenericType`.  Nested/computed type expressions
+(`Box[List[Int]]()`) also work transitively because `TRef` /
+`TGenericApp` resolution is recursive.
+
+One new test in `ProtectedTypeTests.fs`:
+
+- `pt_generic_explicit_type_arg` exercises `val b = Box[Int]()`
+  (no LHS annotation), confirms `b.put(7)` + `b.get()` round-trip.
+
+All 467 emitter tests pass post-change (was 466; +1 net new).
+
+---
+
+### D-progress-087: protected types — Ada-style barrier waiting via tri-modal lock selection
+*claude/protected-type-barrier-wait branch.*  Closes the second half
+of Q008's lock-flavour decision (`docs/06-open-questions.md`,
+`docs/09-msil-emission.md` §17.4): a `when:` barrier on an entry no
+longer immediately throws `LyricAssertionException` when the
+condition is false.  Instead the wrapper waits on a condition variable
+until another thread satisfies the barrier, then re-checks and
+proceeds.  Same scheme Ada uses for `entry … when …`.
+
+Decision per the Q008 recommendation: ship Option C (tri-modal lock
+selection).  The barrier semantics need `Wait` / `Pulse` primitives
+and `Monitor` is the only BCL lock with both.  `ReaderWriterLockSlim`
++ `SemaphoreSlim` don't support Wait/Pulse, so any protected type
+that declares a barrier is forced onto `Monitor` (losing concurrent
+reads); types without barriers keep the cheaper RWLock /
+SemaphoreSlim from D-progress-081 / 083.
+
+Lock-flavour selection (codegen-time, in `defineProtectedTypeOnto`):
+
+| `hasBarriers` | `hasFuncs` | Lock chosen        |
+|---------------|------------|--------------------|
+| true          | (any)      | `PLMonitor`        |
+| false         | true       | `PLRwLock`         |
+| false         | false      | `PLSemaphore`      |
+
+`Records.ProtectedTypeInfo.UsesRwLock: bool` is replaced with a
+`LockFlavour: ProtectedLockFlavour` discriminated union
+(`PLSemaphore | PLRwLock | PLMonitor`).
+
+Wrapper IL for the Monitor flavour with at least one barrier:
+
+```
+Monitor.Enter(this.<>__lock)
+.try {
+  L_check:
+    if (!barrier_1) goto L_wait
+    ...
+    if (!barrier_n) goto L_wait
+    goto L_body
+  L_wait:
+    if (Monitor.Wait(this.<>__lock, timeoutMs))
+       goto L_check          // signalled — re-evaluate
+    else
+       throw LyricAssertionException(
+         "<entry>: barrier wait timed out after Xms")
+  L_body:
+    result = <unsafe>__name(this, args)
+    // invariant checks
+    if (isEntry) Monitor.PulseAll(this.<>__lock)  // wake waiters
+    leave end
+} finally {
+  Monitor.Exit(this.<>__lock)
+}
+end:
+  [ldloc result]
+  ret
+```
+
+The PulseAll runs only after entry bodies (funcs are read-only and
+can't make any new barrier become true).  The wait timeout is a
+bootstrap concession — Ada specifies infinite waits, but a finite
+timeout means a single-threaded program calling an entry whose
+barrier never resolves throws an exception instead of hanging the
+test suite.  Currently 1 second, hard-coded as
+`barrierWaitTimeoutMs`.
+
+Two new tests in `ProtectedTypeTests.fs`:
+
+- `[lock_flavour]` (existing test, expanded): now confirms all three
+  lock flavours via reflection — entry-only → `SemaphoreSlim`,
+  mixed → `ReaderWriterLockSlim`, barrier-bearing → `Object`
+  (Monitor).
+- `[barrier_wait_wakes_on_state_change]` (new): compiles a `Bag` with
+  `entry take() when: count > 0`, kicks off a worker `Task` that
+  blocks on the empty bag, then has the main thread call `add(1)`
+  100ms later.  The PulseAll wakes the waiter; it re-checks the
+  barrier (now true) and completes.  Asserts the worker finishes
+  within 2 seconds.
+
+The existing `pt_when_barrier_throws_when_false` test still passes:
+in a single-threaded program, calling `take()` on an empty bag
+blocks waiting for state change, hits the 1-second timeout, and
+throws — same observable "blocked" output as before, just via the
+wait/timeout path instead of an immediate throw.
+
+All 466 emitter tests pass post-change (was 465; +1 net new — the
+wake test).
+
+---
+
+### D-progress-086: protected types — generic `Box[T]` via LHS-driven inference
+*claude/protected-type-generics-impl branch.*  Closes the first half
+of the D-progress-082 follow-up: `protected type Box[T] { var value:
+T; entry put(v: in T); func get(): T }` now lowers to a real CLR
+generic class, replacing the `E920` diagnostic with a working emit
+path.
+
+Decision per Q008 follow-up: ship Option A (LHS-driven inference)
+rather than Option B (`Box[Int]()` EIndex-as-type-app).  Option A
+mirrors the nullary union-case path (`val o: Option[Int] = None`)
+that's already in the bootstrap and reuses the existing
+`ctx.ExpectedType` plumbing — `val b: Box[Int] = Box()` reads the
+expected closed CLR type, calls `MakeGenericType` against the open
+TypeBuilder, and looks up the constructed ctor through
+`TypeBuilder.GetConstructor`.  EIndex-as-type-app is tracked as
+follow-up but isn't in the critical path for bootstrap consumers.
+
+Implementation in three pieces:
+
+- **Pass A** (`defineProtectedTypeOnto` in `Emitter.fs`):
+  `tb.DefineGenericParameters(typeParamNames)` produces the GTPBs;
+  a `name → GTPB` substitution map is threaded through field-type,
+  method param-type, and method return-type lookups via
+  `TypeMap.toClrTypeWithGenerics` / `toClrReturnTypeWithGenerics`.
+  The `Records.ProtectedTypeInfo.Generics` field is added so call
+  sites can detect the generic case.
+- **Body emit** (`emitFunctionBody`): synthesised entry/func
+  signatures carry the class's type-parameter names in
+  `sg.Generics`; the GTPB recovery falls back to
+  `selfType.GetGenericArguments()` when the method itself isn't
+  generic but its declaring class is.  This lets `var x: T` and
+  `return value` references resolve to the right GTPB.
+- **Call sites** (`Codegen.fs`):
+  - **Construction**: `ECall (EPath {name}, [])` for a generic
+    protected type reads `ctx.ExpectedType`; if it's a closed
+    generic of the same open def, `MakeGenericType` +
+    `TypeBuilder.GetConstructor` produce the constructed ctor ref;
+    otherwise the args fall back to `obj` (M1.4 erasure parity).
+  - **Method dispatch**: the protected-method picker compares the
+    receiver's open generic def (via `GetGenericTypeDefinition`)
+    against `info.Type`.  For a closed receiver,
+    `TypeBuilder.GetMethod(recvTy, openMb)` produces the
+    constructed method ref.  A new `substituteGenericArgs` helper
+    rebinds the open method's `ReturnType` against the closed
+    receiver's generic args so downstream consumers (boxing on
+    `toString`, expected-type propagation) see the substituted
+    type instead of the bare GTPB.
+  - **Wrapper IL** (`Pass B.6`): the lock-field `Ldfld` and the
+    `<unsafe>__name` `Call` rebind onto the type instantiated on
+    its own GTPBs (`TypeBuilder.GetField` /
+    `TypeBuilder.GetMethod`).  Without the rebind, the JIT throws
+    `InvalidOperationException: Could not execute the method
+    because either the method itself or the containing type is not
+    fully instantiated.`
+
+Two new tests in `ProtectedTypeTests.fs` (replacing the
+`pt_generic_not_yet_emitted` E920 test):
+
+- `pt_generic_int` exercises a `Box[Int]` round-trip
+  (value-type closure).
+- `pt_generic_string` does the same for `Box[String]`
+  (reference-type closure).
+
+All 463 tests pass post-change (was 462; +1 net new — removed the
+E920 test, added two generic round-trip tests).
+
+The remaining piece — `Box[Int]()` EIndex-as-type-app dispatch — is
+deferred until a bootstrap consumer actually needs to construct a
+generic protected type without an LHS type annotation.
+
+---
 
 ### D-progress-085: Phase 4 verifier — M4.1 polish (call rule, match, assert, V0006)
 
