@@ -13,6 +13,13 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    env:
+      # `[Lyric.*]*` instruments every type in our source assemblies;
+      # `[*.Tests]*` keeps the test projects themselves out of the
+      # numerator/denominator so the report measures product code only.
+      COVERLET_INCLUDE: '[Lyric.*]*'
+      COVERLET_EXCLUDE: '[*.Tests]*'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +28,12 @@ jobs:
         with:
           global-json-file: compiler/global.json
 
+      - name: Install coverage tools
+        run: |
+          dotnet tool install --global coverlet.console
+          dotnet tool install --global dotnet-reportgenerator-globaltool
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
       - name: Restore
         working-directory: compiler
         run: dotnet restore Lyric.sln
@@ -28,6 +41,14 @@ jobs:
       - name: Build
         working-directory: compiler
         run: dotnet build Lyric.sln --configuration Debug --no-restore
+
+      # ----------------------------------------------------------------
+      # Tests run normally first — these gates determine build pass/fail.
+      # Coverage is then collected as a best-effort second pass below;
+      # if coverlet hits a snag (F#/Expecto edge case, version drift),
+      # the build still passes and the coverage step just skips its
+      # report.
+      # ----------------------------------------------------------------
 
       - name: Lexer tests
         working-directory: compiler
@@ -44,6 +65,96 @@ jobs:
       - name: Emitter tests
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
+
+      - name: Collect coverage (best-effort)
+        id: coverage
+        if: always()
+        continue-on-error: true
+        working-directory: compiler
+        run: |
+          set +e
+          mkdir -p coverage
+
+          # Discover every test DLL under tests/*.Tests and run each
+          # through coverlet. A failure on a single project is logged
+          # but doesn't stop the others — the merged report shows
+          # whatever was successfully measured.
+          status=0
+          for proj in tests/*.Tests; do
+            name=$(basename "$proj" | tr '[:upper:]' '[:lower:]' \
+              | sed 's/^lyric\.//; s/\.tests$//')
+            dll="$proj/bin/Debug/net9.0/$(basename "$proj").dll"
+            if [ ! -f "$dll" ]; then
+              echo "::warning::test dll not found: $dll"
+              continue
+            fi
+            echo "=== coverage: $name ==="
+            coverlet "$dll" \
+              --target dotnet \
+              --targetargs "$dll" \
+              --format cobertura \
+              --output "coverage/${name}.cobertura.xml" \
+              --include "${COVERLET_INCLUDE}" \
+              --exclude "${COVERLET_EXCLUDE}" \
+              --verbosity normal
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "::warning::coverlet exited $rc for $name"
+              status=$rc
+            fi
+          done
+          # Surface a single overall status but never fail the step
+          # (continue-on-error is set, but be explicit).
+          echo "coverlet_status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Generate coverage report
+        if: always()
+        working-directory: compiler
+        run: |
+          shopt -s nullglob
+          files=(coverage/*.cobertura.xml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No cobertura files found; skipping report."
+            exit 0
+          fi
+          reportgenerator \
+            -reports:'coverage/*.cobertura.xml' \
+            -targetdir:coverage/report \
+            -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
+
+      - name: Append coverage to job summary
+        if: always()
+        working-directory: compiler
+        run: |
+          {
+            echo "## Code coverage"
+            echo
+            if [ -f coverage/report/SummaryGithub.md ]; then
+              cat coverage/report/SummaryGithub.md
+            else
+              echo "_Coverage data not produced for this build._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Print coverage summary to log
+        if: always()
+        working-directory: compiler
+        run: |
+          if [ -f coverage/report/Summary.txt ]; then
+            cat coverage/report/Summary.txt
+          else
+            echo "(no coverage summary)"
+          fi
+
+      - name: Upload coverage report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: compiler/coverage/report/
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Smoke-test the CLI on examples
         working-directory: compiler
