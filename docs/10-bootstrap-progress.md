@@ -82,15 +82,108 @@ deferred to Phase 3 by design.
 - Protected types — bootstrap-grade Monitor wrap shipped
   (D-progress-079); `when:` barriers + `invariant:` checks +
   `ReaderWriterLockSlim`/`SemaphoreSlim` lock-flavour split + generic
-  protected types (`Box[T]`) all shipped under D-progress-080 / 081 /
-  083 / 086.  Ada-style condition-variable barrier waiting still gated
-  on Phase C scope plumbing — bootstrap throws on barrier-not-met.
+  protected types (`Box[T]`) + Ada-style condition-variable barrier
+  waiting all shipped under D-progress-080 / 081 / 083 / 086 / 087.
+  Bootstrap concession: barrier waits use a finite timeout (currently
+  1s) so single-threaded misuses surface as exceptions instead of
+  deadlocks; Ada's infinite-wait semantics are tracked as Q008
+  follow-up.
 - Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
   tools need token-position-faithful traversal (decision: D-progress-029).
 
 ---
 
 ## Active session decisions
+
+### D-progress-087: protected types — Ada-style barrier waiting via tri-modal lock selection
+*claude/protected-type-barrier-wait branch.*  Closes the second half
+of Q008's lock-flavour decision (`docs/06-open-questions.md`,
+`docs/09-msil-emission.md` §17.4): a `when:` barrier on an entry no
+longer immediately throws `LyricAssertionException` when the
+condition is false.  Instead the wrapper waits on a condition variable
+until another thread satisfies the barrier, then re-checks and
+proceeds.  Same scheme Ada uses for `entry … when …`.
+
+Decision per the Q008 recommendation: ship Option C (tri-modal lock
+selection).  The barrier semantics need `Wait` / `Pulse` primitives
+and `Monitor` is the only BCL lock with both.  `ReaderWriterLockSlim`
++ `SemaphoreSlim` don't support Wait/Pulse, so any protected type
+that declares a barrier is forced onto `Monitor` (losing concurrent
+reads); types without barriers keep the cheaper RWLock /
+SemaphoreSlim from D-progress-081 / 083.
+
+Lock-flavour selection (codegen-time, in `defineProtectedTypeOnto`):
+
+| `hasBarriers` | `hasFuncs` | Lock chosen        |
+|---------------|------------|--------------------|
+| true          | (any)      | `PLMonitor`        |
+| false         | true       | `PLRwLock`         |
+| false         | false      | `PLSemaphore`      |
+
+`Records.ProtectedTypeInfo.UsesRwLock: bool` is replaced with a
+`LockFlavour: ProtectedLockFlavour` discriminated union
+(`PLSemaphore | PLRwLock | PLMonitor`).
+
+Wrapper IL for the Monitor flavour with at least one barrier:
+
+```
+Monitor.Enter(this.<>__lock)
+.try {
+  L_check:
+    if (!barrier_1) goto L_wait
+    ...
+    if (!barrier_n) goto L_wait
+    goto L_body
+  L_wait:
+    if (Monitor.Wait(this.<>__lock, timeoutMs))
+       goto L_check          // signalled — re-evaluate
+    else
+       throw LyricAssertionException(
+         "<entry>: barrier wait timed out after Xms")
+  L_body:
+    result = <unsafe>__name(this, args)
+    // invariant checks
+    if (isEntry) Monitor.PulseAll(this.<>__lock)  // wake waiters
+    leave end
+} finally {
+  Monitor.Exit(this.<>__lock)
+}
+end:
+  [ldloc result]
+  ret
+```
+
+The PulseAll runs only after entry bodies (funcs are read-only and
+can't make any new barrier become true).  The wait timeout is a
+bootstrap concession — Ada specifies infinite waits, but a finite
+timeout means a single-threaded program calling an entry whose
+barrier never resolves throws an exception instead of hanging the
+test suite.  Currently 1 second, hard-coded as
+`barrierWaitTimeoutMs`.
+
+Two new tests in `ProtectedTypeTests.fs`:
+
+- `[lock_flavour]` (existing test, expanded): now confirms all three
+  lock flavours via reflection — entry-only → `SemaphoreSlim`,
+  mixed → `ReaderWriterLockSlim`, barrier-bearing → `Object`
+  (Monitor).
+- `[barrier_wait_wakes_on_state_change]` (new): compiles a `Bag` with
+  `entry take() when: count > 0`, kicks off a worker `Task` that
+  blocks on the empty bag, then has the main thread call `add(1)`
+  100ms later.  The PulseAll wakes the waiter; it re-checks the
+  barrier (now true) and completes.  Asserts the worker finishes
+  within 2 seconds.
+
+The existing `pt_when_barrier_throws_when_false` test still passes:
+in a single-threaded program, calling `take()` on an empty bag
+blocks waiting for state change, hits the 1-second timeout, and
+throws — same observable "blocked" output as before, just via the
+wait/timeout path instead of an immediate throw.
+
+All 466 emitter tests pass post-change (was 465; +1 net new — the
+wake test).
+
+---
 
 ### D-progress-086: protected types — generic `Box[T]` via LHS-driven inference
 *claude/protected-type-generics-impl branch.*  Closes the first half
