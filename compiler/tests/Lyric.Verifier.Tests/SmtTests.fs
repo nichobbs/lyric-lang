@@ -60,4 +60,59 @@ let tests =
             let smt = renderGoal g
             Expect.stringContains smt "(assert (not " "wraps in not"
         }
+
+        test "ite term renders with three operands" {
+            let g =
+                { Hypotheses = []
+                  Conclusion = TIte(TVar("c", SBool),
+                                    TLit(LInt 1L, SInt),
+                                    TLit(LInt 0L, SInt))
+                  Symbols    = []
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "ite" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(ite c 1 0)" "ite shape"
+        }
+
+        test "negative integer literal renders with the (-) operator" {
+            let g =
+                { Hypotheses = []
+                  Conclusion = TBuiltin(BOpEq, [TVar("x", SInt); TLit(LInt -7L, SInt)])
+                  Symbols    = []
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "neg" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(- 7)" "negative literal"
+        }
+
+        test "forall renders with binders and body" {
+            let g =
+                { Hypotheses = []
+                  Conclusion = TForall(
+                                  [("k", SInt)],
+                                  [],
+                                  TBuiltin(BOpEq, [TVar("k", SInt); TVar("k", SInt)]))
+                  Symbols    = []
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "forall" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(forall ((k Int))" "forall header"
+            Expect.stringContains smt "(= k k)" "body"
+        }
+
+        test "datatype symbols emit declare-datatypes" {
+            let g =
+                { Hypotheses = []
+                  Conclusion = TLit(LBool true, SBool)
+                  Symbols    = [ Datatype("Pair", [("Mk", [("fst", SInt); ("snd", SInt)])]) ]
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "dt" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(declare-datatypes ((Pair 0))" "datatype"
+            Expect.stringContains smt "(Mk (fst Int) (snd Int))" "ctor"
+        }
     ]
