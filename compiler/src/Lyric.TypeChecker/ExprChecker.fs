@@ -60,9 +60,10 @@ let private codegenBuiltinType (name: string) : Type option =
     match name with
     | "println" ->
         // `println` is polymorphic in its argument: codegen routes
-        // string args through Console.Println(string) and everything
-        // else through Console.PrintlnAny(obj) with auto-boxing.  The
-        // type checker mirrors that by accepting any single argument.
+        // string args directly through System.Console.WriteLine(string)
+        // and everything else through Console.PrintlnAny(obj) with
+        // auto-boxing.  The type checker mirrors that by accepting
+        // any single argument.
         Some (TyFunction([TyError], TyPrim PtUnit, false))
     | "toString" ->
         // Polymorphic in its argument like `println`; codegen routes

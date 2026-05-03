@@ -21,20 +21,15 @@ let private captureStdout (action: unit -> unit) : string =
 // `System.Console.SetOut` is process-global, so the captureStdout
 // pattern cannot run in parallel with anything else that writes to
 // stdout. Mark this list as sequenced.
+//
+// The trivial `Console.Println(string)` / `Console.Print(string)`
+// wrappers were retired in P0/3 of D038 — `println(string)` now
+// targets `System.Console.WriteLine` directly. The remaining
+// Contracts coverage stays here because the assertion-exception
+// shape is still F#-side.
 let tests =
     testSequenced
     <| testList "stdlib shim" [
-
-        test "Console.Println writes the line plus newline" {
-            let out = captureStdout (fun () -> Console.Println("hello"))
-            Expect.equal out (sprintf "hello%s" System.Environment.NewLine)
-                "println output"
-        }
-
-        test "Console.Print writes without a newline" {
-            let out = captureStdout (fun () -> Console.Print("hi"))
-            Expect.equal out "hi" "print output"
-        }
 
         test "Contracts.Expect succeeds on a true condition" {
             // No exception should escape.
