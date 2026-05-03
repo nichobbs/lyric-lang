@@ -20,7 +20,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 4. **Contracts first**: Public functions declare preconditions and postconditions; contracts are checked at runtime in `@runtime_checked` modules.
 5. **Opaque domain types**: Core domain abstractions (File, Path, HttpResponse) are opaque; DTOs for wire transfer are exposed records.
 
-## Phase 1 — Spec and shape (current)
+## Phase 1 — Spec and shape (shipped)
 
 **Goal**: Define stdlib source layout and decide what stays in Lyric source vs. F# shim.
 
@@ -73,12 +73,14 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 - ✅ Generic Option/Result unions in core.l
 - ✅ IO and Http FFI boundary stubs created
 - ✅ Test harness updated to inline all stdlib files
-- 🔄 Error model unions need definition
-- 🔄 Parse error handling needs design
+- ✅ Error model unions defined (`IOError`, `HttpError`, `ParseError`)
+- ✅ Parse error handling shipped — `Std.Parse.tryParse{Int,Long,Double,Bool}`
+  return `Result[T, ParseError]` with explicit `Empty / NotANumber / OutOfRange`
+  variants (D-progress-014; subsequent collapse onto BCL's `TryParse`)
 
 ---
 
-## Phase 2 — Core coverage (next)
+## Phase 2 — Core coverage (shipped)
 
 **Goal**: Flesh out primitives, containers, and safe parsing.
 
@@ -133,7 +135,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 
 ---
 
-## Phase 3 — IO foundation (in progress)
+## Phase 3 — IO foundation (shipped)
 
 **Goal**: Safe, `Result`-based file and console I/O.
 
@@ -189,7 +191,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 
 ---
 
-## Phase 4 — HTTP / networking (in progress)
+## Phase 4 — HTTP / networking (shipped)
 
 **Goal**: Safe, `Result`-based HTTP client and server foundations.
 
@@ -233,19 +235,20 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 
 6. **High-level helpers**
    - `Http.retry(request, maxAttempts, backoffMs): Result[HttpResponse, HttpError]` ✅ immediate retry shape
-   - `Http.timeout(request, durationMs): Result[HttpResponse, HttpError]` (deferred to Phase 5 Clock/Duration)
-   - `Http.followRedirects(response): Result[HttpResponse, HttpError]` (deferred to redirect policy design)
+   - `Http.timeout(request, durationMs): Result[HttpResponse, HttpError]` ✅ shipped via D-progress-070 (real BCL timeout threading)
+   - `Http.followRedirects(response): Result[HttpResponse, HttpError]` ✅ shipped via D-progress-070 (configurable redirect policy)
+   - Cancellation tokens threaded through every `*Async` entry ✅ shipped via D-progress-070 (gated on the C2 async chain)
 
 ### Milestones
 
 - **P4.1**: Basic HTTP client drafted (GET, POST with string bodies)
 - **P4.2**: Response parsing and error handling drafted
-- **P4.3**: Retry source shape drafted; timeout/redirects deferred to Phase 5 policy/runtime support
-- **P4.4**: JSON serialization integration
+- **P4.3**: Retry source shape drafted; timeout / redirects / cancellation shipped via D-progress-070
+- **P4.4**: JSON serialization integration ✅ shipped via D-progress-030 / D-progress-043..046 / D-progress-060
 
 ---
 
-## Phase 5 — Application basis and runtime support (in progress)
+## Phase 5 — Application basis and runtime support (shipped)
 
 **Goal**: Environment, time, logging, and minimal app host.
 
@@ -327,40 +330,40 @@ Status: started in `docs/11-stdlib-examples.md`.
 ## Implementation roadmap
 
 ```
-Phase 1 (current)
+Phase 1 ✅
 ├─ Generic Option/Result ✅
 ├─ IO/Http FFI boundaries ✅
-├─ Error model definitions (in progress)
+├─ Error model definitions ✅
 └─ Test harness updates ✅
 
-Phase 2 (core coverage)
-├─ Safe parsing for primitives
-├─ Container helpers (map, filter on Phase 2.5)
-├─ Error unions finalized
-└─ String operations
+Phase 2 ✅
+├─ Safe parsing for primitives ✅ (Std.Parse on BCL TryParse)
+├─ Container helpers ✅ (map / filter / take / drop / concat on slice[T])
+├─ Error unions finalized ✅
+└─ String operations ✅
 
-Phase 3 (IO foundation)
-├─ Console I/O source API ✅
-├─ File operations source API ✅
-├─ Path/Directory helpers source API ✅
-└─ Stream interfaces ✅, concrete handles pending
+Phase 3 ✅
+├─ Console I/O ✅
+├─ File operations ✅ (Result[Unit, IOError] surface)
+├─ Path/Directory helpers ✅
+└─ Stream interfaces ✅; concrete handles still source-API-only
 
-Phase 4 (HTTP/networking)
-├─ HTTP client basics ✅ source API drafted
-├─ Response parsing ✅ source API drafted
-├─ High-level helpers 🔄 retry drafted; timeout/redirects deferred
-└─ JSON integration pending source-generator work
+Phase 4 ✅
+├─ HTTP client basics ✅
+├─ Response parsing ✅
+├─ High-level helpers ✅ (retry / timeout / redirect / cancellation; D-progress-070)
+└─ JSON integration ✅ (@derive(Json) source-gen; D-progress-030..060)
 
-Phase 5 (app basis)
-├─ Environment & process ✅ source API drafted
-├─ Time & scheduling ✅ source API drafted
-├─ Logging framework ✅ source API drafted
-└─ App host ✅ source API drafted
+Phase 5 ✅
+├─ Environment & process ✅
+├─ Time & scheduling ✅ (Std.Time expansion D-progress-027/039)
+├─ Logging framework ✅
+└─ App host ✅
 
 Phase 6 (examples & docs)
 ├─ Worked examples 🔄 first pass in docs/11
-├─ Test coverage
-└─ Documentation 🔄 first pass in docs/11
+├─ Test coverage ✅ (Std.Testing + Property + Snapshot — D-progress-063/064)
+└─ Documentation ✅ tutorial shipped (docs/13; D-progress-065)
 ```
 
 ## Parallel work
@@ -394,4 +397,4 @@ Phase 6 (examples & docs)
 - **Monomorphisation caveat**: Phase 1 Option/Result work because their payloads are reference-typed (obj in M1.4). Value-typed payloads require reified generics (Phase 2 / Phase 4 work).
 - **FFI strategy**: `extern package` declarations in `.l` files list the BCL surface; the F# emitter hand-routes calls to the appropriate static methods. Curated, not reflection-driven.
 - **Error propagation**: The `?` operator (if implemented) will turn `Result` failures into early returns; currently explicit `unwrapOr` or pattern matching.
-- **Async boundaries**: All async stdlib functions use `async func` and return `Task[T]`; blocking shims exist in M1.4 but will be replaced with real async state machines in Phase 4.
+- **Async boundaries**: All async stdlib functions use `async func` and return `Task[T]`.  Real `IAsyncStateMachine` synthesis shipped during the C2 chain (D-progress-033..076); the M1.4 blocking shim only fires for shapes the SM emit doesn't cover (today: generic instance impl methods only).

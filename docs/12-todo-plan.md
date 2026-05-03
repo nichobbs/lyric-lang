@@ -110,62 +110,81 @@ is a separate follow-up (would need codegen to pick the right BCL
 TryParse method based on the closing `T`).  Per-primitive
 `parseOptInt` / `parseOptLong` etc. work fine for the bootstrap.
 
-### C2. Real async state machines
+### C2. ~~Real async state machines~~ — shipped
 
-M1.4 D035 shipped `async`/`await` as `.GetAwaiter().GetResult()`
-blocking shims.  Phase A (D-progress-033) shipped real
-`IAsyncStateMachine` synthesis for await-free async bodies.
-Phase B (D-progress-034) shipped real `AwaitUnsafeOnCompleted`
-suspend/resume with state dispatch, exception flow through
-`SetException`, and locals promoted to fields.  Remaining work:
-Phase B+ (await inside try/catch/defer/match, async impl
-methods, async generics) and Phase C (cancellation tokens,
-structured concurrency scopes).
+The full C2 chain landed: Phase A (D-progress-033), Phase B
+(D-progress-034), every Phase B+/B++/B+++ extension across
+D-progress-036 through 058, Phase C (D-progress-068/069/071), and
+the Tier-4 close-out work — generic async (D-progress-075) +
+spill-prior-siblings ordering (D-progress-076) — landed in PR #62.
+Stack-spilling for nested awaits is D-progress-074.  The only
+async sub-piece left is generic instance impl methods, which
+gates on the underlying generic-impl-methods feature gap (Tier 6
+#16) rather than on async work.
 
-### C3. Range-subtype symbolic bounds
+### C3. ~~Range-subtype symbolic bounds~~ — shipped
 
-D-progress-003.  `T0090` / `T0091` only fire on integer-literal bounds;
-`type X = Int range MIN ..= cap` escapes the well-formedness check.  Needs
-constant folding before the well-formedness pass runs.
+D-progress-025: a `Lyric.TypeChecker.ConstFold` module exposes
+`tryFoldInt` (literals, named-const lookup with cycle detection,
+`+ - * / %` arithmetic with overflow checks).  Both the well-
+formedness checker (T0090 / T0091 / new T0093) and the emitter's
+runtime range-check IL consume the folded value, so symbolic
+bounds like `type Age = Int range MIN_AGE ..= MAX_AGE` no longer
+escape the check.
 
-### C4. Reflection-driven FFI
+### C4. ~~Reflection-driven FFI~~ — shipped
 
-Phase 4.  Today's FFI is hand-routed through `Lyric.Stdlib`.  A
-reflection-driven path would let users write `extern type Url =
-"System.Uri"` and get every public method without an `@externTarget`
-declaration.  Lots of design work — `out` semantics, ref-vs-byref-vs-Span
-shape decisions, extension-method handling — defer until the language
-spec catches up.
+Two-phase rollout: D-progress-026 (phase 1, strict-match auto-FFI
+that resolves a name when exactly one BCL overload matches by
+`(name, arg-arity, exact-type-match)`) and D-progress-061 (phase 2,
+score-based matching with principled coercion rules).  Users can
+now write `xs.add(item)` against a BCL `List<T>` directly without
+an `@externTarget` declaration.  Phase 3 special shapes
+(by-ref structs, `Span<T>`, `params T[]`, extension methods) lands
+on demand under Tier 6.
 
-### C5. Stdlib expansion: Time, Json, Http, regex hardening
+### C5. ~~Stdlib expansion: Time, Json, Http~~ — shipped (Regex deferred)
 
-`docs/10-stdlib-plan.md` Phases 2-4.  Several modules have source
-shapes drafted but no real implementation.  Specifically:
+- `Std.Time` — ISO-8601, `Duration` arithmetic, IANA tz lookup
+  shipped via D-progress-027 / D-progress-039.
+- `Std.Json` — `@derive(Json)` source-gen with primitive / Option /
+  nested-record / slice support shipped via D-progress-030 /
+  D-progress-043..046 / D-progress-060.  `fromJson` covers slice
+  + nested-record cases.
+- `Std.Http` — full surface (cancellation, timeout, redirect
+  policy, headers) shipped via D-progress-052 / D-progress-070.
+- `Std.Regex` — RE2 engine still deferred (Tier 6); no Lyric
+  program is yet exposed to attacker-controlled regex input that
+  would force the upgrade off the BCL ECMA backtracker.
 
-- `Std.Time`: ISO-8601 parser, `Duration` arithmetic, IANA tz lookup.
-- `Std.Json`: source-generated serialiser instead of the current stub.
-- `Std.Http`: full `HttpClient` wrapping with cancellation, timeouts,
-  redirect policy, JSON body deserialisation.
-- `Std.Regex`: RE2-compatible engine instead of dispatching to BCL's
-  ECMA regex.
+### C6. ~~Wire blocks (compile-time DI)~~ — shipped
 
-### C6. Wire blocks (compile-time DI)
-
-M3.2.  Parser accepts `wire { ... }`; semantics not implemented.
-Generates static factory code at compile time.  Big feature; design
-sketched in `docs/01-language-reference.md` §11.
+D-progress-028 shipped the bootstrap-grade wire (singleton +
+`@provided` + `expose` + multi-wire + topo-sort + cycle detection).
+D-progress-072 added scoped wire lifetimes — `scoped[Request]`
+synthesises per-scope factories plus a singleton-references-scoped
+lifetime checker, gated on the `AsyncLocal<T>` ambient cancellation
+plumbing from D-progress-071.
 
 ### C7. Formatter (`lyric fmt`)
 
 M3.3.  Need a printer that round-trips the AST without losing
-information.  Phase 1 parser doesn't preserve trivia; the printer needs
-either a CST layer or a re-parse.
+information.  Phase 1 parser doesn't preserve trivia; the printer
+needs either a CST layer or a re-parse.  Lowest-priority Tier 6
+item per the C7 decision (D-progress-029) — the CST layer pays
+off most when LSP / refactor tools come online, so the formatter
+itself isn't on the v1.0 critical path.
 
-### C8. Package manager (`lyric.toml`)
+### C8. ~~Package manager (`lyric.toml`)~~ — shipped
 
-M3.4.  Today's stdlib resolver is hard-coded to walk-the-repo.  A real
-package manager fetches versioned packages from a registry, compiles
-them on first import, and caches the resulting DLLs.
+D-progress-031 shipped the embedded `Lyric.Contract` managed
+resource on every emitted assembly (the cross-package contract
+metadata format).  D-progress-077 shipped the `lyric.toml`
+manifest plus `lyric publish` / `lyric restore` wrappers around
+`dotnet pack` / `dotnet restore`.  The build-time consumer of
+restored Lyric packages — wiring `lyric build`'s import resolver
+to read each restored DLL's contract resource instead of walking
+the in-tree stdlib — is the remaining loop, tracked under Tier 6.
 
 ### C9. ~~`lyric doc` documentation generator~~ — bootstrap shipped
 

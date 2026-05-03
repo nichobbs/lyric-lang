@@ -254,7 +254,10 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q012: Package registry
 
-**Status:** DEFERRED — Phase 3 work; not gating Phase 0.
+**Status:** RESOLVED — see decision log D-progress-030 (NuGet
+piggyback) and D-progress-031 / D-progress-077 (embedded
+`Lyric.Contract` resource + `lyric.toml` manifest + `lyric publish`
+/ `lyric restore`).
 
 **Question:** Where do Lyric packages live?
 
@@ -269,7 +272,19 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 - Must support private registries for enterprise users.
 - Should be simple to mirror or proxy.
 
-**Recommendation:** Defer to Phase 3. Tentatively: custom registry with NuGet compatibility for .NET BCL bindings. Most languages eventually need their own registry; building it on top of an existing one (as TypeScript did with npm) is viable but constrains evolution.
+**Resolution:** Option 1 (NuGet piggyback) shipped during Tier 3.
+The bootstrap takes the "TypeScript on npm" route: every Lyric
+package emits a standard `.nupkg` carrying its DLL plus an
+embedded `Lyric.Contract` managed resource describing its `pub`
+surface.  `lyric.toml` is a thin manifest that the package
+manager lowers to a generated `<PackageReference>` `.csproj`;
+`lyric publish` runs `dotnet pack`, `lyric restore` runs `dotnet
+restore`.  Private feeds, signing, and credential helpers come
+free from NuGet's existing infrastructure.  Build-time
+consumption of restored Lyric packages — wiring `lyric build`'s
+import resolver to read the embedded contract resource from a
+NuGet-restored DLL — is the remaining follow-up tracked under
+Tier 6 in `docs/12-todo-plan.md`.
 
 ---
 
