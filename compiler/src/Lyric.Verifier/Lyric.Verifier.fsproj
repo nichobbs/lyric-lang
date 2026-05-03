@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Mode.fs" />
+    <Compile Include="Vcir.fs" />
+    <Compile Include="Theory.fs" />
+    <Compile Include="ModeCheck.fs" />
+    <Compile Include="VCGen.fs" />
+    <Compile Include="Smt.fs" />
+    <Compile Include="Solver.fs" />
+    <Compile Include="Driver.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
+    <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
+    <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+  </ItemGroup>
+
+</Project>

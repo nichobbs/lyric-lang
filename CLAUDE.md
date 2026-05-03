@@ -99,11 +99,24 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   against restored Lyric packages (D-progress-078) via the
   `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
   embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
-  into the existing import pipeline.
+  into the existing import pipeline.  `lyric prove <source.l>` runs the
+  Phase 4 verifier (M4.1 fragment).
+- `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1 in
+  progress, see `docs/15-phase-4-proof-plan.md`).  `Mode.fs` parses
+  `@runtime_checked` / `@proof_required` / `@axiom` package-level
+  annotations into a `VerificationLevel`.  `ModeCheck.fs` enforces the
+  call-graph and loop-invariant rules (V0001–V0005).  `Vcir.fs` is the
+  solver-agnostic Lyric-VC IR; `Theory.fs` maps Lyric source types and
+  operators to IR sorts and builtins; `VCGen.fs` runs the wp/sp calculus
+  over the imperative fragment (let/if/return); `Smt.fs` emits SMT-LIB
+  v2.6; `Solver.fs` ships a trivial syntactic discharger plus an
+  optional `z3` shell-out (set `LYRIC_Z3` or put `z3` on `$PATH`);
+  `Driver.fs` is the entry point used by `lyric prove`.
 - `compiler/tests/Lyric.Lexer.Tests/`, `compiler/tests/Lyric.Parser.Tests/`,
   `compiler/tests/Lyric.TypeChecker.Tests/`,
   `compiler/tests/Lyric.Emitter.Tests/`, `compiler/tests/Lyric.Lsp.Tests/`,
-  and `compiler/tests/Lyric.Cli.Tests/` — Expecto-based tests (console-app
+  `compiler/tests/Lyric.Cli.Tests/`, and
+  `compiler/tests/Lyric.Verifier.Tests/` — Expecto-based tests (console-app
   projects; F# does not coexist cleanly with the new Microsoft.Testing.Platform
   xunit runner — Expecto is the F#-native alternative).
 
@@ -118,6 +131,7 @@ dotnet run --project tests/Lyric.TypeChecker.Tests
 dotnet run --project tests/Lyric.Emitter.Tests
 dotnet run --project tests/Lyric.Lsp.Tests
 dotnet run --project tests/Lyric.Cli.Tests
+dotnet run --project tests/Lyric.Verifier.Tests
 ```
 
 M1.4 (in progress) layers contract elaboration, async, FFI, variant-bearing

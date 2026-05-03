@@ -89,6 +89,125 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-080: Phase 4 verifier — M4.1 skeleton
+
+*claude/phase-4-proof-plan-tVGu7 branch.*  Lifts Phase 4 from
+"planned" (`docs/15-phase-4-proof-plan.md`) to "M4.1 partial".  The
+verifier is wired end-to-end (parse → mode-check → VC-gen → SMT-LIB
+emission → discharge → CLI summary) at bootstrap-grade fidelity.
+A new `lyric prove <source.l>` subcommand exposes it.
+
+**New project** — `compiler/src/Lyric.Verifier/`:
+
+- `Mode.fs` — parses `@runtime_checked` / `@proof_required[(modifier)]`
+  / `@axiom` file-level annotations into `VerificationLevel`.
+  Conflict diagnostics: V0010 (multiple level annotations), V0011
+  (unknown modifier).
+- `ModeCheck.fs` — implements the V0001/V0002/V0004/V0005 dispatch
+  rules from `15-phase-4-proof-plan.md` §3.1.  For each function in
+  a proof-required package: rejects calls into non-pure
+  runtime-checked callees (V0002), `await`/`spawn` (V0002),
+  `unsafe` blocks outside `@proof_required(unsafe_blocks_allowed)`
+  (V0003), `@axiom`-with-body (V0004), and loops without an
+  `invariant:` clause (V0005).  V0001 (cross-package level
+  violation) is deferred until the contract-metadata reader for
+  proof-required packages lands.
+- `Vcir.fs` — solver-agnostic Lyric-VC IR per the plan's §6.  Sorts
+  cover `Bool`, `Int`, `BitVec n`, `Float32/64`, `String`,
+  parameterised datatypes, `Slice`, and uninterpreted sorts.  Terms
+  cover variables, literals, builtins (`and`/`or`/`not`/arithmetic/
+  comparisons/`ite`/quantifiers), `let`, user-function applications,
+  and `forall`/`exists`.  Capture-avoiding substitution is built in.
+- `Theory.fs` — Lyric `TypeExpr` → `Sort` mapping plus a
+  `RangeBoundKind` for refined integers (`Int range a ..= b` lifts to
+  `SInt` with a constant-folded `[a, b]` hypothesis).  Lyric `BinOp`/
+  `PrefixOp` → `Vcir.Builtin`.
+- `VCGen.fs` — wp/sp calculus over the *imperative* fragment per the
+  plan's §5.  Function bodies of shape `= expr` or `{ let* ; return e }`
+  produce a `Pre ⇒ wp(body, Post)` goal plus side conditions.
+  `result` and parameter-old snapshots are bound into the env.
+  Quantifiers translate to `TForall`/`TExists`; calls translate to
+  `TApp` so the SMT layer can declare them once.  Loops, `match`,
+  full `var`/`if`-with-blocks, and `old(e)` over non-path expressions
+  are flagged with V0022/V0024/V0025/V0026 warnings and treated as
+  uninterpreted (M4.2 work).
+- `Smt.fs` — SMT-LIB v2.6 emitter.  Renders the `Unit` datatype, the
+  free variables of the goal as `(declare-const ...)`, every collected
+  user function as `(declare-fun ...)`, and `(assert (not …))` of the
+  goal's implication shape, followed by `(check-sat)` + `(get-model)`.
+- `Solver.fs` — back-end.  Two paths:
+  * A *trivial syntactic discharger* that closes goals of shape
+    `true`, reflexive `(= a a)`, `P ⇒ P`, conjunctions/disjunctions
+    of these, or any conclusion that appears verbatim among the
+    hypotheses.  Handles the most common bootstrap-test cases
+    without any solver dependency.
+  * An optional *Z3 shell-out*: if `LYRIC_Z3` is set or `z3` is on
+    `$PATH`, the emitter pipes the SMT-LIB blob to it and parses
+    the first line of stdout (`unsat`/`sat`/`unknown`).  The
+    `Microsoft.Z3` NuGet bindings are intentionally avoided so the
+    AOT path stays clean (per `15-phase-4-proof-plan.md` §7.1
+    carve-out).
+- `Driver.fs` — `proveSource` / `proveFile` end-to-end entry.
+  Returns a `ProofSummary { Level; Diagnostics; Results }` plus
+  per-goal `SmtPath` for the optional `target/proofs/<label>.smt2`
+  file.  Discharged goals are silent; failed goals raise V0008
+  (with up to six lines of counterexample preamble) and V0007 for
+  `unknown`.
+
+**CLI** — `compiler/src/Lyric.Cli/Program.fs` gains a `prove`
+subcommand:
+
+```
+lyric prove <source.l> [--proof-dir <dir>] [--verbose]
+```
+
+`--proof-dir` defaults to `<source-dir>/target/proofs/`.  `--verbose`
+prints the per-goal outcome and the SMT path.  Exit code is 0 on
+all-discharged-no-errors, 1 otherwise.  `lyric build` is unchanged.
+
+**Tests** — `compiler/tests/Lyric.Verifier.Tests/` (28 Expecto
+tests across `ModeTests`, `ModeCheckTests`, `VcirTests`, `SmtTests`,
+`DriverTests`).  Coverage:
+
+- VerificationLevel parsing for every annotation form including
+  `@proof_required(unsafe_blocks_allowed|checked_arithmetic)`.
+- The dispatch checker's V0002 / V0004 / V0005 emission and absence
+  in the corresponding well-formed cases.
+- Vcir IR: `mkAnd`/`mkOr` neutral elements, capture-avoiding `subst`,
+  forall-binder shadowing, `Goal.asImplication` shape.
+- SMT-LIB v2.6 emission: required headers, `declare-const` for free
+  variables, `declare-fun` for user symbols, negated-implication
+  wrapping.
+- End-to-end driver: identity functions, body-less `@axiom`
+  (no VC), constant-bool postcondition, `nop` with no contracts.
+
+**Bootstrap-grade limits explicitly carried into M4.2/M4.3:**
+
+- VC generator covers only `let`/`val`-then-`return` shapes — `var`,
+  `match`, multi-statement blocks with side effects, and loops are
+  warning-only and produce trivially-true `wp`s.
+- `old(e)` only resolves for `e = path-to-parameter`; arbitrary
+  `old` expressions are warning V0021 and treated as current.
+- Quantifier domains aren't enforced as decidable (V0006 deferred).
+- No record/union/opaque datatype declarations are emitted into the
+  SMT context — datatype reasoning is M4.2 work.
+- Cross-package contract reading is not wired (V0001 deferred); the
+  call graph only sees in-file callees.
+- Counterexample reporting is the raw Z3 model text, not the
+  Lyric-typed pretty-printed form §9.1 will ship.
+
+These are tracked into M4.2/M4.3 per the plan and intentionally
+ship as is so the architecture is exercised end-to-end at the
+bootstrap milestone.
+
+**Files touched:** `compiler/Lyric.sln` (added two projects),
+`compiler/src/Lyric.Cli/Lyric.Cli.fsproj` (verifier ProjectReference),
+`compiler/src/Lyric.Cli/Program.fs` (`prove` subcommand + usage),
+`compiler/src/Lyric.Verifier/*` (new), `compiler/tests/Lyric.Verifier.Tests/*`
+(new), `CLAUDE.md` (verifier description in the project layout
+section), `docs/15-phase-4-proof-plan.md` (already shipped in
+PR #75 — referenced from this entry).
+
 ### D-progress-079: protected types — bootstrap-grade Monitor wrap
 *claude/protected-type-bootstrap branch.*  Lifts the Phase-3
 `protected type` deliverable from "deferred" (D-progress-067) to

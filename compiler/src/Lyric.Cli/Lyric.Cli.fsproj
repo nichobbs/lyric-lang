@@ -19,6 +19,7 @@
     <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
     <ProjectReference Include="..\Lyric.Stdlib\Lyric.Stdlib.fsproj" />
     <ProjectReference Include="..\Lyric.Emitter\Lyric.Emitter.fsproj" />
+    <ProjectReference Include="..\Lyric.Verifier\Lyric.Verifier.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
