@@ -864,6 +864,30 @@ let resolveCatchTypeName (typeName: string) : System.Type =
         | Some t when typeof<System.Exception>.IsAssignableFrom(t) -> t
         | _ -> typeof<System.Exception>
 
+/// Substitute the GTPBs in `openTy` against the closed receiver
+/// `closedRecv`'s generic arguments.  Used to recover the substituted
+/// CLR return type after `TypeBuilder.GetMethod`, which leaves the
+/// open method's `ReturnType` in terms of the original GTPBs.
+/// Handles bare GTPBs, generic instantiations, and array types.
+let rec substituteGenericArgs (openTy: ClrType) (closedRecv: ClrType) : ClrType =
+    if openTy.IsGenericParameter then
+        let pos = openTy.GenericParameterPosition
+        let closedArgs = closedRecv.GetGenericArguments()
+        if pos < closedArgs.Length then closedArgs.[pos]
+        else openTy
+    elif openTy.IsArray then
+        let elem = openTy.GetElementType()
+        match Option.ofObj elem with
+        | Some e -> (substituteGenericArgs e closedRecv).MakeArrayType()
+        | None   -> openTy
+    elif openTy.IsGenericType && not openTy.IsGenericTypeDefinition then
+        let openArgs = openTy.GetGenericArguments()
+        let substArgs =
+            openArgs |> Array.map (fun a -> substituteGenericArgs a closedRecv)
+        openTy.GetGenericTypeDefinition().MakeGenericType(substArgs)
+    else
+        openTy
+
 // ---------------------------------------------------------------------------
 // Expression / statement emission.
 // ---------------------------------------------------------------------------
@@ -1644,15 +1668,26 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         // dispatch) — without this branch the UFCS path would
         // mis-resolve `c.incr()` against `Counter.incr` UFCS that
         // doesn't exist.
-        let protectedHit : (Lyric.Emitter.Records.ProtectedMethod) option =
+        // Match the receiver's CLR type against a known protected
+        // type: for non-generic protected types `recvTy = info.Type`;
+        // for generic ones `recvTy` is a closed generic instance and
+        // we compare its open definition against `info.Type`.
+        let protectedHit
+                : (Lyric.Emitter.Records.ProtectedTypeInfo
+                   * Lyric.Emitter.Records.ProtectedMethod) option =
+            let recvOpenDef =
+                if recvTy.IsGenericType && not recvTy.IsGenericTypeDefinition
+                then recvTy.GetGenericTypeDefinition()
+                else recvTy
             ctx.ProtectedTypes
             |> Seq.tryPick (fun kv ->
-                if (kv.Value.Type :> System.Type) = recvTy then
+                if (kv.Value.Type :> System.Type) = recvOpenDef then
                     kv.Value.Methods
                     |> List.tryFind (fun m -> m.Name = methodName)
+                    |> Option.map (fun m -> kv.Value, m)
                 else None)
         match protectedHit with
-        | Some pm ->
+        | Some (info, pm) ->
             // Receiver is already on the stack; emit args next.
             for a in args do
                 let payload =
@@ -1660,9 +1695,34 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | CAPositional ex | CANamed (_, ex, _) -> ex
                 let _ = emitExpr ctx payload
                 ()
-            il.Emit(OpCodes.Callvirt, pm.Method)
-            if pm.Method.ReturnType = typeof<System.Void> then typeof<System.Void>
-            else pm.Method.ReturnType
+            // Generic protected types: rebind the open MethodBuilder
+            // onto the closed receiver type via TypeBuilder.GetMethod
+            // so the Callvirt targets `Box<int>::put`, not the open
+            // `Box<>::put`.  Non-generic protected types keep the
+            // direct `pm.Method` reference.
+            let isGenericReceiver =
+                not info.Generics.IsEmpty
+                && recvTy.IsGenericType
+                && not recvTy.IsGenericTypeDefinition
+            let methodRef : System.Reflection.MethodInfo =
+                if isGenericReceiver then
+                    System.Reflection.Emit.TypeBuilder.GetMethod(
+                        recvTy, pm.Method)
+                else
+                    pm.Method :> System.Reflection.MethodInfo
+            il.Emit(OpCodes.Callvirt, methodRef)
+            // `TypeBuilder.GetMethod`'s `ReturnType` is the open
+            // method's return type (still in terms of the GTPBs), so
+            // substitute against the closed receiver's generic args
+            // for value-type-aware downstream consumers (boxing, etc).
+            let returnTy =
+                if methodRef.ReturnType = typeof<System.Void> then
+                    typeof<System.Void>
+                elif isGenericReceiver then
+                    substituteGenericArgs methodRef.ReturnType recvTy
+                else
+                    methodRef.ReturnType
+            returnTy
         | None ->
         // D037: methods declared inline in a record / opaque body
         // hoist to top-level UFCS-style `<TypeName>.<methodName>`
@@ -2443,11 +2503,39 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     // the no-arg synthesised default ctor before the regular all-
     // fields record ctor path runs (which would expect one arg per
     // field).  `Counter()` ⇒ `Newobj Counter::.ctor()`.
+    //
+    // Generic protected types (D-progress-079 follow-up) close via
+    // LHS-driven inference: `val b: Box[Int] = Box()` reads the
+    // expected CLR type from `ctx.ExpectedType`.  When the expected
+    // type is a closed generic of the same open def, `MakeGenericType`
+    // + `TypeBuilder.GetConstructor` produce the constructed ctor
+    // ref; otherwise the args fall back to `obj` per the existing
+    // erasure path (M1.4 monomorphisation parity with records).
     | ECall ({ Kind = EPath { Segments = [name] } }, [])
         when ctx.ProtectedTypes.ContainsKey name ->
         let info = ctx.ProtectedTypes.[name]
-        il.Emit(OpCodes.Newobj, info.Ctor)
-        info.Type :> ClrType
+        if List.isEmpty info.Generics then
+            il.Emit(OpCodes.Newobj, info.Ctor)
+            info.Type :> ClrType
+        else
+            let openDef = info.Type :> System.Type
+            let typeArgs : System.Type[] =
+                match ctx.ExpectedType with
+                | Some t when t.IsGenericType
+                              && t.GetGenericTypeDefinition() = openDef ->
+                    t.GetGenericArguments()
+                | _ ->
+                    // No usable LHS hint — close to `obj` per the
+                    // M1.4 erasure fallback so `Box()` without a
+                    // typed binding still produces a runnable
+                    // (if untyped) instance.
+                    Array.create info.Generics.Length typeof<obj>
+            let constructed = openDef.MakeGenericType typeArgs
+            let constructedCtor =
+                System.Reflection.Emit.TypeBuilder.GetConstructor(
+                    constructed, info.Ctor)
+            il.Emit(OpCodes.Newobj, constructedCtor)
+            constructed
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when ctx.Records.ContainsKey name ->

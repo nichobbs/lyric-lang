@@ -207,6 +207,8 @@ type ProtectedField =
 
 type ProtectedTypeInfo =
     { Name:       string
+      /// Open generic definition for `protected type Foo[T]`; the
+      /// concrete CLR type for non-generic protected types.
       Type:       TypeBuilder
       Ctor:       ConstructorBuilder
       LockField:  FieldBuilder
@@ -219,7 +221,14 @@ type ProtectedTypeInfo =
       /// always-exclusive case.
       UsesRwLock: bool
       Fields:     ProtectedField list
-      Methods:    ProtectedMethod list }
+      Methods:    ProtectedMethod list
+      /// User-declared type-parameter names in declaration order, or
+      /// `[]` for non-generic protected types.  Drives call-site
+      /// `MakeGenericType` for `Box()` construction (closed via
+      /// `ctx.ExpectedType` per D-progress-079 follow-up: LHS-driven
+      /// type-arg inference) and `TypeBuilder.GetMethod` for
+      /// dispatching method calls on closed receivers.
+      Generics:   string list }
 
 type ProtectedTypeTable = Dictionary<string, ProtectedTypeInfo>
 
