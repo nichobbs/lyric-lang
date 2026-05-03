@@ -32,3 +32,22 @@ pub func wrappedId(x: Int): Int
 pub func addsOk(a: Int range 0 ..= 100, b: Int range 0 ..= 100): Int
   ensures: result >= 0
   = a + b
+
+// `assert φ` in body: φ becomes a side-goal *and* is added to the
+// assumed hypotheses for the rest of the block (Hoare encoding).
+pub func usingAssert(x: Int): Int
+  ensures: result == x
+{
+  assert(x == x)
+  return x
+}
+
+// `match` over literal + bare-binding patterns.  `case n` always
+// matches; the `result == x or result == 0` post follows by case
+// analysis.
+pub func absish(x: Int): Int
+  ensures: result == x or result == 0
+  = match x {
+      case 0 -> 0
+      case n -> n
+    }
