@@ -96,6 +96,129 @@ func main(): Unit {
 }
 """,
     "99"
+
+    "pt_field_initializer",
+    // Per-field initializer: `var count: Int = 100` runs in the
+    // synthesised default ctor so `Counter()` starts with count=100
+    // rather than zero (D-progress-079 follow-up).
+    """
+package E14
+
+protected type Counter {
+  var count: Int = 100
+  entry tick() { count = count + 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val c = Counter()
+  c.tick()
+  c.tick()
+  println(toString(c.get()))
+}
+""",
+    "102"
+
+    "pt_invariant_holds_silently",
+    // Invariant evaluates after every entry/func body returns;
+    // when the body keeps the predicate true, the run completes
+    // normally and prints the final state.
+    """
+package E14
+
+protected type Counter {
+  var count: Int
+
+  invariant: count >= 0
+
+  entry tick() { count = count + 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val c = Counter()
+  c.tick()
+  c.tick()
+  c.tick()
+  println(toString(c.get()))
+}
+""",
+    "3"
+
+    "pt_invariant_violation_throws",
+    // Invariant fails after `decr` drops `count` below zero.  The
+    // wrapper throws `LyricAssertionException` after the unsafe
+    // body returns; main catches via try/catch and prints
+    // "boom" instead of the bogus result.
+    """
+package E14
+
+protected type Counter {
+  var count: Int
+
+  invariant: count >= 0
+
+  entry decr() { count = count - 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val c = Counter()
+  try {
+    c.decr()
+    println(toString(c.get()))
+  } catch Exception as e {
+    println("boom")
+  }
+}
+""",
+    "boom"
+
+    "pt_when_barrier_satisfied",
+    // Happy-path barrier: `when: count > 0` holds, decr runs.
+    """
+package E14
+
+protected type Bag {
+  var count: Int = 5
+  entry decr() when: count > 0 { count = count - 1 }
+  func get(): Int { return count }
+}
+
+func main(): Unit {
+  val b = Bag()
+  b.decr()
+  b.decr()
+  println(toString(b.get()))
+}
+""",
+    "3"
+
+    "pt_when_barrier_throws_when_false",
+    // Barrier-not-met: `when: count > 0` is false at call time,
+    // so the wrapper throws BEFORE invoking the unsafe inner.
+    // Bootstrap-grade scope per `06-open-questions.md` Q008 —
+    // Ada-style condition-variable waiting lands once Phase C
+    // scope plumbing is mature.
+    """
+package E14
+
+protected type Bag {
+  var count: Int
+  entry take() when: count > 0 { count = count - 1 }
+}
+
+func main(): Unit {
+  val b = Bag()
+  try {
+    b.take()
+    println("took")
+  } catch Exception as e {
+    println("blocked")
+  }
+}
+""",
+    "blocked"
 ]
 
 let tests =

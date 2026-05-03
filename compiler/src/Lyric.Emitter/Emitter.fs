@@ -990,11 +990,32 @@ type private ProtectedMethodPending =
       Fn:           FunctionDecl
       Sg:           ResolvedSignature
       IsEntry:      bool
-      Invariants:   InvariantClause list
+      /// Desugared `when: <expr>` barrier conditions — evaluated
+      /// before the unsafe inner runs.  False throws
+      /// `LyricAssertionException` so the bootstrap surfaces a
+      /// "barrier not met" runtime error (Ada-style condition-
+      /// variable waiting is gated on Phase C scope plumbing —
+      /// see `06-open-questions.md` Q008).
+      Barriers:     Expr list
+      /// Desugared `invariant: <expr>` clauses — evaluated after
+      /// the unsafe inner returns, still inside the lock and the
+      /// outer try.  False throws `LyricAssertionException`.
+      Invariants:   Expr list
       Owner:        Records.ProtectedTypeInfo
       LockField:    FieldBuilder
       ParamTypes:   System.Type[]
       ReturnType:   System.Type }
+
+/// Pending ctor IL for a protected type — field initializers are
+/// user-written Lyric expressions that need `Codegen.emitExpr`'s
+/// FunctionCtx, which only becomes available in Pass B.  Pass A
+/// stops the ctor IL after the lock allocation; Pass B picks up
+/// the open ILGenerator, emits each `Stfld` against the field's
+/// init expression, then writes `Ret`.
+type private ProtectedCtorPending =
+    { Owner:        Records.ProtectedTypeInfo
+      Ctor:         ConstructorBuilder
+      Initializers: (string * FieldBuilder * Expr) list }
 
 /// Synthesise the CLR class scaffolding for a `protected type`:
 /// fields per `var`/`let`/immutable, a private `<>__lock : object`
@@ -1008,7 +1029,9 @@ let private defineProtectedTypeOnto
         (symbols: SymbolTable)
         (lookup: TypeId -> System.Type option)
         (pd: ProtectedTypeDecl)
-        : Records.ProtectedTypeInfo * ProtectedMethodPending list =
+        : Records.ProtectedTypeInfo
+          * ProtectedMethodPending list
+          * ProtectedCtorPending =
     let fullName =
         if String.IsNullOrEmpty nsName then pd.Name
         else nsName + "." + pd.Name
@@ -1074,19 +1097,30 @@ let private defineProtectedTypeOnto
     cil.Emit(OpCodes.Ldarg_0)
     cil.Emit(OpCodes.Newobj, objCtorNonNull)
     cil.Emit(OpCodes.Stfld, lockField)
-    cil.Emit(OpCodes.Ret)
+    // Field initializers + Ret are emitted in Pass B (the
+    // user-written init expressions need a FunctionCtx, which only
+    // becomes available after the function tables are populated).
+    // Pass A leaves the IL generator open here.
 
     // Method headers — one per PMEntry / PMFunc.  Bodies emit in
     // Pass B once the FunctionCtx wiring is available.
     let mutable pending : ProtectedMethodPending list = []
     let mutable methods : Records.ProtectedMethod list = []
 
-    let invariants =
+    let invariantClauses =
         pd.Members
         |> List.choose (fun m ->
             match m with
             | PMInvariant inv -> Some inv
             | _ -> None)
+    // Invariants reference fields with bare names (`count <= 100`),
+    // so desugar each clause expression once with the protected
+    // type's field names + an empty shadow set (no params in
+    // scope when an invariant evaluates).
+    let desugaredInvariants =
+        invariantClauses
+        |> List.map (fun inv ->
+            desugarSelfFields fieldNames Set.empty inv.Expr)
 
     // We need to construct the Records.ProtectedTypeInfo first so the
     // pending records can carry an `Owner` reference, but ctor + lock
@@ -1168,13 +1202,23 @@ let private defineProtectedTypeOnto
     let paramNamesOf (ps: Param list) : Set<string> =
         ps |> List.map (fun p -> p.Name) |> Set.ofList
 
+    let extractBarriers (paramNames: Set<string>) (contracts: ContractClause list) : Expr list =
+        contracts
+        |> List.choose (fun c ->
+            match c with
+            | CCWhen (cond, _) ->
+                Some (desugarSelfFields fieldNames paramNames cond)
+            | _ -> None)
+
     for m in pd.Members do
         match m with
         | PMEntry ed ->
             let publicMb, unsafeMb, pTys, bareRet =
                 defineMethodPair ed.Name ed.Params ed.Return
+            let pNames = paramNamesOf ed.Params
             let desugaredBody =
-                desugarFunctionBody fieldNames (paramNamesOf ed.Params) ed.Body
+                desugarFunctionBody fieldNames pNames ed.Body
+            let entryBarriers = extractBarriers pNames ed.Contracts
             let synthFn : FunctionDecl =
                 { DocComments = []; Annotations = []
                   Visibility  = ed.Visibility
@@ -1200,7 +1244,8 @@ let private defineProtectedTypeOnto
                       Fn         = synthFn
                       Sg         = synthSig
                       IsEntry    = true
-                      Invariants = invariants
+                      Barriers   = entryBarriers
+                      Invariants = desugaredInvariants
                       Owner      = info
                       LockField  = lockField
                       ParamTypes = pTys
@@ -1209,13 +1254,14 @@ let private defineProtectedTypeOnto
             let publicMb, unsafeMb, pTys, bareRet =
                 defineMethodPair fn.Name fn.Params fn.Return
             let synthSig = synthSigOf fn.Params fn.Return fn.IsAsync fn.Span
+            let pNames = paramNamesOf fn.Params
             let desugaredFn =
                 match fn.Body with
                 | Some body ->
                     { fn with
-                        Body = Some (desugarFunctionBody fieldNames
-                                        (paramNamesOf fn.Params) body) }
+                        Body = Some (desugarFunctionBody fieldNames pNames body) }
                 | None -> fn
+            let funcBarriers = extractBarriers pNames fn.Contracts
             methods <-
                 methods
                 @ [ { Records.ProtectedMethod.Name    = fn.Name
@@ -1228,7 +1274,8 @@ let private defineProtectedTypeOnto
                       Fn         = desugaredFn
                       Sg         = synthSig
                       IsEntry    = false
-                      Invariants = invariants
+                      Barriers   = funcBarriers
+                      Invariants = desugaredInvariants
                       Owner      = info
                       LockField  = lockField
                       ParamTypes = pTys
@@ -1236,7 +1283,15 @@ let private defineProtectedTypeOnto
         | _ -> ()
 
     let infoFinal = { info with Methods = methods }
-    infoFinal, pending
+    let initializers =
+        fieldEntries
+        |> List.choose (fun (n, fb, init) ->
+            init |> Option.map (fun e -> n, fb, e))
+    let ctorPending : ProtectedCtorPending =
+        { Owner = infoFinal
+          Ctor  = ctor
+          Initializers = initializers }
+    infoFinal, pending, ctorPending
 
 /// Generate the sibling exposed record for a `@projectable` opaque type.
 /// The view contains every non-`@hidden` field of the opaque type and
@@ -2812,11 +2867,13 @@ let private emitAssembly
         // Monitor.Enter / try / finally / Monitor.Exit wrap.
         let protectedTable = Records.ProtectedTypeTable()
         let protectedPending = ResizeArray<ProtectedMethodPending>()
+        let protectedCtorsPending = ResizeArray<ProtectedCtorPending>()
         for pd in protectedItems sf do
-            let info, pending =
+            let info, pending, ctorPending =
                 defineProtectedTypeOnto ctx.Module nsName symbols lookup pd
             protectedTable.[pd.Name] <- info
             for p in pending do protectedPending.Add p
+            protectedCtorsPending.Add ctorPending
             // Register a stub `RecordInfo` so the existing record-call
             // dispatch at `Codegen.fs` line ~2401 picks up `Counter()`
             // construction without needing a separate dispatch arm.
@@ -3683,11 +3740,14 @@ let private emitAssembly
                 true
                 (Some (p.Owner.Type :> System.Type)) programTy symbols codegenDiags
 
-            // Emit the public wrapper.  Pattern:
+            // Emit the public wrapper.  Pattern (with barriers +
+            // invariants from D-progress-079 follow-ups):
             //
             //     Monitor.Enter(this.<>__lock)
             //     .try {
+            //       <when: barrier checks — throw if false>
             //       result = <unsafe>__name(this, args...)
+            //       <invariant: checks — throw if false>
             //       leave end
             //     } finally {
             //       Monitor.Exit(this.<>__lock)
@@ -3702,6 +3762,35 @@ let private emitAssembly
                 else None
             let endLabel = il.DefineLabel()
 
+            // Build a FunctionCtx for the wrapper so the barrier /
+            // invariant expressions (which reference `self.<field>`
+            // after desugaring) lower correctly.  Param names map
+            // 1:1 to CLR arg slots — `argShift = 1` for `this`.
+            let wrapResolveCtx = GenericContext()
+            let wrapScratchDiags = ResizeArray<Diagnostic>()
+            let wrapResolveType (te: TypeExpr) : System.Type =
+                let lty =
+                    Resolver.resolveType
+                        symbols wrapResolveCtx wrapScratchDiags te
+                TypeMap.toClrTypeWith lookup lty
+            let wrapParams =
+                List.zip p.Fn.Params (List.ofArray p.ParamTypes)
+                |> List.map (fun (par, ty) -> par.Name, ty)
+            let wrapCtx =
+                Codegen.FunctionCtx.make
+                    il p.ReturnType wrapParams
+                    methodTable funcSigsTable recordTable
+                    enumTable enumCases
+                    unionTable unionCaseLookup
+                    interfaceTable distinctTable protectedTable
+                    projectableTable
+                    importedRecordTable importedUnionTable
+                    importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable
+                    externTypeNames
+                    true (Some (p.Owner.Type :> System.Type))
+                    programTy wrapResolveType lookup codegenDiags
+
             // Acquire lock: Monitor.Enter(this.<>__lock).
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, p.LockField)
@@ -3709,6 +3798,13 @@ let private emitAssembly
 
             // Open try.
             il.BeginExceptionBlock() |> ignore
+
+            // Barrier checks (from `when: <cond>` clauses).  False
+            // throws — the bootstrap doesn't yet do Ada-style queue
+            // waiting (see `06-open-questions.md` Q008).
+            for barrier in p.Barriers do
+                emitContractCheck wrapCtx barrier
+                    (sprintf "%s: barrier failed" p.Fn.Name)
 
             // Forward `this` + each arg to the unsafe inner.
             il.Emit(OpCodes.Ldarg_0)
@@ -3721,6 +3817,15 @@ let private emitAssembly
             match resultLocal with
             | Some loc -> il.Emit(OpCodes.Stloc, loc)
             | None     -> ()
+
+            // Invariant checks — every protected-type-level
+            // `invariant: <cond>` is re-evaluated after the entry/
+            // func body returns (still inside the lock).  Per
+            // §7.4 of the language reference, an invariant
+            // violation is an unrecoverable bug.
+            for inv in p.Invariants do
+                emitContractCheck wrapCtx inv
+                    (sprintf "%s: invariant failed" p.Owner.Name)
 
             // Leave to the post-try region.
             il.Emit(OpCodes.Leave, endLabel)
@@ -3738,6 +3843,43 @@ let private emitAssembly
             | Some loc -> il.Emit(OpCodes.Ldloc, loc)
             | None     -> ()
             il.Emit(OpCodes.Ret)
+
+        // Pass B.7 — finish protected-type ctors with field
+        // initializers + Ret (D-progress-079 follow-up).  Pass A
+        // emitted the ctor prologue (`base ctor` call + lock alloc)
+        // but left the IL generator open so the user-written field
+        // init expressions can be lowered with a real FunctionCtx
+        // in scope.  Each `var x: T = expr` initialiser becomes
+        // `Ldarg.0; <emit expr>; Stfld x` here.
+        for cp in protectedCtorsPending do
+            let cil = cp.Ctor.GetILGenerator()
+            if not (List.isEmpty cp.Initializers) then
+                let resolveCtxCtor = GenericContext()
+                let scratchDiagsCtor = ResizeArray<Diagnostic>()
+                let resolveTypeForCtorCtx (te: TypeExpr) : System.Type =
+                    let lty =
+                        Resolver.resolveType
+                            symbols resolveCtxCtor scratchDiagsCtor te
+                    TypeMap.toClrTypeWith lookup lty
+                let ctorCtx =
+                    Codegen.FunctionCtx.make
+                        cil typeof<System.Void> []
+                        methodTable funcSigsTable recordTable
+                        enumTable enumCases
+                        unionTable unionCaseLookup
+                        interfaceTable distinctTable protectedTable
+                        projectableTable
+                        importedRecordTable importedUnionTable
+                        importedUnionCaseLookup
+                        importedFuncTable importedDistinctTypeTable
+                        externTypeNames
+                        true (Some (cp.Owner.Type :> System.Type))
+                        programTy resolveTypeForCtorCtx lookup codegenDiags
+                for (name, fb, expr) in cp.Initializers do
+                    cil.Emit(OpCodes.Ldarg_0)
+                    let _ = Codegen.emitExpr ctorCtx expr
+                    cil.Emit(OpCodes.Stfld, fb)
+            cil.Emit(OpCodes.Ret)
 
         let lyricMainOpt =
             if isLibrary then None

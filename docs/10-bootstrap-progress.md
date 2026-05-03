@@ -89,6 +89,80 @@ deferred to Phase 3 by design.
 
 ## Active session decisions
 
+### D-progress-080: protected types — barriers + invariants + field initializers
+*claude/protected-type-followups branch.*  Closes three of the five
+follow-ups documented under D-progress-079:
+
+- **`when: <cond>` barriers** evaluate before the unsafe inner is
+  invoked.  False throws `LyricAssertionException` carrying a
+  `<method>: barrier failed` message — the bootstrap doesn't yet
+  do Ada-style condition-variable waiting (`docs/06-open-questions.md`
+  Q008 gates that on Phase C scope plumbing).  Each barrier
+  expression is desugared the same way entry/func bodies are: bare
+  field references rewrite to `self.<field>` so `when: count > 0`
+  works without explicit `self.` prefixes.
+- **`invariant: <cond>` checks** re-evaluate after every entry/func
+  body returns its value, still inside the lock and the outer try.
+  False throws `LyricAssertionException` carrying a
+  `<TypeName>: invariant failed` message — per language reference
+  §7.4 an invariant violation is an unrecoverable bug.  Multiple
+  invariants combine as a sequence of independent checks.
+- **Per-field initializers** — `var count: Int = 100` now actually
+  runs the initializer in the synthesised default ctor.  Pass A
+  emits the ctor prologue (`base ctor` call + lock alloc) and
+  leaves the IL generator open; Pass B (new step "Pass B.7" in
+  `Emitter.fs`) finishes each ctor by emitting `Ldarg.0; <expr>;
+  Stfld <field>` for every initializer with a real `FunctionCtx`
+  in scope, then writes `Ret`.
+
+**Wrapper IL** — the public method wrapper now lays out as:
+
+```il
+Monitor.Enter(this.<>__lock)
+.try {
+  <when: barriers — throw if false>
+  result = <unsafe>__name(this, args...)
+  <invariant: checks — throw if false>
+  leave end
+} finally {
+  Monitor.Exit(this.<>__lock)
+}
+end:
+[ldloc result]
+ret
+```
+
+The wrapper's barrier + invariant emit uses
+`Codegen.FunctionCtx.make` against the wrapper's IL generator with
+`isInstance = true` and `selfType = <protected type>`, so
+`emitContractCheck` evaluates each desugared expression in the
+correct lexical context.
+
+**Tests** (1065 total, +5 net new in
+`tests/Lyric.Emitter.Tests/ProtectedTypeTests.fs`):
+- `pt_field_initializer` — `var count: Int = 100` starts at 100.
+- `pt_invariant_holds_silently` — happy-path invariant passes
+  through every entry/func.
+- `pt_invariant_violation_throws` — invariant trips on
+  `count >= 0` after `decr` drops below zero; main catches via
+  `try/catch Exception as e` and prints `boom`.
+- `pt_when_barrier_satisfied` — barrier holds; entry runs.
+- `pt_when_barrier_throws_when_false` — barrier fails; wrapper
+  throws BEFORE calling the unsafe inner.
+
+**Bootstrap-grade scope** (still future work):
+- **Concurrent reads on `func`** — every `func` still takes the
+  same exclusive Monitor.  `ReaderWriterLockSlim` lift lands when
+  a real workload exercises the distinction (Q008).
+- **`protected type Foo[T]` generics** — Pass A doesn't yet define
+  generic params on the synthesised TypeBuilder; mirror the C2
+  generic-async path (D-progress-075) when needed.
+- **Ada-style barrier waiting** — gated on Phase C scope
+  plumbing; bootstrap consumers fall back to caller-side retry
+  loops or accept the throw-on-false semantics.
+
+---
+
 ### D-progress-079: protected types — bootstrap-grade Monitor wrap
 *claude/protected-type-bootstrap branch.*  Lifts the Phase-3
 `protected type` deliverable from "deferred" (D-progress-067) to
