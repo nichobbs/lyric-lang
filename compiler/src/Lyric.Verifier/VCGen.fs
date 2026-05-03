@@ -253,6 +253,30 @@ let rec translateExpr (env: Env) (e: Expr)
                     List.zip decl.Params argTerms
                     |> List.fold (fun acc (p, arg) -> Map.add p.Name arg acc) Map.empty
 
+                // @pure callee: unfold one level — emit `g(args) = body`
+                // as an additional assumption so the caller's proof
+                // can do equational reasoning on the body.
+                // (`15-phase-4-proof-plan.md` §5.5; one-level unfold.)
+                let pureUnfold : Term list =
+                    if isPure decl then
+                        match decl.Body with
+                        | Some(FBExpr e) ->
+                            // Translate body in a fresh env that has
+                            // the params bound, then substitute caller
+                            // args for the formal parameters.
+                            let pureEnv =
+                                decl.Params
+                                |> List.fold
+                                    (fun env p ->
+                                        let info = sortOfTypeExpr p.Type
+                                        Env.bind p.Name info env)
+                                    (Env.empty ())
+                            let bodyT, _ = translateExpr pureEnv e
+                            let bodySubst = Term.subst paramSubst bodyT.Term
+                            [ TBuiltin(BOpEq, [callTerm; bodySubst]) ]
+                        | _ -> []
+                    else []
+
                 // Translate every requires clause into a side
                 // condition (substituted with the caller's args).
                 let mkInnerEnv () =
@@ -287,7 +311,7 @@ let rec translateExpr (env: Env) (e: Expr)
 
                 { Term      = callTerm
                   SideConds = argSides @ preConds
-                  Assumed   = argAssumed @ postConds },
+                  Assumed   = argAssumed @ postConds @ pureUnfold },
                 List.concat argDiags
             | None ->
                 // Free function — leave as TApp with an inferred sort.
@@ -486,13 +510,20 @@ let rec translateExpr (env: Env) (e: Expr)
                 e.Span
         { Term = TVar("?expr", SUninterp "expr"); SideConds = []; Assumed = [] }, [diag]
 
-/// Translate a contract clause's expression, conjoining any side
-/// conditions into the main term.
-let translateContract (env: Env) (e: Expr) : Term * Diagnostic list =
+/// Translate a contract clause's expression.  Side conditions are
+/// conjoined into the main term; assumed facts (e.g. callee
+/// postconditions encountered during translation) are returned
+/// separately so the caller can hoist them into the goal's
+/// hypothesis set.
+let translateContract
+        (env: Env)
+        (e: Expr) : Term * Term list * Diagnostic list =
     let r, diags = translateExpr env e
-    match r.SideConds with
-    | [] -> r.Term, diags
-    | xs -> Term.mkAnd (xs @ [r.Term]), diags
+    let term =
+        match r.SideConds with
+        | [] -> r.Term
+        | xs -> Term.mkAnd (xs @ [r.Term])
+    term, r.Assumed, diags
 
 /// Bind a single function parameter into the environment, producing
 /// a parameter-side range hypothesis if the type is a refined range.
@@ -670,26 +701,33 @@ let goalsForFunction
                 Env.bindTerm ("old." + p.Name) (TVar(p.Name, info.Sort)) info env)
             envWithResult
 
-    // Pre / Post translation.
-    let preTerm, preDiags =
-        let clauses =
-            decl.Contracts
-            |> List.choose (fun c ->
-                match c with CCRequires(e, _) -> Some e | _ -> None)
+    // Pre / Post translation.  Returns (term, accumulatedAssumed,
+    // diagnostics).  Pure-fn unfolding from the contract becomes
+    // additional hypotheses on the goal (callee post is also
+    // captured here, but that's harmless).
+    let translateClauses (env: Env) (clauses: Expr list) =
         clauses
-        |> List.map (translateContract envAfterParams)
-        |> List.unzip
-        |> fun (terms, diagss) -> Term.mkAnd terms, List.concat diagss
+        |> List.map (fun c ->
+            let term, assumed, diags = translateContract env c
+            term, assumed, diags)
+        |> List.fold
+            (fun (terms, assumes, diags) (t, a, d) ->
+                terms @ [t], assumes @ a, diags @ d)
+            ([], [], [])
 
-    let postTerm, postDiags =
-        let clauses =
-            decl.Contracts
-            |> List.choose (fun c ->
-                match c with CCEnsures(e, _) -> Some e | _ -> None)
-        clauses
-        |> List.map (translateContract envWithOld)
-        |> List.unzip
-        |> fun (terms, diagss) -> Term.mkAnd terms, List.concat diagss
+    let preClauses =
+        decl.Contracts
+        |> List.choose (fun c ->
+            match c with CCRequires(e, _) -> Some e | _ -> None)
+    let preTerms, preAssumed, preDiags = translateClauses envAfterParams preClauses
+    let preTerm = Term.mkAnd preTerms
+
+    let postClauses =
+        decl.Contracts
+        |> List.choose (fun c ->
+            match c with CCEnsures(e, _) -> Some e | _ -> None)
+    let postTerms, postAssumed, postDiags = translateClauses envWithOld postClauses
+    let postTerm = Term.mkAnd postTerms
 
     let body =
         match decl.Body with
@@ -705,7 +743,15 @@ let goalsForFunction
                 Term.subst (Map.ofList [("result", resultExpr)]) postTerm)
             body
 
-    let hypotheses = paramHyps @ [preTerm] @ wpRes.Assumed
+    // Hypothesis set for the post goal:
+    //   * range bounds on parameters,
+    //   * the precondition,
+    //   * any assumed facts collected during translation of the
+    //     contracts (e.g. @pure-callee unfolds in the contract),
+    //   * any assumed facts collected during the wp computation
+    //     (e.g. callee posts via the call rule).
+    let hypotheses =
+        paramHyps @ [preTerm] @ preAssumed @ postAssumed @ wpRes.Assumed
 
     let mainGoal =
         { Hypotheses = hypotheses

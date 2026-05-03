@@ -190,6 +190,35 @@ let tests =
             | Discharged | Unknown _ -> ()
         }
 
+        test "@pure callee unfolds one level at the call site" {
+            // The trivial discharger can't relate `double(x)` to
+            // `x + x` without help.  When `double` is `@pure` and
+            // has an expression body, the verifier emits
+            // `double(x) == x + x` as an additional assumption,
+            // so the post `result == double(x)` discharges.
+            let src = """
+                @proof_required
+                package P
+
+                @pure
+                pub func double(x: Int): Int = x + x
+
+                pub func mainprop(x: Int): Int
+                  ensures: result == double(x)
+                  = x + x
+                """
+            let summary = prove src
+            // mainprop and double both produce post-goals.
+            Expect.equal (ProofSummary.totalCount summary) 2 "two goals"
+            let r =
+                summary.Results
+                |> List.find (fun r -> r.Goal.Label.StartsWith "mainprop")
+            match r.Outcome with
+            | Counterexample _ ->
+                failtest "pure unfold should let mainprop discharge"
+            | Discharged | Unknown _ -> ()
+        }
+
         test "match with literal + binding patterns produces a runnable VC" {
             // M4.1 supports wildcard, literal, and bare-binding
             // patterns.  The post here is `result == x or result == 0`,
