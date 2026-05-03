@@ -245,7 +245,7 @@ No language changes. Doable today.
    `@externTarget` declarations.** *(PR #71 covered the Console arms;
    `Format.Of1..6` deferred to a follow-up because the emitter would need
    to pack `object[]` for arity 4-6.)*
-4. 🟡 **Establish `compiler/lyric/std/_kernel/*.l`** as the audited
+4. ✅ **Establish `compiler/lyric/std/_kernel/*.l`** as the audited
    extern boundary. Move every `@externTarget` declaration into this
    subdirectory. Add a CI lint that rejects new `@externTarget`s
    outside `_kernel/`.
@@ -254,19 +254,26 @@ No language changes. Doable today.
      moved. File-discovery in `Emitter.fs`, `Cli/Program.fs`, and
      `StdlibSeedTests.fs` updated to recurse and prefer top-level on
      collision.
-   * **P0/4c (this step):** ratchet test
+   * **P0/4c (PR #79):** ratchet test
      `KernelBoundaryTests.fs` enforces "extern declarations outside
-     `_kernel/` never grow" (currently 139 — the ceiling drops as
+     `_kernel/` never grow" (started at 139 — the ceiling drops as
      migrations land) and reports the total against Decision F's
      soft cap of 150 (becomes hard at v1.0).
-   * **P0/4b:** remaining mixed-content files (`math.l`, `time.l`,
-     `task.l`, `http.l`, `json.l`, `regex.l`, `random.l`, `parse.l`,
-     `collections.l`, `io.l`, `http_server.l`, `testing_mocking.l`)
-     migrated one or two at a time, each PR dropping the ratchet
-     ceiling.
-5. **Document the kernel** in this doc and in
-   `docs/10-stdlib-plan.md`. Cross-reference. *(In progress: this
-   subsection + `compiler/lyric/std/_kernel/README.md` ship in P0/4a.)*
+   * **P0/4b batch 1 (PR #81):** `io.l`, `parse.l`, `testing_mocking.l`,
+     `regex.l`, `random.l`, `http_server.l` migrated. Ratchet 139 → 103.
+   * **P0/4b batch 2 (PR #83):** `math.l` and `time.l` split into
+     native trampolines (`math.l`, `time.l`) and
+     `_kernel/{math,time}_host.l`. Ratchet 103 → 44.
+   * **P0/4b batch 3 (PR #86):** `json.l` split, `task.l` moved.
+     Ratchet 44 → 5.
+   * **`collections.l` (5 decls)** retained at the top level pending
+     `pub use` re-exports or an opaque-wrap pattern that handles
+     generic-typed values cleanly. See `docs/06-open-questions.md`
+     Q022 for the language-level work needed; closing Q022 lets the
+     ratchet drop to 0.
+5. ✅ **Document the kernel** in `compiler/lyric/std/_kernel/README.md`
+   plus the §3 / §6 sections of this doc. Cross-references to the
+   decision log (D038) and open-questions doc (Q022) in place.
 
 **Exit criterion:** F# `Stdlib.fs` shrinks by ≥30%; all remaining
 externs are concentrated in `_kernel/`. No new language features

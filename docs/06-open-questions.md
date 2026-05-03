@@ -453,6 +453,41 @@ Tier 6 in `docs/12-todo-plan.md`.
 
 ---
 
+## Q022: Generic-aware re-export, opaque wrapping, and BCL dispatch
+
+**Status:** OPEN — gating the final 5 declarations of D038 P0/4b (`compiler/lyric/std/collections.l`).
+
+**Question:** What is the supported pattern for moving a generic `extern type` (e.g., `List[T] = "System.Collections.Generic.List`1"`) from a public stdlib package into the audited `_kernel/` extern boundary while keeping the user-facing API ergonomic?
+
+**Context:**
+
+D038 closed P0/4b with one file unmigrated: `collections.l`. Its `extern type List[T]` and `extern type Map[K, V]` are widely-used public surface (`iter.l`, `CollectionTests.fs`, future user code) accessed via BCL method dispatch (`xs.add`, `xs.count`, `xs[i]`, `m.containsKey`, `m[k]`). A spike during PR #87 confirmed the natural patterns don't work in M1.4:
+
+1. **`pub use Std.Kernel.Type` re-export.** Spec §9.3 documents this; parser accepts (`FileHeadTests.fs:148`); typechecker treats `pub use Std.X.Y` as an attempt to import package `Std.X.Y` (looking for the file `std/x/y.l`) rather than re-exporting symbol `Y` from package `Std.X`. Diagnostic: `E900: cannot locate lyric source for stdlib module 'Std.SpikeInner.SpikeFoo'`.
+
+2. **Opaque-wrap with internal BCL dispatch.** Declaring `pub opaque type List[T] { inner: RawList[T] }` and writing `pub func List.add[T](xs: in List[T], item: in T) { xs.inner.add(item) }` fails with `System.NotSupportedException: TypeBuilder generic instantiation does not support resolving members`. The codegen path at `Codegen.fs:1019` calls `recvTy.GetMethods()` on the open generic `RawList[T]`; that reflection call isn't supported during emit.
+
+3. **Opaque-wrap routed through `@externTarget` host helpers.** Replacing `xs.inner.add(item)` with `hostListAdd(xs.inner, item)` (where `hostListAdd[T]` is `@externTarget("System.Collections.Generic.List`1.Add")` in the kernel) typechecks but breaks UFCS dispatch from callers: `acc.add(x)` with `acc: List[U]` resolves to "no method 'add' on type Object" rather than dispatching to the static `List.add[T]` function via UFCS.
+
+**Sub-questions:**
+
+1. **`pub use` semantics.** Should `pub use Std.X.Y` be (a) re-export of symbol `Y` from package `Std.X`, or (b) re-export of all public items from package `Std.X.Y`? Spec implies (a); parser accepts (a); typechecker implements (b). Reconcile and wire through.
+2. **Opaque-type emit + reflection.** When the emitter emits an opaque type whose field is a generic extern (`inner: RawList[T]`), what's the correct `TypeBuilder`-aware path for `xs.inner.<method>` dispatch? D035 documents per-call-site monomorphization; this case isn't covered.
+3. **UFCS dispatch on opaque-with-generic-param.** When the type checker sees `acc.add(x)` with `acc: List[U]` (opaque, with generic parameter), should it dispatch to `List.add[T]` via UFCS even though the type is opaque? Today it stops at `Object`.
+4. **Generic `@externTarget` on BCL generic methods.** The existing `tryGetValue[K, V]` shows that `@externTarget("System.Collections.Generic.Dictionary`2.TryGetValue")` works at call sites with concrete `K, V`. Confirm this remains the case from inside another generic Lyric function body (the failing scenario above suggests no).
+
+**Constraints:**
+
+- Must not break the existing `xs.add(item)`, `xs.count`, `xs[i]` user-facing surface for `List[T]` / `Map[K, V]`.
+- Must allow the 5 declarations in `collections.l` to move into `_kernel/`.
+- Should not require special-casing `List` / `Map` in the compiler — the pattern should generalize to future opaque-wrapped generic externs.
+
+**Recommendation:** Pick (1) `pub use` first since it's the smallest piece (probably 1-2 days of typechecker work to make the re-export path actually re-export). With `pub use` working, the migration of `collections.l` is mechanical (relocate to `_kernel/`, add `pub use Std.CollectionsHost.{List, Map, newList, ...}` in `collections.l`). Sub-questions 2-4 can wait until a future stdlib needs opaque-wrapped generic externs.
+
+**Revisions:** None.
+
+---
+
 ## How to resolve these questions
 
 Phase 0 work assigns each question to an owner. Resolution happens in any of:
