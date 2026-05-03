@@ -74,9 +74,13 @@ let private surveyExterns () : int * int =
 
 /// Ceiling for `@externTarget` / `extern type` / `extern package`
 /// declarations OUTSIDE `_kernel/`.  Drops as P0/4b migrations move
-/// declarations into the kernel.  Last update: P0/4c PR introducing
-/// this ratchet (2026-05).
-let private outsideCeiling : int = 139
+/// declarations into the kernel.
+///
+/// History:
+///   139 — P0/4c PR introducing this ratchet (2026-05)
+///   103 — P0/4b batch 1: io.l, parse.l, testing_mocking.l,
+///         regex.l, random.l, http_server.l moved into _kernel/
+let private outsideCeiling : int = 103
 
 /// Soft cap on the total extern surface across the whole stdlib.
 /// Decision F (D038): hard cap of 150 at v1.0.  Currently reported

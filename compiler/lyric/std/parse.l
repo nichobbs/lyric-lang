@@ -18,47 +18,32 @@ package Std.Parse
 
 import Std.Core
 import Std.Errors
+import Std.ParseHost as Host
 
 // =====================================================================
-// FFI to the BCL TryParse family — single host call decides validity
-// + value via an `out` parameter.  Used by the Lyric-side `parseOpt*`
-// wrappers; not generally meant for direct use.
-// =====================================================================
-
-@externTarget("System.Int32.TryParse")
-pub func hostTryParseInt(s: in String, value: out Int): Bool = ()
-
-@externTarget("System.Int64.TryParse")
-pub func hostTryParseLong(s: in String, value: out Long): Bool = ()
-
-@externTarget("System.Double.TryParse")
-pub func hostTryParseDouble(s: in String, value: out Double): Bool = ()
-
-@externTarget("System.Boolean.TryParse")
-pub func hostTryParseBool(s: in String, value: out Bool): Bool = ()
-
-// =====================================================================
-// Option-returning parsers — preferred for new code.
+// Option-returning parsers — preferred for new code.  Each routes the
+// host's `out`-parameter `TryParse` through `Std.ParseHost` (lives in
+// `_kernel/` per D038) and lifts the (Bool, value) pair into Option.
 // =====================================================================
 
 pub func parseOptInt(s: in String): Option[Int] {
   var v: Int = default()
-  if hostTryParseInt(s, v) { Some(value = v) } else { None }
+  if Host.hostTryParseInt(s, v) { Some(value = v) } else { None }
 }
 
 pub func parseOptLong(s: in String): Option[Long] {
   var v: Long = default()
-  if hostTryParseLong(s, v) { Some(value = v) } else { None }
+  if Host.hostTryParseLong(s, v) { Some(value = v) } else { None }
 }
 
 pub func parseOptDouble(s: in String): Option[Double] {
   var v: Double = default()
-  if hostTryParseDouble(s, v) { Some(value = v) } else { None }
+  if Host.hostTryParseDouble(s, v) { Some(value = v) } else { None }
 }
 
 pub func parseOptBool(s: in String): Option[Bool] {
   var v: Bool = default()
-  if hostTryParseBool(s, v) { Some(value = v) } else { None }
+  if Host.hostTryParseBool(s, v) { Some(value = v) } else { None }
 }
 
 // =====================================================================
