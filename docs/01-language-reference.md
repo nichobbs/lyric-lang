@@ -1042,9 +1042,9 @@ work. Their resolution status is now:
 | 8 | `func` exclusivity in protected types | 7.4 | Resolved — `09-msil-emission.md` §17.4 |
 | 9 | Protected type lowering | 7.4 | Resolved — `09-msil-emission.md` §17.1–17.3 |
 | 10 | Task vs ValueTask selection | 7.1 | Resolved — `09-msil-emission.md` §14.2 |
-| 11 | Standard library API surface | 12 | Deferred to Phase 3 |
-| 12 | Package registry | 13.8 | Deferred to Phase 3 |
+| 11 | Standard library API surface | 12 | Partially resolved — Std.Time / Json / Http / Math / Random / Testing / Iter / Collections shipped (D-progress-027..072); v1.0-frozen surface is future work |
+| 12 | Package registry | 13.8 | Resolved — NuGet piggyback (D-progress-030) + embedded `Lyric.Contract` resource (D-progress-031) + `lyric.toml` + `lyric publish` / `lyric restore` (D-progress-077) |
 
-No Phase 0 design questions remain open. Q011 and Q012 are
-intentionally deferred to Phase 3 per
-`docs/05-implementation-plan.md`.
+No Phase 0 design questions remain open.  Q012 resolved during
+the Tier-3 package-ecosystem work; Q011 ships incrementally and
+freezes when the v1.0 surface is declared.
