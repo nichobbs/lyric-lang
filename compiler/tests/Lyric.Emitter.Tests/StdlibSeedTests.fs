@@ -28,13 +28,14 @@ let private locateStdlibDir () : string =
         failwithf "could not locate lyric/std directory from %s"
             System.AppContext.BaseDirectory
 
-/// Load every `.l` file under `compiler/lyric/std/` and strip each
-/// file's `package` declaration. This lets the tests inline the
-/// stdlib seed into the user's package while preserving separate
-/// source files for future multi-package work.
+/// Load every `.l` file under `compiler/lyric/std/` (recursively, so
+/// `_kernel/` is included — see `docs/14-native-stdlib-plan.md` §6 P0/4)
+/// and strip each file's `package` declaration. This lets the tests
+/// inline the stdlib seed into the user's package while preserving
+/// separate source files for future multi-package work.
 let private loadStdlibBody () : string =
     let stdlibDir = locateStdlibDir ()
-    Directory.GetFiles(stdlibDir, "*.l")
+    Directory.GetFiles(stdlibDir, "*.l", SearchOption.AllDirectories)
     |> Array.sort
     |> Array.map (fun path ->
         let raw = File.ReadAllText(path)

@@ -3830,9 +3830,17 @@ let private segmentToFileBase (seg: string) : string =
 ///   2. Walk up the directory tree from `startDir` (the CLI binary's base
 ///      directory) looking for a `lyric/std/` subdirectory — works when the
 ///      binary lives inside the source tree.
+///
+/// Within each candidate stdlib directory, look first at the top level
+/// (`lyric/std/<file>`) and then in the kernel boundary
+/// (`lyric/std/_kernel/<file>`) per `docs/14-native-stdlib-plan.md`
+/// §6 P0/4. Top-level wins on collision so a future native rewrite of
+/// a kernel module shadows the old extern surface without manual cleanup.
 let private locateStdlibFile
         (startDir: string)
         (segments: string list) : string option =
+    let firstExisting (paths: string list) : string option =
+        paths |> List.tryFind File.Exists
     match segments with
     | "Std" :: rest when not (List.isEmpty rest) ->
         let baseName =
@@ -3840,13 +3848,14 @@ let private locateStdlibFile
             |> List.map segmentToFileBase
             |> String.concat "_"
         let fileName = baseName + ".l"
+        let candidatesIn (root: string) : string list =
+            [ Path.Combine(root, fileName)
+              Path.Combine(root, "_kernel", fileName) ]
         // 1) LYRIC_STD_PATH override.
         let envHit =
             match Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_STD_PATH") with
-            | Some p ->
-                let candidate = Path.Combine(p, fileName)
-                if File.Exists candidate then Some candidate else None
-            | None -> None
+            | Some p -> firstExisting (candidatesIn p)
+            | None   -> None
         match envHit with
         | Some _ -> envHit
         | None ->
@@ -3855,8 +3864,9 @@ let private locateStdlibFile
             let mutable found : string option = None
             while found.IsNone && dir.IsSome do
                 let d = dir.Value
-                let candidate = Path.Combine(d.FullName, "lyric", "std", fileName)
-                if File.Exists candidate then found <- Some candidate
+                let stdRoot = Path.Combine(d.FullName, "lyric", "std")
+                if Directory.Exists stdRoot then
+                    found <- firstExisting (candidatesIn stdRoot)
                 dir <- d.Parent |> Option.ofObj
             found
     | _ -> None
