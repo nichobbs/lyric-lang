@@ -944,28 +944,28 @@ let private desugarFunctionBody
     | FBExpr e -> FBExpr (desugarSelfFields fieldNames paramNames e)
     | FBBlock b -> FBBlock (desugarBlock fieldNames paramNames b)
 
-/// Static cache of `System.Threading.Monitor::Enter / Exit` so the
-/// per-method emit can grab them without re-resolving.
-let private monitorEnterMI : Lazy<MethodInfo> =
-    lazy (
-        let monitorTy = typeof<System.Threading.Monitor>
-        let candidates = monitorTy.GetMethods()
-        let m =
-            candidates
-            |> Array.tryFind (fun m ->
-                m.Name = "Enter"
-                && m.GetParameters().Length = 1
-                && (m.GetParameters().[0].ParameterType = typeof<obj>))
-        match m with
-        | Some m -> m
-        | None -> failwith "BCL: Monitor.Enter(object) not found")
+/// Static cache of `System.Threading.ReaderWriterLockSlim` lookups
+/// — protected-type wrappers acquire write mode for entries and
+/// read mode for funcs (D-progress-081 / Q008).
+let private rwLockTy : System.Type = typeof<System.Threading.ReaderWriterLockSlim>
 
-let private monitorExitMI : Lazy<MethodInfo> =
+let private rwLockCtor : Lazy<ConstructorInfo> =
     lazy (
-        let monitorTy = typeof<System.Threading.Monitor>
-        match Option.ofObj (monitorTy.GetMethod("Exit", [| typeof<obj> |])) with
+        match Option.ofObj (rwLockTy.GetConstructor([||])) with
+        | Some c -> c
+        | None -> failwith "BCL: ReaderWriterLockSlim() ctor not found")
+
+let private rwLockMethod (name: string) : Lazy<MethodInfo> =
+    lazy (
+        match Option.ofObj (rwLockTy.GetMethod(name, [||])) with
         | Some m -> m
-        | None -> failwith "BCL: Monitor.Exit(object) not found")
+        | None ->
+            failwithf "BCL: ReaderWriterLockSlim.%s() not found" name)
+
+let private rwEnterReadMI    = rwLockMethod "EnterReadLock"
+let private rwExitReadMI     = rwLockMethod "ExitReadLock"
+let private rwEnterWriteMI   = rwLockMethod "EnterWriteLock"
+let private rwExitWriteMI    = rwLockMethod "ExitWriteLock"
 
 /// Stash collected during Pass A so Pass B can emit each entry/func's
 /// body wrapped in the lock + barrier + invariant scaffolding.
@@ -1069,10 +1069,16 @@ let private defineProtectedTypeOnto
         |> Set.ofList
 
     // Lock field — private object, allocated in the ctor.
+    // Lock field — uses `ReaderWriterLockSlim` so concurrent `func`
+    // calls take a read lock and `entry` calls take a write lock
+    // (D-progress-081 / Q008).  Entry-only protected types currently
+    // also use the RWLock for uniformity; switching to
+    // `SemaphoreSlim` for the entry-only case is a minor follow-up
+    // when the perf delta starts showing up in real workloads.
     let lockField =
         tb.DefineField(
             "<>__lock",
-            typeof<obj>,
+            rwLockTy,
             FieldAttributes.Private ||| FieldAttributes.InitOnly)
 
     // Default no-arg ctor.  Initializes lock, then every field's
@@ -1095,7 +1101,7 @@ let private defineProtectedTypeOnto
         | Some c -> c
         | None   -> failwith "object's no-arg ctor not found"
     cil.Emit(OpCodes.Ldarg_0)
-    cil.Emit(OpCodes.Newobj, objCtorNonNull)
+    cil.Emit(OpCodes.Newobj, rwLockCtor.Value)
     cil.Emit(OpCodes.Stfld, lockField)
     // Field initializers + Ret are emitted in Pass B (the
     // user-written init expressions need a FunctionCtx, which only
@@ -3791,10 +3797,18 @@ let private emitAssembly
                     true (Some (p.Owner.Type :> System.Type))
                     programTy wrapResolveType lookup codegenDiags
 
-            // Acquire lock: Monitor.Enter(this.<>__lock).
+            // Acquire lock: write mode for `entry`, read mode for
+            // `func` (D-progress-081 / Q008).  Concurrent func
+            // calls can run in parallel; entries are exclusive.
+            let acquireMI =
+                if p.IsEntry then rwEnterWriteMI.Value
+                else rwEnterReadMI.Value
+            let releaseMI =
+                if p.IsEntry then rwExitWriteMI.Value
+                else rwExitReadMI.Value
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, p.LockField)
-            il.Emit(OpCodes.Call, monitorEnterMI.Value)
+            il.Emit(OpCodes.Callvirt, acquireMI)
 
             // Open try.
             il.BeginExceptionBlock() |> ignore
@@ -3830,11 +3844,11 @@ let private emitAssembly
             // Leave to the post-try region.
             il.Emit(OpCodes.Leave, endLabel)
 
-            // Finally: release the lock.
+            // Finally: release the lock in matching mode.
             il.BeginFinallyBlock()
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, p.LockField)
-            il.Emit(OpCodes.Call, monitorExitMI.Value)
+            il.Emit(OpCodes.Callvirt, releaseMI)
             il.EndExceptionBlock()
 
             // End label, then load result + ret.
