@@ -143,8 +143,8 @@ let private resolveImportedItems
 // ---------------------------------------------------------------------------
 
 /// Run lex → parse → resolve-imports → type-check on `text`.
-/// Returns all diagnostics, the full CheckResult, and a map of imported
-/// files for go-to-definition.
+/// Returns the type-check diagnostics, the full CheckResult, and a map of
+/// imported files for go-to-definition.
 let analyzeUri
         (text:   string)
         (wsIdx:  WorkspaceIndex option)
@@ -153,7 +153,22 @@ let analyzeUri
     let parsed = Parser.parse text
     let importedItems, importedFiles = resolveImportedItems wsIdx store parsed.File
     let checked' = Checker.checkWithImports parsed.File importedItems
-    parsed.Diagnostics @ checked'.Diagnostics, checked', importedFiles
+    let typeDiags = parsed.Diagnostics @ checked'.Diagnostics
+    typeDiags, checked', importedFiles
+
+/// Run the verifier for @proof_required files and return V-prefixed
+/// diagnostics that aren't already covered by `typeDiags`.
+/// AllowUnverified=true so solver unknowns become warnings, not errors.
+/// Returns [] on any exception so a missing z3 binary never crashes the LSP.
+let private runVerifier (text: string) (typeDiags: Diagnostic list) : Diagnostic list =
+    try
+        let opts = { Lyric.Verifier.Driver.ProveOptions.AllowUnverified = true }
+        let summary = Lyric.Verifier.Driver.proveSourceWithOptions text None [] opts
+        summary.Diagnostics
+        |> List.filter (fun d ->
+            d.Code.StartsWith "V" &&
+            not (typeDiags |> List.exists (fun td -> td.Code = d.Code && td.Span = d.Span)))
+    with _ -> []
 
 // ---------------------------------------------------------------------------
 // Type / signature rendering helpers.
@@ -540,9 +555,13 @@ let dispatch
         let text = asStr (nodeAt td "text")
         if uri <> "" then
             try
-                let diags, cr, importedFiles = analyzeUri text wsIdx.Value store
+                let typeDiags, cr, importedFiles = analyzeUri text wsIdx.Value store
+                // Store the document before running the verifier so hover /
+                // completion / definition still work even if the verifier
+                // crashes or times out.
                 store.Set(uri, { Source = text; CheckResult = cr; ImportedFiles = importedFiles })
-                publishDiagnostics output uri diags
+                let verifierDiags = runVerifier text typeDiags
+                publishDiagnostics output uri (typeDiags @ verifierDiags)
             with _ -> ()
         true
 
@@ -557,9 +576,10 @@ let dispatch
             | _ -> ""
         if uri <> "" && newText <> "" then
             try
-                let diags, cr, importedFiles = analyzeUri newText wsIdx.Value store
+                let typeDiags, cr, importedFiles = analyzeUri newText wsIdx.Value store
                 store.Set(uri, { Source = newText; CheckResult = cr; ImportedFiles = importedFiles })
-                publishDiagnostics output uri diags
+                let verifierDiags = runVerifier newText typeDiags
+                publishDiagnostics output uri (typeDiags @ verifierDiags)
             with _ -> ()
         true
 

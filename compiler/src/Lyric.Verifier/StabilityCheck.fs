@@ -143,7 +143,7 @@ let private collectCallNames (body: FunctionBody) : (string * Span) list =
         | EPrefix(_, x)   -> visitExpr x
         | EBinop(_, l, r) -> visitExpr l; visitExpr r
         | EAssign(t, _, v)-> visitExpr t; visitExpr v
-        | EBlock blk      -> visitBlock blk
+        | EBlock blk | EUnsafe blk -> visitBlock blk
         | EInterpolated segs ->
             segs |> List.iter (function
                 | ISExpr x -> visitExpr x

@@ -648,12 +648,36 @@ let parseFromJson (json: string) : Contract option =
 /// enough info to render a human-readable line.  Removed/changed
 /// entries are SemVer-major-bump-worthy; Added entries are minor-
 /// bump-worthy.
+///
+/// `DiffContractChanged` fires when the signature is unchanged but the
+/// requires/ensures clauses differ in a semantically breaking way:
+///   * StrengthenedRequires — new adds preconditions callers must satisfy.
+///   * WeakenedEnsures      — new removes postconditions callees relied on.
+type ContractBreakKind =
+    | StrengthenedRequires of added: string list
+    | WeakenedEnsures      of removed: string list
+
 type ContractDiffEntry =
-    | DiffAdded   of ContractDecl
-    | DiffRemoved of ContractDecl
-    | DiffChanged of oldDecl: ContractDecl * newDecl: ContractDecl
+    | DiffAdded           of ContractDecl
+    | DiffRemoved         of ContractDecl
+    | DiffChanged         of oldDecl: ContractDecl * newDecl: ContractDecl
+    | DiffContractChanged of decl: ContractDecl * breaks: ContractBreakKind list
 
 let private declKey (d: ContractDecl) = (d.Kind, d.Name)
+
+/// Detect contract-clause breaking changes between two same-named function
+/// declarations.  Returns `Some` with the list of break kinds when at
+/// least one breaking change is detected; `None` when contracts are
+/// compatible.
+let private contractBreaks (o: ContractDecl) (n: ContractDecl) : ContractBreakKind list =
+    let oldReqs = Set.ofList o.Requires
+    let newReqs = Set.ofList n.Requires
+    let oldEns  = Set.ofList o.Ensures
+    let newEns  = Set.ofList n.Ensures
+    let addedReqs   = Set.difference newReqs oldReqs |> Set.toList
+    let removedEns  = Set.difference oldEns  newEns  |> Set.toList
+    [ if not (List.isEmpty addedReqs)  then yield StrengthenedRequires addedReqs
+      if not (List.isEmpty removedEns) then yield WeakenedEnsures removedEns ]
 
 /// Compute a structural diff between two contracts.  Decls keyed
 /// by (Kind, Name) — adding a record and removing a same-named
@@ -674,7 +698,11 @@ let diffContracts
     [ for key in allKeys do
         match Map.tryFind key oldByKey, Map.tryFind key newByKey with
         | Some o, Some n when o.Repr <> n.Repr -> yield DiffChanged (o, n)
-        | Some _, Some _ -> ()  // unchanged
+        | Some o, Some n ->
+            // Same signature — check contract clauses.
+            let breaks = contractBreaks o n
+            if not (List.isEmpty breaks) then
+                yield DiffContractChanged (n, breaks)
         | None, Some n -> yield DiffAdded n
         | Some o, None -> yield DiffRemoved o
         | None, None -> () ]
@@ -684,6 +712,7 @@ let diffContracts
             | DiffAdded d -> 0, declKey d
             | DiffRemoved d -> 1, declKey d
             | DiffChanged (o, _) -> 2, declKey o
+            | DiffContractChanged (d, _) -> 3, declKey d
         (kind, name))
 
 /// Returns true when the diff contains breaking changes to *stable*
@@ -697,7 +726,8 @@ let hasBreakingChanges (entries: ContractDiffEntry list) : bool =
     |> List.exists (function
         | DiffAdded _ -> false
         | DiffRemoved d -> d.Stability <> "experimental"
-        | DiffChanged(o, _) -> o.Stability <> "experimental")
+        | DiffChanged(o, _) -> o.Stability <> "experimental"
+        | DiffContractChanged(d, _) -> d.Stability <> "experimental")
 
 /// Render a single diff entry as a human-readable line.
 let renderDiffEntry (entry: ContractDiffEntry) : string =
@@ -715,3 +745,15 @@ let renderDiffEntry (entry: ContractDiffEntry) : string =
     | DiffChanged (o, n) ->
         sprintf "  ~ %s %s%s\n      old: %s\n      new: %s"
             o.Kind o.Name (stabTag o) o.Repr n.Repr
+    | DiffContractChanged (d, breaks) ->
+        let breakLines =
+            breaks |> List.map (function
+                | StrengthenedRequires added ->
+                    sprintf "      [breaking] strengthened requires: %s"
+                        (added |> List.map (sprintf "\"%s\"") |> String.concat ", ")
+                | WeakenedEnsures removed ->
+                    sprintf "      [breaking] weakened ensures: %s"
+                        (removed |> List.map (sprintf "\"%s\"") |> String.concat ", "))
+            |> String.concat "\n"
+        sprintf "  ! %s %s%s (contract change)\n%s"
+            d.Kind d.Name (stabTag d) breakLines

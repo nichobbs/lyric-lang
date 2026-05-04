@@ -16,6 +16,7 @@
     <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
     <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
     <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+    <ProjectReference Include="..\Lyric.Verifier\Lyric.Verifier.fsproj" />
   </ItemGroup>
 
 </Project>

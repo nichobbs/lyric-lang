@@ -171,4 +171,64 @@ let tests =
             let _, diags = parseAndCheck src
             Expect.isFalse (hasDiag "V0006" diags) "runtime-checked is unrestricted"
         }
+
+        test "[V0003] unsafe block in non-unsafe-allowed package is an error" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func f(x: Int): Int {
+                  unsafe { assert(x > 0) }
+                  return x
+                }
+                """
+            let parsed = parse src
+            let _, diags = checkFile parsed.File
+            Expect.isTrue (hasDiag "V0003" diags) "V0003 emitted"
+        }
+
+        test "[V0003] unsafe block allowed in unsafe_blocks_allowed package" {
+            let src = """
+                @proof_required(unsafe_blocks_allowed)
+                package P
+
+                pub func f(x: Int): Int {
+                  unsafe { assert(x > 0) }
+                  return x
+                }
+                """
+            let parsed = parse src
+            let _, diags = checkFile parsed.File
+            Expect.isFalse (hasDiag "V0003" diags) "no V0003 in unsafe-allowed mode"
+        }
+
+        test "[V0009] assume outside unsafe block is an error" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func f(x: Int): Int {
+                  assume(x > 0)
+                  return x
+                }
+                """
+            let parsed = parse src
+            let _, diags = checkFile parsed.File
+            Expect.isTrue (hasDiag "V0009" diags) "V0009 emitted"
+        }
+
+        test "[V0009] assume inside unsafe block is allowed" {
+            let src = """
+                @proof_required(unsafe_blocks_allowed)
+                package P
+
+                pub func f(x: Int): Int {
+                  unsafe { assume(x > 0) }
+                  return x
+                }
+                """
+            let parsed = parse src
+            let _, diags = checkFile parsed.File
+            Expect.isFalse (hasDiag "V0009" diags) "no V0009 inside unsafe block"
+        }
     ]
