@@ -19,6 +19,7 @@ the design phase.** No compiler exists. The repository currently contains:
 - `docs/grammar.ebnf` — formal grammar (Phase 0 deliverable #4).
 - `docs/08-contract-semantics.md` — operational semantics for contracts (Phase 0 deliverable #5).
 - `docs/09-msil-emission.md` — MSIL emission strategy (Phase 0 deliverable #7).
+- `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6+; emitter to be written in Lyric itself).
 
 ## Reading order (for Claude)
 
