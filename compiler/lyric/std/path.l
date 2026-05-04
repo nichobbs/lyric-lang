@@ -20,6 +20,7 @@ import System.IO as HostIO
 /// let sub = "projects"
 /// let result = join(root, sub)  // "/home/user/projects" on Unix
 /// ```
+@stable(since="1.0")
 pub func join(base: in String, relative: in String): String {
   if base.length == 0 {
     return relative
@@ -38,6 +39,7 @@ pub func join(base: in String, relative: in String): String {
 /// extension("archive.tar.gz") // ".gz"
 /// extension("README")         // ""
 /// ```
+@stable(since="1.0")
 pub func extension(path: in String): String {
   return HostIO.getExtension(path)
 }
@@ -52,6 +54,7 @@ pub func extension(path: in String): String {
 ///
 /// For paths ending in a separator, the host boundary decides whether
 /// this is empty or normalized first.
+@stable(since="1.0")
 pub func basename(path: in String): String {
   return HostIO.getFileName(path)
 }
@@ -66,6 +69,7 @@ pub func basename(path: in String): String {
 ///
 /// Paths with no directory component use "." so callers can compose
 /// with relative paths without handling null.
+@stable(since="1.0")
 pub func dirname(path: in String): String {
   match HostIO.getDirectoryName(path) {
     case null -> "."
@@ -78,6 +82,7 @@ pub func dirname(path: in String): String {
 /// rules.
 ///
 /// This is a syntax check only; it does not verify existence.
+@stable(since="1.0")
 pub func isAbsolute(path: in String): Bool {
   if path.length == 0 {
     return false
@@ -89,6 +94,7 @@ pub func isAbsolute(path: in String): Bool {
 /// rules.
 ///
 /// Empty paths are treated as relative by convention.
+@stable(since="1.0")
 pub func isRelative(path: in String): Bool {
   return not isAbsolute(path)
 }

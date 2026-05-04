@@ -20,8 +20,11 @@ import Std.MathHost as Host
 // Constants. (Trampoline — IEEE 754 doubles via the kernel boundary.)
 // =====================================================================
 
+@stable(since="1.0")
 pub func pi():  Double { Host.hostPi() }
+@stable(since="1.0")
 pub func e():   Double { Host.hostE() }
+@stable(since="1.0")
 pub func tau(): Double { Host.hostTau() }
 
 // =====================================================================
@@ -35,6 +38,7 @@ pub func tau(): Double { Host.hostTau() }
 // Native: integer abs. Panics on `Int.MinValue` (overflow on negation),
 // matching the runtime-bug discipline in §8 of the language reference.
 @pure
+@stable(since="1.0")
 pub func absInt(n: in Int): Int
   ensures: result >= 0
 {
@@ -43,12 +47,14 @@ pub func absInt(n: in Int): Int
 
 // Native: long abs. Same overflow caveat at `Long.MinValue`.
 @pure
+@stable(since="1.0")
 pub func absLong(n: in Long): Long
   ensures: result >= 0i64
 {
   if n < 0i64 { -n } else { n }
 }
 
+@stable(since="1.0")
 pub func absDouble(n: in Double): Double { Host.hostAbsDouble(n) }
 
 // =====================================================================
@@ -60,6 +66,7 @@ pub func absDouble(n: in Double): Double { Host.hostAbsDouble(n) }
 // =====================================================================
 
 @pure
+@stable(since="1.0")
 pub func minPairInt(a: in Int, b: in Int): Int
   ensures: result <= a and result <= b
   ensures: result == a or result == b
@@ -68,6 +75,7 @@ pub func minPairInt(a: in Int, b: in Int): Int
 }
 
 @pure
+@stable(since="1.0")
 pub func maxPairInt(a: in Int, b: in Int): Int
   ensures: result >= a and result >= b
   ensures: result == a or result == b
@@ -76,6 +84,7 @@ pub func maxPairInt(a: in Int, b: in Int): Int
 }
 
 @pure
+@stable(since="1.0")
 pub func minPairLong(a: in Long, b: in Long): Long
   ensures: result <= a and result <= b
   ensures: result == a or result == b
@@ -84,6 +93,7 @@ pub func minPairLong(a: in Long, b: in Long): Long
 }
 
 @pure
+@stable(since="1.0")
 pub func maxPairLong(a: in Long, b: in Long): Long
   ensures: result >= a and result >= b
   ensures: result == a or result == b
@@ -91,7 +101,9 @@ pub func maxPairLong(a: in Long, b: in Long): Long
   if a > b { a } else { b }
 }
 
+@stable(since="1.0")
 pub func minPairDouble(a: in Double, b: in Double): Double { Host.hostMinPairDouble(a, b) }
+@stable(since="1.0")
 pub func maxPairDouble(a: in Double, b: in Double): Double { Host.hostMaxPairDouble(a, b) }
 
 // =====================================================================
@@ -100,6 +112,7 @@ pub func maxPairDouble(a: in Double, b: in Double): Double { Host.hostMaxPairDou
 
 // Greatest common divisor via Euclid. `gcd(0, 0) = 0` by convention.
 @pure
+@stable(since="1.0")
 pub func gcd(a: in Int, b: in Int): Int
   requires: a >= 0 and b >= 0
   ensures: result >= 0
@@ -115,6 +128,7 @@ pub func gcd(a: in Int, b: in Int): Int
 }
 
 @pure
+@stable(since="1.0")
 pub func gcdLong(a: in Long, b: in Long): Long
   requires: a >= 0i64 and b >= 0i64
   ensures: result >= 0i64
@@ -134,6 +148,7 @@ pub func gcdLong(a: in Long, b: in Long): Long
 // Returns 0 when either argument is 0 (the conventional definition;
 // avoids div-by-zero through `gcd(0, 0) = 0`).
 @pure
+@stable(since="1.0")
 pub func lcm(a: in Int, b: in Int): Int
   requires: a >= 0 and b >= 0
   ensures: result >= 0
@@ -146,6 +161,7 @@ pub func lcm(a: in Int, b: in Int): Int
 }
 
 @pure
+@stable(since="1.0")
 pub func lcmLong(a: in Long, b: in Long): Long
   requires: a >= 0i64 and b >= 0i64
   ensures: result >= 0i64
@@ -161,33 +177,51 @@ pub func lcmLong(a: in Long, b: in Long): Long
 // Powers / roots / logs. (Trampoline — hardware-tuned IEEE 754 transcendentals.)
 // =====================================================================
 
+@stable(since="1.0")
 pub func pow(base_: in Double, exponent: in Double): Double { Host.hostPow(base_, exponent) }
+@stable(since="1.0")
 pub func sqrt(x: in Double): Double  { Host.hostSqrt(x) }
+@stable(since="1.0")
 pub func cbrt(x: in Double): Double  { Host.hostCbrt(x) }
+@stable(since="1.0")
 pub func ln(x: in Double): Double    { Host.hostLn(x) }
+@stable(since="1.0")
 pub func log10(x: in Double): Double { Host.hostLog10(x) }
+@stable(since="1.0")
 pub func log2(x: in Double): Double  { Host.hostLog2(x) }
+@stable(since="1.0")
 pub func exp(x: in Double): Double   { Host.hostExp(x) }
 
 // =====================================================================
 // Trigonometry. All angles in radians. (Trampoline.)
 // =====================================================================
 
+@stable(since="1.0")
 pub func sin(x: in Double): Double  { Host.hostSin(x) }
+@stable(since="1.0")
 pub func cos(x: in Double): Double  { Host.hostCos(x) }
+@stable(since="1.0")
 pub func tan(x: in Double): Double  { Host.hostTan(x) }
+@stable(since="1.0")
 pub func asin(x: in Double): Double { Host.hostAsin(x) }
+@stable(since="1.0")
 pub func acos(x: in Double): Double { Host.hostAcos(x) }
+@stable(since="1.0")
 pub func atan(x: in Double): Double { Host.hostAtan(x) }
+@stable(since="1.0")
 pub func atan2(y: in Double, x: in Double): Double { Host.hostAtan2(y, x) }
 
 // =====================================================================
 // Rounding. (Trampoline — banker's-rounding semantics via Math.Round.)
 // =====================================================================
 
+@stable(since="1.0")
 pub func floor(x: in Double): Double    { Host.hostFloor(x) }
+@stable(since="1.0")
 pub func ceiling(x: in Double): Double  { Host.hostCeiling(x) }
+@stable(since="1.0")
 pub func round(x: in Double): Double    { Host.hostRound(x) }
+@stable(since="1.0")
 pub func truncate(x: in Double): Double { Host.hostTruncate(x) }
 
 // =====================================================================
@@ -199,6 +233,7 @@ pub func truncate(x: in Double): Double { Host.hostTruncate(x) }
 // =====================================================================
 
 @pure
+@stable(since="1.0")
 pub func signInt(n: in Int): Int
   ensures: result == -1 or result == 0 or result == 1
 {
@@ -212,6 +247,7 @@ pub func signInt(n: in Int): Int
 }
 
 @pure
+@stable(since="1.0")
 pub func signLong(n: in Long): Int
   ensures: result == -1 or result == 0 or result == 1
 {
@@ -224,7 +260,11 @@ pub func signLong(n: in Long): Int
   }
 }
 
+@stable(since="1.0")
 pub func signDouble(n: in Double): Int    { Host.hostSignDouble(n) }
+@stable(since="1.0")
 pub func isNaN(x: in Double): Bool        { Host.hostIsNaN(x) }
+@stable(since="1.0")
 pub func isInfinity(x: in Double): Bool   { Host.hostIsInfinity(x) }
+@stable(since="1.0")
 pub func isFinite(x: in Double): Bool     { Host.hostIsFinite(x) }

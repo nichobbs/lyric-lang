@@ -22,6 +22,7 @@ import Std.Random
 /// panicking with the failing input on the first violation.
 /// `n` controls how many samples are drawn; typical usage is
 /// 100-1000 per property.
+@experimental
 pub func forAllIntRange(
         rng: in Random,
         min: in Int,
@@ -39,6 +40,7 @@ pub func forAllIntRange(
 }
 
 /// Run `prop` on `n` random `Bool` samples.
+@experimental
 pub func forAllBool(
         rng: in Random,
         n: in Int,
@@ -55,6 +57,7 @@ pub func forAllBool(
 
 /// Run `prop` on `n` random `Double` samples in `[0.0, 1.0)`.
 /// For other ranges, scale the input inside `prop`.
+@experimental
 pub func forAllDouble(
         rng: in Random,
         n: in Int,
@@ -71,6 +74,7 @@ pub func forAllDouble(
 
 /// Run `prop` on `n` random `(Int, Int)` pairs in `[min, max)`.
 /// Useful for properties that take two scalars (e.g. commutativity).
+@experimental
 pub func forAllIntPair(
         rng: in Random,
         min: in Int,

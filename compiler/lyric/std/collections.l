@@ -30,6 +30,7 @@ import Std.CollectionsHost
 /// Lookup `key` in `m`.  Returns `Some(value)` if present, `None` if
 /// missing.  Lyric-side wrapper around `tryGetValue` so callers see
 /// the idiomatic `Option[V]` shape.
+@stable(since="1.0")
 pub func mapGet[K, V](m: in Map[K, V], key: in K): Option[V] {
   var value: V = default()
   if tryGetValue(m, key, value) {

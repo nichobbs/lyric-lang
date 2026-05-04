@@ -9,6 +9,7 @@ package Std.Log
 
 import Std.LogHost as HostLog
 
+@stable(since="1.0")
 pub enum LogLevel {
   case Debug
   case Info
@@ -16,11 +17,13 @@ pub enum LogLevel {
   case Error
 }
 
+@stable(since="1.0")
 pub record LogField {
   key: String
   value: String
 }
 
+@stable(since="1.0")
 pub interface Logger {
   func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit
 }
@@ -56,26 +59,31 @@ func formatFields(fields: in slice[LogField]): String {
 }
 
 /// Emit a best-effort log message through the host diagnostics sink.
+@stable(since="1.0")
 pub func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit {
   HostLog.write(levelName(level), msg + formatFields(fields))
 }
 
 /// Log at debug level.
+@stable(since="1.0")
 pub func debug(msg: in String): Unit {
   log(Debug, msg, [])
 }
 
 /// Log at info level.
+@stable(since="1.0")
 pub func info(msg: in String): Unit {
   log(Info, msg, [])
 }
 
 /// Log at warning level.
+@stable(since="1.0")
 pub func warn(msg: in String): Unit {
   log(Warn, msg, [])
 }
 
 /// Log at error level.
+@stable(since="1.0")
 pub func error(msg: in String): Unit {
   log(Error, msg, [])
 }
@@ -84,6 +92,7 @@ pub func error(msg: in String): Unit {
 ///
 /// # Preconditions
 /// - `key` must be non-empty. Empty field names are caller bugs.
+@stable(since="1.0")
 pub func field(key: in String, value: in String): LogField
   requires: key.length > 0
 {

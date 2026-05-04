@@ -9,12 +9,14 @@ package Std.Stream
 
 import Std.Errors
 
+@stable(since="1.0")
 pub interface ByteReader {
   // Return up to maxBytes. An empty successful slice means EOF.
   func read(maxBytes: in Nat): Result[slice[Byte], IOError]
     requires: maxBytes > 0
 }
 
+@stable(since="1.0")
 pub interface ByteWriter {
   // Write the complete slice or return an IOError.
   func write(bytes: in slice[Byte]): Result[Unit, IOError]
@@ -23,6 +25,7 @@ pub interface ByteWriter {
   func flush(): Result[Unit, IOError]
 }
 
+@stable(since="1.0")
 pub interface TextReader {
   // Ok(None) means EOF. Err means the read itself failed.
   func readLine(): Result[Option[String], IOError]
@@ -32,6 +35,7 @@ pub interface TextReader {
     requires: maxChars > 0
 }
 
+@stable(since="1.0")
 pub interface TextWriter {
   // Write text without adding a newline.
   func write(text: in String): Result[Unit, IOError]
@@ -43,6 +47,7 @@ pub interface TextWriter {
   func flush(): Result[Unit, IOError]
 }
 
+@stable(since="1.0")
 pub interface Closable {
   // Release the underlying resource. Designed to be paired with defer.
   func close(): Result[Unit, IOError]

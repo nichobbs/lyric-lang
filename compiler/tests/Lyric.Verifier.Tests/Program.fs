@@ -8,6 +8,7 @@ let main argv =
         testList "Lyric.Verifier" [
             ModeTests.tests
             ModeCheckTests.tests
+            StabilityCheckTests.tests
             VcirTests.tests
             SmtTests.tests
             SolverTests.tests

@@ -1188,6 +1188,55 @@ conventions; no first-party tool. Tracked as Phase 5 / Tier 6 in
 
 ---
 
+## D040: `@stable(since="X.Y")` / `@experimental` stability annotations
+
+**Status:** ACCEPTED
+**Date:** 2026-05-04
+
+### Decision
+
+Stability is expressed through two annotations on `pub` items:
+
+- `@stable(since="X.Y")` — the item's API will not break without a SemVer major bump from version X.Y onward.
+- `@experimental` — the item may change or be removed at any time; no SemVer guarantee.
+
+Unannotated `pub` items are treated as stable for enforcement purposes (conservative: omitting `@experimental` is not license to depend on one).
+
+The compiler enforces one direction: a non-experimental `pub` function may not call an `@experimental` item in the same source file. Diagnostic `S0001` is emitted at the call site. `S0002` fires when both `@stable` and `@experimental` are present on the same item.
+
+`lyric public-api-diff` (D-progress-062) uses the `Stability` field in `Lyric.Contract` metadata to decide whether a removal or signature change is SemVer-major: removing / changing `@experimental` surface is a no-op SemVer-wise; removing / changing `@stable` surface is a major bump.
+
+### stdlib cut (Q011)
+
+Every `pub` item in `compiler/lyric/std/` is annotated. See `docs/10-stdlib-plan.md` §"Stability cut" for the full table.
+
+Summary:
+- **Experimental:** `Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`; HTTP retry/cancel/timeout helpers; time DTO-conversion and timezone-lookup helpers.
+- **Stable (`since="1.0"`):** `Std.Errors`, `Std.Parse`, `Std.Testing` (assertEqual/assertEqualInt/assertTrue), `Std.Collections`, `Std.String`, `Std.Console`, `Std.File`, `Std.Iter`, `Std.Math`, `Std.Stream`, `Std.Log`, `Std.Path`, `Std.Environment`, `Std.App`, `Std.Directory`, `Std.Json`, core HTTP types and methods, core time operations.
+
+### Alternatives considered
+
+- **Doc-comment convention (`// stability: stable`).** Rejected: invisible to the compiler; cannot be enforced or embedded in contract metadata; hard to diff.
+- **Package-level stability (all-or-nothing).** Rejected: too coarse. `Std.Http` has a stable core and an experimental cancel/timeout wing; splitting into two packages would be worse for discoverability.
+- **Opt-in stable (default experimental).** Rejected: too noisy. Requiring `@stable` on every production function would make new code look experimental by default.
+
+### Rationale
+
+- An annotation on the declaration is the right scope: it appears in source, in LSP hover, and in generated docs.
+- Embedding the stability string in `Lyric.Contract` metadata is load-bearing: `lyric public-api-diff` and future package tooling read it without re-parsing source.
+- The one-direction enforcement rule (stable must not call experimental intra-package) catches the most common mistake — accidentally depending on something you intend to stabilize — without over-constraining experimental code.
+- Cross-package stability enforcement (a stable package can't import an experimental package) is deferred until the contract-metadata reader (`Lyric.Verifier.Imports`) can carry the stability field per-decl.
+
+### Tracked follow-ups
+
+- Cross-package S0001 (stable code depending on experimental cross-package declaration) requires extending `Imports.fs` to carry per-decl stability from the embedded `Lyric.Contract` resource.
+- `lyric doc` (future) should render stability badges next to items.
+- Synthesised `fromJson` / `toJson` from `@derive(Json)` should carry `@experimental` in the emitted contract until Phase 2 stabilizes the derive mechanism.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

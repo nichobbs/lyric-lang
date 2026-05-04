@@ -15,6 +15,7 @@ import Std.Collections
 // =====================================================================
 
 /// Run `f` on each element of `xs` in order.
+@stable(since="1.0")
 pub func forEach[T](xs: in slice[T], f: in (T) -> Unit): Unit {
   for x in xs {
     f(x)
@@ -26,6 +27,7 @@ pub func forEach[T](xs: in slice[T], f: in (T) -> Unit): Unit {
 // =====================================================================
 
 /// Left-fold: `step(... step(step(init, xs[0]), xs[1]) ..., xs[n-1])`.
+@stable(since="1.0")
 pub func fold[T, U](xs: in slice[T], init: in U, step: in (U, T) -> U): U {
   var acc = init
   for x in xs {
@@ -39,6 +41,7 @@ pub func fold[T, U](xs: in slice[T], init: in U, step: in (U, T) -> U): U {
 // =====================================================================
 
 /// `true` iff every element satisfies `pred`.  Vacuously true on `[]`.
+@stable(since="1.0")
 pub func all[T](xs: in slice[T], pred: in (T) -> Bool): Bool {
   for x in xs {
     if not pred(x) { return false }
@@ -47,6 +50,7 @@ pub func all[T](xs: in slice[T], pred: in (T) -> Bool): Bool {
 }
 
 /// `true` iff at least one element satisfies `pred`.  False on `[]`.
+@stable(since="1.0")
 pub func any[T](xs: in slice[T], pred: in (T) -> Bool): Bool {
   for x in xs {
     if pred(x) { return true }
@@ -55,6 +59,7 @@ pub func any[T](xs: in slice[T], pred: in (T) -> Bool): Bool {
 }
 
 /// Number of elements that satisfy `pred`.
+@stable(since="1.0")
 pub func count[T](xs: in slice[T], pred: in (T) -> Bool): Int {
   var n = 0
   for x in xs {
@@ -70,6 +75,7 @@ pub func count[T](xs: in slice[T], pred: in (T) -> Bool): Int {
 // =====================================================================
 
 /// First element satisfying `pred`, or `None`.
+@stable(since="1.0")
 pub func find[T](xs: in slice[T], pred: in (T) -> Bool): Option[T] {
   for x in xs {
     if pred(x) { return Some(value = x) }
@@ -84,6 +90,7 @@ pub func find[T](xs: in slice[T], pred: in (T) -> Bool): Option[T] {
 
 /// Map each element through `f`, collecting the results into a fresh
 /// slice.  `mapTo([1, 2, 3], { n: Int -> n * 2 }) == [2, 4, 6]`.
+@stable(since="1.0")
 pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
   val acc: List[U] = newList()
   for x in xs {
@@ -93,6 +100,7 @@ pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
 }
 
 /// Keep only the elements that satisfy `pred`.
+@stable(since="1.0")
 pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T] {
   val acc: List[T] = newList()
   for x in xs {
@@ -106,6 +114,7 @@ pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T] {
 /// First `n` elements, or fewer if `xs.length < n`.  Negative `n`
 /// returns the empty slice (the inner counter never reaches a
 /// negative threshold).
+@stable(since="1.0")
 pub func take[T](xs: in slice[T], n: in Int): slice[T] {
   val acc: List[T] = newList()
   var i = 0
@@ -120,6 +129,7 @@ pub func take[T](xs: in slice[T], n: in Int): slice[T] {
 
 /// Skip the first `n` elements.  Negative `n` returns a copy of the
 /// whole slice.
+@stable(since="1.0")
 pub func drop[T](xs: in slice[T], n: in Int): slice[T] {
   val acc: List[T] = newList()
   var i = 0
@@ -134,6 +144,7 @@ pub func drop[T](xs: in slice[T], n: in Int): slice[T] {
 
 /// Concatenate two slices, allocating a fresh result.  Use repeatedly
 /// for variable-arity concat — `concat(concat(a, b), c)` etc.
+@stable(since="1.0")
 pub func concat[T](a: in slice[T], b: in slice[T]): slice[T] {
   val acc: List[T] = newList()
   for x in a {
@@ -152,6 +163,7 @@ pub func concat[T](a: in slice[T], b: in slice[T]): slice[T] {
 // =====================================================================
 
 /// Sum of an Int slice.
+@stable(since="1.0")
 pub func sumInt(xs: in slice[Int]): Int {
   var total = 0
   for x in xs {
@@ -161,6 +173,7 @@ pub func sumInt(xs: in slice[Int]): Int {
 }
 
 /// Sum every element of a `slice[Long]`.  Empty slices return 0.
+@stable(since="1.0")
 pub func sumLong(xs: in slice[Long]): Long {
   var total: Long = 0i64
   for x in xs {
@@ -170,6 +183,7 @@ pub func sumLong(xs: in slice[Long]): Long {
 }
 
 /// Sum every element of a `slice[Double]`.  Empty slices return 0.0.
+@stable(since="1.0")
 pub func sumDouble(xs: in slice[Double]): Double {
   var total: Double = 0.0
   for x in xs {
@@ -179,6 +193,7 @@ pub func sumDouble(xs: in slice[Double]): Double {
 }
 
 /// Return the smallest Int in `xs`.  `None` for empty slices.
+@stable(since="1.0")
 pub func iterMinInt(xs: in slice[Int]): Option[Int] {
   if xs.length == 0 {
     return None
@@ -193,6 +208,7 @@ pub func iterMinInt(xs: in slice[Int]): Option[Int] {
 }
 
 /// Return the largest Int in `xs`.  `None` for empty slices.
+@stable(since="1.0")
 pub func iterMaxInt(xs: in slice[Int]): Option[Int] {
   if xs.length == 0 {
     return None
@@ -207,6 +223,7 @@ pub func iterMaxInt(xs: in slice[Int]): Option[Int] {
 }
 
 /// Return the smallest Long in `xs`.  `None` for empty slices.
+@stable(since="1.0")
 pub func minLong(xs: in slice[Long]): Option[Long] {
   if xs.length == 0 {
     return None
@@ -221,6 +238,7 @@ pub func minLong(xs: in slice[Long]): Option[Long] {
 }
 
 /// Return the largest Long in `xs`.  `None` for empty slices.
+@stable(since="1.0")
 pub func maxLong(xs: in slice[Long]): Option[Long] {
   if xs.length == 0 {
     return None
@@ -235,6 +253,7 @@ pub func maxLong(xs: in slice[Long]): Option[Long] {
 }
 
 /// Reverse a `slice[T]` into a fresh slice; the original is unchanged.
+@stable(since="1.0")
 pub func reverse[T](xs: in slice[T]): slice[T] {
   val acc: List[T] = newList()
   val n: Int = xs.length
