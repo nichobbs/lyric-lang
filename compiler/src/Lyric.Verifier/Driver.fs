@@ -72,6 +72,131 @@ module ProveOptions =
     let defaults : ProveOptions =
         { AllowUnverified = false }
 
+/// Reconstruct a human-readable counterexample trace from a model and
+/// goal.  Tries to identify which hypothesis was violated by substituting
+/// the model's variable bindings into each hypothesis term and checking
+/// whether it simplifies to `false`.  The trace is appended after the
+/// raw variable bindings.
+let private buildCounterexampleTrace
+        (g: Goal)
+        (bindings: CounterexampleBinding list) : string =
+
+    // Build a substitution map from the model bindings.
+    let modelSubst : Map<string, Term> =
+        bindings
+        |> List.choose (fun b ->
+            // Try to parse the value as an integer literal.
+            let termOpt =
+                match System.Int64.TryParse b.Value with
+                | true, n -> Some (TLit(LInt n, SInt))
+                | _ ->
+                    match b.Value with
+                    | "true"  -> Some (TLit(LBool true,  SBool))
+                    | "false" -> Some (TLit(LBool false, SBool))
+                    | _       -> None
+            termOpt |> Option.map (fun t -> b.Name, t))
+        |> Map.ofList
+
+    // Evaluate a term under the model substitution — collapses TBuiltin
+    // nodes whose args all simplified to literals.  Returns `Some bool`
+    // only when the result is definitively `true` or `false`.
+    let rec eval (t: Term) : Term =
+        let t' = Term.subst modelSubst t
+        match t' with
+        | TBuiltin(BOpAnd, args) ->
+            let args' = args |> List.map eval
+            if args' |> List.exists (fun a -> a = TLit(LBool false, SBool))
+            then TLit(LBool false, SBool)
+            elif args' |> List.forall (fun a -> a = TLit(LBool true, SBool))
+            then TLit(LBool true, SBool)
+            else TBuiltin(BOpAnd, args')
+        | TBuiltin(BOpOr, args) ->
+            let args' = args |> List.map eval
+            if args' |> List.exists (fun a -> a = TLit(LBool true, SBool))
+            then TLit(LBool true, SBool)
+            elif args' |> List.forall (fun a -> a = TLit(LBool false, SBool))
+            then TLit(LBool false, SBool)
+            else TBuiltin(BOpOr, args')
+        | TBuiltin(BOpNot, [x]) ->
+            match eval x with
+            | TLit(LBool b, _) -> TLit(LBool (not b), SBool)
+            | x'               -> TBuiltin(BOpNot, [x'])
+        | TBuiltin(BOpEq, [a; b]) ->
+            let a', b' = eval a, eval b
+            match a', b' with
+            | TLit(LInt x, _),  TLit(LInt y, _)  -> TLit(LBool (x = y), SBool)
+            | TLit(LBool x, _), TLit(LBool y, _) -> TLit(LBool (x = y), SBool)
+            | _ -> TBuiltin(BOpEq, [a'; b'])
+        | TBuiltin(BOpLte, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x <= y), SBool)
+            | a', b'                            -> TBuiltin(BOpLte, [a'; b'])
+        | TBuiltin(BOpLt, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x < y), SBool)
+            | a', b'                            -> TBuiltin(BOpLt, [a'; b'])
+        | TBuiltin(BOpGte, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x >= y), SBool)
+            | a', b'                            -> TBuiltin(BOpGte, [a'; b'])
+        | TBuiltin(BOpGt, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x > y), SBool)
+            | a', b'                            -> TBuiltin(BOpGt, [a'; b'])
+        | TBuiltin(BOpAdd, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LInt (x + y), SInt)
+            | a', b'                            -> TBuiltin(BOpAdd, [a'; b'])
+        | TBuiltin(BOpSub, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LInt (x - y), SInt)
+            | a', b'                            -> TBuiltin(BOpSub, [a'; b'])
+        | TBuiltin(BOpMul, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LInt (x * y), SInt)
+            | a', b'                            -> TBuiltin(BOpMul, [a'; b'])
+        | TBuiltin(BOpImplies, [p; q]) ->
+            match eval p with
+            | TLit(LBool false, _) -> TLit(LBool true, SBool)
+            | TLit(LBool true,  _) -> eval q
+            | p'                   -> TBuiltin(BOpImplies, [p'; eval q])
+        | _ -> t'
+
+    let isFalse (t: Term) =
+        match eval t with
+        | TLit(LBool false, _) -> true
+        | _ -> false
+
+    let isTrue (t: Term) =
+        match eval t with
+        | TLit(LBool true, _) -> true
+        | _ -> false
+
+    let sb = System.Text.StringBuilder()
+    let ln (s: string) = sb.Append(s).Append('\n') |> ignore
+
+    // Show variable bindings.
+    ln (renderCounterexample bindings)
+
+    // Identify falsified hypotheses.
+    let falsified =
+        g.Hypotheses
+        |> List.mapi (fun i h -> i, h)
+        |> List.filter (fun (_, h) -> isFalse h)
+    if not (List.isEmpty falsified) then
+        ln "  violated hypotheses:"
+        for (i, _) in falsified do
+            ln (sprintf "    h%d: %s" (i+1)
+                    (PrettyPrint.term g.Hypotheses.[i]))
+
+    // Check the conclusion directly.
+    if isFalse g.Conclusion then
+        ln (sprintf "  falsified conclusion: %s" (PrettyPrint.term g.Conclusion))
+    elif isTrue g.Conclusion then
+        ln "  (conclusion holds under model — check hypothesis contradiction)"
+
+    sb.ToString().TrimEnd()
+
 /// Render a discharge outcome into a Diagnostic.  Discharged goals
 /// produce no diagnostic (success is silent).
 let private outcomeToDiag
@@ -91,7 +216,7 @@ let private outcomeToDiag
                     |> String.concat "\n"
                 sprintf "raw model:\n%s" raw
             else
-                renderCounterexample bindings
+                buildCounterexampleTrace g bindings
         Some
             (Diagnostic.error "V0008"
                 (sprintf "%s — proof failed (counterexample below)\n%s"

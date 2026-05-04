@@ -38,7 +38,10 @@ type Env =
       /// / enums / opaques, plus imported types via ProofMeta.
       /// Indexed by leaf name.
       Datatypes: Map<string, ProofMeta.ProofType>
-      Symbols:  ResizeArray<SymbolDecl> }
+      Symbols:  ResizeArray<SymbolDecl>
+      /// When true, arithmetic operations on SInt generate overflow
+      /// side conditions (`@proof_required(checked_arithmetic)`).
+      CheckedArithmetic: bool }
 
 module Env =
 
@@ -48,7 +51,8 @@ module Env =
           Callees  = Map.empty
           Imports  = []
           Datatypes = Map.empty
-          Symbols  = ResizeArray<SymbolDecl>() }
+          Symbols  = ResizeArray<SymbolDecl>()
+          CheckedArithmetic = false }
 
     let bind (name: string) (info: SortInfo) (env: Env) : Env =
         { env with
@@ -264,8 +268,22 @@ let rec translateExpr (env: Env) (e: Expr)
         match builtinOfBinop op with
         | Some b ->
             let term = TBuiltin(b, [lT.Term; rT.Term])
+            // @proof_required(checked_arithmetic): for signed Int
+            // arithmetic, emit side conditions that the result stays
+            // within the 64-bit signed range [-2^63, 2^63-1].
+            let overflowConds =
+                if not env.CheckedArithmetic then []
+                elif Term.sortOf lT.Term <> SInt then []
+                else
+                    match b with
+                    | BOpAdd | BOpSub | BOpMul ->
+                        let minI64 = System.Int64.MinValue
+                        let maxI64 = System.Int64.MaxValue
+                        [ TBuiltin(BOpLte, [TLit(LInt minI64, SInt); term])
+                          TBuiltin(BOpLte, [term; TLit(LInt maxI64, SInt)]) ]
+                    | _ -> []
             { Term      = term
-              SideConds = lT.SideConds @ rT.SideConds
+              SideConds = lT.SideConds @ rT.SideConds @ overflowConds
               Assumed   = lT.Assumed   @ rT.Assumed },
             lDiags @ rDiags
         | None ->
@@ -686,6 +704,25 @@ let rec translateExpr (env: Env) (e: Expr)
         | None ->
             single (TLit(LUnit, SDatatype("Unit", [])))
 
+    | EUnsafe blk ->
+        // The contents of an unsafe block are opaque to the prover.
+        // Any assert φ inside becomes an assumed fact (not a goal).
+        let isAssertCall (s: Statement) : Expr option =
+            match s.Kind with
+            | SExpr { Kind = ECall({ Kind = EPath p }, [arg]) }
+                when p.Segments = ["assert"] ->
+                Some (match arg with CAPositional v -> v | CANamed(_, v, _) -> v)
+            | _ -> None
+        let assumedFacts =
+            blk.Statements
+            |> List.choose isAssertCall
+            |> List.map (fun argExpr -> fst (translateExpr env argExpr))
+            |> List.collect (fun r -> r.Term :: r.SideConds)
+        { Term      = TLit(LUnit, SDatatype("Unit", []))
+          SideConds = []
+          Assumed   = assumedFacts }
+        , []
+
     | EMatch(scrutinee, arms) ->
         // M4.1 fragment: handle wildcard, literal, and bare-binding
         // patterns.  Constructor / record / tuple patterns are
@@ -916,6 +953,23 @@ let rec wpBody
                   SideGoals = (phi.Term, GKAssertion, callExpr.Span) :: inner.SideGoals
                   Assumed   = phi.Term :: phi.Assumed @ inner.Assumed
                   Diags     = phiDiags @ inner.Diags }
+            | { Kind = SExpr { Kind = EUnsafe unsafeBlk } } :: rest ->
+                // `unsafe { … }` block — body is opaque to the prover.
+                // Any assert φ inside becomes an assumed fact for the
+                // rest of the block without generating a proof goal.
+                let isAssertCall (s: Statement) : Expr option =
+                    match s.Kind with
+                    | SExpr { Kind = ECall({ Kind = EPath p }, [a]) }
+                        when p.Segments = ["assert"] ->
+                        Some (match a with CAPositional v -> v | CANamed(_, v, _) -> v)
+                    | _ -> None
+                let unsafeAssumed =
+                    unsafeBlk.Statements
+                    |> List.choose isAssertCall
+                    |> List.map (fun argExpr -> fst (translateExpr env argExpr))
+                    |> List.collect (fun r -> r.Term :: r.SideConds)
+                let inner = walk env rest
+                { inner with Assumed = unsafeAssumed @ inner.Assumed }
             | { Kind = SLocal lb } :: rest ->
                 match lb with
                 | LBVal(pat, _, init) ->
@@ -1315,9 +1369,10 @@ let goalsForFileWithImports
                 | _        -> None)
             |> Map.ofList
         { Env.empty () with
-            Callees   = callees
-            Imports   = imports
-            Datatypes = datatypes }
+            Callees            = callees
+            Imports            = imports
+            Datatypes          = datatypes
+            CheckedArithmetic  = (level = ProofRequiredChecked) }
     let allGoals, allDiags =
         file.Items
         |> List.choose (fun it ->

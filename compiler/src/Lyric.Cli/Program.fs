@@ -697,7 +697,7 @@ let private printUsage () : unit =
     printErr "Usage:"
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
-    printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified]"
+    printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]"
     printErr "  lyric doc   <source.l> [-o out.md]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
     printErr "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <pkg-dir>]"
@@ -854,7 +854,9 @@ let main (argv: string array) : int =
             run sourcePath userArgs
     | "prove" :: rest ->
         // `lyric prove <source.l> [--proof-dir <dir>] [--verbose]
-        //                         [--allow-unverified]`
+        //                         [--allow-unverified]
+        //                         [--json]
+        //                         [--explain --goal <n>]`
         // — Phase 4 verifier.  Runs the mode-dispatch check
         // (V0001/V0002/V0004), generates VCs for every proof-required
         // function, and discharges them via the trivial syntactic
@@ -863,9 +865,14 @@ let main (argv: string array) : int =
         // the command exits 0 — the user's escape hatch when the
         // solver budgets out (M4.2 close-out).  Counterexamples
         // (V0008) remain hard errors regardless.
+        // `--json` emits a machine-readable JSON summary to stdout.
+        // `--explain --goal <n>` prints the Lyric-VC IR for goal n and exits.
         let mutable proofDir : string option = None
         let mutable verbose = false
         let mutable allowUnverified = false
+        let mutable jsonOutput = false
+        let mutable explain = false
+        let mutable explainGoal : int option = None
         let mutable positional : string list = []
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
@@ -878,6 +885,18 @@ let main (argv: string array) : int =
                 cursor <- tail
             | "--allow-unverified" :: tail ->
                 allowUnverified <- true
+                cursor <- tail
+            | "--json" :: tail ->
+                jsonOutput <- true
+                cursor <- tail
+            | "--explain" :: tail ->
+                explain <- true
+                cursor <- tail
+            | "--goal" :: n :: tail ->
+                match System.Int32.TryParse n with
+                | true, idx -> explainGoal <- Some idx
+                | _ ->
+                    printErr (sprintf "prove: --goal expects an integer, got '%s'" n)
                 cursor <- tail
             | s :: tail ->
                 positional <- positional @ [s]
@@ -905,6 +924,101 @@ let main (argv: string array) : int =
             let summary =
                 Lyric.Verifier.Driver.proveFileWithOptions
                     sourcePath resolvedProofDir [] opts
+
+            // --explain --goal <n>: print the Lyric-VC IR for that goal and exit.
+            if explain then
+                match explainGoal with
+                | None ->
+                    printErr "prove --explain: specify a goal index with --goal <n>"
+                    printErr (sprintf "  (this file has %d goal(s))" (List.length summary.Results))
+                    for i, r in summary.Results |> List.mapi (fun i r -> i, r) do
+                        printfn "  %d: %s  [%s]" i r.Goal.Label
+                            (Lyric.Verifier.Vcir.GoalKind.display r.Goal.Kind)
+                    1
+                | Some idx ->
+                    if idx < 0 || idx >= List.length summary.Results then
+                        printErr (sprintf "prove --explain: goal %d out of range (0..%d)"
+                                    idx (List.length summary.Results - 1))
+                        1
+                    else
+                        let r = List.item idx summary.Results
+                        printf "%s" (Lyric.Verifier.Vcir.PrettyPrint.goal idx r.Goal)
+                        0
+            elif jsonOutput then
+                // --json: emit machine-readable summary to stdout.
+                let escape (s: string) =
+                    let sb = System.Text.StringBuilder()
+                    for c in s do
+                        match c with
+                        | '"'  -> sb.Append "\\\"" |> ignore
+                        | '\\' -> sb.Append "\\\\" |> ignore
+                        | '\n' -> sb.Append "\\n"  |> ignore
+                        | '\r' -> sb.Append "\\r"  |> ignore
+                        | '\t' -> sb.Append "\\t"  |> ignore
+                        | c when int c < 0x20 ->
+                            sb.Append(sprintf "\\u%04x" (int c)) |> ignore
+                        | c -> sb.Append c |> ignore
+                    sb.ToString()
+                let jStr (s: string) = sprintf "\"%s\"" (escape s)
+                let jOpt (s: string option) =
+                    match s with Some v -> jStr v | None -> "null"
+                let sb = System.Text.StringBuilder()
+                sb.Append "{\n" |> ignore
+                sb.Append (sprintf "  \"file\": %s,\n" (jStr sourcePath)) |> ignore
+                sb.Append (sprintf "  \"level\": %s,\n"
+                    (jStr (Lyric.Verifier.Mode.VerificationLevel.display summary.Level)))
+                    |> ignore
+                sb.Append "  \"goals\": [\n" |> ignore
+                let results = summary.Results
+                for i, r in results |> List.mapi (fun i r -> i, r) do
+                    let outcomeStr, modelStr =
+                        match r.Outcome with
+                        | Lyric.Verifier.Solver.Discharged ->
+                            "discharged", "null"
+                        | Lyric.Verifier.Solver.Counterexample m ->
+                            "counterexample", jStr m
+                        | Lyric.Verifier.Solver.Unknown reason ->
+                            "unknown", jStr reason
+                    let comma = if i + 1 < List.length results then "," else ""
+                    sb.Append "    {\n" |> ignore
+                    sb.Append (sprintf "      \"index\": %d,\n" i) |> ignore
+                    sb.Append (sprintf "      \"label\": %s,\n" (jStr r.Goal.Label)) |> ignore
+                    sb.Append (sprintf "      \"kind\": %s,\n"
+                        (jStr (Lyric.Verifier.Vcir.GoalKind.display r.Goal.Kind)))
+                        |> ignore
+                    sb.Append (sprintf "      \"line\": %d,\n" r.Goal.Origin.Start.Line) |> ignore
+                    sb.Append (sprintf "      \"col\": %d,\n" r.Goal.Origin.Start.Column) |> ignore
+                    sb.Append (sprintf "      \"outcome\": %s,\n" (jStr outcomeStr)) |> ignore
+                    sb.Append (sprintf "      \"model\": %s,\n" modelStr) |> ignore
+                    sb.Append (sprintf "      \"smtPath\": %s\n" (jOpt r.SmtPath)) |> ignore
+                    sb.Append (sprintf "    }%s\n" comma) |> ignore
+                sb.Append "  ],\n" |> ignore
+                let total = List.length summary.Results
+                let discharged = Lyric.Verifier.Driver.ProofSummary.dischargedCount summary
+                let unknowns   = Lyric.Verifier.Driver.ProofSummary.unknownCount summary
+                let cexs       = Lyric.Verifier.Driver.ProofSummary.counterexampleCount summary
+                sb.Append "  \"diagnostics\": [\n" |> ignore
+                for i, d in summary.Diagnostics |> List.mapi (fun i d -> i, d) do
+                    let sevStr =
+                        match d.Severity with DiagError -> "error" | DiagWarning -> "warning"
+                    let comma = if i + 1 < List.length summary.Diagnostics then "," else ""
+                    sb.Append (sprintf "    {\"code\":%s,\"severity\":%s,\"message\":%s,\"line\":%d,\"col\":%d}%s\n"
+                        (jStr d.Code) (jStr sevStr) (jStr d.Message)
+                        d.Span.Start.Line d.Span.Start.Column comma) |> ignore
+                sb.Append "  ],\n" |> ignore
+                sb.Append "  \"summary\": {\n" |> ignore
+                sb.Append (sprintf "    \"total\": %d,\n" total) |> ignore
+                sb.Append (sprintf "    \"discharged\": %d,\n" discharged) |> ignore
+                sb.Append (sprintf "    \"unknown\": %d,\n" unknowns) |> ignore
+                sb.Append (sprintf "    \"counterexamples\": %d\n" cexs) |> ignore
+                sb.Append "  }\n" |> ignore
+                sb.Append "}\n" |> ignore
+                printf "%s" (sb.ToString())
+                if Lyric.Verifier.Driver.ProofSummary.hasErrorDiag summary then 1
+                elif Lyric.Verifier.Driver.ProofSummary.hasCounterexample summary then 1
+                else 0
+            else
+
             for d in summary.Diagnostics do
                 printDiag d
             let total = Lyric.Verifier.Driver.ProofSummary.totalCount summary

@@ -876,6 +876,8 @@ let rec private desugarSelfFields
         { e with Kind = EAssign (recur t, op, recur v) }
     | EBlock b ->
         { e with Kind = EBlock (desugarBlock fieldNames shadowed b) }
+    | EUnsafe b ->
+        { e with Kind = EUnsafe (desugarBlock fieldNames shadowed b) }
 
 and private desugarBlock
         (fieldNames: Set<string>)

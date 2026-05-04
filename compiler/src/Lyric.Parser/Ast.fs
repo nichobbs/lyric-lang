@@ -587,6 +587,13 @@ and ExprKind =
     /// match-arm body.
     | EBlock of Block
 
+    /// `unsafe { … }` — a block whose contents are treated as opaque
+    /// by the VC generator.  Any `assert φ` inside becomes an assumed
+    /// postcondition for the surrounding proof context rather than a
+    /// proof obligation.  Allowed only in
+    /// `@proof_required(unsafe_blocks_allowed)` packages (V0003).
+    | EUnsafe of Block
+
     /// Recovery hatch.
     | EError
 
