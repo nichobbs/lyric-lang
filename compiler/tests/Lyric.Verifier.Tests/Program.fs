@@ -13,5 +13,6 @@ let main argv =
             SolverTests.tests
             ImportsTests.tests
             DriverTests.tests
+            RegressionTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
