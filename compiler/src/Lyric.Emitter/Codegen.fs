@@ -62,6 +62,11 @@ type FunctionCtx =
       UnionCases: Lyric.Emitter.Records.UnionCaseLookup
       /// Lyric interfaces, keyed by name.
       Interfaces: Lyric.Emitter.Records.InterfaceTable
+      /// Map from a record TypeBuilder to the set of interface names
+      /// it implements.  Populated by Emitter Pass A.5 and consulted
+      /// by `satisfiesMarker` for `where T: UserInterface` bounds
+      /// (Q021 sub-question #5).
+      Impls:      Lyric.Emitter.Records.ImplsTable
       /// Distinct types and range subtypes, keyed by name.
       DistinctTypes: Lyric.Emitter.Records.DistinctTypeTable
       /// Same-package `protected type` definitions (D-progress-079),
@@ -163,6 +168,7 @@ module FunctionCtx =
             (unions: Lyric.Emitter.Records.UnionTable)
             (unionCases: Lyric.Emitter.Records.UnionCaseLookup)
             (interfaces: Lyric.Emitter.Records.InterfaceTable)
+            (impls: Lyric.Emitter.Records.ImplsTable)
             (distinctTypes: Lyric.Emitter.Records.DistinctTypeTable)
             (protectedTypes: Lyric.Emitter.Records.ProtectedTypeTable)
             (projectables: Lyric.Emitter.Records.ProjectableTable)
@@ -197,6 +203,7 @@ module FunctionCtx =
           Unions       = unions
           UnionCases   = unionCases
           Interfaces   = interfaces
+          Impls        = impls
           DistinctTypes = distinctTypes
           ProtectedTypes = protectedTypes
           Projectables = projectables
@@ -627,8 +634,16 @@ let private boxIfValue (il: ILGenerator) (ty: ClrType) : unit =
 /// `ctx.DistinctTypes` but their `derives` list isn't currently
 /// snapshotted on `DistinctTypeInfo`, so for now they only satisfy
 /// markers via the primitive fallback (i.e. don't).
+///
+/// User-defined interface constraints (Q021 sub-question #5) are
+/// resolved by looking up the marker name in `ctx.Interfaces`. When
+/// the name is a known same-package interface, we accept any `ty`
+/// whose implemented interfaces include the interface's TypeBuilder.
+/// `Emitter.fs` Pass A.5 attaches every `impl` block's interface to
+/// its target record TypeBuilder before bodies are emitted, so
+/// `GetInterfaces()` is reliable here.
 let private satisfiesMarker
-        (_ctx: FunctionCtx) (ty: ClrType) (marker: string) : bool =
+        (ctx: FunctionCtx) (ty: ClrType) (marker: string) : bool =
     let isNumeric =
         ty = typeof<sbyte>  || ty = typeof<int16>  || ty = typeof<int32>
         || ty = typeof<int64>  || ty = typeof<byte>   || ty = typeof<uint16>
@@ -642,7 +657,13 @@ let private satisfiesMarker
     | "Add" | "Sub" | "Mul" | "Div" | "Mod" -> isNumeric
     | "Compare" -> isOrderedPrim
     | "Hash" | "Equals" | "Default" -> isAnyPrim
-    | _ -> false
+    | _ ->
+        if ctx.Interfaces.ContainsKey marker then
+            match ctx.Impls.TryGetValue ty with
+            | true, ifaces -> ifaces.Contains marker
+            | _ -> false
+        else
+            false
 
 /// Validate that each inferred type-arg satisfies its declared
 /// `where` markers.  Raises a clear failure when a bound isn't met;
@@ -3568,7 +3589,7 @@ and private emitLambdaWith
         FunctionCtx.make
             lambdaIL retTy paramPairs
             ctx.Funcs ctx.FuncSigs ctx.Records ctx.Enums ctx.EnumCases
-            ctx.Unions ctx.UnionCases ctx.Interfaces ctx.DistinctTypes
+            ctx.Unions ctx.UnionCases ctx.Interfaces ctx.Impls ctx.DistinctTypes
             ctx.ProtectedTypes
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
