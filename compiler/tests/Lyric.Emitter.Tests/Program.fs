@@ -63,6 +63,7 @@ let main argv =
             MockingTests.tests
             RestoredPackageE2ETests.tests
             ProtectedTypeTests.tests
+            StdlibLyricTests.tests
             KernelBoundaryTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

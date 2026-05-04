@@ -19,13 +19,13 @@ let private locateStdlibDir () : string =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let d = dir.Value
-        let candidate = Path.Combine(d.FullName, "lyric", "std")
+        let candidate = Path.Combine(d.FullName, "stdlib", "std")
         if Directory.Exists candidate then found <- Some candidate
         dir <- d.Parent |> Option.ofObj
     match found with
     | Some p -> p
     | None ->
-        failwithf "could not locate lyric/std directory from %s"
+        failwithf "could not locate stdlib/std directory from %s"
             System.AppContext.BaseDirectory
 
 /// Load every `.l` file under `compiler/lyric/std/` (recursively, so

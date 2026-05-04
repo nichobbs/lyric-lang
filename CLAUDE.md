@@ -103,6 +103,17 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
 - `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.TypeChecker/` — the type checker (Phase 1, milestone M1.2, complete).
+- `stdlib/std/` — Lyric-language standard library source (`.l` files).
+  The emitter resolves `import Std.X` by locating `stdlib/std/<x>.l` here,
+  walking up from the binary's base directory or honoring `LYRIC_STD_PATH`.
+  The `stdlib/std/_kernel/` subdirectory holds the audited extern boundary
+  (see `docs/14-native-stdlib-plan.md` Decision F): only kernel files may
+  contain `@externTarget` / `extern type` declarations.
+- `stdlib/tests/` — Lyric-language test suite for the stdlib. Each
+  `*_tests.l` file is a standalone Lyric program that imports the modules
+  it covers and asserts correctness via `Std.Testing`. The F# runner
+  `compiler/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs` discovers and
+  executes these files automatically as part of the emitter test suite.
 - `compiler/src/Lyric.Stdlib/` — the F#-side standard-library shim. The emitter
   targets methods on this assembly (e.g. `Lyric.Stdlib.Console::Println`) for
   IO, contract assertions, and FFI-style BCL access. Hand-curated; grows as

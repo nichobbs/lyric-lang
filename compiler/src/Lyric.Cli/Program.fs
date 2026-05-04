@@ -147,7 +147,7 @@ module private BuildCache =
                 while found.IsNone && (Option.isSome dir) do
                     match dir with
                     | Some d ->
-                        let candidate = Path.Combine(d.FullName, "lyric", "std")
+                        let candidate = Path.Combine(d.FullName, "stdlib", "std")
                         if Directory.Exists candidate then found <- Some candidate
                         dir <- Option.ofObj d.Parent
                     | None -> ()
