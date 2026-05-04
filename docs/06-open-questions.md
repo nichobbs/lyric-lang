@@ -425,7 +425,7 @@ Tier 6 in `docs/12-todo-plan.md`.
 
 ## Q021: `where`-clause activation in the bootstrap compiler
 
-**Status:** PARTIALLY RESOLVED — sub-questions 1-5 shipped (sub-question 5 closed 2026-05-04 by routing user-interface bounds through an `ImplsTable` populated alongside `AddInterfaceImplementation` in Pass A.5). Distinct types' `derives` lists still do not propagate through `satisfiesMarker`; that gap is the only remaining Q021 follow-up.
+**Status:** RESOLVED — all sub-questions shipped. The final gap (distinct types' `derives` lists not propagating through `satisfiesMarker`) was closed 2026-05-04: `DistinctTypeInfo` now carries a `Derives` field (populated from `dt.Derives` in `Emitter.fs`); `satisfiesMarker` checks it as Path 1 before the primitive table. Tests `distinct_type_derives_hash_satisfies_where`, `distinct_type_derives_compare_satisfies_where`, and `distinct_type_without_derives_fails_bound` added to `WhereClauseTests.fs`.
 
 **Question:** What is the concrete plan to lift the Phase 1 deferral of `where` clauses with the D034 marker set, so that native `Std.HashMap[K, V] where K: Hash + Equals`, `Std.Sort[T] where T: Compare`, etc. become expressible in Lyric source?
 
@@ -457,13 +457,11 @@ Tier 6 in `docs/12-todo-plan.md`.
 4. **Monomorphisation interaction.** SHIPPED. `Lyric.Emitter/Codegen.fs:3043` and `:3368` invoke `checkBounds` immediately before `MakeGenericMethod`, raising `B0001` (build-aborting `failwithf`) when an inferred type-arg fails its declared marker. No interface dispatch, no runtime indirection — direct predicate check at codegen, then a fully-resolved `Callvirt` to the monomorphised target.
 5. **User-defined interface constraints.** SHIPPED (2026-05-04, option (b)). `satisfiesMarker` (Codegen.fs) now falls through to `ctx.Impls` when the marker name matches a same-package interface in `ctx.Interfaces`. `ctx.Impls` is a `Dictionary<System.Type, HashSet<string>>` populated in Emitter Pass A.5 next to each `AddInterfaceImplementation` call, so codegen never has to call `TypeBuilder.GetInterfaces()` (unsupported pre-seal — was the original blocker). `where T: Greeter` with `impl Greeter for Bird` now type-checks AND lowers; `where T: Greeter` with a non-implementing record still fails B0001 at codegen, but the error is now correct (the type really doesn't satisfy the bound) rather than the prior "user interfaces always fail" footgun. Imported interfaces and cross-package impls remain untracked — they require an extension to the contract metadata that the audit didn't surface as a need.
 
-**Additional gap surfaced during the audit:** Locally-declared distinct types (`type Age = Int derives Compare, Hash`) don't carry their `derives` list onto `DistinctTypeInfo`, so `satisfiesMarker` falls through to "is this a primitive?" (which the wrapping CLR struct isn't) and rejects them. Comment at Codegen.fs:626-629 acknowledges this. Ranged subtypes hit the same path. This blocks `f[Age] where Age: Hash` patterns — a likely paper cut for the native stdlib. Track as a follow-up under Q021 rather than a new question.
-
-**Implication for D038 / native stdlib G3.** The marker-only path covers `HashMap[K, V] where K: Hash + Equals` and `Sort[T] where T: Compare` for primitive `K`/`V`/`T`. The G3 gating item from `14-native-stdlib-plan.md` is therefore unblocked **for primitive instantiations**. User-interface-constrained instantiations are now also unblocked (see #5). Distinct-typed instantiations remain blocked until the `derives` propagation gap closes.
+**Implication for D038 / native stdlib G3.** The marker-only path covers `HashMap[K, V] where K: Hash + Equals` and `Sort[T] where T: Compare` for primitive and distinct-type `K`/`V`/`T`. The G3 gating item from `14-native-stdlib-plan.md` is fully unblocked for all same-package type arguments. Cross-package distinct types and imported interfaces remain untracked in the contract metadata — a follow-up for the Phase 5 re-host.
 
 **Revisions:**
 - 2026-05-03: Audit against the shipped compiler. Sub-questions 1, 3, 4 confirmed SHIPPED; #2 reclassified PARTIAL (lookup table, not interface dispatch); #5 reclassified NOT SHIPPED with the silent-B0001 footgun called out. Distinct-types/derives gap added as a follow-up. Status flipped from OPEN to PARTIALLY RESOLVED.
-- 2026-05-04: Sub-question #5 SHIPPED via Codegen.fs `satisfiesMarker` + new `Records.ImplsTable` populated in Emitter Pass A.5. Tests `user_interface_constraint_satisfied` and `user_interface_constraint_unsatisfied` added to `WhereClauseTests.fs`. The distinct-types `derives` gap is now the only remaining Q021 follow-up.
+- 2026-05-04: Sub-question #5 SHIPPED. The distinct-types `derives` gap closed: `DistinctTypeInfo.Derives` field added; `satisfiesMarker` consults it as Path 1. `09-msil-emission.md` §9.4 updated to describe the bootstrap lookup-table approach (not interface dispatch). Status flipped to RESOLVED.
 
 ---
 

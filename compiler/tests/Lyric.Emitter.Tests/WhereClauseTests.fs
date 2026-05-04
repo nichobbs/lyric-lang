@@ -65,6 +65,35 @@ func main(): Unit { println(go(2, 5)) }
 """,
     "7"
 
+    // Q021 distinct-types derives gap: `type Age = Int derives Hash`
+    // should satisfy `where T: Hash`.  Previously DistinctTypeInfo
+    // didn't carry the derives list so this aborted with B0001.
+    "distinct_type_derives_hash_satisfies_where",
+    """
+package WC8
+type Age = Int derives Hash, Equals
+func hashOf[T](x: T): Int where T: Hash { 42 }
+func main(): Unit { println(hashOf(Age.from(30))) }
+""",
+    "42"
+
+    // Compare marker via derives: `type Score = Int derives Compare`
+    // satisfies `where T: Compare`.  The generic function only passes the
+    // bound check; it doesn't perform Compare arithmetic on the type
+    // argument (generic distinct-type arithmetic is a separate gap).
+    "distinct_type_derives_compare_satisfies_where",
+    """
+package WC9
+type Score = Int derives Compare, Equals
+func isOrdered[T](a: T, b: T): Bool where T: Compare { true }
+func main(): Unit {
+  val a: Score = Score.from(10)
+  val b: Score = Score.from(20)
+  println(isOrdered(a, b))
+}
+""",
+    "True"
+
     // Q021 sub-question #5: user-defined interface constraints. The
     // record `Bird` implements `Greeter`, so `T = Bird` satisfies
     // `where T: Greeter` and the call dispatches as a normal generic
@@ -96,6 +125,14 @@ let tests =
             "package WC5\n" +
             "func twice[T](x: T): T where T: Add { x + x }\n" +
             "func main(): Unit { println(twice(true)) }\n")
+
+        // Distinct type without the required marker still fails B0001.
+        yield mkBoundFailure (
+            "distinct_type_without_derives_fails_bound",
+            "package WC10\n" +
+            "type Age = Int\n" +
+            "func hashOf[T](x: T): Int where T: Hash { 42 }\n" +
+            "func main(): Unit { println(hashOf(Age.from(30))) }\n")
 
         // Q021 sub-question #5 negative case: `Mute` does not implement
         // the `Greeter` interface, so `T = Mute` fails `where T: Greeter`

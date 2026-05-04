@@ -628,22 +628,32 @@ let private boxIfValue (il: ILGenerator) (ty: ClrType) : unit =
 // Where-clause bound checking (call-site).
 // ---------------------------------------------------------------------------
 
-/// Does `ty` satisfy the given derive marker?  Bootstrap support: CLR
-/// primitives (numeric / Bool / Char) and `String` satisfy a fixed
-/// table of markers.  Locally-defined distinct types live in
-/// `ctx.DistinctTypes` but their `derives` list isn't currently
-/// snapshotted on `DistinctTypeInfo`, so for now they only satisfy
-/// markers via the primitive fallback (i.e. don't).
+/// Does `ty` satisfy the given derive marker?  Three satisfaction paths:
 ///
-/// User-defined interface constraints (Q021 sub-question #5) are
-/// resolved by looking up the marker name in `ctx.Interfaces`. When
-/// the name is a known same-package interface, we accept any `ty`
-/// whose implemented interfaces include the interface's TypeBuilder.
-/// `Emitter.fs` Pass A.5 attaches every `impl` block's interface to
-/// its target record TypeBuilder before bodies are emitted, so
-/// `GetInterfaces()` is reliable here.
+/// 1. Same-package distinct types: look up `ty` in `ctx.DistinctTypes` and
+///    check whether the marker is in its `Derives` list.  This closes the
+///    Q021 gap where `type Age = Int derives Hash` was rejected at a call
+///    site `f[Age] where Age: Hash` because `DistinctTypeInfo` previously
+///    didn't carry the derives list.
+///
+/// 2. CLR primitives: numeric / Bool / Char / String satisfy a fixed table
+///    of D034 markers.
+///
+/// 3. User-defined interface constraints (Q021 sub-question #5): look up
+///    the marker name in `ctx.Interfaces`; if it names a same-package
+///    interface, accept any `ty` whose implemented interfaces include that
+///    interface's TypeBuilder (`Emitter.fs` Pass A.5 populates this before
+///    body emit, so `GetInterfaces()` is reliable).
 let private satisfiesMarker
         (ctx: FunctionCtx) (ty: ClrType) (marker: string) : bool =
+    // Path 1 — same-package distinct type with a matching derives clause.
+    let satisfiesViaDistinct =
+        ctx.DistinctTypes.Values
+        |> Seq.tryFind (fun info -> (info.Type :> ClrType) = ty)
+        |> Option.exists (fun info -> List.contains marker info.Derives)
+    if satisfiesViaDistinct then true
+    else
+    // Path 2 — CLR primitive table.
     let isNumeric =
         ty = typeof<sbyte>  || ty = typeof<int16>  || ty = typeof<int32>
         || ty = typeof<int64>  || ty = typeof<byte>   || ty = typeof<uint16>
@@ -657,6 +667,7 @@ let private satisfiesMarker
     | "Add" | "Sub" | "Mul" | "Div" | "Mod" -> isNumeric
     | "Compare" -> isOrderedPrim
     | "Hash" | "Equals" | "Default" -> isAnyPrim
+    // Path 3 — user-defined interface constraint.
     | _ ->
         if ctx.Interfaces.ContainsKey marker then
             match ctx.Impls.TryGetValue ty with
