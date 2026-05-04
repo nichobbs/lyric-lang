@@ -1,0 +1,55 @@
+<svg viewBox="0 0 240 290" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Lyric programming language logo">
+  <title>Lyric</title>
+  <defs>
+    <radialGradient id="bgGrad" cx="38%" cy="33%" r="75%">
+      <stop offset="0%" stop-color="#1d3557"/>
+      <stop offset="100%" stop-color="#0b1520"/>
+    </radialGradient>
+    <clipPath id="circleClip">
+      <circle cx="120" cy="118" r="108"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="120" cy="118" r="108" fill="url(#bgGrad)"/>
+
+  <!-- Subtle staff lines, clipped to circle -->
+  <g clip-path="url(#circleClip)">
+    <line x1="14" y1="90"  x2="226" y2="90"  stroke="#2d4a6e" stroke-width="1.5"/>
+    <line x1="14" y1="103" x2="226" y2="103" stroke="#2d4a6e" stroke-width="1.5"/>
+    <line x1="14" y1="116" x2="226" y2="116" stroke="#2d4a6e" stroke-width="1.5"/>
+    <line x1="14" y1="129" x2="226" y2="129" stroke="#2d4a6e" stroke-width="1.5"/>
+    <line x1="14" y1="142" x2="226" y2="142" stroke="#2d4a6e" stroke-width="1.5"/>
+  </g>
+
+  <!-- Notehead: filled ellipse, tilted -25 degrees -->
+  <ellipse cx="104" cy="136" rx="23" ry="14"
+           transform="rotate(-25 104 136)"
+           fill="#f59e0b"/>
+
+  <!-- Stem: from right of notehead straight up -->
+  <line x1="123" y1="126" x2="123" y2="44"
+        stroke="#f59e0b" stroke-width="6" stroke-linecap="round"/>
+
+  <!--
+    Flag: shaped like }, tying the musical and code metaphors together.
+    Starts at the top of the stem, curves right (first brace arc),
+    returns to a central nub, then curves right again (second arc),
+    and arrives back near the stem just above the notehead.
+  -->
+  <path d="M 123,44 C 160,50 166,72 132,86 C 162,100 158,120 123,126"
+        fill="none"
+        stroke="#f59e0b"
+        stroke-width="5.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Wordmark -->
+  <text x="120" y="260"
+        text-anchor="middle"
+        font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="25"
+        font-weight="300"
+        letter-spacing="8"
+        fill="#e2e8f0">LYRIC</text>
+</svg>

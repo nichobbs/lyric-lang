@@ -1,0 +1,248 @@
+/* Making Lyric Sing — HTML stylesheet */
+
+/* ── Reset & base ────────────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-size: 17px;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  line-height: 1.7;
+  color: #1a1a2e;
+  background: #fafaf8;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+
+body > * {
+  max-width: 740px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 1.5rem;
+}
+
+/* Nav/TOC gets its own width treatment */
+nav#TOC {
+  max-width: 740px;
+  margin: 2rem auto 3rem;
+  padding: 1.25rem 1.75rem;
+  background: #f0f4f8;
+  border-left: 4px solid #f59e0b;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.9rem;
+}
+
+nav#TOC ul { margin: 0.25rem 0 0; padding-left: 1.25rem; }
+nav#TOC li { margin: 0.2rem 0; }
+nav#TOC a  { color: #1d3557; text-decoration: none; }
+nav#TOC a:hover { text-decoration: underline; color: #f59e0b; }
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+
+h1, h2, h3, h4 {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #0b1520;
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+
+h1 { font-size: 2.1rem;  border-bottom: 3px solid #f59e0b; padding-bottom: 0.4rem; }
+h2 { font-size: 1.55rem; border-bottom: 1px solid #d1d5db; padding-bottom: 0.25rem; }
+h3 { font-size: 1.2rem; }
+h4 { font-size: 1rem; font-style: italic; color: #374151; }
+
+p  { margin: 1rem 0; }
+ul, ol { padding-left: 1.5rem; margin: 0.75rem 0; }
+li { margin: 0.3rem 0; }
+
+a { color: #1d3557; }
+a:hover { color: #f59e0b; }
+
+strong { font-weight: 600; }
+em     { font-style: italic; }
+
+blockquote {
+  margin: 1.5rem 0;
+  padding: 0.75rem 1.25rem;
+  border-left: 4px solid #94a3b8;
+  background: #f8fafc;
+  color: #374151;
+  font-size: 0.95rem;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 2.5rem 0;
+}
+
+/* ── Cover / title block ─────────────────────────────────────────────────── */
+
+header {
+  background: linear-gradient(135deg, #0b1520 0%, #1d3557 100%);
+  color: #e2e8f0;
+  padding: 4rem 2rem 3rem;
+  margin-bottom: 3rem;
+  max-width: 100%;
+  text-align: center;
+}
+
+header h1.title {
+  color: #f8fafc;
+  font-size: 2.8rem;
+  border: none;
+  margin: 0.5rem 0 0;
+}
+
+header p.subtitle {
+  color: #f59e0b;
+  font-size: 1.15rem;
+  margin: 0.5rem 0 0;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-weight: 300;
+  letter-spacing: 0.04em;
+}
+
+header p.author {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  margin-top: 1.5rem;
+}
+
+header img.logo {
+  width: 90px;
+  margin-bottom: 1.5rem;
+}
+
+/* ── Code ────────────────────────────────────────────────────────────────── */
+
+code {
+  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Courier New', monospace;
+  font-size: 0.85em;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  color: #1e293b;
+}
+
+pre {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 1.1rem 1.4rem;
+  overflow-x: auto;
+  margin: 1.5rem 0;
+  line-height: 1.5;
+  border: 1px solid #1e3a5f;
+}
+
+pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #e2e8f0;
+  font-size: 0.87rem;
+}
+
+/* Syntax highlight classes from Pandoc/highlight.js — tango theme adapted */
+code span.kw { color: #7dd3fc; font-weight: bold; }   /* keyword */
+code span.dt { color: #86efac; }                       /* data type */
+code span.dv { color: #fca5a5; }                       /* decimal value */
+code span.bn { color: #fca5a5; }                       /* base-N number */
+code span.fl { color: #fca5a5; }                       /* float */
+code span.ch { color: #f9a8d4; }                       /* char */
+code span.st { color: #fdba74; }                       /* string */
+code span.co { color: #94a3b8; font-style: italic; }   /* comment */
+code span.ot { color: #c4b5fd; }                       /* other */
+code span.al { color: #f87171; font-weight: bold; }    /* alert */
+code span.fu { color: #93c5fd; }                       /* function */
+code span.er { color: #f87171; font-weight: bold; }    /* error */
+code span.cn { color: #86efac; }                       /* constant */
+code span.at { color: #c4b5fd; }                       /* annotation */
+
+/* ── Sidebar (design notes) ──────────────────────────────────────────────── */
+
+.sidebar {
+  background: #eff6ff;
+  border-left: 4px solid #3b82f6;
+  border-radius: 0 6px 6px 0;
+  padding: 0.9rem 1.25rem;
+  margin: 1.75rem 0;
+  font-size: 0.92rem;
+  color: #1e3a5f;
+}
+
+.sidebar p:first-child { margin-top: 0; }
+.sidebar p:last-child  { margin-bottom: 0; }
+.sidebar strong:first-child { color: #1d4ed8; }
+
+/* ── Notes / warnings ────────────────────────────────────────────────────── */
+
+.note {
+  background: #fffbeb;
+  border-left: 4px solid #f59e0b;
+  border-radius: 0 6px 6px 0;
+  padding: 0.9rem 1.25rem;
+  margin: 1.75rem 0;
+  font-size: 0.92rem;
+  color: #451a03;
+}
+
+.note p:first-child { margin-top: 0; }
+.note p:last-child  { margin-bottom: 0; }
+.note strong:first-child { color: #b45309; }
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  font-size: 0.92rem;
+}
+
+th {
+  background: #1d3557;
+  color: #f8fafc;
+  padding: 0.55rem 0.9rem;
+  text-align: left;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+}
+
+td {
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+tr:nth-child(even) td { background: #f8fafc; }
+
+/* ── Exercises section ───────────────────────────────────────────────────── */
+
+h2#exercises,
+h2:has(+ ol.exercises),
+section.exercises h2 {
+  color: #1d3557;
+}
+
+/* Simple ordered list styling for exercises */
+ol li { margin: 0.6rem 0; }
+ol li p { margin: 0.25rem 0; }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+  html { font-size: 15px; }
+  header h1.title { font-size: 2rem; }
+  pre { padding: 0.8rem 1rem; }
+}
