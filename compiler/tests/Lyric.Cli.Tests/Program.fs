@@ -9,5 +9,7 @@ let main argv =
             ManifestTests.tests
             PackTests.tests
             RestoredPackagesTests.tests
+            FmtTests.tests
+            LintTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

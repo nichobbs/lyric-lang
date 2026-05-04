@@ -697,6 +697,8 @@ let private printUsage () : unit =
     printErr "Usage:"
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
+    printErr "  lyric fmt   <source.l> [--check] [--write]"
+    printErr "  lyric lint  <source.l> [--error-on-warning]"
     printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]"
     printErr "  lyric doc   <source.l> [-o out.md]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
@@ -710,6 +712,18 @@ let private printUsage () : unit =
     printErr "  --aot               compile to a native, self-contained binary"
     printErr "                      (passes through dotnet publish)."
     printErr "  --rid <RID>         target RID for AOT (default: host RID)."
+    printErr ""
+    printErr "  fmt: reformat source to canonical Lyric style."
+    printErr "    (default) print formatted output to stdout."
+    printErr "    --write    overwrite the file in place."
+    printErr "    --check    exit 1 if the file would change; print nothing."
+    printErr "    Note: non-doc comments (//) are not preserved — only /// and //!."
+    printErr ""
+    printErr "  lint: report style and quality diagnostics."
+    printErr "    --error-on-warning  treat warnings as errors (exit 1)."
+    printErr "    Codes: L001 (PascalCase types), L002 (camelCase funcs),"
+    printErr "           L003 (missing pub doc), L004 (TODO in doc comment),"
+    printErr "           L005 (pub func without contracts)."
     printErr ""
     printErr "  public-api-diff exits 0 (no changes), 0 (additive), or 2"
     printErr "                  (breaking — Removed/Changed); use 2 in CI to gate"
@@ -1055,6 +1069,99 @@ let main (argv: string array) : int =
             if Lyric.Verifier.Driver.ProofSummary.hasErrorDiag summary then 1
             elif Lyric.Verifier.Driver.ProofSummary.hasCounterexample summary then 1
             else 0
+    | "fmt" :: rest ->
+        // `lyric fmt <source.l> [--check] [--write]`
+        // Default: print formatted output to stdout.
+        // --write: overwrite the file in place.
+        // --check: exit 1 if formatting would change the file; print nothing.
+        //
+        // Non-doc comments (//) are not preserved (the lexer discards them
+        // per §1.3 of the grammar); only /// and //! doc comments survive.
+        let mutable checkMode = false
+        let mutable writeMode = false
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "--check" :: tail ->
+                checkMode <- true
+                cursor <- tail
+            | "--write" :: tail ->
+                writeMode <- true
+                cursor <- tail
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
+        | [] ->
+            printErr "fmt: missing source file"
+            printUsage ()
+            1
+        | sourcePath :: _ ->
+            if not (File.Exists sourcePath) then
+                printErr (sprintf "fmt: source file not found: %s" sourcePath)
+                1
+            else
+            let source = File.ReadAllText sourcePath
+            let parsed = Lyric.Parser.Parser.parse source
+            for d in parsed.Diagnostics do
+                if d.Severity = DiagError then printDiag d
+            let formatted = Lyric.Cli.Fmt.format parsed.File
+            if checkMode then
+                if Lyric.Cli.Fmt.isFormatted source parsed.File then
+                    0
+                else
+                    printErr (sprintf "%s: not formatted — run `lyric fmt --write`" sourcePath)
+                    1
+            elif writeMode then
+                File.WriteAllText(sourcePath, formatted)
+                printfn "formatted %s" sourcePath
+                0
+            else
+                Console.Out.Write(formatted)
+                0
+    | "lint" :: rest ->
+        // `lyric lint <source.l> [--error-on-warning]`
+        // Prints style/quality diagnostics.  Exit codes:
+        //   0 — no diagnostics (or only warnings when --error-on-warning
+        //       is not set)
+        //   1 — at least one error diagnostic
+        //   2 — usage/IO error
+        let mutable errorOnWarning = false
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "--error-on-warning" :: tail ->
+                errorOnWarning <- true
+                cursor <- tail
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
+        | [] ->
+            printErr "lint: missing source file"
+            printUsage ()
+            2
+        | sourcePath :: _ ->
+            if not (File.Exists sourcePath) then
+                printErr (sprintf "lint: source file not found: %s" sourcePath)
+                2
+            else
+            let source = File.ReadAllText sourcePath
+            let parsed = Lyric.Parser.Parser.parse source
+            // Surface parse errors before lint — broken files may produce
+            // spurious lint hits.
+            for d in parsed.Diagnostics do
+                if d.Severity = DiagError then printDiag d
+            let result = Lyric.Cli.Lint.lint parsed.File
+            for d in result.Diagnostics do
+                printErr (Lyric.Cli.Lint.renderDiagnostic d)
+            let hasError   = result.Diagnostics |> List.exists (fun d -> d.Severity = Lyric.Cli.Lint.LintError)
+            let hasWarning = result.Diagnostics |> List.exists (fun d -> d.Severity = Lyric.Cli.Lint.LintWarning)
+            if hasError || (errorOnWarning && hasWarning) then 1 else 0
     | "doc" :: rest ->
         // `lyric doc <source.l> [-o out.md]` — emit Markdown describing
         // the file's `pub` surface.  See Doc.fs for the bootstrap-grade
