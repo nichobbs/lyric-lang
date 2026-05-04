@@ -474,7 +474,7 @@ let tests =
                 package P
 
                 pub func square(x: Int): Int
-                  ensures: result >= x
+                  ensures: result < x
                 {
                   return x * x
                 }
@@ -484,11 +484,12 @@ let tests =
             let summary =
                 Driver.proveSourceWithOptions src None [] opts
             Expect.equal (ProofSummary.totalCount summary) 1 "one obligation"
-            // The result must NOT be Discharged — `x * x >= x` fails
-            // for x = -1.  Whether z3 catches it (Counterexample) or
-            // not (Unknown) depends on the host; for the Unknown case
-            // we want zero error-severity diagnostics under
-            // --allow-unverified.
+            // The result must NOT be Discharged — `x * x < x` rewrites
+            // to `x * (x - 1) < 0`, which has no integer solution and
+            // is therefore false for every Int.  Whether z3 catches it
+            // (Counterexample) or no solver is present (Unknown)
+            // depends on the host; for the Unknown case we want zero
+            // error-severity diagnostics under --allow-unverified.
             let r = List.head summary.Results
             match r.Outcome with
             | Discharged ->
@@ -520,7 +521,7 @@ let tests =
                 package P
 
                 pub func square(x: Int): Int
-                  ensures: result >= x
+                  ensures: result < x
                 {
                   return x * x
                 }
@@ -529,7 +530,7 @@ let tests =
             let r = List.head summary.Results
             match r.Outcome with
             | Discharged ->
-                failtest "x*x >= x should not discharge"
+                failtest "x*x < x should not discharge"
             | Counterexample _ ->
                 Expect.isTrue (ProofSummary.hasErrorDiag summary) "V0008 is error"
             | Unknown _ ->
