@@ -543,7 +543,16 @@ lyric test --doctests                  # include code examples from doc comments
 lyric test --update-snapshots          # accept current output as the new snapshot baseline
 
 # Format
-lyric fmt <file.l>                     # reformat source to fixed style (no configuration)
+lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
+lyric fmt --write <file.l>             # overwrite file in place
+lyric fmt --check <file.l>             # exit 1 if not formatted; print nothing (CI gate)
+# Note: non-doc (//) comments are not preserved — only /// and //! survive
+
+# Lint
+lyric lint <file.l>                    # report style/quality diagnostics (AST-only; fast)
+lyric lint --error-on-warning <file.l> # treat warnings as errors (CI gate)
+# Codes: L001 PascalCase types, L002 camelCase funcs, L003 missing pub doc,
+#        L004 TODO/FIXME in doc, L005 pub func without contracts
 
 # Documentation
 lyric doc <file.l>                     # generate HTML/JSON docs from doc comments + contracts
@@ -559,12 +568,22 @@ lyric restore                          # download dependencies declared in lyric
 lyric publish                          # publish package to registry (NuGet piggyback)
 
 # Tooling
-lyric public-api-diff <git-ref>        # compare current pub surface against a previous ref
+lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compatible) or 2 (breaking)
 ```
 
 ---
 
 ## B.11 Error codes
+
+### Linter (L-series)
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `L001` | error | Type name must be `PascalCase`; constants must be `PascalCase` or `UPPER_SNAKE_CASE` |
+| `L002` | error | Function name (including `entry` in `protected` blocks) must be `camelCase` |
+| `L003` | warning | `pub` item has no doc comment (`///`) |
+| `L004` | warning | Doc comment contains `TODO` or `FIXME` |
+| `L005` | warning | `pub func` with a block body has no `requires:`/`ensures:` contracts |
 
 ### Type checker (T-series)
 

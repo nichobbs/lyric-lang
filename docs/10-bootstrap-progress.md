@@ -88,8 +88,9 @@ deferred to Phase 3 by design.
   1s) so single-threaded misuses surface as exceptions instead of
   deadlocks; Ada's infinite-wait semantics are tracked as Q008
   follow-up.
-- Real CST formatter (`lyric fmt`) — Tier 6, deferred until LSP / refactor
-  tools need token-position-faithful traversal (decision: D-progress-029).
+- Bootstrap AST formatter (`lyric fmt`) — **shipped** (`Fmt.fs` in `Lyric.Cli`): canonical style (2-space indent, brace placement, contract clause layout, trailing newline), `--write` and `--check` flags. Non-doc `//` comments are not preserved (lexer discards them); doc comments (`///`, `//!`) survive. Idempotent.
+- Bootstrap linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`): five AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts. `--error-on-warning` flag. Runs on non-compiling code.
+- Real CST formatter (`lyric fmt` v2) — Tier 6, deferred: round-trip-faithful printing with full comment preservation needs a CST layer (decision: D-progress-029).
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
   `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`
@@ -4697,5 +4698,5 @@ method-level GTPBs, mirror the free-standing generic path
 
 Tier 5 items (`Std.Http` cancellation/timeouts shipped via
 D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).
-Tier 6 items (CST formatter, format5+, Regex RE2, C4 phase 2/3)
-remain on-demand.
+Tier 6 items: AST-based `lyric fmt` and `lyric lint` shipped (see above);
+CST formatter (v2), format5+, Regex RE2, C4 phase 2/3 remain on-demand.
