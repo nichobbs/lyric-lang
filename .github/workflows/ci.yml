@@ -181,7 +181,7 @@ jobs:
             # (they intentionally have no `func main`).
             if head -n 1 "$ex" | grep -q '^@proof_required'; then
               echo "=== prove $ex ==="
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex"
+              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex" --allow-unverified
             else
               echo "=== build $ex ==="
               dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force

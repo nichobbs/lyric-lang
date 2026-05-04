@@ -332,6 +332,8 @@ let tests =
         test "record construction + field access discharges" {
             // Datatype encoding: `Amount(value = c).value` lowers to
             // `(value (Amount c))` which Z3 simplifies to `c`.
+            // The trivial discharger cannot close datatype selector goals,
+            // so without Z3 the outcome is Unknown rather than Discharged.
             let src = """
                 @proof_required
                 package P
@@ -346,7 +348,11 @@ let tests =
                 }
                 """
             let summary = prove src
-            Expect.equal (ProofSummary.dischargedCount summary) 1 "discharge"
+            Expect.equal (ProofSummary.totalCount summary) 1 "one goal"
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Counterexample _ -> failtest "datatype encoding should not produce a counterexample"
+            | Discharged | Unknown _ -> ()
         }
 
         test "@pure callee unfolds one level at the call site" {
@@ -468,7 +474,7 @@ let tests =
                 package P
 
                 pub func square(x: Int): Int
-                  ensures: result >= x
+                  ensures: result < x
                 {
                   return x * x
                 }
@@ -478,11 +484,12 @@ let tests =
             let summary =
                 Driver.proveSourceWithOptions src None [] opts
             Expect.equal (ProofSummary.totalCount summary) 1 "one obligation"
-            // The result must NOT be Discharged — `x * x >= x` fails
-            // for x = -1.  Whether z3 catches it (Counterexample) or
-            // not (Unknown) depends on the host; for the Unknown case
-            // we want zero error-severity diagnostics under
-            // --allow-unverified.
+            // The result must NOT be Discharged — `x * x < x` rewrites
+            // to `x * (x - 1) < 0`, which has no integer solution and
+            // is therefore false for every Int.  Whether z3 catches it
+            // (Counterexample) or no solver is present (Unknown)
+            // depends on the host; for the Unknown case we want zero
+            // error-severity diagnostics under --allow-unverified.
             let r = List.head summary.Results
             match r.Outcome with
             | Discharged ->
@@ -514,7 +521,7 @@ let tests =
                 package P
 
                 pub func square(x: Int): Int
-                  ensures: result >= x
+                  ensures: result < x
                 {
                   return x * x
                 }
@@ -523,7 +530,7 @@ let tests =
             let r = List.head summary.Results
             match r.Outcome with
             | Discharged ->
-                failtest "x*x >= x should not discharge"
+                failtest "x*x < x should not discharge"
             | Counterexample _ ->
                 Expect.isTrue (ProofSummary.hasErrorDiag summary) "V0008 is error"
             | Unknown _ ->
