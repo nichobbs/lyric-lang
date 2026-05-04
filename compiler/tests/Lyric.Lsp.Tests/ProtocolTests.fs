@@ -327,4 +327,134 @@ let tests =
                 Expect.equal (propStr res "uri") "file:///t.l" "uri echoed"
                 Expect.isSome (prop res "range") "range present"
             | None -> failtest "definition response missing"
+
+        testCase "initialize advertises signatureHelpProvider (D-lsp-001)" <| fun () ->
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let resp = out.[0]
+            match prop resp "result"
+                  |> Option.bind (fun r -> prop r "capabilities") with
+            | Some caps ->
+                Expect.isSome (prop caps "signatureHelpProvider")
+                    "signatureHelpProvider declared"
+            | None -> failtest "no capabilities"
+
+        testCase "signatureHelp returns signature for a call site (D-lsp-001)" <| fun () ->
+            // Source: func add(a: in Int, b: in Int): Int
+            // Cursor is inside `add(` — should get back the signature with activeParameter=0.
+            let source =
+                "package T\n"
+                + "pub func add(a: in Int, b: in Int): Int { a }\n"
+                + "func main(): Unit { let x = add(1, 2) }\n"
+            // Position on line 2 (0-indexed), column 32 — inside `add(1, 2)` at the first arg.
+            // "func main(): Unit { let x = add(" is 33 chars; col 32 = just after '('.
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 10
+            req.["method"]  <- JsonValue.Create "textDocument/signatureHelp"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 32   // just after the '('
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 10)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                match prop res "signatures" with
+                | Some (:? JsonArray as sigs) ->
+                    Expect.isGreaterThan sigs.Count 0 "at least one signature"
+                    let sig0 = Option.ofObj sigs.[0] |> Option.defaultWith (fun () -> failtest "sig0 null"; JsonObject() :> JsonNode)
+                    let label = propStr sig0 "label"
+                    Expect.stringContains label "add" "label contains function name"
+                    Expect.stringContains label "Int" "label contains param type"
+                    Expect.equal (propInt res "activeSignature") 0 "activeSignature=0"
+                    Expect.equal (propInt res "activeParameter") 0 "activeParameter=0 (first arg)"
+                | _ -> failtest "signatures array missing or wrong type"
+            | None -> failtest "signatureHelp response missing"
+
+        testCase "signatureHelp activeParameter advances past comma (D-lsp-001)" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func add(a: in Int, b: in Int): Int { a }\n"
+                + "func main(): Unit { let x = add(1, 2) }\n"
+            // Column 35 = just after the ',' and space, landing on the `2` (second arg).
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 11
+            req.["method"]  <- JsonValue.Create "textDocument/signatureHelp"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 35   // past the comma
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 11)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                Expect.equal (propInt res "activeParameter") 1
+                    "activeParameter=1 (second arg)"
+            | None -> failtest "signatureHelp response missing"
+
+        testCase "hover shows full resolved signature for a function (D-lsp-001)" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func add(a: in Int, b: in Int): Int { a }\n"
+                + "func main(): Unit { add(1, 2) }\n"
+            // Hover on 'add' in the call on line 2.
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 12
+            req.["method"]  <- JsonValue.Create "textDocument/hover"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 21  // on 'add' in the call
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 12)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                match prop res "contents" with
+                | Some contents ->
+                    let v = propStr contents "value"
+                    // Full signature — contains param names and types, not just `add(...)`.
+                    Expect.stringContains v "add"  "hover mentions function name"
+                    Expect.stringContains v "Int"  "hover mentions param type"
+                    Expect.isFalse (v.Contains "...") "hover shows full params, not '...'"
+                | None -> failtest "no contents on hover"
+            | None -> failtest "hover response missing"
     ]
