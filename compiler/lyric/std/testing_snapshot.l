@@ -31,6 +31,7 @@ import Std.Errors
 ///     `actual` exactly.
 ///   * `Ok(false)` if the file exists but differs from `actual`.
 ///   * `Err(_)` if any I/O call fails.
+@experimental
 pub func snapshot(label: in String, actual: in String): Result[Bool, IOError] {
   val path = "snapshots/" + label + ".txt"
   if fileExists(path) {
@@ -53,6 +54,7 @@ pub func snapshot(label: in String, actual: in String): Result[Bool, IOError] {
 /// Convenience wrapper: panic with a structured message when the
 /// snapshot doesn't match or when an I/O error occurs.  Use in
 /// test entry points where any deviation should fail loudly.
+@experimental
 pub func snapshotMatch(label: in String, actual: in String): Unit {
   match snapshot(label, actual) {
     case Ok(true) -> ()

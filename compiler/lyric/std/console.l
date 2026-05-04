@@ -16,6 +16,7 @@ import System.Console as HostConsole
 /// Console output is intentionally best-effort in Phase 3 and returns
 /// Unit. Applications that need durable logging should use the future
 /// logging/file APIs, which expose write failures as Result values.
+@stable(since="1.0")
 pub func print(s: in String): Unit {
   HostConsole.write(s)
 }
@@ -23,6 +24,7 @@ pub func print(s: in String): Unit {
 /// Write a string to stdout followed by the platform newline.
 ///
 /// See `print` for the output-failure policy.
+@stable(since="1.0")
 pub func println(s: in String): Unit {
   HostConsole.writeLine(s)
 }
@@ -31,6 +33,7 @@ pub func println(s: in String): Unit {
 ///
 /// Intended for diagnostics and simple command-line tools. Structured
 /// logging belongs in the Phase 5 logging package.
+@stable(since="1.0")
 pub func error(s: in String): Unit {
   HostConsole.errorWriteLine(s)
 }
@@ -43,6 +46,7 @@ pub func error(s: in String): Unit {
 ///
 /// EOF is not a Bug. Host exceptions are caught only here, at the
 /// stdlib boundary, and normalized to `IOError`.
+@stable(since="1.0")
 pub func readLine(): Result[String, IOError] {
   return try {
     match HostConsole.readLine() {

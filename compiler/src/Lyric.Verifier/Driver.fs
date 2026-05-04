@@ -148,12 +148,13 @@ let proveSourceWithOptions
     else
 
     let level, modeDiags = ModeCheck.checkFileWithImports parsed.File imports
+    let stabilityDiags  = StabilityCheck.checkFile parsed.File
 
     if not (Mode.VerificationLevel.isProofRequired level) then
         // Pass-through: nothing to verify.  Report the level so
         // `lyric prove` can print "no proof obligations" cleanly.
         { Level       = level
-          Diagnostics = parseDiags @ modeDiags
+          Diagnostics = parseDiags @ modeDiags @ stabilityDiags
           Results     = [] }
     else
 
@@ -164,7 +165,7 @@ let proveSourceWithOptions
 
     if modeFatal then
         { Level       = level
-          Diagnostics = parseDiags @ modeDiags @ vcDiags
+          Diagnostics = parseDiags @ modeDiags @ stabilityDiags @ vcDiags
           Results     = [] }
     else
 
@@ -189,7 +190,7 @@ let proveSourceWithOptions
         |> List.choose (fun r -> outcomeToDiag opts r.Goal r.Outcome)
 
     { Level       = level
-      Diagnostics = parseDiags @ modeDiags @ vcDiags @ resultDiags
+      Diagnostics = parseDiags @ modeDiags @ stabilityDiags @ vcDiags @ resultDiags
       Results     = results }
 
 /// Backwards-compatible alias preserving the M4.1/M4.2-core call shape.

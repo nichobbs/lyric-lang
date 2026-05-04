@@ -21,6 +21,7 @@ import Std.Core
 /// two strings differ.  Returns `()` on equality.  Use in test
 /// entry points where any deviation should be loud (CI failures
 /// land here).
+@stable(since="1.0")
 pub func assertEqual(
         actual: in String,
         expected: in String,
@@ -37,6 +38,7 @@ pub func assertEqual(
 
 /// Panic with a structured "expected/actual" message when the
 /// two `Int` values differ.
+@stable(since="1.0")
 pub func assertEqualInt(
         actual: in Int,
         expected: in Int,
@@ -52,6 +54,7 @@ pub func assertEqualInt(
 
 /// Panic when `cond` is false.  Useful for non-equality
 /// assertions (e.g. range / set membership / shape predicates).
+@stable(since="1.0")
 pub func assertTrue(cond: in Bool, label: in String): Unit {
   if cond {
     ()

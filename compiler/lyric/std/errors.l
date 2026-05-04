@@ -10,6 +10,7 @@ package Std.Errors
 // ParseError - numeric parsing and format errors.
 // ---------------------------------------------------------------------------
 
+@stable(since="1.0")
 pub union ParseError {
   case InvalidFormat(input: String, expected: String)
   case OutOfRange(value: String, bounds: String)
@@ -17,6 +18,7 @@ pub union ParseError {
 
 // Human-readable message for a ParseError.
 @pure
+@stable(since="1.0")
 pub func ParseError.message(e: in ParseError): String {
   match e {
     case InvalidFormat(input, expected) ->
@@ -34,6 +36,7 @@ pub func ParseError.message(e: in ParseError): String {
 // diagnostics without inventing a separate ConsoleError union.
 // ---------------------------------------------------------------------------
 
+@stable(since="1.0")
 pub union IOError {
   // The path string is syntactically unusable before any host IO call.
   case InvalidPath(path: String, reason: String)
@@ -58,6 +61,7 @@ pub union IOError {
 
 // Human-readable message for an IOError.
 @pure
+@stable(since="1.0")
 pub func IOError.message(e: in IOError): String {
   match e {
     case InvalidPath(path, reason) ->
@@ -83,6 +87,7 @@ pub func IOError.message(e: in IOError): String {
 // HttpError - network and HTTP errors.
 // ---------------------------------------------------------------------------
 
+@stable(since="1.0")
 pub union HttpError {
   case ConnectionFailed(url: String, message: String)
   case Timeout(url: String, durationMs: Long)
@@ -96,6 +101,7 @@ pub union HttpError {
 
 // Human-readable message for an HttpError.
 @pure
+@stable(since="1.0")
 pub func HttpError.message(e: in HttpError): String {
   match e {
     case ConnectionFailed(url, msg) ->

@@ -26,6 +26,7 @@ import Std.Errors
 /// Named `fileExists` rather than the more idiomatic `exists` because
 /// `exists` is a soft keyword (predicate-logic quantifier) reserved for
 /// `requires` / `ensures` clauses.
+@stable(since="1.0")
 pub func fileExists(path: in String): Bool {
   if path.length == 0 {
     false
@@ -39,6 +40,7 @@ pub func fileExists(path: in String): Bool {
 /// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
 /// the host probe says the file doesn't exist, and `Err(IoError)` for
 /// any other host failure (encoding, permission, device, …).
+@stable(since="1.0")
 pub func readText(path: in String): Result[String, IOError] {
   if path.length == 0 {
     Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -55,6 +57,7 @@ pub func readText(path: in String): Result[String, IOError] {
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).
+@stable(since="1.0")
 pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
   if path.length == 0 {
     Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -67,6 +70,7 @@ pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
 
 /// Probe whether `path` names an existing directory.  Returns false
 /// for empty paths and host errors.
+@stable(since="1.0")
 pub func dirExists(path: in String): Bool {
   if path.length == 0 {
     false
@@ -79,6 +83,7 @@ pub func dirExists(path: in String): Bool {
 /// if it already exists.  Returns `Ok(())` on success,
 /// `Err(InvalidPath)` for empty paths, or `Err(IoError)` if the host
 /// call fails.
+@stable(since="1.0")
 pub func createDir(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     Err(error = InvalidPath(path = path, reason = "path must not be empty"))

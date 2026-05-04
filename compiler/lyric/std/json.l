@@ -17,8 +17,10 @@ import Std.JsonHost     // brings `JsonDoc`, `JsonElement`, and `host*` fns into
 // Parsing.
 // =====================================================================
 
+@stable(since="1.0")
 pub func parseJson(s: in String): JsonDoc { hostParseJson(s) }
 
+@stable(since="1.0")
 pub func rootElement(d: in JsonDoc): JsonElement { hostRootElement(d) }
 
 // =====================================================================
@@ -28,10 +30,12 @@ pub func rootElement(d: in JsonDoc): JsonElement { hostRootElement(d) }
 // `tryGetProperty` for the Option-returning variant.
 // =====================================================================
 
+@stable(since="1.0")
 pub func getProperty(elem: in JsonElement, name: in String): JsonElement {
   hostGetProperty(elem, name)
 }
 
+@stable(since="1.0")
 pub func tryGetProperty(elem: in JsonElement, name: in String): Option[JsonElement] {
   var v: JsonElement = default()
   if hostTryGetProperty(elem, name, v) { Some(value = v) } else { None }
@@ -44,17 +48,24 @@ pub func tryGetProperty(elem: in JsonElement, name: in String): Option[JsonEleme
 // Use the `tryGet*` family for safer extraction.
 // =====================================================================
 
+@stable(since="1.0")
 pub func getString(elem: in JsonElement): String   { hostGetString(elem) }
+@stable(since="1.0")
 pub func getInt32(elem: in JsonElement): Int       { hostGetInt32(elem) }
+@stable(since="1.0")
 pub func getInt64(elem: in JsonElement): Long      { hostGetInt64(elem) }
+@stable(since="1.0")
 pub func getBoolean(elem: in JsonElement): Bool    { hostGetBoolean(elem) }
+@stable(since="1.0")
 pub func getDouble(elem: in JsonElement): Double   { hostGetDouble(elem) }
 
+@stable(since="1.0")
 pub func tryGetInt(elem: in JsonElement): Option[Int] {
   var v: Int = default()
   if hostTryGetInt32(elem, v) { Some(value = v) } else { None }
 }
 
+@stable(since="1.0")
 pub func tryGetLong(elem: in JsonElement): Option[Long] {
   var v: Long = default()
   if hostTryGetInt64(elem, v) { Some(value = v) } else { None }
@@ -68,4 +79,5 @@ pub func tryGetLong(elem: in JsonElement): Option[Long] {
 
 /// Wrap a string value as a JSON literal — escapes quotes and
 /// backslashes, surrounds with `"` characters.
+@stable(since="1.0")
 pub func encodeString(s: in String): String { hostEncodeString(s) }

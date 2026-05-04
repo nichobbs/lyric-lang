@@ -237,7 +237,7 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 
 ## Q011: Standard library API surface
 
-**Status:** DEFERRED — Phase 3 work; not gating Phase 0.
+**Status:** RESOLVED — see decision log D040.
 
 **Question:** What is the v1.0 standard library API surface, and what stability guarantees apply?
 
@@ -248,7 +248,7 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 - Must be implementable without language features beyond what v1 ships.
 - Must be SemVer-stable from v1.0.
 
-**Recommendation:** Phase 3 work. Define a "minimum viable stdlib" closer to ship: collections, IO, time, networking, JSON, HTTP, testing. Keep modules small and focused. Mark anything experimental clearly.
+**Resolution:** `@stable(since="1.0")` / `@experimental` annotation system (D040). Every `pub` item in `compiler/lyric/std/` is now annotated. Bootstrap-grade items (`Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`, plus HTTP retry/cancel/timeout variants and time DTO helpers) are `@experimental`. Core modules (errors, parse, collections, string, console, file, iter, math, stream, log, path, environment, app, directory, JSON, and the stable HTTP/time surface) are `@stable(since="1.0")`. The compiler enforces that stable pub functions do not call experimental ones (S0001). `lyric public-api-diff` treats experimental removals as non-breaking. See `docs/10-stdlib-plan.md` §"Stability cut" for the full cut list.
 
 ---
 

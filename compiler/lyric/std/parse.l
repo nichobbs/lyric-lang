@@ -26,21 +26,25 @@ import Std.ParseHost as Host
 // `_kernel/` per D038) and lifts the (Bool, value) pair into Option.
 // =====================================================================
 
+@stable(since="1.0")
 pub func parseOptInt(s: in String): Option[Int] {
   var v: Int = default()
   if Host.hostTryParseInt(s, v) { Some(value = v) } else { None }
 }
 
+@stable(since="1.0")
 pub func parseOptLong(s: in String): Option[Long] {
   var v: Long = default()
   if Host.hostTryParseLong(s, v) { Some(value = v) } else { None }
 }
 
+@stable(since="1.0")
 pub func parseOptDouble(s: in String): Option[Double] {
   var v: Double = default()
   if Host.hostTryParseDouble(s, v) { Some(value = v) } else { None }
 }
 
+@stable(since="1.0")
 pub func parseOptBool(s: in String): Option[Bool] {
   var v: Bool = default()
   if Host.hostTryParseBool(s, v) { Some(value = v) } else { None }
@@ -52,6 +56,7 @@ pub func parseOptBool(s: in String): Option[Bool] {
 // with a `Some` / `None` → `Ok` / `Err` lift.
 // =====================================================================
 
+@stable(since="1.0")
 pub func tryParseInt(s: in String): Result[Int, ParseError] {
   match parseOptInt(s) {
     case Some(v) -> Ok(value = v)
@@ -59,6 +64,7 @@ pub func tryParseInt(s: in String): Result[Int, ParseError] {
   }
 }
 
+@stable(since="1.0")
 pub func tryParseLong(s: in String): Result[Long, ParseError] {
   match parseOptLong(s) {
     case Some(v) -> Ok(value = v)
@@ -66,6 +72,7 @@ pub func tryParseLong(s: in String): Result[Long, ParseError] {
   }
 }
 
+@stable(since="1.0")
 pub func tryParseDouble(s: in String): Result[Double, ParseError] {
   match parseOptDouble(s) {
     case Some(v) -> Ok(value = v)
@@ -73,6 +80,7 @@ pub func tryParseDouble(s: in String): Result[Double, ParseError] {
   }
 }
 
+@stable(since="1.0")
 pub func tryParseBool(s: in String): Result[Bool, ParseError] {
   match parseOptBool(s) {
     case Some(v) -> Ok(value = v)
@@ -84,6 +92,7 @@ pub func tryParseBool(s: in String): Result[Bool, ParseError] {
 // Panicking convenience family.
 // =====================================================================
 
+@stable(since="1.0")
 pub func parseInt(s: in String): Int {
   match tryParseInt(s) {
     case Ok(v)  -> v
@@ -91,6 +100,7 @@ pub func parseInt(s: in String): Int {
   }
 }
 
+@stable(since="1.0")
 pub func parseLong(s: in String): Long {
   match tryParseLong(s) {
     case Ok(v)  -> v
@@ -98,6 +108,7 @@ pub func parseLong(s: in String): Long {
   }
 }
 
+@stable(since="1.0")
 pub func parseDouble(s: in String): Double {
   match tryParseDouble(s) {
     case Ok(v)  -> v
@@ -105,6 +116,7 @@ pub func parseDouble(s: in String): Double {
   }
 }
 
+@stable(since="1.0")
 pub func parseBool(s: in String): Bool {
   match tryParseBool(s) {
     case Ok(v)  -> v

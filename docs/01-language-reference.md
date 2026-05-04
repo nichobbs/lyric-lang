@@ -44,10 +44,17 @@ where       while        wire         with         xor
 Annotation-style keywords (always preceded by `@`):
 
 ```
-@axiom         @derive          @global_clock_unsafe   @hidden
-@projectable   @proof_required  @provided              @runtime_checked
-@stubbable     @test_module
+@axiom         @derive          @experimental          @global_clock_unsafe
+@hidden        @projectable     @proof_required        @provided
+@runtime_checked  @stable       @stubbable             @test_module
 ```
+
+**Stability annotations** (`@stable` / `@experimental`) mark the API stability of `pub` items (D040):
+
+- `@stable(since="X.Y")` — the item's API is stable from version X.Y and is covered by SemVer guarantees.
+- `@experimental` — the item may change without a SemVer major bump.
+
+The compiler enforces one direction: a non-experimental `pub` function may not call an `@experimental` item in the same package (diagnostic S0001). `lyric public-api-diff` uses the stability field to decide whether a removal or signature change is a SemVer-major event (experimental removals are no-ops SemVer-wise).
 
 ### 1.4 Literals
 
@@ -987,7 +994,7 @@ The standard library is its own package set, versioned independently of the lang
 - `std.http` — HTTP client and server primitives (interface layer over .NET BCL)
 - `std.testing` — test runner, property generators, snapshot testing
 
-API surface and stability guarantees: **[TBD]**.
+API surface and stability guarantees: governed by `@stable(since="1.0")` / `@experimental` annotations on each `pub` item (D040 / Q011). See `docs/10-stdlib-plan.md` §"Stability cut" for the module-by-module cut list.
 
 ## 13. Tooling
 
