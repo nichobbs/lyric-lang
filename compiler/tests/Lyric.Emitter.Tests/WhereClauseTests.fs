@@ -64,6 +64,23 @@ func go[T](a: T, b: T): T where T: Add + Compare {
 func main(): Unit { println(go(2, 5)) }
 """,
     "7"
+
+    // Q021 sub-question #5: user-defined interface constraints. The
+    // record `Bird` implements `Greeter`, so `T = Bird` satisfies
+    // `where T: Greeter` and the call dispatches as a normal generic
+    // call site.
+    "user_interface_constraint_satisfied",
+    """
+package WC6
+interface Greeter { func greet(): String }
+record Bird { sound: String }
+impl Greeter for Bird {
+  func greet(): String = self.sound
+}
+func relay[T](g: in T): String where T: Greeter { g.greet() }
+func main(): Unit { println(relay(Bird(sound = "tweet"))) }
+""",
+    "tweet"
 ]
 
 let tests =
@@ -79,4 +96,16 @@ let tests =
             "package WC5\n" +
             "func twice[T](x: T): T where T: Add { x + x }\n" +
             "func main(): Unit { println(twice(true)) }\n")
+
+        // Q021 sub-question #5 negative case: `Mute` does not implement
+        // the `Greeter` interface, so `T = Mute` fails `where T: Greeter`
+        // and the build aborts with B0001 instead of silently rejecting
+        // every user-interface bound (the prior behaviour).
+        yield mkBoundFailure (
+            "user_interface_constraint_unsatisfied",
+            "package WC7\n" +
+            "interface Greeter { func greet(): String }\n" +
+            "record Mute { x: Int }\n" +
+            "func relay[T](g: in T): String where T: Greeter { \"unused\" }\n" +
+            "func main(): Unit { println(relay(Mute(x = 1))) }\n")
     ]

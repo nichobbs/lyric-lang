@@ -2233,6 +2233,7 @@ let private emitFunctionBody
         (unions: Records.UnionTable)
         (unionCases: Records.UnionCaseLookup)
         (interfaces: Records.InterfaceTable)
+        (impls: Records.ImplsTable)
         (distinctTypes: Records.DistinctTypeTable)
         (protectedTypes: Records.ProtectedTypeTable)
         (projectables: Records.ProjectableTable)
@@ -2328,7 +2329,7 @@ let private emitFunctionBody
         Codegen.FunctionCtx.make
             il returnTy paramList
             funcs funcSigs records enums enumCases unions unionCases
-            interfaces distinctTypes protectedTypes projectables
+            interfaces impls distinctTypes protectedTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes externTypeNames
             effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup diags
@@ -3096,6 +3097,12 @@ let private emitAssembly
             |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type)
 
         let interfaceTable = Records.InterfaceTable()
+        // Tracks `impl Foo for Bar` blocks so codegen can resolve
+        // `where T: Foo` bounds (Q021 sub-question #5) without
+        // calling `TypeBuilder.GetInterfaces()` on a still-unsealed
+        // record. Populated in Pass A.5 alongside
+        // `AddInterfaceImplementation`.
+        let implsTable = Records.ImplsTable()
         for id in interfaceItems sf do
             let info = defineInterface ctx.Module nsName symbols lookup id
             interfaceTable.[id.Name] <- info
@@ -3343,6 +3350,15 @@ let private emitAssembly
             match targetRecord, ifaceInfo with
             | Some recInfo, Some iface ->
                 recInfo.Type.AddInterfaceImplementation(iface.Type)
+                let key : System.Type = recInfo.Type :> _
+                let ifaces =
+                    match implsTable.TryGetValue key with
+                    | true, s -> s
+                    | _ ->
+                        let s = HashSet<string>()
+                        implsTable.[key] <- s
+                        s
+                ifaces.Add(iface.Name) |> ignore
                 let resolveCtx = GenericContext()
                 let scratchDiags = ResizeArray<Diagnostic>()
                 for m in impl.Members do
@@ -3580,7 +3596,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) None fn sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3673,7 +3689,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) (Some phaseBExit) fnForPhaseB sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3719,7 +3735,7 @@ let private emitAssembly
                 emitFunctionBody
                     mb None None fn sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3793,7 +3809,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) None fd sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3855,7 +3871,7 @@ let private emitAssembly
                 emitFunctionBody
                     sm.MoveNext (Some sm) (Some phaseBExit) fd sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
@@ -3897,7 +3913,7 @@ let private emitAssembly
                 emitFunctionBody
                     mb None None fd sg lookup
                     methodTable funcSigsTable recordTable enumTable enumCases
-                    unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     true
@@ -3925,7 +3941,7 @@ let private emitAssembly
             emitFunctionBody
                 p.UnsafeMb None None p.Fn p.Sg lookup
                 methodTable funcSigsTable recordTable enumTable enumCases
-                unionTable unionCaseLookup interfaceTable distinctTable protectedTable projectableTable
+                unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable externTypeNames
                 true
@@ -3973,7 +3989,7 @@ let private emitAssembly
                     methodTable funcSigsTable recordTable
                     enumTable enumCases
                     unionTable unionCaseLookup
-                    interfaceTable distinctTable protectedTable
+                    interfaceTable implsTable distinctTable protectedTable
                     projectableTable
                     importedRecordTable importedUnionTable
                     importedUnionCaseLookup
@@ -4154,7 +4170,7 @@ let private emitAssembly
                         methodTable funcSigsTable recordTable
                         enumTable enumCases
                         unionTable unionCaseLookup
-                        interfaceTable distinctTable protectedTable
+                        interfaceTable implsTable distinctTable protectedTable
                         projectableTable
                         importedRecordTable importedUnionTable
                         importedUnionCaseLookup

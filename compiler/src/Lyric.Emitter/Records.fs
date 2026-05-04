@@ -121,6 +121,14 @@ type InterfaceInfo =
 
 type InterfaceTable = Dictionary<string, InterfaceInfo>
 
+/// Per-emit map from a record's TypeBuilder (the target of one or
+/// more `impl Foo for Bar` blocks) to the set of interface names it
+/// implements.  Built during Emitter Pass A.5 and consulted by
+/// `Codegen.satisfiesMarker` so user-defined interface constraints
+/// (`where T: SomeInterface`, Q021 sub-question #5) work without
+/// relying on `TypeBuilder.GetInterfaces()` (unsupported pre-seal).
+type ImplsTable = Dictionary<System.Type, HashSet<string>>
+
 // ---------------------------------------------------------------------------
 // Distinct types (and range subtypes).
 //
