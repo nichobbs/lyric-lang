@@ -32,6 +32,18 @@ module ProofSummary =
 
     let totalCount (s: ProofSummary) : int = List.length s.Results
 
+    let unknownCount (s: ProofSummary) : int =
+        s.Results
+        |> List.filter (fun r ->
+            match r.Outcome with Unknown _ -> true | _ -> false)
+        |> List.length
+
+    let counterexampleCount (s: ProofSummary) : int =
+        s.Results
+        |> List.filter (fun r ->
+            match r.Outcome with Counterexample _ -> true | _ -> false)
+        |> List.length
+
     let hasFailure (s: ProofSummary) : bool =
         s.Results
         |> List.exists (fun r ->
@@ -39,13 +51,33 @@ module ProofSummary =
             | Discharged -> false
             | _          -> true)
 
+    let hasCounterexample (s: ProofSummary) : bool =
+        s.Results
+        |> List.exists (fun r ->
+            match r.Outcome with Counterexample _ -> true | _ -> false)
+
     let hasErrorDiag (s: ProofSummary) : bool =
         s.Diagnostics
         |> List.exists (fun d -> d.Severity = DiagError)
 
+/// Options threaded through the driver from the CLI.  `AllowUnverified`
+/// downgrades `Unknown` outcomes (V0007) from an error to a warning so
+/// `lyric prove --allow-unverified` exits 0 in their presence; genuine
+/// counterexamples (V0008) remain errors regardless (M4.2 close-out).
+type ProveOptions =
+    { AllowUnverified: bool }
+
+module ProveOptions =
+
+    let defaults : ProveOptions =
+        { AllowUnverified = false }
+
 /// Render a discharge outcome into a Diagnostic.  Discharged goals
 /// produce no diagnostic (success is silent).
-let private outcomeToDiag (g: Goal) (outcome: SolverOutcome) : Diagnostic option =
+let private outcomeToDiag
+        (opts: ProveOptions)
+        (g: Goal)
+        (outcome: SolverOutcome) : Diagnostic option =
     match outcome with
     | Discharged ->
         None
@@ -66,8 +98,11 @@ let private outcomeToDiag (g: Goal) (outcome: SolverOutcome) : Diagnostic option
                     (GoalKind.display g.Kind) body)
                 g.Origin)
     | Unknown reason ->
+        let mk =
+            if opts.AllowUnverified then Diagnostic.warning
+            else Diagnostic.error
         Some
-            (Diagnostic.error "V0007"
+            (mk "V0007"
                 (sprintf "%s — solver returned unknown: %s"
                     (GoalKind.display g.Kind) reason)
                 g.Origin)
@@ -92,10 +127,12 @@ let private writeSmtToDisk
 /// call rule).  When `proofDir` is `Some d`, a cache file
 /// `<d>/cache.json` carries discharged outcomes across runs and a
 /// persistent z3 session is reused across goals (decision 5c).
-let proveSourceWithImports
+/// `opts.AllowUnverified` rewrites V0007 from error to warning.
+let proveSourceWithOptions
         (source: string)
         (proofDir: string option)
-        (imports: Imports.ImportedPackage list) : ProofSummary =
+        (imports: Imports.ImportedPackage list)
+        (opts: ProveOptions) : ProofSummary =
 
     let parsed = Lyric.Parser.Parser.parse source
     let parseDiags = parsed.Diagnostics
@@ -149,11 +186,18 @@ let proveSourceWithImports
 
     let resultDiags =
         results
-        |> List.choose (fun r -> outcomeToDiag r.Goal r.Outcome)
+        |> List.choose (fun r -> outcomeToDiag opts r.Goal r.Outcome)
 
     { Level       = level
       Diagnostics = parseDiags @ modeDiags @ vcDiags @ resultDiags
       Results     = results }
+
+/// Backwards-compatible alias preserving the M4.1/M4.2-core call shape.
+let proveSourceWithImports
+        (source: string)
+        (proofDir: string option)
+        (imports: Imports.ImportedPackage list) : ProofSummary =
+    proveSourceWithOptions source proofDir imports ProveOptions.defaults
 
 /// Backwards-compatible alias for callers without an imports list.
 let proveSource
@@ -166,15 +210,22 @@ let proveSource
 /// reads `Lyric.Contract` + `Lyric.Proof` resources from to apply
 /// V0001 / cross-package call rule / cross-package datatype
 /// encoding.
+let proveFileWithOptions
+        (path: string)
+        (proofDir: string option)
+        (dllImports: string list)
+        (opts: ProveOptions) : ProofSummary =
+    let source = File.ReadAllText path
+    let imports, importDiags = Imports.loadMany dllImports
+    let summary = proveSourceWithOptions source proofDir imports opts
+    { summary with
+        Diagnostics = importDiags @ summary.Diagnostics }
+
 let proveFileWithImports
         (path: string)
         (proofDir: string option)
         (dllImports: string list) : ProofSummary =
-    let source = File.ReadAllText path
-    let imports, importDiags = Imports.loadMany dllImports
-    let summary = proveSourceWithImports source proofDir imports
-    { summary with
-        Diagnostics = importDiags @ summary.Diagnostics }
+    proveFileWithOptions path proofDir dllImports ProveOptions.defaults
 
 let proveFile (path: string) (proofDir: string option) : ProofSummary =
     proveFileWithImports path proofDir []

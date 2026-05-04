@@ -697,7 +697,7 @@ let private printUsage () : unit =
     printErr "Usage:"
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
     printErr "  lyric run   <source.l> [-- <args>...]"
-    printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose]"
+    printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified]"
     printErr "  lyric doc   <source.l> [-o out.md]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
     printErr "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <pkg-dir>]"
@@ -853,13 +853,19 @@ let main (argv: string array) : int =
                 | _            -> List.toArray more
             run sourcePath userArgs
     | "prove" :: rest ->
-        // `lyric prove <source.l> [--proof-dir <dir>] [--verbose]`
-        // — Phase 4 verifier (M4.1 fragment).  Runs the mode-dispatch
-        // check (V0001/V0002/V0004), generates VCs for every
-        // proof-required function, and discharges them via the
-        // trivial syntactic checker or a `z3` binary on `$PATH`.
+        // `lyric prove <source.l> [--proof-dir <dir>] [--verbose]
+        //                         [--allow-unverified]`
+        // — Phase 4 verifier.  Runs the mode-dispatch check
+        // (V0001/V0002/V0004), generates VCs for every proof-required
+        // function, and discharges them via the trivial syntactic
+        // checker or a `z3` binary on `$PATH`.  `--allow-unverified`
+        // downgrades V0007 (`unknown`) from an error to a warning so
+        // the command exits 0 — the user's escape hatch when the
+        // solver budgets out (M4.2 close-out).  Counterexamples
+        // (V0008) remain hard errors regardless.
         let mutable proofDir : string option = None
         let mutable verbose = false
+        let mutable allowUnverified = false
         let mutable positional : string list = []
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
@@ -869,6 +875,9 @@ let main (argv: string array) : int =
                 cursor <- tail
             | "--verbose" :: tail | "-v" :: tail ->
                 verbose <- true
+                cursor <- tail
+            | "--allow-unverified" :: tail ->
+                allowUnverified <- true
                 cursor <- tail
             | s :: tail ->
                 positional <- positional @ [s]
@@ -890,17 +899,28 @@ let main (argv: string array) : int =
                     let dir =
                         safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
                     Some (Path.Combine(dir, "target", "proofs"))
+            let opts =
+                { Lyric.Verifier.Driver.ProveOptions.AllowUnverified =
+                    allowUnverified }
             let summary =
-                Lyric.Verifier.Driver.proveFile sourcePath resolvedProofDir
+                Lyric.Verifier.Driver.proveFileWithOptions
+                    sourcePath resolvedProofDir [] opts
             for d in summary.Diagnostics do
                 printDiag d
             let total = Lyric.Verifier.Driver.ProofSummary.totalCount summary
             let discharged =
                 Lyric.Verifier.Driver.ProofSummary.dischargedCount summary
+            let unknowns =
+                Lyric.Verifier.Driver.ProofSummary.unknownCount summary
             if Lyric.Verifier.Mode.VerificationLevel.isProofRequired summary.Level then
-                printfn "%d/%d obligations discharged (%s)"
+                let suffix =
+                    if allowUnverified && unknowns > 0 then
+                        sprintf " [%d unverified, allowed]" unknowns
+                    else ""
+                printfn "%d/%d obligations discharged (%s)%s"
                     discharged total
                     (Lyric.Verifier.Mode.VerificationLevel.display summary.Level)
+                    suffix
             else
                 printfn "no proof obligations: package is %s"
                     (Lyric.Verifier.Mode.VerificationLevel.display summary.Level)
@@ -913,10 +933,14 @@ let main (argv: string array) : int =
                     match r.SmtPath with
                     | Some p -> printfn "    smt: %s" p
                     | None -> ()
-            let summaryFailed =
-                Lyric.Verifier.Driver.ProofSummary.hasFailure summary
-                || Lyric.Verifier.Driver.ProofSummary.hasErrorDiag summary
-            if summaryFailed then 1 else 0
+            // Exit code:
+            //   - any error-severity diagnostic => 1 (parse / mode /
+            //     V0008 counterexample, or V0007 when not allowed).
+            //   - V0007 unknowns under --allow-unverified are warnings;
+            //     they don't fail the run on their own.
+            if Lyric.Verifier.Driver.ProofSummary.hasErrorDiag summary then 1
+            elif Lyric.Verifier.Driver.ProofSummary.hasCounterexample summary then 1
+            else 0
     | "doc" :: rest ->
         // `lyric doc <source.l> [-o out.md]` — emit Markdown describing
         // the file's `pub` surface.  See Doc.fs for the bootstrap-grade

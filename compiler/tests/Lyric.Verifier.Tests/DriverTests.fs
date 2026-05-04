@@ -448,4 +448,151 @@ let tests =
             let summary = prove src
             Expect.isFalse (ProofSummary.hasFailure summary) "no failure"
         }
+
+        // M4.2 close-out: --allow-unverified flag.  V0007 ("solver
+        // returned unknown") is the user's escape hatch when the SMT
+        // budget is exhausted; --allow-unverified rewrites it from a
+        // hard error into a warning so CI can keep running.  V0008
+        // counterexamples remain hard errors regardless.
+
+        test "allow-unverified rewrites V0007 unknown into a warning" {
+            // No solver wired up in the unit-test environment, so a
+            // contract that the trivial discharger can't close becomes
+            // an `Unknown` outcome.  `forall` over an unbounded domain
+            // is also unreachable in @proof_required code, so we use
+            // a concrete arithmetic obligation that the syntactic
+            // checker can't see through but that won't be touched by
+            // V0006 either.
+            let src = """
+                @proof_required
+                package P
+
+                pub func square(x: Int): Int
+                  ensures: result >= x
+                {
+                  return x * x
+                }
+                """
+            let opts =
+                { Driver.ProveOptions.AllowUnverified = true }
+            let summary =
+                Driver.proveSourceWithOptions src None [] opts
+            Expect.equal (ProofSummary.totalCount summary) 1 "one obligation"
+            // The result must NOT be Discharged — `x * x >= x` fails
+            // for x = -1.  Whether z3 catches it (Counterexample) or
+            // not (Unknown) depends on the host; for the Unknown case
+            // we want zero error-severity diagnostics under
+            // --allow-unverified.
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Discharged ->
+                failtest "x*x >= x should not discharge for x = -1"
+            | Counterexample _ ->
+                // V0008 stays an error; this test is environment
+                // dependent on z3 — accept either path but assert the
+                // contract that V0008 is *always* an error.
+                Expect.isTrue
+                    (ProofSummary.hasErrorDiag summary)
+                    "V0008 stays an error under --allow-unverified"
+            | Unknown _ ->
+                Expect.isFalse
+                    (ProofSummary.hasErrorDiag summary)
+                    "V0007 is downgraded to warning under --allow-unverified"
+                Expect.equal (ProofSummary.unknownCount summary) 1 "one unknown"
+                let warnings =
+                    summary.Diagnostics
+                    |> List.filter (fun d ->
+                        d.Severity = DiagWarning && d.Code = "V0007")
+                Expect.equal warnings.Length 1 "exactly one V0007 warning"
+        }
+
+        test "default behaviour (no flag) keeps V0007 as an error" {
+            // Same source as above; under default options, an Unknown
+            // outcome must surface as a V0007 error so CI fails.
+            let src = """
+                @proof_required
+                package P
+
+                pub func square(x: Int): Int
+                  ensures: result >= x
+                {
+                  return x * x
+                }
+                """
+            let summary = prove src
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Discharged ->
+                failtest "x*x >= x should not discharge"
+            | Counterexample _ ->
+                Expect.isTrue (ProofSummary.hasErrorDiag summary) "V0008 is error"
+            | Unknown _ ->
+                let errors =
+                    summary.Diagnostics
+                    |> List.filter (fun d ->
+                        d.Severity = DiagError && d.Code = "V0007")
+                Expect.equal errors.Length 1 "V0007 stays error by default"
+        }
+
+        test "allow-unverified does NOT mask V0008 counterexamples" {
+            // Diagnostic-shape contract: even with --allow-unverified
+            // set, a real counterexample stays an error.  Discharge or
+            // Unknown skip the assertion (env-dependent solver presence).
+            let src = """
+                @proof_required
+                package P
+
+                pub func wrong(x: Int): Int
+                  requires: x >= 0
+                  ensures: result < 0
+                {
+                  return x + 1
+                }
+                """
+            let opts =
+                { Driver.ProveOptions.AllowUnverified = true }
+            let summary =
+                Driver.proveSourceWithOptions src None [] opts
+            let r = List.head summary.Results
+            match r.Outcome with
+            | Counterexample _ ->
+                Expect.isTrue
+                    (ProofSummary.hasErrorDiag summary)
+                    "V0008 must remain an error even with --allow-unverified"
+                Expect.isTrue
+                    (ProofSummary.hasCounterexample summary)
+                    "hasCounterexample reports the failure"
+            | Discharged | Unknown _ -> ()
+        }
+
+        test "unknownCount and counterexampleCount partition non-discharged results" {
+            // Two failing obligations of contrived shape.  The exact
+            // partition between Counterexample and Unknown depends on
+            // whether z3 is on $PATH; the invariant we assert is that
+            // discharged + unknown + counterexample == total.
+            let src = """
+                @proof_required
+                package P
+
+                pub func f1(x: Int): Int
+                  ensures: result >= x
+                {
+                  return x * x
+                }
+
+                pub func f2(x: Int): Int
+                  requires: x >= 0
+                  ensures: result < 0
+                {
+                  return x + 1
+                }
+                """
+            let summary = prove src
+            let total = ProofSummary.totalCount summary
+            let parts =
+                ProofSummary.dischargedCount summary
+                + ProofSummary.unknownCount summary
+                + ProofSummary.counterexampleCount summary
+            Expect.equal parts total "outcomes partition the total"
+        }
     ]

@@ -657,25 +657,70 @@ criteria) and "M4.3" (the v2.0 release scope).
 
 ### D1. M4.2 close-out
 
-1. **`std.core.proof` subpackage.** Create `compiler/lyric/std/proof.l`
-   with the `List[T]` / `Result[T,E]` operations whose contracts
-   the verifier discharges; M4.2 exit criterion requires
-   self-verification. Sized as a half-to-one-session deliverable
-   once the contract surface is decided.
-2. **`--allow-unverified` flag.** Add to `lyric prove` in
-   `compiler/src/Lyric.Cli/`. Default behaviour stays "error on
-   `unknown`"; the flag downgrades to a warning and exits 0. ~50
-   LOC + 2-3 driver tests.
+1. **`std.core.proof` subpackage.** **SHIPPED** — D-progress-091
+   landed `compiler/lyric/std/core_proof.l` (package
+   `Std.Core.Proof`). Bootstrap-grade scope: identity witnesses
+   (`identity`, `pickFirst`/`pickSecond`), Boolean literal anchors
+   (`trueLit`, `falseLit`), let-rebind passthroughs (`tag`,
+   `assertEq`), and a `wrappedIdentity` exercising the §10.4
+   cross-call rule + §5.5 `@pure` unfold. Self-verifies (9/9) under
+   the trivial discharger so the package is portable across CI
+   hosts without `z3`. The aspirational `List[T]` / `Result[T,E]`
+   proof surface is deferred to Phase 4 polish — gated on the
+   verifier's structural-induction support past the M4.2-core
+   primitives.
+2. **`--allow-unverified` flag.** **SHIPPED** — D-progress-091.
+   `Driver.ProveOptions.AllowUnverified` plumbed through
+   `Driver.proveSourceWithOptions` / `proveFileWithOptions`; CLI
+   parses `lyric prove --allow-unverified`. V0007 (`unknown`)
+   downgrades to a warning and exits 0; V0008 counterexamples
+   remain hard errors. Summary surfaces `[N unverified, allowed]`
+   when the flag is set and at least one obligation came back
+   `unknown`.
 3. **Pagination-helper or token-bucket end-to-end proof.** Pick
    one worked example from `docs/02-worked-examples.md`, add the
    loop invariants, prove. Replaces the
    `examples/prove_demo.l` integration test as the M4.2
-   demonstration. Likely surfaces 1-2 missing wp/sp rules.
-4. **Verification regression suite to 200.** Currently 83 verifier
-   tests across `compiler/tests/Lyric.Verifier.Tests/`. Target 200
-   per `docs/15-phase-4-proof-plan.md` §13. Bias toward the
-   negative-counterexample bucket (today: light) and the
-   soundness-anti-axiom bucket (today: zero).
+   demonstration. Likely surfaces 1-2 missing wp/sp rules. Still
+   open after D-progress-091 — `02-worked-examples.md` Example 2
+   (token-bucket) uses Doubles + `protected type`, neither in the
+   M4.2-core verifier scope; `pagination-helper` is referenced in
+   `15-phase-4-proof-plan.md` §M4.2 but not yet drafted as a
+   worked example.
+4. **Verification regression suite to 200.** **SHIPPED** —
+   D-progress-091. `Lyric.Verifier.Tests` is 217 tests today (216
+   passing; 1 environment-gated `z3`-only failure that predates
+   this milestone), up from 83. Coverage:
+   - Positive driver shapes (~50): identity, `let`/`val`-bound
+     passthroughs, `@pure` single-level unfold, `invariant: true`
+     loop establish/preserve, cross-call rule, no-contract
+     baselines, multi-arity / multi-type axes (Bool/Long/String).
+   - Negative driver shapes (5): wrong-sign post, wrong identity
+     ensures, wrong loop establish, false `assert`,
+     `result == false` on `true`.
+   - SMT-LIB rendering (15): every binary boolean / arithmetic
+     operator, `set-logic ALL`, `check-sat`, `get-model`,
+     Bool/Int literal forms.
+   - Trivial-discharger matrix (12): reflexive `=`/`>=`/`<=`
+     across Int/Bool/String, `P ⇒ P`, `(P∧Q) ⇒ P/Q` flatten-on-
+     adopt, conjunctions of tautologies, hypothesis-membership.
+   - `parseModel` / `renderCounterexample` (7): empty / single-Int
+     / Bool / three-binding / `unknown` blob / pair-render /
+     Bool-render.
+   - IR construction (25): `mkAnd`/`mkOr`, `isClosed`, `sortOf`,
+     `subst`, `Goal.asImplication`, `Sort.display`,
+     `GoalKind.display`, `Builtin.display`.
+   - Sort/builtin display matrix (21): `BitVec[8/32/64]`,
+     `Float32/64`, `SDatatype` arity 0/1/2, `SSlice`, `SUninterp`,
+     every `Builtin` variant.
+   - `ProveOptions` defaults (3).
+   Tests bias toward shapes the trivial discharger handles so the
+   suite is portable across CI hosts without `z3`; z3-only shapes
+   stay in `DriverTests.fs` and assert the *non-Discharged*
+   invariant (Counterexample-or-Unknown) rather than a specific
+   verdict. The negative-counterexample bucket today is small; full
+   counterexample-trace assertions land with M4.3
+   (`docs/15-phase-4-proof-plan.md` §9).
 
 ### D2. M4.3 — v2.0 release work
 

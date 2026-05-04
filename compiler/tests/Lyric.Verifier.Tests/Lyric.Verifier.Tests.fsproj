@@ -13,6 +13,7 @@
     <Compile Include="SolverTests.fs" />
     <Compile Include="ImportsTests.fs" />
     <Compile Include="DriverTests.fs" />
+    <Compile Include="RegressionTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
