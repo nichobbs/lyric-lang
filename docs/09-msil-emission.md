@@ -841,10 +841,9 @@ linked source.
 A `protected type P { ... }` lowers to a sealed CLR class `P` with:
 
 - private fields for each declared `var`/`let`/field,
-- a `SemaphoreSlim` (Q008 default) or `ReaderWriterLockSlim` if the
-  protected type contains any `func` declarations and Q008 lands on
-  Option 2 (concurrent reads),
-- a `ConditionalWeakTable<P, ConditionVar>` for barrier signalling,
+- a lock field whose type is chosen by the tri-modal flavour
+  selection in §17.4 (`SemaphoreSlim`, `ReaderWriterLockSlim`,
+  or `Object` (Monitor)),
 - one CLR method per `entry` and `func` declaration, each wrapping
   the body in lock-acquire / lock-release.
 
@@ -893,34 +892,67 @@ For idempotent or write-only entries the rollback is omitted.
 
 ### 17.3 `when:` barriers
 
-A barrier waits on a `ConditionVar` keyed off the protected
-instance:
+Any protected type that declares at least one `when:` barrier is
+forced onto a `Monitor`-backed lock (`PLMonitor` flavour) because
+`Monitor.Wait` / `Monitor.PulseAll` are the only BCL primitives that
+support condition-variable semantics under an exclusive lock.
 
-```cs
-public T acquire(...) {
-    _lock.Wait(cancellation);
-    while (!Barrier(this, args)) {
-        var cv = GetConditionVar();
-        cv.WaitWithLock(_lock, cancellation);
-    }
-    // ... entry body as in §17.2
+The emitted IL for a barrier entry is a wait-loop:
+
+```
+Monitor.Enter(this.<>__lock)
+.try {
+  L_check:
+    if (!barrier_1) goto L_wait
+    ...
+    if (!barrier_n) goto L_wait
+    goto L_body
+  L_wait:
+    Monitor.Wait(this.<>__lock)   // returns bool (always true), discarded
+    pop
+    goto L_check                  // re-evaluate on wake
+  L_body:
+    result = <unsafe>__name(this, args)
+    // invariant checks
+    if (isEntry) Monitor.PulseAll(this.<>__lock)
+    leave end
+} finally {
+  Monitor.Exit(this.<>__lock)
 }
+end:
+  [ldloc result]
+  ret
 ```
 
-`SignalBarriers()` (called at every entry exit, §17.2) re-evaluates
-all condition variables; those whose barrier now holds are signalled
-to retry.
+`Monitor.Wait` releases the lock and suspends the caller until
+another thread calls `PulseAll` (emitted at the end of every
+`entry` body). The wait is **infinite**: Lyric follows Ada
+semantics — an `entry … when …` that is never satisfiable causes
+the caller to block forever. The programmer is responsible for
+ensuring progress. A future uplift (CancellationToken integration)
+would require replacing `Monitor` with a `Lock` + `SemaphoreSlim`
+pair that supports `Wait(CancellationToken)`; this is deferred to
+Phase 2 / Phase C scope.
 
-### 17.4 Concurrent `func` (Q008)
+### 17.4 Lock-flavour selection (Q008, D-progress-087, D-progress-092)
 
-Per the recommendation in Q008, `func` declarations on a protected
-type acquire the lock in *read* mode. The compiler emits a
-`ReaderWriterLockSlim` instead of a `SemaphoreSlim` whenever the
-protected type contains at least one `func`. `entry` operations
-acquire write mode.
+Three lock flavours are chosen at compile time, keyed off the
+declarations in the protected type body:
 
-If Q008 lands on Option 1 (all-exclusive), `func` is treated
-identically to `entry`; the compiler always emits `SemaphoreSlim`.
+| `hasBarriers` | `hasFuncs` | Lock emitted            |
+|---------------|------------|-------------------------|
+| true          | (any)      | `Object` (Monitor)      |
+| false         | true       | `ReaderWriterLockSlim`  |
+| false         | false      | `SemaphoreSlim`         |
+
+Barrier-bearing types are forced onto `Monitor` because
+`ReaderWriterLockSlim` and `SemaphoreSlim` do not support
+`Wait`/`Pulse`. The cost is that concurrent `func` reads are
+serialised on barrier-bearing types; this matches Ada's model
+(protected functions are exclusive under an active barrier entry).
+
+`func` operations on non-barrier types acquire the read lock;
+`entry` operations acquire the write lock.
 
 ### 17.5 Pattern matching is rejected (Q019)
 
@@ -1195,8 +1227,8 @@ CLR or AOT linker resolves the actual code.
 | Q005  | Async + `inout`                    | §11.4: enforced by the static analyser; no special IL needed |
 | Q006  | `?` in non-error functions         | grammar §7 / contract validator: enforced before IL emission |
 | Q007  | `var` capture across async         | §11.5: snapshot by value; cross-await write requires `protected type` |
-| Q008  | Concurrent `func` on protected     | §17.4: `ReaderWriterLockSlim` if any `func`, else `SemaphoreSlim` |
-| Q009  | Protected type lowering            | §17.1–17.3: `SemaphoreSlim` + condition variables for barriers |
+| Q008  | Concurrent `func` on protected     | §17.4: tri-modal lock selection; barrier entries use `Monitor` (infinite wait, Ada-orthodox); CancellationToken integration deferred to Phase 2 |
+| Q009  | Protected type lowering            | §17.1–17.4: tri-modal lock; `Monitor.Wait`/`PulseAll` for barriers |
 | Q010  | Task vs ValueTask                  | §14.2: default `Task<T>`; `@hot` opts into `ValueTask<T>` |
 | Q011  | Stdlib API surface                 | deferred (Phase 3); §10 discusses derive interaction |
 | Q012  | Package registry                   | deferred (Phase 3); `<assembly-name>` mapping is independent |
