@@ -4274,7 +4274,7 @@ let private segmentToFileBase (seg: string) : string =
 /// Search order:
 ///   1. `LYRIC_STD_PATH` env var, if set — allows installed/out-of-tree setups.
 ///   2. Walk up the directory tree from `startDir` (the CLI binary's base
-///      directory) looking for a `lyric/std/` subdirectory — works when the
+///      directory) looking for a `stdlib/std/` subdirectory — works when the
 ///      binary lives inside the source tree.
 ///
 /// Within each candidate stdlib directory, look first at the top level
@@ -4310,7 +4310,7 @@ let private locateStdlibFile
             let mutable found : string option = None
             while found.IsNone && dir.IsSome do
                 let d = dir.Value
-                let stdRoot = Path.Combine(d.FullName, "lyric", "std")
+                let stdRoot = Path.Combine(d.FullName, "stdlib", "std")
                 if Directory.Exists stdRoot then
                     found <- firstExisting (candidatesIn stdRoot)
                 dir <- d.Parent |> Option.ofObj

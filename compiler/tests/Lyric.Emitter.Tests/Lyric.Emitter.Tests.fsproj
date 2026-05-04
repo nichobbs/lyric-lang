@@ -64,6 +64,7 @@
     <Compile Include="MockingTests.fs" />
     <Compile Include="RestoredPackageE2ETests.fs" />
     <Compile Include="ProtectedTypeTests.fs" />
+    <Compile Include="StdlibLyricTests.fs" />
     <Compile Include="KernelBoundaryTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

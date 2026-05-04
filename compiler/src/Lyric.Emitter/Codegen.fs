@@ -300,6 +300,13 @@ let private codegenErrStmt
 // Stdlib bindings.
 // ---------------------------------------------------------------------------
 
+let private compareOrdinalMethod : Lazy<MethodInfo> =
+    lazy (
+        let mi = typeof<System.String>.GetMethod("CompareOrdinal", [| typeof<string>; typeof<string> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwith "String::CompareOrdinal(string,string) not found")
+
 let private printlnString : Lazy<MethodInfo> =
     lazy (
         // Per `docs/14-native-stdlib-plan.md` §3 (kernel surface):
@@ -923,6 +930,22 @@ let rec substituteGenericArgs (openTy: ClrType) (closedRecv: ClrType) : ClrType 
 // ---------------------------------------------------------------------------
 // Expression / statement emission.
 // ---------------------------------------------------------------------------
+
+/// Conservative check: is `b` a branch guaranteed to diverge (panic)?
+/// Detects `panic(...)` in direct-expression and block-ending positions.
+/// Used by the if-else emitter to balance the JIT verifier's stack-height
+/// tracking at merge labels.
+let private isNeverBranch (b: ExprOrBlock) : bool =
+    let isPanic (e: Expr) =
+        match e.Kind with
+        | ECall ({ Kind = EPath { Segments = ["panic"] } }, _) -> true
+        | _ -> false
+    match b with
+    | EOBExpr e -> isPanic e
+    | EOBBlock blk ->
+        match List.tryLast blk.Statements with
+        | Some { Kind = SExpr e } -> isPanic e
+        | _ -> false
 
 let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     let il = ctx.IL
@@ -2280,6 +2303,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 typeof<bool>
         | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
         | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BLt  when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Clt); typeof<bool>
+        | BGt  when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Cgt); typeof<bool>
+        | BLte when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Cgt)
+            emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BGte when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Clt)
+            emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
         | BLt  ->
             if isUnsignedClr opTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
             typeof<bool>
@@ -2316,16 +2353,30 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             il.MarkLabel(lblEnd)
             typeof<System.Void>
         | Some elseB ->
-            let lblElse = il.DefineLabel()
-            let lblEnd  = il.DefineLabel()
+            let lblElse    = il.DefineLabel()
+            let lblEnd     = il.DefineLabel()
+            let thenIsNever = isNeverBranch thenBranch
+            let elseIsNever = isNeverBranch elseB
             il.Emit(OpCodes.Brfalse, lblElse)
             let thenTy = emitBranchValue ctx thenBranch
-            il.Emit(OpCodes.Br, lblEnd)
+            // A Never-returning branch cannot reach lblEnd.  Terminate
+            // its IL path with an unreachable throw so the JIT verifier
+            // sees a single consistent stack height at the merge label.
+            if thenIsNever then
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Throw)
+            else
+                il.Emit(OpCodes.Br, lblEnd)
             il.MarkLabel(lblElse)
             let elseTy = emitBranchValue ctx elseB
+            if elseIsNever && not thenIsNever then
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Throw)
             il.MarkLabel(lblEnd)
-            // Both branches must agree on whether they push a value.
-            if thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
+            // Result type: the non-Never branch's type.
+            if elseIsNever then thenTy
+            elif thenIsNever then elseTy
+            elif thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
                 typeof<System.Void>
             else
                 thenTy
@@ -2389,13 +2440,34 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | _ -> ()
             for (f, argExpr) in List.zip caseInfo.Fields argExprs do
                 bind f.LyricType (peekExprType ctx argExpr)
-            // Default any unbound to `obj`.
+            // Fall back to ctx.ReturnType / ctx.ExpectedType for type
+            // params not bound by any field (e.g. `T` in `Err(error=e)`
+            // where only `E` is present as a field). Without this, `T`
+            // defaults to `obj`, producing `Result_Err<obj,E>` which
+            // fails CLR invariant-generic Isinst checks at the call site.
+            let tryArgFromShape (idx: int) (shape: ClrType) =
+                if shape.IsGenericType && not shape.IsGenericTypeDefinition then
+                    let gargs = shape.GetGenericArguments()
+                    let shapeDef = shape.GetGenericTypeDefinition()
+                    if shapeDef = (info.Type :> System.Type)
+                       && idx < gargs.Length then
+                        Some gargs.[idx]
+                    else None
+                else None
             let typeArgs =
                 info.Generics
-                |> List.map (fun n ->
+                |> List.mapi (fun i n ->
                     match bindings.TryGetValue n with
                     | true, t  -> t
-                    | false, _ -> typeof<obj>)
+                    | false, _ ->
+                        let fromExpected =
+                            ctx.ExpectedType |> Option.bind (tryArgFromShape i)
+                        match fromExpected with
+                        | Some t -> t
+                        | None ->
+                            match tryArgFromShape i ctx.ReturnType with
+                            | Some t -> t
+                            | None   -> typeof<obj>)
                 |> List.toArray
             // Build the constructed parent + case + ctor refs.
             let constructedParent =
