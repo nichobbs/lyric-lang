@@ -179,10 +179,18 @@ You will use four commands constantly:
 | `lyric run <file.l>` | Compile and immediately execute |
 | `lyric test` | Run `test` and `property` declarations in `@test_module` packages |
 | `lyric fmt` | Format source code to the standard style |
+| `lyric fmt --check` | Exit 1 if the file is not formatted (CI gate) |
+| `lyric fmt --write` | Overwrite file in place |
+| `lyric lint` | Report style and quality diagnostics |
+| `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate HTML documentation from doc comments |
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
 
 `lyric fmt` is opinionated and has no configuration. The format is the format. Run it on save.
+
+One important caveat: `lyric fmt` works from the parsed AST, so **non-doc comments (`//`) are not preserved** — the lexer discards them. Doc comments (`///` and `//!`) survive because they are part of the AST.
+
+`lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`.
 
 ## Your first error message
 

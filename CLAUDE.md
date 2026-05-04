@@ -55,6 +55,24 @@ ambiguity is uncovered, fix the reference and append a decision-log entry).
 - Out-of-scope (`04`) entries can move (rejected → deferred → included),
   but require justification per the document's own protocol.
 
+### Keeping docs, book, and progress records in sync
+
+When a compiler feature ships (new CLI command, new language construct,
+changed behaviour), update **all three** of:
+
+1. **Language reference** (`docs/01-language-reference.md`) — the authoritative
+   spec section for the feature. Add flags, rules, output format, exit codes.
+2. **Book** (`book/chapters/`) — at minimum the toolchain table in
+   `01-getting-started.md` and the CLI reference in `appendix-b-quick-reference.md`.
+   Add or expand the relevant chapter if the feature is substantial.
+3. **Bootstrap progress** (`docs/10-bootstrap-progress.md`) — update the Tier
+   status for the shipped item and correct any "deferred" notes that are now stale.
+   Also update `docs/05-implementation-plan.md` if it contains planning text that
+   contradicts what actually shipped.
+
+These updates should be committed in the same PR as the feature, or in an
+immediate follow-up if the feature was merged without them.
+
 ### Style
 
 - No emojis in any file unless the user asks.
@@ -100,7 +118,11 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
   embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
   into the existing import pipeline.  `lyric prove <source.l>` runs the
-  Phase 4 verifier (M4.1 fragment).
+  Phase 4 verifier (M4.1 fragment).  `Fmt.fs` is the AST-based formatter
+  (`lyric fmt`): canonical style rules, `--write`/`--check` flags; non-doc
+  `//` comments are not preserved (lexer discards them).  `Lint.fs` is the
+  linter (`lyric lint`): five AST-only rules (L001–L005), `--error-on-warning`
+  flag, runs on non-compiling code.
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
   see `docs/15-phase-4-proof-plan.md` and the D-progress-084/085
   entries in `docs/10-bootstrap-progress.md`).  `Mode.fs` parses

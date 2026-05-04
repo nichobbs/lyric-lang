@@ -249,7 +249,7 @@ The framing for users: "use proof for the parts where it's easy, runtime checks 
 - **Self-hosted parser, type checker, mode checker, contract elaborator, monomorphizer, MSIL emitter** — all written in Lyric
 - **Bootstrap compiler retained** for emergency use, no longer the primary build path
 - **Self-hosted standard library**, including the LSP server and formatter
-- **`lyric fmt`** with the CST layer it requires. Moved here from Phase 3 (decision log entry pending) — round-trip-faithful printing needs a CST infrastructure that the bootstrap parser doesn't carry, and the CST is most valuable to the LSP / refactor tools that come online during the self-hosting port. Building the formatter twice (once over a Phase-3 stopgap, once over the CST) costs more than waiting; v1.0 ships without `lyric fmt` instead.
+- **`lyric fmt`** (CST-faithful, round-trip-preserving) with the full CST layer it requires. The bootstrap shipped an AST-based formatter (`Fmt.fs` in `Lyric.Cli`) that covers the canonical style rules and is idempotent, but does not preserve non-doc comments. The self-hosted v1.0 formatter will use a CST for full fidelity.
 
 ### Phase 5 strategy
 
