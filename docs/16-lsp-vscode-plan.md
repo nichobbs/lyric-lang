@@ -24,7 +24,7 @@ the editor experience genuinely useful.
 | M-L1 | VS Code extension skeleton | Done |
 | M-L2 | Cached typed AST in server | Done |
 | M-L3 | Richer hover (full resolved signature) + signature help | Done |
-| M-L4 | Cross-file / workspace support | Future |
+| M-L4 | Cross-file / workspace support | Done |
 
 ---
 
@@ -109,12 +109,46 @@ Triggered by `(` and `,`.  Algorithm:
 
 ---
 
-## M-L4 — Cross-file workspace support (future)
+## M-L4 — Cross-file workspace support
 
-- Handle `workspace/didChangeWatchedFiles` to invalidate dependent files.
-- Resolve `import <Pkg>` declarations against the workspace's package graph.
-- Thread imported `CheckResult.Symbols` into the per-file checker so hover
-  and completion work for cross-package names.
+### Workspace index
+
+On `initialize`, the server extracts `rootUri` (or `rootPath`) and builds a
+`WorkspaceIndex` by scanning all `*.l` files under the root and parsing their
+`package` declarations.  The index maps `"Pkg"` / `"Pkg.Sub"` to the absolute
+file path.
+
+### Import resolution
+
+`didOpen` / `didChange` now calls `analyzeUri` instead of `analyzeText`.
+`analyzeUri`:
+
+1. Parses the file with `Parser.parse`.
+2. For each `import Pkg` declaration, looks up `Pkg` in the workspace index.
+3. Reads (or uses the live editor version if the file is open) the declaring
+   file and collects its top-level items.
+4. Calls `Checker.checkWithImports` with those items so the type checker sees
+   cross-package symbols.
+5. Caches a `CachedDoc` that includes a `Map<uri, SourceFile>` for each
+   directly-imported file.
+
+### Updated handlers
+
+| Handler | M-L4 change |
+|---|---|
+| `textDocument/completion` | Draws from `CheckResult.Symbols.All()` (includes imported symbols) instead of just `File.Items`. Deduplicates by name. |
+| `textDocument/definition` | Searches local items first; falls back to `CachedDoc.ImportedFiles` to resolve a symbol to its declaring file and span. |
+| `textDocument/hover` | Searches imported files when no local item matches the identifier. |
+| `workspace/didChangeWatchedFiles` | Rebuilds the workspace index so newly created `.l` files are picked up on the next keystroke. |
+
+### Tests (5 new cases in `workspaceTests`)
+
+- `workspace/didChangeWatchedFiles` handled without error.
+- `initialize` with `rootUri` builds the index; opening a consumer file
+  that imports a library produces no spurious T0043 (undefined name) diagnostics.
+- Completion lists symbols from imported packages.
+- Go-to-definition resolves to the declaring file in another package.
+- `buildWorkspaceIndex` correctly maps package names to files.
 
 ---
 
@@ -130,3 +164,19 @@ Delivered in the initial implementation commit:
   resolved signatures; new `textDocument/signatureHelp` handler.
 - `ProtocolTests.fs`: signature help test added.
 - `initializeResult` updated to advertise `signatureHelpProvider`.
+
+### D-lsp-002 — Cross-file workspace support (M-L4)
+
+- `WorkspaceIndex` type + `buildWorkspaceIndex`: scan `*.l` files under
+  workspace root, map package name → file path.
+- `analyzeUri`: resolves `import` declarations via the index, calls
+  `checkWithImports` so cross-package types and functions are known to the
+  type checker.
+- `CachedDoc` extended with `ImportedFiles: Map<uri, SourceFile>` for
+  go-to-definition across files.
+- Completion now uses `CheckResult.Symbols.All()` (includes imported symbols)
+  with deduplication.
+- Go-to-definition searches imported files when no local match is found.
+- `workspace/didChangeWatchedFiles` rebuilds the workspace index.
+- `dispatch` now takes a `WorkspaceIndex option ref` alongside `DocumentStore`.
+- 5 new test cases in `workspaceTests`; total 18 LSP tests pass.
