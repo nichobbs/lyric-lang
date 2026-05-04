@@ -217,14 +217,26 @@ let rec translateExpr (env: Env) (e: Expr)
         let asExpr eob =
             match eob with
             | EOBExpr x   -> translateExpr env x
-            | EOBBlock _  ->
-                // Block branches are not yet supported in the M4.1
-                // expression translator; fall back to a dummy.
-                let diag =
-                    Diagnostic.warning "V0022"
-                        "block branches in contract expressions not yet supported in M4.1"
-                        e.Span
-                { Term = Term.trueT; SideConds = []; Assumed = [] }, [diag]
+            | EOBBlock blk ->
+                // Extract a single trailing expression or return value so that
+                // branches like `{ return 0 }` or `{ remaining }` translate
+                // to the actual value rather than the `true` dummy.
+                // Intermediate val/let bindings are skipped; they must already
+                // be in scope from an outer block for the result to be meaningful.
+                let rec lastExpr (stmts: Statement list) =
+                    match stmts with
+                    | [{ Kind = SExpr x }]         -> Some x
+                    | [{ Kind = SReturn(Some x) }] -> Some x
+                    | _ :: rest                    -> lastExpr rest
+                    | []                           -> None
+                match lastExpr blk.Statements with
+                | Some x -> translateExpr env x
+                | None ->
+                    let diag =
+                        Diagnostic.warning "V0022"
+                            "block branches in contract expressions not yet supported in M4.1"
+                            e.Span
+                    { Term = Term.trueT; SideConds = []; Assumed = [] }, [diag]
         let tT, tDiags = asExpr t
         let eT, eDiags =
             match eOpt with

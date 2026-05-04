@@ -572,6 +572,38 @@ let tests =
             | Discharged | Unknown _ -> ()
         }
 
+        test "if-branch block bodies translate correctly (return in each branch)" {
+            // Regression for the VCGen bug where EOBBlock branches in EIf were
+            // mapped to Term.trueT instead of their actual value.  Each branch
+            // holds `return <integer-expr>`; the VCGen must extract those values
+            // so the ite term has sort Int, not Bool.
+            let src = """
+                @proof_required
+                package P
+
+                pub func clamp(x: Int, lo: Int, hi: Int): Int
+                  requires: lo <= hi
+                  ensures:  result >= lo
+                  ensures:  result <= hi
+                {
+                  if x < lo {
+                    return lo
+                  } else if x > hi {
+                    return hi
+                  } else {
+                    return x
+                  }
+                }
+                """
+            let summary = prove src
+            // Both ensures clauses are conjoined into one $post goal.
+            Expect.equal (ProofSummary.totalCount summary) 1 "one postcondition goal"
+            for r in summary.Results do
+                match r.Outcome with
+                | Counterexample _ -> failtest "clamp should not produce a counterexample"
+                | Discharged | Unknown _ -> ()
+        }
+
         test "unknownCount and counterexampleCount partition non-discharged results" {
             // Two failing obligations of contrived shape.  The exact
             // partition between Counterexample and Unknown depends on
