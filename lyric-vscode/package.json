@@ -1,0 +1,68 @@
+{
+    "name": "lyric-lang",
+    "displayName": "Lyric",
+    "description": "Lyric language support: syntax highlighting, diagnostics, hover, completion, go-to-definition, and signature help.",
+    "version": "0.0.1",
+    "publisher": "lyric-lang",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/nichobbs/lyric-lang"
+    },
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "activationEvents": [],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "languages": [
+            {
+                "id": "lyric",
+                "aliases": ["Lyric", "lyric"],
+                "extensions": [".l"],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "lyric",
+                "scopeName": "source.lyric",
+                "path": "./syntaxes/lyric.tmLanguage.json"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "Lyric",
+            "properties": {
+                "lyric.serverPath": {
+                    "type": "string",
+                    "default": "lyric-lsp",
+                    "description": "Path to the lyric-lsp executable. Defaults to 'lyric-lsp' on $PATH. Build it with: cd compiler && dotnet publish src/Lyric.Lsp -c Release -o ../bin/lsp"
+                },
+                "lyric.trace.server": {
+                    "type": "string",
+                    "enum": ["off", "messages", "verbose"],
+                    "default": "off",
+                    "description": "Trace LSP communication between VS Code and lyric-lsp. Useful for debugging."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "node esbuild.mjs",
+        "watch": "node esbuild.mjs --watch",
+        "vscode:prepublish": "node esbuild.mjs --minify"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/vscode": "^1.85.0",
+        "esbuild": "^0.20.0",
+        "typescript": "^5.3.0"
+    }
+}

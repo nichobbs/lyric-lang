@@ -1,0 +1,151 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Lyric",
+    "scopeName": "source.lyric",
+    "fileTypes": ["l"],
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#char-literals" },
+        { "include": "#numbers" },
+        { "include": "#annotations" },
+        { "include": "#keywords-control" },
+        { "include": "#keywords-decl" },
+        { "include": "#keywords-module" },
+        { "include": "#keywords-modifier" },
+        { "include": "#keywords-mode" },
+        { "include": "#keywords-logical" },
+        { "include": "#constants" },
+        { "include": "#builtin-types" },
+        { "include": "#function-name" },
+        { "include": "#type-name" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.documentation.lyric",
+                    "match": "///.*$"
+                },
+                {
+                    "name": "comment.line.double-slash.lyric",
+                    "match": "//.*$"
+                }
+            ]
+        },
+
+        "strings": {
+            "name": "string.quoted.double.lyric",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.lyric",
+                    "match": "\\\\(n|t|r|\\\\|\"|'|0|\\{|\\}|u\\{[0-9A-Fa-f]+\\})"
+                },
+                {
+                    "name": "meta.interpolation.lyric",
+                    "begin": "\\{",
+                    "beginCaptures": {
+                        "0": { "name": "punctuation.section.interpolation.begin.lyric" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.interpolation.end.lyric" }
+                    },
+                    "patterns": [
+                        { "include": "$self" }
+                    ]
+                }
+            ]
+        },
+
+        "char-literals": {
+            "name": "string.quoted.single.lyric",
+            "match": "'(\\\\(n|t|r|\\\\|'|0|u\\{[0-9A-Fa-f]+\\})|[^'\\\\])'"
+        },
+
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.hex.lyric",
+                    "match": "\\b0[xX][0-9A-Fa-f][0-9A-Fa-f_]*\\b"
+                },
+                {
+                    "name": "constant.numeric.float.lyric",
+                    "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?[fFdD]?\\b"
+                },
+                {
+                    "name": "constant.numeric.integer.lyric",
+                    "match": "\\b[0-9][0-9_]*\\b"
+                }
+            ]
+        },
+
+        "annotations": {
+            "name": "entity.name.tag.lyric",
+            "match": "@[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+
+        "keywords-control": {
+            "name": "keyword.control.lyric",
+            "match": "\\b(if|else|match|case|for|while|loop|return|break|continue|try|catch|defer|throw|await|then|when|do|end|with)\\b"
+        },
+
+        "keywords-decl": {
+            "name": "keyword.declaration.lyric",
+            "match": "\\b(func|record|union|enum|opaque|type|alias|interface|impl|wire|const|val|var|let|extern|exposed|distinct|protected|entry|generic|scope_kind|fixture|property|test)\\b"
+        },
+
+        "keywords-module": {
+            "name": "keyword.other.lyric",
+            "match": "\\b(package|import|async|spawn|use|as|is|old|result|self|bind|ensures|requires|invariant|where|scope|scoped|singleton|forall|exists|implies|range|derives)\\b"
+        },
+
+        "keywords-modifier": {
+            "name": "storage.modifier.lyric",
+            "match": "\\b(pub|mut)\\b"
+        },
+
+        "keywords-mode": {
+            "name": "keyword.other.mode.lyric",
+            "match": "\\b(in|out|inout|ref)\\b"
+        },
+
+        "keywords-logical": {
+            "name": "keyword.operator.word.lyric",
+            "match": "\\b(and|or|not|xor)\\b"
+        },
+
+        "constants": {
+            "patterns": [
+                {
+                    "name": "constant.language.boolean.lyric",
+                    "match": "\\b(true|false)\\b"
+                },
+                {
+                    "name": "constant.language.null.lyric",
+                    "match": "\\bnull\\b"
+                }
+            ]
+        },
+
+        "builtin-types": {
+            "name": "support.type.primitive.lyric",
+            "match": "\\b(Bool|Byte|Int|Long|UInt|ULong|Nat|Float|Double|Char|String|Unit|Never|Task|List|Map|Set|Option|Result|Slice|Array)\\b"
+        },
+
+        "function-name": {
+            "match": "\\b(func)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+            "captures": {
+                "1": { "name": "keyword.declaration.lyric" },
+                "2": { "name": "entity.name.function.lyric" }
+            }
+        },
+
+        "type-name": {
+            "name": "entity.name.type.lyric",
+            "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+    }
+}
