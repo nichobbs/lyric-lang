@@ -1136,6 +1136,58 @@ in Lyric. Both docs coexist; cross-references added.
 
 ---
 
+## D039: `lyric fmt` and the CST infrastructure deferred to Phase 5
+
+**Date:** 2026-05-04.
+
+**Decision.** The `lyric fmt` formatter (and the Concrete Syntax
+Tree layer it depends on) moves from a Phase 3 / v1.0 deliverable
+to a Phase 5 deliverable. v1.0 ships without `lyric fmt`.
+
+**Context.** `05-implementation-plan.md` listed `Formatter
+(lyric fmt)` as a Phase 3 v1.0 deliverable and assigned it to
+M3.3 alongside LSP and the doc generator. The C7 decision in
+`12-todo-plan.md` (D-progress-029) already deferred `lyric fmt` to
+Tier 6 because a round-trip-faithful printer needs a CST layer the
+bootstrap parser doesn't carry, and the CST is a multi-week
+project that pays off most when the LSP and refactor tools want
+token-position-faithful traversal. Holding the formatter at v1.0
+priority while shipping it Tier-6 was a contradiction.
+
+**Why Phase 5 specifically.** The self-hosting port (Phase 5)
+re-implements the lexer and parser in Lyric. Building the CST
+into the *self-hosted* parser from day one is cheaper than
+retrofitting it into the bootstrap parser and then porting both
+pieces. The LSP / refactor tools that the CST primarily benefits
+also live on the self-hosted side. Phase 5 already lists "LSP and
+formatter" as part of M5.3 (`05-implementation-plan.md` §"Phase
+5"); D039 makes the formatter half of that line authoritative.
+
+**Consequence.** v1.0 release criteria no longer block on
+`lyric fmt`. The Phase 3 testing budget of "~1000+ tests (LSP,
+formatter, wire all get extensive coverage)" drops `formatter`.
+Users who need formatting in v1.0..v1.x rely on community
+conventions; no first-party tool. Tracked as Phase 5 / Tier 6 in
+`12-todo-plan.md` (entry 11) and as M5.3 in
+`05-implementation-plan.md`.
+
+**Alternatives considered.**
+
+- **Ship a stopgap line-based formatter without CST.** Rejected:
+  building the formatter twice costs more than waiting, and a
+  stopgap that loses comments / blank lines is worse than no
+  formatter (users would distrust both the tool and the canonical
+  style it produces).
+- **Build the CST during Phase 3 to keep the formatter at v1.0.**
+  Rejected: 1500-2500 LOC of plumbing across the lexer, parser,
+  and every AST consumer (per D-progress-029) competes with the
+  Phase 4 proof-system push for the same maintainers' time and
+  doesn't unblock anything else on the v1.0 critical path.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

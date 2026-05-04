@@ -184,7 +184,6 @@ Hand-written in Phase-1-Lyric, very minimal:
 - **Property-based testing** built in
 - **Snapshot testing** built in
 - **LSP server** with code completion, go-to-definition, hover, diagnostics
-- **Formatter** (`lyric fmt`)
 - **Package manager** (`lyric` CLI handling dependencies, `lyric.toml`)
 - **`lyric doc`** documentation generator
 - **`lyric public-api-diff`** for SemVer enforcement
@@ -201,7 +200,7 @@ Hand-written in Phase-1-Lyric, very minimal:
 
 1. **M3.1 (month 27-30):** `protected type` and structured scopes
 2. **M3.2 (month 30-33):** Wire blocks
-3. **M3.3 (month 33-36):** LSP, formatter, doc generator
+3. **M3.3 (month 33-36):** LSP, doc generator
 4. **M3.4 (month 36-39):** Package manager, polish, v1.0 release
 
 ### Exit criteria for Phase 3 / v1.0
@@ -250,6 +249,7 @@ The framing for users: "use proof for the parts where it's easy, runtime checks 
 - **Self-hosted parser, type checker, mode checker, contract elaborator, monomorphizer, MSIL emitter** — all written in Lyric
 - **Bootstrap compiler retained** for emergency use, no longer the primary build path
 - **Self-hosted standard library**, including the LSP server and formatter
+- **`lyric fmt`** with the CST layer it requires. Moved here from Phase 3 (decision log entry pending) — round-trip-faithful printing needs a CST infrastructure that the bootstrap parser doesn't carry, and the CST is most valuable to the LSP / refactor tools that come online during the self-hosting port. Building the formatter twice (once over a Phase-3 stopgap, once over the CST) costs more than waiting; v1.0 ships without `lyric fmt` instead.
 
 ### Phase 5 strategy
 
@@ -300,7 +300,7 @@ Documentation work runs continuously, not as a phase. Each milestone ships docs.
 The compiler has its own test suite, sized by phase:
 - Phase 1: ~200 end-to-end test programs (compile and run, check output)
 - Phase 2: ~500 (each new feature gets ~20 tests)
-- Phase 3: ~1000+ (LSP, formatter, wire all get extensive coverage)
+- Phase 3: ~1000+ (LSP, wire all get extensive coverage)
 - Phase 4: ~500 verification-specific tests, including the formal-methods-style soundness checks
 - Phase 5: the self-hosted compiler is tested by being able to build itself plus the standard library plus the test suite
 
