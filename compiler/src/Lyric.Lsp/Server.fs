@@ -8,9 +8,23 @@
 /// Capabilities exposed in `initialize`:
 ///   - textDocumentSync: Full (we keep a full string copy per buffer)
 ///   - hoverProvider:    true  (full resolved signature for functions)
-///   - completionProvider: true (all top-level names in the file)
-///   - definitionProvider: true (go-to-definition for top-level names)
+///   - completionProvider: true (all top-level names, including imports)
+///   - definitionProvider: true (go-to-definition, including imported files)
 ///   - signatureHelpProvider: true (triggered by '(' and ',')
+///
+/// M-L4 — cross-file workspace support:
+///   - On `initialize`, the workspace root is extracted and a
+///     `WorkspaceIndex` (package-name → file-path) is built by scanning
+///     all *.l files under the root.
+///   - `import Pkg` declarations are resolved against the index;
+///     the imported file's items are passed to `checkWithImports` so
+///     the type checker sees the full cross-file symbol table.
+///   - Completion draws from `CheckResult.Symbols` (which includes
+///     imported symbols) rather than just the local AST items.
+///   - Go-to-definition searches imported files when no local match is
+///     found.
+///   - `workspace/didChangeWatchedFiles` rebuilds the index so newly
+///     created files are discovered on the next keystroke.
 module Lyric.Lsp.Server
 
 open System
@@ -24,12 +38,52 @@ open Lyric.TypeChecker.Checker
 open Lyric.Lsp.JsonRpc
 
 // ---------------------------------------------------------------------------
+// Workspace index — maps package name to file path.
+// ---------------------------------------------------------------------------
+
+type WorkspaceIndex =
+    { Root:          string
+      /// "Pkg" or "Pkg.Sub" → absolute file path of the declaring .l file.
+      PackageToFile: Map<string, string> }
+
+/// Convert an LSP `file://` URI to an absolute file-system path.
+let private uriToPath (uri: string) : string option =
+    try Some (Uri(uri).LocalPath)
+    with _ -> None
+
+/// Convert an absolute file-system path to an LSP `file://` URI.
+let private pathToUri (path: string) : string =
+    try Uri(path).AbsoluteUri
+    with _ -> "file://" + path.Replace('\\', '/')
+
+/// Scan every *.l file under `root`, parse its package declaration, and
+/// build the package-name → file-path map.  Files that fail to parse are
+/// silently skipped so a broken file never crashes the whole index.
+let buildWorkspaceIndex (root: string) : WorkspaceIndex =
+    let mutable m = Map.empty
+    try
+        let files = Directory.GetFiles(root, "*.l", SearchOption.AllDirectories)
+        for filePath in files do
+            try
+                let text = File.ReadAllText filePath
+                let parsed = Parser.parse text
+                let key = String.concat "." parsed.File.Package.Path.Segments
+                if key <> "" then
+                    m <- Map.add key filePath m
+            with _ -> ()
+    with _ -> ()
+    { Root = root; PackageToFile = m }
+
+// ---------------------------------------------------------------------------
 // Document store — caches the full analysis result per URI.
 // ---------------------------------------------------------------------------
 
 type CachedDoc =
-    { Source:      string
-      CheckResult: CheckResult }
+    { Source:        string
+      CheckResult:   CheckResult
+      /// URI → SourceFile for each directly-imported package.  Used by
+      /// go-to-definition to resolve symbols declared in other files.
+      ImportedFiles: Map<string, Lyric.Parser.Ast.SourceFile> }
 
 type DocumentStore() =
     let docs = Dictionary<string, CachedDoc>()
@@ -39,24 +93,72 @@ type DocumentStore() =
         match docs.TryGetValue uri with
         | true, d -> Some d
         | _       -> None
+    member _.AllUris() : string seq =
+        seq { for kvp in docs do yield kvp.Key }
+
+// ---------------------------------------------------------------------------
+// Import resolution — discover items from other workspace files.
+// ---------------------------------------------------------------------------
+
+/// For each `import Pkg` in `file`, look up the package in `wsIdx`, parse
+/// (or read from the doc store if already open), and collect its top-level
+/// items for passing to `checkWithImports`.
+///
+/// Also returns a map of URI → SourceFile for cross-file go-to-definition.
+let private resolveImportedItems
+        (wsIdx: WorkspaceIndex option)
+        (store: DocumentStore)
+        (file:  Lyric.Parser.Ast.SourceFile)
+        : Lyric.Parser.Ast.Item list * Map<string, Lyric.Parser.Ast.SourceFile> =
+    match wsIdx with
+    | None -> [], Map.empty
+    | Some idx ->
+        let mutable items : Lyric.Parser.Ast.Item list = []
+        let mutable importedFiles = Map.empty
+        for importDecl in file.Imports do
+            let pkgKey = String.concat "." importDecl.Path.Segments
+            match Map.tryFind pkgKey idx.PackageToFile with
+            | None -> ()
+            | Some filePath ->
+                let fileUri = pathToUri filePath
+                let srcFileOpt =
+                    // Prefer the editor's live version if the file is open.
+                    match store.TryGet fileUri with
+                    | Some doc -> Some doc.CheckResult.File
+                    | None ->
+                        try
+                            let text = File.ReadAllText filePath
+                            let parsed = Parser.parse text
+                            Some parsed.File
+                        with _ -> None
+                match srcFileOpt with
+                | None -> ()
+                | Some sf ->
+                    items <- items @ sf.Items
+                    importedFiles <- Map.add fileUri sf importedFiles
+        items, importedFiles
 
 // ---------------------------------------------------------------------------
 // Analysis helpers.
 // ---------------------------------------------------------------------------
 
-/// Run lex → parse → type-check on `text`.  Returns all diagnostics
-/// together with the cached CheckResult for subsequent LSP lookups.
-let analyzeText (text: string) : Diagnostic list * CheckResult =
-    let parsed   = Parser.parse text
-    let checked' = Lyric.TypeChecker.Checker.check parsed.File
-    parsed.Diagnostics @ checked'.Diagnostics, checked'
+/// Run lex → parse → resolve-imports → type-check on `text`.
+/// Returns all diagnostics, the full CheckResult, and a map of imported
+/// files for go-to-definition.
+let analyzeUri
+        (text:   string)
+        (wsIdx:  WorkspaceIndex option)
+        (store:  DocumentStore)
+        : Diagnostic list * CheckResult * Map<string, Lyric.Parser.Ast.SourceFile> =
+    let parsed = Parser.parse text
+    let importedItems, importedFiles = resolveImportedItems wsIdx store parsed.File
+    let checked' = Checker.checkWithImports parsed.File importedItems
+    parsed.Diagnostics @ checked'.Diagnostics, checked', importedFiles
 
 // ---------------------------------------------------------------------------
 // Type / signature rendering helpers.
 // ---------------------------------------------------------------------------
 
-/// Build a reverse map from TypeId → declared name using the symbol table
-/// so that `TyUser` entries display as `Account` instead of `<#3>`.
 let private buildTypeNames (cr: CheckResult) : Map<int, string> =
     cr.Symbols.All()
     |> Seq.choose (fun sym ->
@@ -92,16 +194,14 @@ let private renderMode (mode: Lyric.Parser.Ast.ParamMode) =
     | Lyric.Parser.Ast.PMOut   -> "out"
     | Lyric.Parser.Ast.PMInout -> "inout"
 
-/// Render a full resolved function signature as a one-liner, e.g.:
-///   `pub async func transfer[T](from: in Account, to: in Account, amount: in T): Bool`
 let private renderFullSig
-        (name:       string)
-        (vis:        Lyric.Parser.Ast.Visibility option)
-        (sg:         ResolvedSignature)
-        (typeNames:  Map<int, string>) : string =
-    let visStr    = match vis with Some _ -> "pub " | None -> ""
-    let asyncStr  = if sg.IsAsync then "async " else ""
-    let generics  =
+        (name:      string)
+        (vis:       Lyric.Parser.Ast.Visibility option)
+        (sg:        ResolvedSignature)
+        (typeNames: Map<int, string>) : string =
+    let visStr   = match vis with Some _ -> "pub " | None -> ""
+    let asyncStr = if sg.IsAsync then "async " else ""
+    let generics =
         if sg.Generics.IsEmpty then ""
         else "[" + String.concat ", " sg.Generics + "]"
     let paramsStr =
@@ -109,15 +209,45 @@ let private renderFullSig
         |> List.map (fun p ->
             sprintf "%s %s: %s" (renderMode p.Mode) p.Name (renderType typeNames p.Type))
         |> String.concat ", "
-    let retStr    = renderType typeNames sg.Return
+    let retStr = renderType typeNames sg.Return
     sprintf "%s%sfunc %s%s(%s): %s" visStr asyncStr name generics paramsStr retStr
+
+// ---------------------------------------------------------------------------
+// Symbol → completion item helpers.
+// ---------------------------------------------------------------------------
+
+/// Map a Symbol to (CompletionItemKind code, detail string).
+let private symbolKindAndDetail (sym: Symbol) : int * string =
+    let vis = match sym.Visibility with Some _ -> "pub " | None -> ""
+    match sym.Kind with
+    | DKFunc fn ->
+        let a = if fn.IsAsync then "async " else ""
+        3, sprintf "%s%sfunc %s(...)" vis a sym.Name
+    | DKRecord _
+    | DKExposedRec _   -> 22, sprintf "%srecord %s"          vis sym.Name
+    | DKUnion _        ->  7, sprintf "%sunion %s"           vis sym.Name
+    | DKEnum _         -> 13, sprintf "%senum %s"            vis sym.Name
+    | DKOpaque _       -> 22, sprintf "%sopaque type %s"     vis sym.Name
+    | DKProtected _    -> 22, sprintf "%sprotected type %s"  vis sym.Name
+    | DKDistinctType _ -> 22, sprintf "%sdistinct type %s"   vis sym.Name
+    | DKTypeAlias _    ->  7, sprintf "%salias %s"           vis sym.Name
+    | DKInterface _    ->  8, sprintf "%sinterface %s"       vis sym.Name
+    | DKConst _        -> 21, sprintf "%sconst %s"           vis sym.Name
+    | DKVal _          ->  6, sprintf "val %s"                   sym.Name
+    | DKExternType _   ->  7, sprintf "extern type %s"           sym.Name
+    | DKWire _         ->  1, sprintf "wire %s"                  sym.Name
+    | DKExtern _       ->  9, sprintf "import %s"                sym.Name
+    | DKScopeKind _
+    | DKTest _
+    | DKProperty _
+    | DKFixture _      ->  1, sym.Name
+    | DKUnionCase(_, uc) -> 20, sprintf "case %s" uc.Name
+    | DKEnumCase(_, ec)  -> 20, sprintf "case %s" ec.Name
 
 // ---------------------------------------------------------------------------
 // Position / offset helpers.
 // ---------------------------------------------------------------------------
 
-/// Convert a Lyric `Position` (1-based line/col) to LSP's 0-based shape.
-/// LSP columns are UTF-16 code units; for ASCII they match.
 let private toLspPosition (p: Position) : JsonNode =
     let o = JsonObject()
     o.["line"]      <- JsonValue.Create(p.Line - 1)
@@ -142,7 +272,6 @@ let private toLspDiagnostic (d: Diagnostic) : JsonNode =
     o.["message"] <- JsonValue.Create d.Message
     o :> JsonNode
 
-/// Convert a 1-based Lyric line/col to a 0-based flat offset in `text`.
 let private posToOffset (text: string) (line: int) (col: int) : int =
     let lines = text.Split('\n')
     let lineIdx = line - 1
@@ -151,10 +280,9 @@ let private posToOffset (text: string) (line: int) (col: int) : int =
         let baseOffset =
             lines
             |> Array.take lineIdx
-            |> Array.sumBy (fun l -> l.Length + 1) // +1 for the '\n'
+            |> Array.sumBy (fun l -> l.Length + 1)
         baseOffset + min (col - 1) lines.[lineIdx].Length
 
-/// Convert a 0-based flat offset to a 1-based Lyric Position.
 let private lspToLyric (line: int) (character: int) : Position =
     { Line = line + 1; Column = character + 1; Offset = 0 }
 
@@ -170,7 +298,6 @@ let private posInSpan (p: Position) (s: Span) : bool =
 
 let private isIdChar (c: char) = Char.IsLetterOrDigit c || c = '_'
 
-/// Find the identifier token that covers `pos` in `text`, or None.
 let private identifierAt (text: string) (pos: Position) : (string * Span) option =
     let lines = text.Split('\n')
     if pos.Line < 1 || pos.Line > lines.Length then None
@@ -195,27 +322,21 @@ let private identifierAt (text: string) (pos: Position) : (string * Span) option
                           End   = { Line = pos.Line; Column = endCol + 1;   Offset = 0 } }
                     Some (ident, span)
 
-/// Scan backward from `offset` to find the innermost unclosed `(`.
-/// Returns `(funcName, activeParamIndex)` if a call site is found.
-///
-/// Skips string literals approximately (good enough for the bootstrap).
 let private findCallContext (text: string) (offset: int) : (string * int) option =
     if offset <= 0 then None
     else
-        // Phase 1: scan backward to find the matching unclosed '('.
-        let mutable i      = offset - 1
-        let mutable depth  = 0
-        let mutable found  = -1
+        let mutable i     = offset - 1
+        let mutable depth = 0
+        let mutable found = -1
         while i >= 0 && found = -1 do
             match text.[i] with
-            | ')' | ']' -> depth <- depth + 1;     i <- i - 1
+            | ')' | ']' -> depth <- depth + 1; i <- i - 1
             | '(' | '[' ->
                 if depth = 0 then found <- i
                 else depth <- depth - 1; i <- i - 1
             | _ -> i <- i - 1
         if found < 0 then None
         else
-            // Phase 2: find the identifier immediately before the '('.
             let mutable j = found - 1
             while j >= 0 && (text.[j] = ' ' || text.[j] = '\t') do
                 j <- j - 1
@@ -227,7 +348,6 @@ let private findCallContext (text: string) (offset: int) : (string * int) option
                 let funcName = text.Substring(j + 1, endJ - (j + 1))
                 if funcName = "" || Char.IsDigit funcName.[0] then None
                 else
-                    // Phase 3: count commas at depth 0 between '(' and cursor.
                     let mutable k        = found + 1
                     let mutable nest     = 0
                     let mutable paramIdx = 0
@@ -241,7 +361,7 @@ let private findCallContext (text: string) (offset: int) : (string * int) option
                     Some (funcName, paramIdx)
 
 // ---------------------------------------------------------------------------
-// AST item helpers (for hover / completion).
+// AST item helpers.
 // ---------------------------------------------------------------------------
 
 let private itemSummary (it: Lyric.Parser.Ast.Item) : string =
@@ -305,13 +425,11 @@ let private publishDiagnostics
     let msg = mkNotification "textDocument/publishDiagnostics" (p :> JsonNode)
     writeMessage output msg
 
-/// `initialize` reply — the static capabilities table the client uses
-/// to decide which subsequent requests to send.
 let private initializeResult () : JsonNode =
     let caps = JsonObject()
     let sync = JsonObject()
     sync.["openClose"] <- JsonValue.Create true
-    sync.["change"]    <- JsonValue.Create 1  // 1 = Full sync.
+    sync.["change"]    <- JsonValue.Create 1
     caps.["textDocumentSync"] <- sync :> JsonNode
     caps.["hoverProvider"]    <- JsonValue.Create true
     let completion = JsonObject()
@@ -321,7 +439,6 @@ let private initializeResult () : JsonNode =
     completion.["triggerCharacters"] <- triggerChars :> JsonNode
     caps.["completionProvider"] <- completion :> JsonNode
     caps.["definitionProvider"] <- JsonValue.Create true
-    // D-lsp-001: signature help triggered by '(' and ','.
     let sigHelp = JsonObject()
     let sigTriggers = JsonArray()
     sigTriggers.Add(JsonValue.Create "(")
@@ -340,7 +457,7 @@ let private initializeResult () : JsonNode =
     r :> JsonNode
 
 // ---------------------------------------------------------------------------
-// JSON utility helpers (keep them local so they don't leak into public API).
+// JSON utility helpers.
 // ---------------------------------------------------------------------------
 
 let private tryGetProperty (o: JsonObject) (name: string) : JsonNode | null =
@@ -370,9 +487,10 @@ let private asInt (n: JsonNode | null) : int =
 // ---------------------------------------------------------------------------
 
 /// Dispatch one inbound LSP message.  Returns `false` when the client
-/// has signalled `exit`, telling the main loop to drop out cleanly.
+/// has signalled `exit`.
 let dispatch
         (store:  DocumentStore)
+        (wsIdx:  WorkspaceIndex option ref)
         (output: Stream)
         (msg:    JsonNode) : bool =
     let methodNode =
@@ -389,6 +507,17 @@ let dispatch
 
     | "initialize" ->
         writeMessage output (mkResponse id (initializeResult ()))
+        // Extract workspace root and build the package index.
+        let rootUri  = asStr (nodeAt params' "rootUri")
+        let rootPath = asStr (nodeAt params' "rootPath")
+        let workspaceRoot =
+            if rootUri <> "" then uriToPath rootUri
+            elif rootPath <> "" then Some rootPath
+            else None
+        match workspaceRoot with
+        | Some root when Directory.Exists root ->
+            wsIdx.Value <- Some (buildWorkspaceIndex root)
+        | _ -> ()
         true
 
     | "initialized" ->
@@ -411,8 +540,8 @@ let dispatch
         let text = asStr (nodeAt td "text")
         if uri <> "" then
             try
-                let diags, cr = analyzeText text
-                store.Set(uri, { Source = text; CheckResult = cr })
+                let diags, cr, importedFiles = analyzeUri text wsIdx.Value store
+                store.Set(uri, { Source = text; CheckResult = cr; ImportedFiles = importedFiles })
                 publishDiagnostics output uri diags
             with _ -> ()
         true
@@ -428,8 +557,8 @@ let dispatch
             | _ -> ""
         if uri <> "" && newText <> "" then
             try
-                let diags, cr = analyzeText newText
-                store.Set(uri, { Source = newText; CheckResult = cr })
+                let diags, cr, importedFiles = analyzeUri newText wsIdx.Value store
+                store.Set(uri, { Source = newText; CheckResult = cr; ImportedFiles = importedFiles })
                 publishDiagnostics output uri diags
             with _ -> ()
         true
@@ -444,7 +573,20 @@ let dispatch
         true
 
     // -----------------------------------------------------------------------
-    // Hover — full resolved signature for functions, summary for other items.
+    // Workspace file-change events — rebuild the index so new .l files are
+    // discovered, but don't force-re-analyse open documents; they'll get
+    // fresh analysis on their next edit.
+    // -----------------------------------------------------------------------
+
+    | "workspace/didChangeWatchedFiles" ->
+        match wsIdx.Value with
+        | Some idx ->
+            wsIdx.Value <- Some (buildWorkspaceIndex idx.Root)
+        | None -> ()
+        true
+
+    // -----------------------------------------------------------------------
+    // Hover — full resolved signature for functions, summary for others.
     // -----------------------------------------------------------------------
 
     | "textDocument/hover" ->
@@ -462,12 +604,15 @@ let dispatch
                 | None -> JsonObject() :> JsonNode
                 | Some (ident, span) ->
                     let cr = doc.CheckResult
+                    // Search local items first, then imported files.
                     let matchItem =
                         cr.File.Items
-                        |> List.tryFind (fun it ->
-                            match itemName it with
-                            | Some n -> n = ident
-                            | None   -> false)
+                        |> List.tryFind (fun it -> itemName it = Some ident)
+                        |> Option.orElseWith (fun () ->
+                            doc.ImportedFiles
+                            |> Map.toSeq
+                            |> Seq.tryPick (fun (_, sf) ->
+                                sf.Items |> List.tryFind (fun it -> itemName it = Some ident)))
                     match matchItem with
                     | None -> JsonObject() :> JsonNode
                     | Some it ->
@@ -475,7 +620,6 @@ let dispatch
                         let summary =
                             match it.Kind with
                             | Lyric.Parser.Ast.IFunc fn ->
-                                // Prefer the resolved signature over the raw AST summary.
                                 let arityKey = fn.Name + "/" + string fn.Params.Length
                                 let sgOpt =
                                     match Map.tryFind arityKey cr.Signatures with
@@ -501,7 +645,8 @@ let dispatch
         true
 
     // -----------------------------------------------------------------------
-    // Completion — all top-level items in the file.
+    // Completion — all symbols in the type-checked symbol table (local +
+    // imported), deduplicated by name.
     // -----------------------------------------------------------------------
 
     | "textDocument/completion" ->
@@ -511,34 +656,23 @@ let dispatch
             match store.TryGet uri with
             | None -> JsonArray() :> JsonNode
             | Some doc ->
-                let items = JsonArray()
-                for it in doc.CheckResult.File.Items do
-                    match itemName it with
-                    | Some n ->
+                let items  = JsonArray()
+                let seen   = System.Collections.Generic.HashSet<string>()
+                for sym in doc.CheckResult.Symbols.All() do
+                    // Skip internal entries (union/enum cases listed separately if desired).
+                    if seen.Add(sym.Name) then
+                        let (kindCode, detail) = symbolKindAndDetail sym
                         let entry = JsonObject()
-                        entry.["label"] <- JsonValue.Create n
-                        let kindCode =
-                            match it.Kind with
-                            | Lyric.Parser.Ast.IFunc _       -> 3   // Function
-                            | Lyric.Parser.Ast.IRecord _
-                            | Lyric.Parser.Ast.IExposedRec _ -> 22  // Struct
-                            | Lyric.Parser.Ast.IUnion _      -> 7   // Class
-                            | Lyric.Parser.Ast.IEnum _       -> 13  // Enum
-                            | Lyric.Parser.Ast.IOpaque _     -> 22  // Struct
-                            | Lyric.Parser.Ast.IInterface _  -> 8   // Interface
-                            | Lyric.Parser.Ast.IConst _      -> 21  // Constant
-                            | Lyric.Parser.Ast.IExternType _ -> 7
-                            | _                              -> 1
+                        entry.["label"]  <- JsonValue.Create sym.Name
                         entry.["kind"]   <- JsonValue.Create kindCode
-                        entry.["detail"] <- JsonValue.Create (itemSummary it)
+                        entry.["detail"] <- JsonValue.Create detail
                         items.Add entry
-                    | None -> ()
                 items :> JsonNode
         writeMessage output (mkResponse id result)
         true
 
     // -----------------------------------------------------------------------
-    // Go-to-definition — top-level item declarations.
+    // Go-to-definition — local items first, then imported files.
     // -----------------------------------------------------------------------
 
     | "textDocument/definition" ->
@@ -555,24 +689,33 @@ let dispatch
                 match identifierAt doc.Source p with
                 | None -> JsonArray() :> JsonNode
                 | Some (ident, _) ->
-                    let matchItem =
+                    // Local match → current file.
+                    let localMatch =
                         doc.CheckResult.File.Items
-                        |> List.tryFind (fun it ->
-                            match itemName it with
-                            | Some n -> n = ident
-                            | None   -> false)
-                    match matchItem with
+                        |> List.tryFind (fun it -> itemName it = Some ident)
+                        |> Option.map (fun it -> uri, it.Span)
+                    // Imported match → the declaring file.
+                    let importedMatch =
+                        if localMatch.IsSome then None
+                        else
+                            doc.ImportedFiles
+                            |> Map.toSeq
+                            |> Seq.tryPick (fun (importUri, sf) ->
+                                sf.Items
+                                |> List.tryFind (fun it -> itemName it = Some ident)
+                                |> Option.map (fun it -> importUri, it.Span))
+                    match localMatch |> Option.orElse importedMatch with
                     | None -> JsonArray() :> JsonNode
-                    | Some it ->
+                    | Some (targetUri, span) ->
                         let loc = JsonObject()
-                        loc.["uri"]   <- JsonValue.Create uri
-                        loc.["range"] <- toLspRange it.Span
+                        loc.["uri"]   <- JsonValue.Create targetUri
+                        loc.["range"] <- toLspRange span
                         loc :> JsonNode
         writeMessage output (mkResponse id result)
         true
 
     // -----------------------------------------------------------------------
-    // Signature help — triggered by '(' and ','.
+    // Signature help.
     // -----------------------------------------------------------------------
 
     | "textDocument/signatureHelp" ->
@@ -590,12 +733,10 @@ let dispatch
                 | None -> JsonObject() :> JsonNode
                 | Some (funcName, activeParam) ->
                     let cr = doc.CheckResult
-                    // Try arity-qualified key first, then bare name.
                     let sgOpt =
                         cr.Signatures
                         |> Map.toSeq
                         |> Seq.tryPick (fun (k, sg) ->
-                            // Accept any key that starts with `funcName` (bare or arity).
                             if k = funcName || k.StartsWith(funcName + "/") then Some sg
                             else None)
                     match sgOpt with
@@ -618,7 +759,6 @@ let dispatch
                                 asyncStr funcName generics
                                 (String.concat ", " paramLabels)
                                 (renderType typeNames sg.Return)
-                        // Build per-parameter sub-labels for highlighting.
                         let paramsArr = JsonArray()
                         for pl in paramLabels do
                             let pm = JsonObject()
@@ -639,11 +779,6 @@ let dispatch
         writeMessage output (mkResponse id result)
         true
 
-    // -----------------------------------------------------------------------
-    // Catch-all — method-not-found for unhandled requests; silent for
-    // notifications (no id).
-    // -----------------------------------------------------------------------
-
     | _ when not (isNull id) ->
         writeMessage output (mkErrorResponse id -32601 (sprintf "method not found: %s" method'))
         true
@@ -652,14 +787,15 @@ let dispatch
         true
 
 let runLoop (input: Stream) (output: Stream) : unit =
-    let store = DocumentStore()
+    let store  = DocumentStore()
+    let wsIdx  = ref None
     let mutable keepRunning = true
     while keepRunning do
         match readMessage input with
         | None -> keepRunning <- false
         | Some msg ->
             try
-                if not (dispatch store output msg) then
+                if not (dispatch store wsIdx output msg) then
                     keepRunning <- false
             with _ ->
                 eprintfn "lyric-lsp: dispatch error"
