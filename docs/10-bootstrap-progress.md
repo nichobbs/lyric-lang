@@ -139,6 +139,51 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 
 ## Active session decisions
 
+### D-progress-092: barrier-wait timeout removed — Ada-orthodox infinite wait
+
+*claude/remove-barrier-timeout-eOJER branch.*  Resolves the
+barrier-wait timeout sub-question from Q008 by adopting the
+Ada-orthodox stance: `entry … when …` barriers wait **forever**
+until another thread makes the condition true.
+
+**Emitter change.**  `monitorWaitMI` now resolves
+`Monitor.Wait(object)` (void return, no timeout) instead of
+`Monitor.Wait(object, int)`.  The `barrierWaitTimeoutMs` constant
+and the entire timeout-branch IL sequence (load int, call, Brfalse
+to a throw block) are removed.  The wait sub-block shrinks to three
+opcodes:
+
+```
+L_wait:
+  ldarg.0
+  ldfld  <>__lock
+  call   Monitor.Wait(object)   // void — blocks until PulseAll
+  br     L_check
+```
+
+**Test changes.**  `pt_when_barrier_throws_when_false` (which relied
+on the 1 s timeout to surface a `LyricAssertionException`) is
+removed from the table-driven cases.  A new standalone test
+`[barrier_wait_hangs_forever_single_threaded]` compiles the same
+single-threaded `Bag` program, runs it in a child `dotnet exec`
+process, and asserts that `Process.WaitForExit(2000)` returns
+`false` (the process did **not** exit — it is correctly blocked on
+the barrier).  The existing
+`[barrier_wait_wakes_on_state_change]` test is unaffected.
+
+**Spec update.** `docs/09-msil-emission.md` §17.3 now shows the
+three-opcode wait block and explains the Ada infinite-wait
+guarantee.  §17.4 (formerly "Concurrent `func`") is retitled to
+"Lock-flavour selection" and documents the full tri-modal table.
+The Q008 / Q009 rows in the cross-reference table are updated.
+
+**Future work.** Honouring `CancellationToken` in barrier waiters
+requires replacing `Monitor` with a `Lock` + `SemaphoreSlim` pair
+(or `SemaphoreSlim` + `ManualResetEventSlim`) that supports
+`WaitAsync(CancellationToken)`.  That is ~200–400 LOC in the emitter
+(a fourth row in the lock-flavour table), plus test-harness changes
+to inject a deadline token.  Deferred to Phase 2 / Phase C scope.
+
 ### D-progress-091: Phase 4 verifier — M4.2 close-out
 
 *claude/close-m4.2-milestone-kLOj5 branch.* Lands the three remaining

@@ -999,7 +999,7 @@ let private semaphoreReleaseMI : Lazy<MethodInfo> =
 /// Static cache of `System.Threading.Monitor` lookups — used as the
 /// single-lock primitive for protected types that declare `when:`
 /// barriers (D-progress-087).  The barrier wrapper threads through
-/// `Monitor.Enter` / `Monitor.Wait(obj, int)` / `Monitor.PulseAll` /
+/// `Monitor.Enter` / `Monitor.Wait(obj)` / `Monitor.PulseAll` /
 /// `Monitor.Exit` so blocked callers wake on state change and re-
 /// evaluate their barriers.
 let private monitorTy : System.Type = typeof<System.Threading.Monitor>
@@ -1022,30 +1022,19 @@ let private monitorPulseAllMI : Lazy<MethodInfo> =
         | Some m -> m
         | None -> failwith "BCL: Monitor.PulseAll(object) not found")
 
-/// `Monitor.Wait(object, int millisecondsTimeout)`.  The bootstrap
-/// uses a finite timeout so a single-threaded program calling an
-/// entry whose barrier never resolves throws an
-/// `LyricAssertionException` instead of deadlocking the test suite.
-/// The Ada language semantics specify infinite waits; the bootstrap
-/// timeout is a `06-open-questions.md` Q008 follow-up tracked under
-/// D-progress-087.
+/// `Monitor.Wait(object)` — blocks the caller (releasing the lock)
+/// until another thread calls `Monitor.Pulse`/`PulseAll` on the same
+/// object, then re-acquires the lock and returns `true`.  The bool
+/// return value is discarded at each call site; we always re-evaluate
+/// the barrier after waking (spurious wakeups are safe).  Ada
+/// specifies infinite waits for `entry … when …` barriers; the
+/// caller is responsible for ensuring progress (D-progress-092).
 let private monitorWaitMI : Lazy<MethodInfo> =
     lazy (
         match Option.ofObj
-                (monitorTy.GetMethod("Wait", [| typeof<obj>; typeof<int> |])) with
+                (monitorTy.GetMethod("Wait", [| typeof<obj> |])) with
         | Some m -> m
-        | None -> failwith "BCL: Monitor.Wait(object, int) not found")
-
-/// Bootstrap-grade barrier-wait timeout in milliseconds.  Long enough
-/// for multi-threaded tests where one task satisfies the barrier after
-/// a brief delay (give the OS scheduler some slack); short enough for
-/// single-threaded "barrier never resolves" cases to surface as a
-/// runtime exception rather than a deadlock.  Tracked under
-/// `06-open-questions.md` Q008 — Ada specifies infinite waits; the
-/// finite timeout is a bootstrap concession to keep test suites
-/// terminating.
-[<Literal>]
-let private barrierWaitTimeoutMs = 1000
+        | None -> failwith "BCL: Monitor.Wait(object) not found")
 
 /// Stash collected during Pass A so Pass B can emit each entry/func's
 /// body wrapped in the lock + barrier + invariant scaffolding.
@@ -4054,11 +4043,9 @@ let private emitAssembly
             // Barriers (`when: <cond>` clauses):
             //   * `PLMonitor`: emit a wait-loop that re-evaluates each
             //     barrier under the held Monitor; on false, calls
-            //     `Monitor.Wait(lock, timeoutMs)` and re-checks when
-            //     signalled.  Timeout returns false → throw a barrier
-            //     diagnostic so a single-threaded program with a
-            //     barrier that never resolves fails loudly instead of
-            //     deadlocking the test suite.  D-progress-087.
+            //     `Monitor.Wait(lock)` (infinite — Ada semantics) and
+            //     re-checks when signalled via PulseAll.
+            //     D-progress-087, D-progress-092.
             //   * Other flavours: barriers can't appear (lock-flavour
             //     selection routes any barrier-bearing type to
             //     `PLMonitor`), so the loop is unused.
@@ -4067,7 +4054,6 @@ let private emitAssembly
                 let checkLabel = il.DefineLabel()
                 let bodyLabel  = il.DefineLabel()
                 let waitLabel  = il.DefineLabel()
-                let throwLabel = il.DefineLabel()
                 il.MarkLabel checkLabel
                 // Evaluate every barrier; on the first false, branch
                 // to the wait sub-block.  All-true falls through to
@@ -4076,22 +4062,20 @@ let private emitAssembly
                     let _ = Codegen.emitExpr wrapCtx barrier
                     il.Emit(OpCodes.Brfalse, waitLabel)
                 il.Emit(OpCodes.Br, bodyLabel)
-                // Wait sub-block: Monitor.Wait(lock, timeoutMs);
-                //   timeout (Wait returns false) → throw;
-                //   signalled  (Wait returns true)  → re-check.
+                // Wait sub-block: Monitor.Wait(lock) suspends the
+                // caller (releasing the lock) until another thread
+                // calls PulseAll, then re-acquires the lock and
+                // returns true.  We discard the return value and
+                // always loop back — spurious wakeups are safe
+                // because the barrier is re-evaluated each time.
+                // Ada specifies infinite waits; the caller is
+                // responsible for progress (D-progress-092).
                 il.MarkLabel waitLabel
                 il.Emit(OpCodes.Ldarg_0)
                 il.Emit(OpCodes.Ldfld, lockFieldRef)
-                il.Emit(OpCodes.Ldc_I4, barrierWaitTimeoutMs)
                 il.Emit(OpCodes.Call, monitorWaitMI.Value)
-                il.Emit(OpCodes.Brfalse, throwLabel)
+                il.Emit(OpCodes.Pop)   // discard bool return value
                 il.Emit(OpCodes.Br, checkLabel)
-                il.MarkLabel throwLabel
-                il.Emit(OpCodes.Ldstr,
-                        sprintf "%s: barrier wait timed out after %dms"
-                                p.Fn.Name barrierWaitTimeoutMs)
-                il.Emit(OpCodes.Newobj, lyricAssertCtor.Value)
-                il.Emit(OpCodes.Throw)
                 il.MarkLabel bodyLabel
             else
                 for barrier in p.Barriers do

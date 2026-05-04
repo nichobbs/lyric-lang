@@ -223,35 +223,6 @@ func main(): Unit {
 """,
     "5\n10"
 
-    "pt_when_barrier_throws_when_false",
-    // Barrier-not-met in a single-threaded program: the wrapper
-    // calls `Monitor.Wait(lock, timeoutMs)` and re-evaluates when
-    // signalled.  With no other thread to satisfy the barrier the
-    // wait times out (D-progress-087) and the wrapper throws —
-    // catch reports "blocked".  See Q008 for the bootstrap timeout
-    // semantics; Ada specifies infinite waits, the bootstrap uses
-    // a finite timeout to keep single-threaded misuses observable
-    // rather than deadlocked.
-    """
-package E14
-
-protected type Bag {
-  var count: Int
-  entry take() when: count > 0 { count = count - 1 }
-}
-
-func main(): Unit {
-  val b = Bag()
-  try {
-    b.take()
-    println("took")
-  } catch Exception as e {
-    println("blocked")
-  }
-}
-""",
-    "blocked"
-
     "pt_generic_int",
     // D-progress-079 follow-up: generic protected types lower via
     // LHS-driven inference — `val b: Box[Int] = Box()` reads the
@@ -444,6 +415,71 @@ func main(): Unit { () }
         if workerTask.IsFaulted then
             failwithf "worker task faulted: %A" workerTask.Exception
 
+/// D-progress-092: Ada-orthodox infinite barrier wait.  A
+/// single-threaded program calling `take()` on an empty `Bag` must
+/// block forever (no timeout, no exception) — the process should NOT
+/// exit within a short observation window.  We compile the DLL,
+/// launch it via `dotnet exec`, and assert that `WaitForExit` times
+/// out, then kill the process.
+let private adaStyleBarrierInfiniteWait : Test =
+    testCase "[barrier_wait_hangs_forever_single_threaded]" <| fun () ->
+        let label = "ProtectedBarrierInfiniteWait"
+        let source = """
+package E14
+
+protected type Bag {
+  var count: Int
+  entry take() when: count > 0 { count = count - 1 }
+}
+
+func main(): Unit {
+  val b = Bag()
+  b.take()
+  println("took")
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source           = source
+              AssemblyName     = label
+              OutputPath       = dll
+              RestoredPackages = [] }
+        let _ = Lyric.Emitter.Emitter.emit req
+        // Run the compiled program in a child process.  Ada semantics:
+        // the barrier wait is infinite so the process must NOT exit
+        // within the observation window.
+        let psi = System.Diagnostics.ProcessStartInfo()
+        let dotnetExe =
+            let envPath = System.Environment.GetEnvironmentVariable("DOTNET_HOST_PATH")
+            match Option.ofObj envPath with
+            | Some p when System.IO.File.Exists p -> p
+            | _ ->
+                let primary = "/root/.dotnet/dotnet"
+                if System.IO.File.Exists primary then primary
+                else "dotnet"
+        psi.FileName <- dotnetExe
+        psi.ArgumentList.Add "exec"
+        psi.ArgumentList.Add dll
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute         <- false
+        psi.CreateNoWindow          <- true
+        let proc =
+            match System.Diagnostics.Process.Start(psi) |> Option.ofObj with
+            | Some p -> p
+            | None   -> failwith "failed to start dotnet process"
+        use _ = proc
+        // Two seconds is ample — if the process exits in that window
+        // the barrier wait timed out (regression) rather than blocking.
+        let exited = proc.WaitForExit(2000)
+        if not exited then proc.Kill()
+        Expect.isFalse exited
+            "process must block on barrier forever (Ada infinite wait)"
+
 let tests =
     testList "protected types (D-progress-079)"
-        ((cases |> List.map mk) @ [ lockFlavourSplit; adaStyleWakeOnBarrier ])
+        ((cases |> List.map mk)
+         @ [ lockFlavourSplit
+             adaStyleWakeOnBarrier
+             adaStyleBarrierInfiniteWait ])
