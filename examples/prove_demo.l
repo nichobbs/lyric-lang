@@ -1,14 +1,17 @@
 @proof_required
 package ProveDemo
 
-// Demonstrates the M4.1 fragment of the Phase 4 verifier.
+// Demonstrates the Phase 4 verifier (M4.1 / M4.2 fragment).
 // Run with:
 //
 //     lyric prove examples/prove_demo.l --verbose
 //
-// All four functions discharge via the trivial syntactic checker
-// alone (no external solver needed).  When `z3` is on `$PATH` the
-// `bumped` and `addsOk` proofs are also handled by Z3 directly.
+// Simple identity / tautology goals discharge via the trivial
+// syntactic checker alone (no external solver needed).  Arithmetic
+// goals (`bumped`, `addsOk`, `makeAmount`) require Z3 and are marked
+// Unknown when no solver is available — pass `--allow-unverified` to
+// suppress V0007 errors in that case.  `absish` (disjunctive post on
+// a match) may remain Unknown even with Z3.
 
 pub func id(x: Int): Int
   ensures: result == x
