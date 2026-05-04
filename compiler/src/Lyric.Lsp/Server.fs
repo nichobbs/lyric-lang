@@ -83,7 +83,9 @@ type CachedDoc =
       CheckResult:   CheckResult
       /// URI → SourceFile for each directly-imported package.  Used by
       /// go-to-definition to resolve symbols declared in other files.
-      ImportedFiles: Map<string, Lyric.Parser.Ast.SourceFile> }
+      ImportedFiles: Map<string, Lyric.Parser.Ast.SourceFile>
+      /// Proof summary from the verifier, if the file is @proof_required.
+      ProofSummary:  Lyric.Verifier.Driver.ProofSummary option }
 
 type DocumentStore() =
     let docs = Dictionary<string, CachedDoc>()
@@ -156,19 +158,25 @@ let analyzeUri
     let typeDiags = parsed.Diagnostics @ checked'.Diagnostics
     typeDiags, checked', importedFiles
 
-/// Run the verifier for @proof_required files and return V-prefixed
-/// diagnostics that aren't already covered by `typeDiags`.
-/// AllowUnverified=true so solver unknowns become warnings, not errors.
-/// Returns [] on any exception so a missing z3 binary never crashes the LSP.
-let private runVerifier (text: string) (typeDiags: Diagnostic list) : Diagnostic list =
+/// Run the verifier for @proof_required files.  Returns the proof summary
+/// (for hover counterexample rendering) and the V-prefixed diagnostics not
+/// already covered by `typeDiags`.  AllowUnverified=true so solver unknowns
+/// become warnings.  Returns (None, []) on any exception so a missing z3
+/// binary never crashes the LSP.
+let private runVerifierWithSummary
+        (text:      string)
+        (typeDiags: Diagnostic list)
+        : Lyric.Verifier.Driver.ProofSummary option * Diagnostic list =
     try
         let opts = { Lyric.Verifier.Driver.ProveOptions.AllowUnverified = true }
         let summary = Lyric.Verifier.Driver.proveSourceWithOptions text None [] opts
-        summary.Diagnostics
-        |> List.filter (fun d ->
-            d.Code.StartsWith "V" &&
-            not (typeDiags |> List.exists (fun td -> td.Code = d.Code && td.Span = d.Span)))
-    with _ -> []
+        let diags =
+            summary.Diagnostics
+            |> List.filter (fun d ->
+                d.Code.StartsWith "V" &&
+                not (typeDiags |> List.exists (fun td -> td.Code = d.Code && td.Span = d.Span)))
+        Some summary, diags
+    with _ -> None, []
 
 // ---------------------------------------------------------------------------
 // Type / signature rendering helpers.
@@ -440,6 +448,99 @@ let private publishDiagnostics
     let msg = mkNotification "textDocument/publishDiagnostics" (p :> JsonNode)
     writeMessage output msg
 
+// ---------------------------------------------------------------------------
+// Reverse-dependency tracking — used for background re-analysis.
+// ---------------------------------------------------------------------------
+
+/// Build a map from imported-file-URI to the set of currently-open consumer
+/// URIs that import it.  When a dependency changes, each consumer is
+/// re-analysed and its diagnostics re-pushed.
+let private buildRevDeps
+        (idx:   WorkspaceIndex)
+        (store: DocumentStore) : Map<string, Set<string>> =
+    let mutable m : Map<string, Set<string>> = Map.empty
+    for consumerUri in store.AllUris() do
+        match store.TryGet consumerUri with
+        | None -> ()
+        | Some doc ->
+            for importDecl in doc.CheckResult.File.Imports do
+                let pkgKey = String.concat "." importDecl.Path.Segments
+                match Map.tryFind pkgKey idx.PackageToFile with
+                | None -> ()
+                | Some filePath ->
+                    let importedUri = pathToUri filePath
+                    let current =
+                        m |> Map.tryFind importedUri |> Option.defaultValue Set.empty
+                    m <- Map.add importedUri (Set.add consumerUri current) m
+    m
+
+/// Analyse `text` for `uri`, store the result, and push diagnostics.
+/// This is the single canonical path for all document analysis so that
+/// `ProofSummary` is always kept in sync with the document store.
+let private analyzeAndPublish
+        (uri:    string)
+        (text:   string)
+        (wsIdx:  WorkspaceIndex option)
+        (store:  DocumentStore)
+        (output: Stream) : unit =
+    let typeDiags, cr, importedFiles = analyzeUri text wsIdx store
+    let summaryOpt, verifierDiags = runVerifierWithSummary text typeDiags
+    store.Set(uri,
+        { Source       = text
+          CheckResult  = cr
+          ImportedFiles = importedFiles
+          ProofSummary = summaryOpt })
+    publishDiagnostics output uri (typeDiags @ verifierDiags)
+
+// ---------------------------------------------------------------------------
+// Text helpers for code actions and rename.
+// ---------------------------------------------------------------------------
+
+/// Extract the source substring covered by `span` (1-based line/column).
+let private textAtSpan (text: string) (span: Span) : string =
+    let lines = text.Split('\n')
+    let sl = span.Start.Line - 1
+    let el = span.End.Line - 1
+    if sl < 0 || sl >= lines.Length then ""
+    elif sl = el then
+        let line = lines.[sl]
+        let sc = max 0 (span.Start.Column - 1)
+        let ec = min line.Length (span.End.Column - 1)
+        if sc <= ec then line.Substring(sc, ec - sc) else ""
+    else
+        let sb = System.Text.StringBuilder()
+        sb.Append(lines.[sl].Substring(max 0 (span.Start.Column - 1))) |> ignore
+        for i in sl + 1 .. el - 1 do
+            if i < lines.Length then
+                sb.Append('\n') |> ignore
+                sb.Append(lines.[i]) |> ignore
+        if el < lines.Length then
+            sb.Append('\n') |> ignore
+            let ec = min lines.[el].Length (span.End.Column - 1)
+            sb.Append(lines.[el].Substring(0, ec)) |> ignore
+        sb.ToString()
+
+/// Return all word-boundary occurrences of `name` in `text` as Spans.
+let private allOccurrencesInText (text: string) (name: string) : Span list =
+    let lines = text.Split('\n')
+    let mutable spans = []
+    for lineIdx in 0 .. lines.Length - 1 do
+        let line = lines.[lineIdx]
+        let mutable i = 0
+        while i <= line.Length - name.Length do
+            if line.Substring(i, name.Length) = name then
+                let before = i = 0 || not (isIdChar line.[i - 1])
+                let after  =
+                    i + name.Length >= line.Length
+                    || not (isIdChar line.[i + name.Length])
+                if before && after then
+                    let span : Span =
+                        { Start = { Line = lineIdx + 1; Column = i + 1;              Offset = 0 }
+                          End   = { Line = lineIdx + 1; Column = i + name.Length + 1; Offset = 0 } }
+                    spans <- span :: spans
+            i <- i + 1
+    List.rev spans
+
 let private initializeResult () : JsonNode =
     let caps = JsonObject()
     let sync = JsonObject()
@@ -463,6 +564,8 @@ let private initializeResult () : JsonNode =
     sigRetriggers.Add(JsonValue.Create ",")
     sigHelp.["retriggerCharacters"] <- sigRetriggers :> JsonNode
     caps.["signatureHelpProvider"] <- sigHelp :> JsonNode
+    caps.["codeActionProvider"]    <- JsonValue.Create true
+    caps.["renameProvider"]        <- JsonValue.Create true
     let info = JsonObject()
     info.["name"]    <- JsonValue.Create "lyric-lsp"
     info.["version"] <- JsonValue.Create "0.1.0"
@@ -498,16 +601,65 @@ let private asInt (n: JsonNode | null) : int =
     | None -> 0
 
 // ---------------------------------------------------------------------------
+// LSP code-action helpers (depend on nodeAt / asInt above).
+// ---------------------------------------------------------------------------
+
+/// Convert an LSP range node back to a Lyric Span (1-based line/column).
+let private lspRangeToSpan (rangeNode: JsonNode | null) : Span =
+    let startNode = nodeAt rangeNode "start"
+    let endNode   = nodeAt rangeNode "end"
+    { Start = { Line   = asInt (nodeAt startNode "line")      + 1
+                Column = asInt (nodeAt startNode "character") + 1
+                Offset = 0 }
+      End   = { Line   = asInt (nodeAt endNode "line")        + 1
+                Column = asInt (nodeAt endNode "character")   + 1
+                Offset = 0 } }
+
+/// Build a `CodeAction` (quickfix) that replaces `range` in `uri` with `newText`.
+let private mkCodeAction
+        (uri:     string)
+        (title:   string)
+        (range:   JsonNode | null)
+        (newText: string) : JsonNode =
+    let textEdit = JsonObject()
+    // Deep-clone so the node is detached from any existing parent.
+    let rangeClone : JsonNode | null =
+        range |> Option.ofObj |> Option.map (fun r -> r.DeepClone()) |> Option.toObj
+    textEdit.["range"]   <- rangeClone
+    textEdit.["newText"] <- JsonValue.Create newText
+    let editsArr = JsonArray()
+    editsArr.Add textEdit
+    let changes = JsonObject()
+    changes.[uri] <- editsArr :> JsonNode
+    let edit = JsonObject()
+    edit.["changes"] <- changes :> JsonNode
+    let action = JsonObject()
+    action.["title"] <- JsonValue.Create title
+    action.["kind"]  <- JsonValue.Create "quickfix"
+    action.["edit"]  <- edit :> JsonNode
+    action :> JsonNode
+
+/// Find the first `@proof_required` annotation in the file-level annotations.
+let private findProofRequiredAnn
+        (anns: Lyric.Parser.Ast.Annotation list)
+        : Lyric.Parser.Ast.Annotation option =
+    anns |> List.tryFind (fun a ->
+        match a.Name.Segments with
+        | ["proof_required"] -> true
+        | _                  -> false)
+
+// ---------------------------------------------------------------------------
 // Dispatch.
 // ---------------------------------------------------------------------------
 
 /// Dispatch one inbound LSP message.  Returns `false` when the client
 /// has signalled `exit`.
 let dispatch
-        (store:  DocumentStore)
-        (wsIdx:  WorkspaceIndex option ref)
-        (output: Stream)
-        (msg:    JsonNode) : bool =
+        (store:    DocumentStore)
+        (wsIdx:    WorkspaceIndex option ref)
+        (revDeps:  Map<string, Set<string>> ref)
+        (output:   Stream)
+        (msg:      JsonNode) : bool =
     let methodNode =
         match msg with
         | :? JsonObject as o -> tryGetProperty o "method"
@@ -522,7 +674,8 @@ let dispatch
 
     | "initialize" ->
         writeMessage output (mkResponse id (initializeResult ()))
-        // Extract workspace root and build the package index.
+        // Extract workspace root, build the package index, run background
+        // analysis for every workspace file, and build the rev-dep map.
         let rootUri  = asStr (nodeAt params' "rootUri")
         let rootPath = asStr (nodeAt params' "rootPath")
         let workspaceRoot =
@@ -531,7 +684,16 @@ let dispatch
             else None
         match workspaceRoot with
         | Some root when Directory.Exists root ->
-            wsIdx.Value <- Some (buildWorkspaceIndex root)
+            let idx = buildWorkspaceIndex root
+            wsIdx.Value <- Some idx
+            // Background pass: push diagnostics for every file in the index.
+            for (_, filePath) in (idx.PackageToFile |> Map.toList) do
+                try
+                    let text    = File.ReadAllText filePath
+                    let fileUri = pathToUri filePath
+                    analyzeAndPublish fileUri text wsIdx.Value store output
+                with _ -> ()
+            revDeps.Value <- buildRevDeps idx store
         | _ -> ()
         true
 
@@ -555,13 +717,19 @@ let dispatch
         let text = asStr (nodeAt td "text")
         if uri <> "" then
             try
-                let typeDiags, cr, importedFiles = analyzeUri text wsIdx.Value store
-                // Store the document before running the verifier so hover /
-                // completion / definition still work even if the verifier
-                // crashes or times out.
-                store.Set(uri, { Source = text; CheckResult = cr; ImportedFiles = importedFiles })
-                let verifierDiags = runVerifier text typeDiags
-                publishDiagnostics output uri (typeDiags @ verifierDiags)
+                analyzeAndPublish uri text wsIdx.Value store output
+                // Re-analyse any open files that import this URI.
+                let consumers =
+                    revDeps.Value |> Map.tryFind uri |> Option.defaultValue Set.empty
+                for consumerUri in consumers do
+                    match store.TryGet consumerUri with
+                    | None -> ()
+                    | Some d ->
+                        try analyzeAndPublish consumerUri d.Source wsIdx.Value store output
+                        with _ -> ()
+                match wsIdx.Value with
+                | Some idx -> revDeps.Value <- buildRevDeps idx store
+                | None     -> ()
             with _ -> ()
         true
 
@@ -576,10 +744,19 @@ let dispatch
             | _ -> ""
         if uri <> "" && newText <> "" then
             try
-                let typeDiags, cr, importedFiles = analyzeUri newText wsIdx.Value store
-                store.Set(uri, { Source = newText; CheckResult = cr; ImportedFiles = importedFiles })
-                let verifierDiags = runVerifier newText typeDiags
-                publishDiagnostics output uri (typeDiags @ verifierDiags)
+                analyzeAndPublish uri newText wsIdx.Value store output
+                // Re-analyse any open files that import this URI.
+                let consumers =
+                    revDeps.Value |> Map.tryFind uri |> Option.defaultValue Set.empty
+                for consumerUri in consumers do
+                    match store.TryGet consumerUri with
+                    | None -> ()
+                    | Some d ->
+                        try analyzeAndPublish consumerUri d.Source wsIdx.Value store output
+                        with _ -> ()
+                match wsIdx.Value with
+                | Some idx -> revDeps.Value <- buildRevDeps idx store
+                | None     -> ()
             with _ -> ()
         true
 
@@ -601,7 +778,9 @@ let dispatch
     | "workspace/didChangeWatchedFiles" ->
         match wsIdx.Value with
         | Some idx ->
-            wsIdx.Value <- Some (buildWorkspaceIndex idx.Root)
+            let newIdx = buildWorkspaceIndex idx.Root
+            wsIdx.Value  <- Some newIdx
+            revDeps.Value <- buildRevDeps newIdx store
         | None -> ()
         true
 
@@ -651,9 +830,51 @@ let dispatch
                             | _ -> itemSummary it
                         let docLines =
                             it.DocComments |> List.map (fun dc -> dc.Text.Trim())
-                        let body =
+                        let baseSummary =
                             if List.isEmpty docLines then summary
                             else summary + "\n\n" + String.concat "\n" docLines
+                        // Append proof-failure section for @proof_required functions.
+                        let proofSection =
+                            match doc.ProofSummary with
+                            | None -> ""
+                            | Some psum ->
+                                match it.Kind with
+                                | Lyric.Parser.Ast.IFunc fn ->
+                                    let failed =
+                                        psum.Results
+                                        |> List.filter (fun r ->
+                                            match r.Outcome with
+                                            | Lyric.Verifier.Solver.Discharged -> false
+                                            | _ -> true)
+                                        |> List.filter (fun r ->
+                                            match r.Goal.Kind with
+                                            | Lyric.Verifier.Vcir.GKPostcondition n
+                                            | Lyric.Verifier.Vcir.GKPrecondition  n -> n = fn.Name
+                                            | _ -> false)
+                                    if List.isEmpty failed then ""
+                                    else
+                                        let lines = System.Text.StringBuilder()
+                                        lines.Append "\n\n**Proof failures:**" |> ignore
+                                        for r in failed do
+                                            let kindStr =
+                                                Lyric.Verifier.Vcir.GoalKind.display r.Goal.Kind
+                                            match r.Outcome with
+                                            | Lyric.Verifier.Solver.Counterexample model ->
+                                                let bindings =
+                                                    Lyric.Verifier.Solver.parseModel model
+                                                lines.Append(sprintf "\n- %s" kindStr) |> ignore
+                                                if not (List.isEmpty bindings) then
+                                                    let ce =
+                                                        Lyric.Verifier.Solver.renderCounterexample bindings
+                                                    lines.Append(sprintf "\n```\n%s\n```" ce) |> ignore
+                                            | Lyric.Verifier.Solver.Unknown reason ->
+                                                lines.Append(
+                                                    sprintf "\n- %s: solver unknown (%s)"
+                                                        kindStr reason) |> ignore
+                                            | _ -> ()
+                                        lines.ToString()
+                                | _ -> ""
+                        let body = baseSummary + proofSection
                         let o = JsonObject()
                         let contents = JsonObject()
                         contents.["kind"]  <- JsonValue.Create "markdown"
@@ -799,6 +1020,101 @@ let dispatch
         writeMessage output (mkResponse id result)
         true
 
+    // -----------------------------------------------------------------------
+    // Code actions — quickfixes for V-series diagnostics.
+    // -----------------------------------------------------------------------
+
+    | "textDocument/codeAction" ->
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
+        let context = nodeAt params' "context"
+        let ctxDiags = nodeAt context "diagnostics"
+        let result =
+            match store.TryGet uri with
+            | None -> JsonArray() :> JsonNode
+            | Some doc ->
+                let actions = JsonArray()
+                match ctxDiags with
+                | :? JsonArray as diagArr ->
+                    for diagNode in diagArr do
+                        let diagCode  = asStr (nodeAt diagNode "code")
+                        let diagRange = nodeAt diagNode "range"
+                        match diagCode with
+                        | "V0009" ->
+                            // Wrap `assume(...)` in `unsafe { }`.
+                            let diagSpan = lspRangeToSpan diagRange
+                            let original = textAtSpan doc.Source diagSpan
+                            if original <> "" then
+                                actions.Add(
+                                    mkCodeAction uri
+                                        "Wrap in unsafe { }"
+                                        diagRange
+                                        (sprintf "unsafe { %s }" original))
+                        | "V0003" ->
+                            // Add unsafe_blocks_allowed to the package annotation.
+                            match findProofRequiredAnn doc.CheckResult.File.FileLevelAnnotations with
+                            | Some ann ->
+                                actions.Add(
+                                    mkCodeAction uri
+                                        "Allow unsafe blocks (@proof_required(unsafe_blocks_allowed))"
+                                        (toLspRange ann.Span)
+                                        "@proof_required(unsafe_blocks_allowed)")
+                            | None -> ()
+                        | "V0007" | "V0008" ->
+                            // Downgrade to @runtime_checked.
+                            match findProofRequiredAnn doc.CheckResult.File.FileLevelAnnotations with
+                            | Some ann ->
+                                actions.Add(
+                                    mkCodeAction uri
+                                        "Downgrade to @runtime_checked"
+                                        (toLspRange ann.Span)
+                                        "@runtime_checked")
+                            | None -> ()
+                        | _ -> ()
+                | _ -> ()
+                actions :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
+    // -----------------------------------------------------------------------
+    // Rename — textual word-boundary replacement across all open documents.
+    // -----------------------------------------------------------------------
+
+    | "textDocument/rename" ->
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
+        let posNode = nodeAt params' "position"
+        let line    = asInt (nodeAt posNode "line")
+        let chr     = asInt (nodeAt posNode "character")
+        let newName = asStr (nodeAt params' "newName")
+        let result =
+            match store.TryGet uri with
+            | None -> JsonObject() :> JsonNode
+            | Some doc ->
+                let p = lspToLyric line chr
+                match identifierAt doc.Source p with
+                | None -> JsonObject() :> JsonNode
+                | Some (ident, _) ->
+                    let changes = JsonObject()
+                    for openUri in store.AllUris() do
+                        match store.TryGet openUri with
+                        | None -> ()
+                        | Some openDoc ->
+                            let spans = allOccurrencesInText openDoc.Source ident
+                            if not (List.isEmpty spans) then
+                                let editsArr = JsonArray()
+                                for span in spans do
+                                    let te = JsonObject()
+                                    te.["range"]   <- toLspRange span
+                                    te.["newText"] <- JsonValue.Create newName
+                                    editsArr.Add te
+                                changes.[openUri] <- editsArr :> JsonNode
+                    let edit = JsonObject()
+                    edit.["changes"] <- changes :> JsonNode
+                    edit :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
     | _ when not (isNull id) ->
         writeMessage output (mkErrorResponse id -32601 (sprintf "method not found: %s" method'))
         true
@@ -807,15 +1123,16 @@ let dispatch
         true
 
 let runLoop (input: Stream) (output: Stream) : unit =
-    let store  = DocumentStore()
-    let wsIdx  = ref None
+    let store    = DocumentStore()
+    let wsIdx    = ref None
+    let revDeps  = ref Map.empty
     let mutable keepRunning = true
     while keepRunning do
         match readMessage input with
         | None -> keepRunning <- false
         | Some msg ->
             try
-                if not (dispatch store wsIdx output msg) then
+                if not (dispatch store wsIdx revDeps output msg) then
                     keepRunning <- false
             with _ ->
                 eprintfn "lyric-lsp: dispatch error"
