@@ -10,6 +10,8 @@
     <Compile Include="Manifest.fs" />
     <Compile Include="Pack.fs" />
     <Compile Include="Doc.fs" />
+    <Compile Include="Fmt.fs" />
+    <Compile Include="Lint.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
