@@ -535,19 +535,39 @@ inlines `NTag.Value`).
 
 ### 9.4 Constraints (`where`)
 
-Constraints map to CLR generic constraints when possible:
+**Bootstrap lowering (shipped).** Marker constraints are not lowered
+to CLR generic constraints in the bootstrap; they are checked at
+monomorphization call sites by a closed lookup function
+(`satisfiesMarker` in `Lyric.Emitter/Codegen.fs`).  This avoids the
+need to emit CLR interface types for each marker.  The satisfaction
+rules are:
 
-- `where T: Copyable` → `where T : struct` (CLR value-type constraint).
-- `where T: Default` → `where T : new()`.
-- Interface constraints (`where T: Compare`) → CLR interface
-  constraints on the interface emitted for the marker. The closed
-  marker set (`Equals`, `Compare`, `Hash`, `Default`, `Copyable`,
-  `Add`, `Sub`, `Mul`, `Div`, `Mod`) is fixed by decision-log D034;
-  user-defined interfaces are also admissible as `where` constraints,
-  lowered as ordinary CLR interface constraints.
-- Marker constraints not expressible in CLR (e.g. `Add` over distinct
-  types) compile to a generated wrapper interface that the source
-  generator emits as `[Lyric.MarkerConstraint("Add")]`.
+1. **Same-package distinct types:** a type `T` defined as
+   `type T = U derives M1, M2` satisfies markers `M1` and `M2`.
+   The compiler records the `derives` list on `DistinctTypeInfo` and
+   consults it at every call site where a bound is checked.
+
+2. **CLR primitives:** numeric types satisfy `Add`, `Sub`, `Mul`,
+   `Div`, `Mod`, `Compare`, `Hash`, `Equals`, `Default`.  Ordered
+   primitives (numeric + `Char` + `String`) satisfy `Compare`.
+   All primitives satisfy `Hash`, `Equals`, `Default`.
+
+3. **User-defined interfaces:** when the marker names a same-package
+   `interface`, any record type that `impl`s that interface satisfies
+   the bound (resolved via the `ImplsTable` populated in Pass A.5).
+
+4. **`Copyable`:** any value type (CLR `struct`) satisfies `Copyable`.
+   `Default` maps to a `where T : new()` check in the same table.
+
+The closed marker set (`Equals`, `Compare`, `Hash`, `Default`,
+`Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod`) is fixed by
+decision-log D034.
+
+**Phase 5 target (future).** Once the compiler is self-hosted, marker
+constraints will be lowered to CLR generic constraints (interface or
+`struct`/`new()` as appropriate) so that cross-assembly generics carry
+constraint metadata in IL and CLR verification can enforce them without
+re-running the Lyric checker.
 
 
 ## 10. Exposed records

@@ -517,7 +517,8 @@ let private defineDistinctType
       Records.DistinctTypeInfo.Type       = tb
       Records.DistinctTypeInfo.ValueField = valueField
       Records.DistinctTypeInfo.FromMethod = fromMb
-      Records.DistinctTypeInfo.TryFromMethod = tryFromMethod }
+      Records.DistinctTypeInfo.TryFromMethod = tryFromMethod
+      Records.DistinctTypeInfo.Derives    = dt.Derives }
 
 /// Define a CLR enum type backing one Lyric enum. Each case becomes
 /// a `Public Static Literal` field with a sequential ordinal value,

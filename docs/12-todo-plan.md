@@ -750,28 +750,20 @@ criteria) and "M4.3" (the v2.0 release scope).
 14. **CVC5 solver-swap parity.** Feature-flag build that runs ≥95 %
     of the M4.2 corpus through CVC5.
 
-### D3. Q021 follow-ups (audit-surfaced)
+### D3. Q021 follow-ups (audit-surfaced) — all shipped
 
-15. **Q021 #5 — user-defined interface constraints.** Today's
-    `Codegen.fs:630` `satisfiesMarker` only knows D034 markers;
-    user interfaces fall through to `_ -> false` and the build
-    aborts with a misleading B0001 even when the candidate type
-    implements the interface. Either (a) reject user-interface
-    constraints at the type checker until codegen learns interface
-    lookup, or (b) extend `satisfiesMarker` to walk
-    `ClrType.GetInterfaces()`. Choose (a) for the bootstrap; (b)
-    can land with the Phase 5 stdlib re-host.
-16. **Distinct-types `derives` propagation.** `DistinctTypeInfo`
-    doesn't snapshot the `derives` list, so `f[Age] where Age:
-    Hash` rejects even when `type Age = Int derives Hash`.
-    Comment at `Codegen.fs:626-629` acknowledges this. Half-session
-    fix once Q021 #5 is decided.
-17. **`09-msil-emission.md` §9.4 update.** Spec says marker
-    constraints lower to interface dispatch; bootstrap actually
-    uses a closed lookup table in `Codegen.fs:satisfiesMarker`.
-    Either retrofit interface dispatch (bigger) or correct the
-    spec to reflect the shipped lowering (smaller; preferred for
-    the bootstrap).
+15. ~~**Q021 #5 — user-defined interface constraints.**~~ **SHIPPED**
+    (2026-05-04, PR #94). `satisfiesMarker` routes unknown marker
+    names through `ctx.Impls` (populated in Pass A.5 alongside
+    `AddInterfaceImplementation`).
+16. ~~**Distinct-types `derives` propagation.**~~ **SHIPPED**
+    (2026-05-04). `DistinctTypeInfo` now carries `Derives: string list`;
+    `satisfiesMarker` checks it as Path 1 before the primitive table.
+    `f[Age] where Age: Hash` accepts when `type Age = Int derives Hash`.
+17. ~~**`09-msil-emission.md` §9.4 update.**~~ **SHIPPED** (2026-05-04).
+    §9.4 now documents the bootstrap lookup-table approach (3 paths:
+    distinct-type derives, CLR primitive table, user-interface ImplsTable)
+    and defers CLR-generic-constraint lowering to Phase 5.
 
 ## Band E — long-horizon (Phase 5+)
 
