@@ -32,7 +32,10 @@ deferred to Phase 3 by design.
 | Milestone | Status | Lands in |
 |---|---|---|
 | M5.1 stage 1 — self-hosted lexer (subset; co-resident with self-test) | **Shipped** | D-progress-093 |
-| M5.1 stage 2 — split lexer into reusable `Lyric.Lexer` library + emitter support for cross-package record field access | Not shipped | — |
+| M5.1 stage 2a — multi-file packages | **Shipped** | D-progress-094 |
+| M5.1 stage 2b — split lexer into reusable `Lyric.Lexer` library | Not shipped | — |
+| M5.1 stage 2c — project-as-DLL bundling per `docs/20-project-as-dll.md` (adds `internal` keyword) | Designed; not shipped | — |
+| M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
 | M5.1 stage 4 — Unicode (UAX #31) identifiers + NFC normalisation; L0040 reserved-name diagnostic | Not shipped | — |
 | M5.1 — self-hosted parser | Not shipped | — |
@@ -152,6 +155,81 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-094: Phase 5 §M5.1 stage 2a — multi-file packages + emitter polish + design docs
+
+*claude/multi-file-packages-design-docs branch.*  Follow-up to PR #122
+that lands the small emitter fixes the self-hosted lexer pressure-tested,
+adds multi-file-package support to the built-in resolver, and ships
+three design documents covering the next stages of self-hosting.
+
+**Emitter fixes.**
+
+* `Codegen.fs` `SAssign EMember` now walks `ctx.ImportedRecords` after
+  `ctx.Records` so `state.field = …` works on a cross-package record
+  receiver, not just a local one.  Mirrors the read-side path that
+  shipped on main while #122 was open.
+* `Codegen.fs:2191` (imported nullary case ctor) now uses
+  `TypeBuilder.GetConstructor` whenever any type-arg is a TypeBuilder
+  flavour — not just `GenericTypeParameterBuilder`.  Previously a
+  user-defined local `TypeBuilder` (e.g. `Keyword` from the same emit)
+  closing `None[Keyword]` landed on the
+  `constructedCase.GetConstructors()` branch and threw
+  `NotSupportedException`.  This is the bug that forced the lexer to
+  use local non-generic union shims (`KeywordLookup` / `OperatorLookup`)
+  in place of `Option[Keyword]` / `Option[OperatorMatch]`.
+
+**Multi-file packages.**
+
+* `Emitter.locateBuiltinFile` is now a thin wrapper around
+  `locateBuiltinFiles : string list`.  The new probes-in-priority
+  order is single-file → directory → kernel single-file → kernel
+  directory; first non-empty wins.
+* New `parseAndMergeBuiltinFiles` reads every located `.l`, parses
+  each, and merges `Items`, `Imports`, `ModuleDoc`, and
+  `FileLevelAnnotations` into one `SourceFile`.  Single-file inputs
+  round-trip unchanged.
+* Cross-file conflict detection (B0011 duplicate decl, B0012 alias
+  collision) is deferred to the type checker for stage 2a — the
+  existing duplicate-symbol diagnostic catches conflicts at the
+  next stage.  Per `docs/19-multi-file-packages.md` §4.
+* `Testpkg` added to `isBuiltinHead` for emitter test fixtures.
+  Two new tests in
+  `compiler/tests/Lyric.Emitter.Tests/MultiFilePackageTests.fs`
+  exercise (a) two-file merge and (b) two-file with distinct
+  imports.  Both pass.
+
+**Design docs.**
+
+* `docs/19-multi-file-packages.md` — specifies the layout, resolver
+  changes, conflict diagnostics (B0010-B0012), and migration path for
+  multi-file packages.  Stage 2a implements §1-§4; §5-§9 land later.
+* `docs/20-project-as-dll.md` — adds the `internal` visibility tier,
+  a `[project]` table in `lyric.toml`, single-DLL emit with
+  per-package contract resources, and `lyric publish` semantics for
+  bundled projects.  Decisions: yes `internal`, retain
+  per-package mode as escape hatch, publish ships the project DLL.
+* `docs/21-nuget-linking.md` — adds `[nuget]` to `lyric.toml`,
+  auto-generated `@axiom` shims per restored package, and the
+  AOT-compatibility caveat (no Lyric-level enforcement; rely on
+  `dotnet publish -p:PublishAot=true` to flag non-AOT-safe NuGet
+  surface).
+
+**Test totals.**  Full sweep on this branch: 497 emitter (495 +
+2 multi-file) + 123 lexer + 311 parser + 137 type-checker + 76 CLI
++ 242 verifier + 25 LSP = 1 411 tests, all passing.
+
+**Future work.**
+
+* Stage 2b: split the self-hosted lexer at
+  `compiler/lyric/lyric/lexer.l` into a reusable `Lyric.Lexer` library
+  + a tiny consumer.  The cross-package field access fix lands the
+  blockers; remaining work is moving the test harness out and adding
+  `pub` re-exports.
+* Stage 2c: implement project-as-DLL per `docs/20-project-as-dll.md`.
+* Stage 2d: implement NuGet linking per `docs/21-nuget-linking.md`.
+* Open: hard surface for B0011 / B0012 diagnostics (deferred from
+  stage 2a).
 
 ### D-progress-093: Phase 5 §M5.1 stage 1 — self-hosted lexer down-payment
 

@@ -4349,26 +4349,50 @@ let private segmentToFileBase (seg: string) : string =
 
 /// True for any top-level package whose source lives under `lyric/<head.lower>/`
 /// in the source tree.  Add new built-in top-level packages here.
+/// `Testpkg` is reserved for `Lyric.Emitter.Tests.MultiFilePackageTests`,
+/// which uses the `LYRIC_TESTPKG_PATH` env-var override to point at a
+/// synthetic temp-directory package — there is no real `Testpkg`
+/// directory shipped with the compiler.
 let private isBuiltinHead (head: string) : bool =
-    head = "Std" || head = "Jvm" || head = "Lyric"
+    head = "Std" || head = "Jvm" || head = "Lyric" || head = "Testpkg"
 
-/// Locate the `.l` source for any built-in package (Std.*, Jvm.*, …).
+/// Locate the `.l` source files for any built-in package.  Two
+/// shapes are accepted (per `docs/19-multi-file-packages.md`):
+///
+///   * Single-file: `<root>/<basename>.l` — the legacy form.
+///   * Multi-file: `<root>/<basename>/*.l` — every `.l` file in the
+///     directory belongs to the same package; the emitter merges
+///     their declarations into one symbol table at compile time.
+///
 /// Search order:
 ///   1. Package-specific env-var override: `LYRIC_STD_PATH` for `Std`,
 ///      `LYRIC_JVM_PATH` for `Jvm`, `LYRIC_<HEAD>_PATH` for others.
-///   2. Walk up the directory tree from `startDir` (the CLI binary's base
-///      directory).  For `Std.*` look for `stdlib/std/`; for other
-///      builtins look for `lyric/<head.lower>/`.  Works when the binary
-///      lives inside the source tree.
+///   2. Walk up the directory tree from `startDir` (the CLI binary's
+///      base directory).  For `Std.*` look for `stdlib/std/`; for
+///      other builtins look for `lyric/<head.lower>/`.
 ///
-/// Within each candidate directory, look first at the top level
-/// (`.../<file>`) and then in the kernel boundary
-/// (`.../_kernel/<file>`).  Top-level wins on collision.
-let private locateBuiltinFile
+/// Within each candidate root, look at the top level and at
+/// `_kernel/`.  Top-level wins on collision.  A package that matches
+/// BOTH the single-file and multi-file form raises a compile error
+/// (callers should report `B0010`); this function returns the
+/// matched file list for the side that found it first.
+let private locateBuiltinFiles
         (startDir: string)
-        (segments: string list) : string option =
-    let firstExisting (paths: string list) : string option =
-        paths |> List.tryFind File.Exists
+        (segments: string list) : string list =
+    let firstHit (probes: (unit -> string list) list) : string list =
+        let rec go xs =
+            match xs with
+            | [] -> []
+            | f :: rest ->
+                let hits = f ()
+                if List.isEmpty hits then go rest else hits
+        go probes
+    let listLyricFiles (dir: string) : string list =
+        if Directory.Exists dir then
+            Directory.GetFiles(dir, "*.l")
+            |> Array.sort
+            |> Array.toList
+        else []
     match segments with
     | head :: rest when not (List.isEmpty rest) ->
         let dirName = head.ToLower()
@@ -4377,28 +4401,31 @@ let private locateBuiltinFile
             |> List.map segmentToFileBase
             |> String.concat "_"
         let fileName = baseName + ".l"
-        let candidatesIn (root: string) : string list =
-            [ Path.Combine(root, fileName)
-              Path.Combine(root, "_kernel", fileName) ]
-        // 1) Package-specific env-var override.
+        let probesIn (root: string) : (unit -> string list) list =
+            // Order: top-level single-file, top-level multi-file
+            // directory, kernel single-file, kernel multi-file
+            // directory.  Top-level wins over kernel.
+            [ (fun () ->
+                let p = Path.Combine(root, fileName)
+                if File.Exists p then [p] else [])
+              (fun () -> listLyricFiles (Path.Combine(root, baseName)))
+              (fun () ->
+                let p = Path.Combine(root, "_kernel", fileName)
+                if File.Exists p then [p] else [])
+              (fun () -> listLyricFiles (Path.Combine(root, "_kernel", baseName))) ]
         let envVar =
             match head with
             | "Std" -> "LYRIC_STD_PATH"
             | h     -> sprintf "LYRIC_%s_PATH" (h.ToUpper())
         let envHit =
             match Option.ofObj (System.Environment.GetEnvironmentVariable envVar) with
-            | Some p -> firstExisting (candidatesIn p)
-            | None   -> None
-        match envHit with
-        | Some _ -> envHit
-        | None ->
-            // 2) Walk up from the binary's base directory.  Std.* now
-            // lives under `stdlib/std/` (extracted out of the compiler
-            // tree); other builtins (e.g. Jvm.*) still live under
-            // `compiler/lyric/<head>/`.
+            | Some p -> firstHit (probesIn p)
+            | None   -> []
+        if not (List.isEmpty envHit) then envHit
+        else
             let mutable dir = Some (DirectoryInfo(startDir))
-            let mutable found : string option = None
-            while found.IsNone && dir.IsSome do
+            let mutable found : string list = []
+            while List.isEmpty found && dir.IsSome do
                 let d = dir.Value
                 let pkgRoot =
                     if head = "Std" then
@@ -4406,10 +4433,62 @@ let private locateBuiltinFile
                     else
                         Path.Combine(d.FullName, "lyric", dirName)
                 if Directory.Exists pkgRoot then
-                    found <- firstExisting (candidatesIn pkgRoot)
+                    found <- firstHit (probesIn pkgRoot)
                 dir <- d.Parent |> Option.ofObj
             found
-    | _ -> None
+    | _ -> []
+
+/// Backwards-compatible single-file lookup: returns the first matched
+/// path (or None).  Multi-file packages return the first file in
+/// alphabetical order; callers that need the full list should use
+/// `locateBuiltinFiles`.
+let private locateBuiltinFile
+        (startDir: string)
+        (segments: string list) : string option =
+    match locateBuiltinFiles startDir segments with
+    | []      -> None
+    | p :: _  -> Some p
+
+/// Parse and merge a set of `.l` files belonging to one package.
+/// Single-file path returns the parse result unchanged; multi-file
+/// path concatenates `Items`, `Imports`, `ModuleDoc`, and
+/// `FileLevelAnnotations` from every file, using the first file's
+/// `Package` declaration as canonical.
+///
+/// Cross-file conflict detection (B0011 duplicate decl, B0012 alias
+/// collision) is deferred to the type checker / re-emit pass —
+/// duplicate-by-name surfaces as the existing T0050 (or its
+/// equivalent) shadowing diagnostic when the merged item table is
+/// type-checked.  This keeps the multi-file landing minimal; a
+/// follow-up lifts the explicit B0011 / B0012 surface per
+/// `docs/19-multi-file-packages.md` §4.
+let private parseAndMergeBuiltinFiles
+        (paths: string list) : Lyric.Parser.Parser.ParseResult option =
+    match paths with
+    | []     -> None
+    | [path] ->
+        Some (Lyric.Parser.Parser.parse (File.ReadAllText path))
+    | _ ->
+        let parsed =
+            paths
+            |> List.map (fun p ->
+                let src = File.ReadAllText p
+                Lyric.Parser.Parser.parse src)
+        let firstFile = parsed.[0].File
+        let merged : SourceFile =
+            { ModuleDoc =
+                parsed |> List.collect (fun pr -> pr.File.ModuleDoc)
+              FileLevelAnnotations =
+                parsed |> List.collect (fun pr -> pr.File.FileLevelAnnotations)
+              Package = firstFile.Package
+              Imports =
+                parsed |> List.collect (fun pr -> pr.File.Imports)
+              Items =
+                parsed |> List.collect (fun pr -> pr.File.Items)
+              Span = firstFile.Span }
+        let allDiags =
+            parsed |> List.collect (fun pr -> pr.Diagnostics)
+        Some { File = merged; Diagnostics = allDiags }
 
 /// Recursively ensure that the given `Std.X[.Y…]` package is compiled,
 /// returning its artifact and any diagnostics raised during the
@@ -4422,15 +4501,22 @@ let rec private ensureStdlibArtifact
         match stdlibArtifactCache.TryGetValue key with
         | true, a -> Ok a
         | _ ->
-            match locateBuiltinFile AppContext.BaseDirectory segments with
+            let foundPaths = locateBuiltinFiles AppContext.BaseDirectory segments
+            match parseAndMergeBuiltinFiles foundPaths with
             | None ->
                 let zeroSpan = Span.make Position.initial Position.initial
                 Error [ err "E900"
                             (sprintf "cannot locate lyric source for stdlib module '%s'" key)
                             zeroSpan ]
-            | Some path ->
-                let src = File.ReadAllText path
-                let parsed = parse src
+            | Some parsed ->
+                // For multi-file packages, `req.Source` is best-effort
+                // — used downstream only for diagnostics that don't
+                // hit the precompile path.  Concatenate so any rare
+                // re-parse round-trips through valid lex input.
+                let src =
+                    foundPaths
+                    |> List.map File.ReadAllText
+                    |> String.concat "\n"
                 // Recursively compile every builtin import the source
                 // declares, so they're cached before this module emits.
                 // Std.Core is auto-included even when not declared so
