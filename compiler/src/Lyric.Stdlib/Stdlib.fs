@@ -1055,6 +1055,26 @@ type FileHost private () =
             ""
         with e -> e.GetType().Name + ": " + e.Message
 
+    /// True if `ReadBytesValue(path)` would succeed.
+    static member ReadBytesIsValid (path: string) : bool =
+        try
+            let _ = System.IO.File.ReadAllBytes(path)
+            true
+        with _ -> false
+
+    /// Read the file at `path` as raw bytes.  Returns an empty list on
+    /// any host error; callers should gate on `ReadBytesIsValid`.
+    static member ReadBytesValue (path: string) : System.Collections.Generic.List<byte> =
+        try System.Collections.Generic.List<byte>(System.IO.File.ReadAllBytes(path))
+        with _ -> System.Collections.Generic.List<byte>()
+
+    /// Diagnostic message paired with `ReadBytesIsValid`.
+    static member ReadBytesError (path: string) : string =
+        try
+            let _ = System.IO.File.ReadAllBytes(path)
+            ""
+        with e -> e.GetType().Name + ": " + e.Message
+
     /// Write raw bytes to `path` (overwriting if it exists).  Returns
     /// true on success, false if the host call threw.
     static member WriteBytesIsValid (path: string, bytes: System.Collections.Generic.List<byte>) : bool =
