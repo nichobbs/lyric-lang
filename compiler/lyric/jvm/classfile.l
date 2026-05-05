@@ -383,3 +383,24 @@ pub func makeExceptionsAttr(classIndices: in List[Int]): Attribute {
   }
   attrFromWriter("Exceptions", w)
 }
+
+/// Create a `ClassFile` with explicit fields and methods lists.
+/// Defaults: minor=0, major=65, ACC_PUBLIC|ACC_SUPER,
+/// superClass=java/lang/Object, no interfaces, no class attributes.
+pub func makeClassFull(
+  thisClass: in String,
+  fields:    in List[FieldInfo],
+  methods:   in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
