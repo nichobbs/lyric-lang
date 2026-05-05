@@ -1,12 +1,12 @@
-/// Phase 5 §M5.1 stage 1 — exercises the self-hosted Lyric lexer at
-/// `compiler/lyric/lyric/lexer.l` end to end.
+/// Phase 5 §M5.1 stage 2b — exercises the self-hosted `Lyric.Lexer`
+/// library through a tiny Lyric.LexerSelfTest consumer.
 ///
 /// Compiles `compiler/lyric/lyric/lexer_self_test.l` via the bootstrap
 /// emitter, runs the resulting program, and asserts that every
 /// in-program assertion held (exit code 0 + an "ok" line in stdout).
-/// The self-test imports `Lyric.Lexer`; the emitter's auto-resolver
-/// (extended for the new `Lyric` head in `Emitter.fs:isBuiltinHead`)
-/// pulls the lexer source in transparently.
+/// The self-test `import Lyric.Lexer`; the emitter's auto-resolver
+/// (`Emitter.fs:isBuiltinHead`) pulls the library source in
+/// transparently.
 module Lyric.Emitter.Tests.SelfHostedLexerTests
 
 open System
@@ -14,19 +14,19 @@ open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
-/// Walk up from `start` looking for the self-test program.
+/// Walk up from `start` looking for the self-test consumer.
 let private findSelfTestSource () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let candidate =
-            Path.Combine(dir.Value.FullName, "lyric", "lyric", "lexer.l")
+            Path.Combine(dir.Value.FullName, "lyric", "lyric", "lexer_self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
 
 let tests =
-    testList "Lyric.Lexer self-host (Phase 5 §M5.1 stage 1)" [
+    testList "Lyric.Lexer self-host (Phase 5 §M5.1 stage 2b)" [
 
         testCase "[lexer_self_test_passes]" <| fun () ->
             let src =
