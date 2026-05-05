@@ -122,6 +122,21 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
   runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
   `ManagedPEBuilder`.
+- `compiler/lyric/lyric/` — the **self-hosted Lyric compiler** sources.
+  Phase 5 §M5.1 stage 1 lands `lexer.l`: a Lyric-language port of
+  `compiler/src/Lyric.Lexer/Lexer.fs` covering identifiers, the full
+  keyword table, decimal/hex/octal/binary integer literals, float
+  literals, plain string + character literals (incl. BMP `\u{…}`
+  escapes), the full punctuation table, line + nested block comments,
+  doc/module-doc comments, statement-end insertion, and diagnostic
+  codes L0001-L0030 (string interpolation, triple/raw strings,
+  non-BMP `\u{…}`, non-ASCII identifiers, and L0040 reserved-name
+  validation are deferred to stages 2-4 — see
+  `docs/10-bootstrap-progress.md` D-progress-093).  `Lyric` is
+  registered as a built-in head in `Emitter.fs:isBuiltinHead`, so
+  `import Lyric.<X>` resolves under this directory.  The
+  `Lyric.<X>` namespace is reserved for the self-hosted compiler
+  tree alone; do not add unrelated packages here.
 - `compiler/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`
   parses `lyric.toml`; `Pack.fs` lowers it to a generated `.csproj` for
   `lyric publish` / `lyric restore`; `Program.fs` is the command dispatch.

@@ -27,6 +27,19 @@ deferred to Phase 3 by design.
   bootstrap-grade cut, see M2 progress below); async + FFI remain
   bootstrap-grade.
 
+### Phase 5 — self-hosting (in progress)
+
+| Milestone | Status | Lands in |
+|---|---|---|
+| M5.1 stage 1 — self-hosted lexer (subset; co-resident with self-test) | **Shipped** | D-progress-093 |
+| M5.1 stage 2 — split lexer into reusable `Lyric.Lexer` library + emitter support for cross-package record field access | Not shipped | — |
+| M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
+| M5.1 stage 4 — Unicode (UAX #31) identifiers + NFC normalisation; L0040 reserved-name diagnostic | Not shipped | — |
+| M5.1 — self-hosted parser | Not shipped | — |
+| M5.1 — self-hosted type checker | Not shipped | — |
+| M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | Not shipped | — |
+
 ### Phase 2 — type system completion (in progress)
 
 | Item | Status | Lands in |
@@ -139,6 +152,105 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-093: Phase 5 §M5.1 stage 1 — self-hosted lexer down-payment
+
+*claude/implement-lyric-lexer-44Aar branch.*  First slice of the
+self-hosting work specified in `docs/05-implementation-plan.md` §5.
+Delivers a Lyric-language lexer that tokenises a substantial subset
+of the bootstrap lexer's scope and self-tests via the bootstrap
+emitter on every `dotnet test` run.
+
+**New source.** `compiler/lyric/lyric/lexer.l` (~2 000 lines):
+identifiers + the full keyword table, decimal/hex/octal/binary integer
+literals (with `_` separators and the i8/i16/i32/i64/u8/u16/u32/u64
+suffixes), float literals (with optional exponent and `f32`/`f64`
+suffix), single-quoted plain string and character literals (with the
+common escape set + BMP `\u{…}`), the full punctuation table, line +
+nested block comments, doc + module-doc comments, statement-end
+insertion with the same suppression rules as the F# bootstrap, and
+diagnostic codes L0001/L0010/L0011/L0012/L0020/L0021/L0022/L0023/
+L0024/L0025/L0030.  String interpolation, triple-quoted and raw
+strings, non-BMP `\u{…}`, non-ASCII identifiers + NFC normalisation,
+and the L0040 reserved-name diagnostic are deferred to a follow-up.
+
+The same file ships an in-program test harness (24 cases over
+`Std.Testing`) covering empty input, identifiers + keywords, bool
+literals, decimal / hex / octal / binary integers, suffix parsing,
+leading-zero diagnostic, floats with exponent + suffix, plain strings
++ escapes, char literals, full punctuation table, STMT_END insertion
++ suppression-after-operator + bracket-depth gating, explicit `;`,
+line / block / nested-block comments, doc + module-doc comments,
+CRLF normalisation, and a realistic mixed source.  Lexer + harness
+co-exist in one package only because the bootstrap codegen does not
+yet expose imported-record field accessors (`Codegen.fs:1969-2005`
+falls through to a BCL property lookup); stage 2 of M5.1 will split
+the harness out as a `Lyric.Lexer` consumer once that lookup lands.
+
+**New test runner.**
+`compiler/tests/Lyric.Emitter.Tests/SelfHostedLexerTests.fs` walks
+up from the test binary's base directory to locate
+`compiler/lyric/lyric/lexer.l`, compiles it via `compileAndRun`,
+and asserts (a) zero error-class diagnostics, (b) exit code 0,
+(c) `"ok"` in stdout.  Discoverable as `[lexer_self_test_passes]`
+in the Expecto run.  Wired into `Program.fs` after `JvmSelfTest`.
+
+**`Lyric` head added to `isBuiltinHead`.**  `Emitter.fs:4298` now
+includes `"Lyric"` so `import Lyric.<X>` resolves under
+`compiler/lyric/lyric/<x>.l` via the existing built-in resolver.
+Reserved for the self-hosted compiler's own packages; future M5.1
+stages (parser, type-checker) live in the same head.
+
+**Bootstrap codegen patches.**
+
+* `Codegen.fs:1097-1117` (`EIndex` BCL fallback) — route through
+  `getRecvMethods` + `closeBclMethod` so `xs[i]` works when `xs`
+  is a `List[T]` whose `T` is a TypeBuilder under construction
+  (e.g. `List[SpannedToken]`).  `recvTy.GetMethods()` directly
+  throws `NotSupportedException` on a TypeBuilderInstantiation.
+  Element type recovered via `substituteGenericArgs` so callers see
+  the closed `T` rather than the open generic parameter.
+
+These two patches are the minimum needed for the lexer's
+`List[SpannedToken]` indexing to JIT cleanly; the rest of the
+emitter's TBI-aware code paths already used the helpers.
+
+**Pattern-shape work-arounds.**  The lexer carefully avoids
+constructs the bootstrap parser/codegen does not yet handle:
+or-patterns in `match` arms, nested constructor patterns
+(`case Some(KwTrue)` matches every `Some` because `emitPatternTest`
+does not recurse into sub-patterns), tuple destructuring in `val`
+or match patterns, and bare `func()` statements that return non-Unit
+(JIT-verifier rejects the resulting IL on `inout` recipients —
+binding to `val _ =` Stloc-discards instead, which works).  The
+file header documents each work-around so they can be removed in
+lock-step with the relevant Phase 1 polish work.
+
+**Local non-generic union shim for `Option[LocalType]`.**  The
+imported nullary case codegen (`Codegen.fs:2118-2139`) calls
+`GetConstructors()` on a `TypeBuilderInstantiation` whose type
+arg is a TypeBuilder under construction, throwing
+`NotSupportedException`.  Until the codegen routes that path
+through `TypeBuilder.GetConstructor`, the lexer uses small local
+non-generic unions (`KeywordLookup { FoundKw(kw) | NoKw }`,
+`OperatorLookup { FoundOp(p, n) | NoOp }`, `PunctLookup { … }`)
+in place of `Option[Keyword]` / `Option[OperatorMatch]`.  Existing
+`Option[Long]` / `Option[Double]` / `Option[Char]` returns are
+unaffected because their type args are CLR primitives.
+
+**Test totals.**  Full sweep on this branch: 479 emitter + 123
+lexer + 311 parser + 137 type-checker + 76 CLI + 242 verifier +
+25 LSP = 1 393 tests, all passing.
+
+**Future work.**
+
+* Stage 2 (M5.1): extend the bootstrap emitter to expose imported
+  records' field accessors (`Codegen.fs:1969+`), then split the
+  lexer into its own `Lyric.Lexer` library + a tiny consumer.
+* Lift the deferred string variants (interpolation, triple, raw)
+  in stage 3.
+* Lift the `_X` reserved-name diagnostic + Unicode/NFC identifier
+  handling in stage 4.
 
 ### D-progress-092: barrier-wait timeout removed — Ada-orthodox infinite wait
 

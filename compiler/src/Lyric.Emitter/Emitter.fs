@@ -4350,7 +4350,7 @@ let private segmentToFileBase (seg: string) : string =
 /// True for any top-level package whose source lives under `lyric/<head.lower>/`
 /// in the source tree.  Add new built-in top-level packages here.
 let private isBuiltinHead (head: string) : bool =
-    head = "Std" || head = "Jvm"
+    head = "Std" || head = "Jvm" || head = "Lyric"
 
 /// Locate the `.l` source for any built-in package (Std.*, Jvm.*, …).
 /// Search order:

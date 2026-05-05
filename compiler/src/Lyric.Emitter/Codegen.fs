@@ -1099,7 +1099,14 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // BCL indexer: any class with a `get_Item(<idx>)` method
             // (List<T>, Dictionary<K, V>, etc.) supports `recv[idx]`.
             // Uses getRecvMethods/closeBclMethod to handle TypeBuilderInstantiation
-            // receivers (e.g. List<JvmType_TypeBuilder>).
+            // receivers (e.g. List<JvmType_TypeBuilder> or List<SpannedToken>
+            // where the type-arg is still a TypeBuilder under construction):
+            // the open `get_Item` is found on the generic definition, then
+            // closed against the constructed receiver before emission.
+            // `MethodOnTypeBuilderInstantiation.ReturnType` keeps the open
+            // generic param ('T'); re-substitute against the closed receiver
+            // so callers see the concrete element type (e.g. `Diagnostic`
+            // from `List[Diagnostic]`).
             let getItem =
                 getRecvMethods recvTy
                 |> Array.tryFind (fun m ->
@@ -2180,10 +2187,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 let constructedCase =
                                     caseInfo.Type.MakeGenericType typeArgs
                                 let openCtor = caseInfo.Ctor
+                                // The "must use TypeBuilder.GetConstructor"
+                                // case is any time the constructed receiver
+                                // is a `TypeBuilderInstantiation` — not just
+                                // when a type-arg is a `GenericTypeParameterBuilder`.
+                                // A user-defined local TypeBuilder (e.g.
+                                // `Keyword` from the same emit) closing
+                                // `None[Keyword]` lands here too: walking
+                                // `constructedCase.GetConstructors()` would
+                                // throw `NotSupportedException`.
+                                let needsTypeBuilderGetCtor =
+                                    typeArgs |> Array.exists (fun t ->
+                                        t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                                        || t :? System.Reflection.Emit.TypeBuilder
+                                        || t.GetType().Name = "TypeBuilderInstantiation")
                                 let constructedCtor =
-                                    if typeArgs |> Array.exists (fun t ->
-                                          t :? System.Reflection.Emit.GenericTypeParameterBuilder)
-                                    then
+                                    if needsTypeBuilderGetCtor then
                                         System.Reflection.Emit.TypeBuilder.GetConstructor(constructedCase, openCtor)
                                     else
                                         constructedCase.GetConstructors() |> Array.head
@@ -4617,6 +4636,10 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             // supported before the type is created."
             | EMember (recv, fieldName) ->
                 let recvTy = emitExpr ctx recv
+                let recvOpenTy =
+                    if recvTy.IsGenericType && not recvTy.IsGenericTypeDefinition
+                    then recvTy.GetGenericTypeDefinition()
+                    else recvTy
                 let recordInfo =
                     ctx.Records.Values
                     |> Seq.tryFind (fun r -> (r.Type :> ClrType) = recvTy)
@@ -4633,9 +4656,32 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                             (sprintf "no field '%s' on record '%s' for assignment"
                                 fieldName r.Name) s.Span
                 | None ->
-                    codegenErrStmt ctx "E0003"
-                        (sprintf "field-store target '%s.%s' not yet supported (receiver type %s)"
-                            (sprintf "%A" recv.Kind) fieldName recvTy.Name) s.Span
+                    // Imported record field-store (cross-package): walk
+                    // `ctx.ImportedRecords` whose `Type` is a concrete
+                    // `Type` (not a TypeBuilder) and whose `Field` is a
+                    // real `FieldInfo`.  Mirror of the read path at
+                    // `Codegen.fs:2049-2064` so cross-package mutation
+                    // through `inout` works the same way local does.
+                    let importedInfo =
+                        ctx.ImportedRecords.Values
+                        |> Seq.tryFind (fun r ->
+                            r.Type = recvTy || r.Type = recvOpenTy)
+                    match importedInfo with
+                    | Some r ->
+                        match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                        | Some f ->
+                            let valTy = emitExpr ctx value
+                            if not f.Type.IsValueType && valTy.IsValueType then
+                                il.Emit(OpCodes.Box, valTy)
+                            il.Emit(OpCodes.Stfld, f.Field)
+                        | None ->
+                            codegenErrStmt ctx "E0003"
+                                (sprintf "no field '%s' on imported record '%s' for assignment"
+                                    fieldName r.Name) s.Span
+                    | None ->
+                        codegenErrStmt ctx "E0003"
+                            (sprintf "field-store target '%s.%s' not yet supported (receiver type %s)"
+                                (sprintf "%A" recv.Kind) fieldName recvTy.Name) s.Span
             | _ ->
                 codegenErrStmt ctx "E0003"
                     (sprintf "assignment target not yet supported: %A" target.Kind) s.Span
