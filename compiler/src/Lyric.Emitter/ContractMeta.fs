@@ -515,30 +515,32 @@ let toJson (c: Contract) : string =
     sb.Append "\n  ]\n}\n" |> ignore
     sb.ToString()
 
-/// Embed `Lyric.Contract` as a managed resource on the assembly at
-/// `dllPath`.  Uses Mono.Cecil to manipulate the resource table —
-/// `PersistedAssemblyBuilder` doesn't expose
-/// `DefineManifestResource` so post-processing is the simplest path.
-/// Idempotent: re-embedding overwrites any prior `Lyric.Contract`
-/// resource.
-let embedIntoAssembly (dllPath: string) (json: string) : unit =
+/// Embed a contract JSON as a managed resource named `resourceName`
+/// on the assembly at `dllPath`.  Project-as-DLL uses
+/// `Lyric.Contract.<Pkg>` (one per packaged); the legacy single-
+/// package shape uses `Lyric.Contract` (no suffix) via
+/// `embedIntoAssembly`.
+let embedIntoAssemblyAs
+        (dllPath: string)
+        (resourceName: string)
+        (json: string) : unit =
     let assembly =
         Mono.Cecil.AssemblyDefinition.ReadAssembly(
             dllPath,
             Mono.Cecil.ReaderParameters(InMemory = true))
     let mainModule = assembly.MainModule
-    // Drop any pre-existing Lyric.Contract resource so re-embeds are
+    // Drop any pre-existing same-name resource so re-embeds are
     // idempotent.
     let toDelete =
         mainModule.Resources
-        |> Seq.filter (fun r -> r.Name = "Lyric.Contract")
+        |> Seq.filter (fun r -> r.Name = resourceName)
         |> Seq.toList
     for r in toDelete do
         mainModule.Resources.Remove r |> ignore
     let bytes = Encoding.UTF8.GetBytes json
     let resource =
         Mono.Cecil.EmbeddedResource(
-            "Lyric.Contract",
+            resourceName,
             Mono.Cecil.ManifestResourceAttributes.Public,
             bytes)
     mainModule.Resources.Add(resource)
@@ -546,17 +548,29 @@ let embedIntoAssembly (dllPath: string) (json: string) : unit =
     assembly.Write(tmp)
     File.Move(tmp, dllPath, overwrite = true)
 
-/// Read the embedded `Lyric.Contract` resource from a .dll and
-/// return its JSON payload.  Returns `None` when the resource isn't
-/// present (e.g. a non-Lyric assembly, or an older Lyric build).
-let readFromAssembly (dllPath: string) : string option =
+/// Embed `Lyric.Contract` as a managed resource on the assembly at
+/// `dllPath`.  Uses Mono.Cecil to manipulate the resource table —
+/// `PersistedAssemblyBuilder` doesn't expose
+/// `DefineManifestResource` so post-processing is the simplest path.
+/// Idempotent: re-embedding overwrites any prior `Lyric.Contract`
+/// resource.  Single-package shape; multi-package projects (`output =
+/// "single"`) use `embedIntoAssemblyAs` with a per-package resource
+/// name.
+let embedIntoAssembly (dllPath: string) (json: string) : unit =
+    embedIntoAssemblyAs dllPath "Lyric.Contract" json
+
+/// Read the embedded `Lyric.Contract` resource (or any
+/// `Lyric.Contract.<Pkg>` per-package variant in project-as-DLL
+/// bundled assemblies) from a `.dll` and return its JSON payload.
+let readFromAssemblyNamed
+        (dllPath: string) (resourceName: string) : string option =
     let assembly =
         Mono.Cecil.AssemblyDefinition.ReadAssembly(
             dllPath,
             Mono.Cecil.ReaderParameters(InMemory = true))
     let resource =
         assembly.MainModule.Resources
-        |> Seq.tryFind (fun r -> r.Name = "Lyric.Contract")
+        |> Seq.tryFind (fun r -> r.Name = resourceName)
     match resource with
     | Some r ->
         match r with
@@ -564,6 +578,43 @@ let readFromAssembly (dllPath: string) : string option =
             Some (Encoding.UTF8.GetString(er.GetResourceData()))
         | _ -> None
     | None -> None
+
+/// Read the embedded `Lyric.Contract` resource from a .dll and
+/// return its JSON payload.  Returns `None` when the resource isn't
+/// present (e.g. a non-Lyric assembly, or an older Lyric build).
+/// For project-as-DLL bundled assemblies (`output = "single"`),
+/// `readAllContractsFromAssembly` returns every `Lyric.Contract.<Pkg>`
+/// resource keyed by package name.
+let readFromAssembly (dllPath: string) : string option =
+    readFromAssemblyNamed dllPath "Lyric.Contract"
+
+/// Walk every `Lyric.Contract` / `Lyric.Contract.<Pkg>` resource in
+/// the bundled DLL and return them keyed by package name.  Single-
+/// package assemblies surface as `[("", json)]`; project-as-DLL
+/// bundles surface as one entry per package
+/// (`[("MyApp.Core", core-json); ("MyApp.Db", db-json); …]`).
+let readAllContractsFromAssembly
+        (dllPath: string) : (string * string) list =
+    let assembly =
+        Mono.Cecil.AssemblyDefinition.ReadAssembly(
+            dllPath,
+            Mono.Cecil.ReaderParameters(InMemory = true))
+    let prefix = "Lyric.Contract"
+    assembly.MainModule.Resources
+    |> Seq.choose (fun r ->
+        if r.Name = prefix then
+            match r with
+            | :? Mono.Cecil.EmbeddedResource as er ->
+                Some ("", Encoding.UTF8.GetString(er.GetResourceData()))
+            | _ -> None
+        elif r.Name.StartsWith(prefix + ".") then
+            match r with
+            | :? Mono.Cecil.EmbeddedResource as er ->
+                let pkg = r.Name.Substring(prefix.Length + 1)
+                Some (pkg, Encoding.UTF8.GetString(er.GetResourceData()))
+            | _ -> None
+        else None)
+    |> List.ofSeq
 
 /// Parse the JSON payload back to a `Contract` value.  Uses
 /// `System.Text.Json` for robustness against future format

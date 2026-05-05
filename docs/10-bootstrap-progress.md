@@ -38,8 +38,10 @@ deferred to Phase 3 by design.
 | M5.1 stage 2b' — codegen polish: EIf merge-balance + tuple/field TypeBuilder paths | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (PR #129) | D-progress-096 |
 | M5.1 stage 2c.2.i — `[project]` table in `lyric.toml` (Manifest parsing + tests) | **Shipped** (this branch) | D-progress-097 |
-| M5.1 stage 2c.2.ii — single-DLL emit driver (multi-package -> one PE; per-package contract resources) | Decided: option 1 (in-emitter restructure); not yet shipped | — |
-| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` updates for bundled DLLs | Pending 2c.2.ii | — |
+| M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP: independent packages bundle into one PE, per-package contract resources | **Shipped** (this branch) | D-progress-098 |
+| M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project + `internal` → CLR `assembly` access modifier + B0020/B0021 surfacing | Designed; in progress | — |
+| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` walk all `Lyric.Contract.<Pkg>` resources | Pending 2c.2.ii.b | — |
+| M5.1 stage 2c.2.iv — CLI integration (`lyric build` reads `[project]` + dispatches to `emitProject`) | Pending 2c.2.ii.b | — |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -161,6 +163,98 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-098: M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP
+
+*claude/project-dll-emit-driver branch.*  First slice of the
+in-emitter restructure picked at the resolution of D-progress-097
+§"2c.2.ii architectural decision".  Lands the plumbing + a working
+end-to-end single-DLL emit for independent packages — full
+cross-package symbol resolution within the project lands in stage
+2c.2.ii.b.
+
+**Backend.**
+
+* New `Backend.createWith asm m desc` lets callers reuse an
+  externally-managed `PersistedAssemblyBuilder` + `ModuleBuilder`
+  across multiple emit calls.  `Backend.create` keeps its current
+  shape (creates + returns a fresh one).
+
+**`emitAssembly` changes.**
+
+* New trailing parameter `sharedCtx: Backend.EmitContext option`.
+  When `None` (default for the legacy single-package path),
+  behaviour is unchanged: `emitAssembly` owns the backend, calls
+  `Backend.save`, and embeds a single `Lyric.Contract` resource.
+  When `Some ctx`, `emitAssembly` emits into the caller-owned
+  context and skips both `Backend.save` and the per-package
+  contract / proof resource embeds — the caller drives the final
+  save + per-package contract embeds.
+* Two existing callers (stdlib precompile in
+  `ensureStdlibArtifact`, and the public `emit` entry point) pass
+  `None`; full test sweep stays green.
+
+**Contract metadata.**
+
+* New `ContractMeta.embedIntoAssemblyAs dllPath resourceName json`
+  is the resource-name-aware embed primitive.  Project-as-DLL
+  bundles use `Lyric.Contract.<Pkg>` (one per package); the legacy
+  single-package path goes through the existing
+  `ContractMeta.embedIntoAssembly` which now thin-wraps the new
+  helper with `"Lyric.Contract"` as the name.
+* New `ContractMeta.readFromAssemblyNamed dllPath resourceName`
+  reads a specific resource by name.
+* New `ContractMeta.readAllContractsFromAssembly dllPath` walks
+  every `Lyric.Contract` / `Lyric.Contract.<Pkg>` resource and
+  returns them keyed by package name (`""` for legacy
+  single-package, package name for project-as-DLL).  Used by stage
+  2c.2.iii's `lyric restore` walker (pending) and the test that
+  asserts both per-package contracts land in the bundled DLL.
+
+**`emitProject` driver.**
+
+* New `ProjectPackageInput` / `ProjectEmitRequest` /
+  `ProjectEmitResult` types.
+* `emitProject (req: ProjectEmitRequest)` opens one
+  `Backend.create`, loops over packages calling `emitAssembly …
+  (Some ctx)`, calls `Backend.save` once, then embeds N
+  `Lyric.Contract.<Pkg>` resources via `embedIntoAssemblyAs`.
+* `B0023` surfaces when `Single = true` is requested with zero
+  packages.
+* `B0021` surfaces when more than one package declares
+  `pub func main` in a single-output project.
+* `B0099` is reserved for `Single = false` calls (per-package mode
+  drives via repeated `emit` calls — until 2c.2.iv ships, the
+  CLI doesn't yet route through `emitProject`).
+
+**Tests.**
+
+* `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` adds
+  two new tests:
+  * `[two_packages_bundle_into_one_dll]` — two independent
+    packages (`MyApp.Core`, `MyApp.Util`) compile into one DLL with
+    two `Lyric.Contract.<Pkg>` resources; the legacy
+    `Lyric.Contract` resource is absent.
+  * `[B0023_zero_packages]` — empty package list with
+    `Single = true` raises B0023.
+
+**Test totals.**  509 emitter tests pass (was 507 + 2 new).
+
+**Deferred to stage 2c.2.ii.b.**
+
+* Cross-package symbol resolution within the project — package B
+  importing package A in the same project.  Requires registering
+  A's `TypeBuilder`s in B's `ImportedRecords` / `ImportedFuncs`
+  tables before B emits.
+* `internal` → CLR `assembly` access modifier.  Today's MVP still
+  emits everything as `MethodAttributes.Public` /
+  `TypeAttributes.Public`; the contract resource is the gate.
+* Topological sort over intra-project imports + cycle detection
+  (B0020).
+* CLI integration: `lyric build` reads `[project] output = "single"`
+  and routes to `emitProject` (currently `emitProject` is exposed
+  as a public API but not yet wired through the CLI).
+
 
 ### D-progress-097: M5.1 stage 2c.2.i — `[project]` table in `lyric.toml`
 

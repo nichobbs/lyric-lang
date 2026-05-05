@@ -48,6 +48,19 @@ let create (desc: AssemblyDescriptor) : EmitContext =
     let m = asm.DefineDynamicModule(desc.Name)
     { Assembly = asm; Module = m; Descriptor = desc }
 
+/// Open an `EmitContext` rooted at an existing
+/// `PersistedAssemblyBuilder` + module.  Used by the project-as-DLL
+/// driver (M5.1 stage 2c.2.ii) so multiple package emits accumulate
+/// into the same physical assembly without re-creating the
+/// reflection-emit state per package.  Callers retain full
+/// responsibility for `save`-ing exactly once after the final
+/// per-package emit completes.
+let createWith
+        (asm:    PersistedAssemblyBuilder)
+        (m:      ModuleBuilder)
+        (desc:   AssemblyDescriptor) : EmitContext =
+    { Assembly = asm; Module = m; Descriptor = desc }
+
 /// Emit the runtimeconfig.json that lets `dotnet exec out.dll` find a
 /// suitable .NET host. The framework version is derived from the runtime
 /// the compiler itself is running on so the emitted PE and its config
