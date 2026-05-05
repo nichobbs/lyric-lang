@@ -1224,6 +1224,18 @@ type JvmByteBuilder() =
 
     member _.Position : int = buf.Count
 
+    member _.AppendU2Le(v: int) : unit =
+        let u = uint32 v
+        buf.Add(byte (u &&& 0xFFu))
+        buf.Add(byte ((u >>> 8) &&& 0xFFu))
+
+    member _.AppendU4Le(v: int) : unit =
+        let u = uint32 v
+        buf.Add(byte (u &&& 0xFFu))
+        buf.Add(byte ((u >>> 8)  &&& 0xFFu))
+        buf.Add(byte ((u >>> 16) &&& 0xFFu))
+        buf.Add(byte ((u >>> 24) &&& 0xFFu))
+
     member _.PatchU2Be(offset: int, v: int) : unit =
         buf.[offset]   <- byte ((v >>> 8) &&& 0xFF)
         buf.[offset+1] <- byte (v &&& 0xFF)
@@ -1286,9 +1298,39 @@ type JvmByteHost private () =
 
     static member ToBytes(w: JvmByteBuilder) : byte[] = w.ToArray()
 
+    static member AppendU2Le(w: JvmByteBuilder, v: int) : unit =
+        w.AppendU2Le(v)
+
+    static member AppendU4Le(w: JvmByteBuilder, v: int) : unit =
+        w.AppendU4Le(v)
+
     static member ToList
             (w: JvmByteBuilder) : System.Collections.Generic.List<byte> =
         w.ToList()
+
+/// CRC32 (ISO 3309, reflected polynomial 0xEDB88320) and ZIP assembly helpers.
+[<Sealed; AbstractClass>]
+type JvmZipHost private () =
+
+    // Pre-computed CRC32 lookup table (reflected polynomial 0xEDB88320).
+    static let crcTable : uint32[] =
+        let t = Array.zeroCreate 256
+        for i in 0..255 do
+            let mutable c = uint32 i
+            for _ in 0..7 do
+                if c &&& 1u <> 0u then c <- (c >>> 1) ^^^ 0xEDB88320u
+                else c <- c >>> 1
+            t.[i] <- c
+        t
+
+    /// CRC32 of a `List<byte>`.  Returns the checksum as a signed int32
+    /// (the bit pattern is identical to the unsigned CRC32 value).
+    static member Crc32(data: System.Collections.Generic.List<byte>) : int =
+        let mutable crc = 0xFFFFFFFFu
+        for b in data do
+            let idx = int ((crc ^^^ uint32 b) &&& 0xFFu)
+            crc <- (crc >>> 8) ^^^ crcTable.[idx]
+        int (crc ^^^ 0xFFFFFFFFu)
 
 /// JVM constant pool builder (JVMS §4.4).
 /// Long / Double entries occupy two pool slots (nextSlot += 2);
