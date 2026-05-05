@@ -544,6 +544,316 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   makeClassFull(r.className, cfFields, methods)
 }
 
+// ── B6: Protected types and wire blocks ──────────────────────────────────────
+//
+// `protected type` → final class with private ReentrantLock, private data
+// fields, a no-arg constructor that zero-initialises them, and entry methods
+// wrapped with lock-acquire / lock-release.
+//
+// `wire` → final class with a private constructor, private static fields (one
+// per binding), a public static bootstrap()V that initialises those fields,
+// and public static accessors for each exposed binding.
+//
+// Entry method convention (for `lowerEntry`):
+//   The caller's LFunc.insns push the return value onto the stack and then
+//   stop — no explicit return instruction.  For void entries, the stack is
+//   left empty.  `lowerEntry` prepends lock acquisition, appends lock
+//   release, saves/restores the return value, and emits the return opcode.
+
+pub record LProtected {
+  className: String
+  fields:    List[LField]   // non-lock data fields (will be emitted as private)
+  entries:   List[LFunc]    // each insns list pushes the result; no return insn
+}
+
+pub record LWireBinding {
+  name:    String
+  valType: JvmType
+  insns:   List[LInsn]      // push the constructed value; no return insn
+}
+
+pub record LWire {
+  className: String
+  bindings:  List[LWireBinding]
+  exposes:   List[String]   // binding names to expose as public static accessors
+}
+
+// Store a value of type `t` to local slot `slot`.
+func storeInsn(t: in JvmType, slot: in Int): LInsn {
+  match t {
+    case JLong    -> LLstore(slot = slot)
+    case JDouble  -> LDstore(slot = slot)
+    case JBoolean -> LIstore(slot = slot)
+    case JByte    -> LIstore(slot = slot)
+    case JChar    -> LIstore(slot = slot)
+    case JShort   -> LIstore(slot = slot)
+    case JInt     -> LIstore(slot = slot)
+    case JFloat   -> LIstore(slot = slot)
+    case JVoid    -> LNop
+    case JRef(_)  -> LAstore(slot = slot)
+    case JArray(_) -> LAstore(slot = slot)
+  }
+}
+
+// Load a value of type `t` from local slot `slot`.
+func loadInsn(t: in JvmType, slot: in Int): LInsn {
+  match t {
+    case JLong    -> LLload(slot = slot)
+    case JDouble  -> LDload(slot = slot)
+    case JBoolean -> LIload(slot = slot)
+    case JByte    -> LIload(slot = slot)
+    case JChar    -> LIload(slot = slot)
+    case JShort   -> LIload(slot = slot)
+    case JInt     -> LIload(slot = slot)
+    case JFloat   -> LIload(slot = slot)
+    case JVoid    -> LNop
+    case JRef(_)  -> LAload(slot = slot)
+    case JArray(_) -> LAload(slot = slot)
+  }
+}
+
+// Return instruction appropriate for return type `t`.
+func returnInsn(t: in JvmType): LInsn {
+  match t {
+    case JLong    -> LLreturn
+    case JDouble  -> LDreturn
+    case JBoolean -> LIreturn
+    case JByte    -> LIreturn
+    case JChar    -> LIreturn
+    case JShort   -> LIreturn
+    case JInt     -> LIreturn
+    case JFloat   -> LIreturn
+    case JVoid    -> LReturn
+    case JRef(_)  -> LAreturn
+    case JArray(_) -> LAreturn
+  }
+}
+
+// True if `name` appears in the `exposes` list.
+func isExposed(name: in String, exposes: in List[String]): Bool {
+  var found = false
+  var ei = 0
+  while ei < exposes.count {
+    if exposes[ei] == name {
+      found = true
+    }
+    ei = ei + 1
+  }
+  found
+}
+
+// Lower one entry method by synthesising a wrapper LFunc whose instruction
+// list is: [lock acquire] ++ ef.insns ++ [save result] ++ [lock release]
+// ++ [load result] ++ [return].
+// (`entry` is a reserved keyword; the parameter is named `ef`.)
+func lowerEntry(ef: in LFunc, className: in String, pool: in Pool): MethodInfo {
+  val lockType = JRef(className = "java/util/concurrent/locks/ReentrantLock")
+  val lockPs: List[JvmType] = newList()
+
+  val wInsns: List[LInsn] = newList()
+
+  // Acquire: aload_0; getfield _lock; invokevirtual lock()
+  wInsns.add(LAload(slot = 0))
+  wInsns.add(LGetfield(owner = className, name = "_lock", t = lockType))
+  wInsns.add(LInvokevirtual(
+    owner  = "java/util/concurrent/locks/ReentrantLock",
+    name   = "lock",
+    params = lockPs,
+    ret    = JVoid
+  ))
+
+  // Body (pushes return value or leaves stack empty for void)
+  var bi = 0
+  while bi < ef.insns.count {
+    wInsns.add(ef.insns[bi])
+    bi = bi + 1
+  }
+
+  // For non-void: save result to a temp local before releasing the lock
+  val resultSlot = ef.maxLocals
+  if fieldSlotSize(ef.ret) > 0 {
+    wInsns.add(storeInsn(ef.ret, resultSlot))
+  }
+
+  // Release: aload_0; getfield _lock; invokevirtual unlock()
+  wInsns.add(LAload(slot = 0))
+  wInsns.add(LGetfield(owner = className, name = "_lock", t = lockType))
+  wInsns.add(LInvokevirtual(
+    owner  = "java/util/concurrent/locks/ReentrantLock",
+    name   = "unlock",
+    params = lockPs,
+    ret    = JVoid
+  ))
+
+  // Reload result and return
+  if fieldSlotSize(ef.ret) > 0 {
+    wInsns.add(loadInsn(ef.ret, resultSlot))
+  }
+  wInsns.add(returnInsn(ef.ret))
+
+  val wFunc = LFunc(
+    flags     = ef.flags,
+    name      = ef.name,
+    params    = ef.params,
+    ret       = ef.ret,
+    insns     = wInsns,
+    maxStack  = ef.maxStack + 2,   // +2 headroom for lock acquire/release
+    maxLocals = ef.maxLocals + fieldSlotSize(ef.ret)
+  )
+  lowerFunc(wFunc, pool)
+}
+
+pub func lowerProtected(p: in LProtected, pool: in Pool): ClassFile {
+  val lockType = JRef(className = "java/util/concurrent/locks/ReentrantLock")
+  val methods: List[MethodInfo] = newList()
+  val cfFields: List[FieldInfo] = newList()
+
+  // _lock (private)
+  val lockFa: List[Attribute] = newList()
+  cfFields.add(makeFieldInfo(ACC_PRIVATE, "_lock", typeDescriptor(lockType), lockFa))
+
+  // Data fields (private)
+  for fld in p.fields.toArray() {
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PRIVATE, fld.name, typeDescriptor(fld.fieldType), fa))
+  }
+
+  // Constructor: <init>()V — super(), new lock, zero-init data fields
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val objPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(
+    owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid
+  ), ctorAsm)
+
+  // aload_0; new RL; dup; invokespecial RL.<init>; putfield _lock
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  lowerInsn(LNew(className = "java/util/concurrent/locks/ReentrantLock"), ctorAsm)
+  lowerInsn(LDup, ctorAsm)
+  val rlPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(
+    owner  = "java/util/concurrent/locks/ReentrantLock",
+    name   = "<init>",
+    params = rlPs,
+    ret    = JVoid
+  ), ctorAsm)
+  lowerInsn(LPutfield(owner = p.className, name = "_lock", t = lockType), ctorAsm)
+
+  // Zero-initialise each data field
+  for fld in p.fields.toArray() {
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    match fld.fieldType {
+      case JInt     -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JBoolean -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JByte    -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JChar    -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JShort   -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JFloat   -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JLong    -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2l, ctorAsm) }
+      case JDouble  -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2d, ctorAsm) }
+      case JVoid    -> ()
+      case JRef(_)  -> lowerInsn(LAconstNull, ctorAsm)
+      case JArray(_) -> lowerInsn(LAconstNull, ctorAsm)
+    }
+    match fld.fieldType {
+      case JVoid -> ()
+      case _     -> lowerInsn(LPutfield(owner = p.className, name = fld.name, t = fld.fieldType), ctorAsm)
+    }
+  }
+
+  lowerInsn(LReturn, ctorAsm)
+
+  // maxStack=3 (aload_0 + new RL + dup before invokespecial), maxLocals=1 (this)
+  val ctorCode = assembleCode(ctorAsm, 3, 1)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParamsEmpty: List[JvmType] = newList()
+  val ctorMethod = makeMethodInfo(
+    ACC_PUBLIC, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs
+  )
+  methods.add(ctorMethod)
+
+  // Entry methods (wrapped with lock acquire / release)
+  for ef in p.entries.toArray() {
+    methods.add(lowerEntry(ef, p.className, pool))
+  }
+
+  makeFinalClass(p.className, cfFields, methods)
+}
+
+pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
+  val methods: List[MethodInfo] = newList()
+  val cfFields: List[FieldInfo] = newList()
+
+  // Static fields (private static), one per binding
+  for b in w.bindings.toArray() {
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(
+      ACC_PRIVATE + ACC_STATIC, b.name, typeDescriptor(b.valType), fa
+    ))
+  }
+
+  // Private constructor (prevents external instantiation)
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val objPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(
+    owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid
+  ), ctorAsm)
+  lowerInsn(LReturn, ctorAsm)
+  val ctorCode = assembleCode(ctorAsm, 1, 1)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParamsEmpty: List[JvmType] = newList()
+  val ctorMethod = makeMethodInfo(
+    ACC_PRIVATE, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs
+  )
+  methods.add(ctorMethod)
+
+  // bootstrap()V — run each binding's insns and store to the static field
+  val bsAsm = newAssembler(pool)
+  for b in w.bindings.toArray() {
+    for insn in b.insns.toArray() {
+      lowerInsn(insn, bsAsm)
+    }
+    lowerInsn(LPutstatic(owner = w.className, name = b.name, t = b.valType), bsAsm)
+  }
+  lowerInsn(LReturn, bsAsm)
+  val bsCode = assembleCode(bsAsm, 3, 0)
+  val bsAttrs: List[Attribute] = newList()
+  bsAttrs.add(bsCode)
+  val bsParamsEmpty: List[JvmType] = newList()
+  val bsMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "bootstrap",
+    buildDescriptor(bsParamsEmpty, JVoid),
+    bsAttrs
+  )
+  methods.add(bsMethod)
+
+  // Public static accessor for each exposed binding: getstatic + return
+  for b in w.bindings.toArray() {
+    if isExposed(b.name, w.exposes) {
+      val accAsm = newAssembler(pool)
+      lowerInsn(LGetstatic(owner = w.className, name = b.name, t = b.valType), accAsm)
+      lowerInsn(returnInsn(b.valType), accAsm)
+      val accCode = assembleCode(accAsm, 1, 0)
+      val accAttrs: List[Attribute] = newList()
+      accAttrs.add(accCode)
+      val accParamsEmpty: List[JvmType] = newList()
+      val accMethod = makeMethodInfo(
+        ACC_PUBLIC + ACC_STATIC,
+        b.name,
+        buildDescriptor(accParamsEmpty, b.valType),
+        accAttrs
+      )
+      methods.add(accMethod)
+    }
+  }
+
+  makeFinalClass(w.className, cfFields, methods)
+}
+
 // ── B4: Union-type lowering ───────────────────────────────────────────────────
 //
 // A Lyric union `union Option { case Some(value: Int); case None }` maps to:

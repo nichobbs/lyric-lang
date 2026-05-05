@@ -425,6 +425,26 @@ pub func makeAbstractClass(
   )
 }
 
+/// Create a final class (`ACC_PUBLIC | ACC_SUPER | ACC_FINAL`) with
+/// `java/lang/Object` as superclass.  Used for protected types and wire classes.
+pub func makeFinalClass(
+  thisClass: in String,
+  fields:    in List[FieldInfo],
+  methods:   in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 /// Create a concrete case class that extends `superClass`.
 /// Used for individual cases in a union type hierarchy.
 pub func makeCaseClass(
