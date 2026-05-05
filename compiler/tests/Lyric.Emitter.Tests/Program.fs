@@ -71,5 +71,6 @@ let main argv =
             JvmLoweringB4Test.tests
             JvmLoweringB5Test.tests
             SelfHostedLexerTests.tests
+            MultiFilePackageTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
