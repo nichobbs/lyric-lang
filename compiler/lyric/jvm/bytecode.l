@@ -536,6 +536,24 @@ func emitAllInsns(
 
 // ── Public assembly entry point ───────────────────────────────────────────────
 
+/// Raw assembly result: code bytes + label-to-offset map.
+/// Used by Jvm.Lowering (B5) to compute stack-map frames before
+/// building the Code attribute.
+pub record AssemblyResult {
+  codeBytes:    List[Byte]
+  labelOffsets: Map[String, Int]
+}
+
+/// Assemble the instruction list to bytes and return both the code bytes
+/// and the label-offset map without building the Code attribute.
+/// Used by lowerFunc (B5) for stack-map computation.
+pub func assembleRaw(asm: in MethodAssembler): AssemblyResult {
+  val labels = buildLabelMap(asm.insns)
+  val code   = writerNew()
+  emitAllInsns(asm.insns, labels, code)
+  AssemblyResult(codeBytes = writerToList(code), labelOffsets = labels)
+}
+
 /// Run the two-pass assembler over `asm` and return a finished
 /// `Code` attribute.
 ///
