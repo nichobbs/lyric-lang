@@ -67,5 +67,6 @@ let main argv =
             KernelBoundaryTests.tests
             JvmSelfTest.tests
             JvmLoweringTest.tests
+            JvmLoweringB4Test.tests
         ]
     runTestsWithCLIArgs [] argv allTests

@@ -404,3 +404,44 @@ pub func makeClassFull(
     attrs        = newList()
   )
 }
+
+/// Create an abstract class (`ACC_PUBLIC | ACC_SUPER | ACC_ABSTRACT`)
+/// with `java/lang/Object` as superclass.  Used as the base of a union hierarchy.
+pub func makeAbstractClass(
+  thisClass: in String,
+  fields:    in List[FieldInfo],
+  methods:   in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
+/// Create a concrete case class that extends `superClass`.
+/// Used for individual cases in a union type hierarchy.
+pub func makeCaseClass(
+  thisClass:  in String,
+  superClass: in String,
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = superClass,
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
