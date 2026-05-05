@@ -427,6 +427,80 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
     pi = pi + 1
   }
 
+  // Pre-pass: collect types for any local slots assigned via store instructions.
+  // This extends the frame beyond the parameter frame for methods with local vars
+  // (e.g., intLoop stores slot 1 = int before the loopHead branch target).
+  val storeTypes: Map[Int, VerifierType] = newMap()
+  var pi3 = 0
+  while pi3 < f.insns.count {
+    match f.insns[pi3] {
+      case LIstore(s) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VInteger)
+          case Some(_) -> ()
+        }
+      }
+      case LLstore(s) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VLong)
+          case Some(_) -> ()
+        }
+      }
+      case LDstore(s) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VDouble)
+          case Some(_) -> ()
+        }
+      }
+      case LAstore(s) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VObject(className = "java/lang/Object"))
+          case Some(_) -> ()
+        }
+      }
+      case _ -> ()
+    }
+    pi3 = pi3 + 1
+  }
+
+  // Compute how many actual JVM slots the parameter frame covers.
+  // Long and Double each occupy 2 slots; all others occupy 1.
+  var paramSlotCount = 0
+  if not isStatic {
+    paramSlotCount = 1
+  }
+  var ili = 0
+  while ili < initialLocals.count {
+    match initialLocals[ili] {
+      case VLong   -> { paramSlotCount = paramSlotCount + 2 }
+      case VDouble -> { paramSlotCount = paramSlotCount + 2 }
+      case _       -> { paramSlotCount = paramSlotCount + 1 }
+    }
+    ili = ili + 1
+  }
+
+  // Build the full frame locals list: params first, then any extra stored slots.
+  val frameLocals: List[VerifierType] = newList()
+  var fli = 0
+  while fli < initialLocals.count {
+    frameLocals.add(initialLocals[fli])
+    fli = fli + 1
+  }
+  var slotIdx = paramSlotCount
+  while slotIdx < f.maxLocals {
+    match mapGet(storeTypes, slotIdx) {
+      case Some(vt) -> {
+        frameLocals.add(vt)
+        match vt {
+          case VLong   -> { slotIdx = slotIdx + 2 }
+          case VDouble -> { slotIdx = slotIdx + 2 }
+          case _       -> { slotIdx = slotIdx + 1 }
+        }
+      }
+      case None -> { slotIdx = slotIdx + 1 }
+    }
+  }
+
   // Walk the LInsn list in order; for each LLabel that is a branch target,
   // emit a full_frame (255) StackMapTable entry.
   val branchTargets = collectBranchTargets(f.insns)
@@ -444,10 +518,10 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
               val delta = off - prevOffset - 1
               writerByte(smBuf, 255)           // full_frame tag
               writerU2(smBuf, delta)           // offset_delta
-              writerU2(smBuf, initialLocals.count)
+              writerU2(smBuf, frameLocals.count)
               var vi = 0
-              while vi < initialLocals.count {
-                emitVType(initialLocals[vi], pool, smBuf)
+              while vi < frameLocals.count {
+                emitVType(frameLocals[vi], pool, smBuf)
                 vi = vi + 1
               }
               writerU2(smBuf, 0)               // stack items = 0 (empty)
