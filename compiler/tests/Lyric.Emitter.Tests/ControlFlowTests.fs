@@ -137,6 +137,47 @@ func main(): Unit {
 """,
     "2"
 
+    // Regression for the JIT `InvalidProgramException` that fired
+    // when an `if-else` in statement position had branches that
+    // disagreed on whether they leave a value: the then branch
+    // ends in an assignment (Void), while the else branch ends in
+    // a non-Unit-returning expression call (`Char`).  Without the
+    // EIf merge balancing, the else branch leaks the Char value
+    // across the loop edge and the JIT verifier rejects the IL.
+    // The fix in `Codegen.fs` `branchLeavesValue` + `discardBoth`
+    // pops the value-yielding branch's result so both reach the
+    // merge label at stack height 0.
+    "if_else_branches_disagree_on_value_yielding",
+    """
+package E3
+record State {
+  source: String
+  pos: Int
+  depth: Int
+}
+func advance(s: inout State): Char {
+  val c = s.source[s.pos]
+  s.pos = s.pos + 1
+  return c
+}
+func consume(s: inout State): Unit {
+  while s.depth > 0 and s.pos < s.source.length {
+    if s.source[s.pos] == '*' {
+      advance(s)
+      s.depth = s.depth - 1
+    } else {
+      advance(s)
+    }
+  }
+}
+func main(): Unit {
+  val s = State(source = "abc*de", pos = 0, depth = 1)
+  consume(s)
+  println(s.pos)
+}
+""",
+    "4"
+
     "while_count",
     """
 package E3

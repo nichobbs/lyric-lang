@@ -2471,8 +2471,18 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let lblEnd     = il.DefineLabel()
             let thenIsNever = isNeverBranch thenBranch
             let elseIsNever = isNeverBranch elseB
+            // Pre-decide whether the merge will be a value or Void.
+            // If either branch is statement-shaped (last stmt isn't an
+            // SExpr) the merged if-else MUST be Void: IL stack heights
+            // at lblEnd have to agree across reachers, and a mixed
+            // value/no-value merge produces unverifiable IL.
+            // Never-branches don't affect the answer because they
+            // diverge before lblEnd.
+            let thenLeaves = (not thenIsNever) && branchLeavesValue ctx thenBranch
+            let elseLeaves = (not elseIsNever) && branchLeavesValue ctx elseB
+            let discardBoth = thenLeaves <> elseLeaves
             il.Emit(OpCodes.Brfalse, lblElse)
-            let thenTy = emitBranchValue ctx thenBranch
+            let thenTy = emitBranchValueWith ctx thenBranch discardBoth
             // A Never-returning branch cannot reach lblEnd.  Terminate
             // its IL path with an unreachable throw so the JIT verifier
             // sees a single consistent stack height at the merge label.
@@ -2482,7 +2492,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             else
                 il.Emit(OpCodes.Br, lblEnd)
             il.MarkLabel(lblElse)
-            let elseTy = emitBranchValue ctx elseB
+            let elseTy = emitBranchValueWith ctx elseB discardBoth
             if elseIsNever && not thenIsNever then
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Throw)
@@ -3902,9 +3912,27 @@ and private emitBranch (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
 /// Like `emitBranch` but in expression-returning mode: the last
 /// statement of a block is kept on the stack rather than popped.
 /// Used for `if { … } else { … }` in expression position.
+///
+/// `discardLastValue: true` overrides this — even an SExpr-shaped
+/// last statement gets its value popped after emit.  Used by the
+/// EIf / EMatch codegen when one arm is value-shaped (SExpr with
+/// non-Void result) and the other is statement-shaped (SAssign,
+/// SLocal, SReturn, …): without this, the value-shaped arm leaks
+/// a stack slot at the merge label, producing IL the JIT verifier
+/// rejects with `InvalidProgramException`.
 and private emitBranchValue (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
+    emitBranchValueWith ctx b false
+
+and private emitBranchValueWith
+        (ctx: FunctionCtx) (b: ExprOrBlock) (discardLastValue: bool)
+        : ClrType =
     match b with
-    | EOBExpr e -> emitExpr ctx e
+    | EOBExpr e ->
+        let ty = emitExpr ctx e
+        if discardLastValue && ty <> typeof<System.Void> then
+            ctx.IL.Emit(OpCodes.Pop)
+            typeof<System.Void>
+        else ty
     | EOBBlock blk ->
         FunctionCtx.pushScope ctx
         let stmts = blk.Statements
@@ -3914,13 +3942,75 @@ and private emitBranchValue (ctx: FunctionCtx) (b: ExprOrBlock) : ClrType =
             if i = lastIdx then
                 match stmt.Kind with
                 | SExpr e ->
-                    resultTy <- emitExpr ctx e
+                    let ty = emitExpr ctx e
+                    if discardLastValue && ty <> typeof<System.Void> then
+                        ctx.IL.Emit(OpCodes.Pop)
+                        resultTy <- typeof<System.Void>
+                    else
+                        resultTy <- ty
                 | _ ->
                     emitStatement ctx stmt
             else
                 emitStatement ctx stmt)
         FunctionCtx.popScope ctx
         resultTy
+
+/// Predict whether `emitBranchValue` would leave a value on the stack
+/// for branch `b`, by looking at its last statement's shape WITHOUT
+/// emitting any IL.  Returns `true` if the last statement is an
+/// `SExpr` containing an expression that resolves to a non-Void
+/// CLR type via `peekExprType`; `false` for blocks ending in
+/// `SAssign`, `SLocal`, `SReturn`, `SWhile`, `SFor`, or `SExpr` of a
+/// known-Void shape (e.g. a call to a Unit-returning function).
+/// Bare-expression branches use the same predicate on their
+/// expression directly.
+///
+/// Recurses into nested `EIf` so an `else if … else if … else` chain
+/// answers based on whether *every* reachable arm leaves a value;
+/// `Never`-shaped arms (SReturn, calls to `panic`) are skipped
+/// because they diverge before the merge point.
+///
+/// Used by the EIf merge (`emitExpr EIf`) to detect when branches
+/// disagree on whether they leave a value — the JIT verifier rejects
+/// IL where two reachers of the same merge label have different stack
+/// heights, which surfaces at runtime as `InvalidProgramException`.
+and private branchLeavesValue (ctx: FunctionCtx) (b: ExprOrBlock) : bool =
+    let rec exprLeaves (e: Lyric.Parser.Ast.Expr) : bool =
+        match e.Kind with
+        | EIf (_, thenB, Some elseB, _) ->
+            // The merge leaves a value only if both arms do.  A
+            // `Never`-arm is skipped: it diverges before reaching the
+            // merge label, so its presence doesn't affect what reaches
+            // there from the other arm.
+            let thenNever = isNeverBranch thenB
+            let elseNever = isNeverBranch elseB
+            let thenLeaves = (not thenNever) && branchLeavesValue ctx thenB
+            let elseLeaves = (not elseNever) && branchLeavesValue ctx elseB
+            // If both arms diverge the if-as-expression has no merge
+            // reach.  Treat as "no value" — emitBranchValue won't pop
+            // because there's no value to push.
+            if thenNever && elseNever then false
+            elif thenNever then elseLeaves
+            elif elseNever then thenLeaves
+            else thenLeaves && elseLeaves
+        | EIf (_, _, None, _) ->
+            // `if … { … }` with no else is a statement form; merges
+            // to Void.
+            false
+        | _ ->
+            // `peekExprType` knows about Lyric funcs / imported funcs
+            // / delegate-typed locals.  Falls back to `typeof<obj>`
+            // for shapes it can't analyse — conservative answer for
+            // those is "leaves a value", preserving existing
+            // behaviour on uncovered shapes.
+            let ty = peekExprType ctx e
+            ty <> typeof<System.Void>
+    match b with
+    | EOBExpr e -> exprLeaves e
+    | EOBBlock blk ->
+        match List.tryLast blk.Statements with
+        | Some { Kind = SExpr e } -> exprLeaves e
+        | _ -> false
 
 /// Compile-time predicate: does `pat` always match? Identifier
 /// patterns are catch-alls *unless* the name names an enum case or

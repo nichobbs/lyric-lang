@@ -24,20 +24,14 @@
 // comments, and statement-end insertion with the same suppression set
 // used by the bootstrap.
 //
-// Several patterns the bootstrap uses freely are deliberately avoided
-// here because the bootstrap parser/codegen does not yet implement
-// them: or-patterns in `match` arms, nested constructor patterns
-// (`case Some(KwTrue)`), and tuple destructuring (`val (a, b) = …`).
-// In their place this file uses small named records and explicit
-// nested `match` expressions; the v0.2 self-host can collapse them
-// once the bootstrap gains the missing pattern support.
-// Phase 5 §M5.1 stage 1 ships the lexer + its self-test in a single
-// package because the bootstrap emitter does not yet generate field
-// accessors for cross-package record imports (`Codegen.fs:1969-2005`
-// only consults the local `ctx.Records` table — imported records fall
-// through to a BCL property lookup that fails on `LexResult.tokens`).
-// The next milestone, M5.1 stage 2, will extend the emitter and split
-// the lexer into its own `Lyric.Lexer` library + a tiny consumer.
+// Stage 1 of M5.1 deliberately avoided several patterns the
+// bootstrap couldn't yet handle (or-patterns, nested constructor
+// patterns, tuple destructuring, bare non-Unit-returning calls in
+// statement position, `Option[T]` over a TypeBuilder type-arg, and
+// cross-package field reads on imported records).  The bootstrap
+// has since gained all of these; the lexer continues to live in a
+// single package alongside its self-test until M5.1 stage 2b
+// finishes the library split — see `docs/19-multi-file-packages.md`.
 package Lyric.LexerSelfTest
 
 import Std.Core
@@ -839,15 +833,15 @@ func skipBlockComment(state: inout LexerState, startP: in Position): Unit {
   var depth = 1
   while depth > 0 and not isAtEnd(state) {
     if peek(state) == '/' and peekAt(state, 1) == '*' {
-      val _a = advance(state)
-      val _b = advance(state)
+      advance(state)
+      advance(state)
       depth = depth + 1
     } else if peek(state) == '*' and peekAt(state, 1) == '/' {
-      val _a = advance(state)
-      val _b = advance(state)
+      advance(state)
+      advance(state)
       depth = depth - 1
     } else {
-      val _ = advance(state)
+      advance(state)
     }
   }
   if depth > 0 {
@@ -906,7 +900,7 @@ func skipTrivia(state: inout LexerState): Unit {
       // OR-in the new flag so a `\n` followed by `\t` keeps the
       // pending state set until the next non-trivia emit.
       state.newlinePending = state.newlinePending or (c == '\n')
-      val _ = advance(state)
+      advance(state)
     } else if isLineCommentStart(state) {
       consumeLineCommentOrDocComment(state)
     } else if isBlockCommentStart(state) {
@@ -1458,7 +1452,7 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
                 makeSpan(startP, currentPosition(state)))
     return '\u{FFFD}'
   }
-  val _ = advance(state)   // '{'
+  advance(state)   // '{'
   var hexBody = ""
   var n = 0
   while not isAtEnd(state) and peek(state) != '}' and n < 6 {
@@ -1470,7 +1464,7 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
                 makeSpan(startP, currentPosition(state)))
     return '\u{FFFD}'
   }
-  val _ = advance(state)   // '}'
+  advance(state)   // '}'
   match parseDigits(hexBody, 16) {
     case Some(v) -> {
       if v < 0i64 or v > 65535i64 {
@@ -1493,7 +1487,7 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
 
 func lexCharLiteral(state: inout LexerState): Unit {
   val startP = currentPosition(state)
-  val _ = advance(state)   // opening '
+  advance(state)   // opening '
   if isAtEnd(state) {
     recordError(state, "L0024", "unterminated character literal",
                 makeSpan(startP, currentPosition(state)))
@@ -1502,7 +1496,7 @@ func lexCharLiteral(state: inout LexerState): Unit {
   }
   val ch = readCharLiteralBody(state, startP)
   if peek(state) == '\'' {
-    val _ = advance(state)
+    advance(state)
   } else {
     recordError(state, "L0024", "unterminated character literal",
                 makeSpan(startP, currentPosition(state)))
@@ -1518,7 +1512,7 @@ func lexCharLiteral(state: inout LexerState): Unit {
 /// receivers).
 func readCharLiteralBody(state: inout LexerState, startP: in Position): Char {
   if peek(state) == '\\' {
-    val _ = advance(state)    // consume the backslash
+    advance(state)    // consume the backslash
     lexEscape(state, startP)
   } else {
     advance(state)
