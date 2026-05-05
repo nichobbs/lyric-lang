@@ -132,3 +132,23 @@ The verifier is about 4,000 lines of F# in `compiler/src/Lyric.Verifier/`. The p
 Up from **690** at the first post — **+702 tests** in two weeks. The Verifier, LSP, and CLI suites are entirely new. The Emitter suite roughly doubled. Bootstrap-progress entries: **D-progress-092** (was 032 at the first post — 60 new entries).
 
 The headline: Phase 4 was scoped for months 39–57. M4.1 through M4.3 shipped in 14 days, with 242 tests covering the proof system.
+
+---
+
+## Fact-check: "what remains genuinely deferred"
+
+A draft of the post cited real async state machines, reflection-driven FFI, the package manager, and the formatter as things still on the list. All four have shipped. Don't use them as examples of deferred work.
+
+| Claim | Actual status |
+|---|---|
+| Real async state machines | **Shipped.** D-progress-033 through 076; closed out in PR #62. The emitter generates a real state machine class — not the `.GetAwaiter().GetResult()` shim from M1.4. |
+| Reflection-driven FFI | **Shipped.** C4 Phase 1 (D-progress-026) and Phase 2 (D-progress-061) — score-based auto-FFI matching against BCL types. |
+| Package manager | **Shipped.** `lyric.toml`, `lyric publish`, `lyric restore`, `lyric build --manifest` (D-progress-077, 078). |
+| Formatter | **Shipped.** `lyric fmt --write` / `--check` and `lyric lint` landed in PR #107. |
+
+**What is actually still deferred** (good substitutes for the post):
+
+- **Real CLR generic constraints** — generic `where T: Hash` bounds are still checked at monomorphisation call sites rather than lowered to CLR constraint metadata. Marked "Phase 5 target" in `docs/09-msil-emission.md` §9.4.
+- **Async lambdas / closures** — the Phase B state machine doesn't synthesise async lambdas; that's noted in the progress doc.
+- **`lyric prove` for async interleavings** — the proof story is sequential per-entry; concurrency verification (protected type schedule fairness) is explicitly out of scope for Phase 4.
+- **M4.3 LSP counterexample UX** — `--explain` JSON schema and inline fix-its in the editor are noted as post-v2.0 polish in `docs/15-phase-4-proof-plan.md`.
