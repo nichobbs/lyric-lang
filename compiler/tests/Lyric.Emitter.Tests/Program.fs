@@ -36,6 +36,7 @@ let main argv =
             DeferTests.tests
             StdlibImportTests.tests
             NegativePatternTests.tests
+            PatternMatchingTests.tests
             InlineMethodTests.tests
             EndToEndSmokeTests.tests
             BuiltinTests.tests
