@@ -85,9 +85,25 @@ pub func writerPatchU4(w: in ByteWriter, offset: in Int, v: in Int): Unit = ()
 @externTarget("Lyric.Stdlib.JvmByteHost.ToBytes")
 pub func writerToBytes(w: in ByteWriter): slice[Byte] = ()
 
+/// Append a 2-byte little-endian unsigned integer (for ZIP format).
+@externTarget("Lyric.Stdlib.JvmByteHost.AppendU2Le")
+pub func writerU2Le(w: in ByteWriter, v: in Int): Unit = ()
+
+/// Append a 4-byte little-endian unsigned integer (for ZIP format).
+/// Handles signed int32 values whose bit pattern represents a uint32 (e.g. CRC32).
+@externTarget("Lyric.Stdlib.JvmByteHost.AppendU4Le")
+pub func writerU4Le(w: in ByteWriter, v: in Int): Unit = ()
+
 /// Materialise all written bytes as a `List[Byte]`.
 @externTarget("Lyric.Stdlib.JvmByteHost.ToList")
 pub func writerToList(w: in ByteWriter): List[Byte] = ()
+
+// ── ZIP / CRC32 ───────────────────────────────────────────────────────────────
+
+/// CRC32 (ISO 3309, reflected polynomial) of a `List[Byte]`.
+/// Returns the checksum value; the bit pattern is the standard uint32 CRC32.
+@externTarget("Lyric.Stdlib.JvmZipHost.Crc32")
+pub func crc32(data: in List[Byte]): Int = ()
 
 // ── Constant-pool operations ──────────────────────────────────────────────────
 
