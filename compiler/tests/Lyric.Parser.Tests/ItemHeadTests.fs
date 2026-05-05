@@ -64,8 +64,42 @@ let tests =
             Expect.equal it.DocComments.Length 2 "two doc lines"
             Expect.equal it.Annotations.Length 1 "one annotation"
             match it.Visibility with
+            | Some (Pub _)      -> ()
+            | Some (Internal _) -> failtest "expected pub, got internal"
+            | None              -> failtest "expected pub"
+        }
+
+        test "internal visibility parses on funcs, records, and fields" {
+            let src =
+                prelude
+                + "internal func helper(): Int = 1\n"
+                + "internal record Hidden { internal value: Int }\n"
+                + "pub record Mixed {\n"
+                + "  pub vis: Int\n"
+                + "  internal hid: Int\n"
+                + "  bare: Int\n"
+                + "}\n"
+            let r = parseFile src
+            // Expect three top-level items.
+            Expect.equal r.File.Items.Length 3 "three items"
+            // First item: internal func.
+            match r.File.Items.[0].Visibility with
+            | Some (Internal _) -> ()
+            | other -> failtestf "func: expected Internal, got %A" other
+            // Second item: internal record.
+            match r.File.Items.[1].Visibility with
+            | Some (Internal _) -> ()
+            | other -> failtestf "record: expected Internal, got %A" other
+            // Third item: pub record with mixed-vis fields.
+            match r.File.Items.[2].Visibility with
             | Some (Pub _) -> ()
-            | None -> failtest "expected pub"
+            | other -> failtestf "Mixed record: expected Pub, got %A" other
+            // No syntax errors.
+            let parseErrs =
+                r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "P")
+            Expect.isEmpty parseErrs
+                (sprintf "no parse errors expected (got: %A)"
+                    (parseErrs |> List.map (fun d -> d.Code)))
         }
 
         test "two consecutive items, both recognised and parsed" {

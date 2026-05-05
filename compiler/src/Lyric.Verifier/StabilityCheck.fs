@@ -86,8 +86,9 @@ let stabilityOfItem (item: Item) : StabilityLevel =
 
 let private isPub (item: Item) : bool =
     match item.Visibility with
-    | Some (Pub _) -> true
-    | None         -> false
+    | Some (Pub _)      -> true
+    | Some (Internal _) -> false   // hidden from cross-project consumers
+    | None              -> false
 
 let private nameOfItemKind (kind: ItemKind) : string option =
     match kind with

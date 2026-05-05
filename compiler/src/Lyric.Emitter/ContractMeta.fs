@@ -128,8 +128,16 @@ let private renderTypeExpr (te: TypeExpr) : string =
         | TError -> "<?>"
     go te
 
+/// True iff a symbol is part of the *external* contract surface.
+/// `pub` is in; `internal` and package-private are both out — internals
+/// are visible inside the project but invisible to cross-project
+/// consumers reading the contract resource (per
+/// `docs/20-project-as-dll.md` §2).
 let private isPub (vis: Visibility option) =
-    match vis with Some _ -> true | None -> false
+    match vis with
+    | Some (Pub _)      -> true
+    | Some (Internal _) -> false
+    | None              -> false
 
 /// Encode the stability annotations on an `Item` as the canonical
 /// stability string stored in `ContractDecl.Stability`.
