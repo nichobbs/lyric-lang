@@ -1099,7 +1099,14 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // BCL indexer: any class with a `get_Item(<idx>)` method
             // (List<T>, Dictionary<K, V>, etc.) supports `recv[idx]`.
             // Uses getRecvMethods/closeBclMethod to handle TypeBuilderInstantiation
-            // receivers (e.g. List<JvmType_TypeBuilder>).
+            // receivers (e.g. List<JvmType_TypeBuilder> or List<SpannedToken>
+            // where the type-arg is still a TypeBuilder under construction):
+            // the open `get_Item` is found on the generic definition, then
+            // closed against the constructed receiver before emission.
+            // `MethodOnTypeBuilderInstantiation.ReturnType` keeps the open
+            // generic param ('T'); re-substitute against the closed receiver
+            // so callers see the concrete element type (e.g. `Diagnostic`
+            // from `List[Diagnostic]`).
             let getItem =
                 getRecvMethods recvTy
                 |> Array.tryFind (fun m ->
