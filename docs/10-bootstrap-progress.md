@@ -38,10 +38,11 @@ deferred to Phase 3 by design.
 | M5.1 stage 2b' — codegen polish: EIf merge-balance + tuple/field TypeBuilder paths | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (PR #129) | D-progress-096 |
 | M5.1 stage 2c.2.i — `[project]` table in `lyric.toml` (Manifest parsing + tests) | **Shipped** (this branch) | D-progress-097 |
-| M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP: independent packages bundle into one PE, per-package contract resources | **Shipped** (this branch) | D-progress-098 |
-| M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project + `internal` → CLR `assembly` access modifier + B0020/B0021 surfacing | Designed; in progress | — |
-| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` walk all `Lyric.Contract.<Pkg>` resources | Pending 2c.2.ii.b | — |
-| M5.1 stage 2c.2.iv — CLI integration (`lyric build` reads `[project]` + dispatches to `emitProject`) | Pending 2c.2.ii.b | — |
+| M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP: independent packages bundle into one PE, per-package contract resources | **Shipped** (PR #133) | D-progress-098 |
+| M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project: topo-sort emit, in-project artifacts, B0020 cycle diagnostic | **Shipped** (this branch) | D-progress-099 |
+| M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | Pending | — |
+| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` walk all `Lyric.Contract.<Pkg>` resources | Pending 2c.2.ii.c | — |
+| M5.1 stage 2c.2.iv — CLI integration (`lyric build` reads `[project]` + dispatches to `emitProject`) | Pending 2c.2.ii.c | — |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -163,6 +164,98 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-099: M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project
+
+*claude/project-dll-cross-pkg branch.*  Builds on D-progress-098 to
+let package B import package A within the same single-DLL project.
+The MVP from 2c.2.ii.a only handled independent packages; this
+slice closes the gap so the stdlib can compile as one bundled DLL
+(every `Std.X` package importing siblings).
+
+**`StdlibArtifact` refactor.**
+
+* `StdlibArtifact.Assembly: Assembly` becomes
+  `StdlibArtifact.Assembly: Assembly option` and gains a new
+  `Lookup: string -> System.Type option` field.  The single
+  consumer (the import-table population loop in `emitAssembly`)
+  now calls `artifact.Lookup` instead of `artifact.Assembly.GetType`.
+  Stdlib + restored-package artifacts still carry a real
+  `Assembly` and bind `Lookup = fun n -> Option.ofObj (asm.GetType n)`;
+  in-project artifacts pass `Assembly = None` and bind `Lookup`
+  to a shared name-keyed dictionary populated by the emit loop.
+
+**`emitAssembly` — type-export hook.**
+
+* New trailing parameter `typesOut: Dictionary<string, Type> option`.
+  When `Some d`, every sealed `TypeBuilder` (interface, record,
+  union base + cases, async state machine, program type) is added
+  to `d` keyed by its fully-qualified `FullName`.  Builder types
+  whose `FullName` is null mid-construction are skipped (closure
+  helpers etc. that downstream packages don't reference).  The
+  legacy single-package `emit` path passes `None`.
+
+**`emitProject` rewrite.**
+
+* Phase A0 — parse every package up front.
+* Phase A1 — extract intra-project import edges (an `import P` is
+  intra-project iff `P` matches some `req.Packages.PackageName`)
+  and run Kahn's algorithm to topo-sort.  A non-empty residual
+  in-degree set surfaces as `B0020` listing the packages still
+  involved in cycles.
+* Phase A2 — iterate packages in topo order.  For each, partition
+  its imports into intra-project / restored / stdlib three ways,
+  splice the matched in-project artifacts into the
+  `mergedArtifacts` list ahead of restored + stdlib, and call
+  `emitAssembly` with both the shared `Backend.EmitContext` AND
+  the shared `typesByName` dictionary.  After a clean emit, capture
+  the package as a `StdlibArtifact` whose `Lookup` reads from the
+  shared dictionary; downstream packages see its full surface.
+
+**Why the shared dictionary, not `module.GetType`.**
+
+* `PersistedAssemblyBuilder`'s `ModuleBuilder` does NOT implement
+  `GetType(string)` or `GetTypes()` (verified via probe — both
+  throw `NotImplementedException` in .NET 10.0.107).  So the
+  intra-project artifact's `Lookup` can't go through the module.
+  `emitAssembly` instead populates a dictionary as `CreateType()`
+  seals each `TypeBuilder`, and intra-project artifacts query that
+  dictionary.  The TypeBuilder stays the same `Type` instance
+  pre/post `CreateType()` (for our purposes), so the dictionary
+  yields fully-formed CLR types ready for the import-table
+  registration loop.
+
+**Tests.**
+
+* `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` gains:
+  * `[cross_package_bundle]` — `CrossPkg.Util` declared first
+    in `req.Packages` but importing `CrossPkg.Core` (declared
+    second).  Must topo-sort to emit Core first; Util's
+    `quadruple(x) = double(x) + double(x)` resolves the
+    cross-package call.  Both per-package contracts land in
+    the bundled DLL.
+  * `[B0020_import_cycle]` — `Cycle.A` imports `Cycle.B`,
+    `Cycle.B` imports `Cycle.A`.  Topo sort cannot order them;
+    emitter surfaces `B0020`.
+
+**Test totals.**  511 emitter tests pass (was 509 + 2 new).
+Lexer, parser, type checker, CLI, and verifier suites stay
+green.
+
+**Still deferred.**
+
+* `internal` → CLR `assembly` access modifier.  Codegen still
+  emits all top-level methods + types as `Public`.  This is fine
+  for the immediate goal — within a single bundled DLL,
+  `internal` items are callable from sibling packages anyway, and
+  the `Lyric.Contract.<Pkg>` resource already gates external
+  consumers (only `pub` items appear in the contract).  Reflection-
+  level enforcement is sub-stage 2c.2.ii.c.
+* CLI integration (`lyric build` reading `[project]` and routing
+  to `emitProject`) — sub-stage 2c.2.iv.
+* `lyric publish` / `lyric restore` walking every
+  `Lyric.Contract.<Pkg>` resource — sub-stage 2c.2.iii.
+
 
 ### D-progress-098: M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP
 
