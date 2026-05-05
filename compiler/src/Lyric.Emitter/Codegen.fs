@@ -536,7 +536,11 @@ let private resolveBclMethod
         let pars = m.GetParameters()
         let mutable ok = true
         for i in 0 .. argTys.Length - 1 do
-            if ok && not (cmp pars.[i].ParameterType argTys.[i]) then
+            let a = argTys.[i]
+            // typeof<obj> from peekExprType means the type is unknown at peek
+            // time (e.g. a field-access whose receiver type isn't tracked);
+            // skip the check and trust the Lyric type checker's prior work.
+            if ok && a <> typeof<obj> && not (cmp pars.[i].ParameterType a) then
                 ok <- false
         ok
     let tryResolve (candidates: MethodInfo array) =
@@ -1094,15 +1098,18 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         else
             // BCL indexer: any class with a `get_Item(<idx>)` method
             // (List<T>, Dictionary<K, V>, etc.) supports `recv[idx]`.
+            // Uses getRecvMethods/closeBclMethod to handle TypeBuilderInstantiation
+            // receivers (e.g. List<JvmType_TypeBuilder>).
             let getItem =
-                recvTy.GetMethods()
+                getRecvMethods recvTy
                 |> Array.tryFind (fun m ->
                     m.Name = "get_Item"
                     && m.GetParameters().Length = 1)
             match getItem with
-            | Some m ->
+            | Some openM ->
+                let m = closeBclMethod recvTy openM
                 il.Emit(OpCodes.Callvirt, m)
-                m.ReturnType
+                substituteGenericArgs openM.ReturnType recvTy
             | None ->
                 failwithf "E7 codegen: indexing on non-array / non-string %s"
                     recvTy.Name
@@ -1919,7 +1926,36 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             if method.ReturnType = typeof<System.Void> then
                 typeof<System.Void>
             else
-                method.ReturnType
+                // When recvTy is a TypeBuilderInstantiation (e.g. List<LField_TypeBuilder>),
+                // TypeBuilder.GetMethod returns open-param return types (T[]) instead of
+                // the closed type (LField_TypeBuilder[]). Substitute manually.
+                let rawRet = method.ReturnType
+                if isGenericInstantiationOnGtpb recvTy
+                   && rawRet.ContainsGenericParameters
+                   && recvTy.IsGenericType
+                   && not recvTy.IsGenericTypeDefinition then
+                    let openDef  = recvTy.GetGenericTypeDefinition()
+                    let openPars = openDef.GetGenericArguments()
+                    let closedArgs = recvTy.GetGenericArguments()
+                    let subst = System.Collections.Generic.Dictionary<ClrType, ClrType>()
+                    for i in 0 .. openPars.Length - 1 do
+                        subst.[openPars.[i]] <- closedArgs.[i]
+                    let rec closeType (t: ClrType) =
+                        match subst.TryGetValue t with
+                        | true, c -> c
+                        | _ ->
+                            if t.IsArray then
+                                let et = match Option.ofObj (t.GetElementType()) with
+                                         | Some e -> closeType e
+                                         | None   -> t
+                                et.MakeArrayType()
+                            elif t.IsGenericType && not t.IsGenericTypeDefinition then
+                                let oT   = t.GetGenericTypeDefinition()
+                                let args = t.GetGenericArguments() |> Array.map closeType
+                                oT.MakeGenericType args
+                            else t
+                    closeType rawRet
+                else rawRet
         | None ->
             codegenErr ctx "E0012"
                 (sprintf "no method '%s' on type %s" methodName recvTy.Name) e.Span
@@ -2002,6 +2038,22 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                             f.Type
                     | None ->
                         failwithf "E5/E7 codegen: record '%s' has no field '%s'"
+                            r.Name fieldName
+                | None
+                    when ctx.ImportedRecords.Values
+                         |> Seq.exists (fun r ->
+                             r.Type = recvTy || r.Type = recvOpenTy) ->
+                    // Imported records from stdlib artifacts (e.g. Jvm.Lowering's LFunc).
+                    let r =
+                        ctx.ImportedRecords.Values
+                        |> Seq.find (fun r ->
+                            r.Type = recvTy || r.Type = recvOpenTy)
+                    match r.Fields |> List.tryFind (fun f -> f.Name = fieldName) with
+                    | Some f ->
+                        il.Emit(OpCodes.Ldfld, f.Field)
+                        f.Type
+                    | None ->
+                        failwithf "E5/E7 codegen: imported record '%s' has no field '%s'"
                             r.Name fieldName
                 | None when isBclType recvTy ->
                     // BCL property fallback: lyric `s.length` -> `String.Length`.
@@ -2832,6 +2884,69 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 match lbOpt with
                 | Some lb -> il.Emit(OpCodes.Ldloc, lb)
                 | None    -> ()
+            il.Emit(OpCodes.Newobj, constructedCtor)
+            constructed
+
+    // ---- imported record construction (e.g. LFunc(...) from Jvm.Lowering) ----
+
+    | ECall ({ Kind = EPath { Segments = [name] } }, args)
+        when ctx.ImportedRecords.ContainsKey name ->
+        let info = ctx.ImportedRecords.[name]
+        let namedMap =
+            args
+            |> List.choose (function
+                | CANamed (n, ex, _) -> Some (n, ex)
+                | _ -> None)
+            |> Map.ofList
+        let positional =
+            args
+            |> List.choose (function
+                | CAPositional ex -> Some ex
+                | _ -> None)
+        let mutable posIdx = 0
+        let argExprs =
+            info.Fields
+            |> List.map (fun f ->
+                match Map.tryFind f.Name namedMap with
+                | Some ex -> ex
+                | None ->
+                    if posIdx < List.length positional then
+                        let ex = List.item posIdx positional
+                        posIdx <- posIdx + 1
+                        ex
+                    else
+                        failwithf "imported record '%s' missing field '%s'" name f.Name)
+        if List.isEmpty info.Generics then
+            for (f, argExpr) in List.zip info.Fields argExprs do
+                let argTy = emitExpr ctx argExpr
+                if f.Type = typeof<obj> && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy)
+            il.Emit(OpCodes.Newobj, info.Ctor)
+            info.Type
+        else
+            // Generic imported record: peek args to bind type params, close, Newobj.
+            let bindings = System.Collections.Generic.Dictionary<string, ClrType>()
+            let rec bind (lyricTy: Lyric.TypeChecker.Type) (argTy: ClrType) =
+                match lyricTy with
+                | Lyric.TypeChecker.TyVar n ->
+                    if not (bindings.ContainsKey n) then bindings.[n] <- argTy
+                | _ -> ()
+            for (f, argExpr) in List.zip info.Fields argExprs do
+                bind f.LyricType (peekExprType ctx argExpr)
+            let typeArgs =
+                info.Generics
+                |> List.map (fun n ->
+                    match bindings.TryGetValue n with
+                    | true, t  -> t
+                    | false, _ -> typeof<obj>)
+                |> List.toArray
+            let constructed = info.Type.MakeGenericType typeArgs
+            let constructedCtor =
+                constructed.GetConstructors() |> Array.find (fun c ->
+                    c.GetParameters().Length = info.Fields.Length)
+            for argExpr in argExprs do
+                let _ = emitExpr ctx argExpr
+                ()
             il.Emit(OpCodes.Newobj, constructedCtor)
             constructed
 
@@ -3880,6 +3995,49 @@ and private emitPatternTest
             match path.Segments with
             | [name] -> name
             | _ -> String.concat "." path.Segments
+        // Emit the isinst type test followed by short-circuit sub-pattern
+        // checks for any non-trivial inner patterns (literals, nested ctors).
+        // getFields is a thunk evaluated only when sub-pattern checks are needed.
+        let emitTypeTestAndSubs (testTy: ClrType) (getFields: unit -> (string * ClrType * FieldInfo) list) =
+            il.Emit(OpCodes.Ldloc, tmp)
+            il.Emit(OpCodes.Isinst, testTy)
+            il.Emit(OpCodes.Ldnull)
+            il.Emit(OpCodes.Cgt_Un)
+            let hasNonTrivialSub =
+                sub |> List.exists (fun sp ->
+                    match sp.Kind with
+                    | PWildcard | PBinding (_, None) -> false
+                    | _ -> true)
+            if hasNonTrivialSub then
+                let lblFalse = il.DefineLabel()
+                let lblEnd   = il.DefineLabel()
+                // consume the type-test bool; if 0 short-circuit to false
+                il.Emit(OpCodes.Brfalse, lblFalse)
+                let castedTmp = FunctionCtx.defineLocal ctx ("__subtest_" + key) testTy
+                il.Emit(OpCodes.Ldloc, tmp)
+                il.Emit(OpCodes.Castclass, testTy)
+                il.Emit(OpCodes.Stloc, castedTmp)
+                let caseFields = getFields ()
+                let pairs =
+                    List.zip
+                        (sub |> List.truncate (List.length caseFields))
+                        caseFields
+                for (sp, (fieldName, fty, fInfo)) in pairs do
+                    match sp.Kind with
+                    | PWildcard | PBinding (_, None) -> ()
+                    | _ ->
+                        let fieldTmp =
+                            FunctionCtx.defineLocal ctx ("__ft_" + fieldName) fty
+                        il.Emit(OpCodes.Ldloc, castedTmp)
+                        il.Emit(OpCodes.Ldfld, fInfo)
+                        il.Emit(OpCodes.Stloc, fieldTmp)
+                        emitPatternTest ctx fieldTmp fty sp
+                        il.Emit(OpCodes.Brfalse, lblFalse)
+                il.Emit(OpCodes.Ldc_I4_1)
+                il.Emit(OpCodes.Br, lblEnd)
+                il.MarkLabel(lblFalse)
+                il.Emit(OpCodes.Ldc_I4_0)
+                il.MarkLabel(lblEnd)
         match ctx.EnumCases.TryGetValue key with
         | true, (_, c) when sub.IsEmpty ->
             il.Emit(OpCodes.Ldloc, tmp)
@@ -3888,12 +4046,6 @@ and private emitPatternTest
         | _ ->
             match ctx.UnionCases.TryGetValue key with
             | true, (info, caseInfo) ->
-                // `tmp is CaseSubclass` — `isinst` returns the value
-                // typed as the subclass, or `null`. We use the
-                // `cgt.un` against ldnull idiom to convert "not null"
-                // into the bool 1.  For generic unions, instantiate
-                // the case type with the scrutinee's type args first
-                // so the test compares apples to apples.
                 let testTy =
                     if List.isEmpty info.Generics
                        || not slotTy.IsGenericType
@@ -3901,14 +4053,26 @@ and private emitPatternTest
                     else
                         let argTys = slotTy.GetGenericArguments()
                         (caseInfo.Type :> System.Type).MakeGenericType argTys
-                il.Emit(OpCodes.Ldloc, tmp)
-                il.Emit(OpCodes.Isinst, testTy)
-                il.Emit(OpCodes.Ldnull)
-                il.Emit(OpCodes.Cgt_Un)
+                emitTypeTestAndSubs testTy (fun () ->
+                    if List.isEmpty info.Generics || not slotTy.IsGenericType then
+                        caseInfo.Fields |> List.map (fun f ->
+                            f.Name, f.Type, (f.Field :> FieldInfo))
+                    else
+                        let argTys = slotTy.GetGenericArguments()
+                        let constructed =
+                            (caseInfo.Type :> System.Type).MakeGenericType argTys
+                        let substMap =
+                            info.Generics
+                            |> List.mapi (fun i n -> n, argTys.[i])
+                            |> Map.ofList
+                        caseInfo.Fields |> List.map (fun f ->
+                            let substTy =
+                                Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                    ctx.Lookup substMap f.LyricType
+                            let fi = TypeBuilder.GetField(constructed, f.Field)
+                            f.Name, substTy, fi))
             | _ ->
-                // Imported variant-bearing union case.  Same shape as
-                // the local generic case: instantiate the case type
-                // with the scrutinee's type-arg array before testing.
+                // Imported variant-bearing union case.
                 match ctx.ImportedUnionCases.TryGetValue key with
                 | true, (info, caseInfo) ->
                     let testTy =
@@ -3917,10 +4081,29 @@ and private emitPatternTest
                         then caseInfo.Type
                         else caseInfo.Type.MakeGenericType
                                 (slotTy.GetGenericArguments())
-                    il.Emit(OpCodes.Ldloc, tmp)
-                    il.Emit(OpCodes.Isinst, testTy)
-                    il.Emit(OpCodes.Ldnull)
-                    il.Emit(OpCodes.Cgt_Un)
+                    emitTypeTestAndSubs testTy (fun () ->
+                        if List.isEmpty info.Generics || not slotTy.IsGenericType then
+                            caseInfo.Fields |> List.map (fun f -> f.Name, f.Type, f.Field)
+                        else
+                            let argTys = slotTy.GetGenericArguments()
+                            let constructed = caseInfo.Type.MakeGenericType argTys
+                            let substMap =
+                                info.Generics
+                                |> List.mapi (fun i n -> n, argTys.[i])
+                                |> Map.ofList
+                            caseInfo.Fields |> List.map (fun f ->
+                                let substTy =
+                                    Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                        ctx.Lookup substMap f.LyricType
+                                let fi =
+                                    if constructed :? TypeBuilder
+                                       || constructed.GetType().Name = "TypeBuilderInstantiation"
+                                    then TypeBuilder.GetField(constructed, f.Field)
+                                    else
+                                        match Option.ofObj (constructed.GetField f.Name) with
+                                        | Some x -> x
+                                        | None   -> f.Field
+                                f.Name, substTy, fi))
                 | _ ->
                     failwithf "E11 codegen: unknown constructor pattern '%s'"
                         (String.concat "." path.Segments)
@@ -4070,8 +4253,40 @@ and private emitMatch
             il.Emit(OpCodes.Brfalse, nextArm)
         FunctionCtx.pushScope ctx
         emitPatternBind ctx tmp arm.Pattern
-        let armTy = emitBranch ctx arm.Body
-        if resultTy.IsNone then resultTy <- Some armTy
+        let rawArmTy = emitBranch ctx arm.Body
+        let isNever  = isNeverBranch arm.Body
+        // Never-returning arms (e.g. `-> panic(...)`): close the path with
+        // `ldnull; throw` so the CLR verifier doesn't require a stack value
+        // at the branch-merge label from this arm.  The `br endLbl` below
+        // becomes dead code but is harmless.
+        if isNever then
+            il.Emit(OpCodes.Ldnull)
+            il.Emit(OpCodes.Throw)
+        // Reconcile stack height with previously established result type.
+        // Lyric Unit (ValueTuple) expression arms push a value; block arms
+        // push nothing.  When the two are mixed the CLR verifier rejects the
+        // inconsistent stack heights at the branch target with
+        // InvalidProgramException.  Normalise here: if a prior arm set a Unit
+        // result and this arm is void, push a zero Unit; if the prior result is
+        // void and this arm pushed Unit, pop it.
+        let unitTy = typeof<System.ValueTuple>
+        let armTy =
+            if isNever then rawArmTy  // path is closed; type doesn't matter
+            else
+                match resultTy with
+                | Some prevTy ->
+                    if rawArmTy = typeof<System.Void> && prevTy = unitTy then
+                        let dummy = FunctionCtx.defineLocal ctx "__unit_pad" unitTy
+                        il.Emit(OpCodes.Ldloca, dummy)
+                        il.Emit(OpCodes.Initobj, unitTy)
+                        il.Emit(OpCodes.Ldloc, dummy)
+                        unitTy
+                    elif rawArmTy = unitTy && prevTy = typeof<System.Void> then
+                        il.Emit(OpCodes.Pop)
+                        typeof<System.Void>
+                    else rawArmTy
+                | None -> rawArmTy
+        if resultTy.IsNone && not isNever then resultTy <- Some armTy
         FunctionCtx.popScope ctx
         il.Emit(OpCodes.Br, endLbl)
         il.MarkLabel(nextArm)

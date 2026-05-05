@@ -2869,6 +2869,58 @@ let private emitAssembly
                         |> Option.bind Symbol.typeIdOpt
                         |> Option.iter (fun tid -> typeIdToClr.[tid] <- baseTy)
                 | _ -> ()
+            // Records — populate importedRecordTable so cross-package
+            // record construction (e.g. `LFunc(...)`) works in consumers.
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IRecord rd | IExposedRec rd ->
+                    let typeParamNames =
+                        match rd.Generics with
+                        | Some gs ->
+                            gs.Params
+                            |> List.map (function
+                                | GPType (n, _) | GPValue (n, _, _) -> n)
+                        | None -> []
+                    match getType (qualify rd.Name) with
+                    | None -> ()
+                    | Some ty ->
+                        let parsedFields =
+                            rd.Members
+                            |> List.choose (function
+                                | RMField fd -> Some (fd.Name, fd.Type)
+                                | _ -> None)
+                            |> List.map (fun (fname, te) ->
+                                fname, importLyric typeParamNames te)
+                        let clrFieldMap =
+                            ty.GetFields()
+                            |> Array.filter (fun f -> f.IsPublic && not f.IsStatic)
+                            |> Array.map (fun f -> f.Name, f)
+                            |> Map.ofArray
+                        let fields =
+                            parsedFields
+                            |> List.choose (fun (fname, lty) ->
+                                match Map.tryFind fname clrFieldMap with
+                                | Some fi ->
+                                    Some
+                                        { Records.ImportedField.Name      = fname
+                                          Records.ImportedField.Type      = fi.FieldType
+                                          Records.ImportedField.LyricType = lty
+                                          Records.ImportedField.Field     = fi }
+                                | None -> None)
+                        match ty.GetConstructors() |> Array.tryHead with
+                        | None -> ()
+                        | Some ctor ->
+                            importedRecordTable.[rd.Name] <-
+                                { Records.ImportedRecordInfo.Name     = rd.Name
+                                  Records.ImportedRecordInfo.Type     = ty
+                                  Records.ImportedRecordInfo.Fields   = fields
+                                  Records.ImportedRecordInfo.Ctor     = ctor
+                                  Records.ImportedRecordInfo.Generics = typeParamNames }
+                            symbols.TryFind rd.Name
+                            |> Seq.tryHead
+                            |> Option.bind Symbol.typeIdOpt
+                            |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
+                | _ -> ()
             // Functions — every IFunc lives as a static method on the
             // stdlib's `<Pkg>.Program` type.  We pair the MethodInfo
             // with the artifact's resolved signature so call-site
@@ -4208,15 +4260,17 @@ let private emitAssembly
 
         // Finalise every type so the persisted PE captures their
         // metadata. Interfaces seal first so records can claim them;
-        // unions seal subclasses before their abstract base.
+        // unions seal the abstract base before subclasses so that
+        // recursive case fields (e.g. JArray.elem: JvmType) resolve
+        // to a completed parent MethodTable.
         for kv in interfaceTable do
             kv.Value.Type.CreateType() |> ignore
         for kv in recordTable do
             kv.Value.Type.CreateType() |> ignore
         for kv in unionTable do
+            kv.Value.Type.CreateType() |> ignore
             for c in kv.Value.Cases do
                 c.Type.CreateType() |> ignore
-            kv.Value.Type.CreateType() |> ignore
         // Async state-machine types — created before programTy so the
         // kickoff stubs in programTy can resolve their references at
         // runtime.
