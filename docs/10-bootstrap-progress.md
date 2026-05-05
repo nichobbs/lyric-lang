@@ -33,9 +33,12 @@ deferred to Phase 3 by design.
 |---|---|---|
 | M5.1 stage 1 — self-hosted lexer (subset; co-resident with self-test) | **Shipped** | D-progress-093 |
 | M5.1 stage 2a — multi-file packages | **Shipped** | D-progress-094 |
-| M5.1 stage 2b — split lexer into reusable `Lyric.Lexer` library | Not shipped | — |
+| M5.1 stage 2a' — B0010 / B0011 / B0012 multi-file conflict diagnostics | **Shipped** | D-progress-095 |
+| M5.1 stage 2b — split lexer into reusable `Lyric.Lexer` library | **Shipped** (PR #127) | D-progress-095 |
+| M5.1 stage 2b' — codegen polish: EIf merge-balance + tuple/field TypeBuilder paths | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2c — project-as-DLL bundling per `docs/20-project-as-dll.md` (adds `internal` keyword) | Designed; not shipped | — |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
+| Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
 | M5.1 stage 4 — Unicode (UAX #31) identifiers + NFC normalisation; L0040 reserved-name diagnostic | Not shipped | — |
 | M5.1 — self-hosted parser | Not shipped | — |
@@ -155,6 +158,47 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-095: M5.1 stage 2a' — multi-file conflict diagnostics
+
+*claude/multi-file-diagnostics branch.*  Hardens the multi-file
+package merge from D-progress-094 with the three diagnostic codes
+specified in `docs/19-multi-file-packages.md` §9.  Each is exercised
+by a new test in `MultiFilePackageTests.fs`.
+
+* **B0010 — layout conflict.**  Detected in
+  `locateBuiltinFilesWithLayout` when both `<root>/<base>.l` and
+  `<root>/<base>/*.l` exist in the same root (or the kernel
+  sub-root).  The single-file form's path list still returns so
+  diagnostics can be demoted, but the build refuses outright in
+  `ensureStdlibArtifact`.
+* **B0011 — duplicate declaration across files.**  Detected in
+  `parseAndMergeBuiltinFiles` via the new `itemConflictKey` helper:
+  functions key on `name + arity` (overloads-by-arity legitimate),
+  records / unions / enums / etc. key on bare name, anonymous shapes
+  (impl, test, fixture) skip the check.  The duplicate item is
+  dropped from the merged list so downstream type-checking sees a
+  clean symbol table.
+* **B0012 — conflicting import alias across files.**  Same alias
+  pointing at different targets across files.  Same alias same
+  target dedupes silently.
+
+Tests:
+
+* `[B0010_layout_conflict]` — write `b0010.l` AND `b0010/two.l` in
+  the same root, assert B0010 surfaces.
+* `[B0011_duplicate_decl_across_files]` — two files declare
+  `pub func twice(x: Int): Int`, assert B0011 surfaces with
+  both file names.
+* `[B0012_conflicting_import_alias]` — `import Std.Core as A` in
+  one file, `import Std.Math as A` in another, assert B0012
+  surfaces.
+* `[overload_by_arity_across_files]` — `pub func add(x)` in one
+  file, `pub func add(x, y)` in another, assert NO B0011 fires
+  AND the user can call `add(3, 4)` end-to-end.
+
+501 emitter tests pass (was 497 + 4 new diagnostic tests).
+
 
 ### D-progress-094: Phase 5 §M5.1 stage 2a — multi-file packages + emitter polish + design docs
 

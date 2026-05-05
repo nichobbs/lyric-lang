@@ -4371,14 +4371,15 @@ let private isBuiltinHead (head: string) : bool =
 ///      base directory).  For `Std.*` look for `stdlib/std/`; for
 ///      other builtins look for `lyric/<head.lower>/`.
 ///
-/// Within each candidate root, look at the top level and at
-/// `_kernel/`.  Top-level wins on collision.  A package that matches
-/// BOTH the single-file and multi-file form raises a compile error
-/// (callers should report `B0010`); this function returns the
-/// matched file list for the side that found it first.
-let private locateBuiltinFiles
+/// Variant of `locateBuiltinFiles` that also reports a layout-conflict
+/// diagnostic (B0010) when both the single-file and multi-file forms
+/// of the package exist in the same root.  In that case the
+/// single-file form's path list still returns (so the build keeps
+/// progressing in case the diagnostic gets demoted), and the caller
+/// is responsible for surfacing the diagnostic to the user.
+let private locateBuiltinFilesWithLayout
         (startDir: string)
-        (segments: string list) : string list =
+        (segments: string list) : string list * Diagnostic option =
     let firstHit (probes: (unit -> string list) list) : string list =
         let rec go xs =
             match xs with
@@ -4401,6 +4402,36 @@ let private locateBuiltinFiles
             |> List.map segmentToFileBase
             |> String.concat "_"
         let fileName = baseName + ".l"
+        let pkgKey = String.concat "." segments
+        // Detect layout conflict (B0010) in a given root: both
+        // `<root>/<base>.l` and `<root>/<base>/*.l` exist.  Same
+        // check is run against the kernel sub-root too.
+        let layoutConflict (root: string) : Diagnostic option =
+            let single = Path.Combine(root, fileName)
+            let multi  = Path.Combine(root, baseName)
+            let kernelSingle = Path.Combine(root, "_kernel", fileName)
+            let kernelMulti  = Path.Combine(root, "_kernel", baseName)
+            let confl =
+                if File.Exists single
+                   && Directory.Exists multi
+                   && not (Array.isEmpty (Directory.GetFiles(multi, "*.l"))) then
+                    Some "top-level"
+                elif File.Exists kernelSingle
+                     && Directory.Exists kernelMulti
+                     && not (Array.isEmpty (Directory.GetFiles(kernelMulti, "*.l"))) then
+                    Some "kernel"
+                else None
+            match confl with
+            | Some loc ->
+                Some
+                    { Severity = DiagError
+                      Code     = "B0010"
+                      Message  =
+                        sprintf
+                            "package '%s' matches both single-file and multi-file %s layout in '%s'; use one"
+                            pkgKey loc root
+                      Span     = Span.make Position.initial Position.initial }
+            | None -> None
         let probesIn (root: string) : (unit -> string list) list =
             // Order: top-level single-file, top-level multi-file
             // directory, kernel single-file, kernel multi-file
@@ -4417,14 +4448,20 @@ let private locateBuiltinFiles
             match head with
             | "Std" -> "LYRIC_STD_PATH"
             | h     -> sprintf "LYRIC_%s_PATH" (h.ToUpper())
+        let envRootOpt =
+            Option.ofObj (System.Environment.GetEnvironmentVariable envVar)
         let envHit =
-            match Option.ofObj (System.Environment.GetEnvironmentVariable envVar) with
+            match envRootOpt with
             | Some p -> firstHit (probesIn p)
             | None   -> []
-        if not (List.isEmpty envHit) then envHit
+        if not (List.isEmpty envHit) then
+            let layout =
+                envRootOpt |> Option.bind layoutConflict
+            envHit, layout
         else
             let mutable dir = Some (DirectoryInfo(startDir))
             let mutable found : string list = []
+            let mutable layout : Diagnostic option = None
             while List.isEmpty found && dir.IsSome do
                 let d = dir.Value
                 let pkgRoot =
@@ -4434,9 +4471,18 @@ let private locateBuiltinFiles
                         Path.Combine(d.FullName, "lyric", dirName)
                 if Directory.Exists pkgRoot then
                     found <- firstHit (probesIn pkgRoot)
+                    if not (List.isEmpty found) then
+                        layout <- layoutConflict pkgRoot
                 dir <- d.Parent |> Option.ofObj
-            found
-    | _ -> []
+            found, layout
+    | _ -> [], None
+
+/// Convenience wrapper for callers that don't need the layout diagnostic.
+let private locateBuiltinFiles
+        (startDir: string)
+        (segments: string list) : string list =
+    let paths, _ = locateBuiltinFilesWithLayout startDir segments
+    paths
 
 /// Backwards-compatible single-file lookup: returns the first matched
 /// path (or None).  Multi-file packages return the first file in
@@ -4449,19 +4495,54 @@ let private locateBuiltinFile
     | []      -> None
     | p :: _  -> Some p
 
+/// Best-effort name extraction for a top-level `Item` — used by the
+/// multi-file conflict detector to flag duplicate declarations
+/// (B0011).  Returns `None` for items that don't have a stable
+/// global name (impl blocks, error nodes, doc-comment-only items).
+/// For functions the key includes arity so overloads-by-arity stay
+/// legal across files (matches D-progress / function-overloading).
+let private itemConflictKey (item: Item) : string option =
+    match item.Kind with
+    | IConst c        -> Some ("const:" + c.Name)
+    | IFunc f         -> Some (sprintf "func:%s/%d" f.Name (List.length f.Params))
+    | ITypeAlias t    -> Some ("alias:" + t.Name)
+    | IDistinctType t -> Some ("distinct:" + t.Name)
+    | IRecord r       -> Some ("record:" + r.Name)
+    | IExposedRec r   -> Some ("exposed:" + r.Name)
+    | IUnion u        -> Some ("union:" + u.Name)
+    | IEnum e         -> Some ("enum:" + e.Name)
+    | IOpaque o       -> Some ("opaque:" + o.Name)
+    | IProtected p    -> Some ("protected:" + p.Name)
+    | IInterface i    -> Some ("interface:" + i.Name)
+    | IWire w         -> Some ("wire:" + w.Name)
+    | IScopeKind s    -> Some ("scope_kind:" + s.Name)
+    | IExternType t   -> Some ("extern_type:" + t.Name)
+    | IVal v          ->
+        match v.Pattern.Kind with
+        | PBinding (n, None) -> Some ("val:" + n)
+        | _                  -> None
+    // Tests / properties / fixtures are addressed by string title and
+    // can legitimately repeat in different files; impls + extern
+    // packages have no global identifier of their own.
+    | ITest _ | IProperty _ | IFixture _ | IImpl _ | IExtern _ | IError -> None
+
 /// Parse and merge a set of `.l` files belonging to one package.
 /// Single-file path returns the parse result unchanged; multi-file
 /// path concatenates `Items`, `Imports`, `ModuleDoc`, and
 /// `FileLevelAnnotations` from every file, using the first file's
 /// `Package` declaration as canonical.
 ///
-/// Cross-file conflict detection (B0011 duplicate decl, B0012 alias
-/// collision) is deferred to the type checker / re-emit pass —
-/// duplicate-by-name surfaces as the existing T0050 (or its
-/// equivalent) shadowing diagnostic when the merged item table is
-/// type-checked.  This keeps the multi-file landing minimal; a
-/// follow-up lifts the explicit B0011 / B0012 surface per
-/// `docs/19-multi-file-packages.md` §4.
+/// Surfaces three multi-file diagnostic codes per
+/// `docs/19-multi-file-packages.md` §9:
+///   * `B0011`: duplicate declaration across files in the same
+///     package.  Functions key on `name + arity` so overloads-by-
+///     arity remain legal; everything else keys on bare name.
+///     The duplicate item is dropped from the merged list so
+///     downstream type-checking sees a clean symbol table.
+///   * `B0012`: conflicting import alias (`import X as A` in one
+///     file, `import Y as A` in another).  The duplicate import is
+///     dropped.  Same path with same alias in two files is fine
+///     (silently deduped); same path WITHOUT alias is also fine.
 let private parseAndMergeBuiltinFiles
         (paths: string list) : Lyric.Parser.Parser.ParseResult option =
     match paths with
@@ -4469,25 +4550,92 @@ let private parseAndMergeBuiltinFiles
     | [path] ->
         Some (Lyric.Parser.Parser.parse (File.ReadAllText path))
     | _ ->
-        let parsed =
+        let parsedWithPaths =
             paths
             |> List.map (fun p ->
                 let src = File.ReadAllText p
-                Lyric.Parser.Parser.parse src)
+                p, Lyric.Parser.Parser.parse src)
+        let parsed = parsedWithPaths |> List.map snd
         let firstFile = parsed.[0].File
+        let pkgKey =
+            firstFile.Package.Path.Segments |> String.concat "."
+        // Conflict scan + merged item list (B0011).
+        let conflictDiags = ResizeArray<Diagnostic>()
+        let seenItem = Dictionary<string, string>()  // key -> first-file-path
+        let mergedItems = ResizeArray<Item>()
+        for (path, pr) in parsedWithPaths do
+            for item in pr.File.Items do
+                match itemConflictKey item with
+                | Some key ->
+                    match seenItem.TryGetValue key with
+                    | true, prevPath ->
+                        let firstName =
+                            // Strip the "kind:" prefix for the message.
+                            let i = key.IndexOf ':'
+                            if i >= 0 then key.Substring(i + 1) else key
+                        conflictDiags.Add
+                            { Severity = DiagError
+                              Code     = "B0011"
+                              Message  =
+                                sprintf
+                                    "duplicate declaration '%s' in package %s; first defined in %s, also in %s"
+                                    firstName pkgKey
+                                    (Path.GetFileName prevPath)
+                                    (Path.GetFileName path)
+                              Span     = item.Span }
+                        // Drop the dupe from the merged list.
+                    | false, _ ->
+                        seenItem.[key] <- path
+                        mergedItems.Add item
+                | None ->
+                    // Anonymous shapes (impl, test, fixture, etc.)
+                    // pass through unchanged.
+                    mergedItems.Add item
+        // Conflict scan + merged import list (B0012).
+        let seenAlias = Dictionary<string, struct (string * string)>()
+            // alias -> (path-of-first-import, target-package-key)
+        let mergedImports = ResizeArray<ImportDecl>()
+        for (path, pr) in parsedWithPaths do
+            for imp in pr.File.Imports do
+                let target = imp.Path.Segments |> String.concat "."
+                match imp.Alias with
+                | Some alias ->
+                    match seenAlias.TryGetValue alias with
+                    | true, struct (prevPath, prevTarget) when prevTarget <> target ->
+                        conflictDiags.Add
+                            { Severity = DiagError
+                              Code     = "B0012"
+                              Message  =
+                                sprintf
+                                    "conflicting import alias '%s' in package %s: maps to %s in %s but to %s in %s"
+                                    alias pkgKey
+                                    prevTarget
+                                    (Path.GetFileName prevPath)
+                                    target
+                                    (Path.GetFileName path)
+                              Span     = imp.Span }
+                    | true, _ ->
+                        // Same alias same target — silently dedup.
+                        ()
+                    | false, _ ->
+                        seenAlias.[alias] <- struct (path, target)
+                        mergedImports.Add imp
+                | None ->
+                    // Unaliased imports: just dedupe by target so
+                    // every package picks up one copy.
+                    mergedImports.Add imp
         let merged : SourceFile =
             { ModuleDoc =
                 parsed |> List.collect (fun pr -> pr.File.ModuleDoc)
               FileLevelAnnotations =
                 parsed |> List.collect (fun pr -> pr.File.FileLevelAnnotations)
               Package = firstFile.Package
-              Imports =
-                parsed |> List.collect (fun pr -> pr.File.Imports)
-              Items =
-                parsed |> List.collect (fun pr -> pr.File.Items)
-              Span = firstFile.Span }
+              Imports = List.ofSeq mergedImports
+              Items   = List.ofSeq mergedItems
+              Span    = firstFile.Span }
         let allDiags =
-            parsed |> List.collect (fun pr -> pr.Diagnostics)
+            (parsed |> List.collect (fun pr -> pr.Diagnostics))
+            @ List.ofSeq conflictDiags
         Some { File = merged; Diagnostics = allDiags }
 
 /// Recursively ensure that the given `Std.X[.Y…]` package is compiled,
@@ -4501,13 +4649,18 @@ let rec private ensureStdlibArtifact
         match stdlibArtifactCache.TryGetValue key with
         | true, a -> Ok a
         | _ ->
-            let foundPaths = locateBuiltinFiles AppContext.BaseDirectory segments
+            let foundPaths, layoutDiag =
+                locateBuiltinFilesWithLayout AppContext.BaseDirectory segments
             match parseAndMergeBuiltinFiles foundPaths with
             | None ->
                 let zeroSpan = Span.make Position.initial Position.initial
                 Error [ err "E900"
                             (sprintf "cannot locate lyric source for stdlib module '%s'" key)
                             zeroSpan ]
+            | Some parsed when layoutDiag.IsSome ->
+                // B0010: package matches both layouts in same root.
+                // Refuse the build outright so the user picks one.
+                Error [ layoutDiag.Value ]
             | Some parsed ->
                 // For multi-file packages, `req.Source` is best-effort
                 // — used downstream only for diagnostics that don't

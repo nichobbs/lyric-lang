@@ -66,13 +66,17 @@ to `SourceFile list -> EmitResult`. The pipeline becomes:
    into a single `SourceFile.Declarations` list (preserving file +
    span info on each decl).
 3. **Conflict diagnostics** before type-checking: if two decls share
-   a name in the same package, emit `B0011 — duplicate declaration
-   '<name>' in package <X>.<Y>; first defined at file:line, also at
-   file:line`. This is a hard error.
-4. **Imports**: union each file's imports. Duplicate imports collapse
-   silently. Conflicting aliases (`import Std.Core as A` in one file,
-   `import Std.Math as A` in another) raise `B0012 — conflicting
-   import alias 'A' in package <X>.<Y>`.
+   a name + arity (functions) or bare name (records/unions/etc.) in
+   the same package, emit `B0011 — duplicate declaration '<name>' in
+   package <X>.<Y>; first defined in <file>, also in <file>`. This is
+   a hard error; the dupe is dropped from the merged item list so
+   downstream type-checking sees a clean symbol table.
+4. **Imports**: union each file's imports, deduping by target package.
+   Conflicting aliases (`import Std.Core as A` in one file, `import
+   Std.Math as A` in another) raise `B0012 — conflicting import alias
+   '<A>' in package <X>.<Y>: maps to <X> in <file> but to <Y> in
+   <file>`. Same alias for the same target across files dedupes
+   silently.
 5. **Type-check + codegen**: identical to the single-file path
    (records / unions / funcs / etc. all live in the merged symbol
    table; codegen emits one CLR type per Lyric record / union, one
@@ -122,11 +126,30 @@ early split: token types into `tokens.l`, keyword table into
 
 ## 9. Diagnostic codes
 
-| Code | Meaning |
-|---|---|
-| `B0010` | package matches both single-file and multi-file layout |
-| `B0011` | duplicate declaration across files in same package |
-| `B0012` | conflicting import alias across files in same package |
+| Code | Meaning | Status |
+|---|---|---|
+| `B0010` | package matches both single-file and multi-file layout | Shipped (D-progress-094 follow-up) |
+| `B0011` | duplicate declaration across files in same package | Shipped (D-progress-094 follow-up) |
+| `B0012` | conflicting import alias across files in same package | Shipped (D-progress-094 follow-up) |
 
 `B-` prefix introduced for "build / project-layout" diagnostics — same
 prefix space `docs/20-project-as-dll.md` uses for project-level errors.
+
+### B0011 key shape
+
+The duplicate-declaration check keys on `kind:name` plus arity for
+functions:
+
+* `func add/2` and `func add/3` are legitimate overloads-by-arity and
+  do NOT trigger B0011.
+* `func add/2` declared in two files is a conflict.
+* Records, unions, enums, opaque types, etc. key on bare name — there
+  is no overloading on these shapes.
+* Anonymous declarations (`impl …`, `test "…"`, `fixture …`) are not
+  flagged because they have no global identifier.
+
+### B0012 collapse rule
+
+Same alias targeting the same package across two files is silently
+deduped (it's a redundant declaration, not a conflict).  Different
+targets is the conflict that fires.
