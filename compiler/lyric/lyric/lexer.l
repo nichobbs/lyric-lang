@@ -710,47 +710,12 @@ func bracketDelta(currentDepth: in Int, p: in Punct): Int {
 }
 
 /// Update `state.bracketDepth` based on `tok` if `tok` is a punct.
-/// Lifted out of `emit` because the bootstrap codegen mishandles
-/// field stores through an `inout` parameter inside a `match` arm
-/// whose scrutinee is a discriminated-union value (the IL emission
-/// produces an unverifiable program).  Calling out to a helper with
-/// no `match` keeps the inout-mutation IL on a known-good path.
 func trackBracketDepthFor(state: inout LexerState, tok: in Token): Unit {
-  val p = punctOfToken(tok)
-  if isSomePunct(p) {
-    state.bracketDepth = bracketDelta(state.bracketDepth, unwrapPunct(p))
-  }
-}
-
-/// `Option[Punct]`-shaped lookup, but realised as a small local union
-/// to keep generic-over-local-type out of the picture (per the same
-/// imported-nullary-case codegen issue tracked in `KeywordLookup`).
-union PunctLookup {
-  case GotPunct(p: Punct)
-  case NoPunct
-}
-
-@pure
-func punctOfToken(tok: in Token): PunctLookup {
   match tok {
-    case TPunct(p) -> GotPunct(p = p)
-    case _         -> NoPunct
-  }
-}
-
-@pure
-func isSomePunct(pl: in PunctLookup): Bool {
-  match pl {
-    case GotPunct(_) -> true
-    case NoPunct     -> false
-  }
-}
-
-@pure
-func unwrapPunct(pl: in PunctLookup): Punct {
-  match pl {
-    case GotPunct(p) -> p
-    case NoPunct     -> Comma  // unreachable when guarded by isSomePunct
+    case TPunct(p) -> {
+      state.bracketDepth = bracketDelta(state.bracketDepth, p)
+    }
+    case _ -> ()
   }
 }
 
