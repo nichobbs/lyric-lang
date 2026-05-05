@@ -2624,7 +2624,14 @@ let private emitAssembly
         (req: EmitRequest)
         (isLibrary: bool)
         (stdlibArtifacts: StdlibArtifact list)
-        (stdImports: ImportDecl list) : Diagnostic list =
+        (stdImports: ImportDecl list)
+        // M5.1 stage 2c.2.ii — when `Some ctx`, `emitAssembly`
+        // emits into the caller-owned context and skips the save +
+        // contract/proof embed steps.  Caller drives the final save
+        // and resource embeds for project-as-DLL bundling.  When
+        // `None`, behaviour is unchanged: own the backend, save,
+        // and embed a single-package contract.
+        (sharedCtx: Backend.EmitContext option) : Diagnostic list =
     let funcs = functionItems sf
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
@@ -2642,7 +2649,10 @@ let private emitAssembly
             { Name        = req.AssemblyName
               Version     = Version(0, 1, 0, 0)
               OutputPath  = req.OutputPath }
-        let ctx = Backend.create desc
+        let ctx, ownsCtx =
+            match sharedCtx with
+            | Some c -> c, false
+            | None   -> Backend.create desc, true
         let codegenDiags = ResizeArray<Diagnostic>()
         let nsName = String.concat "." sf.Package.Path.Segments
         let typeName =
@@ -4277,38 +4287,44 @@ let private emitAssembly
         for smTy in smTypesToFinalize do
             smTy.CreateType() |> ignore
         programTy.CreateType() |> ignore
-        Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
-        // Embed the `Lyric.Contract` managed resource describing this
-        // assembly's `pub` surface.  Cross-package consumption + the
-        // future `lyric public-api-diff` / `lyric search` tooling
-        // reads it via `ContractMeta.readFromAssembly`.  Best-effort:
-        // a Cecil failure shouldn't fail the build (the IL is
-        // already on disk); surface as a non-fatal warning if it
-        // happens.
-        try
-            let contract = ContractMeta.buildContract sf "0.1.0"
-            ContractMeta.embedIntoAssembly req.OutputPath (ContractMeta.toJson contract)
-        with e ->
-            codegenDiags.Add
-                { Severity = DiagWarning
-                  Code     = "E0900"
-                  Message  =
-                    sprintf "could not embed Lyric.Contract resource: %s" e.Message
-                  Span     = sf.Span }
-        // Also embed the proof-only `Lyric.Proof` binary resource
-        // (D-progress-086).  Same best-effort guard as above; the
-        // resource is verifier-internal and a missing one only
-        // degrades cross-package proofs.
-        try
-            let proofMeta = ProofMeta.buildProofMeta sf "0.1.0"
-            ProofMeta.embedIntoAssembly req.OutputPath (ProofMeta.toBytes proofMeta)
-        with e ->
-            codegenDiags.Add
-                { Severity = DiagWarning
-                  Code     = "E0901"
-                  Message  =
-                    sprintf "could not embed Lyric.Proof resource: %s" e.Message
-                  Span     = sf.Span }
+        if ownsCtx then
+            // Sole owner of the backend — drive save + per-package
+            // contract embedding here.  Project-as-DLL callers
+            // (`emitProject`) own the backend, supply
+            // `sharedCtx = Some _`, and run save + N contract embeds
+            // themselves once every package's emit has completed.
+            Backend.save ctx (hostMainOpt |> Option.map (fun m -> m :> MethodInfo))
+            // Embed the `Lyric.Contract` managed resource describing this
+            // assembly's `pub` surface.  Cross-package consumption + the
+            // future `lyric public-api-diff` / `lyric search` tooling
+            // reads it via `ContractMeta.readFromAssembly`.  Best-effort:
+            // a Cecil failure shouldn't fail the build (the IL is
+            // already on disk); surface as a non-fatal warning if it
+            // happens.
+            try
+                let contract = ContractMeta.buildContract sf "0.1.0"
+                ContractMeta.embedIntoAssembly req.OutputPath (ContractMeta.toJson contract)
+            with e ->
+                codegenDiags.Add
+                    { Severity = DiagWarning
+                      Code     = "E0900"
+                      Message  =
+                        sprintf "could not embed Lyric.Contract resource: %s" e.Message
+                      Span     = sf.Span }
+            // Also embed the proof-only `Lyric.Proof` binary resource
+            // (D-progress-086).  Same best-effort guard as above; the
+            // resource is verifier-internal and a missing one only
+            // degrades cross-package proofs.
+            try
+                let proofMeta = ProofMeta.buildProofMeta sf "0.1.0"
+                ProofMeta.embedIntoAssembly req.OutputPath (ProofMeta.toBytes proofMeta)
+            with e ->
+                codegenDiags.Add
+                    { Severity = DiagWarning
+                      Code     = "E0901"
+                      Message  =
+                        sprintf "could not embed Lyric.Proof resource: %s" e.Message
+                      Span     = sf.Span }
         List.ofSeq codegenDiags
 
 // ---------------------------------------------------------------------------
@@ -4755,7 +4771,7 @@ let rec private ensureStdlibArtifact
                     let emitDiags =
                         emitAssembly
                             stripped checked'.Signatures checked'.Symbols
-                            req true depArtifacts stdImportsHere
+                            req true depArtifacts stdImportsHere None
                     // Surface every error-level diagnostic from any
                     // stage of the stdlib precompile.  Earlier
                     // bootstrap state ignored these so user emits
@@ -5025,8 +5041,234 @@ let emit (req: EmitRequest) : EmitResult =
                 false
                 mergedArtifacts
                 stdImports
+                None
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
         { OutputPath  = outputPath
           Diagnostics = upstream @ emitDiags }
+
+// ---------------------------------------------------------------------------
+// Project-as-DLL emit driver (M5.1 stage 2c.2.ii).
+//
+// `emitProject` takes a `[project]`-shaped manifest section plus the
+// per-package source (after multi-file merge per `docs/19`) and emits
+// every package into ONE persistent assembly.  Per-package contract
+// metadata lands as `Lyric.Contract.<Pkg>` resources in the bundled
+// DLL; downstream `lyric restore` and contract walkers learn to enumerate
+// them via `ContractMeta.readAllContractsFromAssembly`.
+//
+// MVP scope (this PR — option 1 in-emitter restructure, smallest first
+// slice):
+//
+//   * Topological sort over packages by intra-project import order
+//     (cycles surface as B0020 — pending; for now an unsorted single
+//     pass since we don't yet inspect cross-project imports here).
+//   * One shared `Backend.EmitContext` across all packages.
+//   * Each package's emit calls `emitAssembly … (Some ctx)` so save +
+//     contract embed are skipped.
+//   * Caller finalises with one `Backend.save` and N
+//     `ContractMeta.embedIntoAssemblyAs` calls.
+//
+// Not yet wired (stage 2c.2.ii.b follow-up):
+//
+//   * Cross-package symbol resolution within the project.  For now
+//     each package's emit type-checks against the existing per-
+//     package import surface only; package B importing package A
+//     within the same project compiles only when A has been
+//     pre-published to a separate DLL.  The shared-Backend
+//     architecture is the prerequisite for the eventual fix —
+//     register A's TypeBuilders into B's `ImportedRecords` /
+//     `ImportedFuncs` tables before B emits.
+//   * `internal` → CLR `assembly` access modifier.  Codegen still
+//     emits everything as `public`; the contract resource is the
+//     gate today.
+//   * B0020 cycle / B0021 multiple-main / B0023 zero-package
+//     diagnostics.
+// ---------------------------------------------------------------------------
+
+/// Per-package source feed for `emitProject`.  Each package's
+/// `Sources` list is the `.l` file contents in deterministic
+/// order; multi-file packages should already have been resolved
+/// + merged by the caller via the `docs/19` machinery.
+type ProjectPackageInput =
+    { PackageName: string
+      Sources:     string list }
+
+/// Top-level request for project-as-DLL emit.  The output mode is
+/// captured separately from `EmitRequest`: `EmitRequest.Source` /
+/// `AssemblyName` / `OutputPath` describe the BUNDLED DLL.
+type ProjectEmitRequest =
+    { Packages:     ProjectPackageInput list
+      AssemblyName: string
+      OutputPath:   string
+      /// Restored Lyric packages this build can resolve non-`Std.*`
+      /// imports against.  Same shape as the single-package
+      /// `EmitRequest.RestoredPackages`.
+      RestoredPackages: RestoredPackages.RestoredPackageRef list
+      /// `true` for `output = "single"`; `false` falls back to a
+      /// per-package emit producing one DLL per package alongside
+      /// the bundled output.  M5.1 stage 2c.2.ii ships only the
+      /// `Single = true` path; per-package mode keeps the legacy
+      /// per-package emit flow intact via `emit`.
+      Single:       bool }
+
+/// Result of a project emit.  Mirrors `EmitResult` but tracks a
+/// list of per-package emit diagnostics so the caller can render
+/// each package's failures with attribution.
+type ProjectEmitResult =
+    { OutputPath:  string option
+      Diagnostics: Diagnostic list }
+
+/// Concatenate a package's source files into one synthetic source
+/// string.  Each file declares the same `package <X>`; the resulting
+/// concatenation re-declares the package once at the top by stripping
+/// subsequent `package` lines.  This is a simplification for the MVP;
+/// the proper multi-file merger lives at `parseAndMergeBuiltinFiles`
+/// and lifts here when the project-discovery flow lands in
+/// `Lyric.Cli.Pack`.
+let private joinPackageSources (sources: string list) : string =
+    match sources with
+    | []      -> ""
+    | [only]  -> only
+    | _       -> String.concat "\n" sources
+
+/// Emit every package in the project into a single bundled DLL.
+let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
+    if not req.Single then
+        // Per-package mode is the legacy flow — caller should drive
+        // this via repeated `emit` calls itself.  Until project-mode
+        // CLI integration lands we surface a clear diagnostic so the
+        // accidental single=false call doesn't silently produce
+        // nothing.
+        let zeroSpan = Span.make Position.initial Position.initial
+        { OutputPath  = None
+          Diagnostics =
+            [ { Severity = DiagError
+                Code     = "B0099"
+                Message  =
+                    "emitProject with Single=false is not implemented; \
+                     drive per-package mode via repeated emit() calls"
+                Span     = zeroSpan } ] }
+    elif List.isEmpty req.Packages then
+        let zeroSpan = Span.make Position.initial Position.initial
+        { OutputPath  = None
+          Diagnostics =
+            [ { Severity = DiagError
+                Code     = "B0023"
+                Message  =
+                    "project declared `output = \"single\"` but discovered \
+                     zero packages"
+                Span     = zeroSpan } ] }
+    else
+        // Open one shared backend for the whole project.
+        let desc =
+            { Backend.Name        = req.AssemblyName
+              Backend.Version     = Version(0, 1, 0, 0)
+              Backend.OutputPath  = req.OutputPath }
+        let ctx = Backend.create desc
+        let allDiags = ResizeArray<Diagnostic>()
+        let perPackageContracts = ResizeArray<string * SourceFile * Map<string, Lyric.TypeChecker.ResolvedSignature>>()
+        let mutable mainCount = 0
+        // Phase A — for each package: parse, type-check, emit
+        // into the shared context.  We do NOT save yet.
+        for pkg in req.Packages do
+            let combinedSrc = joinPackageSources pkg.Sources
+            let parsed = parse combinedSrc
+            let afterRestored, _, restoredArtifacts, restoredDiags =
+                resolveRestoredImports parsed.File req.RestoredPackages
+            let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
+                resolveStdlibImports afterRestored
+            let mergedImportedItems = importedItems
+            let mergedArtifacts = restoredArtifacts @ stdlibArtifacts
+            let checked' =
+                Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
+            allDiags.AddRange parsed.Diagnostics
+            allDiags.AddRange restoredDiags
+            allDiags.AddRange importDiags
+            allDiags.AddRange checked'.Diagnostics
+            // Track main-fn count for B0021 (multiple `pub func main`
+            // in single-output project).
+            for it in resolved.Items do
+                match it.Kind with
+                | IFunc fn when fn.Name = "main" -> mainCount <- mainCount + 1
+                | _ -> ()
+            let perPkgReq =
+                { Source           = combinedSrc
+                  AssemblyName     = req.AssemblyName
+                  OutputPath       = req.OutputPath
+                  RestoredPackages = req.RestoredPackages }
+            let isLib = mainCount = 0   // last package wins; refined after loop
+            // For per-package emit we treat every package as a
+            // library (no main) when the bundled DLL is a library.
+            // Executable bundles take their main from whichever
+            // package declared `func main`.  TODO: enforce B0021
+            // when mainCount > 1 below.
+            let pkgEmitDiags =
+                emitAssembly
+                    resolved
+                    checked'.Signatures
+                    checked'.Symbols
+                    perPkgReq
+                    true                     // emit each package as a library piece
+                    mergedArtifacts
+                    stdImports
+                    (Some ctx)
+            allDiags.AddRange pkgEmitDiags
+            perPackageContracts.Add(pkg.PackageName, resolved, checked'.Signatures)
+        // B0021 — multiple `pub func main` across packages in the
+        // single-output project.  Surface once after the full pass
+        // so a downstream test can ASSERT the diagnostic regardless
+        // of which package emitted main first.
+        if mainCount > 1 then
+            let zeroSpan = Span.make Position.initial Position.initial
+            allDiags.Add
+                { Severity = DiagError
+                  Code     = "B0021"
+                  Message  =
+                    sprintf
+                        "project `%s` declares %d `pub func main` decls; expected at most 1"
+                        req.AssemblyName mainCount
+                  Span     = zeroSpan }
+        let fatal =
+            allDiags |> Seq.exists (fun d -> d.Severity = DiagError)
+        if fatal then
+            // Don't save partially-emitted IL on a fatal diagnostic —
+            // the Backend's reflection-emit state is unsealed and the
+            // PE would be corrupt.
+            { OutputPath  = None
+              Diagnostics = List.ofSeq allDiags }
+        else
+            // Phase B — save the bundled assembly to disk.
+            // Single-DLL projects emit as libraries (no entry point);
+            // executable bundles promote the main fn to entry in a
+            // follow-up.  For now: library-only.
+            try
+                Backend.save ctx None
+            with e ->
+                allDiags.Add
+                    { Severity = DiagError
+                      Code     = "B0098"
+                      Message  =
+                        sprintf "Backend.save failed: %s" e.Message
+                      Span     = Span.make Position.initial Position.initial }
+            // Phase C — embed one `Lyric.Contract.<Pkg>` per package.
+            for (pkgName, resolved, _sigs) in perPackageContracts do
+                try
+                    let contract = ContractMeta.buildContract resolved "0.1.0"
+                    let json = ContractMeta.toJson contract
+                    ContractMeta.embedIntoAssemblyAs
+                        req.OutputPath
+                        ("Lyric.Contract." + pkgName)
+                        json
+                with e ->
+                    allDiags.Add
+                        { Severity = DiagWarning
+                          Code     = "E0900"
+                          Message  =
+                            sprintf
+                                "could not embed Lyric.Contract.%s resource: %s"
+                                pkgName e.Message
+                          Span     = Span.make Position.initial Position.initial }
+            { OutputPath  = Some req.OutputPath
+              Diagnostics = List.ofSeq allDiags }

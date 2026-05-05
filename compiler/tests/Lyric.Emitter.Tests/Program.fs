@@ -78,5 +78,6 @@ let main argv =
             JvmLoweringB11Test.tests
             SelfHostedLexerTests.tests
             MultiFilePackageTests.tests
+            ProjectAsDllTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

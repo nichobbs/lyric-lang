@@ -79,6 +79,7 @@
     <Compile Include="JvmLoweringB11Test.fs" />
     <Compile Include="SelfHostedLexerTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
+    <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
