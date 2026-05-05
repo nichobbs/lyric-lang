@@ -133,6 +133,8 @@ pub union LInsn {
 
   case LNew(className: String)
   case LCheckcast(className: String)
+  case LInstanceof(className: String)
+  case LAconstNull
 }
 
 pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
@@ -239,6 +241,11 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       val idx = poolClass(asm.pool, cls)
       emitCheckcast(asm, idx)
     }
+    case LInstanceof(cls) -> {
+      val idx = poolClass(asm.pool, cls)
+      emitInstanceof(asm, idx)
+    }
+    case LAconstNull -> emitAconstNull(asm)
   }
 }
 
@@ -371,4 +378,125 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   }
 
   makeClassFull(r.className, cfFields, methods)
+}
+
+// ── B4: Union-type lowering ───────────────────────────────────────────────────
+//
+// A Lyric union `union Option { case Some(value: Int); case None }` maps to:
+//   - An abstract base class `Option`  (ACC_PUBLIC | ACC_ABSTRACT)
+//   - A concrete case class  `Option$Some` extends `Option` with field `value`
+//   - A concrete case class  `Option$None` extends `Option`
+//
+// Pattern matching is performed at the call site using `instanceof` checks
+// and `checkcast` to the specific case class.
+
+pub record LUnionCase {
+  caseName:   String         // simple case name (e.g. "Some")
+  fields:     List[LField]   // case payload fields
+}
+
+pub record LUnion {
+  baseName:   String           // JVM internal binary name (e.g. "Option")
+  cases:      List[LUnionCase]
+  methods:    List[LFunc]      // methods on the base class
+}
+
+/// Returns the JVM internal name for a case class:
+/// `<baseName>$<caseName>` (dollar-separated, JVM convention).
+pub func caseClassName(baseName: in String, caseName: in String): String {
+  baseName + "$" + caseName
+}
+
+/// Lower one case class (concrete subclass of the union base).
+func lowerCase(baseName: in String, c: in LUnionCase, pool: in Pool): ClassFile {
+  val fullName = caseClassName(baseName, c.caseName)
+
+  // Fields
+  val cfFields: List[FieldInfo] = newList()
+  for fld in c.fields.toArray() {
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(
+      ACC_PUBLIC, fld.name, typeDescriptor(fld.fieldType), fa
+    ))
+  }
+
+  // Synthesise <init>(field…)V — same logic as lowerRecord but super is baseName
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val superPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(
+    owner  = baseName,
+    name   = "<init>",
+    params = superPs,
+    ret    = JVoid
+  ), ctorAsm)
+
+  var slot = 1
+  for fld in c.fields.toArray() {
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    emitFieldLoad(fld.fieldType, slot, ctorAsm)
+    lowerInsn(LPutfield(owner = fullName, name = fld.name, t = fld.fieldType), ctorAsm)
+    slot = slot + fieldSlotSize(fld.fieldType)
+  }
+  lowerInsn(LReturn, ctorAsm)
+
+  val ctorCode = assembleCode(ctorAsm, slot + 1, slot)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParams: List[JvmType] = newList()
+  for fld in c.fields.toArray() {
+    ctorParams.add(fld.fieldType)
+  }
+  val ctorMethod = makeMethodInfo(
+    ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs
+  )
+
+  val methods: List[MethodInfo] = newList()
+  methods.add(ctorMethod)
+  makeCaseClass(fullName, baseName, cfFields, methods)
+}
+
+/// Lower a union type into a list of ClassFiles:
+///   index 0 — the abstract base class
+///   index i+1 — case class i
+pub func lowerUnion(u: in LUnion, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+
+  // Base class methods
+  val baseMethods: List[MethodInfo] = newList()
+
+  // Abstract base class <init>()V — needed so case constructors can super-call
+  val baseCtorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), baseCtorAsm)
+  val objPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(
+    owner  = "java/lang/Object",
+    name   = "<init>",
+    params = objPs,
+    ret    = JVoid
+  ), baseCtorAsm)
+  lowerInsn(LReturn, baseCtorAsm)
+
+  val baseCtorCode = assembleCode(baseCtorAsm, 1, 1)
+  val baseCtorAttrs: List[Attribute] = newList()
+  baseCtorAttrs.add(baseCtorCode)
+  val baseCtorPs: List[JvmType] = newList()
+  val baseCtor = makeMethodInfo(
+    ACC_PUBLIC, "<init>", buildDescriptor(baseCtorPs, JVoid), baseCtorAttrs
+  )
+  baseMethods.add(baseCtor)
+
+  for fn in u.methods.toArray() {
+    baseMethods.add(lowerFunc(fn, pool))
+  }
+
+  val baseFields: List[FieldInfo] = newList()
+  result.add(makeAbstractClass(u.baseName, baseFields, baseMethods))
+
+  // One concrete case class per union case
+  for c in u.cases.toArray() {
+    result.add(lowerCase(u.baseName, c, pool))
+  }
+
+  result
 }
