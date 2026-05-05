@@ -23,10 +23,7 @@ let private err
     diags.Add(Diagnostic.error code msg span)
 
 /// Walk a pattern and bind any single-ident bindings into the scope.
-/// Tuple, constructor, and record patterns destructure into multiple
-/// bindings; for T5 we only handle single-ident bindings, leaving
-/// the rest to T6+ when the pattern type checker lands.
-let private bindPattern
+let rec private bindPattern
         (scope: Scope)
         (diags: ResizeArray<Diagnostic>)
         (pat:   Pattern)
@@ -37,14 +34,24 @@ let private bindPattern
         scope.Add({ Name = name; Type = ty; IsMutable = false })
     | PWildcard | PBinding("_", _) ->
         ()
-    | PBinding(name, Some _) ->
-        // `name @ inner` — bind name; pattern walking for inner is
-        // T6 work.
+    | PBinding(name, Some inner) ->
         scope.Add({ Name = name; Type = ty; IsMutable = false })
+        bindPattern scope diags inner ty
+    | PTuple ps ->
+        // Bind each element; element types are unknown without full
+        // tuple-type inference, so use TyError as a placeholder.
+        ps |> List.iter (fun sp -> bindPattern scope diags sp TyError)
+    | PConstructor(_, args) ->
+        // Bind sub-pattern names; field types are unknown here.
+        args |> List.iter (fun sp -> bindPattern scope diags sp TyError)
+    | POr alts ->
+        // All alternatives bind the same names (enforced by the type
+        // checker in T6). Walk the first alternative; the rest are
+        // skipped to avoid duplicate registrations.
+        alts |> List.tryHead |> Option.iter (fun sp -> bindPattern scope diags sp ty)
     | _ ->
-        // Tuple / constructor / record / range patterns are accepted
-        // syntactically but not yet bound by the checker. Emit no
-        // diagnostic — the binding is silently dropped.
+        // Range, record, type-test: accepted syntactically but
+        // bindings deferred to T6+.
         ()
 
 /// Build a GenericContext seeded with the enclosing function's

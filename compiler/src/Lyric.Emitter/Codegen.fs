@@ -3916,7 +3916,67 @@ and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
         && not (ctx.UnionCases.ContainsKey name)
         && not (ctx.ImportedUnionCases.ContainsKey name)
     | PParen inner -> alwaysMatches ctx inner
+    | PTuple ps    -> List.forall (alwaysMatches ctx) ps
+    | POr alts     -> List.exists (alwaysMatches ctx) alts
     | _ -> false
+
+/// Resolve the CLR case type and ordered field list for a union case key,
+/// applying generic substitution from `scrutTy` when the union is generic.
+/// Returns None if `key` is not found in any union table.
+and private resolveUnionCaseInfo
+        (ctx: FunctionCtx)
+        (key: string)
+        (scrutTy: ClrType)
+        : (ClrType * (string * ClrType * FieldInfo) list) option =
+    match ctx.UnionCases.TryGetValue key with
+    | true, (info, caseInfo) ->
+        if List.isEmpty info.Generics || not scrutTy.IsGenericType then
+            Some (caseInfo.Type :> ClrType,
+                  caseInfo.Fields
+                  |> List.map (fun f -> f.Name, f.Type, (f.Field :> FieldInfo)))
+        else
+            let argTys = scrutTy.GetGenericArguments()
+            let constructed = (caseInfo.Type :> ClrType).MakeGenericType argTys
+            let substMap =
+                info.Generics |> List.mapi (fun i n -> n, argTys.[i]) |> Map.ofList
+            Some (constructed,
+                  caseInfo.Fields
+                  |> List.map (fun f ->
+                      let substTy =
+                          Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                              ctx.Lookup substMap f.LyricType
+                      let fi = TypeBuilder.GetField(constructed, f.Field)
+                      f.Name, substTy, fi))
+    | _ ->
+        match ctx.ImportedUnionCases.TryGetValue key with
+        | true, (info, caseInfo) ->
+            if List.isEmpty info.Generics || not scrutTy.IsGenericType then
+                Some (caseInfo.Type,
+                      caseInfo.Fields
+                      |> List.map (fun f -> f.Name, f.Type, f.Field))
+            else
+                let argTys = scrutTy.GetGenericArguments()
+                let constructed = caseInfo.Type.MakeGenericType argTys
+                let substMap =
+                    info.Generics
+                    |> List.mapi (fun i n -> n, argTys.[i])
+                    |> Map.ofList
+                Some (constructed,
+                      caseInfo.Fields
+                      |> List.map (fun f ->
+                          let substTy =
+                              Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                  ctx.Lookup substMap f.LyricType
+                          let fi =
+                              if constructed :? TypeBuilder
+                                 || constructed.GetType().Name = "TypeBuilderInstantiation" then
+                                  TypeBuilder.GetField(constructed, f.Field)
+                              else
+                                  match Option.ofObj (constructed.GetField f.Name) with
+                                  | Some x -> x
+                                  | None   -> f.Field
+                          f.Name, substTy, fi))
+        | _ -> None
 
 /// Emit IL that pushes `1` onto the stack iff `pat` matches the
 /// scrutinee value already stored in `tmp`. The slot's CLR type is
@@ -3995,118 +4055,103 @@ and private emitPatternTest
             match path.Segments with
             | [name] -> name
             | _ -> String.concat "." path.Segments
-        // Emit the isinst type test followed by short-circuit sub-pattern
-        // checks for any non-trivial inner patterns (literals, nested ctors).
-        // getFields is a thunk evaluated only when sub-pattern checks are needed.
-        let emitTypeTestAndSubs (testTy: ClrType) (getFields: unit -> (string * ClrType * FieldInfo) list) =
-            il.Emit(OpCodes.Ldloc, tmp)
-            il.Emit(OpCodes.Isinst, testTy)
-            il.Emit(OpCodes.Ldnull)
-            il.Emit(OpCodes.Cgt_Un)
-            let hasNonTrivialSub =
-                sub |> List.exists (fun sp ->
-                    match sp.Kind with
-                    | PWildcard | PBinding (_, None) -> false
-                    | _ -> true)
-            if hasNonTrivialSub then
-                let lblFalse = il.DefineLabel()
-                let lblEnd   = il.DefineLabel()
-                // consume the type-test bool; if 0 short-circuit to false
-                il.Emit(OpCodes.Brfalse, lblFalse)
-                let castedTmp = FunctionCtx.defineLocal ctx ("__subtest_" + key) testTy
-                il.Emit(OpCodes.Ldloc, tmp)
-                il.Emit(OpCodes.Castclass, testTy)
-                il.Emit(OpCodes.Stloc, castedTmp)
-                let caseFields = getFields ()
-                let pairs =
-                    List.zip
-                        (sub |> List.truncate (List.length caseFields))
-                        caseFields
-                for (sp, (fieldName, fty, fInfo)) in pairs do
-                    match sp.Kind with
-                    | PWildcard | PBinding (_, None) -> ()
-                    | _ ->
-                        let fieldTmp =
-                            FunctionCtx.defineLocal ctx ("__ft_" + fieldName) fty
-                        il.Emit(OpCodes.Ldloc, castedTmp)
-                        il.Emit(OpCodes.Ldfld, fInfo)
-                        il.Emit(OpCodes.Stloc, fieldTmp)
-                        emitPatternTest ctx fieldTmp fty sp
-                        il.Emit(OpCodes.Brfalse, lblFalse)
-                il.Emit(OpCodes.Ldc_I4_1)
-                il.Emit(OpCodes.Br, lblEnd)
-                il.MarkLabel(lblFalse)
-                il.Emit(OpCodes.Ldc_I4_0)
-                il.MarkLabel(lblEnd)
         match ctx.EnumCases.TryGetValue key with
         | true, (_, c) when sub.IsEmpty ->
             il.Emit(OpCodes.Ldloc, tmp)
             emitLdcI4 il c.Ordinal
             il.Emit(OpCodes.Ceq)
         | _ ->
-            match ctx.UnionCases.TryGetValue key with
-            | true, (info, caseInfo) ->
-                let testTy =
-                    if List.isEmpty info.Generics
-                       || not slotTy.IsGenericType
-                    then caseInfo.Type :> System.Type
-                    else
-                        let argTys = slotTy.GetGenericArguments()
-                        (caseInfo.Type :> System.Type).MakeGenericType argTys
-                emitTypeTestAndSubs testTy (fun () ->
-                    if List.isEmpty info.Generics || not slotTy.IsGenericType then
-                        caseInfo.Fields |> List.map (fun f ->
-                            f.Name, f.Type, (f.Field :> FieldInfo))
-                    else
-                        let argTys = slotTy.GetGenericArguments()
-                        let constructed =
-                            (caseInfo.Type :> System.Type).MakeGenericType argTys
-                        let substMap =
-                            info.Generics
-                            |> List.mapi (fun i n -> n, argTys.[i])
-                            |> Map.ofList
-                        caseInfo.Fields |> List.map (fun f ->
-                            let substTy =
-                                Lyric.Emitter.TypeMap.toClrTypeWithGenerics
-                                    ctx.Lookup substMap f.LyricType
-                            let fi = TypeBuilder.GetField(constructed, f.Field)
-                            f.Name, substTy, fi))
-            | _ ->
-                // Imported variant-bearing union case.
-                match ctx.ImportedUnionCases.TryGetValue key with
-                | true, (info, caseInfo) ->
-                    let testTy =
-                        if List.isEmpty info.Generics
-                           || not slotTy.IsGenericType
-                        then caseInfo.Type
-                        else caseInfo.Type.MakeGenericType
-                                (slotTy.GetGenericArguments())
-                    emitTypeTestAndSubs testTy (fun () ->
-                        if List.isEmpty info.Generics || not slotTy.IsGenericType then
-                            caseInfo.Fields |> List.map (fun f -> f.Name, f.Type, f.Field)
-                        else
-                            let argTys = slotTy.GetGenericArguments()
-                            let constructed = caseInfo.Type.MakeGenericType argTys
-                            let substMap =
-                                info.Generics
-                                |> List.mapi (fun i n -> n, argTys.[i])
-                                |> Map.ofList
-                            caseInfo.Fields |> List.map (fun f ->
-                                let substTy =
-                                    Lyric.Emitter.TypeMap.toClrTypeWithGenerics
-                                        ctx.Lookup substMap f.LyricType
-                                let fi =
-                                    if constructed :? TypeBuilder
-                                       || constructed.GetType().Name = "TypeBuilderInstantiation"
-                                    then TypeBuilder.GetField(constructed, f.Field)
-                                    else
-                                        match Option.ofObj (constructed.GetField f.Name) with
-                                        | Some x -> x
-                                        | None   -> f.Field
-                                f.Name, substTy, fi))
-                | _ ->
-                    failwithf "E11 codegen: unknown constructor pattern '%s'"
-                        (String.concat "." path.Segments)
+            match resolveUnionCaseInfo ctx key slotTy with
+            | None ->
+                failwithf "E11 codegen: unknown constructor pattern '%s'"
+                    (String.concat "." path.Segments)
+            | Some (caseTy, fields) ->
+                // isinst test: is the value the right case subclass?
+                il.Emit(OpCodes.Ldloc, tmp)
+                il.Emit(OpCodes.Isinst, caseTy)
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Cgt_Un)
+                // If any sub-pattern is non-trivial, AND in sub-pattern tests.
+                let nonTrivialPairs =
+                    List.zip (sub |> List.truncate fields.Length) fields
+                    |> List.filter (fun (sp, _) -> not (alwaysMatches ctx sp))
+                if not nonTrivialPairs.IsEmpty then
+                    let failLabel = il.DefineLabel()
+                    let doneLabel = il.DefineLabel()
+                    // Stack: [0 or 1] from isinst. Dup; branch on 0.
+                    il.Emit(OpCodes.Dup)
+                    il.Emit(OpCodes.Brfalse, failLabel)
+                    // isinst passed: pop the 1, cast, test sub-patterns.
+                    il.Emit(OpCodes.Pop)
+                    let uid = System.Guid.NewGuid().GetHashCode() |> abs |> string
+                    let castedTmp =
+                        FunctionCtx.defineLocal ctx ("__ptcase_" + key + uid) caseTy
+                    il.Emit(OpCodes.Ldloc, tmp)
+                    il.Emit(OpCodes.Castclass, caseTy)
+                    il.Emit(OpCodes.Stloc, castedTmp)
+                    let mutable isFirst = true
+                    for (sp, (fname, fty, fInfo)) in nonTrivialPairs do
+                        let fieldTmp =
+                            FunctionCtx.defineLocal ctx
+                                ("__ptf_" + key + "_" + fname + uid) fty
+                        il.Emit(OpCodes.Ldloc, castedTmp)
+                        il.Emit(OpCodes.Ldfld, fInfo)
+                        il.Emit(OpCodes.Stloc, fieldTmp)
+                        emitPatternTest ctx fieldTmp fty sp
+                        if not isFirst then il.Emit(OpCodes.And)
+                        isFirst <- false
+                    il.Emit(OpCodes.Br, doneLabel)
+                    // failLabel: 0 already on stack (from Dup+Brfalse path).
+                    il.MarkLabel(failLabel)
+                    il.MarkLabel(doneLabel)
+
+    | PTuple ps ->
+        match ps with
+        | [] ->
+            // Unit pattern () — always matches.
+            emitLdcI4 il 1
+        | _ ->
+            // AND together tests for each element.
+            // Tuples lower to ValueTuple<…> structs; use Ldloca+Ldfld to
+            // read each element without copying the whole struct.
+            let tupleTy = slotTy
+            let mutable isFirst = true
+            ps |> List.iteri (fun i sp ->
+                let fieldName =
+                    if i < 7 then sprintf "Item%d" (i + 1) else "Rest"
+                match tupleTy.GetField(fieldName) |> Option.ofObj with
+                | None -> ()
+                | Some fi ->
+                    let uid = System.Guid.NewGuid().GetHashCode() |> abs |> string
+                    let elemTmp =
+                        FunctionCtx.defineLocal ctx
+                            ("__tup_" + fieldName + uid) fi.FieldType
+                    il.Emit(OpCodes.Ldloca, tmp)
+                    il.Emit(OpCodes.Ldfld, fi)
+                    il.Emit(OpCodes.Stloc, elemTmp)
+                    emitPatternTest ctx elemTmp fi.FieldType sp
+                    if not isFirst then il.Emit(OpCodes.And)
+                    isFirst <- false)
+            if isFirst then
+                // All fields were missing (shouldn't happen) — always match.
+                emitLdcI4 il 1
+
+    | POr alts ->
+        // Short-circuit OR: push 1 if any alternative matches.
+        match alts with
+        | [] -> emitLdcI4 il 1
+        | [single] -> emitPatternTest ctx tmp slotTy single
+        | _ ->
+            let doneLabel = il.DefineLabel()
+            let nonLast = alts |> List.take (alts.Length - 1)
+            let lastAlt = alts |> List.last
+            for alt in nonLast do
+                emitPatternTest ctx tmp slotTy alt
+                il.Emit(OpCodes.Dup)
+                il.Emit(OpCodes.Brtrue, doneLabel)  // if 1, done
+                il.Emit(OpCodes.Pop)                 // was 0; pop and try next
+            emitPatternTest ctx tmp slotTy lastAlt
+            il.MarkLabel(doneLabel)
     | PError ->
         // Parser-error recovery node; emit a diagnostic and push 0 (never matches)
         // so compilation can continue and surface the underlying parse error.
@@ -4139,88 +4184,20 @@ and private emitPatternBind
             match path.Segments with
             | [name] -> name
             | _ -> String.concat "." path.Segments
-        // Resolve the case info from local OR imported union tables.
-        // For generic local unions we also recover the type-arg array
-        // from the scrutinee's CLR type so each field load uses a
-        // fully-substituted FieldInfo.
-        let scrutTy = tmp.LocalType
-        let caseTy, caseFields =
-            match ctx.UnionCases.TryGetValue key with
-            | true, (info, caseInfo) ->
-                if List.isEmpty info.Generics || not scrutTy.IsGenericType then
-                    Some (caseInfo.Type :> ClrType),
-                    caseInfo.Fields
-                    |> List.map (fun f ->
-                        f.Name, f.Type, (f.Field :> FieldInfo))
-                else
-                    let argTys = scrutTy.GetGenericArguments()
-                    let constructed =
-                        (caseInfo.Type :> System.Type).MakeGenericType argTys
-                    let substMap =
-                        info.Generics
-                        |> List.mapi (fun i n -> n, argTys.[i])
-                        |> Map.ofList
-                    Some constructed,
-                    caseInfo.Fields
-                    |> List.map (fun f ->
-                        let substTy =
-                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
-                                ctx.Lookup substMap f.LyricType
-                        let fi = TypeBuilder.GetField(constructed, f.Field)
-                        f.Name, substTy, fi)
-            | _ ->
-                match ctx.ImportedUnionCases.TryGetValue key with
-                | true, (info, caseInfo) ->
-                    if List.isEmpty info.Generics || not scrutTy.IsGenericType then
-                        Some caseInfo.Type,
-                        caseInfo.Fields
-                        |> List.map (fun f -> f.Name, f.Type, f.Field)
-                    else
-                        // Generic imported union: instantiate the case
-                        // and re-substitute each FieldInfo so payload
-                        // loads carry the right CLR type at the IL
-                        // boundary.
-                        let argTys = scrutTy.GetGenericArguments()
-                        let constructed = caseInfo.Type.MakeGenericType argTys
-                        let substMap =
-                            info.Generics
-                            |> List.mapi (fun i n -> n, argTys.[i])
-                            |> Map.ofList
-                        // For runtime types, locate the matching field
-                        // on the constructed instance directly.
-                        Some constructed,
-                        caseInfo.Fields
-                        |> List.map (fun f ->
-                            let substTy =
-                                Lyric.Emitter.TypeMap.toClrTypeWithGenerics
-                                    ctx.Lookup substMap f.LyricType
-                            // `GetField` on a TypeBuilderInstantiation
-                            // (generic instance closed over a TypeBuilder)
-                            // throws NotSupportedException; route through
-                            // `TypeBuilder.GetField` in that case.
-                            let fi =
-                                if constructed :? TypeBuilder
-                                   || constructed.GetType().Name = "TypeBuilderInstantiation" then
-                                    TypeBuilder.GetField(constructed, f.Field)
-                                else
-                                    match Option.ofObj (constructed.GetField f.Name) with
-                                    | Some x -> x
-                                    | None   -> f.Field
-                            f.Name, substTy, fi)
-                | _ -> None, []
-        match caseTy with
-        | Some t ->
+        match resolveUnionCaseInfo ctx key tmp.LocalType with
+        | None -> ()
+        | Some (caseTy, caseFields) ->
             let castedTmp =
-                FunctionCtx.defineLocal ctx
-                    ("__case_" + key) t
+                FunctionCtx.defineLocal ctx ("__case_" + key) caseTy
             il.Emit(OpCodes.Ldloc, tmp)
-            il.Emit(OpCodes.Castclass, t)
+            il.Emit(OpCodes.Castclass, caseTy)
             il.Emit(OpCodes.Stloc, castedTmp)
             let pairs =
                 caseFields
                 |> List.zip (sub |> List.truncate (List.length caseFields))
-            for (sp, (_, fty, fInfo)) in pairs do
+            for (sp, (fname, fty, fInfo)) in pairs do
                 match sp.Kind with
+                | PWildcard | PBinding ("_", None) -> ()
                 | PBinding (name, None)
                     when name <> "_"
                          && not (ctx.EnumCases.ContainsKey name)
@@ -4230,9 +4207,86 @@ and private emitPatternBind
                     il.Emit(OpCodes.Ldloc, castedTmp)
                     il.Emit(OpCodes.Ldfld, fInfo)
                     il.Emit(OpCodes.Stloc, lb)
-                | PWildcard | PBinding ("_", None) -> ()
-                | _ -> ()
-        | None -> ()
+                | _ ->
+                    // Nested pattern: load field into a temp, recurse.
+                    let fieldTmp =
+                        FunctionCtx.defineLocal ctx ("__bind_" + key + "_" + fname) fty
+                    il.Emit(OpCodes.Ldloc, castedTmp)
+                    il.Emit(OpCodes.Ldfld, fInfo)
+                    il.Emit(OpCodes.Stloc, fieldTmp)
+                    emitPatternBind ctx fieldTmp sp
+
+    | PTuple ps ->
+        let tupleTy = tmp.LocalType
+        ps |> List.iteri (fun i sp ->
+            match sp.Kind with
+            | PWildcard | PBinding ("_", None) -> ()
+            | _ ->
+                let fieldName =
+                    if i < 7 then sprintf "Item%d" (i + 1) else "Rest"
+                match tupleTy.GetField(fieldName) |> Option.ofObj with
+                | None -> ()
+                | Some fi ->
+                    let elemTmp =
+                        FunctionCtx.defineLocal ctx ("__telem_" + fieldName) fi.FieldType
+                    il.Emit(OpCodes.Ldloca, tmp)
+                    il.Emit(OpCodes.Ldfld, fi)
+                    il.Emit(OpCodes.Stloc, elemTmp)
+                    emitPatternBind ctx elemTmp sp)
+
+    | POr alts ->
+        // Re-test each alternative at bind time and store into shared locals.
+        //
+        // All alternatives must bind the same names at the same types (enforced
+        // by the type checker).  We run the first alternative's bind to let it
+        // allocate those shared locals, snapshot which new locals appeared in
+        // the scope frame, then feed those into ctx.PreAllocatedLocals before
+        // binding subsequent alternatives so that `defineLocal` reuses the
+        // SAME IL slot rather than allocating a fresh one.  Without this, the
+        // scope entry for a name ends up pointing at the LAST alternative's
+        // local, so whichever earlier runtime branch stored into its own slot
+        // would produce a value the arm body never reads.
+        match alts with
+        | [] -> ()
+        | [single] -> emitPatternBind ctx tmp single
+        | firstAlt :: restAlts ->
+            let doneLabel = il.DefineLabel()
+            let slotTy = tmp.LocalType
+            let firstNextLabel = il.DefineLabel()
+            emitPatternTest ctx tmp slotTy firstAlt
+            il.Emit(OpCodes.Brfalse, firstNextLabel)
+            // Snapshot frame after test but before bind.
+            let frameAfterTest =
+                ctx.Scopes.Peek()
+                |> Seq.map (fun kv -> kv.Key)
+                |> Set.ofSeq
+            emitPatternBind ctx tmp firstAlt
+            // Collect the new locals introduced by the first bind.
+            let sharedLocals =
+                ctx.Scopes.Peek()
+                |> Seq.filter (fun kv -> not (frameAfterTest.Contains kv.Key))
+                |> Seq.map (fun kv -> kv.Key, kv.Value)
+                |> Array.ofSeq
+            il.Emit(OpCodes.Br, doneLabel)
+            il.MarkLabel(firstNextLabel)
+            let withShared (f: unit -> unit) =
+                for (name, lb) in sharedLocals do
+                    ctx.PreAllocatedLocals.[name] <- lb
+                f ()
+                for (name, _) in sharedLocals do
+                    ctx.PreAllocatedLocals.Remove(name) |> ignore
+            let nonLastRest = restAlts |> List.take (restAlts.Length - 1)
+            let lastRestAlt = restAlts |> List.last
+            for alt in nonLastRest do
+                let nextLabel = il.DefineLabel()
+                emitPatternTest ctx tmp slotTy alt
+                il.Emit(OpCodes.Brfalse, nextLabel)
+                withShared (fun () -> emitPatternBind ctx tmp alt)
+                il.Emit(OpCodes.Br, doneLabel)
+                il.MarkLabel(nextLabel)
+            withShared (fun () -> emitPatternBind ctx tmp lastRestAlt)
+            il.MarkLabel(doneLabel)
+
     | _ -> ()
 
 and private emitMatch
@@ -4418,6 +4472,13 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         ctx.ExpectedType <- saved
         let lb = FunctionCtx.defineLocal ctx name initTy
         il.Emit(OpCodes.Stloc, lb)
+
+    | SLocal (LBVal ({ Kind = PTuple _ } as pat, _annot, init)) ->
+        // `val (x, y) = expr` — evaluate, stash in a temp, destructure.
+        let initTy = emitExpr ctx init
+        let tupleTmp = FunctionCtx.defineLocal ctx "__ptuple" initTy
+        il.Emit(OpCodes.Stloc, tupleTmp)
+        emitPatternBind ctx tupleTmp pat
 
     | SLocal (LBVal ({ Kind = PWildcard }, _annot, init))
     | SLocal (LBVal ({ Kind = PBinding ("_", None) }, _annot, init)) ->
