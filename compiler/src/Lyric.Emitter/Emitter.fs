@@ -2605,17 +2605,32 @@ let private defineHostEntryPoint
 /// Result of pre-compiling `core.l` to a standalone library DLL.
 /// User emissions that import `Std.Core` consult this artifact to
 /// resolve types/methods to their precompiled CLR equivalents.
+///
+/// The artifact is also the surface used by `emitProject` to wire
+/// intra-project cross-package imports: package N's emit captures
+/// itself as an artifact (whose `Lookup` resolves names against the
+/// shared `ModuleBuilder`) and feeds it into package N+1's emit.
+/// `Assembly` is `None` for those in-project artifacts because the
+/// bundled DLL hasn't been written yet — `Lookup` reads sealed
+/// `TypeBuilder`s out of the live module instead.
 type private StdlibArtifact =
     { /// Absolute path to the compiled `Lyric.Stdlib.Core.dll`.
+      /// Empty string for in-project artifacts (no on-disk DLL yet).
       AssemblyPath: string
       /// Loaded into the current process via `Assembly.LoadFrom`.
-      Assembly:     Assembly
+      /// `None` for in-project artifacts (see type doc).
+      Assembly:     Assembly option
       /// Parsed AST of `core.l`.
       Source:       SourceFile
       /// The stdlib's symbol table (typeids are stdlib-local).
       Symbols:      SymbolTable
       /// Resolved signatures for every stdlib function.
-      Signatures:   Map<string, ResolvedSignature> }
+      Signatures:   Map<string, ResolvedSignature>
+      /// Type lookup: fully-qualified CLR name → `System.Type`.
+      /// Backed by `Assembly.GetType` for stdlib + restored
+      /// packages and by `ModuleBuilder.GetType` for in-project
+      /// artifacts (see `emitProject` plumbing).
+      Lookup:       string -> System.Type option }
 
 let private emitAssembly
         (sf: SourceFile)
@@ -2631,7 +2646,16 @@ let private emitAssembly
         // and resource embeds for project-as-DLL bundling.  When
         // `None`, behaviour is unchanged: own the backend, save,
         // and embed a single-package contract.
-        (sharedCtx: Backend.EmitContext option) : Diagnostic list =
+        (sharedCtx: Backend.EmitContext option)
+        // M5.1 stage 2c.2.ii.b — when `Some d`, `emitAssembly`
+        // populates `d` with `qualifiedName -> System.Type` entries
+        // as each `TypeBuilder` is sealed via `CreateType()`.  The
+        // `emitProject` driver shares one dictionary across every
+        // package's emit so downstream packages can resolve
+        // intra-project type names without going through the
+        // PersistedAssemblyBuilder's `ModuleBuilder.GetType`, which
+        // is not implemented for that backend.
+        (typesOut: Dictionary<string, System.Type> option) : Diagnostic list =
     let funcs = functionItems sf
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
@@ -2771,13 +2795,12 @@ let private emitAssembly
             stdImports
             |> List.tryPick (fun imp -> selectorAliasFor imp origName)
         for artifact in stdlibArtifacts do
-            let asm = artifact.Assembly
             let stdNs = String.concat "." artifact.Source.Package.Path.Segments
             let qualify name =
                 if String.IsNullOrEmpty stdNs then name
                 else stdNs + "." + name
             let getType (n: string) : System.Type option =
-                Option.ofObj (asm.GetType n)
+                artifact.Lookup n
             let userImport =
                 Map.tryFind artifact.Source.Package.Path.Segments importByPath
             // Resolver context against the artifact's symbol table —
@@ -4273,20 +4296,33 @@ let private emitAssembly
         // unions seal the abstract base before subclasses so that
         // recursive case fields (e.g. JArray.elem: JvmType) resolve
         // to a completed parent MethodTable.
+        let recordSealed (ty: System.Type) =
+            // Project-as-DLL: feed each sealed type into the
+            // caller-supplied lookup table so cross-package emit can
+            // resolve names against this package's surface.  Builder
+            // types may have a null `FullName` mid-construction; skip
+            // those — they're internal helpers (e.g. nested closure
+            // classes) that downstream packages don't reference.
+            match typesOut with
+            | None -> ()
+            | Some d ->
+                match Option.ofObj ty.FullName with
+                | Some fn when not (d.ContainsKey fn) -> d.[fn] <- ty
+                | _ -> ()
         for kv in interfaceTable do
-            kv.Value.Type.CreateType() |> ignore
+            recordSealed (kv.Value.Type.CreateType())
         for kv in recordTable do
-            kv.Value.Type.CreateType() |> ignore
+            recordSealed (kv.Value.Type.CreateType())
         for kv in unionTable do
-            kv.Value.Type.CreateType() |> ignore
+            recordSealed (kv.Value.Type.CreateType())
             for c in kv.Value.Cases do
-                c.Type.CreateType() |> ignore
+                recordSealed (c.Type.CreateType())
         // Async state-machine types — created before programTy so the
         // kickoff stubs in programTy can resolve their references at
         // runtime.
         for smTy in smTypesToFinalize do
-            smTy.CreateType() |> ignore
-        programTy.CreateType() |> ignore
+            recordSealed (smTy.CreateType())
+        recordSealed (programTy.CreateType())
         if ownsCtx then
             // Sole owner of the backend — drive save + per-package
             // contract embedding here.  Project-as-DLL callers
@@ -4771,7 +4807,7 @@ let rec private ensureStdlibArtifact
                     let emitDiags =
                         emitAssembly
                             stripped checked'.Signatures checked'.Symbols
-                            req true depArtifacts stdImportsHere None
+                            req true depArtifacts stdImportsHere None None
                     // Surface every error-level diagnostic from any
                     // stage of the stdlib precompile.  Earlier
                     // bootstrap state ignored these so user emits
@@ -4804,14 +4840,16 @@ let rec private ensureStdlibArtifact
                         let assembly = Assembly.LoadFrom outPath
                         let artifact =
                             { AssemblyPath = outPath
-                              Assembly     = assembly
+                              Assembly     = Some assembly
                               // Keep the original (unstripped) parse so
                               // the user-side visit can walk transitive
                               // `Std.X` deps.  The type-checker /
                               // emitter calls used `stripped`.
                               Source       = parsed.File
                               Symbols      = checked'.Symbols
-                              Signatures   = checked'.Signatures }
+                              Signatures   = checked'.Signatures
+                              Lookup       =
+                                fun n -> Option.ofObj (assembly.GetType n) }
                         stdlibArtifactCache.[key] <- artifact
                         Ok artifact)
 
@@ -4989,10 +5027,13 @@ let private resolveRestoredImports
                         | Ok ra ->
                             let asArtifact : StdlibArtifact =
                                 { AssemblyPath = ra.AssemblyPath
-                                  Assembly     = ra.Assembly
+                                  Assembly     = Some ra.Assembly
                                   Source       = ra.Source
                                   Symbols      = ra.Symbols
-                                  Signatures   = ra.Signatures }
+                                  Signatures   = ra.Signatures
+                                  Lookup       =
+                                    let asm = ra.Assembly
+                                    fun n -> Option.ofObj (asm.GetType n) }
                             artifacts.Add asArtifact
                             for it in ra.Source.Items do importedItems.Add it
             { sf with Imports = otherImps },
@@ -5042,6 +5083,7 @@ let emit (req: EmitRequest) : EmitResult =
                 mergedArtifacts
                 stdImports
                 None
+                None
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
@@ -5058,33 +5100,28 @@ let emit (req: EmitRequest) : EmitResult =
 // DLL; downstream `lyric restore` and contract walkers learn to enumerate
 // them via `ContractMeta.readAllContractsFromAssembly`.
 //
-// MVP scope (this PR — option 1 in-emitter restructure, smallest first
-// slice):
+// Stage 2c.2.ii.b additions over the MVP:
 //
-//   * Topological sort over packages by intra-project import order
-//     (cycles surface as B0020 — pending; for now an unsorted single
-//     pass since we don't yet inspect cross-project imports here).
-//   * One shared `Backend.EmitContext` across all packages.
-//   * Each package's emit calls `emitAssembly … (Some ctx)` so save +
-//     contract embed are skipped.
-//   * Caller finalises with one `Backend.save` and N
-//     `ContractMeta.embedIntoAssemblyAs` calls.
+//   * Topological sort over packages by intra-project import edges
+//     so package A emits before package B when `B imports A`.
+//   * Cycle detection: a strongly-connected component of size > 1 (or
+//     a self-loop) surfaces as `B0020`.
+//   * Intra-project artifacts: after package A's emit, its TypeBuilders
+//     have all been sealed via `CreateType()` and live inside the
+//     shared `ModuleBuilder`.  We capture A as a `StdlibArtifact`
+//     whose `Lookup` resolves names against `ctx.Module.GetType` and
+//     thread it into B's emit so B's `ImportedRecordTable` /
+//     `ImportedFuncTable` register A's surface.
 //
-// Not yet wired (stage 2c.2.ii.b follow-up):
+// Not yet wired (stage 2c.2.iv follow-up):
 //
-//   * Cross-package symbol resolution within the project.  For now
-//     each package's emit type-checks against the existing per-
-//     package import surface only; package B importing package A
-//     within the same project compiles only when A has been
-//     pre-published to a separate DLL.  The shared-Backend
-//     architecture is the prerequisite for the eventual fix —
-//     register A's TypeBuilders into B's `ImportedRecords` /
-//     `ImportedFuncs` tables before B emits.
 //   * `internal` → CLR `assembly` access modifier.  Codegen still
 //     emits everything as `public`; the contract resource is the
 //     gate today.
-//   * B0020 cycle / B0021 multiple-main / B0023 zero-package
-//     diagnostics.
+//   * CLI integration via `lyric build` reading `[project]` from
+//     `lyric.toml` and dispatching here.
+//   * `lyric publish` / `lyric restore` enumerating every
+//     `Lyric.Contract.<Pkg>` resource in a bundled DLL.
 // ---------------------------------------------------------------------------
 
 /// Per-package source feed for `emitProject`.  Each package's
@@ -5170,20 +5207,154 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         let allDiags = ResizeArray<Diagnostic>()
         let perPackageContracts = ResizeArray<string * SourceFile * Map<string, Lyric.TypeChecker.ResolvedSignature>>()
         let mutable mainCount = 0
-        // Phase A — for each package: parse, type-check, emit
-        // into the shared context.  We do NOT save yet.
+
+        // ---- Phase A0: parse every package once so we can topo-sort
+        // ---- by intra-project import edges before emit.
+        let parsedByName = Dictionary<string, ParseResult * string>()
+        let projectPackageSet = HashSet<string>(req.Packages |> List.map (fun p -> p.PackageName))
         for pkg in req.Packages do
             let combinedSrc = joinPackageSources pkg.Sources
             let parsed = parse combinedSrc
-            let afterRestored, _, restoredArtifacts, restoredDiags =
-                resolveRestoredImports parsed.File req.RestoredPackages
+            allDiags.AddRange parsed.Diagnostics
+            parsedByName.[pkg.PackageName] <- (parsed, combinedSrc)
+
+        /// Imports that point at another package in the same project.
+        /// Returned as the in-project package name (the `import`
+        /// path's segments joined by `.`).  Imports that don't match
+        /// a project package fall through to the existing stdlib +
+        /// restored resolvers.
+        let intraImportsOf (sf: SourceFile) : string list =
+            sf.Imports
+            |> List.choose (fun i ->
+                let key = String.concat "." i.Path.Segments
+                if projectPackageSet.Contains key then Some key else None)
+            |> List.distinct
+
+        // ---- Phase A1: topo-sort by intra-project edges + B0020
+        // ---- on cycles.  Edges: A -> B when "B imports A" (so A
+        // ---- emits first).  The classic Kahn's algorithm gives
+        // ---- both an order and a cycle-detection result for free.
+        let edges =
+            req.Packages
+            |> List.map (fun p ->
+                let parsed, _ = parsedByName.[p.PackageName]
+                p.PackageName, intraImportsOf parsed.File)
+        let inDegree = Dictionary<string, int>()
+        for p in req.Packages do inDegree.[p.PackageName] <- 0
+        for (name, deps) in edges do
+            for d in deps do
+                if projectPackageSet.Contains d then
+                    inDegree.[name] <- inDegree.[name] + 1
+        let revAdj = Dictionary<string, ResizeArray<string>>()
+        for p in req.Packages do revAdj.[p.PackageName] <- ResizeArray<string>()
+        for (name, deps) in edges do
+            for d in deps do
+                if projectPackageSet.Contains d then
+                    revAdj.[d].Add name
+        let order = ResizeArray<string>()
+        let queue = System.Collections.Generic.Queue<string>()
+        for kv in inDegree do
+            if kv.Value = 0 then queue.Enqueue kv.Key
+        while queue.Count > 0 do
+            let n = queue.Dequeue()
+            order.Add n
+            for m in revAdj.[n] do
+                inDegree.[m] <- inDegree.[m] - 1
+                if inDegree.[m] = 0 then queue.Enqueue m
+        let cycleNames =
+            inDegree
+            |> Seq.filter (fun kv -> kv.Value > 0)
+            |> Seq.map (fun kv -> kv.Key)
+            |> Seq.toList
+        if not (List.isEmpty cycleNames) then
+            let zeroSpan = Span.make Position.initial Position.initial
+            allDiags.Add
+                { Severity = DiagError
+                  Code     = "B0020"
+                  Message  =
+                    sprintf
+                        "intra-project import cycle detected; packages involved: %s"
+                        (String.concat ", " cycleNames)
+                  Span     = zeroSpan }
+
+        // Map from package name → its in-project artifact, populated
+        // as we iterate in topo order.  Each downstream package's
+        // intra-project import resolution consults this map.
+        let intraArtifacts = Dictionary<string, StdlibArtifact>()
+        // Shared `qualifiedName -> System.Type` lookup table populated
+        // by every package's `emitAssembly` call as its `TypeBuilder`s
+        // get sealed.  We can't use `ModuleBuilder.GetType` for this
+        // because `PersistedAssemblyBuilder`'s `ModuleBuilder` doesn't
+        // implement `GetType` / `GetTypes`.
+        let typesByName = Dictionary<string, System.Type>()
+        // Build a `StdlibArtifact` view of an already-emitted
+        // in-project package.  `Lookup` walks the shared
+        // `typesByName` table rather than a real `Assembly` (the
+        // bundled DLL hasn't been written yet).
+        let buildIntraArtifact (resolved: SourceFile)
+                               (symbols: SymbolTable)
+                               (sigs: Map<string, ResolvedSignature>) : StdlibArtifact =
+            { AssemblyPath = ""
+              Assembly     = None
+              Source       = resolved
+              Symbols      = symbols
+              Signatures   = sigs
+              Lookup       =
+                fun n ->
+                    match typesByName.TryGetValue n with
+                    | true, t -> Some t
+                    | _       -> None }
+
+        /// Strip intra-project imports from a parsed source so the
+        /// downstream `resolveStdlibImports` / type checker stops
+        /// flagging them as unknown.  Returns the stripped source +
+        /// the matched in-project artifacts so `emitAssembly` sees
+        /// them as if they were stdlib.
+        let resolveIntraImports (sf: SourceFile)
+                                : SourceFile * Item list * StdlibArtifact list =
+            let intraImps, otherImps =
+                sf.Imports
+                |> List.partition (fun i ->
+                    let key = String.concat "." i.Path.Segments
+                    projectPackageSet.Contains key)
+            if List.isEmpty intraImps then sf, [], []
+            else
+                let arts = ResizeArray<StdlibArtifact>()
+                let items = ResizeArray<Item>()
+                let visited = HashSet<string>()
+                for imp in intraImps do
+                    let key = String.concat "." imp.Path.Segments
+                    match intraArtifacts.TryGetValue key with
+                    | true, a when visited.Add key ->
+                        arts.Add a
+                        for it in a.Source.Items do items.Add it
+                    | _ -> ()
+                { sf with Imports = otherImps },
+                List.ofSeq items,
+                List.ofSeq arts
+
+        // ---- Phase A2: emit each package in topo order.  Each
+        // ---- package's import surface combines stdlib + restored +
+        // ---- in-project artifacts.
+        let emitOrder =
+            // On cycle, fall back to the user-declared order so we
+            // still surface as much downstream emit as possible.
+            // The B0020 above will be the dominant diagnostic.
+            if List.isEmpty cycleNames then
+                order |> Seq.toList
+            else
+                req.Packages |> List.map (fun p -> p.PackageName)
+        for pkgName in emitOrder do
+            let parsed, combinedSrc = parsedByName.[pkgName]
+            let afterIntra, intraItems, intraArts = resolveIntraImports parsed.File
+            let afterRestored, restoredItems, restoredArtifacts, restoredDiags =
+                resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
                 resolveStdlibImports afterRestored
-            let mergedImportedItems = importedItems
-            let mergedArtifacts = restoredArtifacts @ stdlibArtifacts
+            let mergedImportedItems = intraItems @ restoredItems @ importedItems
+            let mergedArtifacts = intraArts @ restoredArtifacts @ stdlibArtifacts
             let checked' =
                 Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
-            allDiags.AddRange parsed.Diagnostics
             allDiags.AddRange restoredDiags
             allDiags.AddRange importDiags
             allDiags.AddRange checked'.Diagnostics
@@ -5198,12 +5369,6 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                   AssemblyName     = req.AssemblyName
                   OutputPath       = req.OutputPath
                   RestoredPackages = req.RestoredPackages }
-            let isLib = mainCount = 0   // last package wins; refined after loop
-            // For per-package emit we treat every package as a
-            // library (no main) when the bundled DLL is a library.
-            // Executable bundles take their main from whichever
-            // package declared `func main`.  TODO: enforce B0021
-            // when mainCount > 1 below.
             let pkgEmitDiags =
                 emitAssembly
                     resolved
@@ -5214,8 +5379,20 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     mergedArtifacts
                     stdImports
                     (Some ctx)
+                    (Some typesByName)
             allDiags.AddRange pkgEmitDiags
-            perPackageContracts.Add(pkg.PackageName, resolved, checked'.Signatures)
+            perPackageContracts.Add(pkgName, resolved, checked'.Signatures)
+            // Capture this package as an in-project artifact for
+            // downstream packages.  Skip on emit failure — the
+            // backend's reflection state for this package may be
+            // half-finalised and feeding it to a downstream emit
+            // would risk surfacing TypeBuilder-instantiation errors
+            // that obscure the real cause.
+            let pkgFatal =
+                pkgEmitDiags |> List.exists (fun d -> d.Severity = DiagError)
+            if not pkgFatal then
+                intraArtifacts.[pkgName] <-
+                    buildIntraArtifact resolved checked'.Symbols checked'.Signatures
         // B0021 — multiple `pub func main` across packages in the
         // single-output project.  Surface once after the full pass
         // so a downstream test can ASSERT the diagnostic regardless

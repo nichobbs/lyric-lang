@@ -117,6 +117,83 @@ let tests =
                     None
                     "legacy `Lyric.Contract` resource absent for projects"
 
+        // Cross-package import within the project (M5.1 stage 2c.2.ii.b).
+        // MyApp.Util imports MyApp.Core and calls into it.  The
+        // emit must topo-sort so MyApp.Core emits first; the second
+        // emit must see MyApp.Core's TypeBuilders via the shared
+        // ModuleBuilder.
+        testCase "[cross_package_bundle]" <| fun () ->
+            withTempDll "cross-pkg" <| fun dir ->
+                let dllPath = Path.Combine(dir, "CrossPkg.dll")
+                let coreSrc =
+                    "package CrossPkg.Core\n" +
+                    "@stable(since=\"0.1\")\n" +
+                    "pub func double(x: in Int): Int { x + x }\n"
+                let utilSrc =
+                    "package CrossPkg.Util\n" +
+                    "import CrossPkg.Core\n" +
+                    "@stable(since=\"0.1\")\n" +
+                    "pub func quadruple(x: in Int): Int { double(x) + double(x) }\n"
+                let req : Emitter.ProjectEmitRequest =
+                    { Packages =
+                        // Declare consumer first to force topo sort
+                        // to do real work — Util depends on Core but
+                        // the user-declared order has Util listed
+                        // before Core.
+                        [ { PackageName = "CrossPkg.Util"
+                            Sources     = [utilSrc] }
+                          { PackageName = "CrossPkg.Core"
+                            Sources     = [coreSrc] } ]
+                      AssemblyName     = "CrossPkg"
+                      OutputPath       = dllPath
+                      RestoredPackages = []
+                      Single           = true }
+                let result = Emitter.emitProject req
+                let errs =
+                    result.Diagnostics
+                    |> List.filter (fun d -> d.Severity = DiagError)
+                Expect.isEmpty errs
+                    (sprintf "cross-pkg emit clean (got %A)" errs)
+                Expect.equal result.OutputPath (Some dllPath) "OutputPath"
+                Expect.isTrue (File.Exists dllPath)
+                    (sprintf "bundled DLL %s should exist" dllPath)
+                // Both per-package contracts present.
+                let contracts =
+                    ContractMeta.readAllContractsFromAssembly dllPath
+                let pkgs = contracts |> List.map fst |> List.sort
+                Expect.equal pkgs ["CrossPkg.Core"; "CrossPkg.Util"]
+                    "both per-package contracts present"
+
+        // B0020 — intra-project import cycle.  Two packages that
+        // import each other.  Topo sort cannot order them; emitter
+        // surfaces B0020 with both names.
+        testCase "[B0020_import_cycle]" <| fun () ->
+            withTempDll "b0020" <| fun dir ->
+                let dllPath = Path.Combine(dir, "Cycle.dll")
+                let aSrc =
+                    "package Cycle.A\n" +
+                    "import Cycle.B\n" +
+                    "@stable(since=\"0.1\")\n" +
+                    "pub func a(): Int { 1 }\n"
+                let bSrc =
+                    "package Cycle.B\n" +
+                    "import Cycle.A\n" +
+                    "@stable(since=\"0.1\")\n" +
+                    "pub func b(): Int { 2 }\n"
+                let req : Emitter.ProjectEmitRequest =
+                    { Packages =
+                        [ { PackageName = "Cycle.A"; Sources = [aSrc] }
+                          { PackageName = "Cycle.B"; Sources = [bSrc] } ]
+                      AssemblyName     = "Cycle"
+                      OutputPath       = dllPath
+                      RestoredPackages = []
+                      Single           = true }
+                let result = Emitter.emitProject req
+                let b0020 =
+                    result.Diagnostics
+                    |> List.filter (fun d -> d.Code = "B0020")
+                Expect.isNonEmpty b0020 "B0020 raised on cycle"
+
         // B0023 — `output = "single"` with zero packages.
         testCase "[B0023_zero_packages]" <| fun () ->
             withTempDll "b0023" <| fun dir ->
