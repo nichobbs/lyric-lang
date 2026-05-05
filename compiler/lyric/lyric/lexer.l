@@ -355,96 +355,83 @@ pub func keywordSpelling(kw: in Keyword): String {
   }
 }
 
-/// Result of looking an identifier up in the keyword table.  This is
-/// a local non-generic union (rather than `Option[Keyword]`) because
-/// the bootstrap codegen does not yet handle `None[Keyword]` when
-/// `Keyword` is a TypeBuilder under construction (the imported nullary
-/// case branch at `Codegen.fs:2137` calls `GetConstructors()` on a
-/// `TypeBuilderInstantiation`, which throws).  A self-hosted compiler
-/// rebuild will collapse this back into `Option[Keyword]`.
-@stable(since="0.1")
-pub union KeywordLookup {
-  case FoundKw(kw: Keyword)
-  case NoKw
-}
-
 /// Match an identifier-shaped string against the keyword table.
 /// Soft keywords (`range`, `derives`, `forall`, `exists`, `implies`,
 /// `scope_kind`) are NOT recognised here — the parser resolves them
 /// contextually.
 @pure
 @stable(since="0.1")
-pub func tryKeywordFromString(s: in String): KeywordLookup {
+pub func tryKeywordFromString(s: in String): Option[Keyword] {
   // The keyword table is closed and small; an explicit cascade keeps
   // the lookup allocation-free and its branches obvious.  Once the
   // self-hosted compiler grows a `Std.Map` with first-class hash
   // tables this can collapse to a hashed lookup.
-  if s == "alias"     { FoundKw(kw = KwAlias) }
-  else if s == "and"       { FoundKw(kw = KwAnd) }
-  else if s == "as"        { FoundKw(kw = KwAs) }
-  else if s == "async"     { FoundKw(kw = KwAsync) }
-  else if s == "await"     { FoundKw(kw = KwAwait) }
-  else if s == "bind"      { FoundKw(kw = KwBind) }
-  else if s == "case"      { FoundKw(kw = KwCase) }
-  else if s == "do"        { FoundKw(kw = KwDo) }
-  else if s == "else"      { FoundKw(kw = KwElse) }
-  else if s == "end"       { FoundKw(kw = KwEnd) }
-  else if s == "ensures"   { FoundKw(kw = KwEnsures) }
-  else if s == "entry"     { FoundKw(kw = KwEntry) }
-  else if s == "enum"      { FoundKw(kw = KwEnum) }
-  else if s == "exposed"   { FoundKw(kw = KwExposed) }
-  else if s == "extern"    { FoundKw(kw = KwExtern) }
-  else if s == "false"     { FoundKw(kw = KwFalse) }
-  else if s == "fixture"   { FoundKw(kw = KwFixture) }
-  else if s == "for"       { FoundKw(kw = KwFor) }
-  else if s == "func"      { FoundKw(kw = KwFunc) }
-  else if s == "generic"   { FoundKw(kw = KwGeneric) }
-  else if s == "if"        { FoundKw(kw = KwIf) }
-  else if s == "impl"      { FoundKw(kw = KwImpl) }
-  else if s == "import"    { FoundKw(kw = KwImport) }
-  else if s == "in"        { FoundKw(kw = KwIn) }
-  else if s == "inout"     { FoundKw(kw = KwInout) }
-  else if s == "interface" { FoundKw(kw = KwInterface) }
-  else if s == "invariant" { FoundKw(kw = KwInvariant) }
-  else if s == "is"        { FoundKw(kw = KwIs) }
-  else if s == "let"       { FoundKw(kw = KwLet) }
-  else if s == "match"     { FoundKw(kw = KwMatch) }
-  else if s == "mut"       { FoundKw(kw = KwMut) }
-  else if s == "not"       { FoundKw(kw = KwNot) }
-  else if s == "old"       { FoundKw(kw = KwOld) }
-  else if s == "opaque"    { FoundKw(kw = KwOpaque) }
-  else if s == "or"        { FoundKw(kw = KwOr) }
-  else if s == "out"       { FoundKw(kw = KwOut) }
-  else if s == "package"   { FoundKw(kw = KwPackage) }
-  else if s == "property"  { FoundKw(kw = KwProperty) }
-  else if s == "protected" { FoundKw(kw = KwProtected) }
-  else if s == "pub"       { FoundKw(kw = KwPub) }
-  else if s == "record"    { FoundKw(kw = KwRecord) }
-  else if s == "requires"  { FoundKw(kw = KwRequires) }
-  else if s == "result"    { FoundKw(kw = KwResult) }
-  else if s == "return"    { FoundKw(kw = KwReturn) }
-  else if s == "scope"     { FoundKw(kw = KwScope) }
-  else if s == "scoped"    { FoundKw(kw = KwScoped) }
-  else if s == "self"      { FoundKw(kw = KwSelf) }
-  else if s == "singleton" { FoundKw(kw = KwSingleton) }
-  else if s == "spawn"     { FoundKw(kw = KwSpawn) }
-  else if s == "test"      { FoundKw(kw = KwTest) }
-  else if s == "then"      { FoundKw(kw = KwThen) }
-  else if s == "throw"     { FoundKw(kw = KwThrow) }
-  else if s == "true"      { FoundKw(kw = KwTrue) }
-  else if s == "try"       { FoundKw(kw = KwTry) }
-  else if s == "type"      { FoundKw(kw = KwType) }
-  else if s == "union"     { FoundKw(kw = KwUnion) }
-  else if s == "use"       { FoundKw(kw = KwUse) }
-  else if s == "val"       { FoundKw(kw = KwVal) }
-  else if s == "var"       { FoundKw(kw = KwVar) }
-  else if s == "when"      { FoundKw(kw = KwWhen) }
-  else if s == "where"     { FoundKw(kw = KwWhere) }
-  else if s == "while"     { FoundKw(kw = KwWhile) }
-  else if s == "wire"      { FoundKw(kw = KwWire) }
-  else if s == "with"      { FoundKw(kw = KwWith) }
-  else if s == "xor"       { FoundKw(kw = KwXor) }
-  else                     { NoKw }
+  if s == "alias"     { Some(value = KwAlias) }
+  else if s == "and"       { Some(value = KwAnd) }
+  else if s == "as"        { Some(value = KwAs) }
+  else if s == "async"     { Some(value = KwAsync) }
+  else if s == "await"     { Some(value = KwAwait) }
+  else if s == "bind"      { Some(value = KwBind) }
+  else if s == "case"      { Some(value = KwCase) }
+  else if s == "do"        { Some(value = KwDo) }
+  else if s == "else"      { Some(value = KwElse) }
+  else if s == "end"       { Some(value = KwEnd) }
+  else if s == "ensures"   { Some(value = KwEnsures) }
+  else if s == "entry"     { Some(value = KwEntry) }
+  else if s == "enum"      { Some(value = KwEnum) }
+  else if s == "exposed"   { Some(value = KwExposed) }
+  else if s == "extern"    { Some(value = KwExtern) }
+  else if s == "false"     { Some(value = KwFalse) }
+  else if s == "fixture"   { Some(value = KwFixture) }
+  else if s == "for"       { Some(value = KwFor) }
+  else if s == "func"      { Some(value = KwFunc) }
+  else if s == "generic"   { Some(value = KwGeneric) }
+  else if s == "if"        { Some(value = KwIf) }
+  else if s == "impl"      { Some(value = KwImpl) }
+  else if s == "import"    { Some(value = KwImport) }
+  else if s == "in"        { Some(value = KwIn) }
+  else if s == "inout"     { Some(value = KwInout) }
+  else if s == "interface" { Some(value = KwInterface) }
+  else if s == "invariant" { Some(value = KwInvariant) }
+  else if s == "is"        { Some(value = KwIs) }
+  else if s == "let"       { Some(value = KwLet) }
+  else if s == "match"     { Some(value = KwMatch) }
+  else if s == "mut"       { Some(value = KwMut) }
+  else if s == "not"       { Some(value = KwNot) }
+  else if s == "old"       { Some(value = KwOld) }
+  else if s == "opaque"    { Some(value = KwOpaque) }
+  else if s == "or"        { Some(value = KwOr) }
+  else if s == "out"       { Some(value = KwOut) }
+  else if s == "package"   { Some(value = KwPackage) }
+  else if s == "property"  { Some(value = KwProperty) }
+  else if s == "protected" { Some(value = KwProtected) }
+  else if s == "pub"       { Some(value = KwPub) }
+  else if s == "record"    { Some(value = KwRecord) }
+  else if s == "requires"  { Some(value = KwRequires) }
+  else if s == "result"    { Some(value = KwResult) }
+  else if s == "return"    { Some(value = KwReturn) }
+  else if s == "scope"     { Some(value = KwScope) }
+  else if s == "scoped"    { Some(value = KwScoped) }
+  else if s == "self"      { Some(value = KwSelf) }
+  else if s == "singleton" { Some(value = KwSingleton) }
+  else if s == "spawn"     { Some(value = KwSpawn) }
+  else if s == "test"      { Some(value = KwTest) }
+  else if s == "then"      { Some(value = KwThen) }
+  else if s == "throw"     { Some(value = KwThrow) }
+  else if s == "true"      { Some(value = KwTrue) }
+  else if s == "try"       { Some(value = KwTry) }
+  else if s == "type"      { Some(value = KwType) }
+  else if s == "union"     { Some(value = KwUnion) }
+  else if s == "use"       { Some(value = KwUse) }
+  else if s == "val"       { Some(value = KwVal) }
+  else if s == "var"       { Some(value = KwVar) }
+  else if s == "when"      { Some(value = KwWhen) }
+  else if s == "where"     { Some(value = KwWhere) }
+  else if s == "while"     { Some(value = KwWhile) }
+  else if s == "wire"      { Some(value = KwWire) }
+  else if s == "with"      { Some(value = KwWith) }
+  else if s == "xor"       { Some(value = KwXor) }
+  else                     { None }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -973,8 +960,8 @@ func lexIdentOrKeyword(state: inout LexerState): Unit {
 /// straight-line IL frame.
 func emitIdentOrKeywordToken(state: inout LexerState, lexeme: in String, startP: in Position): Unit {
   match tryKeywordFromString(lexeme) {
-    case FoundKw(kw) -> emitKeywordToken(state, kw, startP)
-    case NoKw        -> emit(state, TIdent(name = lexeme), startP)
+    case Some(kw) -> emitKeywordToken(state, kw, startP)
+    case None     -> emit(state, TIdent(name = lexeme), startP)
   }
 }
 
@@ -1553,63 +1540,51 @@ func lexStringLiteral(state: inout LexerState): Unit {
 // Punctuation and operators.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Result of a punctuation-table lookup.  Local non-generic union for
-/// the same reason `KeywordLookup` is — `None[Record]` trips the
-/// bootstrap codegen's imported-nullary-case path with a TypeBuilder
-/// argument.  Fields are flattened into the case (rather than nested
-/// in a `OperatorMatch` record) because the bootstrap codegen does
-/// not yet handle record-typed payloads on union cases — every
-/// existing union in the stdlib uses primitive payloads only.
-union OperatorLookup {
-  case FoundOp(p: Punct, consumed: Int)
-  case NoOp
-}
-
 /// Try to match a multi-/single-char operator at the cursor.  Returns
-/// the matched `FoundOp(p, n)` (the Punct plus how many source chars
-/// to advance) or `NoOp` if no token is available.
+/// `Some((p, n))` with the matched `Punct` plus how many source chars
+/// to advance, or `None` if no token is available.
 @pure
-func tryMatchOperator(c0: in Char, c1: in Char, c2: in Char): OperatorLookup {
-  if c0 == '.' and c1 == '.' and c2 == '=' { FoundOp(p = DotDotEq, consumed = 3) }
-  else if c0 == '.' and c1 == '.' and c2 == '<' { FoundOp(p = DotDotLt, consumed = 3) }
-  else if c0 == '.' and c1 == '.'               { FoundOp(p = DotDot, consumed = 2) }
-  else if c0 == '-' and c1 == '>'               { FoundOp(p = Arrow, consumed = 2) }
-  else if c0 == '=' and c1 == '>'               { FoundOp(p = FatArrow, consumed = 2) }
-  else if c0 == ':' and c1 == ':'               { FoundOp(p = ColonColon, consumed = 2) }
-  else if c0 == '?' and c1 == '?'               { FoundOp(p = QuestionQuestion, consumed = 2) }
-  else if c0 == '=' and c1 == '='               { FoundOp(p = EqEq, consumed = 2) }
-  else if c0 == '!' and c1 == '='               { FoundOp(p = NotEq, consumed = 2) }
-  else if c0 == '<' and c1 == '='               { FoundOp(p = LtEq, consumed = 2) }
-  else if c0 == '>' and c1 == '='               { FoundOp(p = GtEq, consumed = 2) }
-  else if c0 == '+' and c1 == '='               { FoundOp(p = PlusEq, consumed = 2) }
-  else if c0 == '-' and c1 == '='               { FoundOp(p = MinusEq, consumed = 2) }
-  else if c0 == '*' and c1 == '='               { FoundOp(p = StarEq, consumed = 2) }
-  else if c0 == '/' and c1 == '='               { FoundOp(p = SlashEq, consumed = 2) }
-  else if c0 == '%' and c1 == '='               { FoundOp(p = PercentEq, consumed = 2) }
-  else if c0 == '?'                             { FoundOp(p = Question, consumed = 1) }
-  else if c0 == '@'                             { FoundOp(p = At, consumed = 1) }
-  else if c0 == '+'                             { FoundOp(p = Plus, consumed = 1) }
-  else if c0 == '-'                             { FoundOp(p = Minus, consumed = 1) }
-  else if c0 == '*'                             { FoundOp(p = Star, consumed = 1) }
-  else if c0 == '/'                             { FoundOp(p = Slash, consumed = 1) }
-  else if c0 == '%'                             { FoundOp(p = Percent, consumed = 1) }
-  else if c0 == '<'                             { FoundOp(p = Lt, consumed = 1) }
-  else if c0 == '>'                             { FoundOp(p = Gt, consumed = 1) }
-  else if c0 == '='                             { FoundOp(p = Eq, consumed = 1) }
-  else if c0 == '!'                             { FoundOp(p = Bang, consumed = 1) }
-  else if c0 == '|'                             { FoundOp(p = Pipe, consumed = 1) }
-  else if c0 == '&'                             { FoundOp(p = Amp, consumed = 1) }
-  else if c0 == '('                             { FoundOp(p = LParen, consumed = 1) }
-  else if c0 == ')'                             { FoundOp(p = RParen, consumed = 1) }
-  else if c0 == '['                             { FoundOp(p = LBracket, consumed = 1) }
-  else if c0 == ']'                             { FoundOp(p = RBracket, consumed = 1) }
-  else if c0 == '{'                             { FoundOp(p = LBrace, consumed = 1) }
-  else if c0 == '}'                             { FoundOp(p = RBrace, consumed = 1) }
-  else if c0 == ','                             { FoundOp(p = Comma, consumed = 1) }
-  else if c0 == ';'                             { FoundOp(p = Semi, consumed = 1) }
-  else if c0 == ':'                             { FoundOp(p = Colon, consumed = 1) }
-  else if c0 == '.'                             { FoundOp(p = Dot, consumed = 1) }
-  else                                          { NoOp }
+func tryMatchOperator(c0: in Char, c1: in Char, c2: in Char): Option[(Punct, Int)] {
+  if c0 == '.' and c1 == '.' and c2 == '=' { Some(value = (DotDotEq, 3)) }
+  else if c0 == '.' and c1 == '.' and c2 == '<' { Some(value = (DotDotLt, 3)) }
+  else if c0 == '.' and c1 == '.'               { Some(value = (DotDot, 2)) }
+  else if c0 == '-' and c1 == '>'               { Some(value = (Arrow, 2)) }
+  else if c0 == '=' and c1 == '>'               { Some(value = (FatArrow, 2)) }
+  else if c0 == ':' and c1 == ':'               { Some(value = (ColonColon, 2)) }
+  else if c0 == '?' and c1 == '?'               { Some(value = (QuestionQuestion, 2)) }
+  else if c0 == '=' and c1 == '='               { Some(value = (EqEq, 2)) }
+  else if c0 == '!' and c1 == '='               { Some(value = (NotEq, 2)) }
+  else if c0 == '<' and c1 == '='               { Some(value = (LtEq, 2)) }
+  else if c0 == '>' and c1 == '='               { Some(value = (GtEq, 2)) }
+  else if c0 == '+' and c1 == '='               { Some(value = (PlusEq, 2)) }
+  else if c0 == '-' and c1 == '='               { Some(value = (MinusEq, 2)) }
+  else if c0 == '*' and c1 == '='               { Some(value = (StarEq, 2)) }
+  else if c0 == '/' and c1 == '='               { Some(value = (SlashEq, 2)) }
+  else if c0 == '%' and c1 == '='               { Some(value = (PercentEq, 2)) }
+  else if c0 == '?'                             { Some(value = (Question, 1)) }
+  else if c0 == '@'                             { Some(value = (At, 1)) }
+  else if c0 == '+'                             { Some(value = (Plus, 1)) }
+  else if c0 == '-'                             { Some(value = (Minus, 1)) }
+  else if c0 == '*'                             { Some(value = (Star, 1)) }
+  else if c0 == '/'                             { Some(value = (Slash, 1)) }
+  else if c0 == '%'                             { Some(value = (Percent, 1)) }
+  else if c0 == '<'                             { Some(value = (Lt, 1)) }
+  else if c0 == '>'                             { Some(value = (Gt, 1)) }
+  else if c0 == '='                             { Some(value = (Eq, 1)) }
+  else if c0 == '!'                             { Some(value = (Bang, 1)) }
+  else if c0 == '|'                             { Some(value = (Pipe, 1)) }
+  else if c0 == '&'                             { Some(value = (Amp, 1)) }
+  else if c0 == '('                             { Some(value = (LParen, 1)) }
+  else if c0 == ')'                             { Some(value = (RParen, 1)) }
+  else if c0 == '['                             { Some(value = (LBracket, 1)) }
+  else if c0 == ']'                             { Some(value = (RBracket, 1)) }
+  else if c0 == '{'                             { Some(value = (LBrace, 1)) }
+  else if c0 == '}'                             { Some(value = (RBrace, 1)) }
+  else if c0 == ','                             { Some(value = (Comma, 1)) }
+  else if c0 == ';'                             { Some(value = (Semi, 1)) }
+  else if c0 == ':'                             { Some(value = (Colon, 1)) }
+  else if c0 == '.'                             { Some(value = (Dot, 1)) }
+  else                                          { None }
 }
 
 @pure
@@ -1626,7 +1601,7 @@ func lexPunct(state: inout LexerState): Unit {
   val c1 = peekAt(state, 1)
   val c2 = peekAt(state, 2)
   match tryMatchOperator(c0, c1, c2) {
-    case FoundOp(p, n) -> {
+    case Some((p, n)) -> {
       var i = 0
       while i < n {
         advance(state)
@@ -1645,7 +1620,7 @@ func lexPunct(state: inout LexerState): Unit {
         emit(state, TPunct(p = p), startP)
       }
     }
-    case NoOp -> {
+    case None -> {
       val c = advance(state)
       recordError(state, "L0030",
                   "unexpected character '" + charToString(c) + "'",

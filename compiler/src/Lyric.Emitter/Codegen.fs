@@ -1166,13 +1166,37 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | 6 -> typedefof<System.ValueTuple<_, _, _, _, _, _>>
             | 7 -> typedefof<System.ValueTuple<_, _, _, _, _, _, _>>
             | _ -> typedefof<System.ValueTuple<_, _, _, _, _, _, _, _>>
+        // When a type-arg is a still-under-construction TypeBuilder
+        // (or a TypeBuilderInstantiation that closes over one),
+        // `closedTy.GetConstructor` throws `NotSupportedException`.
+        // Route through `TypeBuilder.GetConstructor` against the open
+        // generic def in those cases — same pattern the imported
+        // nullary case ctor uses (`Codegen.fs` §"nullary case ctor").
+        let needsTypeBuilderCtor (typeArgs: ClrType array) : bool =
+            typeArgs |> Array.exists (fun t ->
+                t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                || t :? System.Reflection.Emit.TypeBuilder
+                || t.GetType().Name = "TypeBuilderInstantiation")
+        let resolveCtor (closedTy: ClrType) (openTy: ClrType)
+                         (elemTypes: ClrType array) : ConstructorInfo option =
+            if needsTypeBuilderCtor elemTypes then
+                let openParams =
+                    openTy.GetGenericArguments()
+                let openCtor =
+                    openTy.GetConstructor openParams
+                match Option.ofObj openCtor with
+                | Some oc ->
+                    Some (System.Reflection.Emit.TypeBuilder.GetConstructor(closedTy, oc))
+                | None -> None
+            else
+                Option.ofObj (closedTy.GetConstructor elemTypes)
         let rec build (xs: Expr list) : ClrType =
             if xs.Length <= 7 then
                 let elemTypes =
                     xs |> List.map (fun e -> emitExpr ctx e) |> List.toArray
-                let closedTy = (openByArity xs.Length).MakeGenericType elemTypes
-                let ctor = closedTy.GetConstructor elemTypes
-                match Option.ofObj ctor with
+                let openTy = openByArity xs.Length
+                let closedTy = openTy.MakeGenericType elemTypes
+                match resolveCtor closedTy openTy elemTypes with
                 | Some c ->
                     il.Emit(OpCodes.Newobj, c)
                     closedTy
@@ -1185,9 +1209,9 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     front |> List.map (fun e -> emitExpr ctx e) |> List.toArray
                 let restTy = build rest
                 let allTys = Array.append frontTys [| restTy |]
-                let closedTy = (openByArity 8).MakeGenericType allTys
-                let ctor = closedTy.GetConstructor allTys
-                match Option.ofObj ctor with
+                let openTy = openByArity 8
+                let closedTy = openTy.MakeGenericType allTys
+                match resolveCtor closedTy openTy allTys with
                 | Some c ->
                     il.Emit(OpCodes.Newobj, c)
                     closedTy
@@ -4223,22 +4247,52 @@ and private emitPatternTest
             // AND together tests for each element.
             // Tuples lower to ValueTuple<…> structs; use Ldloca+Ldfld to
             // read each element without copying the whole struct.
+            // For tuples whose generic args are still under construction
+            // (e.g. `ValueTuple<Punct, Int>` where `Punct` is a local
+            // TypeBuilder), `GetField` throws — route through
+            // `TypeBuilder.GetField` against the open generic def.
             let tupleTy = slotTy
+            let isUnderConstruction =
+                tupleTy.IsGenericType
+                && not tupleTy.IsGenericTypeDefinition
+                && tupleTy.GetGenericArguments() |> Array.exists (fun t ->
+                    t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                    || t :? System.Reflection.Emit.TypeBuilder
+                    || t.GetType().Name = "TypeBuilderInstantiation")
+            let getTupleField (fieldName: string) : FieldInfo option =
+                if isUnderConstruction then
+                    let openTy = tupleTy.GetGenericTypeDefinition()
+                    let openF = openTy.GetField(fieldName)
+                    match Option.ofObj openF with
+                    | None -> None
+                    | Some o ->
+                        Some (System.Reflection.Emit.TypeBuilder.GetField(tupleTy, o))
+                else
+                    Option.ofObj (tupleTy.GetField(fieldName))
             let mutable isFirst = true
             ps |> List.iteri (fun i sp ->
                 let fieldName =
                     if i < 7 then sprintf "Item%d" (i + 1) else "Rest"
-                match tupleTy.GetField(fieldName) |> Option.ofObj with
+                match getTupleField fieldName with
                 | None -> ()
                 | Some fi ->
+                    // Element type for `Item<n>` of a constructed
+                    // tuple is the n-th generic arg, not the open
+                    // `fi.FieldType` which would still be `T<n>`.
+                    let fieldTy =
+                        if i < 7 && tupleTy.IsGenericType then
+                            let cargs = tupleTy.GetGenericArguments()
+                            if i < cargs.Length then cargs.[i]
+                            else fi.FieldType
+                        else fi.FieldType
                     let uid = System.Guid.NewGuid().GetHashCode() |> abs |> string
                     let elemTmp =
                         FunctionCtx.defineLocal ctx
-                            ("__tup_" + fieldName + uid) fi.FieldType
+                            ("__tup_" + fieldName + uid) fieldTy
                     il.Emit(OpCodes.Ldloca, tmp)
                     il.Emit(OpCodes.Ldfld, fi)
                     il.Emit(OpCodes.Stloc, elemTmp)
-                    emitPatternTest ctx elemTmp fi.FieldType sp
+                    emitPatternTest ctx elemTmp fieldTy sp
                     if not isFirst then il.Emit(OpCodes.And)
                     isFirst <- false)
             if isFirst then
@@ -4327,17 +4381,50 @@ and private emitPatternBind
 
     | PTuple ps ->
         let tupleTy = tmp.LocalType
+        // `GetField` on a TypeBuilderInstantiation (e.g. `ValueTuple<Punct, Int>`
+        // where `Punct` is still a TypeBuilder) throws.  Route through
+        // `TypeBuilder.GetField` against the open generic def in those
+        // cases — same pattern the imported-record field path uses.
+        let getTupleField (fieldName: string) : FieldInfo option =
+            let isUnderConstruction =
+                tupleTy.IsGenericType
+                && not tupleTy.IsGenericTypeDefinition
+                && tupleTy.GetGenericArguments() |> Array.exists (fun t ->
+                    t :? System.Reflection.Emit.GenericTypeParameterBuilder
+                    || t :? System.Reflection.Emit.TypeBuilder
+                    || t.GetType().Name = "TypeBuilderInstantiation")
+            if isUnderConstruction then
+                let openTy = tupleTy.GetGenericTypeDefinition()
+                let openF = openTy.GetField(fieldName)
+                match Option.ofObj openF with
+                | None -> None
+                | Some o ->
+                    Some (System.Reflection.Emit.TypeBuilder.GetField(tupleTy, o))
+            else
+                Option.ofObj (tupleTy.GetField(fieldName))
         ps |> List.iteri (fun i sp ->
             match sp.Kind with
             | PWildcard | PBinding ("_", None) -> ()
             | _ ->
                 let fieldName =
                     if i < 7 then sprintf "Item%d" (i + 1) else "Rest"
-                match tupleTy.GetField(fieldName) |> Option.ofObj with
+                match getTupleField fieldName with
                 | None -> ()
                 | Some fi ->
+                    let fieldTy =
+                        // For TypeBuilderInstantiation tuples,
+                        // the substituted field type comes from the
+                        // closed receiver's generic args — not the
+                        // open `fi.FieldType` which would still be `T`.
+                        if i < 7
+                           && tupleTy.IsGenericType
+                           && not tupleTy.IsGenericTypeDefinition then
+                            let cargs = tupleTy.GetGenericArguments()
+                            if i < cargs.Length then cargs.[i]
+                            else fi.FieldType
+                        else fi.FieldType
                     let elemTmp =
-                        FunctionCtx.defineLocal ctx ("__telem_" + fieldName) fi.FieldType
+                        FunctionCtx.defineLocal ctx ("__telem_" + fieldName) fieldTy
                     il.Emit(OpCodes.Ldloca, tmp)
                     il.Emit(OpCodes.Ldfld, fi)
                     il.Emit(OpCodes.Stloc, elemTmp)
