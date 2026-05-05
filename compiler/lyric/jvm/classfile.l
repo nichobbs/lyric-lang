@@ -116,6 +116,23 @@ pub func makeFieldInfo(flags: in Int, name: in String, descriptor: in String, at
   FieldInfo(flags = flags, name = name, descriptor = descriptor, attrs = attrs)
 }
 
+/// Like `makeClass`, but takes the method list directly.  Used by callers
+/// in other packages that can't mutate `cf.methods` post-construction
+/// (the Phase-1 emitter doesn't support field access on imported records).
+pub func makeClassWithMethods(thisClass: in String, methods: in List[MethodInfo]): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 /// Minimum `ClassFile` for a concrete class.
 /// Sets minor=0, major=65 (Java 21), ACC_PUBLIC|ACC_SUPER, no interfaces.
 pub func makeClass(thisClass: in String): ClassFile {

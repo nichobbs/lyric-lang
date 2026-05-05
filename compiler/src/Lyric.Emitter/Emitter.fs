@@ -3306,21 +3306,27 @@ let private emitAssembly
 
         // Fold `pub val` / `pub const` integer constants so they can
         // be referenced by name inside function bodies (e.g. ACC_PUBLIC).
+        // Stdlib-artifact constants are folded first so user-side
+        // bindings with the same name win on collision.
         let constsTable = Dictionary<string, int64>()
-        for it in sf.Items do
-            match it.Kind with
-            | IVal v ->
-                match v.Pattern.Kind with
-                | PBinding (name, _) ->
-                    match Lyric.TypeChecker.ConstFold.tryFoldInt symbols v.Init with
-                    | Ok n  -> constsTable.[name] <- n
+        let foldConstsFrom (items: Item list) (syms: SymbolTable) =
+            for it in items do
+                match it.Kind with
+                | IVal v ->
+                    match v.Pattern.Kind with
+                    | PBinding (name, _) ->
+                        match Lyric.TypeChecker.ConstFold.tryFoldInt syms v.Init with
+                        | Ok n  -> constsTable.[name] <- n
+                        | Error _ -> ()
+                    | _ -> ()
+                | IConst c ->
+                    match Lyric.TypeChecker.ConstFold.tryFoldInt syms c.Init with
+                    | Ok n  -> constsTable.[c.Name] <- n
                     | Error _ -> ()
                 | _ -> ()
-            | IConst c ->
-                match Lyric.TypeChecker.ConstFold.tryFoldInt symbols c.Init with
-                | Ok n  -> constsTable.[c.Name] <- n
-                | Error _ -> ()
-            | _ -> ()
+        for artifact in stdlibArtifacts do
+            foldConstsFrom artifact.Source.Items artifact.Symbols
+        foldConstsFrom sf.Items symbols
 
         // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
         // attach interface methods to Bar's TypeBuilder, both as

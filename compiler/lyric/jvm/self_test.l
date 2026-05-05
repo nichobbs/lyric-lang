@@ -52,9 +52,12 @@ pub func makeHelloClassBytes(): List[Byte] {
     mainAttrs
   )
 
-  // Build ClassFile via makeClass (defaults: major=65, ACC_PUBLIC|ACC_SUPER).
-  val cf = makeClass("Hello")
-  cf.methods.add(mainMethod)
+  // Build ClassFile via makeClassWithMethods (defaults: major=65,
+  // ACC_PUBLIC|ACC_SUPER) — accepts the methods list up-front so we
+  // don't need post-construction field access on the imported record.
+  val cfMethods: List[MethodInfo] = newList()
+  cfMethods.add(mainMethod)
+  val cf = makeClassWithMethods("Hello", cfMethods)
 
   serializeClassWithPool(cf, pool)
 }
