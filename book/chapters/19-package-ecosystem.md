@@ -8,32 +8,59 @@ By the end you will have a clear picture of how to take a Lyric project from a b
 
 ## §19.1 `lyric.toml` — the project manifest
 
-Every Lyric project is described by a `lyric.toml` file at its root. Here is a representative manifest:
+Every Lyric project is described by a `lyric.toml` file at its root. Here is a single-package manifest:
 
 ```toml
-[project]
+[package]
 name    = "MyService"
 version = "1.2.0"
 authors = ["Alice <alice@example.com>"]
+license = "MIT"
 
 [dependencies]
 Money   = "^1.0"
 Account = "^2.3"
-std     = "^1.0"
-
-[dev-dependencies]
-TestHelpers = "^1.0"
 ```
 
-The fields:
+The `[package]` fields:
 
 - `name` — the package identifier as it appears on NuGet. Use `UpperCamelCase` by convention.
 - `version` — SemVer 2.0.0. The string must be a valid three-part version; pre-release labels (`1.2.0-rc.1`) are allowed.
 - `authors` — a list of strings in free-form "Name <email>" format.
-- `[dependencies]` — packages required at build and runtime. Version constraints follow the caret-range convention used by npm and Cargo: `"^1.0"` allows any `1.x.y` with `x.y >= 0.0`.
-- `[dev-dependencies]` — packages required only during `lyric test`. They are not included in the `.nupkg` the compiler produces for `lyric publish`.
+- `description`, `license`, `repository` — optional metadata that flows into the published `.nupkg`.
+- `[dependencies]` — packages required at build and runtime. Versions are NuGet-style constraints.
 
-Version constraints are resolved against the NuGet registry (or a compatible private registry). The compiler picks the minimum version satisfying all constraints in the dependency graph, consistent with NuGet's lowest-applicable-version resolution strategy.
+Version constraints are resolved against the NuGet registry (or a compatible private registry).
+
+### §19.1.1 Multi-package projects (`[project]`)
+
+A Lyric *project* may contain more than one package — useful when an application is large enough that splitting into `MyApp.Core`, `MyApp.Db`, `MyApp.Web` is clearer than one monolith. Add a `[project]` section to the manifest to declare the project name and choose between two output modes (Phase 5 §M5.1 stage 2c.2 addition):
+
+```toml
+[package]
+name    = "MyApp"
+version = "1.0.0"
+
+[project]
+name           = "MyApp"
+output         = "single"        # "single" (default for new apps)
+                                 # | "per-package" (legacy bootstrap shape)
+output_assembly = "MyApp.dll"    # only meaningful when output = "single"
+
+[project.packages]
+"MyApp.Core" = "src/core"
+"MyApp.Db"   = "src/db"
+"MyApp.Web"  = "src/web"
+```
+
+Output modes:
+
+- **`output = "single"`** — every package in `[project.packages]` compiles into one DLL named `output_assembly` (defaulting to `<name>.dll`). The bundled DLL carries one `Lyric.Contract.<Pkg>` resource per package. Cross-package calls within the project skip the binary contract round-trip and resolve through the in-process symbol table at compile time. Pair with the `internal` visibility tier (chapter 6) to expose symbols across packages within the project without leaking them to downstream consumers.
+- **`output = "per-package"`** — every package emits to its own DLL, the legacy shape the bootstrap stdlib uses. Each DLL carries one `Lyric.Contract` resource describing its own surface.
+
+Auto-discovery: when `[project.packages]` is empty, `lyric build` walks the source root for any directory containing `.l` files whose `package <X>` declaration is rooted at the project's `name`.
+
+The `[project]` section is optional; manifests without it use the legacy single-package compilation flow.
 
 ## §19.2 Building with a manifest
 

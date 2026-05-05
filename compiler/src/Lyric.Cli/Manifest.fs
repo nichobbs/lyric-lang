@@ -56,11 +56,38 @@ type BuildSection =
       /// Defaults to `pkg/`.
       OutputDir: string option }
 
+/// `output` mode for `[project]` (per `docs/20-project-as-dll.md` §3):
+///   * `Single` — bundle every package in `[project.packages]` into
+///     one DLL named after `output_assembly` (or the project's name).
+///   * `PerPackage` — retain the legacy "one DLL per package" shape
+///     used by the bootstrap stdlib.
+type ProjectOutputMode =
+    | Single
+    | PerPackage
+
+/// `[project]` section (Phase 5 §M5.1 stage 2c.2 addition).  Optional
+/// — its absence falls back to the legacy single-package compilation
+/// flow.  When present, `lyric build` walks `[project.packages]` (or
+/// auto-discovers from the source root) and emits accordingly.
+type ProjectSection =
+    { Name:           string
+      Output:         ProjectOutputMode
+      OutputAssembly: string option
+      /// Map from package name (`MyApp.Core`, etc.) to the source
+      /// directory under the project root containing that package's
+      /// `.l` files.  When empty, `lyric build` auto-discovers by
+      /// walking the source root for any directory containing `.l`
+      /// files whose `package <X>` declaration names a package
+      /// rooted at the project's name.
+      Packages:       (string * string) list }
+
 /// Whole-manifest record.
 type Manifest =
     { Package:      PackageMetadata
       Build:        BuildSection
-      Dependencies: Dependency list }
+      Dependencies: Dependency list
+      /// `None` for legacy manifests without a `[project]` block.
+      Project:      ProjectSection option }
 
 // ---------------------------------------------------------------------------
 // TOML token / value model.  Hand-rolled because the bootstrap doesn't
@@ -402,7 +429,61 @@ let private toManifest (entries: Map<string * string, Value>)
         let build =
             { Sources   = sources
               OutputDir = outputDir }
-        Ok { Package = pkg; Build = build; Dependencies = deps }
+        // `[project]` parsing (Phase 5 §M5.1 stage 2c.2).  Optional;
+        // when absent, the legacy single-package flow applies.  When
+        // present, requires `name`; `output` defaults to
+        // `"per-package"` for back-compat (the bootstrap stdlib's
+        // existing layout).
+        let projName =
+            match Map.tryFind ("project", "name") entries with
+            | Some (VString s) -> Some s
+            | _ -> None
+        match projName with
+        | None ->
+            Ok { Package = pkg; Build = build; Dependencies = deps;
+                 Project = None }
+        | Some pname ->
+            bind (optString entries "project" "output") <| fun outOpt ->
+            let outputMode =
+                match outOpt with
+                | Some "single"      -> Ok Single
+                | Some "per-package" -> Ok PerPackage
+                | None               -> Ok PerPackage
+                | Some other         ->
+                    Error (InvalidFieldType ("project", "output",
+                              sprintf
+                                  "\"single\" or \"per-package\" (got \"%s\")"
+                                  other))
+            bind outputMode <| fun mode ->
+            bind (optString entries "project" "output_assembly") <| fun outAsm ->
+            // [project.packages] = inline table of "<pkg>" = "<dir>"
+            let pkgEntries =
+                entries
+                |> Map.toList
+                |> List.choose (fun ((sec, key), v) ->
+                    if sec = "project.packages" then
+                        match v with
+                        | VString d -> Some (Ok (key, d))
+                        | _ ->
+                            Some (Error (InvalidFieldType (sec, key,
+                                            "package source directory string")))
+                    else None)
+            let firstPkgErr =
+                pkgEntries |> List.tryPick (function Error e -> Some e | _ -> None)
+            match firstPkgErr with
+            | Some e -> Error e
+            | None ->
+                let packages =
+                    pkgEntries
+                    |> List.choose (function Ok p -> Some p | _ -> None)
+                    |> List.sortBy fst
+                let proj =
+                    { Name           = pname
+                      Output         = mode
+                      OutputAssembly = outAsm
+                      Packages       = packages }
+                Ok { Package = pkg; Build = build; Dependencies = deps;
+                     Project = Some proj }
 
 /// Parse a `lyric.toml` text into a typed `Manifest` record.
 let parseText (text: string) : Result<Manifest, ManifestError> =

@@ -36,8 +36,10 @@ deferred to Phase 3 by design.
 | M5.1 stage 2a' — B0010 / B0011 / B0012 multi-file conflict diagnostics | **Shipped** | D-progress-095 |
 | M5.1 stage 2b — split lexer into reusable `Lyric.Lexer` library | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2b' — codegen polish: EIf merge-balance + tuple/field TypeBuilder paths | **Shipped** (PR #127) | D-progress-095 |
-| M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (this branch) | D-progress-096 |
-| M5.1 stage 2c.2 — project-as-DLL bundling per `docs/20-project-as-dll.md` | Designed; in progress | — |
+| M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (PR #129) | D-progress-096 |
+| M5.1 stage 2c.2.i — `[project]` table in `lyric.toml` (Manifest parsing + tests) | **Shipped** (this branch) | D-progress-097 |
+| M5.1 stage 2c.2.ii — single-DLL emit driver (multi-package -> one PE; per-package contract resources) | Decided: option 1 (in-emitter restructure); not yet shipped | — |
+| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` updates for bundled DLLs | Pending 2c.2.ii | — |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -159,6 +161,75 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-097: M5.1 stage 2c.2.i — `[project]` table in `lyric.toml`
+
+*claude/project-as-dll-stage-2c2 branch.*  Lands the manifest piece
+of stage 2c.2 per `docs/20-project-as-dll.md` §3 — the
+`[project]` and `[project.packages]` sections are now parsed and
+materialised into a typed `ProjectSection` record on `Manifest`.
+
+**Manifest model.**
+
+* New `ProjectOutputMode` discriminated union: `Single` |
+  `PerPackage` (defaults to `PerPackage` for back-compat).
+* New `ProjectSection` record: `Name`, `Output`, `OutputAssembly`,
+  `Packages : (string * string) list`.
+* `Manifest` gains `Project : ProjectSection option` field — `None`
+  for legacy single-package manifests, `Some` when `[project]` is
+  present.
+
+**Parser changes.**  `Manifest.toManifest` now accepts an optional
+`[project]` block.  When present:
+
+* `name` (required) — project name.
+* `output` (optional, defaults to `"per-package"`) — `"single"` or
+  `"per-package"`; anything else surfaces as
+  `InvalidFieldType ("project", "output", …)`.
+* `output_assembly` (optional) — bundled DLL filename when
+  `output = "single"`.
+* `[project.packages]` (optional) — map of `<pkg-name>` to source
+  directory, sorted by name on load.
+
+**Tests.**  Five new cases in
+`compiler/tests/Lyric.Cli.Tests/ManifestTests.fs`:
+
+* `[project section absent by default]` — legacy back-compat.
+* `[project section parses with defaults]` — minimal `[project]`.
+* `[project output mode round-trips]` — `single` and `per-package`
+  both materialise correctly + `output_assembly` flows through.
+* `[invalid project output mode rejected]` — `output = "weird"`
+  surfaces as `InvalidFieldType`.
+* `[[project.packages] map sorted by name]` — packages-by-name
+  lookup is stable.
+
+**Doc updates.**
+
+* `book/chapters/19-package-ecosystem.md` §19.1 fixed to use the
+  correct `[package]` section name (was using `[project]` as a
+  synonym for `[package]`); new §19.1.1 documents the multi-package
+  `[project]` block.
+* `book/chapters/appendix-b-quick-reference.md` lyric.toml example
+  updated.
+* `docs/10-bootstrap-progress.md` Phase 5 status table splits 2c.2
+  into 2c.2.i / 2c.2.ii / 2c.2.iii sub-stages.
+
+**Test totals.**  81 CLI tests pass (was 76 + 5 new project-table).
+
+**2c.2.ii architectural decision (resolved).**
+
+After review the user picked **option 1 — in-emitter restructure**:
+refactor `emitAssembly` to accept a list of `SourceFile` and emit
+them serially into one shared `PersistedAssemblyBuilder`.  Each
+package's emit walks both the local-package symbol table AND the
+previously-emitted-package tables (whose `TypeBuilder`s aren't
+finalised yet — the recent tuple/field/ctor TypeBuilder fixes
+already plumb this path).  Trade-off accepted: ~600-1000 LOC +
+tests, deep changes to `Records.fs` / `ContractMeta.fs` /
+`Codegen.fs` import-table handling, in exchange for full
+single-DLL semantics including the CLR `internal` access modifier
+shipping naturally.  Options 2 (ILRepack post-merge) and 3
+(`PublishSingleFile`) recorded as rejected alternatives.
 
 ### D-progress-096: M5.1 stage 2c.1 — `internal` visibility tier
 

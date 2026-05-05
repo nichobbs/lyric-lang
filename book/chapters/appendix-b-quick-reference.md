@@ -461,15 +461,24 @@ fixture myData: MyType = MyType.make()
 ### `lyric.toml` fields
 
 ```toml
-[project]
+[package]
 name    = "myapp"
 version = "1.0.0"
+authors = ["alice <alice@example.com>"]
+license = "MIT"
 
 [dependencies]
 Money = "^2.1"
 
-[dev-dependencies]
-TestHelpers = "^1.0"
+# Optional — opt in for project-as-DLL bundling (M5.1 stage 2c.2):
+[project]
+name           = "myapp"
+output         = "single"          # | "per-package"
+output_assembly = "myapp.dll"
+
+[project.packages]
+"myapp.Core" = "src/core"
+"myapp.Web"  = "src/web"
 ```
 
 ---
