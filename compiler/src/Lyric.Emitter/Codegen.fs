@@ -92,6 +92,11 @@ type FunctionCtx =
       /// imports.  Drives strict-match auto-FFI for static-method
       /// calls of the form `ExternTypeName.method(args)` (C4 phase 1).
       ExternTypeNames: Dictionary<string, ClrType>
+      /// Module-level `pub val` and `pub const` integer constants,
+      /// folded at assembly-build time.  Keyed by name; value is
+      /// the folded int64.  Used by `EPath { Segments = [name] }`
+      /// so constants like `ACC_PUBLIC` resolve without a static field.
+      Consts: Dictionary<string, int64>
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -183,6 +188,7 @@ module FunctionCtx =
             (programType: TypeBuilder)
             (resolveType: Lyric.Parser.Ast.TypeExpr -> System.Type)
             (lookup: Lyric.TypeChecker.TypeId -> System.Type option)
+            (consts: Dictionary<string, int64>)
             (diags: ResizeArray<Lyric.Lexer.Diagnostic>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
@@ -213,6 +219,7 @@ module FunctionCtx =
           ImportedFuncs       = importedFuncs
           ImportedDistinctTypes = importedDistinctTypes
           ExternTypeNames = externTypeNames
+          Consts       = consts
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -399,6 +406,10 @@ let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
             fileHostMethod "WriteIsValid" [| typeof<string>; typeof<string> |]
         "hostWriteAllTextError",
             fileHostMethod "WriteError" [| typeof<string>; typeof<string> |]
+        "hostWriteAllBytesIsValid",
+            fileHostMethod "WriteBytesIsValid" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
+        "hostWriteAllBytesError",
+            fileHostMethod "WriteBytesError" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
         "hostDirectoryExists",
             fileHostMethod "DirectoryExists" [| typeof<string> |]
         "hostCreateDirectoryIsValid",
@@ -466,16 +477,23 @@ let private capitalizeFirst (s: string) : string =
     if String.IsNullOrEmpty s then s
     else string (Char.ToUpperInvariant s.[0]) + s.Substring(1)
 
-/// True if `recvTy` is a generic instantiation that mentions a
-/// `GenericTypeParameterBuilder` — i.e. we're inside a Lyric generic
-/// function being emitted.  `TypeBuilderInstantiation.GetMethods()`
-/// throws `NotSupportedException` for such types, so callers must
-/// route through `TypeBuilder.GetMethod` on the open definition.
+/// True if `t` is a closed generic type whose type arguments include
+/// a `GenericTypeParameterBuilder` (we're inside a generic Lyric function)
+/// OR a `TypeBuilder` (the argument type is being defined in the same
+/// compilation unit, e.g. `List<AsmInsn>` while `AsmInsn` is still a
+/// TypeBuilder).  `TypeBuilderInstantiation.GetMethods()` throws in both
+/// cases; callers must enumerate methods on the open definition and close
+/// them with `TypeBuilder.GetMethod`.
 let private isGenericInstantiationOnGtpb (t: ClrType) : bool =
+    let rec isDynamic (ty: ClrType) : bool =
+        ty :? System.Reflection.Emit.GenericTypeParameterBuilder
+        || ty :? System.Reflection.Emit.TypeBuilder
+        || (ty.IsGenericType
+            && not ty.IsGenericTypeDefinition
+            && ty.GetGenericArguments() |> Array.exists isDynamic)
     t.IsGenericType
     && not t.IsGenericTypeDefinition
-    && t.GetGenericArguments() |> Array.exists (fun a ->
-        a :? System.Reflection.Emit.GenericTypeParameterBuilder)
+    && t.GetGenericArguments() |> Array.exists isDynamic
 
 /// `recvTy.GetMethods()` that works even when recvTy is a
 /// TypeBuilderInstantiation (closed-on-GTPB generic).  For non-GTPB
@@ -740,7 +758,13 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
                         | Some et -> et
                         | None    -> t
                     else t
-                | _            -> typeof<obj>
+                | _ ->
+                    match ctx.Consts.TryGetValue name with
+                    | true, v ->
+                        if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue
+                        then typeof<int>
+                        else typeof<int64>
+                    | _ -> typeof<obj>
     | EBinop (op, l, _) ->
         match op with
         | BAnd | BOr | BXor | BImplies
@@ -1981,13 +2005,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                             r.Name fieldName
                 | None when isBclType recvTy ->
                     // BCL property fallback: lyric `s.length` -> `String.Length`.
+                    // When recvTy is a TypeBuilderInstantiation (e.g. `List<AsmInsn>`)
+                    // GetProperty throws; look up the property on the open definition
+                    // and close its getter via TypeBuilder.GetMethod.
                     let propName = capitalizeFirst fieldName
-                    let prop = recvTy.GetProperty(propName)
+                    let lookupTy =
+                        if isGenericInstantiationOnGtpb recvTy then
+                            recvTy.GetGenericTypeDefinition()
+                        else
+                            recvTy
+                    let prop = lookupTy.GetProperty(propName)
                     let getter =
                         match Option.ofObj prop with
                         | Some p when p.CanRead ->
                             Option.ofObj (p.GetGetMethod())
-                            |> Option.map (fun g -> g, p.PropertyType)
+                            |> Option.map (fun g ->
+                                let closed = closeBclMethod recvTy g
+                                closed, p.PropertyType)
                         | _ -> None
                     match getter with
                     | Some (g, ty) ->
@@ -2104,8 +2138,17 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 il.Emit(OpCodes.Newobj, constructedCtor)
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
-                            codegenErr ctx "E0004"
-                                (sprintf "unknown name '%s'" name) e.Span
+                            match ctx.Consts.TryGetValue name with
+                            | true, v ->
+                                if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue then
+                                    emitLdcI4 il (int32 v)
+                                    typeof<int>
+                                else
+                                    il.Emit(OpCodes.Ldc_I8, v)
+                                    typeof<int64>
+                            | _ ->
+                                codegenErr ctx "E0004"
+                                    (sprintf "unknown name '%s'" name) e.Span
 
     | EPath { Segments = [enumName; caseName] }
         when ctx.Enums.ContainsKey enumName ->
@@ -2978,6 +3021,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | CAPositional ex | CANamed (_, ex, _) -> ex
                 let expectedDelegateTy =
                     if i < paramTypes.Length
+                       && not (isGenericInstantiationOnGtpb paramTypes.[i])
                        && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
                     then Some paramTypes.[i]
                     else None
@@ -3677,7 +3721,7 @@ and private emitLambdaWith
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
-            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Diags
+            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
     // single-exit discipline.
@@ -3880,6 +3924,11 @@ and private emitPatternTest
                 | _ ->
                     failwithf "E11 codegen: unknown constructor pattern '%s'"
                         (String.concat "." path.Segments)
+    | PError ->
+        // Parser-error recovery node; emit a diagnostic and push 0 (never matches)
+        // so compilation can continue and surface the underlying parse error.
+        codegenErrStmt ctx "E0012" "pattern parse error (recovery)" pat.Span
+        emitLdcI4 il 0
     | _ ->
         failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
 

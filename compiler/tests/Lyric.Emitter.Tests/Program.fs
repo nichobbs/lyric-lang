@@ -65,5 +65,6 @@ let main argv =
             ProtectedTypeTests.tests
             StdlibLyricTests.tests
             KernelBoundaryTests.tests
+            JvmSelfTest.tests
         ]
     runTestsWithCLIArgs [] argv allTests

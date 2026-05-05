@@ -14,6 +14,8 @@
 @runtime_checked
 package Std.File
 
+import Std.Core
+import Std.Collections
 import Std.Errors
 
 /// Probe whether a regular file exists at `path`.
@@ -91,5 +93,20 @@ pub func createDir(path: in String): Result[Unit, IOError] {
     Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "createDirectory failed"))
+  }
+}
+
+/// Write raw bytes to `path` (creating or replacing).
+///
+/// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
+/// or `Err(IoError)` for any host failure (permission, disk-full, …).
+@stable(since="1.0")
+pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+  if path.length == 0 {
+    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  } else if hostWriteAllBytesIsValid(path, bytes) {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = hostWriteAllBytesError(path, bytes)))
   }
 }

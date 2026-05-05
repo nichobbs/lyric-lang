@@ -104,6 +104,35 @@ pub func makeAttr(name: in String, bytes: in List[Byte]): Attribute {
   Attribute(name = name, bytes = bytes)
 }
 
+/// Create a `MethodInfo`.  Bootstrap-grade factory: lets callers in other
+/// packages construct method records without reaching into the imported
+/// record table directly (which the Phase-1 emitter doesn't expose).
+pub func makeMethodInfo(flags: in Int, name: in String, descriptor: in String, attrs: in List[Attribute]): MethodInfo {
+  MethodInfo(flags = flags, name = name, descriptor = descriptor, attrs = attrs)
+}
+
+/// Create a `FieldInfo` (companion factory for `makeMethodInfo`).
+pub func makeFieldInfo(flags: in Int, name: in String, descriptor: in String, attrs: in List[Attribute]): FieldInfo {
+  FieldInfo(flags = flags, name = name, descriptor = descriptor, attrs = attrs)
+}
+
+/// Like `makeClass`, but takes the method list directly.  Used by callers
+/// in other packages that can't mutate `cf.methods` post-construction
+/// (the Phase-1 emitter doesn't support field access on imported records).
+pub func makeClassWithMethods(thisClass: in String, methods: in List[MethodInfo]): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 /// Minimum `ClassFile` for a concrete class.
 /// Sets minor=0, major=65 (Java 21), ACC_PUBLIC|ACC_SUPER, no interfaces.
 pub func makeClass(thisClass: in String): ClassFile {
@@ -195,19 +224,19 @@ func emitMethod(m: in MethodInfo, pool: in Pool, buf: in ByteWriter): Unit {
 
 // ── Public serializer ─────────────────────────────────────────────────────────
 
-/// Serialize `cf` to a JVM-loadable byte sequence.
+/// Serialize `cf` to a JVM-loadable byte sequence using a caller-supplied pool.
 ///
-/// The returned `List[Byte]` can be written to a `.class` file verbatim.
+/// Use this when methods were assembled via `Jvm.Bytecode.assembleCode` with
+/// the same `pool` — the bytecode contains pool indices that must match the
+/// class-file constant pool, so both must share one `Pool` object.
 ///
 /// Algorithm:
-///   1. Build the constant pool by interning all symbolic references.
+///   1. Intern all symbolic class-level references into `pool` (idempotent).
 ///   2. Write the pool to a `ByteWriter` (count + entries).
 ///   3. Write the class body (flags, this/super, interfaces, fields,
 ///      methods, attributes) to a second `ByteWriter`.
 ///   4. Concatenate: magic (0xCAFEBABE) + minor + major + pool + body.
-pub func serializeClass(cf: in ClassFile): List[Byte] {
-  val pool = poolNew()
-
+pub func serializeClassWithPool(cf: in ClassFile, pool: in Pool): List[Byte] {
   // ── Pass 1: populate the constant pool ───────────────────────────────────
   // Pool operations are idempotent (same key → same index), so pass 2
   // can re-call the same pool* functions and get the cached indices.
@@ -265,6 +294,16 @@ pub func serializeClass(cf: in ClassFile): List[Byte] {
   poolWriteTo(pool, result)    // constant_pool_count + entries
   writerAppend(result, body)   // access_flags … attributes
   writerToList(result)
+}
+
+/// Serialize `cf` to a JVM-loadable byte sequence with a fresh pool.
+///
+/// Only correct for classes whose methods carry no `Code` attribute (or whose
+/// Code bytes contain no pool references).  For classes with assembled
+/// bytecode, use `serializeClassWithPool` and pass the same `Pool` that was
+/// given to `Jvm.Bytecode.newAssembler`.
+pub func serializeClass(cf: in ClassFile): List[Byte] {
+  serializeClassWithPool(cf, poolNew())
 }
 
 // ── Attribute builders ────────────────────────────────────────────────────────

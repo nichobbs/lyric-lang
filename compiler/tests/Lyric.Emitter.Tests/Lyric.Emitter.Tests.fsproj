@@ -66,6 +66,7 @@
     <Compile Include="ProtectedTypeTests.fs" />
     <Compile Include="StdlibLyricTests.fs" />
     <Compile Include="KernelBoundaryTests.fs" />
+    <Compile Include="JvmSelfTest.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
