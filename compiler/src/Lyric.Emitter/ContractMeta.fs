@@ -42,6 +42,11 @@ type ContractDecl =
       Repr:     string         // canonical signature / shape, free-form
       /// `@pure` annotation present on this declaration.
       Pure:     bool
+      /// Stability level (D040 / Q011).
+      ///   ""                — unannotated (treated as stable for enforcement).
+      ///   "stable:X.Y"      — `@stable(since="X.Y")`.
+      ///   "experimental"    — `@experimental`.
+      Stability: string
       /// Source-level strings of the function's `requires:` clauses.
       /// Empty for non-functions.
       Requires: string list
@@ -73,14 +78,15 @@ module ContractDecl =
     /// fixtures and decls of kinds that never carry contracts
     /// (records, enums, …).
     let basic (kind: string) (name: string) (repr: string) : ContractDecl =
-        { Kind     = kind
-          Name     = name
-          Repr     = repr
-          Pure     = false
-          Requires = []
-          Ensures  = []
-          Body     = None
-          Params   = [] }
+        { Kind      = kind
+          Name      = name
+          Repr      = repr
+          Pure      = false
+          Stability = ""
+          Requires  = []
+          Ensures   = []
+          Body      = None
+          Params    = [] }
 
 module Contract =
 
@@ -124,6 +130,31 @@ let private renderTypeExpr (te: TypeExpr) : string =
 
 let private isPub (vis: Visibility option) =
     match vis with Some _ -> true | None -> false
+
+/// Encode the stability annotations on an `Item` as the canonical
+/// stability string stored in `ContractDecl.Stability`.
+///   `@stable(since="X.Y")` → `"stable:X.Y"`
+///   `@experimental`        → `"experimental"`
+///   (unannotated)          → `""`
+let private stabilityStringOfItem (item: Item) : string =
+    let findAnn name =
+        item.Annotations |> List.tryFind (fun a ->
+            match a.Name.Segments with
+            | [seg] -> seg = name
+            | _     -> false)
+    match findAnn "experimental" with
+    | Some _ -> "experimental"
+    | None ->
+        match findAnn "stable" with
+        | Some a ->
+            let since =
+                a.Args |> List.tryPick (fun arg ->
+                    match arg with
+                    | AAName("since", AVString(s, _), _) -> Some s
+                    | _                                  -> None)
+                |> Option.defaultValue ""
+            "stable:" + since
+        | None -> ""
 
 let private genericsRepr (g: GenericParams option) : string =
     match g with
@@ -248,15 +279,17 @@ let private contractClauseStrings (cs: ContractClause list)
     req, ens
 
 let private declOf (it: Item) : ContractDecl option =
+    let stab = stabilityStringOfItem it
     let mkDefault kind name repr =
-        { Kind     = kind
-          Name     = name
-          Repr     = repr
-          Pure     = false
-          Requires = []
-          Ensures  = []
-          Body     = None
-          Params   = [] }
+        { Kind      = kind
+          Name      = name
+          Repr      = repr
+          Pure      = false
+          Stability = stab
+          Requires  = []
+          Ensures   = []
+          Body      = None
+          Params    = [] }
     if not (isPub it.Visibility) then None
     else
         match it.Kind with
@@ -289,14 +322,15 @@ let private declOf (it: Item) : ContractDecl option =
                 fn.Params
                 |> List.map (fun p -> p.Name, renderTypeExpr p.Type)
             Some
-                { Kind     = "func"
-                  Name     = fn.Name
-                  Repr     = repr
-                  Pure     = isPure
-                  Requires = req
-                  Ensures  = ens
-                  Body     = body
-                  Params   = paramsStruct }
+                { Kind      = "func"
+                  Name      = fn.Name
+                  Repr      = repr
+                  Pure      = isPure
+                  Stability = stab
+                  Requires  = req
+                  Ensures   = ens
+                  Body      = body
+                  Params    = paramsStruct }
         | IRecord rd | IExposedRec rd ->
             let fs =
                 rd.Members
@@ -434,6 +468,8 @@ let private renderDecl (d: ContractDecl) : string =
     sb.Append (sprintf "{\"kind\":\"%s\",\"name\":\"%s\",\"repr\":\"%s\""
                 (escape d.Kind) (escape d.Name) (escape d.Repr))
         |> ignore
+    if d.Stability <> "" then
+        sb.Append (sprintf ",\"stability\":\"%s\"" (escape d.Stability)) |> ignore
     if d.Pure then
         sb.Append ",\"pure\":true" |> ignore
     if not (List.isEmpty d.Requires) then
@@ -584,19 +620,21 @@ let parseFromJson (json: string) : Contract option =
                     let name     = getStrInElem el "name" ""
                     let repr     = getStrInElem el "repr" ""
                     let pure'    = getBoolInElem el "pure"
+                    let stab     = getStrInElem el "stability" ""
                     let reqs     = getStrArrayInElem el "requires"
                     let ens      = getStrArrayInElem el "ensures"
                     let body     = getOptStrInElem el "body"
                     let parms    = getParamsInElem el
                     yield
-                        { Kind     = kind
-                          Name     = name
-                          Repr     = repr
-                          Pure     = pure'
-                          Requires = reqs
-                          Ensures  = ens
-                          Body     = body
-                          Params   = parms } ]
+                        { Kind      = kind
+                          Name      = name
+                          Repr      = repr
+                          Pure      = pure'
+                          Stability = stab
+                          Requires  = reqs
+                          Ensures   = ens
+                          Body      = body
+                          Params    = parms } ]
             | _ -> []
         Some
             { PackageName   = pkgStr
@@ -610,12 +648,36 @@ let parseFromJson (json: string) : Contract option =
 /// enough info to render a human-readable line.  Removed/changed
 /// entries are SemVer-major-bump-worthy; Added entries are minor-
 /// bump-worthy.
+///
+/// `DiffContractChanged` fires when the signature is unchanged but the
+/// requires/ensures clauses differ in a semantically breaking way:
+///   * StrengthenedRequires — new adds preconditions callers must satisfy.
+///   * WeakenedEnsures      — new removes postconditions callees relied on.
+type ContractBreakKind =
+    | StrengthenedRequires of added: string list
+    | WeakenedEnsures      of removed: string list
+
 type ContractDiffEntry =
-    | DiffAdded   of ContractDecl
-    | DiffRemoved of ContractDecl
-    | DiffChanged of oldDecl: ContractDecl * newDecl: ContractDecl
+    | DiffAdded           of ContractDecl
+    | DiffRemoved         of ContractDecl
+    | DiffChanged         of oldDecl: ContractDecl * newDecl: ContractDecl
+    | DiffContractChanged of decl: ContractDecl * breaks: ContractBreakKind list
 
 let private declKey (d: ContractDecl) = (d.Kind, d.Name)
+
+/// Detect contract-clause breaking changes between two same-named function
+/// declarations.  Returns `Some` with the list of break kinds when at
+/// least one breaking change is detected; `None` when contracts are
+/// compatible.
+let private contractBreaks (o: ContractDecl) (n: ContractDecl) : ContractBreakKind list =
+    let oldReqs = Set.ofList o.Requires
+    let newReqs = Set.ofList n.Requires
+    let oldEns  = Set.ofList o.Ensures
+    let newEns  = Set.ofList n.Ensures
+    let addedReqs   = Set.difference newReqs oldReqs |> Set.toList
+    let removedEns  = Set.difference oldEns  newEns  |> Set.toList
+    [ if not (List.isEmpty addedReqs)  then yield StrengthenedRequires addedReqs
+      if not (List.isEmpty removedEns) then yield WeakenedEnsures removedEns ]
 
 /// Compute a structural diff between two contracts.  Decls keyed
 /// by (Kind, Name) — adding a record and removing a same-named
@@ -636,7 +698,11 @@ let diffContracts
     [ for key in allKeys do
         match Map.tryFind key oldByKey, Map.tryFind key newByKey with
         | Some o, Some n when o.Repr <> n.Repr -> yield DiffChanged (o, n)
-        | Some _, Some _ -> ()  // unchanged
+        | Some o, Some n ->
+            // Same signature — check contract clauses.
+            let breaks = contractBreaks o n
+            if not (List.isEmpty breaks) then
+                yield DiffContractChanged (n, breaks)
         | None, Some n -> yield DiffAdded n
         | Some o, None -> yield DiffRemoved o
         | None, None -> () ]
@@ -646,23 +712,48 @@ let diffContracts
             | DiffAdded d -> 0, declKey d
             | DiffRemoved d -> 1, declKey d
             | DiffChanged (o, _) -> 2, declKey o
+            | DiffContractChanged (d, _) -> 3, declKey d
         (kind, name))
 
-/// Returns true when the diff contains breaking changes
-/// (Removed or Changed).  Added-only diffs are a SemVer minor bump.
+/// Returns true when the diff contains breaking changes to *stable*
+/// surface (Removed or Changed on a non-experimental item).
+///
+/// Removing or changing an `@experimental` item is a no-op SemVer-
+/// wise — experimental surface carries no stability guarantee.
+/// Added-only diffs (any stability) are a SemVer minor bump.
 let hasBreakingChanges (entries: ContractDiffEntry list) : bool =
     entries
     |> List.exists (function
-        | DiffRemoved _ | DiffChanged _ -> true
-        | DiffAdded _ -> false)
+        | DiffAdded _ -> false
+        | DiffRemoved d -> d.Stability <> "experimental"
+        | DiffChanged(o, _) -> o.Stability <> "experimental"
+        | DiffContractChanged(d, _) -> d.Stability <> "experimental")
 
 /// Render a single diff entry as a human-readable line.
 let renderDiffEntry (entry: ContractDiffEntry) : string =
+    let stabTag (d: ContractDecl) =
+        match d.Stability with
+        | "experimental" -> " [experimental]"
+        | s when s.StartsWith("stable:") ->
+            sprintf " [stable since %s]" (s.Substring(7))
+        | _ -> ""
     match entry with
     | DiffAdded d ->
-        sprintf "  + %s %s : %s" d.Kind d.Name d.Repr
+        sprintf "  + %s %s%s : %s" d.Kind d.Name (stabTag d) d.Repr
     | DiffRemoved d ->
-        sprintf "  - %s %s : %s" d.Kind d.Name d.Repr
+        sprintf "  - %s %s%s : %s" d.Kind d.Name (stabTag d) d.Repr
     | DiffChanged (o, n) ->
-        sprintf "  ~ %s %s\n      old: %s\n      new: %s"
-            o.Kind o.Name o.Repr n.Repr
+        sprintf "  ~ %s %s%s\n      old: %s\n      new: %s"
+            o.Kind o.Name (stabTag o) o.Repr n.Repr
+    | DiffContractChanged (d, breaks) ->
+        let breakLines =
+            breaks |> List.map (function
+                | StrengthenedRequires added ->
+                    sprintf "      [breaking] strengthened requires: %s"
+                        (added |> List.map (sprintf "\"%s\"") |> String.concat ", ")
+                | WeakenedEnsures removed ->
+                    sprintf "      [breaking] weakened ensures: %s"
+                        (removed |> List.map (sprintf "\"%s\"") |> String.concat ", "))
+            |> String.concat "\n"
+        sprintf "  ! %s %s%s (contract change)\n%s"
+            d.Kind d.Name (stabTag d) breakLines

@@ -7,8 +7,24 @@
 ///
 /// Capabilities exposed in `initialize`:
 ///   - textDocumentSync: Full (we keep a full string copy per buffer)
-///   - hoverProvider:    true
-///   - diagnosticProvider via push (publishDiagnostics)
+///   - hoverProvider:    true  (full resolved signature for functions)
+///   - completionProvider: true (all top-level names, including imports)
+///   - definitionProvider: true (go-to-definition, including imported files)
+///   - signatureHelpProvider: true (triggered by '(' and ',')
+///
+/// M-L4 — cross-file workspace support:
+///   - On `initialize`, the workspace root is extracted and a
+///     `WorkspaceIndex` (package-name → file-path) is built by scanning
+///     all *.l files under the root.
+///   - `import Pkg` declarations are resolved against the index;
+///     the imported file's items are passed to `checkWithImports` so
+///     the type checker sees the full cross-file symbol table.
+///   - Completion draws from `CheckResult.Symbols` (which includes
+///     imported symbols) rather than just the local AST items.
+///   - Go-to-definition searches imported files when no local match is
+///     found.
+///   - `workspace/didChangeWatchedFiles` rebuilds the index so newly
+///     created files are discovered on the next keystroke.
 module Lyric.Lsp.Server
 
 open System
@@ -17,19 +33,244 @@ open System.IO
 open System.Text.Json.Nodes
 open Lyric.Lexer
 open Lyric.Parser
+open Lyric.TypeChecker
+open Lyric.TypeChecker.Checker
 open Lyric.Lsp.JsonRpc
 
-type DocumentStore() =
-    let docs = Dictionary<string, string>()
-    member _.Set(uri: string, text: string) = docs.[uri] <- text
-    member _.Remove(uri: string) = docs.Remove(uri) |> ignore
-    member _.TryGet(uri: string) =
-        match docs.TryGetValue uri with
-        | true, t -> Some t
-        | _       -> None
+// ---------------------------------------------------------------------------
+// Workspace index — maps package name to file path.
+// ---------------------------------------------------------------------------
 
-/// Convert a Lyric `Position` (1-based line/col) to LSP's 0-based
-/// shape.  LSP columns are UTF-16 code units; for ASCII they match.
+type WorkspaceIndex =
+    { Root:          string
+      /// "Pkg" or "Pkg.Sub" → absolute file path of the declaring .l file.
+      PackageToFile: Map<string, string> }
+
+/// Convert an LSP `file://` URI to an absolute file-system path.
+let private uriToPath (uri: string) : string option =
+    try Some (Uri(uri).LocalPath)
+    with _ -> None
+
+/// Convert an absolute file-system path to an LSP `file://` URI.
+let private pathToUri (path: string) : string =
+    try Uri(path).AbsoluteUri
+    with _ -> "file://" + path.Replace('\\', '/')
+
+/// Scan every *.l file under `root`, parse its package declaration, and
+/// build the package-name → file-path map.  Files that fail to parse are
+/// silently skipped so a broken file never crashes the whole index.
+let buildWorkspaceIndex (root: string) : WorkspaceIndex =
+    let mutable m = Map.empty
+    try
+        let files = Directory.GetFiles(root, "*.l", SearchOption.AllDirectories)
+        for filePath in files do
+            try
+                let text = File.ReadAllText filePath
+                let parsed = Parser.parse text
+                let key = String.concat "." parsed.File.Package.Path.Segments
+                if key <> "" then
+                    m <- Map.add key filePath m
+            with _ -> ()
+    with _ -> ()
+    { Root = root; PackageToFile = m }
+
+// ---------------------------------------------------------------------------
+// Document store — caches the full analysis result per URI.
+// ---------------------------------------------------------------------------
+
+type CachedDoc =
+    { Source:        string
+      CheckResult:   CheckResult
+      /// URI → SourceFile for each directly-imported package.  Used by
+      /// go-to-definition to resolve symbols declared in other files.
+      ImportedFiles: Map<string, Lyric.Parser.Ast.SourceFile>
+      /// Proof summary from the verifier, if the file is @proof_required.
+      ProofSummary:  Lyric.Verifier.Driver.ProofSummary option }
+
+type DocumentStore() =
+    let docs = Dictionary<string, CachedDoc>()
+    member _.Set(uri: string, doc: CachedDoc)    = docs.[uri] <- doc
+    member _.Remove(uri: string)                 = docs.Remove(uri) |> ignore
+    member _.TryGet(uri: string) : CachedDoc option =
+        match docs.TryGetValue uri with
+        | true, d -> Some d
+        | _       -> None
+    member _.AllUris() : string seq =
+        seq { for kvp in docs do yield kvp.Key }
+
+// ---------------------------------------------------------------------------
+// Import resolution — discover items from other workspace files.
+// ---------------------------------------------------------------------------
+
+/// For each `import Pkg` in `file`, look up the package in `wsIdx`, parse
+/// (or read from the doc store if already open), and collect its top-level
+/// items for passing to `checkWithImports`.
+///
+/// Also returns a map of URI → SourceFile for cross-file go-to-definition.
+let private resolveImportedItems
+        (wsIdx: WorkspaceIndex option)
+        (store: DocumentStore)
+        (file:  Lyric.Parser.Ast.SourceFile)
+        : Lyric.Parser.Ast.Item list * Map<string, Lyric.Parser.Ast.SourceFile> =
+    match wsIdx with
+    | None -> [], Map.empty
+    | Some idx ->
+        let mutable items : Lyric.Parser.Ast.Item list = []
+        let mutable importedFiles = Map.empty
+        for importDecl in file.Imports do
+            let pkgKey = String.concat "." importDecl.Path.Segments
+            match Map.tryFind pkgKey idx.PackageToFile with
+            | None -> ()
+            | Some filePath ->
+                let fileUri = pathToUri filePath
+                let srcFileOpt =
+                    // Prefer the editor's live version if the file is open.
+                    match store.TryGet fileUri with
+                    | Some doc -> Some doc.CheckResult.File
+                    | None ->
+                        try
+                            let text = File.ReadAllText filePath
+                            let parsed = Parser.parse text
+                            Some parsed.File
+                        with _ -> None
+                match srcFileOpt with
+                | None -> ()
+                | Some sf ->
+                    items <- items @ sf.Items
+                    importedFiles <- Map.add fileUri sf importedFiles
+        items, importedFiles
+
+// ---------------------------------------------------------------------------
+// Analysis helpers.
+// ---------------------------------------------------------------------------
+
+/// Run lex → parse → resolve-imports → type-check on `text`.
+/// Returns the type-check diagnostics, the full CheckResult, and a map of
+/// imported files for go-to-definition.
+let analyzeUri
+        (text:   string)
+        (wsIdx:  WorkspaceIndex option)
+        (store:  DocumentStore)
+        : Diagnostic list * CheckResult * Map<string, Lyric.Parser.Ast.SourceFile> =
+    let parsed = Parser.parse text
+    let importedItems, importedFiles = resolveImportedItems wsIdx store parsed.File
+    let checked' = Checker.checkWithImports parsed.File importedItems
+    let typeDiags = parsed.Diagnostics @ checked'.Diagnostics
+    typeDiags, checked', importedFiles
+
+/// Run the verifier for @proof_required files.  Returns the proof summary
+/// (for hover counterexample rendering) and the V-prefixed diagnostics not
+/// already covered by `typeDiags`.  AllowUnverified=true so solver unknowns
+/// become warnings.  Returns (None, []) on any exception so a missing z3
+/// binary never crashes the LSP.
+let private runVerifierWithSummary
+        (text:      string)
+        (typeDiags: Diagnostic list)
+        : Lyric.Verifier.Driver.ProofSummary option * Diagnostic list =
+    try
+        let opts = { Lyric.Verifier.Driver.ProveOptions.AllowUnverified = true }
+        let summary = Lyric.Verifier.Driver.proveSourceWithOptions text None [] opts
+        let diags =
+            summary.Diagnostics
+            |> List.filter (fun d ->
+                d.Code.StartsWith "V" &&
+                not (typeDiags |> List.exists (fun td -> td.Code = d.Code && td.Span = d.Span)))
+        Some summary, diags
+    with _ -> None, []
+
+// ---------------------------------------------------------------------------
+// Type / signature rendering helpers.
+// ---------------------------------------------------------------------------
+
+let private buildTypeNames (cr: CheckResult) : Map<int, string> =
+    cr.Symbols.All()
+    |> Seq.choose (fun sym ->
+        match Symbol.typeIdOpt sym with
+        | Some (TypeId id) -> Some (id, sym.Name)
+        | None -> None)
+    |> Map.ofSeq
+
+let private renderType (typeNames: Map<int, string>) (ty: Type) : string =
+    let rec render = function
+        | TyPrim p -> Type.primName p
+        | TyUser(TypeId id, []) ->
+            typeNames |> Map.tryFind id |> Option.defaultValue (sprintf "<#%d>" id)
+        | TyUser(TypeId id, args) ->
+            let name = typeNames |> Map.tryFind id |> Option.defaultValue (sprintf "<#%d>" id)
+            name + "[" + (args |> List.map render |> String.concat ", ") + "]"
+        | TyTuple xs    -> "(" + (xs |> List.map render |> String.concat ", ") + ")"
+        | TyNullable x  -> render x + "?"
+        | TyFunction(ps, r, isAsync) ->
+            let prefix = if isAsync then "async " else ""
+            prefix + "(" + (ps |> List.map render |> String.concat ", ") + ") -> " + render r
+        | TyArray(Some n, e) -> sprintf "array[%d, %s]" n (render e)
+        | TyArray(None, e)   -> sprintf "array[?, %s]" (render e)
+        | TySlice x  -> sprintf "slice[%s]" (render x)
+        | TySelf     -> "Self"
+        | TyVar n    -> n
+        | TyError    -> "<error>"
+    render ty
+
+let private renderMode (mode: Lyric.Parser.Ast.ParamMode) =
+    match mode with
+    | Lyric.Parser.Ast.PMIn    -> "in"
+    | Lyric.Parser.Ast.PMOut   -> "out"
+    | Lyric.Parser.Ast.PMInout -> "inout"
+
+let private renderFullSig
+        (name:      string)
+        (vis:       Lyric.Parser.Ast.Visibility option)
+        (sg:        ResolvedSignature)
+        (typeNames: Map<int, string>) : string =
+    let visStr   = match vis with Some _ -> "pub " | None -> ""
+    let asyncStr = if sg.IsAsync then "async " else ""
+    let generics =
+        if sg.Generics.IsEmpty then ""
+        else "[" + String.concat ", " sg.Generics + "]"
+    let paramsStr =
+        sg.Params
+        |> List.map (fun p ->
+            sprintf "%s %s: %s" (renderMode p.Mode) p.Name (renderType typeNames p.Type))
+        |> String.concat ", "
+    let retStr = renderType typeNames sg.Return
+    sprintf "%s%sfunc %s%s(%s): %s" visStr asyncStr name generics paramsStr retStr
+
+// ---------------------------------------------------------------------------
+// Symbol → completion item helpers.
+// ---------------------------------------------------------------------------
+
+/// Map a Symbol to (CompletionItemKind code, detail string).
+let private symbolKindAndDetail (sym: Symbol) : int * string =
+    let vis = match sym.Visibility with Some _ -> "pub " | None -> ""
+    match sym.Kind with
+    | DKFunc fn ->
+        let a = if fn.IsAsync then "async " else ""
+        3, sprintf "%s%sfunc %s(...)" vis a sym.Name
+    | DKRecord _
+    | DKExposedRec _   -> 22, sprintf "%srecord %s"          vis sym.Name
+    | DKUnion _        ->  7, sprintf "%sunion %s"           vis sym.Name
+    | DKEnum _         -> 13, sprintf "%senum %s"            vis sym.Name
+    | DKOpaque _       -> 22, sprintf "%sopaque type %s"     vis sym.Name
+    | DKProtected _    -> 22, sprintf "%sprotected type %s"  vis sym.Name
+    | DKDistinctType _ -> 22, sprintf "%sdistinct type %s"   vis sym.Name
+    | DKTypeAlias _    ->  7, sprintf "%salias %s"           vis sym.Name
+    | DKInterface _    ->  8, sprintf "%sinterface %s"       vis sym.Name
+    | DKConst _        -> 21, sprintf "%sconst %s"           vis sym.Name
+    | DKVal _          ->  6, sprintf "val %s"                   sym.Name
+    | DKExternType _   ->  7, sprintf "extern type %s"           sym.Name
+    | DKWire _         ->  1, sprintf "wire %s"                  sym.Name
+    | DKExtern _       ->  9, sprintf "import %s"                sym.Name
+    | DKScopeKind _
+    | DKTest _
+    | DKProperty _
+    | DKFixture _      ->  1, sym.Name
+    | DKUnionCase(_, uc) -> 20, sprintf "case %s" uc.Name
+    | DKEnumCase(_, ec)  -> 20, sprintf "case %s" ec.Name
+
+// ---------------------------------------------------------------------------
+// Position / offset helpers.
+// ---------------------------------------------------------------------------
+
 let private toLspPosition (p: Position) : JsonNode =
     let o = JsonObject()
     o.["line"]      <- JsonValue.Create(p.Line - 1)
@@ -39,8 +280,6 @@ let private toLspPosition (p: Position) : JsonNode =
 let private toLspRange (s: Span) : JsonNode =
     let o = JsonObject()
     o.["start"] <- toLspPosition s.Start
-    // LSP ranges are exclusive at end.  Lyric spans already have an
-    // exclusive end position so the conversion is direct.
     o.["end"]   <- toLspPosition s.End
     o :> JsonNode
 
@@ -48,7 +287,6 @@ let private toLspDiagnostic (d: Diagnostic) : JsonNode =
     let o = JsonObject()
     o.["range"]    <- toLspRange d.Span
     o.["severity"] <-
-        // 1 = Error, 2 = Warning per LSP spec.
         match d.Severity with
         | DiagError   -> JsonValue.Create 1
         | DiagWarning -> JsonValue.Create 2
@@ -57,62 +295,16 @@ let private toLspDiagnostic (d: Diagnostic) : JsonNode =
     o.["message"] <- JsonValue.Create d.Message
     o :> JsonNode
 
-/// Run lex → parse → type-check on `text` and return every diagnostic
-/// produced.  We deliberately stop short of emitting IL — the LSP
-/// only needs the diagnostic surface, and skipping the emitter keeps
-/// per-keystroke latency low and avoids touching the build cache.
-let computeDiagnostics (text: string) : Diagnostic list =
-    let parsed = Parser.parse text
-    let checked' = Lyric.TypeChecker.Checker.check parsed.File
-    parsed.Diagnostics @ checked'.Diagnostics
-
-let private publishDiagnostics
-        (output: Stream) (uri: string) (diags: Diagnostic list) : unit =
-    let arr = JsonArray()
-    for d in diags do
-        arr.Add(toLspDiagnostic d)
-    let p = JsonObject()
-    p.["uri"]         <- JsonValue.Create uri
-    p.["diagnostics"] <- arr
-    let msg = mkNotification "textDocument/publishDiagnostics" (p :> JsonNode)
-    writeMessage output msg
-
-/// `initialize` reply — the static capabilities table the client uses
-/// to decide which subsequent requests to send.  Push diagnostics
-/// don't go in capabilities (the server publishes them unsolicited);
-/// only declarative providers do.
-let private initializeResult () : JsonNode =
-    let caps = JsonObject()
-    // 1 = Full sync — we re-parse the entire buffer on every change.
-    // The bootstrap doesn't try to do incremental parsing.
-    let sync = JsonObject()
-    sync.["openClose"] <- JsonValue.Create true
-    sync.["change"]    <- JsonValue.Create 1
-    caps.["textDocumentSync"] <- sync :> JsonNode
-    caps.["hoverProvider"]    <- JsonValue.Create true
-    // D-progress-066: completion + go-to-def land alongside hover.
-    let completion = JsonObject()
-    completion.["resolveProvider"] <- JsonValue.Create false
-    let triggerChars = JsonArray()
-    triggerChars.Add(JsonValue.Create ".")
-    completion.["triggerCharacters"] <- triggerChars :> JsonNode
-    caps.["completionProvider"] <- completion :> JsonNode
-    caps.["definitionProvider"] <- JsonValue.Create true
-    let info = JsonObject()
-    info.["name"]    <- JsonValue.Create "lyric-lsp"
-    info.["version"] <- JsonValue.Create "0.1.0"
-    let r = JsonObject()
-    r.["capabilities"] <- caps :> JsonNode
-    r.["serverInfo"]   <- info :> JsonNode
-    r :> JsonNode
-
-// ---------------------------------------------------------------------------
-// Position / item lookup helpers (D-progress-066).
-//
-// LSP positions are 0-based line/character; Lyric's `Position` is
-// 1-based.  `lspToLyric` does the conversion; `posInSpan` checks
-// whether a Lyric span contains a Lyric position.
-// ---------------------------------------------------------------------------
+let private posToOffset (text: string) (line: int) (col: int) : int =
+    let lines = text.Split('\n')
+    let lineIdx = line - 1
+    if lineIdx < 0 || lineIdx >= lines.Length then text.Length
+    else
+        let baseOffset =
+            lines
+            |> Array.take lineIdx
+            |> Array.sumBy (fun l -> l.Length + 1)
+        baseOffset + min (col - 1) lines.[lineIdx].Length
 
 let private lspToLyric (line: int) (character: int) : Position =
     { Line = line + 1; Column = character + 1; Offset = 0 }
@@ -123,8 +315,78 @@ let private posInSpan (p: Position) (s: Span) : bool =
         else compare a.Column b.Column
     cmp s.Start p <= 0 && cmp p s.End < 0
 
-/// Render a `pub`-surface item to a one-line summary suitable for
-/// hover / completion display.
+// ---------------------------------------------------------------------------
+// Identifier and call-context scanning helpers.
+// ---------------------------------------------------------------------------
+
+let private isIdChar (c: char) = Char.IsLetterOrDigit c || c = '_'
+
+let private identifierAt (text: string) (pos: Position) : (string * Span) option =
+    let lines = text.Split('\n')
+    if pos.Line < 1 || pos.Line > lines.Length then None
+    else
+        let line = lines.[pos.Line - 1]
+        let col  = pos.Column - 1
+        if col < 0 || col > line.Length then None
+        else
+            let mutable startCol = col
+            while startCol > 0 && isIdChar line.[startCol - 1] do
+                startCol <- startCol - 1
+            let mutable endCol = col
+            while endCol < line.Length && isIdChar line.[endCol] do
+                endCol <- endCol + 1
+            if startCol = endCol then None
+            else
+                let ident = line.Substring(startCol, endCol - startCol)
+                if not (Char.IsLetter ident.[0] || ident.[0] = '_') then None
+                else
+                    let span : Span =
+                        { Start = { Line = pos.Line; Column = startCol + 1; Offset = 0 }
+                          End   = { Line = pos.Line; Column = endCol + 1;   Offset = 0 } }
+                    Some (ident, span)
+
+let private findCallContext (text: string) (offset: int) : (string * int) option =
+    if offset <= 0 then None
+    else
+        let mutable i     = offset - 1
+        let mutable depth = 0
+        let mutable found = -1
+        while i >= 0 && found = -1 do
+            match text.[i] with
+            | ')' | ']' -> depth <- depth + 1; i <- i - 1
+            | '(' | '[' ->
+                if depth = 0 then found <- i
+                else depth <- depth - 1; i <- i - 1
+            | _ -> i <- i - 1
+        if found < 0 then None
+        else
+            let mutable j = found - 1
+            while j >= 0 && (text.[j] = ' ' || text.[j] = '\t') do
+                j <- j - 1
+            if j < 0 then None
+            else
+                let endJ = j + 1
+                while j >= 0 && isIdChar text.[j] do
+                    j <- j - 1
+                let funcName = text.Substring(j + 1, endJ - (j + 1))
+                if funcName = "" || Char.IsDigit funcName.[0] then None
+                else
+                    let mutable k        = found + 1
+                    let mutable nest     = 0
+                    let mutable paramIdx = 0
+                    while k < offset do
+                        match text.[k] with
+                        | '(' | '[' | '{' -> nest <- nest + 1
+                        | ')' | ']' | '}' -> nest <- nest - 1
+                        | ',' when nest = 0 -> paramIdx <- paramIdx + 1
+                        | _ -> ()
+                        k <- k + 1
+                    Some (funcName, paramIdx)
+
+// ---------------------------------------------------------------------------
+// AST item helpers.
+// ---------------------------------------------------------------------------
+
 let private itemSummary (it: Lyric.Parser.Ast.Item) : string =
     let visPrefix =
         match it.Visibility with
@@ -156,60 +418,167 @@ let private itemSummary (it: Lyric.Parser.Ast.Item) : string =
         sprintf "extern type %s" et.Name
     | _ -> "(item)"
 
-/// Item name for completion / lookup keying.
 let private itemName (it: Lyric.Parser.Ast.Item) : string option =
     match it.Kind with
-    | Lyric.Parser.Ast.IFunc fn -> Some fn.Name
-    | Lyric.Parser.Ast.IRecord rd | Lyric.Parser.Ast.IExposedRec rd -> Some rd.Name
-    | Lyric.Parser.Ast.IUnion ud -> Some ud.Name
-    | Lyric.Parser.Ast.IEnum ed -> Some ed.Name
-    | Lyric.Parser.Ast.IOpaque od -> Some od.Name
+    | Lyric.Parser.Ast.IFunc fn         -> Some fn.Name
+    | Lyric.Parser.Ast.IRecord rd
+    | Lyric.Parser.Ast.IExposedRec rd   -> Some rd.Name
+    | Lyric.Parser.Ast.IUnion ud        -> Some ud.Name
+    | Lyric.Parser.Ast.IEnum ed         -> Some ed.Name
+    | Lyric.Parser.Ast.IOpaque od       -> Some od.Name
     | Lyric.Parser.Ast.IInterface iface -> Some iface.Name
-    | Lyric.Parser.Ast.IConst cd -> Some cd.Name
-    | Lyric.Parser.Ast.ITypeAlias ta -> Some ta.Name
+    | Lyric.Parser.Ast.IConst cd        -> Some cd.Name
+    | Lyric.Parser.Ast.ITypeAlias ta    -> Some ta.Name
     | Lyric.Parser.Ast.IDistinctType dt -> Some dt.Name
-    | Lyric.Parser.Ast.IExternType et -> Some et.Name
+    | Lyric.Parser.Ast.IExternType et   -> Some et.Name
     | _ -> None
 
-/// Identifier-like span at the given position, or None when the
-/// position lies on whitespace / non-identifier text.  Identifiers
-/// are recognised by the Lyric lexer's identifier rule
-/// (`[A-Za-z_][A-Za-z0-9_]*`); we re-implement the test here
-/// without re-tokenising the buffer.
-let private identifierAt (text: string) (pos: Position) : (string * Span) option =
-    // Convert 1-based line/col to a 0-based offset in `text`.
+// ---------------------------------------------------------------------------
+// LSP wire helpers.
+// ---------------------------------------------------------------------------
+
+let private publishDiagnostics
+        (output: Stream) (uri: string) (diags: Diagnostic list) : unit =
+    let arr = JsonArray()
+    for d in diags do
+        arr.Add(toLspDiagnostic d)
+    let p = JsonObject()
+    p.["uri"]         <- JsonValue.Create uri
+    p.["diagnostics"] <- arr
+    let msg = mkNotification "textDocument/publishDiagnostics" (p :> JsonNode)
+    writeMessage output msg
+
+// ---------------------------------------------------------------------------
+// Reverse-dependency tracking — used for background re-analysis.
+// ---------------------------------------------------------------------------
+
+/// Build a map from imported-file-URI to the set of currently-open consumer
+/// URIs that import it.  When a dependency changes, each consumer is
+/// re-analysed and its diagnostics re-pushed.
+let private buildRevDeps
+        (idx:   WorkspaceIndex)
+        (store: DocumentStore) : Map<string, Set<string>> =
+    let mutable m : Map<string, Set<string>> = Map.empty
+    for consumerUri in store.AllUris() do
+        match store.TryGet consumerUri with
+        | None -> ()
+        | Some doc ->
+            for importDecl in doc.CheckResult.File.Imports do
+                let pkgKey = String.concat "." importDecl.Path.Segments
+                match Map.tryFind pkgKey idx.PackageToFile with
+                | None -> ()
+                | Some filePath ->
+                    let importedUri = pathToUri filePath
+                    let current =
+                        m |> Map.tryFind importedUri |> Option.defaultValue Set.empty
+                    m <- Map.add importedUri (Set.add consumerUri current) m
+    m
+
+/// Analyse `text` for `uri`, store the result, and push diagnostics.
+/// This is the single canonical path for all document analysis so that
+/// `ProofSummary` is always kept in sync with the document store.
+let private analyzeAndPublish
+        (uri:    string)
+        (text:   string)
+        (wsIdx:  WorkspaceIndex option)
+        (store:  DocumentStore)
+        (output: Stream) : unit =
+    let typeDiags, cr, importedFiles = analyzeUri text wsIdx store
+    let summaryOpt, verifierDiags = runVerifierWithSummary text typeDiags
+    store.Set(uri,
+        { Source       = text
+          CheckResult  = cr
+          ImportedFiles = importedFiles
+          ProofSummary = summaryOpt })
+    publishDiagnostics output uri (typeDiags @ verifierDiags)
+
+// ---------------------------------------------------------------------------
+// Text helpers for code actions and rename.
+// ---------------------------------------------------------------------------
+
+/// Extract the source substring covered by `span` (1-based line/column).
+let private textAtSpan (text: string) (span: Span) : string =
     let lines = text.Split('\n')
-    if pos.Line < 1 || pos.Line > lines.Length then None
+    let sl = span.Start.Line - 1
+    let el = span.End.Line - 1
+    if sl < 0 || sl >= lines.Length then ""
+    elif sl = el then
+        let line = lines.[sl]
+        let sc = max 0 (span.Start.Column - 1)
+        let ec = min line.Length (span.End.Column - 1)
+        if sc <= ec then line.Substring(sc, ec - sc) else ""
     else
-        let line = lines.[pos.Line - 1]
-        let col = pos.Column - 1
-        if col < 0 || col > line.Length then None
-        else
-            let isIdChar (c: char) =
-                System.Char.IsLetterOrDigit c || c = '_'
-            // Find the identifier boundaries.
-            let mutable startCol = col
-            while startCol > 0 && isIdChar line.[startCol - 1] do
-                startCol <- startCol - 1
-            let mutable endCol = col
-            while endCol < line.Length && isIdChar line.[endCol] do
-                endCol <- endCol + 1
-            if startCol = endCol then None
-            else
-                let ident = line.Substring(startCol, endCol - startCol)
-                // First char must be an identifier-start (letter/_).
-                if not (System.Char.IsLetter ident.[0] || ident.[0] = '_') then None
-                else
+        let sb = System.Text.StringBuilder()
+        sb.Append(lines.[sl].Substring(max 0 (span.Start.Column - 1))) |> ignore
+        for i in sl + 1 .. el - 1 do
+            if i < lines.Length then
+                sb.Append('\n') |> ignore
+                sb.Append(lines.[i]) |> ignore
+        if el < lines.Length then
+            sb.Append('\n') |> ignore
+            let ec = min lines.[el].Length (span.End.Column - 1)
+            sb.Append(lines.[el].Substring(0, ec)) |> ignore
+        sb.ToString()
+
+/// Return all word-boundary occurrences of `name` in `text` as Spans.
+let private allOccurrencesInText (text: string) (name: string) : Span list =
+    let lines = text.Split('\n')
+    let mutable spans = []
+    for lineIdx in 0 .. lines.Length - 1 do
+        let line = lines.[lineIdx]
+        let mutable i = 0
+        while i <= line.Length - name.Length do
+            if line.Substring(i, name.Length) = name then
+                let before = i = 0 || not (isIdChar line.[i - 1])
+                let after  =
+                    i + name.Length >= line.Length
+                    || not (isIdChar line.[i + name.Length])
+                if before && after then
                     let span : Span =
-                        { Start = { Line = pos.Line; Column = startCol + 1; Offset = 0 }
-                          End   = { Line = pos.Line; Column = endCol + 1;   Offset = 0 } }
-                    Some (ident, span)
+                        { Start = { Line = lineIdx + 1; Column = i + 1;              Offset = 0 }
+                          End   = { Line = lineIdx + 1; Column = i + name.Length + 1; Offset = 0 } }
+                    spans <- span :: spans
+            i <- i + 1
+    List.rev spans
+
+let private initializeResult () : JsonNode =
+    let caps = JsonObject()
+    let sync = JsonObject()
+    sync.["openClose"] <- JsonValue.Create true
+    sync.["change"]    <- JsonValue.Create 1
+    caps.["textDocumentSync"] <- sync :> JsonNode
+    caps.["hoverProvider"]    <- JsonValue.Create true
+    let completion = JsonObject()
+    completion.["resolveProvider"] <- JsonValue.Create false
+    let triggerChars = JsonArray()
+    triggerChars.Add(JsonValue.Create ".")
+    completion.["triggerCharacters"] <- triggerChars :> JsonNode
+    caps.["completionProvider"] <- completion :> JsonNode
+    caps.["definitionProvider"] <- JsonValue.Create true
+    let sigHelp = JsonObject()
+    let sigTriggers = JsonArray()
+    sigTriggers.Add(JsonValue.Create "(")
+    sigTriggers.Add(JsonValue.Create ",")
+    sigHelp.["triggerCharacters"] <- sigTriggers :> JsonNode
+    let sigRetriggers = JsonArray()
+    sigRetriggers.Add(JsonValue.Create ",")
+    sigHelp.["retriggerCharacters"] <- sigRetriggers :> JsonNode
+    caps.["signatureHelpProvider"] <- sigHelp :> JsonNode
+    caps.["codeActionProvider"]    <- JsonValue.Create true
+    caps.["renameProvider"]        <- JsonValue.Create true
+    let info = JsonObject()
+    info.["name"]    <- JsonValue.Create "lyric-lsp"
+    info.["version"] <- JsonValue.Create "0.1.0"
+    let r = JsonObject()
+    r.["capabilities"] <- caps :> JsonNode
+    r.["serverInfo"]   <- info :> JsonNode
+    r :> JsonNode
+
+// ---------------------------------------------------------------------------
+// JSON utility helpers.
+// ---------------------------------------------------------------------------
 
 let private tryGetProperty (o: JsonObject) (name: string) : JsonNode | null =
-    // .NET 10 added a 3-arg overload of `TryGetPropertyValue`, which
-    // breaks F#'s ability to tuple-destructure the (bool * JsonNode)
-    // out-pair on the 2-arg call without a type hint.  Explicit byref
-    // here disambiguates and produces identical IL.
     let mutable v : JsonNode | null = null
     if o.TryGetPropertyValue(name, &v) then v else null
 
@@ -223,17 +592,74 @@ let private nodeAt (n: JsonNode | null) (path: string) : JsonNode | null =
 
 let private asStr (n: JsonNode | null) : string =
     match Option.ofObj n with
-    | Some node ->
-        try node.GetValue<string>()
-        with _ -> ""
+    | Some node -> try node.GetValue<string>() with _ -> ""
     | None -> ""
 
+let private asInt (n: JsonNode | null) : int =
+    match Option.ofObj n with
+    | Some node -> try node.GetValue<int>() with _ -> 0
+    | None -> 0
+
+// ---------------------------------------------------------------------------
+// LSP code-action helpers (depend on nodeAt / asInt above).
+// ---------------------------------------------------------------------------
+
+/// Convert an LSP range node back to a Lyric Span (1-based line/column).
+let private lspRangeToSpan (rangeNode: JsonNode | null) : Span =
+    let startNode = nodeAt rangeNode "start"
+    let endNode   = nodeAt rangeNode "end"
+    { Start = { Line   = asInt (nodeAt startNode "line")      + 1
+                Column = asInt (nodeAt startNode "character") + 1
+                Offset = 0 }
+      End   = { Line   = asInt (nodeAt endNode "line")        + 1
+                Column = asInt (nodeAt endNode "character")   + 1
+                Offset = 0 } }
+
+/// Build a `CodeAction` (quickfix) that replaces `range` in `uri` with `newText`.
+let private mkCodeAction
+        (uri:     string)
+        (title:   string)
+        (range:   JsonNode | null)
+        (newText: string) : JsonNode =
+    let textEdit = JsonObject()
+    // Deep-clone so the node is detached from any existing parent.
+    let rangeClone : JsonNode | null =
+        range |> Option.ofObj |> Option.map (fun r -> r.DeepClone()) |> Option.toObj
+    textEdit.["range"]   <- rangeClone
+    textEdit.["newText"] <- JsonValue.Create newText
+    let editsArr = JsonArray()
+    editsArr.Add textEdit
+    let changes = JsonObject()
+    changes.[uri] <- editsArr :> JsonNode
+    let edit = JsonObject()
+    edit.["changes"] <- changes :> JsonNode
+    let action = JsonObject()
+    action.["title"] <- JsonValue.Create title
+    action.["kind"]  <- JsonValue.Create "quickfix"
+    action.["edit"]  <- edit :> JsonNode
+    action :> JsonNode
+
+/// Find the first `@proof_required` annotation in the file-level annotations.
+let private findProofRequiredAnn
+        (anns: Lyric.Parser.Ast.Annotation list)
+        : Lyric.Parser.Ast.Annotation option =
+    anns |> List.tryFind (fun a ->
+        match a.Name.Segments with
+        | ["proof_required"] -> true
+        | _                  -> false)
+
+// ---------------------------------------------------------------------------
+// Dispatch.
+// ---------------------------------------------------------------------------
+
 /// Dispatch one inbound LSP message.  Returns `false` when the client
-/// has signalled `exit`, telling the main loop to drop out cleanly.
+/// has signalled `exit`.
 let dispatch
-        (store: DocumentStore)
-        (output: Stream)
-        (msg: JsonNode) : bool =
+        (store:    DocumentStore)
+        (wsIdx:    WorkspaceIndex option ref)
+        (revDeps:  Map<string, Set<string>> ref)
+        (output:   Stream)
+        (msg:      JsonNode) : bool =
     let methodNode =
         match msg with
         | :? JsonObject as o -> tryGetProperty o "method"
@@ -248,40 +674,68 @@ let dispatch
 
     | "initialize" ->
         writeMessage output (mkResponse id (initializeResult ()))
+        // Extract workspace root, build the package index, run background
+        // analysis for every workspace file, and build the rev-dep map.
+        let rootUri  = asStr (nodeAt params' "rootUri")
+        let rootPath = asStr (nodeAt params' "rootPath")
+        let workspaceRoot =
+            if rootUri <> "" then uriToPath rootUri
+            elif rootPath <> "" then Some rootPath
+            else None
+        match workspaceRoot with
+        | Some root when Directory.Exists root ->
+            let idx = buildWorkspaceIndex root
+            wsIdx.Value <- Some idx
+            // Background pass: push diagnostics for every file in the index.
+            for (_, filePath) in (idx.PackageToFile |> Map.toList) do
+                try
+                    let text    = File.ReadAllText filePath
+                    let fileUri = pathToUri filePath
+                    analyzeAndPublish fileUri text wsIdx.Value store output
+                with _ -> ()
+            revDeps.Value <- buildRevDeps idx store
+        | _ -> ()
         true
 
     | "initialized" ->
-        // Client signals it processed our `initialize` reply.  No-op.
         true
 
     | "shutdown" ->
-        // Per the LSP spec the result of `shutdown` should be `null`;
-        // most clients only check that an `id` echo arrives.  Emit an
-        // empty object — semantically equivalent for practical purposes
-        // and sidesteps the JsonNode-non-nullable-setter constraint
-        // when wiring `null` through the JsonObject API.
         writeMessage output (mkResponse id (JsonObject() :> JsonNode))
         true
 
     | "exit" ->
         false
 
+    // -----------------------------------------------------------------------
+    // Document synchronisation.
+    // -----------------------------------------------------------------------
+
     | "textDocument/didOpen" ->
-        let td = nodeAt params' "textDocument"
+        let td   = nodeAt params' "textDocument"
         let uri  = asStr (nodeAt td "uri")
         let text = asStr (nodeAt td "text")
         if uri <> "" then
-            store.Set(uri, text)
             try
-                let diags = computeDiagnostics text
-                publishDiagnostics output uri diags
+                analyzeAndPublish uri text wsIdx.Value store output
+                // Re-analyse any open files that import this URI.
+                let consumers =
+                    revDeps.Value |> Map.tryFind uri |> Option.defaultValue Set.empty
+                for consumerUri in consumers do
+                    match store.TryGet consumerUri with
+                    | None -> ()
+                    | Some d ->
+                        try analyzeAndPublish consumerUri d.Source wsIdx.Value store output
+                        with _ -> ()
+                match wsIdx.Value with
+                | Some idx -> revDeps.Value <- buildRevDeps idx store
+                | None     -> ()
             with _ -> ()
         true
 
     | "textDocument/didChange" ->
-        let td = nodeAt params' "textDocument"
-        let uri = asStr (nodeAt td "uri")
-        // Full-sync mode: a single change event carries the full text.
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
         let changes = nodeAt params' "contentChanges"
         let newText =
             match changes with
@@ -289,65 +743,138 @@ let dispatch
                 asStr (nodeAt a.[a.Count - 1] "text")
             | _ -> ""
         if uri <> "" && newText <> "" then
-            store.Set(uri, newText)
             try
-                let diags = computeDiagnostics newText
-                publishDiagnostics output uri diags
+                analyzeAndPublish uri newText wsIdx.Value store output
+                // Re-analyse any open files that import this URI.
+                let consumers =
+                    revDeps.Value |> Map.tryFind uri |> Option.defaultValue Set.empty
+                for consumerUri in consumers do
+                    match store.TryGet consumerUri with
+                    | None -> ()
+                    | Some d ->
+                        try analyzeAndPublish consumerUri d.Source wsIdx.Value store output
+                        with _ -> ()
+                match wsIdx.Value with
+                | Some idx -> revDeps.Value <- buildRevDeps idx store
+                | None     -> ()
             with _ -> ()
         true
 
     | "textDocument/didClose" ->
-        let td = nodeAt params' "textDocument"
+        let td  = nodeAt params' "textDocument"
         let uri = asStr (nodeAt td "uri")
         if uri <> "" then
             store.Remove(uri)
-            // Clear stale diagnostics for the closed document.
             try publishDiagnostics output uri []
             with _ -> ()
         true
 
+    // -----------------------------------------------------------------------
+    // Workspace file-change events — rebuild the index so new .l files are
+    // discovered, but don't force-re-analyse open documents; they'll get
+    // fresh analysis on their next edit.
+    // -----------------------------------------------------------------------
+
+    | "workspace/didChangeWatchedFiles" ->
+        match wsIdx.Value with
+        | Some idx ->
+            let newIdx = buildWorkspaceIndex idx.Root
+            wsIdx.Value  <- Some newIdx
+            revDeps.Value <- buildRevDeps newIdx store
+        | None -> ()
+        true
+
+    // -----------------------------------------------------------------------
+    // Hover — full resolved signature for functions, summary for others.
+    // -----------------------------------------------------------------------
+
     | "textDocument/hover" ->
-        // D-progress-066: real hover.  Look up the identifier at
-        // the cursor in the parsed AST; if it matches a top-level
-        // item, format its summary + doc comments.  Falls back to
-        // an empty result for non-identifier positions.
-        let td  = nodeAt params' "textDocument"
-        let uri = asStr (nodeAt td "uri")
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
         let posNode = nodeAt params' "position"
-        let intAt (parent: JsonNode | null) (key: string) : int =
-            let raw : JsonNode | null = nodeAt parent key
-            match Option.ofObj raw with
-            | None -> 0
-            | Some n ->
-                try n.GetValue<int>()
-                with _ -> 0
-        let line = intAt posNode "line"
-        let chr  = intAt posNode "character"
+        let line    = asInt (nodeAt posNode "line")
+        let chr     = asInt (nodeAt posNode "character")
         let result =
             match store.TryGet uri with
             | None -> JsonObject() :> JsonNode
-            | Some text ->
+            | Some doc ->
                 let p = lspToLyric line chr
-                match identifierAt text p with
+                match identifierAt doc.Source p with
                 | None -> JsonObject() :> JsonNode
                 | Some (ident, span) ->
-                    let parsed = Parser.parse text
+                    let cr = doc.CheckResult
+                    // Search local items first, then imported files.
                     let matchItem =
-                        parsed.File.Items
-                        |> List.tryFind (fun it ->
-                            match itemName it with
-                            | Some n -> n = ident
-                            | None -> false)
+                        cr.File.Items
+                        |> List.tryFind (fun it -> itemName it = Some ident)
+                        |> Option.orElseWith (fun () ->
+                            doc.ImportedFiles
+                            |> Map.toSeq
+                            |> Seq.tryPick (fun (_, sf) ->
+                                sf.Items |> List.tryFind (fun it -> itemName it = Some ident)))
                     match matchItem with
                     | None -> JsonObject() :> JsonNode
                     | Some it ->
-                        let summary = itemSummary it
+                        let typeNames = buildTypeNames cr
+                        let summary =
+                            match it.Kind with
+                            | Lyric.Parser.Ast.IFunc fn ->
+                                let arityKey = fn.Name + "/" + string fn.Params.Length
+                                let sgOpt =
+                                    match Map.tryFind arityKey cr.Signatures with
+                                    | Some s -> Some s
+                                    | None   -> Map.tryFind fn.Name cr.Signatures
+                                match sgOpt with
+                                | Some sg -> renderFullSig fn.Name it.Visibility sg typeNames
+                                | None    -> itemSummary it
+                            | _ -> itemSummary it
                         let docLines =
-                            it.DocComments
-                            |> List.map (fun dc -> dc.Text.Trim())
-                        let body =
+                            it.DocComments |> List.map (fun dc -> dc.Text.Trim())
+                        let baseSummary =
                             if List.isEmpty docLines then summary
                             else summary + "\n\n" + String.concat "\n" docLines
+                        // Append proof-failure section for @proof_required functions.
+                        let proofSection =
+                            match doc.ProofSummary with
+                            | None -> ""
+                            | Some psum ->
+                                match it.Kind with
+                                | Lyric.Parser.Ast.IFunc fn ->
+                                    let failed =
+                                        psum.Results
+                                        |> List.filter (fun r ->
+                                            match r.Outcome with
+                                            | Lyric.Verifier.Solver.Discharged -> false
+                                            | _ -> true)
+                                        |> List.filter (fun r ->
+                                            match r.Goal.Kind with
+                                            | Lyric.Verifier.Vcir.GKPostcondition n
+                                            | Lyric.Verifier.Vcir.GKPrecondition  n -> n = fn.Name
+                                            | _ -> false)
+                                    if List.isEmpty failed then ""
+                                    else
+                                        let lines = System.Text.StringBuilder()
+                                        lines.Append "\n\n**Proof failures:**" |> ignore
+                                        for r in failed do
+                                            let kindStr =
+                                                Lyric.Verifier.Vcir.GoalKind.display r.Goal.Kind
+                                            match r.Outcome with
+                                            | Lyric.Verifier.Solver.Counterexample model ->
+                                                let bindings =
+                                                    Lyric.Verifier.Solver.parseModel model
+                                                lines.Append(sprintf "\n- %s" kindStr) |> ignore
+                                                if not (List.isEmpty bindings) then
+                                                    let ce =
+                                                        Lyric.Verifier.Solver.renderCounterexample bindings
+                                                    lines.Append(sprintf "\n```\n%s\n```" ce) |> ignore
+                                            | Lyric.Verifier.Solver.Unknown reason ->
+                                                lines.Append(
+                                                    sprintf "\n- %s: solver unknown (%s)"
+                                                        kindStr reason) |> ignore
+                                            | _ -> ()
+                                        lines.ToString()
+                                | _ -> ""
+                        let body = baseSummary + proofSection
                         let o = JsonObject()
                         let contents = JsonObject()
                         contents.["kind"]  <- JsonValue.Create "markdown"
@@ -358,90 +885,237 @@ let dispatch
         writeMessage output (mkResponse id result)
         true
 
+    // -----------------------------------------------------------------------
+    // Completion — all symbols in the type-checked symbol table (local +
+    // imported), deduplicated by name.
+    // -----------------------------------------------------------------------
+
     | "textDocument/completion" ->
-        // D-progress-066: completion returns every top-level item
-        // declared in the current file.  Cross-file imports + scope-
-        // aware ranking land in a follow-up; this gets the editor a
-        // useful baseline immediately.
         let td  = nodeAt params' "textDocument"
         let uri = asStr (nodeAt td "uri")
         let result =
             match store.TryGet uri with
             | None -> JsonArray() :> JsonNode
-            | Some text ->
-                let parsed = Parser.parse text
-                let items = JsonArray()
-                for it in parsed.File.Items do
-                    match itemName it with
-                    | Some n ->
+            | Some doc ->
+                let items  = JsonArray()
+                let seen   = System.Collections.Generic.HashSet<string>()
+                for sym in doc.CheckResult.Symbols.All() do
+                    // Skip internal entries (union/enum cases listed separately if desired).
+                    if seen.Add(sym.Name) then
+                        let (kindCode, detail) = symbolKindAndDetail sym
                         let entry = JsonObject()
-                        entry.["label"] <- JsonValue.Create n
-                        // 3 = Function, 7 = Class, 13 = Enum, 22 = Struct.
-                        // Map item kinds → CompletionItemKind.
-                        let kindCode =
-                            match it.Kind with
-                            | Lyric.Parser.Ast.IFunc _ -> 3
-                            | Lyric.Parser.Ast.IRecord _
-                            | Lyric.Parser.Ast.IExposedRec _ -> 22
-                            | Lyric.Parser.Ast.IUnion _ -> 7
-                            | Lyric.Parser.Ast.IEnum _ -> 13
-                            | Lyric.Parser.Ast.IOpaque _ -> 22
-                            | Lyric.Parser.Ast.IInterface _ -> 8
-                            | Lyric.Parser.Ast.IConst _ -> 21
-                            | Lyric.Parser.Ast.IExternType _ -> 7
-                            | _ -> 1
+                        entry.["label"]  <- JsonValue.Create sym.Name
                         entry.["kind"]   <- JsonValue.Create kindCode
-                        entry.["detail"] <- JsonValue.Create (itemSummary it)
+                        entry.["detail"] <- JsonValue.Create detail
                         items.Add entry
-                    | None -> ()
                 items :> JsonNode
         writeMessage output (mkResponse id result)
         true
 
+    // -----------------------------------------------------------------------
+    // Go-to-definition — local items first, then imported files.
+    // -----------------------------------------------------------------------
+
     | "textDocument/definition" ->
-        // D-progress-066: go-to-definition.  Look up the identifier
-        // at the cursor; return a `Location` pointing at the
-        // matching top-level item's span.
-        let td  = nodeAt params' "textDocument"
-        let uri = asStr (nodeAt td "uri")
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
         let posNode = nodeAt params' "position"
-        let intAt (parent: JsonNode | null) (key: string) : int =
-            let raw : JsonNode | null = nodeAt parent key
-            match Option.ofObj raw with
-            | None -> 0
-            | Some n ->
-                try n.GetValue<int>()
-                with _ -> 0
-        let line = intAt posNode "line"
-        let chr  = intAt posNode "character"
+        let line    = asInt (nodeAt posNode "line")
+        let chr     = asInt (nodeAt posNode "character")
         let result =
             match store.TryGet uri with
             | None -> JsonArray() :> JsonNode
-            | Some text ->
+            | Some doc ->
                 let p = lspToLyric line chr
-                match identifierAt text p with
+                match identifierAt doc.Source p with
                 | None -> JsonArray() :> JsonNode
                 | Some (ident, _) ->
-                    let parsed = Parser.parse text
-                    let matchItem =
-                        parsed.File.Items
-                        |> List.tryFind (fun it ->
-                            match itemName it with
-                            | Some n -> n = ident
-                            | None -> false)
-                    match matchItem with
+                    // Local match → current file.
+                    let localMatch =
+                        doc.CheckResult.File.Items
+                        |> List.tryFind (fun it -> itemName it = Some ident)
+                        |> Option.map (fun it -> uri, it.Span)
+                    // Imported match → the declaring file.
+                    let importedMatch =
+                        if localMatch.IsSome then None
+                        else
+                            doc.ImportedFiles
+                            |> Map.toSeq
+                            |> Seq.tryPick (fun (importUri, sf) ->
+                                sf.Items
+                                |> List.tryFind (fun it -> itemName it = Some ident)
+                                |> Option.map (fun it -> importUri, it.Span))
+                    match localMatch |> Option.orElse importedMatch with
                     | None -> JsonArray() :> JsonNode
-                    | Some it ->
+                    | Some (targetUri, span) ->
                         let loc = JsonObject()
-                        loc.["uri"]   <- JsonValue.Create uri
-                        loc.["range"] <- toLspRange it.Span
+                        loc.["uri"]   <- JsonValue.Create targetUri
+                        loc.["range"] <- toLspRange span
                         loc :> JsonNode
         writeMessage output (mkResponse id result)
         true
 
+    // -----------------------------------------------------------------------
+    // Signature help.
+    // -----------------------------------------------------------------------
+
+    | "textDocument/signatureHelp" ->
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
+        let posNode = nodeAt params' "position"
+        let line    = asInt (nodeAt posNode "line")
+        let chr     = asInt (nodeAt posNode "character")
+        let result =
+            match store.TryGet uri with
+            | None -> JsonObject() :> JsonNode
+            | Some doc ->
+                let offset = posToOffset doc.Source (line + 1) (chr + 1)
+                match findCallContext doc.Source offset with
+                | None -> JsonObject() :> JsonNode
+                | Some (funcName, activeParam) ->
+                    let cr = doc.CheckResult
+                    let sgOpt =
+                        cr.Signatures
+                        |> Map.toSeq
+                        |> Seq.tryPick (fun (k, sg) ->
+                            if k = funcName || k.StartsWith(funcName + "/") then Some sg
+                            else None)
+                    match sgOpt with
+                    | None -> JsonObject() :> JsonNode
+                    | Some sg ->
+                        let typeNames = buildTypeNames cr
+                        let paramLabels =
+                            sg.Params
+                            |> List.map (fun p ->
+                                sprintf "%s %s: %s"
+                                    (renderMode p.Mode)
+                                    p.Name
+                                    (renderType typeNames p.Type))
+                        let generics =
+                            if sg.Generics.IsEmpty then ""
+                            else "[" + String.concat ", " sg.Generics + "]"
+                        let asyncStr = if sg.IsAsync then "async " else ""
+                        let label =
+                            sprintf "%sfunc %s%s(%s): %s"
+                                asyncStr funcName generics
+                                (String.concat ", " paramLabels)
+                                (renderType typeNames sg.Return)
+                        let paramsArr = JsonArray()
+                        for pl in paramLabels do
+                            let pm = JsonObject()
+                            pm.["label"] <- JsonValue.Create pl
+                            paramsArr.Add pm
+                        let sig' = JsonObject()
+                        sig'.["label"]      <- JsonValue.Create label
+                        sig'.["parameters"] <- paramsArr :> JsonNode
+                        let sigArr = JsonArray()
+                        sigArr.Add sig'
+                        let o = JsonObject()
+                        o.["signatures"]      <- sigArr :> JsonNode
+                        o.["activeSignature"] <- JsonValue.Create 0
+                        o.["activeParameter"] <- JsonValue.Create (
+                            if sg.Params.IsEmpty then 0
+                            else min activeParam (sg.Params.Length - 1))
+                        o :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
+    // -----------------------------------------------------------------------
+    // Code actions — quickfixes for V-series diagnostics.
+    // -----------------------------------------------------------------------
+
+    | "textDocument/codeAction" ->
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
+        let context = nodeAt params' "context"
+        let ctxDiags = nodeAt context "diagnostics"
+        let result =
+            match store.TryGet uri with
+            | None -> JsonArray() :> JsonNode
+            | Some doc ->
+                let actions = JsonArray()
+                match ctxDiags with
+                | :? JsonArray as diagArr ->
+                    for diagNode in diagArr do
+                        let diagCode  = asStr (nodeAt diagNode "code")
+                        let diagRange = nodeAt diagNode "range"
+                        match diagCode with
+                        | "V0009" ->
+                            // Wrap `assume(...)` in `unsafe { }`.
+                            let diagSpan = lspRangeToSpan diagRange
+                            let original = textAtSpan doc.Source diagSpan
+                            if original <> "" then
+                                actions.Add(
+                                    mkCodeAction uri
+                                        "Wrap in unsafe { }"
+                                        diagRange
+                                        (sprintf "unsafe { %s }" original))
+                        | "V0003" ->
+                            // Add unsafe_blocks_allowed to the package annotation.
+                            match findProofRequiredAnn doc.CheckResult.File.FileLevelAnnotations with
+                            | Some ann ->
+                                actions.Add(
+                                    mkCodeAction uri
+                                        "Allow unsafe blocks (@proof_required(unsafe_blocks_allowed))"
+                                        (toLspRange ann.Span)
+                                        "@proof_required(unsafe_blocks_allowed)")
+                            | None -> ()
+                        | "V0007" | "V0008" ->
+                            // Downgrade to @runtime_checked.
+                            match findProofRequiredAnn doc.CheckResult.File.FileLevelAnnotations with
+                            | Some ann ->
+                                actions.Add(
+                                    mkCodeAction uri
+                                        "Downgrade to @runtime_checked"
+                                        (toLspRange ann.Span)
+                                        "@runtime_checked")
+                            | None -> ()
+                        | _ -> ()
+                | _ -> ()
+                actions :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
+    // -----------------------------------------------------------------------
+    // Rename — textual word-boundary replacement across all open documents.
+    // -----------------------------------------------------------------------
+
+    | "textDocument/rename" ->
+        let td      = nodeAt params' "textDocument"
+        let uri     = asStr (nodeAt td "uri")
+        let posNode = nodeAt params' "position"
+        let line    = asInt (nodeAt posNode "line")
+        let chr     = asInt (nodeAt posNode "character")
+        let newName = asStr (nodeAt params' "newName")
+        let result =
+            match store.TryGet uri with
+            | None -> JsonObject() :> JsonNode
+            | Some doc ->
+                let p = lspToLyric line chr
+                match identifierAt doc.Source p with
+                | None -> JsonObject() :> JsonNode
+                | Some (ident, _) ->
+                    let changes = JsonObject()
+                    for openUri in store.AllUris() do
+                        match store.TryGet openUri with
+                        | None -> ()
+                        | Some openDoc ->
+                            let spans = allOccurrencesInText openDoc.Source ident
+                            if not (List.isEmpty spans) then
+                                let editsArr = JsonArray()
+                                for span in spans do
+                                    let te = JsonObject()
+                                    te.["range"]   <- toLspRange span
+                                    te.["newText"] <- JsonValue.Create newName
+                                    editsArr.Add te
+                                changes.[openUri] <- editsArr :> JsonNode
+                    let edit = JsonObject()
+                    edit.["changes"] <- changes :> JsonNode
+                    edit :> JsonNode
+        writeMessage output (mkResponse id result)
+        true
+
     | _ when not (isNull id) ->
-        // Unhandled request — JSON-RPC requires a reply.  Notifications
-        // (no id) are silently dropped.
         writeMessage output (mkErrorResponse id -32601 (sprintf "method not found: %s" method'))
         true
 
@@ -449,16 +1123,16 @@ let dispatch
         true
 
 let runLoop (input: Stream) (output: Stream) : unit =
-    let store = DocumentStore()
+    let store    = DocumentStore()
+    let wsIdx    = ref None
+    let revDeps  = ref Map.empty
     let mutable keepRunning = true
     while keepRunning do
         match readMessage input with
         | None -> keepRunning <- false
         | Some msg ->
             try
-                if not (dispatch store output msg) then
+                if not (dispatch store wsIdx revDeps output msg) then
                     keepRunning <- false
             with _ ->
-                // Per LSP convention, the server should not crash on
-                // a single bad message — log to stderr and keep going.
                 eprintfn "lyric-lsp: dispatch error"

@@ -398,3 +398,43 @@ Phase 6 (examples & docs)
 - **FFI strategy**: `extern package` declarations in `.l` files list the BCL surface; the F# emitter hand-routes calls to the appropriate static methods. Curated, not reflection-driven.
 - **Error propagation**: The `?` operator (if implemented) will turn `Result` failures into early returns; currently explicit `unwrapOr` or pattern matching.
 - **Async boundaries**: All async stdlib functions use `async func` and return `Task[T]`.  Real `IAsyncStateMachine` synthesis shipped during the C2 chain (D-progress-033..076); the M1.4 blocking shim only fires for shapes the SM emit doesn't cover (today: generic instance impl methods only).
+
+
+---
+
+## Stability cut (Q011 / D040)
+
+Every `pub` item in `compiler/lyric/std/` carries either `@stable(since="1.0")` or `@experimental`.  This table is the authoritative cut list for v1.0.
+
+| Module | Stability | Rationale |
+|--------|-----------|-----------|
+| `Std.Errors` (`errors.l`) | `@stable` | Core error types used everywhere; stable from day one. |
+| `Std.Parse` (`parse.l`) | `@stable` | Primitive parsing is foundational; well-exercised. |
+| `Std.Core` (`core.l`) | no `pub` items | Option/Result are compiler-intrinsic; accessed by all importers without `pub`. |
+| `Std.Collections` (`collections.l`) | `@stable` | `mapGet` is the only pub item; maps are fundamental. |
+| `Std.String` (`string.l`) | `@stable` | All string helpers; well-tested, stable API. |
+| `Std.Console` (`console.l`) | `@stable` | `print`, `println`, `error`, `readLine` — basic I/O. |
+| `Std.File` (`file.l`) | `@stable` | `readText`, `writeText`, `fileExists`, `dirExists`, `createDir`. |
+| `Std.Directory` (`directory.l`) | `@stable` | `exists`, `create`, `createRecursive`, `enumerate`, `delete`, `deleteRecursive`. |
+| `Std.Iter` (`iter.l`) | `@stable` | All slice combinators (`map`, `filter`, `fold`, `find`, etc.). |
+| `Std.Math` (`math.l`) | `@stable` | All math helpers: `pi`, `e`, trig, `abs`, `min`/`max`, `gcd`, `lcm`, `pow`, `sqrt`, etc. |
+| `Std.Stream` (`stream.l`) | `@stable` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` interfaces. |
+| `Std.Log` (`log.l`) | `@stable` | `LogLevel`, `LogField`, `Logger`, `log`/`debug`/`info`/`warn`/`error`. |
+| `Std.Path` (`path.l`) | `@stable` | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative`. |
+| `Std.Environment` (`environment.l`) | `@stable` | `getVar`, `getVarOrDefault`, `args`, `exitCode`. |
+| `Std.App` (`app.l`) | `@stable` | `Config`, `run`, `withConfig`, `Config.path`, `Config.rawText`. |
+| `Std.Json` (`json.l`) | `@stable` | `parseJson`, `rootElement`, `getProperty`, `tryGetProperty`, scalar getters, `encodeString`. |
+| `Std.Time` — core (`time.l`) | `@stable` | `now`, `zeroDuration`, duration constructors, `since`, `plus`, `totalMillis`/`Seconds`, `addMonths`/`Years`/`Days`, `fromEpochMillis`/`Seconds`, `parseOptInstant`, comparison/arithmetic helpers, `toIsoString`. |
+| `Std.Time` — DTO/TZ helpers (`time.l`) | `@experimental` | `dtoFromEpochMillis`, `dtoFromEpochSeconds`, `dtoUtcDateTime`, `findTimeZone` — bootstrap-grade; full DateTimeOffset/TimeZone API to settle in Phase 2. |
+| `Std.Http` — core (`http.l`) | `@stable` | `HttpMethod`, `Url`/`Uri`, `HttpRequest`, `HttpResponse`, `Headers`, core constructors, `request`, `withHeader`, `withJsonBody`/`withTextBody`, `sendAsync`, `getAsync`, `postAsync`, `HttpResponse.*` status helpers, `bodyText`/`bodyBytes`, `HttpResponse.header`. |
+| `Std.Http` — advanced (`http.l`) | `@experimental` | `retry`, cancel/timeout variants (`sendWithCancelAsync`, `getWithCancelAsync`, `postWithCancelAsync`, `sendWithTimeoutAsync`, `getWithTimeoutAsync`, `postWithTimeoutAsync`, `HttpResponse.bodyTextWithCancel`), `clientWithRedirects`, `clientNoRedirects` — bootstrap-grade; cancellation and retry contracts to be redesigned in Phase 2. |
+| `Std.Testing` (`testing.l`) | `@stable` | `assertEqual`, `assertEqualInt`, `assertTrue` — the basic assert API. |
+| `Std.Testing.Property` (`testing_property.l`) | `@experimental` | No shrinking, no `Gen[T]` type-class; bootstrap-grade. Full property-test harness is Phase 3 work. |
+| `Std.Testing.Snapshot` (`testing_snapshot.l`) | `@experimental` | No inline diff, no snapshot update workflow; bootstrap-grade. |
+| `Std.CoreProof` (`core_proof.l`) | `@experimental` | Proof scaffolding helpers (`identity`, `trueLit`, `assertEq`, etc.); internal to the Phase 4 test suite. |
+
+### Enforcement summary
+
+- The compiler emits **S0001** when a non-experimental `pub` function calls an `@experimental` callee in the same source file.
+- `lyric public-api-diff` treats `@experimental` removals/changes as **SemVer no-ops**; only `@stable` (or unannotated) removals/changes trigger a **major-bump warning**.
+- Cross-package stability (stable package importing experimental package) is a deferred follow-up that requires extending `Lyric.Verifier.Imports` to carry per-decl stability from the embedded `Lyric.Contract` resource.

@@ -148,7 +148,12 @@ type DistinctTypeInfo =
       /// Static factory: panics on range violation (or unconstrained).
       FromMethod: MethodBuilder
       /// Static factory returning Result; None for non-range types.
-      TryFromMethod: MethodBuilder option }
+      TryFromMethod: MethodBuilder option
+      /// Derive markers declared on this type (`Equals`, `Hash`,
+      /// `Default`, `Compare`, `Add`, `Sub`, `Mul`, `Div`, `Mod`).
+      /// Consulted by `satisfiesMarker` at generic call sites so that
+      /// `f[Age] where Age: Hash` accepts when `type Age = Int derives Hash`.
+      Derives:    string list }
 
 type DistinctTypeTable = Dictionary<string, DistinctTypeInfo>
 

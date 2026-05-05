@@ -369,6 +369,201 @@ seed (or replace with `sharedRandom()`) if you want variation.
 
 ---
 
+## 8. Verifying the banking example
+
+This section is a step-by-step walkthrough for marking the banking
+transfer example `@proof_required` and discharging its VCs with
+`lyric prove`.  It assumes you have read sections 1–7 and are
+comfortable with `requires:`/`ensures:` syntax.
+
+### 8.1 What we are proving
+
+The transfer domain has one key conservation invariant:
+
+```
+newFrom.balance + newTo.balance == from.balance + to.balance
+```
+
+Informally: money is neither created nor destroyed.  This should
+hold for every successful `Transfer.execute` call.  We will make the
+compiler *check* that — not just assert it at runtime.
+
+### 8.2 Annotating the package
+
+Change the first line of each domain file:
+
+```
+@proof_required          // was: @runtime_checked (or absent)
+package Money
+```
+
+```
+@proof_required
+package Account
+```
+
+```
+@proof_required
+package Transfer
+```
+
+The application-layer file (`TransferService`) stays
+`@runtime_checked`; it's allowed to call into proof-required
+packages (the partial order permits it).
+
+### 8.3 Running the verifier
+
+```
+cd compiler
+lyric prove path/to/transfer.l
+```
+
+On a fresh, unannotated `transfer.l` the prover will immediately
+complain about `execute`:
+
+```
+transfer.l:12:3: error V0008: ensures (conservation) — proof failed
+  counterexample:
+    from.balance : Int = 100
+    to.balance   : Int = 50
+    amount       : Int = 0
+  falsified conclusion: newFrom.balance + newTo.balance == 150
+```
+
+The solver found an input where the postcondition is violated — in
+this case because `debit` can return `Err` (insufficient funds), the
+function returns early, and `newFrom`/`newTo` are never bound.
+
+### 8.4 Writing the contracts for `debit` and `credit`
+
+The key is to make `debit`'s postcondition strong enough that the
+VC generator can derive the conservation property from it.  Add:
+
+```
+pub func debit(a: in Account, amount: in Amount): Result[Account, AccountError]
+  ensures: result.isOk implies result.value.balance == a.balance - amountValue(amount)
+  ensures: result.isErr implies a.balance < amountValue(amount)
+```
+
+And for `credit`:
+
+```
+pub func credit(a: in Account, amount: in Amount): Result[Account, AccountError]
+  ensures: result.isOk implies result.value.balance == a.balance + amountValue(amount)
+  ensures: result.isErr implies a.balance + amountValue(amount) > 1_000_000_000_00
+```
+
+### 8.5 Writing the contract for `execute`
+
+```
+pub func execute(
+  from: in Account,
+  to:   in Account,
+  amount: in Amount
+): Result[(Account, Account), TransferError]
+  requires: from.id != to.id
+  ensures: result.isOk implies {
+    val (newFrom, newTo) = result.value
+    newFrom.balance + newTo.balance == from.balance + to.balance
+  }
+```
+
+The VC generator applies the Hoare call rule (§10.4 of
+`docs/08-contract-semantics.md`): at each call to `debit`/`credit`
+it asserts the callee's `requires:` and then *assumes* the callee's
+`ensures:`.  From those assumed facts it derives the conservation
+property and discharges the goal.
+
+### 8.6 Checking with `--explain`
+
+When the proof goes through you'll see:
+
+```
+transfer.l: @proof_required  1 goal  discharged (trivial discharger)
+```
+
+To inspect the goal IR before discharge:
+
+```
+lyric prove --explain --goal 0 transfer.l
+```
+
+This prints the Lyric-VC IR for goal 0 — the hypotheses (the
+callee postconditions, substituted at the call sites) and the
+conclusion (the conservation postcondition).
+
+### 8.7 Machine-readable output
+
+```
+lyric prove --json transfer.l
+```
+
+Emits:
+
+```json
+{
+  "file": "transfer.l",
+  "level": "@proof_required",
+  "goals": [
+    {
+      "index": 0,
+      "label": "execute/ensures/conservation",
+      "kind": "ensures",
+      "outcome": "discharged",
+      "model": null,
+      "smtPath": null
+    }
+  ],
+  "diagnostics": [],
+  "summary": { "total": 1, "discharged": 1, "unknown": 0, "counterexamples": 0 }
+}
+```
+
+The JSON surface is frozen as of M4.3; downstream tooling
+(`lyric public-api-diff`, CI gates) can parse it reliably.
+
+### 8.8 Checked arithmetic
+
+For financial code that must not overflow, annotate:
+
+```
+@proof_required(checked_arithmetic)
+package Account
+```
+
+In this mode every arithmetic operation on `Int` generates an
+additional side condition that the result lies within `[Int.min,
+Int.max]`.  The overflow VCs for `a.balance + amountValue(amount)`
+inside `credit` will then be checked by the solver.
+
+### 8.9 Escaping to `unsafe { }`
+
+Occasionally a callee is too complex to discharge (for example, it
+calls into a BCL method not in the decidable fragment).  Annotate:
+
+```
+@proof_required(unsafe_blocks_allowed)
+package Transfer
+```
+
+Then wrap the problematic call in `unsafe { }` and assert the
+postcondition you are manually confident holds:
+
+```
+unsafe {
+  val raw = bcl_complex_thing(from)
+  assert(raw.balance >= 0)
+}
+```
+
+Inside `unsafe { }` the prover does not generate obligations for
+the body; the `assert` becomes an *assumed* hypothesis for the rest
+of the function.  The full V0009 rule prevents `assume` from
+appearing outside `unsafe { }` in plain `@proof_required` packages,
+ensuring every assumption is explicitly bracketed.
+
+---
+
 ## Where next
 
 - **Reference**: `docs/01-language-reference.md` describes every
@@ -384,6 +579,12 @@ seed (or replace with `sharedRandom()`) if you want variation.
 - **Standard library**: source lives in `compiler/lyric/std/`.
   Each `.l` file is the authoritative API for its package; the
   doc comments are surfaced by `lyric doc <file>`.
+- **Proof plan**: `docs/15-phase-4-proof-plan.md` gives the full
+  technical specification for the VC generator, SMT encoding, and
+  solver architecture.
+- **Axiom audit**: `docs/17-axiom-audit.md` lists every `@axiom`
+  shipped in `std.bcl.*` with rationale and the invariants callers
+  must uphold.
 
 Read in that order if you're going deep.  Keep this tutorial
 open in a tab while you write your first 100 lines — the

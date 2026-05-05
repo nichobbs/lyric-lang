@@ -135,6 +135,7 @@ dotnet run --project tests/Lyric.Emitter.Tests
 - [08-contract-semantics.md](docs/08-contract-semantics.md) — operational semantics for `requires` / `ensures` / `invariant`
 - [09-msil-emission.md](docs/09-msil-emission.md) — how Lyric lowers to MSIL on .NET
 - [13-tutorial.md](docs/13-tutorial.md) — guided introduction for newcomers (Phase 3 / D-progress-065)
+- [18-jvm-emission.md](docs/18-jvm-emission.md) — JVM bytecode emission strategy (Phase 6+ stretch goal; emitter to be written in Lyric itself)
 - [grammar.ebnf](docs/grammar.ebnf) — formal grammar (Phase 0 deliverable #4)
 
 ## Reading order

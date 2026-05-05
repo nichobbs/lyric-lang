@@ -669,6 +669,11 @@ let rec private parsePrimaryExpr
                 inner.Span
         mkExpr (EOld inner) (joinSpans opTok.Span endSpan)
 
+    | TIdent "unsafe" ->
+        let opTok = Cursor.advance cursor
+        let body = parseBlock cursor diags
+        mkExpr (EUnsafe body) (joinSpans opTok.Span body.Span)
+
     | TIdent "forall" ->
         parseQuantifierExpr cursor diags true
 

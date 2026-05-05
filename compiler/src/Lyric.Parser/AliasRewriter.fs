@@ -140,6 +140,7 @@ and private rewriteExpr (aliases: Set<string>) (e: Expr) : Expr =
         | ERange rb        -> ERange (rewriteRangeBound aliases rb)
         | EAssign (t, op, v) -> EAssign (r t, op, r v)
         | EBlock blk       -> EBlock (rewriteBlock aliases blk)
+        | EUnsafe blk      -> EUnsafe (rewriteBlock aliases blk)
     { e with Kind = kind }
 
 and private rewriteCallArg (aliases: Set<string>) (a: CallArg) : CallArg =

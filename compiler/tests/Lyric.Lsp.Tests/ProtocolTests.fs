@@ -6,11 +6,13 @@
 /// no real stdio — the streams are just buffers.
 module Lyric.Lsp.Tests.ProtocolTests
 
+open System
 open System.IO
 open System.Text
 open System.Text.Json.Nodes
 open Expecto
 open Lyric.Lsp
+open Lyric.Lsp.Server
 
 let private frame (payload: string) : byte array =
     let body = Encoding.UTF8.GetBytes payload
@@ -327,4 +329,618 @@ let tests =
                 Expect.equal (propStr res "uri") "file:///t.l" "uri echoed"
                 Expect.isSome (prop res "range") "range present"
             | None -> failtest "definition response missing"
+
+        testCase "initialize advertises signatureHelpProvider (D-lsp-001)" <| fun () ->
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let resp = out.[0]
+            match prop resp "result"
+                  |> Option.bind (fun r -> prop r "capabilities") with
+            | Some caps ->
+                Expect.isSome (prop caps "signatureHelpProvider")
+                    "signatureHelpProvider declared"
+            | None -> failtest "no capabilities"
+
+        testCase "signatureHelp returns signature for a call site (D-lsp-001)" <| fun () ->
+            // Source: func add(a: in Int, b: in Int): Int
+            // Cursor is inside `add(` — should get back the signature with activeParameter=0.
+            let source =
+                "package T\n"
+                + "pub func add(a: in Int, b: in Int): Int { a }\n"
+                + "func main(): Unit { let x = add(1, 2) }\n"
+            // Position on line 2 (0-indexed), column 32 — inside `add(1, 2)` at the first arg.
+            // "func main(): Unit { let x = add(" is 33 chars; col 32 = just after '('.
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 10
+            req.["method"]  <- JsonValue.Create "textDocument/signatureHelp"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 32   // just after the '('
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 10)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                match prop res "signatures" with
+                | Some (:? JsonArray as sigs) ->
+                    Expect.isGreaterThan sigs.Count 0 "at least one signature"
+                    let sig0 = Option.ofObj sigs.[0] |> Option.defaultWith (fun () -> failtest "sig0 null"; JsonObject() :> JsonNode)
+                    let label = propStr sig0 "label"
+                    Expect.stringContains label "add" "label contains function name"
+                    Expect.stringContains label "Int" "label contains param type"
+                    Expect.equal (propInt res "activeSignature") 0 "activeSignature=0"
+                    Expect.equal (propInt res "activeParameter") 0 "activeParameter=0 (first arg)"
+                | _ -> failtest "signatures array missing or wrong type"
+            | None -> failtest "signatureHelp response missing"
+
+        testCase "signatureHelp activeParameter advances past comma (D-lsp-001)" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func add(a: in Int, b: in Int): Int { a }\n"
+                + "func main(): Unit { let x = add(1, 2) }\n"
+            // Column 35 = just after the ',' and space, landing on the `2` (second arg).
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 11
+            req.["method"]  <- JsonValue.Create "textDocument/signatureHelp"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 35   // past the comma
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 11)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                Expect.equal (propInt res "activeParameter") 1
+                    "activeParameter=1 (second arg)"
+            | None -> failtest "signatureHelp response missing"
+
+        testCase "hover shows full resolved signature for a function (D-lsp-001)" <| fun () ->
+            let source =
+                "package T\n"
+                + "pub func add(a: in Int, b: in Int): Int { a }\n"
+                + "func main(): Unit { add(1, 2) }\n"
+            // Hover on 'add' in the call on line 2.
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 12
+            req.["method"]  <- JsonValue.Create "textDocument/hover"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 2
+            pos.["character"] <- JsonValue.Create 21  // on 'add' in the call
+            rp.["position"] <- pos :> JsonNode
+            req.["params"] <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 12)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                match prop res "contents" with
+                | Some contents ->
+                    let v = propStr contents "value"
+                    // Full signature — contains param names and types, not just `add(...)`.
+                    Expect.stringContains v "add"  "hover mentions function name"
+                    Expect.stringContains v "Int"  "hover mentions param type"
+                    Expect.isFalse (v.Contains "...") "hover shows full params, not '...'"
+                | None -> failtest "no contents on hover"
+            | None -> failtest "hover response missing"
+    ]
+
+// ---------------------------------------------------------------------------
+// M-L4 — workspace / cross-file tests.
+// ---------------------------------------------------------------------------
+
+/// Write a Lyric source file to a temp path and return the path + URI.
+let private withTempLyricFiles
+        (files: (string * string) list)
+        (body:  (string -> (string * string) list -> unit)) =
+    let dir = Path.Combine(Path.GetTempPath(), "lyric-lsp-test-" + Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory(dir) |> ignore
+    try
+        let written =
+            files
+            |> List.map (fun (name, src) ->
+                let path = Path.Combine(dir, name)
+                File.WriteAllText(path, src)
+                path, Uri(path).AbsoluteUri)
+        body dir written
+    finally
+        try Directory.Delete(dir, true) with _ -> ()
+
+let workspaceTests =
+    testList "Lyric LSP — workspace (M-L4)" [
+
+        testCase "workspace/didChangeWatchedFiles is handled without error" <| fun () ->
+            let notif =
+                """{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"file:///tmp/x.l","type":2}]}}"""
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    notif
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            // The notification has no id, so no reply is expected; the server
+            // must not crash — verify it handled exit cleanly.
+            Expect.isNonEmpty out "initialize reply present"
+            let initReply = out |> List.tryFind (fun n -> propInt n "id" = 1)
+            Expect.isSome initReply "initialize reply is present after didChangeWatchedFiles"
+
+        testCase "initialize with rootUri builds workspace index" <| fun () ->
+            // Write two files: a library and a consumer.
+            withTempLyricFiles
+                [ "lib.l",
+                    "package Greetings\n\npub func hello(name: in String): String { name }\n"
+                  "main.l",
+                    "package Main\nimport Greetings\nfunc main(): Unit { hello(\"world\") }\n" ]
+                (fun dir written ->
+                    let rootUri = Uri(dir).AbsoluteUri
+                    let (_, mainUri) = written |> List.find (fun (p, _) -> p.EndsWith "main.l")
+                    let mainSrc = File.ReadAllText(fst (written |> List.find (fun (p, _) -> p.EndsWith "main.l")))
+                    let initMsg =
+                        sprintf """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"%s"}}""" rootUri
+                    let out =
+                        runWith [
+                            initMsg
+                            didOpenFor mainUri mainSrc
+                            """{"jsonrpc":"2.0","method":"exit"}"""
+                        ]
+                    // The server must have initialized without crashing.
+                    let initReply = out |> List.tryFind (fun n -> propInt n "id" = 1)
+                    Expect.isSome initReply "initialize reply present"
+                    // Diagnostics for main.l: with cross-file resolution `hello` is
+                    // known, so there should be no T0043/undefined-name errors.
+                    let pub =
+                        out
+                        |> List.tryFind (fun n ->
+                            propStr n "method" = "textDocument/publishDiagnostics"
+                            && (match prop n "params" |> Option.bind (fun p -> prop p "uri") with
+                                | Some u -> u.GetValue<string>() = mainUri
+                                | None   -> false))
+                    match pub with
+                    | None ->
+                        // No diagnostic event is also fine — means no errors were published.
+                        ()
+                    | Some n ->
+                        match prop n "params" |> Option.bind (fun p -> prop p "diagnostics") with
+                        | Some (:? JsonArray as a) ->
+                            // If diagnostics were published, check none are T0043 (undefined name).
+                            let hasUndefined =
+                                a |> Seq.exists (fun d ->
+                                    match Option.ofObj d with
+                                    | Some node ->
+                                        match prop node "code" with
+                                        | Some c -> (try c.GetValue<string>() with _ -> "") = "T0043"
+                                        | None -> false
+                                    | None -> false)
+                            Expect.isFalse hasUndefined
+                                "cross-file import resolves hello — no T0043"
+                        | _ -> ())
+
+        testCase "completion includes symbols from imported packages (M-L4)" <| fun () ->
+            withTempLyricFiles
+                [ "mathlib.l",
+                    "package MathLib\n\npub func square(n: in Int): Int { n }\n"
+                  "consumer.l",
+                    "package Consumer\nimport MathLib\nfunc main(): Unit { square(2) }\n" ]
+                (fun dir written ->
+                    let rootUri = Uri(dir).AbsoluteUri
+                    let (consumerPath, consumerUri) =
+                        written |> List.find (fun (p, _) -> p.EndsWith "consumer.l")
+                    let consumerSrc = File.ReadAllText consumerPath
+                    let initMsg =
+                        sprintf """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"%s"}}""" rootUri
+                    let compReq = JsonObject()
+                    compReq.["jsonrpc"] <- JsonValue.Create "2.0"
+                    compReq.["id"]      <- JsonValue.Create 20
+                    compReq.["method"]  <- JsonValue.Create "textDocument/completion"
+                    let cp = JsonObject()
+                    let td = JsonObject()
+                    td.["uri"] <- JsonValue.Create consumerUri
+                    cp.["textDocument"] <- td :> JsonNode
+                    let pos = JsonObject()
+                    pos.["line"]      <- JsonValue.Create 0
+                    pos.["character"] <- JsonValue.Create 0
+                    cp.["position"] <- pos :> JsonNode
+                    compReq.["params"] <- cp :> JsonNode
+                    let out =
+                        runWith [
+                            initMsg
+                            didOpenFor consumerUri consumerSrc
+                            compReq.ToJsonString()
+                            """{"jsonrpc":"2.0","method":"exit"}"""
+                        ]
+                    let r = out |> List.tryFind (fun n -> propInt n "id" = 20)
+                    match r |> Option.bind (fun n -> prop n "result") with
+                    | Some (:? JsonArray as a) ->
+                        let labels =
+                            a |> Seq.choose (fun n ->
+                                match Option.ofObj n with
+                                | Some node -> Some (propStr node "label")
+                                | None -> None)
+                            |> Seq.toList
+                        // `square` comes from the imported MathLib package.
+                        Expect.contains labels "square"
+                            "imported symbol 'square' appears in completion"
+                    | _ -> failtest "completion result missing or not an array")
+
+        testCase "go-to-definition resolves to imported file (M-L4)" <| fun () ->
+            withTempLyricFiles
+                [ "shapes.l",
+                    "package Shapes\n\npub record Circle { radius: Int }\n"
+                  "drawing.l",
+                    "package Drawing\nimport Shapes\nfunc draw(c: in Circle): Unit { }\n" ]
+                (fun dir written ->
+                    let rootUri = Uri(dir).AbsoluteUri
+                    let (drawingPath, drawingUri) =
+                        written |> List.find (fun (p, _) -> p.EndsWith "drawing.l")
+                    let (_, shapesUri) =
+                        written |> List.find (fun (p, _) -> p.EndsWith "shapes.l")
+                    let drawingSrc = File.ReadAllText drawingPath
+                    let initMsg =
+                        sprintf """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"%s"}}""" rootUri
+                    let defReq = JsonObject()
+                    defReq.["jsonrpc"] <- JsonValue.Create "2.0"
+                    defReq.["id"]      <- JsonValue.Create 21
+                    defReq.["method"]  <- JsonValue.Create "textDocument/definition"
+                    let dp = JsonObject()
+                    let td = JsonObject()
+                    td.["uri"] <- JsonValue.Create drawingUri
+                    dp.["textDocument"] <- td :> JsonNode
+                    // Line 2 (0-indexed), "func draw(c: in Circle)" — "Circle" starts at col 17.
+                    let pos = JsonObject()
+                    pos.["line"]      <- JsonValue.Create 2
+                    pos.["character"] <- JsonValue.Create 17
+                    dp.["position"] <- pos :> JsonNode
+                    defReq.["params"] <- dp :> JsonNode
+                    let out =
+                        runWith [
+                            initMsg
+                            didOpenFor drawingUri drawingSrc
+                            defReq.ToJsonString()
+                            """{"jsonrpc":"2.0","method":"exit"}"""
+                        ]
+                    let r = out |> List.tryFind (fun n -> propInt n "id" = 21)
+                    match r |> Option.bind (fun n -> prop n "result") with
+                    | Some res ->
+                        // The definition should point at shapes.l, not drawing.l.
+                        let targetUri = propStr res "uri"
+                        Expect.equal targetUri shapesUri
+                            "definition of imported type resolves to the declaring file"
+                        Expect.isSome (prop res "range") "range is present"
+                    | None -> failtest "definition response missing")
+
+        testCase "buildWorkspaceIndex maps package names to files" <| fun () ->
+            withTempLyricFiles
+                [ "alpha.l", "package Alpha\npub func f(): Unit { }\n"
+                  "beta.l",  "package Beta.Sub\npub func g(): Unit { }\n" ]
+                (fun dir _ ->
+                    let idx = buildWorkspaceIndex dir
+                    Expect.isTrue  (idx.PackageToFile |> Map.containsKey "Alpha")
+                        "Alpha is indexed"
+                    Expect.isTrue  (idx.PackageToFile |> Map.containsKey "Beta.Sub")
+                        "Beta.Sub is indexed"
+                    Expect.isFalse (idx.PackageToFile |> Map.containsKey "Gamma")
+                        "Gamma is not indexed")
+    ]
+
+// ---------------------------------------------------------------------------
+// Code actions, rename, hover counterexample, background diagnostics.
+// ---------------------------------------------------------------------------
+
+let newCapabilityTests =
+    testList "Lyric LSP — code actions / rename / background diagnostics" [
+
+        testCase "initialize advertises codeActionProvider and renameProvider" <| fun () ->
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            match prop out.[0] "result"
+                  |> Option.bind (fun r -> prop r "capabilities") with
+            | Some caps ->
+                Expect.isSome (prop caps "codeActionProvider") "codeActionProvider declared"
+                Expect.isSome (prop caps "renameProvider")     "renameProvider declared"
+            | None -> failtest "no capabilities"
+
+        testCase "codeAction V0009 returns wrap-in-unsafe quickfix" <| fun () ->
+            // Source has an assume(...) call that should produce a V0009 diagnostic.
+            // We inject the diagnostic artificially in the context (the handler reads
+            // codes/spans from context.diagnostics, not from stored diagnostics).
+            let source =
+                "@proof_required\n"
+                + "package P\n"
+                + "pub func f(x: Int): Int {\n"
+                + "  assume(x > 0)\n"    // line 3 (0-indexed), chars 2-16
+                + "  return x\n"
+                + "}\n"
+            let assumeRange = JsonObject()
+            let s = JsonObject()
+            s.["line"] <- JsonValue.Create 3; s.["character"] <- JsonValue.Create 2
+            let e = JsonObject()
+            e.["line"] <- JsonValue.Create 3; e.["character"] <- JsonValue.Create 16
+            assumeRange.["start"] <- s :> JsonNode
+            assumeRange.["end"]   <- e :> JsonNode
+            let diag = JsonObject()
+            diag.["code"]     <- JsonValue.Create "V0009"
+            diag.["range"]    <- assumeRange.DeepClone()
+            diag.["message"]  <- JsonValue.Create "assume outside unsafe block"
+            diag.["severity"] <- JsonValue.Create 1
+            let diagArr = JsonArray()
+            diagArr.Add diag
+            let context = JsonObject()
+            context.["diagnostics"] <- diagArr :> JsonNode
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///p.l"
+            rp.["textDocument"] <- td :> JsonNode
+            rp.["range"]        <- assumeRange :> JsonNode
+            rp.["context"]      <- context :> JsonNode
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 30
+            req.["method"]  <- JsonValue.Create "textDocument/codeAction"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///p.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 30)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some (:? JsonArray as arr) ->
+                Expect.isGreaterThan arr.Count 0 "at least one code action returned"
+                let titles =
+                    arr |> Seq.choose (fun n ->
+                        match Option.ofObj n with
+                        | Some node -> Some (propStr node "title")
+                        | None      -> None)
+                    |> Seq.toList
+                Expect.isTrue (titles |> List.exists (fun t -> t.Contains "unsafe"))
+                    "action title mentions unsafe"
+                // Verify the edit replaces the span with the wrapped text.
+                let action =
+                    arr
+                    |> Seq.choose Option.ofObj
+                    |> Seq.tryFind (fun n -> (propStr n "title").Contains "unsafe")
+                match action with
+                | None -> failtest "no unsafe action found"
+                | Some a ->
+                    match prop a "edit"
+                          |> Option.bind (fun ed -> prop ed "changes")
+                          |> Option.bind (fun ch -> prop ch "file:///p.l") with
+                    | Some (:? JsonArray as edits) ->
+                        Expect.isGreaterThan edits.Count 0 "edit has entries"
+                        let newText =
+                            edits
+                            |> Seq.choose Option.ofObj
+                            |> Seq.tryPick (fun e ->
+                                match prop e "newText" with
+                                | Some t -> Some (t.GetValue<string>())
+                                | None   -> None)
+                            |> Option.defaultValue ""
+                        Expect.stringContains newText "unsafe" "newText contains unsafe"
+                        Expect.stringContains newText "assume" "newText still contains assume"
+                    | _ -> failtest "no edits for the file"
+            | _ -> failtest "codeAction result missing or not an array"
+
+        testCase "codeAction for unknown diagnostic code returns empty array" <| fun () ->
+            let source = "package T\nfunc main(): Unit { }\n"
+            let diag = JsonObject()
+            diag.["code"]     <- JsonValue.Create "T9999"
+            diag.["range"]    <- JsonObject() :> JsonNode
+            diag.["message"]  <- JsonValue.Create "unknown"
+            diag.["severity"] <- JsonValue.Create 1
+            let diagArr = JsonArray()
+            diagArr.Add diag
+            let context = JsonObject()
+            context.["diagnostics"] <- diagArr :> JsonNode
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            rp.["range"]   <- JsonObject() :> JsonNode
+            rp.["context"] <- context :> JsonNode
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 31
+            req.["method"]  <- JsonValue.Create "textDocument/codeAction"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 31)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some (:? JsonArray as arr) ->
+                Expect.equal arr.Count 0 "no actions for unknown diagnostic code"
+            | _ -> failtest "codeAction result missing or not an array"
+
+        testCase "rename replaces all occurrences of identifier in open file" <| fun () ->
+            // "greet" appears on line 1 (definition) and line 2 (call site).
+            let source =
+                "package T\n"
+                + "pub func greet(name: in String): String { name }\n"
+                + "func main(): Unit { greet(\"x\") }\n"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            pos.["line"]      <- JsonValue.Create 1   // 0-indexed line with "greet"
+            pos.["character"] <- JsonValue.Create 9   // column 9 = start of "greet"
+            rp.["position"] <- pos :> JsonNode
+            rp.["newName"]  <- JsonValue.Create "hello"
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 40
+            req.["method"]  <- JsonValue.Create "textDocument/rename"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 40)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                match prop res "changes"
+                      |> Option.bind (fun ch -> prop ch "file:///t.l") with
+                | Some (:? JsonArray as edits) ->
+                    // "greet" appears twice in the source.
+                    Expect.isGreaterThanOrEqual edits.Count 2
+                        "at least 2 edits (definition + call site)"
+                    let allNewText =
+                        edits
+                        |> Seq.choose (fun n ->
+                            match Option.ofObj n with
+                            | Some node ->
+                                match prop node "newText" with
+                                | Some t -> Some (t.GetValue<string>())
+                                | None   -> None
+                            | None -> None)
+                        |> Seq.toList
+                    Expect.isTrue (allNewText |> List.forall (fun t -> t = "hello"))
+                        "all edits replace with the new name"
+                | _ -> failtest "no edits for file:///t.l in workspace edit"
+            | None -> failtest "rename response missing"
+
+        testCase "rename on non-identifier position returns empty workspace edit" <| fun () ->
+            let source = "package T\nfunc main(): Unit { }\n"
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///t.l"
+            rp.["textDocument"] <- td :> JsonNode
+            let pos = JsonObject()
+            // Line 1 (0-indexed), character 18 = the '{' in "func main(): Unit { }"
+            // which is not adjacent to any identifier on either side.
+            pos.["line"]      <- JsonValue.Create 1
+            pos.["character"] <- JsonValue.Create 18
+            rp.["position"] <- pos :> JsonNode
+            rp.["newName"]  <- JsonValue.Create "X"
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 41
+            req.["method"]  <- JsonValue.Create "textDocument/rename"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///t.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 41)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some res ->
+                // An empty workspace edit has no changes property, or an empty changes object.
+                match prop res "changes" with
+                | None -> ()  // empty object returned — acceptable
+                | Some ch ->
+                    // If changes exists, it should be empty.
+                    match ch with
+                    | :? JsonObject as o -> Expect.equal o.Count 0 "no files in workspace edit"
+                    | _ -> ()
+            | None -> failtest "rename response missing"
+
+        testCase "initialize with workspace pushes diagnostics for all files" <| fun () ->
+            withTempLyricFiles
+                [ "lib.l",  "package Lib\npub func helper(): Unit { }\n"
+                  "main.l", "package Main\nfunc main(): Unit { }\n" ]
+                (fun dir _ ->
+                    let rootUri = Uri(dir).AbsoluteUri
+                    let initMsg =
+                        sprintf
+                            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"%s"}}"""
+                            rootUri
+                    let out = runWith [ initMsg; """{"jsonrpc":"2.0","method":"exit"}""" ]
+                    let pubUris =
+                        out
+                        |> List.choose (fun n ->
+                            if propStr n "method" = "textDocument/publishDiagnostics" then
+                                prop n "params"
+                                |> Option.bind (fun p -> prop p "uri")
+                                |> Option.map (fun u -> u.GetValue<string>())
+                            else None)
+                    Expect.isGreaterThanOrEqual pubUris.Length 2
+                        "initialize pushes diagnostics for every workspace file")
+
+        testCase "didChange on imported file re-analyses open consumer" <| fun () ->
+            withTempLyricFiles
+                [ "lib.l",  "package Lib\npub func helper(): Unit { }\n"
+                  "main.l", "package Main\nimport Lib\nfunc main(): Unit { helper() }\n" ]
+                (fun dir written ->
+                    let rootUri = Uri(dir).AbsoluteUri
+                    let (libPath,  libUri)  = written |> List.find (fun (p, _) -> p.EndsWith "lib.l")
+                    let (mainPath, mainUri) = written |> List.find (fun (p, _) -> p.EndsWith "main.l")
+                    let initMsg =
+                        sprintf
+                            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"%s"}}"""
+                            rootUri
+                    let libSrc   = File.ReadAllText libPath
+                    let mainSrc  = File.ReadAllText mainPath
+                    let libV2    = "package Lib\npub func helper(): Unit { }\npub func extra(): Unit { }\n"
+                    let out =
+                        runWith [
+                            initMsg
+                            didOpenFor  libUri  libSrc
+                            didOpenFor  mainUri mainSrc
+                            didChangeFor libUri 2 libV2
+                            """{"jsonrpc":"2.0","method":"exit"}"""
+                        ]
+                    // main.l must have received publishDiagnostics at least twice:
+                    // once when opened and once after lib.l changed.
+                    let pubsMain =
+                        out
+                        |> List.filter (fun n ->
+                            propStr n "method" = "textDocument/publishDiagnostics"
+                            && (prop n "params"
+                                |> Option.bind (fun p -> prop p "uri")
+                                |> Option.map (fun u ->
+                                    try u.GetValue<string>() = mainUri with _ -> false)
+                                |> Option.defaultValue false))
+                    Expect.isGreaterThanOrEqual pubsMain.Length 2
+                        "main.l re-analysed after lib.l changed (pubDiags >= 2)")
     ]

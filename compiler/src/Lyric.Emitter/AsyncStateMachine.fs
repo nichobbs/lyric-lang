@@ -75,7 +75,7 @@ let rec private exprHasAwait (e: Expr) : bool =
         | RBClosed (a, b) | RBHalfOpen (a, b) -> exprHasAwait a || exprHasAwait b
         | RBLowerOpen a | RBUpperOpen a       -> exprHasAwait a
     | EAssign (t, _, v) -> exprHasAwait t || exprHasAwait v
-    | EBlock b -> blockHasAwait b
+    | EBlock b | EUnsafe b -> blockHasAwait b
 
 and private branchHasAwait (eob: ExprOrBlock) : bool =
     match eob with
@@ -564,7 +564,7 @@ let rec private spillAwaits
         { e with Kind = ETuple (spillSiblings sigOf sp es) }
     | EList es ->
         { e with Kind = EList (spillSiblings sigOf sp es) }
-    | EIf _ | EMatch _ | EBlock _ ->
+    | EIf _ | EMatch _ | EBlock _ | EUnsafe _ ->
         // These are already safe positions for awaits (Phase B+).
         // The existing safe-position machinery descends into branches /
         // arms.  Don't rewrite — over-spilling here would defeat the
@@ -917,7 +917,7 @@ let collectAwaitInners (fn: FunctionDecl) : Expr list =
             | RBClosed (a, b) | RBHalfOpen (a, b) -> walkExpr a; walkExpr b
             | RBLowerOpen a | RBUpperOpen a       -> walkExpr a
         | EAssign (t, _, v) -> walkExpr t; walkExpr v
-        | EBlock b -> walkBlock b
+        | EBlock b | EUnsafe b -> walkBlock b
     and walkBranch (eob: ExprOrBlock) =
         match eob with
         | EOBExpr e  -> walkExpr e

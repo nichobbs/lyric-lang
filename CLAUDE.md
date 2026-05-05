@@ -19,6 +19,7 @@ the design phase.** No compiler exists. The repository currently contains:
 - `docs/grammar.ebnf` — formal grammar (Phase 0 deliverable #4).
 - `docs/08-contract-semantics.md` — operational semantics for contracts (Phase 0 deliverable #5).
 - `docs/09-msil-emission.md` — MSIL emission strategy (Phase 0 deliverable #7).
+- `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6+; emitter to be written in Lyric itself).
 
 ## Reading order (for Claude)
 
@@ -55,6 +56,24 @@ ambiguity is uncovered, fix the reference and append a decision-log entry).
 - Out-of-scope (`04`) entries can move (rejected → deferred → included),
   but require justification per the document's own protocol.
 
+### Keeping docs, book, and progress records in sync
+
+When a compiler feature ships (new CLI command, new language construct,
+changed behaviour), update **all three** of:
+
+1. **Language reference** (`docs/01-language-reference.md`) — the authoritative
+   spec section for the feature. Add flags, rules, output format, exit codes.
+2. **Book** (`book/chapters/`) — at minimum the toolchain table in
+   `01-getting-started.md` and the CLI reference in `appendix-b-quick-reference.md`.
+   Add or expand the relevant chapter if the feature is substantial.
+3. **Bootstrap progress** (`docs/10-bootstrap-progress.md`) — update the Tier
+   status for the shipped item and correct any "deferred" notes that are now stale.
+   Also update `docs/05-implementation-plan.md` if it contains planning text that
+   contradicts what actually shipped.
+
+These updates should be committed in the same PR as the feature, or in an
+immediate follow-up if the feature was merged without them.
+
 ### Style
 
 - No emojis in any file unless the user asks.
@@ -84,6 +103,17 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
 - `compiler/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
 - `compiler/src/Lyric.TypeChecker/` — the type checker (Phase 1, milestone M1.2, complete).
+- `stdlib/std/` — Lyric-language standard library source (`.l` files).
+  The emitter resolves `import Std.X` by locating `stdlib/std/<x>.l` here,
+  walking up from the binary's base directory or honoring `LYRIC_STD_PATH`.
+  The `stdlib/std/_kernel/` subdirectory holds the audited extern boundary
+  (see `docs/14-native-stdlib-plan.md` Decision F): only kernel files may
+  contain `@externTarget` / `extern type` declarations.
+- `stdlib/tests/` — Lyric-language test suite for the stdlib. Each
+  `*_tests.l` file is a standalone Lyric program that imports the modules
+  it covers and asserts correctness via `Std.Testing`. The F# runner
+  `compiler/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs` discovers and
+  executes these files automatically as part of the emitter test suite.
 - `compiler/src/Lyric.Stdlib/` — the F#-side standard-library shim. The emitter
   targets methods on this assembly (e.g. `Lyric.Stdlib.Console::Println`) for
   IO, contract assertions, and FFI-style BCL access. Hand-curated; grows as
@@ -100,7 +130,11 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
   embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
   into the existing import pipeline.  `lyric prove <source.l>` runs the
-  Phase 4 verifier (M4.1 fragment).
+  Phase 4 verifier (M4.1 fragment).  `Fmt.fs` is the AST-based formatter
+  (`lyric fmt`): canonical style rules, `--write`/`--check` flags; non-doc
+  `//` comments are not preserved (lexer discards them).  `Lint.fs` is the
+  linter (`lyric lint`): five AST-only rules (L001–L005), `--error-on-warning`
+  flag, runs on non-compiling code.
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
   see `docs/15-phase-4-proof-plan.md` and the D-progress-084/085
   entries in `docs/10-bootstrap-progress.md`).  `Mode.fs` parses

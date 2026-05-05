@@ -508,7 +508,7 @@ let rec inferExpr
         // surrounding expressions don't cascade.
         TyError
 
-    | ELambda _ | EIf _ | EMatch _ | EBlock _
+    | ELambda _ | EIf _ | EMatch _ | EBlock _ | EUnsafe _
     | ETry _ | EForall _ | EExists _
     | EAssign _ | ERange _ | ETypeApp _ | EIndex _
     | EInterpolated _ -> TyError

@@ -44,10 +44,17 @@ where       while        wire         with         xor
 Annotation-style keywords (always preceded by `@`):
 
 ```
-@axiom         @derive          @global_clock_unsafe   @hidden
-@projectable   @proof_required  @provided              @runtime_checked
-@stubbable     @test_module
+@axiom         @derive          @experimental          @global_clock_unsafe
+@hidden        @projectable     @proof_required        @provided
+@runtime_checked  @stable       @stubbable             @test_module
 ```
+
+**Stability annotations** (`@stable` / `@experimental`) mark the API stability of `pub` items (D040):
+
+- `@stable(since="X.Y")` — the item's API is stable from version X.Y and is covered by SemVer guarantees.
+- `@experimental` — the item may change without a SemVer major bump.
+
+The compiler enforces one direction: a non-experimental `pub` function may not call an `@experimental` item in the same package (diagnostic S0001). `lyric public-api-diff` uses the stability field to decide whether a removal or signature change is a SemVer-major event (experimental removals are no-ops SemVer-wise).
 
 ### 1.4 Literals
 
@@ -987,7 +994,7 @@ The standard library is its own package set, versioned independently of the lang
 - `std.http` — HTTP client and server primitives (interface layer over .NET BCL)
 - `std.testing` — test runner, property generators, snapshot testing
 
-API surface and stability guarantees: **[TBD]**.
+API surface and stability guarantees: governed by `@stable(since="1.0")` / `@experimental` annotations on each `pub` item (D040 / Q011). See `docs/10-stdlib-plan.md` §"Stability cut" for the module-by-module cut list.
 
 ## 13. Tooling
 
@@ -1017,9 +1024,54 @@ The language server conforms to the Microsoft Language Server Protocol (latest s
 
 ### 13.7 Formatter
 
-`lyric fmt` formats source code per a fixed style. No configuration; the format is what it is. Run on save.
+`lyric fmt` formats source code per a fixed style. No configuration; the format is the format. Run on save.
 
-### 13.8 Package manager
+The bootstrap formatter works directly from the parsed AST; it does not require a CST. Consequences:
+
+- **Non-doc comments (`//`) are not preserved** — the lexer discards them (§1.3). Doc comments (`///` and `//!`) survive because they are part of the AST.
+- The output is idempotent: formatting a file that is already formatted is a no-op.
+
+**Canonical style rules:**
+- 2-space indentation.
+- Opening brace `{` is inline when there are no contract or where clauses; on its own line when they are present.
+- One blank line between top-level items.
+- Contract clauses (`requires:`, `ensures:`, `invariant:`) each on their own line, indented 2 spaces under the function signature.
+- Trailing newline; no trailing whitespace per line.
+
+**Flags:**
+
+| Flag | Effect |
+|------|--------|
+| _(default)_ | Print formatted source to stdout |
+| `--write` | Overwrite the file in place |
+| `--check` | Exit 1 if the file would change; print nothing (CI use) |
+
+### 13.8 Linter
+
+`lyric lint` checks source code for style and quality issues. It works entirely from the parsed AST — no type-checker context is needed — so it is fast and runs on files that do not yet compile.
+
+**Diagnostic codes:**
+
+| Code | Severity | Rule |
+|------|----------|------|
+| `L001` | error | Type names (`record`, `union`, `enum`, `interface`, opaque, `protected`, distinct type, type alias) must be `PascalCase`. Constants must be `PascalCase` or `UPPER_SNAKE_CASE`. |
+| `L002` | error | Function names (`func` items, `entry` declarations inside `protected` blocks) must be `camelCase`. |
+| `L003` | warning | `pub` items should have a doc comment (`///`). |
+| `L004` | warning | Doc comments must not contain `TODO` or `FIXME`. |
+| `L005` | warning | `pub func` with a block body should declare at least one `requires:` or `ensures:` contract. Expression-body stubs are excluded. |
+
+**Flags:**
+
+| Flag | Effect |
+|------|--------|
+| _(default)_ | Print diagnostics; exit 0 if only warnings |
+| `--error-on-warning` | Treat warnings as errors; exit 1 |
+
+**Exit codes:** 0 = clean (or warnings-only without `--error-on-warning`); 1 = at least one error (or warning with the flag); 2 = usage/IO error.
+
+**Output format:** `<code> <severity> [<line>:<col>]: <message>`, matching the compiler's own diagnostic shape.
+
+### 13.9 Package manager
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: **[TBD]**.
 

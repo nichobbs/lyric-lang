@@ -2,7 +2,7 @@
 ///
 /// The plan in `docs/14-native-stdlib-plan.md` §3 establishes a hard
 /// cap of 150 host-extern declarations across the stdlib for v1.0,
-/// concentrated in `compiler/lyric/std/_kernel/`.  This test enforces
+/// concentrated in `stdlib/std/_kernel/`.  This test enforces
 /// the migration as a one-way ratchet:
 ///
 /// * `externsOutsideKernel` may **never** exceed `outsideCeiling`.
@@ -27,20 +27,20 @@ open System.IO
 open System.Text.RegularExpressions
 open Expecto
 
-/// Locate `compiler/lyric/std/`. Mirror of `StdlibSeedTests`'
+/// Locate `stdlib/std/`. Mirror of `StdlibSeedTests`'
 /// search for symmetry; failure should be impossible in CI.
 let private locateStdlibDir () : string =
     let mutable dir = Some (DirectoryInfo(System.AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let d = dir.Value
-        let candidate = Path.Combine(d.FullName, "lyric", "std")
+        let candidate = Path.Combine(d.FullName, "stdlib", "std")
         if Directory.Exists candidate then found <- Some candidate
         dir <- d.Parent |> Option.ofObj
     match found with
     | Some p -> p
     | None ->
-        failwithf "could not locate lyric/std directory from %s"
+        failwithf "could not locate stdlib/std directory from %s"
             System.AppContext.BaseDirectory
 
 let private externRegex =
@@ -103,7 +103,7 @@ let tests =
                 (sprintf
                     "found %d extern declarations outside _kernel/; \
                      the ratchet ceiling is %d.  Either move new \
-                     externs into compiler/lyric/std/_kernel/ or, \
+                     externs into stdlib/std/_kernel/ or, \
                      if this PR is migrating externs INTO the kernel, \
                      drop `outsideCeiling` in KernelBoundaryTests.fs."
                     outside outsideCeiling)

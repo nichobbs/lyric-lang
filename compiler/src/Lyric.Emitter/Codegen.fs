@@ -92,6 +92,11 @@ type FunctionCtx =
       /// imports.  Drives strict-match auto-FFI for static-method
       /// calls of the form `ExternTypeName.method(args)` (C4 phase 1).
       ExternTypeNames: Dictionary<string, ClrType>
+      /// Module-level `pub val` and `pub const` integer constants,
+      /// folded at assembly-build time.  Keyed by name; value is
+      /// the folded int64.  Used by `EPath { Segments = [name] }`
+      /// so constants like `ACC_PUBLIC` resolve without a static field.
+      Consts: Dictionary<string, int64>
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -183,6 +188,7 @@ module FunctionCtx =
             (programType: TypeBuilder)
             (resolveType: Lyric.Parser.Ast.TypeExpr -> System.Type)
             (lookup: Lyric.TypeChecker.TypeId -> System.Type option)
+            (consts: Dictionary<string, int64>)
             (diags: ResizeArray<Lyric.Lexer.Diagnostic>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
@@ -213,6 +219,7 @@ module FunctionCtx =
           ImportedFuncs       = importedFuncs
           ImportedDistinctTypes = importedDistinctTypes
           ExternTypeNames = externTypeNames
+          Consts       = consts
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -299,6 +306,13 @@ let private codegenErrStmt
 // ---------------------------------------------------------------------------
 // Stdlib bindings.
 // ---------------------------------------------------------------------------
+
+let private compareOrdinalMethod : Lazy<MethodInfo> =
+    lazy (
+        let mi = typeof<System.String>.GetMethod("CompareOrdinal", [| typeof<string>; typeof<string> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwith "String::CompareOrdinal(string,string) not found")
 
 let private printlnString : Lazy<MethodInfo> =
     lazy (
@@ -392,6 +406,10 @@ let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
             fileHostMethod "WriteIsValid" [| typeof<string>; typeof<string> |]
         "hostWriteAllTextError",
             fileHostMethod "WriteError" [| typeof<string>; typeof<string> |]
+        "hostWriteAllBytesIsValid",
+            fileHostMethod "WriteBytesIsValid" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
+        "hostWriteAllBytesError",
+            fileHostMethod "WriteBytesError" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
         "hostDirectoryExists",
             fileHostMethod "DirectoryExists" [| typeof<string> |]
         "hostCreateDirectoryIsValid",
@@ -459,16 +477,23 @@ let private capitalizeFirst (s: string) : string =
     if String.IsNullOrEmpty s then s
     else string (Char.ToUpperInvariant s.[0]) + s.Substring(1)
 
-/// True if `recvTy` is a generic instantiation that mentions a
-/// `GenericTypeParameterBuilder` — i.e. we're inside a Lyric generic
-/// function being emitted.  `TypeBuilderInstantiation.GetMethods()`
-/// throws `NotSupportedException` for such types, so callers must
-/// route through `TypeBuilder.GetMethod` on the open definition.
+/// True if `t` is a closed generic type whose type arguments include
+/// a `GenericTypeParameterBuilder` (we're inside a generic Lyric function)
+/// OR a `TypeBuilder` (the argument type is being defined in the same
+/// compilation unit, e.g. `List<AsmInsn>` while `AsmInsn` is still a
+/// TypeBuilder).  `TypeBuilderInstantiation.GetMethods()` throws in both
+/// cases; callers must enumerate methods on the open definition and close
+/// them with `TypeBuilder.GetMethod`.
 let private isGenericInstantiationOnGtpb (t: ClrType) : bool =
+    let rec isDynamic (ty: ClrType) : bool =
+        ty :? System.Reflection.Emit.GenericTypeParameterBuilder
+        || ty :? System.Reflection.Emit.TypeBuilder
+        || (ty.IsGenericType
+            && not ty.IsGenericTypeDefinition
+            && ty.GetGenericArguments() |> Array.exists isDynamic)
     t.IsGenericType
     && not t.IsGenericTypeDefinition
-    && t.GetGenericArguments() |> Array.exists (fun a ->
-        a :? System.Reflection.Emit.GenericTypeParameterBuilder)
+    && t.GetGenericArguments() |> Array.exists isDynamic
 
 /// `recvTy.GetMethods()` that works even when recvTy is a
 /// TypeBuilderInstantiation (closed-on-GTPB generic).  For non-GTPB
@@ -628,22 +653,32 @@ let private boxIfValue (il: ILGenerator) (ty: ClrType) : unit =
 // Where-clause bound checking (call-site).
 // ---------------------------------------------------------------------------
 
-/// Does `ty` satisfy the given derive marker?  Bootstrap support: CLR
-/// primitives (numeric / Bool / Char) and `String` satisfy a fixed
-/// table of markers.  Locally-defined distinct types live in
-/// `ctx.DistinctTypes` but their `derives` list isn't currently
-/// snapshotted on `DistinctTypeInfo`, so for now they only satisfy
-/// markers via the primitive fallback (i.e. don't).
+/// Does `ty` satisfy the given derive marker?  Three satisfaction paths:
 ///
-/// User-defined interface constraints (Q021 sub-question #5) are
-/// resolved by looking up the marker name in `ctx.Interfaces`. When
-/// the name is a known same-package interface, we accept any `ty`
-/// whose implemented interfaces include the interface's TypeBuilder.
-/// `Emitter.fs` Pass A.5 attaches every `impl` block's interface to
-/// its target record TypeBuilder before bodies are emitted, so
-/// `GetInterfaces()` is reliable here.
+/// 1. Same-package distinct types: look up `ty` in `ctx.DistinctTypes` and
+///    check whether the marker is in its `Derives` list.  This closes the
+///    Q021 gap where `type Age = Int derives Hash` was rejected at a call
+///    site `f[Age] where Age: Hash` because `DistinctTypeInfo` previously
+///    didn't carry the derives list.
+///
+/// 2. CLR primitives: numeric / Bool / Char / String satisfy a fixed table
+///    of D034 markers.
+///
+/// 3. User-defined interface constraints (Q021 sub-question #5): look up
+///    the marker name in `ctx.Interfaces`; if it names a same-package
+///    interface, accept any `ty` whose implemented interfaces include that
+///    interface's TypeBuilder (`Emitter.fs` Pass A.5 populates this before
+///    body emit, so `GetInterfaces()` is reliable).
 let private satisfiesMarker
         (ctx: FunctionCtx) (ty: ClrType) (marker: string) : bool =
+    // Path 1 — same-package distinct type with a matching derives clause.
+    let satisfiesViaDistinct =
+        ctx.DistinctTypes.Values
+        |> Seq.tryFind (fun info -> (info.Type :> ClrType) = ty)
+        |> Option.exists (fun info -> List.contains marker info.Derives)
+    if satisfiesViaDistinct then true
+    else
+    // Path 2 — CLR primitive table.
     let isNumeric =
         ty = typeof<sbyte>  || ty = typeof<int16>  || ty = typeof<int32>
         || ty = typeof<int64>  || ty = typeof<byte>   || ty = typeof<uint16>
@@ -657,6 +692,7 @@ let private satisfiesMarker
     | "Add" | "Sub" | "Mul" | "Div" | "Mod" -> isNumeric
     | "Compare" -> isOrderedPrim
     | "Hash" | "Equals" | "Default" -> isAnyPrim
+    // Path 3 — user-defined interface constraint.
     | _ ->
         if ctx.Interfaces.ContainsKey marker then
             match ctx.Impls.TryGetValue ty with
@@ -722,7 +758,13 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
                         | Some et -> et
                         | None    -> t
                     else t
-                | _            -> typeof<obj>
+                | _ ->
+                    match ctx.Consts.TryGetValue name with
+                    | true, v ->
+                        if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue
+                        then typeof<int>
+                        else typeof<int64>
+                    | _ -> typeof<obj>
     | EBinop (op, l, _) ->
         match op with
         | BAnd | BOr | BXor | BImplies
@@ -912,6 +954,22 @@ let rec substituteGenericArgs (openTy: ClrType) (closedRecv: ClrType) : ClrType 
 // ---------------------------------------------------------------------------
 // Expression / statement emission.
 // ---------------------------------------------------------------------------
+
+/// Conservative check: is `b` a branch guaranteed to diverge (panic)?
+/// Detects `panic(...)` in direct-expression and block-ending positions.
+/// Used by the if-else emitter to balance the JIT verifier's stack-height
+/// tracking at merge labels.
+let private isNeverBranch (b: ExprOrBlock) : bool =
+    let isPanic (e: Expr) =
+        match e.Kind with
+        | ECall ({ Kind = EPath { Segments = ["panic"] } }, _) -> true
+        | _ -> false
+    match b with
+    | EOBExpr e -> isPanic e
+    | EOBBlock blk ->
+        match List.tryLast blk.Statements with
+        | Some { Kind = SExpr e } -> isPanic e
+        | _ -> false
 
 let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     let il = ctx.IL
@@ -1947,13 +2005,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                             r.Name fieldName
                 | None when isBclType recvTy ->
                     // BCL property fallback: lyric `s.length` -> `String.Length`.
+                    // When recvTy is a TypeBuilderInstantiation (e.g. `List<AsmInsn>`)
+                    // GetProperty throws; look up the property on the open definition
+                    // and close its getter via TypeBuilder.GetMethod.
                     let propName = capitalizeFirst fieldName
-                    let prop = recvTy.GetProperty(propName)
+                    let lookupTy =
+                        if isGenericInstantiationOnGtpb recvTy then
+                            recvTy.GetGenericTypeDefinition()
+                        else
+                            recvTy
+                    let prop = lookupTy.GetProperty(propName)
                     let getter =
                         match Option.ofObj prop with
                         | Some p when p.CanRead ->
                             Option.ofObj (p.GetGetMethod())
-                            |> Option.map (fun g -> g, p.PropertyType)
+                            |> Option.map (fun g ->
+                                let closed = closeBclMethod recvTy g
+                                closed, p.PropertyType)
                         | _ -> None
                     match getter with
                     | Some (g, ty) ->
@@ -2070,8 +2138,17 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 il.Emit(OpCodes.Newobj, constructedCtor)
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
-                            codegenErr ctx "E0004"
-                                (sprintf "unknown name '%s'" name) e.Span
+                            match ctx.Consts.TryGetValue name with
+                            | true, v ->
+                                if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue then
+                                    emitLdcI4 il (int32 v)
+                                    typeof<int>
+                                else
+                                    il.Emit(OpCodes.Ldc_I8, v)
+                                    typeof<int64>
+                            | _ ->
+                                codegenErr ctx "E0004"
+                                    (sprintf "unknown name '%s'" name) e.Span
 
     | EPath { Segments = [enumName; caseName] }
         when ctx.Enums.ContainsKey enumName ->
@@ -2269,6 +2346,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 typeof<bool>
         | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
         | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BLt  when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Clt); typeof<bool>
+        | BGt  when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Cgt); typeof<bool>
+        | BLte when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Cgt)
+            emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
+        | BGte when opTy = typeof<string> ->
+            il.Emit(OpCodes.Call, compareOrdinalMethod.Value)
+            emitLdcI4 il 0; il.Emit(OpCodes.Clt)
+            emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
         | BLt  ->
             if isUnsignedClr opTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
             typeof<bool>
@@ -2305,16 +2396,30 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             il.MarkLabel(lblEnd)
             typeof<System.Void>
         | Some elseB ->
-            let lblElse = il.DefineLabel()
-            let lblEnd  = il.DefineLabel()
+            let lblElse    = il.DefineLabel()
+            let lblEnd     = il.DefineLabel()
+            let thenIsNever = isNeverBranch thenBranch
+            let elseIsNever = isNeverBranch elseB
             il.Emit(OpCodes.Brfalse, lblElse)
             let thenTy = emitBranchValue ctx thenBranch
-            il.Emit(OpCodes.Br, lblEnd)
+            // A Never-returning branch cannot reach lblEnd.  Terminate
+            // its IL path with an unreachable throw so the JIT verifier
+            // sees a single consistent stack height at the merge label.
+            if thenIsNever then
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Throw)
+            else
+                il.Emit(OpCodes.Br, lblEnd)
             il.MarkLabel(lblElse)
             let elseTy = emitBranchValue ctx elseB
+            if elseIsNever && not thenIsNever then
+                il.Emit(OpCodes.Ldnull)
+                il.Emit(OpCodes.Throw)
             il.MarkLabel(lblEnd)
-            // Both branches must agree on whether they push a value.
-            if thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
+            // Result type: the non-Never branch's type.
+            if elseIsNever then thenTy
+            elif thenIsNever then elseTy
+            elif thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
                 typeof<System.Void>
             else
                 thenTy
@@ -2378,13 +2483,34 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | _ -> ()
             for (f, argExpr) in List.zip caseInfo.Fields argExprs do
                 bind f.LyricType (peekExprType ctx argExpr)
-            // Default any unbound to `obj`.
+            // Fall back to ctx.ReturnType / ctx.ExpectedType for type
+            // params not bound by any field (e.g. `T` in `Err(error=e)`
+            // where only `E` is present as a field). Without this, `T`
+            // defaults to `obj`, producing `Result_Err<obj,E>` which
+            // fails CLR invariant-generic Isinst checks at the call site.
+            let tryArgFromShape (idx: int) (shape: ClrType) =
+                if shape.IsGenericType && not shape.IsGenericTypeDefinition then
+                    let gargs = shape.GetGenericArguments()
+                    let shapeDef = shape.GetGenericTypeDefinition()
+                    if shapeDef = (info.Type :> System.Type)
+                       && idx < gargs.Length then
+                        Some gargs.[idx]
+                    else None
+                else None
             let typeArgs =
                 info.Generics
-                |> List.map (fun n ->
+                |> List.mapi (fun i n ->
                     match bindings.TryGetValue n with
                     | true, t  -> t
-                    | false, _ -> typeof<obj>)
+                    | false, _ ->
+                        let fromExpected =
+                            ctx.ExpectedType |> Option.bind (tryArgFromShape i)
+                        match fromExpected with
+                        | Some t -> t
+                        | None ->
+                            match tryArgFromShape i ctx.ReturnType with
+                            | Some t -> t
+                            | None   -> typeof<obj>)
                 |> List.toArray
             // Build the constructed parent + case + ctor refs.
             let constructedParent =
@@ -2895,6 +3021,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | CAPositional ex | CANamed (_, ex, _) -> ex
                 let expectedDelegateTy =
                     if i < paramTypes.Length
+                       && not (isGenericInstantiationOnGtpb paramTypes.[i])
                        && paramTypes.[i].IsSubclassOf typeof<System.Delegate>
                     then Some paramTypes.[i]
                     else None
@@ -3594,7 +3721,7 @@ and private emitLambdaWith
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
-            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Diags
+            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
     // single-exit discipline.
@@ -3797,6 +3924,11 @@ and private emitPatternTest
                 | _ ->
                     failwithf "E11 codegen: unknown constructor pattern '%s'"
                         (String.concat "." path.Segments)
+    | PError ->
+        // Parser-error recovery node; emit a diagnostic and push 0 (never matches)
+        // so compilation can continue and surface the underlying parse error.
+        codegenErrStmt ctx "E0012" "pattern parse error (recovery)" pat.Span
+        emitLdcI4 il 0
     | _ ->
         failwithf "E6 codegen: pattern not yet supported: %A" pat.Kind
 

@@ -107,7 +107,8 @@ func main(): Unit { println(shown(Visible(x = 1))) }
                 |> List.map (function
                     | ContractMeta.DiffAdded d   -> "+ " + d.Name
                     | ContractMeta.DiffRemoved d -> "- " + d.Name
-                    | ContractMeta.DiffChanged (o, _) -> "~ " + o.Name)
+                    | ContractMeta.DiffChanged (o, _) -> "~ " + o.Name
+                    | ContractMeta.DiffContractChanged (d, _) -> "! " + d.Name)
             Expect.equal kinds.Length 3 "added + removed + changed"
             Expect.contains kinds "+ added" "new func added"
             Expect.contains kinds "- drop" "old func removed"

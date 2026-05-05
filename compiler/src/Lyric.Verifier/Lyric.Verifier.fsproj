@@ -10,6 +10,7 @@
     <Compile Include="Imports.fs" />
     <Compile Include="Theory.fs" />
     <Compile Include="ModeCheck.fs" />
+    <Compile Include="StabilityCheck.fs" />
     <Compile Include="VCGen.fs" />
     <Compile Include="Smt.fs" />
     <Compile Include="Solver.fs" />

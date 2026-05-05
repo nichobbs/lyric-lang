@@ -83,6 +83,7 @@ let private collectCalls
         | EBinop(_, l, r) -> visitExpr l; visitExpr r
         | EAssign(t, _, v) -> visitExpr t; visitExpr v
         | EBlock blk -> visitBlock blk
+        | EUnsafe blk -> onUnsafe e.Span; visitBlock blk
         | EInterpolated segs ->
             for seg in segs do
                 match seg with
@@ -325,7 +326,7 @@ let private checkQuantifierDomains
         | EPrefix(_, x) -> walkExpr x
         | EBinop(_, l, r) -> walkExpr l; walkExpr r
         | EAssign(t, _, v) -> walkExpr t; walkExpr v
-        | EBlock blk ->
+        | EBlock blk | EUnsafe blk ->
             for st in blk.Statements do
                 match st.Kind with
                 | SExpr x | SAssign(_, _, x) | SReturn(Some x) | SThrow x -> walkExpr x
@@ -357,6 +358,96 @@ let private checkQuantifierDomains
         match it.Kind with
         | IFunc fn when fn |> levelOfFunction fileLevel |> VerificationLevel.isProofRequired ->
             walkContractClauses fn.Contracts
+        | _ -> ()
+
+/// V0009: `assume` used in proof-required code outside an `unsafe { }` block.
+/// (`15-phase-4-proof-plan.md` §3.1.)
+let private checkAssumeUsage
+        (diags: ResizeArray<Diagnostic>)
+        (fileLevel: VerificationLevel)
+        (file: SourceFile) : unit =
+
+    if not (VerificationLevel.isProofRequired fileLevel) then ()
+    else
+
+    let rec walkExpr (inUnsafe: bool) (e: Expr) : unit =
+        match e.Kind with
+        | ECall(callee, args) ->
+            (match callee.Kind with
+             | EPath p ->
+                 match p.Segments with
+                 | ["assume"] when not inUnsafe ->
+                     diags.Add(
+                         Diagnostic.error "V0009"
+                             "`assume` may only appear inside an `unsafe { }` block in proof-required code; wrap in `unsafe { }` or remove"
+                             e.Span)
+                 | _ -> ()
+             | _ -> ())
+            walkExpr inUnsafe callee
+            for a in args do
+                match a with
+                | CANamed(_, v, _) | CAPositional v -> walkExpr inUnsafe v
+        | EUnsafe blk -> walkBlock true blk
+        | EBlock blk -> walkBlock inUnsafe blk
+        | EParen inner | EOld inner | ETry inner | EAwait inner
+        | ESpawn inner | EPropagate inner -> walkExpr inUnsafe inner
+        | ETuple xs | EList xs -> xs |> List.iter (walkExpr inUnsafe)
+        | EIf(c, t, eOpt, _) ->
+            walkExpr inUnsafe c
+            walkExprOrBlock inUnsafe t
+            (match eOpt with Some x -> walkExprOrBlock inUnsafe x | None -> ())
+        | EMatch(s, arms) ->
+            walkExpr inUnsafe s
+            for arm in arms do
+                walkExprOrBlock inUnsafe arm.Body
+                match arm.Guard with Some g -> walkExpr inUnsafe g | None -> ()
+        | EForall(_, w, body) | EExists(_, w, body) ->
+            (match w with Some x -> walkExpr inUnsafe x | None -> ())
+            walkExpr inUnsafe body
+        | ETypeApp(fn, _) -> walkExpr inUnsafe fn
+        | EIndex(r, ix) -> walkExpr inUnsafe r; ix |> List.iter (walkExpr inUnsafe)
+        | EMember(r, _) -> walkExpr inUnsafe r
+        | EPrefix(_, x) -> walkExpr inUnsafe x
+        | EBinop(_, l, r) -> walkExpr inUnsafe l; walkExpr inUnsafe r
+        | EAssign(t, _, v) -> walkExpr inUnsafe t; walkExpr inUnsafe v
+        | ELambda(_, body) -> walkBlock inUnsafe body
+        | EInterpolated segs ->
+            for seg in segs do
+                match seg with ISExpr x -> walkExpr inUnsafe x | ISText _ -> ()
+        | ERange _ | ELiteral _ | EPath _ | ESelf | EResult | EError -> ()
+
+    and walkExprOrBlock (inUnsafe: bool) (eob: ExprOrBlock) =
+        match eob with
+        | EOBExpr x -> walkExpr inUnsafe x
+        | EOBBlock b -> walkBlock inUnsafe b
+
+    and walkBlock (inUnsafe: bool) (blk: Block) =
+        for st in blk.Statements do
+            match st.Kind with
+            | SExpr x | SAssign(_, _, x) | SReturn(Some x)
+            | SThrow x | SInvariant x -> walkExpr inUnsafe x
+            | SLocal lb ->
+                match lb with
+                | LBVal(_, _, init) | LBLet(_, _, init) -> walkExpr inUnsafe init
+                | LBVar(_, _, Some init) -> walkExpr inUnsafe init
+                | LBVar(_, _, None) -> ()
+            | STry(body, catches) ->
+                walkBlock inUnsafe body
+                for c in catches do walkBlock inUnsafe c.Body
+            | SDefer body | SScope(_, body) -> walkBlock inUnsafe body
+            | SFor(_, _, iter, body) | SWhile(_, iter, body) ->
+                walkExpr inUnsafe iter; walkBlock inUnsafe body
+            | SLoop(_, body) -> walkBlock inUnsafe body
+            | SRule(l, r) -> walkExpr inUnsafe l; walkExpr inUnsafe r
+            | _ -> ()
+
+    for it in file.Items do
+        match it.Kind with
+        | IFunc fn when fn |> levelOfFunction fileLevel |> VerificationLevel.isProofRequired ->
+            match fn.Body with
+            | None -> ()
+            | Some(FBExpr e) -> walkExpr false e
+            | Some(FBBlock blk) -> walkBlock false blk
         | _ -> ()
 
 /// V0001: a `@proof_required` package may not directly import a
@@ -422,6 +513,7 @@ let checkFileWithImports
             | _        -> ()
         checkAxiomBodies diags level file
         checkQuantifierDomains diags level file
+        checkAssumeUsage diags level file
         checkImportLevels diags level file imports
         level, List.ofSeq diags
 

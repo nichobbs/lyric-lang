@@ -162,11 +162,9 @@ let private trivialDischarge (g: Goal) : SolverOutcome option =
         Some Discharged
     else None
 
-/// Locate `z3` on `$PATH`.  Returns `None` if the binary isn't
-/// available; the caller then falls through to trivial discharge
-/// or `Unknown`.
-let private findZ3 () : string option =
-    match Option.ofObj (Environment.GetEnvironmentVariable "LYRIC_Z3") with
+/// Locate a binary by name on `$PATH` (and via an explicit env var).
+let private findBinary (envVar: string) (name: string) : string option =
+    match Option.ofObj (Environment.GetEnvironmentVariable envVar) with
     | Some explicit when File.Exists explicit -> Some explicit
     | _ ->
         match Option.ofObj (Environment.GetEnvironmentVariable "PATH") with
@@ -177,17 +175,25 @@ let private findZ3 () : string option =
             let candidates =
                 path.Split(sep)
                 |> Array.collect (fun dir ->
-                    let exe = Path.Combine(dir, "z3")
-                    let exeWin = Path.Combine(dir, "z3.exe")
+                    let exe = Path.Combine(dir, name)
+                    let exeWin = Path.Combine(dir, name + ".exe")
                     [| exe; exeWin |])
             candidates |> Array.tryFind File.Exists
 
-/// Run Z3 on an SMT-LIB blob and return the parsed verdict.
-let private invokeZ3 (z3Path: string) (smtSource: string) : SolverOutcome =
+/// Locate `z3` on `$PATH` or via `LYRIC_Z3`.
+let private findZ3 () : string option = findBinary "LYRIC_Z3" "z3"
+
+/// Locate `cvc5` on `$PATH` or via `LYRIC_CVC5`.
+let private findCvc5 () : string option = findBinary "LYRIC_CVC5" "cvc5"
+
+/// Run a solver process on an SMT-LIB blob and return the parsed verdict.
+/// `args` are the extra arguments passed after the binary path; both Z3
+/// (`-in -T:5`) and CVC5 (`--lang=smt2 --tlimit=5000`) are supported.
+let private invokeSolver
+        (binPath: string) (args: string list) (smtSource: string) : SolverOutcome =
     let psi = ProcessStartInfo()
-    psi.FileName <- z3Path
-    psi.ArgumentList.Add "-in"
-    psi.ArgumentList.Add "-T:5"
+    psi.FileName <- binPath
+    for a in args do psi.ArgumentList.Add a
     psi.RedirectStandardInput  <- true
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError  <- true
@@ -196,7 +202,7 @@ let private invokeZ3 (z3Path: string) (smtSource: string) : SolverOutcome =
     try
         match Option.ofObj (Process.Start psi) with
         | None ->
-            Unknown "z3 process failed to start"
+            Unknown (sprintf "%s process failed to start" (Path.GetFileName binPath))
         | Some proc ->
             use _ = proc
             proc.StandardInput.Write smtSource
@@ -212,23 +218,35 @@ let private invokeZ3 (z3Path: string) (smtSource: string) : SolverOutcome =
             match firstLine with
             | "unsat"   -> Discharged
             | "sat"     -> Counterexample stdout
-            | "unknown" -> Unknown "z3 returned unknown"
+            | "unknown" -> Unknown (sprintf "%s returned unknown" (Path.GetFileName binPath))
             | other     ->
                 let detail =
-                    if stderr.Length > 0 then stderr else other
-                Unknown (sprintf "z3 returned unexpected output: %s" detail)
+                    if stderr.Length > 0 then stderr.Split('\n').[0] else other
+                Unknown (sprintf "%s returned unexpected output: %s" (Path.GetFileName binPath) detail)
     with ex ->
-        Unknown (sprintf "z3 invocation failed: %s" ex.Message)
+        Unknown (sprintf "%s invocation failed: %s" (Path.GetFileName binPath) ex.Message)
+
+/// Run Z3 on an SMT-LIB blob and return the parsed verdict.
+let private invokeZ3 (z3Path: string) (smtSource: string) : SolverOutcome =
+    invokeSolver z3Path ["-in"; "-T:5"] smtSource
+
+/// Run CVC5 on an SMT-LIB blob and return the parsed verdict.
+/// CVC5 reads from stdin with `--lang=smt2`; `--tlimit` is in ms.
+let private invokeCvc5 (cvc5Path: string) (smtSource: string) : SolverOutcome =
+    invokeSolver cvc5Path ["--lang=smt2"; "--tlimit=5000"; "--produce-models"; "-"] smtSource
 
 /// Discharge a goal.  Tries the trivial discharger first; falls
-/// through to z3 if available; otherwise returns `Unknown`.
+/// through to z3 if available; then cvc5; otherwise returns `Unknown`.
 let discharge (g: Goal) : SolverOutcome =
     match trivialDischarge g with
     | Some outcome -> outcome
     | None ->
         match findZ3 () with
         | Some z3 -> invokeZ3 z3 (Smt.renderGoal g)
-        | None    -> Unknown "no SMT solver available (set LYRIC_Z3 or install z3)"
+        | None ->
+            match findCvc5 () with
+            | Some cvc5 -> invokeCvc5 cvc5 (Smt.renderGoal g)
+            | None      -> Unknown "no SMT solver available (set LYRIC_Z3 or LYRIC_CVC5, or install z3/cvc5)"
 
 /// Pretty-print a solver outcome for human-facing diagnostics.
 let displayOutcome (o: SolverOutcome) : string =
@@ -507,10 +525,10 @@ let endSession (session: SolverSession) : unit =
     try session.Process.Dispose() with _ -> ()
 
 /// One-shot helper: try to start a session, run the action with
-/// it, then tear down.  Falls through to a per-goal `discharge`
-/// (no cache) when z3 isn't available.  Set `LYRIC_VERIFY_DEBUG=1`
-/// for trace output (session start, z3 version, endSession dirty
-/// flag).
+/// it, then tear down.  Tries Z3 first; falls back to CVC5 if Z3
+/// is not found.  Falls through to a per-goal `discharge` (trivial-
+/// only, no cache) when neither solver is available.
+/// Set `LYRIC_VERIFY_DEBUG=1` for trace output.
 let withSession
         (cachePath: string option)
         (action: (Goal -> SolverOutcome) -> 'a) : 'a =
@@ -518,23 +536,25 @@ let withSession
         not (isNull (Environment.GetEnvironmentVariable "LYRIC_VERIFY_DEBUG"))
     let trace (msg: string) =
         if debug then eprintfn "%s" msg
-    match findZ3 () with
-    | None ->
-        trace "[verify] no z3 found; falling back to trivial-only"
-        // No solver — caller still gets a discharger, but it's
-        // the trivial-only fallback.
-        action discharge
-    | Some z3 ->
-        trace (sprintf "[verify] starting z3 session at %s" z3)
-        match startSession z3 cachePath with
+    let runWithSolver (solverPath: string) =
+        trace (sprintf "[verify] starting session at %s" solverPath)
+        match startSession solverPath cachePath with
         | None ->
             trace "[verify] startSession failed; falling back to per-goal"
             action discharge
         | Some session ->
-            trace (sprintf "[verify] session started, z3 version: %s"
+            trace (sprintf "[verify] session started, solver version: %s"
                     session.Z3Version)
             try
                 action (fun g -> dischargeIn session g)
             finally
                 trace (sprintf "[verify] endSession (dirty=%b)" session.Dirty)
                 endSession session
+    match findZ3 () with
+    | Some z3 -> runWithSolver z3
+    | None ->
+        match findCvc5 () with
+        | Some cvc5 -> runWithSolver cvc5
+        | None ->
+            trace "[verify] no solver found; using trivial-only discharge"
+            action discharge

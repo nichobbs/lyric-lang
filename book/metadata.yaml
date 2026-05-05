@@ -1,0 +1,56 @@
+---
+title: "Making Lyric Sing"
+subtitle: "A Programmer's Introduction to the Lyric Language"
+author: "The Lyric Project"
+date: "2026"
+lang: en-GB
+
+# Table of contents
+toc: true
+toc-depth: 2
+toc-title: "Contents"
+numbersections: true
+
+# Typography
+fontsize: 11pt
+linestretch: 1.35
+
+# PDF geometry
+geometry:
+  - margin=2.5cm
+  - a4paper
+
+# PDF fonts (requires these to be installed; falls back gracefully)
+mainfont: "Palatino"
+sansfont: "Helvetica Neue"
+monofont: "Fira Code"
+monofontoptions:
+  - Scale=0.88
+
+# Colour links in PDF
+colorlinks: true
+linkcolor: "NavyBlue"
+urlcolor: "NavyBlue"
+toccolor: black
+
+# PDF metadata
+subject: "Programming Language"
+keywords:
+  - Lyric
+  - programming
+  - safety
+  - contracts
+  - verification
+
+# Code highlighting
+highlight-style: tango
+
+# Header / footer (requires eisvogel or similar template; ignored otherwise)
+titlepage: true
+titlepage-color: "0b1520"
+titlepage-text-color: "e2e8f0"
+titlepage-rule-color: "f59e0b"
+titlepage-rule-height: 4
+logo: "logo.svg"
+logo-width: 80
+...

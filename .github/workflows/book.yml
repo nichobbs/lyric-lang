@@ -1,0 +1,66 @@
+name: Book — Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'book/**'
+  # Allow a manual re-deploy without needing a book/ change
+  workflow_dispatch:
+
+# GitHub Pages deployment requires these exact permissions
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time; cancel in-flight runs on new push
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build HTML book
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pandoc
+        run: |
+          # Download a pinned Pandoc release — Ubuntu apt ships an older version
+          # that lacks --embed-resources (added in 3.0).
+          PANDOC_VER=3.6.4
+          wget -q "https://github.com/jgm/pandoc/releases/download/${PANDOC_VER}/pandoc-${PANDOC_VER}-1-amd64.deb"
+          sudo dpkg -i "pandoc-${PANDOC_VER}-1-amd64.deb"
+          pandoc --version | head -1
+
+      - name: Build self-contained HTML
+        working-directory: book
+        run: make html
+
+      - name: Prepare Pages artifact
+        # upload-pages-artifact needs a directory, not a file.
+        # We put the book at index.html so the root URL shows it directly.
+        run: |
+          mkdir -p _site
+          cp book/making-lyric-sing.html _site/index.html
+          cp book/logo.svg _site/logo.svg
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
