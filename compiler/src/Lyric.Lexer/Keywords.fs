@@ -18,6 +18,7 @@ let spelling (kw: Keyword) : string =
     | KwIf -> "if"              | KwImpl -> "impl"
     | KwImport -> "import"      | KwIn -> "in"
     | KwInout -> "inout"        | KwInterface -> "interface"
+    | KwInternal -> "internal"
     | KwInvariant -> "invariant"| KwIs -> "is"
     | KwLet -> "let"            | KwMatch -> "match"
     | KwMut -> "mut"            | KwNot -> "not"
@@ -46,7 +47,7 @@ let all : Keyword list =
       KwEnsures; KwEntry; KwEnum; KwExposed; KwExtern
       KwFalse; KwFixture; KwFor; KwFunc; KwGeneric
       KwIf; KwImpl; KwImport; KwIn; KwInout
-      KwInterface; KwInvariant; KwIs; KwLet; KwMatch
+      KwInternal; KwInterface; KwInvariant; KwIs; KwLet; KwMatch
       KwMut; KwNot; KwOld; KwOpaque; KwOr
       KwOut; KwPackage; KwProperty; KwProtected; KwPub
       KwRecord; KwRequires; KwResult; KwReturn; KwScope

@@ -26,9 +26,16 @@ type ModulePath =
     { Segments: string list
       Span:     Span }
 
-/// `pub` modifier on an item or field. Absent visibility is package-private.
+/// Visibility modifier on an item or field.  Absent visibility is
+/// package-private.  Per `docs/20-project-as-dll.md` §2:
+///   * `Pub`      — visible to all consumers of the published artefact
+///                  (CLR `public`).
+///   * `Internal` — visible to other packages within the same project,
+///                  hidden from external consumers (CLR `assembly`).
+///                  Stage 2c addition.
 type Visibility =
-    | Pub of Span
+    | Pub      of Span
+    | Internal of Span
 
 /// A `///` or `//!` doc comment. The `IsModule` flag distinguishes the
 /// two forms; payload is the comment text without the leading slashes.

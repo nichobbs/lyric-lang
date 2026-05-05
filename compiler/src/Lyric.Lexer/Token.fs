@@ -21,7 +21,7 @@ type Keyword =
     | KwEnsures | KwEntry | KwEnum | KwExposed | KwExtern
     | KwFalse | KwFixture | KwFor | KwFunc | KwGeneric
     | KwIf | KwImpl | KwImport | KwIn | KwInout
-    | KwInterface | KwInvariant | KwIs | KwLet | KwMatch
+    | KwInternal | KwInterface | KwInvariant | KwIs | KwLet | KwMatch
     | KwMut | KwNot | KwOld | KwOpaque | KwOr
     | KwOut | KwPackage | KwProperty | KwProtected | KwPub
     | KwRecord | KwRequires | KwResult | KwReturn | KwScope

@@ -31,7 +31,8 @@ bind        case         do           else         end
 ensures     entry        enum         exposed      extern
 false       fixture      for          func         generic
 if          impl         import       in           inout
-interface   invariant    is           let          match
+internal    interface    invariant    is           let
+match
 mut         not          old          opaque       or
 out         package      property     protected    pub
 record      requires     result       return       scope
@@ -404,15 +405,27 @@ Multiple inheritance of interfaces is permitted; diamond conflicts are resolved 
 
 ## 3. Visibility
 
-### 3.1 The `pub` keyword
+### 3.1 Visibility tiers
 
-By default, all declarations are package-private (visible only within the same package). The `pub` keyword exposes a declaration as part of the package's contract:
+Three visibility tiers are recognised:
+
+| Modifier | Cross-project surface | Cross-package surface inside the project | Package-internal |
+|---|---|---|---|
+| `pub` | Visible | Visible | Visible |
+| `internal` | Hidden | Visible | Visible |
+| (unmarked) | Hidden | Hidden | Visible |
+
+By default, declarations are package-private (visible only within the same package). The `pub` keyword exposes a declaration as part of the package's external contract; the `internal` keyword (Phase 5 §M5.1 stage 2c addition) exposes it across packages within the same project but hides it from external consumers.
 
 ```
 pub type AccountId = Long range 0 ..= MAX_ACCOUNT_ID
 pub func openAccount(owner: in CustomerId): AccountId
 
-func internalHelper(x: in Int): Int     // package-private
+internal func projectVisible(x: in Int): Int   // visible to other
+                                                // packages in this project,
+                                                // hidden from consumers
+
+func packagePrivate(x: in Int): Int             // package-private
 ```
 
 For records:
@@ -421,13 +434,16 @@ For records:
 pub record Customer {
   pub id: CustomerId          // visible field
   pub email: Email
+  internal billingId: Long    // cross-package within project
   internalNotes: String       // package-private field
 }
 ```
 
 A `pub` record may have non-`pub` fields, but constructing the record from outside the package requires every field to be `pub`. Outside callers use a constructor function the package provides.
 
-For opaque types, `pub opaque type T` exposes the type's existence but not its representation. The fields inside `opaque type T { ... }` are always invisible to clients, regardless of `pub` markers.
+For opaque types, `pub opaque type T` exposes the type's existence but not its representation. The fields inside `opaque type T { ... }` are always invisible to clients, regardless of `pub`/`internal` markers.
+
+`internal` symbols are excluded from the `Lyric.Contract` resource embedded in published DLLs (per §3.3) — downstream consumers reading the contract see only the `pub` surface. Internal-to-internal references resolve through the in-process symbol table when the project is built as a single DLL (per `docs/20-project-as-dll.md`); the tier is principally useful when paired with `output = "single"` mode.
 
 ### 3.2 Test-module access
 

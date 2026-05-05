@@ -36,7 +36,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2a' — B0010 / B0011 / B0012 multi-file conflict diagnostics | **Shipped** | D-progress-095 |
 | M5.1 stage 2b — split lexer into reusable `Lyric.Lexer` library | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2b' — codegen polish: EIf merge-balance + tuple/field TypeBuilder paths | **Shipped** (PR #127) | D-progress-095 |
-| M5.1 stage 2c — project-as-DLL bundling per `docs/20-project-as-dll.md` (adds `internal` keyword) | Designed; not shipped | — |
+| M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (this branch) | D-progress-096 |
+| M5.1 stage 2c.2 — project-as-DLL bundling per `docs/20-project-as-dll.md` | Designed; in progress | — |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -158,6 +159,65 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-096: M5.1 stage 2c.1 — `internal` visibility tier
+
+*claude/internal-visibility-tier branch.*  Lands the language-level
+half of stage 2c per `docs/20-project-as-dll.md` §2: a third
+visibility tier between `pub` and package-private, marking symbols
+that are visible to other packages within the same project but
+hidden from cross-project consumers.
+
+**Lexer.**  `internal` becomes a reserved keyword via `KwInternal`
+(added to `Token.fs`, `Keywords.fs`'s `spelling` / `all` table, and
+`docs/grammar.ebnf` §1.5).
+
+**Parser + AST.**  `Visibility` gains an `Internal of Span` case
+alongside the existing `Pub of Span`.  Three places in `Parser.fs`
+that consumed `pub` extend to also accept `internal`: the top-level
+item-prefix loop, record/struct field parsing, and entry-decl
+parsing.  Protected-type members and `pub use` re-exports stay
+`pub`-only (intentional — internal members of protected types
+have the same lifetime concerns as cross-await `var` capture, and
+re-exporting an internal symbol would leak the project boundary).
+
+**Contract metadata.**  `ContractMeta.isPub` was previously truthy
+for any `Some _`; now it requires `Some (Pub _)` specifically.
+`internal` and package-private items both stop appearing in the
+`Lyric.Contract` resource — exactly the cross-project policy
+documented in §3.3 of the language reference.
+
+**Codegen.**  Stays at `MethodAttributes.Public` /
+`TypeAttributes.Public` for both `pub` and `internal` items in the
+current per-package-DLL world.  Once `output = "single"` ships
+(stage 2c.2), the emit driver picks `assembly` for `internal` and
+`public` for `pub`; until then, the contract resource is the gate.
+
+**Tests.**
+
+* `compiler/tests/Lyric.Lexer.Tests/KeywordTests.fs` automatically
+  covers the new keyword via `Keywords.all` round-trip.
+* New parser test `[internal visibility parses on funcs, records,
+  and fields]` asserts the AST shape across all three positions
+  the parser was extended for.
+* New emitter test `[internal items are excluded from contract]`
+  builds a package with mixed `pub` / `internal` / unmarked
+  declarations and verifies only `pub` names appear in the embedded
+  `Lyric.Contract` resource.
+
+**Doc updates.**
+
+* `docs/01-language-reference.md` §1.3 reserved-keyword list adds
+  `internal`; §3.1 is rewritten as "Visibility tiers" with the
+  three-tier table and example block showing the new modifier.
+* `docs/grammar.ebnf` §1.5 adds `'internal'` to the keyword list.
+* `docs/10-bootstrap-progress.md` Phase 5 status table splits stage
+  2c into 2c.1 (this branch) + 2c.2 (project-as-DLL bundling, still
+  pending).
+
+**Future work.**  Single-DLL emit (`output = "single"`),
+`[project]` in `lyric.toml`, per-package contract resources in one
+bundled DLL, and `lyric publish` updates land in stage 2c.2.
 
 ### D-progress-095: M5.1 stage 2a' — multi-file conflict diagnostics
 

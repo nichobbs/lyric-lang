@@ -2471,7 +2471,10 @@ and private parseFieldDecl
     let vis =
         match Cursor.tryEatKeyword KwPub cursor with
         | Some t -> Some (Pub t.Span)
-        | None -> None
+        | None ->
+            match Cursor.tryEatKeyword KwInternal cursor with
+            | Some t -> Some (Internal t.Span)
+            | None   -> None
     let name, nameSpan = readIdent cursor diags "field"
     match Cursor.tryEatPunct Colon cursor with
     | Some _ -> ()
@@ -3269,7 +3272,10 @@ and private parseEntryDecl
     let vis =
         match Cursor.tryEatKeyword KwPub cursor with
         | Some t -> Some (Pub t.Span)
-        | None -> None
+        | None ->
+            match Cursor.tryEatKeyword KwInternal cursor with
+            | Some t -> Some (Internal t.Span)
+            | None   -> None
     let entryTok = Cursor.advance cursor   // 'entry'
     let name, _ = readIdent cursor diags "entry"
     let parameters = parseParamList cursor diags
@@ -3855,6 +3861,9 @@ and private parseItem
             | TKeyword KwPub when vis.IsNone ->
                 let t = Cursor.advance cursor
                 vis <- Some (Pub t.Span)
+            | TKeyword KwInternal when vis.IsNone ->
+                let t = Cursor.advance cursor
+                vis <- Some (Internal t.Span)
             | TKeyword KwGeneric when genericsPrefix.IsNone ->
                 genericsPrefix <- parseGenericParamsOpt cursor diags
             | TPunct At ->
