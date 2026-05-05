@@ -2239,6 +2239,7 @@ let private emitFunctionBody
         (selfType: System.Type option)
         (programType: TypeBuilder)
         (symbols: SymbolTable)
+        (consts: Dictionary<string, int64>)
         (diags: ResizeArray<Diagnostic>) : unit =
     let il = mb.GetILGenerator()
     // For an async function the *body* still computes a value of
@@ -2324,7 +2325,7 @@ let private emitFunctionBody
             interfaces impls distinctTypes protectedTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes externTypeNames
-            effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup diags
+            effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup consts diags
     // Populate SmFields from the SM's parameter fields so EPath
     // reads / SAssign writes route through `Ldarg.0; Ldfld <field>`
     // instead of the regular `Ldarg N` parameter slot path.
@@ -3303,6 +3304,24 @@ let private emitAssembly
             funcSigsTable.[fn.Name]  <- sg
             funcSigsTable.[arityKey] <- sg
 
+        // Fold `pub val` / `pub const` integer constants so they can
+        // be referenced by name inside function bodies (e.g. ACC_PUBLIC).
+        let constsTable = Dictionary<string, int64>()
+        for it in sf.Items do
+            match it.Kind with
+            | IVal v ->
+                match v.Pattern.Kind with
+                | PBinding (name, _) ->
+                    match Lyric.TypeChecker.ConstFold.tryFoldInt symbols v.Init with
+                    | Ok n  -> constsTable.[name] <- n
+                    | Error _ -> ()
+                | _ -> ()
+            | IConst c ->
+                match Lyric.TypeChecker.ConstFold.tryFoldInt symbols c.Init with
+                | Ok n  -> constsTable.[c.Name] <- n
+                | Error _ -> ()
+            | _ -> ()
+
         // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
         // attach interface methods to Bar's TypeBuilder, both as
         // method headers and as interface implementations via
@@ -3592,7 +3611,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols codegenDiags
+                    programTy symbols constsTable codegenDiags
                 smTypesToFinalize.Add sm.Type
             elif phaseBSpecOpt.IsSome then
                 // Phase B: real `AwaitUnsafeOnCompleted` suspend/resume
@@ -3685,7 +3704,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols codegenDiags
+                    programTy symbols constsTable codegenDiags
                 // Dispatch.
                 il.MarkLabel(dispatchLabel)
                 il.Emit(OpCodes.Ldarg_0)
@@ -3731,7 +3750,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols codegenDiags
+                    programTy symbols constsTable codegenDiags
 
         // Pass B.5 — emit impl-method bodies as instance methods.
         // Async impl methods route through the SM path the same way
@@ -3805,7 +3824,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols codegenDiags
+                    programTy symbols constsTable codegenDiags
                 smTypesToFinalize.Add sm.Type
             elif phaseBSpecOpt.IsSome then
                 // Phase B for impl methods — same shape as the
@@ -3867,7 +3886,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols codegenDiags
+                    programTy symbols constsTable codegenDiags
                 il.MarkLabel(dispatchLabel)
                 il.Emit(OpCodes.Ldarg_0)
                 il.Emit(OpCodes.Ldfld, sm.State)
@@ -3909,7 +3928,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     true
-                    (Option.ofObj selfTy) programTy symbols codegenDiags
+                    (Option.ofObj selfTy) programTy symbols constsTable codegenDiags
 
         // Pass B.6 — emit protected-type method bodies (D-progress-079).
         //
@@ -3937,7 +3956,7 @@ let private emitAssembly
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable externTypeNames
                 true
-                (Some (p.Owner.Type :> System.Type)) programTy symbols codegenDiags
+                (Some (p.Owner.Type :> System.Type)) programTy symbols constsTable codegenDiags
 
             // Emit the public wrapper.  Pattern (with barriers +
             // invariants from D-progress-079 follow-ups):
@@ -3988,7 +4007,7 @@ let private emitAssembly
                     importedFuncTable importedDistinctTypeTable
                     externTypeNames
                     true (Some (p.Owner.Type :> System.Type))
-                    programTy wrapResolveType lookup codegenDiags
+                    programTy wrapResolveType lookup constsTable codegenDiags
 
             // Generic-type self-references: when emitting IL inside a
             // generic class, member references (Ldfld <>__lock,
@@ -4164,7 +4183,7 @@ let private emitAssembly
                         importedFuncTable importedDistinctTypeTable
                         externTypeNames
                         true (Some (cp.Owner.Type :> System.Type))
-                        programTy resolveTypeForCtorCtx lookup codegenDiags
+                        programTy resolveTypeForCtorCtx lookup constsTable codegenDiags
                 for (name, fb, expr) in cp.Initializers do
                     cil.Emit(OpCodes.Ldarg_0)
                     let _ = Codegen.emitExpr ctorCtx expr
@@ -4268,27 +4287,31 @@ let private segmentToFileBase (seg: string) : string =
         sb.Append(System.Char.ToLowerInvariant c) |> ignore)
     sb.ToString()
 
-/// Walk up the directory tree from `startDir` looking for the `.l`
-/// file backing the given `Std.X[.Y…]` package.
-/// Locate the `.l` source for a stdlib package segment list.
+/// True for any top-level package whose source lives under `lyric/<head.lower>/`
+/// in the source tree.  Add new built-in top-level packages here.
+let private isBuiltinHead (head: string) : bool =
+    head = "Std" || head = "Jvm"
+
+/// Locate the `.l` source for any built-in package (Std.*, Jvm.*, …).
 /// Search order:
-///   1. `LYRIC_STD_PATH` env var, if set — allows installed/out-of-tree setups.
+///   1. Package-specific env-var override: `LYRIC_STD_PATH` for `Std`,
+///      `LYRIC_JVM_PATH` for `Jvm`, `LYRIC_<HEAD>_PATH` for others.
 ///   2. Walk up the directory tree from `startDir` (the CLI binary's base
-///      directory) looking for a `stdlib/std/` subdirectory — works when the
-///      binary lives inside the source tree.
+///      directory).  For `Std.*` look for `stdlib/std/`; for other
+///      builtins look for `lyric/<head.lower>/`.  Works when the binary
+///      lives inside the source tree.
 ///
-/// Within each candidate stdlib directory, look first at the top level
-/// (`lyric/std/<file>`) and then in the kernel boundary
-/// (`lyric/std/_kernel/<file>`) per `docs/14-native-stdlib-plan.md`
-/// §6 P0/4. Top-level wins on collision so a future native rewrite of
-/// a kernel module shadows the old extern surface without manual cleanup.
-let private locateStdlibFile
+/// Within each candidate directory, look first at the top level
+/// (`.../<file>`) and then in the kernel boundary
+/// (`.../_kernel/<file>`).  Top-level wins on collision.
+let private locateBuiltinFile
         (startDir: string)
         (segments: string list) : string option =
     let firstExisting (paths: string list) : string option =
         paths |> List.tryFind File.Exists
     match segments with
-    | "Std" :: rest when not (List.isEmpty rest) ->
+    | head :: rest when not (List.isEmpty rest) ->
+        let dirName = head.ToLower()
         let baseName =
             rest
             |> List.map segmentToFileBase
@@ -4297,22 +4320,33 @@ let private locateStdlibFile
         let candidatesIn (root: string) : string list =
             [ Path.Combine(root, fileName)
               Path.Combine(root, "_kernel", fileName) ]
-        // 1) LYRIC_STD_PATH override.
+        // 1) Package-specific env-var override.
+        let envVar =
+            match head with
+            | "Std" -> "LYRIC_STD_PATH"
+            | h     -> sprintf "LYRIC_%s_PATH" (h.ToUpper())
         let envHit =
-            match Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_STD_PATH") with
+            match Option.ofObj (System.Environment.GetEnvironmentVariable envVar) with
             | Some p -> firstExisting (candidatesIn p)
             | None   -> None
         match envHit with
         | Some _ -> envHit
         | None ->
-            // 2) Walk up from the binary's base directory.
+            // 2) Walk up from the binary's base directory.  Std.* now
+            // lives under `stdlib/std/` (extracted out of the compiler
+            // tree); other builtins (e.g. Jvm.*) still live under
+            // `compiler/lyric/<head>/`.
             let mutable dir = Some (DirectoryInfo(startDir))
             let mutable found : string option = None
             while found.IsNone && dir.IsSome do
                 let d = dir.Value
-                let stdRoot = Path.Combine(d.FullName, "stdlib", "std")
-                if Directory.Exists stdRoot then
-                    found <- firstExisting (candidatesIn stdRoot)
+                let pkgRoot =
+                    if head = "Std" then
+                        Path.Combine(d.FullName, "stdlib", "std")
+                    else
+                        Path.Combine(d.FullName, "lyric", dirName)
+                if Directory.Exists pkgRoot then
+                    found <- firstExisting (candidatesIn pkgRoot)
                 dir <- d.Parent |> Option.ofObj
             found
     | _ -> None
@@ -4328,7 +4362,7 @@ let rec private ensureStdlibArtifact
         match stdlibArtifactCache.TryGetValue key with
         | true, a -> Ok a
         | _ ->
-            match locateStdlibFile AppContext.BaseDirectory segments with
+            match locateBuiltinFile AppContext.BaseDirectory segments with
             | None ->
                 let zeroSpan = Span.make Position.initial Position.initial
                 Error [ err "E900"
@@ -4337,7 +4371,7 @@ let rec private ensureStdlibArtifact
             | Some path ->
                 let src = File.ReadAllText path
                 let parsed = parse src
-                // Recursively compile every `Std.X` import the source
+                // Recursively compile every builtin import the source
                 // declares, so they're cached before this module emits.
                 // Std.Core is auto-included even when not declared so
                 // every stdlib module can rely on `Result` / `Option`.
@@ -4345,7 +4379,7 @@ let rec private ensureStdlibArtifact
                     parsed.File.Imports
                     |> List.choose (fun i ->
                         match i.Path.Segments with
-                        | "Std" :: _ when i.Path.Segments <> segments ->
+                        | head :: _ when isBuiltinHead head && i.Path.Segments <> segments ->
                             Some i.Path.Segments
                         | _ -> None)
                 let allDeps =
@@ -4374,7 +4408,7 @@ let rec private ensureStdlibArtifact
                                     a.Source.Imports
                                     |> List.choose (fun i ->
                                         match i.Path.Segments with
-                                        | "Std" :: _ when i.Path.Segments <> segments ->
+                                        | head :: _ when isBuiltinHead head && i.Path.Segments <> segments ->
                                             Some i.Path.Segments
                                         | _ -> None)
                                 for d in nestedDeps do walk d
@@ -4385,10 +4419,10 @@ let rec private ensureStdlibArtifact
                     List.ofSeq ordered
                 if not depDiags.IsEmpty then Error depDiags
                 else
-                    // Strip the cross-stdlib imports — they're handled
-                    // by the artifact list, not the user-side
-                    // `Item list` re-registration.  Non-`Std.*` imports
-                    // (e.g. axiom externs to System.*) flow through.
+                    // Strip all builtin imports — they're handled by the
+                    // artifact list, not the user-side `Item list`
+                    // re-registration.  Non-builtin imports (e.g. axiom
+                    // externs to System.*) flow through.
                     let stripped =
                         let sf = parsed.File
                         { sf with
@@ -4396,14 +4430,17 @@ let rec private ensureStdlibArtifact
                                 sf.Imports
                                 |> List.filter (fun i ->
                                     match i.Path.Segments with
-                                    | "Std" :: _ -> false
+                                    | head :: _ when isBuiltinHead head -> false
                                     | _ -> true) }
                     let importedItems =
                         depArtifacts |> List.collect (fun a -> a.Source.Items)
                     let checked' =
                         Lyric.TypeChecker.Checker.checkWithImports stripped importedItems
                     let assemblyName =
-                        "Lyric.Stdlib." + (List.tail segments |> String.concat "")
+                        match segments with
+                        | "Std" :: rest -> "Lyric.Stdlib." + String.concat "" rest
+                        | head :: rest  -> sprintf "Lyric.%s.%s" head (String.concat "" rest)
+                        | []            -> "Lyric.Unknown"
                     let outPath = Path.Combine(stdlibCacheDir, assemblyName + ".dll")
                     let req =
                         { Source           = src
@@ -4414,7 +4451,7 @@ let rec private ensureStdlibArtifact
                         parsed.File.Imports
                         |> List.filter (fun i ->
                             match i.Path.Segments with
-                            | "Std" :: _ -> true
+                            | head :: _ when isBuiltinHead head -> true
                             | _ -> false)
                     let emitDiags =
                         emitAssembly
@@ -4482,10 +4519,11 @@ let stdlibAssemblyPaths () : string list =
         |> Seq.map (fun a -> a.AssemblyPath)
         |> List.ofSeq)
 
-/// Resolve `import Std.X` declarations: walk the dependency closure,
-/// compile what's missing, and hand the artifact list + their parsed
-/// items to the type checker / emitter.  The user's `SourceFile.Items`
-/// is left unchanged; only `Std.*` imports are stripped.
+/// Resolve `import Std.X` / `import Jvm.X` (and any other built-in package)
+/// declarations: walk the dependency closure, compile what's missing, and hand
+/// the artifact list + their parsed items to the type checker / emitter.  The
+/// user's `SourceFile.Items` is left unchanged; only builtin imports are
+/// stripped.
 let private resolveStdlibImports
         (sf: SourceFile)
         : SourceFile * Item list * StdlibArtifact list * ImportDecl list * Diagnostic list =
@@ -4493,7 +4531,7 @@ let private resolveStdlibImports
         sf.Imports
         |> List.partition (fun i ->
             match i.Path.Segments with
-            | "Std" :: _ -> true
+            | head :: _ when isBuiltinHead head -> true
             | _ -> false)
     if stdImports.IsEmpty then sf, [], [], [], []
     else
@@ -4512,7 +4550,7 @@ let private resolveStdlibImports
                         a.Source.Imports
                         |> List.choose (fun i ->
                             match i.Path.Segments with
-                            | "Std" :: _ -> Some i.Path.Segments
+                            | head :: _ when isBuiltinHead head -> Some i.Path.Segments
                             | _ -> None)
                     // Auto-add Std.Core since `ensureStdlibArtifact`
                     // does — the user-visible item list needs it too.

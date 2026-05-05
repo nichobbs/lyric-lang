@@ -258,57 +258,57 @@ pub val T_LONG    : Int = 11
 // Labels are strings (unique within a method); branch instructions
 // target a label name rather than a raw offset (resolved in pass 2).
 
-pub sealed union AsmInsn {
+pub union AsmInsn {
   // Pseudo-instruction: defines a label at the current offset.
-  Label(name: String)
+  case Label(name: String)
 
   // Nullary opcodes (no operands).
-  Nullary(op: Int)
+  case Nullary(op: Int)
 
   // Opcodes with a single u1 immediate (e.g. bipush, newarray).
-  U1(op: Int, imm: Int)
+  case U1(op: Int, imm: Int)
 
   // Opcodes with a single u2 immediate (e.g. sipush, ldc_w).
-  U2(op: Int, imm: Int)
+  case U2(op: Int, imm: Int)
 
   // Opcodes with a u1 local-variable index (iload, astore, …).
-  LocalU1(op: Int, slot: Int)
+  case LocalU1(op: Int, slot: Int)
 
   // Opcodes with a u2 local-variable index (wide form).
-  LocalU2Wide(op: Int, slot: Int)
+  case LocalU2Wide(op: Int, slot: Int)
 
   // iinc: u1 index + i8 constant (or wide: u2 index + i16 constant).
-  Iinc(slot: Int, delta: Int)
+  case Iinc(slot: Int, delta: Int)
 
   // Field/method reference: opcode + u2 pool index.
-  Ref(op: Int, classIdx: Int, natIdx: Int)
+  case Ref(op: Int, classIdx: Int, natIdx: Int)
 
   // invokeinterface: opcode + u2 index + u1 count + u1 zero.
-  InvokeInterface(classIdx: Int, natIdx: Int, argCount: Int)
+  case InvokeInterface(classIdx: Int, natIdx: Int, argCount: Int)
 
   // invokedynamic: u2 index + u2 zero.
-  InvokeDynamic(dynIdx: Int)
+  case InvokeDynamic(dynIdx: Int)
 
   // Branch: opcode + label name (resolved to i16 offset in pass 2).
-  Branch(op: Int, label: String)
+  case Branch(op: Int, label: String)
 
   // goto_w: label name (resolved to i32 offset).
-  GotoW(label: String)
+  case GotoW(label: String)
 
   // new / checkcast / instanceof: u2 class pool index.
-  ClassRef(op: Int, classIdx: Int)
+  case ClassRef(op: Int, classIdx: Int)
 
   // newarray: u1 element type code.
-  NewArray(typeCode: Int)
+  case NewArray(typeCode: Int)
 
   // anewarray / multianewarray.
-  ANewArray(classIdx: Int)
-  MultiANewArray(classIdx: Int, dims: Int)
+  case ANewArray(classIdx: Int)
+  case MultiANewArray(classIdx: Int, dims: Int)
 
   // ldc (u1 pool index ≤ 255) vs ldc_w (u2 index).
-  Ldc(poolIdx: Int)
-  LdcW(poolIdx: Int)
-  Ldc2W(poolIdx: Int)   // long / double constants
+  case Ldc(poolIdx: Int)
+  case LdcW(poolIdx: Int)
+  case Ldc2W(poolIdx: Int)   // long / double constants
 }
 
 // ── MethodAssembler ───────────────────────────────────────────────────────────
@@ -345,7 +345,7 @@ func insnSize(insn: in AsmInsn): Int {
     case LocalU1(_, _)           -> 2
     case LocalU2Wide(_, _)       -> 4       // wide + op + u2
     case Iinc(slot, delta)       ->
-      if slot <= 255 && delta >= -128 && delta <= 127 then 3   // op + u1 + i8
+      if slot <= 255 and delta >= -128 and delta <= 127 then 3   // op + u1 + i8
       else 6                                                    // wide + op + u2 + i16
     case Ref(_, _, _)            -> 3       // op + u2 (pool index is a single u2
                                             //   computed from classIdx; see emitInsn2)
@@ -367,12 +367,12 @@ func insnSize(insn: in AsmInsn): Int {
 
 // Pass 1: walk the instruction list and build a label→offset map.
 func buildLabelMap(insns: in List[AsmInsn]): Map[String, Int] {
-  val labels = newMap[String, Int]()
+  val labels: Map[String, Int] = newMap()
   var offset  = 0
   for insn in insns.toArray() {
     match insn {
       case Label(name) -> labels.add(name, offset)
-      case _           -> offset = offset + insnSize(insn)
+      case _           -> { offset = offset + insnSize(insn) }
     }
   }
   labels
@@ -429,7 +429,7 @@ func emitAllInsns(
       }
 
       case Iinc(slot, delta) -> {
-        if slot <= 255 && delta >= -128 && delta <= 127 {
+        if slot <= 255 and delta >= -128 and delta <= 127 {
           writerByte(buf, OP_IINC)
           writerByte(buf, slot)
           writerByte(buf, delta)      // signed byte, but writerByte masks low 8 bits
@@ -609,11 +609,11 @@ pub func emitSipush(asm: in MethodAssembler, v: in Int): Unit {
 
 /// Push an integer constant using the smallest encoding.
 pub func emitPushInt(asm: in MethodAssembler, v: in Int): Unit {
-  if v >= -1 && v <= 5 {
+  if v >= -1 and v <= 5 {
     emitIconst(asm, v)
-  } else if v >= -128 && v <= 127 {
+  } else if v >= -128 and v <= 127 {
     emitBipush(asm, v)
-  } else if v >= -32768 && v <= 32767 {
+  } else if v >= -32768 and v <= 32767 {
     emitSipush(asm, v)
   } else {
     emitInsn(asm, Ldc(poolIdx = poolInteger(asm.pool, v)))

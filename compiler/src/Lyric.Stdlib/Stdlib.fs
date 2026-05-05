@@ -1055,6 +1055,21 @@ type FileHost private () =
             ""
         with e -> e.GetType().Name + ": " + e.Message
 
+    /// Write raw bytes to `path` (overwriting if it exists).  Returns
+    /// true on success, false if the host call threw.
+    static member WriteBytesIsValid (path: string, bytes: System.Collections.Generic.List<byte>) : bool =
+        try
+            System.IO.File.WriteAllBytes(path, bytes.ToArray())
+            true
+        with _ -> false
+
+    /// Diagnostic message paired with `WriteBytesIsValid`.
+    static member WriteBytesError (path: string, bytes: System.Collections.Generic.List<byte>) : string =
+        try
+            System.IO.File.WriteAllBytes(path, bytes.ToArray())
+            ""
+        with e -> e.GetType().Name + ": " + e.Message
+
     /// Probe whether `path` names an existing directory.
     static member DirectoryExists (path: string) : bool =
         try System.IO.Directory.Exists(path)
