@@ -3168,6 +3168,24 @@ let private emitAssembly
                             |> Option.bind Symbol.typeIdOpt
                             |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
                 | _ -> ()
+            // Protected types — populate typeIdToClr so cross-package
+            // references to a `protected type` (e.g. `StubCounter` from
+            // `Std.Testing.Mocking`) resolve to the correct CLR type.
+            // No method table is needed: callers go through wrapper
+            // functions in the same package, not direct method dispatch.
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IProtected pd ->
+                    match getType (qualify pd.Name) with
+                    | None -> ()
+                    | Some ty ->
+                        symbols.TryFind pd.Name
+                        |> Seq.tryHead
+                        |> Option.bind Symbol.typeIdOpt
+                        |> Option.iter (fun tid ->
+                            if not (typeIdToClr.ContainsKey tid) then
+                                typeIdToClr.[tid] <- ty)
+                | _ -> ()
             // Functions — every IFunc lives as a static method on the
             // stdlib's `<Pkg>.Program` type.  We pair the MethodInfo
             // with the artifact's resolved signature so call-site
