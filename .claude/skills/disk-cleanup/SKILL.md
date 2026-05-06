@@ -62,7 +62,7 @@ without the `ENOSPC` error).
 
 ### Phase 2 — bulk reclaim with Bash
 
-Once Bash initialises, run the two commands that actually free
+Once Bash initialises, run the commands that actually free
 material space:
 
 ```bash
@@ -71,6 +71,16 @@ find compiler -type d \( -name bin -o -name obj \) -exec rm -rf {} +
 
 `bin/` and `obj/` together are typically the largest single
 contributor; `dotnet build Lyric.sln` repopulates them on demand.
+
+The emitter test suite also leaves a separate cache under
+`/tmp/lyric-emit-<label>-<guid>/` — one directory per
+`compileAndRun` invocation, with the staged stdlib + Jvm hosts
+copied into each.  These can grow to multi-GB quickly when many
+tests run; reclaim them with:
+
+```bash
+find /tmp -maxdepth 1 -name 'lyric-emit-*' -type d -exec rm -rf {} +
+```
 
 If the JSONL logs are still bloated, also run:
 
@@ -90,6 +100,38 @@ df -h /
 Expect `Use%` back below 50%.  Then re-run whatever build / test
 step ENOSPC interrupted; the regenerated `bin/`/`obj/` will be
 fresh artefacts, not stale ones.
+
+### When `df` and `du` disagree (deleted-but-still-open files)
+
+If `df -h /` reports the root filesystem near 100% but
+`du -xh --max-depth=1 /` only sums to a fraction of that, the
+gap is almost certainly **deleted-but-still-open files** — files
+unlinked while a process still holds them open.  ext4's reserved
+blocks (~5%) explain a few GB but never tens of GB.  Diagnose
+with:
+
+```bash
+sudo lsof +L1                    # files with link count 0 (deleted, still open)
+sudo lsof -nP | grep '(deleted)' # alternative
+```
+
+Common culprits: a service writing to a log that was rotated /
+removed without a reload, a long-running container holding a
+deleted volume file, or `nohup.out` that was `rm`'d.  Sort the
+output by size to find the offender.
+
+Two ways to reclaim:
+
+1. **Restart the holding process.**  Closes the FD; the kernel
+   then frees the inode and its blocks.
+2. **Truncate via `/proc`** when restart isn't possible:
+   ```bash
+   sudo truncate -s 0 /proc/<pid>/fd/<n>
+   ```
+
+Confirm the on-disk side really sums to what `du` reports with
+`du -xh --max-depth=1 / 2>/dev/null | sort -h`; if that matches
+and `df` doesn't, deleted-open files are definitively the cause.
 
 ## Out of scope
 

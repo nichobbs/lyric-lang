@@ -16,8 +16,7 @@ let tests =
     <| testList "Lyric.Contract embedded resource (D-progress-031)" [
 
         testCase "[contract resource is embedded in every emitted DLL]" <| fun () ->
-            let r, _, _, exitCode =
-                compileAndRun "ContractA" """
+            let src = """
 package MyApp
 
 @derive(Json)
@@ -31,25 +30,25 @@ func main(): Unit {
   println(greet(User(name = "Alice", age = 30)))
 }
 """
-            Expect.equal exitCode 0 "build + run"
-            match r.OutputPath with
-            | None -> failtest "no output path"
-            | Some p ->
-                match ContractMeta.readFromAssembly p with
-                | None -> failtest "Lyric.Contract resource not embedded"
-                | Some json ->
-                    Expect.stringContains json "\"packageName\": \"MyApp\""
-                        "package name in contract"
-                    Expect.stringContains json "\"name\":\"User\""
-                        "User record in contract"
-                    Expect.stringContains json "\"name\":\"greet\""
-                        "greet function in contract"
-                    Expect.stringContains json "\"name\":\"User.toJson\""
-                        "synthesised toJson appears as a pub func"
+            compileAndRunWith "ContractA" src (fun (r, _, _, exitCode) ->
+                Expect.equal exitCode 0 "build + run"
+                match r.OutputPath with
+                | None -> failtest "no output path"
+                | Some p ->
+                    match ContractMeta.readFromAssembly p with
+                    | None -> failtest "Lyric.Contract resource not embedded"
+                    | Some json ->
+                        Expect.stringContains json "\"packageName\": \"MyApp\""
+                            "package name in contract"
+                        Expect.stringContains json "\"name\":\"User\""
+                            "User record in contract"
+                        Expect.stringContains json "\"name\":\"greet\""
+                            "greet function in contract"
+                        Expect.stringContains json "\"name\":\"User.toJson\""
+                            "synthesised toJson appears as a pub func")
 
         testCase "[non-pub items are excluded]" <| fun () ->
-            let r, _, _, _ =
-                compileAndRun "ContractB" """
+            let src = """
 package Hidden
 
 pub record Visible { x: Int }
@@ -60,28 +59,28 @@ func helper(i: in HiddenRec): Int { i.y }
 
 func main(): Unit { println(shown(Visible(x = 1))) }
 """
-            match r.OutputPath with
-            | None -> failtest "no output path"
-            | Some p ->
-                match ContractMeta.readFromAssembly p with
-                | None -> failtest "Lyric.Contract resource not embedded"
-                | Some json ->
-                    Expect.stringContains json "Visible"
-                        "pub record in contract"
-                    Expect.stringContains json "shown"
-                        "pub func in contract"
-                    Expect.isFalse (json.Contains "HiddenRec")
-                        "package-private record absent"
-                    Expect.isFalse (json.Contains "helper")
-                        "package-private func absent"
+            compileAndRunWith "ContractB" src (fun (r, _, _, _) ->
+                match r.OutputPath with
+                | None -> failtest "no output path"
+                | Some p ->
+                    match ContractMeta.readFromAssembly p with
+                    | None -> failtest "Lyric.Contract resource not embedded"
+                    | Some json ->
+                        Expect.stringContains json "Visible"
+                            "pub record in contract"
+                        Expect.stringContains json "shown"
+                            "pub func in contract"
+                        Expect.isFalse (json.Contains "HiddenRec")
+                            "package-private record absent"
+                        Expect.isFalse (json.Contains "helper")
+                            "package-private func absent")
 
         // Stage 2c: `internal` items live in the package symbol
         // table but are excluded from the contract resource — same
         // policy as package-private but with cross-package
         // visibility within the project once project-as-DLL ships.
         testCase "[internal items are excluded from contract]" <| fun () ->
-            let r, _, _, _ =
-                compileAndRun "ContractInternal" """
+            let src = """
 package Mixed
 
 pub record VisibleRec { x: Int }
@@ -92,20 +91,21 @@ internal func internalHelper(i: in InternalRec): Int { i.y }
 
 func main(): Unit { println(shown(VisibleRec(x = 1))) }
 """
-            match r.OutputPath with
-            | None -> failtest "no output path"
-            | Some p ->
-                match ContractMeta.readFromAssembly p with
-                | None -> failtest "Lyric.Contract resource not embedded"
-                | Some json ->
-                    Expect.stringContains json "VisibleRec"
-                        "pub record in contract"
-                    Expect.stringContains json "shown"
-                        "pub func in contract"
-                    Expect.isFalse (json.Contains "InternalRec")
-                        "internal record absent from contract"
-                    Expect.isFalse (json.Contains "internalHelper")
-                        "internal func absent from contract"
+            compileAndRunWith "ContractInternal" src (fun (r, _, _, _) ->
+                match r.OutputPath with
+                | None -> failtest "no output path"
+                | Some p ->
+                    match ContractMeta.readFromAssembly p with
+                    | None -> failtest "Lyric.Contract resource not embedded"
+                    | Some json ->
+                        Expect.stringContains json "VisibleRec"
+                            "pub record in contract"
+                        Expect.stringContains json "shown"
+                            "pub func in contract"
+                        Expect.isFalse (json.Contains "InternalRec")
+                            "internal record absent from contract"
+                        Expect.isFalse (json.Contains "internalHelper")
+                            "internal func absent from contract")
 
         testCase "[parseFromJson round-trips toJson]" <| fun () ->
             let original =
