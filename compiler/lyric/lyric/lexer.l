@@ -13,18 +13,17 @@
 // TRawString) plus the InString / InHole mode stack mirror
 // `compiler/src/Lyric.Lexer/Lexer.fs` 1:1.
 //
-// Phase 5 §M5.1 stage 4 (this file): NFC normalisation of identifier
-// lexemes via `System.String.Normalize` (BCL instance method) plus
-// the L0040 reserved-name diagnostic for `_X` identifiers.  The
-// non-ASCII identifier-character acceptance side of stage 4 (full
-// UAX #31 XID_Start / XID_Continue category coverage) is still
-// deferred — it needs a kernel extern for
-// `System.Char.GetUnicodeCategory`, which the audit boundary keeps
-// for a follow-up.
+// Phase 5 §M5.1 stage 4 (this file): full UAX #31 identifier
+// support — NFC normalisation of lexemes via
+// `System.String.Normalize` (BCL instance method), the L0040
+// reserved-name diagnostic for `_X` identifiers, and non-ASCII
+// XID_Start / XID_Continue acceptance via `Std.UnicodeHost`'s
+// `System.Char.GetUnicodeCategory` extern.  The category integers
+// match `System.Globalization.UnicodeCategory`'s enum ordering;
+// see `compiler/lyric/std/_kernel/unicode_host.l` for the constants.
 //
 // Scope still deferred:
 //   * Non-BMP `\u{…}` escapes (would need a wider TChar payload).
-//   * Non-ASCII identifier characters (UAX #31 XID_Start/Continue).
 //
 // Everything else from the F# lexer's grammar §1 implementation lives
 // here: identifiers, the full keyword table, decimal/hex/octal/binary
@@ -39,6 +38,7 @@ package Lyric.Lexer
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.UnicodeHost
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -635,13 +635,53 @@ func isAsciiAlpha(c: in Char): Bool {
 }
 
 @pure
-func isIdStart(c: in Char): Bool {
-  isAsciiAlpha(c) or c == '_'
+func isAscii(c: in Char): Bool {
+  c <= '\u{007F}'
 }
 
+/// UAX #31 XID_Start (approximated through .NET's `UnicodeCategory`):
+/// the ASCII fast path covers `[A-Za-z_]`; the non-ASCII path admits
+/// any character whose category is `UppercaseLetter`,
+/// `LowercaseLetter`, `TitlecaseLetter`, `ModifierLetter`,
+/// `OtherLetter`, or `LetterNumber`.  Mirrors the F# bootstrap's
+/// `isIdStart` (compiler/src/Lyric.Lexer/Lexer.fs lines 92-101).
+@pure
+func isIdStart(c: in Char): Bool {
+  if isAscii(c) {
+    isAsciiAlpha(c) or c == '_'
+  } else {
+    val cat = hostUnicodeCategory(c)
+    cat == ucUppercaseLetter()
+      or cat == ucLowercaseLetter()
+      or cat == ucTitlecaseLetter()
+      or cat == ucModifierLetter()
+      or cat == ucOtherLetter()
+      or cat == ucLetterNumber()
+  }
+}
+
+/// UAX #31 XID_Continue: XID_Start plus combining marks
+/// (`NonSpacingMark`, `SpacingCombiningMark`), decimal digits
+/// (`DecimalDigitNumber`), and connector punctuation
+/// (`ConnectorPunctuation` — i.e. `_` and friends).  Mirrors the F#
+/// bootstrap's `isIdContinue` (lines 104-119).
 @pure
 func isIdContinue(c: in Char): Bool {
-  isAsciiAlpha(c) or isDigitChar(c) or c == '_'
+  if isAscii(c) {
+    isAsciiAlpha(c) or isDigitChar(c) or c == '_'
+  } else {
+    val cat = hostUnicodeCategory(c)
+    cat == ucUppercaseLetter()
+      or cat == ucLowercaseLetter()
+      or cat == ucTitlecaseLetter()
+      or cat == ucModifierLetter()
+      or cat == ucOtherLetter()
+      or cat == ucLetterNumber()
+      or cat == ucNonSpacingMark()
+      or cat == ucSpacingCombiningMark()
+      or cat == ucDecimalDigitNumber()
+      or cat == ucConnectorPunctuation()
+  }
 }
 
 /// Map an ASCII digit char to its numeric value 0..15, returning -1

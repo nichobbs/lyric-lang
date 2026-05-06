@@ -61,7 +61,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 2d.v — build-time wiring (auto-discover `_extern/*.l` files, NuGet DLLs in emitter `Assembly.LoadFrom` set, `.deps.json` for runtime resolution, end-to-end smoke) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
-| M5.1 stage 4 (partial) — NFC normalisation + L0040 reserved-name diagnostic in self-hosted lexer (full UAX #31 XID_Start / XID_Continue acceptance still deferred — needs an audited `System.Char.GetUnicodeCategory` extern) | **Shipped** (this branch) | D-progress-120 |
+| M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
 | M5.1 — self-hosted parser | Not shipped | — |
 | M5.1 — self-hosted type checker | Not shipped | — |
 | M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
@@ -179,6 +179,37 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-121: M5.1 stage 4 close-out — UAX #31 acceptance in self-hosted lexer
+
+*claude/m5.1-stages-2d-3-4-8hL4O branch.*  Closes the half of stage
+4 that D-progress-120 deferred: full UAX #31 XID_Start /
+XID_Continue acceptance for non-ASCII identifier characters in the
+self-hosted lexer.
+
+* New audited kernel file `stdlib/std/_kernel/unicode_host.l`
+  exposes `System.Char.GetUnicodeCategory` returning `Int` (the
+  underlying type of `System.Globalization.UnicodeCategory`'s
+  `enum : int32`) plus a small set of `@pure` constant accessors
+  for the categories the lexer cares about:
+  `UppercaseLetter` (0), `LowercaseLetter` (1), `TitlecaseLetter`
+  (2), `ModifierLetter` (3), `OtherLetter` (4), `NonSpacingMark`
+  (5), `SpacingCombiningMark` (6), `DecimalDigitNumber` (8),
+  `LetterNumber` (9), `ConnectorPunctuation` (18).  One new
+  `@externTarget`; `_kernel/` count now 147/150.
+* `compiler/lyric/lyric/lexer.l` `isIdStart` / `isIdContinue` keep
+  the ASCII fast path (`[A-Za-z_]` / `[A-Za-z0-9_]`) and gain a
+  non-ASCII branch that calls `hostUnicodeCategory(c)` and
+  matches the same category set the F# bootstrap does
+  (compiler/src/Lyric.Lexer/Lexer.fs lines 92-119).
+* New helper `isAscii(c) = c <= '\u{007F}'` keeps the dispatch
+  branch readable.
+* Self-test grows by 3 cases — Greek-letter ident, Cyrillic
+  uppercase + lowercase, and `<letter><digit>` continuation.
+
+The kernel-cap check (≤150 `@externTarget`s per platform per the
+audit boundary policy) leaves room for further BCL exposure
+without re-architecting the kernel.
 
 ### D-progress-120: M5.1 stage 4 (partial) — NFC + L0040 in self-hosted lexer
 
