@@ -46,7 +46,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.3 — stdlib-bundle proof: 3-package smoke set compiles via `lyric build --manifest stdlib/lyric.toml`; in-project generic-union ctor + DeclaredOnly reflection fixes | **Shipped** (PR #140) | D-progress-103 |
 | `docs/14` stage P3 — F# shim P3 trio: drop dead `Lyric.Stdlib.Parse`; route `format1..6` through `System.String.Format(string, object[])` (delete F# `Format`); inline-loop renderers in `@derive(Json)` synthesiser for Int/Long/Bool/String slices (delete F# `JsonHost.Render*Slice`, retain only `RenderDoubleSlice`) | **Shipped** (PR #141) | D-progress-104 |
 | `docs/23` G8 — codegen-emitted null-aware `println(any)` / `toString(any)` lowering: F# `Lyric.Stdlib.Console` retired (`PrintlnAny` / `ToStr`) | **Shipped** (PR #145) | D-progress-105 |
-| `docs/23` Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern: kernel boundary now points at `System.Random..ctor` / `System.Threading.CancellationToken{,Source}.*` directly; `nextBool` is native Lyric (`nextIntBelow(rng, 2) != 0`) | **Shipped** (this branch) | D-progress-106 |
+| `docs/23` Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern: kernel boundary now points at `System.Random..ctor` / `System.Threading.CancellationToken{,Source}.*` directly; `nextBool` is native Lyric (`nextIntBelow(rng, 2) != 0`) | **Shipped** (PR #147) | D-progress-106 |
+| `docs/23` Phase 1 (3/3) — Bucket D split: `Jvm*` host helpers (~430 LoC) move from `Lyric.Stdlib` to a new `Lyric.Jvm.Hosts` project; stdlib bundle freed of JVM-only code | **Shipped** (this branch) | D-progress-107 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -223,6 +224,70 @@ exercise every retired CancelHost / RandomHost method.
 **Remaining Phase 1 (per docs/23 §6).** Bucket D split-out — move
 `Jvm*` helpers (~430 LoC) to `compiler/lyric/jvm/`, freeing the
 stdlib bundle from JVM-specific code.
+
+### D-progress-107: Phase 1 (3/3) — Bucket D `Jvm*` split-out
+
+*claude/bucket-d-jvm-split branch.*  Third and final slice of
+`docs/23-fsharp-shim-elimination.md` Phase 1.  Removes ~430 LoC of
+JVM-emit-only F# helpers from the stdlib bundle's host shim by
+moving them to a dedicated project.
+
+**New project: `compiler/src/Lyric.Jvm.Hosts/`.**
+
+* `Lyric.Jvm.Hosts.fsproj` (default F# library shape, doc-file
+  generation enabled to match `Lyric.Stdlib`).
+* `JvmHosts.fs` (~454 LoC) — verbatim move of the previous
+  `JvmInternals` / `JvmByteBuilder` / `JvmByteHost` / `JvmZipHost` /
+  `JvmConstantPool` / `JvmPoolHost` types from
+  `compiler/src/Lyric.Stdlib/Stdlib.fs` lines 1008–1452, repackaged
+  under `namespace Lyric.Jvm.Hosts`.
+
+**`Lyric.Stdlib`** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+
+* Lines 1008–1452 deleted (the entire JVM block).  Replaced by
+  a short doc comment pointing at the new home.
+
+**`Lyric.Emitter`** (`compiler/src/Lyric.Emitter/`).
+
+* `Lyric.Emitter.fsproj` adds a `<ProjectReference>` to
+  `Lyric.Jvm.Hosts` so the assembly is in the test/CLI runtime
+  closure.
+* `Emitter.fs` `findClrType` now also force-loads
+  `Lyric.Jvm.Hosts` via `typeof<Lyric.Jvm.Hosts.JvmByteHost>`,
+  mirroring the existing `Lyric.Stdlib` force-load — so emit-time
+  `findClrType("Lyric.Jvm.Hosts.…")` walks the AppDomain and
+  resolves cleanly.
+
+**Lyric source updates** (`@externTarget` repointing).
+
+* `compiler/lyric/jvm/_kernel/kernel.l` — 38 occurrences of
+  `Lyric.Stdlib.Jvm…` rewritten to `Lyric.Jvm.Hosts.Jvm…`.
+  `extern type ByteWriter = "Lyric.Stdlib.JvmByteBuilder"` and
+  `extern type Pool = "Lyric.Stdlib.JvmConstantPool"` updated to
+  the new namespace.
+* `stdlib/std/_kernel_jvm/json_host.l` — 1 occurrence updated.
+
+**Stdlib bundle impact.**  `Lyric.Stdlib.dll` (the F# host shim)
+shrinks from 1452 → 1018 LoC (~30% reduction).  The stdlib bundle
+DLL emitted by `lyric build --manifest stdlib/lyric.toml` is
+unchanged in surface; the JVM helpers were never part of its
+contract resources anyway.  A new `Lyric.Jvm.Hosts.dll` ships
+alongside the JVM emitter's Lyric source as expected per
+`docs/23` §4.3.
+
+**Tests.**  All suites green.  JVM lowering tests
+(`JvmLoweringB*Test.fs`, 80+ stages) exercise every retired Jvm*
+host method via the kernel `@externTarget` path, and they all
+pass — confirming the new namespace + force-load wiring works.
+
+**Net F# stdlib shim.** ~430 LoC retired from `Lyric.Stdlib`.
+Trajectory tracks the ~890 LoC waypoint in `docs/23` §4.4.
+
+**Phase 1 complete.**  All three Phase 1 slices have shipped
+(G8, RandomHost/CancelHost direct-extern, Bucket D split).
+The next steps require new G-items (G7 `protected type` codegen,
+G9 user-defined exceptions, G10 try/catch FFI, G11 `AsyncLocal`,
+G12 delegate-lowering audit).
 
 
 ### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`
