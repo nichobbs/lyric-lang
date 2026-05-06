@@ -435,6 +435,37 @@ func testCrlfNormalisation(): Unit {
   assertEqual(tokenKindAt(r, 2), "ident",    "crlf: bar")
 }
 
+// Phase 5 §M5.1 stage 4 — L0040 reserved-name diagnostic for `_X`
+// (underscore followed by an ASCII uppercase letter).  The lexeme
+// still flows through as a TIdent so the parser can recover.
+func testReservedUnderscoreUpperRejected(): Unit {
+  val r = lex("_Hidden")
+  assertEqual(tokenKindAt(r, 0), "ident", "L0040: still emitted as TIdent")
+  assertEqual(identNameAt(r, 0), "_Hidden", "L0040: lexeme preserved")
+  assertEqualInt(diagCount(r), 1, "L0040: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0040", "L0040: code")
+}
+
+func testReservedUnderscoreLowerOK(): Unit {
+  // Underscore followed by a *lowercase* letter is fine — those
+  // aren't compiler-generated.
+  val r = lex("_hidden")
+  assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for _hidden")
+}
+
+func testReservedUnderscoreDigitOK(): Unit {
+  // Underscore + digit is also fine (e.g. `_0` is a destructured
+  // tuple slot in some style guides).
+  val r = lex("_0name")
+  assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for _0…")
+}
+
+func testReservedUnderscoreAlone(): Unit {
+  // Pure underscore is the wildcard pattern; no diagnostic.
+  val r = lex("_")
+  assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for `_`")
+}
+
 func testFullPackageHeader(): Unit {
   val r = lex("package Foo.Bar\n\nimport Std.Core\n\nfunc add(x: in Int, y: in Int): Int {\n  x + y\n}\n")
   assertEqualInt(diagCount(r), 0, "full: no diagnostics")
@@ -478,6 +509,10 @@ func main(): Unit {
   testDocComment()
   testModuleDocComment()
   testCrlfNormalisation()
+  testReservedUnderscoreUpperRejected()
+  testReservedUnderscoreLowerOK()
+  testReservedUnderscoreDigitOK()
+  testReservedUnderscoreAlone()
   testFullPackageHeader()
   println("lexer self-test: ok")
 }

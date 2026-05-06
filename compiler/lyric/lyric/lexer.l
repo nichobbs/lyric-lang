@@ -13,11 +13,18 @@
 // TRawString) plus the InString / InHole mode stack mirror
 // `compiler/src/Lyric.Lexer/Lexer.fs` 1:1.
 //
-// Scope still deferred to follow-up stages of M5.1 (per
-// `docs/10-bootstrap-progress.md`):
+// Phase 5 §M5.1 stage 4 (this file): NFC normalisation of identifier
+// lexemes via `System.String.Normalize` (BCL instance method) plus
+// the L0040 reserved-name diagnostic for `_X` identifiers.  The
+// non-ASCII identifier-character acceptance side of stage 4 (full
+// UAX #31 XID_Start / XID_Continue category coverage) is still
+// deferred — it needs a kernel extern for
+// `System.Char.GetUnicodeCategory`, which the audit boundary keeps
+// for a follow-up.
+//
+// Scope still deferred:
 //   * Non-BMP `\u{…}` escapes (would need a wider TChar payload).
-//   * Non-ASCII identifiers and NFC normalisation (stage 4).
-//   * The `_X` reserved-name diagnostic, L0040 (stage 4).
+//   * Non-ASCII identifier characters (UAX #31 XID_Start/Continue).
 //
 // Everything else from the F# lexer's grammar §1 implementation lives
 // here: identifiers, the full keyword table, decimal/hex/octal/binary
@@ -971,7 +978,39 @@ func lexIdentOrKeyword(state: inout LexerState): Unit {
     val c = advance(state)
     buf = buf + charToString(c)
   }
-  emitIdentOrKeywordToken(state, buf, startP)
+  // Phase 5 §M5.1 stage 4: NFC-normalise the lexed identifier so
+  // downstream stages compare canonical-equivalent spellings as
+  // equal (per grammar.ebnf §1.4).  For pure ASCII identifiers
+  // `Normalize` is a no-op; the cost is paid only on strings that
+  // actually differ.
+  val text = if buf.isNormalized() { buf } else { buf.normalize() }
+  // Phase 5 §M5.1 stage 4: reject identifiers of the form `_`
+  // followed by an ASCII uppercase letter — reserved for compiler-
+  // generated names (grammar.ebnf §1.4).  The lexeme still flows
+  // through as a TIdent so the parser keeps making progress on
+  // recovery; only the diagnostic surfaces the policy.
+  if isReservedUnderscoreUpper(text) {
+    recordError(state, "L0040",
+                reservedUnderscoreUpperMessage(text),
+                makeSpan(startP, currentPosition(state)))
+  }
+  emitIdentOrKeywordToken(state, text, startP)
+}
+
+@pure
+func isAsciiUpper(c: in Char): Bool {
+  c >= 'A' and c <= 'Z'
+}
+
+@pure
+func isReservedUnderscoreUpper(text: in String): Bool {
+  text.length >= 2 and text[0] == '_' and isAsciiUpper(text[1])
+}
+
+@pure
+func reservedUnderscoreUpperMessage(text: in String): String {
+  "identifier '" + text
+    + "' is reserved (leading '_' followed by an uppercase letter)"
 }
 
 /// Decide between `TBool`, `TKeyword`, and `TIdent` for a freshly
