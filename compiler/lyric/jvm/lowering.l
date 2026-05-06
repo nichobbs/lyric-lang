@@ -1658,3 +1658,94 @@ pub func lowerThreadJoin(asm: in MethodAssembler): Unit {
   emitInvokevirtual(asm, idx)
   trackStack(asm, -1)
 }
+
+// ── Distinct-type lowering ────────────────────────────────────────────────────
+//
+// Lowers a Lyric distinct type (`type T = U`) to a plain final class with a
+// single private final field `$value` of the underlying JVM type, a public
+// canonical constructor, and a public `$value()` accessor.
+// This is the bootstrap approximation of §6.2 (Java record shape deferred).
+
+pub record LDistinctType {
+  wrapperClass:   String
+  underlyingType: JvmType
+}
+
+pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
+  val valueDesc = typeDescriptor(d.underlyingType)
+  val fieldIdx  = poolFieldref(pool, d.wrapperClass, "$value", valueDesc)
+
+  // private final <underlying> $value
+  val fAttrs: List[Attribute] = newList()
+  val valueField = makeFieldInfo(ACC_PRIVATE + ACC_FINAL, "$value", valueDesc, fAttrs)
+
+  // public <init>(<underlying>)V
+  val ctorAsm    = newAssembler(pool)
+  val objCtorIdx = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+  emitAload(ctorAsm, 0)
+  emitInvokespecial(ctorAsm, objCtorIdx)
+  emitAload(ctorAsm, 0)
+  match d.underlyingType {
+    case JLong    -> emitLload(ctorAsm, 1)
+    case JDouble  -> emitDload(ctorAsm, 1)
+    case JFloat   -> emitFload(ctorAsm, 1)
+    case JBoolean -> emitIload(ctorAsm, 1)
+    case JByte    -> emitIload(ctorAsm, 1)
+    case JChar    -> emitIload(ctorAsm, 1)
+    case JShort   -> emitIload(ctorAsm, 1)
+    case JInt     -> emitIload(ctorAsm, 1)
+    case JVoid    -> ()
+    case JRef(_)  -> emitAload(ctorAsm, 1)
+    case JArray(_) -> emitAload(ctorAsm, 1)
+  }
+  emitPutfield(ctorAsm, fieldIdx)
+  emitReturn(ctorAsm)
+  val ctorMaxL = 1 + fieldSlotSize(d.underlyingType)
+  val ctorCode = assembleCode(ctorAsm, 3, ctorMaxL)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(d.underlyingType)
+  val ctor = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorPs, JVoid), ctorAttrs)
+
+  // public <underlying> $value()
+  val accAsm = newAssembler(pool)
+  emitAload(accAsm, 0)
+  emitGetfield(accAsm, fieldIdx)
+  match d.underlyingType {
+    case JLong    -> emitLreturn(accAsm)
+    case JDouble  -> emitDreturn(accAsm)
+    case JFloat   -> emitFreturn(accAsm)
+    case JBoolean -> emitIreturn(accAsm)
+    case JByte    -> emitIreturn(accAsm)
+    case JChar    -> emitIreturn(accAsm)
+    case JShort   -> emitIreturn(accAsm)
+    case JInt     -> emitIreturn(accAsm)
+    case JVoid    -> ()
+    case JRef(_)  -> emitAreturn(accAsm)
+    case JArray(_) -> emitAreturn(accAsm)
+  }
+  val accCode = assembleCode(accAsm, fieldSlotSize(d.underlyingType), 1)
+  val accAttrs: List[Attribute] = newList()
+  accAttrs.add(accCode)
+  val noPs: List[JvmType] = newList()
+  val acc = makeMethodInfo(ACC_PUBLIC, "$value", buildDescriptor(noPs, d.underlyingType), accAttrs)
+
+  val fields: List[FieldInfo] = newList()
+  fields.add(valueField)
+  val methods: List[MethodInfo] = newList()
+  methods.add(ctor)
+  methods.add(acc)
+
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = d.wrapperClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
