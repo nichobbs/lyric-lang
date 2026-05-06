@@ -174,6 +174,40 @@ let tests =
             Expect.stringContains stderr "out of range"
                 "stderr explains the out-of-range index"
 
+        testCase "[--json] every goal carries a suggestions array" <| fun () ->
+            // Per the M4.3 schema (Appendix A in `15-phase-4-proof-plan.md`),
+            // every goal exposes a `suggestions` array.  On a discharged
+            // proof the array is empty.  On a counterexample the
+            // boundary-suggestion heuristics may populate it; we don't
+            // assert content because the model depends on whether z3 is
+            // available.
+            let path = freshSourcePath trivialSource
+            let stdout, _stderr, _exit = runCli ["prove"; path; "--json"]
+            let doc =
+                match Option.ofObj (JsonNode.Parse stdout) with
+                | Some n -> n
+                | None -> failtestf "stdout is not valid JSON:\n%s" stdout
+            let goals =
+                match prop doc "goals" with
+                | Some (:? JsonArray as a) -> a
+                | _ -> failtest "goals missing"
+            Expect.equal goals.Count 1 "one goal"
+            let g =
+                match Option.ofObj goals.[0] with
+                | Some n -> n
+                | None -> failtest "goals[0] is null"
+            match g with
+            | :? JsonObject as o ->
+                Expect.isTrue (o.ContainsKey "suggestions")
+                    "suggestions key always present"
+                match o.["suggestions"] with
+                | :? JsonArray as arr ->
+                    // Discharged goals have no suggestions.
+                    Expect.equal arr.Count 0
+                        "discharged goals have empty suggestions"
+                | _ -> failtest "suggestions must be a JSON array"
+            | _ -> failtest "goal is not a JsonObject"
+
         testCase "[--json] preserves diagnostics array shape" <| fun () ->
             // Force a V0001 by importing a runtime_checked stub — but
             // for unit-test simplicity we use an unbounded quantifier

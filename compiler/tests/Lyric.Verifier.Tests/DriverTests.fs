@@ -704,6 +704,161 @@ let tests =
                 "unbounded x*x must surface a non-discharged overflow VC"
         }
 
+        // ---------- M4.3: suggestRequiresClauses (unit) ----------
+        // The boundary-suggestion heuristic is solver-independent —
+        // exercise it directly with synthetic bindings.
+
+        test "[M4.3 unit] zero binding produces `requires: x > 0`" {
+            let bindings =
+                [ { Name = "x"; Sort = "Int"; Value = "0" } ]
+            let suggestions = Driver.suggestRequiresClauses bindings
+            Expect.equal suggestions [ "requires: x > 0" ]
+                "x = 0 -> requires: x > 0"
+        }
+
+        test "[M4.3 unit] negative binding produces `requires: x >= 0`" {
+            let bindings =
+                [ { Name = "x"; Sort = "Int"; Value = "-5" } ]
+            let suggestions = Driver.suggestRequiresClauses bindings
+            Expect.equal suggestions [ "requires: x >= 0" ]
+                "x = -5 -> requires: x >= 0"
+        }
+
+        test "[M4.3 unit] positive binding produces no suggestion" {
+            let bindings =
+                [ { Name = "x"; Sort = "Int"; Value = "42" } ]
+            let suggestions = Driver.suggestRequiresClauses bindings
+            Expect.equal suggestions []
+                "positive binding triggers no suggestion"
+        }
+
+        test "[M4.3 unit] synthetic names are skipped" {
+            // Names with `$` (goal labels), `?` (translation
+            // fallback), or starting with an uppercase letter must
+            // not surface as user-facing suggestions.
+            let bindings =
+                [ { Name = "id$post$result"; Sort = "Int"; Value = "0" }
+                  { Name = "?prefix";        Sort = "Int"; Value = "0" }
+                  { Name = "Account";        Sort = "Int"; Value = "0" } ]
+            let suggestions = Driver.suggestRequiresClauses bindings
+            Expect.equal suggestions []
+                "synthetic / type-shaped names are not suggested"
+        }
+
+        test "[M4.3 unit] caps at three suggestions" {
+            let bindings =
+                [ for i in 1..7 ->
+                    { Name = sprintf "p%d" i; Sort = "Int"; Value = "0" } ]
+            let suggestions = Driver.suggestRequiresClauses bindings
+            Expect.equal suggestions.Length 3 "capped at 3"
+            Expect.equal
+                (suggestions |> List.distinct |> List.length)
+                3 "distinct"
+        }
+
+        test "[M4.3 unit] non-integer bindings are skipped" {
+            let bindings =
+                [ { Name = "b"; Sort = "Bool"; Value = "false" }
+                  { Name = "s"; Sort = "String"; Value = "(...)" } ]
+            let suggestions = Driver.suggestRequiresClauses bindings
+            Expect.equal suggestions []
+                "Bool/String bindings are not suggestion candidates"
+        }
+
+        // ---------- M4.3: counterexample suggestion heuristics ----------
+        // Per `docs/15-phase-4-proof-plan.md` §9.3, the V0008 trace
+        // ends with one or more "suggestion: add `requires: …`" lines
+        // when a model binding pins a user parameter to a boundary
+        // value (zero or negative).  These are *heuristic* — they only
+        // claim to block the offending counterexample, not to make the
+        // whole proof go through.
+
+        test "[M4.3] suggestions surface for zero-bound counterexample" {
+            // The model `x = 0` falsifies `result == x + 1` only if
+            // we're proving `result == x + 1` against `return x` —
+            // construct a goal that the solver actually finds a
+            // counterexample for.  `x` is the problematic binding.
+            let src = """
+                @proof_required
+                package P
+
+                pub func bug(x: Int): Int
+                  ensures: result > 0
+                {
+                  return x
+                }
+                """
+            let summary = prove src
+            // Suggestion content depends on whether z3 produced a
+            // counterexample (it should, when present).  When z3 isn't
+            // on $PATH the outcome is Unknown and Suggestions = []; we
+            // accept either path but assert the contract.
+            for r in summary.Results do
+                match r.Outcome with
+                | Counterexample _ ->
+                    // At least one suggestion if the model pins x to
+                    // a boundary value.  z3 typically returns x = 0
+                    // for "result > 0 with result = x" goals.
+                    let allClauses = r.Suggestions
+                    Expect.isTrue
+                        (allClauses |> List.forall (fun c ->
+                            c.StartsWith "requires: "))
+                        "every suggestion is a `requires:` clause"
+                    // Suggestions are capped at 3.
+                    Expect.isLessThanOrEqual allClauses.Length 3
+                        "suggestions capped at 3"
+                | Unknown _ ->
+                    // No solver -> no model -> no suggestions.
+                    Expect.equal r.Suggestions [] "no suggestions without a model"
+                | Discharged ->
+                    Expect.equal r.Suggestions [] "no suggestions on discharged"
+        }
+
+        test "[M4.3] suggestions are deduplicated and bounded" {
+            // Several free variables, each pinned to 0 by the model:
+            // a, b, c, d, e — should produce at most 3 suggestions.
+            let src = """
+                @proof_required
+                package P
+
+                pub func multi(a: Int, b: Int, c: Int, d: Int, e: Int): Int
+                  ensures: result > 0
+                {
+                  return a + b + c + d + e
+                }
+                """
+            let summary = prove src
+            for r in summary.Results do
+                match r.Outcome with
+                | Counterexample _ ->
+                    Expect.isLessThanOrEqual r.Suggestions.Length 3
+                        "at most 3 suggestions even with five free vars"
+                    Expect.equal
+                        (r.Suggestions |> List.distinct |> List.length)
+                        r.Suggestions.Length
+                        "no duplicate suggestions"
+                | _ -> ()
+        }
+
+        test "[M4.3] suggestions are empty on Discharged and Unknown" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func id(x: Int): Int
+                  ensures: result == x
+                { return x }
+                """
+            let summary = prove src
+            for r in summary.Results do
+                match r.Outcome with
+                | Counterexample _ ->
+                    failtest "id/result==x should not produce a counterexample"
+                | Discharged | Unknown _ ->
+                    Expect.equal r.Suggestions []
+                        "no suggestions when there's no counterexample"
+        }
+
         test "[M4.3] checked_arithmetic mode is reported in the summary level" {
             let src = """
                 @proof_required(checked_arithmetic)

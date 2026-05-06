@@ -867,6 +867,10 @@ let dispatch
                                                     let ce =
                                                         Lyric.Verifier.Solver.renderCounterexample bindings
                                                     lines.Append(sprintf "\n```\n%s\n```" ce) |> ignore
+                                                if not (List.isEmpty r.Suggestions) then
+                                                    lines.Append "\n  *Suggestions:*" |> ignore
+                                                    for s in r.Suggestions do
+                                                        lines.Append(sprintf "\n  - `%s`" s) |> ignore
                                             | Lyric.Verifier.Solver.Unknown reason ->
                                                 lines.Append(
                                                     sprintf "\n- %s: solver unknown (%s)"

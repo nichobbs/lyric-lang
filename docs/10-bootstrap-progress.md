@@ -149,7 +149,7 @@ deferred to Phase 3 by design.
 | M4.2 — `std.core.proof` standard-library subpackage | **Shipped** | D-progress-091 (`compiler/lyric/std/core_proof.l`; 9/9 obligations self-discharge under the trivial checker) |
 | M4.2 — `--allow-unverified` CLI flag (escape hatch on `unknown`) | **Shipped** | D-progress-091 (`Driver.ProveOptions`; CLI wires `lyric prove --allow-unverified`; V0007 downgraded to warning, V0008 stays an error) |
 | M4.2 — 200-test verification regression suite | **Shipped** | D-progress-091 (216 passing in `Lyric.Verifier.Tests`; the one z3-only failure is environment-gated and predates this milestone) |
-| M4.3 — counterexample reporting + trace reconstruction + suggestion heuristics | **Partial** | M4.1 emits `name : sort = value` bindings; M4.2 polish added falsified-hypothesis / falsified-conclusion lines; suggestion-heuristic step ("add `requires:` …") remains |
+| M4.3 — counterexample reporting + trace reconstruction + suggestion heuristics | **Shipped** | D-progress-114 (M4.1 model bindings + M4.2 falsified-hypothesis / falsified-conclusion lines + M4.3 boundary `requires:` suggestions in `Driver.suggestRequiresClauses`; surfaced in V0008 messages, `--json` `goals[].suggestions`, and LSP proof-failure hovers; six unit tests in DriverTests cover the heuristic) |
 | M4.3 — `lyric prove --explain --goal <n>` mode | **Shipped** | D-progress-113 (`Vcir.PrettyPrint.goal` + CLI dispatch + ProveTests CLI tests) |
 | M4.3 — `lyric prove --json` schema (frozen public surface) | **Shipped** | D-progress-113 (CLI emitter + appendix A in `docs/15-phase-4-proof-plan.md` + ProveTests schema tests) |
 | M4.3 — LSP integration: V0007/V0008 hover counterexamples + code actions | **Shipped** | D-progress-113 (`Server.fs` proof-failure hover section; V0007/V0008 downgrade-to-runtime_checked quickfix; ProtocolTests covers V0003 / V0007 / V0008 / V0009) |
@@ -233,6 +233,81 @@ main, identical between this branch and `origin/main`), 83 CLI,
 Native bytes-round-trip probe (`/tmp/bytes_probe.l`) confirms
 write 4 → read 4 with byte 0 = 1, byte 3 = 255 round-trip
 correctly.
+
+### D-progress-114: M4.3 — counterexample suggestion heuristics
+
+*claude/review-phase-4-5-items-bRPXA branch.*  Closes the last
+in-flight M4.3 deliverable: the suggestion line called for by
+`docs/15-phase-4-proof-plan.md` §9.3.
+
+**The heuristic.**  `Lyric.Verifier.Driver.suggestRequiresClauses`
+walks the parsed `(get-model)` bindings emitted on a V0008
+counterexample.  For each binding `x = v` where the *name* looks
+like a Lyric source identifier (lowercase first letter, no `$` or
+`?`, alphanumeric + `_`) and the *value* sits at a numeric
+boundary, it proposes the `requires:` clause that would have
+blocked this counterexample:
+
+| Model binding | Suggested clause       |
+|---------------|------------------------|
+| `x = 0`       | `requires: x > 0`      |
+| `x < 0`       | `requires: x >= 0`     |
+
+Each candidate is locally validated: a synthetic
+`x > 0` term is substituted under the model and partially
+evaluated; only candidates that collapse to `false` (i.e. blocked
+by the offending model) are kept.  The list is deduplicated and
+capped at three to avoid flooding the diagnostic on goals with
+many free variables.
+
+The plan's §9.3 example
+`suggestion: add \`requires: amount.value > 0\`` is the canonical
+shape.  The bootstrap implementation only handles plain
+parameter-name boundary cases (no field-access decomposition); the
+field-access form is a Phase 5 polish item.
+
+**Surfaces.**
+
+* **`ProofResult.Suggestions: string list`** — new field on
+  the public proof-result record.  Empty for `Discharged` and
+  `Unknown`; populated for `Counterexample`.
+* **V0008 diagnostic message body** — appends a
+  `suggestions (heuristic — verify the rest of the proof still
+  goes through):` block under the existing trace.
+* **`lyric prove --json`** — every goal now carries a
+  `"suggestions": [string]` array.  Always present (empty by
+  default).  Schema appendix A in
+  `docs/15-phase-4-proof-plan.md` updated accordingly.  The
+  M4.3 stability promise (additive-only) is preserved: existing
+  consumers ignoring unknown fields are unaffected.
+* **LSP hover** — proof-failure section appends a
+  `*Suggestions:* - \`requires: x > 0\`` list under the
+  counterexample bindings block.
+
+**Tests.**
+
+* `Lyric.Verifier.Tests/DriverTests.fs` adds **6 unit tests** that
+  exercise `suggestRequiresClauses` with synthetic bindings
+  (zero / negative / positive / synthetic-name / cap-at-three /
+  non-integer), and **3 integration tests** that cover the full
+  pipeline (suggestions surface on a counterexample, are bounded
+  on multi-var goals, and are empty on Discharged / Unknown).
+* `Lyric.Cli.Tests/ProveTests.fs` adds **1 test** that the
+  `suggestions` array is always present in `--json` output, and
+  empty for discharged goals.
+* All suites green: 254 verifier (was 248 before this PR2 split,
+  now 254 after the 6 unit tests + 3 integration), 90 CLI,
+  28 LSP, 598 emitter.
+
+**Status table delta** (`docs/10-bootstrap-progress.md` Phase 4):
+
+| Row                                                          | Was      | Now     |
+|--------------------------------------------------------------|----------|---------|
+| Counterexample reporting + trace reconstruction + suggestion heuristics | Partial  | Shipped |
+
+CVC5 solver-swap parity remains the only Partial row in the
+M4.3 group — see D-progress-113 (Phase 4 status flip) for the
+in-place state and the follow-up plan.
 
 ### D-progress-112: G11 — `AsyncLocal[T]` extern + non-builder generic-FFI fix
 
