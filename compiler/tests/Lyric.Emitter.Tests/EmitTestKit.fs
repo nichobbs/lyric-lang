@@ -84,11 +84,16 @@ let prepareOutputDir (name: string) : string =
     copyAllStdlibDlls dir
     dir
 
-/// Compile + run a Lyric source string. Returns the stdout/stderr/
-/// exit-code triple plus the EmitResult so individual tests can
-/// inspect diagnostics.  The temporary output directory is always
-/// deleted after the run so test suites don't fill the disk.
-let compileAndRun (label: string) (source: string) : EmitResult * string * string * int =
+/// Compile + run a Lyric source string while the output directory
+/// is still alive — the caller's `inspect` callback runs *before*
+/// cleanup, so post-emit reads against the produced DLL (e.g.
+/// `ContractMeta.readFromAssembly`) work.  The temporary output
+/// directory is always deleted after `inspect` returns.
+let compileAndRunWith
+        (label:   string)
+        (source:  string)
+        (inspect: EmitResult * string * string * int -> 'a)
+        : 'a =
     let outDir = prepareOutputDir label
     try
         let dll = Path.Combine(outDir, label + ".dll")
@@ -113,6 +118,15 @@ let compileAndRun (label: string) (source: string) : EmitResult * string * strin
                         sprintf "[%A %s] %s" d.Severity d.Code d.Message)
                     |> String.concat "\n"
                 "", diagText, -1
-        r, stdout, stderr, exitCode
+        inspect (r, stdout, stderr, exitCode)
     finally
         try Directory.Delete(outDir, recursive = true) with _ -> ()
+
+/// Compile + run a Lyric source string. Returns the stdout/stderr/
+/// exit-code triple plus the EmitResult so individual tests can
+/// inspect diagnostics.  The temporary output directory is always
+/// deleted after the run so test suites don't fill the disk.  Tests
+/// that need to read the produced DLL (e.g. for embedded resources)
+/// should use `compileAndRunWith` instead.
+let compileAndRun (label: string) (source: string) : EmitResult * string * string * int =
+    compileAndRunWith label source id
