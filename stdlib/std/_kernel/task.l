@@ -28,6 +28,7 @@ extern type Task   = "System.Threading.Tasks.Task"
 extern type CancellationToken       = "System.Threading.CancellationToken"
 extern type CancellationTokenSource = "System.Threading.CancellationTokenSource"
 extern type Scope                   = "Lyric.Stdlib.LyricTaskScope"
+extern type AsyncLocal[T]           = "System.Threading.AsyncLocal`1"
 
 // =====================================================================
 // Construction helpers.
@@ -219,25 +220,49 @@ pub func disposeScope(s: in Scope): Unit = ()
 // back to "no cancellation" when the caller didn't supply one.
 // =====================================================================
 
+// G11 (`docs/23-fsharp-shim-elimination.md`): the ambient slot is now
+// a process-shared `AsyncLocal[CancellationToken]` accessed through
+// direct BCL externs.  `Lyric.Stdlib.AmbientSlot.Slot` holds the one
+// instance; the read/write helpers are native Lyric on top of
+// `AsyncLocal\`1.{Value, set_Value}` plus `CancellationToken.CanBeCanceled`.
+
+@externTarget("Lyric.Stdlib.AmbientSlot.Slot")
+func ambientSlot(): AsyncLocal[CancellationToken] = ()
+
+@externTarget("System.Threading.AsyncLocal`1.Value")
+func ambientValue(slot: in AsyncLocal[CancellationToken]): CancellationToken = ()
+
+@externTarget("System.Threading.AsyncLocal`1.set_Value")
+func setAmbientValue(slot: in AsyncLocal[CancellationToken], v: in CancellationToken): Unit = ()
+
+@externTarget("System.Threading.CancellationToken.CanBeCanceled")
+func tokenCanBeCanceled(token: in CancellationToken): Bool = ()
+
 /// Read the ambient cancellation token.  Returns the
 /// never-cancelled `CancellationToken.None` when no scope is
 /// active.
-@externTarget("Lyric.Stdlib.AmbientHost.Current")
-pub func currentToken(): CancellationToken = ()
+pub func currentToken(): CancellationToken {
+  ambientValue(ambientSlot())
+}
 
 /// Install `token` as the ambient.  Returns the previous value;
 /// callers should `defer { restoreToken(previous) }` so the slot
 /// is restored on scope exit (success or exception).
-@externTarget("Lyric.Stdlib.AmbientHost.SetCurrent")
-pub func installToken(token: in CancellationToken): CancellationToken = ()
+pub func installToken(token: in CancellationToken): CancellationToken {
+  val previous = currentToken()
+  setAmbientValue(ambientSlot(), token)
+  previous
+}
 
 /// Restore the ambient slot to `previous`.  Idempotent when
 /// `previous` is the same value already installed.
-@externTarget("Lyric.Stdlib.AmbientHost.Restore")
-pub func restoreToken(previous: in CancellationToken): Unit = ()
+pub func restoreToken(previous: in CancellationToken): Unit {
+  setAmbientValue(ambientSlot(), previous)
+}
 
 /// True when the ambient slot holds a non-default token.  Used by
 /// libraries to detect whether to honour the ambient or fall back
 /// to no-cancellation semantics.
-@externTarget("Lyric.Stdlib.AmbientHost.HasAmbient")
-pub func hasAmbient(): Bool = ()
+pub func hasAmbient(): Bool {
+  tokenCanBeCanceled(currentToken())
+}

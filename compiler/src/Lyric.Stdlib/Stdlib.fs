@@ -81,43 +81,17 @@ type StubCounterHost private () =
     static member Get (c: StubCounter) : int = c.Get()
     static member Reset (c: StubCounter) : unit = c.Reset()
 
-/// AsyncLocal-backed ambient `CancellationToken` slot.  Phase C
-/// follow-up (D-progress-071): callers can install a token once
-/// (typically inside a structured-concurrency scope's
-/// `defer`-cleaned setup) and downstream async work picks it up
-/// implicitly via `current()` instead of threading the token
-/// through every signature.  The slot is a `static let` so a
-/// single Lyric process shares one ambient slot — sufficient for
-/// the typical "request scope" pattern; nested scopes save/restore.
+/// Holder for the process-shared `AsyncLocal<CancellationToken>` slot
+/// backing `Std.Task`'s ambient cancellation primitive (D-progress-071).
+/// Owns nothing else — `currentToken` / `installToken` / `restoreToken` /
+/// `hasAmbient` are now native Lyric on top of direct BCL externs to
+/// `AsyncLocal\`1.Value` and `CancellationToken.CanBeCanceled`
+/// (`docs/23-fsharp-shim-elimination.md` G11; D-progress-NNN).
 [<Sealed; AbstractClass>]
-type AmbientHost private () =
-
-    static let ambientToken : System.Threading.AsyncLocal<System.Threading.CancellationToken> =
-        new System.Threading.AsyncLocal<System.Threading.CancellationToken>()
-
-    /// Read the ambient token.  Returns `CancellationToken.None`
-    /// when no scope has installed one — equivalent to "no
-    /// cancellation requested."
-    static member Current () : System.Threading.CancellationToken =
-        ambientToken.Value
-
-    /// Install `token` as the ambient.  Returns the previous value
-    /// so the caller can restore it on exit (`defer { restore(prev) }`).
-    static member SetCurrent (token: System.Threading.CancellationToken)
-            : System.Threading.CancellationToken =
-        let previous = ambientToken.Value
-        ambientToken.Value <- token
-        previous
-
-    /// Restore the ambient slot to `previous`.  No-op when
-    /// `previous` is the same value already installed.
-    static member Restore (previous: System.Threading.CancellationToken) : unit =
-        ambientToken.Value <- previous
-
-    /// Convenience: returns true when the ambient slot has been
-    /// set to a non-default token (i.e. a scope is active).
-    static member HasAmbient () : bool =
-        ambientToken.Value.CanBeCanceled
+type AmbientSlot private () =
+    static let slot =
+        System.Threading.AsyncLocal<System.Threading.CancellationToken>()
+    static member Slot = slot
 
 /// A structured-concurrency scope.  Holds a `CancellationTokenSource`
 /// (for cancelling spawned children when the scope exits abnormally)

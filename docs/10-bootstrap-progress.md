@@ -51,7 +51,8 @@ deferred to Phase 3 by design.
 | `docs/23` Phase 1 dead-code sweep — drop F# `Lyric.Stdlib.MapHelpers` / `TryHost` (zero live `@externTarget` callers) | **Shipped** (PR #149) | D-progress-108 |
 | `docs/23` G10 (1/2) — text/dir `Std.File` migrated to native Lyric `try { … } catch Bug as b { … }` around direct BCL externs (`System.IO.File.{ReadAllText,WriteAllText,Exists}` + `System.IO.Directory.{Exists,CreateDirectory}`); F# `FileHost` trimmed to bytes-only methods | **Shipped** (PR #150) | D-progress-109 |
 | `docs/23` G9 — codegen inlines `newobj System.Exception(string)` + `throw` for `panic` / `expect` / `assert` + `requires:` / `ensures:` runtime checks; F# `Lyric.Stdlib.Contracts` and `LyricAssertionException` retired | **Shipped** (PR #151) | D-progress-110 |
-| `docs/23` G12 (1/N) — F# `Lyric.Stdlib.TaskHost` retired; `Std.Task.{delay, delayWithCancel}` extern at `System.Threading.Tasks.Task.Delay` directly (overload by arity) | **Shipped** (this branch) | D-progress-111 |
+| `docs/23` G12 (1/N) — F# `Lyric.Stdlib.TaskHost` retired; `Std.Task.{delay, delayWithCancel}` extern at `System.Threading.Tasks.Task.Delay` directly (overload by arity) | **Shipped** (PR #152) | D-progress-111 |
+| `docs/23` G11 — `extern type AsyncLocal[T]` + non-builder generic FFI close; `Std.Task.{currentToken, installToken, restoreToken, hasAmbient}` are native Lyric on top of direct BCL externs to `AsyncLocal\`1.{Value, set_Value}` and `CancellationToken.CanBeCanceled`; F# `AmbientHost` collapses to a 4-LoC `AmbientSlot` static-field holder | **Shipped** (this branch) | D-progress-112 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -173,6 +174,71 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-112: G11 — `AsyncLocal[T]` extern + non-builder generic-FFI fix
+
+*claude/g11-asynclocal-extern branch.*  Realises the type-form path
+described in `docs/23-fsharp-shim-elimination.md` G11 by fixing the
+codegen blocker that previously stopped non-generic Lyric functions
+from declaring externs against generic BCL types like
+`System.Threading.AsyncLocal\`1`.
+
+**Codegen fix** (`compiler/src/Lyric.Emitter/Emitter.fs`).
+
+`emitExternCall` previously closed open generic declaring types via
+the static `TypeBuilder.GetMethod` / `TypeBuilder.GetConstructor`,
+on the documented assumption that the BCL static accepts both
+TypeBuilder-bearing and fully-resolved closed types.  In practice
+the BCL throws
+
+    'type' must be or must contain a TypeBuilder as a generic
+    argument. (Parameter 'type')
+
+when the closed type's args are all real CLR types — exactly the
+shape produced by a non-generic Lyric function returning
+`AsyncLocal[CancellationToken]`.  The generic-Lyric-function path
+(`newList[T]`) keeps working because its `T` becomes a
+`GenericTypeParameterBuilder`, which the static accepts.
+
+The fix walks the closed type's generic args and detects whether
+any TypeBuilder / GTPB is present.  When it isn't, we look the
+member up directly on the closed Type via regular reflection
+(`closedTy.GetMethods(flags)` + name + arity match).  The
+TypeBuilder static remains the path for the GTPB case so existing
+generic externs are unchanged.
+
+**`Std.Task` rewrite** (`stdlib/std/_kernel/task.l`).
+
+* New `extern type AsyncLocal[T] = "System.Threading.AsyncLocal\`1"`.
+* Three private kernel helpers:
+  * `ambientSlot()` → `Lyric.Stdlib.AmbientSlot.Slot` (the one
+    process-shared instance).
+  * `ambientValue` / `setAmbientValue` → `AsyncLocal\`1.Value` getter
+    + setter.
+  * `tokenCanBeCanceled` → `CancellationToken.CanBeCanceled`.
+* `currentToken` / `installToken` / `restoreToken` / `hasAmbient`
+  are now native Lyric, four short bodies on top of the helpers.
+
+**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+
+`type AmbientHost private () = …` (~30 LoC, four members) collapses
+to `type AmbientSlot private () = …` (~4 LoC, just holds the
+`AsyncLocal<CancellationToken>` slot — Lyric still needs *some*
+host site for a process-shared static field of a generic BCL
+type).
+
+**Net F# shim shrink.** ~26 LoC retired.  Trajectory now ~800 LoC
+in `Stdlib.fs` (Phase 1 + G10 1/2 + G9 + G12 1/N + this PR).
+
+**Tests.** All suites green: 593 emitter (the existing
+`AsyncLocalTests.fs` exercises every retired AmbientHost method),
+83 CLI, 242 verifier, 137 type checker, 312 parser, 123 lexer,
+25 LSP.
+
+**Why "non-builder generic FFI" matters past G11.**  The codegen
+fix is reusable: any future direct-extern against a closed generic
+BCL type (e.g. `Task\`1`, `Task\`2.ContinueWith`, `IDictionary\`2`
+overloads) from a non-generic Lyric function now Just Works.
 
 ### D-progress-106: Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern
 
