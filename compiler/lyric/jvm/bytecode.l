@@ -679,6 +679,34 @@ pub func assembleCode(asm: in MethodAssembler, maxStack: in Int, maxLocals: in I
   makeCodeAttr(maxStack, maxLocals, writerToList(code))
 }
 
+func resolveLbl(labels: in Map[String, Int], name: in String): Int {
+  match mapGet(labels, name) {
+    case Some(v) -> v
+    case None    -> 0
+  }
+}
+
+/// Assemble with two exception-table entries (label names resolved to PCs).
+pub func assembleCodeWith2Handlers(
+  asm:           in MethodAssembler,
+  maxStack:      in Int,
+  maxLocals:     in Int,
+  startLabel1:   in String, endLabel1:   in String, handlerLabel1: in String, catchType1: in Int,
+  startLabel2:   in String, endLabel2:   in String, handlerLabel2: in String, catchType2: in Int
+): Attribute {
+  val labels = buildLabelMap(asm)
+  val code   = writerNew()
+  emitAllInsns(asm, labels, code)
+  val sp1 = resolveLbl(labels, startLabel1)
+  val ep1 = resolveLbl(labels, endLabel1)
+  val hp1 = resolveLbl(labels, handlerLabel1)
+  val sp2 = resolveLbl(labels, startLabel2)
+  val ep2 = resolveLbl(labels, endLabel2)
+  val hp2 = resolveLbl(labels, handlerLabel2)
+  makeCodeAttrWith2Handlers(maxStack, maxLocals, writerToList(code),
+    sp1, ep1, hp1, catchType1, sp2, ep2, hp2, catchType2)
+}
+
 // ── B18: StackMapTable generation for manually-assembled bytecode ─────────────
 //
 // Java class files with major version >= 50 (Java 6+) require a StackMapTable
@@ -1244,11 +1272,15 @@ pub func emitLaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op =
 pub func emitDaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DALOAD))  }
 pub func emitAaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_AALOAD))  }
 pub func emitBaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_BALOAD))  }
+pub func emitCaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_CALOAD))  }
+pub func emitSaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_SALOAD))  }
 pub func emitIastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_IASTORE)) }
 pub func emitLastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LASTORE)) }
 pub func emitDastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DASTORE)) }
 pub func emitAastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_AASTORE)) }
 pub func emitBastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_BASTORE)) }
+pub func emitCastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_CASTORE)) }
+pub func emitSastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_SASTORE)) }
 
 // ── Returns ───────────────────────────────────────────────────────────────────
 

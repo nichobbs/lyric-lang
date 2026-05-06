@@ -377,6 +377,32 @@ pub func makeCodeAttrWithHandler(
   attrFromWriter("Code", w)
 }
 
+/// Build a `Code` attribute with two exception handlers.
+pub func makeCodeAttrWith2Handlers(
+  maxStack:    in Int,
+  maxLocals:   in Int,
+  code:        in List[Byte],
+  startPc1:    in Int, endPc1:    in Int, handlerPc1: in Int, catchType1: in Int,
+  startPc2:    in Int, endPc2:    in Int, handlerPc2: in Int, catchType2: in Int
+): Attribute {
+  val w = writerNew()
+  writerU2(w, maxStack)
+  writerU2(w, maxLocals)
+  writerU4(w, code.count)
+  writerByteList(w, code)
+  writerU2(w, 2)
+  writerU2(w, startPc1)
+  writerU2(w, endPc1)
+  writerU2(w, handlerPc1)
+  writerU2(w, catchType1)
+  writerU2(w, startPc2)
+  writerU2(w, endPc2)
+  writerU2(w, handlerPc2)
+  writerU2(w, catchType2)
+  writerU2(w, 0)
+  attrFromWriter("Code", w)
+}
+
 /// Build a `Signature` attribute (JVMS §4.7.9) for generic type info.
 pub func makeSignatureAttr(pool: in Pool, signature: in String): Attribute {
   val w = writerNew()
@@ -422,6 +448,80 @@ pub func makeClassFull(
     methods      = methods,
     attrs        = newList()
   )
+}
+
+/// Create a class that implements one or more interfaces.
+pub func makeClassWithInterfaces(
+  thisClass:  in String,
+  interfaces: in List[String],
+  methods:    in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = interfaces,
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
+/// Create an interface ClassFile with the given methods.
+/// Uses ACC_PUBLIC|ACC_INTERFACE|ACC_ABSTRACT flags.
+pub func makeInterfaceWithMethods(
+  thisClass: in String,
+  methods:   in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
+/// Create a class with class-level attributes (e.g. BootstrapMethods).
+pub func makeClassWithMethodsAndAttrs(
+  thisClass:  in String,
+  methods:    in List[MethodInfo],
+  classAttrs: in List[Attribute]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
+  )
+}
+
+/// Build a `BootstrapMethods` class-level attribute with a single entry
+/// and no static arguments.  `refKind` is typically 6 (REF_invokeStatic).
+pub func makeBootstrapMethodsSingle(
+  pool:      in Pool,
+  refKind:   in Int,
+  className: in String,
+  name:      in String,
+  desc:      in String
+): Attribute {
+  val w   = writerNew()
+  val mhIdx = poolMethodHandle(pool, refKind, className, name, desc)
+  writerU2(w, 1)       // num_bootstrap_methods
+  writerU2(w, mhIdx)   // bootstrap_method_ref
+  writerU2(w, 0)       // num_bootstrap_arguments = 0
+  attrFromWriter("BootstrapMethods", w)
 }
 
 /// Create an abstract class (`ACC_PUBLIC | ACC_SUPER | ACC_ABSTRACT`)
