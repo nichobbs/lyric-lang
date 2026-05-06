@@ -1,22 +1,25 @@
 // std/file.l - Bootstrap-grade file I/O.
 //
-// Routes through `hostFile*` builtins resolved by the emitter to static
-// methods on `Lyric.Stdlib.FileHost`.  Each operation catches host
-// exceptions on the F# side and surfaces a `Result[T, IOError]` to
-// callers — no exception escapes the FFI boundary.
+// G10 (`docs/23-fsharp-shim-elimination.md` §5): the text/dir-mode
+// helpers wrap `System.IO.File` / `System.IO.Directory` calls in
+// `try { … } catch Bug as b { … }` to surface host failures as
+// `Result.Err(IoError)` — the same shape `Std.Directory` uses.  No
+// more F#-side `FileHost` round-trip for those paths.
 //
-// Pair-of-statics shape (`*IsValid` + `*Value` / `*Error`) is the same
-// bootstrap workaround used by `Std.Parse`: Lyric has no out-parameters,
-// so we expose two host calls and accept the cost of doing the IO twice
-// when surfacing the error message.  Collapses to a single TryRead /
-// TryWrite once Lyric grows out-params or real exception-to-Result
-// translation.
+// `readBytes` / `writeBytes` still go through `Lyric.Stdlib.FileHost`
+// pair-of-statics for now: `System.IO.File.ReadAllBytes` returns
+// `byte[]`, but the public Lyric surface returns `List[Byte]`, and
+// the BCL→Lyric conversion isn't expressible in pure Lyric without
+// a `slice[Byte] → List[Byte]` constructor.  That migration lands as
+// a follow-up to G10.
+
 @runtime_checked
 package Std.File
 
 import Std.Core
 import Std.Collections
 import Std.Errors
+import Std.FileHost
 
 /// Probe whether a regular file exists at `path`.
 ///
@@ -45,13 +48,15 @@ pub func fileExists(path: in String): Bool {
 @stable(since="1.0")
 pub func readText(path: in String): Result[String, IOError] {
   if path.length == 0 {
-    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  } else if not hostFileExists(path) {
-    Err(error = FileNotFound(path = path))
-  } else if hostReadAllTextIsValid(path) {
-    Ok(value = hostReadAllTextValue(path))
-  } else {
-    Err(error = IoError(path = path, message = hostReadAllTextError(path)))
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  if not hostFileExists(path) {
+    return Err(error = FileNotFound(path = path))
+  }
+  return try {
+    Ok(value = hostReadAllText(path))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
   }
 }
 
@@ -62,11 +67,13 @@ pub func readText(path: in String): Result[String, IOError] {
 @stable(since="1.0")
 pub func writeText(path: in String, text: in String): Result[Unit, IOError] {
   if path.length == 0 {
-    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  } else if hostWriteAllTextIsValid(path, text) {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    hostWriteAllText(path, text)
     Ok(value = ())
-  } else {
-    Err(error = IoError(path = path, message = hostWriteAllTextError(path, text)))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
   }
 }
 
@@ -88,11 +95,13 @@ pub func dirExists(path: in String): Bool {
 @stable(since="1.0")
 pub func createDir(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
-    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  } else if hostCreateDirectoryIsValid(path) {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    hostCreateDirectory(path)
     Ok(value = ())
-  } else {
-    Err(error = IoError(path = path, message = "createDirectory failed"))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
   }
 }
 
