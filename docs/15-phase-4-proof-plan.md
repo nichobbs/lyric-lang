@@ -545,8 +545,8 @@ error[V0008]: postcondition not provable for `Transfer.execute`
 ```
 
 **Machine (`--json`).** A JSON object suitable for editor
-integration. Schema documented in `15-phase-4-proof-plan.md`
-appendix B (this document, after M4.3).
+integration. Schema documented in appendix A of this document
+(frozen as of M4.3).
 
 ### 9.4 The `--explain` mode
 
@@ -599,7 +599,8 @@ The strategy:
   *must* cross into runtime-checked code: `IO`, `Time`, `Random`,
   `String.format`. The contracts of these axiom shims are reviewed
   manually (D013 social mechanism); the audit list lives at
-  `docs/16-axiom-audit.md` (created in M4.2; not in this branch).
+  `docs/17-axiom-audit.md` (renumbered from 16 because slot 16 was
+  taken by `docs/16-lsp-vscode-plan.md`).
 
 `docs/14-native-stdlib-plan.md` already commits to a native
 `std.collections.List[T]` carrying `invariant: length >= 0`. That
@@ -690,7 +691,7 @@ M4.1/M4.2/M4.3.
    `V0009`).
 7. Tutorial chapter and "verifying the banking example" walkthrough
    in `docs/13-tutorial.md`.
-8. `docs/16-axiom-audit.md` lists every `@axiom` shipped in
+8. `docs/17-axiom-audit.md` lists every `@axiom` shipped in
    `std.bcl.*`, with rationale.
 9. `lyric public-api-diff` aware of contract changes: a SemVer
    minor bump that *strengthens* a `requires:` (or weakens an
@@ -772,7 +773,7 @@ someone with formal methods background." Concretely:
 | Counterexample messages baffle non-verification users                | High       | Medium   | The `--explain` JSON schema lands in M4.3 so editor integrators can render fix-its; UX iterations are post-v2.0 work |
 | Pure-function-body serialisation explodes contract artifacts         | Low        | Low      | One-level unfold by default (§5.5); user opts in to more |
 | `std.core.proof` development time exceeds budget                     | High       | High     | Carve `std.core.proof` to the *minimum* needed by the worked examples; defer the rest to Phase 4 polish |
-| `@axiom` audit drifts from real usage                                | Medium     | High     | `<P>.lyric-contract` already lists axiom declarations; the v2.0 release blocks on `docs/16-axiom-audit.md` matching the union of axioms in shipped stdlib packages |
+| `@axiom` audit drifts from real usage                                | Medium     | High     | `<P>.lyric-contract` already lists axiom declarations; the v2.0 release blocks on `docs/17-axiom-audit.md` matching the union of axioms in shipped stdlib packages |
 | Native AOT compatibility broken by Z3 link                           | Resolved   | n/a      | The verifier is a JIT-mode carve-out (§7.1); `lyric build` without `--prove` stays AOT |
 | Soundness bug discovered after v2.0                                  | Medium     | Critical | Soundness-anti-axiom regression suite (§13); academic advisor sign-off; the conservation property test is canary |
 | Contract metadata format-break between v1.x and v2.0                 | Low        | High     | `<P>.lyric-contract` versioning already shipped; v2.0 bumps the format version and emits both during a deprecation window |
@@ -827,3 +828,70 @@ these here so reviewers do not re-litigate them:
   2008.
 - Tucker Taft et al., *Ada 2012 Rationale*, contracts chapter.
 - *SPARK 2014 Reference Manual.*
+
+---
+
+## Appendix A. `lyric prove --json` schema (frozen v1)
+
+The JSON surface emitted by `lyric prove --json` is part of M4.3's
+public contract.  Editor extensions, CI gates, and downstream
+tooling can rely on the keys, types, and value vocabulary below
+without breakage across patch and minor compiler releases.
+
+### A.1 Top-level object
+
+| Field         | Type   | Notes                                                                                                              |
+|---------------|--------|--------------------------------------------------------------------------------------------------------------------|
+| `file`        | string | The source file path passed to `lyric prove` (verbatim, not canonicalised).                                        |
+| `level`       | string | The verification level — one of `@runtime_checked`, `@proof_required`, `@proof_required(unsafe_blocks_allowed)`, `@proof_required(checked_arithmetic)`, `@axiom`. |
+| `goals`       | array  | Goal objects (see A.2).  Always present; empty when the file has no proof obligations.                             |
+| `diagnostics` | array  | Diagnostic objects (see A.3).  Always present; empty when there are none.                                          |
+| `summary`     | object | Counts (see A.4).                                                                                                  |
+
+### A.2 Goal object
+
+| Field      | Type                  | Notes                                                                                                                   |
+|------------|-----------------------|-------------------------------------------------------------------------------------------------------------------------|
+| `index`    | integer               | 0-based goal index, stable for `--explain --goal <n>` cross-reference.                                                  |
+| `label`    | string                | `<function>$<role>` — e.g. `id$post`, `transfer$pre`, `body$assert`.  Free-form but stable for a fixed source.           |
+| `kind`     | string                | One of `postcondition of <fn>`, `precondition of <fn> at call site`, `loop invariant — establish/preserve`, `loop invariant — conclusion`, `user assertion`, `range constructor side condition`. |
+| `line`     | integer               | 1-based source line of the goal's origin span.                                                                          |
+| `col`      | integer               | 1-based source column of the goal's origin span.                                                                        |
+| `outcome`  | string                | One of `discharged`, `counterexample`, `unknown`.                                                                       |
+| `model`    | string &#124; null    | Raw `(get-model)` block on `counterexample`; the solver's `unknown` reason on `unknown`; `null` on `discharged`.        |
+| `smtPath`  | string &#124; null    | Path to the goal's SMT-LIB v2.6 source on disk under `target/proofs/`, or `null` when SMT was not written.              |
+
+### A.3 Diagnostic object
+
+| Field      | Type    | Notes                                                                                       |
+|------------|---------|---------------------------------------------------------------------------------------------|
+| `code`     | string  | `V0001`–`V0009`, `V0023`, `P####`, etc.  See `docs/01-language-reference.md` §13 + §10.     |
+| `severity` | string  | `error` or `warning`.  Under `--allow-unverified`, V0007 surfaces as `warning`.             |
+| `message`  | string  | Human-readable diagnostic text (LF-newline-separated for multi-line counterexample blocks). |
+| `line`     | integer | 1-based source line.                                                                        |
+| `col`      | integer | 1-based source column.                                                                      |
+
+### A.4 Summary object
+
+| Field             | Type    | Notes                                                                          |
+|-------------------|---------|--------------------------------------------------------------------------------|
+| `total`           | integer | `goals.length` — sum of the three counts below.                                |
+| `discharged`      | integer | Goals whose outcome is `discharged`.                                           |
+| `unknown`         | integer | Goals whose outcome is `unknown`.                                              |
+| `counterexamples` | integer | Goals whose outcome is `counterexample`.                                       |
+
+### A.5 Exit codes
+
+`lyric prove --json` exits 0 when the summary is clean (no errors,
+no counterexamples) and 1 otherwise.  Under
+`lyric prove --json --allow-unverified`, V0007 unknowns are
+warnings — the run exits 0 if no V0008 counterexamples are present.
+V0008 always exits 1.
+
+### A.6 Stability promise
+
+The keys, value types, and string vocabularies in tables A.1–A.4 are
+frozen as of M4.3.  Future minor compiler releases may add new
+fields or new outcome / kind / code values, but never remove or
+rename existing ones.  Tooling that consumes this schema should
+ignore unknown keys.

@@ -761,6 +761,205 @@ let newCapabilityTests =
                     | _ -> failtest "no edits for the file"
             | _ -> failtest "codeAction result missing or not an array"
 
+        // ---------- M4.3: V0007 / V0008 code actions ----------
+        // Per `docs/15-phase-4-proof-plan.md` §M4.3 deliverable 4: LSP
+        // surfaces V0007 (solver returned unknown) and V0008
+        // (counterexample) with a code action to downgrade the package
+        // from `@proof_required` to `@runtime_checked`.  This is the
+        // editor escape hatch for users who want runtime checks while
+        // they iterate on contracts.
+
+        testCase "codeAction V0007 returns downgrade-to-runtime-checked" <| fun () ->
+            let source =
+                "@proof_required\n"
+                + "package P\n"
+                + "pub func square(x: Int): Int\n"
+                + "  ensures: result < x\n"
+                + "{ return x * x }\n"
+            let annRange = JsonObject()
+            let s = JsonObject()
+            s.["line"] <- JsonValue.Create 0; s.["character"] <- JsonValue.Create 0
+            let e = JsonObject()
+            e.["line"] <- JsonValue.Create 0; e.["character"] <- JsonValue.Create 16
+            annRange.["start"] <- s :> JsonNode
+            annRange.["end"]   <- e :> JsonNode
+            let diag = JsonObject()
+            diag.["code"]     <- JsonValue.Create "V0007"
+            diag.["range"]    <- annRange.DeepClone()
+            diag.["message"]  <- JsonValue.Create "solver returned unknown"
+            diag.["severity"] <- JsonValue.Create 1
+            let diagArr = JsonArray()
+            diagArr.Add diag
+            let context = JsonObject()
+            context.["diagnostics"] <- diagArr :> JsonNode
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///p.l"
+            rp.["textDocument"] <- td :> JsonNode
+            rp.["range"]        <- annRange :> JsonNode
+            rp.["context"]      <- context :> JsonNode
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 50
+            req.["method"]  <- JsonValue.Create "textDocument/codeAction"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///p.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 50)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some (:? JsonArray as arr) ->
+                let titles =
+                    arr |> Seq.choose (fun n ->
+                        match Option.ofObj n with
+                        | Some node -> Some (propStr node "title")
+                        | None      -> None)
+                    |> Seq.toList
+                Expect.isTrue
+                    (titles |> List.exists (fun t -> t.Contains "runtime_checked"))
+                    "V0007 surfaces a downgrade-to-runtime_checked action"
+                let action =
+                    arr
+                    |> Seq.choose Option.ofObj
+                    |> Seq.tryFind (fun n ->
+                        (propStr n "title").Contains "runtime_checked")
+                match action with
+                | None -> failtest "no runtime_checked action"
+                | Some a ->
+                    match prop a "edit"
+                          |> Option.bind (fun ed -> prop ed "changes")
+                          |> Option.bind (fun ch -> prop ch "file:///p.l") with
+                    | Some (:? JsonArray as edits) ->
+                        Expect.isGreaterThan edits.Count 0
+                            "edit replaces the annotation"
+                        let newText =
+                            edits
+                            |> Seq.choose Option.ofObj
+                            |> Seq.tryPick (fun e ->
+                                match prop e "newText" with
+                                | Some t -> Some (t.GetValue<string>())
+                                | None   -> None)
+                            |> Option.defaultValue ""
+                        Expect.equal newText "@runtime_checked"
+                            "newText replaces with @runtime_checked"
+                    | _ -> failtest "no edits for the file"
+            | _ -> failtest "codeAction result missing or not an array"
+
+        testCase "codeAction V0008 returns downgrade-to-runtime-checked" <| fun () ->
+            // Same source, V0008 (counterexample) — also offers the
+            // downgrade quickfix.
+            let source =
+                "@proof_required\n"
+                + "package P\n"
+                + "pub func dec(x: Int): Int\n"
+                + "  ensures: result > x\n"
+                + "{ return x - 1 }\n"
+            let annRange = JsonObject()
+            let s = JsonObject()
+            s.["line"] <- JsonValue.Create 0; s.["character"] <- JsonValue.Create 0
+            let e = JsonObject()
+            e.["line"] <- JsonValue.Create 0; e.["character"] <- JsonValue.Create 16
+            annRange.["start"] <- s :> JsonNode
+            annRange.["end"]   <- e :> JsonNode
+            let diag = JsonObject()
+            diag.["code"]     <- JsonValue.Create "V0008"
+            diag.["range"]    <- annRange.DeepClone()
+            diag.["message"]  <- JsonValue.Create "proof failed (counterexample)"
+            diag.["severity"] <- JsonValue.Create 1
+            let diagArr = JsonArray()
+            diagArr.Add diag
+            let context = JsonObject()
+            context.["diagnostics"] <- diagArr :> JsonNode
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///p.l"
+            rp.["textDocument"] <- td :> JsonNode
+            rp.["range"]        <- annRange :> JsonNode
+            rp.["context"]      <- context :> JsonNode
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 51
+            req.["method"]  <- JsonValue.Create "textDocument/codeAction"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///p.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 51)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some (:? JsonArray as arr) ->
+                let titles =
+                    arr |> Seq.choose (fun n ->
+                        match Option.ofObj n with
+                        | Some node -> Some (propStr node "title")
+                        | None      -> None)
+                    |> Seq.toList
+                Expect.isTrue
+                    (titles |> List.exists (fun t -> t.Contains "runtime_checked"))
+                    "V0008 surfaces a downgrade-to-runtime_checked action"
+            | _ -> failtest "codeAction result missing or not an array"
+
+        testCase "codeAction V0003 offers unsafe_blocks_allowed upgrade" <| fun () ->
+            // V0003: unsafe { } needs @proof_required(unsafe_blocks_allowed).
+            let source =
+                "@proof_required\n"
+                + "package P\n"
+                + "pub func f(x: Int): Int { unsafe { return x } }\n"
+            let annRange = JsonObject()
+            let s = JsonObject()
+            s.["line"] <- JsonValue.Create 0; s.["character"] <- JsonValue.Create 0
+            let e = JsonObject()
+            e.["line"] <- JsonValue.Create 0; e.["character"] <- JsonValue.Create 16
+            annRange.["start"] <- s :> JsonNode
+            annRange.["end"]   <- e :> JsonNode
+            let diag = JsonObject()
+            diag.["code"]     <- JsonValue.Create "V0003"
+            diag.["range"]    <- annRange.DeepClone()
+            diag.["message"]  <- JsonValue.Create "unsafe block requires unsafe_blocks_allowed"
+            diag.["severity"] <- JsonValue.Create 1
+            let diagArr = JsonArray()
+            diagArr.Add diag
+            let context = JsonObject()
+            context.["diagnostics"] <- diagArr :> JsonNode
+            let rp = JsonObject()
+            let td = JsonObject()
+            td.["uri"] <- JsonValue.Create "file:///p.l"
+            rp.["textDocument"] <- td :> JsonNode
+            rp.["range"]        <- annRange :> JsonNode
+            rp.["context"]      <- context :> JsonNode
+            let req = JsonObject()
+            req.["jsonrpc"] <- JsonValue.Create "2.0"
+            req.["id"]      <- JsonValue.Create 52
+            req.["method"]  <- JsonValue.Create "textDocument/codeAction"
+            req.["params"]  <- rp :> JsonNode
+            let out =
+                runWith [
+                    """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"""
+                    didOpenFor "file:///p.l" source
+                    req.ToJsonString()
+                    """{"jsonrpc":"2.0","method":"exit"}"""
+                ]
+            let r = out |> List.tryFind (fun n -> propInt n "id" = 52)
+            match r |> Option.bind (fun n -> prop n "result") with
+            | Some (:? JsonArray as arr) ->
+                let titles =
+                    arr |> Seq.choose (fun n ->
+                        match Option.ofObj n with
+                        | Some node -> Some (propStr node "title")
+                        | None      -> None)
+                    |> Seq.toList
+                Expect.isTrue
+                    (titles |> List.exists (fun t -> t.Contains "unsafe_blocks_allowed"))
+                    "V0003 offers an unsafe_blocks_allowed upgrade"
+            | _ -> failtest "codeAction result missing or not an array"
+
         testCase "codeAction for unknown diagnostic code returns empty array" <| fun () ->
             let source = "package T\nfunc main(): Unit { }\n"
             let diag = JsonObject()

@@ -741,8 +741,9 @@ criteria) and "M4.3" (the v2.0 release scope).
     the diagnostic surface; assertion lowering to a side-VC.
 11. **Banking-example proof tutorial chapter** in
     `docs/13-tutorial.md`.
-12. **`docs/16-axiom-audit.md`** — list every `@axiom` the stdlib
-    ships with its rationale.
+12. **`docs/17-axiom-audit.md`** — list every `@axiom` the stdlib
+    ships with its rationale (renumbered from 16; slot 16 went to
+    `docs/16-lsp-vscode-plan.md`).
 13. **Contract-aware `lyric public-api-diff`.** A SemVer minor that
     *strengthens* a `requires:` (or weakens an `ensures:`) is
     breaking. Spec already in `01-language-reference.md` §11; M4.3

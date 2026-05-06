@@ -148,6 +148,115 @@ func main(): Unit { println(shown(VisibleRec(x = 1))) }
             Expect.isTrue (ContractMeta.hasBreakingChanges entries)
                 "removed/changed entries are breaking"
 
+        testCase "[diffContracts: strengthened requires is breaking (M4.3)]" <| fun () ->
+            // Same signature, but the new revision adds a `requires:`
+            // clause callers must satisfy.  This is the breaking change
+            // SemVer-wise (`docs/15-phase-4-proof-plan.md` §M4.3 #9 +
+            // `docs/01-language-reference.md` §11).
+            let mkDecl reqs =
+                { ContractMeta.ContractDecl.basic "func" "f" "(x: in Int): Int"
+                    with Requires = reqs }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0" [ mkDecl [] ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0"
+                    [ mkDecl [ "x > 0" ] ]
+            let entries = ContractMeta.diffContracts oldC newC
+            Expect.equal entries.Length 1 "one contract-change entry"
+            match entries.[0] with
+            | ContractMeta.DiffContractChanged(_, breaks) ->
+                let hasStrengthenedReq =
+                    breaks |> List.exists (function
+                        | ContractMeta.StrengthenedRequires xs ->
+                            xs = [ "x > 0" ]
+                        | _ -> false)
+                Expect.isTrue hasStrengthenedReq
+                    "StrengthenedRequires reports the added clause"
+            | _ -> failtest "expected DiffContractChanged"
+            Expect.isTrue (ContractMeta.hasBreakingChanges entries)
+                "strengthened requires is breaking"
+
+        testCase "[diffContracts: weakened ensures is breaking (M4.3)]" <| fun () ->
+            // Removing an `ensures:` clause weakens what callers can
+            // rely on — also breaking.
+            let mkDecl ens =
+                { ContractMeta.ContractDecl.basic "func" "f" "(x: in Int): Int"
+                    with Ensures = ens }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0"
+                    [ mkDecl [ "result > 0"; "result == x + 1" ] ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0"
+                    [ mkDecl [ "result > 0" ] ]
+            let entries = ContractMeta.diffContracts oldC newC
+            Expect.equal entries.Length 1 "one contract-change entry"
+            match entries.[0] with
+            | ContractMeta.DiffContractChanged(_, breaks) ->
+                let hasWeakenedEns =
+                    breaks |> List.exists (function
+                        | ContractMeta.WeakenedEnsures xs ->
+                            xs = [ "result == x + 1" ]
+                        | _ -> false)
+                Expect.isTrue hasWeakenedEns
+                    "WeakenedEnsures reports the removed clause"
+            | _ -> failtest "expected DiffContractChanged"
+            Expect.isTrue (ContractMeta.hasBreakingChanges entries)
+                "weakened ensures is breaking"
+
+        testCase "[diffContracts: relaxed requires is non-breaking]" <| fun () ->
+            // Removing a precondition is a strict relaxation: every
+            // existing caller still satisfies the (now smaller) set.
+            let mkDecl reqs =
+                { ContractMeta.ContractDecl.basic "func" "f" "(x: in Int): Int"
+                    with Requires = reqs }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0"
+                    [ mkDecl [ "x > 0" ] ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0" [ mkDecl [] ]
+            let entries = ContractMeta.diffContracts oldC newC
+            Expect.equal entries.Length 0
+                "no diff entry for relaxed requires"
+            Expect.isFalse (ContractMeta.hasBreakingChanges entries)
+                "relaxing requires is non-breaking"
+
+        testCase "[diffContracts: added ensures is non-breaking]" <| fun () ->
+            // Adding a postcondition strengthens what callers can rely
+            // on; existing callers still type-check.
+            let mkDecl ens =
+                { ContractMeta.ContractDecl.basic "func" "f" "(x: in Int): Int"
+                    with Ensures = ens }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0" [ mkDecl [] ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0"
+                    [ mkDecl [ "result > x" ] ]
+            let entries = ContractMeta.diffContracts oldC newC
+            Expect.equal entries.Length 0
+                "no diff entry for added ensures"
+
+        testCase "[diffContracts: rendering surfaces [breaking] tag]" <| fun () ->
+            // `lyric public-api-diff` users see the rendered string;
+            // pin the rendering format so editor integrations can
+            // grep for `[breaking] strengthened requires:` reliably.
+            let mkDecl reqs =
+                { ContractMeta.ContractDecl.basic "func" "f" "(x: in Int): Int"
+                    with Requires = reqs }
+            let oldC =
+                ContractMeta.Contract.legacy "Demo" "1.0.0" [ mkDecl [] ]
+            let newC =
+                ContractMeta.Contract.legacy "Demo" "1.1.0"
+                    [ mkDecl [ "x > 0" ] ]
+            let entries = ContractMeta.diffContracts oldC newC
+            let rendered =
+                entries
+                |> List.map ContractMeta.renderDiffEntry
+                |> String.concat "\n"
+            Expect.stringContains rendered "[breaking] strengthened requires:"
+                "renders breaking tag"
+            Expect.stringContains rendered "\"x > 0\""
+                "renders the added clause text"
+
         testCase "[diffContracts identifies additive-only as non-breaking]" <| fun () ->
             let oldC =
                 ContractMeta.Contract.legacy "Demo" "1.0.0"
