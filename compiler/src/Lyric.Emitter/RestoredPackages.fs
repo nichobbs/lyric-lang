@@ -130,49 +130,87 @@ let private renderError (err: RestoredLoadError) : string =
             p count (if count = 1 then "" else "s")
             (match ds with d :: _ -> d.Message | [] -> "(none)")
 
-/// Build a `RestoredArtifact` from a single `RestoredPackageRef`.
-/// Reads the DLL, extracts its `Lyric.Contract` resource,
-/// synthesises a Lyric source from the contract decls, parses +
-/// type-checks the synthesised source, and pairs the result with
-/// the loaded assembly.
+/// Synthesise + type-check a single contract into a `RestoredArtifact`.
+/// Shared between the single-package and multi-package code paths.
+let private artifactOfContract
+        (ref': RestoredPackageRef)
+        (assembly: Assembly)
+        (contract: ContractMeta.Contract)
+        : Result<RestoredArtifact, RestoredLoadError> =
+    let synthSource = synthesiseSource contract
+    let parsed = Lyric.Parser.Parser.parse synthSource
+    let parseErrors =
+        parsed.Diagnostics
+        |> List.filter (fun d -> d.Severity = DiagError)
+    if not (List.isEmpty parseErrors) then
+        Error (SynthesisDiagnostics (ref'.DllPath, parseErrors))
+    else
+        // Type-check the synthesised source on its own —
+        // imports inside the contract aren't supported in
+        // the bootstrap (the contract Repr loses cross-
+        // package qualifications).  Type-check failures
+        // surface as a single load error.
+        let checked' = Lyric.TypeChecker.Checker.check parsed.File
+        let checkErrors =
+            checked'.Diagnostics
+            |> List.filter (fun d -> d.Severity = DiagError)
+        if not (List.isEmpty checkErrors) then
+            Error (SynthesisDiagnostics (ref'.DllPath, checkErrors))
+        else
+            Ok { Reference    = ref'
+                 Contract     = contract
+                 AssemblyPath = ref'.DllPath
+                 Assembly     = assembly
+                 Source       = parsed.File
+                 Symbols      = checked'.Symbols
+                 Signatures   = checked'.Signatures }
+
+/// Build the list of `RestoredArtifact`s exposed by a single
+/// `RestoredPackageRef`.  M5.1 stage 2c.2.iii: a bundled DLL
+/// produced by `output = "single"` carries one
+/// `Lyric.Contract.<Pkg>` resource per package; each becomes its own
+/// artifact (sharing the same loaded `Assembly` and `DllPath`) so
+/// downstream import resolution can match each consumer-side
+/// `import <Pkg>` against the right surface.
+///
+/// Legacy single-package DLLs (one `Lyric.Contract` resource) return
+/// a singleton list — the per-package and bundled paths converge
+/// after this point.  An assembly with neither resource shape
+/// surfaces `NoContractResource`.
 let loadRestoredPackage
-        (ref': RestoredPackageRef) : Result<RestoredArtifact, RestoredLoadError> =
+        (ref': RestoredPackageRef) : Result<RestoredArtifact list, RestoredLoadError> =
     if not (File.Exists ref'.DllPath) then Error (DllMissing ref'.DllPath)
     else
+    let assembly = Assembly.LoadFrom ref'.DllPath
+    // First try the legacy single-resource form for backwards
+    // compatibility with non-bundled per-package DLLs.
     match ContractMeta.readFromAssembly ref'.DllPath with
-    | None -> Error (NoContractResource ref'.DllPath)
     | Some json ->
         match ContractMeta.parseFromJson json with
         | None -> Error (MalformedContract ref'.DllPath)
         | Some contract ->
-            let synthSource = synthesiseSource contract
-            let parsed = Lyric.Parser.Parser.parse synthSource
-            let parseErrors =
-                parsed.Diagnostics
-                |> List.filter (fun d -> d.Severity = DiagError)
-            if not (List.isEmpty parseErrors) then
-                Error (SynthesisDiagnostics (ref'.DllPath, parseErrors))
-            else
-                // Type-check the synthesised source on its own —
-                // imports inside the contract aren't supported in
-                // the bootstrap (the contract Repr loses cross-
-                // package qualifications).  Type-check failures
-                // surface as a single load error.
-                let checked' = Lyric.TypeChecker.Checker.check parsed.File
-                let checkErrors =
-                    checked'.Diagnostics
-                    |> List.filter (fun d -> d.Severity = DiagError)
-                if not (List.isEmpty checkErrors) then
-                    Error (SynthesisDiagnostics (ref'.DllPath, checkErrors))
-                else
-                    let assembly = Assembly.LoadFrom ref'.DllPath
-                    Ok { Reference    = ref'
-                         Contract     = contract
-                         AssemblyPath = ref'.DllPath
-                         Assembly     = assembly
-                         Source       = parsed.File
-                         Symbols      = checked'.Symbols
-                         Signatures   = checked'.Signatures }
+            match artifactOfContract ref' assembly contract with
+            | Ok a    -> Ok [a]
+            | Error e -> Error e
+    | None ->
+        // Fall back to per-package resources (`Lyric.Contract.<Pkg>`).
+        // Each name → JSON pair becomes its own artifact.
+        let perPkg = ContractMeta.readAllContractsFromAssembly ref'.DllPath
+        if List.isEmpty perPkg then Error (NoContractResource ref'.DllPath)
+        else
+            let mutable err : RestoredLoadError option = None
+            let acc = ResizeArray<RestoredArtifact>()
+            for (_pkgName, json) in perPkg do
+                if err.IsNone then
+                    match ContractMeta.parseFromJson json with
+                    | None -> err <- Some (MalformedContract ref'.DllPath)
+                    | Some contract ->
+                        match artifactOfContract ref' assembly contract with
+                        | Ok a -> acc.Add a
+                        | Error e -> err <- Some e
+            match err with
+            | Some e -> Error e
+            | None   -> Ok (List.ofSeq acc)
 
 /// Render a load error into a fatal Diagnostic that the emit
 /// loop surfaces alongside other import-resolution errors.

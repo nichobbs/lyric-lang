@@ -265,6 +265,117 @@ let private build
         printErr (sprintf "%s: build failed" sourcePath)
         1
 
+/// Build a project-as-DLL bundle (M5.1 stage 2c.2.iv).  Walks
+/// `[project.packages]`, reads each package's `.l` files in
+/// deterministic order, and routes through `Emitter.emitProject` so
+/// every package emits into one bundled assembly.  Per-package
+/// contract resources (`Lyric.Contract.<Pkg>`) are embedded by the
+/// emitter; on success the runtimeconfig + stdlib closure ship into
+/// the output dir alongside the bundle, mirroring the legacy
+/// single-package build.
+let private buildProject
+        (manifestPath: string)
+        (project: Lyric.Cli.Manifest.ProjectSection)
+        (force: bool)
+        (explicitOut: string option)
+        (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list) : int =
+    // `output = "per-package"` falls through to the legacy
+    // per-source `lyric build` flow — the bootstrap stdlib's exact
+    // shape — so the project-build path here only handles `single`.
+    match project.Output with
+    | Lyric.Cli.Manifest.PerPackage ->
+        printErr "build: [project] output = \"per-package\" not yet wired through `lyric build`; \
+                  invoke `lyric build <pkg>.l` per package, or set output = \"single\""
+        1
+    | Lyric.Cli.Manifest.Single ->
+    let manifestDir =
+        safeStr (Path.GetDirectoryName(Path.GetFullPath manifestPath)) "."
+    let outAssembly =
+        match explicitOut with
+        | Some o -> Path.GetFullPath o
+        | None ->
+            let stem =
+                match project.OutputAssembly with
+                | Some s -> s
+                | None   -> project.Name + ".dll"
+            if Path.IsPathRooted stem then stem
+            else Path.Combine(manifestDir, "bin", stem)
+    let outDir =
+        safeStr (Path.GetDirectoryName(Path.GetFullPath outAssembly)) "."
+    Directory.CreateDirectory(outDir) |> ignore
+    if List.isEmpty project.Packages then
+        printErr (sprintf
+            "build: %s [project.packages] is empty — single-DLL projects require explicit per-package source dirs (auto-discovery not yet wired)"
+            manifestPath)
+        1
+    else
+    // Gather per-package sources.  Each `.l` file under the named
+    // dir contributes one element; deterministic order by relative
+    // path so emit reproducibility doesn't depend on the
+    // filesystem.
+    let mutable hadFatal = false
+    let pkgInputs = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
+    for (pkgName, srcDir) in project.Packages do
+        let absDir =
+            if Path.IsPathRooted srcDir then srcDir
+            else Path.Combine(manifestDir, srcDir)
+        if not (Directory.Exists absDir) then
+            printErr (sprintf "build: project package '%s' source dir '%s' missing" pkgName absDir)
+            hadFatal <- true
+        else
+            let lFiles =
+                Directory.EnumerateFiles(absDir, "*.l", SearchOption.AllDirectories)
+                |> Seq.sortBy id
+                |> Seq.toList
+            if List.isEmpty lFiles then
+                printErr (sprintf "build: project package '%s' has no .l files under '%s'" pkgName absDir)
+                hadFatal <- true
+            else
+                let sources = lFiles |> List.map File.ReadAllText
+                pkgInputs.Add
+                    { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
+                      Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = sources }
+    if hadFatal then 1
+    else
+    let asmName =
+        safeStr (Path.GetFileNameWithoutExtension outAssembly) "out"
+    let req : Lyric.Emitter.Emitter.ProjectEmitRequest =
+        { Packages         = List.ofSeq pkgInputs
+          AssemblyName     = asmName
+          OutputPath       = outAssembly
+          RestoredPackages = restoredPackageRefs
+          Single           = true }
+    let mutable hadError = false
+    let result =
+        try
+            Emitter.emitProject req
+        with e ->
+            hadError <- true
+            printErr (sprintf "internal error: %s" e.Message)
+            match Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_DEBUG") with
+            | None -> ()
+            | Some _ ->
+                match Option.ofObj e.StackTrace with
+                | Some st -> printErr st
+                | None    -> ()
+            { OutputPath  = None
+              Diagnostics = [] }
+    for d in result.Diagnostics do
+        if d.Severity = DiagError then hadError <- true
+        printDiag d
+    match result.OutputPath with
+    | Some _ when not hadError ->
+        writeRuntimeConfig outAssembly
+        copyStdlibArtifacts outDir
+        // BuildCache currently fingerprints a single source path;
+        // skip caching for project builds rather than half-stamp it.
+        ignore force
+        printfn "built %s" outAssembly
+        0
+    | _ ->
+        printErr (sprintf "%s: project build failed" manifestPath)
+        1
+
 /// Detect the host RID (e.g. `linux-x64`) by inspecting
 /// `System.Runtime.InteropServices.RuntimeInformation`.  Used to
 /// drive `dotnet publish -r <RID>` for native-AOT builds when the
@@ -696,6 +807,7 @@ let private run (sourcePath: string) (args: string array) : int =
 let private printUsage () : unit =
     printErr "Usage:"
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
+    printErr "  lyric build --manifest <lyric.toml>  (project mode: bundles every [project.packages] entry into one DLL)"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric fmt   <source.l> [--check] [--write]"
     printErr "  lyric lint  <source.l> [--error-on-warning]"
@@ -775,6 +887,78 @@ let main (argv: string array) : int =
                 positional <- positional @ [s]
                 cursor <- tail
             | [] -> ()
+        // Pre-resolve the manifest once: the (optional) source-rooted
+        // build path and the project-mode build path both want it,
+        // and project-mode requires it (no positional source).
+        let manifestPath =
+            match manifestArg with
+            | Some m -> Some (Path.GetFullPath m)
+            | None ->
+                match positional with
+                | sourcePath :: _ ->
+                    let dir =
+                        safeStr
+                            (Path.GetDirectoryName(Path.GetFullPath sourcePath))
+                            "."
+                    let candidate = Path.Combine(dir, "lyric.toml")
+                    if File.Exists candidate then Some candidate else None
+                | [] -> None
+        let parsedManifest =
+            match manifestPath with
+            | None -> None
+            | Some p ->
+                match Lyric.Cli.Manifest.parseFile p with
+                | Error e ->
+                    printErr (Lyric.Cli.Manifest.renderError p e)
+                    None
+                | Ok m -> Some (p, m)
+        let restoredPackageRefs =
+            match parsedManifest with
+            | None -> []
+            | Some (_, manifest) ->
+                manifest.Dependencies
+                |> List.choose (fun dep ->
+                    match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
+                    | Some dll ->
+                        Some
+                            { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
+                              Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
+                              Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                    | None ->
+                        printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
+                                          dep.Name dep.Version)
+                        None)
+        // Project-mode dispatch: `lyric build --manifest lyric.toml`
+        // (no positional source) where the manifest declares a
+        // single-DLL `[project]`.  The bundle drops in
+        // `<manifestDir>/bin/<output_assembly or project.Name>.dll`
+        // unless `-o` overrides.  AOT for project builds is not yet
+        // wired (the AOT publish wrapper assumes a single DLL with
+        // one `Main`).
+        let projectModeRequested =
+            List.isEmpty positional
+            && (match parsedManifest with
+                | Some (_, m) -> Option.isSome m.Project
+                | None -> false)
+        if projectModeRequested then
+            if aot then
+                printErr "build: --aot with [project] output = \"single\" is not yet supported"
+                1
+            else
+                match parsedManifest with
+                | Some (mPath, m) ->
+                    match m.Project with
+                    | Some proj ->
+                        buildProject mPath proj force explicitOut restoredPackageRefs
+                    | None ->
+                        printErr "build: missing source file"
+                        printUsage ()
+                        1
+                | None ->
+                    printErr "build: missing source file"
+                    printUsage ()
+                    1
+        else
         match positional with
         | [] ->
             printErr "build: missing source file"
@@ -799,43 +983,6 @@ let main (argv: string array) : int =
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
-            // Locate `lyric.toml`: explicit `--manifest` first; if
-            // absent, look next to the source file.  When found,
-            // resolve every `[dependencies]` entry to its restored
-            // DLL via the standard NuGet cache convention so
-            // `import <Pkg>` declarations resolve at build time
-            // (D-progress-077 follow-up).
-            let restoredPackageRefs =
-                let manifestPath =
-                    match manifestArg with
-                    | Some m -> Some (Path.GetFullPath m)
-                    | None ->
-                        let dir =
-                            safeStr
-                                (Path.GetDirectoryName(Path.GetFullPath sourcePath))
-                                "."
-                        let candidate = Path.Combine(dir, "lyric.toml")
-                        if File.Exists candidate then Some candidate else None
-                match manifestPath with
-                | None -> []
-                | Some path ->
-                    match Lyric.Cli.Manifest.parseFile path with
-                    | Error e ->
-                        printErr (Lyric.Cli.Manifest.renderError path e)
-                        []
-                    | Ok manifest ->
-                        manifest.Dependencies
-                        |> List.choose (fun dep ->
-                            match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
-                            | Some dll ->
-                                Some
-                                    { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
-                                      Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
-                                      Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
-                            | None ->
-                                printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
-                                                  dep.Name dep.Version)
-                                None)
             let buildExit = build sourcePath dllOutPath force restoredPackageRefs
             if buildExit <> 0 then buildExit
             elif not aot then 0

@@ -132,4 +132,75 @@ func main(): Unit { () }
             Expect.contains codes "E901" "missing-restored-DLL surfaces E901"
             Expect.isNone result.OutputPath
                 "no output when restored-package load fails"
+
+        // Stage 2c.2.iii — a single restored ref pointing at a
+        // bundled (`output = "single"`) DLL exposes every per-package
+        // contract.  The consumer can import any of the bundled
+        // packages by name and the import resolver matches by package
+        // path, not by the dep ref's Name.
+        testCase "consumer imports two packages from a bundled DLL" <| fun () ->
+            // Build a bundled DLL containing two packages.
+            let bundleDir = guidDir "lyric-rp-bundle"
+            let bundleDll = Path.Combine(bundleDir, "MyLib.dll")
+            let coreSrc =
+                "package MyLib.Core\n" +
+                "@stable(since=\"0.1\")\n" +
+                "pub func double(x: in Int): Int { x + x }\n"
+            let utilSrc =
+                "package MyLib.Util\n" +
+                "@stable(since=\"0.1\")\n" +
+                "pub func square(x: in Int): Int { x * x }\n"
+            let req : ProjectEmitRequest =
+                { Packages =
+                    [ { PackageName = "MyLib.Core"; Sources = [coreSrc] }
+                      { PackageName = "MyLib.Util"; Sources = [utilSrc] } ]
+                  AssemblyName     = "MyLib"
+                  OutputPath       = bundleDll
+                  RestoredPackages = []
+                  Single           = true }
+            let bundleResult = emitProject req
+            let bundleErrs =
+                bundleResult.Diagnostics
+                |> List.filter (fun d -> d.Severity = Lyric.Lexer.DiagError)
+            Expect.isEmpty bundleErrs (sprintf "bundle clean (%A)" bundleErrs)
+
+            // Consumer imports both packages from the bundle via a
+            // single restored ref.
+            let consumerDir = prepareOutputDir "rp-bundle-consumer"
+            File.Copy(
+                bundleDll,
+                Path.Combine(consumerDir, "MyLib.dll"),
+                overwrite = true)
+            let consumerDll = Path.Combine(consumerDir, "rp-bundle-consumer.dll")
+            let consumerReq : EmitRequest =
+                { Source =
+                    """
+package Demo
+
+import MyLib.Core
+import MyLib.Util
+
+func main(): Unit {
+  println(toString(double(3)))
+  println(toString(square(4)))
+}
+"""
+                  AssemblyName     = "rp-bundle-consumer"
+                  OutputPath       = consumerDll
+                  RestoredPackages =
+                    [ { Name    = "MyLib"
+                        Version = "0.1.0"
+                        DllPath = bundleDll } ] }
+            let result = emit consumerReq
+            let errs =
+                result.Diagnostics
+                |> List.filter (fun d -> d.Severity = Lyric.Lexer.DiagError)
+            Expect.isEmpty errs (sprintf "consumer clean (%A)" errs)
+            Expect.isSome result.OutputPath "consumer produced an output"
+            let stdout, stderr, exitCode = runDll consumerDll
+            Expect.equal exitCode 0
+                (sprintf "consumer exit %d (stderr=%s)" exitCode stderr)
+            let nl = System.Environment.NewLine
+            Expect.equal (stdout.Trim()) ("6" + nl + "16")
+                "consumer printed double(3) then square(4)"
     ]

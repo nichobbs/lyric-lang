@@ -2726,7 +2726,13 @@ let private emitAssembly
         // intra-project type names without going through the
         // PersistedAssemblyBuilder's `ModuleBuilder.GetType`, which
         // is not implemented for that backend.
-        (typesOut: Dictionary<string, System.Type> option) : Diagnostic list =
+        (typesOut: Dictionary<string, System.Type> option)
+        // M5.1 stage 2c.2.iv — when `Some r` and the source declares
+        // `func main`, `emitAssembly` writes the host-wrapper
+        // `MethodInfo` into `r` so an `emitProject` driver can pass
+        // it to `Backend.save` as the bundled DLL's entry point.
+        // Single-package callers ignore this (they save themselves).
+        (mainOut: MethodInfo option ref option) : Diagnostic list =
     let funcs = functionItems sf
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
@@ -4370,6 +4376,17 @@ let private emitAssembly
         let hostMainOpt =
             lyricMainOpt
             |> Option.map (fun m -> defineHostEntryPoint programTy m)
+        // Project-as-DLL: hand the host-main wrapper back to the
+        // caller so `emitProject` can wire it through `Backend.save`
+        // as the bundled assembly's entry point.  No-op for the
+        // single-package flow (`mainOut = None`), and harmless when
+        // `hostMainOpt = None` (library-shaped emit).
+        match mainOut with
+        | Some r ->
+            match hostMainOpt with
+            | Some hm -> r.Value <- Some (hm :> MethodInfo)
+            | None    -> ()
+        | None -> ()
 
         // Finalise every type so the persisted PE captures their
         // metadata. Interfaces seal first so records can claim them;
@@ -4887,7 +4904,7 @@ let rec private ensureStdlibArtifact
                     let emitDiags =
                         emitAssembly
                             stripped checked'.Signatures checked'.Symbols
-                            req true depArtifacts stdImportsHere None None
+                            req true depArtifacts stdImportsHere None None None
                     // Surface every error-level diagnostic from any
                     // stage of the stdlib precompile.  Earlier
                     // bootstrap state ignored these so user emits
@@ -5072,50 +5089,68 @@ let private resolveRestoredImports
         : SourceFile * Item list * StdlibArtifact list * Diagnostic list =
     if List.isEmpty refs then sf, [], [], []
     else
-        // Index restored packages by both their full name (`Lyric.Greeter`)
-        // and their leading segment (`Lyric`).  An `import Lyric.Greeter`
-        // matches by full name; the leading-segment fallback is used for
-        // shorter `import Greeter`-style aliases when the user's manifest
-        // dep is just `Greeter = "..."`.
-        let byFullName =
-            refs
-            |> List.map (fun r -> r.Name, r)
-            |> Map.ofList
-        let importMatches (segments: string list) : RestoredPackages.RestoredPackageRef option =
+        // Pre-load every ref's contracts up front.  M5.1 stage
+        // 2c.2.iii: a single `RestoredPackageRef` (one entry in
+        // `lyric.toml`'s `[dependencies]`) may now expose multiple
+        // packages when the DLL was published as a bundled
+        // `output = "single"` project.  Each package becomes its own
+        // `RestoredPackages.RestoredArtifact` keyed on the package
+        // path it declares — so an import `MyApp.Core` matches the
+        // contract that synthesised `package MyApp.Core` items, and
+        // an import `MyApp.Util` matches the sibling contract.
+        let diags = ResizeArray<Diagnostic>()
+        let allArtifacts = ResizeArray<RestoredPackages.RestoredArtifact>()
+        let visited = HashSet<string>()
+        for r in refs do
+            if visited.Add r.Name then
+                match RestoredPackages.loadRestoredPackage r with
+                | Error e -> diags.Add (RestoredPackages.toDiagnostic e)
+                | Ok ras  ->
+                    for ra in ras do allArtifacts.Add ra
+        // Index by the package path declared in each artifact's
+        // synthesised source.  Multiple artifacts under the same
+        // ref yield distinct keys (each contract carries its own
+        // `package <X>` line).
+        let byPackage =
+            allArtifacts
+            |> Seq.map (fun a ->
+                String.concat "." a.Source.Package.Path.Segments, a)
+            |> Map.ofSeq
+        let importMatches (segments: string list) : RestoredPackages.RestoredArtifact option =
             let key = String.concat "." segments
-            Map.tryFind key byFullName
+            Map.tryFind key byPackage
         let nonStdImports, otherImps =
             sf.Imports
             |> List.partition (fun i ->
                 match i.Path.Segments with
                 | "Std" :: _ -> false
                 | segs -> Option.isSome (importMatches segs))
-        if List.isEmpty nonStdImports then sf, [], [], []
+        if List.isEmpty nonStdImports then
+            // Imports unmatched but refs may have surfaced load
+            // diagnostics — propagate them so the user sees the
+            // failure rather than silently missing the import.
+            sf, [], [], List.ofSeq diags
         else
-            let diags = ResizeArray<Diagnostic>()
             let artifacts = ResizeArray<StdlibArtifact>()
             let importedItems = ResizeArray<Item>()
-            let visited = HashSet<string>()
+            let usedPackages = HashSet<string>()
             for imp in nonStdImports do
                 match importMatches imp.Path.Segments with
                 | None -> ()  // shouldn't happen — partition checked
-                | Some ref' ->
-                    if visited.Add ref'.Name then
-                        match RestoredPackages.loadRestoredPackage ref' with
-                        | Error e ->
-                            diags.Add (RestoredPackages.toDiagnostic e)
-                        | Ok ra ->
-                            let asArtifact : StdlibArtifact =
-                                { AssemblyPath = ra.AssemblyPath
-                                  Assembly     = Some ra.Assembly
-                                  Source       = ra.Source
-                                  Symbols      = ra.Symbols
-                                  Signatures   = ra.Signatures
-                                  Lookup       =
-                                    let asm = ra.Assembly
-                                    fun n -> Option.ofObj (asm.GetType n) }
-                            artifacts.Add asArtifact
-                            for it in ra.Source.Items do importedItems.Add it
+                | Some ra ->
+                    let key = String.concat "." ra.Source.Package.Path.Segments
+                    if usedPackages.Add key then
+                        let asArtifact : StdlibArtifact =
+                            { AssemblyPath = ra.AssemblyPath
+                              Assembly     = Some ra.Assembly
+                              Source       = ra.Source
+                              Symbols      = ra.Symbols
+                              Signatures   = ra.Signatures
+                              Lookup       =
+                                let asm = ra.Assembly
+                                fun n -> Option.ofObj (asm.GetType n) }
+                        artifacts.Add asArtifact
+                        for it in ra.Source.Items do importedItems.Add it
             { sf with Imports = otherImps },
             List.ofSeq importedItems,
             List.ofSeq artifacts,
@@ -5164,6 +5199,7 @@ let emit (req: EmitRequest) : EmitResult =
                 stdImports
                 None
                 None
+                None
         let emitFatal =
             emitDiags |> List.exists (fun d -> d.Severity = DiagError)
         let outputPath = if emitFatal then None else Some req.OutputPath
@@ -5193,15 +5229,19 @@ let emit (req: EmitRequest) : EmitResult =
 //     thread it into B's emit so B's `ImportedRecordTable` /
 //     `ImportedFuncTable` register A's surface.
 //
-// Not yet wired (stage 2c.2.iv follow-up):
+// Stage 2c.2.iv additions:
 //
-//   * `internal` → CLR `assembly` access modifier.  Codegen still
-//     emits everything as `public`; the contract resource is the
-//     gate today.
-//   * CLI integration via `lyric build` reading `[project]` from
-//     `lyric.toml` and dispatching here.
-//   * `lyric publish` / `lyric restore` enumerating every
-//     `Lyric.Contract.<Pkg>` resource in a bundled DLL.
+//   * Pre-scan packages for `func main`; emit the main-bearing
+//     package as non-library and capture its host-wrapper
+//     `MethodInfo` via the new `mainOut` parameter on
+//     `emitAssembly`.  Pass that MethodInfo through `Backend.save`
+//     so the bundled DLL is `dotnet exec`-runnable.  Bundles
+//     without a `main` save library-shaped (no entry point).
+//
+// Stage 2c.2.iii (D-progress-101): `lyric restore` walks every
+// `Lyric.Contract.<Pkg>` resource via `loadRestoredPackage`'s
+// list-returning shape so a single bundled-DLL `[dependencies]`
+// entry surfaces N consumer-side imports.
 // ---------------------------------------------------------------------------
 
 /// Per-package source feed for `emitProject`.  Each package's
@@ -5424,6 +5464,22 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 order |> Seq.toList
             else
                 req.Packages |> List.map (fun p -> p.PackageName)
+        // Pre-scan: only the (single) package containing `func main`
+        // emits as an executable; the rest emit library-shaped so
+        // their `Program` types don't claim a duplicate entry point.
+        // The host MethodInfo from that package's emit is captured
+        // and used as `Backend.save`'s entry point so the bundled DLL
+        // is `dotnet exec`-runnable.
+        let packageHasMain (pkgName: string) : bool =
+            let parsed, _ = parsedByName.[pkgName]
+            parsed.File.Items
+            |> List.exists (fun it ->
+                match it.Kind with
+                | IFunc fn -> fn.Name = "main"
+                | _ -> false)
+        let mainPackage =
+            emitOrder |> List.tryFind packageHasMain
+        let bundleMain : MethodInfo option ref = ref None
         for pkgName in emitOrder do
             let parsed, combinedSrc = parsedByName.[pkgName]
             let afterIntra, intraItems, intraArts = resolveIntraImports parsed.File
@@ -5449,17 +5505,21 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                   AssemblyName     = req.AssemblyName
                   OutputPath       = req.OutputPath
                   RestoredPackages = req.RestoredPackages }
+            let isMainPkg = (Some pkgName = mainPackage)
+            let mainOutForCall =
+                if isMainPkg then Some bundleMain else None
             let pkgEmitDiags =
                 emitAssembly
                     resolved
                     checked'.Signatures
                     checked'.Symbols
                     perPkgReq
-                    true                     // emit each package as a library piece
+                    (not isMainPkg)          // main-bearing pkg emits exec; others library
                     mergedArtifacts
                     stdImports
                     (Some ctx)
                     (Some typesByName)
+                    mainOutForCall
             allDiags.AddRange pkgEmitDiags
             perPackageContracts.Add(pkgName, resolved, checked'.Signatures)
             // Capture this package as an in-project artifact for
@@ -5496,12 +5556,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
             { OutputPath  = None
               Diagnostics = List.ofSeq allDiags }
         else
-            // Phase B — save the bundled assembly to disk.
-            // Single-DLL projects emit as libraries (no entry point);
-            // executable bundles promote the main fn to entry in a
-            // follow-up.  For now: library-only.
+            // Phase B — save the bundled assembly to disk.  When the
+            // project contains a `func main` in any of its packages,
+            // that package's host wrapper becomes the bundled DLL's
+            // entry point (M5.1 stage 2c.2.iv).  Bundles without
+            // `main` save as library-shaped (no entry point).
             try
-                Backend.save ctx None
+                Backend.save ctx bundleMain.Value
             with e ->
                 allDiags.Add
                     { Severity = DiagError

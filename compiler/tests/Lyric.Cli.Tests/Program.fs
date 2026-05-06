@@ -11,5 +11,6 @@ let main argv =
             RestoredPackagesTests.tests
             FmtTests.tests
             LintTests.tests
+            ProjectBuildTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

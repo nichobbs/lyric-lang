@@ -540,6 +540,9 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --release <file.l>         # release build (contracts elided for @runtime_checked)
 lyric build --aot <file.l>             # Native AOT; no .NET runtime at deployment
 lyric build --manifest lyric.toml      # build from project manifest
+                                       # (with [project] output = "single", bundles every
+                                       # [project.packages] entry into one DLL with one
+                                       # Lyric.Contract.<Pkg> resource per package)
 
 # Run
 lyric run <file.l>                     # compile and immediately execute
