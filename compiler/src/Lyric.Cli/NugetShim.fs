@@ -84,6 +84,71 @@ let renderShimError (err: ShimError) : string =
         sprintf "shim: '%s' reflection failed: %s" p d
 
 // ---------------------------------------------------------------------------
+// NuGet cache locator.
+// ---------------------------------------------------------------------------
+
+/// TFM compatibility fallback chain: when a NuGet package doesn't
+/// ship `lib/<requested-target>/`, work down through compatible
+/// frameworks the .NET runtime is happy to load against.  This is
+/// the .NET tooling's own NuGet-fallback ordering, conservatively
+/// truncated to the modern .NET / .NET Standard heads.  Reading
+/// `project.assets.json` would be more authoritative but doesn't
+/// gain enough over this heuristic for the bootstrap.
+let private tfmFallbackChain (target: string) : string list =
+    // Numeric-suffix order for `net<X>.0`: try the requested TFM,
+    // then walk down monotonically.  The string match keeps things
+    // deterministic without heavyweight version parsing.
+    let modernNets =
+        [ "net10.0"; "net9.0"; "net8.0"; "net7.0"; "net6.0"; "net5.0" ]
+    let netCoreApps =
+        [ "netcoreapp3.1"; "netcoreapp3.0"; "netcoreapp2.1" ]
+    let netStandards =
+        [ "netstandard2.1"; "netstandard2.0"; "netstandard1.6"
+          "netstandard1.5"; "netstandard1.4"; "netstandard1.3"
+          "netstandard1.2"; "netstandard1.1"; "netstandard1.0" ]
+    let tail =
+        if target.StartsWith "netstandard" then netStandards
+        elif target.StartsWith "netcoreapp" then netCoreApps @ netStandards
+        else modernNets @ netCoreApps @ netStandards
+    target :: (tail |> List.filter (fun t -> t <> target))
+
+/// Probe the standard NuGet cache for a restored package's primary
+/// DLL.  Tries the requested TFM first, then walks the compatibility
+/// fallback chain (`lib/net9.0`, `lib/net8.0`, …, `lib/netstandard2.0`,
+/// …) and finally `ref/<tfm>/`.  Within each `lib/<tfm>/` directory
+/// the locator prefers `<id>.dll`; if absent, the first DLL in
+/// alphabetical order — meta-packages occasionally ship content
+/// whose file name doesn't match the package id, but reflection
+/// works regardless.  Returns `None` if nothing matches — the
+/// caller surfaces a B0030-flavoured diagnostic.
+let tryLocateNugetDll (packageId: string) (version: string)
+                      (target: string) : string option =
+    let nugetRoot =
+        match Option.ofObj (Environment.GetEnvironmentVariable "NUGET_PACKAGES") with
+        | Some p -> p
+        | None ->
+            Path.Combine(
+                Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
+                ".nuget", "packages")
+    let pkgLower = packageId.ToLowerInvariant()
+    let baseDir = Path.Combine(nugetRoot, pkgLower, version)
+    let probe (kind: string) (tfm: string) : string option =
+        let dir = Path.Combine(baseDir, kind, tfm)
+        if not (Directory.Exists dir) then None
+        else
+            let preferred = Path.Combine(dir, packageId + ".dll")
+            if File.Exists preferred then Some preferred
+            else
+                Directory.GetFiles(dir, "*.dll")
+                |> Array.sort
+                |> Array.tryHead
+    let chain = tfmFallbackChain target
+    chain
+    |> List.tryPick (probe "lib")
+    |> Option.orElseWith (fun () ->
+        chain |> List.tryPick (probe "ref"))
+
+// ---------------------------------------------------------------------------
 // Lyric naming conventions.
 // ---------------------------------------------------------------------------
 

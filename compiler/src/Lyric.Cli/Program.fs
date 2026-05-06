@@ -1505,10 +1505,11 @@ let main (argv: string array) : int =
             match Lyric.Cli.Pack.runRestore manifest manifestDir false with
             | Ok () ->
                 let lyricCount = List.length manifest.Dependencies
-                let nugetCount =
+                let nugetEntries =
                     match manifest.Nuget with
-                    | None -> 0
-                    | Some n -> List.length n.Packages
+                    | None -> []
+                    | Some n -> n.Packages
+                let nugetCount = List.length nugetEntries
                 if nugetCount = 0 then
                     printfn "restore: %d Lyric package%s declared in %s"
                         lyricCount (if lyricCount = 1 then "" else "s") mfPath
@@ -1516,6 +1517,64 @@ let main (argv: string array) : int =
                     printfn "restore: %d Lyric + %d NuGet package%s declared in %s"
                         lyricCount nugetCount
                         (if lyricCount + nugetCount = 1 then "" else "s") mfPath
+                // Phase 5 §M5.1 stage 2d.iv: after `dotnet restore`
+                // populates the NuGet cache, write each NuGet
+                // package's auto-generated `_extern/<lyric-pkg>.l`
+                // shim (and an optional `.skip.md` report) to the
+                // manifest directory so reviewers see the surface
+                // that will be in scope.  Failures here are
+                // reported as warnings — the cache is still good
+                // and the user can re-run after fixing the issue.
+                if nugetCount > 0 then
+                    let externDir = Path.Combine(manifestDir, "_extern")
+                    Directory.CreateDirectory externDir |> ignore
+                    let target =
+                        match manifest.Nuget with
+                        | Some { Options = { Target = Some t } } -> t
+                        | _ -> "net10.0"
+                    let mutable shimsOk = 0
+                    for entry in nugetEntries do
+                        match
+                            Lyric.Cli.NugetShim.tryLocateNugetDll
+                                entry.Id entry.Version target with
+                        | None ->
+                            printErr
+                                (sprintf
+                                    "restore: B0030 could not locate '%s' v%s for shim generation; skipping"
+                                    entry.Id entry.Version)
+                        | Some dll ->
+                            match
+                                Lyric.Cli.NugetShim.generate
+                                    dll entry.Id entry.Version [] with
+                            | Error e ->
+                                printErr
+                                    (Lyric.Cli.NugetShim.renderShimError e)
+                            | Ok shim ->
+                                let shimPath =
+                                    Path.Combine(
+                                        externDir,
+                                        shim.LyricPackage + ".l")
+                                File.WriteAllText(shimPath, shim.LyricSource)
+                                match shim.SkipReport with
+                                | Some report ->
+                                    let skipPath =
+                                        Path.Combine(
+                                            externDir,
+                                            shim.LyricPackage + ".skip.md")
+                                    File.WriteAllText(skipPath, report)
+                                | None -> ()
+                                shimsOk <- shimsOk + 1
+                                printfn
+                                    "restore:   %s -> _extern/%s.l (%d types, %d methods, %d skipped)"
+                                    entry.Id shim.LyricPackage
+                                    shim.ExternTypes shim.ExternMethods
+                                    shim.SkippedMembers
+                    if shimsOk < nugetCount then
+                        printErr
+                            (sprintf
+                                "restore: %d of %d NuGet shim%s did not generate cleanly — see B0030 above"
+                                (nugetCount - shimsOk) nugetCount
+                                (if nugetCount = 1 then "" else "s"))
                 0
             | Error msg ->
                 printErr msg
