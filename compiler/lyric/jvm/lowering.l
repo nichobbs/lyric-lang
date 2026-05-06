@@ -1403,3 +1403,45 @@ pub func lowerUnion(u: in LUnion, pool: in Pool): List[ClassFile] {
 
   result
 }
+
+// ── Union match dispatch ──────────────────────────────────────────────────────
+
+pub record LMatchArm {
+  caseClass: String
+  boundSlot:  Int
+  skipLabel:  String
+  bodyInsns:  List[LInsn]
+}
+
+func lowerBodyInsns(asm: in MethodAssembler, insns: in List[LInsn]): Unit {
+  var j = 0
+  while j < insns.count {
+    lowerInsn(insns[j], asm)
+    j = j + 1
+  }
+}
+
+// Emit an instanceof/branch/checkcast chain for each arm of a union match.
+// For each arm: test instanceof caseClass; if false jump to skipLabel;
+// checkcast caseClass into boundSlot; run bodyInsns; goto endLabel.
+pub func lowerMatchUnion(
+  asm:       in MethodAssembler,
+  scrutSlot: in Int,
+  arms:      in List[LMatchArm],
+  endLabel:  in String
+): Unit {
+  var i = 0
+  while i < arms.count {
+    val arm = arms[i]
+    lowerInsn(LAload(slot = scrutSlot), asm)
+    lowerInsn(LInstanceof(className = arm.caseClass), asm)
+    lowerInsn(LIfeq(label = arm.skipLabel), asm)
+    lowerInsn(LAload(slot = scrutSlot), asm)
+    lowerInsn(LCheckcast(className = arm.caseClass), asm)
+    lowerInsn(LAstore(slot = arm.boundSlot), asm)
+    lowerBodyInsns(asm, arm.bodyInsns)
+    lowerInsn(LGoto(label = endLabel), asm)
+    lowerInsn(LLabel(name = arm.skipLabel), asm)
+    i = i + 1
+  }
+}
