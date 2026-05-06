@@ -488,6 +488,42 @@ pub func makeInterfaceWithMethods(
   )
 }
 
+/// Create a class with class-level attributes (e.g. BootstrapMethods).
+pub func makeClassWithMethodsAndAttrs(
+  thisClass:  in String,
+  methods:    in List[MethodInfo],
+  classAttrs: in List[Attribute]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
+  )
+}
+
+/// Build a `BootstrapMethods` class-level attribute with a single entry
+/// and no static arguments.  `refKind` is typically 6 (REF_invokeStatic).
+pub func makeBootstrapMethodsSingle(
+  pool:      in Pool,
+  refKind:   in Int,
+  className: in String,
+  name:      in String,
+  desc:      in String
+): Attribute {
+  val w   = writerNew()
+  val mhIdx = poolMethodHandle(pool, refKind, className, name, desc)
+  writerU2(w, 1)       // num_bootstrap_methods
+  writerU2(w, mhIdx)   // bootstrap_method_ref
+  writerU2(w, 0)       // num_bootstrap_arguments = 0
+  attrFromWriter("BootstrapMethods", w)
+}
+
 /// Create an abstract class (`ACC_PUBLIC | ACC_SUPER | ACC_ABSTRACT`)
 /// with `java/lang/Object` as superclass.  Used as the base of a union hierarchy.
 pub func makeAbstractClass(
