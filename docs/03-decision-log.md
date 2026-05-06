@@ -1237,6 +1237,89 @@ Summary:
 
 ---
 
+## D041: JVM stdlib kernel uses platform-selected directories
+
+**Status:** ACCEPTED
+**Date:** 2026-05-06
+
+### Decision
+
+The JVM stdlib kernel lives in `stdlib/std/_kernel_jvm/`.  The build
+driver selects the directory based on the active compilation target:
+`--target=jvm` uses `_kernel_jvm/`, the default .NET path uses
+`_kernel/`.  Package names inside both trees are identical (`Std.IO`,
+`Std.MathHost`, `Std.CollectionsHost`, etc.) so the safe-API layer
+(parent `std/` files) requires no changes.
+
+`@externTarget` strings remain single-platform — one string per
+declaration.  Platform-selection happens at the file level, not the
+annotation level.
+
+### Alternatives considered
+
+- **Stacked `@externTarget` with `platform=` qualifier.**  A single
+  declaration would carry `@externTarget("System.Math.Sin",
+  platform=dotnet)` and `@externTarget("java.lang.Math.sin",
+  platform=jvm)` on the same function.  More DRY for 1:1 mappings,
+  but requires a language change (new optional parameter on the
+  annotation), and breaks down for `extern package` blocks and
+  `extern type` aliases where structural divergence between platforms
+  is not merely a string difference — the JVM kernel does not use
+  `extern package` pointing to BCL-style static classes; it points to
+  `lyric.stdlib.jvm.*` shims or direct `java.*` methods depending on
+  the operation.
+
+- **Fully separate kernel package (`Std.Kernel.Jvm`).**  Would force
+  conditional `import` in every safe-API file, spreading
+  platform-conditional logic into code that should be
+  platform-neutral.
+
+### JVM shim layer
+
+The JVM kernel targets `lyric.stdlib.jvm.*` wrapper classes
+(analogous to `Lyric.Stdlib.*` on .NET) for operations where the JVM
+API differs structurally from the declared Lyric surface:
+
+- **Parse**: Java's `Integer.parseInt` throws on failure; the shim
+  provides `TryParse`-style out-parameter + Bool semantics.
+- **Time**: `java.time.*` method names differ from .NET's
+  `System.DateTime`/`System.TimeSpan`; duration constructors take
+  `long` where Lyric declares `Double`; shims handle conversion.
+- **Collections**: Java's `HashMap.get` returns `null` on miss; the
+  shim provides `tryGetValue`'s out-parameter + Bool pattern.
+- **Math**: `sign` (Java returns `double`, Lyric declares `Int`),
+  `log2`, `tau`, and `truncate` (absent from `java.lang.Math`) route
+  through `lyric.stdlib.jvm.MathHost`.
+
+Where the JVM provides a direct static-method or static-field
+equivalent the kernel points to it directly (e.g.
+`@externTarget("java.lang.Math.sin")`,
+`@externTarget("java.time.Instant.now")`) without an intermediate
+shim.
+
+### Kernel cap
+
+The 150-declaration cap (D038) applies per directory; the JVM kernel
+has its own budget.  Before the JVM target ships, a parallel
+`KernelBoundaryTests` probe for `_kernel_jvm/` must be added to
+`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`.
+
+### Tracked follow-ups
+
+- `KernelBoundaryTests.fs` needs a JVM-kernel probe once
+  `--target=jvm` is wired into the build driver.
+- `lyric.stdlib.jvm.*` shim classes (Java-side) are a Phase 6
+  deliverable; their API surface is determined by the `@externTarget`
+  strings in `_kernel_jvm/`.
+- Q011 in `docs/18-jvm-emission.md` ("Stdlib API surface: deferred to
+  a separate JVM stdlib doc") is partially addressed by this
+  directory; a follow-up doc should cover the full safe-API surface
+  for the JVM target.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
