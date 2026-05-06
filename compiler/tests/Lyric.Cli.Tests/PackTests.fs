@@ -18,7 +18,8 @@ let private mkManifest (deps: (string * string) list) : Manifest =
           OutputDir = None }
       Dependencies =
         deps |> List.map (fun (n, v) -> { Name = n; Version = v })
-      Project = None }
+      Project = None
+      Nuget   = None }
 
 let private withTempDir (action: string -> 'a) : 'a =
     let dir = Path.Combine(Path.GetTempPath(),

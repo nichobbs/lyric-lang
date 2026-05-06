@@ -81,13 +81,39 @@ type ProjectSection =
       /// rooted at the project's name.
       Packages:       (string * string) list }
 
+/// One NuGet dependency: `"<id>" = "<version>"`.  See
+/// `docs/21-nuget-linking.md` §2.
+type NugetEntry =
+    { Id:      string
+      Version: string }
+
+/// `[nuget.options]` — knobs that apply to every NuGet entry in this
+/// manifest.  `target` defaults to the project's TFM (`net10.0`); a
+/// `None` here means "let the build flow pick the default".
+type NugetOptions =
+    { /// `false` (default): refuse packages whose runtime requires
+      /// native binaries.  `true`: opt in to native-loaded packages
+      /// at the cost of cross-platform shipping guarantees.
+      AllowNative: bool
+      /// TFM the restore evaluates against; `None` falls back to the
+      /// project's target framework.
+      Target:      string option }
+
+/// `[nuget]` + `[nuget.options]` (Phase 5 §M5.1 stage 2d).  Optional;
+/// absence preserves the legacy "no NuGet" behaviour.
+type NugetSection =
+    { Packages: NugetEntry list
+      Options:  NugetOptions }
+
 /// Whole-manifest record.
 type Manifest =
     { Package:      PackageMetadata
       Build:        BuildSection
       Dependencies: Dependency list
       /// `None` for legacy manifests without a `[project]` block.
-      Project:      ProjectSection option }
+      Project:      ProjectSection option
+      /// `None` for manifests without `[nuget]` / `[nuget.options]`.
+      Nuget:        NugetSection option }
 
 // ---------------------------------------------------------------------------
 // TOML token / value model.  Hand-rolled because the bootstrap doesn't
@@ -438,10 +464,60 @@ let private toManifest (entries: Map<string * string, Value>)
             match Map.tryFind ("project", "name") entries with
             | Some (VString s) -> Some s
             | _ -> None
+        // `[nuget]` + `[nuget.options]` (Phase 5 §M5.1 stage 2d) are
+        // both optional.  Detect presence by scanning the entry map
+        // for either section name; absence on both leaves
+        // `Manifest.Nuget = None`.
+        let nugetEntries =
+            entries
+            |> Map.toList
+            |> List.choose (fun ((sec, key), v) ->
+                if sec = "nuget" then
+                    match v with
+                    | VString version -> Some (Ok { Id = key; Version = version })
+                    | _ ->
+                        Some (Error (InvalidFieldType (sec, key,
+                                        "nuget package version string")))
+                else None)
+        let firstNugetErr =
+            nugetEntries |> List.tryPick (function Error e -> Some e | _ -> None)
+        let nugetEntriesResult : Result<NugetEntry list, ManifestError> =
+            match firstNugetErr with
+            | Some e -> Error e
+            | None ->
+                nugetEntries
+                |> List.choose (function Ok e -> Some e | _ -> None)
+                |> List.sortBy (fun e -> e.Id)
+                |> Ok
+        let nugetOptionsPresent =
+            entries
+            |> Map.toList
+            |> List.exists (fun ((sec, _), _) -> sec = "nuget.options")
+        let allowNativeResult : Result<bool, ManifestError> =
+            match Map.tryFind ("nuget.options", "allow_native") entries with
+            | Some (VBool b) -> Ok b
+            | Some _ ->
+                Error (InvalidFieldType ("nuget.options", "allow_native", "bool"))
+            | None -> Ok false
+        let nugetTargetResult : Result<string option, ManifestError> =
+            optString entries "nuget.options" "target"
+        let buildNuget () : Result<NugetSection option, ManifestError> =
+            bind nugetEntriesResult <| fun pkgs ->
+            bind allowNativeResult <| fun allowNative ->
+            bind nugetTargetResult <| fun target ->
+            if List.isEmpty pkgs && not nugetOptionsPresent then
+                Ok None
+            else
+                Ok (Some { Packages = pkgs
+                           Options  = { AllowNative = allowNative
+                                        Target      = target } })
+        match buildNuget () with
+        | Error e -> Error e
+        | Ok nuget ->
         match projName with
         | None ->
             Ok { Package = pkg; Build = build; Dependencies = deps;
-                 Project = None }
+                 Project = None; Nuget = nuget }
         | Some pname ->
             bind (optString entries "project" "output") <| fun outOpt ->
             let outputMode =
@@ -483,7 +559,7 @@ let private toManifest (entries: Map<string * string, Value>)
                       OutputAssembly = outAsm
                       Packages       = packages }
                 Ok { Package = pkg; Build = build; Dependencies = deps;
-                     Project = Some proj }
+                     Project = Some proj; Nuget = nuget }
 
 /// Parse a `lyric.toml` text into a typed `Manifest` record.
 let parseText (text: string) : Result<Manifest, ManifestError> =

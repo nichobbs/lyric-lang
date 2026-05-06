@@ -198,6 +198,109 @@ output = "weird"
             | Error (InvalidFieldType ("project", "output", _)) -> ()
             | _ -> failwithf "expected InvalidFieldType, got %A" r
 
+        // [nuget] + [nuget.options] are the Phase 5 §M5.1 stage 2d
+        // entry points per `docs/21-nuget-linking.md` §2 — absent for
+        // legacy manifests, present when the user wants to consume
+        // arbitrary NuGet packages.
+        testCase "nuget section absent by default" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyPackage"
+version = "0.1.0"
+"""
+            Expect.equal m.Nuget None "no [nuget] -> Nuget = None"
+
+        testCase "nuget packages parse and sort by id" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+
+[nuget]
+"Newtonsoft.Json" = "13.0.3"
+"System.Text.Json" = "9.0.0"
+"Npgsql" = "8.0.0"
+"""
+            match m.Nuget with
+            | None -> failtest "expected Some Nuget"
+            | Some n ->
+                Expect.equal (n.Packages |> List.map (fun p -> p.Id))
+                    ["Newtonsoft.Json"; "Npgsql"; "System.Text.Json"]
+                    "nuget ids sorted lexicographically"
+                Expect.equal (n.Packages |> List.map (fun p -> p.Version))
+                    ["13.0.3"; "8.0.0"; "9.0.0"]
+                    "versions follow"
+                Expect.isFalse n.Options.AllowNative
+                    "allow_native defaults to false"
+                Expect.equal n.Options.Target None "target defaults to None"
+
+        testCase "nuget.options round-trip" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+
+[nuget]
+"Polly" = "8.0.0"
+
+[nuget.options]
+allow_native = true
+target = "net10.0"
+"""
+            match m.Nuget with
+            | None -> failtest "expected Some Nuget"
+            | Some n ->
+                Expect.isTrue n.Options.AllowNative "allow_native"
+                Expect.equal n.Options.Target (Some "net10.0") "target"
+
+        testCase "nuget.options without [nuget] still surfaces section" <| fun () ->
+            // Edge case: the user has no NuGet deps yet but pre-sets
+            // options for when they add some.  Section should be
+            // present so the build flow can honour them.
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+
+[nuget.options]
+allow_native = true
+"""
+            match m.Nuget with
+            | None -> failtest "expected Some Nuget"
+            | Some n ->
+                Expect.isEmpty n.Packages "no packages yet"
+                Expect.isTrue n.Options.AllowNative "options applied"
+
+        testCase "nuget version must be a string" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[nuget]
+"BadPackage" = 42
+"""
+            match r with
+            | Error (InvalidFieldType ("nuget", "BadPackage", _)) -> ()
+            | _ ->
+                failwithf "expected InvalidFieldType for nuget.BadPackage, got %A" r
+
+        testCase "nuget.options.allow_native must be bool" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[nuget.options]
+allow_native = "yes"
+"""
+            match r with
+            | Error (InvalidFieldType ("nuget.options", "allow_native", _)) -> ()
+            | _ ->
+                failwithf
+                    "expected InvalidFieldType for nuget.options.allow_native, got %A"
+                    r
+
         testCase "[project.packages] map sorted by name" <| fun () ->
             let m = parseOk """
 [package]

@@ -1,7 +1,11 @@
 # 21 — NuGet Linking
 
 **Status:** Drafted. Approved 2026-05-05 (PR #122 review).
-**Implementation:** Phase 5 §M5.2 (after multi-file packages + project-as-DLL).
+**Implementation:** Phase 5 §M5.1 stage 2d (immediately after multi-file
+packages + project-as-DLL, which closed in stage 2c.3 / D-progress-103).
+The original draft slotted this for §M5.2; it was pulled forward to
+2d once the multi-file infrastructure landed and the appetite for
+arbitrary NuGet consumption arrived.
 **Decision-log entry:** to follow on landing.
 
 ## 1. Motivation
