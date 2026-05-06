@@ -2119,9 +2119,13 @@ let private emitExternCall
                         target fn.Name openDeclaring.FullName
     // `TypeBuilder.GetMethod` / `TypeBuilder.GetConstructor` are the
     // Reflection.Emit-safe way to substitute when the closed type
-    // contains GenericTypeParameterBuilder instances.  Both also accept
-    // fully-resolved closed types (no TypeBuilder), so we can call them
-    // unconditionally.
+    // contains GenericTypeParameterBuilder instances (the typical
+    // path for generic Lyric functions like `newList[T]`).  But the
+    // BCL static throws `'type' must be or must contain a TypeBuilder
+    // as a generic argument` when the closed type is fully resolved
+    // (no TypeBuilders), e.g. `AsyncLocal<CancellationToken>` from a
+    // non-generic Lyric function.  In that case we look the member up
+    // directly on the closed Type via regular reflection.
     let isOpenGenericDeclaring (declaring: System.Type | null) : bool =
         match Option.ofObj declaring with
         | Some d -> d.IsGenericTypeDefinition
@@ -2130,14 +2134,64 @@ let private emitExternCall
         match Option.ofObj declaring with
         | Some d -> d
         | None   -> failwithf "FFI: declaring type missing on extern target `%s`" target
+    let rec containsBuilder (t: System.Type) : bool =
+        if t :? System.Reflection.Emit.TypeBuilder
+           || t :? System.Reflection.Emit.GenericTypeParameterBuilder then true
+        elif t.IsGenericType then
+            t.GetGenericArguments() |> Array.exists containsBuilder
+        elif t.HasElementType then
+            match Option.ofObj (t.GetElementType()) with
+            | Some elem -> containsBuilder elem
+            | None      -> false
+        else false
+    let resolveMethodOnClosed
+            (closedTy: System.Type) (openMethod: MethodInfo) : MethodInfo =
+        let openParams = openMethod.GetParameters()
+        let flags =
+            BindingFlags.Public ||| BindingFlags.NonPublic |||
+            (if openMethod.IsStatic then BindingFlags.Static else BindingFlags.Instance)
+        let cand =
+            closedTy.GetMethods(flags)
+            |> Array.tryFind (fun m ->
+                m.Name = openMethod.Name
+                && m.GetParameters().Length = openParams.Length)
+        match cand with
+        | Some m -> m
+        | None   ->
+            failwithf
+                "FFI: cannot find `%s` (arity %d) on closed type `%s`"
+                openMethod.Name openParams.Length closedTy.FullName
+    let resolveCtorOnClosed
+            (closedTy: System.Type) (openCtor: ConstructorInfo) : ConstructorInfo =
+        let openParams = openCtor.GetParameters()
+        let cand =
+            closedTy.GetConstructors(
+                BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Instance)
+            |> Array.tryFind (fun c -> c.GetParameters().Length = openParams.Length)
+        match cand with
+        | Some c -> c
+        | None   ->
+            failwithf
+                "FFI: cannot find ctor (arity %d) on closed type `%s`"
+                openParams.Length closedTy.FullName
     let closedResolved =
         match resolved with
         | EBMMethod m when isOpenGenericDeclaring m.DeclaringType ->
             let closedTy = openClosedClr (unwrapDeclaring m.DeclaringType)
-            EBMMethod (System.Reflection.Emit.TypeBuilder.GetMethod(closedTy, m))
+            let closedMethod =
+                if containsBuilder closedTy then
+                    System.Reflection.Emit.TypeBuilder.GetMethod(closedTy, m)
+                else
+                    resolveMethodOnClosed closedTy m
+            EBMMethod closedMethod
         | EBMCtor c when isOpenGenericDeclaring c.DeclaringType ->
             let closedTy = openClosedClr (unwrapDeclaring c.DeclaringType)
-            EBMCtor (System.Reflection.Emit.TypeBuilder.GetConstructor(closedTy, c))
+            let closedCtor =
+                if containsBuilder closedTy then
+                    System.Reflection.Emit.TypeBuilder.GetConstructor(closedTy, c)
+                else
+                    resolveCtorOnClosed closedTy c
+            EBMCtor closedCtor
         | other -> other
     // Static-field externs don't take any params — skip the arg
     // push so we don't blow the stack discipline.
