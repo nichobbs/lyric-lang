@@ -15,7 +15,8 @@ let tests =
                 { Source           = "package Hello"
                   AssemblyName     = "Hello"
                   OutputPath       = Path.Combine(Path.GetTempPath(), "lyric-noop.dll")
-                  RestoredPackages = [] }
+                  RestoredPackages = []
+                  Target           = Dotnet }
             let r = emit req
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "E0001" "missing-main surfaces E0001"
@@ -27,7 +28,8 @@ let tests =
                 { Source           = ""
                   AssemblyName     = "Empty"
                   OutputPath       = Path.Combine(Path.GetTempPath(), "lyric-empty.dll")
-                  RestoredPackages = [] }
+                  RestoredPackages = []
+                  Target           = Dotnet }
             let r = emit req
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "P0020" "missing-package surfaces"

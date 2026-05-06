@@ -26,7 +26,8 @@ let private buildPackage (outDir: string) (name: string) (source: string) : stri
         { Source           = source
           AssemblyName     = name
           OutputPath       = dll
-          RestoredPackages = [] }
+          RestoredPackages = []
+          Target           = Dotnet }
     let r = emit req
     let errs =
         r.Diagnostics
@@ -93,7 +94,8 @@ func main(): Unit {
                   RestoredPackages =
                     [ { Name    = "Lyric.Greeter"
                         Version = "0.1.0"
-                        DllPath = restoredDll } ] }
+                        DllPath = restoredDll } ]
+                  Target           = Dotnet }
             let result = emit req
             let errs =
                 result.Diagnostics
@@ -126,7 +128,8 @@ func main(): Unit { () }
                   RestoredPackages =
                     [ { Name    = "Lyric.Greeter"
                         Version = "0.1.0"
-                        DllPath = "/this/does/not/exist.dll" } ] }
+                        DllPath = "/this/does/not/exist.dll" } ]
+                  Target           = Dotnet }
             let result = emit req
             let codes = result.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "E901" "missing-restored-DLL surfaces E901"
@@ -157,7 +160,8 @@ func main(): Unit { () }
                   AssemblyName     = "MyLib"
                   OutputPath       = bundleDll
                   RestoredPackages = []
-                  Single           = true }
+                  Single           = true
+                  Target           = Dotnet }
             let bundleResult = emitProject req
             let bundleErrs =
                 bundleResult.Diagnostics
@@ -190,7 +194,8 @@ func main(): Unit {
                   RestoredPackages =
                     [ { Name    = "MyLib"
                         Version = "0.1.0"
-                        DllPath = bundleDll } ] }
+                        DllPath = bundleDll } ]
+                  Target           = Dotnet }
             let result = emit consumerReq
             let errs =
                 result.Diagnostics

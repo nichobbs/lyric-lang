@@ -21,6 +21,11 @@ type EmitResult =
     { OutputPath:  string option
       Diagnostics: Diagnostic list }
 
+/// Selects which kernel directory (`_kernel/` vs `_kernel_jvm/`) the
+/// emitter uses for builtin `Std.*` packages.  `Dotnet` is the default;
+/// `Jvm` is activated by `--target=jvm` (D041).
+type CompileTarget = Dotnet | Jvm
+
 type EmitRequest =
     { Source:       string
       AssemblyName: string
@@ -30,15 +35,19 @@ type EmitRequest =
       /// populates this list from `lyric.toml`'s `[dependencies]`
       /// after running `lyric restore`.  Defaults to empty so
       /// existing call sites keep compiling.
-      RestoredPackages: RestoredPackages.RestoredPackageRef list }
+      RestoredPackages: RestoredPackages.RestoredPackageRef list
+      /// Compilation target platform.  Controls which `_kernel*`
+      /// directory is used for builtin `Std.*` package resolution.
+      Target: CompileTarget }
 
 /// Backwards-compat constructor for callers that don't carry a
-/// manifest — synonymous with `{ Source = ...; ...; RestoredPackages = [] }`.
+/// manifest — synonymous with `{ Source = ...; ...; RestoredPackages = []; Target = Dotnet }`.
 let mkEmitRequest (source: string) (assemblyName: string) (outputPath: string) : EmitRequest =
     { Source = source
       AssemblyName = assemblyName
       OutputPath = outputPath
-      RestoredPackages = [] }
+      RestoredPackages = []
+      Target = Dotnet }
 
 let private err (code: string) (msg: string) (span: Span) : Diagnostic =
     Diagnostic.error code msg span
@@ -4550,6 +4559,7 @@ let private isBuiltinHead (head: string) : bool =
 /// is responsible for surfacing the diagnostic to the user.
 let private locateBuiltinFilesWithLayout
         (startDir: string)
+        (target: CompileTarget)
         (segments: string list) : string list * Diagnostic option =
     let firstHit (probes: (unit -> string list) list) : string list =
         let rec go xs =
@@ -4576,12 +4586,13 @@ let private locateBuiltinFilesWithLayout
         let pkgKey = String.concat "." segments
         // Detect layout conflict (B0010) in a given root: both
         // `<root>/<base>.l` and `<root>/<base>/*.l` exist.  Same
-        // check is run against the kernel sub-root too.
+        // check is run against the active kernel sub-root too.
+        let kernelDir = if target = Jvm then "_kernel_jvm" else "_kernel"
         let layoutConflict (root: string) : Diagnostic option =
             let single = Path.Combine(root, fileName)
             let multi  = Path.Combine(root, baseName)
-            let kernelSingle = Path.Combine(root, "_kernel", fileName)
-            let kernelMulti  = Path.Combine(root, "_kernel", baseName)
+            let kernelSingle = Path.Combine(root, kernelDir, fileName)
+            let kernelMulti  = Path.Combine(root, kernelDir, baseName)
             let confl =
                 if File.Exists single
                    && Directory.Exists multi
@@ -4590,7 +4601,7 @@ let private locateBuiltinFilesWithLayout
                 elif File.Exists kernelSingle
                      && Directory.Exists kernelMulti
                      && not (Array.isEmpty (Directory.GetFiles(kernelMulti, "*.l"))) then
-                    Some "kernel"
+                    Some kernelDir
                 else None
             match confl with
             | Some loc ->
@@ -4604,17 +4615,30 @@ let private locateBuiltinFilesWithLayout
                       Span     = Span.make Position.initial Position.initial }
             | None -> None
         let probesIn (root: string) : (unit -> string list) list =
-            // Order: top-level single-file, top-level multi-file
-            // directory, kernel single-file, kernel multi-file
-            // directory.  Top-level wins over kernel.
+            // Order: top-level single-file, top-level multi-file directory,
+            // then platform kernel (JVM prefers _kernel_jvm with _kernel
+            // fallback; .NET uses _kernel only).
+            let kernelProbes =
+                match target with
+                | Jvm ->
+                    [ (fun () ->
+                        let p = Path.Combine(root, "_kernel_jvm", fileName)
+                        if File.Exists p then [p] else [])
+                      (fun () -> listLyricFiles (Path.Combine(root, "_kernel_jvm", baseName)))
+                      (fun () ->
+                        let p = Path.Combine(root, "_kernel", fileName)
+                        if File.Exists p then [p] else [])
+                      (fun () -> listLyricFiles (Path.Combine(root, "_kernel", baseName))) ]
+                | Dotnet ->
+                    [ (fun () ->
+                        let p = Path.Combine(root, "_kernel", fileName)
+                        if File.Exists p then [p] else [])
+                      (fun () -> listLyricFiles (Path.Combine(root, "_kernel", baseName))) ]
             [ (fun () ->
                 let p = Path.Combine(root, fileName)
                 if File.Exists p then [p] else [])
-              (fun () -> listLyricFiles (Path.Combine(root, baseName)))
-              (fun () ->
-                let p = Path.Combine(root, "_kernel", fileName)
-                if File.Exists p then [p] else [])
-              (fun () -> listLyricFiles (Path.Combine(root, "_kernel", baseName))) ]
+              (fun () -> listLyricFiles (Path.Combine(root, baseName))) ]
+            @ kernelProbes
         let envVar =
             match head with
             | "Std" -> "LYRIC_STD_PATH"
@@ -4651,8 +4675,9 @@ let private locateBuiltinFilesWithLayout
 /// Convenience wrapper for callers that don't need the layout diagnostic.
 let private locateBuiltinFiles
         (startDir: string)
+        (target: CompileTarget)
         (segments: string list) : string list =
-    let paths, _ = locateBuiltinFilesWithLayout startDir segments
+    let paths, _ = locateBuiltinFilesWithLayout startDir target segments
     paths
 
 /// Backwards-compatible single-file lookup: returns the first matched
@@ -4661,8 +4686,9 @@ let private locateBuiltinFiles
 /// `locateBuiltinFiles`.
 let private locateBuiltinFile
         (startDir: string)
+        (target: CompileTarget)
         (segments: string list) : string option =
-    match locateBuiltinFiles startDir segments with
+    match locateBuiltinFiles startDir target segments with
     | []      -> None
     | p :: _  -> Some p
 
@@ -4812,16 +4838,18 @@ let private parseAndMergeBuiltinFiles
 /// Recursively ensure that the given `Std.X[.Y…]` package is compiled,
 /// returning its artifact and any diagnostics raised during the
 /// compile chain.  Cached per-process; re-entrant calls hit the
-/// cache.
+/// cache.  `target` controls which `_kernel*` directory is probed
+/// (D041).
 let rec private ensureStdlibArtifact
+        (target: CompileTarget)
         (segments: string list) : Result<StdlibArtifact, Diagnostic list> =
-    let key = packageKey segments
+    let key = sprintf "%A:%s" target (packageKey segments)
     lock stdlibLock (fun () ->
         match stdlibArtifactCache.TryGetValue key with
         | true, a -> Ok a
         | _ ->
             let foundPaths, layoutDiag =
-                locateBuiltinFilesWithLayout AppContext.BaseDirectory segments
+                locateBuiltinFilesWithLayout AppContext.BaseDirectory target segments
             match parseAndMergeBuiltinFiles foundPaths with
             | None ->
                 let zeroSpan = Span.make Position.initial Position.initial
@@ -4872,7 +4900,7 @@ let rec private ensureStdlibArtifact
                     let rec walk (segs: string list) : unit =
                         let key = packageKey segs
                         if visited.Add key then
-                            match ensureStdlibArtifact segs with
+                            match ensureStdlibArtifact target segs with
                             | Ok a ->
                                 let nestedDeps =
                                     a.Source.Imports
@@ -4916,7 +4944,8 @@ let rec private ensureStdlibArtifact
                         { Source           = src
                           AssemblyName     = assemblyName
                           OutputPath       = outPath
-                          RestoredPackages = [] }
+                          RestoredPackages = []
+                          Target           = target }
                     let stdImportsHere =
                         parsed.File.Imports
                         |> List.filter (fun i ->
@@ -4977,9 +5006,11 @@ let rec private ensureStdlibArtifact
 /// copy DLLs alongside each user output.
 let stdlibAssemblyPath () : string option =
     lock stdlibLock (fun () ->
-        match stdlibArtifactCache.TryGetValue "Std.Core" with
-        | true, a -> Some a.AssemblyPath
-        | _ -> None)
+        // Key format is "<Target>:<package>" (e.g. "Dotnet:Std.Core").
+        // Scan for any target variant that compiled Std.Core.
+        stdlibArtifactCache
+        |> Seq.tryFind (fun kv -> kv.Key.EndsWith ":Std.Core")
+        |> Option.map (fun kv -> kv.Value.AssemblyPath))
 
 /// Every compiled stdlib DLL path that has been produced this
 /// process.  Newer code (the test kit) copies all of them so user
@@ -4997,6 +5028,7 @@ let stdlibAssemblyPaths () : string list =
 /// user's `SourceFile.Items` is left unchanged; only builtin imports are
 /// stripped.
 let private resolveStdlibImports
+        (target: CompileTarget)
         (sf: SourceFile)
         : SourceFile * Item list * StdlibArtifact list * ImportDecl list * Diagnostic list =
     let stdImports, otherImps =
@@ -5013,7 +5045,7 @@ let private resolveStdlibImports
         let rec visit segments =
             let key = packageKey segments
             if visited.Add key then
-                match ensureStdlibArtifact segments with
+                match ensureStdlibArtifact target segments with
                 | Ok a ->
                     // Visit deps first so they appear before in the
                     // ordered list — type-checker import processing
@@ -5187,7 +5219,7 @@ let emit (req: EmitRequest) : EmitResult =
     let afterRestored, restoredImportedItems, restoredArtifacts, restoredDiags =
         resolveRestoredImports parsed.File req.RestoredPackages
     let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
-        resolveStdlibImports afterRestored
+        resolveStdlibImports req.Target afterRestored
     let mergedImportedItems = restoredImportedItems @ importedItems
     let mergedArtifacts = restoredArtifacts @ stdlibArtifacts
     let checked' =
@@ -5290,7 +5322,10 @@ type ProjectEmitRequest =
       /// the bundled output.  M5.1 stage 2c.2.ii ships only the
       /// `Single = true` path; per-package mode keeps the legacy
       /// per-package emit flow intact via `emit`.
-      Single:       bool }
+      Single:       bool
+      /// Compilation target platform.  Controls which `_kernel*`
+      /// directory is used for builtin `Std.*` package resolution.
+      Target:       CompileTarget }
 
 /// Result of a project emit.  Mirrors `EmitResult` but tracks a
 /// list of per-package emit diagnostics so the caller can render
@@ -5508,7 +5543,7 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
             let afterRestored, restoredItems, restoredArtifacts, restoredDiags =
                 resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
-                resolveStdlibImports afterRestored
+                resolveStdlibImports req.Target afterRestored
             let mergedImportedItems = intraItems @ restoredItems @ importedItems
             let mergedArtifacts = intraArts @ restoredArtifacts @ stdlibArtifacts
             let checked' =
@@ -5526,7 +5561,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 { Source           = combinedSrc
                   AssemblyName     = req.AssemblyName
                   OutputPath       = req.OutputPath
-                  RestoredPackages = req.RestoredPackages }
+                  RestoredPackages = req.RestoredPackages
+                  Target           = req.Target }
             let isMainPkg = (Some pkgName = mainPackage)
             let mainOutForCall =
                 if isMainPkg then Some bundleMain else None

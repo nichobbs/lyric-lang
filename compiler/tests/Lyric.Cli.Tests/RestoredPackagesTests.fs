@@ -22,7 +22,8 @@ let private buildPackage (dir: string) (name: string) (source: string) : string 
         { Source           = source
           AssemblyName     = name
           OutputPath       = dll
-          RestoredPackages = [] }
+          RestoredPackages = []
+          Target           = Emitter.Dotnet }
     let r = Emitter.emit req
     let errs = r.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
     if not (List.isEmpty errs) then
