@@ -237,155 +237,194 @@ pub union LInsn {
   case LSastore
 }
 
+// ── Type helpers (no OR patterns) ────────────────────────────────────────────
+
+// Returns 2 for double-width types (long, double), 1 for all others.
+pub func fieldSlotSize(t: in JvmType): Int {
+  match t {
+    case JLong   -> 2
+    case JDouble -> 2
+    case JBoolean -> 1
+    case JByte    -> 1
+    case JChar    -> 1
+    case JShort   -> 1
+    case JInt     -> 1
+    case JFloat   -> 1
+    case JVoid    -> 0
+    case JRef(_)  -> 1
+    case JArray(_) -> 1
+  }
+}
+
+// Sum of slot sizes for a list of JvmType parameters.
+pub func slotSum(ps: in List[JvmType]): Int {
+  var s = 0
+  var i = 0
+  while i < ps.count {
+    s = s + fieldSlotSize(ps[i])
+    i = i + 1
+  }
+  s
+}
+
 pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
   match insn {
-    case LLabel(n)      -> emitLabel(asm, n)
+    case LLabel(n)      -> { emitLabel(asm, n); resetStack(asm) }
     case LNop           -> emitNop(asm)
     case LReturn        -> emitReturn(asm)
-    case LIreturn       -> emitIreturn(asm)
-    case LLreturn       -> emitLreturn(asm)
-    case LDreturn       -> emitDreturn(asm)
-    case LAreturn       -> emitAreturn(asm)
-    case LAthrow        -> emitAthrow(asm)
+    case LIreturn       -> { emitIreturn(asm); trackStack(asm, -1) }
+    case LLreturn       -> { emitLreturn(asm); trackStack(asm, -2) }
+    case LDreturn       -> { emitDreturn(asm); trackStack(asm, -2) }
+    case LAreturn       -> { emitAreturn(asm); trackStack(asm, -1) }
+    case LAthrow        -> { emitAthrow(asm);  trackStack(asm, -1) }
 
-    case LIconst(v)     -> emitPushInt(asm, v)
-    case LLconst(v)     -> emitPushLong(asm, v)
-    case LFconst(v)     -> emitPushFloat(asm, v)
-    case LDconst(v)     -> emitPushDouble(asm, v)
-    case LPushString(s) -> emitPushString(asm, s)
+    case LIconst(v)     -> { emitPushInt(asm, v);    trackStack(asm, 1)  }
+    case LLconst(v)     -> { emitPushLong(asm, v);   trackStack(asm, 2)  }
+    case LFconst(v)     -> { emitPushFloat(asm, v);  trackStack(asm, 1)  }
+    case LDconst(v)     -> { emitPushDouble(asm, v); trackStack(asm, 2)  }
+    case LPushString(s) -> { emitPushString(asm, s); trackStack(asm, 1)  }
 
-    case LIload(s)      -> emitIload(asm, s)
-    case LLload(s)      -> emitLload(asm, s)
-    case LDload(s)      -> emitDload(asm, s)
-    case LAload(s)      -> emitAload(asm, s)
-    case LIstore(s)     -> emitIstore(asm, s)
-    case LLstore(s)     -> emitLstore(asm, s)
-    case LDstore(s)     -> emitDstore(asm, s)
-    case LAstore(s)         -> emitAstore(asm, s)
-    case LAstoreAs(s, _cls) -> emitAstore(asm, s)
+    case LIload(s)      -> { emitIload(asm, s); trackStack(asm, 1)  }
+    case LLload(s)      -> { emitLload(asm, s); trackStack(asm, 2)  }
+    case LDload(s)      -> { emitDload(asm, s); trackStack(asm, 2)  }
+    case LAload(s)      -> { emitAload(asm, s); trackStack(asm, 1)  }
+    case LIstore(s)     -> { emitIstore(asm, s); trackStack(asm, -1) }
+    case LLstore(s)     -> { emitLstore(asm, s); trackStack(asm, -2) }
+    case LDstore(s)     -> { emitDstore(asm, s); trackStack(asm, -2) }
+    case LAstore(s)         -> { emitAstore(asm, s); trackStack(asm, -1) }
+    case LAstoreAs(s, _cls) -> { emitAstore(asm, s); trackStack(asm, -1) }
 
-    case LPop           -> emitPop(asm)
-    case LDup           -> emitDup(asm)
+    case LPop           -> { emitPop(asm); trackStack(asm, -1) }
+    case LDup           -> { emitDup(asm); trackStack(asm, 1)  }
 
-    case LIadd          -> emitIadd(asm)
-    case LIsub          -> emitIsub(asm)
-    case LImul          -> emitImul(asm)
-    case LIdiv          -> emitIdiv(asm)
-    case LIrem          -> emitIrem(asm)
+    case LIadd          -> { emitIadd(asm);  trackStack(asm, -1) }
+    case LIsub          -> { emitIsub(asm);  trackStack(asm, -1) }
+    case LImul          -> { emitImul(asm);  trackStack(asm, -1) }
+    case LIdiv          -> { emitIdiv(asm);  trackStack(asm, -1) }
+    case LIrem          -> { emitIrem(asm);  trackStack(asm, -1) }
     case LIneg          -> emitIneg(asm)
     case LIinc(s, d)    -> emitIinc(asm, s, d)
-    case LI2l           -> emitI2l(asm)
-    case LI2d           -> emitI2d(asm)
-    case LL2i           -> emitL2i(asm)
+    case LI2l           -> { emitI2l(asm); trackStack(asm, 1)  }
+    case LI2d           -> { emitI2d(asm); trackStack(asm, 1)  }
+    case LL2i           -> { emitL2i(asm); trackStack(asm, -1) }
 
-    case LLadd          -> emitLadd(asm)
-    case LLsub          -> emitLsub(asm)
-    case LLmul          -> emitLmul(asm)
-    case LLdiv          -> emitLdiv(asm)
+    case LLadd          -> { emitLadd(asm); trackStack(asm, -2) }
+    case LLsub          -> { emitLsub(asm); trackStack(asm, -2) }
+    case LLmul          -> { emitLmul(asm); trackStack(asm, -2) }
+    case LLdiv          -> { emitLdiv(asm); trackStack(asm, -2) }
 
-    case LDadd          -> emitDadd(asm)
-    case LDsub          -> emitDsub(asm)
-    case LDmul          -> emitDmul(asm)
-    case LDdiv          -> emitDdiv(asm)
+    case LDadd          -> { emitDadd(asm); trackStack(asm, -2) }
+    case LDsub          -> { emitDsub(asm); trackStack(asm, -2) }
+    case LDmul          -> { emitDmul(asm); trackStack(asm, -2) }
+    case LDdiv          -> { emitDdiv(asm); trackStack(asm, -2) }
 
-    case LFload(s)      -> emitFload(asm, s)
-    case LFstore(s)     -> emitFstore(asm, s)
-    case LFreturn       -> emitFreturn(asm)
-    case LFadd          -> emitFadd(asm)
-    case LFsub          -> emitFsub(asm)
-    case LFmul          -> emitFmul(asm)
-    case LFdiv          -> emitFdiv(asm)
-    case LFrem          -> emitFrem(asm)
+    case LFload(s)      -> { emitFload(asm, s); trackStack(asm, 1)  }
+    case LFstore(s)     -> { emitFstore(asm, s); trackStack(asm, -1) }
+    case LFreturn       -> { emitFreturn(asm); trackStack(asm, -1) }
+    case LFadd          -> { emitFadd(asm); trackStack(asm, -1) }
+    case LFsub          -> { emitFsub(asm); trackStack(asm, -1) }
+    case LFmul          -> { emitFmul(asm); trackStack(asm, -1) }
+    case LFdiv          -> { emitFdiv(asm); trackStack(asm, -1) }
+    case LFrem          -> { emitFrem(asm); trackStack(asm, -1) }
     case LFneg          -> emitFneg(asm)
 
-    case LIand          -> emitIand(asm)
-    case LIor           -> emitIor(asm)
-    case LIxor          -> emitIxor(asm)
-    case LIshl          -> emitIshl(asm)
-    case LIshr          -> emitIshr(asm)
-    case LIushr         -> emitIushr(asm)
+    case LIand          -> { emitIand(asm);  trackStack(asm, -1) }
+    case LIor           -> { emitIor(asm);   trackStack(asm, -1) }
+    case LIxor          -> { emitIxor(asm);  trackStack(asm, -1) }
+    case LIshl          -> { emitIshl(asm);  trackStack(asm, -1) }
+    case LIshr          -> { emitIshr(asm);  trackStack(asm, -1) }
+    case LIushr         -> { emitIushr(asm); trackStack(asm, -1) }
 
     case LLneg          -> emitLneg(asm)
-    case LLrem          -> emitLrem(asm)
-    case LLand          -> emitLand(asm)
-    case LLor           -> emitLor(asm)
-    case LLxor          -> emitLxor(asm)
-    case LLshl          -> emitLshl(asm)
-    case LLshr          -> emitLshr(asm)
-    case LLushr         -> emitLushr(asm)
-    case LLcmp          -> emitLcmp(asm)
+    case LLrem          -> { emitLrem(asm);  trackStack(asm, -2) }
+    case LLand          -> { emitLand(asm);  trackStack(asm, -2) }
+    case LLor           -> { emitLor(asm);   trackStack(asm, -2) }
+    case LLxor          -> { emitLxor(asm);  trackStack(asm, -2) }
+    case LLshl          -> { emitLshl(asm);  trackStack(asm, -1) }
+    case LLshr          -> { emitLshr(asm);  trackStack(asm, -1) }
+    case LLushr         -> { emitLushr(asm); trackStack(asm, -1) }
+    case LLcmp          -> { emitLcmp(asm);  trackStack(asm, -3) }
 
-    case LDrem          -> emitDrem(asm)
+    case LDrem          -> { emitDrem(asm);  trackStack(asm, -2) }
     case LDneg          -> emitDneg(asm)
-    case LFcmpl         -> emitFcmpl(asm)
-    case LFcmpg         -> emitFcmpg(asm)
-    case LDcmpl         -> emitDcmpl(asm)
-    case LDcmpg         -> emitDcmpg(asm)
+    case LFcmpl         -> { emitFcmpl(asm); trackStack(asm, -1) }
+    case LFcmpg         -> { emitFcmpg(asm); trackStack(asm, -1) }
+    case LDcmpl         -> { emitDcmpl(asm); trackStack(asm, -3) }
+    case LDcmpg         -> { emitDcmpg(asm); trackStack(asm, -3) }
 
-    case LL2f           -> emitL2f(asm)
+    case LL2f           -> { emitL2f(asm); trackStack(asm, -1) }
     case LL2d           -> emitL2d(asm)
     case LI2f           -> emitI2f(asm)
     case LI2b           -> emitI2b(asm)
     case LI2c           -> emitI2c(asm)
     case LI2s           -> emitI2s(asm)
     case LF2i           -> emitF2i(asm)
-    case LF2l           -> emitF2l(asm)
-    case LF2d           -> emitF2d(asm)
-    case LD2i           -> emitD2i(asm)
+    case LF2l           -> { emitF2l(asm); trackStack(asm, 1) }
+    case LF2d           -> { emitF2d(asm); trackStack(asm, 1) }
+    case LD2i           -> { emitD2i(asm); trackStack(asm, -1) }
     case LD2l           -> emitD2l(asm)
-    case LD2f           -> emitD2f(asm)
+    case LD2f           -> { emitD2f(asm); trackStack(asm, -1) }
 
     case LGoto(l)           -> emitGoto(asm, l)
-    case LIfeq(l)           -> emitIfeq(asm, l)
-    case LIfne(l)           -> emitIfne(asm, l)
-    case LIflt(l)           -> emitIflt(asm, l)
-    case LIfge(l)           -> emitIfge(asm, l)
-    case LIfgt(l)           -> emitIfgt(asm, l)
-    case LIfle(l)           -> emitIfle(asm, l)
-    case LIfIcmpeq(l)       -> emitIfIcmpeq(asm, l)
-    case LIfIcmpne(l)       -> emitIfIcmpne(asm, l)
-    case LIfIcmplt(l)       -> emitIfIcmplt(asm, l)
-    case LIfIcmpge(l)       -> emitIfIcmpge(asm, l)
-    case LIfIcmpgt(l)       -> emitIfIcmpgt(asm, l)
-    case LIfIcmple(l)       -> emitIfIcmple(asm, l)
+    case LIfeq(l)           -> { emitIfeq(asm, l);     trackStack(asm, -1) }
+    case LIfne(l)           -> { emitIfne(asm, l);     trackStack(asm, -1) }
+    case LIflt(l)           -> { emitIflt(asm, l);     trackStack(asm, -1) }
+    case LIfge(l)           -> { emitIfge(asm, l);     trackStack(asm, -1) }
+    case LIfgt(l)           -> { emitIfgt(asm, l);     trackStack(asm, -1) }
+    case LIfle(l)           -> { emitIfle(asm, l);     trackStack(asm, -1) }
+    case LIfIcmpeq(l)       -> { emitIfIcmpeq(asm, l); trackStack(asm, -2) }
+    case LIfIcmpne(l)       -> { emitIfIcmpne(asm, l); trackStack(asm, -2) }
+    case LIfIcmplt(l)       -> { emitIfIcmplt(asm, l); trackStack(asm, -2) }
+    case LIfIcmpge(l)       -> { emitIfIcmpge(asm, l); trackStack(asm, -2) }
+    case LIfIcmpgt(l)       -> { emitIfIcmpgt(asm, l); trackStack(asm, -2) }
+    case LIfIcmple(l)       -> { emitIfIcmple(asm, l); trackStack(asm, -2) }
 
     case LGetfield(owner, name, t) -> {
       val idx = poolFieldref(asm.pool, owner, name, typeDescriptor(t))
       emitGetfield(asm, idx)
+      trackStack(asm, fieldSlotSize(t) - 1)
     }
     case LPutfield(owner, name, t) -> {
       val idx = poolFieldref(asm.pool, owner, name, typeDescriptor(t))
       emitPutfield(asm, idx)
+      trackStack(asm, -(fieldSlotSize(t) + 1))
     }
     case LGetstatic(owner, name, t) -> {
       val idx = poolFieldref(asm.pool, owner, name, typeDescriptor(t))
       emitGetstatic(asm, idx)
+      trackStack(asm, fieldSlotSize(t))
     }
     case LPutstatic(owner, name, t) -> {
       val idx = poolFieldref(asm.pool, owner, name, typeDescriptor(t))
       emitPutstatic(asm, idx)
+      trackStack(asm, -fieldSlotSize(t))
     }
 
     case LInvokevirtual(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokevirtual(asm, idx)
+      trackStack(asm, 0)
     }
     case LInvokespecial(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokespecial(asm, idx)
+      trackStack(asm, 0)
     }
     case LInvokestatic(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokestatic(asm, idx)
+      trackStack(asm, 0)
     }
     case LInvokeinterface(owner, name, ps, ret, argCount) -> {
       val idx = poolIfaceMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokeinterface(asm, idx, argCount)
+      trackStack(asm, 0)
     }
 
     case LNew(cls) -> {
       val idx = poolClass(asm.pool, cls)
       emitNew(asm, idx)
+      trackStack(asm, 1)
     }
     case LCheckcast(cls) -> {
       val idx = poolClass(asm.pool, cls)
@@ -395,7 +434,7 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       val idx = poolClass(asm.pool, cls)
       emitInstanceof(asm, idx)
     }
-    case LAconstNull -> emitAconstNull(asm)
+    case LAconstNull -> { emitAconstNull(asm); trackStack(asm, 1) }
 
     case LAnewarray(cls) -> {
       val idx = poolClass(asm.pool, cls)
@@ -404,26 +443,26 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LNewarray(tc) -> emitNewarray(asm, tc)
     case LArraylength  -> emitArraylength(asm)
 
-    case LIaload  -> emitIaload(asm)
+    case LIaload  -> { emitIaload(asm); trackStack(asm, -1) }
     case LLaload  -> emitLaload(asm)
-    case LFaload  -> emitFaload(asm)
+    case LFaload  -> { emitFaload(asm); trackStack(asm, -1) }
     case LDaload  -> emitDaload(asm)
-    case LAaload  -> emitAaload(asm)
-    case LBaload  -> emitBaload(asm)
-    case LCaload  -> emitCaload(asm)
-    case LSaload  -> emitSaload(asm)
+    case LAaload  -> { emitAaload(asm); trackStack(asm, -1) }
+    case LBaload  -> { emitBaload(asm); trackStack(asm, -1) }
+    case LCaload  -> { emitCaload(asm); trackStack(asm, -1) }
+    case LSaload  -> { emitSaload(asm); trackStack(asm, -1) }
 
-    case LIastore  -> emitIastore(asm)
-    case LLastore  -> emitLastore(asm)
-    case LFastore  -> emitFastore(asm)
-    case LDastore  -> emitDastore(asm)
-    case LAastore  -> emitAastore(asm)
-    case LBastore  -> emitBastore(asm)
-    case LCastore  -> emitCastore(asm)
-    case LSastore  -> emitSastore(asm)
+    case LIastore  -> { emitIastore(asm); trackStack(asm, -3) }
+    case LLastore  -> { emitLastore(asm); trackStack(asm, -4) }
+    case LFastore  -> { emitFastore(asm); trackStack(asm, -3) }
+    case LDastore  -> { emitDastore(asm); trackStack(asm, -4) }
+    case LAastore  -> { emitAastore(asm); trackStack(asm, -3) }
+    case LBastore  -> { emitBastore(asm); trackStack(asm, -3) }
+    case LCastore  -> { emitCastore(asm); trackStack(asm, -3) }
+    case LSastore  -> { emitSastore(asm); trackStack(asm, -3) }
 
-    case LTableswitch(lo, hi, def, cases) -> emitTableSwitch(asm, lo, hi, def, cases)
-    case LLookupswitch(def, pairs) -> emitLookupSwitch(asm, def, pairs)
+    case LTableswitch(lo, hi, def, cases) -> { emitTableSwitch(asm, lo, hi, def, cases); trackStack(asm, -1) }
+    case LLookupswitch(def, pairs) -> { emitLookupSwitch(asm, def, pairs); trackStack(asm, -1) }
 
     case LTryCatch(_, _, _, _) -> ()  // meta-insn: collected by lowerFunc, no bytecode
 
@@ -528,23 +567,6 @@ pub record LRecord {
 
 // ── Type helpers (no OR patterns) ────────────────────────────────────────────
 
-// Returns 2 for double-width types (long, double), 1 for all others.
-func fieldSlotSize(t: in JvmType): Int {
-  match t {
-    case JLong   -> 2
-    case JDouble -> 2
-    case JBoolean -> 1
-    case JByte    -> 1
-    case JChar    -> 1
-    case JShort   -> 1
-    case JInt     -> 1
-    case JFloat   -> 1
-    case JVoid    -> 0
-    case JRef(_)  -> 1
-    case JArray(_) -> 1
-  }
-}
-
 // Emit the appropriate load instruction for parameter slot `slot` of type `t`.
 func emitFieldLoad(t: in JvmType, slot: in Int, asm: in MethodAssembler): Unit {
   match t {
@@ -603,11 +625,21 @@ func addTarget(targets: in Map[String, Bool], l: in String): Unit {
 
 // Return a set (Map[String, Bool]) of label names that are branch targets
 // in the LInsn list.
+//
+// D035 erasure: List[T] fields inside non-generic union cases (e.g.
+// LTableswitch.caseLabels and LLookupswitch.pairs) are stored as Object
+// at the CLR level, so we cannot call .count on them inside a match arm.
+// To work around this, every LLabel name is unconditionally added to the
+// set.  All switch case targets are emitted as LLabel instructions, so
+// they will be captured here even if we cannot iterate the switch operand
+// lists.  Emitting a StackMapTable frame for a label that is not strictly
+// a branch target is valid; the JVM verifier accepts additional frames.
 func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
   val targets: Map[String, Bool] = newMap()
   var i = 0
   while i < insns.count {
     match insns[i] {
+      case LLabel(l)      -> addTarget(targets, l)
       case LGoto(l)       -> addTarget(targets, l)
       case LIfeq(l)       -> addTarget(targets, l)
       case LIfne(l)       -> addTarget(targets, l)
@@ -621,22 +653,8 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
       case LIfIcmpge(l)   -> addTarget(targets, l)
       case LIfIcmpgt(l)   -> addTarget(targets, l)
       case LIfIcmple(l)   -> addTarget(targets, l)
-      case LTableswitch(_, _, def, cases) -> {
-        addTarget(targets, def)
-        var ti = 0
-        while ti < cases.count {
-          addTarget(targets, cases[ti])
-          ti = ti + 1
-        }
-      }
-      case LLookupswitch(def, pairs) -> {
-        addTarget(targets, def)
-        var li = 0
-        while li < pairs.count {
-          addTarget(targets, pairs[li].label)
-          li = li + 1
-        }
-      }
+      case LTableswitch(_, _, def, _) -> addTarget(targets, def)
+      case LLookupswitch(def, _)      -> addTarget(targets, def)
       case _              -> ()
     }
     i = i + 1
@@ -646,11 +664,48 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
 
 // ── Lowering ──────────────────────────────────────────────────────────────────
 
+// Infer the minimum maxLocals needed by scanning the instruction list for the
+// highest slot index used by any load/store instruction.
+func inferMaxLocals(f: in LFunc): Int {
+  var maxSlot = 0
+  var i = 0
+  while i < f.insns.count {
+    match f.insns[i] {
+      case LIload(s)       -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LLload(s)       -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
+      case LFload(s)       -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LDload(s)       -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
+      case LAload(s)       -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LIstore(s)      -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LLstore(s)      -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
+      case LFstore(s)      -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LDstore(s)      -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
+      case LAstore(s)      -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LAstoreAs(s, _) -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case LIinc(s, _)     -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
+      case _               -> ()
+    }
+    i = i + 1
+  }
+  // Account for parameter slots (always allocated at 0..N-1).
+  val paramSlots = slotSum(f.params)
+  if paramSlots > maxSlot { maxSlot = paramSlots }
+  // For virtual methods slot 0 is `this`; ACC_STATIC = 0x0008.
+  val isStatic = (f.flags / 8) % 2 == 1
+  if not isStatic and maxSlot < 1 { maxSlot = 1 }
+  maxSlot
+}
+
 pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   val asm = newAssembler(pool)
   for insn in f.insns.toArray() {
     lowerInsn(insn, asm)
   }
+
+  // Use caller-supplied maxStack/maxLocals when > 0; otherwise infer from the
+  // assembled instruction sequence (B103 feature).
+  val actualMaxStack  = if f.maxStack  > 0 then f.maxStack  else asm.peakStack
+  val actualMaxLocals = if f.maxLocals > 0 then f.maxLocals else inferMaxLocals(f)
 
   // -- B5: stack-map computation -----------------------------------------
   // Assemble code bytes and collect label offsets.
@@ -755,7 +810,7 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
     fli = fli + 1
   }
   var slotIdx = paramSlotCount
-  while slotIdx < f.maxLocals {
+  while slotIdx < actualMaxLocals {
     match mapGet(storeTypes, slotIdx) {
       case Some(vt) -> {
         frameLocals.add(vt)
@@ -827,8 +882,8 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   // Build the Code attribute body.  If there are StackMapTable entries,
   // embed them as a nested attribute (JVMS §4.7.3, §4.7.4).
   val codeW = writerNew()
-  writerU2(codeW, f.maxStack)
-  writerU2(codeW, f.maxLocals)
+  writerU2(codeW, actualMaxStack)
+  writerU2(codeW, actualMaxLocals)
   writerU4(codeW, ar.codeBytes.count)
   writerByteList(codeW, ar.codeBytes)
   writerU2(codeW, tcStartLabels.count)   // exception_table_length
