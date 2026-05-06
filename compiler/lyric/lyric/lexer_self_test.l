@@ -466,6 +466,36 @@ func testReservedUnderscoreAlone(): Unit {
   assertEqualInt(diagCount(r), 0, "L0040: no diagnostic for `_`")
 }
 
+// Phase 5 §M5.1 stage 4 — non-ASCII (UAX #31 XID_Start /
+// XID_Continue) identifier acceptance via `Std.UnicodeHost`'s
+// `System.Char.GetUnicodeCategory` extern.
+func testNonAsciiIdentifier(): Unit {
+  // Greek-letter identifier — `α` is `LowercaseLetter`,
+  // `β` is `LowercaseLetter`.  No diagnostics; one TIdent token.
+  val r = lex("\u{03B1}\u{03B2}")
+  assertEqualInt(diagCount(r), 0, "uax31: greek ident no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "ident", "uax31: TIdent kind")
+  assertEqual(identNameAt(r, 0), "\u{03B1}\u{03B2}", "uax31: lexeme preserved")
+}
+
+func testCyrillicIdentifier(): Unit {
+  // Cyrillic capital letter `И` (U+0418) is `UppercaseLetter`;
+  // followed by lowercase `и` (U+0438) which is `LowercaseLetter`.
+  val r = lex("\u{0418}\u{0438}")
+  assertEqualInt(diagCount(r), 0, "uax31: cyrillic ident no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "ident", "uax31: TIdent kind")
+}
+
+func testIdentDigitsContinueOnly(): Unit {
+  // `α0` — letter then ASCII digit.  Digits are XID_Continue but
+  // not XID_Start, so the leading letter is required.  Should
+  // produce one TIdent.
+  val r = lex("\u{03B1}0")
+  assertEqualInt(diagCount(r), 0, "uax31: letter+digit no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "ident", "uax31: starts as TIdent")
+  assertEqual(identNameAt(r, 0), "\u{03B1}0", "uax31: digits trail")
+}
+
 func testFullPackageHeader(): Unit {
   val r = lex("package Foo.Bar\n\nimport Std.Core\n\nfunc add(x: in Int, y: in Int): Int {\n  x + y\n}\n")
   assertEqualInt(diagCount(r), 0, "full: no diagnostics")
@@ -513,6 +543,9 @@ func main(): Unit {
   testReservedUnderscoreLowerOK()
   testReservedUnderscoreDigitOK()
   testReservedUnderscoreAlone()
+  testNonAsciiIdentifier()
+  testCyrillicIdentifier()
+  testIdentDigitsContinueOnly()
   testFullPackageHeader()
   println("lexer self-test: ok")
 }
