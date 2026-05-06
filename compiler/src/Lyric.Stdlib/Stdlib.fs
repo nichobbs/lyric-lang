@@ -739,53 +739,13 @@ type HttpServerHost private () =
         resp.OutputStream.Close()
         resp.Close()
 
-[<Sealed; AbstractClass>]
-type FileHost private () =
-
-    // G10 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-109):
-    // text- and dir-mode helpers retired.  `Std.File`'s `fileExists`,
-    // `readText`, `writeText`, `dirExists`, `createDir` now go through
-    // direct `@externTarget`s on `System.IO.File` / `System.IO.Directory`
-    // declared in `stdlib/std/_kernel/file_host.l`, with `try { … }
-    // catch Bug as b { Err(...b.message...) }` wrappers in the user-facing
-    // `Std.File` package.  The bytes-flavoured methods below remain
-    // because `slice[Byte] → List[Byte]` conversion isn't yet
-    // expressible in pure Lyric; G10 follow-up tracks the migration.
-
-    /// True if `ReadBytesValue(path)` would succeed.
-    static member ReadBytesIsValid (path: string) : bool =
-        try
-            let _ = System.IO.File.ReadAllBytes(path)
-            true
-        with _ -> false
-
-    /// Read the file at `path` as raw bytes.  Returns an empty list on
-    /// any host error; callers should gate on `ReadBytesIsValid`.
-    static member ReadBytesValue (path: string) : System.Collections.Generic.List<byte> =
-        try System.Collections.Generic.List<byte>(System.IO.File.ReadAllBytes(path))
-        with _ -> System.Collections.Generic.List<byte>()
-
-    /// Diagnostic message paired with `ReadBytesIsValid`.
-    static member ReadBytesError (path: string) : string =
-        try
-            let _ = System.IO.File.ReadAllBytes(path)
-            ""
-        with e -> e.GetType().Name + ": " + e.Message
-
-    /// Write raw bytes to `path` (overwriting if it exists).  Returns
-    /// true on success, false if the host call threw.
-    static member WriteBytesIsValid (path: string, bytes: System.Collections.Generic.List<byte>) : bool =
-        try
-            System.IO.File.WriteAllBytes(path, bytes.ToArray())
-            true
-        with _ -> false
-
-    /// Diagnostic message paired with `WriteBytesIsValid`.
-    static member WriteBytesError (path: string, bytes: System.Collections.Generic.List<byte>) : string =
-        try
-            System.IO.File.WriteAllBytes(path, bytes.ToArray())
-            ""
-        with e -> e.GetType().Name + ": " + e.Message
+// G10 (`docs/23-fsharp-shim-elimination.md` §5): the F# `FileHost`
+// type retires entirely with G10 (2/2) (D-progress-NNN).  The
+// bytes-flavoured methods (`ReadBytes*`, `WriteBytes*`) were the
+// last survivors after G10 (1/2); they now route through direct
+// `System.IO.File.{ReadAllBytes, WriteAllBytes}` externs in
+// `stdlib/std/_kernel/file_host.l`, with the `byte[]`/`slice[Byte]`
+// to `List[Byte]` shuttle done in pure Lyric inside `Std.File`.
 
 // ── JVM class-file emission helpers moved out (Phase 1 Bucket D) ─────────────
 //

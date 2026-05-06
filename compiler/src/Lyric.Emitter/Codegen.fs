@@ -382,37 +382,13 @@ let private stringFormatParams : Lazy<MethodInfo> =
         | Some m -> m
         | None   -> failwith "System.String::Format(String, Object[]) not found")
 
-/// Lookup a static method on `Lyric.Stdlib.FileHost` by name, with the
-/// given parameter types.  Each Lyric `hostFile*` builtin routes here.
-let private fileHostMethod (name: string) (paramTys: System.Type array) : Lazy<MethodInfo> =
-    lazy (
-        let ty = typeof<Lyric.Stdlib.FileHost>
-        let mi = ty.GetMethod(name, paramTys)
-        match Option.ofObj mi with
-        | Some m -> m
-        | None   -> failwithf "Lyric.Stdlib.FileHost::%s not found" name)
-
-/// Codegen map for the bytes-flavoured `Std.File` operations that
-/// haven't yet migrated off the `Lyric.Stdlib.FileHost` pair-of-statics
-/// pattern.  G10 (D-progress-109) ported the text / dir helpers to
-/// direct BCL externs in `stdlib/std/_kernel/file_host.l` + a `try {
-/// … } catch Bug as b { … }` wrapper in `stdlib/std/file.l`.  The
-/// bytes surfaces still need a `slice[Byte] → List[Byte]`
-/// conversion that's gated on a follow-up — they stay on the F#
-/// shim until then.
-let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
-    Map.ofList [
-        "hostReadAllBytesIsValid",
-            fileHostMethod "ReadBytesIsValid" [| typeof<string> |]
-        "hostReadAllBytesValue",
-            fileHostMethod "ReadBytesValue" [| typeof<string> |]
-        "hostReadAllBytesError",
-            fileHostMethod "ReadBytesError" [| typeof<string> |]
-        "hostWriteAllBytesIsValid",
-            fileHostMethod "WriteBytesIsValid" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
-        "hostWriteAllBytesError",
-            fileHostMethod "WriteBytesError" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
-    ]
+// G10 (`docs/23-fsharp-shim-elimination.md` §5): the
+// `hostFileBuiltins` codegen map (and its `fileHostMethod` helper)
+// retired with G10 (2/2).  The text / dir surfaces went direct via
+// G10 (1/2) (D-progress-109); the bytes surfaces follow now via
+// `System.IO.File.{ReadAllBytes, WriteAllBytes}` externs in
+// `stdlib/std/_kernel/file_host.l` plus a pure-Lyric
+// `slice[Byte]`/`List[Byte]` shuttle in `stdlib/std/file.l`.
 
 /// G9 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-110): the
 /// previous `Lyric.Stdlib.Contracts.{Panic, Expect, Assert}` helpers
@@ -3052,20 +3028,6 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 m.ReturnType
             | None ->
                 failwithf "M2.1 codegen: %s.tryFrom not available (no range constraint)" typeName
-
-    // ---- std.file host builtins ---------------------------------------
-
-    | ECall ({ Kind = EPath { Segments = [name] } }, args)
-        when Map.containsKey name hostFileBuiltins ->
-        for a in args do
-            let payload =
-                match a with
-                | CAPositional ex | CANamed (_, ex, _) -> ex
-            let _ = emitExpr ctx payload
-            ()
-        let mi = (Map.find name hostFileBuiltins).Value
-        il.Emit(OpCodes.Call, mi)
-        mi.ReturnType
 
     // ---- panic / expect / assert builtins ------------------------------
     //

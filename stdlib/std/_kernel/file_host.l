@@ -42,3 +42,15 @@ pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 
 @externTarget("System.IO.Directory.CreateDirectory")
 pub func hostCreateDirectory(path: in String): Unit = ()
+
+// =====================================================================
+// Bytes-mode IO — `ReadAllBytes` returns `byte[]` (which Lyric maps
+// to `slice[Byte]`); `WriteAllBytes` takes `byte[]`.  Both throw on
+// host failure; `Std.File` wraps them in `try { } catch Bug as b`.
+// =====================================================================
+
+@externTarget("System.IO.File.ReadAllBytes")
+pub func hostReadAllBytes(path: in String): slice[Byte] = ()
+
+@externTarget("System.IO.File.WriteAllBytes")
+pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()

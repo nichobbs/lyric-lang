@@ -52,7 +52,8 @@ deferred to Phase 3 by design.
 | `docs/23` G10 (1/2) — text/dir `Std.File` migrated to native Lyric `try { … } catch Bug as b { … }` around direct BCL externs (`System.IO.File.{ReadAllText,WriteAllText,Exists}` + `System.IO.Directory.{Exists,CreateDirectory}`); F# `FileHost` trimmed to bytes-only methods | **Shipped** (PR #150) | D-progress-109 |
 | `docs/23` G9 — codegen inlines `newobj System.Exception(string)` + `throw` for `panic` / `expect` / `assert` + `requires:` / `ensures:` runtime checks; F# `Lyric.Stdlib.Contracts` and `LyricAssertionException` retired | **Shipped** (PR #151) | D-progress-110 |
 | `docs/23` G12 (1/N) — F# `Lyric.Stdlib.TaskHost` retired; `Std.Task.{delay, delayWithCancel}` extern at `System.Threading.Tasks.Task.Delay` directly (overload by arity) | **Shipped** (PR #152) | D-progress-111 |
-| `docs/23` G11 — `extern type AsyncLocal[T]` + non-builder generic FFI close; `Std.Task.{currentToken, installToken, restoreToken, hasAmbient}` are native Lyric on top of direct BCL externs to `AsyncLocal\`1.{Value, set_Value}` and `CancellationToken.CanBeCanceled`; F# `AmbientHost` collapses to a 4-LoC `AmbientSlot` static-field holder | **Shipped** (this branch) | D-progress-112 |
+| `docs/23` G11 — `extern type AsyncLocal[T]` + non-builder generic FFI close; `Std.Task.{currentToken, installToken, restoreToken, hasAmbient}` are native Lyric on top of direct BCL externs to `AsyncLocal\`1.{Value, set_Value}` and `CancellationToken.CanBeCanceled`; F# `AmbientHost` collapses to a 4-LoC `AmbientSlot` static-field holder | **Shipped** (PR #155) | D-progress-112 |
+| `docs/23` G10 (2/2) — bytes paths in `Std.File` go direct to `System.IO.File.{ReadAllBytes, WriteAllBytes}` via new kernel externs in `_kernel/file_host.l`; `slice[Byte] ↔ List[Byte]` shuttle done in pure Lyric (`for b in raw { acc.add(b) }` for read; `bytes.toArray()` for write).  F# `FileHost` retired entirely; `hostFileBuiltins` codegen map and `fileHostMethod` helper deleted | **Shipped** (this branch) | D-progress-113 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -174,6 +175,64 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-113: G10 (2/2) — `Std.File` bytes paths go direct to BCL
+
+*claude/g10-bytes-jsonslice branch.*  Closes the second half of
+`docs/23-fsharp-shim-elimination.md` G10 by retiring the F#
+`Lyric.Stdlib.FileHost` type entirely.  G10 (1/2) (D-progress-109)
+ported the text/dir surfaces; this PR finishes the migration for
+`readBytes` / `writeBytes`.
+
+**Kernel externs** (`stdlib/std/_kernel/file_host.l`).
+
+* New `hostReadAllBytes(path)` → `System.IO.File.ReadAllBytes`
+  returning `slice[Byte]` (Lyric's mapping for `byte[]`).
+* New `hostWriteAllBytes(path, slice[Byte])` → `System.IO.File.WriteAllBytes`.
+
+**`Std.File` rewrite** (`stdlib/std/file.l`).
+
+* `readBytes` now: `try { hostReadAllBytes(path) → for b in raw {
+  acc.add(b) } → Ok(acc) } catch Bug as b { Err(IoError(...)) }`.
+* `writeBytes` now: `try { hostWriteAllBytes(path, bytes.toArray());
+  Ok(()) } catch Bug as b { Err(IoError(...)) }`.
+* The `slice[Byte] ↔ List[Byte]` shuttle is pure Lyric — no FFI
+  gymnastics.  The public surface (`Result[List[Byte], IOError]`)
+  stays unchanged so callers (incl. JVM self-tests) need no edits.
+
+**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+
+* `type FileHost private () = …` (~70 LoC after G10 1/2 had pruned
+  text/dir; 5 remaining `ReadBytes*`/`WriteBytes*` members) deleted.
+* Replaced by a short doc comment.
+
+**Codegen trim** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+
+* `hostFileBuiltins` map (5 entries) deleted along with the
+  `fileHostMethod` helper.
+* The dispatch arm in `emitExpr` that consulted `hostFileBuiltins`
+  also deleted — the bytes operations now flow through the regular
+  extern-call path.
+
+**Net F# shim shrink.** ~40 LoC retired.  Trajectory now ~760 LoC
+in `Stdlib.fs` (Phase 1 + G10 1/2 + G9 + G12 1/N + G11 + G10 2/2).
+
+**`JsonHost.Get*Slice` parked.** The five `JsonHost.Get*Slice`
+methods (`GetIntSlice`, `GetLongSlice`, `GetDoubleSlice`,
+`GetBoolSlice`, `GetStringSlice`) were the second G10 (2/2) target
+in the prior summary — they're real JSON parsers (parse + property
+lookup + array enumeration + typed extraction), not boundary
+passthroughs.  `docs/14-native-stdlib-plan.md` §3 already declares
+the JSON tokenizer kernel-grade; these methods inherit that
+classification and stay.
+
+**Tests.** All non-pre-existing-failure suites green: 583 emitter
+(the 16 errored tests are pre-existing JVM-lowering failures on
+main, identical between this branch and `origin/main`), 83 CLI,
+242 verifier, 137 type checker, 312 parser, 123 lexer, 25 LSP.
+Native bytes-round-trip probe (`/tmp/bytes_probe.l`) confirms
+write 4 → read 4 with byte 0 = 1, byte 3 = 255 round-trip
+correctly.
 
 ### D-progress-112: G11 — `AsyncLocal[T]` extern + non-builder generic-FFI fix
 

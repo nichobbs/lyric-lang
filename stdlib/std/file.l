@@ -1,17 +1,15 @@
 // std/file.l - Bootstrap-grade file I/O.
 //
-// G10 (`docs/23-fsharp-shim-elimination.md` §5): the text/dir-mode
-// helpers wrap `System.IO.File` / `System.IO.Directory` calls in
-// `try { … } catch Bug as b { … }` to surface host failures as
-// `Result.Err(IoError)` — the same shape `Std.Directory` uses.  No
-// more F#-side `FileHost` round-trip for those paths.
+// G10 (`docs/23-fsharp-shim-elimination.md` §5): every helper now
+// wraps a direct BCL `@externTarget` (declared in
+// `stdlib/std/_kernel/file_host.l`) in `try { … } catch Bug as b
+// { … }` to surface host failures as `Result.Err(IoError)`.  No more
+// F#-side `FileHost` round-trip.
 //
-// `readBytes` / `writeBytes` still go through `Lyric.Stdlib.FileHost`
-// pair-of-statics for now: `System.IO.File.ReadAllBytes` returns
-// `byte[]`, but the public Lyric surface returns `List[Byte]`, and
-// the BCL→Lyric conversion isn't expressible in pure Lyric without
-// a `slice[Byte] → List[Byte]` constructor.  That migration lands as
-// a follow-up to G10.
+// For bytes round-tripping the public surface stays `List[Byte]` for
+// caller convenience; the kernel extern returns / accepts
+// `slice[Byte]` and we shuttle through `slice[T].toList()` /
+// `List[T].toArray()` in pure Lyric.
 
 @runtime_checked
 package Std.File
@@ -105,7 +103,6 @@ pub func createDir(path: in String): Result[Unit, IOError] {
   }
 }
 
-/// Write raw bytes to `path` (creating or replacing).
 /// Read the file at `path` as raw bytes.
 ///
 /// Returns `Ok(bytes)` on success, `Err(InvalidPath)` for empty paths,
@@ -113,24 +110,33 @@ pub func createDir(path: in String): Result[Unit, IOError] {
 @stable(since="1.0")
 pub func readBytes(path: in String): Result[List[Byte], IOError] {
   if path.length == 0 {
-    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  } else if hostReadAllBytesIsValid(path) {
-    Ok(value = hostReadAllBytesValue(path))
-  } else {
-    Err(error = IoError(path = path, message = hostReadAllBytesError(path)))
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    val raw = hostReadAllBytes(path)
+    val acc: List[Byte] = newList()
+    for b in raw {
+      acc.add(b)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
   }
 }
 
+/// Write raw bytes to `path` (creating or replacing).
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).
 @stable(since="1.0")
 pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
   if path.length == 0 {
-    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  } else if hostWriteAllBytesIsValid(path, bytes) {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    hostWriteAllBytes(path, bytes.toArray())
     Ok(value = ())
-  } else {
-    Err(error = IoError(path = path, message = hostWriteAllBytesError(path, bytes)))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
   }
 }
