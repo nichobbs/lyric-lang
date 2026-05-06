@@ -77,51 +77,6 @@ type Contracts private () =
     static member Panic (msg: string) : unit =
         raise (LyricAssertionException("panic: " + msg))
 
-/// String formatting backed by `System.String.Format`.  Supports
-/// .NET-style `{0}`, `{1}`, … placeholders.  Up to four args today;
-/// add more overloads if/when programs need them.  Lyric has no
-/// varargs syntax, so each arity is a separate static member.
-[<Sealed; AbstractClass>]
-type Format private () =
-
-    static member Of1 (template: string, a0: obj | null) : string =
-        System.String.Format(template, a0)
-
-    static member Of2 (template: string,
-                       a0: obj | null,
-                       a1: obj | null) : string =
-        System.String.Format(template, a0, a1)
-
-    static member Of3 (template: string,
-                       a0: obj | null,
-                       a1: obj | null,
-                       a2: obj | null) : string =
-        System.String.Format(template, a0, a1, a2)
-
-    static member Of4 (template: string,
-                       a0: obj | null,
-                       a1: obj | null,
-                       a2: obj | null,
-                       a3: obj | null) : string =
-        System.String.Format(template, [| a0; a1; a2; a3 |])
-
-    static member Of5 (template: string,
-                       a0: obj | null,
-                       a1: obj | null,
-                       a2: obj | null,
-                       a3: obj | null,
-                       a4: obj | null) : string =
-        System.String.Format(template, [| a0; a1; a2; a3; a4 |])
-
-    static member Of6 (template: string,
-                       a0: obj | null,
-                       a1: obj | null,
-                       a2: obj | null,
-                       a3: obj | null,
-                       a4: obj | null,
-                       a5: obj | null) : string =
-        System.String.Format(template, [| a0; a1; a2; a3; a4; a5 |])
-
 /// Generic helper for `Dictionary<K, V>` operations that don't fit
 /// directly into the FFI without out-parameters or rich Lyric
 /// inference.  All members are static and routed through Lyric's
@@ -477,25 +432,13 @@ type JsonHost private () =
     // `RenderObjSlice` which calls `EncodeString` on String / falls
     // through to `Convert.ToString` for everything else.
 
-    static member RenderIntSlice (items: int[] | null) : string =
-        match Option.ofObj items with
-        | None    -> "[]"
-        | Some xs ->
-            let sb = System.Text.StringBuilder("[")
-            for i = 0 to xs.Length - 1 do
-                if i > 0 then sb.Append(',') |> ignore
-                sb.Append(string xs.[i]) |> ignore
-            sb.Append(']').ToString()
-
-    static member RenderLongSlice (items: int64[] | null) : string =
-        match Option.ofObj items with
-        | None    -> "[]"
-        | Some xs ->
-            let sb = System.Text.StringBuilder("[")
-            for i = 0 to xs.Length - 1 do
-                if i > 0 then sb.Append(',') |> ignore
-                sb.Append(string xs.[i]) |> ignore
-            sb.Append(']').ToString()
+    // P3-3 (native-stdlib plan §6): `RenderIntSlice` / `RenderLongSlice` /
+    // `RenderBoolSlice` / `RenderStringSlice` were retired; the
+    // `@derive(Json)` synthesiser (`Lyric.Parser.JsonDerive.fs`) now
+    // emits inline `while`-loop renderers in pure Lyric for those
+    // primitives.  `RenderDoubleSlice` stays here because round-trip-
+    // faithful `ToString("R", InvariantCulture)` formatting isn't yet
+    // covered by Lyric's `toString`.
 
     static member RenderDoubleSlice (items: double[] | null) : string =
         match Option.ofObj items with
@@ -507,16 +450,6 @@ type JsonHost private () =
                 // Use round-trip "R" so 1.5 → "1.5" not "1.5000000000000002".
                 sb.Append(xs.[i].ToString("R", System.Globalization.CultureInfo.InvariantCulture))
                 |> ignore
-            sb.Append(']').ToString()
-
-    static member RenderBoolSlice (items: bool[] | null) : string =
-        match Option.ofObj items with
-        | None    -> "[]"
-        | Some xs ->
-            let sb = System.Text.StringBuilder("[")
-            for i = 0 to xs.Length - 1 do
-                if i > 0 then sb.Append(',') |> ignore
-                sb.Append(if xs.[i] then "true" else "false") |> ignore
             sb.Append(']').ToString()
 
     // -------- fromJson primitive field readers --------
@@ -586,21 +519,11 @@ type JsonHost private () =
             else false
         with _ -> false
 
-    static member RenderStringSlice (items: (string | null)[] | null) : string =
-        match Option.ofObj items with
-        | None    -> "[]"
-        | Some xs ->
-            let sb = System.Text.StringBuilder("[")
-            for i = 0 to xs.Length - 1 do
-                if i > 0 then sb.Append(',') |> ignore
-                let raw = xs.[i]
-                let s : string =
-                    match Option.ofObj raw with
-                    | Some v -> v
-                    | None   -> ""
-                let encoded = System.Text.Json.JsonEncodedText.Encode(s)
-                sb.Append('"').Append(encoded.ToString()).Append('"') |> ignore
-            sb.Append(']').ToString()
+    // P3-3: `RenderStringSlice` retired; the synthesiser now emits an
+    // inline `while`-loop renderer that calls
+    // `__lyricJsonEscape(items[i])` per element (which still routes
+    // through `JsonHost.EncodeString` — `EncodeString` stays kernel
+    // because it depends on `System.Text.Json.JsonEncodedText`).
 
     // -------- fromJson slice / sub-object readers --------
     //
@@ -1102,50 +1025,6 @@ type FileHost private () =
             let _ = System.IO.Directory.CreateDirectory(path)
             true
         with _ -> false
-
-/// Numeric / bool parsing routed through `int.TryParse` etc.  The pair
-/// `IsValid` / `Value` is a bootstrap-grade workaround for not having
-/// out-parameters on the Lyric side: callers gate `Value` behind
-/// `IsValid` and accept the cost of parsing twice.  When real out
-/// parameters land the pair collapses into a single TryParse method.
-[<Sealed; AbstractClass>]
-type Parse private () =
-
-    static member IntIsValid (s: string) : bool =
-        let mutable v = 0
-        System.Int32.TryParse(s, &v)
-
-    static member IntValue (s: string) : int =
-        let mutable v = 0
-        System.Int32.TryParse(s, &v) |> ignore
-        v
-
-    static member LongIsValid (s: string) : bool =
-        let mutable v = 0L
-        System.Int64.TryParse(s, &v)
-
-    static member LongValue (s: string) : int64 =
-        let mutable v = 0L
-        System.Int64.TryParse(s, &v) |> ignore
-        v
-
-    static member DoubleIsValid (s: string) : bool =
-        let mutable v = 0.0
-        System.Double.TryParse(
-            s,
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture,
-            &v)
-
-    static member DoubleValue (s: string) : double =
-        let mutable v = 0.0
-        System.Double.TryParse(
-            s,
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture,
-            &v)
-        |> ignore
-        v
 
 // ── JVM class-file emission helpers (Stage B1) ───────────────────────────────
 //
