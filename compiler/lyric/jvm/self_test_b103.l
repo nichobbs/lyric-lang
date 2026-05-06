@@ -1,12 +1,7 @@
-// jvm/self_test_b102.l — Stage B102: tableswitch and lookupswitch in LInsn.
+// jvm/self_test_b103.l — Stage B103: maxStack/maxLocals inference.
 //
-// Adds LTableswitch and LLookupswitch to LInsn.  Both are wired to the existing
-// emitTableSwitch / emitLookupSwitch in bytecode.l.  collectBranchTargets is
-// updated to harvest all case labels and the default label from these insns.
-//
-// Creates a Switch class with:
-//   gradeStr(int score): String    — tableswitch over 0..4 (letter grades)
-//   dayName(int d): String         — lookupswitch over sparse keys 1,3,5,7 (day names)
+// Identical to self_test_b102 except maxStack = 0 and maxLocals = 0 on
+// both LFunc values.  lowerFunc must infer the correct values automatically.
 //
 // Java output (java -jar):
 //   A=gradeStr(4)
@@ -17,7 +12,7 @@
 //   Wed=dayName(3)
 //   ?=dayName(2)
 
-package Jvm.SelfTestB102
+package Jvm.SelfTestB103
 
 import Std.Core
 import Std.Collections
@@ -70,8 +65,8 @@ func makeGradeStrMethod(): LFunc {
     params    = params,
     ret       = JRef(className = "java/lang/String"),
     insns     = insns,
-    maxStack  = 1,
-    maxLocals = 1
+    maxStack  = 0,
+    maxLocals = 0
   )
 }
 
@@ -112,8 +107,8 @@ func makeDayNameMethod(): LFunc {
     params    = params,
     ret       = JRef(className = "java/lang/String"),
     insns     = insns,
-    maxStack  = 1,
-    maxLocals = 1
+    maxStack  = 0,
+    maxLocals = 0
   )
 }
 
@@ -199,7 +194,7 @@ func makeMainBytes(): List[Byte] {
 }
 
 func main(): Unit {
-  val outDir = "/tmp/lyric-jvm-b102"
+  val outDir = "/tmp/lyric-jvm-b103"
   match createDir(outDir) {
     case Ok(_)  -> ()
     case Err(_) -> ()
@@ -212,7 +207,7 @@ func main(): Unit {
   classes.add(mainClass)
 
   val req = BuildRequest(
-    packageName = "Jvm.SelfTestB102",
+    packageName = "Jvm.SelfTestB103",
     mainClass   = "Main",
     version     = "0.1.0",
     outPath     = outDir + "/hello.jar"

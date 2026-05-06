@@ -26,9 +26,9 @@
 //   Slots 1+ = parameters in declaration order, then temporaries.
 //
 // Stack-depth tracking:
-//   `MethodAssembler` does not automatically compute max_stack.  The caller
-//   must supply `maxStack` to `assembleCode`.  A future B4 pass will infer
-//   it from the instruction sequence.
+//   `MethodAssembler` tracks the running stack depth in `curStack` and the
+//   peak depth in `peakStack`.  `lowerInsn` calls `trackStack` after each
+//   instruction.  `assembleCodeInferred` uses `asm.peakStack` automatically.
 
 package Jvm.Bytecode
 
@@ -344,6 +344,8 @@ pub record MethodAssembler {
   swLookupKeys:   List[Int]     // all lookupswitch keys (flat)
   swLookupLabels: List[String]  // all lookupswitch labels (flat)
   swLookupOff:    List[Int]     // start index for each lookupswitch in swLookupKeys/Labels
+  curStack:       Int           // current stack depth during lowerInsn calls
+  peakStack:      Int           // maximum stack depth seen so far
 }
 
 /// Construct a fresh assembler sharing `pool`.
@@ -356,8 +358,23 @@ pub func newAssembler(pool: in Pool): MethodAssembler {
     swTableOff     = newList(),
     swLookupKeys   = newList(),
     swLookupLabels = newList(),
-    swLookupOff    = newList()
+    swLookupOff    = newList(),
+    curStack       = 0,
+    peakStack      = 0
   )
+}
+
+/// Update the running stack depth by `delta` and record a new peak if needed.
+pub func trackStack(asm: in MethodAssembler, delta: in Int): Unit {
+  asm.curStack = asm.curStack + delta
+  if asm.curStack > asm.peakStack {
+    asm.peakStack = asm.curStack
+  }
+}
+
+/// Reset the current stack depth to 0 (used at every label / branch target).
+pub func resetStack(asm: in MethodAssembler): Unit {
+  asm.curStack = 0
 }
 
 /// Append a raw `AsmInsn` to the assembler.  Most callers use the typed
@@ -679,6 +696,11 @@ pub func assembleCode(asm: in MethodAssembler, maxStack: in Int, maxLocals: in I
   makeCodeAttr(maxStack, maxLocals, writerToList(code))
 }
 
+/// Like `assembleCode` but uses `asm.peakStack` instead of a caller-supplied maxStack.
+pub func assembleCodeInferred(asm: in MethodAssembler, maxLocals: in Int): Attribute {
+  assembleCode(asm, asm.peakStack, maxLocals)
+}
+
 func resolveLbl(labels: in Map[String, Int], name: in String): Int {
   match mapGet(labels, name) {
     case Some(v) -> v
@@ -869,6 +891,15 @@ pub func assembleCodeWithFrames(
     writerU2(codeW, 0)                           // no nested attributes
   }
   attrFromWriter("Code", codeW)
+}
+
+/// Like `assembleCodeWithFrames` but uses `asm.peakStack` instead of a caller-supplied maxStack.
+pub func assembleCodeWithFramesInferred(
+  asm:         in MethodAssembler,
+  maxLocals:   in Int,
+  frameLocals: in List[VerifierType]
+): Attribute {
+  assembleCodeWithFrames(asm, asm.peakStack, maxLocals, frameLocals)
 }
 
 // ── Typed emitter helpers ─────────────────────────────────────────────────────
