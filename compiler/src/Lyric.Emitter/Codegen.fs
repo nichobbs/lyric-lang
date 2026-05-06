@@ -2226,8 +2226,18 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 // `None[Keyword]` lands here too: walking
                                 // `constructedCase.GetConstructors()` would
                                 // throw `NotSupportedException`.
+                                // The receiver itself is a `TypeBuilderInstantiation`
+                                // whenever the open generic def is a `TypeBuilder` —
+                                // including in-project imported artifacts whose
+                                // `caseInfo.Type` is the live builder for `Option_Some`
+                                // (post-D-progress-099).  Walking
+                                // `constructedCase.GetConstructors()` on such a
+                                // receiver throws `NotSupportedException`, so we
+                                // route through `TypeBuilder.GetConstructor`
+                                // unconditionally when the open def is a builder.
                                 let needsTypeBuilderGetCtor =
-                                    typeArgs |> Array.exists (fun t ->
+                                    (caseInfo.Type :? System.Reflection.Emit.TypeBuilder)
+                                    || typeArgs |> Array.exists (fun t ->
                                         t :? System.Reflection.Emit.GenericTypeParameterBuilder
                                         || t :? System.Reflection.Emit.TypeBuilder
                                         || t.GetType().Name = "TypeBuilderInstantiation")
@@ -2741,9 +2751,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     && t.GetGenericArguments() |> Array.exists (fun ga ->
                         ga :? System.Reflection.Emit.TypeBuilder
                         || ga :? System.Reflection.Emit.GenericTypeParameterBuilder))
+            // Same widening as the nullary path above: when the
+            // open def is itself a `TypeBuilder` (in-project artifact
+            // post-D-progress-099), `constructedCase` is a
+            // `TypeBuilderInstantiation` regardless of the type-args,
+            // so route through `TypeBuilder.GetConstructor`.
+            let needsTypeBuilderCtor =
+                (caseInfo.Type :? System.Reflection.Emit.TypeBuilder)
+                || (typeArgs |> Array.exists isTypeBuilderArg)
             let constructedCtor =
-                if typeArgs |> Array.exists isTypeBuilderArg
-                then
+                if needsTypeBuilderCtor then
                     System.Reflection.Emit.TypeBuilder.GetConstructor(constructedCase, openCtor)
                 else
                     constructedCase.GetConstructors()

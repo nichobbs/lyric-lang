@@ -250,6 +250,79 @@ let tests =
                 Expect.isTrue (pubRec.IsPublic) "PubRec is CLR Public"
                 Expect.isTrue (intRec.IsNotPublic) "IntRec is CLR NotPublic"
 
+        // M5.1 stage 2c proof: a downstream Lyric package importing a
+        // generic union from another in-project package compiles
+        // through the cross-package symbol resolution path
+        // (D-progress-099) without tripping the TypeBuilder /
+        // TypeBuilderInstantiation reflection limits in either
+        // `emitAssembly`'s import-table population (DeclaredOnly
+        // binding flags) or `Codegen.fs`'s nullary / payload union
+        // ctor sites.  Mirrors the smallest-possible Std.Core +
+        // Std.Errors + Std.String slice that bundles cleanly via
+        // `lyric build --manifest stdlib/lyric.toml`.
+        testCase "[stdlib_smoke_bundle_compiles]" <| fun () ->
+            withTempDll "stdlib-smoke" <| fun dir ->
+                let dllPath = Path.Combine(dir, "Smoke.dll")
+                // Mimics the relevant subset of Std.Core: an
+                // Option-shaped generic union plus a plain enum-like
+                // union.  Stripped of every external dep.
+                let coreSrc =
+                    "package Std.Smoke.Core\n" +
+                    "\n" +
+                    "pub generic[T] union Option {\n" +
+                    "  case Some(value: T)\n" +
+                    "  case None\n" +
+                    "}\n"
+                // Mimics Std.Errors: a plain enum-shaped union with
+                // no payload.
+                let errorsSrc =
+                    "package Std.Smoke.Errors\n" +
+                    "\n" +
+                    "pub union HostError {\n" +
+                    "  case Timeout\n" +
+                    "  case Refused\n" +
+                    "}\n"
+                // Mimics the consumer pattern (Std.String style) —
+                // imports the generic Option from Std.Core and
+                // constructs Some/None in helper bodies.
+                let stringSrc =
+                    "package Std.Smoke.String\n" +
+                    "\n" +
+                    "import Std.Smoke.Core\n" +
+                    "\n" +
+                    "pub func tryHead(s: in String): Option[Char] {\n" +
+                    "  if s.length == 0 {\n" +
+                    "    None\n" +
+                    "  } else {\n" +
+                    "    Some(value = s[0])\n" +
+                    "  }\n" +
+                    "}\n"
+                let req : Emitter.ProjectEmitRequest =
+                    { Packages =
+                        [ { PackageName = "Std.Smoke.Core";   Sources = [coreSrc] }
+                          { PackageName = "Std.Smoke.Errors"; Sources = [errorsSrc] }
+                          { PackageName = "Std.Smoke.String"; Sources = [stringSrc] } ]
+                      AssemblyName     = "Smoke"
+                      OutputPath       = dllPath
+                      RestoredPackages = []
+                      Single           = true }
+                let result = Emitter.emitProject req
+                let errs =
+                    result.Diagnostics
+                    |> List.filter (fun d -> d.Severity = DiagError)
+                Expect.isEmpty errs
+                    (sprintf "stdlib-smoke bundle clean (%A)" errs)
+                Expect.equal result.OutputPath (Some dllPath) "OutputPath"
+                Expect.isTrue (File.Exists dllPath)
+                    (sprintf "bundle DLL %s should exist" dllPath)
+                let contracts =
+                    ContractMeta.readAllContractsFromAssembly dllPath
+                    |> List.map fst
+                    |> List.sort
+                Expect.equal contracts
+                    [ "Std.Smoke.Core"; "Std.Smoke.Errors"; "Std.Smoke.String" ]
+                    "all three per-package contracts present"
+
         // B0023 — `output = "single"` with zero packages.
         testCase "[B0023_zero_packages]" <| fun () ->
             withTempDll "b0023" <| fun dir ->

@@ -2933,8 +2933,22 @@ let private emitAssembly
                                 match getType caseFullName with
                                 | None -> None
                                 | Some caseTy ->
+                                    // `BindingFlags.DeclaredOnly` is required for
+                                    // in-project artifacts (D-progress-099): a
+                                    // generic union case's parent is a
+                                    // `TypeBuilderInstantiation` (`Option`Some`
+                                    // declares parent `Option<T>`), and the
+                                    // default `GetFields` traverses parents,
+                                    // which throws `NotSupportedException` on
+                                    // a builder instantiation.  Declared-only
+                                    // skips the parent walk; case fields are
+                                    // never inherited anyway.
+                                    let declaredFlags =
+                                        BindingFlags.Instance
+                                        ||| BindingFlags.Public
+                                        ||| BindingFlags.DeclaredOnly
                                     let ctorOpt =
-                                        caseTy.GetConstructors()
+                                        caseTy.GetConstructors declaredFlags
                                         |> Array.tryHead
                                     // Walk the parsed case fields to
                                     // resolve each LyricType against
@@ -2951,7 +2965,7 @@ let private emitAssembly
                                             let lty = importLyric typeParamNames te
                                             fname, lty)
                                     let clrFields =
-                                        caseTy.GetFields()
+                                        caseTy.GetFields declaredFlags
                                         |> Array.filter (fun f -> f.IsPublic && not f.IsStatic)
                                         |> Array.map (fun f -> f.Name, f)
                                         |> Map.ofArray
@@ -3010,8 +3024,16 @@ let private emitAssembly
                                 | _ -> None)
                             |> List.map (fun (fname, te) ->
                                 fname, importLyric typeParamNames te)
+                        // See the union-case path above for why
+                        // `DeclaredOnly` is required to support in-project
+                        // artifacts whose generic record's parent is a
+                        // `TypeBuilderInstantiation`.
+                        let declaredFlags =
+                            BindingFlags.Instance
+                            ||| BindingFlags.Public
+                            ||| BindingFlags.DeclaredOnly
                         let clrFieldMap =
-                            ty.GetFields()
+                            ty.GetFields declaredFlags
                             |> Array.filter (fun f -> f.IsPublic && not f.IsStatic)
                             |> Array.map (fun f -> f.Name, f)
                             |> Map.ofArray
@@ -3026,7 +3048,7 @@ let private emitAssembly
                                           Records.ImportedField.LyricType = lty
                                           Records.ImportedField.Field     = fi }
                                 | None -> None)
-                        match ty.GetConstructors() |> Array.tryHead with
+                        match ty.GetConstructors declaredFlags |> Array.tryHead with
                         | None -> ()
                         | Some ctor ->
                             importedRecordTable.[rd.Name] <-

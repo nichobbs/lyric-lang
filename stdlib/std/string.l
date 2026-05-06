@@ -5,6 +5,8 @@
 @runtime_checked
 package Std.String
 
+import Std.Core
+
 // ---------------------------------------------------------------------------
 // String inspection and basic operations.
 // ---------------------------------------------------------------------------

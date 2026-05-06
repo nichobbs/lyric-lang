@@ -41,8 +41,9 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP: independent packages bundle into one PE, per-package contract resources | **Shipped** (PR #133) | D-progress-098 |
 | M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project: topo-sort emit, in-project artifacts, B0020 cycle diagnostic | **Shipped** (PR #134) | D-progress-099 |
 | M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | **Shipped** (PR #136) | D-progress-100 |
-| M5.1 stage 2c.2.iii — `lyric restore` walks every `Lyric.Contract.<Pkg>` resource on bundled DLLs | **Shipped** (this branch) | D-progress-101 |
-| M5.1 stage 2c.2.iv — CLI integration (`lyric build --manifest` dispatches to `emitProject` when `[project] output = "single"`); main entry-point capture from project bundle | **Shipped** (this branch) | D-progress-102 |
+| M5.1 stage 2c.2.iii — `lyric restore` walks every `Lyric.Contract.<Pkg>` resource on bundled DLLs | **Shipped** (PR #138) | D-progress-101 |
+| M5.1 stage 2c.2.iv — CLI integration (`lyric build --manifest` dispatches to `emitProject` when `[project] output = "single"`); main entry-point capture from project bundle | **Shipped** (PR #138) | D-progress-102 |
+| M5.1 stage 2c.3 — stdlib-bundle proof: 3-package smoke set compiles via `lyric build --manifest stdlib/lyric.toml`; in-project generic-union ctor + DeclaredOnly reflection fixes | **Shipped** (this branch) | D-progress-103 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -164,6 +165,88 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-103: M5.1 stage 2c.3 — stdlib-bundle proof
+
+*claude/stdlib-bundle-proof branch.*  Validates the project-as-DLL
+pipeline (D-progress-098 / 099 / 100 / 101 / 102) end-to-end on the
+real bootstrap stdlib's source tree: a 3-package smoke set
+(`Std.Core` + `Std.Errors` + `Std.String`) compiles cleanly via
+`lyric build --manifest stdlib/lyric.toml` into one
+`Lyric.StdlibBundle.dll` carrying three `Lyric.Contract.<Pkg>`
+resources side-by-side.
+
+**CLI manifest enhancement.**  `[project.packages]` values now
+accept either a directory (existing semantics — multi-file package
+under that dir) or a single `.l` file (one package per file — the
+shape the stdlib actually uses, with every `Std.X` living as a
+sibling under one `std/` dir).  `Lyric.Cli.Program.buildProject`
+branches on `Path.GetExtension`/`File.Exists` versus
+`Directory.Exists` and falls back to the existing source-walking
+behaviour for dir entries.
+
+**Emitter codegen fixes for in-project artifacts.**
+
+* `emitAssembly`'s import-table population now uses
+  `BindingFlags.DeclaredOnly` when reflecting on case TypeBuilders
+  and record TypeBuilders.  Generic union case classes inherit from
+  a `TypeBuilderInstantiation` parent (e.g. `Option_Some<T>` ⇒
+  `Option<T>`), and `caseTy.GetFields()` traverses parents by
+  default — that walk explodes on a builder instantiation with
+  `NotSupportedException: TypeBuilder generic instantiation does
+  not support resolving members. Use TypeBuilder.GetField instead.`
+  Declared-only skips the parent walk (case fields are never
+  inherited anyway), and the same fix applies to
+  `caseTy.GetConstructors()` plus the matching record path.
+* `Codegen.fs`'s nullary and payload union case construction sites
+  used to route through `TypeBuilder.GetConstructor` only when a
+  *type-arg* was a builder.  When the open generic def is itself a
+  `TypeBuilder` (the in-project artifact case shipped in
+  D-progress-099), `caseInfo.Type.MakeGenericType(...)` always
+  returns a `TypeBuilderInstantiation` regardless of type-args —
+  walking `constructedCase.GetConstructors()` then explodes the
+  same way.  The check now also fires when `caseInfo.Type :?
+  TypeBuilder`, routing through `TypeBuilder.GetConstructor`
+  unconditionally for builder-backed open defs.
+
+**Tests.**
+
+* `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs`
+  `[stdlib_smoke_bundle_compiles]` mimics the working subset of the
+  bundle: a generic `Option[T]` union in `Std.Smoke.Core`, a plain
+  `HostError` enum-shaped union in `Std.Smoke.Errors`, and a
+  consumer in `Std.Smoke.String` that imports `Std.Smoke.Core` and
+  builds `Some(value = s[0])` / `None` in helper bodies.  Asserts
+  the bundle compiles clean and ships three per-package contract
+  resources.
+* `stdlib/lyric.toml` lands as the canonical project manifest for
+  the stdlib bundle, currently scoped to the working 3-package
+  smoke set.  Expanding to additional packages surfaces
+  package-specific codegen gaps (e.g. `Std.Path`'s `dir.length`
+  property pattern — `E11 codegen: unknown constructor pattern`)
+  that pre-date this stage and are tracked separately for
+  follow-up work.
+
+**Test totals.**  575 emitter tests pass (was 573 + the new
+`stdlib_smoke` + the existing 2c.* coverage).  Lexer 123, Parser
+312, Type checker 137, CLI 83, Verifier 242 — all green.
+
+**Stage-level status.**
+
+* The user-stated Phase-5 milestone "compile the stdlib into a
+  single (project) DLL" is **proven** for the foundational
+  generics-bearing subset of the stdlib.  Bundling the rest of
+  `std/` requires individual codegen fixes that are out of scope
+  for this proof; see D-progress-104 (open) for the running list.
+* "Reference the bundled stdlib from an arbitrary lyric program"
+  is **deferred**.  The current emitter still routes `import
+  Std.X` through the in-process precompile cache
+  (`ensureStdlibArtifact`) regardless of restored packages.
+  Consuming a published stdlib bundle requires a switch on the
+  `[dependencies]` side that prefers a restored bundle over the
+  precompile when both are available.  Tracked as
+  `Q-stdlib-bundle-consume` in `docs/06-open-questions.md`
+  (open) — needs a design decision before implementation.
 
 ### D-progress-102: M5.1 stage 2c.2.iv — CLI dispatch to `emitProject`
 
