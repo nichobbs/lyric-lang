@@ -161,20 +161,37 @@ let publishCsproj (manifest: Manifest) (dllPath: string) : string =
     lines.Add "</Project>"
     String.concat "\n" lines + "\n"
 
-/// Build the `.csproj` text used by `lyric restore`.  Declares only
-/// the `<PackageReference>` items so `dotnet restore` populates the
-/// NuGet cache with each dependency's full transitive closure.
+/// Build the `.csproj` text used by `lyric restore`.  Declares the
+/// `<PackageReference>` items from `[dependencies]` (Lyric packages)
+/// and `[nuget]` (arbitrary NuGet packages, Phase 5 §M5.1 stage 2d
+/// per `docs/21-nuget-linking.md`) so `dotnet restore` populates the
+/// NuGet cache with the full transitive closure.  `[nuget.options]
+/// target` (when set) overrides the default `net10.0` TFM.
 let restoreCsproj (manifest: Manifest) : string =
-    let depsXml =
+    let lyricDepsXml =
         manifest.Dependencies
         |> List.map (fun d ->
             sprintf "    <PackageReference Include=\"%s\" Version=\"%s\" />\n"
                     (xmlEscape d.Name) (xmlEscape d.Version))
         |> String.concat ""
+    let nugetDepsXml =
+        match manifest.Nuget with
+        | None -> ""
+        | Some n ->
+            n.Packages
+            |> List.map (fun p ->
+                sprintf "    <PackageReference Include=\"%s\" Version=\"%s\" />\n"
+                        (xmlEscape p.Id) (xmlEscape p.Version))
+            |> String.concat ""
+    let target =
+        match manifest.Nuget with
+        | Some { Options = { Target = Some t } } -> t
+        | _ -> "net10.0"
     let lines = ResizeArray<string>()
     lines.Add "<Project Sdk=\"Microsoft.NET.Sdk\">"
     lines.Add "  <PropertyGroup>"
-    lines.Add "    <TargetFramework>net10.0</TargetFramework>"
+    lines.Add (sprintf "    <TargetFramework>%s</TargetFramework>"
+                       (xmlEscape target))
     lines.Add (sprintf "    <PackageId>%s</PackageId>"
                        (xmlEscape (sanitisedPackageName manifest.Package.Name)))
     lines.Add (sprintf "    <Version>%s</Version>"
@@ -182,10 +199,17 @@ let restoreCsproj (manifest: Manifest) : string =
     lines.Add "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>"
     lines.Add "    <IncludeBuildOutput>false</IncludeBuildOutput>"
     lines.Add "  </PropertyGroup>"
-    lines.Add "  <ItemGroup>"
-    if not (String.IsNullOrEmpty depsXml) then
-        lines.Add (depsXml.TrimEnd '\n')
-    lines.Add "  </ItemGroup>"
+    let combined = lyricDepsXml + nugetDepsXml
+    if not (String.IsNullOrEmpty combined) then
+        lines.Add "  <ItemGroup>"
+        lines.Add (combined.TrimEnd '\n')
+        lines.Add "  </ItemGroup>"
+    else
+        // Preserve the previous shape (empty ItemGroup is harmless and
+        // matches the pre-stage-2d csproj layout `dotnet restore` already
+        // accepts).
+        lines.Add "  <ItemGroup>"
+        lines.Add "  </ItemGroup>"
     lines.Add "</Project>"
     String.concat "\n" lines + "\n"
 

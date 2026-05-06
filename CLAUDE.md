@@ -88,6 +88,29 @@ The user assigns the working branch via the session prompt
 (e.g., `claude/define-language-spec-5DbnS`). Develop, commit, and push
 to that branch. Never push elsewhere without explicit permission.
 
+### Autonomous-work default
+
+When the user assigns a multi-stage task on a working branch, the
+default is to **work through it without check-ins until you genuinely
+need direction and have nothing else productive to do**.  Specifically:
+
+- Plan the work (TodoWrite or equivalent), then execute. Do not pause
+  between stages for "should I continue?" approvals.
+- Commit and push regularly in coherent chunks; group related commits
+  into a single PR when they belong together (e.g. one PR per
+  milestone-stage), and open a fresh PR when the next chunk is
+  scoped differently.
+- If a stage hits a real blocker (missing decision, ambiguous spec,
+  external dependency), park it with a clear note and move on to the
+  next independent stage rather than stopping the session.
+- Only stop and ask the user when **every** remaining task is
+  blocked, or when an action falls outside the scope of the assigned
+  task (e.g. modifying CI policy, force-pushing, touching another
+  repo).
+- Honour the existing safety rules (no `--no-verify`, no force-push
+  without permission, etc.) — autonomy is about throughput, not
+  about side-stepping guardrails.
+
 ### Tools and build
 
 The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:

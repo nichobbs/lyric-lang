@@ -1504,8 +1504,18 @@ let main (argv: string array) : int =
             let manifestDir = safeStr (Path.GetDirectoryName mfFull) "."
             match Lyric.Cli.Pack.runRestore manifest manifestDir false with
             | Ok () ->
-                printfn "restore: %d packages declared in %s"
-                    (List.length manifest.Dependencies) mfPath
+                let lyricCount = List.length manifest.Dependencies
+                let nugetCount =
+                    match manifest.Nuget with
+                    | None -> 0
+                    | Some n -> List.length n.Packages
+                if nugetCount = 0 then
+                    printfn "restore: %d Lyric package%s declared in %s"
+                        lyricCount (if lyricCount = 1 then "" else "s") mfPath
+                else
+                    printfn "restore: %d Lyric + %d NuGet package%s declared in %s"
+                        lyricCount nugetCount
+                        (if lyricCount + nugetCount = 1 then "" else "s") mfPath
                 0
             | Error msg ->
                 printErr msg
