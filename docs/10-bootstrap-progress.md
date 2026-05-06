@@ -54,10 +54,14 @@ deferred to Phase 3 by design.
 | `docs/23` G12 (1/N) — F# `Lyric.Stdlib.TaskHost` retired; `Std.Task.{delay, delayWithCancel}` extern at `System.Threading.Tasks.Task.Delay` directly (overload by arity) | **Shipped** (PR #152) | D-progress-111 |
 | `docs/23` G11 — `extern type AsyncLocal[T]` + non-builder generic FFI close; `Std.Task.{currentToken, installToken, restoreToken, hasAmbient}` are native Lyric on top of direct BCL externs to `AsyncLocal\`1.{Value, set_Value}` and `CancellationToken.CanBeCanceled`; F# `AmbientHost` collapses to a 4-LoC `AmbientSlot` static-field holder | **Shipped** (PR #155) | D-progress-112 |
 | `docs/23` G10 (2/2) — bytes paths in `Std.File` go direct to `System.IO.File.{ReadAllBytes, WriteAllBytes}` via new kernel externs in `_kernel/file_host.l`; `slice[Byte] ↔ List[Byte]` shuttle done in pure Lyric (`for b in raw { acc.add(b) }` for read; `bytes.toArray()` for write).  F# `FileHost` retired entirely; `hostFileBuiltins` codegen map and `fileHostMethod` helper deleted | **Shipped** (this branch) | D-progress-113 |
-| M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
+| M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
+| M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
+| M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
+| M5.1 stage 2d.iv — `lyric restore` writes `_extern/<lyric-pkg>.l` + `.skip.md` shims for every `[nuget]` entry after restore completes; B0030-flavoured warnings for unlocatable DLLs | **Shipped** (PR #162) | D-progress-118 |
+| M5.1 stage 2d.v — build-time wiring (auto-discover `_extern/*.l` files, NuGet DLLs in emitter `Assembly.LoadFrom` set, `.deps.json` for runtime resolution, end-to-end smoke) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
-| M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
-| M5.1 stage 4 — Unicode (UAX #31) identifiers + NFC normalisation; L0040 reserved-name diagnostic | Not shipped | — |
+| M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
+| M5.1 stage 4 (partial) — NFC normalisation + L0040 reserved-name diagnostic in self-hosted lexer (full UAX #31 XID_Start / XID_Continue acceptance still deferred — needs an audited `System.Char.GetUnicodeCategory` extern) | **Shipped** (this branch) | D-progress-120 |
 | M5.1 — self-hosted parser | Not shipped | — |
 | M5.1 — self-hosted type checker | Not shipped | — |
 | M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
@@ -175,6 +179,120 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-120: M5.1 stage 4 (partial) — NFC + L0040 in self-hosted lexer
+
+*claude/m5.1-stages-2d-3-4-8hL4O branch.*  Adds the F# bootstrap's
+existing identifier hardening to `compiler/lyric/lyric/lexer.l`:
+
+* `lexIdentOrKeyword` NFC-normalises every lexed identifier via
+  `buf.normalize()` (calls `System.String.Normalize` through the BCL
+  method-dispatch path).  Guarded by `buf.isNormalized()` so pure-
+  ASCII identifiers cost nothing.  Mirrors `Lexer.fs` lines 268-271.
+* `L0040` reserved-name diagnostic for identifiers that begin with
+  `_` followed by an ASCII uppercase letter (`_Hidden`, `_X`, …).
+  The lexeme still flows through as `TIdent` so the parser can
+  recover; only the diagnostic surfaces the policy.
+* Helpers `isAsciiUpper`, `isReservedUnderscoreUpper`, and
+  `reservedUnderscoreUpperMessage` factored out of the case path.
+* Self-test grows by 4 cases: `_Hidden` triggers L0040; `_hidden`,
+  `_0name`, and pure `_` do not.
+
+**Deferred**: full UAX #31 XID_Start / XID_Continue category
+coverage (the non-ASCII identifier-acceptance side of stage 4).
+The bootstrap-grade `isIdStart` / `isIdContinue` in the self-hosted
+lexer remain ASCII-only.  Wiring up `System.Char.GetUnicodeCategory`
+through an audited `_kernel/` extern is the obvious next step;
+deferred to keep the audited extern surface count visible to a
+follow-up review.
+
+### D-progress-119: M5.1 stage 3 — interpolated / triple / raw strings in self-hosted lexer
+
+*claude/m5.1-stages-2d-3-4-8hL4O branch.*  Ports
+`compiler/src/Lyric.Lexer/Lexer.fs`'s string-shape coverage into
+`compiler/lyric/lyric/lexer.l` 1:1.  Adds the `TStringStart` /
+`TStringPart` / `TStringHoleStart` / `TStringEnd` quartet for
+interpolated literals, plus `TTripleString` / `TRawString` for the
+multiline + literal-byte-buffer shapes.  Introduces a `Mode` union
+(`InString` / `InHole`) carried in a `List[Mode]` stack on
+`LexerState` plus `topMode` / `pushMode` / `popMode` helpers.
+`hasInterpolation` does the lookahead deciding whether a leading
+`"` takes the simple `TString` path or the multi-token interpolated
+path.  `lexNext` dispatches on `topMode`: `InString` runs
+`lexStringChunk`, otherwise normal `lexOne` with `InHole` pop-on-
+bracketDepth-match.  EOF drains any open string / hole frames so the
+diagnostics arrive in a well-defined order and the token stream
+stays balanced.
+
+Diagnostic codes added: `L0026` (unterminated triple-quoted),
+`L0027` (missing `"` after `r` in raw opener), `L0028` (unterminated
+raw string).  Self-test grows from 23 to 30 cases — interpolation
+sequence shape, triple-quoted bodies preserved across newlines, raw
+strings with and without hash delimiters, and unterminated variants
+of each diagnostic.
+
+### D-progress-118: M5.1 stage 2d.iii / 2d.iv — NuGet shim generator + restore wiring
+
+*claude/m5.1-stages-2d-3-4-8hL4O branch.*  Adds
+`Lyric.Cli.NugetShim.generate` (reflection-driven via
+`System.Reflection.MetadataLoadContext`) and wires it into the
+existing `lyric restore` flow:
+
+* Generator emits `<manifest-dir>/_extern/<lyric-pkg>.l` carrying
+  `@axiom("from NuGet package <id> v<ver>")` plus sorted
+  `extern type T = "Namespace.T"` declarations and bodyless
+  `@externTarget(…)` `pub func` decls for each translatable static
+  method.  An optional `<lyric-pkg>.skip.md` records skipped
+  surface with reasons (open generic, by-ref param, type not
+  translatable, duplicate (name, arity), …).
+* Bootstrap-grade scope: static methods only; translatable types
+  are BCL primitives (Bool / Byte / Int / Long / UInt / ULong /
+  Float / Double / Char / String / Unit) plus the package's own
+  exported types.  Generic methods, generic types as params, and
+  nested types skip with reasons.  Lyric-keyword collisions are
+  renamed to `<name>_` with a comment.
+* `tryLocateNugetDll` walks the standard NuGet cache (`lib/<tfm>/`,
+  then a TFM-compat fallback chain through net5/6/…/10 and
+  netstandard1.0/…/2.1, then `ref/<tfm>/`).
+* The CLI restore reporter splits the count: "N Lyric + M NuGet
+  packages declared" when both are present.  Failed shim generation
+  surfaces a B0030-flavoured warning; the restore exit code stays 0
+  so the cache is still usable.
+* Manual smoke (`/tmp/lyric-nuget-smoke` with
+  `Newtonsoft.Json = "13.0.3"` in `[nuget]`) generates
+  `_extern/NewtonsoftJson.l` (138 types, 36 methods, 77 skipped)
+  plus a markdown skip report.  CLI tests grow from 92 to 105
+  passing (NugetShim coverage: package-name derivation, missing-DLL
+  error, axiom + autogen banner, sorted `extern type` emission,
+  skip report present on a real DLL).
+
+**Deferred to stage 2d.v**: build-time wiring (auto-discovery of
+`_extern/*.l` source files when resolving imports, NuGet DLLs in the
+emitter's `Assembly.LoadFrom` set, `.deps.json` emission, end-to-end
+smoke that exercises a real NuGet symbol from Lyric source).
+
+### D-progress-117: M5.1 stage 2d.i / 2d.ii — `[nuget]` manifest + restore csproj forwarding
+
+*claude/m5.1-stages-2d-3-4-8hL4O branch.*  Schema changes in
+`Lyric.Cli.Manifest` add `NugetEntry` / `NugetOptions` /
+`NugetSection` records and parse `[nuget]` (a flat
+`"<id>" = "<version>"` table) plus `[nuget.options]` (`allow_native`,
+`target`).  Section is `Manifest.Nuget = None` when both are absent,
+preserving the legacy "no NuGet" behaviour.  `restoreCsproj` emits a
+`<PackageReference>` for every `[nuget]` entry alongside the
+existing `[dependencies]` entries; `[nuget.options] target`
+overrides the default `net10.0` TFM.  CLI test suite grows from 82
+to 92 passing across 10 new tests covering parsing edge cases and
+the csproj rendering.
+
+Reconciles `docs/21-nuget-linking.md`'s header (was M5.2; now M5.1
+stage 2d, matching the bootstrap-progress slot and the assigned
+working branch).  Also locks in the **autonomous-work default** in
+`CLAUDE.md`: when the user assigns a multi-stage task on a working
+branch, plan and execute through it without check-ins until either
+genuinely blocked or out of independent stages — commit + push
+regularly, group related commits into a single PR per natural
+slice.
 
 ### D-progress-116: M4.3 — z3 + cvc5 in the session-start hook (CVC5 corpus run cleared)
 
