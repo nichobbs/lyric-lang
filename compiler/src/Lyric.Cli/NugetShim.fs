@@ -341,14 +341,51 @@ let generate
 
     // Map full CLR name -> Lyric (simple) name.  Used during method
     // signature mapping to allow self-references between types in
-    // the same package.
+    // the same package.  Simple names that collide across namespaces
+    // (e.g. `Newtonsoft.Json.Linq.Extensions` and
+    // `Newtonsoft.Json.Schema.Extensions`) get a deterministic
+    // namespace-tail prefix so each Lyric `extern type` declares a
+    // unique name; the F# bootstrap parser refuses duplicate type
+    // declarations.
     let externTypeMap =
-        publicTypes
-        |> Array.choose (fun t ->
-            match typeFullName t with
-            | Some full -> Some (full, nz t.Name "")
-            | None      -> None)
-        |> Map.ofArray
+        let candidates =
+            publicTypes
+            |> Array.choose (fun t ->
+                match typeFullName t with
+                | Some full -> Some (t, full, nz t.Name "")
+                | None      -> None)
+        // Group simple-name collisions and disambiguate the second+
+        // entries by prefixing each with the last namespace segment
+        // of its full name (e.g. `Linq_Extensions`).  The first
+        // entry stays unprefixed for ergonomic parity with the
+        // common case (simple names usually unique).
+        let buckets =
+            candidates
+            |> Array.groupBy (fun (_, _, simple) -> simple)
+        let acc = System.Collections.Generic.Dictionary<string, string>()
+        for (_, members) in buckets do
+            for (i, (_, full, simple)) in Array.indexed members do
+                let lyricName =
+                    if i = 0 then simple
+                    else
+                        // Pull the last namespace segment as a prefix.
+                        // `Newtonsoft.Json.Linq.Extensions` ->
+                        // `Linq_Extensions`.  Falls back to a
+                        // numeric suffix when the full name has no
+                        // distinguishable tail.
+                        let dotIdx = full.LastIndexOf('.')
+                        if dotIdx <= 0 then simple + "_" + string i
+                        else
+                            let beforeDot = full.Substring(0, dotIdx)
+                            let nsTail =
+                                let idx = beforeDot.LastIndexOf('.')
+                                if idx >= 0 then beforeDot.Substring(idx + 1)
+                                else beforeDot
+                            nsTail + "_" + simple
+                acc.[full] <- lyricName
+        acc
+        |> Seq.map (fun kv -> kv.Key, kv.Value)
+        |> Map.ofSeq
 
     let lyricPkg = lyricNameFromNugetId nugetId
     let sb = StringBuilder()
@@ -383,9 +420,13 @@ let generate
                       assembly." |> ignore
     else
         for t in publicTypes do
+            let full = nz t.FullName ""
+            let lyricName =
+                match Map.tryFind full externTypeMap with
+                | Some n -> n
+                | None   -> nz t.Name ""
             sb.AppendLine
-                (sprintf "extern type %s = \"%s\""
-                        (nz t.Name "") (nz t.FullName ""))
+                (sprintf "extern type %s = \"%s\"" lyricName full)
                 |> ignore
         sb.AppendLine "" |> ignore
 
@@ -406,31 +447,42 @@ let generate
     let safeReturnType (m: MethodInfo) : Type option =
         try Some m.ReturnType
         with _ -> None
+    // Method name disambiguation across types is handled by always
+    // prefixing the emitted Lyric function with its owner type's
+    // Lyric name — `JArray.Load` becomes `JArray_Load`, `JObject.Load`
+    // becomes `JObject_Load`.  Lyric supports overload-by-arity but
+    // not by parameter type, and free functions in the package's
+    // top-level scope can't share a name regardless of arity, so a
+    // mechanical rename keeps the surface flat without collisions.
+    let globalSeen = HashSet<string * int>()
     for t in publicTypes do
+        let tFull = nz t.FullName ""
+        let typeLyricName =
+            match Map.tryFind tFull externTypeMap with
+            | Some n -> n
+            | None   -> nz t.Name ""
         let rawMethods = safeGetMethods t
         let staticMethods =
             rawMethods
             |> Array.filter (fun m ->
                 not m.IsSpecialName
                 && not m.IsGenericMethodDefinition)
-            // Only sort by name + a stable secondary key — arity
-            // costs a `GetParameters()` per element, which can throw.
             |> Array.sortBy (fun m -> nz m.Name "")
-        let seen = HashSet<string * int>()
         for m in staticMethods do
             let mName = nz m.Name ""
-            let tFull = nz t.FullName ""
             let qual = sprintf "%s.%s" tFull mName
             match safeGetParams m, safeReturnType m with
             | None, _ | _, None ->
                 recordSkip qual "signature unresolvable in MetadataLoadContext"
             | Some parameters, Some retType ->
             let arity = parameters.Length
-            let key = (mName, arity)
-            if not (seen.Add key) then
+            // Owner-prefixed name for the emitted Lyric func.
+            let baseName = typeLyricName + "_" + mName
+            let key = (baseName, arity)
+            if not (globalSeen.Add key) then
                 recordSkip qual
-                    (sprintf "duplicate (name, arity = %d) — overload \
-                              kept earlier" arity)
+                    (sprintf "duplicate (%s, arity = %d) — overload \
+                              kept earlier" baseName arity)
             else
             let paramMaps =
                 parameters
@@ -448,14 +500,11 @@ let generate
                     |> Array.map (fun (pname, r) ->
                         match r with
                         | Ok ltype ->
-                            // Sanitise a parameter name that is itself a
-                            // Lyric keyword (rare but real — `value`,
-                            // `type`).
                             let pn, _ = maybeRename pname
                             sprintf "%s: in %s" pn ltype
                         | Error _ -> "")
                     |> String.concat ", "
-                let methodName, renamed = maybeRename mName
+                let methodName, renamed = maybeRename baseName
                 if renamed then
                     sb.AppendLine "// renamed to avoid keyword collision"
                         |> ignore

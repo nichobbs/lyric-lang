@@ -336,11 +336,13 @@ func main(): Unit {
         let outDir = prepareOutputDir label
         let dll    = Path.Combine(outDir, label + ".dll")
         let req : Lyric.Emitter.Emitter.EmitRequest =
-            { Source           = source
-              AssemblyName     = label
-              OutputPath       = dll
-              RestoredPackages = []
-              Target           = Lyric.Emitter.Emitter.Dotnet }
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Lyric.Emitter.Emitter.Dotnet }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let lockOf (typeName: string) : System.Type =
@@ -384,11 +386,13 @@ func main(): Unit { () }
         let outDir = prepareOutputDir label
         let dll    = Path.Combine(outDir, label + ".dll")
         let req : Lyric.Emitter.Emitter.EmitRequest =
-            { Source           = source
-              AssemblyName     = label
-              OutputPath       = dll
-              RestoredPackages = []
-              Target           = Lyric.Emitter.Emitter.Dotnet }
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Lyric.Emitter.Emitter.Dotnet }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let bagTy = asm.GetTypes() |> Array.find (fun t -> t.Name = "Bag")
@@ -443,11 +447,13 @@ func main(): Unit {
         let outDir = prepareOutputDir label
         let dll    = Path.Combine(outDir, label + ".dll")
         let req : Lyric.Emitter.Emitter.EmitRequest =
-            { Source           = source
-              AssemblyName     = label
-              OutputPath       = dll
-              RestoredPackages = []
-              Target           = Lyric.Emitter.Emitter.Dotnet }
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Lyric.Emitter.Emitter.Dotnet }
         let _ = Lyric.Emitter.Emitter.emit req
         // Run the compiled program in a child process.  Ada semantics:
         // the barrier wait is infinite so the process must NOT exit

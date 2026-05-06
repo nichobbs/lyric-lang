@@ -98,11 +98,13 @@ let compileAndRunWith
     try
         let dll = Path.Combine(outDir, label + ".dll")
         let req =
-            { Source           = source
-              AssemblyName     = label
-              OutputPath       = dll
-              RestoredPackages = []
-              Target           = Dotnet }
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Dotnet }
         let r = emit req
         // The emit may have lazily precompiled extra `Std.X` modules.
         // Copy any newly cached DLLs over so the runtime probing path

@@ -19,11 +19,13 @@ let private tmpDir () : string =
 let private buildPackage (dir: string) (name: string) (source: string) : string =
     let dll = Path.Combine(dir, name + ".dll")
     let req : Emitter.EmitRequest =
-        { Source           = source
-          AssemblyName     = name
-          OutputPath       = dll
-          RestoredPackages = []
-          Target           = Emitter.Dotnet }
+        { Source             = source
+          AssemblyName       = name
+          OutputPath         = dll
+          RestoredPackages   = []
+          NugetAssemblyPaths = []
+          ExternShimRoot     = None
+          Target             = Emitter.Dotnet }
     let r = Emitter.emit req
     let errs = r.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
     if not (List.isEmpty errs) then

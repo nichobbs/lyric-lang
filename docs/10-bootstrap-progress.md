@@ -59,7 +59,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.iv — `lyric restore` writes `_extern/<lyric-pkg>.l` + `.skip.md` shims for every `[nuget]` entry after restore completes; B0030-flavoured warnings for unlocatable DLLs | **Shipped** (PR #162) | D-progress-118 |
-| M5.1 stage 2d.v — build-time wiring (auto-discover `_extern/*.l` files, NuGet DLLs in emitter `Assembly.LoadFrom` set, `.deps.json` for runtime resolution, end-to-end smoke) | Designed; not shipped | — |
+| M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (this branch) | D-progress-122 |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
@@ -180,6 +180,112 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-122: M5.1 stage 2d.v — build-time wiring for NuGet packages
+
+*claude/m5.1-stages-2d-3-4-8hL4O branch.*  Closes the M5.1 stage-2d
+work: the user can now write `[nuget] "Newtonsoft.Json" = "13.0.3"`
+in `lyric.toml`, run `lyric restore`, and `lyric build` produces a
+PE that loads + runs against the NuGet runtime DLL.
+
+**Architecture decisions (taken in-session)**:
+
+1. **`_extern/` discovery via implicit-import fallback (option b).**
+   `compiler/src/Lyric.Emitter/Emitter.fs` gains
+   `resolveExternShimImports` running between `resolveRestoredImports`
+   and `resolveStdlibImports`.  For every `import <Head>` whose first
+   path segment isn't a builtin head (`Std`, `Lyric`, `Jvm`,
+   `Testpkg`), the resolver looks for `<ExternShimRoot>/<Head>.l` on
+   disk; if found, it parses + type-checks + compiles the shim to a
+   cached DLL and registers a `StdlibArtifact` shaped like any
+   other.  The user's call sites resolve through the existing
+   `importedFuncTable` machinery — no new code path in codegen.
+2. **Authoritative DLL paths via `project.assets.json` (option β).**
+   New module `Lyric.Cli.NugetAssets` parses
+   `<scratch>/obj/project.assets.json` after `dotnet restore` writes
+   it, walks the `targets[<tfm>]` graph, and joins each entry's
+   `<libraries>.path` with its `runtime` first-key to produce
+   absolute DLL paths.  Transitive deps surface automatically;
+   build-time and runtime probing agree on which lib path was
+   chosen.
+3. **NuGet + shim DLLs copied alongside the output (option 2c, copy
+   half).**  `Program.fs` gains `copyNugetArtifacts` mirroring
+   `copyStdlibArtifacts`: every NuGet runtime DLL plus every
+   `<.lyric/extern-cache>/*.dll` shim ends up next to the user's
+   output PE.  `dotnet exec` finds them through the default
+   adjacent-probing path.  Generated `.deps.json` (the cache-based
+   runtime resolution variant) is deferred for `dotnet publish` /
+   AOT flows.
+4. **`_extern/` admitted for `extern type` / `@externTarget`
+   declarations (decision 4 yes).**  No new policy enforcement; the
+   existing kernel-only convention was a soft norm only.  The
+   `@axiom("from NuGet package …")` annotation is the audit
+   anchor, not the directory name.
+5. **Hard-fail at build when an `import <Pkg>` lacks a shim
+   (decision 5).**  Default behaviour: an unresolved import becomes
+   a regular type-check error.  No new diagnostic code needed —
+   the existing "unknown import" error is the right shape.
+
+**EmitRequest / ProjectEmitRequest**: gain
+`NugetAssemblyPaths: string list` and
+`ExternShimRoot: string option`.  Every existing call site updates
+to pass `[]` / `None`.  The CLI's `build` and `buildProject` add
+the same parameters and thread them in from the manifest's
+`[nuget]` block via `NugetAssets.readForManifest`.
+
+**Emitter changes (`compiler/src/Lyric.Emitter/Emitter.fs`)**:
+* `preloadNugetAssemblies` runs at the top of `emit` to
+  `Assembly.LoadFrom` every NuGet DLL the request carries.  Already
+  loaded paths are skipped via the AppDomain's existing
+  `Assembly.Location` set.
+* `resolveExternShimImports` parses each shim, type-checks it,
+  emits via `emitAssembly` (with `isLibrary = true` so the
+  main-function gate doesn't fire), loads the resulting DLL, and
+  builds a `StdlibArtifact` whose `Lookup` walks that DLL.  Cached
+  DLLs land at `<manifestDir>/.lyric/extern-cache/<head>.dll` so
+  re-runs hit the cache.
+
+**Shim generator polish**: `NugetShim.fs` learned to disambiguate
+type-name collisions (`Newtonsoft.Json.Linq.Extensions` vs
+`Newtonsoft.Json.Schema.Extensions` -> `Extensions` and
+`Schema_Extensions`) and method-name collisions across types
+(every emitted func is now `<TypeName>_<MethodName>`, e.g.
+`JValue_CreateString`).  Without these, the shim source failed
+type-check on `T0001` duplicates.
+
+**Smoke test (manual, `/tmp/lyric-nuget-smoke`)**:
+```toml
+[package]
+name = "smoke"; version = "0.0.1"
+[nuget]
+"Newtonsoft.Json" = "13.0.3"
+```
+```l
+package Smoke
+import Std.Core
+import NewtonsoftJson
+func main(): Unit {
+  val v: JValue = JValue_CreateString("hello from nuget")
+  println("nuget extern resolved + loaded")
+}
+```
+`lyric restore` materialises `_extern/NewtonsoftJson.l` (138
+extern types, 36 funcs, 77 skipped) plus a markdown skip report.
+`lyric build main.l --manifest lyric.toml` succeeds.
+`dotnet exec main.dll` prints `nuget extern resolved + loaded`.
+
+**Deferred to follow-ups**:
+* Generated `.deps.json` so `dotnet publish` / AOT flows can do
+  cache-based resolution without copying every transitive DLL.
+* Instance-method shim generation (the existing generator is
+  static-only; instance externs need a receiver-as-first-param
+  shape that the FFI bridge supports but the generator doesn't
+  yet emit).
+* Generic-method shims (per `docs/21-nuget-linking.md` §4's
+  example `pub func serialize[T](value: in T): String`).
+* AOT compatibility audit per `docs/21` §7 — projects with `[nuget]`
+  forfeit the "all Lyric code AOT-compatible" guarantee, which
+  needs explicit messaging when `--aot` is requested.
 
 ### D-progress-121: M5.1 stage 4 close-out — UAX #31 acceptance in self-hosted lexer
 
