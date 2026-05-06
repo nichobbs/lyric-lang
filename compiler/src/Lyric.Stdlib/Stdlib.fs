@@ -56,34 +56,12 @@ type Contracts private () =
     static member Panic (msg: string) : unit =
         raise (LyricAssertionException("panic: " + msg))
 
-/// Generic helper for `Dictionary<K, V>` operations that don't fit
-/// directly into the FFI without out-parameters or rich Lyric
-/// inference.  All members are static and routed through Lyric's
-/// `extern type` + `@externTarget` machinery.
-[<Sealed; AbstractClass>]
-type MapHelpers<'K, 'V when 'K: not null> private () =
-
-    /// True if `m` contains `key`.  A drop-in replacement for the
-    /// open-generic `Dictionary`2.ContainsKey` once a Lyric program
-    /// has the required generic externs.
-    static member Has (m: System.Collections.Generic.Dictionary<'K, 'V>,
-                       key: 'K) : bool =
-        m.ContainsKey key
-
-    /// Return `m[key]` if present, otherwise the default value of `V`.
-    /// Pair with `Has` to build a `Result` / `Option` on the Lyric side
-    /// without out-params.  Avoids the JIT verifier issue that hits
-    /// when chaining ContainsKey + the indexer through `extern type`.
-    static member GetOrDefault (m: System.Collections.Generic.Dictionary<'K, 'V>,
-                                key: 'K) : 'V =
-        match m.TryGetValue key with
-        | true, v -> v
-        | _       -> Unchecked.defaultof<'V>
-
-    /// Set `m[key] = value` (insert or overwrite).
-    static member Put (m: System.Collections.Generic.Dictionary<'K, 'V>,
-                       key: 'K, value: 'V) : unit =
-        m.[key] <- value
+// `MapHelpers<'K, 'V>` retired (`docs/23-fsharp-shim-elimination.md`).
+// All references were superseded when `Std.Collections` migrated to
+// `_kernel/collections_host.l` direct externs in `docs/14` P0/4b
+// batch 3.  Kept zero live `@externTarget` callers — verified by
+// `KernelBoundaryTests.fs`'s outsideCeiling = 0 ratchet plus a
+// repo-wide grep.
 
 /// Generic exception-to-result helper.  The Lyric side calls
 /// `tryRunValue(() => bclThing(args))` to invoke an arbitrary
@@ -297,34 +275,12 @@ type TaskScopeHost private () =
     static member Dispose (scope: LyricTaskScope) : unit =
         scope.Dispose()
 
-/// `(IsValid, Value, Error)` triple.  Same shape as `Std.Parse` /
-/// `Std.File` but factored out so future stdlib modules don't each
-/// hand-roll their own try/catch wrappers in F#.
-[<Sealed; AbstractClass>]
-type TryHost<'T> private () =
-
-    /// True if invoking `action` returns without throwing.
-    static member RunIsValid (action: System.Func<'T>) : bool =
-        try
-            let _ = action.Invoke()
-            true
-        with _ -> false
-
-    /// Invoke `action` and return its result.  Returns
-    /// `default(T)` when the call throws — gate on `RunIsValid` first.
-    static member RunValue (action: System.Func<'T>) : 'T =
-        try action.Invoke()
-        with _ -> Unchecked.defaultof<'T>
-
-    /// Diagnostic message for the most recent failure observed by
-    /// `RunIsValid`.  Like `FileHost.ReadError`, invokes `action` again
-    /// to recover the message; pair with `RunIsValid` so the success
-    /// path doesn't pay this cost.
-    static member RunError (action: System.Func<'T>) : string =
-        try
-            let _ = action.Invoke()
-            ""
-        with e -> e.GetType().Name + ": " + e.Message
+// `TryHost<'T>` retired (`docs/23-fsharp-shim-elimination.md`).
+// Designed as a generic try/catch wrapper for FFI calls but never
+// referenced from any `@externTarget` declaration — `Std.File` /
+// `Std.Parse` etc. carry their own per-method shims, and the generic
+// closure-based form was superseded before it was used.  G10 (FFI
+// try/catch) makes the whole concept moot.
 
 /// File I/O host shim.  Each operation catches host exceptions and
 /// returns a tuple-shaped pair (`IsValid` flag + value/message) so the
