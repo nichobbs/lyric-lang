@@ -322,16 +322,8 @@ func emitFieldLoad(t: in JvmType, slot: in Int, asm: in MethodAssembler): Unit {
 //     local variable stores occur in the generated code).
 // Both invariants hold for B3/B4 lowerings and the B5 self-test.
 
-/// Verifier type tags (JVMS §4.10.1.2, verification_type_info).
-pub union VerifierType {
-  case VTop                      // dead slot / void
-  case VInteger                  // boolean, byte, char, short, int
-  case VFloat
-  case VLong
-  case VDouble
-  case VNull
-  case VObject(className: String) // reference or array type
-}
+// VerifierType is defined in Jvm.Bytecode (imported above) and re-used here.
+// VTop, VInteger, VFloat, VLong, VDouble, VNull, VObject come from that import.
 
 // Convert a JvmType to its VerifierType equivalent.
 pub func jvmToVerifier(t: in JvmType): VerifierType {
@@ -347,23 +339,6 @@ pub func jvmToVerifier(t: in JvmType): VerifierType {
     case JVoid      -> VTop
     case JRef(cls)  -> VObject(className = cls)
     case JArray(el) -> VObject(className = "[" + typeDescriptor(el))
-  }
-}
-
-// Emit one verification_type_info entry (JVMS §4.7.4) to `w`.
-// Object and array types write an additional u2 class pool index.
-func emitVType(t: in VerifierType, pool: in Pool, w: in ByteWriter): Unit {
-  match t {
-    case VTop         -> writerByte(w, 0)
-    case VInteger     -> writerByte(w, 1)
-    case VFloat       -> writerByte(w, 2)
-    case VDouble      -> writerByte(w, 3)
-    case VLong        -> writerByte(w, 4)
-    case VNull        -> writerByte(w, 5)
-    case VObject(cls) -> {
-      writerByte(w, 7)
-      writerU2(w, poolClass(pool, cls))
-    }
   }
 }
 
@@ -521,7 +496,7 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
               writerU2(smBuf, frameLocals.count)
               var vi = 0
               while vi < frameLocals.count {
-                emitVType(frameLocals[vi], pool, smBuf)
+                emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
                 vi = vi + 1
               }
               writerU2(smBuf, 0)               // stack items = 0 (empty)
