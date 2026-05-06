@@ -1641,3 +1641,20 @@ pub func lowerClosure(c: in LClosure, pool: in Pool): ClassFile {
   ifaces.add(c.ifaceClass)
   makeClassFullWithInterfaces(c.closureClass, ifaces, fields, methods)
 }
+
+// ── Virtual-thread async helpers ──────────────────────────────────────────────
+
+// Emits Thread.startVirtualThread(runnable) — pops Runnable, pushes Thread.
+pub func lowerSpawnVirtualThread(asm: in MethodAssembler): Unit {
+  val idx = poolMethodref(asm.pool, "java/lang/Thread", "startVirtualThread",
+    "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
+  emitInvokestatic(asm, idx)
+  trackStack(asm, 0)
+}
+
+// Emits thread.join() — pops Thread ref, returns void.
+pub func lowerThreadJoin(asm: in MethodAssembler): Unit {
+  val idx = poolMethodref(asm.pool, "java/lang/Thread", "join", "()V")
+  emitInvokevirtual(asm, idx)
+  trackStack(asm, -1)
+}
