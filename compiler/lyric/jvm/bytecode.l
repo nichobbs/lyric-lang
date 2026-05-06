@@ -1141,13 +1141,19 @@ pub func emitIinc(asm: in MethodAssembler, slot: in Int, delta: in Int): Unit {
 
 // ── Long arithmetic ───────────────────────────────────────────────────────────
 
-pub func emitLadd(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LADD)) }
-pub func emitLsub(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LSUB)) }
-pub func emitLmul(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LMUL)) }
-pub func emitLdiv(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LDIV)) }
-pub func emitLrem(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LREM)) }
-pub func emitLneg(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LNEG)) }
-pub func emitLcmp(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LCMP)) }
+pub func emitLadd(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LADD))  }
+pub func emitLsub(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LSUB))  }
+pub func emitLmul(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LMUL))  }
+pub func emitLdiv(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LDIV))  }
+pub func emitLrem(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LREM))  }
+pub func emitLneg(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LNEG))  }
+pub func emitLcmp(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LCMP))  }
+pub func emitLand(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LAND))  }
+pub func emitLor(asm: in MethodAssembler): Unit   { emitInsn(asm, Nullary(op = OP_LOR))   }
+pub func emitLxor(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LXOR))  }
+pub func emitLshl(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LSHL))  }
+pub func emitLshr(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LSHR))  }
+pub func emitLushr(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LUSHR)) }
 
 // ── Float arithmetic ──────────────────────────────────────────────────────────
 
@@ -1166,10 +1172,12 @@ pub func emitFcmpl(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = O
 
 // ── Double arithmetic ─────────────────────────────────────────────────────────
 
-pub func emitDadd(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DADD)) }
-pub func emitDsub(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DSUB)) }
-pub func emitDmul(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DMUL)) }
-pub func emitDdiv(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DDIV)) }
+pub func emitDadd(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DADD))  }
+pub func emitDsub(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DSUB))  }
+pub func emitDmul(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DMUL))  }
+pub func emitDdiv(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DDIV))  }
+pub func emitDrem(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DREM))  }
+pub func emitDneg(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DNEG))  }
 pub func emitDcmpg(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DCMPG)) }
 pub func emitDcmpl(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DCMPL)) }
 

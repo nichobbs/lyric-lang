@@ -129,6 +129,45 @@ pub union LInsn {
   case LFsub
   case LFmul
   case LFdiv
+  case LFrem
+  case LFneg
+
+  case LIand
+  case LIor
+  case LIxor
+  case LIshl
+  case LIshr
+  case LIushr
+
+  case LLneg
+  case LLrem
+  case LLand
+  case LLor
+  case LLxor
+  case LLshl
+  case LLshr
+  case LLushr
+  case LLcmp
+
+  case LDrem
+  case LDneg
+  case LFcmpl
+  case LFcmpg
+  case LDcmpl
+  case LDcmpg
+
+  case LL2f
+  case LL2d
+  case LI2f
+  case LI2b
+  case LI2c
+  case LI2s
+  case LF2i
+  case LF2l
+  case LF2d
+  case LD2i
+  case LD2l
+  case LD2f
 
   case LGetfield(owner: String, name: String, t: JvmType)
   case LPutfield(owner: String, name: String, t: JvmType)
@@ -202,6 +241,45 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LFsub          -> emitFsub(asm)
     case LFmul          -> emitFmul(asm)
     case LFdiv          -> emitFdiv(asm)
+    case LFrem          -> emitFrem(asm)
+    case LFneg          -> emitFneg(asm)
+
+    case LIand          -> emitIand(asm)
+    case LIor           -> emitIor(asm)
+    case LIxor          -> emitIxor(asm)
+    case LIshl          -> emitIshl(asm)
+    case LIshr          -> emitIshr(asm)
+    case LIushr         -> emitIushr(asm)
+
+    case LLneg          -> emitLneg(asm)
+    case LLrem          -> emitLrem(asm)
+    case LLand          -> emitLand(asm)
+    case LLor           -> emitLor(asm)
+    case LLxor          -> emitLxor(asm)
+    case LLshl          -> emitLshl(asm)
+    case LLshr          -> emitLshr(asm)
+    case LLushr         -> emitLushr(asm)
+    case LLcmp          -> emitLcmp(asm)
+
+    case LDrem          -> emitDrem(asm)
+    case LDneg          -> emitDneg(asm)
+    case LFcmpl         -> emitFcmpl(asm)
+    case LFcmpg         -> emitFcmpg(asm)
+    case LDcmpl         -> emitDcmpl(asm)
+    case LDcmpg         -> emitDcmpg(asm)
+
+    case LL2f           -> emitL2f(asm)
+    case LL2d           -> emitL2d(asm)
+    case LI2f           -> emitI2f(asm)
+    case LI2b           -> emitI2b(asm)
+    case LI2c           -> emitI2c(asm)
+    case LI2s           -> emitI2s(asm)
+    case LF2i           -> emitF2i(asm)
+    case LF2l           -> emitF2l(asm)
+    case LF2d           -> emitF2d(asm)
+    case LD2i           -> emitD2i(asm)
+    case LD2l           -> emitD2l(asm)
+    case LD2f           -> emitD2f(asm)
 
     case LGoto(l)           -> emitGoto(asm, l)
     case LIfeq(l)           -> emitIfeq(asm, l)
