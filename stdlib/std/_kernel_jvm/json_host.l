@@ -2,7 +2,7 @@
 //
 // Mirrors _kernel/json_host.l for the JVM target.  All operations
 // route through lyric.stdlib.jvm.JsonHost, which wraps the JSON
-// library bundled with Lyric.Stdlib.Jvm (Jackson ObjectMapper by
+// library bundled with Lyric.Jvm.Hosts.Jvm (Jackson ObjectMapper by
 // default; the shim presents a stable API regardless of the backing
 // library so the kernel strings never need to change if the library
 // is swapped).

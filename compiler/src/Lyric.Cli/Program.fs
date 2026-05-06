@@ -89,6 +89,16 @@ let private copyStdlibArtifacts (outDir: string) : unit =
         File.Copy(src, Path.Combine(outDir, "Lyric.Stdlib.dll"), overwrite = true)
     | None ->
         printErr "warning: Lyric.Stdlib.dll not found alongside the CLI; runtime resolution may fail"
+    // `Lyric.Jvm.Hosts.dll` ships alongside the stdlib (D-progress-107
+    // / Bucket D split): the JVM emitter's `_kernel/kernel.l`
+    // `@externTarget`s `Lyric.Jvm.Hosts.JvmByteHost.…` etc., so any
+    // user program emitting JVM bytecode resolves the host helpers
+    // at runtime.  Non-JVM programs don't reference it, but copying
+    // unconditionally keeps the staging path uniform.
+    let jvmHosts =
+        Path.Combine(AppContext.BaseDirectory, "Lyric.Jvm.Hosts.dll")
+    if File.Exists jvmHosts then
+        File.Copy(jvmHosts, Path.Combine(outDir, "Lyric.Jvm.Hosts.dll"), overwrite = true)
     let fsharpCore =
         Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
     if File.Exists fsharpCore then
@@ -602,6 +612,7 @@ let private publishAot
 
     copyIfExists lyricDll
     copyIfExists (Path.Combine(cliDir, "Lyric.Stdlib.dll"))
+    copyIfExists (Path.Combine(cliDir, "Lyric.Jvm.Hosts.dll"))
     copyIfExists (Path.Combine(cliDir, "FSharp.Core.dll"))
     for p in Lyric.Emitter.Emitter.stdlibAssemblyPaths () do
         copyIfExists p

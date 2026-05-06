@@ -1869,6 +1869,9 @@ let private findClrType (qualifiedName: string) : System.Type option =
     // `Std.Time`) and aren't auto-loaded by the BCL on demand.
     // Pin `JsonHost` (any survivor would do) to force-load `Lyric.Stdlib`.
     let _ = typeof<Lyric.Stdlib.JsonHost>
+    // Pin `JvmByteHost` to force-load `Lyric.Jvm.Hosts` — the JVM emitter's
+    // `compiler/lyric/jvm/_kernel/kernel.l` `@externTarget`s these.
+    let _ = typeof<Lyric.Jvm.Hosts.JvmByteHost>
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>

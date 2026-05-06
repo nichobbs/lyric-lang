@@ -65,6 +65,15 @@ let prepareOutputDir (name: string) : string =
     let dir = Path.Combine(Path.GetTempPath(), "lyric-emit-" + name + "-" + Guid.NewGuid().ToString("N"))
     Directory.CreateDirectory(dir) |> ignore
     File.Copy(stdlibDll (), Path.Combine(dir, "Lyric.Stdlib.dll"), overwrite = true)
+    // `Lyric.Jvm.Hosts.dll` must ship next to JVM-self-test PEs so the
+    // `compiler/lyric/jvm/_kernel/kernel.l` `@externTarget`s resolve at
+    // runtime (D-progress-107 / Bucket D split).  Non-JVM tests don't
+    // reference it but copying unconditionally keeps the staging path
+    // simple.
+    let jvmHosts =
+        Path.Combine(AppContext.BaseDirectory, "Lyric.Jvm.Hosts.dll")
+    if File.Exists jvmHosts then
+        File.Copy(jvmHosts, Path.Combine(dir, "Lyric.Jvm.Hosts.dll"), overwrite = true)
     // FSharp.Core needs to be next to the user program so any F#
     // method on Lyric.Stdlib whose IL touches FSharp.Core helpers
     // (e.g. `Array.zeroCreate`) resolves at runtime.
