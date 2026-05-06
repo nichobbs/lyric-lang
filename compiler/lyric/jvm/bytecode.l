@@ -1036,6 +1036,13 @@ pub func emitAnewarray(asm: in MethodAssembler, classIdx: in Int): Unit {
   emitInsn(asm, ANewArray(classIdx = classIdx))
 }
 
+/// multianewarray — creates a multi-dimensional array.
+/// `classIdx` is the pool index for the full array-type descriptor (e.g. "[[I").
+/// `dims` is the number of dimensions to allocate (must be ≥ 1).
+pub func emitMultiANewArray(asm: in MethodAssembler, classIdx: in Int, dims: in Int): Unit {
+  emitInsn(asm, MultiANewArray(classIdx = classIdx, dims = dims))
+}
+
 pub func emitArraylength(asm: in MethodAssembler): Unit {
   emitInsn(asm, Nullary(op = OP_ARRAYLENGTH))
 }
