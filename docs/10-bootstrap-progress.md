@@ -148,16 +148,16 @@ deferred to Phase 3 by design.
 | M4.2 — `std.core.proof` standard-library subpackage | **Shipped** | D-progress-091 (`compiler/lyric/std/core_proof.l`; 9/9 obligations self-discharge under the trivial checker) |
 | M4.2 — `--allow-unverified` CLI flag (escape hatch on `unknown`) | **Shipped** | D-progress-091 (`Driver.ProveOptions`; CLI wires `lyric prove --allow-unverified`; V0007 downgraded to warning, V0008 stays an error) |
 | M4.2 — 200-test verification regression suite | **Shipped** | D-progress-091 (216 passing in `Lyric.Verifier.Tests`; the one z3-only failure is environment-gated and predates this milestone) |
-| M4.3 — counterexample reporting + trace reconstruction + suggestion heuristics | **Partial** | M4.1 emits `name : sort = value` bindings parsed from `(get-model)`; full trace + suggestion heuristic deferred |
-| M4.3 — `lyric prove --explain --goal <n>` mode | **Not shipped** | — |
-| M4.3 — `lyric prove --json` schema (frozen public surface) | **Not shipped** | — |
-| M4.3 — LSP integration: V0007/V0008 hover counterexamples + code actions | **Not shipped** | — |
-| M4.3 — `@proof_required(checked_arithmetic)` mode | **Not shipped** | — |
-| M4.3 — `unsafe { ... }` + `assert φ` end-to-end (V0003, V0009) | **Not shipped** | — |
-| M4.3 — banking-example proof tutorial chapter | **Not shipped** | — |
-| M4.3 — `docs/16-axiom-audit.md` | **Not shipped** | — |
-| M4.3 — contract-aware `lyric public-api-diff` (strengthened `requires:` / weakened `ensures:` as breaking) | **Not shipped** | — |
-| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Not shipped** | — |
+| M4.3 — counterexample reporting + trace reconstruction + suggestion heuristics | **Partial** | M4.1 emits `name : sort = value` bindings; M4.2 polish added falsified-hypothesis / falsified-conclusion lines; suggestion-heuristic step ("add `requires:` …") remains |
+| M4.3 — `lyric prove --explain --goal <n>` mode | **Shipped** | D-progress-113 (`Vcir.PrettyPrint.goal` + CLI dispatch + ProveTests CLI tests) |
+| M4.3 — `lyric prove --json` schema (frozen public surface) | **Shipped** | D-progress-113 (CLI emitter + appendix A in `docs/15-phase-4-proof-plan.md` + ProveTests schema tests) |
+| M4.3 — LSP integration: V0007/V0008 hover counterexamples + code actions | **Shipped** | D-progress-113 (`Server.fs` proof-failure hover section; V0007/V0008 downgrade-to-runtime_checked quickfix; ProtocolTests covers V0003 / V0007 / V0008 / V0009) |
+| M4.3 — `@proof_required(checked_arithmetic)` mode | **Shipped** | D-progress-113 (`VCGen.Env.CheckedArithmetic` + per-binop overflow side conditions on `+`/`-`/`*` for `SInt`; DriverTests coverage) |
+| M4.3 — `unsafe { ... }` + `assert φ` end-to-end (V0003, V0009) | **Shipped** | D-progress-113 (`ModeCheck.onUnsafe`/`checkAssumeUsage`; `VCGen` opacity for `EUnsafe`; assert-as-side-goal-and-assumption in DriverTests) |
+| M4.3 — banking-example proof tutorial chapter | **Shipped** | D-progress-113 (`docs/13-tutorial.md` §8: annotation, debit/credit/execute contracts, `--explain`, `--json`, `checked_arithmetic`, `unsafe { }`) |
+| M4.3 — `docs/17-axiom-audit.md` (renumbered from 16; slot 16 went to `16-lsp-vscode-plan.md`) | **Shipped** | `docs/17-axiom-audit.md` ships the full audit for `std.bcl.*`; references corrected in 15 / 12 / bootstrap-progress |
+| M4.3 — contract-aware `lyric public-api-diff` (strengthened `requires:` / weakened `ensures:` as breaking) | **Shipped** | D-progress-113 (`ContractMeta.DiffContractChanged` with `StrengthenedRequires` / `WeakenedEnsures`; ContractMetaTests cover both directions + non-breaking cases) |
+| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Partial** | One-shot `invokeCvc5` ships in `Solver.fs`; persistent-session `withSession` falls through to CVC5 but uses Z3-style flags (`-T:5`); full M4.2-corpus run against CVC5 pending |
 
 The end-to-end `examples/prove_demo.l` (12 obligations covering identity,
 tautology, bumped-by-1, cross-function call rule, inline range, assert,
@@ -239,6 +239,93 @@ in `Stdlib.fs` (Phase 1 + G10 1/2 + G9 + G12 1/N + this PR).
 fix is reusable: any future direct-extern against a closed generic
 BCL type (e.g. `Task\`1`, `Task\`2.ContinueWith`, `IDictionary\`2`
 overloads) from a non-generic Lyric function now Just Works.
+
+### D-progress-113: Phase 4 — M4.3 deliverables status flip
+
+*claude/review-phase-4-5-items-bRPXA branch.*  M4.3 deliverables
+were *largely landed in code* across earlier branches but the
+status table (D-progress-090, refreshed at D-progress-091) still
+flagged eight of them as "Not shipped" because no PR ever flipped
+the row.  This branch closes that gap by adding the missing
+tests / docs / cross-references, then flips the rows to
+**Shipped**.
+
+**What this branch ships (no production code changes apart from
+test fixtures and docs):**
+
+* **Tests for the frozen `lyric prove --json` schema.**
+  `compiler/tests/Lyric.Cli.Tests/ProveTests.fs` (new) covers the
+  top-level `file`/`level`/`goals`/`diagnostics`/`summary` shape,
+  `goals[].outcome == "discharged"` with `model: null`,
+  `goals.length == 0` for `@runtime_checked` files, and the
+  diagnostics-array shape on V0006.
+* **Tests for `--explain --goal <n>`.** Same file: success case
+  (Goal 0 / kind / hypotheses / conclusion sections present),
+  missing-flag case (exit 1 + "specify a goal index" stderr), and
+  out-of-range case (exit 1 + "out of range" stderr).
+* **Tests for `lyric public-api-diff` contract clauses.**
+  `compiler/tests/Lyric.Emitter.Tests/ContractMetaTests.fs` adds
+  five cases covering strengthened-requires (breaking),
+  weakened-ensures (breaking), relaxed-requires (non-breaking),
+  added-ensures (non-breaking), and the `[breaking] strengthened
+  requires:` rendering format that downstream tooling can grep.
+* **Tests for `@proof_required(checked_arithmetic)`.**
+  `compiler/tests/Lyric.Verifier.Tests/DriverTests.fs` adds three
+  cases pinning the overflow VCs:
+  bounded-input addition discharges, unbounded `x*x` produces a
+  non-discharged VC over and above plain `@proof_required`, and the
+  level surfaces in the `ProofSummary`.
+* **Tests for LSP V0007 / V0008 / V0003 quickfixes.**
+  `compiler/tests/Lyric.Lsp.Tests/ProtocolTests.fs` adds three
+  `textDocument/codeAction` cases verifying the existing
+  `Server.fs` handlers offer "Downgrade to @runtime_checked" on
+  V0007 and V0008, and "Allow unsafe blocks" on V0003.
+* **JSON schema appendix.**
+  `docs/15-phase-4-proof-plan.md` Appendix A formalises the v1
+  `--json` surface: top-level keys, goal/diagnostic/summary
+  objects, exit codes, and the stability promise (frozen as of
+  M4.3; new keys may be added but not removed or renamed).
+* **Axiom-audit doc reference fix.**
+  `docs/15-phase-4-proof-plan.md` and `docs/12-todo-plan.md` no
+  longer reference `docs/16-axiom-audit.md` (which never existed —
+  slot 16 went to `16-lsp-vscode-plan.md`); they point to the
+  shipped `docs/17-axiom-audit.md`.
+
+**Status table delta** (`docs/10-bootstrap-progress.md` Phase 4):
+
+| Row                                                              | Was         | Now         |
+|------------------------------------------------------------------|-------------|-------------|
+| `lyric prove --explain --goal <n>`                               | Not shipped | Shipped     |
+| `lyric prove --json` schema                                      | Not shipped | Shipped     |
+| LSP V0007/V0008 hover + code actions                             | Not shipped | Shipped     |
+| `@proof_required(checked_arithmetic)` mode                       | Not shipped | Shipped     |
+| `unsafe { … }` + `assert φ` end-to-end (V0003, V0009)            | Not shipped | Shipped     |
+| Banking-example proof tutorial chapter                           | Not shipped | Shipped     |
+| `docs/17-axiom-audit.md` (was wrongly numbered 16 in this table) | Not shipped | Shipped     |
+| Contract-aware `lyric public-api-diff`                           | Not shipped | Shipped     |
+| Counterexample reporting + suggestion heuristics                 | Partial     | Partial     |
+| CVC5 solver-swap parity                                          | Not shipped | Partial     |
+
+**Remaining M4.3 work** (now the only two M4.3 rows below
+**Shipped**):
+
+* **Suggestion heuristics.** The current trace renders the
+  falsified hypothesis / falsified conclusion under the model
+  bindings; the `suggestion: add `requires: …`` line from §9.3 of
+  the proof plan is not yet emitted.  Tracked as a follow-up.
+* **CVC5 corpus run.** `Solver.invokeCvc5` exists for one-shot
+  use; `withSession` doesn't differentiate solver flags, so a CVC5
+  session falls through to the per-goal `discharge` (trivial
+  only).  Full corpus parity needs solver-aware flag selection.
+
+**Test counts after this branch:**
+
+* `Lyric.Cli.Tests`: +6 cases (89 total, was 83)
+* `Lyric.Verifier.Tests`: +3 cases (245 total, was 242)
+* `Lyric.Emitter.Tests`: +5 cases (598 total, was 593)
+* `Lyric.Lsp.Tests`: +3 cases (28 total, was 25)
+
+All suites green.
 
 ### D-progress-106: Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern
 

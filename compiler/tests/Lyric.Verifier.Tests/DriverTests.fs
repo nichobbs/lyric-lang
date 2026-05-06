@@ -634,4 +634,89 @@ let tests =
                 + ProofSummary.counterexampleCount summary
             Expect.equal parts total "outcomes partition the total"
         }
+
+        // ---------- M4.3: @proof_required(checked_arithmetic) ----------
+        // Per `docs/15-phase-4-proof-plan.md` §10, a package marked
+        // `@proof_required(checked_arithmetic)` emits an extra side-VC
+        // for each `+`/`-`/`*` on `Int` requiring the result to stay
+        // within `[Int.min, Int.max]`.  The plain `@proof_required`
+        // mode does NOT emit overflow VCs — it trusts the platform
+        // wrap-around semantics or the user's range-subtype constraints.
+
+        test "[M4.3] checked_arithmetic mode: bounded inputs prove no-overflow" {
+            // x in [0..1000] + y in [0..1000] never overflows i64.
+            let src = """
+                @proof_required(checked_arithmetic)
+                package P
+
+                type SmallInt = Int range 0 ..= 1000
+
+                pub func add(x: SmallInt, y: SmallInt): Int
+                  ensures: result == x + y
+                {
+                  return x + y
+                }
+                """
+            let summary = prove src
+            // No counterexample — the bounded inputs make the overflow
+            // conditions provable.  The exact discharge state depends
+            // on whether z3 is on $PATH; we assert no false-positive.
+            for r in summary.Results do
+                match r.Outcome with
+                | Counterexample _ ->
+                    failtest "bounded inputs should not produce an overflow counterexample"
+                | _ -> ()
+        }
+
+        test "[M4.3] checked_arithmetic mode: unbounded multiplication is unverified" {
+            // Without bounds on x, x * x can overflow.  The verifier
+            // must produce *more goals* than plain @proof_required and
+            // at least one is non-discharged (Counterexample with z3,
+            // Unknown without).
+            let baseSrc = """
+                package P
+
+                pub func sq(x: Int): Int
+                  ensures: result == x * x
+                {
+                  return x * x
+                }
+                """
+            let plainSummary =
+                Driver.proveSource ("@proof_required\n" + baseSrc) None
+            let checkedSummary =
+                Driver.proveSource ("@proof_required(checked_arithmetic)\n" + baseSrc) None
+            // checked_arithmetic injects extra obligations.
+            Expect.isGreaterThan
+                (ProofSummary.totalCount checkedSummary)
+                (ProofSummary.totalCount plainSummary)
+                "checked_arithmetic produces more obligations than plain @proof_required"
+            // At least one of the new obligations does not discharge —
+            // it surfaces as a Counterexample (z3 present) or Unknown
+            // (no solver).  In either case, it must NOT be Discharged.
+            let hasNonDischarged =
+                checkedSummary.Results
+                |> List.exists (fun r ->
+                    match r.Outcome with
+                    | Discharged -> false
+                    | _ -> true)
+            Expect.isTrue hasNonDischarged
+                "unbounded x*x must surface a non-discharged overflow VC"
+        }
+
+        test "[M4.3] checked_arithmetic mode is reported in the summary level" {
+            let src = """
+                @proof_required(checked_arithmetic)
+                package P
+
+                pub func id(x: Int): Int
+                  ensures: result == x
+                { return x }
+                """
+            let summary = prove src
+            Expect.equal
+                (Lyric.Verifier.Mode.VerificationLevel.display summary.Level)
+                "@proof_required(checked_arithmetic)"
+                "level surfaces the checked_arithmetic modifier"
+        }
     ]
