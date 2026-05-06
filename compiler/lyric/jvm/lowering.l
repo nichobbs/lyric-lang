@@ -84,6 +84,7 @@ pub union LInsn {
   case LLstore(slot: Int)
   case LDstore(slot: Int)
   case LAstore(slot: Int)
+  case LAstoreAs(slot: Int, className: String)
 
   case LPop
   case LDup
@@ -94,6 +95,7 @@ pub union LInsn {
   case LIdiv
   case LIrem
   case LIneg
+  case LIinc(slot: Int, delta: Int)
   case LI2l
   case LI2d
   case LL2i
@@ -129,6 +131,45 @@ pub union LInsn {
   case LFsub
   case LFmul
   case LFdiv
+  case LFrem
+  case LFneg
+
+  case LIand
+  case LIor
+  case LIxor
+  case LIshl
+  case LIshr
+  case LIushr
+
+  case LLneg
+  case LLrem
+  case LLand
+  case LLor
+  case LLxor
+  case LLshl
+  case LLshr
+  case LLushr
+  case LLcmp
+
+  case LDrem
+  case LDneg
+  case LFcmpl
+  case LFcmpg
+  case LDcmpl
+  case LDcmpg
+
+  case LL2f
+  case LL2d
+  case LI2f
+  case LI2b
+  case LI2c
+  case LI2s
+  case LF2i
+  case LF2l
+  case LF2d
+  case LD2i
+  case LD2l
+  case LD2f
 
   case LGetfield(owner: String, name: String, t: JvmType)
   case LPutfield(owner: String, name: String, t: JvmType)
@@ -144,6 +185,56 @@ pub union LInsn {
   case LCheckcast(className: String)
   case LInstanceof(className: String)
   case LAconstNull
+
+  case LAnewarray(className: String)
+  case LNewarray(typeCode: Int)
+  case LArraylength
+
+  case LTableswitch(low: Int, high: Int, defaultLabel: String, caseLabels: List[String])
+  case LLookupswitch(defaultLabel: String, pairs: List[SwitchPair])
+
+  // Meta-insn: declares an exception table entry.  Produces no bytecode; lowerFunc
+  // collects these and emits them in the Code attribute's exception_table.
+  // catchClass = "" means catch-all (catch_type=0 in the class file).
+  case LTryCatch(startLabel: String, endLabel: String, handlerLabel: String, catchClass: String)
+
+  // Boxing convenience insns: expand to invokestatic <Wrapper>.valueOf(prim)Wrapper.
+  case LBoxInt
+  case LBoxLong
+  case LBoxFloat
+  case LBoxDouble
+  case LBoxBool
+  case LBoxByte
+  case LBoxChar
+  case LBoxShort
+
+  // Unboxing convenience insns: expand to invokevirtual <Wrapper>.<prim>Value()prim.
+  case LUnboxInt
+  case LUnboxLong
+  case LUnboxFloat
+  case LUnboxDouble
+  case LUnboxBool
+  case LUnboxByte
+  case LUnboxChar
+  case LUnboxShort
+
+  case LIaload
+  case LLaload
+  case LFaload
+  case LDaload
+  case LAaload
+  case LBaload
+  case LCaload
+  case LSaload
+
+  case LIastore
+  case LLastore
+  case LFastore
+  case LDastore
+  case LAastore
+  case LBastore
+  case LCastore
+  case LSastore
 }
 
 pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
@@ -170,7 +261,8 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LIstore(s)     -> emitIstore(asm, s)
     case LLstore(s)     -> emitLstore(asm, s)
     case LDstore(s)     -> emitDstore(asm, s)
-    case LAstore(s)     -> emitAstore(asm, s)
+    case LAstore(s)         -> emitAstore(asm, s)
+    case LAstoreAs(s, _cls) -> emitAstore(asm, s)
 
     case LPop           -> emitPop(asm)
     case LDup           -> emitDup(asm)
@@ -181,6 +273,7 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LIdiv          -> emitIdiv(asm)
     case LIrem          -> emitIrem(asm)
     case LIneg          -> emitIneg(asm)
+    case LIinc(s, d)    -> emitIinc(asm, s, d)
     case LI2l           -> emitI2l(asm)
     case LI2d           -> emitI2d(asm)
     case LL2i           -> emitL2i(asm)
@@ -202,6 +295,45 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LFsub          -> emitFsub(asm)
     case LFmul          -> emitFmul(asm)
     case LFdiv          -> emitFdiv(asm)
+    case LFrem          -> emitFrem(asm)
+    case LFneg          -> emitFneg(asm)
+
+    case LIand          -> emitIand(asm)
+    case LIor           -> emitIor(asm)
+    case LIxor          -> emitIxor(asm)
+    case LIshl          -> emitIshl(asm)
+    case LIshr          -> emitIshr(asm)
+    case LIushr         -> emitIushr(asm)
+
+    case LLneg          -> emitLneg(asm)
+    case LLrem          -> emitLrem(asm)
+    case LLand          -> emitLand(asm)
+    case LLor           -> emitLor(asm)
+    case LLxor          -> emitLxor(asm)
+    case LLshl          -> emitLshl(asm)
+    case LLshr          -> emitLshr(asm)
+    case LLushr         -> emitLushr(asm)
+    case LLcmp          -> emitLcmp(asm)
+
+    case LDrem          -> emitDrem(asm)
+    case LDneg          -> emitDneg(asm)
+    case LFcmpl         -> emitFcmpl(asm)
+    case LFcmpg         -> emitFcmpg(asm)
+    case LDcmpl         -> emitDcmpl(asm)
+    case LDcmpg         -> emitDcmpg(asm)
+
+    case LL2f           -> emitL2f(asm)
+    case LL2d           -> emitL2d(asm)
+    case LI2f           -> emitI2f(asm)
+    case LI2b           -> emitI2b(asm)
+    case LI2c           -> emitI2c(asm)
+    case LI2s           -> emitI2s(asm)
+    case LF2i           -> emitF2i(asm)
+    case LF2l           -> emitF2l(asm)
+    case LF2d           -> emitF2d(asm)
+    case LD2i           -> emitD2i(asm)
+    case LD2l           -> emitD2l(asm)
+    case LD2f           -> emitD2f(asm)
 
     case LGoto(l)           -> emitGoto(asm, l)
     case LIfeq(l)           -> emitIfeq(asm, l)
@@ -264,6 +396,109 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       emitInstanceof(asm, idx)
     }
     case LAconstNull -> emitAconstNull(asm)
+
+    case LAnewarray(cls) -> {
+      val idx = poolClass(asm.pool, cls)
+      emitAnewarray(asm, idx)
+    }
+    case LNewarray(tc) -> emitNewarray(asm, tc)
+    case LArraylength  -> emitArraylength(asm)
+
+    case LIaload  -> emitIaload(asm)
+    case LLaload  -> emitLaload(asm)
+    case LFaload  -> emitFaload(asm)
+    case LDaload  -> emitDaload(asm)
+    case LAaload  -> emitAaload(asm)
+    case LBaload  -> emitBaload(asm)
+    case LCaload  -> emitCaload(asm)
+    case LSaload  -> emitSaload(asm)
+
+    case LIastore  -> emitIastore(asm)
+    case LLastore  -> emitLastore(asm)
+    case LFastore  -> emitFastore(asm)
+    case LDastore  -> emitDastore(asm)
+    case LAastore  -> emitAastore(asm)
+    case LBastore  -> emitBastore(asm)
+    case LCastore  -> emitCastore(asm)
+    case LSastore  -> emitSastore(asm)
+
+    case LTableswitch(lo, hi, def, cases) -> emitTableSwitch(asm, lo, hi, def, cases)
+    case LLookupswitch(def, pairs) -> emitLookupSwitch(asm, def, pairs)
+
+    case LTryCatch(_, _, _, _) -> ()  // meta-insn: collected by lowerFunc, no bytecode
+
+    case LBoxInt -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JInt)
+      lowerInsn(LInvokestatic(owner = "java/lang/Integer", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Integer")), asm)
+    }
+    case LBoxLong -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JLong)
+      lowerInsn(LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Long")), asm)
+    }
+    case LBoxFloat -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JFloat)
+      lowerInsn(LInvokestatic(owner = "java/lang/Float", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Float")), asm)
+    }
+    case LBoxDouble -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JDouble)
+      lowerInsn(LInvokestatic(owner = "java/lang/Double", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Double")), asm)
+    }
+    case LBoxBool -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JBoolean)
+      lowerInsn(LInvokestatic(owner = "java/lang/Boolean", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Boolean")), asm)
+    }
+    case LBoxByte -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JByte)
+      lowerInsn(LInvokestatic(owner = "java/lang/Byte", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Byte")), asm)
+    }
+    case LBoxChar -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JChar)
+      lowerInsn(LInvokestatic(owner = "java/lang/Character", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Character")), asm)
+    }
+    case LBoxShort -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JShort)
+      lowerInsn(LInvokestatic(owner = "java/lang/Short", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Short")), asm)
+    }
+    case LUnboxInt -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Integer", name = "intValue", params = ps, ret = JInt), asm)
+    }
+    case LUnboxLong -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Long", name = "longValue", params = ps, ret = JLong), asm)
+    }
+    case LUnboxFloat -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Float", name = "floatValue", params = ps, ret = JFloat), asm)
+    }
+    case LUnboxDouble -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Double", name = "doubleValue", params = ps, ret = JDouble), asm)
+    }
+    case LUnboxBool -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Boolean", name = "booleanValue", params = ps, ret = JBoolean), asm)
+    }
+    case LUnboxByte -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = ps, ret = JByte), asm)
+    }
+    case LUnboxChar -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Character", name = "charValue", params = ps, ret = JChar), asm)
+    }
+    case LUnboxShort -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Short", name = "shortValue", params = ps, ret = JShort), asm)
+    }
   }
 }
 
@@ -386,6 +621,22 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
       case LIfIcmpge(l)   -> addTarget(targets, l)
       case LIfIcmpgt(l)   -> addTarget(targets, l)
       case LIfIcmple(l)   -> addTarget(targets, l)
+      case LTableswitch(_, _, def, cases) -> {
+        addTarget(targets, def)
+        var ti = 0
+        while ti < cases.count {
+          addTarget(targets, cases[ti])
+          ti = ti + 1
+        }
+      }
+      case LLookupswitch(def, pairs) -> {
+        addTarget(targets, def)
+        var li = 0
+        while li < pairs.count {
+          addTarget(targets, pairs[li].label)
+          li = li + 1
+        }
+      }
       case _              -> ()
     }
     i = i + 1
@@ -419,9 +670,13 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   }
 
   // Pre-pass: collect types for any local slots assigned via store instructions.
-  // This extends the frame beyond the parameter frame for methods with local vars
-  // (e.g., intLoop stores slot 1 = int before the loopHead branch target).
+  // Also collect LTryCatch meta-insns for the exception table and StackMapTable.
   val storeTypes: Map[Int, VerifierType] = newMap()
+  val tcStartLabels:   List[String] = newList()
+  val tcEndLabels:     List[String] = newList()
+  val tcHandlerLabels: List[String] = newList()
+  val tcCatchClasses:  List[String] = newList()
+  val handlerTargets:  Map[String, String] = newMap()  // handlerLabel -> catchClass
   var pi3 = 0
   while pi3 < f.insns.count {
     match f.insns[pi3] {
@@ -452,6 +707,22 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
       case LAstore(s) -> {
         match mapGet(storeTypes, s) {
           case None -> storeTypes.add(s, VObject(className = "java/lang/Object"))
+          case Some(_) -> ()
+        }
+      }
+      case LAstoreAs(s, cls) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VObject(className = cls))
+          case Some(_) -> ()
+        }
+      }
+      case LTryCatch(sl, el, hl, cc) -> {
+        tcStartLabels.add(sl)
+        tcEndLabels.add(el)
+        tcHandlerLabels.add(hl)
+        tcCatchClasses.add(cc)
+        match mapGet(handlerTargets, hl) {
+          case None -> handlerTargets.add(hl, cc)
           case Some(_) -> ()
         }
       }
@@ -501,6 +772,16 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   // Walk the LInsn list in order; for each LLabel that is a branch target,
   // emit a full_frame (255) StackMapTable entry.
   val branchTargets = collectBranchTargets(f.insns)
+  // Exception handler labels are also branch targets for the StackMapTable.
+  var hti = 0
+  while hti < tcHandlerLabels.count {
+    val hl = tcHandlerLabels[hti]
+    match mapGet(branchTargets, hl) {
+      case None -> branchTargets.add(hl, true)
+      case Some(_) -> ()
+    }
+    hti = hti + 1
+  }
   val smBuf = writerNew()   // raw frame bytes (no leading count)
   var smCount = 0
   var prevOffset = -1       // initial implicit frame is at offset -1
@@ -521,7 +802,16 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
                 emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
                 vi = vi + 1
               }
-              writerU2(smBuf, 0)               // stack items = 0 (empty)
+              match mapGet(handlerTargets, l) {
+                case Some(cc) -> {
+                  writerU2(smBuf, 1)             // 1 stack item: the caught exception
+                  val exClass = if cc == "" { "java/lang/Throwable" } else { cc }
+                  emitVerifierTypeBc(VObject(className = exClass), pool, smBuf)
+                }
+                case None -> {
+                  writerU2(smBuf, 0)             // stack items = 0 (empty)
+                }
+              }
               smCount = smCount + 1
               prevOffset = off
             }
@@ -541,7 +831,20 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   writerU2(codeW, f.maxLocals)
   writerU4(codeW, ar.codeBytes.count)
   writerByteList(codeW, ar.codeBytes)
-  writerU2(codeW, 0)               // exception_table_length = 0
+  writerU2(codeW, tcStartLabels.count)   // exception_table_length
+  var tci = 0
+  while tci < tcStartLabels.count {
+    val spOff = match mapGet(ar.labelOffsets, tcStartLabels[tci]) { case Some(v) -> v case None -> 0 }
+    val epOff = match mapGet(ar.labelOffsets, tcEndLabels[tci])   { case Some(v) -> v case None -> 0 }
+    val hpOff = match mapGet(ar.labelOffsets, tcHandlerLabels[tci]) { case Some(v) -> v case None -> 0 }
+    val cc    = tcCatchClasses[tci]
+    val ct    = if cc == "" { 0 } else { poolClass(pool, cc) }
+    writerU2(codeW, spOff)
+    writerU2(codeW, epOff)
+    writerU2(codeW, hpOff)
+    writerU2(codeW, ct)
+    tci = tci + 1
+  }
   if smCount > 0 {
     writerU2(codeW, 1)             // attributes_count = 1
     writerU2(codeW, poolUtf8(pool, "StackMapTable"))

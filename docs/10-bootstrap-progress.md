@@ -576,6 +576,53 @@ lookups), partially offset by the ~28-line
 * Bucket B follow-ups (`RandomHost` / `CancelHost` direct-extern;
   Bucket D `Jvm*` split-out) ship as subsequent Phase 1 PRs.
 
+### D-progress-105: JVM self-tests B90-B96 — Java 21 StackMapTable, higher-level lowering helpers, float-opcode fix, reader round-trip
+
+*claude/fix-bytecode-emitter-37pZc branch.*  Seven new JVM self-tests
+exercise the higher-level `Jvm.Lowering` helpers and round out the
+`Jvm.Bytecode` / `Jvm.Reader` pipeline:
+
+* **B90 (`lowerFunc` + Java 21 StackMapTable).**  First Lyric-authored
+  class targeting Java 21 (`major=65`).  The B5 `lowerFunc` stack-map
+  pre-pass already existed; this test proves it works end-to-end.
+  Required the *result-slot pattern*: pre-assign a default to a local
+  slot before any conditional branch so every branch-target label sees
+  an empty operand stack, satisfying the B5 invariant that
+  `lowerFunc` always emits a zero-stack frame at branch targets.
+* **B91 (`lowerRecord`).**  Minimal `Point(x:JInt, y:JInt)` record →
+  Java class with constructor and field getters, verified by spawning
+  the produced JAR under `java -jar`.
+* **B92 (`lowerUnion`).**  `Shape` union with `Circle`/`Square` cases
+  → abstract base + `Shape$Circle` / `Shape$Square` case classes;
+  both cases loadable from the multi-class JAR.
+* **B93 (`lowerProtected`).**  `Counter` with `increment()` /
+  `get()` entry methods; verifies mutable field round-trip in a
+  generated Java class.
+* **B94 (`lowerWire`).**  Config wire with a single `answer=42`
+  binding; verifies `bootstrap()` / accessor code generation.
+* **B95 (float fields in `lowerRecord`).**  `Vector2(x:JFloat, y:JFloat)`
+  with a `getX():JFloat` accessor.  Exposed a class of JVM verifier
+  rejections: `emitFieldLoad`, `storeInsn`, `loadInsn`, and `returnInsn`
+  in `lowering.l` all used int opcodes (`LIload/LIstore/LIreturn`) for
+  `JFloat` fields instead of float opcodes.  Fixed by adding
+  `LFload / LFstore / LFreturn / LFconst / LFadd / LFsub / LFmul / LFdiv`
+  to the `LInsn` union and wiring them through all affected helpers;
+  also fixed `lowerProtected` constructor zero-init of JFloat fields
+  (`LIconst(v=0)` → `LFconst(v=0.0)`).
+* **B96 (`Jvm.Reader` round-trip).**  Builds a minimal `Hello.class`
+  via `Jvm.Classfile` + `Jvm.Bytecode`, serializes to bytes, parses
+  back with `Jvm.Reader.parseClassSummary`, and prints `magic_valid`,
+  `majorVersion`, `methodCount` to Lyric stdout — no Java invocation
+  needed.
+
+All seven F# driver tests follow the standard pattern: locate the
+`.l` source file by walking up from `AppContext.BaseDirectory`, call
+`compileAndRun`, assert zero diagnostics, assert exit 0, then check
+stdout against expected lines (and for B91-B95 also `runJar` the
+produced JAR under `java -jar`).  Both the `.l` sources and the
+`.fs` drivers are registered in the `.fsproj` / `Program.fs`.
+
+---
 
 ### D-progress-104: F# shim P3 trio — drop `Parse`, port `format`/`Render*Slice`
 
