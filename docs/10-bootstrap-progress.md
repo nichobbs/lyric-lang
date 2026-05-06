@@ -158,7 +158,7 @@ deferred to Phase 3 by design.
 | M4.3 — banking-example proof tutorial chapter | **Shipped** | D-progress-113 (`docs/13-tutorial.md` §8: annotation, debit/credit/execute contracts, `--explain`, `--json`, `checked_arithmetic`, `unsafe { }`) |
 | M4.3 — `docs/17-axiom-audit.md` (renumbered from 16; slot 16 went to `16-lsp-vscode-plan.md`) | **Shipped** | `docs/17-axiom-audit.md` ships the full audit for `std.bcl.*`; references corrected in 15 / 12 / bootstrap-progress |
 | M4.3 — contract-aware `lyric public-api-diff` (strengthened `requires:` / weakened `ensures:` as breaking) | **Shipped** | D-progress-113 (`ContractMeta.DiffContractChanged` with `StrengthenedRequires` / `WeakenedEnsures`; ContractMetaTests cover both directions + non-breaking cases) |
-| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Shipped** (mechanism); corpus run pending in any environment with cvc5 installed | D-progress-115 (`SolverFlavor` discriminator threads through `startSession` / `dischargeIn` / `endSession`; CVC5-specific args `--lang=smt2 --interactive --produce-models --tlimit-per=5000`; flavor-aware verdict-line drain in `readResponse`; SolverTests cover the flavor table); the ≥95 % corpus run is environment-gated and runs whenever `cvc5` is on `$PATH` (or `$LYRIC_CVC5` is set) and `z3` is not |
+| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Shipped** | D-progress-115 (`SolverFlavor` discriminator + flavor-specific args + flavor-aware verdict-line drain) + D-progress-116 (`session-start.sh` installs z3 + cvc5 from the Ubuntu universe repo so every Claude-on-the-web session has both solvers available; the full Lyric.Verifier.Tests suite — 256 tests, the cumulative M4.2 + M4.3 regression corpus — passes against CVC5 alone after temporarily disabling z3, **100 %** of the corpus, well above the ≥95 % exit criterion) |
 
 The end-to-end `examples/prove_demo.l` (12 obligations covering identity,
 tautology, bumped-by-1, cross-function call rule, inline range, assert,
@@ -175,6 +175,50 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-116: M4.3 — z3 + cvc5 in the session-start hook (CVC5 corpus run cleared)
+
+*claude/review-phase-4-5-items-bRPXA branch.*  Closes the
+environment-gated half of M4.3 deliverable 10 (CVC5 solver-swap
+parity, ≥95 % of M4.2 corpus) by ensuring both solvers are
+available in every Claude-on-the-web session and exercising the
+full M4.2 corpus against CVC5.
+
+**Hook update.**  `.claude/hooks/session-start.sh` learns an
+`ensure_solver` helper that `apt-get install`s z3 and cvc5 (both
+Ubuntu universe packages, ~30 s combined first install,
+idempotent fast-path on subsequent sessions).  Failures are
+soft — apt-get failure logs a warning and the verifier falls back
+to the trivial-only discharger, exactly as before.  The hook
+already required sudo + apt-get for the .NET SDK install, so this
+imposes no new privileges.
+
+**Corpus run.**  With z3 temporarily renamed to `/usr/bin/z3.disabled`
+(forcing `findZ3` to return `None`), the full
+`Lyric.Verifier.Tests` suite — 256 tests covering the cumulative
+M4.1 / M4.2 / M4.3 regression corpus — was run against CVC5 alone:
+
+```
+EXPECTO! 256 tests run in 00:00:00.94 for Lyric.Verifier
+       — 256 passed, 0 ignored, 0 failed, 0 errored.  Success!
+```
+
+That's **100 %** of the corpus, well above the ≥95 % exit
+criterion from `docs/15-phase-4-proof-plan.md` §M4.3.  The
+`[verify] endSession (dirty=true)` debug traces confirm CVC5
+sessions actually started, dispatched goals through
+`dischargeIn`, and wrote cache entries — not silently falling
+through to the trivial discharger.
+
+z3 was then restored.  Both solvers now coexist on every fresh
+Claude session via the hook.
+
+**Status table.**  M4.3 row 10 (`CVC5 solver-swap parity (≥95 %
+of M4.2 corpus)`) flips from "Shipped (mechanism)" — the
+qualifier added in D-progress-115 because the corpus run hadn't
+been observed in any concrete environment — to plain **Shipped**.
+Every M4.3 deliverable from `docs/15-phase-4-proof-plan.md` §M4.3
+is now Shipped without qualifier.
 
 ### D-progress-115: M4.3 — CVC5 persistent-session parity
 

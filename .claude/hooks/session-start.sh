@@ -86,3 +86,45 @@ if ! "$DOTNET_BIN" --list-runtimes 2>/dev/null \
 fi
 
 echo "session-start.sh: installed .NET SDK $SDK_VERSION + runtime ${SDK_MAJOR}.x at $DOTNET_DIR"
+
+# ---------------------------------------------------------------------------
+# Phase 4 verifier dependencies: z3 + cvc5.
+#
+# `Lyric.Verifier.Solver.withSession` shells out to `z3` (or, as a
+# fallback, `cvc5`) for any proof obligation the trivial syntactic
+# discharger can't close.  With neither solver on PATH, the verifier
+# silently degrades to "trivial-only" and most goals come back as
+# Unknown — environment-gated coverage that hides regressions in
+# the SMT integration path.
+#
+# Both packages are in the Ubuntu universe repo and install in
+# under 30 s combined.  Idempotent: skip if already present.
+# ---------------------------------------------------------------------------
+
+ensure_solver() {
+    local pkg="$1"
+    local bin="$2"
+    if command -v "$bin" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! command -v sudo >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
+        echo "session-start.sh: no apt-get / sudo; skipping $pkg install" >&2
+        return 0
+    fi
+    echo "session-start.sh: installing $pkg via apt-get"
+    DEBIAN_FRONTEND=noninteractive sudo -n apt-get install -y "$pkg" \
+        >/dev/null 2>&1 || {
+            echo "session-start.sh: apt-get install $pkg failed; verifier will fall back to trivial-only discharger" >&2
+            return 0
+        }
+}
+
+ensure_solver z3   z3
+ensure_solver cvc5 cvc5
+
+if command -v z3 >/dev/null 2>&1; then
+    echo "session-start.sh: z3 ready ($(z3 --version 2>/dev/null | head -1))"
+fi
+if command -v cvc5 >/dev/null 2>&1; then
+    echo "session-start.sh: cvc5 ready ($(cvc5 --version 2>/dev/null | head -1))"
+fi
