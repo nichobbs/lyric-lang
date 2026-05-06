@@ -86,29 +86,33 @@ let prepareOutputDir (name: string) : string =
 
 /// Compile + run a Lyric source string. Returns the stdout/stderr/
 /// exit-code triple plus the EmitResult so individual tests can
-/// inspect diagnostics.
+/// inspect diagnostics.  The temporary output directory is always
+/// deleted after the run so test suites don't fill the disk.
 let compileAndRun (label: string) (source: string) : EmitResult * string * string * int =
     let outDir = prepareOutputDir label
-    let dll    = Path.Combine(outDir, label + ".dll")
-    let req =
-        { Source           = source
-          AssemblyName     = label
-          OutputPath       = dll
-          RestoredPackages = []
-          Target           = Dotnet }
-    let r = emit req
-    // The emit may have lazily precompiled extra `Std.X` modules.
-    // Copy any newly cached DLLs over so the runtime probing path
-    // resolves every cross-assembly reference.
-    copyAllStdlibDlls outDir
-    let stdout, stderr, exitCode =
-        match r.OutputPath with
-        | Some _ -> runDll dll
-        | None ->
-            let diagText =
-                r.Diagnostics
-                |> List.map (fun d ->
-                    sprintf "[%A %s] %s" d.Severity d.Code d.Message)
-                |> String.concat "\n"
-            "", diagText, -1
-    r, stdout, stderr, exitCode
+    try
+        let dll = Path.Combine(outDir, label + ".dll")
+        let req =
+            { Source           = source
+              AssemblyName     = label
+              OutputPath       = dll
+              RestoredPackages = []
+              Target           = Dotnet }
+        let r = emit req
+        // The emit may have lazily precompiled extra `Std.X` modules.
+        // Copy any newly cached DLLs over so the runtime probing path
+        // resolves every cross-assembly reference.
+        copyAllStdlibDlls outDir
+        let stdout, stderr, exitCode =
+            match r.OutputPath with
+            | Some _ -> runDll dll
+            | None ->
+                let diagText =
+                    r.Diagnostics
+                    |> List.map (fun d ->
+                        sprintf "[%A %s] %s" d.Severity d.Code d.Message)
+                    |> String.concat "\n"
+                "", diagText, -1
+        r, stdout, stderr, exitCode
+    finally
+        try Directory.Delete(outDir, recursive = true) with _ -> ()
