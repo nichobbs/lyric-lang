@@ -509,6 +509,25 @@ pub func makeInterfaceWithMethods(
   )
 }
 
+/// Create a class that carries only class-level attributes (no methods, no fields).
+/// Useful for attaching custom attributes (e.g. LyricSignature) to a class.
+pub func makeClassWithAttrs(
+  thisClass:  in String,
+  classAttrs: in List[Attribute]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = newList(),
+    attrs        = classAttrs
+  )
+}
+
 /// Create a class with class-level attributes (e.g. BootstrapMethods).
 pub func makeClassWithMethodsAndAttrs(
   thisClass:  in String,
@@ -600,6 +619,102 @@ pub func makeCaseClass(
     thisClass    = thisClass,
     superClass   = superClass,
     interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
+// ── B111-B116 attribute helpers ───────────────────────────────────────────────
+
+/// Build a `PermittedSubclasses` class-level attribute (JVMS §4.7.31).
+/// `caseNames` are the JVM binary names of the permitted subclasses.
+pub func makePermittedSubclassesAttr(caseNames: in List[String], pool: in Pool): Attribute {
+  val w = writerNew()
+  writerU2(w, caseNames.count)
+  for name in caseNames.toArray() {
+    writerU2(w, poolClass(pool, name))
+  }
+  attrFromWriter("PermittedSubclasses", w)
+}
+
+/// Build a `Record` class-level attribute (JVMS §4.7.30).
+/// `fieldNames` and `fieldDescs` must have equal length; each pair is one record component.
+pub func makeRecordAttr(fieldNames: in List[String], fieldDescs: in List[String], pool: in Pool): Attribute {
+  val w = writerNew()
+  writerU2(w, fieldNames.count)   // components_count
+  var i = 0
+  while i < fieldNames.count {
+    writerU2(w, poolUtf8(pool, fieldNames[i]))   // name_index
+    writerU2(w, poolUtf8(pool, fieldDescs[i]))   // descriptor_index
+    writerU2(w, 0)                               // attributes_count = 0
+    i = i + 1
+  }
+  attrFromWriter("Record", w)
+}
+
+/// Build a sealed interface ClassFile with a `PermittedSubclasses` attribute.
+pub func makeSealedInterfaceWithMethods(
+  thisClass: in String,
+  caseNames: in List[String],
+  methods:   in List[MethodInfo],
+  pool:      in Pool
+): ClassFile {
+  val permAttr = makePermittedSubclassesAttr(caseNames, pool)
+  val classAttrs: List[Attribute] = newList()
+  classAttrs.add(permAttr)
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
+  )
+}
+
+/// Build a final record class with a `Record` attribute and unmangled field accessors.
+pub func makeRecordClass(
+  thisClass:  in String,
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo],
+  recordAttr: in Attribute
+): ClassFile {
+  val classAttrs: List[Attribute] = newList()
+  classAttrs.add(recordAttr)
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Record",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = classAttrs
+  )
+}
+
+/// Build a case class that extends `superClass` and implements `iface`.
+pub func makeCaseClassImplementing(
+  thisClass:  in String,
+  superClass: in String,
+  iface:      in String,
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo]
+): ClassFile {
+  val ifaces: List[String] = newList()
+  ifaces.add(iface)
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = thisClass,
+    superClass   = superClass,
+    interfaces   = ifaces,
     fields       = fields,
     methods      = methods,
     attrs        = newList()

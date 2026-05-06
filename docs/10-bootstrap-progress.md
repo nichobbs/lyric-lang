@@ -63,6 +63,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.iv — `lyric restore` writes `_extern/<lyric-pkg>.l` + `.skip.md` shims for every `[nuget]` entry after restore completes; B0030-flavoured warnings for unlocatable DLLs | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (this branch) | D-progress-122 |
+| JVM self-tests B111-B124 — lowerSealedUnion, lowerEnum, lowerOutInoutParam, lowerNatTag, makeLyricSignatureAttr, lowerExposedRecord, lowerProjectable, lowerProtectedWithBarriers, lowerHotAsync, lowerScopeBlock, lowerFuncWithContract, lowerDeriveEquality, lowerDeriveOrd, lowerPackage | **Shipped** (this branch) | D-progress-124 |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
@@ -183,6 +184,45 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-124: JVM self-tests B111-B124 — sealed-union, enum, out-param, nat-tag, signature attr, exposed-record, projectable, protected-barriers, hot-async, scope-block, func-with-contract, derive-equality, derive-ord, lowerPackage
+
+*claude/jvm-scope-b111-XNq6s branch.*  Completes the JVM lowering
+self-test series B111–B124 exercising the full range of Lyric-level
+lowering functions.  Each stage has a self-test Lyric source in
+`compiler/lyric/jvm/` and an F# Expecto test in
+`compiler/tests/Lyric.Emitter.Tests/`.
+
+**Stages shipped:**
+
+| Stage | Lyric API exercised | Key issue fixed |
+|---|---|---|
+| B111 | `lowerSealedUnion` | sealed interface + permitted-subclasses attr |
+| B112 | `lowerEnum` | `assembleCodeWithFrames` needed for branching `switch` |
+| B113 | `lowerOutInoutParam` | out-alloc / out-store / out-load helpers |
+| B114 | `lowerNatTag` | `42L` not valid; use `42i64` Lyric syntax |
+| B115 | `makeLyricSignatureAttr` | SIGSEGV: direct `ClassFile(...)` ctor outside module; fix via `makeClassWithAttrs` helper in `classfile.l` |
+| B116 | `lowerExposedRecord` | `makeRecordAttr` + `makeRecordClass` helpers |
+| B117 | `lowerProjectable` | `makeClassWithMethodsAndAttrs` helper |
+| B118 | `lowerProtectedWithBarriers` | `invokevirtual` on `Condition` (interface) → `invokeinterface`; result-slot pre-init before barrier branch targets |
+| B119 | `lowerHotAsync` | `thenApply` + `completedFuture` nesting; fix: stage2 returns raw value |
+| B120 | `lowerScopeBlock` | direct `ClassFile(...)` ctor SIGSEGV; fix via `makeFinalClass`/`makeClassWithInterfaces` |
+| B121 | `lowerFuncWithContract` | StackMapTable empty-stack assumption; fix: skip result slot when ensures is empty; simplify requires to avoid diamond-with-stack-value |
+| B122 | `lowerDeriveEquality` | `equals` branch targets before slot-2 assigned; fix: `LIfAcmpeq`/`LIfAcmpne` LInsn cases + pre-init slot 2 + `lowerFuncForClass` path |
+| B123 | `lowerDeriveOrd` | `compareTo` with long comparison |
+| B124 | `lowerPackage` | `LIreturn` missing from static `add` body |
+
+**Lowering infrastructure changes (in `lowering.l`):**
+
+- `lowerFuncImpl(f, thisTypeName, pool)` — internal impl taking explicit `this`-type for StackMapTable frame generation
+- `lowerFunc(f, pool)` — public wrapper using `java/lang/Object` as `this`-type (static / top-level methods)
+- `lowerFuncForClass(f, declaringClass, pool)` — public wrapper using the actual class name (instance methods)
+- `lowerEntry` and `lowerProtectedWithBarriers` updated to call `lowerFuncForClass`
+- Fixed `paramSlotCount` double-counting of `this` in non-static methods
+- Added `LIfAcmpeq` and `LIfAcmpne` to the `LInsn` union, `lowerInsn`, and `collectBranchTargets`
+- `lowerDeriveEquality` refactored to use `LInsn` list + `lowerFuncForClass` for correct StackMapTable
+
+---
 
 ### D-progress-122: M5.1 stage 2d.v — build-time wiring for NuGet packages
 

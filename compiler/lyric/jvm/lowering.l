@@ -123,6 +123,8 @@ pub union LInsn {
   case LIfIcmpge(label: String)
   case LIfIcmpgt(label: String)
   case LIfIcmple(label: String)
+  case LIfAcmpeq(label: String)
+  case LIfAcmpne(label: String)
 
   case LFload(slot: Int)
   case LFstore(slot: Int)
@@ -378,6 +380,8 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LIfIcmpge(l)       -> { emitIfIcmpge(asm, l); trackStack(asm, -2) }
     case LIfIcmpgt(l)       -> { emitIfIcmpgt(asm, l); trackStack(asm, -2) }
     case LIfIcmple(l)       -> { emitIfIcmple(asm, l); trackStack(asm, -2) }
+    case LIfAcmpeq(l)       -> { emitIfAcmpeq(asm, l); trackStack(asm, -2) }
+    case LIfAcmpne(l)       -> { emitIfAcmpne(asm, l); trackStack(asm, -2) }
 
     case LGetfield(owner, name, t) -> {
       val idx = poolFieldref(asm.pool, owner, name, typeDescriptor(t))
@@ -674,6 +678,8 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
       case LIfIcmpge(l)   -> addTarget(targets, l)
       case LIfIcmpgt(l)   -> addTarget(targets, l)
       case LIfIcmple(l)   -> addTarget(targets, l)
+      case LIfAcmpeq(l)   -> addTarget(targets, l)
+      case LIfAcmpne(l)   -> addTarget(targets, l)
       case LTableswitch(_, _, def, cases) -> {
         addTarget(targets, def)
         addLabelTargets(targets, cases)
@@ -723,7 +729,10 @@ func inferMaxLocals(f: in LFunc): Int {
   maxSlot
 }
 
-pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
+// Internal implementation: thisTypeName overrides the receiver type in the StackMapTable.
+// Use "java/lang/Object" for the default (static or unknown class) and the actual class
+// name for instance methods where the verifier checks field access (B118+).
+func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodInfo {
   val asm = newAssembler(pool)
   for insn in f.insns.toArray() {
     lowerInsn(insn, asm)
@@ -743,7 +752,7 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   val initialLocals: List[VerifierType] = newList()
   val isStatic = (f.flags / 8) % 2 == 1
   if not isStatic {
-    initialLocals.add(VObject(className = "java/lang/Object"))
+    initialLocals.add(VObject(className = thisTypeName))
   }
   var pi = 0
   while pi < f.params.count {
@@ -815,11 +824,13 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
 
   // Compute how many actual JVM slots the parameter frame covers.
   // Long and Double each occupy 2 slots; all others occupy 1.
+  // For non-static methods, slot 0 ('this') is already counted separately;
+  // start the loop at index 1 to skip it.
   var paramSlotCount = 0
   if not isStatic {
     paramSlotCount = 1
   }
-  var ili = 0
+  var ili = if isStatic then 0 else 1
   while ili < initialLocals.count {
     match initialLocals[ili] {
       case VLong   -> { paramSlotCount = paramSlotCount + 2 }
@@ -942,6 +953,16 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   makeMethodInfo(f.flags, f.name, buildDescriptor(f.params, f.ret), attrs)
+}
+
+/// Lower a static or top-level LFunc to a MethodInfo.
+pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
+  lowerFuncImpl(f, "java/lang/Object", pool)
+}
+
+/// Lower an instance LFunc where the receiver type matters in StackMapTable frames.
+pub func lowerFuncForClass(f: in LFunc, declaringClass: in String, pool: in Pool): MethodInfo {
+  lowerFuncImpl(f, declaringClass, pool)
 }
 
 pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
@@ -1156,7 +1177,7 @@ func lowerEntry(ef: in LFunc, className: in String, pool: in Pool): MethodInfo {
     maxStack  = ef.maxStack + 2,   // +2 headroom for lock acquire/release
     maxLocals = ef.maxLocals + fieldSlotSize(ef.ret)
   )
-  lowerFunc(wFunc, pool)
+  lowerFuncForClass(wFunc, className, pool)
 }
 
 pub func lowerProtected(p: in LProtected, pool: in Pool): ClassFile {
@@ -1985,4 +2006,1173 @@ pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
     methods      = allMethods,
     attrs        = newList()
   )
+}
+
+// ── B111: lowerSealedUnion (production sealed-interface form) ─────────────────
+
+/// Sealed case (same shape as LUnionCase but targets the sealed-interface form).
+pub record LSealedCase {
+  caseName: String       // simple case name (e.g. "Circle")
+  fields:   List[LField] // payload fields
+}
+
+pub record LSealedUnion {
+  baseName: String           // sealed interface JVM internal name
+  cases:    List[LSealedCase]
+}
+
+/// Lower one sealed case class: a final class implementing the sealed interface.
+/// Includes a `$tag(): I` method returning the ordinal index of this case.
+func lowerSealedCase(baseName: in String, c: in LSealedCase, ordinal: in Int, pool: in Pool): ClassFile {
+  val fullName = caseClassName(baseName, c.caseName)
+
+  // Fields
+  val cfFields: List[FieldInfo] = newList()
+  for fld in c.fields.toArray() {
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_FINAL, fld.name, typeDescriptor(fld.fieldType), fa))
+  }
+
+  // <init>(field...)V
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val superPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = superPs, ret = JVoid), ctorAsm)
+  var slot = 1
+  for fld in c.fields.toArray() {
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    emitFieldLoad(fld.fieldType, slot, ctorAsm)
+    lowerInsn(LPutfield(owner = fullName, name = fld.name, t = fld.fieldType), ctorAsm)
+    slot = slot + fieldSlotSize(fld.fieldType)
+  }
+  lowerInsn(LReturn, ctorAsm)
+  val ctorCode = assembleCode(ctorAsm, slot + 1, slot)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParams: List[JvmType] = newList()
+  for fld in c.fields.toArray() {
+    ctorParams.add(fld.fieldType)
+  }
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs)
+
+  // $tag(): I — returns the ordinal of this case
+  val tagAsm = newAssembler(pool)
+  lowerInsn(LIconst(v = ordinal), tagAsm)
+  lowerInsn(LIreturn, tagAsm)
+  val tagCode = assembleCode(tagAsm, 1, 1)
+  val tagAttrs: List[Attribute] = newList()
+  tagAttrs.add(tagCode)
+  val tagPs: List[JvmType] = newList()
+  val tagMethod = makeMethodInfo(ACC_PUBLIC, "$tag", buildDescriptor(tagPs, JInt), tagAttrs)
+
+  val methods: List[MethodInfo] = newList()
+  methods.add(ctorMethod)
+  methods.add(tagMethod)
+
+  makeCaseClassImplementing(fullName, "java/lang/Object", baseName, cfFields, methods)
+}
+
+/// Lower a sealed union to a list of ClassFiles:
+///   index 0 — the sealed interface (with PermittedSubclasses attribute)
+///   index i+1 — case class i (final, implements the interface)
+pub func lowerSealedUnion(u: in LSealedUnion, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+
+  // Collect permitted case names
+  val caseNames: List[String] = newList()
+  for c in u.cases.toArray() {
+    caseNames.add(caseClassName(u.baseName, c.caseName))
+  }
+
+  // Abstract $tag(): I method on the interface
+  val tagAsm = newAssembler(pool)
+  val tagPs: List[JvmType] = newList()
+  val tagAttrs: List[Attribute] = newList()
+  val tagMethod = makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "$tag", buildDescriptor(tagPs, JInt), tagAttrs)
+  val ifaceMethods: List[MethodInfo] = newList()
+  ifaceMethods.add(tagMethod)
+
+  result.add(makeSealedInterfaceWithMethods(u.baseName, caseNames, ifaceMethods, pool))
+
+  var ordinal = 0
+  for c in u.cases.toArray() {
+    result.add(lowerSealedCase(u.baseName, c, ordinal, pool))
+    ordinal = ordinal + 1
+  }
+
+  result
+}
+
+// ── B112: lowerEnum (JVM enum class) ─────────────────────────────────────────
+
+pub record LEnumType {
+  className: String
+  variants:  List[String]
+}
+
+/// Lower a payload-free enum type to a single JVM enum ClassFile.
+pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
+  val cls  = e.className
+  val clsDesc = "L" + cls + ";"
+  val arrDesc = "[" + clsDesc
+
+  val cfFields: List[FieldInfo] = newList()
+
+  // One public static final field per variant
+  for v in e.variants.toArray() {
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL + ACC_ENUM, v, clsDesc, fa))
+  }
+
+  // $VALUES: E[]
+  val valFa: List[Attribute] = newList()
+  cfFields.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL + ACC_SYNTHETIC, "$VALUES", arrDesc, valFa))
+
+  val methods: List[MethodInfo] = newList()
+
+  // Private <init>(String name, int ordinal): super(name, ordinal)
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  lowerInsn(LAload(slot = 1), ctorAsm)   // name
+  lowerInsn(LIload(slot = 2), ctorAsm)   // ordinal
+  val enumPs: List[JvmType] = newList()
+  enumPs.add(JRef(className = "java/lang/String"))
+  enumPs.add(JInt)
+  lowerInsn(LInvokespecial(owner = "java/lang/Enum", name = "<init>", params = enumPs, ret = JVoid), ctorAsm)
+  lowerInsn(LReturn, ctorAsm)
+  val ctorCode = assembleCode(ctorAsm, 3, 3)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(JRef(className = "java/lang/String"))
+  ctorPs.add(JInt)
+  methods.add(makeMethodInfo(ACC_PRIVATE, "<init>", buildDescriptor(ctorPs, JVoid), ctorAttrs))
+
+  // <clinit>: initialise each variant field, then $VALUES array
+  val clinitAsm = newAssembler(pool)
+  val enumNewIdx   = poolClass(pool, cls)
+  val enumCtorDesc = "(Ljava/lang/String;I)V"
+  val enumCtorRef  = poolMethodref(pool, cls, "<init>", enumCtorDesc)
+  var ordinal = 0
+  for v in e.variants.toArray() {
+    // new E("V", ordinal)
+    lowerInsn(LNew(className = cls), clinitAsm)
+    lowerInsn(LDup, clinitAsm)
+    lowerInsn(LPushString(s = v), clinitAsm)
+    lowerInsn(LIconst(v = ordinal), clinitAsm)
+    lowerInsn(LInvokespecial(owner = cls, name = "<init>", params = ctorPs, ret = JVoid), clinitAsm)
+    lowerInsn(LPutstatic(owner = cls, name = v, t = JRef(className = cls)), clinitAsm)
+    ordinal = ordinal + 1
+  }
+
+  // Build $VALUES array
+  lowerInsn(LIconst(v = e.variants.count), clinitAsm)
+  lowerInsn(LAnewarray(className = cls), clinitAsm)
+  var ai = 0
+  for v in e.variants.toArray() {
+    lowerInsn(LDup, clinitAsm)
+    lowerInsn(LIconst(v = ai), clinitAsm)
+    lowerInsn(LGetstatic(owner = cls, name = v, t = JRef(className = cls)), clinitAsm)
+    lowerInsn(LAastore, clinitAsm)
+    ai = ai + 1
+  }
+  lowerInsn(LPutstatic(owner = cls, name = "$VALUES", t = JArray(JRef(className = cls))), clinitAsm)
+  lowerInsn(LReturn, clinitAsm)
+  val clinitCode = assembleCode(clinitAsm, 5, 0)
+  val clinitAttrs: List[Attribute] = newList()
+  clinitAttrs.add(clinitCode)
+  val clinitPs: List[JvmType] = newList()
+  methods.add(makeMethodInfo(ACC_STATIC, "<clinit>", buildDescriptor(clinitPs, JVoid), clinitAttrs))
+
+  // values(): E[]
+  val valAsm = newAssembler(pool)
+  lowerInsn(LGetstatic(owner = cls, name = "$VALUES", t = JArray(JRef(className = cls))), valAsm)
+  lowerInsn(LInvokevirtual(
+    owner = "java/lang/Object", name = "clone",
+    params = clinitPs, ret = JRef(className = "java/lang/Object")
+  ), valAsm)
+  lowerInsn(LCheckcast(className = "[" + clsDesc), valAsm)
+  lowerInsn(LAreturn, valAsm)
+  val valCode = assembleCode(valAsm, 1, 0)
+  val valAttrs: List[Attribute] = newList()
+  valAttrs.add(valCode)
+  val valRet: List[JvmType] = newList()
+  methods.add(makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "values", buildDescriptor(valRet, JArray(JRef(className = cls))), valAttrs))
+
+  // valueOf(String): E — delegates to Enum.valueOf(Class, String)
+  val voAsm = newAssembler(pool)
+  emitPushClass(voAsm, cls)
+  lowerInsn(LAload(slot = 0), voAsm)
+  val voPs: List[JvmType] = newList()
+  voPs.add(JRef(className = "java/lang/Class"))
+  voPs.add(JRef(className = "java/lang/String"))
+  lowerInsn(LInvokestatic(owner = "java/lang/Enum", name = "valueOf", params = voPs, ret = JRef(className = "java/lang/Enum")), voAsm)
+  lowerInsn(LCheckcast(className = cls), voAsm)
+  lowerInsn(LAreturn, voAsm)
+  val voCode = assembleCode(voAsm, 2, 1)
+  val voAttrs: List[Attribute] = newList()
+  voAttrs.add(voCode)
+  val voParamPs: List[JvmType] = newList()
+  voParamPs.add(JRef(className = "java/lang/String"))
+  methods.add(makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "valueOf", buildDescriptor(voParamPs, JRef(className = cls)), voAttrs))
+
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL + ACC_ENUM,
+    thisClass    = cls,
+    superClass   = "java/lang/Enum",
+    interfaces   = newList(),
+    fields       = cfFields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
+// ── B114: lowerNatTag (phantom N_<value> class for value generics) ────────────
+
+pub record LNatTag {
+  className: String    // e.g. "N_42"
+  value:     Long
+}
+
+/// Lower a nat-tag phantom class with a public static final long VALUE field
+/// and a value() accessor.
+pub func lowerNatTag(n: in LNatTag, pool: in Pool): ClassFile {
+  val cls = n.className
+  val longDesc = typeDescriptor(JLong)
+  val cfFields: List[FieldInfo] = newList()
+  val fa: List[Attribute] = newList()
+  cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL, "VALUE", longDesc, fa))
+
+  val methods: List[MethodInfo] = newList()
+
+  // <clinit>: VALUE = n.value
+  val clinitAsm = newAssembler(pool)
+  lowerInsn(LLconst(v = n.value), clinitAsm)
+  lowerInsn(LPutstatic(owner = cls, name = "VALUE", t = JLong), clinitAsm)
+  lowerInsn(LReturn, clinitAsm)
+  val clinitPs: List[JvmType] = newList()
+  val clinitCode = assembleCode(clinitAsm, 2, 0)
+  val clinitAttrs: List[Attribute] = newList()
+  clinitAttrs.add(clinitCode)
+  methods.add(makeMethodInfo(ACC_STATIC, "<clinit>", buildDescriptor(clinitPs, JVoid), clinitAttrs))
+
+  // public long value() { return VALUE; }
+  val accAsm = newAssembler(pool)
+  lowerInsn(LGetstatic(owner = cls, name = "VALUE", t = JLong), accAsm)
+  lowerInsn(LLreturn, accAsm)
+  val accPs: List[JvmType] = newList()
+  val accCode = assembleCode(accAsm, 2, 1)
+  val accAttrs: List[Attribute] = newList()
+  accAttrs.add(accCode)
+  methods.add(makeMethodInfo(ACC_PUBLIC, "value", buildDescriptor(accPs, JLong), accAttrs))
+
+  // Default <init>
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val objPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid), ctorAsm)
+  lowerInsn(LReturn, ctorAsm)
+  val ctorCode = assembleCode(ctorAsm, 1, 1)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorPs: List[JvmType] = newList()
+  methods.add(makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorPs, JVoid), ctorAttrs))
+
+  makeFinalClass(cls, cfFields, methods)
+}
+
+// ── B115: makeLyricSignatureAttr ──────────────────────────────────────────────
+
+/// Build a `LyricSignature` vendor attribute whose info bytes are the
+/// modified-UTF-8 encoding of `sig`.
+pub func makeLyricSignatureAttr(sig: in String): Attribute {
+  val w = writerNew()
+  writerModifiedUtf8(w, sig)
+  attrFromWriter("LyricSignature", w)
+}
+
+// ── B116: lowerExposedRecord (unmangled fields + Record class attribute) ───────
+
+pub record LExposedRecord {
+  className: String
+  fields:    List[LField]
+}
+
+/// Lower an `exposed record` to a ClassFile:
+/// - ACC_PUBLIC + ACC_SUPER + ACC_FINAL, superClass = java/lang/Record
+/// - Fields are NOT name-mangled (no `$` prefix)
+/// - Unmangled public accessor methods named after each field
+/// - A `Record` class-level attribute listing all components
+pub func lowerExposedRecord(r: in LExposedRecord, pool: in Pool): ClassFile {
+  val cfFields: List[FieldInfo] = newList()
+  val methods:  List[MethodInfo] = newList()
+  val fieldNames: List[String] = newList()
+  val fieldDescs: List[String] = newList()
+
+  for fld in r.fields.toArray() {
+    val desc = typeDescriptor(fld.fieldType)
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PRIVATE + ACC_FINAL, fld.name, desc, fa))
+    fieldNames.add(fld.name)
+    fieldDescs.add(desc)
+  }
+
+  // <init>(fields...)V
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val recPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = "java/lang/Record", name = "<init>", params = recPs, ret = JVoid), ctorAsm)
+  var slot = 1
+  for fld in r.fields.toArray() {
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    emitFieldLoad(fld.fieldType, slot, ctorAsm)
+    lowerInsn(LPutfield(owner = r.className, name = fld.name, t = fld.fieldType), ctorAsm)
+    slot = slot + fieldSlotSize(fld.fieldType)
+  }
+  lowerInsn(LReturn, ctorAsm)
+  val ctorCode = assembleCode(ctorAsm, slot + 1, slot)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParams: List[JvmType] = newList()
+  for fld in r.fields.toArray() {
+    ctorParams.add(fld.fieldType)
+  }
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs)
+  methods.add(ctorMethod)
+
+  // Unmangled public accessor: <name>(): <type>
+  for fld in r.fields.toArray() {
+    val accAsm = newAssembler(pool)
+    lowerInsn(LAload(slot = 0), accAsm)
+    lowerInsn(LGetfield(owner = r.className, name = fld.name, t = fld.fieldType), accAsm)
+    lowerInsn(returnInsn(fld.fieldType), accAsm)
+    val accPs: List[JvmType] = newList()
+    val accCode = assembleCode(accAsm, fieldSlotSize(fld.fieldType) + 1, 1)
+    val accAttrs: List[Attribute] = newList()
+    accAttrs.add(accCode)
+    methods.add(makeMethodInfo(ACC_PUBLIC, fld.name, buildDescriptor(accPs, fld.fieldType), accAttrs))
+  }
+
+  val recAttr = makeRecordAttr(fieldNames, fieldDescs, pool)
+  makeRecordClass(r.className, cfFields, methods, recAttr)
+}
+
+// ── B117: lowerProjectable (@projectable opaque + view twin + toView()) ────────
+
+pub record LProjectable {
+  opaqueTypeName: String
+  viewTypeName:   String
+  fields:         List[LOpaqueField]
+}
+
+/// Lower a `@projectable` opaque type:
+///   Returns [opaqueClass, viewClass]
+///   The opaque class gets a `toView(): ViewType` method that copies $-mangled
+///   fields into a fresh exposed-record instance of the view type.
+pub func lowerProjectable(p: in LProjectable, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+
+  // Build the view type as an exposed record (unmangled fields)
+  val viewFields: List[LField] = newList()
+  for f in p.fields.toArray() {
+    viewFields.add(LField(flags = ACC_PUBLIC, name = f.name, fieldType = f.fieldType))
+  }
+  val viewRec = LExposedRecord(className = p.viewTypeName, fields = viewFields)
+  val viewCf = lowerExposedRecord(viewRec, pool)
+
+  // Build the opaque type with the base lowerOpaqueType helper
+  val opaqueType = LOpaqueType(className = p.opaqueTypeName, fields = p.fields)
+  val opaqueCf = lowerOpaqueType(opaqueType, pool)
+
+  // Build toView(): ViewType — copies $-mangled fields to a new ViewType instance
+  val viewAsm = newAssembler(pool)
+  val viewNewIdx = poolClass(pool, p.viewTypeName)
+  lowerInsn(LNew(className = p.viewTypeName), viewAsm)
+  lowerInsn(LDup, viewAsm)
+
+  // Push each field value: aload_0; getfield $name
+  for f in p.fields.toArray() {
+    lowerInsn(LAload(slot = 0), viewAsm)
+    lowerInsn(LGetfield(owner = p.opaqueTypeName, name = "$" + f.name, t = f.fieldType), viewAsm)
+  }
+
+  // Build constructor descriptor for ViewType(<fields>...)V
+  val viewCtorParams: List[JvmType] = newList()
+  for f in p.fields.toArray() {
+    viewCtorParams.add(f.fieldType)
+  }
+  lowerInsn(LInvokespecial(owner = p.viewTypeName, name = "<init>", params = viewCtorParams, ret = JVoid), viewAsm)
+  lowerInsn(LAreturn, viewAsm)
+
+  val toViewPs: List[JvmType] = newList()
+  var viewMaxStack = 2
+  for f in p.fields.toArray() {
+    viewMaxStack = viewMaxStack + fieldSlotSize(f.fieldType)
+  }
+  val toViewCode = assembleCode(viewAsm, viewMaxStack, 1)
+  val toViewAttrs: List[Attribute] = newList()
+  toViewAttrs.add(toViewCode)
+  val toViewMethod = makeMethodInfo(
+    ACC_PUBLIC, "toView", buildDescriptor(toViewPs, JRef(className = p.viewTypeName)), toViewAttrs
+  )
+
+  // Patch the opaque ClassFile to add toView()
+  val opaqueMethods: List[MethodInfo] = newList()
+  for m in opaqueCf.methods.toArray() {
+    opaqueMethods.add(m)
+  }
+  opaqueMethods.add(toViewMethod)
+
+  val opaqueWithView = ClassFile(
+    minorVersion = opaqueCf.minorVersion,
+    majorVersion = opaqueCf.majorVersion,
+    flags        = opaqueCf.flags,
+    thisClass    = opaqueCf.thisClass,
+    superClass   = opaqueCf.superClass,
+    interfaces   = opaqueCf.interfaces,
+    fields       = opaqueCf.fields,
+    methods      = opaqueMethods,
+    attrs        = opaqueCf.attrs
+  )
+
+  result.add(opaqueWithView)
+  result.add(viewCf)
+  result
+}
+
+// ── B118: lowerProtectedWithBarriers (when: Condition-variable barriers) ───────
+
+pub record LBarrierEntry {
+  entryFunc:      LFunc        // the wrapped entry method (body insns only; no lock/unlock)
+  conditionName:  String       // name for the Condition field (e.g. "_cond_push")
+  predicateInsns: List[LInsn]  // pushes Bool: 1=can proceed, 0=must wait
+}
+
+pub record LProtectedWithBarriers {
+  className: String
+  fields:    List[LField]
+  barriers:  List[LBarrierEntry]
+}
+
+/// Lower a protected type with `when:` Condition-variable barriers.
+/// Uses ReentrantLock + one Condition per barrier entry.
+/// Entry method pattern: lock, while !predicate { condition.await }, body, signalAll, unlock.
+pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool): ClassFile {
+  val lockType = JRef(className = "java/util/concurrent/locks/ReentrantLock")
+  val condType = JRef(className = "java/util/concurrent/locks/Condition")
+  val methods:  List[MethodInfo] = newList()
+  val cfFields: List[FieldInfo] = newList()
+
+  // _lock field
+  val lockFa: List[Attribute] = newList()
+  cfFields.add(makeFieldInfo(ACC_PRIVATE, "_lock", typeDescriptor(lockType), lockFa))
+
+  // One Condition field per barrier
+  for be in p.barriers.toArray() {
+    val condFa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PRIVATE, be.conditionName, typeDescriptor(condType), condFa))
+  }
+
+  // Data fields
+  for fld in p.fields.toArray() {
+    val fa: List[Attribute] = newList()
+    cfFields.add(makeFieldInfo(ACC_PRIVATE, fld.name, typeDescriptor(fld.fieldType), fa))
+  }
+
+  // Constructor: <init>()V — init lock, conditions, zero-init data
+  val ctorAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  val objPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid), ctorAsm)
+
+  // new ReentrantLock(); putfield _lock
+  lowerInsn(LAload(slot = 0), ctorAsm)
+  lowerInsn(LNew(className = "java/util/concurrent/locks/ReentrantLock"), ctorAsm)
+  lowerInsn(LDup, ctorAsm)
+  val rlPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = "java/util/concurrent/locks/ReentrantLock", name = "<init>", params = rlPs, ret = JVoid), ctorAsm)
+  lowerInsn(LPutfield(owner = p.className, name = "_lock", t = lockType), ctorAsm)
+
+  // For each barrier: _lock.newCondition() → condition field
+  for be in p.barriers.toArray() {
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    lowerInsn(LGetfield(owner = p.className, name = "_lock", t = lockType), ctorAsm)
+    val ncPs: List[JvmType] = newList()
+    lowerInsn(LInvokevirtual(
+      owner = "java/util/concurrent/locks/ReentrantLock", name = "newCondition",
+      params = ncPs, ret = condType
+    ), ctorAsm)
+    lowerInsn(LPutfield(owner = p.className, name = be.conditionName, t = condType), ctorAsm)
+  }
+
+  // Zero-init data fields
+  for fld in p.fields.toArray() {
+    lowerInsn(LAload(slot = 0), ctorAsm)
+    match fld.fieldType {
+      case JInt  -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JLong -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2l, ctorAsm) }
+      case JRef(_) -> lowerInsn(LAconstNull, ctorAsm)
+      case _       -> lowerInsn(LIconst(v = 0), ctorAsm)
+    }
+    match fld.fieldType {
+      case JVoid -> ()
+      case _     -> lowerInsn(LPutfield(owner = p.className, name = fld.name, t = fld.fieldType), ctorAsm)
+    }
+  }
+
+  lowerInsn(LReturn, ctorAsm)
+  val ctorCode = assembleCode(ctorAsm, 4, 1)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParamsEmpty: List[JvmType] = newList()
+  methods.add(makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs))
+
+  // Entry methods with barrier guard
+  val lockPs: List[JvmType] = newList()
+  val noPs:   List[JvmType] = newList()
+  for be in p.barriers.toArray() {
+    val ef = be.entryFunc
+    val wInsns: List[LInsn] = newList()
+
+    // Pre-initialize the result slot so that StackMapTable frames at barrier branch
+    // targets (which appear before the result is stored) declare the slot as live.
+    val resultSlot = ef.maxLocals
+    if fieldSlotSize(ef.ret) > 0 {
+      match ef.ret {
+        case JLong    -> { wInsns.add(LLconst(v = 0i64)); wInsns.add(LLstore(slot = resultSlot)) }
+        case JDouble  -> { wInsns.add(LDconst(v = 0.0));  wInsns.add(LDstore(slot = resultSlot)) }
+        case JFloat   -> { wInsns.add(LFconst(v = 0.0));  wInsns.add(LFstore(slot = resultSlot)) }
+        case JRef(cls) -> { wInsns.add(LAconstNull); wInsns.add(LAstoreAs(slot = resultSlot, className = cls)) }
+        case JArray(_) -> { wInsns.add(LAconstNull); wInsns.add(LAstore(slot = resultSlot)) }
+        case _ -> { wInsns.add(LIconst(v = 0)); wInsns.add(LIstore(slot = resultSlot)) }
+      }
+    }
+
+    // lock.lock()
+    wInsns.add(LAload(slot = 0))
+    wInsns.add(LGetfield(owner = p.className, name = "_lock", t = lockType))
+    wInsns.add(LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "lock", params = lockPs, ret = JVoid))
+
+    // while !predicate() { condition.await() }  (no exception handling for bootstrap)
+    wInsns.add(LLabel(name = "barrier_check_" + be.conditionName))
+    var pi = 0
+    while pi < be.predicateInsns.count {
+      wInsns.add(be.predicateInsns[pi])
+      pi = pi + 1
+    }
+    wInsns.add(LIfne(label = "barrier_body_" + be.conditionName))
+    // await
+    wInsns.add(LAload(slot = 0))
+    wInsns.add(LGetfield(owner = p.className, name = be.conditionName, t = condType))
+    val awaitPs: List[JvmType] = newList()
+    wInsns.add(LInvokeinterface(owner = "java/util/concurrent/locks/Condition", name = "awaitUninterruptibly", params = awaitPs, ret = JVoid, argCount = 1))
+    wInsns.add(LGoto(label = "barrier_check_" + be.conditionName))
+    wInsns.add(LLabel(name = "barrier_body_" + be.conditionName))
+
+    // Body
+    var bi = 0
+    while bi < ef.insns.count {
+      wInsns.add(ef.insns[bi])
+      bi = bi + 1
+    }
+
+    // Save result if non-void
+    if fieldSlotSize(ef.ret) > 0 {
+      wInsns.add(storeInsn(ef.ret, resultSlot))
+    }
+
+    // signalAll on the condition
+    wInsns.add(LAload(slot = 0))
+    wInsns.add(LGetfield(owner = p.className, name = be.conditionName, t = condType))
+    val sigPs: List[JvmType] = newList()
+    wInsns.add(LInvokeinterface(owner = "java/util/concurrent/locks/Condition", name = "signalAll", params = sigPs, ret = JVoid, argCount = 1))
+
+    // lock.unlock()
+    wInsns.add(LAload(slot = 0))
+    wInsns.add(LGetfield(owner = p.className, name = "_lock", t = lockType))
+    wInsns.add(LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "unlock", params = lockPs, ret = JVoid))
+
+    // Return result
+    if fieldSlotSize(ef.ret) > 0 {
+      wInsns.add(loadInsn(ef.ret, resultSlot))
+    }
+    wInsns.add(returnInsn(ef.ret))
+
+    val wFunc = LFunc(
+      flags     = ef.flags,
+      name      = ef.name,
+      params    = ef.params,
+      ret       = ef.ret,
+      insns     = wInsns,
+      maxStack  = ef.maxStack + 3,
+      maxLocals = ef.maxLocals + fieldSlotSize(ef.ret)
+    )
+    methods.add(lowerFuncForClass(wFunc, p.className, pool))
+  }
+
+  makeFinalClass(p.className, cfFields, methods)
+}
+
+// ── B119: lowerHotAsync (CompletableFuture thenCompose chain) ────────────────
+
+pub record LHotFunc {
+  className:    String       // host class for the async method
+  methodName:   String       // name of the async method
+  resultType:   JvmType      // the T in CompletableFuture<T>
+  stage1Insns:  List[LInsn]  // first stage: pushes the initial value (no return)
+  stage2Insns:  List[LInsn]  // second stage: pops one slot, pushes the result (no return)
+}
+
+/// Bootstrap-grade lowering of a two-stage @hot async function.
+/// Emits a static `methodName(): CompletableFuture<T>` on the host class.
+/// Stage 1 result → completedFuture; stage 2 applied via thenApply closure.
+pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+  val cfType = JRef(className = "java/util/concurrent/CompletableFuture")
+
+  // Closure class that implements Function<Object,Object>
+  // apply(Object) executes stage2Insns on the input value and returns the result.
+  // thenApply uses this to transform the stage1 result to the final result.
+  val appInsns: List[LInsn] = newList()
+  // stage2Insns expect the arg on stack; slot 1 = the Object argument
+  appInsns.add(LAload(slot = 1))    // push Object arg
+  var s2i = 0
+  while s2i < h.stage2Insns.count {
+    appInsns.add(h.stage2Insns[s2i])
+    s2i = s2i + 1
+  }
+  // Return the result directly (must be an Object on the stack after stage2Insns)
+  appInsns.add(LAreturn)
+
+  val appCaptures: List[LClosureCapture] = newList()
+  val appParams:   List[JvmType] = newList()
+  appParams.add(JRef(className = "java/lang/Object"))
+
+  val applyFuncClass = h.className + "$Stage2"
+  val appClosure = LClosure(
+    closureClass = applyFuncClass,
+    ifaceClass   = "java/util/function/Function",
+    ifaceMethod  = "apply",
+    captures     = appCaptures,
+    methodParams = appParams,
+    methodRet    = JRef(className = "java/lang/Object"),
+    bodyInsns    = appInsns
+  )
+  result.add(lowerClosure(appClosure, pool))
+
+  // Host class with static async method
+  val hostAsm = newAssembler(pool)
+
+  // Execute stage1, wrap in completedFuture
+  var s1i = 0
+  while s1i < h.stage1Insns.count {
+    lowerInsn(h.stage1Insns[s1i], hostAsm)
+    s1i = s1i + 1
+  }
+  // stage1 must push an Object (box int for bootstrap)
+  val cfPs1: List[JvmType] = newList()
+  cfPs1.add(JRef(className = "java/lang/Object"))
+  lowerInsn(LInvokestatic(
+    owner = "java/util/concurrent/CompletableFuture",
+    name  = "completedFuture",
+    params = cfPs1,
+    ret   = cfType
+  ), hostAsm)
+  // .thenCompose(new Stage2())
+  lowerInsn(LNew(className = applyFuncClass), hostAsm)
+  lowerInsn(LDup, hostAsm)
+  val stage2CtorPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = applyFuncClass, name = "<init>", params = stage2CtorPs, ret = JVoid), hostAsm)
+  val thenPs: List[JvmType] = newList()
+  thenPs.add(JRef(className = "java/util/function/Function"))
+  lowerInsn(LInvokevirtual(
+    owner  = "java/util/concurrent/CompletableFuture",
+    name   = "thenApply",
+    params = thenPs,
+    ret    = cfType
+  ), hostAsm)
+  lowerInsn(LAreturn, hostAsm)
+
+  val hostPs:   List[JvmType] = newList()
+  val hostCode  = assembleCode(hostAsm, 4, 0)
+  val hostAttrs: List[Attribute] = newList()
+  hostAttrs.add(hostCode)
+  val hostMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC, h.methodName,
+    buildDescriptor(hostPs, cfType), hostAttrs
+  )
+  val hostMethods: List[MethodInfo] = newList()
+  hostMethods.add(hostMethod)
+  result.add(makeClassWithMethods(h.className, hostMethods))
+  result
+}
+
+// ── B120: lowerStructuredScope (StructuredTaskScope.ShutdownOnFailure) ────────
+
+/// Emit bytecode to open a `StructuredTaskScope.ShutdownOnFailure`, fork
+/// each callable class (which must implement `Callable`), call join() and
+/// throwIfFailed(), then close the scope.
+/// The scope reference is stored in `scopeSlot`; each forked task is stored
+/// in successive local slots starting at `firstTaskSlot`.
+pub func lowerScopeBlock(
+  asm:           in MethodAssembler,
+  callableNames: in List[String],
+  scopeSlot:     in Int,
+  firstTaskSlot: in Int
+): Unit {
+  val scopeClass = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"
+  val scopePs:   List[JvmType] = newList()
+
+  // new ShutdownOnFailure(); store to scopeSlot
+  emitNew(asm, poolClass(asm.pool, scopeClass))
+  emitDup(asm)
+  emitInvokespecial(asm, poolMethodref(asm.pool, scopeClass, "<init>", "()V"))
+  emitAstore(asm, scopeSlot)
+
+  // fork each callable
+  var taskSlot = firstTaskSlot
+  for callableName in callableNames.toArray() {
+    val callableClass = poolClass(asm.pool, callableName)
+    val callableCtor  = poolMethodref(asm.pool, callableName, "<init>", "()V")
+    val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
+    val forkRef  = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
+
+    emitAload(asm, scopeSlot)
+    emitNew(asm, callableClass)
+    emitDup(asm)
+    emitInvokespecial(asm, callableCtor)
+    emitInvokevirtual(asm, forkRef)
+    emitAstore(asm, taskSlot)
+    taskSlot = taskSlot + 1
+  }
+
+  // join() and throwIfFailed()
+  val joinRef = poolMethodref(asm.pool, scopeClass, "join", "()Ljava/util/concurrent/StructuredTaskScope;")
+  val throwRef = poolMethodref(asm.pool, scopeClass, "throwIfFailed", "()V")
+  emitAload(asm, scopeSlot)
+  emitInvokevirtual(asm, joinRef)
+  emitPop(asm)
+  emitAload(asm, scopeSlot)
+  emitInvokevirtual(asm, throwRef)
+}
+
+// ── B121: lowerFuncWithContract (inline requires/ensures bytecode) ────────────
+
+pub record LContract {
+  requiresInsns: List[LInsn]   // pushes Bool (1=ok, 0=violated); evaluated at entry
+  ensuresInsns:  List[LInsn]   // same, evaluated before return
+}
+
+/// Like lowerFunc but splices contract guard bytecode around the body:
+///   1. Evaluate requiresInsns; throw AssertionError if result is 0.
+///   2. Execute the body.
+///   3. Evaluate ensuresInsns; throw AssertionError if result is 0.
+///   4. Return.
+pub func lowerFuncWithContract(f: in LFunc, contract: in LContract, pool: in Pool): MethodInfo {
+  val assertErrClass = "java/lang/AssertionError"
+  val assertPs: List[JvmType] = newList()
+
+  val wInsns: List[LInsn] = newList()
+
+  // requires check
+  var ri = 0
+  while ri < contract.requiresInsns.count {
+    wInsns.add(contract.requiresInsns[ri])
+    ri = ri + 1
+  }
+  wInsns.add(LIfne(label = "req_ok"))
+  wInsns.add(LNew(className = assertErrClass))
+  wInsns.add(LDup)
+  wInsns.add(LPushString(s = "requires violated"))
+  val aePsList: List[JvmType] = newList()
+  aePsList.add(JRef(className = "java/lang/Object"))
+  wInsns.add(LInvokespecial(owner = assertErrClass, name = "<init>", params = aePsList, ret = JVoid))
+  wInsns.add(LAthrow)
+  wInsns.add(LLabel(name = "req_ok"))
+
+  // Body
+  var bi = 0
+  while bi < f.insns.count {
+    wInsns.add(f.insns[bi])
+    bi = bi + 1
+  }
+
+  // Save result before ensures check (only needed when ensures is non-empty)
+  val hasEnsures = contract.ensuresInsns.count > 0
+  val resultSlot = f.maxLocals
+  if hasEnsures and fieldSlotSize(f.ret) > 0 {
+    wInsns.add(storeInsn(f.ret, resultSlot))
+  }
+
+  // ensures check
+  if hasEnsures {
+    var ei = 0
+    while ei < contract.ensuresInsns.count {
+      wInsns.add(contract.ensuresInsns[ei])
+      ei = ei + 1
+    }
+    wInsns.add(LIfne(label = "ens_ok"))
+    wInsns.add(LNew(className = assertErrClass))
+    wInsns.add(LDup)
+    wInsns.add(LPushString(s = "ensures violated"))
+    wInsns.add(LInvokespecial(owner = assertErrClass, name = "<init>", params = aePsList, ret = JVoid))
+    wInsns.add(LAthrow)
+    wInsns.add(LLabel(name = "ens_ok"))
+  }
+
+  // Return (reload result from slot only when ensures was active and saved it)
+  if hasEnsures and fieldSlotSize(f.ret) > 0 {
+    wInsns.add(loadInsn(f.ret, resultSlot))
+  }
+  wInsns.add(returnInsn(f.ret))
+
+  val extraLocals = if hasEnsures then fieldSlotSize(f.ret) else 0
+  val wFunc = LFunc(
+    flags     = f.flags,
+    name      = f.name,
+    params    = f.params,
+    ret       = f.ret,
+    insns     = wInsns,
+    maxStack  = f.maxStack + 4,  // +4 for new AssertionError + dup + ldc + invokespecial
+    maxLocals = f.maxLocals + extraLocals
+  )
+  lowerFunc(wFunc, pool)
+}
+
+// ── B122: lowerDeriveEquality (@derive(Equals) + @derive(Hash)) ──────────────
+
+pub record LRecordWithDerives {
+  className:  String
+  fields:     List[LField]
+  deriveEq:   Bool
+  deriveHash: Bool
+}
+
+/// Lower a record with `@derive(Equals)` and/or `@derive(Hash)`.
+/// Emits `equals(Object): boolean` with field-by-field comparison
+/// and `hashCode(): int` with a prime-multiply accumulator.
+pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile {
+  // First build the base record
+  val r = LRecord(
+    className = d.className,
+    fields    = d.fields,
+    methods   = newList()
+  )
+  val cf = lowerRecord(r, pool)
+
+  val extraMethods: List[MethodInfo] = newList()
+
+  if d.deriveEq {
+    // equals(Object other): boolean
+    // Build as LInsn list so lowerFuncForClass generates a correct StackMapTable.
+    val eqInsns: List[LInsn] = newList()
+
+    // Pre-initialize slot 2 (the cast result) so StackMapTable frames at early
+    // branch targets (before slot 2 is assigned) declare it as live.
+    eqInsns.add(LAconstNull)
+    eqInsns.add(LAstoreAs(slot = 2, className = d.className))
+
+    // if (this == other) return true
+    eqInsns.add(LAload(slot = 0))
+    eqInsns.add(LAload(slot = 1))
+    eqInsns.add(LIfAcmpeq(label = "eq_same"))
+    eqInsns.add(LGoto(label = "eq_check_type"))
+    eqInsns.add(LLabel(name = "eq_same"))
+    eqInsns.add(LIconst(v = 1))
+    eqInsns.add(LIreturn)
+    eqInsns.add(LLabel(name = "eq_check_type"))
+
+    // if (!(other instanceof <className>)) return false
+    eqInsns.add(LAload(slot = 1))
+    eqInsns.add(LInstanceof(className = d.className))
+    eqInsns.add(LIfne(label = "eq_cast"))
+    eqInsns.add(LIconst(v = 0))
+    eqInsns.add(LIreturn)
+    eqInsns.add(LLabel(name = "eq_cast"))
+
+    // <className> o = (<className>) other; stored in slot 2
+    eqInsns.add(LAload(slot = 1))
+    eqInsns.add(LCheckcast(className = d.className))
+    eqInsns.add(LAstoreAs(slot = 2, className = d.className))
+
+    // Compare each field; return false on mismatch
+    for fld in d.fields.toArray() {
+      val skipLabel = "eq_skip_" + fld.name
+      eqInsns.add(LAload(slot = 0))
+      eqInsns.add(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType))
+      eqInsns.add(LAload(slot = 2))
+      eqInsns.add(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType))
+      match fld.fieldType {
+        case JInt     -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JBoolean -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JByte    -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JChar    -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JShort   -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case _        -> eqInsns.add(LIfAcmpeq(label = skipLabel))
+      }
+      eqInsns.add(LIconst(v = 0))
+      eqInsns.add(LIreturn)
+      eqInsns.add(LLabel(name = skipLabel))
+    }
+    eqInsns.add(LIconst(v = 1))
+    eqInsns.add(LIreturn)
+
+    val eqPs: List[JvmType] = newList()
+    eqPs.add(JRef(className = "java/lang/Object"))
+    val eqFunc = LFunc(
+      flags     = ACC_PUBLIC,
+      name      = "equals",
+      params    = eqPs,
+      ret       = JBoolean,
+      insns     = eqInsns,
+      maxStack  = 4,
+      maxLocals = 3
+    )
+    extraMethods.add(lowerFuncForClass(eqFunc, d.className, pool))
+  }
+
+  if d.deriveHash {
+    // hashCode(): int  — hash = 31 * hash + field_hash for each field
+    val hashAsm = newAssembler(pool)
+    lowerInsn(LIconst(v = 1), hashAsm)     // hash = 1
+    lowerInsn(LIstore(slot = 1), hashAsm)
+
+    for fld in d.fields.toArray() {
+      lowerInsn(LIconst(v = 31), hashAsm)
+      lowerInsn(LIload(slot = 1), hashAsm)
+      lowerInsn(LImul, hashAsm)
+      lowerInsn(LAload(slot = 0), hashAsm)
+      lowerInsn(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType), hashAsm)
+      match fld.fieldType {
+        case JInt     -> ()
+        case JBoolean -> ()
+        case JByte    -> ()
+        case JChar    -> ()
+        case JShort   -> ()
+        case _        -> {
+          // For reference fields, call .hashCode()
+          val hcPs: List[JvmType] = newList()
+          lowerInsn(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = hcPs, ret = JInt), hashAsm)
+        }
+      }
+      lowerInsn(LIadd, hashAsm)
+      lowerInsn(LIstore(slot = 1), hashAsm)
+    }
+    lowerInsn(LIload(slot = 1), hashAsm)
+    lowerInsn(LIreturn, hashAsm)
+
+    val hashPs: List[JvmType] = newList()
+    val hashCode = assembleCode(hashAsm, 4, 2)
+    val hashAttrs: List[Attribute] = newList()
+    hashAttrs.add(hashCode)
+    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "hashCode", buildDescriptor(hashPs, JInt), hashAttrs))
+  }
+
+  // Rebuild ClassFile with the extra methods appended
+  val allMethods: List[MethodInfo] = newList()
+  for m in cf.methods.toArray() {
+    allMethods.add(m)
+  }
+  for m in extraMethods.toArray() {
+    allMethods.add(m)
+  }
+  ClassFile(
+    minorVersion = cf.minorVersion,
+    majorVersion = cf.majorVersion,
+    flags        = cf.flags,
+    thisClass    = cf.thisClass,
+    superClass   = cf.superClass,
+    interfaces   = cf.interfaces,
+    fields       = cf.fields,
+    methods      = allMethods,
+    attrs        = cf.attrs
+  )
+}
+
+// ── B123: lowerDeriveOrd (@derive(Compare/Add/Sub) on distinct types) ─────────
+
+pub record LDistinctWithDerives {
+  wrapperClass:  String
+  underlyingType: JvmType
+  deriveCompare: Bool
+  deriveAdd:     Bool
+  deriveSub:     Bool
+}
+
+/// Lower a distinct type with optional @derive(Compare), @derive(Add), @derive(Sub).
+/// Emits `compareTo(T): int`, `$add(T): T`, `$sub(T): T` by delegating to the
+/// underlying primitive.
+pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
+  // Build base distinct type
+  val base = LDistinctType(
+    wrapperClass   = d.wrapperClass,
+    underlyingType = d.underlyingType
+  )
+  val cf = lowerDistinctType(base, pool)
+
+  val extraMethods: List[MethodInfo] = newList()
+  val selfParam: List[JvmType] = newList()
+  selfParam.add(JRef(className = d.wrapperClass))
+
+  if d.deriveCompare {
+    // compareTo(T other): int — compare underlying values
+    val cmpAsm = newAssembler(pool)
+    lowerInsn(LAload(slot = 0), cmpAsm)
+    lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), cmpAsm)
+    lowerInsn(LAload(slot = 1), cmpAsm)
+    lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), cmpAsm)
+    // For Long: lcmp; for Int: subtract
+    match d.underlyingType {
+      case JLong -> {
+        lowerInsn(LLcmp, cmpAsm)
+      }
+      case _ -> {
+        lowerInsn(LIsub, cmpAsm)
+      }
+    }
+    lowerInsn(LIreturn, cmpAsm)
+    val cmpCode = assembleCode(cmpAsm, 4, 2)
+    val cmpAttrs: List[Attribute] = newList()
+    cmpAttrs.add(cmpCode)
+    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "compareTo", buildDescriptor(selfParam, JInt), cmpAttrs))
+  }
+
+  if d.deriveAdd {
+    // $add(T other): T — add underlying values, wrap in new T
+    val addAsm = newAssembler(pool)
+    lowerInsn(LNew(className = d.wrapperClass), addAsm)
+    lowerInsn(LDup, addAsm)
+    lowerInsn(LAload(slot = 0), addAsm)
+    lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), addAsm)
+    lowerInsn(LAload(slot = 1), addAsm)
+    lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), addAsm)
+    match d.underlyingType {
+      case JLong -> lowerInsn(LLadd, addAsm)
+      case _     -> lowerInsn(LIadd, addAsm)
+    }
+    val wrapperPs: List[JvmType] = newList()
+    wrapperPs.add(d.underlyingType)
+    lowerInsn(LInvokespecial(owner = d.wrapperClass, name = "<init>", params = wrapperPs, ret = JVoid), addAsm)
+    lowerInsn(LAreturn, addAsm)
+    val addCode = assembleCode(addAsm, 6, 2)
+    val addAttrs: List[Attribute] = newList()
+    addAttrs.add(addCode)
+    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "$add", buildDescriptor(selfParam, JRef(className = d.wrapperClass)), addAttrs))
+  }
+
+  if d.deriveSub {
+    // $sub(T other): T — subtract underlying values
+    val subAsm = newAssembler(pool)
+    lowerInsn(LNew(className = d.wrapperClass), subAsm)
+    lowerInsn(LDup, subAsm)
+    lowerInsn(LAload(slot = 0), subAsm)
+    lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), subAsm)
+    lowerInsn(LAload(slot = 1), subAsm)
+    lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), subAsm)
+    match d.underlyingType {
+      case JLong -> lowerInsn(LLsub, subAsm)
+      case _     -> lowerInsn(LIsub, subAsm)
+    }
+    val wrapperPsSub: List[JvmType] = newList()
+    wrapperPsSub.add(d.underlyingType)
+    lowerInsn(LInvokespecial(owner = d.wrapperClass, name = "<init>", params = wrapperPsSub, ret = JVoid), subAsm)
+    lowerInsn(LAreturn, subAsm)
+    val subCode = assembleCode(subAsm, 6, 2)
+    val subAttrs: List[Attribute] = newList()
+    subAttrs.add(subCode)
+    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "$sub", buildDescriptor(selfParam, JRef(className = d.wrapperClass)), subAttrs))
+  }
+
+  // Rebuild ClassFile with extra methods
+  val allMethods: List[MethodInfo] = newList()
+  for m in cf.methods.toArray() {
+    allMethods.add(m)
+  }
+  for m in extraMethods.toArray() {
+    allMethods.add(m)
+  }
+  ClassFile(
+    minorVersion = cf.minorVersion,
+    majorVersion = cf.majorVersion,
+    flags        = cf.flags,
+    thisClass    = cf.thisClass,
+    superClass   = cf.superClass,
+    interfaces   = cf.interfaces,
+    fields       = cf.fields,
+    methods      = allMethods,
+    attrs        = cf.attrs
+  )
+}
+
+// ── B124: lowerPackage (top-level integration entry point) ────────────────────
+
+pub union LPackageItem {
+  case LPRecord(rec: LRecord)
+  case LPSealedUnion(su: LSealedUnion)
+  case LPEnum(en: LEnumType)
+  case LPOpaqueType(ot: LOpaqueType)
+  case LPDistinctType(dt: LDistinctType)
+  case LPRangeType(rt: LRangeType)
+  case LPExposedRecord(er: LExposedRecord)
+  case LPProtected(pt: LProtected)
+  case LPFuncs(funcsClass: String, fns: List[LFunc])
+}
+
+pub record LPackage {
+  packageName: String
+  items:       List[LPackageItem]
+}
+
+func lowerFuncsToClass(funcsClass: in String, fns: in List[LFunc], pool: in Pool): ClassFile {
+  val methods: List[MethodInfo] = newList()
+  for fn in fns.toArray() {
+    methods.add(lowerFunc(fn, pool))
+  }
+  makeClassWithMethods(funcsClass, methods)
+}
+
+/// Dispatch over all package items and return the complete list of ClassFiles.
+/// LPFuncs items are collected into a single `<funcsClass>` host class.
+pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+
+  for item in pkg.items.toArray() {
+    match item {
+      case LPRecord(rec) -> {
+        result.add(lowerRecord(rec, pool))
+      }
+      case LPSealedUnion(su) -> {
+        val cfs = lowerSealedUnion(su, pool)
+        for cf in cfs.toArray() {
+          result.add(cf)
+        }
+      }
+      case LPEnum(en) -> {
+        result.add(lowerEnum(en, pool))
+      }
+      case LPOpaqueType(ot) -> {
+        result.add(lowerOpaqueType(ot, pool))
+      }
+      case LPDistinctType(dt) -> {
+        result.add(lowerDistinctType(dt, pool))
+      }
+      case LPRangeType(rt) -> {
+        result.add(lowerRangeType(rt, pool))
+      }
+      case LPExposedRecord(er) -> {
+        result.add(lowerExposedRecord(er, pool))
+      }
+      case LPProtected(pt) -> {
+        result.add(lowerProtected(pt, pool))
+      }
+      case LPFuncs(funcsClass, fns) -> {
+        result.add(lowerFuncsToClass(funcsClass, fns, pool))
+      }
+    }
+  }
+
+  result
 }

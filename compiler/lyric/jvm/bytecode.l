@@ -1490,3 +1490,33 @@ pub func emitMonitorenter(asm: in MethodAssembler): Unit {
 pub func emitMonitorexit(asm: in MethodAssembler): Unit {
   emitInsn(asm, Nullary(op = OP_MONITOREXIT))
 }
+
+// ── B113-B114 helpers ─────────────────────────────────────────────────────────
+
+/// Push the `Class<T>` literal for `className` via ldc_w.
+pub func emitPushClass(asm: in MethodAssembler, className: in String): Unit {
+  val idx = poolClass(asm.pool, className)
+  emitInsn(asm, LdcW(poolIdx = idx))
+}
+
+/// Allocate a 1-element `int[]` and store it into local slot `targetSlot`.
+pub func emitOutAllocInt(asm: in MethodAssembler, targetSlot: in Int): Unit {
+  emitPushInt(asm, 1)
+  emitNewarray(asm, 10)   // T_INT = 10
+  emitAstore(asm, targetSlot)
+}
+
+/// Store the int in local `valueSlot` into index 0 of the `int[]` at `arraySlot`.
+pub func emitOutStoreInt(asm: in MethodAssembler, arraySlot: in Int, valueSlot: in Int): Unit {
+  emitAload(asm, arraySlot)
+  emitIconst(asm, 0)
+  emitIload(asm, valueSlot)
+  emitIastore(asm)
+}
+
+/// Load the int at index 0 of the `int[]` at `arraySlot` onto the stack.
+pub func emitOutLoadInt(asm: in MethodAssembler, arraySlot: in Int): Unit {
+  emitAload(asm, arraySlot)
+  emitIconst(asm, 0)
+  emitIaload(asm)
+}
