@@ -149,6 +149,8 @@ let main argv =
             JvmLoweringB82Test.tests
             JvmLoweringB83Test.tests
             JvmLoweringB84Test.tests
+            JvmLoweringB85Test.tests
+            JvmLoweringB86Test.tests
             SelfHostedLexerTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests

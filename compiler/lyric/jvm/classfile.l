@@ -450,6 +450,44 @@ pub func makeClassFull(
   )
 }
 
+/// Create a class that implements one or more interfaces.
+pub func makeClassWithInterfaces(
+  thisClass:  in String,
+  interfaces: in List[String],
+  methods:    in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = interfaces,
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
+/// Create an interface ClassFile with the given methods.
+/// Uses ACC_PUBLIC|ACC_INTERFACE|ACC_ABSTRACT flags.
+pub func makeInterfaceWithMethods(
+  thisClass: in String,
+  methods:   in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 /// Create an abstract class (`ACC_PUBLIC | ACC_SUPER | ACC_ABSTRACT`)
 /// with `java/lang/Object` as superclass.  Used as the base of a union hierarchy.
 pub func makeAbstractClass(
