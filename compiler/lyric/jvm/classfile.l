@@ -450,6 +450,27 @@ pub func makeClassFull(
   )
 }
 
+/// Create a class with explicit fields, interfaces, and methods.
+/// Defaults: minor=0, major=65, ACC_PUBLIC|ACC_SUPER, superClass=java/lang/Object.
+pub func makeClassFullWithInterfaces(
+  thisClass:  in String,
+  interfaces: in List[String],
+  fields:     in List[FieldInfo],
+  methods:    in List[MethodInfo]
+): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = interfaces,
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 /// Create a class that implements one or more interfaces.
 pub func makeClassWithInterfaces(
   thisClass:  in String,
