@@ -112,58 +112,12 @@ type TaskHost private () =
             : System.Threading.Tasks.Task =
         System.Threading.Tasks.Task.Delay(ms, token)
 
-/// Cancellation primitives wrapping `System.Threading.Cancellation*`.
-/// Each helper is a thin static so the Lyric-side `Std.Task` can
-/// route `@externTarget` annotations to deterministic targets
-/// without exposing struct details (`CancellationToken` is a struct
-/// in the BCL; we surface it as an opaque object via a
-/// `CancellationToken | null` boundary the FFI handles).
-[<Sealed; AbstractClass>]
-type CancelHost private () =
-
-    /// Construct a fresh `CancellationTokenSource`.
-    static member MakeSource () : System.Threading.CancellationTokenSource =
-        new System.Threading.CancellationTokenSource()
-
-    /// Construct a `CancellationTokenSource` that auto-cancels after
-    /// `ms` milliseconds.  Used by `withTimeout` for deadline-shaped
-    /// scopes.
-    static member MakeSourceTimeout (ms: int) : System.Threading.CancellationTokenSource =
-        new System.Threading.CancellationTokenSource(ms)
-
-    /// Project a token from a source.  The token is a value type
-    /// in the BCL but boxes through the FFI cleanly.
-    static member SourceToken
-            (src: System.Threading.CancellationTokenSource)
-            : System.Threading.CancellationToken =
-        src.Token
-
-    /// Request cancellation.  Idempotent: subsequent calls are
-    /// no-ops.
-    static member Cancel (src: System.Threading.CancellationTokenSource) : unit =
-        src.Cancel()
-
-    /// Returns true once the token's source has been cancelled.
-    static member IsCancellationRequested
-            (token: System.Threading.CancellationToken) : bool =
-        token.IsCancellationRequested
-
-    /// Cooperative throw point.  Async loops can call this between
-    /// iterations to honour cancellation without an outright suspend.
-    static member ThrowIfCancellationRequested
-            (token: System.Threading.CancellationToken) : unit =
-        token.ThrowIfCancellationRequested()
-
-    /// A token that is never cancelled — equivalent to
-    /// `CancellationToken.None`.  Used by call sites that don't
-    /// have a real token to pass.
-    static member None () : System.Threading.CancellationToken =
-        System.Threading.CancellationToken.None
-
-    /// Dispose the source, releasing any unmanaged resources.
-    /// Safe to call from `defer { dispose(src) }` blocks.
-    static member Dispose (src: System.Threading.CancellationTokenSource) : unit =
-        src.Dispose()
+// `Lyric.Stdlib.CancelHost` retired (`docs/23-fsharp-shim-elimination.md`
+// Phase 1, D-progress-105 follow-up).  Every method was a thin
+// passthrough to `System.Threading.Cancellation{Token,TokenSource}`.
+// `stdlib/std/_kernel/task.l` now `@externTarget`s those BCL members
+// directly — `CancellationToken.None`, `CancellationTokenSource..ctor`,
+// `.Token`, `.Cancel`, `.Dispose`, and the matching token methods.
 
 /// Per-stub call counter for `@stubbable` mocking enhancements
 /// (D-progress-073).  Each stub method's auto-synthesised body
@@ -824,20 +778,10 @@ type HttpClientHost private () =
         elif response.Content.Headers.TryGetValues(name, &outRef) then firstOf outRef
         else ""
 
-/// `System.Random` helpers used by `Std.Random`.  `System.Random`
-/// has overloaded `Next` methods that auto-FFI's strict-match
-/// can resolve, but the seeded constructor and the boolean
-/// helper need their own thin wrappers (D-progress-055).
-[<Sealed; AbstractClass>]
-type RandomHost private () =
-
-    static member Make (seed: int) : System.Random =
-        new System.Random(seed)
-
-    static member NextBool (rng: System.Random) : bool =
-        // 50/50 split; cheaper than NextDouble + comparison and
-        // matches the C# `rng.Next(2) == 1` idiom.
-        rng.Next(2) = 1
+// `Lyric.Stdlib.RandomHost` retired (`docs/23-fsharp-shim-elimination.md`
+// Phase 1, D-progress-105 follow-up).  `Std.Random` now externs the
+// seeded `System.Random..ctor` directly, and `nextBool` is a one-line
+// native Lyric body (`nextIntBelow(rng, 2) != 0`).
 
 /// HTTP server helpers wrapping `System.Net.HttpListener`.  The
 /// canonical loop is `nextContext` (blocking) → inspect / respond →

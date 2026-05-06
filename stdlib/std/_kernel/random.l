@@ -16,7 +16,7 @@ extern type Random = "System.Random"
 @externTarget("System.Random.Shared")
 pub func sharedRandom(): Random = ()
 
-@externTarget("Lyric.Stdlib.RandomHost.Make")
+@externTarget("System.Random..ctor")
 pub func makeRandom(seed: in Int): Random = ()
 
 // =====================================================================
@@ -48,7 +48,11 @@ pub func nextDouble(rng: in Random): Double = ()
 
 // =====================================================================
 // Random booleans.
+//
+// `System.Random` doesn't expose a `NextBool`; route through
+// `Next(2)` and compare instead of carrying a host helper.
 // =====================================================================
 
-@externTarget("Lyric.Stdlib.RandomHost.NextBool")
-pub func nextBool(rng: in Random): Bool = ()
+pub func nextBool(rng: in Random): Bool {
+  nextIntBelow(rng, 2) != 0
+}
