@@ -392,20 +392,16 @@ let private fileHostMethod (name: string) (paramTys: System.Type array) : Lazy<M
         | Some m -> m
         | None   -> failwithf "Lyric.Stdlib.FileHost::%s not found" name)
 
+/// Codegen map for the bytes-flavoured `Std.File` operations that
+/// haven't yet migrated off the `Lyric.Stdlib.FileHost` pair-of-statics
+/// pattern.  G10 (D-progress-109) ported the text / dir helpers to
+/// direct BCL externs in `stdlib/std/_kernel/file_host.l` + a `try {
+/// … } catch Bug as b { … }` wrapper in `stdlib/std/file.l`.  The
+/// bytes surfaces still need a `slice[Byte] → List[Byte]`
+/// conversion that's gated on a follow-up — they stay on the F#
+/// shim until then.
 let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
     Map.ofList [
-        "hostFileExists",
-            fileHostMethod "Exists" [| typeof<string> |]
-        "hostReadAllTextIsValid",
-            fileHostMethod "ReadIsValid" [| typeof<string> |]
-        "hostReadAllTextValue",
-            fileHostMethod "ReadValue" [| typeof<string> |]
-        "hostReadAllTextError",
-            fileHostMethod "ReadError" [| typeof<string> |]
-        "hostWriteAllTextIsValid",
-            fileHostMethod "WriteIsValid" [| typeof<string>; typeof<string> |]
-        "hostWriteAllTextError",
-            fileHostMethod "WriteError" [| typeof<string>; typeof<string> |]
         "hostReadAllBytesIsValid",
             fileHostMethod "ReadBytesIsValid" [| typeof<string> |]
         "hostReadAllBytesValue",
@@ -416,10 +412,6 @@ let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
             fileHostMethod "WriteBytesIsValid" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
         "hostWriteAllBytesError",
             fileHostMethod "WriteBytesError" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
-        "hostDirectoryExists",
-            fileHostMethod "DirectoryExists" [| typeof<string> |]
-        "hostCreateDirectoryIsValid",
-            fileHostMethod "CreateDirectoryIsValid" [| typeof<string> |]
     ]
 
 /// Lookup a static method on `Lyric.Stdlib.Contracts` by name (used

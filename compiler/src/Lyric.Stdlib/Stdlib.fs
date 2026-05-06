@@ -808,54 +808,15 @@ type HttpServerHost private () =
 [<Sealed; AbstractClass>]
 type FileHost private () =
 
-    /// Probe whether `path` names an existing regular file.  Returns
-    /// false for invalid paths (no exception escapes).
-    static member Exists (path: string) : bool =
-        try System.IO.File.Exists(path)
-        with _ -> false
-
-    /// True if `ReadValue(path)` would succeed.  Performs the read and
-    /// throws away the result — a bootstrap convenience until Lyric
-    /// gets out-parameters.  Callers that gate on this then call
-    /// `ReadValue` are paying the IO cost twice.
-    static member ReadIsValid (path: string) : bool =
-        try
-            let _ = System.IO.File.ReadAllText(path)
-            true
-        with _ -> false
-
-    /// Read the file at `path` as UTF-8 text.  Returns `""` on any
-    /// host error; callers should gate on `ReadIsValid`.
-    static member ReadValue (path: string) : string =
-        try System.IO.File.ReadAllText(path)
-        with _ -> ""
-
-    /// Diagnostic message for the most recent failure observed by
-    /// `ReadIsValid` — hand-rolled because the F# `try` above swallows
-    /// the exception. Calling this when the previous read succeeded
-    /// returns `""`.
-    static member ReadError (path: string) : string =
-        try
-            let _ = System.IO.File.ReadAllText(path)
-            ""
-        with e -> e.GetType().Name + ": " + e.Message
-
-    /// Write `text` to `path` (overwriting if it exists).  Returns
-    /// true on success, false if the host call threw.
-    static member WriteIsValid (path: string, text: string) : bool =
-        try
-            System.IO.File.WriteAllText(path, text)
-            true
-        with _ -> false
-
-    /// Diagnostic message paired with `WriteIsValid`.  Like `ReadError`,
-    /// invokes the operation a second time to recover the message.
-    /// Use when surfacing a write failure to a `Result.Err` arm.
-    static member WriteError (path: string, text: string) : string =
-        try
-            System.IO.File.WriteAllText(path, text)
-            ""
-        with e -> e.GetType().Name + ": " + e.Message
+    // G10 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-109):
+    // text- and dir-mode helpers retired.  `Std.File`'s `fileExists`,
+    // `readText`, `writeText`, `dirExists`, `createDir` now go through
+    // direct `@externTarget`s on `System.IO.File` / `System.IO.Directory`
+    // declared in `stdlib/std/_kernel/file_host.l`, with `try { … }
+    // catch Bug as b { Err(...b.message...) }` wrappers in the user-facing
+    // `Std.File` package.  The bytes-flavoured methods below remain
+    // because `slice[Byte] → List[Byte]` conversion isn't yet
+    // expressible in pure Lyric; G10 follow-up tracks the migration.
 
     /// True if `ReadBytesValue(path)` would succeed.
     static member ReadBytesIsValid (path: string) : bool =
@@ -891,20 +852,6 @@ type FileHost private () =
             System.IO.File.WriteAllBytes(path, bytes.ToArray())
             ""
         with e -> e.GetType().Name + ": " + e.Message
-
-    /// Probe whether `path` names an existing directory.
-    static member DirectoryExists (path: string) : bool =
-        try System.IO.Directory.Exists(path)
-        with _ -> false
-
-    /// Create the directory (and any missing parents).  No-op if it
-    /// already exists.  Returns true on success.
-    static member CreateDirectoryIsValid (path: string) : bool =
-        try
-            let _ = System.IO.Directory.CreateDirectory(path)
-            true
-        with _ -> false
-
 
 // ── JVM class-file emission helpers moved out (Phase 1 Bucket D) ─────────────
 //

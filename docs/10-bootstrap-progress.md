@@ -48,7 +48,8 @@ deferred to Phase 3 by design.
 | `docs/23` G8 — codegen-emitted null-aware `println(any)` / `toString(any)` lowering: F# `Lyric.Stdlib.Console` retired (`PrintlnAny` / `ToStr`) | **Shipped** (PR #145) | D-progress-105 |
 | `docs/23` Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern: kernel boundary now points at `System.Random..ctor` / `System.Threading.CancellationToken{,Source}.*` directly; `nextBool` is native Lyric (`nextIntBelow(rng, 2) != 0`) | **Shipped** (PR #147) | D-progress-106 |
 | `docs/23` Phase 1 (3/3) — Bucket D split: `Jvm*` host helpers (~430 LoC) move from `Lyric.Stdlib` to a new `Lyric.Jvm.Hosts` project; stdlib bundle freed of JVM-only code | **Shipped** (PR #148) | D-progress-107 |
-| `docs/23` Phase 1 dead-code sweep — drop F# `Lyric.Stdlib.MapHelpers` / `TryHost` (zero live `@externTarget` callers) | **Shipped** (this branch) | D-progress-108 |
+| `docs/23` Phase 1 dead-code sweep — drop F# `Lyric.Stdlib.MapHelpers` / `TryHost` (zero live `@externTarget` callers) | **Shipped** (PR #149) | D-progress-108 |
+| `docs/23` G10 (1/2) — text/dir `Std.File` migrated to native Lyric `try { … } catch Bug as b { … }` around direct BCL externs (`System.IO.File.{ReadAllText,WriteAllText,Exists}` + `System.IO.Directory.{Exists,CreateDirectory}`); F# `FileHost` trimmed to bytes-only methods | **Shipped** (this branch) | D-progress-109 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -335,6 +336,65 @@ LoC.  The remaining types are all genuinely live:
 
 All future shim shrinkage requires a language-level G-item, per
 `docs/23` §5.
+
+### D-progress-109: G10 (1/2) — `Std.File` text/dir paths use native try/catch
+
+*claude/g10-trycatch-ffi branch.*  First half of `docs/23-fsharp-shim-elimination.md`
+G10 (try/catch FFI bridging).  Migrates `Std.File`'s text- and
+directory-mode helpers off the F# `FileHost` pair-of-statics
+workaround onto direct BCL `@externTarget`s wrapped in `try { … }
+catch Bug as b { … }`.
+
+**Surfaces migrated.**
+
+| `Std.File` user fn | Old shape | New shape |
+|---|---|---|
+| `fileExists` | `hostFileExists` codegen builtin → `FileHost.Exists` | `hostFileExists` extern → `System.IO.File.Exists` |
+| `dirExists` | codegen builtin → `FileHost.DirectoryExists` | extern → `System.IO.Directory.Exists` |
+| `readText` | three-call dance (`*IsValid` + `*Value` + `*Error`) | one-call `try { hostReadAllText(p) } catch Bug as b { … b.message }` |
+| `writeText` | two-call dance | one-call try/catch around `hostWriteAllText` |
+| `createDir` | codegen builtin → `FileHost.CreateDirectoryIsValid` | extern → `Directory.CreateDirectory`, error captured by Lyric's catch |
+
+**New kernel boundary.**  `stdlib/std/_kernel/file_host.l` declares
+five `@externTarget` wrappers: `hostFileExists`, `hostDirectoryExists`,
+`hostReadAllText`, `hostWriteAllText`, `hostCreateDirectory`.  All
+within the audited `_kernel/` boundary.  `Std.File` `import`s the new
+`Std.FileHost` package.
+
+**`Std.File` rewrite** (`stdlib/std/file.l`).
+
+* `readText` / `writeText` / `createDir` now use `return try { Ok(…) }
+  catch Bug as b { Err(IoError(message = b.message)) }`.  Single I/O
+  call per operation instead of the previous 2–3.
+* `fileExists` / `dirExists` go through the new direct BCL externs.
+* Bytes paths (`readBytes` / `writeBytes`) unchanged — gated on a
+  `slice[Byte] → List[Byte]` conversion that's a follow-up to G10.
+
+**Codegen trim** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+The `hostFileBuiltins` map shrinks from 13 entries to 5 (only the
+bytes-flavoured ones remain).  No more F# `FileHost.Exists` /
+`ReadIsValid` / `WriteIsValid` / `DirectoryExists` /
+`CreateDirectoryIsValid` / `Read*Error` route.
+
+**F# shim trim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+Eight `FileHost` static members deleted (~96 LoC); five
+`ReadBytes*`/`WriteBytes*` survive until the bytes follow-up.
+
+**Tests.** All suites green: 589 emitter, 83 CLI, 242 verifier,
+137 type checker, 312 parser, 123 lexer.  `StdFileTests.fs` exercises
+each migrated helper end-to-end (write → read → fileExists →
+createDir → dirExists), confirming the try/catch path matches the
+prior pair-of-statics behaviour for both success and error arms.
+
+**Net F# shim shrink.** ~96 LoC retired; trajectory now ~782 LoC
+in `Stdlib.fs` (was 1473 pre-Phase-1).
+
+**Why "G10 (1/2)".** The bytes paths and `JsonHost.Get*Slice`
+out-param readers — the other targets G10 was supposed to unblock —
+still need a `slice[Byte] → List[Byte]` constructor and a
+slice-of-string `out` param respectively.  Both ride on a
+follow-up to this PR; the text/dir migration is the cleanest first
+slice.
 
 
 ### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`
