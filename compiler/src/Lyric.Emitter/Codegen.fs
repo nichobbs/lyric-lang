@@ -406,6 +406,12 @@ let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
             fileHostMethod "WriteIsValid" [| typeof<string>; typeof<string> |]
         "hostWriteAllTextError",
             fileHostMethod "WriteError" [| typeof<string>; typeof<string> |]
+        "hostReadAllBytesIsValid",
+            fileHostMethod "ReadBytesIsValid" [| typeof<string> |]
+        "hostReadAllBytesValue",
+            fileHostMethod "ReadBytesValue" [| typeof<string> |]
+        "hostReadAllBytesError",
+            fileHostMethod "ReadBytesError" [| typeof<string> |]
         "hostWriteAllBytesIsValid",
             fileHostMethod "WriteBytesIsValid" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
         "hostWriteAllBytesError",

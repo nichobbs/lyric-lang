@@ -97,6 +97,21 @@ pub func createDir(path: in String): Result[Unit, IOError] {
 }
 
 /// Write raw bytes to `path` (creating or replacing).
+/// Read the file at `path` as raw bytes.
+///
+/// Returns `Ok(bytes)` on success, `Err(InvalidPath)` for empty paths,
+/// or `Err(IoError)` for any host failure (not found, permission, …).
+@stable(since="1.0")
+pub func readBytes(path: in String): Result[List[Byte], IOError] {
+  if path.length == 0 {
+    Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  } else if hostReadAllBytesIsValid(path) {
+    Ok(value = hostReadAllBytesValue(path))
+  } else {
+    Err(error = IoError(path = path, message = hostReadAllBytesError(path)))
+  }
+}
+
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).

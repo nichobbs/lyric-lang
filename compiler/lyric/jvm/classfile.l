@@ -133,6 +133,25 @@ pub func makeClassWithMethods(thisClass: in String, methods: in List[MethodInfo]
   )
 }
 
+/// Like `makeClassWithMethods` but targets Java 5 (major=49).
+/// Java 5 class files do not require StackMapTable attributes, so they can
+/// contain conditional branches without pre-computing frame descriptors.
+/// Use this for tests that exercise branching before full StackMap support
+/// is implemented (tracked in B18+).
+pub func makeClassWithMethodsV49(thisClass: in String, methods: in List[MethodInfo]): ClassFile {
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 49,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 /// Minimum `ClassFile` for a concrete class.
 /// Sets minor=0, major=65 (Java 21), ACC_PUBLIC|ACC_SUPER, no interfaces.
 pub func makeClass(thisClass: in String): ClassFile {
