@@ -708,6 +708,25 @@ func resolveLbl(labels: in Map[String, Int], name: in String): Int {
   }
 }
 
+/// Assemble with one exception-table entry (label names resolved to PCs).
+pub func assembleCodeWith1Handler(
+  asm:          in MethodAssembler,
+  maxStack:     in Int,
+  maxLocals:    in Int,
+  startLabel:   in String,
+  endLabel:     in String,
+  handlerLabel: in String,
+  catchType:    in Int
+): Attribute {
+  val labels = buildLabelMap(asm)
+  val code   = writerNew()
+  emitAllInsns(asm, labels, code)
+  val sp = resolveLbl(labels, startLabel)
+  val ep = resolveLbl(labels, endLabel)
+  val hp = resolveLbl(labels, handlerLabel)
+  makeCodeAttrWithHandler(maxStack, maxLocals, writerToList(code), sp, ep, hp, catchType)
+}
+
 /// Assemble with two exception-table entries (label names resolved to PCs).
 pub func assembleCodeWith2Handlers(
   asm:           in MethodAssembler,

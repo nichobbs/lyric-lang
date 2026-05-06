@@ -1749,3 +1749,115 @@ pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
     attrs        = newList()
   )
 }
+
+// ── Range-subtype lowering ────────────────────────────────────────────────────
+//
+// Lowers a Lyric range subtype (`type T = U range lo ..= hi`) to a final
+// wrapper class extending `lowerDistinctType` with a validating constructor.
+// The constructor branches to a throw of IllegalArgumentException when the
+// value is outside [lo, hi].  Uses V49 (Java 5) to avoid StackMapTable
+// complexity at the two branch merge points.
+// Only JInt and JLong underlying types are supported.
+
+pub record LRangeType {
+  wrapperClass:   String
+  underlyingType: JvmType
+  lo:             Int
+  hi:             Int
+}
+
+pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
+  val valueDesc = typeDescriptor(r.underlyingType)
+  val fieldIdx  = poolFieldref(pool, r.wrapperClass, "$value", valueDesc)
+  val iaeClass  = "java/lang/IllegalArgumentException"
+  val iaeIdx    = poolClass(pool, iaeClass)
+  val iaeCtorIdx = poolMethodref(pool, iaeClass, "<init>", "(Ljava/lang/String;)V")
+  val objCtorIdx = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+
+  // private final <underlying> $value
+  val fAttrs: List[Attribute] = newList()
+  val valueField = makeFieldInfo(ACC_PRIVATE + ACC_FINAL, "$value", valueDesc, fAttrs)
+
+  // public <init>(<underlying>)V  — validates lo <= value <= hi
+  // Uses V49 class (set below) to avoid StackMapTable at branch merge points.
+  val ctorAsm = newAssembler(pool)
+  emitAload(ctorAsm, 0)
+  emitInvokespecial(ctorAsm, objCtorIdx)
+  match r.underlyingType {
+    case JInt -> {
+      emitIload(ctorAsm, 1)
+      emitPushInt(ctorAsm, r.lo)
+      emitIfIcmplt(ctorAsm, "ctor_fail")
+      emitIload(ctorAsm, 1)
+      emitPushInt(ctorAsm, r.hi)
+      emitIfIcmpgt(ctorAsm, "ctor_fail")
+      emitAload(ctorAsm, 0)
+      emitIload(ctorAsm, 1)
+    }
+    case JLong -> {
+      // push lo/hi as int, widen via i2l, then lcmp; iflt/ifgt fail
+      emitLload(ctorAsm, 1)
+      emitPushInt(ctorAsm, r.lo)
+      emitI2l(ctorAsm)
+      emitLcmp(ctorAsm)
+      emitIflt(ctorAsm, "ctor_fail")
+      emitLload(ctorAsm, 1)
+      emitPushInt(ctorAsm, r.hi)
+      emitI2l(ctorAsm)
+      emitLcmp(ctorAsm)
+      emitIfgt(ctorAsm, "ctor_fail")
+      emitAload(ctorAsm, 0)
+      emitLload(ctorAsm, 1)
+    }
+    case _ -> ()
+  }
+  emitPutfield(ctorAsm, fieldIdx)
+  emitReturn(ctorAsm)
+  emitLabel(ctorAsm, "ctor_fail")
+  emitNew(ctorAsm, iaeIdx)
+  emitDup(ctorAsm)
+  emitPushString(ctorAsm, r.wrapperClass + " value out of range")
+  emitInvokespecial(ctorAsm, iaeCtorIdx)
+  emitAthrow(ctorAsm)
+  val ctorMaxL = 1 + fieldSlotSize(r.underlyingType)
+  val ctorCode = assembleCode(ctorAsm, 4, ctorMaxL)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(r.underlyingType)
+  val ctor = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorPs, JVoid), ctorAttrs)
+
+  // public <underlying> $value()  — identical to lowerDistinctType accessor
+  val accAsm = newAssembler(pool)
+  emitAload(accAsm, 0)
+  emitGetfield(accAsm, fieldIdx)
+  match r.underlyingType {
+    case JLong   -> emitLreturn(accAsm)
+    case JDouble -> emitDreturn(accAsm)
+    case JFloat  -> emitFreturn(accAsm)
+    case _       -> emitIreturn(accAsm)
+  }
+  val accCode = assembleCode(accAsm, fieldSlotSize(r.underlyingType), 1)
+  val accAttrs: List[Attribute] = newList()
+  accAttrs.add(accCode)
+  val noPs: List[JvmType] = newList()
+  val acc = makeMethodInfo(ACC_PUBLIC, "$value", buildDescriptor(noPs, r.underlyingType), accAttrs)
+
+  val fields: List[FieldInfo] = newList()
+  fields.add(valueField)
+  val methods: List[MethodInfo] = newList()
+  methods.add(ctor)
+  methods.add(acc)
+
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 49,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = r.wrapperClass,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = methods,
+    attrs        = newList()
+  )
+}
