@@ -208,7 +208,8 @@ let private build
         (sourcePath: string)
         (outPath: string)
         (force: bool)
-        (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list) : int =
+        (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list)
+        (target: Emitter.CompileTarget) : int =
     if (not force) && BuildCache.isFresh sourcePath outPath then
         printfn "up to date %s" outPath
         0
@@ -223,7 +224,8 @@ let private build
         { Source           = source
           AssemblyName     = assemblyName
           OutputPath       = outPath
-          RestoredPackages = restoredPackageRefs }
+          RestoredPackages = restoredPackageRefs
+          Target           = target }
     let mutable hadError = false
     let result =
         try
@@ -351,7 +353,8 @@ let private buildProject
           AssemblyName     = asmName
           OutputPath       = outAssembly
           RestoredPackages = restoredPackageRefs
-          Single           = true }
+          Single           = true
+          Target           = Lyric.Emitter.Emitter.Dotnet }
     let mutable hadError = false
     let result =
         try
@@ -792,7 +795,7 @@ let private run (sourcePath: string) (args: string array) : int =
     // Always force-build for `run` — the temp dir is fresh each
     // invocation so the cache check would always miss anyway, and
     // writing the sidecar there is wasted IO.
-    let buildExit = build sourcePath outPath true []
+    let buildExit = build sourcePath outPath true [] Emitter.Dotnet
     if buildExit <> 0 then buildExit
     else
         let psi = Diagnostics.ProcessStartInfo()
@@ -813,7 +816,7 @@ let private run (sourcePath: string) (args: string array) : int =
 
 let private printUsage () : unit =
     printErr "Usage:"
-    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>]"
+    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>] [--target dotnet|jvm]"
     printErr "  lyric build --manifest <lyric.toml>  (project mode: bundles every [project.packages] entry into one DLL)"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric fmt   <source.l> [--check] [--write]"
@@ -872,6 +875,7 @@ let main (argv: string array) : int =
         let mutable rid : string option = None
         let mutable manifestArg : string option = None
         let mutable positional : string list = []
+        let mutable compileTarget = Emitter.Dotnet
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
             match cursor with
@@ -886,6 +890,12 @@ let main (argv: string array) : int =
                 cursor <- tail
             | "--manifest" :: m :: tail ->
                 manifestArg <- Some m
+                cursor <- tail
+            | "--target" :: "jvm" :: tail ->
+                compileTarget <- Emitter.Jvm
+                cursor <- tail
+            | "--target" :: "dotnet" :: tail ->
+                compileTarget <- Emitter.Dotnet
                 cursor <- tail
             | "-o" :: out :: tail ->
                 explicitOut <- Some out
@@ -990,7 +1000,7 @@ let main (argv: string array) : int =
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
-            let buildExit = build sourcePath dllOutPath force restoredPackageRefs
+            let buildExit = build sourcePath dllOutPath force restoredPackageRefs compileTarget
             if buildExit <> 0 then buildExit
             elif not aot then 0
             else

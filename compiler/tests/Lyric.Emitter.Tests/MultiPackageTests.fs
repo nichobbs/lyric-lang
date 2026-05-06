@@ -28,7 +28,8 @@ let tests =
                 { Source           = "package Trigger\nimport Std.Core\nfunc main(): Unit { println(unwrapOr(Some(value = 1), 0)) }"
                   AssemblyName     = "Trigger"
                   OutputPath       = dll
-                  RestoredPackages = [] }
+                  RestoredPackages = []
+                  Target           = Dotnet }
             let _ = emit req
             match stdlibAssemblyPath () with
             | None ->

@@ -121,6 +121,10 @@ pub func poolUtf8(pool: in Pool, s: in String): Int = ()
 @externTarget("Lyric.Stdlib.JvmPoolHost.Integer")
 pub func poolInteger(pool: in Pool, v: in Int): Int = ()
 
+/// Intern a CONSTANT_Float (tag 4).
+@externTarget("Lyric.Stdlib.JvmPoolHost.Float_")
+pub func poolFloat(pool: in Pool, v: in Double): Int = ()
+
 /// Intern a CONSTANT_Long (tag 5); occupies two consecutive pool slots.
 @externTarget("Lyric.Stdlib.JvmPoolHost.Long_")
 pub func poolLong(pool: in Pool, v: in Long): Int = ()

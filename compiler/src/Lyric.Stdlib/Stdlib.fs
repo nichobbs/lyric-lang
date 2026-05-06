@@ -1258,6 +1258,17 @@ type JvmConstantPool() =
                           byte ((v >>> 8)  &&& 0xFF); byte (v &&& 0xFF) |]
             this.Add(key, data)
 
+    member this.Float_(v: float) : int =
+        let key = "4:" + string (float32 v)
+        match cache.TryGetValue(key) with
+        | true, slot -> slot
+        | _ ->
+            let bits = System.BitConverter.SingleToInt32Bits(float32 v)
+            let data = [| 4uy
+                          byte ((bits >>> 24) &&& 0xFF); byte ((bits >>> 16) &&& 0xFF)
+                          byte ((bits >>> 8)  &&& 0xFF); byte (bits &&& 0xFF) |]
+            this.Add(key, data)
+
     member this.Long_(v: int64) : int =
         let key = "5:" + string v
         match cache.TryGetValue(key) with
@@ -1396,6 +1407,9 @@ type JvmPoolHost private () =
 
     static member Integer(pool: JvmConstantPool, v: int) : int =
         pool.Integer(v)
+
+    static member Float_(pool: JvmConstantPool, v: float) : int =
+        pool.Float_(v)
 
     static member Long_(pool: JvmConstantPool, v: int64) : int =
         pool.Long_(v)

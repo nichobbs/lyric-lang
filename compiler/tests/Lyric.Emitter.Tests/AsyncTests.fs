@@ -736,7 +736,8 @@ func main(): Unit {
             { Source       = source
               AssemblyName = label
               OutputPath   = dll
-              RestoredPackages = [] }
+              RestoredPackages = []
+              Target       = Lyric.Emitter.Emitter.Dotnet }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let smTypes =
@@ -777,7 +778,8 @@ func main(): Unit {
             { Source       = source
               AssemblyName = label
               OutputPath   = dll
-              RestoredPackages = [] }
+              RestoredPackages = []
+              Target       = Lyric.Emitter.Emitter.Dotnet }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let smTypes =
@@ -820,7 +822,8 @@ func main(): Unit {
             { Source       = source
               AssemblyName = label
               OutputPath   = dll
-              RestoredPackages = [] }
+              RestoredPackages = []
+              Target       = Lyric.Emitter.Emitter.Dotnet }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let smTypes =

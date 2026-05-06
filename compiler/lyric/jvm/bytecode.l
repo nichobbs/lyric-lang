@@ -947,6 +947,15 @@ pub func emitPushLong(asm: in MethodAssembler, v: in Long): Unit {
 }
 
 /// Push a double constant via ldc2_w.
+pub func emitPushFloat(asm: in MethodAssembler, v: in Double): Unit {
+  val idx = poolFloat(asm.pool, v)
+  if idx <= 255 {
+    emitInsn(asm, Ldc(poolIdx = idx))
+  } else {
+    emitInsn(asm, LdcW(poolIdx = idx))
+  }
+}
+
 pub func emitPushDouble(asm: in MethodAssembler, v: in Double): Unit {
   emitInsn(asm, Ldc2W(poolIdx = poolDouble(asm.pool, v)))
 }
@@ -1269,6 +1278,7 @@ pub func emitArraylength(asm: in MethodAssembler): Unit {
 
 pub func emitIaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_IALOAD))  }
 pub func emitLaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_LALOAD))  }
+pub func emitFaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FALOAD))  }
 pub func emitDaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DALOAD))  }
 pub func emitAaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_AALOAD))  }
 pub func emitBaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_BALOAD))  }
@@ -1276,6 +1286,7 @@ pub func emitCaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op =
 pub func emitSaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_SALOAD))  }
 pub func emitIastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_IASTORE)) }
 pub func emitLastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LASTORE)) }
+pub func emitFastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FASTORE)) }
 pub func emitDastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DASTORE)) }
 pub func emitAastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_AASTORE)) }
 pub func emitBastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_BASTORE)) }

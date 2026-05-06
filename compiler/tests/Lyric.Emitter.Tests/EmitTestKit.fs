@@ -85,7 +85,8 @@ let compileAndRun (label: string) (source: string) : EmitResult * string * strin
         { Source           = source
           AssemblyName     = label
           OutputPath       = dll
-          RestoredPackages = [] }
+          RestoredPackages = []
+          Target           = Dotnet }
     let r = emit req
     // The emit may have lazily precompiled extra `Std.X` modules.
     // Copy any newly cached DLLs over so the runtime probing path

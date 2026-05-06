@@ -76,7 +76,8 @@ let tests =
                       AssemblyName     = "MyApp"
                       OutputPath       = dllPath
                       RestoredPackages = []
-                      Single           = true }
+                      Single           = true
+                      Target           = Emitter.Dotnet }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -147,7 +148,8 @@ let tests =
                       AssemblyName     = "CrossPkg"
                       OutputPath       = dllPath
                       RestoredPackages = []
-                      Single           = true }
+                      Single           = true
+                      Target           = Emitter.Dotnet }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -187,7 +189,8 @@ let tests =
                       AssemblyName     = "Cycle"
                       OutputPath       = dllPath
                       RestoredPackages = []
-                      Single           = true }
+                      Single           = true
+                      Target           = Emitter.Dotnet }
                 let result = Emitter.emitProject req
                 let b0020 =
                     result.Diagnostics
@@ -215,7 +218,8 @@ let tests =
                       AssemblyName     = "VisProbe"
                       OutputPath       = dllPath
                       RestoredPackages = []
-                      Single           = true }
+                      Single           = true
+                      Target           = Emitter.Dotnet }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -305,7 +309,8 @@ let tests =
                       AssemblyName     = "Smoke"
                       OutputPath       = dllPath
                       RestoredPackages = []
-                      Single           = true }
+                      Single           = true
+                      Target           = Emitter.Dotnet }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -332,7 +337,8 @@ let tests =
                       AssemblyName     = "Empty"
                       OutputPath       = dllPath
                       RestoredPackages = []
-                      Single           = true }
+                      Single           = true
+                      Target           = Emitter.Dotnet }
                 let result = Emitter.emitProject req
                 let b0023 =
                     result.Diagnostics
