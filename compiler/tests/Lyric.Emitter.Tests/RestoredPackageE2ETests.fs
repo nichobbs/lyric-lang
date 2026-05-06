@@ -23,11 +23,13 @@ let private guidDir (prefix: string) : string =
 let private buildPackage (outDir: string) (name: string) (source: string) : string =
     let dll = Path.Combine(outDir, name + ".dll")
     let req : EmitRequest =
-        { Source           = source
-          AssemblyName     = name
-          OutputPath       = dll
-          RestoredPackages = []
-          Target           = Dotnet }
+        { Source             = source
+          AssemblyName       = name
+          OutputPath         = dll
+          RestoredPackages   = []
+          NugetAssemblyPaths = []
+          ExternShimRoot     = None
+          Target             = Dotnet }
     let r = emit req
     let errs =
         r.Diagnostics
@@ -89,13 +91,15 @@ func main(): Unit {
   println(greet("world"))
 }
 """
-                  AssemblyName     = "rp-consumer"
-                  OutputPath       = consumerDll
-                  RestoredPackages =
+                  AssemblyName       = "rp-consumer"
+                  OutputPath         = consumerDll
+                  RestoredPackages   =
                     [ { Name    = "Lyric.Greeter"
                         Version = "0.1.0"
                         DllPath = restoredDll } ]
-                  Target           = Dotnet }
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Target             = Dotnet }
             let result = emit req
             let errs =
                 result.Diagnostics
@@ -122,14 +126,16 @@ import Lyric.Greeter
 
 func main(): Unit { () }
 """
-                  AssemblyName     = "rp-missing"
-                  OutputPath       = Path.Combine(Path.GetTempPath(),
-                                                  "lyric-rp-missing.dll")
-                  RestoredPackages =
+                  AssemblyName       = "rp-missing"
+                  OutputPath         = Path.Combine(Path.GetTempPath(),
+                                                    "lyric-rp-missing.dll")
+                  RestoredPackages   =
                     [ { Name    = "Lyric.Greeter"
                         Version = "0.1.0"
                         DllPath = "/this/does/not/exist.dll" } ]
-                  Target           = Dotnet }
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Target             = Dotnet }
             let result = emit req
             let codes = result.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "E901" "missing-restored-DLL surfaces E901"
@@ -157,11 +163,13 @@ func main(): Unit { () }
                 { Packages =
                     [ { PackageName = "MyLib.Core"; Sources = [coreSrc] }
                       { PackageName = "MyLib.Util"; Sources = [utilSrc] } ]
-                  AssemblyName     = "MyLib"
-                  OutputPath       = bundleDll
-                  RestoredPackages = []
-                  Single           = true
-                  Target           = Dotnet }
+                  AssemblyName       = "MyLib"
+                  OutputPath         = bundleDll
+                  RestoredPackages   = []
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Single             = true
+                  Target             = Dotnet }
             let bundleResult = emitProject req
             let bundleErrs =
                 bundleResult.Diagnostics
@@ -189,13 +197,15 @@ func main(): Unit {
   println(toString(square(4)))
 }
 """
-                  AssemblyName     = "rp-bundle-consumer"
-                  OutputPath       = consumerDll
-                  RestoredPackages =
+                  AssemblyName       = "rp-bundle-consumer"
+                  OutputPath         = consumerDll
+                  RestoredPackages   =
                     [ { Name    = "MyLib"
                         Version = "0.1.0"
                         DllPath = bundleDll } ]
-                  Target           = Dotnet }
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Target             = Dotnet }
             let result = emit consumerReq
             let errs =
                 result.Diagnostics

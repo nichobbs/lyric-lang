@@ -12,11 +12,13 @@ let tests =
 
         test "source without a main function reports E0001" {
             let req =
-                { Source           = "package Hello"
-                  AssemblyName     = "Hello"
-                  OutputPath       = Path.Combine(Path.GetTempPath(), "lyric-noop.dll")
-                  RestoredPackages = []
-                  Target           = Dotnet }
+                { Source             = "package Hello"
+                  AssemblyName       = "Hello"
+                  OutputPath         = Path.Combine(Path.GetTempPath(), "lyric-noop.dll")
+                  RestoredPackages   = []
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Target             = Dotnet }
             let r = emit req
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "E0001" "missing-main surfaces E0001"
@@ -25,11 +27,13 @@ let tests =
 
         test "ill-formed source surfaces the parser's diagnostics" {
             let req =
-                { Source           = ""
-                  AssemblyName     = "Empty"
-                  OutputPath       = Path.Combine(Path.GetTempPath(), "lyric-empty.dll")
-                  RestoredPackages = []
-                  Target           = Dotnet }
+                { Source             = ""
+                  AssemblyName       = "Empty"
+                  OutputPath         = Path.Combine(Path.GetTempPath(), "lyric-empty.dll")
+                  RestoredPackages   = []
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Target             = Dotnet }
             let r = emit req
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "P0020" "missing-package surfaces"

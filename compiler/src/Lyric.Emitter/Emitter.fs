@@ -36,6 +36,18 @@ type EmitRequest =
       /// after running `lyric restore`.  Defaults to empty so
       /// existing call sites keep compiling.
       RestoredPackages: RestoredPackages.RestoredPackageRef list
+      /// Absolute paths to NuGet DLLs the build should load into the
+      /// AppDomain before resolving extern types (Phase 5 §M5.1
+      /// stage 2d.v).  `lyric build` populates this from the
+      /// `[nuget]` graph as walked from `project.assets.json`.
+      NugetAssemblyPaths: string list
+      /// Directory holding auto-generated `_extern/<lower-pkg>.l`
+      /// shim sources (Phase 5 §M5.1 stage 2d.v).  When `Some`, the
+      /// import resolver falls back to walking this directory for
+      /// any `import <Pkg>` that didn't match a builtin head, a
+      /// restored Lyric package, or an in-project package.  `None`
+      /// preserves the legacy (no-NuGet) behaviour.
+      ExternShimRoot: string option
       /// Compilation target platform.  Controls which `_kernel*`
       /// directory is used for builtin `Std.*` package resolution.
       Target: CompileTarget }
@@ -47,6 +59,8 @@ let mkEmitRequest (source: string) (assemblyName: string) (outputPath: string) :
       AssemblyName = assemblyName
       OutputPath = outputPath
       RestoredPackages = []
+      NugetAssemblyPaths = []
+      ExternShimRoot = None
       Target = Dotnet }
 
 let private err (code: string) (msg: string) (span: Span) : Diagnostic =
@@ -1889,6 +1903,27 @@ let private findClrType (qualifiedName: string) : System.Type option =
             try
                 Option.ofObj (asm.GetType qualifiedName)
             with _ -> None)
+
+/// Phase 5 §M5.1 stage 2d.v: pre-load the user's NuGet DLLs into
+/// the current AppDomain so `findClrType` finds extern types declared
+/// against those packages.  Failures (assembly already loaded, file
+/// missing, bad image) are non-fatal — the worst case is that a
+/// later `extern type` resolution fails with the existing FFI error,
+/// which is the right diagnostic anyway.
+let private preloadNugetAssemblies (paths: string list) : unit =
+    let loaded =
+        System.AppDomain.CurrentDomain.GetAssemblies()
+        |> Array.choose (fun a ->
+            try
+                let loc = a.Location
+                if System.String.IsNullOrEmpty loc then None
+                else Some loc
+            with _ -> None)
+        |> Set.ofArray
+    for p in paths do
+        if System.IO.File.Exists p && not (loaded.Contains p) then
+            try System.Reflection.Assembly.LoadFrom p |> ignore
+            with _ -> ()
 
 /// Pick the BCL method (or property accessor) referenced by `target`.
 /// `target` is `<Fully.Qualified.Type>.<Member>`.  `paramArity` is
@@ -5003,11 +5038,13 @@ let rec private ensureStdlibArtifact
                         | []            -> "Lyric.Unknown"
                     let outPath = Path.Combine(stdlibCacheDir, assemblyName + ".dll")
                     let req =
-                        { Source           = src
-                          AssemblyName     = assemblyName
-                          OutputPath       = outPath
-                          RestoredPackages = []
-                          Target           = target }
+                        { Source             = src
+                          AssemblyName       = assemblyName
+                          OutputPath         = outPath
+                          RestoredPackages   = []
+                          NugetAssemblyPaths = []
+                          ExternShimRoot     = None
+                          Target             = target }
                     let stdImportsHere =
                         parsed.File.Imports
                         |> List.filter (fun i ->
@@ -5272,23 +5309,171 @@ let private resolveRestoredImports
             List.ofSeq artifacts,
             List.ofSeq diags
 
+/// Phase 5 §M5.1 stage 2d.v: compile each `_extern/<Head>.l` shim to
+/// a cached DLL and build a `StdlibArtifact` from the result.  The
+/// shim contents are `pub func` declarations with `@externTarget`
+/// annotations targeting the user's NuGet packages — emitting them
+/// produces a `<Head>.Program` class with static-method trampolines
+/// that the existing imported-func resolver looks up.  Without the
+/// emit step the user's call site fires `E0004 unknown name` because
+/// no real `<Head>.Program.<func>` method exists.
+///
+/// The compile is done via a recursive `emit` call.  We carry through
+/// the NuGet DLL paths so `preloadNugetAssemblies` populates the
+/// AppDomain before the shim's `@externTarget` resolution runs;
+/// `ExternShimRoot` is forced to `None` on the inner request so the
+/// recursion bottoms out at the shim itself (shims are leaves).
+let private resolveExternShimImports
+        (sf: SourceFile)
+        (shimRoot: string option)
+        (nugetPaths: string list)
+        : SourceFile * Item list * StdlibArtifact list * Diagnostic list =
+    match shimRoot with
+    | None -> sf, [], [], []
+    | Some root ->
+    if not (Directory.Exists root) then sf, [], [], []
+    else
+    let zeroSpan = Span.make Position.initial Position.initial
+    let candidates =
+        sf.Imports
+        |> List.choose (fun i ->
+            match i.Path.Segments with
+            | head :: _ when not (isBuiltinHead head) ->
+                let path = Path.Combine(root, head + ".l")
+                if File.Exists path then Some (head, path, i)
+                else None
+            | _ -> None)
+    if List.isEmpty candidates then sf, [], [], []
+    else
+    let diags = ResizeArray<Diagnostic>()
+    let artifacts = ResizeArray<StdlibArtifact>()
+    let importedItems = ResizeArray<Item>()
+    let visited = HashSet<string>()
+    let strippedImports = HashSet<string>()
+    // Cache compiled shim DLLs alongside the manifest's `.lyric/`
+    // scratch directory so re-runs hit the cache instead of
+    // recompiling.  `<root>/../.lyric/extern-cache/<head>.dll`.
+    let cacheDir =
+        let parent =
+            try Path.GetDirectoryName(Path.GetFullPath root)
+            with _ -> null
+        match Option.ofObj parent with
+        | Some p -> Path.Combine(p, ".lyric", "extern-cache")
+        | None   -> Path.Combine(Path.GetTempPath(), "lyric-extern-cache")
+    Directory.CreateDirectory cacheDir |> ignore
+    // Pre-load NuGet assemblies before parsing any shim — the
+    // shim's `@externTarget` resolution walks the AppDomain.
+    preloadNugetAssemblies nugetPaths
+    for (head, shimPath, _) in candidates do
+        if visited.Add head then
+            let src =
+                try Some (File.ReadAllText shimPath)
+                with ex ->
+                    diags.Add (
+                        err "E901"
+                            (sprintf "extern shim '%s' unreadable: %s" shimPath ex.Message)
+                            zeroSpan)
+                    None
+            match src with
+            | None -> ()
+            | Some text ->
+                let parsed = Lyric.Parser.Parser.parse text
+                let parseErrs =
+                    parsed.Diagnostics
+                    |> List.filter (fun d -> d.Severity = DiagError)
+                if not (List.isEmpty parseErrs) then
+                    for d in parseErrs do diags.Add d
+                else
+                    let checked' =
+                        Lyric.TypeChecker.Checker.check parsed.File
+                    let checkErrs =
+                        checked'.Diagnostics
+                        |> List.filter (fun d -> d.Severity = DiagError)
+                    if not (List.isEmpty checkErrs) then
+                        for d in checkErrs do diags.Add d
+                    else
+                        let dllPath = Path.Combine(cacheDir, head + ".dll")
+                        let innerReq : EmitRequest =
+                            { Source             = text
+                              AssemblyName       = head
+                              OutputPath         = dllPath
+                              RestoredPackages   = []
+                              NugetAssemblyPaths = nugetPaths
+                              ExternShimRoot     = None
+                              Target             = Dotnet }
+                        // `emitAssembly` with `isLibrary = true`
+                        // skips the main-function requirement that
+                        // `emit` enforces for executables.  Same
+                        // pattern used by `ensureStdlibArtifact`.
+                        let emitDiags =
+                            emitAssembly
+                                parsed.File checked'.Signatures
+                                checked'.Symbols
+                                innerReq true [] [] None None None
+                        let emitErrs =
+                            emitDiags
+                            |> List.filter (fun d -> d.Severity = DiagError)
+                        if not (List.isEmpty emitErrs) then
+                            for d in emitErrs do diags.Add d
+                        elif not (File.Exists dllPath) then
+                            diags.Add (
+                                err "E901"
+                                    (sprintf "extern shim '%s' did not produce '%s'"
+                                            shimPath dllPath)
+                                    zeroSpan)
+                        else
+                            let asm = Assembly.LoadFrom dllPath
+                            let artifact : StdlibArtifact =
+                                { AssemblyPath = dllPath
+                                  Assembly     = Some asm
+                                  Source       = parsed.File
+                                  Symbols      = checked'.Symbols
+                                  Signatures   = checked'.Signatures
+                                  Lookup       =
+                                    fun n -> Option.ofObj (asm.GetType n) }
+                            artifacts.Add artifact
+                            for it in parsed.File.Items do importedItems.Add it
+                            strippedImports.Add head |> ignore
+    let remainingImports =
+        sf.Imports
+        |> List.filter (fun i ->
+            match i.Path.Segments with
+            | head :: _ -> not (strippedImports.Contains head)
+            | _        -> true)
+    { sf with Imports = remainingImports },
+    List.ofSeq importedItems,
+    List.ofSeq artifacts,
+    List.ofSeq diags
+
 /// Emit a Lyric source string to a persistent assembly.
 let emit (req: EmitRequest) : EmitResult =
+    // Phase 5 §M5.1 stage 2d.v: pre-load NuGet DLLs into the
+    // AppDomain so `findClrType` resolves extern types declared in
+    // auto-generated `_extern/<pkg>.l` shims.  No-op when the
+    // request carries no NuGet refs (legacy single-source builds).
+    preloadNugetAssemblies req.NugetAssemblyPaths
     let parsed   = parse req.Source
     // Restored Lyric packages (D-progress-077 follow-up) resolve
     // first so the `Std.*` resolver below sees a SourceFile with
     // the matching non-`Std` imports already stripped.
     let afterRestored, restoredImportedItems, restoredArtifacts, restoredDiags =
         resolveRestoredImports parsed.File req.RestoredPackages
+    // Phase 5 §M5.1 stage 2d.v: NuGet shim imports.
+    let afterExtern, externImportedItems, externArtifacts, externDiags =
+        resolveExternShimImports afterRestored req.ExternShimRoot
+            req.NugetAssemblyPaths
     let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
-        resolveStdlibImports req.Target afterRestored
-    let mergedImportedItems = restoredImportedItems @ importedItems
-    let mergedArtifacts = restoredArtifacts @ stdlibArtifacts
+        resolveStdlibImports req.Target afterExtern
+    let mergedImportedItems =
+        restoredImportedItems @ externImportedItems @ importedItems
+    let mergedArtifacts =
+        restoredArtifacts @ externArtifacts @ stdlibArtifacts
     let checked' =
         Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
 
     let upstream =
-        parsed.Diagnostics @ restoredDiags @ importDiags @ checked'.Diagnostics
+        parsed.Diagnostics @ restoredDiags @ externDiags
+        @ importDiags @ checked'.Diagnostics
     let parserFatal =
         upstream
         |> List.exists (fun d ->
@@ -5379,6 +5564,12 @@ type ProjectEmitRequest =
       /// imports against.  Same shape as the single-package
       /// `EmitRequest.RestoredPackages`.
       RestoredPackages: RestoredPackages.RestoredPackageRef list
+      /// NuGet DLLs to pre-load into the AppDomain (Phase 5 §M5.1
+      /// stage 2d.v).  Mirrors `EmitRequest.NugetAssemblyPaths`.
+      NugetAssemblyPaths: string list
+      /// `_extern/` shim directory for NuGet imports.  Mirrors
+      /// `EmitRequest.ExternShimRoot`.
+      ExternShimRoot: string option
       /// `true` for `output = "single"`; `false` falls back to a
       /// per-package emit producing one DLL per package alongside
       /// the bundled output.  M5.1 stage 2c.2.ii ships only the
@@ -5619,12 +5810,14 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 match it.Kind with
                 | IFunc fn when fn.Name = "main" -> mainCount <- mainCount + 1
                 | _ -> ()
-            let perPkgReq =
-                { Source           = combinedSrc
-                  AssemblyName     = req.AssemblyName
-                  OutputPath       = req.OutputPath
-                  RestoredPackages = req.RestoredPackages
-                  Target           = req.Target }
+            let perPkgReq : EmitRequest =
+                { Source             = combinedSrc
+                  AssemblyName       = req.AssemblyName
+                  OutputPath         = req.OutputPath
+                  RestoredPackages   = req.RestoredPackages
+                  NugetAssemblyPaths = req.NugetAssemblyPaths
+                  ExternShimRoot     = req.ExternShimRoot
+                  Target             = req.Target }
             let isMainPkg = (Some pkgName = mainPackage)
             let mainOutForCall =
                 if isMainPkg then Some bundleMain else None

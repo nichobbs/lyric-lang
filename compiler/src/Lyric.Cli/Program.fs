@@ -111,6 +111,44 @@ let private copyStdlibArtifacts (outDir: string) : unit =
                 | None   -> "Lyric.Stdlib.<unknown>.dll"
             File.Copy(p, Path.Combine(outDir, fname), overwrite = true)
 
+/// Phase 5 §M5.1 stage 2d.v: copy each NuGet DLL the build referenced
+/// into the output directory so `dotnet exec`'s default probing path
+/// finds them at runtime.  Also copies every compiled `_extern/`
+/// shim DLL out of the build cache so the user's main DLL can load
+/// the shim package at runtime.  This is the simplest correct
+/// shape; a generated `.deps.json` (cache-based resolution) is a
+/// follow-up for `dotnet publish` / AOT flows that want lighter
+/// deploys.
+let private copyNugetArtifacts
+        (outDir: string)
+        (nugetPaths: string list)
+        (externShimRoot: string option) : unit =
+    let copyOne (p: string) =
+        if File.Exists p then
+            match Option.ofObj (Path.GetFileName p) with
+            | Some fname ->
+                let dest = Path.Combine(outDir, fname)
+                try File.Copy(p, dest, overwrite = true)
+                with ex ->
+                    printErr
+                        (sprintf "warning: failed to copy NuGet DLL '%s' -> '%s': %s"
+                                  p dest ex.Message)
+            | None -> ()
+    for p in nugetPaths do copyOne p
+    match externShimRoot with
+    | None -> ()
+    | Some root ->
+        let parent =
+            try Path.GetDirectoryName(Path.GetFullPath root)
+            with _ -> null
+        match Option.ofObj parent with
+        | Some p ->
+            let cache = Path.Combine(p, ".lyric", "extern-cache")
+            if Directory.Exists cache then
+                for dll in Directory.GetFiles(cache, "*.dll") do
+                    copyOne dll
+        | None -> ()
+
 /// Build cache: when a `.lyric-cache` sidecar next to `outPath`
 /// records the same SHA-256 fingerprint as the current source +
 /// every stdlib `.l` file the resolver might pull in, and the
@@ -219,6 +257,8 @@ let private build
         (outPath: string)
         (force: bool)
         (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list)
+        (nugetAssemblyPaths: string list)
+        (externShimRoot: string option)
         (target: Emitter.CompileTarget) : int =
     if (not force) && BuildCache.isFresh sourcePath outPath then
         printfn "up to date %s" outPath
@@ -231,11 +271,13 @@ let private build
     let assemblyName =
         safeStr (Path.GetFileNameWithoutExtension outPath) "out"
     let req : Emitter.EmitRequest =
-        { Source           = source
-          AssemblyName     = assemblyName
-          OutputPath       = outPath
-          RestoredPackages = restoredPackageRefs
-          Target           = target }
+        { Source             = source
+          AssemblyName       = assemblyName
+          OutputPath         = outPath
+          RestoredPackages   = restoredPackageRefs
+          NugetAssemblyPaths = nugetAssemblyPaths
+          ExternShimRoot     = externShimRoot
+          Target             = target }
     let mutable hadError = false
     let result =
         try
@@ -266,6 +308,7 @@ let private build
     | Some _ when not hadError ->
         writeRuntimeConfig outPath
         copyStdlibArtifacts outDir
+        copyNugetArtifacts outDir nugetAssemblyPaths externShimRoot
         BuildCache.stamp sourcePath outPath
         printfn "built %s" outPath
         0
@@ -290,7 +333,9 @@ let private buildProject
         (project: Lyric.Cli.Manifest.ProjectSection)
         (force: bool)
         (explicitOut: string option)
-        (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list) : int =
+        (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list)
+        (nugetAssemblyPaths: string list)
+        (externShimRoot: string option) : int =
     // `output = "per-package"` falls through to the legacy
     // per-source `lyric build` flow — the bootstrap stdlib's exact
     // shape — so the project-build path here only handles `single`.
@@ -359,12 +404,14 @@ let private buildProject
     let asmName =
         safeStr (Path.GetFileNameWithoutExtension outAssembly) "out"
     let req : Lyric.Emitter.Emitter.ProjectEmitRequest =
-        { Packages         = List.ofSeq pkgInputs
-          AssemblyName     = asmName
-          OutputPath       = outAssembly
-          RestoredPackages = restoredPackageRefs
-          Single           = true
-          Target           = Lyric.Emitter.Emitter.Dotnet }
+        { Packages           = List.ofSeq pkgInputs
+          AssemblyName       = asmName
+          OutputPath         = outAssembly
+          RestoredPackages   = restoredPackageRefs
+          NugetAssemblyPaths = nugetAssemblyPaths
+          ExternShimRoot     = externShimRoot
+          Single             = true
+          Target             = Lyric.Emitter.Emitter.Dotnet }
     let mutable hadError = false
     let result =
         try
@@ -387,6 +434,7 @@ let private buildProject
     | Some _ when not hadError ->
         writeRuntimeConfig outAssembly
         copyStdlibArtifacts outDir
+        copyNugetArtifacts outDir nugetAssemblyPaths externShimRoot
         // BuildCache currently fingerprints a single source path;
         // skip caching for project builds rather than half-stamp it.
         ignore force
@@ -806,7 +854,7 @@ let private run (sourcePath: string) (args: string array) : int =
     // Always force-build for `run` — the temp dir is fresh each
     // invocation so the cache check would always miss anyway, and
     // writing the sidecar there is wasted IO.
-    let buildExit = build sourcePath outPath true [] Emitter.Dotnet
+    let buildExit = build sourcePath outPath true [] [] None Emitter.Dotnet
     if buildExit <> 0 then buildExit
     else
         let psi = Diagnostics.ProcessStartInfo()
@@ -956,6 +1004,37 @@ let main (argv: string array) : int =
                         printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
                                           dep.Name dep.Version)
                         None)
+        // Phase 5 §M5.1 stage 2d.v: resolve [nuget] entries through
+        // `project.assets.json` (written by `lyric restore`).  The
+        // result feeds two parallel channels into the emit request:
+        //   * `nugetAssemblyPaths` — every transitive runtime DLL,
+        //     pre-loaded into the AppDomain so `findClrType` finds
+        //     extern types declared by the auto-generated shims.
+        //   * `externShimRoot` — `<manifestDir>/_extern/` where the
+        //     `_extern/<lyric-pkg>.l` files live.  The emitter's
+        //     resolver falls back here for non-builtin imports.
+        let nugetAssemblyPaths, externShimRoot =
+            match parsedManifest with
+            | None -> [], None
+            | Some (mPath, manifest) ->
+                let manifestDir =
+                    safeStr (Path.GetDirectoryName(Path.GetFullPath mPath)) "."
+                let nugetPresent =
+                    match manifest.Nuget with
+                    | Some n -> not (List.isEmpty n.Packages)
+                    | None   -> false
+                if not nugetPresent then [], None
+                else
+                    match Lyric.Cli.NugetAssets.readForManifest manifestDir manifest with
+                    | Error e ->
+                        printErr (Lyric.Cli.NugetAssets.renderError e)
+                        [], None
+                    | Ok r ->
+                        let paths =
+                            r.Packages |> List.map (fun p -> p.RuntimeDll)
+                        let externDir =
+                            Path.Combine(manifestDir, "_extern")
+                        paths, Some externDir
         // Project-mode dispatch: `lyric build --manifest lyric.toml`
         // (no positional source) where the manifest declares a
         // single-DLL `[project]`.  The bundle drops in
@@ -977,7 +1056,9 @@ let main (argv: string array) : int =
                 | Some (mPath, m) ->
                     match m.Project with
                     | Some proj ->
-                        buildProject mPath proj force explicitOut restoredPackageRefs
+                        buildProject mPath proj force explicitOut
+                            restoredPackageRefs nugetAssemblyPaths
+                            externShimRoot
                     | None ->
                         printErr "build: missing source file"
                         printUsage ()
@@ -1011,7 +1092,9 @@ let main (argv: string array) : int =
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
-            let buildExit = build sourcePath dllOutPath force restoredPackageRefs compileTarget
+            let buildExit =
+                build sourcePath dllOutPath force restoredPackageRefs
+                    nugetAssemblyPaths externShimRoot compileTarget
             if buildExit <> 0 then buildExit
             elif not aot then 0
             else

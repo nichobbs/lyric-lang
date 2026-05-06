@@ -25,11 +25,13 @@ let tests =
             Directory.CreateDirectory outDir |> ignore
             let dll = Path.Combine(outDir, "Trigger.dll")
             let req =
-                { Source           = "package Trigger\nimport Std.Core\nfunc main(): Unit { println(unwrapOr(Some(value = 1), 0)) }"
-                  AssemblyName     = "Trigger"
-                  OutputPath       = dll
-                  RestoredPackages = []
-                  Target           = Dotnet }
+                { Source             = "package Trigger\nimport Std.Core\nfunc main(): Unit { println(unwrapOr(Some(value = 1), 0)) }"
+                  AssemblyName       = "Trigger"
+                  OutputPath         = dll
+                  RestoredPackages   = []
+                  NugetAssemblyPaths = []
+                  ExternShimRoot     = None
+                  Target             = Dotnet }
             let _ = emit req
             match stdlibAssemblyPath () with
             | None ->
