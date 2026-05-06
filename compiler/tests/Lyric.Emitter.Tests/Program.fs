@@ -118,6 +118,8 @@ let main argv =
             JvmLoweringB51Test.tests
             JvmLoweringB52Test.tests
             JvmLoweringB53Test.tests
+            JvmLoweringB54Test.tests
+            JvmLoweringB55Test.tests
             SelfHostedLexerTests.tests
             MultiFilePackageTests.tests
         ]

@@ -119,6 +119,8 @@
     <Compile Include="JvmLoweringB51Test.fs" />
     <Compile Include="JvmLoweringB52Test.fs" />
     <Compile Include="JvmLoweringB53Test.fs" />
+    <Compile Include="JvmLoweringB54Test.fs" />
+    <Compile Include="JvmLoweringB55Test.fs" />
     <Compile Include="SelfHostedLexerTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="Program.fs" />
