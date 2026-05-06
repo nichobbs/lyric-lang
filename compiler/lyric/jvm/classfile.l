@@ -377,6 +377,32 @@ pub func makeCodeAttrWithHandler(
   attrFromWriter("Code", w)
 }
 
+/// Build a `Code` attribute with two exception handlers.
+pub func makeCodeAttrWith2Handlers(
+  maxStack:    in Int,
+  maxLocals:   in Int,
+  code:        in List[Byte],
+  startPc1:    in Int, endPc1:    in Int, handlerPc1: in Int, catchType1: in Int,
+  startPc2:    in Int, endPc2:    in Int, handlerPc2: in Int, catchType2: in Int
+): Attribute {
+  val w = writerNew()
+  writerU2(w, maxStack)
+  writerU2(w, maxLocals)
+  writerU4(w, code.count)
+  writerByteList(w, code)
+  writerU2(w, 2)
+  writerU2(w, startPc1)
+  writerU2(w, endPc1)
+  writerU2(w, handlerPc1)
+  writerU2(w, catchType1)
+  writerU2(w, startPc2)
+  writerU2(w, endPc2)
+  writerU2(w, handlerPc2)
+  writerU2(w, catchType2)
+  writerU2(w, 0)
+  attrFromWriter("Code", w)
+}
+
 /// Build a `Signature` attribute (JVMS §4.7.9) for generic type info.
 pub func makeSignatureAttr(pool: in Pool, signature: in String): Attribute {
   val w = writerNew()
