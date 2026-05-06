@@ -37,7 +37,7 @@ extern type Scope                   = "Lyric.Stdlib.LyricTaskScope"
 /// `CancellationToken.None` in the BCL.  Use as the "no
 /// cancellation requested" sentinel when an API requires a
 /// token but the caller has no source.
-@externTarget("Lyric.Stdlib.CancelHost.None")
+@externTarget("System.Threading.CancellationToken.None")
 pub func noCancellation(): CancellationToken = ()
 
 /// Create a fresh `CancellationTokenSource`.  Pass its token
@@ -45,13 +45,14 @@ pub func noCancellation(): CancellationToken = ()
 /// `source.cancel()` when you want them to abort.  Sources own
 /// unmanaged resources — wrap usage in `defer { source.dispose()
 /// }` or use `withScope` for automatic cleanup.
-@externTarget("Lyric.Stdlib.CancelHost.MakeSource")
+@externTarget("System.Threading.CancellationTokenSource..ctor")
 pub func makeCancelSource(): CancellationTokenSource = ()
 
 /// Same as `makeCancelSource` but auto-cancels the resulting
 /// source after `ms` milliseconds — convenient for deadline-
-/// shaped scopes.
-@externTarget("Lyric.Stdlib.CancelHost.MakeSourceTimeout")
+/// shaped scopes.  Routes through the `(int millisecondsDelay)`
+/// constructor overload.
+@externTarget("System.Threading.CancellationTokenSource..ctor")
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource = ()
 
 // =====================================================================
@@ -60,7 +61,7 @@ pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource = ()
 
 /// Project a token from a source.  Multiple calls return the
 /// same token (BCL semantics).
-@externTarget("Lyric.Stdlib.CancelHost.SourceToken")
+@externTarget("System.Threading.CancellationTokenSource.Token")
 pub func sourceToken(source: in CancellationTokenSource): CancellationToken = ()
 
 /// Request cancellation.  Idempotent: subsequent calls are no-ops.
@@ -68,12 +69,12 @@ pub func sourceToken(source: in CancellationTokenSource): CancellationToken = ()
 /// `isCancelled == true` (and any `delayWithCancel` / similar in
 /// flight will throw `OperationCanceledException` at the next
 /// resume point).
-@externTarget("Lyric.Stdlib.CancelHost.Cancel")
+@externTarget("System.Threading.CancellationTokenSource.Cancel")
 pub func cancelSource(source: in CancellationTokenSource): Unit = ()
 
 /// Release the source's unmanaged resources.  Always safe to
 /// call after the source's last consumer has resumed.
-@externTarget("Lyric.Stdlib.CancelHost.Dispose")
+@externTarget("System.Threading.CancellationTokenSource.Dispose")
 pub func disposeSource(source: in CancellationTokenSource): Unit = ()
 
 // =====================================================================
@@ -83,14 +84,14 @@ pub func disposeSource(source: in CancellationTokenSource): Unit = ()
 /// Has cancellation been requested for this token's source?
 /// Async loops can poll this between iterations as a cheap
 /// alternative to `throwIfCancelled`.
-@externTarget("Lyric.Stdlib.CancelHost.IsCancellationRequested")
+@externTarget("System.Threading.CancellationToken.IsCancellationRequested")
 pub func isCancelled(token: in CancellationToken): Bool = ()
 
 /// Throw `OperationCanceledException` (which Lyric catches as
 /// `Exception`) when the token has been cancelled.  Use as a
 /// cooperative cancellation point inside long-running synchronous
 /// stretches that can't naturally suspend.
-@externTarget("Lyric.Stdlib.CancelHost.ThrowIfCancellationRequested")
+@externTarget("System.Threading.CancellationToken.ThrowIfCancellationRequested")
 pub func throwIfCancelled(token: in CancellationToken): Unit = ()
 
 // =====================================================================

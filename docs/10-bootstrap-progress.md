@@ -45,7 +45,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.2.iv — CLI integration (`lyric build --manifest` dispatches to `emitProject` when `[project] output = "single"`); main entry-point capture from project bundle | **Shipped** (PR #138) | D-progress-102 |
 | M5.1 stage 2c.3 — stdlib-bundle proof: 3-package smoke set compiles via `lyric build --manifest stdlib/lyric.toml`; in-project generic-union ctor + DeclaredOnly reflection fixes | **Shipped** (PR #140) | D-progress-103 |
 | `docs/14` stage P3 — F# shim P3 trio: drop dead `Lyric.Stdlib.Parse`; route `format1..6` through `System.String.Format(string, object[])` (delete F# `Format`); inline-loop renderers in `@derive(Json)` synthesiser for Int/Long/Bool/String slices (delete F# `JsonHost.Render*Slice`, retain only `RenderDoubleSlice`) | **Shipped** (PR #141) | D-progress-104 |
-| `docs/23` G8 — codegen-emitted null-aware `println(any)` / `toString(any)` lowering: F# `Lyric.Stdlib.Console` retired (`PrintlnAny` / `ToStr`) | **Shipped** (this branch) | D-progress-105 |
+| `docs/23` G8 — codegen-emitted null-aware `println(any)` / `toString(any)` lowering: F# `Lyric.Stdlib.Console` retired (`PrintlnAny` / `ToStr`) | **Shipped** (PR #145) | D-progress-105 |
+| `docs/23` Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern: kernel boundary now points at `System.Random..ctor` / `System.Threading.CancellationToken{,Source}.*` directly; `nextBool` is native Lyric (`nextIntBelow(rng, 2) != 0`) | **Shipped** (this branch) | D-progress-106 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -167,6 +168,62 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-106: Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern
+
+*claude/g8b-direct-extern-random-cancel branch.*  Second slice of
+`docs/23-fsharp-shim-elimination.md` Phase 1.  Replaces the F# shim's
+two thinnest passthrough types with direct BCL `@externTarget`
+declarations in the existing kernel boundary files.
+
+**`Std.Random` (`stdlib/std/_kernel/random.l`).**
+
+* `makeRandom(seed)` now externs `System.Random..ctor` directly
+  (the `(int)` overload is selected by arity).
+* `nextBool(rng)` is now native Lyric: `nextIntBelow(rng, 2) != 0`.
+  No host method needed once `Std.Random.nextIntBelow` is in scope
+  (already declared in this same file).
+
+**`Std.Task` (`stdlib/std/_kernel/task.l`).**
+
+* `noCancellation()` → `System.Threading.CancellationToken.None`
+  (static field).
+* `makeCancelSource()` → `System.Threading.CancellationTokenSource..ctor`
+  (default ctor).
+* `makeCancelSourceTimeout(ms)` → same `..ctor` symbol; the `(int
+  millisecondsDelay)` overload is selected by arity.
+* `sourceToken(src)` → `System.Threading.CancellationTokenSource.Token`
+  (instance property).
+* `cancelSource(src)` → `System.Threading.CancellationTokenSource.Cancel`.
+* `disposeSource(src)` → `System.Threading.CancellationTokenSource.Dispose`.
+* `isCancelled(token)` → `System.Threading.CancellationToken.IsCancellationRequested`.
+* `throwIfCancelled(token)` → `System.Threading.CancellationToken.ThrowIfCancellationRequested`.
+
+**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+
+* `type CancelHost private () = …` deleted (52 LoC).
+* `type RandomHost private () = …` deleted (14 LoC).
+* Both replaced by short doc comments pointing at the new direct
+  externs.
+
+**Net F# shim shrink.** ~66 LoC removed.
+
+**Why these two together.** Both fall under Bucket B in `docs/23`
+§4.1 — pure passthroughs that the BCL exposes directly with no
+language-level gating.  Bundling them into one slice trims a
+quarter of Bucket B's LoC budget in a single PR.
+
+**Tests.** All suites stay green — the kernel-boundary ratchet
+(`KernelBoundaryTests.fs`) holds at `outsideCeiling = 0` because
+the migrations are inside `_kernel/` already.  Cancellation tests
+(`CancellationTests.fs`, `StructuredConcurrencyTests.fs`,
+`AsyncLocalTests.fs`) and randomness tests (`StdRandomTests.fs`)
+exercise every retired CancelHost / RandomHost method.
+
+**Remaining Phase 1 (per docs/23 §6).** Bucket D split-out — move
+`Jvm*` helpers (~430 LoC) to `compiler/lyric/jvm/`, freeing the
+stdlib bundle from JVM-specific code.
+
 
 ### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`
 
