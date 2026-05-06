@@ -47,7 +47,8 @@ deferred to Phase 3 by design.
 | `docs/14` stage P3 — F# shim P3 trio: drop dead `Lyric.Stdlib.Parse`; route `format1..6` through `System.String.Format(string, object[])` (delete F# `Format`); inline-loop renderers in `@derive(Json)` synthesiser for Int/Long/Bool/String slices (delete F# `JsonHost.Render*Slice`, retain only `RenderDoubleSlice`) | **Shipped** (PR #141) | D-progress-104 |
 | `docs/23` G8 — codegen-emitted null-aware `println(any)` / `toString(any)` lowering: F# `Lyric.Stdlib.Console` retired (`PrintlnAny` / `ToStr`) | **Shipped** (PR #145) | D-progress-105 |
 | `docs/23` Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern: kernel boundary now points at `System.Random..ctor` / `System.Threading.CancellationToken{,Source}.*` directly; `nextBool` is native Lyric (`nextIntBelow(rng, 2) != 0`) | **Shipped** (PR #147) | D-progress-106 |
-| `docs/23` Phase 1 (3/3) — Bucket D split: `Jvm*` host helpers (~430 LoC) move from `Lyric.Stdlib` to a new `Lyric.Jvm.Hosts` project; stdlib bundle freed of JVM-only code | **Shipped** (this branch) | D-progress-107 |
+| `docs/23` Phase 1 (3/3) — Bucket D split: `Jvm*` host helpers (~430 LoC) move from `Lyric.Stdlib` to a new `Lyric.Jvm.Hosts` project; stdlib bundle freed of JVM-only code | **Shipped** (PR #148) | D-progress-107 |
+| `docs/23` Phase 1 dead-code sweep — drop F# `Lyric.Stdlib.MapHelpers` / `TryHost` (zero live `@externTarget` callers) | **Shipped** (this branch) | D-progress-108 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -288,6 +289,52 @@ Trajectory tracks the ~890 LoC waypoint in `docs/23` §4.4.
 The next steps require new G-items (G7 `protected type` codegen,
 G9 user-defined exceptions, G10 try/catch FFI, G11 `AsyncLocal`,
 G12 delegate-lowering audit).
+
+### D-progress-108: Phase 1 dead-code sweep — drop `MapHelpers` + `TryHost`
+
+*claude/delete-dead-shim-types branch.*  Tactical follow-up to the
+`docs/23-fsharp-shim-elimination.md` Phase 1 trio (G8 / Random &
+Cancel direct-extern / Bucket D Jvm split).  An audit of every
+remaining `Lyric.Stdlib.*` type for live `@externTarget` callers
+turned up two with **zero** live callers: `MapHelpers<'K, 'V>`
+(31 LoC) and `TryHost<'T>` (39 LoC).
+
+**`MapHelpers`** was superseded when `Std.Collections` migrated
+to `_kernel/collections_host.l` direct externs in `docs/14` P0/4b
+batch 3 (D-progress-094 era).  The type stayed as legacy housekeeping;
+this PR drops it.
+
+**`TryHost<'T>`** was originally designed as a generic try/catch
+wrapper for FFI calls — `Std.File` / `Std.Parse` were going to
+route through it.  Each module ended up with its own per-method
+shim instead, and the generic closure-based form was never wired
+up.  G10 (FFI try/catch) makes the whole concept moot regardless,
+so the dead code retires now.
+
+Both replaced by short doc comments noting the removal.
+
+**Net F# shim shrink.** ~70 LoC retired.
+
+**Tests.** All suites stay green — no behavioural change because
+nothing called these types in the first place.
+
+**Remaining shim trajectory.**
+
+After this PR, `Lyric.Stdlib.Stdlib.fs` is at ~1019 - 70 = ~949
+LoC.  The remaining types are all genuinely live:
+
+* `Contracts` / `LyricAssertionException` — invoked by codegen for
+  `assert` / `panic` / contract failures.  Gated on G9
+  (user-defined exceptions).
+* `TaskHost` / `LyricTaskScope` / `TaskScopeHost` / `StubCounter*` /
+  `AmbientHost` — concurrency / mocking primitives.  Gated on G7
+  (`protected type`) or G11 / G12.
+* `JsonHost` / `HttpClientHost` / `HttpServerHost` / `FileHost` —
+  larger BCL bridges.  `JsonHost` mostly stays kernel forever
+  (tokenizer); the rest gated on G10 / G12.
+
+All future shim shrinkage requires a language-level G-item, per
+`docs/23` §5.
 
 
 ### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`
