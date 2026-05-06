@@ -84,6 +84,7 @@ pub union LInsn {
   case LLstore(slot: Int)
   case LDstore(slot: Int)
   case LAstore(slot: Int)
+  case LAstoreAs(slot: Int, className: String)
 
   case LPop
   case LDup
@@ -94,6 +95,7 @@ pub union LInsn {
   case LIdiv
   case LIrem
   case LIneg
+  case LIinc(slot: Int, delta: Int)
   case LI2l
   case LI2d
   case LL2i
@@ -183,6 +185,28 @@ pub union LInsn {
   case LCheckcast(className: String)
   case LInstanceof(className: String)
   case LAconstNull
+
+  case LAnewarray(className: String)
+  case LNewarray(typeCode: Int)
+  case LArraylength
+
+  case LIaload
+  case LLaload
+  case LFaload
+  case LDaload
+  case LAaload
+  case LBaload
+  case LCaload
+  case LSaload
+
+  case LIastore
+  case LLastore
+  case LFastore
+  case LDastore
+  case LAastore
+  case LBastore
+  case LCastore
+  case LSastore
 }
 
 pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
@@ -209,7 +233,8 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LIstore(s)     -> emitIstore(asm, s)
     case LLstore(s)     -> emitLstore(asm, s)
     case LDstore(s)     -> emitDstore(asm, s)
-    case LAstore(s)     -> emitAstore(asm, s)
+    case LAstore(s)         -> emitAstore(asm, s)
+    case LAstoreAs(s, _cls) -> emitAstore(asm, s)
 
     case LPop           -> emitPop(asm)
     case LDup           -> emitDup(asm)
@@ -220,6 +245,7 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LIdiv          -> emitIdiv(asm)
     case LIrem          -> emitIrem(asm)
     case LIneg          -> emitIneg(asm)
+    case LIinc(s, d)    -> emitIinc(asm, s, d)
     case LI2l           -> emitI2l(asm)
     case LI2d           -> emitI2d(asm)
     case LL2i           -> emitL2i(asm)
@@ -342,6 +368,31 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       emitInstanceof(asm, idx)
     }
     case LAconstNull -> emitAconstNull(asm)
+
+    case LAnewarray(cls) -> {
+      val idx = poolClass(asm.pool, cls)
+      emitAnewarray(asm, idx)
+    }
+    case LNewarray(tc) -> emitNewarray(asm, tc)
+    case LArraylength  -> emitArraylength(asm)
+
+    case LIaload  -> emitIaload(asm)
+    case LLaload  -> emitLaload(asm)
+    case LFaload  -> emitFaload(asm)
+    case LDaload  -> emitDaload(asm)
+    case LAaload  -> emitAaload(asm)
+    case LBaload  -> emitBaload(asm)
+    case LCaload  -> emitCaload(asm)
+    case LSaload  -> emitSaload(asm)
+
+    case LIastore  -> emitIastore(asm)
+    case LLastore  -> emitLastore(asm)
+    case LFastore  -> emitFastore(asm)
+    case LDastore  -> emitDastore(asm)
+    case LAastore  -> emitAastore(asm)
+    case LBastore  -> emitBastore(asm)
+    case LCastore  -> emitCastore(asm)
+    case LSastore  -> emitSastore(asm)
   }
 }
 
@@ -530,6 +581,12 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
       case LAstore(s) -> {
         match mapGet(storeTypes, s) {
           case None -> storeTypes.add(s, VObject(className = "java/lang/Object"))
+          case Some(_) -> ()
+        }
+      }
+      case LAstoreAs(s, cls) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VObject(className = cls))
           case Some(_) -> ()
         }
       }
