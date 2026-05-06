@@ -623,17 +623,38 @@ func addTarget(targets: in Map[String, Bool], l: in String): Unit {
   }
 }
 
+// Helper: add every label in a `List[String]` to `targets`.  Indirected
+// through a typed parameter so the codegen has the concrete `List[String]`
+// type for `.count` / indexing — non-generic-union erasure (D035) drops
+// the destructured-binding type to `obj` inside the case arm, which the
+// member-dispatch path doesn't reconstruct on its own.
+func addLabelTargets(targets: in Map[String, Bool], labels: in List[String]): Unit {
+  var i = 0
+  while i < labels.count {
+    addTarget(targets, labels[i])
+    i = i + 1
+  }
+}
+
+// Helper: add every pair's label in a `List[SwitchPair]` to `targets`.
+// Same indirection rationale as `addLabelTargets`.
+func addPairLabelTargets(targets: in Map[String, Bool], pairs: in List[SwitchPair]): Unit {
+  var i = 0
+  while i < pairs.count {
+    addTarget(targets, pairs[i].label)
+    i = i + 1
+  }
+}
+
 // Return a set (Map[String, Bool]) of label names that are branch targets
 // in the LInsn list.
 //
 // D035 erasure: List[T] fields inside non-generic union cases (e.g.
 // LTableswitch.caseLabels and LLookupswitch.pairs) are stored as Object
 // at the CLR level, so we cannot call .count on them inside a match arm.
-// To work around this, every LLabel name is unconditionally added to the
-// set.  All switch case targets are emitted as LLabel instructions, so
-// they will be captured here even if we cannot iterate the switch operand
-// lists.  Emitting a StackMapTable frame for a label that is not strictly
-// a branch target is valid; the JVM verifier accepts additional frames.
+// We iterate via `addLabelTargets` / `addPairLabelTargets` helpers above —
+// passing the destructured value through a typed `in List[T]` parameter
+// recovers the concrete type for `.count` / indexing on the helper side.
 func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
   val targets: Map[String, Bool] = newMap()
   var i = 0
@@ -653,8 +674,14 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
       case LIfIcmpge(l)   -> addTarget(targets, l)
       case LIfIcmpgt(l)   -> addTarget(targets, l)
       case LIfIcmple(l)   -> addTarget(targets, l)
-      case LTableswitch(_, _, def, _) -> addTarget(targets, def)
-      case LLookupswitch(def, _)      -> addTarget(targets, def)
+      case LTableswitch(_, _, def, cases) -> {
+        addTarget(targets, def)
+        addLabelTargets(targets, cases)
+      }
+      case LLookupswitch(def, pairs) -> {
+        addTarget(targets, def)
+        addPairLabelTargets(targets, pairs)
+      }
       case _              -> ()
     }
     i = i + 1
