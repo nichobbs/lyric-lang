@@ -81,6 +81,7 @@ let main argv =
             JvmLoweringB14Test.tests
             JvmLoweringB15Test.tests
             JvmLoweringB16Test.tests
+            JvmLoweringB17Test.tests
             SelfHostedLexerTests.tests
             MultiFilePackageTests.tests
         ]
