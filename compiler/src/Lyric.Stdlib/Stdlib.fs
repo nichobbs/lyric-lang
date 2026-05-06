@@ -532,125 +532,15 @@ type JsonHost private () =
 /// codegen with a target method).  These thin static shims give
 /// `Std.HttpHost` something concrete to `@externTarget` against
 /// (D-progress-052).
+/// HTTP client helpers wrapping `System.Net.Http.HttpClient`.  G12
+/// (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN): every
+/// method except `ResponseHeader` retired — `stdlib/std/_kernel/http_host.l`
+/// now declares direct-extern primitives + Lyric-level orchestration
+/// helpers.  `ResponseHeader` survives because `TryGetValues` uses an
+/// `out IEnumerable<string>` shape that the FFI surface doesn't yet
+/// support; a follow-up unblocks it.
 [<Sealed; AbstractClass>]
 type HttpClientHost private () =
-
-    static member DefaultClient () : System.Net.Http.HttpClient =
-        new System.Net.Http.HttpClient()
-
-    static member MakeRequest (httpMethod: string, url: string) : System.Net.Http.HttpRequestMessage =
-        new System.Net.Http.HttpRequestMessage(
-            new System.Net.Http.HttpMethod(httpMethod),
-            url)
-
-    static member WithHeader (
-            request: System.Net.Http.HttpRequestMessage,
-            key: string,
-            value: string) : System.Net.Http.HttpRequestMessage =
-        request.Headers.TryAddWithoutValidation(key, value) |> ignore
-        request
-
-    static member WithStringBody (
-            request: System.Net.Http.HttpRequestMessage,
-            contentType: string,
-            body: string) : System.Net.Http.HttpRequestMessage =
-        request.Content <- new System.Net.Http.StringContent(
-            body,
-            System.Text.Encoding.UTF8,
-            contentType)
-        request
-
-    static member Send (
-            client: System.Net.Http.HttpClient,
-            request: System.Net.Http.HttpRequestMessage) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
-        client.SendAsync(request)
-
-    static member Get (
-            client: System.Net.Http.HttpClient,
-            url: string) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
-        client.GetAsync(url)
-
-    static member PostString (
-            client: System.Net.Http.HttpClient,
-            url: string,
-            body: string,
-            contentType: string) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
-        let content =
-            new System.Net.Http.StringContent(
-                body,
-                System.Text.Encoding.UTF8,
-                contentType)
-        client.PostAsync(url, content)
-
-    static member StatusCode (response: System.Net.Http.HttpResponseMessage) : int =
-        int response.StatusCode
-
-    static member ReadBodyText (response: System.Net.Http.HttpResponseMessage) : System.Threading.Tasks.Task<string> =
-        response.Content.ReadAsStringAsync()
-
-    static member ReadBodyBytes (response: System.Net.Http.HttpResponseMessage) : System.Threading.Tasks.Task<byte[]> =
-        response.Content.ReadAsByteArrayAsync()
-
-    // -------- Phase C cancellation-aware overloads (D-progress-070) --------
-    //
-    // Each overload mirrors its non-cancellable counterpart but
-    // accepts a `CancellationToken` that the underlying BCL call
-    // honours.  Cancellation surfaces as `OperationCanceledException`
-    // (which Lyric catches as `Bug` / `Exception`); the user-facing
-    // `Std.Http` wrappers convert that into `HttpError.ConnectionFailed`
-    // with a "cancelled" message so the Result discipline is preserved.
-
-    static member SendWithCancel (
-            client: System.Net.Http.HttpClient,
-            request: System.Net.Http.HttpRequestMessage,
-            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
-        client.SendAsync(request, token)
-
-    static member GetWithCancel (
-            client: System.Net.Http.HttpClient,
-            url: string,
-            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
-        client.GetAsync(url, token)
-
-    static member PostStringWithCancel (
-            client: System.Net.Http.HttpClient,
-            url: string,
-            body: string,
-            contentType: string,
-            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> =
-        let content =
-            new System.Net.Http.StringContent(
-                body,
-                System.Text.Encoding.UTF8,
-                contentType)
-        client.PostAsync(url, content, token)
-
-    static member ReadBodyTextWithCancel (
-            response: System.Net.Http.HttpResponseMessage,
-            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<string> =
-        response.Content.ReadAsStringAsync(token)
-
-    static member ReadBodyBytesWithCancel (
-            response: System.Net.Http.HttpResponseMessage,
-            token: System.Threading.CancellationToken) : System.Threading.Tasks.Task<byte[]> =
-        response.Content.ReadAsByteArrayAsync(token)
-
-    /// Construct an `HttpClient` that follows redirects automatically.
-    /// Bootstrap-grade scope: the Lyric-side wrapper exposes this as
-    /// `clientWithRedirects(maxRedirects)`; full per-request redirect
-    /// policy lands in Phase 4 alongside a richer Std.Http surface.
-    static member ClientWithRedirects (maxRedirects: int) : System.Net.Http.HttpClient =
-        let handler = new System.Net.Http.HttpClientHandler()
-        handler.AllowAutoRedirect <- true
-        handler.MaxAutomaticRedirections <- maxRedirects
-        new System.Net.Http.HttpClient(handler)
-
-    /// Construct an `HttpClient` that does NOT follow redirects.
-    /// Useful for callers that want to inspect 3xx responses.
-    static member ClientNoRedirects () : System.Net.Http.HttpClient =
-        let handler = new System.Net.Http.HttpClientHandler()
-        handler.AllowAutoRedirect <- false
-        new System.Net.Http.HttpClient(handler)
 
     /// Read a single response header by name, returning the first
     /// value or `""` if the header isn't present.  Used by the
