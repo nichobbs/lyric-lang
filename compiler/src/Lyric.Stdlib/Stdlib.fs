@@ -563,71 +563,14 @@ type HttpClientHost private () =
 // seeded `System.Random..ctor` directly, and `nextBool` is a one-line
 // native Lyric body (`nextIntBelow(rng, 2) != 0`).
 
-/// HTTP server helpers wrapping `System.Net.HttpListener`.  The
-/// canonical loop is `nextContext` (blocking) → inspect / respond →
-/// `respondClose`.  Prefixes follow the HttpListener convention:
-/// `http://localhost:8080/api/`.
-[<Sealed; AbstractClass>]
-type HttpServerHost private () =
-
-    static member StartListener (prefix: string) : System.Net.HttpListener =
-        let l = new System.Net.HttpListener()
-        l.Prefixes.Add(prefix)
-        l.Start()
-        l
-
-    static member NextContext (l: System.Net.HttpListener) : System.Net.HttpListenerContext =
-        l.GetContext()
-
-    static member StopListener (l: System.Net.HttpListener) : unit =
-        l.Stop()
-
-    static member RequestMethod (c: System.Net.HttpListenerContext) : string =
-        try c.Request.HttpMethod with _ -> "GET"
-
-    static member RequestPath (c: System.Net.HttpListenerContext) : string =
-        try
-            match Option.ofObj c.Request.Url with
-            | Some uri -> uri.AbsolutePath
-            | None     -> "/"
-        with _ -> "/"
-
-    /// Read the request body as a UTF-8 string (or `""` if there's no
-    /// body / the BCL hands us a null stream).  Wrapped in `try` so a
-    /// transport-level error doesn't crash the accept loop.
-    static member RequestBody (c: System.Net.HttpListenerContext) : string =
-        try
-            let req = c.Request
-            let s = req.InputStream
-            use reader = new System.IO.StreamReader(s, req.ContentEncoding)
-            reader.ReadToEnd()
-        with _ -> ""
-
-    /// Reply with a status code + plaintext body.  Sets
-    /// `Content-Type: text/plain; charset=utf-8` and closes the
-    /// response.  Suitable for simple endpoints; a JSON helper sits
-    /// next to this with `application/json`.
-    static member RespondText
-            (c: System.Net.HttpListenerContext, status: int, body: string) : unit =
-        let resp = c.Response
-        resp.StatusCode <- status
-        resp.ContentType <- "text/plain; charset=utf-8"
-        let bytes = System.Text.Encoding.UTF8.GetBytes(body)
-        resp.ContentLength64 <- int64 bytes.Length
-        resp.OutputStream.Write(bytes, 0, bytes.Length)
-        resp.OutputStream.Close()
-        resp.Close()
-
-    static member RespondJson
-            (c: System.Net.HttpListenerContext, status: int, body: string) : unit =
-        let resp = c.Response
-        resp.StatusCode <- status
-        resp.ContentType <- "application/json; charset=utf-8"
-        let bytes = System.Text.Encoding.UTF8.GetBytes(body)
-        resp.ContentLength64 <- int64 bytes.Length
-        resp.OutputStream.Write(bytes, 0, bytes.Length)
-        resp.OutputStream.Close()
-        resp.Close()
+// G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
+// the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
+// `stdlib/std/_kernel/http_server.l` declares direct-extern primitives
+// for `HttpListener` / `HttpListenerContext` / `HttpListenerRequest` /
+// `HttpListenerResponse` / `Stream` / `StreamReader` / `Encoding` and
+// composes the user-facing `startListener` / `nextContext` /
+// `requestMethod` / `requestBody` / `respondText` / `respondJson` /
+// etc. as native Lyric on top of them.
 
 // G10 (`docs/23-fsharp-shim-elimination.md` §5): the F# `FileHost`
 // type retires entirely with G10 (2/2) (D-progress-NNN).  The
