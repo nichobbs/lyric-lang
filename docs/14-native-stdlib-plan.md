@@ -465,6 +465,9 @@ D038 for the umbrella record. Resolutions reproduced inline.
 
 ## 13. References
 
+- `docs/23-fsharp-shim-elimination.md` — successor plan that
+  picks up where this one leaves off: continues shrinking the
+  F# shim past §6 P3 once new G-items (G7–G12) land.
 - `docs/10-stdlib-plan.md` — API surface plan (this doc's sibling).
 - `docs/05-implementation-plan.md` — phasing.
 - `docs/03-decision-log.md` — D034 (constraint markers), D035 (M1.4
