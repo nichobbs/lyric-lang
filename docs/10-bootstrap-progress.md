@@ -50,7 +50,8 @@ deferred to Phase 3 by design.
 | `docs/23` Phase 1 (3/3) — Bucket D split: `Jvm*` host helpers (~430 LoC) move from `Lyric.Stdlib` to a new `Lyric.Jvm.Hosts` project; stdlib bundle freed of JVM-only code | **Shipped** (PR #148) | D-progress-107 |
 | `docs/23` Phase 1 dead-code sweep — drop F# `Lyric.Stdlib.MapHelpers` / `TryHost` (zero live `@externTarget` callers) | **Shipped** (PR #149) | D-progress-108 |
 | `docs/23` G10 (1/2) — text/dir `Std.File` migrated to native Lyric `try { … } catch Bug as b { … }` around direct BCL externs (`System.IO.File.{ReadAllText,WriteAllText,Exists}` + `System.IO.Directory.{Exists,CreateDirectory}`); F# `FileHost` trimmed to bytes-only methods | **Shipped** (PR #150) | D-progress-109 |
-| `docs/23` G9 — codegen inlines `newobj System.Exception(string)` + `throw` for `panic` / `expect` / `assert` + `requires:` / `ensures:` runtime checks; F# `Lyric.Stdlib.Contracts` and `LyricAssertionException` retired | **Shipped** (this branch) | D-progress-110 |
+| `docs/23` G9 — codegen inlines `newobj System.Exception(string)` + `throw` for `panic` / `expect` / `assert` + `requires:` / `ensures:` runtime checks; F# `Lyric.Stdlib.Contracts` and `LyricAssertionException` retired | **Shipped** (PR #151) | D-progress-110 |
+| `docs/23` G12 (1/N) — F# `Lyric.Stdlib.TaskHost` retired; `Std.Task.{delay, delayWithCancel}` extern at `System.Threading.Tasks.Task.Delay` directly (overload by arity) | **Shipped** (this branch) | D-progress-111 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -471,6 +472,46 @@ the standard BCL property.  No catch-side change needed.
 
 **Net F# shim shrink.** ~23 LoC retired.  Trajectory now ~759 LoC
 in `Stdlib.fs` (post-Phase-1 + post-G10 1/2 + post-G9).
+
+### D-progress-111: G12 (1/N) — `TaskHost` direct-extern
+
+*claude/g12-delegate-audit branch.*  Smallest realised win from the
+G12 delegate-lowering audit in `docs/23-fsharp-shim-elimination.md`
+§5.  `Lyric.Stdlib.TaskHost` was a 25-LoC F# class with two static
+members: `Delay(int)` and `DelayWithCancel(int, CancellationToken)`.
+Both are pure pass-throughs to `System.Threading.Tasks.Task.Delay`.
+
+**`stdlib/std/_kernel/task.l`.**  Both `@externTarget`s repointed at
+`System.Threading.Tasks.Task.Delay` directly.  The codegen's
+arity-based overload resolution selects the right one at each call
+site (1-arg → `Task.Delay(int)`, 2-arg → `Task.Delay(int, CancellationToken)`).
+
+**`compiler/src/Lyric.Stdlib/Stdlib.fs`.**  `type TaskHost` deleted
+along with its 2 static members.  Replaced by a doc comment.
+
+**G12 status.** This PR closes the simplest part of G12 — direct-
+extern of methods whose Lyric surface already matches the BCL surface
+1:1.  The remaining `HttpClientHost` (~140 LoC) and `HttpServerHost`
+(~60 LoC) need either:
+
+* multi-step orchestration that single `@externTarget` can't do
+  (`MakeRequest` constructs `HttpRequestMessage`; `WithStringBody`
+  composes `StringContent` + assigns to `request.Content`;
+  `RespondText` chains `Response.OutputStream.Write` + `.Close`); or
+* property-setter externs (`set_StatusCode`, `set_ContentType`)
+  that haven't been validated against the codegen yet.
+
+Both retire when there's a need-driven follow-up that's worth the
+auditing cost.  TaskHost ships now because it has no such
+complications.
+
+**Net F# shim shrink.** ~25 LoC retired.  Trajectory now ~734 LoC
+in `Stdlib.fs` (after Phase 1 + G10 1/2 + G9 + this PR).
+
+**Tests.** All green.  589 emitter, 83 CLI, 242 verifier, 137 type
+checker, 312 parser, 123 lexer.  Existing async tests (delay,
+delayWithCancel inside `withTimeout`) confirm both
+`Task.Delay` overloads route correctly.
 
 
 ### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`

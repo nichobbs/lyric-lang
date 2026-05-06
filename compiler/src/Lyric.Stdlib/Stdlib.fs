@@ -43,32 +43,12 @@ open System
 // `KernelBoundaryTests.fs`'s outsideCeiling = 0 ratchet plus a
 // repo-wide grep.
 
-/// Generic exception-to-result helper.  The Lyric side calls
-/// `tryRunValue(() => bclThing(args))` to invoke an arbitrary
-/// throw-prone BCL operation; the F# wrapper catches and surfaces a
-/// Async primitives.  `Std.Task.delay` lowers to `TaskHost.Delay`
-/// via `@externTarget`, returning a real `Task` that suspends the
-/// caller's state machine until the timer fires.  This is the
-/// canonical Phase B suspension trigger used by `AsyncTests`.
-[<Sealed; AbstractClass>]
-type TaskHost private () =
-
-    /// `Task.Delay(ms)` wrapped so consumers can declare the Lyric
-    /// target as `async func delay(ms: in Int): Unit` without
-    /// reaching for a non-Lyric `Task` type at the source level.
-    static member Delay (ms: int) : System.Threading.Tasks.Task =
-        System.Threading.Tasks.Task.Delay(ms)
-
-    /// `Task.Delay(ms, token)` — same as `Delay` but cooperatively
-    /// cancellable via the supplied token.  Throws
-    /// `OperationCanceledException` (caught as `Exception` on the
-    /// Lyric side) when the token is cancelled before the timer
-    /// fires.  Phase C / D-progress-068.
-    static member DelayWithCancel
-            (ms: int,
-             token: System.Threading.CancellationToken)
-            : System.Threading.Tasks.Task =
-        System.Threading.Tasks.Task.Delay(ms, token)
+// `TaskHost` retired (`docs/23-fsharp-shim-elimination.md` G12;
+// D-progress-111).  Both members were thin passthroughs to
+// `System.Threading.Tasks.Task.Delay(int)` and
+// `Task.Delay(int, CancellationToken)`.  `_kernel/task.l` now externs
+// those overloads directly; the codegen's arity-based overload
+// resolution picks the right one.
 
 // `Lyric.Stdlib.CancelHost` retired (`docs/23-fsharp-shim-elimination.md`
 // Phase 1, D-progress-105 follow-up).  Every method was a thin
