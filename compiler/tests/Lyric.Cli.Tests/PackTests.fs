@@ -80,6 +80,47 @@ let tests =
             Expect.isFalse (xml.Contains "PackagePath") "no PackagePath"
             Expect.stringContains xml "Include=\"Lyric.Foo\"" "deps included"
 
+        // Phase 5 §M5.1 stage 2d: NuGet packages flow through the
+        // same `<PackageReference>` mechanism as Lyric deps.
+        testCase "restoreCsproj forwards [nuget] entries" <| fun () ->
+            let m =
+                { mkManifest [ "Lyric.Foo", "1.0.0" ] with
+                    Nuget =
+                        Some { Packages =
+                                 [ { Id = "Newtonsoft.Json"; Version = "13.0.3" }
+                                   { Id = "Polly";           Version = "8.0.0"  } ]
+                               Options =
+                                 { AllowNative = false
+                                   Target      = None } } }
+            let xml = restoreCsproj m
+            Expect.stringContains xml "Include=\"Newtonsoft.Json\""
+                "first NuGet ref present"
+            Expect.stringContains xml "Version=\"13.0.3\""
+                "first NuGet version"
+            Expect.stringContains xml "Include=\"Polly\""
+                "second NuGet ref present"
+            Expect.stringContains xml "Include=\"Lyric.Foo\""
+                "Lyric deps still flow through"
+
+        testCase "restoreCsproj uses [nuget.options] target when set" <| fun () ->
+            let m =
+                { mkManifest [] with
+                    Nuget =
+                        Some { Packages =
+                                 [ { Id = "Polly"; Version = "8.0.0" } ]
+                               Options =
+                                 { AllowNative = false
+                                   Target      = Some "net9.0" } } }
+            let xml = restoreCsproj m
+            Expect.stringContains xml "<TargetFramework>net9.0</TargetFramework>"
+                "target overridden to net9.0"
+
+        testCase "restoreCsproj defaults TFM to net10.0 without [nuget]" <| fun () ->
+            let m = mkManifest []
+            let xml = restoreCsproj m
+            Expect.stringContains xml "<TargetFramework>net10.0</TargetFramework>"
+                "default TFM net10.0"
+
         testCase "runPack errors when prebuilt DLL missing" <| fun () ->
             withTempDir <| fun dir ->
                 let m = mkManifest []
