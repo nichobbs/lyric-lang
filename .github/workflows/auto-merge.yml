@@ -11,8 +11,22 @@ jobs:
   enable-auto-merge:
     runs-on: ubuntu-latest
     steps:
+      # `gh pr merge --auto` requires both repo-level auto-merge to be
+      # enabled and at least one required-status-check on the target
+      # branch.  When either is missing the API errors and the gh
+      # invocation exits non-zero — but that's an environmental
+      # condition, not a PR defect, so we tolerate it instead of
+      # failing the workflow (which would otherwise mark every PR
+      # red and block the rest of the CI signal).
       - name: Enable auto-merge for this PR
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: |
+          set +e
+          gh pr merge --auto --squash "$PR_URL"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::auto-merge could not be enabled (exit $rc); PR will need manual merge"
+          fi
+          exit 0
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
