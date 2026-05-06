@@ -2,8 +2,9 @@
 /// `toString` (and a regression for `println` polymorphism).
 ///
 /// `toString(x)` is polymorphic in its argument and returns String.
-/// Codegen routes through `Lyric.Stdlib.Console::ToStr(obj)` with
-/// auto-boxing for value types.
+/// Codegen inlines the `null -> "()" else value.ToString()` lowering
+/// directly (G8, `docs/23-fsharp-shim-elimination.md` §5) with auto-
+/// boxing for value types.
 module Lyric.Emitter.Tests.BuiltinTests
 
 open Expecto

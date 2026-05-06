@@ -1855,11 +1855,11 @@ let private emitContractCheck
 let private findClrType (qualifiedName: string) : System.Type option =
     // Force-touch a few well-known assemblies so they're loaded into
     // the AppDomain before we walk it.  `Lyric.Stdlib` carries the
-    // host-side wrapper types (`Console`, `MapHelpers`, `JsonHost`,
-    // etc.); the others back common stdlib modules (`Std.Json`,
-    // `Std.Regex`, `Std.Time`) and aren't auto-loaded by the BCL on
-    // demand.
-    let _ = typeof<Lyric.Stdlib.Console>
+    // host-side wrapper types (`MapHelpers`, `JsonHost`, etc.); the
+    // others back common stdlib modules (`Std.Json`, `Std.Regex`,
+    // `Std.Time`) and aren't auto-loaded by the BCL on demand.
+    // Pin `JsonHost` (any survivor would do) to force-load `Lyric.Stdlib`.
+    let _ = typeof<Lyric.Stdlib.JsonHost>
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>

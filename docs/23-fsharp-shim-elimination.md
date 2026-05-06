@@ -186,7 +186,7 @@ remains).
 around method bodies, field-access guards, dispose-safe
 finalisation). Already on the Phase 3 roadmap.
 
-### G8. Codegen-emitted `null`-aware `println` / `toString`
+### G8. Codegen-emitted `null`-aware `println` / `toString` ✅ shipped (D-progress-105)
 
 Today the emitter calls `Lyric.Stdlib.Console.PrintlnAny(obj)` /
 `ToStr(obj)`. Replace with inline IL at the call site:

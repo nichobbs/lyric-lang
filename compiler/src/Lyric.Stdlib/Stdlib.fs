@@ -21,32 +21,11 @@ namespace Lyric.Stdlib
 
 open System
 
-/// Console helpers that need null-aware behaviour. Plain
-/// `println(string)` and `print(string)` route directly to
-/// `System.Console.WriteLine` / `System.Console.Write`; the helpers
-/// below survive only because Lyric can't yet express the
-/// `null -> "()"` discrimination without out-params.
-[<Sealed; AbstractClass>]
-type Console private () =
-
-    /// `println` overload for non-string values — emits `ToString()`.
-    /// Used when the emitter needs to format an integer, bool, etc.
-    static member PrintlnAny (value: obj | null) : unit =
-        match value with
-        | null    -> System.Console.WriteLine("()")
-        | nonNull -> System.Console.WriteLine(nonNull.ToString())
-
-    /// Convert any value to its string representation.  Routes through
-    /// `Object.ToString()`; nulls map to `"()"` for symmetry with
-    /// `PrintlnAny`.  The emitter emits this when the user calls the
-    /// Lyric-side `toString(x)` builtin.
-    static member ToStr (value: obj | null) : string =
-        match value with
-        | null    -> "()"
-        | nonNull ->
-            match nonNull.ToString() with
-            | null -> ""
-            | s    -> s
+// G8 (`docs/23-fsharp-shim-elimination.md` §5): the prior `Console`
+// type held `PrintlnAny(obj | null)` and `ToStr(obj | null)` — both
+// retired.  Codegen now inlines the `null -> "()" else value.ToString()`
+// lowering directly via `emitNullableToStringInline` in
+// `compiler/src/Lyric.Emitter/Codegen.fs`.
 
 /// Contract / test-harness intrinsics. Lyric's `expect` / `assert`
 /// raise on failure; in Phase 1 we wire both to a single
