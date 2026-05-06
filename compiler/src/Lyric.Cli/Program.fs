@@ -315,26 +315,33 @@ let private buildProject
     // filesystem.
     let mutable hadFatal = false
     let pkgInputs = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
-    for (pkgName, srcDir) in project.Packages do
-        let absDir =
-            if Path.IsPathRooted srcDir then srcDir
-            else Path.Combine(manifestDir, srcDir)
-        if not (Directory.Exists absDir) then
-            printErr (sprintf "build: project package '%s' source dir '%s' missing" pkgName absDir)
-            hadFatal <- true
-        else
-            let lFiles =
-                Directory.EnumerateFiles(absDir, "*.l", SearchOption.AllDirectories)
+    for (pkgName, srcEntry) in project.Packages do
+        let abs =
+            if Path.IsPathRooted srcEntry then srcEntry
+            else Path.Combine(manifestDir, srcEntry)
+        // The manifest entry can be either a directory (whose `.l`
+        // files all merge into one package via the multi-file path)
+        // or a single `.l` file (one package per file — the layout
+        // used by the bootstrap stdlib, where every `Std.X` lives in
+        // a sibling `.l` under one shared `std/` dir).
+        let lFiles =
+            if File.Exists abs && abs.EndsWith ".l" then
+                [abs]
+            elif Directory.Exists abs then
+                Directory.EnumerateFiles(abs, "*.l", SearchOption.AllDirectories)
                 |> Seq.sortBy id
                 |> Seq.toList
-            if List.isEmpty lFiles then
-                printErr (sprintf "build: project package '%s' has no .l files under '%s'" pkgName absDir)
-                hadFatal <- true
             else
-                let sources = lFiles |> List.map File.ReadAllText
-                pkgInputs.Add
-                    { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
-                      Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = sources }
+                []
+        if List.isEmpty lFiles then
+            printErr (sprintf "build: project package '%s' source path '%s' is missing or contains no .l files"
+                              pkgName abs)
+            hadFatal <- true
+        else
+            let sources = lFiles |> List.map File.ReadAllText
+            pkgInputs.Add
+                { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
+                  Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = sources }
     if hadFatal then 1
     else
     let asmName =
