@@ -519,13 +519,144 @@ let synthesizeItems (items: Item list) : Item list =
               Visibility  = None
               Kind        = IFunc escFn
               Span        = firstSpan }
-        // Synthesise per-primitive slice renderers.  Each one is
-        // an extern target on `Lyric.Stdlib.JsonHost::Render<T>Slice`
-        // accepting a `slice[T]` and returning a `[a, b, c]` JSON
-        // array literal.  Defined unconditionally because the
-        // synthesiser doesn't yet pre-scan field types — unused
-        // helpers cost a few bytes of metadata but no IL.
-        let mkSliceHelper
+        // Synthesise per-primitive slice renderers.  P3-3 of the
+        // native-stdlib plan replaces the legacy
+        // `Lyric.Stdlib.JsonHost::Render<T>Slice` extern wrappers
+        // with inline `while` loops over `slice[T]` — same shape as
+        // `mkRecordSliceHelper` below but with a primitive-specific
+        // per-element render expression.  `Double` keeps a tiny
+        // host extern for round-trip-faithful formatting
+        // (`ToString("R", InvariantCulture)`) which Lyric's
+        // `toString` doesn't yet guarantee.  Defined unconditionally
+        // because the synthesiser doesn't yet pre-scan field types —
+        // unused helpers cost a few bytes of metadata but no IL.
+        let mkRefTy (name: string) =
+            mkType (TRef (mkPath name firstSpan)) firstSpan
+        let strLitInline (s: string) = strLit s firstSpan
+        let pathExpr name = mkExpr (EPath (mkPath name firstSpan)) firstSpan
+        /// Build an inline `while`-loop slice renderer.  `renderElem`
+        /// receives the indexed-element expression `items[i]` and
+        /// must produce a `String`-typed expression for that element.
+        let mkSliceHelperInline
+                (helperName: string)
+                (elemTy: TypeExpr)
+                (renderElem: Expr -> Expr) : Item =
+            let sliceTy = mkType (TSlice elemTy) firstSpan
+            let intTy = mkType (TRef (mkPath "Int" firstSpan)) firstSpan
+            // var result: String = "["
+            let resultDecl =
+                { Kind =
+                    SLocal (LBVar
+                        ("result",
+                         Some stringTy,
+                         Some (strLitInline "[")))
+                  Span = firstSpan }
+            // var i: Int = 0
+            let iDecl =
+                { Kind =
+                    SLocal (LBVar
+                        ("i",
+                         Some intTy,
+                         Some (mkExpr (ELiteral (LInt (0UL, NoIntSuffix))) firstSpan)))
+                  Span = firstSpan }
+            // while i < items.length { … }
+            let lengthAccess =
+                mkExpr (EMember (pathExpr "items", "length")) firstSpan
+            let cond =
+                mkExpr (EBinop (BLt, pathExpr "i", lengthAccess)) firstSpan
+            // if i > 0 { result = result + "," }
+            let zeroLit = mkExpr (ELiteral (LInt (0UL, NoIntSuffix))) firstSpan
+            let iGtZero =
+                mkExpr (EBinop (BGt, pathExpr "i", zeroLit)) firstSpan
+            let appendComma =
+                { Kind =
+                    SAssign
+                        (pathExpr "result", AssEq,
+                         mkExpr
+                             (EBinop (BAdd, pathExpr "result",
+                                       strLitInline ","))
+                             firstSpan)
+                  Span = firstSpan }
+            let ifCommaThenBlock : Block =
+                { Statements = [ appendComma ]; Span = firstSpan }
+            let ifComma : Statement =
+                { Kind =
+                    SExpr
+                        (mkExpr
+                            (EIf (iGtZero,
+                                  EOBBlock ifCommaThenBlock,
+                                  None,
+                                  false))
+                            firstSpan)
+                  Span = firstSpan }
+            // result = result + <renderElem items[i]>
+            let elemAccess =
+                mkExpr
+                    (EIndex (pathExpr "items", [ pathExpr "i" ]))
+                    firstSpan
+            let appendElem =
+                { Kind =
+                    SAssign
+                        (pathExpr "result", AssEq,
+                         mkExpr
+                             (EBinop (BAdd, pathExpr "result", renderElem elemAccess))
+                             firstSpan)
+                  Span = firstSpan }
+            // i = i + 1
+            let oneLit = mkExpr (ELiteral (LInt (1UL, NoIntSuffix))) firstSpan
+            let bumpI =
+                { Kind =
+                    SAssign
+                        (pathExpr "i", AssEq,
+                         mkExpr
+                             (EBinop (BAdd, pathExpr "i", oneLit))
+                             firstSpan)
+                  Span = firstSpan }
+            let whileBody : Block =
+                { Statements = [ ifComma; appendElem; bumpI ]
+                  Span       = firstSpan }
+            let whileStmt =
+                { Kind = SWhile (None, cond, whileBody)
+                  Span = firstSpan }
+            // result + "]"
+            let bodyExpr =
+                mkExpr
+                    (EBinop (BAdd, pathExpr "result", strLitInline "]"))
+                    firstSpan
+            let bodyExprStmt =
+                { Kind = SExpr bodyExpr; Span = firstSpan }
+            let bodyBlock : Block =
+                { Statements = [ resultDecl; iDecl; whileStmt; bodyExprStmt ]
+                  Span       = firstSpan }
+            let fn : FunctionDecl =
+                { DocComments = []
+                  Annotations = []
+                  Visibility  = None
+                  IsAsync     = false
+                  Name        = helperName
+                  Generics    = None
+                  Params      =
+                    [ { Mode    = PMIn
+                        Name    = "items"
+                        Type    = sliceTy
+                        Default = None
+                        Span    = firstSpan } ]
+                  Return      = Some stringTy
+                  Where       = None
+                  Contracts   = []
+                  Body        = Some (FBBlock bodyBlock)
+                  Span        = firstSpan }
+            { DocComments = []
+              Annotations = []
+              Visibility  = None
+              Kind        = IFunc fn
+              Span        = firstSpan }
+        /// Legacy extern stub form, kept only for `Double` whose
+        /// round-trip rendering Lyric's plain `toString` doesn't
+        /// preserve (`xs[i].ToString("R", InvariantCulture)` is what
+        /// the host did and what callers expect).  All other
+        /// primitive renderers go through `mkSliceHelperInline`.
+        let mkSliceHelperExtern
                 (helperName: string)
                 (clrName: string)
                 (elemTy: TypeExpr) : Item =
@@ -561,28 +692,46 @@ let synthesizeItems (items: Item list) : Item list =
               Visibility  = None
               Kind        = IFunc fn
               Span        = firstSpan }
-        let mkRefTy (name: string) =
-            mkType (TRef (mkPath name firstSpan)) firstSpan
-        result.Add (mkSliceHelper
+        // Int / Long render via `toString(items[i])`.
+        let toStringCall (e: Expr) =
+            mkExpr (ECall (pathExpr "toString", [ CAPositional e ])) firstSpan
+        result.Add (mkSliceHelperInline
             "__lyricJsonRenderIntSlice"
-            "Lyric.Stdlib.JsonHost.RenderIntSlice"
-            (mkRefTy "Int"))
-        result.Add (mkSliceHelper
+            (mkRefTy "Int")
+            toStringCall)
+        result.Add (mkSliceHelperInline
             "__lyricJsonRenderLongSlice"
-            "Lyric.Stdlib.JsonHost.RenderLongSlice"
-            (mkRefTy "Long"))
-        result.Add (mkSliceHelper
+            (mkRefTy "Long")
+            toStringCall)
+        // Double keeps the host shim — round-trip culture-invariant
+        // formatting isn't yet equivalent to `toString` in Lyric.
+        result.Add (mkSliceHelperExtern
             "__lyricJsonRenderDoubleSlice"
             "Lyric.Stdlib.JsonHost.RenderDoubleSlice"
             (mkRefTy "Double"))
-        result.Add (mkSliceHelper
+        // Bool renders via inline `if items[i] { "true" } else { "false" }`.
+        let boolRender (e: Expr) =
+            mkExpr
+                (EIf (e,
+                      EOBExpr (strLitInline "true"),
+                      Some (EOBExpr (strLitInline "false")),
+                      true))
+                firstSpan
+        result.Add (mkSliceHelperInline
             "__lyricJsonRenderBoolSlice"
-            "Lyric.Stdlib.JsonHost.RenderBoolSlice"
-            (mkRefTy "Bool"))
-        result.Add (mkSliceHelper
+            (mkRefTy "Bool")
+            boolRender)
+        // String routes through the per-source `__lyricJsonEscape`
+        // synthesised above (which itself is a host extern wrapping
+        // `Lyric.Stdlib.JsonHost.EncodeString`).
+        let strRender (e: Expr) =
+            mkExpr
+                (ECall (pathExpr "__lyricJsonEscape", [ CAPositional e ]))
+                firstSpan
+        result.Add (mkSliceHelperInline
             "__lyricJsonRenderStringSlice"
-            "Lyric.Stdlib.JsonHost.RenderStringSlice"
-            (mkRefTy "String"))
+            (mkRefTy "String")
+            strRender)
         // Per-record slice helpers — one `__lyricJsonRender<Rec>Slice`
         // function per `@derive(Json)` record so fields of type
         // `slice[Rec]` can lower to `__lyricJsonRender<Rec>Slice

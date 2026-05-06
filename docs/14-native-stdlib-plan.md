@@ -318,14 +318,31 @@ Land G3 if not already done. Then:
 
 ### P3. Native parsing + format (2-3 sprints)
 
-1. `Std.Parse.tryParseInt`, `tryParseLong` native. Float parsing stays
-   kernel.
-2. `Std.Format` template engine native. Delete `Format.Of1..6` from
-   `Stdlib.fs`.
-3. `Std.Json` encoder native (the writer half; tokenizer stays).
+1. ✅ **`Std.Parse.tryParseInt`, `tryParseLong` native.**  Already done
+   prior to this stage — `Std.Parse` routes through
+   `Std.ParseHost.hostTryParse*` (out-param BCL `TryParse`s in
+   `_kernel/parse_host.l`); the legacy F# `Lyric.Stdlib.Parse` type +
+   matching codegen `hostParseBuiltins` map were dead code and
+   deleted.  *(D-progress-104.)*  Float parsing stays kernel.
+2. ✅ **`Std.Format` template engine.**  Routed through
+   `System.String.Format(string, object[])` directly: codegen for
+   `format1..6` builtins now allocates an `object[arity]` inline
+   and calls the BCL params overload.  F# `Lyric.Stdlib.Format`
+   type deleted.  `format1..6` reserved as codegen builtin names
+   pending first-class params-array literal support; once that
+   lands they collapse into a single varargs builtin.  *(D-progress-104.)*
+3. ✅ **`Std.Json` encoder.**  The `@derive(Json)` slice renderers
+   for Int / Long / Bool / String now synthesise inline `while`
+   loops over the slice (mirrors the per-record slice helper
+   already shipping); F# `JsonHost.Render{Int,Long,Bool,String}Slice`
+   retired.  `JsonHost.RenderDoubleSlice` retained — round-trip
+   culture-invariant double formatting (`.ToString("R", InvariantCulture)`)
+   isn't yet expressible in Lyric and a tiny BCL escape stays
+   the simplest path.  *(D-progress-104.)*
 
 **Exit criterion:** `Stdlib.fs` is reduced to the kernel surface
-defined in §3.
+defined in §3.  Achieved modulo `RenderDoubleSlice`, which the
+plan accepted as a kernel-grade item.
 
 ### P4. Iterator protocol overhaul (Phase 3 alongside `protected type`)
 

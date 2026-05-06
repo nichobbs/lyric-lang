@@ -43,7 +43,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | **Shipped** (PR #136) | D-progress-100 |
 | M5.1 stage 2c.2.iii — `lyric restore` walks every `Lyric.Contract.<Pkg>` resource on bundled DLLs | **Shipped** (PR #138) | D-progress-101 |
 | M5.1 stage 2c.2.iv — CLI integration (`lyric build --manifest` dispatches to `emitProject` when `[project] output = "single"`); main entry-point capture from project bundle | **Shipped** (PR #138) | D-progress-102 |
-| M5.1 stage 2c.3 — stdlib-bundle proof: 3-package smoke set compiles via `lyric build --manifest stdlib/lyric.toml`; in-project generic-union ctor + DeclaredOnly reflection fixes | **Shipped** (this branch) | D-progress-103 |
+| M5.1 stage 2c.3 — stdlib-bundle proof: 3-package smoke set compiles via `lyric build --manifest stdlib/lyric.toml`; in-project generic-union ctor + DeclaredOnly reflection fixes | **Shipped** (PR #140) | D-progress-103 |
+| `docs/14` stage P3 — F# shim P3 trio: drop dead `Lyric.Stdlib.Parse`; route `format1..6` through `System.String.Format(string, object[])` (delete F# `Format`); inline-loop renderers in `@derive(Json)` synthesiser for Int/Long/Bool/String slices (delete F# `JsonHost.Render*Slice`, retain only `RenderDoubleSlice`) | **Shipped** (this branch) | D-progress-104 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -165,6 +166,61 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-104: F# shim P3 trio — drop `Parse`, port `format`/`Render*Slice`
+
+*claude/p3-1-std-parse-native branch.*  Executes the three P3 items
+in `docs/14-native-stdlib-plan.md` §6 as one atomic slice:
+
+* **P3-1 (drop `Parse`).**  `Lyric.Stdlib.Parse` had been replaced
+  by `Std.ParseHost.hostTryParse*` (which uses `out` parameters
+  routed straight at `System.Int32.TryParse` etc.) but the F# type
+  and the codegen `hostParseBuiltins` map / `hostParse*` builtin
+  wiring were never deleted.  Both sides removed; the dead-code
+  `compiler/tests/Lyric.Emitter.Tests/ParseTests.fs` (which
+  exercised those builtins) deleted.
+* **P3-2 (`format1..6` → `String.Format(string, object[])`).**  The
+  arity-specialised `Lyric.Stdlib.Format.OfN` wrappers retired.
+  Codegen now builds an `object[arity]` inline (`newarr` + per-slot
+  `dup` / `ldc.i4` / boxed value / `stelem.ref`) and calls
+  `System.String.Format(string, object[])` directly.  `format1..6`
+  remain reserved codegen builtin names because Lyric still has no
+  first-class params-array literal — when one lands the names can
+  collapse into a single varargs builtin.
+* **P3-3 (`@derive(Json)` slice renderers → inline while-loops).**
+  `Lyric.Parser.JsonDerive.fs`'s `mkSliceHelper` extern-stub form
+  replaced by a generic `mkSliceHelperInline` that emits the same
+  AST as the existing `mkRecordSliceHelper`: `var result = "["`,
+  bumping `i` over `items.length`, joining with `","`.  Per-element
+  rendering is parameterised: Int / Long use `toString(items[i])`,
+  Bool uses `if items[i] { "true" } else { "false" }`, String
+  routes through the per-source synthesised `__lyricJsonEscape`.
+  `Double` keeps the host extern (`Lyric.Stdlib.JsonHost.RenderDoubleSlice`)
+  because round-trip culture-invariant rendering
+  (`ToString("R", InvariantCulture)`) isn't yet expressible via
+  Lyric's `toString`.  Four of the five `JsonHost.Render*Slice`
+  methods retired from the F# shim.
+
+**Test totals.** 573 emitter (was 575 — `ParseTests.fs`'s 4 tests
+deleted; `+0` net new), 83 CLI, 242 verifier, 137 type checker,
+312 parser, 123 lexer.  Stdlib bundle (`stdlib/lyric.toml`) still
+compiles cleanly via `lyric build --manifest`.
+
+**Net F# shim change.**  ~80 LoC removed from `Stdlib.fs`
+(`Parse` type ≈48 LoC + `Format` type ≈40 LoC + 4× `Render*Slice`
+≈40 LoC, partially offset by inline doc comments).
+
+**Deferred.**
+
+* `format1..6` collapse to a single varargs builtin — gated on
+  Lyric-level params-array support.
+* `RenderDoubleSlice` migration — needs either a tiny kernel
+  helper for `ToString("R", InvariantCulture)` or a Lyric-level
+  surface for culture-aware double formatting.
+* `JsonHost.Encode` (used by `__lyricJsonEscape`) — kernel forever
+  per `docs/14-native-stdlib-plan.md` §3 (depends on
+  `System.Text.Json.JsonEncodedText`).
+
 
 ### D-progress-103: M5.1 stage 2c.3 — stdlib-bundle proof
 

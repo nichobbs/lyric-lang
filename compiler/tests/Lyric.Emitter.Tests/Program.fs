@@ -32,7 +32,6 @@ let main argv =
             GenericUnionTests.tests
             SyntaxSimplificationTests.tests
             BclDispatchTests.tests
-            ParseTests.tests
             DeferTests.tests
             StdlibImportTests.tests
             NegativePatternTests.tests

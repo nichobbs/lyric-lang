@@ -342,45 +342,20 @@ let private toStr : Lazy<MethodInfo> =
         | Some m -> m
         | None   -> failwith "Lyric.Stdlib.Console::ToStr(object) not found")
 
-let private formatMethod (arity: int) : Lazy<MethodInfo> =
+/// `System.String.Format(String, Object[])` — the params-array
+/// overload.  `format1..6` codegen builtins build the array inline
+/// and call this directly, replacing the legacy `Lyric.Stdlib.Format.OfN`
+/// arity-specialised wrappers (P3-2 of the native-stdlib plan).
+let private stringFormatParams : Lazy<MethodInfo> =
     lazy (
-        let formatTy = typeof<Lyric.Stdlib.Format>
-        let methodName = sprintf "Of%d" arity
-        let paramTys =
-            Array.append [| typeof<string> |]
-                         (Array.create arity typeof<obj>)
-        let mi = formatTy.GetMethod(methodName, paramTys)
+        let stringTy = typeof<string>
+        let mi =
+            stringTy.GetMethod(
+                "Format",
+                [| typeof<string>; typeof<obj array> |])
         match Option.ofObj mi with
         | Some m -> m
-        | None   -> failwithf "Lyric.Stdlib.Format::%s not found" methodName)
-
-let private format1 = formatMethod 1
-let private format2 = formatMethod 2
-let private format3 = formatMethod 3
-let private format4 = formatMethod 4
-let private format5 = formatMethod 5
-let private format6 = formatMethod 6
-
-/// Lookup a static method on `Lyric.Stdlib.Parse` by name.  Each Lyric
-/// builtin (`hostParseIntIsValid`, `hostParseIntValue`, …) routes to
-/// the matching CLR static.
-let private parseHostMethod (name: string) : Lazy<MethodInfo> =
-    lazy (
-        let parseTy = typeof<Lyric.Stdlib.Parse>
-        let mi = parseTy.GetMethod(name, [| typeof<string> |])
-        match Option.ofObj mi with
-        | Some m -> m
-        | None   -> failwithf "Lyric.Stdlib.Parse::%s(string) not found" name)
-
-let private hostParseBuiltins : Map<string, Lazy<MethodInfo>> =
-    Map.ofList [
-        "hostParseIntIsValid",    parseHostMethod "IntIsValid"
-        "hostParseIntValue",      parseHostMethod "IntValue"
-        "hostParseLongIsValid",   parseHostMethod "LongIsValid"
-        "hostParseLongValue",     parseHostMethod "LongValue"
-        "hostParseDoubleIsValid", parseHostMethod "DoubleIsValid"
-        "hostParseDoubleValue",   parseHostMethod "DoubleValue"
-    ]
+        | None   -> failwith "System.String::Format(String, Object[]) not found")
 
 /// Lookup a static method on `Lyric.Stdlib.FileHost` by name, with the
 /// given parameter types.  Each Lyric `hostFile*` builtin routes here.
@@ -3048,21 +3023,6 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | None ->
                 failwithf "M2.1 codegen: %s.tryFrom not available (no range constraint)" typeName
 
-    // ---- std.parse host builtins --------------------------------------
-
-    | ECall ({ Kind = EPath { Segments = [name] } }, [arg])
-        when Map.containsKey name hostParseBuiltins ->
-        let payload =
-            match arg with
-            | CAPositional ex | CANamed (_, ex, _) -> ex
-        let argTy = emitExpr ctx payload
-        if argTy <> typeof<string> then
-            failwithf "host parse builtin '%s' requires String arg, got %s"
-                name argTy.Name
-        let mi = (Map.find name hostParseBuiltins).Value
-        il.Emit(OpCodes.Call, mi)
-        mi.ReturnType
-
     // ---- std.file host builtins ---------------------------------------
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
@@ -3120,7 +3080,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             il.Emit(OpCodes.Call, printlnAny.Value)
         typeof<System.Void>
 
-    // ---- format1..4 builtins ------------------------------------------
+    // ---- format1..6 builtins ------------------------------------------
+    //
+    // P3-2 (native-stdlib plan §6): replaced the `Lyric.Stdlib.Format.OfN`
+    // arity-specialised F# wrappers with a direct
+    // `System.String.Format(string, object[])` call.  Codegen builds the
+    // `object[]` array inline.  `format1..6` survive as named codegen
+    // builtins until first-class params-array literals land in Lyric.
 
     | ECall ({ Kind = EPath { Segments = [name] } }, args)
         when (name = "format1" || name = "format2"
@@ -3135,20 +3101,19 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         // Template (first arg) — must be String; emitter trusts the
         // type checker.
         let _ = emitExpr ctx (List.head payloads)
-        // Each remaining arg is boxed to obj for String.Format.
-        for p in List.tail payloads do
+        // Build `object[arity]` for the params overload.  `newarr` +
+        // `dup` + `ldc.i4 i` + (boxed value) + `stelem.ref` per slot.
+        emitLdcI4 il arity
+        il.Emit(OpCodes.Newarr, typeof<obj>)
+        payloads
+        |> List.tail
+        |> List.iteri (fun i p ->
+            il.Emit(OpCodes.Dup)
+            emitLdcI4 il i
             let argTy = emitExpr ctx p
             boxIfValue il argTy
-        let mi =
-            match arity with
-            | 1 -> format1.Value
-            | 2 -> format2.Value
-            | 3 -> format3.Value
-            | 4 -> format4.Value
-            | 5 -> format5.Value
-            | 6 -> format6.Value
-            | n -> failwithf "format arity %d not supported" n
-        il.Emit(OpCodes.Call, mi)
+            il.Emit(OpCodes.Stelem_Ref))
+        il.Emit(OpCodes.Call, stringFormatParams.Value)
         typeof<string>
 
     // ---- default[T]() builtin -----------------------------------------
