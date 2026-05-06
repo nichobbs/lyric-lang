@@ -195,6 +195,26 @@ pub union LInsn {
   // catchClass = "" means catch-all (catch_type=0 in the class file).
   case LTryCatch(startLabel: String, endLabel: String, handlerLabel: String, catchClass: String)
 
+  // Boxing convenience insns: expand to invokestatic <Wrapper>.valueOf(prim)Wrapper.
+  case LBoxInt
+  case LBoxLong
+  case LBoxFloat
+  case LBoxDouble
+  case LBoxBool
+  case LBoxByte
+  case LBoxChar
+  case LBoxShort
+
+  // Unboxing convenience insns: expand to invokevirtual <Wrapper>.<prim>Value()prim.
+  case LUnboxInt
+  case LUnboxLong
+  case LUnboxFloat
+  case LUnboxDouble
+  case LUnboxBool
+  case LUnboxByte
+  case LUnboxChar
+  case LUnboxShort
+
   case LIaload
   case LLaload
   case LFaload
@@ -400,6 +420,79 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LSastore  -> emitSastore(asm)
 
     case LTryCatch(_, _, _, _) -> ()  // meta-insn: collected by lowerFunc, no bytecode
+
+    case LBoxInt -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JInt)
+      lowerInsn(LInvokestatic(owner = "java/lang/Integer", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Integer")), asm)
+    }
+    case LBoxLong -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JLong)
+      lowerInsn(LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Long")), asm)
+    }
+    case LBoxFloat -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JFloat)
+      lowerInsn(LInvokestatic(owner = "java/lang/Float", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Float")), asm)
+    }
+    case LBoxDouble -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JDouble)
+      lowerInsn(LInvokestatic(owner = "java/lang/Double", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Double")), asm)
+    }
+    case LBoxBool -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JBoolean)
+      lowerInsn(LInvokestatic(owner = "java/lang/Boolean", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Boolean")), asm)
+    }
+    case LBoxByte -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JByte)
+      lowerInsn(LInvokestatic(owner = "java/lang/Byte", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Byte")), asm)
+    }
+    case LBoxChar -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JChar)
+      lowerInsn(LInvokestatic(owner = "java/lang/Character", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Character")), asm)
+    }
+    case LBoxShort -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JShort)
+      lowerInsn(LInvokestatic(owner = "java/lang/Short", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Short")), asm)
+    }
+    case LUnboxInt -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Integer", name = "intValue", params = ps, ret = JInt), asm)
+    }
+    case LUnboxLong -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Long", name = "longValue", params = ps, ret = JLong), asm)
+    }
+    case LUnboxFloat -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Float", name = "floatValue", params = ps, ret = JFloat), asm)
+    }
+    case LUnboxDouble -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Double", name = "doubleValue", params = ps, ret = JDouble), asm)
+    }
+    case LUnboxBool -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Boolean", name = "booleanValue", params = ps, ret = JBoolean), asm)
+    }
+    case LUnboxByte -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = ps, ret = JByte), asm)
+    }
+    case LUnboxChar -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Character", name = "charValue", params = ps, ret = JChar), asm)
+    }
+    case LUnboxShort -> {
+      val ps: List[JvmType] = newList()
+      lowerInsn(LInvokevirtual(owner = "java/lang/Short", name = "shortValue", params = ps, ret = JShort), asm)
+    }
   }
 }
 
