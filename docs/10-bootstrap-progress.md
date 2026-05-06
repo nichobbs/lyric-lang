@@ -39,10 +39,10 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (PR #129) | D-progress-096 |
 | M5.1 stage 2c.2.i — `[project]` table in `lyric.toml` (Manifest parsing + tests) | **Shipped** (this branch) | D-progress-097 |
 | M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP: independent packages bundle into one PE, per-package contract resources | **Shipped** (PR #133) | D-progress-098 |
-| M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project: topo-sort emit, in-project artifacts, B0020 cycle diagnostic | **Shipped** (this branch) | D-progress-099 |
-| M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | Pending | — |
-| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` walk all `Lyric.Contract.<Pkg>` resources | Pending 2c.2.ii.c | — |
-| M5.1 stage 2c.2.iv — CLI integration (`lyric build` reads `[project]` + dispatches to `emitProject`) | Pending 2c.2.ii.c | — |
+| M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project: topo-sort emit, in-project artifacts, B0020 cycle diagnostic | **Shipped** (PR #134) | D-progress-099 |
+| M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | **Shipped** (this branch) | D-progress-100 |
+| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` walk all `Lyric.Contract.<Pkg>` resources | Pending | — |
+| M5.1 stage 2c.2.iv — CLI integration (`lyric build` reads `[project]` + dispatches to `emitProject`) | Pending | — |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -164,6 +164,72 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-100: M5.1 stage 2c.2.ii.c — `internal` → CLR `Assembly` access
+
+*claude/internal-codegen-2c2iic branch.*  Wires the parsed
+`Visibility.Internal` marker through to CLR access flags so the
+emitted PE metadata mirrors the Lyric `pub` / `internal` boundary.
+
+**Helpers.**
+
+* `visibilityByName : SourceFile -> Map<string, Visibility option>`
+  collects each top-level item's `Item.Visibility` keyed by name.
+* `typeAttrsForVis (vis: Visibility option) (extra: TypeAttributes)
+  : TypeAttributes` returns `NotPublic ||| extra` for `Internal`,
+  `Public ||| extra` otherwise.  Package-private (no marker)
+  intentionally stays `Public`: the legacy per-package stdlib relies
+  on cross-DLL access to unmarked items, and the type checker
+  doesn't yet enforce a package-private boundary at call sites.
+* `methodAttrsForVis` and `nestedTypeAttrsForVis` mirror the type
+  helper for methods (`Assembly` vs `Public`) and nested types
+  (`NestedAssembly` vs `NestedPublic`).
+
+**`defineMethodHeader`.**  The top-level function emit consults
+`methodAttrsForVis fn.Visibility` for the access flag.  `main` is
+forced to `Public` regardless of declared visibility so the host
+`Main` wrapper (which Lyric promotes to the assembly entry point)
+can locate it via reflection-driven entry-point discovery.
+
+**Type-defining helpers.**  Each helper that defines a top-level
+user type accepts a new `vis: Visibility option` parameter and
+threads it through `typeAttrsForVis`.  Updated:
+
+* `defineInterface`
+* `defineDistinctType`
+* `defineEnum` (with `enum<TypeAttributes> 0` for the no-extras
+  baseline)
+* `defineUnion` (base abstract class + generic case classes use
+  `typeAttrsForVis`; non-generic nested cases use
+  `nestedTypeAttrsForVis`)
+* `defineProtectedTypeOnto`
+* `defineProjectableViewStub`
+
+The two inline define sites in `emitAssembly` (records, opaques)
+look up visibility via the new `visOf` closure and pass it the
+same way.
+
+**Contract metadata** is unchanged: `ContractMeta.isPub` already
+filtered both `Internal` and unmarked items out of the emitted
+contract surface (D-progress-096), so the contract resource
+correctly hides internal items from external Lyric consumers.
+
+**Tests.**  `[internal_items_emit_assembly_visibility]` builds a
+package with a `pub func`, `internal func`, `pub record`, and
+`internal record`; loads the bundled DLL via reflection; and asserts
+`pubFn.IsPublic`, `intFn.IsAssembly`, `PubRec.IsPublic`,
+`IntRec.IsNotPublic`.  514 emitter tests pass (was 513 + 1 new).
+
+**Why package-private stayed CLR Public.**  Strict package-private
+enforcement requires the type checker to refuse cross-package
+access to unmarked items first; that's a larger change touching the
+symbol resolver.  Treating package-private as CLR `Public` matches
+today's behaviour (no regression), keeps the legacy per-package
+stdlib working (its `func` items are unmarked but reachable across
+DLL boundaries), and lets the contract resource alone gate external
+visibility for now.  A follow-up can tighten the type-checker side
+without re-touching codegen.
+
 
 ### D-progress-099: M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project
 

@@ -194,6 +194,62 @@ let tests =
                     |> List.filter (fun d -> d.Code = "B0020")
                 Expect.isNonEmpty b0020 "B0020 raised on cycle"
 
+        // Stage 2c.2.ii.c — `internal` items emit with CLR `Assembly`
+        // access for methods and `NotPublic` for types.  Reflection
+        // on the bundled DLL surfaces only `pub` items as Public;
+        // internal record types appear as NotPublic.
+        testCase "[internal_items_emit_assembly_visibility]" <| fun () ->
+            withTempDll "internal-vis" <| fun dir ->
+                let dllPath = Path.Combine(dir, "VisProbe.dll")
+                let src =
+                    "package VisProbe.Pkg\n" +
+                    "@stable(since=\"0.1\")\n" +
+                    "pub func pubFn(x: in Int): Int { x }\n" +
+                    "internal func intFn(x: in Int): Int { x + 1 }\n" +
+                    "pub record PubRec { x: Int }\n" +
+                    "internal record IntRec { x: Int }\n"
+                let req : Emitter.ProjectEmitRequest =
+                    { Packages =
+                        [ { PackageName = "VisProbe.Pkg"
+                            Sources     = [src] } ]
+                      AssemblyName     = "VisProbe"
+                      OutputPath       = dllPath
+                      RestoredPackages = []
+                      Single           = true }
+                let result = Emitter.emitProject req
+                let errs =
+                    result.Diagnostics
+                    |> List.filter (fun d -> d.Severity = DiagError)
+                Expect.isEmpty errs (sprintf "clean emit (%A)" errs)
+                let asm = System.Reflection.Assembly.LoadFrom dllPath
+                let progTy =
+                    match Option.ofObj (asm.GetType "VisProbe.Pkg.Program") with
+                    | Some t -> t
+                    | None -> failwith "Program type missing"
+                let methodFlags =
+                    System.Reflection.BindingFlags.Public
+                    ||| System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Static
+                let pubMb =
+                    match Option.ofObj (progTy.GetMethod("pubFn", methodFlags)) with
+                    | Some m -> m
+                    | None -> failwith "pubFn missing"
+                let intMb =
+                    match Option.ofObj (progTy.GetMethod("intFn", methodFlags)) with
+                    | Some m -> m
+                    | None -> failwith "intFn missing"
+                Expect.isTrue pubMb.IsPublic "pubFn is CLR Public"
+                Expect.isTrue intMb.IsAssembly "intFn is CLR Assembly"
+                let pubRec =
+                    match Option.ofObj (asm.GetType "VisProbe.Pkg.PubRec") with
+                    | Some t -> t
+                    | None -> failwith "PubRec missing"
+                let intRec =
+                    asm.GetTypes()
+                    |> Array.find (fun t -> t.Name = "IntRec")
+                Expect.isTrue (pubRec.IsPublic) "PubRec is CLR Public"
+                Expect.isTrue (intRec.IsNotPublic) "IntRec is CLR NotPublic"
+
         // B0023 — `output = "single"` with zero packages.
         testCase "[B0023_zero_packages]" <| fun () ->
             withTempDll "b0023" <| fun dir ->

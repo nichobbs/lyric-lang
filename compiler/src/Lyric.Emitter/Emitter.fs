@@ -136,6 +136,61 @@ let private opaqueItems (sf: SourceFile) : OpaqueTypeDecl list =
         | IOpaque o when o.HasBody -> Some o
         | _ -> None)
 
+/// Map a top-level item's name to its declared visibility (`Item.Visibility`).
+/// `defineMethodHeader` and the various `DefineType` sites consult this
+/// to set CLR access flags so emitted PE metadata mirrors the Lyric
+/// `pub` / `internal` / package-private boundary (M5.1 stage 2c.2.ii.c).
+/// Items without a name (impls, wires, scope kinds, errors) are absent
+/// from the map.
+let private visibilityByName (sf: SourceFile) : Map<string, Visibility option> =
+    sf.Items
+    |> List.choose (fun it ->
+        let nameOpt =
+            match it.Kind with
+            | IFunc fn          -> Some fn.Name
+            | IRecord r
+            | IExposedRec r     -> Some r.Name
+            | IUnion u          -> Some u.Name
+            | IEnum e           -> Some e.Name
+            | IInterface i      -> Some i.Name
+            | IDistinctType d   -> Some d.Name
+            | IOpaque o         -> Some o.Name
+            | IProtected p      -> Some p.Name
+            | ITypeAlias a      -> Some a.Name
+            | _                 -> None
+        nameOpt |> Option.map (fun n -> n, it.Visibility))
+    |> Map.ofList
+
+/// CLR `TypeAttributes` for a declared visibility.  `internal` items
+/// become `TypeAttributes.NotPublic` (assembly-private); everything
+/// else (`pub` and unmarked package-private) becomes
+/// `TypeAttributes.Public`.  Package-private retains `Public` for
+/// bootstrap compatibility — the legacy per-package stdlib relies on
+/// cross-DLL access to unmarked items, and the type checker doesn't
+/// yet enforce a package-private boundary at call sites.  External
+/// Lyric consumers see only `pub` items via the package's
+/// `Lyric.Contract` resource regardless of CLR access flags.
+let private typeAttrsForVis (vis: Visibility option) (extra: TypeAttributes) : TypeAttributes =
+    match vis with
+    | Some (Internal _) -> TypeAttributes.NotPublic ||| extra
+    | _                 -> TypeAttributes.Public ||| extra
+
+/// CLR `MethodAttributes` for a declared visibility.  `internal`
+/// becomes `Assembly`; `pub` and unmarked stay `Public` for the same
+/// reason as `typeAttrsForVis`.
+let private methodAttrsForVis (vis: Visibility option) : MethodAttributes =
+    match vis with
+    | Some (Internal _) -> MethodAttributes.Assembly
+    | _                 -> MethodAttributes.Public
+
+/// CLR `TypeAttributes` for a nested type whose containing parent has
+/// the given visibility.  Mirrors `typeAttrsForVis` but uses the
+/// `Nested*` flags.
+let private nestedTypeAttrsForVis (vis: Visibility option) (extra: TypeAttributes) : TypeAttributes =
+    match vis with
+    | Some (Internal _) -> TypeAttributes.NestedAssembly ||| extra
+    | _                 -> TypeAttributes.NestedPublic ||| extra
+
 /// Convert an `OpaqueTypeDecl` body into a synthetic `RecordDecl` for
 /// reuse of the record-emission pipeline.  The CLR shape is identical
 /// (sealed class with public fields and an all-fields ctor); the M2.2
@@ -194,6 +249,7 @@ let private defineInterface
         (nsName: string)
         (symbols: SymbolTable)
         (lookup: TypeId -> System.Type option)
+        (vis: Visibility option)
         (id: InterfaceDecl) : Records.InterfaceInfo =
     let fullName =
         if String.IsNullOrEmpty nsName then id.Name
@@ -201,9 +257,7 @@ let private defineInterface
     let tb =
         md.DefineType(
             fullName,
-            TypeAttributes.Public
-            ||| TypeAttributes.Interface
-            ||| TypeAttributes.Abstract,
+            typeAttrsForVis vis (TypeAttributes.Interface ||| TypeAttributes.Abstract),
             null)
     let resolveCtx = GenericContext()
     let scratchDiags = ResizeArray<Diagnostic>()
@@ -267,6 +321,7 @@ let private defineDistinctType
         (lookup: TypeId -> System.Type option)
         (symbols: SymbolTable)
         (importedUnions: Records.ImportedUnionTable)
+        (vis: Visibility option)
         (dt: DistinctTypeDecl) : Records.DistinctTypeInfo =
     let fullName =
         if String.IsNullOrEmpty nsName then dt.Name
@@ -282,10 +337,10 @@ let private defineDistinctType
     let tb =
         md.DefineType(
             fullName,
-            TypeAttributes.Public
-            ||| TypeAttributes.Sealed
-            ||| TypeAttributes.SequentialLayout
-            ||| TypeAttributes.BeforeFieldInit,
+            typeAttrsForVis vis
+                (TypeAttributes.Sealed
+                 ||| TypeAttributes.SequentialLayout
+                 ||| TypeAttributes.BeforeFieldInit),
             typeof<System.ValueType>)
     let valueField =
         tb.DefineField("Value", underlyingClr, FieldAttributes.Public)
@@ -526,11 +581,16 @@ let private defineDistinctType
 let private defineEnum
         (md: ModuleBuilder)
         (nsName: string)
+        (vis: Visibility option)
         (ed: EnumDecl) : Records.EnumInfo =
     let fullName =
         if String.IsNullOrEmpty nsName then ed.Name
         else nsName + "." + ed.Name
-    let eb = md.DefineEnum(fullName, TypeAttributes.Public, typeof<int32>)
+    let eb =
+        md.DefineEnum(
+            fullName,
+            typeAttrsForVis vis (enum<TypeAttributes> 0),
+            typeof<int32>)
     let cases =
         ed.Cases
         |> List.mapi (fun i c ->
@@ -552,6 +612,7 @@ let private defineUnion
         (md: ModuleBuilder)
         (nsName: string)
         (symbols: SymbolTable)
+        (vis: Visibility option)
         (ud: UnionDecl) : Records.UnionInfo =
     let fullName =
         if String.IsNullOrEmpty nsName then ud.Name
@@ -568,7 +629,7 @@ let private defineUnion
     let baseTy =
         md.DefineType(
             fullName,
-            TypeAttributes.Public ||| TypeAttributes.Abstract,
+            typeAttrsForVis vis TypeAttributes.Abstract,
             typeof<obj>)
     let baseTps =
         if isGeneric
@@ -606,7 +667,7 @@ let private defineUnion
                     let tb =
                         md.DefineType(
                             caseFull,
-                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            typeAttrsForVis vis TypeAttributes.Sealed,
                             typeof<obj>)
                     let tps = tb.DefineGenericParameters(typeParamNames |> List.toArray)
                     let parentOnCaseTps =
@@ -621,7 +682,7 @@ let private defineUnion
                     let tb =
                         baseTy.DefineNestedType(
                             c.Name,
-                            TypeAttributes.NestedPublic ||| TypeAttributes.Sealed,
+                            nestedTypeAttrsForVis vis TypeAttributes.Sealed,
                             baseTy :> System.Type)
                     tb, [||], Map.empty, None
             let payload =
@@ -1101,6 +1162,7 @@ let private defineProtectedTypeOnto
         (symbols: SymbolTable)
         (lookup: TypeId -> System.Type option)
         (codegenDiags: ResizeArray<Diagnostic>)
+        (vis: Visibility option)
         (pd: ProtectedTypeDecl)
         : Records.ProtectedTypeInfo
           * ProtectedMethodPending list
@@ -1111,7 +1173,7 @@ let private defineProtectedTypeOnto
     let tb =
         md.DefineType(
             fullName,
-            TypeAttributes.Public ||| TypeAttributes.Sealed,
+            typeAttrsForVis vis TypeAttributes.Sealed,
             typeof<obj>)
     // Generic protected types (`protected type Foo[T]`) define their
     // CLR generic parameters here.  Construction goes through the
@@ -1468,6 +1530,7 @@ let private defineProjectableViewStub
         (md: ModuleBuilder)
         (nsName: string)
         (opaqueInfo: Records.RecordInfo)
+        (vis: Visibility option)
         (od: OpaqueTypeDecl) : ProjectableStub =
     let viewName = od.Name + "View"
     let fullName =
@@ -1476,7 +1539,7 @@ let private defineProjectableViewStub
     let tb =
         md.DefineType(
             fullName,
-            TypeAttributes.Public ||| TypeAttributes.Sealed,
+            typeAttrsForVis vis TypeAttributes.Sealed,
             typeof<obj>)
     let visible =
         od.Members
@@ -1692,6 +1755,14 @@ let private defineMethodHeader
         (lookup: TypeId -> System.Type option)
         (fn: FunctionDecl)
         (sg: ResolvedSignature) : MethodBuilder =
+    // `main` is the program entry point.  The host `Main` wrapper is
+    // public; the Lyric `main` it calls must also stay reachable from
+    // an external runtime when the assembly is consumed via
+    // `dotnet exec`.  Force `Public` regardless of declared
+    // visibility so the entry-point lookup works.
+    let methodVis =
+        if fn.Name = "main" then MethodAttributes.Public
+        else methodAttrsForVis fn.Visibility
     if sg.Generics.IsEmpty then
         // Non-generic fast path — single-call signature.
         let paramTypes =
@@ -1704,7 +1775,7 @@ let private defineMethodHeader
         let mb =
             programTy.DefineMethod(
                 fn.Name,
-                MethodAttributes.Public ||| MethodAttributes.Static,
+                methodVis ||| MethodAttributes.Static,
                 returnType,
                 paramTypes)
         sg.Params
@@ -1719,7 +1790,7 @@ let private defineMethodHeader
         let mb =
             programTy.DefineMethod(
                 fn.Name,
-                MethodAttributes.Public ||| MethodAttributes.Static)
+                methodVis ||| MethodAttributes.Static)
         let typeParams =
             mb.DefineGenericParameters(sg.Generics |> List.toArray)
         let genericSubst =
@@ -2683,6 +2754,15 @@ let private emitAssembly
             if String.IsNullOrEmpty nsName then "Program"
             else nsName + ".Program"
 
+        // M5.1 stage 2c.2.ii.c — visibility lookup keyed by item name.
+        // Each top-level `DefineType` consults this to choose
+        // `Public` vs `NotPublic` based on the declared visibility.
+        let visByName = visibilityByName sf
+        let visOf (name: string) : Visibility option =
+            match Map.tryFind name visByName with
+            | Some v -> v
+            | None   -> None
+
         // Pass 0 — record + enum types. Defined before functions so
         // signatures can mention them, and the runtime sees them
         // ready when the host calls newobj / loads case constants.
@@ -3026,7 +3106,7 @@ let private emitAssembly
             let tb =
                 ctx.Module.DefineType(
                     fullName,
-                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeAttrsForVis (visOf rd.Name) TypeAttributes.Sealed,
                     typeof<obj>)
             let typeParamNames =
                 match rd.Generics with
@@ -3061,7 +3141,7 @@ let private emitAssembly
             let tb =
                 ctx.Module.DefineType(
                     fullName,
-                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeAttrsForVis (visOf od.Name) TypeAttributes.Sealed,
                     typeof<obj>)
             let typeParamNames =
                 match od.Generics with
@@ -3084,7 +3164,7 @@ let private emitAssembly
             |> Option.iter (fun id -> typeIdToClr.[id] <- tb :> System.Type)
             opaqueStubs.Add(od, tb, typeParamNames, typeParamSubst)
         for ed in enumItems sf do
-            let info = defineEnum ctx.Module nsName ed
+            let info = defineEnum ctx.Module nsName (visOf ed.Name) ed
             enumTable.[ed.Name] <- info
             for c in info.Cases do
                 // Bare `Red` and qualified `Color.Red` both resolve.
@@ -3098,7 +3178,7 @@ let private emitAssembly
         let unionTable = Records.UnionTable()
         let unionCaseLookup = Records.UnionCaseLookup()
         for ud in unionItems sf do
-            let info = defineUnion ctx.Module nsName symbols ud
+            let info = defineUnion ctx.Module nsName symbols (visOf ud.Name) ud
             unionTable.[ud.Name] <- info
             for c in info.Cases do
                 unionCaseLookup.[c.Name] <- (info, c)
@@ -3140,7 +3220,7 @@ let private emitAssembly
         let protectedCtorsPending = ResizeArray<ProtectedCtorPending>()
         for pd in protectedItems sf do
             let info, pending, ctorPending =
-                defineProtectedTypeOnto ctx.Module nsName symbols lookup codegenDiags pd
+                defineProtectedTypeOnto ctx.Module nsName symbols lookup codegenDiags (visOf pd.Name) pd
             protectedTable.[pd.Name] <- info
             for p in pending do protectedPending.Add p
             protectedCtorsPending.Add ctorPending
@@ -3182,7 +3262,7 @@ let private emitAssembly
         // `AddInterfaceImplementation`.
         let implsTable = Records.ImplsTable()
         for id in interfaceItems sf do
-            let info = defineInterface ctx.Module nsName symbols lookup id
+            let info = defineInterface ctx.Module nsName symbols lookup (visOf id.Name) id
             interfaceTable.[id.Name] <- info
             symbols.TryFind id.Name
             |> Seq.tryHead
@@ -3305,7 +3385,7 @@ let private emitAssembly
         let stubs =
             projectablesToDerive
             |> List.map (fun (od, opaqueInfo) ->
-                let stub = defineProjectableViewStub ctx.Module nsName opaqueInfo od
+                let stub = defineProjectableViewStub ctx.Module nsName opaqueInfo (visOf od.Name) od
                 stubByOpaqueClr.[opaqueInfo.Type :> System.Type] <- stub
                 stub)
         // Pass B: populate fields + ctors on every view stub (now all
@@ -3343,7 +3423,7 @@ let private emitAssembly
         for dt in distinctTypeItems sf do
             let info =
                 defineDistinctType
-                    ctx.Module nsName lookup symbols importedUnionTable dt
+                    ctx.Module nsName lookup symbols importedUnionTable (visOf dt.Name) dt
             distinctTable.[dt.Name] <- info
             symbols.TryFind dt.Name
             |> Seq.tryHead
