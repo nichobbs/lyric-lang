@@ -27,6 +27,12 @@ func tokenName(t: in Token): String {
     case TFloat(_, _)         -> "float"
     case TChar(_)             -> "char"
     case TString(_)           -> "string"
+    case TStringStart         -> "string_start"
+    case TStringPart(_)       -> "string_part"
+    case TStringHoleStart     -> "string_hole_start"
+    case TStringEnd           -> "string_end"
+    case TTripleString(_)     -> "triple_string"
+    case TRawString(_)        -> "raw_string"
     case TBool(_)             -> "bool"
     case TPunct(_)            -> "punct"
     case TStmtEnd             -> "stmt_end"
@@ -76,6 +82,27 @@ func boolValueAt(lr: in LexResult, i: in Int): Bool {
   match tokenAt(lr, i).token {
     case TBool(b) -> b
     case _        -> false
+  }
+}
+
+func stringPartAt(lr: in LexResult, i: in Int): String {
+  match tokenAt(lr, i).token {
+    case TStringPart(t) -> t
+    case _              -> "<not-string-part>"
+  }
+}
+
+func tripleStringAt(lr: in LexResult, i: in Int): String {
+  match tokenAt(lr, i).token {
+    case TTripleString(t) -> t
+    case _                -> "<not-triple-string>"
+  }
+}
+
+func rawStringAt(lr: in LexResult, i: in Int): String {
+  match tokenAt(lr, i).token {
+    case TRawString(t) -> t
+    case _             -> "<not-raw-string>"
   }
 }
 
@@ -246,6 +273,73 @@ func testUnterminatedString(): Unit {
   assertEqual(r.diagnostics[0].code, "L0025", "unterm: L0025")
 }
 
+// Phase 5 §M5.1 stage 3 — interpolated / triple / raw strings.
+//
+// Note on quoting: every time the body of a `lex(...)` call below
+// contains a `${`, the bootstrap lexer (parsing this source file)
+// would otherwise interpret it as its own interpolation hole.  The
+// `\$` escape in the outer string keeps the bootstrap from doing
+// that — the lexer-under-test still sees a literal `${` because
+// `\$` decodes to `$`.
+func testInterpolatedString(): Unit {
+  // The string passed to `lex` is `"hello, ${name}"` — three logical
+  // chunks: the literal `hello, `, the hole's expression token (an
+  // ident), and the closing sequence.  Tokens: TStringStart,
+  // TStringPart, TStringHoleStart, TIdent, TPunct(}), TStringEnd,
+  // TEof.
+  val r = lex("\"hello, \${name}\"")
+  assertEqualInt(diagCount(r), 0, "interp: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "string_start",      "interp: TStringStart")
+  assertEqual(tokenKindAt(r, 1), "string_part",       "interp: TStringPart")
+  assertEqual(stringPartAt(r, 1), "hello, ",          "interp: chunk text")
+  assertEqual(tokenKindAt(r, 2), "string_hole_start", "interp: TStringHoleStart")
+  assertEqual(tokenKindAt(r, 3), "ident",             "interp: hole ident")
+  assertEqual(tokenKindAt(r, 4), "punct",             "interp: closing }")
+  assertEqual(tokenKindAt(r, 5), "string_end",        "interp: TStringEnd")
+}
+
+func testInterpolatedStringNoHoles(): Unit {
+  // No `${`, so the simple `TString` path runs even though the
+  // dispatcher consulted `hasInterpolation`.
+  val r = lex("\"plain ascii\"")
+  assertEqual(tokenKindAt(r, 0), "string", "interp-fallback: simple TString")
+  assertEqual(stringValueAt(r, 0), "plain ascii", "interp-fallback: text")
+}
+
+func testTripleString(): Unit {
+  val r = lex("\"\"\"line1\nline2\"\"\"")
+  assertEqualInt(diagCount(r), 0, "triple: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "triple_string", "triple: TTripleString")
+  assertEqual(tripleStringAt(r, 0), "line1\nline2", "triple: body preserved")
+}
+
+func testUnterminatedTripleString(): Unit {
+  val r = lex("\"\"\"missing close")
+  assertEqualInt(diagCount(r), 1, "unterm-triple: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0026", "unterm-triple: L0026")
+}
+
+func testRawStringNoHashes(): Unit {
+  val r = lex("r\"raw\\nbody\"")
+  assertEqualInt(diagCount(r), 0, "raw: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "raw_string", "raw: TRawString")
+  // No escape processing — the literal `\n` survives as two chars.
+  assertEqual(rawStringAt(r, 0), "raw\\nbody", "raw: body byte-for-byte")
+}
+
+func testRawStringWithHashes(): Unit {
+  val r = lex("r#\"with \"quotes\"\"#")
+  assertEqualInt(diagCount(r), 0, "raw#: no diagnostics")
+  assertEqual(tokenKindAt(r, 0), "raw_string", "raw#: TRawString")
+  assertEqual(rawStringAt(r, 0), "with \"quotes\"", "raw#: embedded quotes")
+}
+
+func testUnterminatedRawString(): Unit {
+  val r = lex("r\"oops")
+  assertEqualInt(diagCount(r), 1, "unterm-raw: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0028", "unterm-raw: L0028")
+}
+
 func testCharLiteral(): Unit {
   val r = lex("'a' '\\n'")
   assertEqual(tokenKindAt(r, 0), "char", "char: 'a' kind")
@@ -365,6 +459,13 @@ func main(): Unit {
   testStringLiteral()
   testStringEscapes()
   testUnterminatedString()
+  testInterpolatedString()
+  testInterpolatedStringNoHoles()
+  testTripleString()
+  testUnterminatedTripleString()
+  testRawStringNoHashes()
+  testRawStringWithHashes()
+  testUnterminatedRawString()
   testCharLiteral()
   testPunctuation()
   testStmtEndInsertion()

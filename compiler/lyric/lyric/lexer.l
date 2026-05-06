@@ -7,13 +7,17 @@
 // `Lyric.Lexer` library; the in-process self-test that exercises it
 // lives at `compiler/lyric/lyric/lexer_self_test.l`.
 //
-// Scope deferred to follow-up stages of M5.1 (per
+// Phase 5 §M5.1 stage 3 (this file): string interpolation, triple-
+// quoted and raw strings landed; the new tokens (TStringStart,
+// TStringPart, TStringHoleStart, TStringEnd, TTripleString,
+// TRawString) plus the InString / InHole mode stack mirror
+// `compiler/src/Lyric.Lexer/Lexer.fs` 1:1.
+//
+// Scope still deferred to follow-up stages of M5.1 (per
 // `docs/10-bootstrap-progress.md`):
-//   * String interpolation (`"…${expr}…"` → multi-token sequence).
-//   * Triple-quoted (`"""…"""`) and raw (`r"…"` / `r#"…"#`) strings.
 //   * Non-BMP `\u{…}` escapes (would need a wider TChar payload).
-//   * Non-ASCII identifiers and NFC normalisation.
-//   * The `_X` reserved-name diagnostic (L0040).
+//   * Non-ASCII identifiers and NFC normalisation (stage 4).
+//   * The `_X` reserved-name diagnostic, L0040 (stage 4).
 //
 // Everything else from the F# lexer's grammar §1 implementation lives
 // here: identifiers, the full keyword table, decimal/hex/octal/binary
@@ -102,9 +106,7 @@ pub func warningDiagnostic(code: in String, msg: in String, sp: in Span): Diagno
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tokens — mirror compiler/src/Lyric.Lexer/Token.fs.  String-interpolation
-// variants (TStringStart / TStringPart / TStringHoleStart / TStringEnd),
-// triple-quoted, and raw strings are deferred (see file header).
+// Tokens — mirror compiler/src/Lyric.Lexer/Token.fs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @stable(since="0.1")
@@ -254,7 +256,28 @@ pub union Token {
   case TInt(value: Long, suffix: IntSuffix)
   case TFloat(value: Double, suffix: FloatSuffix)
   case TChar(codepoint: Int)
+  /// A complete plain string literal (no interpolation).  Emitted by
+  /// `lexStringLiteral` for the common case.
   case TString(text: String)
+  /// Beginning of an interpolated string literal — the opening `"`.
+  /// Followed by a sequence of `TStringPart` (literal chunks) and
+  /// `TStringHoleStart` … `}` … (interpolation expressions), and
+  /// terminated by `TStringEnd` on the closing `"`.
+  case TStringStart
+  /// A run of literal characters inside an interpolated string.
+  /// The text has all the same escape processing as `TString`.
+  case TStringPart(text: String)
+  /// The `${` that opens an interpolation hole.  The expression
+  /// inside is lexed by the regular dispatcher; the hole closes
+  /// when bracket depth returns to its pre-hole value.
+  case TStringHoleStart
+  /// The closing `"` of an interpolated string.
+  case TStringEnd
+  /// Triple-quoted multiline string (`"""…"""`).
+  case TTripleString(text: String)
+  /// Raw string (`r"…"` / `r#"…"#`).  Body is captured byte-for-byte;
+  /// no escape processing happens.
+  case TRawString(text: String)
   case TBool(value: Bool)
   case TPunct(p: Punct)
   case TStmtEnd
@@ -435,6 +458,24 @@ pub record LexResult {
   diagnostics: List[Diagnostic]
 }
 
+/// A lexer mode pushed onto an internal stack to track string-
+/// interpolation context.  The stack is empty during normal top-
+/// level lexing; the `InString` frame is pushed when a `"` opens an
+/// interpolated literal, and an `InHole` frame is pushed when a
+/// `${` opens an interpolation hole inside it.  Mirrors the F#
+/// bootstrap's `Mode` union.
+union Mode {
+  /// Inside a `"…"` string.  `start` is the position of the
+  /// opening `"`, used for span construction on `TStringPart` and
+  /// for the unterminated-string diagnostic.
+  case InString(start: Position)
+  /// Inside an interpolation hole `${ … }`.  `depthBefore` is the
+  /// `bracketDepth` recorded just before the hole's implicit `{`
+  /// counted; when bracket depth returns to that value the hole
+  /// has closed.
+  case InHole(depthBefore: Int)
+}
+
 /// Internal state carried through every helper as `inout`.  Records in
 /// Lyric have assignable fields once a binding is in scope, so each
 /// helper can step the cursor and accumulate tokens / diagnostics
@@ -464,6 +505,9 @@ record LexerState {
   haveAnyToken: Bool
   tokens:      List[SpannedToken]
   diagnostics: List[Diagnostic]
+  // String / interpolation mode stack.  Empty during plain top-
+  // level lexing; see the `Mode` union.
+  modes:       List[Mode]
 }
 
 func newState(source: in String): LexerState {
@@ -478,8 +522,30 @@ func newState(source: in String): LexerState {
     prevWasStmtEnd = false,
     haveAnyToken   = false,
     tokens         = newList(),
-    diagnostics    = newList()
+    diagnostics    = newList(),
+    modes          = newList()
   )
+}
+
+/// `topMode`: peek the most recently pushed mode, if any.
+func topMode(state: in LexerState): Option[Mode] {
+  val n = state.modes.count
+  if n == 0 {
+    None
+  } else {
+    Some(value = state.modes[n - 1])
+  }
+}
+
+func pushMode(state: inout LexerState, m: in Mode): Unit {
+  state.modes.add(m)
+}
+
+func popMode(state: inout LexerState): Unit {
+  val n = state.modes.count
+  if n > 0 {
+    state.modes.removeAt(n - 1)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1493,6 +1559,209 @@ func lexStringLiteral(state: inout LexerState): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// String interpolation, triple-quoted, and raw strings (Phase 5 §M5.1
+// stage 3).  Mirrors `compiler/src/Lyric.Lexer/Lexer.fs` 1:1 — see the
+// docstrings on each helper for the per-shape rules.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lookahead from just past an opening `"`: scan for the first
+/// occurrence of an unescaped `${`, closing `"`, newline, or EOF.
+/// Returns true iff `${` is encountered first — that's the signal
+/// to take the multi-token interpolation path instead of the simple
+/// `TString` path.
+@pure
+func hasInterpolation(state: in LexerState): Bool {
+  var i = state.pos + 1   // skip the `"` we're sitting on
+  var result = false
+  var stopped = false
+  while not stopped {
+    if i >= state.source.length {
+      stopped = true
+    } else {
+      val c = state.source[i]
+      if c == '"' {
+        stopped = true
+      } else if c == '\n' {
+        stopped = true
+      } else if c == '\\' {
+        // Skip the backslash and the next char (the escape body).
+        i = i + 2
+      } else if c == '$' and i + 1 < state.source.length
+                and state.source[i + 1] == '{' {
+        result = true
+        stopped = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  return result
+}
+
+/// Open an interpolated string: emit `TStringStart`, push `InString`
+/// mode.  The actual content + holes are consumed by the dispatcher
+/// via `lexStringChunk` on subsequent steps.
+func lexInterpolatedStringOpen(state: inout LexerState): Unit {
+  val startP = currentPosition(state)
+  advance(state)   // opening `"`
+  emit(state, TStringStart, startP)
+  pushMode(state, InString(start = startP))
+}
+
+/// Inside an `InString` frame: consume one chunk of string content.
+/// Emits at most one `TStringPart` for the literal run, followed by
+/// either `TStringEnd` (closing quote), `TStringHoleStart` + push
+/// `InHole` (a `${`), or a diagnostic + `TStringEnd` on EOF / stray
+/// newline.
+func lexStringChunk(state: inout LexerState, stringStart: in Position): Unit {
+  val chunkStart = currentPosition(state)
+  var buf = ""
+  var stopped = false
+  // closeReason: 0 closed, 1 hole, 2 newline, 3 eof.
+  var closeReason = 0
+  while not stopped {
+    if isAtEnd(state) {
+      stopped = true
+      closeReason = 3
+    } else {
+      val c = peek(state)
+      if c == '"' {
+        stopped = true
+        closeReason = 0
+      } else if c == '$' and peekAt(state, 1) == '{' {
+        stopped = true
+        closeReason = 1
+      } else if c == '\n' {
+        stopped = true
+        closeReason = 2
+      } else if c == '\\' {
+        advance(state)    // consume the backslash
+        val d = lexEscape(state, chunkStart)
+        buf = buf + charToString(d)
+      } else {
+        buf = buf + charToString(advance(state))
+      }
+    }
+  }
+  if buf.length > 0 {
+    emit(state, TStringPart(text = buf), chunkStart)
+  }
+  if closeReason == 0 {
+    val endStart = currentPosition(state)
+    advance(state)   // closing `"`
+    emit(state, TStringEnd, endStart)
+    popMode(state)
+  } else if closeReason == 1 {
+    val holeStart = currentPosition(state)
+    advance(state)   // `$`
+    advance(state)   // `{`
+    emit(state, TStringHoleStart, holeStart)
+    // The hole's implicit `{` counts toward bracketDepth so a
+    // matching `}` decrements back to the saved depth, signalling
+    // hole-close to the dispatcher.
+    val depthBeforeHole = state.bracketDepth
+    state.bracketDepth = state.bracketDepth + 1
+    pushMode(state, InHole(depthBefore = depthBeforeHole))
+  } else {
+    recordError(state, "L0025",
+                "unterminated string literal",
+                makeSpan(stringStart, currentPosition(state)))
+    emit(state, TStringEnd, currentPosition(state))
+    popMode(state)
+  }
+}
+
+/// Triple-quoted string.  Spans newlines; escapes processed
+/// identically to a single-quoted string.  Closes on the first
+/// occurrence of `"""` in the body.  Interpolation in the triple
+/// form is reserved (the spec keeps it for a future slice).
+func lexTripleString(state: inout LexerState): Unit {
+  val startP = currentPosition(state)
+  advance(state)   // first `"`
+  advance(state)   // second `"`
+  advance(state)   // third `"`
+  var buf = ""
+  var terminated = false
+  while not terminated and not isAtEnd(state) {
+    if peek(state) == '"' and peekAt(state, 1) == '"'
+       and peekAt(state, 2) == '"' {
+      advance(state)
+      advance(state)
+      advance(state)
+      terminated = true
+    } else if peek(state) == '\\' {
+      advance(state)
+      val d = lexEscape(state, startP)
+      buf = buf + charToString(d)
+    } else {
+      buf = buf + charToString(advance(state))
+    }
+  }
+  if not terminated {
+    recordError(state, "L0026",
+                "unterminated triple-quoted string literal",
+                makeSpan(startP, currentPosition(state)))
+  }
+  emit(state, TTripleString(text = buf), startP)
+}
+
+/// Raw string: `r"…"` (no hashes) or `r#"…"#`, `r##"…"##`, etc.
+/// Inside the body no escape processing happens — the body is
+/// captured byte-for-byte.  Newlines are permitted.  The closing
+/// delimiter is a `"` followed by the same number of `#`s used at
+/// the opening.
+func lexRawString(state: inout LexerState): Unit {
+  val startP = currentPosition(state)
+  advance(state)   // `r`
+  var hashes = 0
+  while peek(state) == '#' {
+    advance(state)
+    hashes = hashes + 1
+  }
+  if peek(state) != '"' {
+    recordError(state, "L0027",
+                "expected '\"' after 'r' (raw-string opener)",
+                makeSpan(startP, currentPosition(state)))
+    emit(state, TRawString(text = ""), startP)
+    return
+  }
+  advance(state)   // opening `"`
+  var buf = ""
+  var terminated = false
+  while not terminated and not isAtEnd(state) {
+    if peek(state) == '"' {
+      // Tentative close: peek ahead `hashes` hash characters.
+      var i = 1
+      var matched = true
+      while matched and i <= hashes {
+        if peekAt(state, i) != '#' { matched = false }
+        i = i + 1
+      }
+      if matched {
+        // Consume `"` plus `hashes` `#`s.
+        advance(state)
+        var k = 0
+        while k < hashes {
+          advance(state)
+          k = k + 1
+        }
+        terminated = true
+      } else {
+        buf = buf + charToString(advance(state))
+      }
+    } else {
+      buf = buf + charToString(advance(state))
+    }
+  }
+  if not terminated {
+    recordError(state, "L0028",
+                "unterminated raw string literal",
+                makeSpan(startP, currentPosition(state)))
+  }
+  emit(state, TRawString(text = buf), startP)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Punctuation and operators.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1593,16 +1862,52 @@ func lexOne(state: inout LexerState): Unit {
   skipTrivia(state)
   if isAtEnd(state) { return }
   val c = peek(state)
-  if isDigitChar(c) {
+  // Raw-string prefix wins over the `r` identifier path.
+  if c == 'r' and (peekAt(state, 1) == '"' or peekAt(state, 1) == '#') {
+    lexRawString(state)
+  // Triple-quoted string wins over the single-quoted form.
+  } else if c == '"' and peekAt(state, 1) == '"' and peekAt(state, 2) == '"' {
+    lexTripleString(state)
+  } else if isDigitChar(c) {
     lexNumber(state)
   } else if isIdStart(c) {
     lexIdentOrKeyword(state)
   } else if c == '"' {
-    lexStringLiteral(state)
+    // Decide between the simple `TString` path (no interpolation)
+    // and the multi-token interpolated path.
+    if hasInterpolation(state) {
+      lexInterpolatedStringOpen(state)
+    } else {
+      lexStringLiteral(state)
+    }
   } else if c == '\'' {
     lexCharLiteral(state)
   } else {
     lexPunct(state)
+  }
+}
+
+/// One step of the top-level lexer.  Dispatches to either `lexOne`
+/// (for normal / `InHole` frames) or `lexStringChunk` (for
+/// `InString` frames).  After emitting a token in `InHole` context,
+/// checks whether the matching `}` just closed the hole and pops
+/// the `InHole` frame if so.
+func lexNext(state: inout LexerState): Unit {
+  match topMode(state) {
+    case Some(InString(start)) -> lexStringChunk(state, start)
+    case _ -> {
+      lexOne(state)
+      // Hole-close detection: emit() decremented bracketDepth on a
+      // matching `}`.  If we're now back at the depth recorded at
+      // hole entry, the hole has closed; pop and resume string
+      // mode.
+      match topMode(state) {
+        case Some(InHole(saved)) -> {
+          if state.bracketDepth == saved { popMode(state) }
+        }
+        case _ -> {}
+      }
+    }
   }
 }
 
@@ -1621,7 +1926,18 @@ pub func lex(source: in String): LexResult {
   val normalised = normaliseLineEndings(source)
   val state = newState(normalised)
   while not isAtEnd(state) {
-    lexOne(state)
+    lexNext(state)
+  }
+  // Drain any open string / hole frames at EOF so the diagnostics
+  // arrive in a well-defined order and the tokens stream stays
+  // balanced (every TStringStart / TStringHoleStart eventually
+  // pairs with a TStringEnd).
+  while state.modes.count > 0 {
+    match topMode(state) {
+      case Some(InString(start)) -> lexStringChunk(state, start)
+      case Some(InHole(_))       -> popMode(state)
+      case None                  -> {}
+    }
   }
   // Final STMT_END if the file ended on a real statement.
   skipTrivia(state)
