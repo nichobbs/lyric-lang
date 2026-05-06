@@ -142,4 +142,41 @@ sat
             let rendered = renderCounterexample []
             Expect.stringContains rendered "no model bindings" "empty"
         }
+
+        // ---------- M4.3: SolverFlavor / CVC5 parity ----------
+        // Per `docs/15-phase-4-proof-plan.md` §M4.3 deliverable 10
+        // (CVC5 solver-swap parity).  The persistent-session machinery
+        // routes through the same code path for both Z3 and CVC5; the
+        // flavor-aware abstraction lives in `SolverFlavor` and decides
+        // which CLI flags to use and which verdict-line quirks to
+        // tolerate.  Direct-test the flavor table without spawning a
+        // process so the test runs even when no SMT solver is on PATH.
+
+        test "[M4.3] SolverFlavor.display is stable" {
+            Expect.equal (SolverFlavor.display Z3Flavor)   "z3"   "z3"
+            Expect.equal (SolverFlavor.display Cvc5Flavor) "cvc5" "cvc5"
+        }
+
+        test "[M4.3] SolverFlavor.interactiveArgs differ between solvers" {
+            let z3Args = SolverFlavor.interactiveArgs Z3Flavor
+            let cvc5Args = SolverFlavor.interactiveArgs Cvc5Flavor
+            // Z3 uses -in (interactive stdin) and -T:5 (timeout).
+            Expect.contains z3Args "-in"  "z3 interactive flag"
+            Expect.contains z3Args "-T:5" "z3 timeout"
+            // CVC5 uses --interactive and --tlimit-per for the same purpose.
+            Expect.contains cvc5Args "--interactive"
+                "cvc5 interactive flag"
+            Expect.contains cvc5Args "--lang=smt2"
+                "cvc5 SMT-LIB v2 input"
+            Expect.contains cvc5Args "--produce-models"
+                "cvc5 model output"
+            Expect.isTrue
+                (cvc5Args |> List.exists (fun a -> a.StartsWith "--tlimit"))
+                "cvc5 has a timeout flag"
+            // Cross-pollination guard: z3 flags don't leak into cvc5 args.
+            Expect.isFalse (cvc5Args |> List.contains "-in")
+                "cvc5 doesn't use z3-style -in"
+            Expect.isFalse (z3Args |> List.contains "--lang=smt2")
+                "z3 doesn't use cvc5-style --lang=smt2"
+        }
     ]

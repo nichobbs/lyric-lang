@@ -363,47 +363,89 @@ let private writeCache
     Directory.CreateDirectory dir |> ignore
     File.WriteAllText(path, sb.ToString())
 
-/// Query the z3 binary for its version string, used as a cache
-/// key salt.
-let private queryZ3Version (z3Path: string) : string =
-    try
-        let psi = ProcessStartInfo()
-        psi.FileName <- z3Path
-        psi.ArgumentList.Add "--version"
-        psi.RedirectStandardOutput <- true
-        psi.UseShellExecute <- false
-        psi.CreateNoWindow <- true
-        match Option.ofObj (Process.Start psi) with
-        | Some proc ->
-            use _ = proc
-            let out = proc.StandardOutput.ReadToEnd().Trim()
-            proc.WaitForExit()
-            out
-        | None -> "unknown-z3"
-    with _ -> "unknown-z3"
+/// Which SMT solver a session is talking to.  Both speak SMT-LIB
+/// v2.6, but their interactive command-line flags and a few
+/// idiosyncrasies (verdict-line whitespace, model-block trailers)
+/// differ enough to keep separate.
+type SolverFlavor =
+    | Z3Flavor
+    | Cvc5Flavor
 
-/// One persistent z3 process.  The session pipes the preamble +
+module SolverFlavor =
+
+    let display (f: SolverFlavor) : string =
+        match f with
+        | Z3Flavor   -> "z3"
+        | Cvc5Flavor -> "cvc5"
+
+    /// Interactive-mode arguments for the persistent-session path.
+    /// Z3: `-in -T:5` (interactive stdin, 5s per check).
+    /// CVC5: `--lang=smt2 --interactive --produce-models --tlimit-per=5000`.
+    /// `--produce-models` duplicates the preamble's
+    /// `(set-option :produce-models true)` but is harmless and works
+    /// across CVC5 versions where the option route differs.
+    let interactiveArgs (f: SolverFlavor) : string list =
+        match f with
+        | Z3Flavor   -> ["-in"; "-T:5"]
+        | Cvc5Flavor -> ["--lang=smt2"; "--interactive"; "--produce-models"; "--tlimit-per=5000"]
+
+/// Query a solver binary for its version string, used as a cache
+/// key salt.  Output is solver-defined; we prepend the flavor name
+/// so cache entries from different solvers (or different versions
+/// of the same solver) never collide.
+let private querySolverVersion
+        (flavor: SolverFlavor) (binPath: string) : string =
+    let raw =
+        try
+            let psi = ProcessStartInfo()
+            psi.FileName <- binPath
+            psi.ArgumentList.Add "--version"
+            psi.RedirectStandardOutput <- true
+            psi.UseShellExecute <- false
+            psi.CreateNoWindow <- true
+            match Option.ofObj (Process.Start psi) with
+            | Some proc ->
+                use _ = proc
+                let out = proc.StandardOutput.ReadToEnd().Trim()
+                proc.WaitForExit()
+                out
+            | None -> "unknown"
+        with _ -> "unknown"
+    sprintf "%s/%s" (SolverFlavor.display flavor) raw
+
+/// One persistent solver process.  The session pipes the preamble +
 /// shared declarations once, then push/pop-scopes each goal so the
 /// solver re-enters a clean assertion stack between goals while
-/// retaining the shared declarations.
+/// retaining the shared declarations.  The flavor controls which
+/// command-line flags were used at start-up and which verdict-line
+/// quirks to tolerate.
 type SolverSession =
     private
-        { Process:     Process
+        { Process:        Process
+          Flavor:         SolverFlavor
           mutable Declared: Set<string>
-          Z3Version:   string
-          Cache:       System.Collections.Generic.Dictionary<string, SolverOutcome>
-          CachePath:   string option
-          mutable Dirty: bool }
+          SolverVersion:  string
+          Cache:          System.Collections.Generic.Dictionary<string, SolverOutcome>
+          CachePath:      string option
+          mutable Dirty:  bool }
 
-    member this.Z3 : string = this.Z3Version
+    /// Display name + version of the solver this session is bound to.
+    /// Stable for cache invalidation across solver upgrades.
+    member this.Version : string = this.SolverVersion
 
-let private startSession (z3Path: string) (cachePath: string option)
+    /// Which SMT solver this session was started against.
+    member this.SolverName : string = SolverFlavor.display this.Flavor
+
+let private startSession
+        (flavor:    SolverFlavor)
+        (binPath:   string)
+        (cachePath: string option)
         : SolverSession option =
-    let z3Version = queryZ3Version z3Path
+    let version = querySolverVersion flavor binPath
     let psi = ProcessStartInfo()
-    psi.FileName <- z3Path
-    psi.ArgumentList.Add "-in"
-    psi.ArgumentList.Add "-T:5"
+    psi.FileName <- binPath
+    for a in SolverFlavor.interactiveArgs flavor do
+        psi.ArgumentList.Add a
     psi.RedirectStandardInput  <- true
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError  <- true
@@ -420,23 +462,28 @@ let private startSession (z3Path: string) (cachePath: string option)
                 System.Collections.Generic.Dictionary<string, SolverOutcome>()
             match cachePath with
             | Some p ->
-                for KeyValue(k, v) in readCache p z3Version do
+                for KeyValue(k, v) in readCache p version do
                     dict.[k] <- parseOutcome v
             | None -> ()
             dict
         Some
-            { Process   = proc
-              Declared  = Set.empty
-              Z3Version = z3Version
-              Cache     = cache
-              CachePath = cachePath
-              Dirty     = false }
+            { Process       = proc
+              Flavor        = flavor
+              Declared      = Set.empty
+              SolverVersion = version
+              Cache         = cache
+              CachePath     = cachePath
+              Dirty         = false }
 
-/// Read z3's response to a `(check-sat)` (and the optional
+/// Read a solver's response to a `(check-sat)` (and the optional
 /// `(get-model)` block that follows on `sat`) — one line for
 /// the verdict, then either nothing (unsat / unknown) or a
 /// multi-line `(...)` for the model.
-let private readResponse (proc: Process) : SolverOutcome =
+///
+/// Flavor-aware: Z3 emits a stray `(error ...)` line on
+/// `unsat`-then-`get-model` (which we drain); CVC5 doesn't.  Both
+/// emit the same `(...)` model shape on `sat`.
+let private readResponse (flavor: SolverFlavor) (proc: Process) : SolverOutcome =
     // Read first non-empty line for the verdict.
     let rec readVerdict () =
         match Option.ofObj (proc.StandardOutput.ReadLine()) with
@@ -446,19 +493,27 @@ let private readResponse (proc: Process) : SolverOutcome =
             if t = "" then readVerdict ()
             else t
     let verdict = readVerdict ()
+    let solverName = SolverFlavor.display flavor
     match verdict with
     | "unsat" ->
-        // Drain any trailing `(error ...)` from a get-model on a
-        // closed scope.  Z3 emits one line on stderr in that case;
-        // we deliberately don't read it so the next goal starts
-        // clean.
-        let _ = proc.StandardOutput.ReadLine()  // (error ...) eaten
+        // Z3 emits a `(error ...)` line on a `(get-model)` against
+        // an unsat scope; CVC5 emits nothing in interactive mode.
+        // Drain only on Z3 so we don't block on CVC5.
+        match flavor with
+        | Z3Flavor -> let _ = proc.StandardOutput.ReadLine() in ()
+        | Cvc5Flavor -> ()
         Discharged
     | "unknown" ->
-        let _ = proc.StandardOutput.ReadLine()
-        Unknown "z3 returned unknown"
+        // Z3 may emit a trailing line; CVC5 does not.  Same drain
+        // policy as `unsat`.
+        match flavor with
+        | Z3Flavor -> let _ = proc.StandardOutput.ReadLine() in ()
+        | Cvc5Flavor -> ()
+        Unknown (sprintf "%s returned unknown" solverName)
     | "sat" ->
-        // Read until balanced parens — the model body.
+        // Read until balanced parens — the model body.  Both Z3 and
+        // CVC5 emit standard SMT-LIB v2.6 `(define-fun …)` clauses
+        // inside an outer `(…)`, which `parseModel` consumes.
         let sb : StringBuilder = StringBuilder()
         sb.Append("sat\n") |> ignore
         let mutable depth = 0
@@ -478,17 +533,18 @@ let private readResponse (proc: Process) : SolverOutcome =
                 if opened && depth = 0 then keepGoing <- false
         Counterexample (sb.ToString())
     | other ->
-        Unknown (sprintf "z3 returned unexpected verdict: %s" other)
+        Unknown (sprintf "%s returned unexpected verdict: %s"
+                    solverName other)
 
 /// Discharge a goal in a session.  Cache-aware: hash the goal,
 /// look it up in the cache, return early on a hit.  On miss,
-/// pipe the goal's body to the persistent z3 process and parse
+/// pipe the goal's body to the persistent solver process and parse
 /// the response.
 let dischargeIn (session: SolverSession) (g: Goal) : SolverOutcome =
     match trivialDischarge g with
     | Some outcome -> outcome
     | None ->
-        let key = hashGoal session.Z3Version g
+        let key = hashGoal session.SolverVersion g
         match session.Cache.TryGetValue key with
         | true, cached -> cached
         | _ ->
@@ -497,13 +553,13 @@ let dischargeIn (session: SolverSession) (g: Goal) : SolverOutcome =
             session.Declared <- declared'
             session.Process.StandardInput.Write body
             session.Process.StandardInput.Flush()
-            let outcome = readResponse session.Process
+            let outcome = readResponse session.Flavor session.Process
             session.Cache.[key] <- outcome
             session.Dirty <- true
             outcome
 
 /// Tear down the session.  Flushes the cache to disk if dirty,
-/// then closes the z3 process.
+/// then closes the solver process.
 let endSession (session: SolverSession) : unit =
     match session.CachePath with
     | Some p when session.Dirty ->
@@ -511,7 +567,7 @@ let endSession (session: SolverSession) : unit =
             session.Cache
             |> Seq.map (fun kv -> kv.Key, serializeOutcome kv.Value)
             |> Map.ofSeq
-        try writeCache p session.Z3Version entries
+        try writeCache p session.SolverVersion entries
         with ex ->
             eprintfn "warning: cache write to %s failed: %s" p ex.Message
     | Some _ -> ()  // not dirty
@@ -536,25 +592,26 @@ let withSession
         not (isNull (Environment.GetEnvironmentVariable "LYRIC_VERIFY_DEBUG"))
     let trace (msg: string) =
         if debug then eprintfn "%s" msg
-    let runWithSolver (solverPath: string) =
-        trace (sprintf "[verify] starting session at %s" solverPath)
-        match startSession solverPath cachePath with
+    let runWithSolver (flavor: SolverFlavor) (solverPath: string) =
+        trace (sprintf "[verify] starting %s session at %s"
+                (SolverFlavor.display flavor) solverPath)
+        match startSession flavor solverPath cachePath with
         | None ->
             trace "[verify] startSession failed; falling back to per-goal"
             action discharge
         | Some session ->
             trace (sprintf "[verify] session started, solver version: %s"
-                    session.Z3Version)
+                    session.SolverVersion)
             try
                 action (fun g -> dischargeIn session g)
             finally
                 trace (sprintf "[verify] endSession (dirty=%b)" session.Dirty)
                 endSession session
     match findZ3 () with
-    | Some z3 -> runWithSolver z3
+    | Some z3 -> runWithSolver Z3Flavor z3
     | None ->
         match findCvc5 () with
-        | Some cvc5 -> runWithSolver cvc5
+        | Some cvc5 -> runWithSolver Cvc5Flavor cvc5
         | None ->
             trace "[verify] no solver found; using trivial-only discharge"
             action discharge

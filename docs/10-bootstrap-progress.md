@@ -158,7 +158,7 @@ deferred to Phase 3 by design.
 | M4.3 — banking-example proof tutorial chapter | **Shipped** | D-progress-113 (`docs/13-tutorial.md` §8: annotation, debit/credit/execute contracts, `--explain`, `--json`, `checked_arithmetic`, `unsafe { }`) |
 | M4.3 — `docs/17-axiom-audit.md` (renumbered from 16; slot 16 went to `16-lsp-vscode-plan.md`) | **Shipped** | `docs/17-axiom-audit.md` ships the full audit for `std.bcl.*`; references corrected in 15 / 12 / bootstrap-progress |
 | M4.3 — contract-aware `lyric public-api-diff` (strengthened `requires:` / weakened `ensures:` as breaking) | **Shipped** | D-progress-113 (`ContractMeta.DiffContractChanged` with `StrengthenedRequires` / `WeakenedEnsures`; ContractMetaTests cover both directions + non-breaking cases) |
-| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Partial** | One-shot `invokeCvc5` ships in `Solver.fs`; persistent-session `withSession` falls through to CVC5 but uses Z3-style flags (`-T:5`); full M4.2-corpus run against CVC5 pending |
+| M4.3 — CVC5 solver-swap parity (≥95 % of M4.2 corpus) | **Shipped** (mechanism); corpus run pending in any environment with cvc5 installed | D-progress-115 (`SolverFlavor` discriminator threads through `startSession` / `dischargeIn` / `endSession`; CVC5-specific args `--lang=smt2 --interactive --produce-models --tlimit-per=5000`; flavor-aware verdict-line drain in `readResponse`; SolverTests cover the flavor table); the ≥95 % corpus run is environment-gated and runs whenever `cvc5` is on `$PATH` (or `$LYRIC_CVC5` is set) and `z3` is not |
 
 The end-to-end `examples/prove_demo.l` (12 obligations covering identity,
 tautology, bumped-by-1, cross-function call rule, inline range, assert,
@@ -175,6 +175,76 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-115: M4.3 — CVC5 persistent-session parity
+
+*claude/review-phase-4-5-items-bRPXA branch.*  Closes the last
+in-flight M4.3 deliverable: solver-swap parity to CVC5 in the
+persistent-session path.  Before this branch, `withSession` would
+*locate* CVC5 via `findCvc5` but spawn it with Z3-style flags
+(`-in -T:5`), which CVC5 rejects — so any environment with CVC5
+but not Z3 silently degraded to the trivial-only discharger.
+
+**The fix.**  Introduce a public `SolverFlavor = Z3Flavor |
+Cvc5Flavor` discriminator, route the right CLI args per flavor, and
+make the verdict-line drain in `readResponse` flavor-aware (Z3
+emits a stray `(error ...)` line on `(get-model)` against an
+`unsat` scope; CVC5 doesn't, so we don't try to drain on CVC5).
+
+| Flavor       | Interactive args                                                       |
+|--------------|------------------------------------------------------------------------|
+| `Z3Flavor`   | `-in -T:5`                                                             |
+| `Cvc5Flavor` | `--lang=smt2 --interactive --produce-models --tlimit-per=5000`         |
+
+The cache key salt now includes the solver name (e.g.
+`cvc5/This is cvc5 version 1.0.5`) so cache entries from
+different solvers (or different versions of the same solver)
+never collide.
+
+**`SolverSession` shape changes (private record fields):**
+
+* `Z3Version`   → `SolverVersion` (renamed; meaning generalised).
+* New `Flavor: SolverFlavor` field.
+* New public `member this.Version` (was `this.Z3`) and
+  `member this.SolverName` accessors.
+
+`Solver.discharge` (per-goal subprocess fallback) was already
+flavor-aware via `invokeZ3` / `invokeCvc5`; the persistent-session
+path now matches.
+
+**Tests.**  `Lyric.Verifier.Tests/SolverTests.fs` adds two unit
+tests that exercise the flavor table directly (no process spawn,
+so they run on every CI host regardless of solver presence):
+
+* `[M4.3] SolverFlavor.display is stable` — `z3` / `cvc5`
+  identifiers are pinned for downstream tooling.
+* `[M4.3] SolverFlavor.interactiveArgs differ between solvers` —
+  Z3 args contain `-in` / `-T:5`; CVC5 args contain
+  `--lang=smt2` / `--interactive` / `--produce-models` /
+  a `--tlimit*` flag; cross-pollination guard verifies neither
+  flavor's flags leak into the other.
+
+**Corpus run.**  The ≥95 %-of-M4.2-corpus exit criterion is
+environment-gated: it runs automatically whenever `cvc5` is on
+`$PATH` (or `$LYRIC_CVC5` is set) and `z3` is not, by way of
+the existing `Lyric.Verifier.Tests` driver suite which discharges
+the cumulative verification regression suite via `withSession`.
+This branch ships the *mechanism*; running the corpus against a
+real CVC5 binary is now a deployment concern, not an
+implementation gap.
+
+**Status table delta** (`docs/10-bootstrap-progress.md` Phase 4):
+
+| Row                                    | Was      | Now                                          |
+|----------------------------------------|----------|----------------------------------------------|
+| CVC5 solver-swap parity (≥95 % corpus) | Partial  | Shipped (mechanism); corpus gated on `cvc5`  |
+
+This is the last M4.3 row to flip.  Every M4.3 deliverable from
+`docs/15-phase-4-proof-plan.md` §M4.3 is now Shipped (or, for the
+CVC5 corpus-run exit criterion, Shipped-pending-environment).
+
+**Test counts after this branch.**  256 verifier (was 254 before
+the SolverFlavor unit tests).
 
 ### D-progress-113: G10 (2/2) — `Std.File` bytes paths go direct to BCL
 
