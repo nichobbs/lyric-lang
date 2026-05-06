@@ -82,7 +82,8 @@ func main(): Unit { ()  }
                 { Name = "Lyric.Greeter"; Version = "0.1.0"; DllPath = dll }
             match loadRestoredPackage ref' with
             | Error e -> failwithf "expected Ok, got %A" e
-            | Ok artifact ->
+            | Ok [] -> failwith "expected at least one artifact"
+            | Ok (artifact :: _) ->
                 Expect.equal artifact.Contract.PackageName "Lyric.Greeter" "pkg name"
                 let funcNames =
                     artifact.Contract.Decls

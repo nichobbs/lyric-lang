@@ -11,6 +11,7 @@
     <Compile Include="RestoredPackagesTests.fs" />
     <Compile Include="FmtTests.fs" />
     <Compile Include="LintTests.fs" />
+    <Compile Include="ProjectBuildTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

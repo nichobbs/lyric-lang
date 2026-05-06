@@ -40,9 +40,9 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.2.i — `[project]` table in `lyric.toml` (Manifest parsing + tests) | **Shipped** (this branch) | D-progress-097 |
 | M5.1 stage 2c.2.ii.a — single-DLL emit driver MVP: independent packages bundle into one PE, per-package contract resources | **Shipped** (PR #133) | D-progress-098 |
 | M5.1 stage 2c.2.ii.b — cross-package symbol resolution within the project: topo-sort emit, in-project artifacts, B0020 cycle diagnostic | **Shipped** (PR #134) | D-progress-099 |
-| M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | **Shipped** (this branch) | D-progress-100 |
-| M5.1 stage 2c.2.iii — `lyric publish` / `lyric restore` walk all `Lyric.Contract.<Pkg>` resources | Pending | — |
-| M5.1 stage 2c.2.iv — CLI integration (`lyric build` reads `[project]` + dispatches to `emitProject`) | Pending | — |
+| M5.1 stage 2c.2.ii.c — `internal` → CLR `assembly` access modifier on emitted methods/types (codegen change) | **Shipped** (PR #136) | D-progress-100 |
+| M5.1 stage 2c.2.iii — `lyric restore` walks every `Lyric.Contract.<Pkg>` resource on bundled DLLs | **Shipped** (this branch) | D-progress-101 |
+| M5.1 stage 2c.2.iv — CLI integration (`lyric build --manifest` dispatches to `emitProject` when `[project] output = "single"`); main entry-point capture from project bundle | **Shipped** (this branch) | D-progress-102 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -164,6 +164,122 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-102: M5.1 stage 2c.2.iv — CLI dispatch to `emitProject`
+
+*claude/project-dll-stage-2c2iv-iii branch.*  Wires `lyric build`
+to recognise `[project] output = "single"` in `lyric.toml` and
+dispatch to the in-emitter project-as-DLL bundler.  Closes the loop
+between the manifest format (D-progress-097) and the emit driver
+shipped across D-progress-098 / D-progress-099.
+
+**`Lyric.Cli.Program.buildProject`.** New private helper that:
+
+* Resolves the bundle output path: explicit `-o` wins, else the
+  manifest's `output_assembly`, else `<project.Name>.dll` placed in
+  `<manifestDir>/bin/`.
+* Walks `[project.packages]`, enumerating `*.l` files under each
+  package's source dir in deterministic (lexicographic) order so
+  emit reproducibility doesn't depend on filesystem traversal order.
+* Constructs a `Lyric.Emitter.Emitter.ProjectEmitRequest` with
+  `Single = true` and forwards restored-package refs from
+  `[dependencies]`.
+* On success: writes `runtimeconfig.json`, copies the stdlib
+  closure into the output dir, prints `built <bundle>`.
+
+**`build` command dispatch.**  When `lyric build --manifest <path>`
+is called with no positional source AND the manifest declares
+`[project]`, the CLI routes to `buildProject` instead of the
+single-source `build`.  `--aot` with project mode is rejected
+(B0021/B0022 follow-up).  The `output = "per-package"` path also
+errors with a helpful pointer back to `lyric build <pkg>.l`; the
+bootstrap stdlib's per-package layout is unchanged.
+
+**Bundle entry-point capture.**  `emitAssembly` gains a new
+`mainOut: MethodInfo option ref option` parameter — when the
+caller passes `Some r`, the host-main wrapper produced by
+`defineHostEntryPoint` is written into `r`.  `emitProject`
+pre-scans packages for `func main`, emits exactly one as
+non-library (the rest stay library-shaped to avoid duplicate
+`Program.Main` claims), captures the resulting `MethodInfo`, and
+threads it through `Backend.save` so the bundled DLL's PE header
+records the right entry-point token.  Bundles without `main` save
+library-shaped (no entry point) — same as the legacy
+single-package library path.
+
+**Tests.**
+
+* `Lyric.Cli.Tests/ProjectBuildTests.fs` — two cases.
+  - `lyric build --manifest bundles a multi-package project` drops
+    a `MyApp.Core` + `MyApp.App` skeleton in a temp dir, invokes
+    the CLI as a subprocess, asserts the bundle DLL exists, both
+    `Lyric.Contract.MyApp.Core` and `Lyric.Contract.MyApp.App`
+    resources are present (and the legacy `Lyric.Contract`
+    resource is *absent*), then runs the bundle via `dotnet exec`
+    and verifies cross-package call output (`println(double(7))`
+    → `14`).
+  - `lyric build --manifest reports empty [project.packages]`
+    asserts the missing-packages diagnostic surfaces with a
+    non-zero exit.
+* No emitter-side tests changed shape; the existing
+  `[two_packages_bundle_into_one_dll]` covers the same emit
+  invariants from the API side.
+
+**Test totals after rebase + new tests.** 527 emitter tests pass
+(+2 over the post-#136 baseline of 525), 83 CLI tests (+2),
+242 verifier, 137 type checker, 312 parser, 123 lexer.
+
+**Deferred.**
+
+* `--aot` for project-mode bundles: requires the AOT publish
+  wrapper to handle multi-resource DLLs and the synthetic
+  entry-point class lookup.  Tracked as a follow-up Q.
+* `output = "per-package"` dispatch: the legacy bootstrap stdlib
+  flow is the only consumer today and it stays on the
+  per-source-file `lyric build` path.
+* Auto-discovery for `[project.packages]` (the doc's "glob
+  default"): when `[project.packages]` is empty, today the build
+  errors with B0023.  Walking the source root for `package <X>`
+  declarations is straightforward but isn't on the critical path
+  for the self-hosted compiler bootstrap.
+
+### D-progress-101: M5.1 stage 2c.2.iii — `lyric restore` walks bundled DLL contracts
+
+*claude/project-dll-stage-2c2iv-iii branch.*  Closes the
+publish/restore round-trip for `output = "single"` bundles per
+`docs/20-project-as-dll.md` §5: a downstream consumer can list a
+single bundled DLL as one `[dependencies]` entry and `import` any
+of its bundled packages by name.
+
+**`Lyric.Emitter.RestoredPackages`.**  The package loader gains a
+multi-resource path.  `loadRestoredPackage` first probes for the
+legacy single-resource form (`Lyric.Contract` with no suffix); on
+miss, falls back to `ContractMeta.readAllContractsFromAssembly`
+and produces one `RestoredArtifact` per `Lyric.Contract.<Pkg>`
+resource, sharing the same loaded `Assembly` and `DllPath`.  The
+return type changes from `Result<RestoredArtifact, _>` to
+`Result<RestoredArtifact list, _>` so a single ref can expose
+multiple artifacts.
+
+**`Lyric.Emitter.Emitter.resolveRestoredImports`.**  Updated to
+match: pre-load every ref's contracts up front, index every
+resulting artifact by its declared package path
+(`String.concat "." source.Package.Path.Segments`), then partition
+the consumer's imports against that path index.  An import for
+`MyApp.Core` matches the artifact whose synthesised source begins
+`package MyApp.Core` — regardless of which `RestoredPackageRef`
+the artifact came from.  Per-package contract resources let one
+bundle dependency feed N consumer-side imports.
+
+**Tests.**
+
+* `Lyric.Emitter.Tests/RestoredPackageE2ETests.fs +
+  consumer imports two packages from a bundled DLL` — builds a
+  two-package bundle via `emitProject`, points a consumer at it
+  via a single `RestoredPackageRef`, imports both bundled
+  packages, runs the consumer, and verifies cross-package output.
+* `Lyric.Cli.Tests/RestoredPackagesTests.fs` updated to handle
+  the new `Ok (artifact :: _)` shape.
 
 ### D-progress-100: M5.1 stage 2c.2.ii.c — `internal` → CLR `Assembly` access
 
