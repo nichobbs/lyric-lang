@@ -175,16 +175,27 @@ ordered by leverage (most-LoC-eliminated first).
 
 Lyric's `protected type` is the Phase 3-shaped primitive for
 "Ada-style structurally-locked shared mutable state" (per
-`docs/03-decision-log.md` D-progress-049 onward; the parser /
-type checker accept `protected type` already; codegen support
-remains).
+`docs/03-decision-log.md` D-progress-049 onward).  The parser /
+type checker / emitter all support `protected type` already
+(shipped as D-progress-079 and follow-ups; ProtectedTypeTests.fs
+has 14 test cases covering fields, invariants, barriers, generics,
+and the tri-modal lock-flavour split).
 
-**Unblocks:** `StubCounter`, `StubCounterHost`, `LyricTaskScope`,
-`TaskScopeHost`. ~135 LoC of F# shim retired.
+**StubCounter — shipped (D-progress-123).**  `stdlib/std/testing_mocking.l`
+(new top-level file, shadows `_kernel/testing_mocking.l` on .NET)
+defines `pub protected type StubCounter { var count: Int = 0; … }`
+and thin wrapper functions.  `Emitter.fs` gained `IProtected`
+scanning in the artifact-import loop so cross-package references to
+a `protected type` resolve to the correct CLR type.  F#
+`StubCounter` + `StubCounterHost` (~24 LoC) are now dead code;
+removal deferred until `LyricTaskScope` (next step) is ported so
+the shim rebuild stays atomic.
 
-**Cost estimate:** ~600 LoC of emitter work (lock acquisition
-around method bodies, field-access guards, dispose-safe
-finalisation). Already on the Phase 3 roadmap.
+**Remaining:** `LyricTaskScope` / `TaskScopeHost` (~111 LoC).
+Gates on G12 delegate-lowering being complete (not yet shipped).
+
+**Unblocks:** `StubCounter` ✅; `LyricTaskScope` / `TaskScopeHost`
+pending. ~135 LoC of F# shim retired when both are done.
 
 ### G8. Codegen-emitted `null`-aware `println` / `toString` ✅ shipped (D-progress-105)
 
