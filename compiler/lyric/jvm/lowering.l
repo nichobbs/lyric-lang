@@ -190,6 +190,9 @@ pub union LInsn {
   case LNewarray(typeCode: Int)
   case LArraylength
 
+  case LTableswitch(low: Int, high: Int, defaultLabel: String, caseLabels: List[String])
+  case LLookupswitch(defaultLabel: String, pairs: List[SwitchPair])
+
   // Meta-insn: declares an exception table entry.  Produces no bytecode; lowerFunc
   // collects these and emits them in the Code attribute's exception_table.
   // catchClass = "" means catch-all (catch_type=0 in the class file).
@@ -419,6 +422,9 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LCastore  -> emitCastore(asm)
     case LSastore  -> emitSastore(asm)
 
+    case LTableswitch(lo, hi, def, cases) -> emitTableSwitch(asm, lo, hi, def, cases)
+    case LLookupswitch(def, pairs) -> emitLookupSwitch(asm, def, pairs)
+
     case LTryCatch(_, _, _, _) -> ()  // meta-insn: collected by lowerFunc, no bytecode
 
     case LBoxInt -> {
@@ -615,6 +621,22 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
       case LIfIcmpge(l)   -> addTarget(targets, l)
       case LIfIcmpgt(l)   -> addTarget(targets, l)
       case LIfIcmple(l)   -> addTarget(targets, l)
+      case LTableswitch(_, _, def, cases) -> {
+        addTarget(targets, def)
+        var ti = 0
+        while ti < cases.count {
+          addTarget(targets, cases[ti])
+          ti = ti + 1
+        }
+      }
+      case LLookupswitch(def, pairs) -> {
+        addTarget(targets, def)
+        var li = 0
+        while li < pairs.count {
+          addTarget(targets, pairs[li].label)
+          li = li + 1
+        }
+      }
       case _              -> ()
     }
     i = i + 1
