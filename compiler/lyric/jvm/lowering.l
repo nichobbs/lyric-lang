@@ -1445,3 +1445,79 @@ pub func lowerMatchUnion(
     i = i + 1
   }
 }
+
+// ── Int match dispatch ────────────────────────────────────────────────────────
+
+pub record LIntArm {
+  key:       Int
+  caseLabel: String
+  bodyInsns: List[LInsn]
+}
+
+// Emit a lookupswitch dispatch over integer cases.  Each arm is emitted as:
+//   caseLabel: [bodyInsns] goto endLabel
+// The default case follows all arms:
+//   defaultLabel: [defaultInsns] goto endLabel
+pub func lowerMatchInt(
+  asm:          in MethodAssembler,
+  scrutSlot:    in Int,
+  arms:         in List[LIntArm],
+  defaultLabel: in String,
+  defaultInsns: in List[LInsn],
+  endLabel:     in String
+): Unit {
+  val pairs: List[SwitchPair] = newList()
+  var i = 0
+  while i < arms.count {
+    pairs.add(SwitchPair(key = arms[i].key, label = arms[i].caseLabel))
+    i = i + 1
+  }
+  lowerInsn(LIload(slot = scrutSlot), asm)
+  lowerInsn(LLookupswitch(defaultLabel = defaultLabel, pairs = pairs), asm)
+  i = 0
+  while i < arms.count {
+    lowerInsn(LLabel(name = arms[i].caseLabel), asm)
+    lowerBodyInsns(asm, arms[i].bodyInsns)
+    lowerInsn(LGoto(label = endLabel), asm)
+    i = i + 1
+  }
+  lowerInsn(LLabel(name = defaultLabel), asm)
+  lowerBodyInsns(asm, defaultInsns)
+  lowerInsn(LGoto(label = endLabel), asm)
+}
+
+// ── String match dispatch ─────────────────────────────────────────────────────
+
+pub record LStrArm {
+  key:       String
+  skipLabel: String
+  bodyInsns: List[LInsn]
+}
+
+// Emit a linear equals-chain dispatch over string cases.
+// For each arm: aload scrutSlot; ldc key; invokevirtual equals; ifeq skipLabel;
+//   [bodyInsns] goto endLabel; skipLabel:
+// Followed by [defaultInsns] goto endLabel.
+pub func lowerMatchStr(
+  asm:          in MethodAssembler,
+  scrutSlot:    in Int,
+  arms:         in List[LStrArm],
+  defaultInsns: in List[LInsn],
+  endLabel:     in String
+): Unit {
+  val eqIdx = poolMethodref(asm.pool, "java/lang/String", "equals", "(Ljava/lang/Object;)Z")
+  var i = 0
+  while i < arms.count {
+    lowerInsn(LAload(slot = scrutSlot), asm)
+    lowerInsn(LPushString(s = arms[i].key), asm)
+    emitInvokevirtual(asm, eqIdx)
+    trackStack(asm, -1)
+    lowerInsn(LIfeq(label = arms[i].skipLabel), asm)
+    lowerBodyInsns(asm, arms[i].bodyInsns)
+    lowerInsn(LGoto(label = endLabel), asm)
+    lowerInsn(LLabel(name = arms[i].skipLabel), asm)
+    i = i + 1
+  }
+  lowerBodyInsns(asm, defaultInsns)
+  lowerInsn(LGoto(label = endLabel), asm)
+}
