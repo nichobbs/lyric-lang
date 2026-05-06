@@ -190,6 +190,11 @@ pub union LInsn {
   case LNewarray(typeCode: Int)
   case LArraylength
 
+  // Meta-insn: declares an exception table entry.  Produces no bytecode; lowerFunc
+  // collects these and emits them in the Code attribute's exception_table.
+  // catchClass = "" means catch-all (catch_type=0 in the class file).
+  case LTryCatch(startLabel: String, endLabel: String, handlerLabel: String, catchClass: String)
+
   case LIaload
   case LLaload
   case LFaload
@@ -393,6 +398,8 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LBastore  -> emitBastore(asm)
     case LCastore  -> emitCastore(asm)
     case LSastore  -> emitSastore(asm)
+
+    case LTryCatch(_, _, _, _) -> ()  // meta-insn: collected by lowerFunc, no bytecode
   }
 }
 
@@ -548,9 +555,13 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   }
 
   // Pre-pass: collect types for any local slots assigned via store instructions.
-  // This extends the frame beyond the parameter frame for methods with local vars
-  // (e.g., intLoop stores slot 1 = int before the loopHead branch target).
+  // Also collect LTryCatch meta-insns for the exception table and StackMapTable.
   val storeTypes: Map[Int, VerifierType] = newMap()
+  val tcStartLabels:   List[String] = newList()
+  val tcEndLabels:     List[String] = newList()
+  val tcHandlerLabels: List[String] = newList()
+  val tcCatchClasses:  List[String] = newList()
+  val handlerTargets:  Map[String, String] = newMap()  // handlerLabel -> catchClass
   var pi3 = 0
   while pi3 < f.insns.count {
     match f.insns[pi3] {
@@ -587,6 +598,16 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
       case LAstoreAs(s, cls) -> {
         match mapGet(storeTypes, s) {
           case None -> storeTypes.add(s, VObject(className = cls))
+          case Some(_) -> ()
+        }
+      }
+      case LTryCatch(sl, el, hl, cc) -> {
+        tcStartLabels.add(sl)
+        tcEndLabels.add(el)
+        tcHandlerLabels.add(hl)
+        tcCatchClasses.add(cc)
+        match mapGet(handlerTargets, hl) {
+          case None -> handlerTargets.add(hl, cc)
           case Some(_) -> ()
         }
       }
@@ -636,6 +657,16 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   // Walk the LInsn list in order; for each LLabel that is a branch target,
   // emit a full_frame (255) StackMapTable entry.
   val branchTargets = collectBranchTargets(f.insns)
+  // Exception handler labels are also branch targets for the StackMapTable.
+  var hti = 0
+  while hti < tcHandlerLabels.count {
+    val hl = tcHandlerLabels[hti]
+    match mapGet(branchTargets, hl) {
+      case None -> branchTargets.add(hl, true)
+      case Some(_) -> ()
+    }
+    hti = hti + 1
+  }
   val smBuf = writerNew()   // raw frame bytes (no leading count)
   var smCount = 0
   var prevOffset = -1       // initial implicit frame is at offset -1
@@ -656,7 +687,16 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
                 emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
                 vi = vi + 1
               }
-              writerU2(smBuf, 0)               // stack items = 0 (empty)
+              match mapGet(handlerTargets, l) {
+                case Some(cc) -> {
+                  writerU2(smBuf, 1)             // 1 stack item: the caught exception
+                  val exClass = if cc == "" { "java/lang/Throwable" } else { cc }
+                  emitVerifierTypeBc(VObject(className = exClass), pool, smBuf)
+                }
+                case None -> {
+                  writerU2(smBuf, 0)             // stack items = 0 (empty)
+                }
+              }
               smCount = smCount + 1
               prevOffset = off
             }
@@ -676,7 +716,20 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
   writerU2(codeW, f.maxLocals)
   writerU4(codeW, ar.codeBytes.count)
   writerByteList(codeW, ar.codeBytes)
-  writerU2(codeW, 0)               // exception_table_length = 0
+  writerU2(codeW, tcStartLabels.count)   // exception_table_length
+  var tci = 0
+  while tci < tcStartLabels.count {
+    val spOff = match mapGet(ar.labelOffsets, tcStartLabels[tci]) { case Some(v) -> v case None -> 0 }
+    val epOff = match mapGet(ar.labelOffsets, tcEndLabels[tci])   { case Some(v) -> v case None -> 0 }
+    val hpOff = match mapGet(ar.labelOffsets, tcHandlerLabels[tci]) { case Some(v) -> v case None -> 0 }
+    val cc    = tcCatchClasses[tci]
+    val ct    = if cc == "" { 0 } else { poolClass(pool, cc) }
+    writerU2(codeW, spOff)
+    writerU2(codeW, epOff)
+    writerU2(codeW, hpOff)
+    writerU2(codeW, ct)
+    tci = tci + 1
+  }
   if smCount > 0 {
     writerU2(codeW, 1)             // attributes_count = 1
     writerU2(codeW, poolUtf8(pool, "StackMapTable"))
