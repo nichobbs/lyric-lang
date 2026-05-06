@@ -1828,17 +1828,22 @@ let private defineMethodHeader
 /// For non-Unit functions whose body is a block, the trailing SExpr
 /// (if any) is treated as the implicit return value — matching
 /// Lyric's "last expression is the value" rule for block bodies.
-/// MethodInfo for the LyricAssertionException constructor accepting
-/// a string message. Resolved once per emit run.
-let private lyricAssertCtor : Lazy<ConstructorInfo> =
+/// G9 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-110):
+/// runtime contract failures used to throw the F#-side
+/// `Lyric.Stdlib.LyricAssertionException` (a thin
+/// `System.Exception` subclass).  Throwing the BCL `System.Exception`
+/// directly keeps the user-visible catch shape identical (`catch Bug
+/// as b { … }` already resolves `Bug` to `System.Exception`) and
+/// retires the F# wrapper class.
+let private contractExceptionCtor : Lazy<ConstructorInfo> =
     lazy (
-        let exTy = typeof<Lyric.Stdlib.LyricAssertionException>
+        let exTy = typeof<System.Exception>
         match Option.ofObj (exTy.GetConstructor([| typeof<string> |])) with
         | Some c -> c
-        | None   -> failwith "LyricAssertionException(string) ctor not found")
+        | None   -> failwith "System.Exception(String) ctor not found")
 
 /// Emit a runtime contract check: evaluate `cond`; on false, throw
-/// `LyricAssertionException(message)`.
+/// `System.Exception(message)`.
 let private emitContractCheck
         (ctx: Codegen.FunctionCtx)
         (cond: Expr)
@@ -1848,7 +1853,7 @@ let private emitContractCheck
     let okLbl = il.DefineLabel()
     il.Emit(OpCodes.Brtrue, okLbl)
     il.Emit(OpCodes.Ldstr, label)
-    il.Emit(OpCodes.Newobj, lyricAssertCtor.Value)
+    il.Emit(OpCodes.Newobj, contractExceptionCtor.Value)
     il.Emit(OpCodes.Throw)
     il.MarkLabel(okLbl)
 

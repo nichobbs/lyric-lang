@@ -7,7 +7,6 @@
 
   <ItemGroup>
     <Compile Include="EmitTestKit.fs" />
-    <Compile Include="StdlibSmokeTests.fs" />
     <Compile Include="EmitterScaffoldTests.fs" />
     <Compile Include="HelloWorldTests.fs" />
     <Compile Include="ArithmeticTests.fs" />

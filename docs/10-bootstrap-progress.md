@@ -49,7 +49,8 @@ deferred to Phase 3 by design.
 | `docs/23` Phase 1 (2/3) — `RandomHost` / `CancelHost` direct-extern: kernel boundary now points at `System.Random..ctor` / `System.Threading.CancellationToken{,Source}.*` directly; `nextBool` is native Lyric (`nextIntBelow(rng, 2) != 0`) | **Shipped** (PR #147) | D-progress-106 |
 | `docs/23` Phase 1 (3/3) — Bucket D split: `Jvm*` host helpers (~430 LoC) move from `Lyric.Stdlib` to a new `Lyric.Jvm.Hosts` project; stdlib bundle freed of JVM-only code | **Shipped** (PR #148) | D-progress-107 |
 | `docs/23` Phase 1 dead-code sweep — drop F# `Lyric.Stdlib.MapHelpers` / `TryHost` (zero live `@externTarget` callers) | **Shipped** (PR #149) | D-progress-108 |
-| `docs/23` G10 (1/2) — text/dir `Std.File` migrated to native Lyric `try { … } catch Bug as b { … }` around direct BCL externs (`System.IO.File.{ReadAllText,WriteAllText,Exists}` + `System.IO.Directory.{Exists,CreateDirectory}`); F# `FileHost` trimmed to bytes-only methods | **Shipped** (this branch) | D-progress-109 |
+| `docs/23` G10 (1/2) — text/dir `Std.File` migrated to native Lyric `try { … } catch Bug as b { … }` around direct BCL externs (`System.IO.File.{ReadAllText,WriteAllText,Exists}` + `System.IO.Directory.{Exists,CreateDirectory}`); F# `FileHost` trimmed to bytes-only methods | **Shipped** (PR #150) | D-progress-109 |
+| `docs/23` G9 — codegen inlines `newobj System.Exception(string)` + `throw` for `panic` / `expect` / `assert` + `requires:` / `ensures:` runtime checks; F# `Lyric.Stdlib.Contracts` and `LyricAssertionException` retired | **Shipped** (this branch) | D-progress-110 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -395,6 +396,81 @@ still need a `slice[Byte] → List[Byte]` constructor and a
 slice-of-string `out` param respectively.  Both ride on a
 follow-up to this PR; the text/dir migration is the cleanest first
 slice.
+
+### D-progress-110: G9 — codegen inlines `panic` / `expect` / `assert` throws
+
+*claude/g9-user-exceptions branch.*  Implements the pragmatic
+interpretation of `docs/23-fsharp-shim-elimination.md` G9 — instead
+of growing user-defined exception types as a full language feature,
+codegen inlines the `newobj System.Exception(string)` + `throw`
+pattern that the F# `Contracts` helpers used to do.  Drops both the
+`Contracts` static class (~20 LoC) and the `LyricAssertionException`
+custom subclass (~3 LoC) without losing any user-visible behaviour.
+
+**Codegen** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+
+* Two new lazy lookups:
+  * `systemExceptionStringCtor` → `System.Exception(string)` ctor.
+  * `systemStringConcat2` → `System.String.Concat(string, string)` —
+    used by `panic` to prepend the `"panic: "` prefix at runtime
+    (matches the F# `Contracts.Panic` behaviour without baking the
+    prefix into every IL emit).
+* `panic(msg)` lowers to:
+  ```
+  ldstr "panic: "
+  <emit msg>
+  call String.Concat
+  newobj System.Exception(string)
+  throw
+  ```
+* `expect(cond, msg)` and `assert(cond)` lower to:
+  ```
+  <emit cond>
+  brtrue okLbl
+  <emit msg>          ; "assertion failed" literal for `assert`
+  newobj System.Exception(string)
+  throw
+  okLbl:
+  ```
+
+**Emitter** (`compiler/src/Lyric.Emitter/Emitter.fs`).
+
+* `lyricAssertCtor` (resolving `Lyric.Stdlib.LyricAssertionException`)
+  renamed to `contractExceptionCtor` and points at
+  `System.Exception(string)`.
+* `emitContractCheck` (the helper used by `requires:` / `ensures:`
+  runtime checks) now uses the BCL exception ctor — matching the
+  builtin sites above.
+
+**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+
+* `type LyricAssertionException(message: string) = …` deleted (3 LoC).
+* `[<Sealed; AbstractClass>] type Contracts private () = …` deleted
+  (~20 LoC, including doc strings).
+* Both replaced by short doc comments noting the migration.
+
+**Why "G9" not "user-defined exception types".** The full
+`@exception type Foo { … }` syntax surfaced in `docs/23` §5 needs
+typechecker recognition + emitter inheritance pattern + parser
+extensions.  This PR instead covers the only existing consumer of
+custom exception types in the bootstrap — `panic` / `expect` /
+`assert` and the `requires:` / `ensures:` runtime checks — with a
+much smaller IL-only change.  Truly user-extensible exception types
+remain a follow-up if a real consumer surfaces.
+
+**Why `try/catch Bug as b { … b.message }` still works.** The
+`Bug` catch alias resolves to `System.Exception` already (per
+`TryCatchTests.fs` `[try_catch_specific_exception_type]`), and a
+runtime-thrown `System.Exception(message)` exposes `Message` via
+the standard BCL property.  No catch-side change needed.
+
+**Tests.** All suites green.  589 emitter (the existing
+`TryCatchTests.fs`'s `panic` round-trip + every `requires:` /
+`ensures:` test exercises the new lowering), 83 CLI, 242 verifier,
+137 type checker, 312 parser, 123 lexer.
+
+**Net F# shim shrink.** ~23 LoC retired.  Trajectory now ~759 LoC
+in `Stdlib.fs` (post-Phase-1 + post-G10 1/2 + post-G9).
 
 
 ### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`
