@@ -101,14 +101,14 @@ pub func throwIfCancelled(token: in CancellationToken): Unit = ()
 /// `Task.Delay(ms)` — non-cancellable timer.  Pre-Phase-C
 /// callers continue to use this; the SM will suspend until `ms`
 /// elapses.
-@externTarget("Lyric.Stdlib.TaskHost.Delay")
+@externTarget("System.Threading.Tasks.Task.Delay")
 pub func delay(ms: in Int): Task = ()
 
 /// `Task.Delay(ms, token)` — cancellable timer.  When the token
 /// is cancelled before the timer fires, the awaiting state
 /// machine resumes with `OperationCanceledException` (caught as
 /// `Exception` on the Lyric side).  Phase C / D-progress-068.
-@externTarget("Lyric.Stdlib.TaskHost.DelayWithCancel")
+@externTarget("System.Threading.Tasks.Task.Delay")
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
 
 // =====================================================================
