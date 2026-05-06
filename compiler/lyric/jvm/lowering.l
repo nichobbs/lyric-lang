@@ -1861,3 +1861,128 @@ pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
     attrs        = newList()
   )
 }
+
+// ── Opaque-type lowering ──────────────────────────────────────────────────────
+//
+// Lowers a Lyric opaque type to a final class (§7 bootstrap form):
+//   • Fields are private + final + synthetic with `$`-prefixed mangled names.
+//   • The constructor is package-private (flag = 0; no ACC_PUBLIC).
+//   • Bootstrap-grade: each field also gets a public `$<name>()T` accessor so
+//     the self-test can verify field values without JVM reflection.
+//     Full opacity (no accessors) is a Phase-6 deliverable.
+
+pub record LOpaqueField {
+  name:      String
+  fieldType: JvmType
+}
+
+pub record LOpaqueType {
+  className: String
+  fields:    List[LOpaqueField]
+}
+
+// Package-private constructor: aload_0 → Object.<init>() → for each field: aload_0, load param, putfield → return.
+func lowerOpaqueCtor(o: in LOpaqueType, pool: in Pool): MethodInfo {
+  val asm = newAssembler(pool)
+  val objCtorIdx = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+  emitAload(asm, 0)
+  emitInvokespecial(asm, objCtorIdx)
+  var slot = 1
+  var i = 0
+  while i < o.fields.count {
+    val f = o.fields[i]
+    val mangledName = "$" + f.name
+    val desc = typeDescriptor(f.fieldType)
+    val fIdx = poolFieldref(pool, o.className, mangledName, desc)
+    emitAload(asm, 0)
+    match f.fieldType {
+      case JInt     -> { emitIload(asm, slot); slot = slot + 1 }
+      case JLong    -> { emitLload(asm, slot); slot = slot + 2 }
+      case JFloat   -> { emitFload(asm, slot); slot = slot + 1 }
+      case JDouble  -> { emitDload(asm, slot); slot = slot + 2 }
+      case JBoolean -> { emitIload(asm, slot); slot = slot + 1 }
+      case JByte    -> { emitIload(asm, slot); slot = slot + 1 }
+      case JChar    -> { emitIload(asm, slot); slot = slot + 1 }
+      case JShort   -> { emitIload(asm, slot); slot = slot + 1 }
+      case JVoid    -> ()
+      case JRef(_)   -> { emitAload(asm, slot); slot = slot + 1 }
+      case JArray(_) -> { emitAload(asm, slot); slot = slot + 1 }
+    }
+    emitPutfield(asm, fIdx)
+    i = i + 1
+  }
+  emitReturn(asm)
+  val maxL = slot  // this + all param slots
+  val codeAttr = assembleCode(asm, 3, maxL)
+  val attrs: List[Attribute] = newList()
+  attrs.add(codeAttr)
+  val ctorPs: List[JvmType] = newList()
+  var ci = 0
+  while ci < o.fields.count {
+    ctorPs.add(o.fields[ci].fieldType)
+    ci = ci + 1
+  }
+  makeMethodInfo(0, "<init>", buildDescriptor(ctorPs, JVoid), attrs)
+}
+
+// One public `$<name>()T` accessor per field (bootstrap-grade; removed in Phase 6).
+func lowerOpaqueAcc(className: in String, f: in LOpaqueField, pool: in Pool): MethodInfo {
+  val mangledName = "$" + f.name
+  val desc = typeDescriptor(f.fieldType)
+  val fIdx = poolFieldref(pool, className, mangledName, desc)
+  val asm = newAssembler(pool)
+  emitAload(asm, 0)
+  emitGetfield(asm, fIdx)
+  match f.fieldType {
+    case JLong    -> emitLreturn(asm)
+    case JDouble  -> emitDreturn(asm)
+    case JFloat   -> emitFreturn(asm)
+    case JBoolean -> emitIreturn(asm)
+    case JByte    -> emitIreturn(asm)
+    case JChar    -> emitIreturn(asm)
+    case JShort   -> emitIreturn(asm)
+    case JInt     -> emitIreturn(asm)
+    case JVoid    -> ()
+    case JRef(_)   -> emitAreturn(asm)
+    case JArray(_) -> emitAreturn(asm)
+  }
+  val code = assembleCode(asm, fieldSlotSize(f.fieldType), 1)
+  val attrs: List[Attribute] = newList()
+  attrs.add(code)
+  val noPs: List[JvmType] = newList()
+  makeMethodInfo(ACC_PUBLIC, mangledName, buildDescriptor(noPs, f.fieldType), attrs)
+}
+
+pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
+  val fields: List[FieldInfo] = newList()
+  val methods: List[MethodInfo] = newList()
+  var i = 0
+  while i < o.fields.count {
+    val f = o.fields[i]
+    val mangledName = "$" + f.name
+    val desc = typeDescriptor(f.fieldType)
+    val fAttrs: List[Attribute] = newList()
+    fields.add(makeFieldInfo(ACC_PRIVATE + ACC_FINAL + ACC_SYNTHETIC, mangledName, desc, fAttrs))
+    methods.add(lowerOpaqueAcc(o.className, f, pool))
+    i = i + 1
+  }
+  val ctor = lowerOpaqueCtor(o, pool)
+  val allMethods: List[MethodInfo] = newList()
+  allMethods.add(ctor)
+  var j = 0
+  while j < methods.count {
+    allMethods.add(methods[j])
+    j = j + 1
+  }
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = o.className,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = fields,
+    methods      = allMethods,
+    attrs        = newList()
+  )
+}

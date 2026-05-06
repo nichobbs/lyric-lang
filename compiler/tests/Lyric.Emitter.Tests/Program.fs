@@ -172,6 +172,7 @@ let main argv =
             JvmLoweringB107Test.tests
             JvmLoweringB108Test.tests
             JvmLoweringB109Test.tests
+            JvmLoweringB110Test.tests
             SelfHostedLexerTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
