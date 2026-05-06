@@ -231,12 +231,54 @@ pub func hostClientNoRedirects(): HttpClient {
   newClientFromHandler(handler)
 }
 
-// `ResponseHeader` is parked: the BCL `TryGetValues` returns
-// `IEnumerable<string>` via an out-param, which Lyric's FFI doesn't
-// surface today (slice-of-string `out` param + IEnumerable<T>
-// iteration).  Stays in the F# shim until a follow-up.
-@externTarget("Lyric.Stdlib.HttpClientHost.ResponseHeader")
+// `ResponseHeader` (G12 follow-up): native Lyric on top of
+// `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + a
+// `System.Linq.Enumerable.ToArray<string>` shuttle into a
+// `slice[String]` the Lyric side can index.  The BCL splits headers
+// across `response.Headers` (general + caller-set) and
+// `response.Content.Headers` (Content-Type, Content-Length, …) — try
+// the former first, then fall through to the latter, then `""`.
+extern type HttpResponseHeaders = "System.Net.Http.Headers.HttpResponseHeaders"
+extern type HttpContentHeaders  = "System.Net.Http.Headers.HttpContentHeaders"
+extern type IEnumerableStr      = "System.Collections.Generic.IEnumerable`1[System.String]"
+
+@externTarget("System.Net.Http.HttpResponseMessage.Headers")
+func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders = ()
+
+@externTarget("System.Net.Http.HttpContent.Headers")
+func contentHeadersOf(c: in HttpContent): HttpContentHeaders = ()
+
+@externTarget("System.Net.Http.Headers.HttpHeaders.TryGetValues")
+func responseHeadersTryGet(h: in HttpResponseHeaders, name: in String, values: out IEnumerableStr): Bool = ()
+
+@externTarget("System.Net.Http.Headers.HttpHeaders.TryGetValues")
+func contentHeadersTryGet(h: in HttpContentHeaders, name: in String, values: out IEnumerableStr): Bool = ()
+
+@externTarget("System.Linq.Enumerable.ToArray")
+func enumerableStrToArray(values: in IEnumerableStr): slice[String] = ()
+
+// Take the first element of `values` or `""` if empty.  Pure Lyric.
+func firstOrEmpty(values: in slice[String]): String {
+  if values.length > 0 {
+    values[0]
+  } else {
+    ""
+  }
+}
+
 pub func hostResponseHeader(
   response: in HttpResponseMessage,
   name: in String
-): String = ()
+): String {
+  val respHeaders = responseHeadersOf(response)
+  var responseValues: IEnumerableStr = default()
+  if responseHeadersTryGet(respHeaders, name, responseValues) {
+    return firstOrEmpty(enumerableStrToArray(responseValues))
+  }
+  val contentHeaders = contentHeadersOf(responseContent(response))
+  var contentValues: IEnumerableStr = default()
+  if contentHeadersTryGet(contentHeaders, name, contentValues) {
+    return firstOrEmpty(enumerableStrToArray(contentValues))
+  }
+  ""
+}

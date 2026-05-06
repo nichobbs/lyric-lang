@@ -526,37 +526,15 @@ type JsonHost private () =
             value <- Array.empty<string>
             false
 
-/// HTTP client helpers wrapping `System.Net.Http`.  Extern-package
-/// declarations in Lyric source can't currently route to BCL
-/// methods directly (they parse + type-check but never reach
-/// codegen with a target method).  These thin static shims give
-/// `Std.HttpHost` something concrete to `@externTarget` against
-/// (D-progress-052).
-/// HTTP client helpers wrapping `System.Net.Http.HttpClient`.  G12
-/// (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN): every
-/// method except `ResponseHeader` retired — `stdlib/std/_kernel/http_host.l`
-/// now declares direct-extern primitives + Lyric-level orchestration
-/// helpers.  `ResponseHeader` survives because `TryGetValues` uses an
-/// `out IEnumerable<string>` shape that the FFI surface doesn't yet
-/// support; a follow-up unblocks it.
-[<Sealed; AbstractClass>]
-type HttpClientHost private () =
-
-    /// Read a single response header by name, returning the first
-    /// value or `""` if the header isn't present.  Used by the
-    /// Lyric-side `responseHeader` helper.
-    static member ResponseHeader (
-            response: System.Net.Http.HttpResponseMessage,
-            name: string) : string =
-        let firstOf (vs: System.Collections.Generic.IEnumerable<string>) : string =
-            match Seq.tryHead vs with
-            | Some s -> s
-            | None   -> ""
-        let mutable values : System.Collections.Generic.IEnumerable<string> = Unchecked.defaultof<_>
-        let outRef = &values
-        if response.Headers.TryGetValues(name, &outRef) then firstOf outRef
-        elif response.Content.Headers.TryGetValues(name, &outRef) then firstOf outRef
-        else ""
+// G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
+// `Lyric.Stdlib.HttpClientHost` retires entirely.  Every member
+// migrated to direct-extern primitives + Lyric-level helpers in
+// `stdlib/std/_kernel/http_host.l` across G12 (2/N) (everything
+// except `ResponseHeader`) and this slice (G12 (4/N) —
+// `ResponseHeader` rebuilt over `HttpHeaders.TryGetValues(name,
+// out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>`
+// shuttling into a `slice[String]` the Lyric side indexes for the
+// first-value-or-empty fallback).
 
 // `Lyric.Stdlib.RandomHost` retired (`docs/23-fsharp-shim-elimination.md`
 // Phase 1, D-progress-105 follow-up).  `Std.Random` now externs the
