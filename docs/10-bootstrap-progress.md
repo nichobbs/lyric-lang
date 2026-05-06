@@ -44,7 +44,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2c.2.iii — `lyric restore` walks every `Lyric.Contract.<Pkg>` resource on bundled DLLs | **Shipped** (PR #138) | D-progress-101 |
 | M5.1 stage 2c.2.iv — CLI integration (`lyric build --manifest` dispatches to `emitProject` when `[project] output = "single"`); main entry-point capture from project bundle | **Shipped** (PR #138) | D-progress-102 |
 | M5.1 stage 2c.3 — stdlib-bundle proof: 3-package smoke set compiles via `lyric build --manifest stdlib/lyric.toml`; in-project generic-union ctor + DeclaredOnly reflection fixes | **Shipped** (PR #140) | D-progress-103 |
-| `docs/14` stage P3 — F# shim P3 trio: drop dead `Lyric.Stdlib.Parse`; route `format1..6` through `System.String.Format(string, object[])` (delete F# `Format`); inline-loop renderers in `@derive(Json)` synthesiser for Int/Long/Bool/String slices (delete F# `JsonHost.Render*Slice`, retain only `RenderDoubleSlice`) | **Shipped** (this branch) | D-progress-104 |
+| `docs/14` stage P3 — F# shim P3 trio: drop dead `Lyric.Stdlib.Parse`; route `format1..6` through `System.String.Format(string, object[])` (delete F# `Format`); inline-loop renderers in `@derive(Json)` synthesiser for Int/Long/Bool/String slices (delete F# `JsonHost.Render*Slice`, retain only `RenderDoubleSlice`) | **Shipped** (PR #141) | D-progress-104 |
+| `docs/23` G8 — codegen-emitted null-aware `println(any)` / `toString(any)` lowering: F# `Lyric.Stdlib.Console` retired (`PrintlnAny` / `ToStr`) | **Shipped** (this branch) | D-progress-105 |
 | M5.1 stage 2d — NuGet linking per `docs/21-nuget-linking.md` (auto-generated `@axiom` shim) | Designed; not shipped | — |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing | Not shipped | — |
@@ -166,6 +167,69 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-105: G8 — codegen inlines null-aware `println` / `toString`
+
+*claude/g8-inline-printlnany branch.*  First slice of
+`docs/23-fsharp-shim-elimination.md` Phase 1.  Retires the F# shim's
+`Lyric.Stdlib.Console` type by inlining the `null -> "()" else
+value.ToString()` lowering at the codegen call sites.
+
+**Codegen change** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+
+* New helper `emitNullableToStringInline (il)` consumes a boxed
+  `obj | null` from the stack and pushes a non-null `string`.  IL
+  shape: `dup` + `brfalse outerNull`, `callvirt Object::ToString()`,
+  defensive inner `dup` + `brfalse innerNull` (BCL types are free
+  to return null from `ToString`), `ldstr ""` / `ldstr "()"` in
+  the respective null arms.  Stack discipline preserved across
+  both branches.
+* `println(any)` non-string path now: `boxIfValue` →
+  `emitNullableToStringInline` → `Call Console::WriteLine(string)`.
+  No more F# `PrintlnAny` round-trip.
+* `toString(any)` non-string path now: `boxIfValue` →
+  `emitNullableToStringInline`.  No more F# `ToStr` round-trip.
+* The `printlnString` lazy lookup is reused for both string- and
+  any-arg cases (same target method), so the call-site dispatch
+  logic stays single-method in either branch.
+* `Lyric.Stdlib.Console` references in Codegen.fs / Emitter.fs
+  (`typeof<Lyric.Stdlib.Console>` AppDomain force-load) repointed
+  at the surviving `Lyric.Stdlib.JsonHost` so the assembly still
+  loads on demand.
+
+**F# shim change** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+
+* `type Console private () = …` deleted along with its two static
+  members.  Replaced by a one-paragraph doc comment pointing at
+  the codegen helper that took over.
+
+**Test totals.**  All suites stay green — no behavioural change.
+The inline IL was hand-validated with a probe source
+(`println("hello")`, `println(42)`, `println(toString(3.14))`)
+producing `hello`, `42`, `3.14` respectively.  Existing tests in
+`BuiltinTests.fs` exercise `toString` over Int / Long / Bool /
+String / Double / record / union / Option types — they cover the
+inline path.
+
+**Net F# shim shrink.**  ~29 LoC retired (`Console` type body) +
+~30 LoC retired in Codegen.fs (the two `Lazy<MethodInfo>`
+lookups), partially offset by the ~28-line
+`emitNullableToStringInline` helper.  Net trajectory tracks the
+~1320 LoC waypoint in `docs/23` §4.4.
+
+**Deferred to subsequent G-items.**
+
+* G7 (`protected type` codegen) — Phase 3 roadmap item; gates
+  `StubCounter` / `LyricTaskScope` ports.
+* G9 (user-defined exception types) — gates
+  `LyricAssertionException` / `Contracts` port.
+* G10 (try/catch FFI) — gates `TryHost` / `FileHost` ports.
+* G11 (`AsyncLocal[T]`) — gates `AmbientHost` port.
+* G12 (delegate-lowering audit) — gates direct-extern of
+  `TaskHost` / `HttpClientHost` / `HttpServerHost`.
+* Bucket B follow-ups (`RandomHost` / `CancelHost` direct-extern;
+  Bucket D `Jvm*` split-out) ship as subsequent Phase 1 PRs.
+
 
 ### D-progress-104: F# shim P3 trio — drop `Parse`, port `format`/`Render*Slice`
 

@@ -316,31 +316,56 @@ let private compareOrdinalMethod : Lazy<MethodInfo> =
 
 let private printlnString : Lazy<MethodInfo> =
     lazy (
-        // Per `docs/14-native-stdlib-plan.md` §3 (kernel surface):
-        // string `println` routes directly to `System.Console.WriteLine`.
-        // Non-string arguments still fall back to the F#-side
-        // `PrintlnAny`/`ToStr` because of their `null -> "()"` semantics.
+        // `println(String)` and `println(any)` (G8) both route to
+        // `System.Console.WriteLine(string)`; the non-string path
+        // first inlines a null-check + `Object.ToString()`.
         let consoleTy = typeof<System.Console>
         let mi = consoleTy.GetMethod("WriteLine", [| typeof<string> |])
         match Option.ofObj mi with
         | Some m -> m
         | None   -> failwith "System.Console::WriteLine(string) not found")
 
-let private printlnAny : Lazy<MethodInfo> =
+/// `System.Object::ToString()` — used by both the inline `toString(any)`
+/// and inline `println(any)` paths after a null check has cleared the
+/// reference (see G8 in `docs/23-fsharp-shim-elimination.md`).
+let private objectToString : Lazy<MethodInfo> =
     lazy (
-        let consoleTy = typeof<Lyric.Stdlib.Console>
-        let mi = consoleTy.GetMethod("PrintlnAny", [| typeof<obj> |])
+        let mi = typeof<obj>.GetMethod("ToString", [||])
         match Option.ofObj mi with
         | Some m -> m
-        | None   -> failwith "Lyric.Stdlib.Console::PrintlnAny(object) not found")
+        | None   -> failwith "System.Object::ToString() not found")
 
-let private toStr : Lazy<MethodInfo> =
-    lazy (
-        let consoleTy = typeof<Lyric.Stdlib.Console>
-        let mi = consoleTy.GetMethod("ToStr", [| typeof<obj> |])
-        match Option.ofObj mi with
-        | Some m -> m
-        | None   -> failwith "Lyric.Stdlib.Console::ToStr(object) not found")
+/// G8 (`docs/23-fsharp-shim-elimination.md` §5): emit the inline
+/// `null -> "()" else value.ToString()` lowering that previously
+/// lived as `Lyric.Stdlib.Console.PrintlnAny` / `ToStr` in the F#
+/// shim.  Caller pushes a boxed `obj | null` reference onto the IL
+/// stack; this helper consumes it and leaves a non-null `string`.
+///
+/// `ToString()` itself is defensively null-checked because BCL types
+/// are free to return null (matches the F# shim's prior behaviour:
+/// `nonNull.ToString()` of `null` mapped to `""`).
+let private emitNullableToStringInline (il: ILGenerator) : unit =
+    let outerNullLbl = il.DefineLabel()
+    let innerNullLbl = il.DefineLabel()
+    let endLbl       = il.DefineLabel()
+    // [obj]
+    il.Emit(OpCodes.Dup)                       // [obj; obj]
+    il.Emit(OpCodes.Brfalse, outerNullLbl)     // [obj]   (brfalse consumes top)
+    il.Emit(OpCodes.Callvirt, objectToString.Value)  // [string-or-null]
+    il.Emit(OpCodes.Dup)                       // [s; s]
+    il.Emit(OpCodes.Brfalse, innerNullLbl)     // [s]
+    il.Emit(OpCodes.Br, endLbl)
+    il.MarkLabel(innerNullLbl)
+    // ToString() returned null — replace with empty string.
+    il.Emit(OpCodes.Pop)                       // []
+    il.Emit(OpCodes.Ldstr, "")                 // [""]
+    il.Emit(OpCodes.Br, endLbl)
+    il.MarkLabel(outerNullLbl)
+    // Original obj was null — replace with "()".
+    il.Emit(OpCodes.Pop)                       // []
+    il.Emit(OpCodes.Ldstr, "()")               // ["()"]
+    il.MarkLabel(endLbl)
+    // [string]
 
 /// `System.String.Format(String, Object[])` — the params-array
 /// overload.  `format1..6` codegen builtins build the array inline
@@ -3076,8 +3101,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         if argTy = typeof<string> then
             il.Emit(OpCodes.Call, printlnString.Value)
         else
+            // G8: inline the `null -> "()" else value.ToString()`
+            // lowering instead of routing through the F# shim.
             boxIfValue il argTy
-            il.Emit(OpCodes.Call, printlnAny.Value)
+            emitNullableToStringInline il
+            il.Emit(OpCodes.Call, printlnString.Value)
         typeof<System.Void>
 
     // ---- format1..6 builtins ------------------------------------------
@@ -3147,8 +3175,10 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // Already a string — no boxing or call needed.
             ()
         else
+            // G8: inline the `null -> "()" else value.ToString()`
+            // lowering instead of routing through the F# shim.
             boxIfValue il argTy
-            il.Emit(OpCodes.Call, toStr.Value)
+            emitNullableToStringInline il
         typeof<string>
 
     // ---- user-defined call --------------------------------------------
