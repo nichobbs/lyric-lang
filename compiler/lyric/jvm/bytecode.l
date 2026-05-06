@@ -1021,6 +1021,30 @@ pub func emitDstore(asm: in MethodAssembler, slot: in Int): Unit {
   }
 }
 
+pub func emitFload(asm: in MethodAssembler, slot: in Int): Unit {
+  match slot {
+    case 0 -> emitInsn(asm, Nullary(op = OP_FLOAD_0))
+    case 1 -> emitInsn(asm, Nullary(op = OP_FLOAD_1))
+    case 2 -> emitInsn(asm, Nullary(op = OP_FLOAD_2))
+    case 3 -> emitInsn(asm, Nullary(op = OP_FLOAD_3))
+    case _ ->
+      if slot <= 255 then emitInsn(asm, LocalU1(op = OP_FLOAD, slot = slot))
+      else emitInsn(asm, LocalU2Wide(op = OP_FLOAD, slot = slot))
+  }
+}
+
+pub func emitFstore(asm: in MethodAssembler, slot: in Int): Unit {
+  match slot {
+    case 0 -> emitInsn(asm, Nullary(op = OP_FSTORE_0))
+    case 1 -> emitInsn(asm, Nullary(op = OP_FSTORE_1))
+    case 2 -> emitInsn(asm, Nullary(op = OP_FSTORE_2))
+    case 3 -> emitInsn(asm, Nullary(op = OP_FSTORE_3))
+    case _ ->
+      if slot <= 255 then emitInsn(asm, LocalU1(op = OP_FSTORE, slot = slot))
+      else emitInsn(asm, LocalU2Wide(op = OP_FSTORE, slot = slot))
+  }
+}
+
 pub func emitAstore(asm: in MethodAssembler, slot: in Int): Unit {
   match slot {
     case 0 -> emitInsn(asm, Nullary(op = OP_ASTORE_0))
@@ -1088,6 +1112,21 @@ pub func emitLrem(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP
 pub func emitLneg(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LNEG)) }
 pub func emitLcmp(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LCMP)) }
 
+// ── Float arithmetic ──────────────────────────────────────────────────────────
+
+pub func emitFconst0(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCONST_0)) }
+pub func emitFconst1(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCONST_1)) }
+pub func emitFconst2(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCONST_2)) }
+
+pub func emitFadd(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FADD))  }
+pub func emitFsub(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FSUB))  }
+pub func emitFmul(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FMUL))  }
+pub func emitFdiv(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FDIV))  }
+pub func emitFrem(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FREM))  }
+pub func emitFneg(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FNEG))  }
+pub func emitFcmpg(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCMPG)) }
+pub func emitFcmpl(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCMPL)) }
+
 // ── Double arithmetic ─────────────────────────────────────────────────────────
 
 pub func emitDadd(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DADD)) }
@@ -1099,12 +1138,18 @@ pub func emitDcmpl(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = O
 
 // ── Type conversions ──────────────────────────────────────────────────────────
 
+pub func emitI2f(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2F))  }
 pub func emitI2l(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2L))  }
 pub func emitI2d(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2D))  }
 pub func emitL2i(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_L2I))  }
+pub func emitL2f(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_L2F))  }
 pub func emitL2d(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_L2D))  }
+pub func emitF2i(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_F2I))  }
+pub func emitF2l(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_F2L))  }
+pub func emitF2d(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_F2D))  }
 pub func emitD2i(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_D2I))  }
 pub func emitD2l(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_D2L))  }
+pub func emitD2f(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_D2F))  }
 pub func emitI2b(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2B))  }
 pub func emitI2c(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2C))  }
 pub func emitI2s(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2S))  }
@@ -1208,6 +1253,7 @@ pub func emitBastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op =
 // ── Returns ───────────────────────────────────────────────────────────────────
 
 pub func emitIreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_IRETURN)) }
+pub func emitFreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FRETURN)) }
 pub func emitLreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LRETURN)) }
 pub func emitDreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DRETURN)) }
 pub func emitAreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_ARETURN)) }
