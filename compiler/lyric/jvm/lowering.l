@@ -72,6 +72,7 @@ pub union LInsn {
 
   case LIconst(v: Int)
   case LLconst(v: Long)
+  case LFconst(v: Double)
   case LDconst(v: Double)
   case LPushString(s: String)
 
@@ -121,6 +122,14 @@ pub union LInsn {
   case LIfIcmpgt(label: String)
   case LIfIcmple(label: String)
 
+  case LFload(slot: Int)
+  case LFstore(slot: Int)
+  case LFreturn
+  case LFadd
+  case LFsub
+  case LFmul
+  case LFdiv
+
   case LGetfield(owner: String, name: String, t: JvmType)
   case LPutfield(owner: String, name: String, t: JvmType)
   case LGetstatic(owner: String, name: String, t: JvmType)
@@ -150,6 +159,7 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
 
     case LIconst(v)     -> emitPushInt(asm, v)
     case LLconst(v)     -> emitPushLong(asm, v)
+    case LFconst(v)     -> emitPushFloat(asm, v)
     case LDconst(v)     -> emitPushDouble(asm, v)
     case LPushString(s) -> emitPushString(asm, s)
 
@@ -184,6 +194,14 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LDsub          -> emitDsub(asm)
     case LDmul          -> emitDmul(asm)
     case LDdiv          -> emitDdiv(asm)
+
+    case LFload(s)      -> emitFload(asm, s)
+    case LFstore(s)     -> emitFstore(asm, s)
+    case LFreturn       -> emitFreturn(asm)
+    case LFadd          -> emitFadd(asm)
+    case LFsub          -> emitFsub(asm)
+    case LFmul          -> emitFmul(asm)
+    case LFdiv          -> emitFdiv(asm)
 
     case LGoto(l)           -> emitGoto(asm, l)
     case LIfeq(l)           -> emitIfeq(asm, l)
@@ -292,9 +310,7 @@ func fieldSlotSize(t: in JvmType): Int {
   }
 }
 
-// Emit the appropriate load instruction for parameter slot `slot`
-// of type `t` and push the value before a putfield.
-// NOTE: JFloat uses iload as an approximation (B3 scope; no float fields in self-test).
+// Emit the appropriate load instruction for parameter slot `slot` of type `t`.
 func emitFieldLoad(t: in JvmType, slot: in Int, asm: in MethodAssembler): Unit {
   match t {
     case JLong    -> lowerInsn(LLload(slot = slot), asm)
@@ -304,7 +320,7 @@ func emitFieldLoad(t: in JvmType, slot: in Int, asm: in MethodAssembler): Unit {
     case JChar    -> lowerInsn(LIload(slot = slot), asm)
     case JShort   -> lowerInsn(LIload(slot = slot), asm)
     case JInt     -> lowerInsn(LIload(slot = slot), asm)
-    case JFloat   -> lowerInsn(LIload(slot = slot), asm)
+    case JFloat   -> lowerInsn(LFload(slot = slot), asm)
     case JVoid    -> ()
     case JRef(_)  -> lowerInsn(LAload(slot = slot), asm)
     case JArray(_) -> lowerInsn(LAload(slot = slot), asm)
@@ -424,6 +440,12 @@ pub func lowerFunc(f: in LFunc, pool: in Pool): MethodInfo {
       case LDstore(s) -> {
         match mapGet(storeTypes, s) {
           case None -> storeTypes.add(s, VDouble)
+          case Some(_) -> ()
+        }
+      }
+      case LFstore(s) -> {
+        match mapGet(storeTypes, s) {
+          case None -> storeTypes.add(s, VFloat)
           case Some(_) -> ()
         }
       }
@@ -637,7 +659,7 @@ func storeInsn(t: in JvmType, slot: in Int): LInsn {
     case JChar    -> LIstore(slot = slot)
     case JShort   -> LIstore(slot = slot)
     case JInt     -> LIstore(slot = slot)
-    case JFloat   -> LIstore(slot = slot)
+    case JFloat   -> LFstore(slot = slot)
     case JVoid    -> LNop
     case JRef(_)  -> LAstore(slot = slot)
     case JArray(_) -> LAstore(slot = slot)
@@ -654,7 +676,7 @@ func loadInsn(t: in JvmType, slot: in Int): LInsn {
     case JChar    -> LIload(slot = slot)
     case JShort   -> LIload(slot = slot)
     case JInt     -> LIload(slot = slot)
-    case JFloat   -> LIload(slot = slot)
+    case JFloat   -> LFload(slot = slot)
     case JVoid    -> LNop
     case JRef(_)  -> LAload(slot = slot)
     case JArray(_) -> LAload(slot = slot)
@@ -671,7 +693,7 @@ func returnInsn(t: in JvmType): LInsn {
     case JChar    -> LIreturn
     case JShort   -> LIreturn
     case JInt     -> LIreturn
-    case JFloat   -> LIreturn
+    case JFloat   -> LFreturn
     case JVoid    -> LReturn
     case JRef(_)  -> LAreturn
     case JArray(_) -> LAreturn
@@ -797,7 +819,7 @@ pub func lowerProtected(p: in LProtected, pool: in Pool): ClassFile {
       case JByte    -> lowerInsn(LIconst(v = 0), ctorAsm)
       case JChar    -> lowerInsn(LIconst(v = 0), ctorAsm)
       case JShort   -> lowerInsn(LIconst(v = 0), ctorAsm)
-      case JFloat   -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JFloat   -> lowerInsn(LFconst(v = 0.0), ctorAsm)
       case JLong    -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2l, ctorAsm) }
       case JDouble  -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2d, ctorAsm) }
       case JVoid    -> ()
