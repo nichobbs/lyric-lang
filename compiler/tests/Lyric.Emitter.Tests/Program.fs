@@ -88,6 +88,53 @@ let main argv =
             JvmLoweringB21Test.tests
             JvmLoweringB22Test.tests
             JvmLoweringB23Test.tests
+            JvmLoweringB24Test.tests
+            JvmLoweringB25Test.tests
+            JvmLoweringB26Test.tests
+            JvmLoweringB27Test.tests
+            JvmLoweringB28Test.tests
+            JvmLoweringB29Test.tests
+            JvmLoweringB30Test.tests
+            JvmLoweringB31Test.tests
+            JvmLoweringB32Test.tests
+            JvmLoweringB33Test.tests
+            JvmLoweringB34Test.tests
+            JvmLoweringB35Test.tests
+            JvmLoweringB36Test.tests
+            JvmLoweringB37Test.tests
+            JvmLoweringB38Test.tests
+            JvmLoweringB39Test.tests
+            JvmLoweringB40Test.tests
+            JvmLoweringB41Test.tests
+            JvmLoweringB42Test.tests
+            JvmLoweringB43Test.tests
+            JvmLoweringB44Test.tests
+            JvmLoweringB45Test.tests
+            JvmLoweringB46Test.tests
+            JvmLoweringB47Test.tests
+            JvmLoweringB48Test.tests
+            JvmLoweringB49Test.tests
+            JvmLoweringB50Test.tests
+            JvmLoweringB51Test.tests
+            JvmLoweringB52Test.tests
+            JvmLoweringB53Test.tests
+            JvmLoweringB54Test.tests
+            JvmLoweringB55Test.tests
+            JvmLoweringB56Test.tests
+            JvmLoweringB57Test.tests
+            JvmLoweringB58Test.tests
+            JvmLoweringB59Test.tests
+            JvmLoweringB60Test.tests
+            JvmLoweringB61Test.tests
+            JvmLoweringB62Test.tests
+            JvmLoweringB63Test.tests
+            JvmLoweringB64Test.tests
+            JvmLoweringB65Test.tests
+            JvmLoweringB66Test.tests
+            JvmLoweringB67Test.tests
+            JvmLoweringB68Test.tests
+            JvmLoweringB69Test.tests
+            JvmLoweringB70Test.tests
             SelfHostedLexerTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests

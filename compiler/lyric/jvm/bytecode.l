@@ -253,6 +253,12 @@ pub val T_SHORT   : Int = 9
 pub val T_INT     : Int = 10
 pub val T_LONG    : Int = 11
 
+/// One key→label entry in a lookupswitch table.
+pub record SwitchPair {
+  key:   Int
+  label: String
+}
+
 // ── Instruction union ─────────────────────────────────────────────────────────
 // Each variant carries precisely the operands the JVM opcode needs.
 // Labels are strings (unique within a method); branch instructions
@@ -309,6 +315,15 @@ pub union AsmInsn {
   case Ldc(poolIdx: Int)
   case LdcW(poolIdx: Int)
   case Ldc2W(poolIdx: Int)   // long / double constants
+
+  // tableswitch: size is position-dependent (alignment padding).
+  // swIdx indexes into asm.swDefaults and asm.swTableLabels/swTableOff.
+  // Do NOT rely on insnSize for this variant.
+  case TableSwitch(low: Int, high: Int, nCases: Int, swIdx: Int)
+
+  // lookupswitch: size is position-dependent (alignment padding).
+  // swIdx indexes into asm.swDefaults, asm.swLookupKeys, asm.swLookupLabels, asm.swLookupOff.
+  case LookupSwitch(nPairs: Int, swIdx: Int)
 }
 
 // ── MethodAssembler ───────────────────────────────────────────────────────────
@@ -316,15 +331,33 @@ pub union AsmInsn {
 /// Builder that accumulates AsmInsn values for a single method body.
 /// Call `emitXxx` functions to append instructions, then `assembleCode`
 /// to run the two-pass assembler and produce a Code attribute.
+///
+/// Switch table data is stored in parallel lists here rather than in
+/// the AsmInsn union, because non-generic union case fields of List[T]
+/// are erased to Object by the D035 erasure path and cannot be accessed.
 pub record MethodAssembler {
-  insns:    List[AsmInsn]
-  pool:     Pool        // shared constant pool; all Ref/ClassRef indices
-                        // must have been interned before assembleCode runs
+  insns:          List[AsmInsn]
+  pool:           Pool          // shared constant pool
+  swDefaults:     List[String]  // default label for each switch (indexed by swIdx)
+  swTableLabels:  List[String]  // all tableswitch case labels (flat)
+  swTableOff:     List[Int]     // start index in swTableLabels for each tableswitch
+  swLookupKeys:   List[Int]     // all lookupswitch keys (flat)
+  swLookupLabels: List[String]  // all lookupswitch labels (flat)
+  swLookupOff:    List[Int]     // start index for each lookupswitch in swLookupKeys/Labels
 }
 
 /// Construct a fresh assembler sharing `pool`.
 pub func newAssembler(pool: in Pool): MethodAssembler {
-  MethodAssembler(insns = newList(), pool = pool)
+  MethodAssembler(
+    insns          = newList(),
+    pool           = pool,
+    swDefaults     = newList(),
+    swTableLabels  = newList(),
+    swTableOff     = newList(),
+    swLookupKeys   = newList(),
+    swLookupLabels = newList(),
+    swLookupOff    = newList()
+  )
 }
 
 /// Append a raw `AsmInsn` to the assembler.  Most callers use the typed
@@ -360,19 +393,36 @@ func insnSize(insn: in AsmInsn): Int {
     case Ldc(_)                  -> 2       // op + u1 index
     case LdcW(_)                 -> 3
     case Ldc2W(_)                -> 3
+    // position-dependent; handled specially in buildLabelMap / emitAllInsns
+    case TableSwitch(_, _, _, _) -> 0  // (low, high, nCases, swIdx)
+    case LookupSwitch(_, _)      -> 0  // (nPairs, swIdx)
   }
 }
 
 // ── Two-pass assembler ────────────────────────────────────────────────────────
 
 // Pass 1: walk the instruction list and build a label→offset map.
-func buildLabelMap(insns: in List[AsmInsn]): Map[String, Int] {
+// Alignment padding bytes added before tableswitch / lookupswitch operands.
+// The opcode itself is at `opcodeOffset`; the padding follows the opcode byte.
+func switchPadding(opcodeOffset: in Int): Int {
+  (4 - ((opcodeOffset + 1) % 4)) % 4
+}
+
+func buildLabelMap(asm: in MethodAssembler): Map[String, Int] {
   val labels: Map[String, Int] = newMap()
   var offset  = 0
-  for insn in insns.toArray() {
+  for insn in asm.insns.toArray() {
     match insn {
       case Label(name) -> labels.add(name, offset)
-      case _           -> { offset = offset + insnSize(insn) }
+      case TableSwitch(_, _, nCases, _) -> {
+        val pad = switchPadding(offset)
+        offset = offset + 1 + pad + 4 + 4 + 4 + 4 * nCases
+      }
+      case LookupSwitch(nPairs, _) -> {
+        val pad = switchPadding(offset)
+        offset = offset + 1 + pad + 4 + 4 + 8 * nPairs
+      }
+      case _ -> { offset = offset + insnSize(insn) }
     }
   }
   labels
@@ -389,12 +439,12 @@ func emitRef(buf: in ByteWriter, op: in Int, poolRef: in Int): Unit {
 
 // Pass 2: emit actual bytes, resolving branches.
 func emitAllInsns(
-  insns:  in List[AsmInsn],
+  asm:    in MethodAssembler,
   labels: in Map[String, Int],
   buf:    in ByteWriter
 ): Unit {
   var offset = 0
-  for insn in insns.toArray() {
+  for insn in asm.insns.toArray() {
     match insn {
       case Label(_) -> ()  // no bytes emitted
 
@@ -530,6 +580,67 @@ func emitAllInsns(
         writerU2(buf, poolIdx)
         offset = offset + 3
       }
+
+      case TableSwitch(low, high, nCases, swIdx) -> {
+        val pad         = switchPadding(offset)
+        val defaultLabel = asm.swDefaults[swIdx]
+        val labelOff    = asm.swTableOff[swIdx]
+        writerByte(buf, OP_TABLESWITCH)
+        var p = 0
+        while p < pad {
+          writerByte(buf, 0)
+          p = p + 1
+        }
+        val defOff = match mapGet(labels, defaultLabel) {
+          case Some(t) -> t - offset
+          case None    -> panic(format1("tableswitch: undefined default label '{0}'", defaultLabel))
+        }
+        writerU4(buf, defOff)
+        writerU4(buf, low)
+        writerU4(buf, high)
+        var ci = 0
+        while ci < nCases {
+          val lbl = asm.swTableLabels[labelOff + ci]
+          val cOff = match mapGet(labels, lbl) {
+            case Some(t) -> t - offset
+            case None    -> panic(format1("tableswitch: undefined case label '{0}'", lbl))
+          }
+          writerU4(buf, cOff)
+          ci = ci + 1
+        }
+        offset = offset + 1 + pad + 4 + 4 + 4 + 4 * nCases
+      }
+
+      case LookupSwitch(nPairs, swIdx) -> {
+        val pad          = switchPadding(offset)
+        val defaultLabel = asm.swDefaults[swIdx]
+        val dataOff      = asm.swLookupOff[swIdx]
+        writerByte(buf, OP_LOOKUPSWITCH)
+        var p = 0
+        while p < pad {
+          writerByte(buf, 0)
+          p = p + 1
+        }
+        val defOff = match mapGet(labels, defaultLabel) {
+          case Some(t) -> t - offset
+          case None    -> panic(format1("lookupswitch: undefined default label '{0}'", defaultLabel))
+        }
+        writerU4(buf, defOff)
+        writerU4(buf, nPairs)
+        var pi = 0
+        while pi < nPairs {
+          val key  = asm.swLookupKeys[dataOff + pi]
+          val lbl  = asm.swLookupLabels[dataOff + pi]
+          val cOff = match mapGet(labels, lbl) {
+            case Some(t) -> t - offset
+            case None    -> panic(format1("lookupswitch: undefined case label '{0}'", lbl))
+          }
+          writerU4(buf, key)
+          writerU4(buf, cOff)
+          pi = pi + 1
+        }
+        offset = offset + 1 + pad + 4 + 4 + 8 * nPairs
+      }
     }
   }
 }
@@ -548,9 +659,9 @@ pub record AssemblyResult {
 /// and the label-offset map without building the Code attribute.
 /// Used by lowerFunc (B5) for stack-map computation.
 pub func assembleRaw(asm: in MethodAssembler): AssemblyResult {
-  val labels = buildLabelMap(asm.insns)
+  val labels = buildLabelMap(asm)
   val code   = writerNew()
-  emitAllInsns(asm.insns, labels, code)
+  emitAllInsns(asm, labels, code)
   AssemblyResult(codeBytes = writerToList(code), labelOffsets = labels)
 }
 
@@ -562,9 +673,9 @@ pub func assembleRaw(asm: in MethodAssembler): AssemblyResult {
 ///
 /// `maxLocals` must include slot 0 (`this`) for virtual methods.
 pub func assembleCode(asm: in MethodAssembler, maxStack: in Int, maxLocals: in Int): Attribute {
-  val labels = buildLabelMap(asm.insns)
+  val labels = buildLabelMap(asm)
   val code   = writerNew()
-  emitAllInsns(asm.insns, labels, code)
+  emitAllInsns(asm, labels, code)
   makeCodeAttr(maxStack, maxLocals, writerToList(code))
 }
 
@@ -608,11 +719,11 @@ func emitVerifierTypeBc(t: in VerifierType, pool: in Pool, w: in ByteWriter): Un
   }
 }
 
-func collectBranchLabels(insns: in List[AsmInsn]): Map[String, Bool] {
+func collectBranchLabels(asm: in MethodAssembler): Map[String, Bool] {
   val seen: Map[String, Bool] = newMap()
   var bi = 0
-  while bi < insns.count {
-    match insns[bi] {
+  while bi < asm.insns.count {
+    match asm.insns[bi] {
       case Branch(_, lbl) -> {
         match mapGet(seen, lbl) {
           case None    -> seen.add(lbl, true)
@@ -623,6 +734,40 @@ func collectBranchLabels(insns: in List[AsmInsn]): Map[String, Bool] {
         match mapGet(seen, lbl) {
           case None    -> seen.add(lbl, true)
           case Some(_) -> ()
+        }
+      }
+      case TableSwitch(_, _, nCases, swIdx) -> {
+        val defLbl = asm.swDefaults[swIdx]
+        match mapGet(seen, defLbl) {
+          case None    -> seen.add(defLbl, true)
+          case Some(_) -> ()
+        }
+        val off = asm.swTableOff[swIdx]
+        var ti = 0
+        while ti < nCases {
+          val cl = asm.swTableLabels[off + ti]
+          match mapGet(seen, cl) {
+            case None    -> seen.add(cl, true)
+            case Some(_) -> ()
+          }
+          ti = ti + 1
+        }
+      }
+      case LookupSwitch(nPairs, swIdx) -> {
+        val defLbl = asm.swDefaults[swIdx]
+        match mapGet(seen, defLbl) {
+          case None    -> seen.add(defLbl, true)
+          case Some(_) -> ()
+        }
+        val off = asm.swLookupOff[swIdx]
+        var li = 0
+        while li < nPairs {
+          val cl = asm.swLookupLabels[off + li]
+          match mapGet(seen, cl) {
+            case None    -> seen.add(cl, true)
+            case Some(_) -> ()
+          }
+          li = li + 1
         }
       }
       case _ -> ()
@@ -645,7 +790,7 @@ pub func assembleCodeWithFrames(
 ): Attribute {
   val pool    = asm.pool
   val ar      = assembleRaw(asm)
-  val targets = collectBranchLabels(asm.insns)
+  val targets = collectBranchLabels(asm)
   val smBuf   = writerNew()
   var smCount = 0
   var prevOff = -1
@@ -876,6 +1021,30 @@ pub func emitDstore(asm: in MethodAssembler, slot: in Int): Unit {
   }
 }
 
+pub func emitFload(asm: in MethodAssembler, slot: in Int): Unit {
+  match slot {
+    case 0 -> emitInsn(asm, Nullary(op = OP_FLOAD_0))
+    case 1 -> emitInsn(asm, Nullary(op = OP_FLOAD_1))
+    case 2 -> emitInsn(asm, Nullary(op = OP_FLOAD_2))
+    case 3 -> emitInsn(asm, Nullary(op = OP_FLOAD_3))
+    case _ ->
+      if slot <= 255 then emitInsn(asm, LocalU1(op = OP_FLOAD, slot = slot))
+      else emitInsn(asm, LocalU2Wide(op = OP_FLOAD, slot = slot))
+  }
+}
+
+pub func emitFstore(asm: in MethodAssembler, slot: in Int): Unit {
+  match slot {
+    case 0 -> emitInsn(asm, Nullary(op = OP_FSTORE_0))
+    case 1 -> emitInsn(asm, Nullary(op = OP_FSTORE_1))
+    case 2 -> emitInsn(asm, Nullary(op = OP_FSTORE_2))
+    case 3 -> emitInsn(asm, Nullary(op = OP_FSTORE_3))
+    case _ ->
+      if slot <= 255 then emitInsn(asm, LocalU1(op = OP_FSTORE, slot = slot))
+      else emitInsn(asm, LocalU2Wide(op = OP_FSTORE, slot = slot))
+  }
+}
+
 pub func emitAstore(asm: in MethodAssembler, slot: in Int): Unit {
   match slot {
     case 0 -> emitInsn(asm, Nullary(op = OP_ASTORE_0))
@@ -943,6 +1112,21 @@ pub func emitLrem(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP
 pub func emitLneg(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LNEG)) }
 pub func emitLcmp(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LCMP)) }
 
+// ── Float arithmetic ──────────────────────────────────────────────────────────
+
+pub func emitFconst0(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCONST_0)) }
+pub func emitFconst1(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCONST_1)) }
+pub func emitFconst2(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCONST_2)) }
+
+pub func emitFadd(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FADD))  }
+pub func emitFsub(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FSUB))  }
+pub func emitFmul(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FMUL))  }
+pub func emitFdiv(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FDIV))  }
+pub func emitFrem(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FREM))  }
+pub func emitFneg(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_FNEG))  }
+pub func emitFcmpg(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCMPG)) }
+pub func emitFcmpl(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FCMPL)) }
+
 // ── Double arithmetic ─────────────────────────────────────────────────────────
 
 pub func emitDadd(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DADD)) }
@@ -954,12 +1138,18 @@ pub func emitDcmpl(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = O
 
 // ── Type conversions ──────────────────────────────────────────────────────────
 
+pub func emitI2f(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2F))  }
 pub func emitI2l(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2L))  }
 pub func emitI2d(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2D))  }
 pub func emitL2i(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_L2I))  }
+pub func emitL2f(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_L2F))  }
 pub func emitL2d(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_L2D))  }
+pub func emitF2i(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_F2I))  }
+pub func emitF2l(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_F2L))  }
+pub func emitF2d(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_F2D))  }
 pub func emitD2i(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_D2I))  }
 pub func emitD2l(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_D2L))  }
+pub func emitD2f(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_D2F))  }
 pub func emitI2b(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2B))  }
 pub func emitI2c(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2C))  }
 pub func emitI2s(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_I2S))  }
@@ -1036,6 +1226,13 @@ pub func emitAnewarray(asm: in MethodAssembler, classIdx: in Int): Unit {
   emitInsn(asm, ANewArray(classIdx = classIdx))
 }
 
+/// multianewarray — creates a multi-dimensional array.
+/// `classIdx` is the pool index for the full array-type descriptor (e.g. "[[I").
+/// `dims` is the number of dimensions to allocate (must be ≥ 1).
+pub func emitMultiANewArray(asm: in MethodAssembler, classIdx: in Int, dims: in Int): Unit {
+  emitInsn(asm, MultiANewArray(classIdx = classIdx, dims = dims))
+}
+
 pub func emitArraylength(asm: in MethodAssembler): Unit {
   emitInsn(asm, Nullary(op = OP_ARRAYLENGTH))
 }
@@ -1056,6 +1253,7 @@ pub func emitBastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op =
 // ── Returns ───────────────────────────────────────────────────────────────────
 
 pub func emitIreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_IRETURN)) }
+pub func emitFreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_FRETURN)) }
 pub func emitLreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LRETURN)) }
 pub func emitDreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DRETURN)) }
 pub func emitAreturn(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_ARETURN)) }
@@ -1134,6 +1332,52 @@ pub func emitIfnull(asm: in MethodAssembler, label: in String): Unit {
 
 pub func emitIfnonnull(asm: in MethodAssembler, label: in String): Unit {
   emitInsn(asm, Branch(op = OP_IFNONNULL, label = label))
+}
+
+// ── Switch instructions ───────────────────────────────────────────────────────
+
+/// tableswitch — integer switch over a contiguous range [low..high].
+/// `caseLabels` must contain exactly `high - low + 1` label names, one
+/// per case value in order.  `defaultLabel` is taken if the key is out of range.
+pub func emitTableSwitch(
+  asm:          in MethodAssembler,
+  low:          in Int,
+  high:         in Int,
+  defaultLabel: in String,
+  caseLabels:   in List[String]
+): Unit {
+  val idx    = asm.swDefaults.count
+  val off    = asm.swTableLabels.count
+  val nCases = high - low + 1
+  asm.swDefaults.add(defaultLabel)
+  asm.swTableOff.add(off)
+  var i = 0
+  while i < caseLabels.count {
+    asm.swTableLabels.add(caseLabels[i])
+    i = i + 1
+  }
+  emitInsn(asm, TableSwitch(low = low, high = high, nCases = nCases, swIdx = idx))
+}
+
+/// lookupswitch — integer switch over arbitrary (key, label) pairs.
+/// `pairs` must be sorted by key in ascending order (JVMS requirement).
+/// `defaultLabel` is taken when no key matches.
+pub func emitLookupSwitch(
+  asm:          in MethodAssembler,
+  defaultLabel: in String,
+  pairs:        in List[SwitchPair]
+): Unit {
+  val idx  = asm.swDefaults.count
+  val off  = asm.swLookupKeys.count
+  asm.swDefaults.add(defaultLabel)
+  asm.swLookupOff.add(off)
+  var i = 0
+  while i < pairs.count {
+    asm.swLookupKeys.add(pairs[i].key)
+    asm.swLookupLabels.add(pairs[i].label)
+    i = i + 1
+  }
+  emitInsn(asm, LookupSwitch(nPairs = pairs.count, swIdx = idx))
 }
 
 // ── Monitor (for synchronized blocks) ────────────────────────────────────────
