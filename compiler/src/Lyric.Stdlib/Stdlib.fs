@@ -27,34 +27,14 @@ open System
 // lowering directly via `emitNullableToStringInline` in
 // `compiler/src/Lyric.Emitter/Codegen.fs`.
 
-/// Contract / test-harness intrinsics. Lyric's `expect` / `assert`
-/// raise on failure; in Phase 1 we wire both to a single
-/// `LyricAssertionException` so callers can catch via the FFI.
-///
-/// Defined as a plain CLR class (not an F# `exception` declaration)
-/// so the emitted PE can `newobj` it directly and so the runtime's
-/// `ToString` produces a clean message — F#'s synthesised exception
-/// types have a `Data0` representation that the persisted-assembly
-/// metadata round-trip stumbles on.
-type LyricAssertionException(message: string) =
-    inherit System.Exception(message)
-
-[<Sealed; AbstractClass>]
-type Contracts private () =
-
-    static member Expect (cond: bool, msg: string) : unit =
-        if not cond then
-            raise (LyricAssertionException(msg))
-
-    static member Assert (cond: bool) : unit =
-        if not cond then
-            raise (LyricAssertionException("assertion failed"))
-
-    /// `panic` returns `Never` in Lyric. From the CLR's perspective
-    /// this is a throw-only method whose return type is `void` (the
-    /// emitter will mark its Lyric type as Never).
-    static member Panic (msg: string) : unit =
-        raise (LyricAssertionException("panic: " + msg))
+// G9 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-110): the
+// prior `LyricAssertionException` and `Contracts.{Panic, Expect, Assert}`
+// were thin wrappers that constructed a custom exception subclass and
+// threw it.  Codegen now inlines `newobj System.Exception(string)` +
+// `throw` for every `panic` / `expect` / `assert` call site (and for
+// `requires:` / `ensures:` runtime checks), so neither type is needed.
+// `try { … } catch Bug as b { … }` resolves `Bug` to `System.Exception`
+// already, so the user-visible catch behaviour is unchanged.
 
 // `MapHelpers<'K, 'V>` retired (`docs/23-fsharp-shim-elimination.md`).
 // All references were superseded when `Std.Collections` migrated to

@@ -6,7 +6,6 @@ open Expecto
 let main argv =
     let allTests =
         testList "Lyric.Emitter" [
-            StdlibSmokeTests.tests
             EmitterScaffoldTests.tests
             HelloWorldTests.tests
             ArithmeticTests.tests

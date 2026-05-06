@@ -414,25 +414,38 @@ let private hostFileBuiltins : Map<string, Lazy<MethodInfo>> =
             fileHostMethod "WriteBytesError" [| typeof<string>; typeof<System.Collections.Generic.List<byte>> |]
     ]
 
-/// Lookup a static method on `Lyric.Stdlib.Contracts` by name (used
-/// for the `panic` / `expect` / `assert` builtins).
-let private contractMethod (name: string) (paramTys: System.Type array) : Lazy<MethodInfo> =
+/// G9 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-110): the
+/// previous `Lyric.Stdlib.Contracts.{Panic, Expect, Assert}` helpers
+/// were thin static wrappers that constructed a
+/// `LyricAssertionException(message)` and threw it.  Codegen now
+/// inlines the equivalent IL directly: build the string, `newobj
+/// System.Exception(string)`, `throw`.  User-visible catch behaviour
+/// is unchanged because `try { … } catch Bug as b { … }` resolves
+/// `Bug` to `System.Exception` already.
+
+/// `System.Exception(string message)` constructor — used by the
+/// inline `panic` / `expect` / `assert` lowerings and by the
+/// emitter's `emitContractCheck`.
+let private systemExceptionStringCtor : Lazy<ConstructorInfo> =
     lazy (
-        let ty = typeof<Lyric.Stdlib.Contracts>
-        let mi = ty.GetMethod(name, paramTys)
+        let exTy = typeof<System.Exception>
+        match Option.ofObj (exTy.GetConstructor([| typeof<string> |])) with
+        | Some c -> c
+        | None   -> failwith "System.Exception(String) ctor not found")
+
+/// `System.String.Concat(String, String)` — used by the inline
+/// `panic` lowering to prepend the `"panic: "` prefix at runtime
+/// (matches the prior F# `Contracts.Panic` behaviour without baking
+/// the prefix into every call site's IL).
+let private systemStringConcat2 : Lazy<MethodInfo> =
+    lazy (
+        let mi =
+            typeof<string>.GetMethod(
+                "Concat",
+                [| typeof<string>; typeof<string> |])
         match Option.ofObj mi with
         | Some m -> m
-        | None ->
-            failwithf "Lyric.Stdlib.Contracts::%s not found" name)
-
-let private panicMethod : Lazy<MethodInfo> =
-    contractMethod "Panic" [| typeof<string> |]
-
-let private expectMethod : Lazy<MethodInfo> =
-    contractMethod "Expect" [| typeof<bool>; typeof<string> |]
-
-let private assertMethod : Lazy<MethodInfo> =
-    contractMethod "Assert" [| typeof<bool> |]
+        | None   -> failwith "System.String::Concat(String, String) not found")
 
 // ---------------------------------------------------------------------------
 // CLR-type predicates used by the binop emitter.
@@ -3055,15 +3068,28 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         mi.ReturnType
 
     // ---- panic / expect / assert builtins ------------------------------
+    //
+    // G9 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-110):
+    // these used to call `Lyric.Stdlib.Contracts.{Panic, Expect, Assert}`
+    // which constructed `LyricAssertionException(message)` and threw
+    // it.  Codegen now inlines the equivalent IL — `newobj
+    // System.Exception(string)` + `throw` — so the F# `Contracts` /
+    // `LyricAssertionException` types can retire.  `try { … } catch
+    // Bug as b { … }` resolves `Bug` to `System.Exception` already,
+    // so the user-visible behaviour is unchanged.
 
     | ECall ({ Kind = EPath { Segments = ["panic"] } }, [arg]) ->
         let payload =
             match arg with
             | CAPositional ex | CANamed (_, ex, _) -> ex
+        // Stack: ["panic: "; <user msg>]
+        il.Emit(OpCodes.Ldstr, "panic: ")
         let _ = emitExpr ctx payload
-        il.Emit(OpCodes.Call, panicMethod.Value)
-        // Panic returns Never; the IL stack ends here, but the codegen
-        // needs *some* CLR type for downstream chaining.  Use Void.
+        il.Emit(OpCodes.Call, systemStringConcat2.Value)
+        il.Emit(OpCodes.Newobj, systemExceptionStringCtor.Value)
+        il.Emit(OpCodes.Throw)
+        // Panic returns Never; downstream chaining needs *some* CLR
+        // type — use Void.
         typeof<System.Void>
 
     | ECall ({ Kind = EPath { Segments = ["expect"] } }, [a1; a2]) ->
@@ -3071,16 +3097,27 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             match a1 with CAPositional ex | CANamed (_, ex, _) -> ex
         let payload2 =
             match a2 with CAPositional ex | CANamed (_, ex, _) -> ex
+        // if !cond { throw new System.Exception(msg) }
         let _ = emitExpr ctx payload1
+        let okLbl = il.DefineLabel()
+        il.Emit(OpCodes.Brtrue, okLbl)
         let _ = emitExpr ctx payload2
-        il.Emit(OpCodes.Call, expectMethod.Value)
+        il.Emit(OpCodes.Newobj, systemExceptionStringCtor.Value)
+        il.Emit(OpCodes.Throw)
+        il.MarkLabel(okLbl)
         typeof<System.Void>
 
     | ECall ({ Kind = EPath { Segments = ["assert"] } }, [arg]) ->
         let payload =
             match arg with CAPositional ex | CANamed (_, ex, _) -> ex
+        // if !cond { throw new System.Exception("assertion failed") }
         let _ = emitExpr ctx payload
-        il.Emit(OpCodes.Call, assertMethod.Value)
+        let okLbl = il.DefineLabel()
+        il.Emit(OpCodes.Brtrue, okLbl)
+        il.Emit(OpCodes.Ldstr, "assertion failed")
+        il.Emit(OpCodes.Newobj, systemExceptionStringCtor.Value)
+        il.Emit(OpCodes.Throw)
+        il.MarkLabel(okLbl)
         typeof<System.Void>
 
     // ---- println builtin ----------------------------------------------
