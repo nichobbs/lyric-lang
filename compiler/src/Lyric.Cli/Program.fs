@@ -1179,7 +1179,15 @@ let main (argv: string array) : int =
                     sb.Append (sprintf "      \"col\": %d,\n" r.Goal.Origin.Start.Column) |> ignore
                     sb.Append (sprintf "      \"outcome\": %s,\n" (jStr outcomeStr)) |> ignore
                     sb.Append (sprintf "      \"model\": %s,\n" modelStr) |> ignore
-                    sb.Append (sprintf "      \"smtPath\": %s\n" (jOpt r.SmtPath)) |> ignore
+                    sb.Append (sprintf "      \"smtPath\": %s,\n" (jOpt r.SmtPath)) |> ignore
+                    let suggestionsJson =
+                        match r.Suggestions with
+                        | [] -> "[]"
+                        | xs ->
+                            "["
+                            + (xs |> List.map jStr |> String.concat ", ")
+                            + "]"
+                    sb.Append (sprintf "      \"suggestions\": %s\n" suggestionsJson) |> ignore
                     sb.Append (sprintf "    }%s\n" comma) |> ignore
                 sb.Append "  ],\n" |> ignore
                 let total = List.length summary.Results

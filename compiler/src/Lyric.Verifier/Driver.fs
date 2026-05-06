@@ -15,7 +15,15 @@ open Lyric.Verifier.Solver
 type ProofResult =
     { Goal:    Goal
       Outcome: SolverOutcome
-      SmtPath: string option }
+      SmtPath: string option
+      /// Heuristic suggestions surfaced alongside a V0008
+      /// counterexample.  Each element is a contract clause the user
+      /// could add (or strengthen) to block this counterexample —
+      /// e.g. `"requires: x > 0"`.  Empty on `Discharged` / `Unknown`.
+      ///
+      /// `15-phase-4-proof-plan.md` §9.3 lists the
+      /// boundary-suggestion patterns this implements.
+      Suggestions: string list }
 
 type ProofSummary =
     { Level:        Mode.VerificationLevel
@@ -72,6 +80,24 @@ module ProveOptions =
     let defaults : ProveOptions =
         { AllowUnverified = false }
 
+/// Build a substitution map from a counterexample's bindings.  Only
+/// integer and boolean values map cleanly; opaque sorts (datatypes,
+/// strings, slices) stay unbound and the evaluator falls through.
+let private modelSubstOfBindings
+        (bindings: CounterexampleBinding list) : Map<string, Term> =
+    bindings
+    |> List.choose (fun b ->
+        let termOpt =
+            match System.Int64.TryParse b.Value with
+            | true, n -> Some (TLit(LInt n, SInt))
+            | _ ->
+                match b.Value with
+                | "true"  -> Some (TLit(LBool true,  SBool))
+                | "false" -> Some (TLit(LBool false, SBool))
+                | _       -> None
+        termOpt |> Option.map (fun t -> b.Name, t))
+    |> Map.ofList
+
 /// Reconstruct a human-readable counterexample trace from a model and
 /// goal.  Tries to identify which hypothesis was violated by substituting
 /// the model's variable bindings into each hypothesis term and checking
@@ -81,21 +107,7 @@ let private buildCounterexampleTrace
         (g: Goal)
         (bindings: CounterexampleBinding list) : string =
 
-    // Build a substitution map from the model bindings.
-    let modelSubst : Map<string, Term> =
-        bindings
-        |> List.choose (fun b ->
-            // Try to parse the value as an integer literal.
-            let termOpt =
-                match System.Int64.TryParse b.Value with
-                | true, n -> Some (TLit(LInt n, SInt))
-                | _ ->
-                    match b.Value with
-                    | "true"  -> Some (TLit(LBool true,  SBool))
-                    | "false" -> Some (TLit(LBool false, SBool))
-                    | _       -> None
-            termOpt |> Option.map (fun t -> b.Name, t))
-        |> Map.ofList
+    let modelSubst = modelSubstOfBindings bindings
 
     // Evaluate a term under the model substitution — collapses TBuiltin
     // nodes whose args all simplified to literals.  Returns `Some bool`
@@ -197,12 +209,109 @@ let private buildCounterexampleTrace
 
     sb.ToString().TrimEnd()
 
+/// True iff a model-binding name looks like a Lyric source identifier
+/// the user could write into a `requires:` clause.  Synthetic
+/// VC-internal names (carrying `$` from goal labels, `?` from
+/// translation fall-throughs, or starting with an uppercase letter
+/// like a type name) are excluded.
+let private looksLikeUserParam (name: string) : bool =
+    not (System.String.IsNullOrEmpty name)
+    && not (name.Contains '$')
+    && not (name.Contains '?')
+    && System.Char.IsLower name.[0]
+    && name |> Seq.forall (fun c ->
+        System.Char.IsLetterOrDigit c || c = '_')
+
+/// Heuristic suggestion generator: walk the model bindings and, for
+/// each integer-valued user parameter pinned to a "boundary" value
+/// (zero or negative), propose the `requires:` clause that would
+/// have blocked the counterexample.  Each suggestion is a contract
+/// fragment the user pastes between `requires:` and the next
+/// clause / brace.
+///
+/// The suggestion is *only* included when its body evaluates to
+/// `false` under the offending model — that's the local proof that
+/// adding it would have at least eliminated *this* counterexample.
+/// It is not (and cannot be, without re-invoking the solver) a
+/// guarantee the rest of the proof goes through afterwards.
+///
+/// Suggestions are deduplicated and capped at three to avoid
+/// flooding the diagnostic on goals with many free variables.
+///
+/// Public so test fixtures can exercise the heuristic directly with
+/// synthetic models, decoupled from solver availability.
+let suggestRequiresClauses
+        (bindings: CounterexampleBinding list) : string list =
+
+    let modelSubst = modelSubstOfBindings bindings
+
+    // Local micro-evaluator: a candidate `x > 0` over a model with
+    // `x = 0` must collapse to `false` to count as a useful
+    // suggestion.  Only the literal-comparator rules are needed —
+    // the candidate hypotheses we generate here are all of the shape
+    // `var <op> literal`.
+    let rec eval (t: Term) : Term =
+        let t' = Term.subst modelSubst t
+        match t' with
+        | TBuiltin(BOpGt,  [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x > y), SBool)
+            | _ -> t'
+        | TBuiltin(BOpGte, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x >= y), SBool)
+            | _ -> t'
+        | TBuiltin(BOpNeq, [a; b]) ->
+            match eval a, eval b with
+            | TLit(LInt x, _), TLit(LInt y, _) -> TLit(LBool (x <> y), SBool)
+            | _ -> t'
+        | _ -> t'
+
+    let blocksModel (candidate: Term) : bool =
+        match eval candidate with
+        | TLit(LBool false, _) -> true
+        | _ -> false
+
+    let candidatesFor (b: CounterexampleBinding) : (string * Term) list =
+        if not (looksLikeUserParam b.Name) then []
+        else
+            match System.Int64.TryParse b.Value with
+            | true, 0L ->
+                [ sprintf "requires: %s > 0" b.Name,
+                    TBuiltin(BOpGt,
+                        [TVar(b.Name, SInt); TLit(LInt 0L, SInt)]) ]
+            | true, n when n < 0L ->
+                [ sprintf "requires: %s >= 0" b.Name,
+                    TBuiltin(BOpGte,
+                        [TVar(b.Name, SInt); TLit(LInt 0L, SInt)]) ]
+            | _ -> []
+
+    bindings
+    |> List.collect candidatesFor
+    |> List.filter (fun (_, t) -> blocksModel t)
+    |> List.map fst
+    |> List.distinct
+    |> List.truncate 3
+
+/// Compute the heuristic suggestions for a discharge outcome.
+/// Empty for `Discharged` and `Unknown`; for `Counterexample`,
+/// returns the boundary suggestions from `suggestRequiresClauses`.
+let private suggestionsFor (outcome: SolverOutcome) : string list =
+    match outcome with
+    | Counterexample model ->
+        let bindings = parseModel model
+        if List.isEmpty bindings then [] else suggestRequiresClauses bindings
+    | _ -> []
+
 /// Render a discharge outcome into a Diagnostic.  Discharged goals
-/// produce no diagnostic (success is silent).
+/// produce no diagnostic (success is silent).  Suggestions are
+/// pre-computed (so the same list ends up in `ProofResult.Suggestions`
+/// and the V0008 message body); pass them through here.
 let private outcomeToDiag
         (opts: ProveOptions)
         (g: Goal)
-        (outcome: SolverOutcome) : Diagnostic option =
+        (outcome: SolverOutcome)
+        (suggestions: string list) : Diagnostic option =
     match outcome with
     | Discharged ->
         None
@@ -217,10 +326,18 @@ let private outcomeToDiag
                 sprintf "raw model:\n%s" raw
             else
                 buildCounterexampleTrace g bindings
+        let suggestionBlock =
+            match suggestions with
+            | [] -> ""
+            | xs ->
+                let lines =
+                    xs |> List.map (sprintf "    %s") |> String.concat "\n"
+                "\n  suggestions (heuristic — verify the rest of the proof still goes through):\n"
+                + lines
         Some
             (Diagnostic.error "V0008"
-                (sprintf "%s — proof failed (counterexample below)\n%s"
-                    (GoalKind.display g.Kind) body)
+                (sprintf "%s — proof failed (counterexample below)\n%s%s"
+                    (GoalKind.display g.Kind) body suggestionBlock)
                 g.Origin)
     | Unknown reason ->
         let mk =
@@ -308,11 +425,15 @@ let proveSourceWithOptions
             |> List.map (fun g ->
                 let outcome = dischargeFn g
                 let smtPath = writeSmtToDisk proofDir g
-                { Goal = g; Outcome = outcome; SmtPath = smtPath }))
+                { Goal        = g
+                  Outcome     = outcome
+                  SmtPath     = smtPath
+                  Suggestions = suggestionsFor outcome }))
 
     let resultDiags =
         results
-        |> List.choose (fun r -> outcomeToDiag opts r.Goal r.Outcome)
+        |> List.choose (fun r ->
+            outcomeToDiag opts r.Goal r.Outcome r.Suggestions)
 
     { Level       = level
       Diagnostics = parseDiags @ modeDiags @ stabilityDiags @ vcDiags @ resultDiags

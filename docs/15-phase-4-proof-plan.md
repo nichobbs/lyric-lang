@@ -860,6 +860,7 @@ without breakage across patch and minor compiler releases.
 | `outcome`  | string                | One of `discharged`, `counterexample`, `unknown`.                                                                       |
 | `model`    | string &#124; null    | Raw `(get-model)` block on `counterexample`; the solver's `unknown` reason on `unknown`; `null` on `discharged`.        |
 | `smtPath`  | string &#124; null    | Path to the goal's SMT-LIB v2.6 source on disk under `target/proofs/`, or `null` when SMT was not written.              |
+| `suggestions` | array of string    | Heuristic contract clauses the user could add to block this counterexample (e.g. `"requires: x > 0"`).  Always present; empty for `discharged` / `unknown`, capped at 3 for `counterexample`.  See §9.3 for the boundary-suggestion policy. |
 
 ### A.3 Diagnostic object
 
