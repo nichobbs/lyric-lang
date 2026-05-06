@@ -1244,11 +1244,15 @@ pub func emitLaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op =
 pub func emitDaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_DALOAD))  }
 pub func emitAaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_AALOAD))  }
 pub func emitBaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_BALOAD))  }
+pub func emitCaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_CALOAD))  }
+pub func emitSaload(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op = OP_SALOAD))  }
 pub func emitIastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_IASTORE)) }
 pub func emitLastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_LASTORE)) }
 pub func emitDastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_DASTORE)) }
 pub func emitAastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_AASTORE)) }
 pub func emitBastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_BASTORE)) }
+pub func emitCastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_CASTORE)) }
+pub func emitSastore(asm: in MethodAssembler): Unit { emitInsn(asm, Nullary(op = OP_SASTORE)) }
 
 // ── Returns ───────────────────────────────────────────────────────────────────
 
