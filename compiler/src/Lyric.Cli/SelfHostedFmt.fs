@@ -64,7 +64,9 @@ let private ensureLyricFmtAssembly () : string =
           RestoredPackages   = []
           NugetAssemblyPaths = []
           ExternShimRoot     = None
-          Target             = Emitter.Dotnet }
+          Target             = Emitter.Dotnet
+          ActiveFeatures     = Set.empty
+          DeclaredFeatures   = Set.empty }
     let result = Emitter.emit req
     let errs =
         result.Diagnostics

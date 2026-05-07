@@ -1315,6 +1315,7 @@ let main (argv: string array) : int =
                     let outPath = Path.Combine(tmp, stem + ".dll")
                     let buildExit =
                         build synthPath outPath true [] [] None Emitter.Dotnet
+                            Set.empty Set.empty
                     if buildExit <> 0 then
                         // Strip the temp-path prefix from any diagnostic
                         // line so users see "their" path.  build()

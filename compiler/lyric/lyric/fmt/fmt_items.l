@@ -347,6 +347,8 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case ITest(td)        -> concatDoc(header, testDoc(td, ctx))
     case IProperty(pd)    -> concatDoc(header, propertyDoc(pd, ctx))
     case IFixture(fd)     -> concatDoc(header, fixtureDoc(fd))
+    case IConfig(_)       -> singleLineDoc("// config block (D046, formatter follow-up)")
+    case IAspect(_)       -> singleLineDoc("// aspect block (D047, formatter follow-up)")
     case IError           -> singleLineDoc("// <parse-error>")
   }
 }
