@@ -309,6 +309,23 @@ let private typeOf (it: Item) : ProofType option =
         // proof consumers see through the cell deliberately.
         let fs = od.Members |> List.choose opaqueFieldOf
         Some { Name = od.Name; Kind = PTKOpaque fs }
+    | IProtected pd ->
+        // Protected type fields are exposed to the verifier so it can
+        // reason about the type invariant and entry-method contracts.
+        // The runtime visibility rules are enforced by the type checker;
+        // here we treat the fields like an opaque type's rep.
+        let fs =
+            pd.Members
+            |> List.choose (fun m ->
+                match m with
+                | PMField (PFVar(n, te, _, _)) ->
+                    Some { Name = n; TypeRepr = renderTypeExpr te }
+                | PMField (PFLet(n, te, _, _)) ->
+                    Some { Name = n; TypeRepr = renderTypeExpr te }
+                | PMField (PFImmutable fd) ->
+                    Some { Name = fd.Name; TypeRepr = renderTypeExpr fd.Type }
+                | _ -> None)
+        Some { Name = pd.Name; Kind = PTKOpaque fs }
     | _ -> None
 
 /// Walk a parsed source file and collect proof-only metadata for

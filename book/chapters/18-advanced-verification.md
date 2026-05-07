@@ -96,7 +96,7 @@ The `forall (y: T)` here is not iterated at runtime — in `@proof_required` mod
 
 `exists` works analogously. It becomes an existential formula for the SMT solver, which can discharge it by finding a witness. `exists (x: T) where xs.contains(x) and x > threshold` translates to "there is an element in `xs` greater than `threshold`," which Z3 can verify or refute for integer-typed collections.
 
-The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string or floating-point domains — check whether the goals discharge before relying on them.
+The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string domains — check whether the goals discharge before relying on them. For floating-point (`Float`, `Double`) the prover maps values to mathematical reals, which is sound for inequality and arithmetic reasoning; see §18.8.
 
 ## §18.3 The sorted set example
 
@@ -201,7 +201,7 @@ Knowing what discharges deterministically helps you write contracts that stay wi
 - Free quantifiers over `String` — `forall (s: String) implies ...` without the domain being a finite collection. String ordering (lexicographic `<`) is not in Z3's decidable LIA fragment.
 - Non-linear arithmetic where both operands are symbolic — `n * m` where both `n` and `m` are variables, not constants. This is outside LIA and into nonlinear arithmetic, where Z3 may time out or return `unknown`.
 - Recursive functions with complex invariants and deep nesting — `isBst` of depth 10 is fine; a mutually recursive function pair with a shared invariant and non-trivial base cases may exhaust Z3's resources.
-- Floating-point arithmetic — decidable in IEEE 754 theory but notoriously slow, and many operations produce formulas Z3 cannot close in a reasonable time budget.
+- Floating-point arithmetic with exact rounding semantics — if you need IEEE 754 bit-exact results (`NaN` propagation, subnormals, directed rounding) the prover cannot reason about those. The verifier maps `Float`/`Double` to mathematical reals, which covers the common case of inequality and arithmetic reasoning soundly; see §18.8 for details.
 
 **When the prover says `unknown`:**
 
@@ -264,7 +264,95 @@ At the call site to `balancesConserved` in the postcondition, the prover uses th
 
 Breaking a large proof into named lemmas has two benefits: individual goals are smaller and more tractable for Z3, and the intermediate properties are named and can be understood independently. A failing goal now points to a specific lemma rather than to a large multi-clause postcondition.
 
-## §18.7 Knowing when to stop
+## §18.7 Proving `protected type` invariants
+
+A `protected type` declaration combines mutable shared state with an invariant. In `@proof_required` mode, `lyric prove` checks each `entry` and `func` method: it assumes the invariant holds on entry and asks the prover to confirm it still holds on exit. The token-bucket example demonstrates the pattern:
+
+```lyric
+@proof_required
+package TokenBucketProof
+
+pub protected type Bucket {
+  var tokens: Double
+  let capacity: Double
+
+  invariant: tokens >= 0.0
+  invariant: tokens <= capacity
+
+  pub entry tryAcquire(count: in Double): Bool
+    requires: count > 0.0
+    requires: count <= capacity
+  {
+    if tokens >= count {
+      tokens = tokens - count
+      assert(tokens >= 0.0)
+      assert(tokens <= capacity)
+      return true
+    }
+    return false
+  }
+
+  pub entry refill(added: in Double): Unit
+    requires: added > 0.0
+  {
+    val newTokens = tokens + added
+    tokens = if newTokens > capacity then capacity else newTokens
+    assert(tokens >= 0.0)
+    assert(tokens <= capacity)
+  }
+}
+```
+
+Running `lyric prove` on this package generates six obligations — one postcondition goal per entry plus one side goal per `assert` — and all discharge under Z3.
+
+**How the prover sees a protected entry.** The VC generator translates each `entry` as if it were a standalone function with:
+
+- One symbolic variable per field (`tokens: Real`, `capacity: Real`).
+- The type's `invariant:` clauses prepended as additional `requires:` preconditions.
+- The entry's own `requires:` clauses appended after.
+
+The body is then run through the standard wp calculus. Assignments to fields (`tokens = tokens - count`) rebind the symbolic variable for the rest of the block, so `assert(tokens >= 0.0)` after the assignment verifies the updated value.
+
+**Why `assert` rather than `ensures:`?** The invariant is about mutable state. A postcondition `ensures: tokens >= 0.0` in the Lyric contract language describes the *return value*, not the final field state. Expressing invariant preservation requires naming the updated field value — which, in a sequential block that may reassign the field multiple times, is most naturally done with an explicit `assert` at the point where the field reaches its final value.
+
+The pattern therefore is:
+1. Declare the structural invariant in the `invariant:` clause.
+2. After each mutation sequence, add `assert(invariant_holds)` to prove preservation.
+3. The prover sees the `assert` as a side goal and uses the branch conditions, preconditions, and intermediate bindings as hypotheses.
+
+**Branch conditions are automatically in scope.** The `if tokens >= count` guard is available to the prover when checking the `assert` inside the taken branch — the verifier wraps branch-internal side goals with the condition as a hypothesis. This is why `assert(tokens >= 0.0)` inside `if tokens >= count` discharges: the prover knows both `tokens >= count` and `count > 0.0`, so `tokens - count >= 0.0` follows.
+
+**Constructor postconditions.** A `func make(...)` that constructs a protected type proves a standard postcondition. Use `result.field` in `ensures:` to state structural facts:
+
+```lyric
+pub func make(capacity: in Double): Bucket
+  requires: capacity > 0.0
+  ensures:  result.tokens == capacity
+  ensures:  result.capacity == capacity
+{
+  return Bucket(tokens = capacity, capacity = capacity)
+}
+```
+
+This generates one goal — the structural postcondition — which Z3 closes trivially from the constructor arguments.
+
+## §18.8 Float and Double as mathematical reals
+
+The Lyric verifier maps `Float` and `Double` values to the SMT `Real` sort (mathematical real numbers) rather than to the IEEE 754 bitvector theory. This is a deliberate, sound approximation.
+
+**What it means in practice.** Arithmetic over `Float`/`Double` in contracts is treated as exact real-number arithmetic. The inequality `tokens - count >= 0.0` is discharged by linear arithmetic over reals — the same decision procedure that handles integer arithmetic — and closes reliably without a time budget concern. The division operator `/` on float operands emits as real-valued `/` (not integer `div`), so rate computations like `refillRate / 60.0` reason correctly.
+
+**What it does not cover.** The Real approximation is sound but not complete for IEEE 754. If your contract depends on:
+
+- Rounding behaviour (`1.0 / 3.0 * 3.0 == 1.0` is true in reals but not in IEEE 754 doubles)
+- `NaN` or infinity propagation
+- Overflow to `Inf` for very large values
+
+those obligations will not hold in real arithmetic and the prover will correctly report them as failing. For the common case of inequality reasoning, conservation properties, and monotonicity arguments over bounded ranges, the Real mapping is both sound and complete.
+
+**Guideline.** Use `Float`/`Double` in `@proof_required` contracts for rate limits, ratios, thresholds, and other situations where the values are well-bounded and you need inequality reasoning. Avoid relying on exact decimal representations or rounding properties; if you need those guarantees, use `Int` scaled by a factor (e.g., store amounts in integer cents rather than decimal dollars).
+
+## §18.9 Knowing when to stop
 
 ::: sidebar
 **Should I use `@proof_required` for everything?** The answer is no, and it is worth being explicit about why. SMT verification is powerful but not free. Every contract obligation becomes an SMT query; a complex package can generate hundreds of goals. Some of those goals may be in the undecidable fragment, requiring manual intervention. Writing `ensures:` clauses precise enough to let the prover succeed takes discipline and iteration — it is more work than writing runtime-only contracts. The compilation time is longer; CI pipelines need to accommodate the solver's budget. The value is highest for money handling, safety-critical invariants, and security properties where the cost of a missed bug in production is large. For glue code, HTTP handlers, and UI-facing logic, `@runtime_checked` with well-written contracts gives most of the safety benefit at a fraction of the effort. Reach for `@proof_required` deliberately, for the packages where the stakes are high enough to justify it.
