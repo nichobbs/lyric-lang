@@ -72,7 +72,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (this branch) | D-progress-128 |
 | M5.1 — self-hosted type checker | Not shipped | — |
 | M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | Not shipped | — |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`) | D-progress-129 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -271,6 +271,50 @@ tests, 0 ignored).
   `lowerFuncWithContract`) to match `lowering.l` exports.
 - `docs/10-bootstrap-progress.md` Phase 5 table: PR numbers filled in for D-progress-124;
   D-progress-125 row added.
+
+---
+
+### D-progress-129: M5.3 (stage 1) — self-hosted CLI migration
+
+*claude/migrate-lyric-cli-3WDhT branch.*  Phase 5 §M5.3 begins
+migrating the Lyric CLI from F# to Lyric itself, keeping the F# bootstrap
+compiler in place for compilation.
+
+**Files shipped:**
+
+| File | Role |
+|---|---|
+| `stdlib/std/_kernel/process_host.l` | Trusted BCL extern boundary for `System.Diagnostics.Process` |
+| `stdlib/std/process.l` | `Std.Process` — `run` / `runChecked` wrapping the process kernel |
+| `compiler/lyric/lyric/manifest.l` | `Lyric.Manifest` — pure-Lyric TOML parser for `lyric.toml` (mirrors `Manifest.fs`) |
+| `compiler/lyric/lyric/cli.l` | `Lyric.Cli` — self-hosted command dispatch (mirrors `Program.fs`) |
+| `stdlib/std/string.l` | Added `pub func fromInt(n: in Int): String` convenience wrapper over `toString` |
+
+**Architecture decisions:**
+
+- `Std.ProcessHost` lives in `stdlib/std/_kernel/` (kernel boundary), using
+  `Process.Start(string, string)` — the two-string overload — so argument
+  quoting is done in pure Lyric (`buildArgString` in `process.l`).  This
+  avoids `ProcessStartInfo.ArgumentList` (a generic mutable collection
+  with no exact-CLR-type match in the emitter's `paramsExactMatch`).
+- No new F# shim modules were added.  `G10` pattern (`try/catch Bug`) is
+  used throughout for host-failure conversion.
+- `Lyric.Manifest` uses a cursor-based recursive descent parser with
+  `inout Cursor` for mutable state, matching the `lexer.l` style.
+- `Lyric.Cli` forward-imports `Lyric.Parser`, `Lyric.Emitter`, `Lyric.Fmt`,
+  `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, and `Lyric.ContractMeta`.
+  These packages do not exist yet; they will ship in M5.2 (parser/emitter)
+  and the remainder of M5.3.  The CLI source documents their expected API
+  surface in header comments.  The file lives in `compiler/lyric/lyric/`
+  and is only compiled by the self-hosted compiler, so forward references
+  are safe.
+- `stdlib/lyric.toml` gains `Std.ProcessHost` in Tier 0 (only depends on
+  `Std.Core`).  `Std.Process` is queued for Tier 1 once `Std.Collections`
+  is wired into the bundle.
+
+**Kernel boundary count** (after this PR): `Std.ProcessHost` adds 3 extern
+declarations (`hostSpawn`, `hostWait`, `hostExitCode`).  Total kernel
+extern count: ~217, well under the 250 hard limit.
 
 ---
 
