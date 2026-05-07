@@ -138,6 +138,19 @@ func testFormatModuleDoc(): Unit {
              "format: module doc preserved")
 }
 
+func testFormatSourceFacade(): Unit {
+  // String-in / string-out façade — the entry point the F# CLI calls
+  // through reflection in M5.3 stage 2 (CLI wiring).
+  val src = "package P\n\n// keep me\nalias A = Int\n"
+  val acc = formatSource(src)
+  assertTrue(Str.contains(acc, "// keep me"),
+             "formatSource: comment preserved")
+  assertTrue(Str.contains(acc, "alias A = Int"),
+             "formatSource: item rendered")
+  assertTrue(isFormattedSource(acc),
+             "formatSource: output is canonical (idempotent)")
+}
+
 func main(): Unit {
   testFormatPackageOnly()
   testFormatPackageAndImports()
@@ -153,5 +166,6 @@ func main(): Unit {
   testFormatEnum()
   testFormatVal()
   testFormatModuleDoc()
+  testFormatSourceFacade()
   println("fmt self-test: ok")
 }

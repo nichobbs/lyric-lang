@@ -333,3 +333,21 @@ pub func isFormatted(source: in String, parsed: in ParseResult): Bool {
 func normaliseEnd(s: in String): String {
   Str.trimEnd(Str.replace(s, "\r\n", "\n"))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6. String-in / string-out façade.  Convenience wrappers that
+// internally drive `Lyric.Parser.parse` so callers (notably the F# CLI
+// crossing the language boundary by reflection) don't need to construct
+// a `ParseResult` themselves.  Mirrors the API contract advertised in
+// `compiler/lyric/lyric/cli.l` for the eventual self-hosted CLI.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@stable(since="0.1")
+pub func formatSource(source: in String): String {
+  format(parse(source))
+}
+
+@stable(since="0.1")
+pub func isFormattedSource(source: in String): Bool {
+  isFormatted(source, parse(source))
+}

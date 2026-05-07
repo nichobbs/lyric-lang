@@ -77,7 +77,7 @@ deferred to Phase 3 by design.
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port) | D-progress-129 / D-progress-131 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge) | D-progress-129 / D-progress-131 / D-progress-135 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -193,6 +193,60 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-135: M5.3 stage 3 — F# CLI `lyric fmt` reflection bridge
+
+*claude/lyric-fmt-cli-wiring branch.*
+
+Routes the F# `lyric fmt` subcommand through the self-hosted
+`Lyric.Fmt` (D-progress-131) so non-doc comments survive the user-
+facing `lyric fmt` command.  The previous stage shipped the formatter;
+this stage wires it.
+
+How it works:
+
+- `Lyric.Fmt` (Lyric package) gains two String-in / String-out
+  facade entry points so the F# bridge doesn't have to construct a
+  Lyric `ParseResult` across the language boundary:
+  `pub func formatSource(source: in String): String`
+  `pub func isFormattedSource(source: in String): Bool`
+  The bodies just thread through the existing `format` /
+  `isFormatted` and parse the source first.
+- `compiler/src/Lyric.Cli/SelfHostedFmt.fs` (new F# module)
+  implements the bridge.  On first call it compiles a tiny driver
+  Lyric program (`package Lyric.FmtBridge / import Lyric.Fmt /
+  func main(): Unit { }`) via `Emitter.emit`, which has the side-
+  effect of dropping `Lyric.Lyric.Fmt.dll` into the per-process
+  stdlib precompile cache.  We then `Assembly.LoadFrom` every cached
+  DLL so the transitive references resolve, locate
+  `Lyric.Fmt.Program`, and reflect out the static
+  `formatSource(string)` / `isFormattedSource(string)` methods.  The
+  resolved delegates are cached in a process-wide `lock`-guarded
+  ref so subsequent invocations skip the ~3-5s driver compile.
+- `Program.fs` `lyric fmt` dispatch routes through
+  `SelfHostedFmt.format` / `SelfHostedFmt.isFormatted` by default; a
+  new `--legacy` flag (and `LYRIC_FMT_LEGACY=1` env var for
+  automation harnesses that can't pass extra flags) falls back to
+  the F# `Lyric.Cli.Fmt` formatter.  If the bridge throws (e.g.
+  driver compile error in a pathological env), we surface the
+  message to stderr and degrade to the legacy backend so
+  `lyric fmt` is never bricked.
+- Help text on `lyric --help` is updated: `--legacy` is documented
+  and the comment-preservation note is corrected — the default
+  backend now keeps both `///` and `//` comments.
+
+Tests at `compiler/tests/Lyric.Cli.Tests/SelfHostedFmtBridgeTests.fs`
+exercise the bridge directly (round-trip, idempotence, leading +
+between + trailing line/block comment preservation, `isFormatted`
+discrimination).  All seven F# Expecto suites continue to pass.
+
+Naming wart for follow-up: the emitter's stdlib-precompile path
+mints DLL filenames as `sprintf "Lyric.%s.%s" head (concat rest)`,
+so `Lyric.Fmt` lands as `Lyric.Lyric.Fmt.dll` (the double `Lyric.`
+is head + per-package basename, not a typo).  The CLR type names
+inside the DLL are unaffected (`Lyric.Fmt.Program`).  Cleaning the
+DLL naming is its own concern; for now the bridge looks up
+`Lyric.Lyric.Fmt.dll` explicitly with a comment.
 
 ### D-progress-131: M5.3 stage 2 — self-hosted formatter (`Lyric.Fmt`) port
 
