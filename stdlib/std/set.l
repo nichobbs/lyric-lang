@@ -5,11 +5,9 @@
 // is used for the core operations (`add`, `contains`, `remove`, `count`)
 // the same way `List[T]` is used in `Std.Iter`.
 //
-// Set-algebra operations (`setUnion`, `setIntersection`, `setDifference`)
-// materialise their arguments as slices via `setToSlice` (which routes
-// through the `Lyric.Stdlib.SetHost.SetToArray` shim because `HashSet<T>`
-// exposes `.ToArray()` only as a LINQ extension method).  Each algebra
-// operation builds a fresh `Set[T]` and returns it.
+// Set-algebra operations iterate `Set[T]` directly via the IEnumerable
+// for-loop (D-progress: P0/4d Group B).  `setToSlice` is now a pure Lyric
+// function that collects elements into a `List[T]` and calls `.toArray()`.
 //
 // Naming convention: all exported functions carry a `set` prefix to avoid
 // clashing with the identically-named BCL dispatch calls (`add`, `remove`,
@@ -68,6 +66,17 @@ pub func setElements[T](s: in Set[T]): slice[T] {
   setToSlice(s)
 }
 
+/// Collect all elements of `s` into a new slice.  Iterates via the
+/// IEnumerable for-loop and accumulates into a `List[T]`.
+@stable(since="1.0")
+pub func setToSlice[T](s: in Set[T]): slice[T] {
+  val result: List[T] = newList()
+  for item in s {
+    result.add(item)
+  }
+  return result.toArray()
+}
+
 // =====================================================================
 // Set algebra — each returns a fresh set.
 // =====================================================================
@@ -76,12 +85,8 @@ pub func setElements[T](s: in Set[T]): slice[T] {
 @stable(since="1.0")
 pub func setUnion[T](a: in Set[T], b: in Set[T]): Set[T] {
   val r: Set[T] = newSet()
-  for x in setToSlice(a) {
-    r.add(x)
-  }
-  for x in setToSlice(b) {
-    r.add(x)
-  }
+  for x in a { r.add(x) }
+  for x in b { r.add(x) }
   return r
 }
 
@@ -89,7 +94,7 @@ pub func setUnion[T](a: in Set[T], b: in Set[T]): Set[T] {
 @stable(since="1.0")
 pub func setIntersection[T](a: in Set[T], b: in Set[T]): Set[T] {
   val r: Set[T] = newSet()
-  for x in setToSlice(a) {
+  for x in a {
     if b.contains(x) {
       r.add(x)
     }
@@ -101,7 +106,7 @@ pub func setIntersection[T](a: in Set[T], b: in Set[T]): Set[T] {
 @stable(since="1.0")
 pub func setDifference[T](a: in Set[T], b: in Set[T]): Set[T] {
   val r: Set[T] = newSet()
-  for x in setToSlice(a) {
+  for x in a {
     if not b.contains(x) {
       r.add(x)
     }
@@ -112,7 +117,7 @@ pub func setDifference[T](a: in Set[T], b: in Set[T]): Set[T] {
 /// True iff every element of `sub` is also an element of `super_`.
 @stable(since="1.0")
 pub func setIsSubset[T](sub: in Set[T], super_: in Set[T]): Bool {
-  for x in setToSlice(sub) {
+  for x in sub {
     if not super_.contains(x) { return false }
   }
   return true
@@ -122,7 +127,7 @@ pub func setIsSubset[T](sub: in Set[T], super_: in Set[T]): Bool {
 @stable(since="1.0")
 pub func setEquals[T](a: in Set[T], b: in Set[T]): Bool {
   if a.count != b.count { return false }
-  for x in setToSlice(a) {
+  for x in a {
     if not b.contains(x) { return false }
   }
   return true
