@@ -105,6 +105,18 @@ type NugetSection =
     { Packages: NugetEntry list
       Options:  NugetOptions }
 
+/// `[features]` section per `docs/24-build-features.md` (D045).  Each
+/// declared feature is named in the section; in v1 each value must be
+/// an empty implication array (non-empty implications are deferred to
+/// v1.1).  `default = [...]` names the features active when the user
+/// does not pass `--features` / `--no-default-features`.
+type FeaturesSection =
+    { /// All declared feature names, sorted alphabetically.  Excludes
+      /// the synthetic `default` key.
+      Declared: string list
+      /// Features enabled by default; subset of `Declared`.
+      Default:  string list }
+
 /// Whole-manifest record.
 type Manifest =
     { Package:      PackageMetadata
@@ -113,7 +125,10 @@ type Manifest =
       /// `None` for legacy manifests without a `[project]` block.
       Project:      ProjectSection option
       /// `None` for manifests without `[nuget]` / `[nuget.options]`.
-      Nuget:        NugetSection option }
+      Nuget:        NugetSection option
+      /// `None` for manifests without `[features]`; this means the
+      /// active feature set is empty regardless of CLI flags.
+      Features:     FeaturesSection option }
 
 // ---------------------------------------------------------------------------
 // TOML token / value model.  Hand-rolled because the bootstrap doesn't
@@ -514,10 +529,78 @@ let private toManifest (entries: Map<string * string, Value>)
         match buildNuget () with
         | Error e -> Error e
         | Ok nuget ->
+        // [features] section per docs/24-build-features.md (D045).
+        // Optional; absence yields `Features = None`.  Each entry's
+        // value must be an empty array in v1; non-empty implication
+        // arrays are deferred to v1.1.  The synthetic key `default`
+        // names the features active when the user passes no CLI flags.
+        let featureEntries =
+            entries
+            |> Map.toList
+            |> List.choose (fun ((sec, key), v) ->
+                if sec = "features" then Some (key, v) else None)
+        let buildFeatures () : Result<FeaturesSection option, ManifestError> =
+            if List.isEmpty featureEntries then Ok None
+            else
+                let mutable err : ManifestError option = None
+                let declared = ResizeArray<string>()
+                let mutable defaults : string list option = None
+                for (key, value) in featureEntries do
+                    if err.IsNone then
+                        match key, value with
+                        | "default", VArray arr ->
+                            let asStr = ResizeArray<string>()
+                            for item in arr do
+                                match item with
+                                | VString s -> asStr.Add s
+                                | _ ->
+                                    err <- Some (InvalidFieldType
+                                                ("features", "default",
+                                                 "array of feature-name strings"))
+                            defaults <- Some (List.ofSeq asStr)
+                        | "default", _ ->
+                            err <- Some (InvalidFieldType
+                                        ("features", "default",
+                                         "array of feature-name strings"))
+                        | name, VArray arr ->
+                            // v1: require empty implication array.
+                            if not (List.isEmpty arr) then
+                                err <- Some (InvalidFieldType
+                                            ("features", name,
+                                             "empty array (feature implications are deferred to v1.1)"))
+                            else
+                                declared.Add name
+                        | name, _ ->
+                            err <- Some (InvalidFieldType
+                                        ("features", name,
+                                         "array (use [] for v1)"))
+                match err with
+                | Some e -> Error e
+                | None ->
+                    let declaredList =
+                        List.ofSeq declared |> List.sort
+                    let declaredSet = Set.ofList declaredList
+                    let defaultList =
+                        Option.defaultValue [] defaults
+                    // Validate every default names a declared feature.
+                    let undeclared =
+                        defaultList
+                        |> List.tryFind (fun f -> not (Set.contains f declaredSet))
+                    match undeclared with
+                    | Some f ->
+                        Error (InvalidFieldType
+                                ("features", "default",
+                                 sprintf "references undeclared feature '%s'" f))
+                    | None ->
+                        Ok (Some { Declared = declaredList
+                                   Default  = defaultList })
+        match buildFeatures () with
+        | Error e -> Error e
+        | Ok features ->
         match projName with
         | None ->
             Ok { Package = pkg; Build = build; Dependencies = deps;
-                 Project = None; Nuget = nuget }
+                 Project = None; Nuget = nuget; Features = features }
         | Some pname ->
             bind (optString entries "project" "output") <| fun outOpt ->
             let outputMode =
@@ -559,7 +642,7 @@ let private toManifest (entries: Map<string * string, Value>)
                       OutputAssembly = outAsm
                       Packages       = packages }
                 Ok { Package = pkg; Build = build; Dependencies = deps;
-                     Project = Some proj; Nuget = nuget }
+                     Project = Some proj; Nuget = nuget; Features = features }
 
 /// Parse a `lyric.toml` text into a typed `Manifest` record.
 let parseText (text: string) : Result<Manifest, ManifestError> =

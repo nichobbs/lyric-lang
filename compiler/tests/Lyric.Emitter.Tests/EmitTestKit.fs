@@ -104,7 +104,9 @@ let compileAndRunWith
               RestoredPackages   = []
               NugetAssemblyPaths = []
               ExternShimRoot     = None
-              Target             = Dotnet }
+              Target             = Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
         let r = emit req
         // The emit may have lazily precompiled extra `Std.X` modules.
         // Copy any newly cached DLLs over so the runtime probing path

@@ -325,4 +325,109 @@ output = "single"
                 Expect.equal (p.Packages |> List.map snd)
                     ["src/core"; "src/db"; "src/web"]
                     "package source dirs"
+
+        // D045: [features] section parsing.
+        testCase "[features] absent yields Features = None" <| fun () ->
+            let m = parseOk """
+[package]
+name = "X"
+version = "0.0.1"
+"""
+            Expect.equal m.Features None "no [features]"
+
+        testCase "[features] declares names with empty implication arrays" <| fun () ->
+            let m = parseOk """
+[package]
+name = "X"
+version = "0.0.1"
+
+[features]
+default = ["logging"]
+logging = []
+tracing = []
+metrics = []
+"""
+            match m.Features with
+            | None -> failtest "expected Some Features"
+            | Some f ->
+                Expect.equal f.Declared ["logging"; "metrics"; "tracing"]
+                    "declared features sorted alphabetically"
+                Expect.equal f.Default ["logging"] "default set"
+
+        testCase "[features] empty section yields Some with empty lists" <| fun () ->
+            // A [features] header with no entries is unusual but valid;
+            // since we detect [features] presence by looking for keys
+            // under that section, an empty body yields None.  Document
+            // that behaviour explicitly.
+            let m = parseOk """
+[package]
+name = "X"
+version = "0.0.1"
+
+[features]
+"""
+            Expect.equal m.Features None "empty [features] body indistinguishable from absent"
+
+        testCase "[features] non-empty implication array rejected in v1" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[features]
+default = []
+tracing = ["logging"]
+"""
+            match r with
+            | Error (InvalidFieldType ("features", "tracing", msg)) ->
+                Expect.stringContains msg "deferred to v1.1"
+                    "v1 rejects implications with a guiding message"
+            | other ->
+                failwithf "expected InvalidFieldType for features.tracing, got %A" other
+
+        testCase "[features] default referencing undeclared feature errors" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[features]
+default = ["nope"]
+logging = []
+"""
+            match r with
+            | Error (InvalidFieldType ("features", "default", msg)) ->
+                Expect.stringContains msg "nope"
+                    "diagnostic names the undeclared feature"
+            | other ->
+                failwithf "expected InvalidFieldType, got %A" other
+
+        testCase "[features] default not an array errors" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[features]
+default = "logging"
+logging = []
+"""
+            match r with
+            | Error (InvalidFieldType ("features", "default", _)) -> ()
+            | other ->
+                failwithf "expected InvalidFieldType, got %A" other
+
+        testCase "[features] feature value not an array errors" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[features]
+logging = "yes"
+"""
+            match r with
+            | Error (InvalidFieldType ("features", "logging", _)) -> ()
+            | other ->
+                failwithf "expected InvalidFieldType, got %A" other
     ]

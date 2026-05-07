@@ -793,6 +793,10 @@ pub union ItemKind {
   case IError
 }
 
+// D046 / D047: ConfigDecl / AspectDecl AST shapes ship in the F#
+// bootstrap parser only.  The self-hosted mirror is deferred — see
+// the matching note in `parser/parser_ast.l`.
+
 @stable(since="0.1")
 pub record ConstDecl {
   name: String

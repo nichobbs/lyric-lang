@@ -643,6 +643,16 @@ pub union ItemKind {
   case IError
 }
 
+// D046 / D047: ConfigDecl and AspectDecl AST shapes are implemented
+// in the F# bootstrap parser (`compiler/src/Lyric.Parser/Ast.fs`)
+// only.  The self-hosted mirror is deferred — landing the new
+// `IConfig` / `IAspect` cases here triggers a TypeBuilder generic
+// instantiation issue in the F# bootstrap's `emitLambdaWith` codegen
+// path when downstream Lyric.Fmt / parser-self-test code matches
+// over the wider `ItemKind` union.  The mirror lights up once the
+// codegen path in `compiler/src/Lyric.Emitter/Codegen.fs:emitLambdaWith`
+// is fixed.
+
 pub record Item {
   docComments: List[DocComment]
   annotations: List[Annotation]

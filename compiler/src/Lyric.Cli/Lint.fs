@@ -226,7 +226,8 @@ let private checkItem (item: Item) : LintDiagnostic list =
         @ checkDocTodos docs
 
     | IWire _ | IScopeKind _ | IExtern _ | IExternType _
-    | ITest _ | IProperty _ | IFixture _ | IVal _ | IError ->
+    | ITest _ | IProperty _ | IFixture _ | IVal _
+    | IConfig _ | IAspect _ | IError ->
         checkDocTodos docs
 
 // ---------------------------------------------------------------------------

@@ -38,6 +38,52 @@ let private safeStr (s: string | null) (fallback: string) : string =
     | Some v -> v
     | None   -> fallback
 
+/// CLI feature-flag selection per `docs/24-build-features.md` (D045).
+type private FeatureSelection =
+    { /// Names from `--features X,Y` (additive over manifest defaults).
+      Cli:                string list
+      /// `--no-default-features` flag — suppresses manifest's `default`.
+      SuppressDefault:    bool
+      /// `--all-features` flag — activates every declared feature.
+      AllFeatures:        bool }
+
+let private emptyFeatureSelection : FeatureSelection =
+    { Cli = []; SuppressDefault = false; AllFeatures = false }
+
+/// Compute the active feature set from CLI flags + manifest.  Errors
+/// printed to stderr; returns `(active, declared, errorCount)` so the
+/// caller can fail the build when a CLI-specified feature isn't
+/// declared in the manifest.
+let private resolveFeatures
+        (sel: FeatureSelection)
+        (manifest: Lyric.Cli.Manifest.Manifest option)
+        : Set<string> * Set<string> * int =
+    let declaredList, defaultList =
+        match manifest |> Option.bind (fun m -> m.Features) with
+        | Some f -> f.Declared, f.Default
+        | None   -> [], []
+    let declared = Set.ofList declaredList
+    if sel.AllFeatures then
+        declared, declared, 0
+    else
+        let cliSet = Set.ofList sel.Cli
+        let mutable errors = 0
+        // F0003: every CLI feature must be declared in the manifest
+        // (only enforced when the manifest declares ANY features).
+        if not (Set.isEmpty declared) then
+            for f in cliSet do
+                if not (Set.contains f declared) then
+                    printErr
+                        (sprintf
+                            "F0003: feature '%s' is not declared in the manifest's [features] section"
+                            f)
+                    errors <- errors + 1
+        let baseSet =
+            if sel.SuppressDefault then Set.empty
+            else Set.ofList defaultList
+        let active = Set.union baseSet cliSet
+        active, declared, errors
+
 let private printDiag (d: Diagnostic) : unit =
     let sev =
         match d.Severity with
@@ -259,7 +305,9 @@ let private build
         (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list)
         (nugetAssemblyPaths: string list)
         (externShimRoot: string option)
-        (target: Emitter.CompileTarget) : int =
+        (target: Emitter.CompileTarget)
+        (activeFeatures: Set<string>)
+        (declaredFeatures: Set<string>) : int =
     if (not force) && BuildCache.isFresh sourcePath outPath then
         printfn "up to date %s" outPath
         0
@@ -277,7 +325,9 @@ let private build
           RestoredPackages   = restoredPackageRefs
           NugetAssemblyPaths = nugetAssemblyPaths
           ExternShimRoot     = externShimRoot
-          Target             = target }
+          Target             = target
+          ActiveFeatures     = activeFeatures
+          DeclaredFeatures   = declaredFeatures }
     let mutable hadError = false
     let result =
         try
@@ -335,7 +385,9 @@ let private buildProject
         (explicitOut: string option)
         (restoredPackageRefs: Lyric.Emitter.RestoredPackages.RestoredPackageRef list)
         (nugetAssemblyPaths: string list)
-        (externShimRoot: string option) : int =
+        (externShimRoot: string option)
+        (activeFeatures: Set<string>)
+        (declaredFeatures: Set<string>) : int =
     // `output = "per-package"` falls through to the legacy
     // per-source `lyric build` flow — the bootstrap stdlib's exact
     // shape — so the project-build path here only handles `single`.
@@ -411,7 +463,9 @@ let private buildProject
           NugetAssemblyPaths = nugetAssemblyPaths
           ExternShimRoot     = externShimRoot
           Single             = true
-          Target             = Lyric.Emitter.Emitter.Dotnet }
+          Target             = Lyric.Emitter.Emitter.Dotnet
+          ActiveFeatures     = activeFeatures
+          DeclaredFeatures   = declaredFeatures }
     let mutable hadError = false
     let result =
         try
@@ -854,7 +908,9 @@ let private run (sourcePath: string) (args: string array) : int =
     // Always force-build for `run` — the temp dir is fresh each
     // invocation so the cache check would always miss anyway, and
     // writing the sidecar there is wasted IO.
-    let buildExit = build sourcePath outPath true [] [] None Emitter.Dotnet
+    let buildExit =
+        build sourcePath outPath true [] [] None Emitter.Dotnet
+            Set.empty Set.empty
     if buildExit <> 0 then buildExit
     else
         let psi = Diagnostics.ProcessStartInfo()
@@ -941,6 +997,7 @@ let main (argv: string array) : int =
         let mutable manifestArg : string option = None
         let mutable positional : string list = []
         let mutable compileTarget = Emitter.Dotnet
+        let mutable featureSel = emptyFeatureSelection
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
             match cursor with
@@ -955,6 +1012,20 @@ let main (argv: string array) : int =
                 cursor <- tail
             | "--manifest" :: m :: tail ->
                 manifestArg <- Some m
+                cursor <- tail
+            | "--features" :: list :: tail ->
+                let parsed =
+                    list.Split ','
+                    |> Array.map (fun s -> s.Trim())
+                    |> Array.filter (fun s -> s.Length > 0)
+                    |> List.ofArray
+                featureSel <- { featureSel with Cli = featureSel.Cli @ parsed }
+                cursor <- tail
+            | "--no-default-features" :: tail ->
+                featureSel <- { featureSel with SuppressDefault = true }
+                cursor <- tail
+            | "--all-features" :: tail ->
+                featureSel <- { featureSel with AllFeatures = true }
                 cursor <- tail
             | "--target" :: "jvm" :: tail ->
                 compileTarget <- Emitter.Jvm
@@ -1048,6 +1119,14 @@ let main (argv: string array) : int =
         // unless `-o` overrides.  AOT for project builds is not yet
         // wired (the AOT publish wrapper assumes a single DLL with
         // one `Main`).
+        // D045: resolve active feature set from manifest + CLI flags
+        // before either build path runs.  Diagnostics already streamed
+        // to stderr by `resolveFeatures`.
+        let activeFeatures, declaredFeatures, featureErrCount =
+            resolveFeatures featureSel
+                (parsedManifest |> Option.map snd)
+        if featureErrCount > 0 then 1
+        else
         let projectModeRequested =
             List.isEmpty positional
             && (match parsedManifest with
@@ -1065,6 +1144,7 @@ let main (argv: string array) : int =
                         buildProject mPath proj force explicitOut
                             restoredPackageRefs nugetAssemblyPaths
                             externShimRoot
+                            activeFeatures declaredFeatures
                     | None ->
                         printErr "build: missing source file"
                         printUsage ()
@@ -1101,6 +1181,7 @@ let main (argv: string array) : int =
             let buildExit =
                 build sourcePath dllOutPath force restoredPackageRefs
                     nugetAssemblyPaths externShimRoot compileTarget
+                    activeFeatures declaredFeatures
             if buildExit <> 0 then buildExit
             elif not aot then 0
             else
@@ -1234,6 +1315,7 @@ let main (argv: string array) : int =
                     let outPath = Path.Combine(tmp, stem + ".dll")
                     let buildExit =
                         build synthPath outPath true [] [] None Emitter.Dotnet
+                            Set.empty Set.empty
                     if buildExit <> 0 then
                         // Strip the temp-path prefix from any diagnostic
                         // line so users see "their" path.  build()

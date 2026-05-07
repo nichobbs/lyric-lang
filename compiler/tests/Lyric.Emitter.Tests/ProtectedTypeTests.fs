@@ -342,7 +342,9 @@ func main(): Unit {
               RestoredPackages   = []
               NugetAssemblyPaths = []
               ExternShimRoot     = None
-              Target             = Lyric.Emitter.Emitter.Dotnet }
+              Target             = Lyric.Emitter.Emitter.Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let lockOf (typeName: string) : System.Type =
@@ -392,7 +394,9 @@ func main(): Unit { () }
               RestoredPackages   = []
               NugetAssemblyPaths = []
               ExternShimRoot     = None
-              Target             = Lyric.Emitter.Emitter.Dotnet }
+              Target             = Lyric.Emitter.Emitter.Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
         let _ = Lyric.Emitter.Emitter.emit req
         let asm = Assembly.LoadFrom dll
         let bagTy = asm.GetTypes() |> Array.find (fun t -> t.Name = "Bag")
@@ -453,7 +457,9 @@ func main(): Unit {
               RestoredPackages   = []
               NugetAssemblyPaths = []
               ExternShimRoot     = None
-              Target             = Lyric.Emitter.Emitter.Dotnet }
+              Target             = Lyric.Emitter.Emitter.Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
         let _ = Lyric.Emitter.Emitter.emit req
         // Run the compiled program in a child process.  Ada semantics:
         // the barrier wait is infinite so the process must NOT exit

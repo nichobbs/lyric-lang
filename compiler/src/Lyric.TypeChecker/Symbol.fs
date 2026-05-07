@@ -32,6 +32,17 @@ type DeclKind =
     | DKWire     of WireDecl
     | DKExtern   of ExternPackageDecl
     | DKScopeKind of ScopeKindDecl
+    /// `config Name { ... }` block per `docs/25-config-blocks.md` (D046).
+    /// Treated as a static namespace whose fields are read once at
+    /// process startup; field access goes through the resolver's
+    /// dot-notation path, mirroring how a record's fields are
+    /// addressed once an instance has been bound.
+    | DKConfig   of ConfigDecl
+    /// `aspect Name { ... }` block per `docs/26-aspects.md` (D047).
+    /// v1 surface registers the aspect under its name; the weaver
+    /// (deferred slice) consumes the AST directly without going
+    /// through the resolver.
+    | DKAspect   of AspectDecl
 
     /// Test-only declarations. Always rejected outside @test_module.
     | DKTest     of TestDecl

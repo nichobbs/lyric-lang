@@ -29,7 +29,9 @@ let private buildPackage (outDir: string) (name: string) (source: string) : stri
           RestoredPackages   = []
           NugetAssemblyPaths = []
           ExternShimRoot     = None
-          Target             = Dotnet }
+          Target             = Dotnet
+          ActiveFeatures     = Set.empty
+          DeclaredFeatures   = Set.empty }
     let r = emit req
     let errs =
         r.Diagnostics
@@ -99,7 +101,9 @@ func main(): Unit {
                         DllPath = restoredDll } ]
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let result = emit req
             let errs =
                 result.Diagnostics
@@ -135,7 +139,9 @@ func main(): Unit { () }
                         DllPath = "/this/does/not/exist.dll" } ]
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let result = emit req
             let codes = result.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "E901" "missing-restored-DLL surfaces E901"
@@ -169,7 +175,9 @@ func main(): Unit { () }
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
                   Single             = true
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let bundleResult = emitProject req
             let bundleErrs =
                 bundleResult.Diagnostics
@@ -205,7 +213,9 @@ func main(): Unit {
                         DllPath = bundleDll } ]
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let result = emit consumerReq
             let errs =
                 result.Diagnostics

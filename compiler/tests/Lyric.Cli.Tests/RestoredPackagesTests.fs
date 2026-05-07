@@ -25,7 +25,9 @@ let private buildPackage (dir: string) (name: string) (source: string) : string 
           RestoredPackages   = []
           NugetAssemblyPaths = []
           ExternShimRoot     = None
-          Target             = Emitter.Dotnet }
+          Target             = Emitter.Dotnet
+          ActiveFeatures     = Set.empty
+          DeclaredFeatures   = Set.empty }
     let r = Emitter.emit req
     let errs = r.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
     if not (List.isEmpty errs) then

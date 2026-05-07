@@ -704,6 +704,53 @@ and private itemDoc (item: Item) : Doc =
         header
         @ [sprintf "fixture %s%s = %s" fd.Name tyStr (exprInline 0 fd.Init)]
 
+    | IConfig cd ->
+        // D046: render config blocks as `config Name { ... }` with one
+        // field per line.  Field annotations (e.g. @sensitive) precede
+        // the field line; fields with defaults render `name: T = expr`.
+        let fieldLines =
+            cd.Fields
+            |> List.collect (fun f ->
+                let annos = f.Annotations |> List.map annotationStr
+                let dflt =
+                    match f.Default with
+                    | Some e -> " = " + exprInline 0 e
+                    | None   -> ""
+                annos
+                @ [sprintf "  %s: %s%s" f.Name (typeStr f.Type) dflt])
+        header
+        @ [sprintf "config %s {" cd.Name]
+        @ fieldLines
+        @ ["}"]
+
+    | IAspect ad ->
+        // D047: render `aspect Name { matches: ...; around(args) -> ret { ... } }`.
+        // v1 surface only; later slices add wraps:/inside:, requires:,
+        // ensures:, config { ... }.
+        let matchesLines =
+            ad.Matches
+            |> List.map (fun m ->
+                match m with
+                | AMNameLike (g, _) ->
+                    sprintf "  matches: name like \"%s\"" g)
+        let aroundLines =
+            match ad.Around with
+            | Some ar ->
+                let ret =
+                    match ar.RetName with
+                    | Some r -> sprintf " -> %s" r
+                    | None   -> ""
+                let body = blockLines ar.Body |> List.map (fun l -> "  " + l)
+                [sprintf "  around(%s)%s {" ar.ArgsName ret]
+                @ body
+                @ ["  }"]
+            | None -> []
+        header
+        @ [sprintf "aspect %s {" ad.Name]
+        @ matchesLines
+        @ aroundLines
+        @ ["}"]
+
     | IError ->
         ["// <parse-error>"]
 

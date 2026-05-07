@@ -18,7 +18,9 @@ let tests =
                   RestoredPackages   = []
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let r = emit req
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "E0001" "missing-main surfaces E0001"
@@ -33,7 +35,9 @@ let tests =
                   RestoredPackages   = []
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let r = emit req
             let codes = r.Diagnostics |> List.map (fun d -> d.Code)
             Expect.contains codes "P0020" "missing-package surfaces"

@@ -215,6 +215,12 @@ func cmdBuild(argv: in slice[String]): Int {
   var explicitOut: Option[String] = None
   var manifestArg: Option[String] = None
   var target: CompileTarget = Dotnet
+  // D045 build features.  Captured here for spec parity with the F#
+  // bootstrap CLI; the self-hosted compiler will consume them once the
+  // emitter ships (Phase 5+ stage 7).
+  val cliFeatures: List[String] = newList()
+  var noDefaultFeatures: Bool = false
+  var allFeatures: Bool = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -239,6 +245,26 @@ func cmdBuild(argv: in slice[String]): Int {
         printErr("build: --manifest requires an argument")
         return 1
       }
+    } else if arg == "--features" {
+      if i + 1 < argv.length {
+        val raw = argv[i + 1]
+        // Comma-separated, whitespace-trimmed; empty entries dropped.
+        val pieces = Str.split(raw, ",")
+        for piece in pieces {
+          val trimmed = Str.trim(piece)
+          if Str.length(trimmed) > 0 { cliFeatures.add(trimmed) }
+        }
+        i += 2
+      } else {
+        printErr("build: --features requires a comma-separated list")
+        return 1
+      }
+    } else if arg == "--no-default-features" {
+      noDefaultFeatures = true
+      i += 1
+    } else if arg == "--all-features" {
+      allFeatures = true
+      i += 1
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -257,6 +283,13 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
+  // D045: feature-set computed here once buildOne / buildProject
+  // accept a `features` parameter (Phase 5+ stage 7 follow-up).  For
+  // now the parsed flags are intentionally unused — they document the
+  // CLI surface in lockstep with the F# bootstrap.
+  val _features = cliFeatures
+  val _noDefault = noDefaultFeatures
+  val _all = allFeatures
 
   // Project-mode: `lyric build --manifest lyric.toml` with no positional source.
   if positional.count == 0 {

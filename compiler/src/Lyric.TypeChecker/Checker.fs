@@ -145,6 +145,8 @@ let private registerItem
     | IProperty p      -> Some (mkSym p.Title (DKProperty p))
     | IFixture x       -> Some (mkSym x.Name (DKFixture x))
     | IImpl _          -> None       // impl blocks have no identifier
+    | IConfig c        -> Some (mkSym c.Name (DKConfig c))
+    | IAspect a        -> Some (mkSym a.Name (DKAspect a))
     | IError           -> None
 
 /// The closed set of derive markers recognised in `where T: M` bounds.
@@ -218,6 +220,44 @@ let private checkDistinctType
         | Some (RBClosed(lo, hi))   -> checkClosed lo hi "..="
         | Some (RBHalfOpen(lo, hi)) -> checkClosed lo hi "..<"
         | _ -> ()
+
+/// Allowed config-field types in v1 per `docs/25-config-blocks.md`.
+/// Names match the bare `TRef` form; range subtypes, enums, lists,
+/// records, and nested types are rejected with `G0009`.
+let private configFieldAllowedTypes : Set<string> =
+    Set.ofList [ "Bool"; "Int"; "String" ]
+
+/// Well-formedness check for a `config` block per
+/// `docs/25-config-blocks.md` (D046).  v1 enforces:
+///
+///   * Field type must be one of `Bool` / `Int` / `String`
+///     (`G0009`).
+///   * Field name must be unique within the block (`G0013`).
+///   * No `pub` modifier — config blocks are package-private and the
+///     parser already rejects `pub config`, so no diagnostic here.
+///
+/// Default-expression validation (must be a compile-time constant of
+/// the declared type) lives in the const-folding pass and lights up
+/// when the emitter ships D046's runtime hook.
+let private checkConfigBlock
+        (diags: ResizeArray<Diagnostic>)
+        (cd: ConfigDecl) : unit =
+    let seen = System.Collections.Generic.HashSet<string>()
+    for f in cd.Fields do
+        if not (seen.Add f.Name) then
+            err diags "G0013"
+                (sprintf "duplicate field '%s' in config block '%s'"
+                         f.Name cd.Name)
+                f.Span
+        // Type validation — accept only the v1 allow-list.
+        match f.Type.Kind with
+        | TRef { Segments = [ name ] }
+            when Set.contains name configFieldAllowedTypes -> ()
+        | _ ->
+            err diags "G0009"
+                (sprintf "config field '%s.%s' has type not allowed in v1; allowed: Bool, Int, String"
+                         cd.Name f.Name)
+                f.Type.Span
 
 /// Well-formedness check for a `where` clause: each bound's left side
 /// must be a generic parameter of the enclosing item, and each right-
@@ -344,6 +384,7 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     for it in file.Items do
         match it.Kind with
         | IDistinctType dt -> checkDistinctType table diags dt
+        | IConfig cd       -> checkConfigBlock diags cd
         | _ -> ()
 
     // T3: resolve signatures for every IFunc — both imported and user.

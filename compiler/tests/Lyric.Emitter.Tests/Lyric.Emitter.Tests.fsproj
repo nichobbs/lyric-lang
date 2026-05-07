@@ -198,6 +198,7 @@
     <Compile Include="SelfHostedTestSynthTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
+    <Compile Include="CfgErasureTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

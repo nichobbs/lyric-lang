@@ -79,7 +79,9 @@ let tests =
                       NugetAssemblyPaths = []
                       ExternShimRoot     = None
                       Single             = true
-                      Target             = Emitter.Dotnet }
+                      Target             = Emitter.Dotnet
+                      ActiveFeatures     = Set.empty
+                      DeclaredFeatures   = Set.empty }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -153,7 +155,9 @@ let tests =
                       NugetAssemblyPaths = []
                       ExternShimRoot     = None
                       Single             = true
-                      Target             = Emitter.Dotnet }
+                      Target             = Emitter.Dotnet
+                      ActiveFeatures     = Set.empty
+                      DeclaredFeatures   = Set.empty }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -196,7 +200,9 @@ let tests =
                       NugetAssemblyPaths = []
                       ExternShimRoot     = None
                       Single             = true
-                      Target             = Emitter.Dotnet }
+                      Target             = Emitter.Dotnet
+                      ActiveFeatures     = Set.empty
+                      DeclaredFeatures   = Set.empty }
                 let result = Emitter.emitProject req
                 let b0020 =
                     result.Diagnostics
@@ -227,7 +233,9 @@ let tests =
                       NugetAssemblyPaths = []
                       ExternShimRoot     = None
                       Single             = true
-                      Target             = Emitter.Dotnet }
+                      Target             = Emitter.Dotnet
+                      ActiveFeatures     = Set.empty
+                      DeclaredFeatures   = Set.empty }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -320,7 +328,9 @@ let tests =
                       NugetAssemblyPaths = []
                       ExternShimRoot     = None
                       Single             = true
-                      Target             = Emitter.Dotnet }
+                      Target             = Emitter.Dotnet
+                      ActiveFeatures     = Set.empty
+                      DeclaredFeatures   = Set.empty }
                 let result = Emitter.emitProject req
                 let errs =
                     result.Diagnostics
@@ -350,7 +360,9 @@ let tests =
                       NugetAssemblyPaths = []
                       ExternShimRoot     = None
                       Single             = true
-                      Target             = Emitter.Dotnet }
+                      Target             = Emitter.Dotnet
+                      ActiveFeatures     = Set.empty
+                      DeclaredFeatures   = Set.empty }
                 let result = Emitter.emitProject req
                 let b0023 =
                     result.Diagnostics

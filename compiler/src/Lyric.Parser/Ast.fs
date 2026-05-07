@@ -437,6 +437,50 @@ and ScopeKindDecl =
     { Name: string
       Span: Span }
 
+/// `config Name { ... }` block field per `docs/25-config-blocks.md`
+/// (D046).  v1 supports `Bool` / `Int` / `String` typed fields with
+/// optional literal defaults.  Required fields (no default) fail-fast
+/// at startup if the env var is unset.
+and ConfigField =
+    { DocComments: DocComment list
+      Annotations: Annotation list
+      Name:        string
+      Type:        TypeExpr
+      /// Default expression.  v1 accepts any expression that the
+      /// type-checker classifies as a compile-time constant of the
+      /// declared type.  When `None`, the field is required.
+      Default:     Expr option
+      Span:        Span }
+
+and ConfigDecl =
+    { Name:   string
+      Fields: ConfigField list
+      Span:   Span }
+
+/// `aspect Name { ... }` block per `docs/26-aspects.md` (D047).
+/// v1 surface: a `matches:` clause and an `around` advice body.
+/// Future slices add `requires:`/`ensures:` (contract augmentation),
+/// `wraps:`/`inside:` ordering clauses, and a `config { ... }` block.
+and AspectMatcher =
+    /// `matches: name like "<glob>"`.  Single positive predicate in
+    /// v1; conjunction (`and signature: …`, `and annotated: …`) is
+    /// reserved for v1.x.
+    | AMNameLike of glob: string * Span
+
+and AspectAround =
+    { /// Single parameter binding the synthesised `args` record.
+      ArgsName: string
+      /// Optional return-binding name (for `-> ret`).
+      RetName:  string option
+      Body:     Block
+      Span:     Span }
+
+and AspectDecl =
+    { Name:    string
+      Matches: AspectMatcher list
+      Around:  AspectAround option
+      Span:    Span }
+
 and ExternMember =
     | EMRecord       of RecordDecl
     | EMExposedRec   of ExposedRecordDecl
@@ -724,6 +768,12 @@ and ItemKind =
     | ITest         of TestDecl
     | IProperty     of PropertyDecl
     | IFixture      of FixtureDecl
+    /// Module-scope `config Name { ... }` block per
+    /// `docs/25-config-blocks.md` (D046).
+    | IConfig       of ConfigDecl
+    /// Module-scope `aspect Name { ... }` block per
+    /// `docs/26-aspects.md` (D047).
+    | IAspect       of AspectDecl
     | IError        // recovery placeholder
 
 and ConstDecl =

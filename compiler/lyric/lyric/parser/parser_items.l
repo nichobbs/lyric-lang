@@ -1583,6 +1583,12 @@ func parseScopeKindBody(st: inout ParseState): ScopeKindDecl {
   ScopeKindDecl(name = ns.name, span = joinSpans(startTok.span, ns.span))
 }
 
+// D046 / D047 self-hosted parser dispatch + bodies are deferred —
+// see the note at the top of `parser_ast.l`.  The F# bootstrap
+// parser has the full implementation; the self-hosted mirror lights
+// up once the F# emitter's `emitLambdaWith` codegen path can handle
+// the resulting Lyric source shape.
+
 func parseTestBody(st: inout ParseState): TestDecl {
   val startTok = advance(st)  // 'test'
   val title =
@@ -1962,7 +1968,8 @@ func parseItemOpt(st: inout ParseState): Option[Item] {
         }
       }
       case TIdent(_) -> {
-        if identStr(nextTok.token) == "scope_kind" {
+        val identName = identStr(nextTok.token)
+        if identName == "scope_kind" {
           IScopeKind(decl = parseScopeKindBody(st))
         } else {
           emitErr(st, "P0040", "expected an item declaration", nextTok.span)

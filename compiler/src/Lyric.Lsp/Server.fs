@@ -264,6 +264,8 @@ let private symbolKindAndDetail (sym: Symbol) : int * string =
     | DKTest _
     | DKProperty _
     | DKFixture _      ->  1, sym.Name
+    | DKConfig _       -> 22, sprintf "config %s" sym.Name
+    | DKAspect _       -> 22, sprintf "aspect %s" sym.Name
     | DKUnionCase(_, uc) -> 20, sprintf "case %s" uc.Name
     | DKEnumCase(_, ec)  -> 20, sprintf "case %s" ec.Name
 
