@@ -1,26 +1,35 @@
 // std/_kernel/encoding_host.l — host boundary for Base64, hex, and UTF-8
 // byte-level encoding.
 //
-// Four of the six operations route through Lyric.Stdlib.EncodingHost
-// shims because they either can throw (and need try/catch wrapping) or
-// go through a non-static class instance (Encoding.UTF8):
+// All operations resolve directly to BCL statics, instance methods, a
+// static property, or a constructor via the emitter's type-aware extern
+// resolver, eliminating the Lyric.Stdlib.EncodingHost F# shim.
 //
-//   hostTryFromBase64   — System.Convert.FromBase64String throws
-//                         FormatException on invalid input; shim wraps.
-//   hostTryFromHex      — System.Convert.FromHexString throws on bad
-//                         input; shim wraps.
-//   hostEncodeUtf8      — System.Text.Encoding.UTF8.GetBytes(string);
-//                         instance access via the static property.
-//   hostTryDecodeUtf8   — System.Text.Encoding.UTF8.GetString(byte[])
-//                         throws DecoderFallbackException on invalid bytes.
-//
-// `hostToBase64String` and `hostToHexString` target BCL statics directly
-// because they never throw on valid byte-array input.
+//   hostToBase64String   — System.Convert.ToBase64String(byte[])
+//   hostFromBase64String — System.Convert.FromBase64String(string)
+//                          throws FormatException on bad input; wrapped in
+//                          try/catch in encoding.l
+//   hostToHexString      — System.Convert.ToHexString(byte[])
+//   hostFromHexString    — System.Convert.FromHexString(string)
+//                          throws FormatException on bad input; wrapped in
+//                          try/catch in encoding.l
+//   hostGetUtf8Encoding  — System.Text.Encoding.UTF8 (static property)
+//                          resolves via the propGetter() fallback
+//   hostGetBytes         — System.Text.Encoding.GetBytes(string)
+//                          instance method; exact-typed via instanceTyped
+//   newStrictUtf8Encoding — System.Text.UTF8Encoding..ctor(bool, bool)
+//                          (emitBom=false, throwOnInvalid=true)
+//   hostGetString        — System.Text.UTF8Encoding.GetString(byte[])
+//                          instance method; throws DecoderFallbackException
+//                          when throwOnInvalid=true; wrapped in encoding.l
 //
 // Internal: only Std.Encoding should import this.
 
 @axiom("System.Convert and System.Text.Encoding encoding operations conform to their documented .NET contracts")
 package Std.EncodingHost
+
+extern type Encoding    = "System.Text.Encoding"
+extern type UTF8Encoding = "System.Text.UTF8Encoding"
 
 // =====================================================================
 // Base64.
@@ -31,10 +40,11 @@ package Std.EncodingHost
 @externTarget("System.Convert.ToBase64String")
 pub func hostToBase64String(bytes: in slice[Byte]): String = ()
 
-// Decode a Base64 string.  Returns true and writes the decoded bytes
-// on success; returns false on any format error (no exception escapes).
-@externTarget("Lyric.Stdlib.EncodingHost.TryFromBase64")
-pub func hostTryFromBase64(s: in String, value: out slice[Byte]): Bool = ()
+// Decode a Base64 string.
+// System.Convert.FromBase64String(string) — throws FormatException on bad input.
+// Callers must wrap in try/catch.
+@externTarget("System.Convert.FromBase64String")
+pub func hostFromBase64String(s: in String): slice[Byte] = ()
 
 // =====================================================================
 // Hexadecimal.
@@ -45,21 +55,36 @@ pub func hostTryFromBase64(s: in String, value: out slice[Byte]): Bool = ()
 @externTarget("System.Convert.ToHexString")
 pub func hostToHexString(bytes: in slice[Byte]): String = ()
 
-// Decode a hex string (upper or lower case).  Returns true on success;
-// returns false on any format error (no exception escapes).
-@externTarget("Lyric.Stdlib.EncodingHost.TryFromHex")
-pub func hostTryFromHex(s: in String, value: out slice[Byte]): Bool = ()
+// Decode a hex string (upper or lower case).
+// System.Convert.FromHexString(string) — throws FormatException on bad input.
+// Callers must wrap in try/catch.
+@externTarget("System.Convert.FromHexString")
+pub func hostFromHexString(s: in String): slice[Byte] = ()
 
 // =====================================================================
 // UTF-8.
 // =====================================================================
 
-// Encode a String as a UTF-8 byte slice.  All Lyric strings are valid
-// Unicode so this never fails.
-@externTarget("Lyric.Stdlib.EncodingHost.EncodeUtf8")
-pub func hostEncodeUtf8(s: in String): slice[Byte] = ()
+// System.Text.Encoding.UTF8 (static property) — returns the shared
+// UTF-8 encoder/decoder.  Resolves via the propGetter() fallback in
+// the extern resolver.
+@externTarget("System.Text.Encoding.UTF8")
+pub func hostGetUtf8Encoding(): Encoding = ()
 
-// Decode a UTF-8 byte slice.  Returns true and writes the string on
-// success; returns false when the bytes are not valid UTF-8.
-@externTarget("Lyric.Stdlib.EncodingHost.TryDecodeUtf8")
-pub func hostTryDecodeUtf8(bytes: in slice[Byte], value: out String): Bool = ()
+// System.Text.Encoding.GetBytes(string) — instance method, never throws
+// for valid .NET strings (all Lyric strings are valid Unicode).
+@externTarget("System.Text.Encoding.GetBytes")
+pub func hostGetBytes(enc: in Encoding, s: in String): slice[Byte] = ()
+
+// System.Text.UTF8Encoding(bool encoderShouldEmitUTF8Identifier,
+//                           bool throwOnInvalidBytes) — constructor.
+// Use (false, true) to get strict decoding that throws DecoderFallbackException
+// on invalid byte sequences rather than substituting U+FFFD.
+@externTarget("System.Text.UTF8Encoding..ctor")
+pub func newStrictUtf8Encoding(emitBom: in Bool, throwOnInvalid: in Bool): UTF8Encoding = ()
+
+// System.Text.UTF8Encoding.GetString(byte[]) — instance method.
+// When created with throwOnInvalidBytes=true, throws DecoderFallbackException
+// on invalid byte sequences.  Callers must wrap in try/catch.
+@externTarget("System.Text.UTF8Encoding.GetString")
+pub func hostGetString(enc: in UTF8Encoding, bytes: in slice[Byte]): String = ()

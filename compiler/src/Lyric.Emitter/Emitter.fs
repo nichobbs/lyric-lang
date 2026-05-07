@@ -2739,6 +2739,15 @@ let private emitFunctionBody
                         | SExpr e ->
                             let t = Codegen.emitExpr ctx e
                             routeReturn t
+                        | STry _ ->
+                            // A bare `try { … } catch … { … }` as the last statement
+                            // in a non-void function body is value-producing.  Wrap in
+                            // EBlock so the try-as-expression handler fires and the
+                            // result is routed back through the single-exit discipline.
+                            let wrappedBlk : Lyric.Parser.Ast.Block = { Statements = [last]; Span = last.Span }
+                            let wrappedExpr : Lyric.Parser.Ast.Expr = { Kind = EBlock wrappedBlk; Span = last.Span }
+                            let t = Codegen.emitExpr ctx wrappedExpr
+                            routeReturn t
                         | _ -> Codegen.emitStatement ctx last
                     else
                         Codegen.emitStatement ctx last

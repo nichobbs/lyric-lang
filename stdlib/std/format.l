@@ -9,11 +9,12 @@
 //   1. Pure-Lyric helpers (`zeroPad`, `hexPad`) that compose the
 //      trampolines below without adding new host calls.
 //
-//   2. Trampolines into `Std.FormatHost` for hex formatting and
-//      fixed-point doubles (`toHexString`, `formatFixed`).
+//   2. Trampolines into BCL instance methods via `Std.FormatHost`
+//      for hex formatting and fixed-point doubles (`toHexString`,
+//      `formatFixed`).
 //
 //   3. Padding trampolines into `System.String.PadLeft / PadRight` via
-//      the shim (`padLeft`, `padRight`).
+//      the kernel (`padLeft`, `padRight`).
 
 @runtime_checked
 package Std.Format
@@ -31,7 +32,7 @@ import Std.FormatHost as Host
 @pure
 @stable(since="1.0")
 pub func toHexString(n: in Int): String {
-  Host.hostToHexString(n)
+  Host.hostIntToString(n, "x")
 }
 
 /// Format `n` as an uppercase hexadecimal string with no prefix.
@@ -39,7 +40,7 @@ pub func toHexString(n: in Int): String {
 @pure
 @stable(since="1.0")
 pub func toHexStringUpper(n: in Int): String {
-  Host.hostToHexStringUpper(n)
+  Host.hostIntToString(n, "X")
 }
 
 // =====================================================================
@@ -54,7 +55,7 @@ pub func toHexStringUpper(n: in Int): String {
 pub func formatFixed(x: in Double, decimals: in Int): String
   requires: decimals >= 0
 {
-  Host.hostFormatFixed(x, decimals)
+  Host.hostDoubleToString(x, "F" + ("" + decimals), Host.hostInvariantCulture())
 }
 
 // =====================================================================
