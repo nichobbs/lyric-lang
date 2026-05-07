@@ -71,8 +71,43 @@ changed behaviour), update **all three** of:
    Also update `docs/05-implementation-plan.md` if it contains planning text that
    contradicts what actually shipped.
 
-These updates should be committed in the same PR as the feature, or in an
-immediate follow-up if the feature was merged without them.
+These updates are part of the task, not optional follow-ups. A task is not
+complete until the docs and book reflect the shipped state. Commit them in the
+same PR as the feature. If they were omitted from an already-merged PR, create
+an immediate follow-up and land it before starting the next task.
+
+### PR hygiene
+
+#### Before creating a PR
+
+1. Fetch the latest `main` and rebase the working branch onto it:
+   ```sh
+   git fetch origin main
+   git rebase origin/main
+   ```
+2. Resolve any conflicts, stage the resolutions, and `git rebase --continue`.
+3. Push (with `--force-with-lease` if the rebase rewrote commits already
+   pushed) before opening the PR.
+
+A PR that has conflicts on creation blocks auto-merge and review. Do not
+open a PR in a conflicted state.
+
+#### After creating a PR
+
+After opening a PR, check whether GitHub reports merge conflicts (the
+"This branch has conflicts" banner). If it does:
+
+1. Fetch and rebase:
+   ```sh
+   git fetch origin main
+   git rebase origin/main
+   ```
+2. Resolve conflicts, stage, and `git rebase --continue`.
+3. Push with `--force-with-lease` to update the PR branch.
+
+Repeat until GitHub shows the branch as mergeable. If auto-merge was
+enabled before the conflict appeared, re-enable it after pushing the
+resolution.
 
 ### Style
 
@@ -146,18 +181,22 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
   `ManagedPEBuilder`.
 - `compiler/lyric/lyric/` — the **self-hosted Lyric compiler** sources.
-  Phase 5 §M5.1 stage 1 lands `lexer.l`: a Lyric-language port of
-  `compiler/src/Lyric.Lexer/Lexer.fs` covering identifiers, the full
-  keyword table, decimal/hex/octal/binary integer literals, float
-  literals, plain string + character literals (incl. BMP `\u{…}`
-  escapes), the full punctuation table, line + nested block comments,
-  doc/module-doc comments, statement-end insertion, and diagnostic
-  codes L0001-L0030 (string interpolation, triple/raw strings,
-  non-BMP `\u{…}`, non-ASCII identifiers, and L0040 reserved-name
-  validation are deferred to stages 2-4 — see
-  `docs/10-bootstrap-progress.md` D-progress-093).  `Lyric` is
-  registered as a built-in head in `Emitter.fs:isBuiltinHead`, so
-  `import Lyric.<X>` resolves under this directory.  The
+  M5.1 stages 1–5 have shipped (D-progress-093 through D-progress-128):
+  - `lexer.l` — full self-hosted lexer: identifiers (NFC-normalised,
+    UAX #31 XID_Start/Continue), keyword table, all integer/float
+    literal forms, plain/interpolated/triple/raw strings, character
+    literals (BMP `\u{…}`), punctuation, line and nested block
+    comments, doc/module-doc comments, statement-end insertion, and
+    diagnostics L0001–L0040 (PR #190, D-progress-093–D-progress-121).
+  - `ast.l` — self-hosted AST type declarations mirroring `Ast.fs`
+    (PR #185).
+  - `parser/` — self-hosted parser as a four-file `Lyric.Parser`
+    library: `parser_ast.l`, `parser_core.l`, `parser_exprs.l`,
+    `parser_items.l` (PR #190, D-progress-128).
+  - `lexer_self_test.l`, `parser_self_test.l` — self-test consumers
+    run by the F# emitter test suite.
+  `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
+  so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
   tree alone; do not add unrelated packages here.
 - `compiler/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`

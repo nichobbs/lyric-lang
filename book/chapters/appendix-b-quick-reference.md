@@ -470,6 +470,14 @@ license = "MIT"
 [dependencies]
 Money = "^2.1"
 
+# NuGet interop — resolved by `lyric restore`, shims generated in _extern/
+[nuget]
+"Newtonsoft.Json" = "13.0.3"
+
+[nuget.options]
+allow_native = false               # allow packages with native binaries
+target       = "net10.0"           # target framework moniker (default: net10.0)
+
 # Optional — opt in for project-as-DLL bundling (M5.1 stage 2c.2):
 [project]
 name           = "myapp"
@@ -513,19 +521,28 @@ output_assembly = "myapp.dll"
 | Module | Provides | Key names |
 |---|---|---|
 | `Std.Core` | `Result`, `Option`, built-in ops | `Ok`, `Err`, `Some`, `None`, `println`, `panic`, `assert`, `expect`, `toString`, `default` |
+| `Std.Core.Proof` | Proof-required witness functions | `identity`, `fst`, `snd`, `minInt`, `maxInt` (all `@pure @experimental`) |
 | `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpperCase`, `substring` |
 | `Std.Parse` | Numeric parsing | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Errors` | Standard error types | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | File system | `readText`, `writeText`, `fileExists`, `createDir` |
 | `Std.Collections` | Generic growable containers | `List[T]` (`add`, `count`, `get`), `Map[K,V]` (`[]`, `containsKey`, `remove`) |
+| `Std.Set` | Hash set | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setSize`, `setFromSlice`, `setUnion`, `setIntersection`, `setDifference` |
+| `Std.Sort` | Stable sort | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
 | `Std.Math` | Numeric utilities | `abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil` |
 | `Std.Random` | Pseudo-random values | `nextInt`, `nextDouble`, `nextBool` |
+| `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpperCase`, `isLowerCase`, `toUpperCase`, `toLowerCase`, `toInt`, `fromInt`, `digitValue`, `hexDigitValue` |
+| `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
+| `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
+| `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
+| `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Time` | Instants and durations | `Instant`, `Duration`, `Clock` interface, `now`, ISO-8601 parsing |
 | `Std.Json` | RFC 8259 JSON | `serialize`, `deserialize`, `JsonValue` |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode` |
 | `Std.Testing` | Test assertions | `expect`, `expectEq`, `expectErr`, `fail` |
 | `Std.Testing.Snapshot` | Snapshot testing | `snapshot(label, actual)`, `snapshotMatch(label, actual)` |
 | `Std.Testing.Property` | Property-based testing | `forAllIntRange`, `forAllBool`, `forAllDouble`, `forAllIntPair` |
+| `Std.Testing.Mocking` | Stub call-count tracking | `StubCounter`, `makeStubCounter`, `stubCounterGet`, `stubCounterIncrement`, `stubCounterReset` |
 | `Std.Iter` | Lazy iteration | `map`, `filter`, `fold`, `take`, `skip`, `collect` |
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`, `default()`.
@@ -580,6 +597,7 @@ lyric restore                          # download dependencies declared in lyric
 lyric publish                          # publish package to registry (NuGet piggyback)
 
 # Tooling
+lyric --sdk-info                       # print SDK root, stdlib DLL path, and version information
 lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compatible) or 2 (breaking)
 ```
 
