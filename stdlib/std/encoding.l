@@ -3,14 +3,19 @@
 // All operations are safe in the Lyric sense: callers that provide
 // well-formed input always get a non-panicking `Ok`/`Some` result, and
 // callers that provide malformed input get `None` rather than a thrown
-// exception.  The `try*` variants follow the `Std.Parse` naming convention.
+// exception.  The `try*` variants wrap the BCL's throwing overloads in
+// Lyric try/catch rather than routing through out-parameter shims.
 //
 // Hex output from `encodeHex` uses the uppercase format produced by
 // `System.Convert.ToHexString` ("FF" not "ff").  Use `Std.String.toLower`
 // if lowercase is required.
 //
 // UTF-8 encoding never fails (all valid Lyric strings are valid Unicode);
-// decoding can fail when the byte slice is not valid UTF-8.
+// decoding can fail when the byte slice is not valid UTF-8.  A strict
+// `UTF8Encoding(false, true)` instance is used so invalid byte sequences
+// throw `DecoderFallbackException` (rather than silently substituting
+// the U+FFFD replacement character), allowing `tryDecodeUtf8` to return
+// `None` for any invalid input.
 
 package Std.Encoding
 
@@ -32,8 +37,11 @@ pub func encodeBase64(bytes: in slice[Byte]): String {
 /// any input that is not valid Base64 (illegal characters, wrong padding).
 @stable(since="1.0")
 pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
-  var v: slice[Byte] = default()
-  if Host.hostTryFromBase64(s, v) { Some(value = v) } else { None }
+  try {
+    Some(value = Host.hostFromBase64String(s))
+  } catch Exception {
+    None
+  }
 }
 
 // =====================================================================
@@ -52,8 +60,11 @@ pub func encodeHex(bytes: in slice[Byte]): String {
 /// (odd length, non-hex characters).
 @stable(since="1.0")
 pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
-  var v: slice[Byte] = default()
-  if Host.hostTryFromHex(s, v) { Some(value = v) } else { None }
+  try {
+    Some(value = Host.hostFromHexString(s))
+  } catch Exception {
+    None
+  }
 }
 
 // =====================================================================
@@ -64,13 +75,17 @@ pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
 /// Unicode so this operation always succeeds.
 @stable(since="1.0")
 pub func encodeUtf8(s: in String): slice[Byte] {
-  Host.hostEncodeUtf8(s)
+  Host.hostGetBytes(Host.hostGetUtf8Encoding(), s)
 }
 
 /// Decode a UTF-8 byte slice to a `String`.  Returns `Some(s)` when the
 /// bytes are valid UTF-8, `None` otherwise.
 @stable(since="1.0")
 pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
-  var v: String = default()
-  if Host.hostTryDecodeUtf8(bytes, v) { Some(value = v) } else { None }
+  try {
+    val enc = Host.newStrictUtf8Encoding(false, true)
+    Some(value = Host.hostGetString(enc, bytes))
+  } catch Exception {
+    None
+  }
 }
