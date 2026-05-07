@@ -31,3 +31,26 @@ pub func newMap[K, V](): Map[K, V] = ()
 /// `Std.Collections.mapGet`.
 @externTarget("System.Collections.Generic.Dictionary`2.TryGetValue")
 pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
+
+// =====================================================================
+// Set[T] — thin alias over System.Collections.Generic.HashSet.
+//
+// BCL method dispatch works directly on the extern type:
+//   s.add(item)     → HashSet.Add(T)     : Bool (discarded)
+//   s.contains(x)   → HashSet.Contains(T): Bool
+//   s.remove(x)     → HashSet.Remove(T)  : Bool
+//   s.count         → HashSet.Count      : Int
+//
+// `setToSlice` is routed through the `Lyric.Stdlib.SetHost.SetToArray`
+// shim because `HashSet<T>` has no `.ToArray()` instance method —
+// only the LINQ extension method, which the emitter cannot resolve
+// without help.
+// =====================================================================
+
+extern type Set[T] = "System.Collections.Generic.HashSet`1"
+
+@externTarget("System.Collections.Generic.HashSet`1..ctor")
+pub func newSet[T](): Set[T] = ()
+
+@externTarget("Lyric.Stdlib.SetHost.SetToArray")
+pub func setToSlice[T](s: in Set[T]): slice[T] = ()

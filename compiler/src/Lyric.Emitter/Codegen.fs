@@ -824,21 +824,124 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
                         match ctx.Params.TryGetValue name with
                         | true, (_, t) -> t
                         | _ -> typeof<obj>
-                if delTy.IsGenericType then
-                    try
-                        let g = delTy.GetGenericTypeDefinition()
-                        let args = delTy.GetGenericArguments()
-                        let isAction =
-                            g = typedefof<System.Action>
-                            || g = typedefof<System.Action<_>>
-                            || g = typedefof<System.Action<_,_>>
-                            || g = typedefof<System.Action<_,_,_>>
-                            || g = typedefof<System.Action<_,_,_,_>>
-                        if isAction then typeof<System.Void>
-                        elif args.Length > 0 then args.[args.Length - 1]
-                        else typeof<obj>
-                    with _ -> typeof<obj>
-                else typeof<obj>
+                let delegateResult =
+                    if delTy.IsGenericType then
+                        try
+                            let g = delTy.GetGenericTypeDefinition()
+                            let gArgs = delTy.GetGenericArguments()
+                            let isAction =
+                                g = typedefof<System.Action>
+                                || g = typedefof<System.Action<_>>
+                                || g = typedefof<System.Action<_,_>>
+                                || g = typedefof<System.Action<_,_,_>>
+                                || g = typedefof<System.Action<_,_,_,_>>
+                            if isAction then typeof<System.Void>
+                            elif gArgs.Length > 0 then gArgs.[gArgs.Length - 1]
+                            else typeof<obj>
+                        with _ -> typeof<obj>
+                    else typeof<obj>
+                if delegateResult <> typeof<obj> then delegateResult
+                else
+                    // Last resort: union case constructors (e.g. `Some(value = x)`).
+                    // Peek arg types, resolve generic params, return the constructed
+                    // union type so callers like `emitLambdaWith` can determine the
+                    // lambda's return type for HOF type-arg inference.
+                    let peekUnionCase
+                            (info: Lyric.Emitter.Records.ImportedUnionInfo)
+                            (caseInfo: Lyric.Emitter.Records.ImportedUnionCaseInfo)
+                            : ClrType =
+                        if List.isEmpty info.Generics then info.Type
+                        else
+                            let namedExprs =
+                                args |> List.choose (function
+                                    | CANamed (n, ex, _) -> Some (n, ex)
+                                    | _ -> None) |> Map.ofList
+                            let positional =
+                                args |> List.choose (function
+                                    | CAPositional ex -> Some ex | _ -> None)
+                            let mutable posIdx = 0
+                            let bindings = System.Collections.Generic.Dictionary<string, ClrType>()
+                            for f in caseInfo.Fields do
+                                let ex =
+                                    match Map.tryFind f.Name namedExprs with
+                                    | Some e -> Some e
+                                    | None when posIdx < positional.Length ->
+                                        let e = positional.[posIdx]
+                                        posIdx <- posIdx + 1
+                                        Some e
+                                    | None -> None
+                                match ex with
+                                | None -> ()
+                                | Some e ->
+                                    let argTy = peekExprType ctx e
+                                    let rec bindField (lyricTy: Lyric.TypeChecker.Type) (clrTy: ClrType) =
+                                        match lyricTy with
+                                        | Lyric.TypeChecker.TyVar n ->
+                                            if not (bindings.ContainsKey n) then
+                                                bindings.[n] <- clrTy
+                                        | Lyric.TypeChecker.TyUser (_, lyricArgs)
+                                            when not lyricArgs.IsEmpty && clrTy.IsGenericType ->
+                                            let clrArgs = clrTy.GetGenericArguments()
+                                            if clrArgs.Length = lyricArgs.Length then
+                                                List.iteri (fun i la -> bindField la clrArgs.[i]) lyricArgs
+                                        | _ -> ()
+                                    bindField f.LyricType argTy
+                            let typeArgs =
+                                info.Generics
+                                |> List.map (fun n ->
+                                    match bindings.TryGetValue n with
+                                    | true, t -> t
+                                    | _       -> typeof<obj>)
+                                |> List.toArray
+                            try info.Type.MakeGenericType typeArgs with _ -> info.Type
+                    match ctx.ImportedUnionCases.TryGetValue name with
+                    | true, (info, caseInfo) -> peekUnionCase info caseInfo
+                    | _ ->
+                        match ctx.UnionCases.TryGetValue name with
+                        | true, (info, caseInfo) ->
+                            if List.isEmpty info.Generics then info.Type :> ClrType
+                            else
+                                let namedExprs =
+                                    args |> List.choose (function
+                                        | CANamed (n, ex, _) -> Some (n, ex)
+                                        | _ -> None) |> Map.ofList
+                                let positional =
+                                    args |> List.choose (function
+                                        | CAPositional ex -> Some ex | _ -> None)
+                                let mutable posIdx = 0
+                                let bindings = System.Collections.Generic.Dictionary<string, ClrType>()
+                                for f in caseInfo.Fields do
+                                    let ex =
+                                        match Map.tryFind f.Name namedExprs with
+                                        | Some e -> Some e
+                                        | None when posIdx < positional.Length ->
+                                            let e = positional.[posIdx]
+                                            posIdx <- posIdx + 1
+                                            Some e
+                                        | None -> None
+                                    match ex with
+                                    | None -> ()
+                                    | Some e ->
+                                        let argTy = peekExprType ctx e
+                                        let rec bindField (lyricTy: Lyric.TypeChecker.Type) (clrTy: ClrType) =
+                                            match lyricTy with
+                                            | Lyric.TypeChecker.TyVar n ->
+                                                if not (bindings.ContainsKey n) then
+                                                    bindings.[n] <- clrTy
+                                            | _ -> ()
+                                        bindField f.LyricType argTy
+                                let typeArgs =
+                                    info.Generics
+                                    |> List.map (fun n ->
+                                        match bindings.TryGetValue n with
+                                        | true, t -> t
+                                        | _       -> typeof<obj>)
+                                    |> List.toArray
+                                try
+                                    let openTy = info.Type :> ClrType
+                                    openTy.MakeGenericType typeArgs
+                                with _ -> info.Type :> ClrType
+                        | _ -> typeof<obj>
     | _ -> typeof<obj>
 
 // ---------------------------------------------------------------------------
@@ -2747,9 +2850,20 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     constructedCase.GetConstructors()
                     |> Array.find (fun c ->
                         c.GetParameters().Length = caseInfo.Fields.Length)
-            for argExpr in argExprs do
-                let _ = emitExpr ctx argExpr
-                ()
+            // Box value-type args when the substituted field type is
+            // a reference type (e.g. obj when T=obj). Mirrors the
+            // non-generic case path at line ~2768.
+            let substMap =
+                List.zip info.Generics (List.ofArray typeArgs) |> Map.ofList
+            for (f, argExpr) in List.zip caseInfo.Fields argExprs do
+                let argTy = emitExpr ctx argExpr
+                let substFieldTy =
+                    Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                        ctx.Lookup substMap f.LyricType
+                if not substFieldTy.IsValueType && argTy.IsValueType then
+                    il.Emit(OpCodes.Box, argTy)
+                elif substFieldTy.IsValueType && argTy = typeof<obj> then
+                    il.Emit(OpCodes.Unbox_Any, substFieldTy)
             il.Emit(OpCodes.Newobj, constructedCtor)
             info.Type.MakeGenericType typeArgs
 
@@ -3679,7 +3793,59 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                     bindLyricToClr lyricParamTypes.[i] (peekExprType ctx payload)
                                 None, payload, typeof<obj>
                             else
-                                let argTy = emitExpr ctx payload
+                                // For lambda args, compute the expected delegate type
+                                // from the bindings already resolved by preceding args,
+                                // but ONLY when every generic referenced in this
+                                // parameter's Lyric type is already bound.  Unbound
+                                // generics would fall back to `obj` and force the wrong
+                                // return type on the lambda (e.g. `mapOption[T,U]` has U
+                                // unbound before the lambda arg; forcing Func<T,obj>
+                                // causes the lambda body to return an unboxed Int32 as if
+                                // it were a reference, triggering NullReferenceException).
+                                // When all generics ARE bound (e.g. `orElse[T]` with T=obj
+                                // inferred from a preceding None arg), the correct delegate
+                                // type drives the lambda's return type so its body produces
+                                // e.g. Some<obj> rather than Some<Int>.
+                                let rec allGenericsBound (ty: Lyric.TypeChecker.Type) =
+                                    match ty with
+                                    | Lyric.TypeChecker.TyVar n ->
+                                        match List.tryFindIndex ((=) n) genericNames with
+                                        | Some pos -> bindings.[pos].IsSome
+                                        | None     -> true
+                                    | Lyric.TypeChecker.TyUser (_, args) ->
+                                        List.forall allGenericsBound args
+                                    | Lyric.TypeChecker.TyFunction (ps, r, _) ->
+                                        List.forall allGenericsBound ps
+                                        && allGenericsBound r
+                                    | Lyric.TypeChecker.TySlice elem
+                                    | Lyric.TypeChecker.TyArray (_, elem)
+                                    | Lyric.TypeChecker.TyNullable elem ->
+                                        allGenericsBound elem
+                                    | Lyric.TypeChecker.TyTuple xs ->
+                                        List.forall allGenericsBound xs
+                                    | _ -> true
+                                let argTy =
+                                    match payload.Kind with
+                                    | ELambda (lps, body)
+                                        when i < lyricParamTypes.Length
+                                             && allGenericsBound lyricParamTypes.[i] ->
+                                        let provSubst =
+                                            List.zip genericNames
+                                                (bindings
+                                                 |> Array.map (function
+                                                     | Some t -> t
+                                                     | None   -> typeof<obj>)
+                                                 |> List.ofArray)
+                                            |> Map.ofList
+                                        let expectedDelegateTy =
+                                            Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                                ctx.Lookup provSubst lyricParamTypes.[i]
+                                        if expectedDelegateTy.IsSubclassOf typeof<System.Delegate> then
+                                            emitLambdaWith ctx lps body (Some expectedDelegateTy)
+                                        else
+                                            emitExpr ctx payload
+                                    | _ ->
+                                        emitExpr ctx payload
                                 if i < lyricParamTypes.Length then
                                     bindLyricToClr lyricParamTypes.[i] argTy
                                 let lb = FunctionCtx.defineLocal ctx ("__imp_arg_" + string i) argTy
@@ -4555,7 +4721,14 @@ and private emitMatch
     // zero. M1.4 will replace this with a `MatchFailure` throw.
     match resultTy with
     | Some t when t = typeof<System.Void> -> ()
-    | Some t when t.IsValueType ->
+    | Some t when t.IsValueType || t.IsGenericParameter ->
+        // Generic parameters (class-level or method-level) must use
+        // initobj (not ldnull) so the fall-through IL stays valid when T
+        // is instantiated as a value type (e.g. System.Guid).  Method
+        // type parameters (MVAR) have IsGenericTypeParameter=false but
+        // IsGenericParameter=true — the narrower check caused
+        // InvalidProgramException when T was a value type.  initobj +
+        // ldloc is safe for both reference and value type instantiations.
         let dummy = FunctionCtx.defineLocal ctx ("__match_default") t
         il.Emit(OpCodes.Ldloca, dummy)
         il.Emit(OpCodes.Initobj, t)

@@ -1386,6 +1386,112 @@ declarations, matching the pattern in `math_host.l`.
 
 ---
 
+## D043: Stdlib expansion — sort, set, char, format, encoding, uuid
+
+**Date:** 2026-05-07
+**Status:** Accepted
+
+**Context:**
+The initial stdlib (`Std.Core`, `Std.Collections`, `Std.Math`, `Std.String`,
+`Std.Testing`) covered only the constructs needed by the worked examples and
+bootstrap compiler.  Compared to the Java and .NET base class libraries several
+broadly-useful capability areas were missing: ordered sequence manipulation,
+set algebra, character classification, formatted number and string output,
+binary encoding (Base64, hex, UTF-8), and UUID generation.  These are needed
+by realistic application code and by the stdlib tests themselves.
+
+**Decision:**
+Add six new top-level packages and three new combinators to `Std.Core`:
+
+| Package | File | Content |
+|---|---|---|
+| `Std.Sort` | `stdlib/std/sort.l` | Top-down stable merge sort (`sort[T]`, `sortInts`, `sortBy`) |
+| `Std.Set` | `stdlib/std/set.l` | Unordered set backed by `HashSet<T>` (`setContains`, `setAdd`, `setRemove`, `setUnion`, `setIntersect`, `setDifference`, `setFromSlice`, `setSize`, `setIsEmpty`) |
+| `Std.Char` | `stdlib/std/char.l` | Character classification and conversion (`isLetter`, `isDigit`, `isWhiteSpace`, `isUpper`, `isLower`, `toUpper`, `toLower`, `charToInt`, `intToChar`, `digitValue`, `isAscii`, `isAsciiAlpha`, `isAsciiAlphaNum`, `isPunctuation`) |
+| `Std.Format` | `stdlib/std/format.l` | Number and string formatting (`toHexString`, `toHexStringUpper`, `formatFixed`, `padLeft`, `padRight`, `zeroPad`, `hexPad`, `hexPadUpper`) |
+| `Std.Encoding` | `stdlib/std/encoding.l` | Binary encoding (`encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8`) |
+| `Std.Uuid` | `stdlib/std/uuid.l` | UUID generation and parsing (`newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt`) |
+
+`Std.Core` additions: `andThen[T,U]`, `orElse[T]`, `andThenResult[T,U,E]` —
+monadic flatmap/chaining combinators for `Option[T]` and `Result[T,E]`.
+
+Kernel additions (`./_kernel/` and `./_kernel_jvm/`):
+- `char_host.l` (`Std.CharHost`) — `System.Char` and `System.Convert` bridges
+- `format_host.l` (`Std.FormatHost`) — formatting via F# `FormatHost` shim
+- `encoding_host.l` (`Std.EncodingHost`) — Base64, hex, UTF-8 via F# `EncodingHost` shim
+- `uuid_host.l` (`Std.UuidHost`) — `System.Guid` extern type + helpers
+- `collections_host.l` additions — `Set[T]` extern type, `newSet`, `setToSlice` via F# `SetHost.SetToArray` shim
+
+Each kernel file carries `@axiom` to document trust in the BCL/JVM contracts.
+JVM mirrors added under `./_kernel_jvm/`, routing through `lyric.stdlib.jvm.*`
+shim classes where the JDK API shape differs.
+
+New F# shim types added to `compiler/src/Lyric.Stdlib/Stdlib.fs`:
+`SetHost`, `FormatHost`, `EncodingHost`.  Shims are needed where the BCL target
+is a LINQ extension method, requires a static-property accessor chain, has
+overload-resolution ambiguity, or requires a try/catch boundary.
+
+Tests added to `stdlib/tests/`: `sort_tests.l`, `set_tests.l`, `char_tests.l`,
+`format_tests.l`, `encoding_tests.l`, `uuid_tests.l`, plus extensions to
+`core_tests.l` for the three new combinators.
+
+**Rationale:**
+
+*Sort*: Sort is the single most commonly needed algorithm; implementing it in
+pure Lyric (top-down merge sort over `slice[T]`) exercises generics, closures,
+and recursive calls and doubles as a self-test of the emitter's generics path.
+Merge sort was chosen over quicksort for stability and worst-case O(n log n)
+guarantees.
+
+*Set*: Hash-based sets are part of every practical general-purpose stdlib.
+Backing by `HashSet<T>` / `java.util.HashSet` gives O(1) amortised membership
+for free; the conversion-to-slice pattern avoids requiring the emitter to
+support `IEnumerable<T>` directly.
+
+*Char*: Applications almost always need to inspect individual characters.
+Routing through `System.Char` / `java.lang.Character` ensures Unicode-correct
+behaviour for classification; ASCII fast-paths are implemented purely in Lyric
+to keep the kernel footprint small.
+
+*Format*: `Int.ToString("x")` and `Double.ToString("F2")` have overloads that
+are tricky to target directly; wrapping in F# shims is cleaner than encoding
+format-string overload selection in the emitter.
+
+*Encoding*: Base64, hex, and UTF-8 are the three encoding primitives most
+frequently needed for wire interchange and logging.  `Option`-returning decode
+functions match the Lyric idiom for fallible operations.
+
+*UUID*: UUIDs are the standard primary-key type for distributed systems;
+`System.Guid` / `java.util.UUID` provide cryptographically-random generation
+on both targets.
+
+**Alternatives considered:**
+
+- *Route sort through BCL `Array.Sort`*: rejected because it requires a
+  `Comparison<T>` delegate, which the current emitter does not yet lower
+  closures to; pure-Lyric merge sort avoids this and is more instructive.
+
+- *Expose `IEnumerable<T>` iteration directly*: rejected for now; the emitter's
+  `for` loop is currently array-specialised.  `setToSlice` bridges the gap
+  without changing the emitter.
+
+- *Single `Std.Extras` umbrella package*: rejected; separate packages let
+  callers import only what they need and keep kernel files under the 150-
+  declaration audit limit.
+
+**Follow-up tracked:**
+
+- When the emitter supports `IEnumerable<T>`, replace `setToSlice` + `for` with
+  direct set iteration in `set.l`.
+- If closure-to-delegate lowering lands, consider adding a BCL-backed sort path
+  (`Array.Sort`) as an alternative to the merge sort for large slices.
+- JVM shim classes (`lyric.stdlib.jvm.*`) need to be published alongside the
+  BCL shim DLL as part of the Phase 6 SDK package (see D042).
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
