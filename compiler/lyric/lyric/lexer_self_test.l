@@ -12,6 +12,7 @@ package Lyric.LexerSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Lexer
 
@@ -496,6 +497,131 @@ func testIdentDigitsContinueOnly(): Unit {
   assertEqual(identNameAt(r, 0), "\u{03B1}0", "uax31: digits trail")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Trivia capture (Phase 5 §M5.1 stage 5' — red/green CST foundation).
+// `SpannedToken.leadingTrivia` carries every whitespace, newline, and
+// non-doc comment that preceded the token in source order.  These
+// tests cover each `TriviaKind` plus the basic invariant that a token
+// stream's leading-trivia text concatenated with its lexeme text
+// reproduces the original source byte-for-byte (modulo CR/LF
+// normalisation already applied by `lex`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func triviaKindName(k: in TriviaKind): String {
+  match k {
+    case TKWhitespace   -> "ws"
+    case TKNewline      -> "nl"
+    case TKLineComment  -> "line"
+    case TKBlockComment -> "block"
+  }
+}
+
+func leadingTriviaCount(lr: in LexResult, i: in Int): Int {
+  tokenAt(lr, i).leadingTrivia.count
+}
+
+func leadingTriviaKindAt(lr: in LexResult, ti: in Int, idx: in Int): String {
+  triviaKindName(tokenAt(lr, ti).leadingTrivia[idx].kind)
+}
+
+func leadingTriviaTextAt(lr: in LexResult, ti: in Int, idx: in Int): String {
+  tokenAt(lr, ti).leadingTrivia[idx].text
+}
+
+/// Concatenate every token's leading-trivia text plus its source
+/// extent.  Used to assert lossless reconstruction of the original
+/// source string from the captured trivia + token spans.
+func reconstructSource(src: in String, lr: in LexResult): String {
+  var s = ""
+  var i = 0
+  while i < lr.tokens.count {
+    val t = tokenAt(lr, i)
+    var j = 0
+    while j < t.leadingTrivia.count {
+      s = s + t.leadingTrivia[j].text
+      j = j + 1
+    }
+    val len = t.span.endPos.offset - t.span.startPos.offset
+    if len > 0 {
+      s = s + Str.substring(src, t.span.startPos.offset, len)
+    }
+    i = i + 1
+  }
+  s
+}
+
+func testTriviaLeadingWhitespace(): Unit {
+  val r = lex("   foo")
+  // Tokens: foo, EOF.  `foo` carries the leading "   " whitespace.
+  assertEqual(tokenKindAt(r, 0), "ident", "trivia-ws: ident")
+  assertEqualInt(leadingTriviaCount(r, 0), 1, "trivia-ws: one trivium")
+  assertEqual(leadingTriviaKindAt(r, 0, 0), "ws", "trivia-ws: kind")
+  assertEqual(leadingTriviaTextAt(r, 0, 0), "   ", "trivia-ws: text")
+}
+
+func testTriviaLineComment(): Unit {
+  val r = lex("// hi\nfoo")
+  // Tokens: foo, EOF.  Leading trivia on `foo`: line-comment then newline.
+  assertEqual(tokenKindAt(r, 0), "ident", "trivia-line: ident")
+  assertEqualInt(leadingTriviaCount(r, 0), 2, "trivia-line: two trivia")
+  assertEqual(leadingTriviaKindAt(r, 0, 0), "line", "trivia-line: comment kind")
+  assertEqual(leadingTriviaTextAt(r, 0, 0), "// hi", "trivia-line: comment text")
+  assertEqual(leadingTriviaKindAt(r, 0, 1), "nl", "trivia-line: newline kind")
+  assertEqual(leadingTriviaTextAt(r, 0, 1), "\n", "trivia-line: newline text")
+}
+
+func testTriviaBlockComment(): Unit {
+  val r = lex("/* hi */foo")
+  // Tokens: foo, EOF.  Leading trivia on `foo`: block-comment.
+  assertEqual(tokenKindAt(r, 0), "ident", "trivia-block: ident")
+  assertEqualInt(leadingTriviaCount(r, 0), 1, "trivia-block: one trivium")
+  assertEqual(leadingTriviaKindAt(r, 0, 0), "block", "trivia-block: kind")
+  assertEqual(leadingTriviaTextAt(r, 0, 0), "/* hi */", "trivia-block: text")
+}
+
+func testTriviaNewlineRun(): Unit {
+  val r = lex("a\n\nb")
+  // Tokens: a, STMT_END (synthesised), b, EOF.  Each `\n` becomes its
+  // own TKNewline trivium so a formatter can preserve blank lines.
+  // The trivia accumulated between two real tokens flushes onto the
+  // first emit that follows — the synthetic STMT_END here — so both
+  // newlines belong to STMT_END, and `b` has no leading trivia.
+  assertEqual(tokenKindAt(r, 0), "ident", "trivia-nl: a is ident")
+  assertEqualInt(leadingTriviaCount(r, 0), 0, "trivia-nl: a no trivia")
+  assertEqual(tokenKindAt(r, 1), "stmt_end", "trivia-nl: synth stmt_end")
+  assertEqualInt(leadingTriviaCount(r, 1), 2, "trivia-nl: stmt_end picks up both newlines")
+  assertEqual(leadingTriviaKindAt(r, 1, 0), "nl", "trivia-nl: first newline kind")
+  assertEqual(leadingTriviaKindAt(r, 1, 1), "nl", "trivia-nl: second newline kind")
+  assertEqual(tokenKindAt(r, 2), "ident", "trivia-nl: b is ident")
+  assertEqualInt(leadingTriviaCount(r, 2), 0, "trivia-nl: b drained")
+}
+
+func testTriviaDocCommentNotInTrivia(): Unit {
+  // Doc comments remain real tokens (TDocComment) — they must NOT be
+  // captured as `TriviaKind.TKLineComment`.  Plain `//` line comments
+  // before the doc comment do attach as trivia on the doc-comment
+  // token, however.
+  val r = lex("// plain\n/// doc\nfoo")
+  // Tokens: TDocComment, foo, EOF.  `TDocComment` carries the plain
+  // line-comment + newline as its leading trivia.
+  assertEqual(tokenKindAt(r, 0), "doc", "trivia-doc: doc-comment is its own token")
+  assertEqualInt(leadingTriviaCount(r, 0), 2, "trivia-doc: doc has plain comment + newline trivia")
+  assertEqual(leadingTriviaKindAt(r, 0, 0), "line", "trivia-doc: leading line-comment")
+  assertEqual(leadingTriviaTextAt(r, 0, 0), "// plain", "trivia-doc: leading text")
+}
+
+func testTriviaLossless(): Unit {
+  // Round-trip a moderately mixed source through the lexer and verify
+  // that the captured token + trivia text equals the (post-CRLF
+  // normalised) input.  Doc-comment tokens have no `text` field on
+  // SpannedToken, but their span covers the full `///…` lexeme so the
+  // source-substring path reproduces them exactly.
+  val src = "package P\n\n  // a comment\n  func f(): Unit { /* inline */ }\n"
+  val r = lex(src)
+  val rebuilt = reconstructSource(src, r)
+  assertEqual(rebuilt, src, "trivia-rt: lossless round-trip")
+}
+
 func testFullPackageHeader(): Unit {
   val r = lex("package Foo.Bar\n\nimport Std.Core\n\nfunc add(x: in Int, y: in Int): Int {\n  x + y\n}\n")
   assertEqualInt(diagCount(r), 0, "full: no diagnostics")
@@ -547,5 +673,11 @@ func main(): Unit {
   testCyrillicIdentifier()
   testIdentDigitsContinueOnly()
   testFullPackageHeader()
+  testTriviaLeadingWhitespace()
+  testTriviaLineComment()
+  testTriviaBlockComment()
+  testTriviaNewlineRun()
+  testTriviaDocCommentNotInTrivia()
+  testTriviaLossless()
   println("lexer self-test: ok")
 }

@@ -1706,6 +1706,7 @@ func listConcat(a: in List[Annotation], b: in List[Annotation]): List[Annotation
 func parseItemOpt(st: inout ParseState): Option[Item] {
   val _ = skipStmtEnds(st)
   if isAtEnd(st) { return None }
+  cstStart(st, SkItem)
 
   val prefixStart = peekSpan(st)
   val docs = parseItemDocComments(st)
@@ -1977,15 +1978,18 @@ func parseItemOpt(st: inout ParseState): Option[Item] {
     }
 
   val endSpan = peekSpan(st)
-  Some(Item(
+  val item = Item(
     docComments = docs,
     annotations = anns,
     visibility  = vis,
     kind        = kind,
-    span        = joinSpans(prefixStart, endSpan)))
+    span        = joinSpans(prefixStart, endSpan))
+  cstFinish(st)
+  Some(item)
 }
 
 func parseItems(st: inout ParseState): List[Item] {
+  cstStart(st, SkItemSection)
   val xs: List[Item] = newList()
   var keepGoing = true
   while keepGoing {
@@ -1994,6 +1998,7 @@ func parseItems(st: inout ParseState): List[Item] {
       case None -> { keepGoing = false }
     }
   }
+  cstFinish(st)
   xs
 }
 
@@ -2004,6 +2009,10 @@ func parseItems(st: inout ParseState): List[Item] {
 pub func parse(source: in String): ParseResult {
   val lexResult = lex(source)
   var st = makeParseState(lexResult.tokens, lexResult.diagnostics)
+  // Wrap the entire file in a single SkSourceFile CST node so every
+  // token (including the trailing TEof) is reachable from a single
+  // root for the formatter / LSP to walk.
+  cstStart(st, SkSourceFile)
   val startSpan = peekSpan(st)
   val moduleDoc = parseModuleDocComments(st)
   val fileAnnotations = parseFileLevelAnnotations(st)
@@ -2011,6 +2020,13 @@ pub func parse(source: in String): ParseResult {
   val imports = parseImports(st)
   val items = parseItems(st)
   val endSpan = peekSpan(st)
+  // Drain any trailing STMT_END / EOF tokens so they fall under the
+  // root node rather than dangling outside the CST.  The final TEof
+  // is reached but `advance` won't step past it; bump `st.pos` to
+  // `tokens.count` so trailing trivia attached to TEof is captured.
+  val _ = skipStmtEnds(st)
+  while st.pos < st.tokens.count { st.pos = st.pos + 1 }
+  cstFinish(st)
   val file = SourceFile(
     moduleDoc       = moduleDoc,
     fileAnnotations = fileAnnotations,
@@ -2018,5 +2034,6 @@ pub func parse(source: in String): ParseResult {
     imports         = imports,
     items           = items,
     span            = joinSpans(startSpan, endSpan))
-  ParseResult(file = file, diagnostics = st.diags)
+  val cst = buildGreenTree(st.cstEvents, st.tokens)
+  ParseResult(file = file, diagnostics = st.diags, cst = cst, source = source)
 }

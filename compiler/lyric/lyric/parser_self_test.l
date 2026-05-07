@@ -194,6 +194,145 @@ func testGenericFunc(): Unit {
   assertEqual(firstItemKindName(pr), "func", "generic: kind")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CST tests (Phase 5 §M5.1 stage 5' — red/green CST foundation).
+//
+// The parser now builds a lossless concrete syntax tree alongside the
+// AST.  These tests verify:
+//   * The root is `SkSourceFile`.
+//   * Every byte of the input source survives `nodeSourceText` —
+//     including comments (line + block) and whitespace.
+//   * `RedNode` traversal yields children with non-decreasing offsets.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func syntaxKindName(k: in SyntaxKind): String {
+  match k {
+    case SkSourceFile             -> "source_file"
+    case SkModuleDocSection       -> "module_doc"
+    case SkFileAnnotationsSection -> "file_anns"
+    case SkPackageDecl            -> "package_decl"
+    case SkImportSection          -> "import_section"
+    case SkImportDecl             -> "import_decl"
+    case SkItemSection            -> "item_section"
+    case SkItem                   -> "item"
+    case SkAnnotation             -> "annotation"
+    case SkRaw                    -> "raw"
+  }
+}
+
+/// Count direct CST children of a green node by `kind`.  Used to
+/// assert that the structural shape matches the parsed source
+/// without locking the test to specific child positions.
+func countChildrenOfKind(n: in GreenNode, want: in SyntaxKind): Int {
+  var c = 0
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcNode(child) -> {
+        if syntaxKindName(child.kind) == syntaxKindName(want) { c = c + 1 }
+      }
+      case GcToken(_) -> {}
+    }
+    i = i + 1
+  }
+  c
+}
+
+/// Find the first direct CST child of `n` whose kind matches `want`,
+/// or panic.  The CST is structurally fixed at the file/import/item
+/// granularity so callers know the child exists.
+func findChild(n: in GreenNode, want: in SyntaxKind): GreenNode {
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcNode(child) -> {
+        if syntaxKindName(child.kind) == syntaxKindName(want) { return child }
+      }
+      case GcToken(_) -> {}
+    }
+    i = i + 1
+  }
+  panic("no child of kind " + syntaxKindName(want))
+}
+
+func testCstRootKind(): Unit {
+  val src = "package P\n"
+  val pr = parse(src)
+  assertEqual(syntaxKindName(pr.cst.kind), "source_file", "cst: root is source_file")
+}
+
+func testCstLossless(): Unit {
+  // Source includes a doc comment, a line comment, a block comment,
+  // and irregular indentation — the round-trip must reproduce every
+  // byte (post CR/LF normalisation).
+  val src =
+    "//! module doc\n" +
+    "package P\n" +
+    "\n" +
+    "// pre-import line comment\n" +
+    "import Std.Core /* trailing block */\n" +
+    "\n" +
+    "/// item doc\n" +
+    "@pure\n" +
+    "func add(x: in Int, y: in Int): Int {\n" +
+    "  // body comment\n" +
+    "  x + y\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "cst-lossless: no diagnostics")
+  val rebuilt = nodeSourceText(pr.source, pr.cst)
+  assertEqual(rebuilt, src, "cst-lossless: byte-faithful round-trip")
+}
+
+func testCstShape(): Unit {
+  val src = "package P\nimport Std.Core\nfunc f(): Unit { }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "cst-shape: no diagnostics")
+  val root = pr.cst
+  assertEqualInt(countChildrenOfKind(root, SkPackageDecl), 1, "cst-shape: one package_decl")
+  assertEqualInt(countChildrenOfKind(root, SkImportSection), 1, "cst-shape: one import_section")
+  assertEqualInt(countChildrenOfKind(root, SkItemSection), 1, "cst-shape: one item_section")
+  val imports = findChild(root, SkImportSection)
+  assertEqualInt(countChildrenOfKind(imports, SkImportDecl), 1, "cst-shape: one import_decl")
+  val items = findChild(root, SkItemSection)
+  assertEqualInt(countChildrenOfKind(items, SkItem), 1, "cst-shape: one item")
+}
+
+func testCstEmptySourceLossless(): Unit {
+  val pr = parse("")
+  assertEqual(syntaxKindName(pr.cst.kind), "source_file", "cst-empty: still a source_file")
+  assertEqual(nodeSourceText(pr.source, pr.cst), "", "cst-empty: empty round-trip")
+}
+
+func testCstWidthMatchesText(): Unit {
+  val src = "package P\nfunc f(): Unit { }\n"
+  val pr = parse(src)
+  assertEqualInt(pr.cst.width, src.length, "cst-width: width equals source length")
+}
+
+func testRedRootOffsets(): Unit {
+  // Red-tree wrapper: the root sits at offset 0, and every child's
+  // offset is the running sum of its preceding siblings' widths.
+  val src = "package P\nimport Std.Core\n"
+  val pr = parse(src)
+  val red = makeRedRoot(pr.cst)
+  assertEqualInt(red.offset, 0, "red-root: offset 0")
+  val kids = redChildren(red)
+  // First kid at 0, monotonic non-decreasing offsets thereafter.
+  assertTrue(kids.count > 0, "red-root: has children")
+  var prev = -1
+  var i = 0
+  while i < kids.count {
+    val o = match kids[i] {
+      case RcToken(_, _, off) -> off
+      case RcNode(node) -> node.offset
+    }
+    assertTrue(o >= prev, "red-root: offsets monotonic")
+    prev = o
+    i = i + 1
+  }
+}
+
 func main(): Unit {
   testEmptySource()
   testPackageDecl()
@@ -213,5 +352,11 @@ func main(): Unit {
   testMatchExpr()
   testIfExpr()
   testGenericFunc()
+  testCstRootKind()
+  testCstLossless()
+  testCstShape()
+  testCstEmptySourceLossless()
+  testCstWidthMatchesText()
+  testRedRootOffsets()
   println("parser self-test: ok")
 }
