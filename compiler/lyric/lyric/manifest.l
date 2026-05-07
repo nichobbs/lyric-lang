@@ -81,12 +81,25 @@ pub record NugetSection {
   allowNative: Bool
 }
 
+/// `[features]` section per `docs/24-build-features.md` (D045).  v1
+/// implementation accepts only empty implication arrays per declared
+/// feature; non-empty implications are deferred to v1.1.
+pub record FeaturesSection {
+  /// Declared feature names, sorted alphabetically (excluding the
+  /// synthetic `default` key).
+  declared: List[String]
+  /// Features active when the user passes neither `--features` nor
+  /// `--no-default-features`.  Subset of `declared`.
+  defaults: List[String]
+}
+
 pub record Manifest {
   filePath: String
   package:  PackageSection
   project:  Option[ProjectSection]
   deps:     List[DependencyEntry]
   nuget:    Option[NugetSection]
+  features: Option[FeaturesSection]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -498,6 +511,87 @@ func assembleDeps(entries: in List[Entry]): List[DependencyEntry] {
   result
 }
 
+// Local helpers used by the [features] assembly below.
+func listContains(xs: in List[String], target: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == target { return true }
+    i += 1
+  }
+  false
+}
+
+func sortStringList(xs: in List[String]): List[String] {
+  // Insertion sort — O(n^2) but list is small (one entry per declared
+  // feature) and the sort runs once per build.
+  val out = newList[String]()
+  var i = 0
+  while i < xs.count { out.add(xs[i]); i += 1 }
+  var k = 1
+  while k < out.count {
+    val cur = out[k]
+    var j = k
+    while j > 0 && out[j - 1] > cur {
+      out[j] = out[j - 1]
+      j -= 1
+    }
+    out[j] = cur
+    k += 1
+  }
+  out
+}
+
+/// `[features]` per `docs/24-build-features.md` (D045).  v1 accepts
+/// only empty implication arrays; a non-empty array on any non-`default`
+/// key produces `Err(InvalidField)`.  Returns `Ok(None)` when the
+/// section is absent.
+func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], ManifestError] {
+  if not hasSection(entries, "features") { return Ok(value = None) }
+  val declared = newList[String]()
+  var defaults: Option[List[String]] = None
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == "features" {
+      match e.value {
+        case VStrList(items) ->
+          if e.key == "default" {
+            defaults = Some(value = items)
+          } else if items.count > 0 {
+            return Err(error = InvalidField(
+              section = "features",
+              field   = e.key,
+              message = "v1 requires an empty array (feature implications are deferred to v1.1)"))
+          } else {
+            declared.add(e.key)
+          }
+        case _ ->
+          return Err(error = InvalidField(
+            section = "features",
+            field   = e.key,
+            message = "expected an array (use [] for v1)"))
+      }
+    }
+    i += 1
+  }
+  // Validate every default names a declared feature.
+  val defaultList = unwrapOr(defaults, newList[String]())
+  var di = 0
+  while di < defaultList.count {
+    val name = defaultList[di]
+    if not listContains(declared, name) {
+      return Err(error = InvalidField(
+        section = "features",
+        field   = "default",
+        message = "references undeclared feature '" + name + "'"))
+    }
+    di += 1
+  }
+  Ok(value = Some(value = FeaturesSection(
+    declared = sortStringList(declared),
+    defaults = defaultList)))
+}
+
 func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
   if not hasSection(entries, "nuget") { return None }
   val nugetEntries = newList[NugetEntry]()
@@ -541,12 +635,17 @@ pub func parse(text: in String, filePath: in String): Result[Manifest, ManifestE
           val project = assembleProject(entries)
           val deps    = assembleDeps(entries)
           val nuget   = assembleNuget(entries)
-          Ok(value = Manifest(
-            filePath = filePath,
-            package  = pkg,
-            project  = project,
-            deps     = deps,
-            nuget    = nuget))
+          match assembleFeatures(entries) {
+            case Err(e)         -> Err(error = e)
+            case Ok(featuresOpt) ->
+              Ok(value = Manifest(
+                filePath = filePath,
+                package  = pkg,
+                project  = project,
+                deps     = deps,
+                nuget    = nuget,
+                features = featuresOpt))
+          }
       }
   }
 }

@@ -1,10 +1,19 @@
 # 24 — Build Features (compile-time gating)
 
-**Status:** Drafted.
+**Status:** Drafted.  v1 implementation in progress.
 **Implementation:** prerequisite for `docs/25-config-blocks.md` and
 `docs/26-aspects.md`. No phase commitment yet; can land any time after
 M5.1 stage 5'.
 **Decision-log entry:** D045.
+
+> **v1 scope note.** The first implementation ships a deliberately
+> narrow subset of the design below: `[features]` with a `default`
+> array (no implication arrays); `@cfg(feature = "X")` only (no
+> `any` / `all` / `not` — multiple `@cfg` annotations on one item AND
+> together); CLI flags `--features`, `--no-default-features`,
+> `--all-features`; item erasure during type-checking. Implication
+> arrays and boolean predicate composition are deferred to v1.1; the
+> design below describes the full target.
 
 ---
 

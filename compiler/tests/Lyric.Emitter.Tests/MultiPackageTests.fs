@@ -31,7 +31,9 @@ let tests =
                   RestoredPackages   = []
                   NugetAssemblyPaths = []
                   ExternShimRoot     = None
-                  Target             = Dotnet }
+                  Target             = Dotnet
+                  ActiveFeatures     = Set.empty
+                  DeclaredFeatures   = Set.empty }
             let _ = emit req
             match stdlibAssemblyPath () with
             | None ->

@@ -50,7 +50,19 @@ type EmitRequest =
       ExternShimRoot: string option
       /// Compilation target platform.  Controls which `_kernel*`
       /// directory is used for builtin `Std.*` package resolution.
-      Target: CompileTarget }
+      Target: CompileTarget
+      /// Active build-feature set per `docs/24-build-features.md`
+      /// (D045).  Items annotated `@cfg(feature = "X")` are erased
+      /// from the parse tree when `X` is not in this set.  Empty
+      /// set means "no features active" — items with `@cfg`
+      /// referencing any feature are erased.
+      ActiveFeatures: Set<string>
+      /// Features the manifest declares.  Used only for diagnostics
+      /// — an `@cfg(feature = "Y")` with `Y` outside this set
+      /// produces an `F0013` warning so typos are visible.  Empty
+      /// when the manifest has no `[features]` section, in which
+      /// case `F0013` is suppressed.
+      DeclaredFeatures: Set<string> }
 
 /// Backwards-compat constructor for callers that don't carry a
 /// manifest — synonymous with `{ Source = ...; ...; RestoredPackages = []; Target = Dotnet }`.
@@ -61,7 +73,9 @@ let mkEmitRequest (source: string) (assemblyName: string) (outputPath: string) :
       RestoredPackages = []
       NugetAssemblyPaths = []
       ExternShimRoot = None
-      Target = Dotnet }
+      Target = Dotnet
+      ActiveFeatures = Set.empty
+      DeclaredFeatures = Set.empty }
 
 let private err (code: string) (msg: string) (span: Span) : Diagnostic =
     Diagnostic.error code msg span
@@ -5360,7 +5374,9 @@ let rec private ensureStdlibArtifact
                           RestoredPackages   = []
                           NugetAssemblyPaths = []
                           ExternShimRoot     = None
-                          Target             = target }
+                          Target             = target
+                          ActiveFeatures     = Set.empty
+                          DeclaredFeatures   = Set.empty }
                     let stdImportsHere =
                         parsed.File.Imports
                         |> List.filter (fun i ->
@@ -5721,7 +5737,9 @@ let private resolveExternShimImports
                               RestoredPackages   = []
                               NugetAssemblyPaths = nugetPaths
                               ExternShimRoot     = None
-                              Target             = Dotnet }
+                              Target             = Dotnet
+                              ActiveFeatures     = Set.empty
+                              DeclaredFeatures   = Set.empty }
                         // `emitAssembly` with `isLibrary = true`
                         // skips the main-function requirement that
                         // `emit` enforces for executables.  Same
@@ -5774,11 +5792,18 @@ let emit (req: EmitRequest) : EmitResult =
     // request carries no NuGet refs (legacy single-source builds).
     preloadNugetAssemblies req.NugetAssemblyPaths
     let parsed   = parse req.Source
+    // D045: erase items annotated with `@cfg(feature = "X")` whose
+    // predicate is false against the active feature set.  Runs
+    // before import resolution so erased imports (gated alongside
+    // their definitions in future) cleanly disappear.
+    let cfgFiltered, cfgDiags =
+        Lyric.Emitter.Cfg.applyCfgErasure
+            req.ActiveFeatures req.DeclaredFeatures parsed.File
     // Restored Lyric packages (D-progress-077 follow-up) resolve
     // first so the `Std.*` resolver below sees a SourceFile with
     // the matching non-`Std` imports already stripped.
     let afterRestored, restoredImportedItems, restoredArtifacts, restoredDiags =
-        resolveRestoredImports parsed.File req.RestoredPackages
+        resolveRestoredImports cfgFiltered req.RestoredPackages
     // Phase 5 §M5.1 stage 2d.v: NuGet shim imports.
     let afterExtern, externImportedItems, externArtifacts, externDiags =
         resolveExternShimImports afterRestored req.ExternShimRoot
@@ -5793,7 +5818,7 @@ let emit (req: EmitRequest) : EmitResult =
         Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
 
     let upstream =
-        parsed.Diagnostics @ restoredDiags @ externDiags
+        parsed.Diagnostics @ cfgDiags @ restoredDiags @ externDiags
         @ importDiags @ checked'.Diagnostics
     let parserFatal =
         upstream
@@ -5899,7 +5924,12 @@ type ProjectEmitRequest =
       Single:       bool
       /// Compilation target platform.  Controls which `_kernel*`
       /// directory is used for builtin `Std.*` package resolution.
-      Target:       CompileTarget }
+      Target:       CompileTarget
+      /// Active build-feature set (D045) shared across every package
+      /// in the project.  Mirrors `EmitRequest.ActiveFeatures`.
+      ActiveFeatures:   Set<string>
+      /// Declared feature set (D045) for diagnostic-only typo guards.
+      DeclaredFeatures: Set<string> }
 
 /// Result of a project emit.  Mirrors `EmitResult` but tracks a
 /// list of per-package emit diagnostics so the caller can render
@@ -6177,7 +6207,9 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                   RestoredPackages   = req.RestoredPackages
                   NugetAssemblyPaths = req.NugetAssemblyPaths
                   ExternShimRoot     = req.ExternShimRoot
-                  Target             = req.Target }
+                  Target             = req.Target
+                  ActiveFeatures     = req.ActiveFeatures
+                  DeclaredFeatures   = req.DeclaredFeatures }
             let isMainPkg = (Some pkgName = mainPackage)
             let mainOutForCall =
                 if isMainPkg then Some bundleMain else None

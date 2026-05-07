@@ -197,5 +197,6 @@ let main argv =
             SelfHostedTestSynthTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
+            CfgErasureTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
