@@ -153,3 +153,34 @@ func countWhere(xs: in slice[Int], pred: in (Int) -> Bool): Int {
   for x in xs { if pred(x) { n += 1 } }
   return n
 }
+
+// ---------------------------------------------------------------------------
+// Flatmap / chaining combinators.
+// ---------------------------------------------------------------------------
+
+// Apply `f` to the value inside `Some`; return its result.  Propagate `None`.
+// The function-composition analogue of `mapOption` where `f` itself returns
+// `Option[U]` instead of `U`.
+generic[T, U] func andThen(o: in Option[T], f: in (T) -> Option[U]): Option[U] {
+  match o {
+    case Some(v) -> f(v)
+    case None    -> None
+  }
+}
+
+// Return `o` when it is `Some`; otherwise evaluate and return `other()`.
+// Useful for cascaded fallbacks: `findInCache(k) |> orElse { fetchFromDb(k) }`.
+generic[T] func orElse(o: in Option[T], other: in () -> Option[T]): Option[T] {
+  match o {
+    case Some(v) -> o
+    case None    -> other()
+  }
+}
+
+// Apply `f` to the `Ok` value and return its result.  Propagate `Err` unchanged.
+generic[T, U, E] func andThenResult(r: in Result[T, E], f: in (T) -> Result[U, E]): Result[U, E] {
+  match r {
+    case Ok(v)  -> f(v)
+    case Err(e) -> Err(error = e)
+  }
+}

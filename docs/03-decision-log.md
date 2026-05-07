@@ -1320,6 +1320,115 @@ has its own budget.  Before the JVM target ships, a parallel
 
 ---
 
+## D042: Stdlib expansion — sort, set, char, format, encoding, uuid
+
+**Status:** ACCEPTED
+**Date:** 2026-05-07
+
+### Decision
+
+Six new standard-library modules ship to close the most prominent gaps
+vs. Java and .NET standard libraries: `Std.Sort`, `Std.Set`, `Std.Char`,
+`Std.Format`, `Std.Encoding`, and `Std.Uuid`.  Three `Std.Core`
+combinators also ship: `andThen` (flatMap for `Option`), `orElse`
+(fallback for `Option`), and `andThenResult` (flatMap for `Result`).
+
+#### Module summary
+
+| Module | Coverage | Implementation |
+|---|---|---|
+| `Std.Sort` | Stable merge sort with explicit comparator; `sortInts`, `sortStrings`, `sortLongs`, `isSorted` | Pure Lyric using `Std.Collections.List[T]` for sub-slices |
+| `Std.Set` | `Set[T]` ≙ `HashSet<T>`; membership, add, remove, size, fromSlice, setElements, union, intersection, difference, isSubset, equals | Extern type in `Std.CollectionsHost`; algebra ops iterate via `setToSlice` shim |
+| `Std.Char` | Unicode classification (isLetter, isDigit, isWhiteSpace, isUpper, isLower, isPunctuation, isControl); case conversion; `toInt`/`fromInt`; `digitValue`, `hexDigitValue`, `isAscii` | BCL-backed via `Std.CharHost`; ASCII range helpers are pure Lyric |
+| `Std.Format` | `toHexString` / `toHexStringUpper`, `formatFixed`, `padLeft`, `padRight`, `zeroPad`, `hexPad`, `hexPadUpper` | Trampolines into `Std.FormatHost`; composite helpers are pure Lyric |
+| `Std.Encoding` | Base64 encode/decode, hex encode/decode, UTF-8 encode/decode; all decode paths return `Option` | Trampolines into `Std.EncodingHost`; error-prone BCL calls wrapped in F# shims |
+| `Std.Uuid` | `Uuid` ≙ `System.Guid`; `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` | Trampolines into `Std.UuidHost`; `Uuid` declared as extern type |
+
+#### Kernel additions
+
+Four new kernel files added to `stdlib/std/_kernel/` (with matching
+JVM stubs in `stdlib/std/_kernel_jvm/`):
+
+- `char_host.l` (`Std.CharHost`) — `System.Char.*` classification and
+  `System.Convert.ToInt32` / `ToChar` bridge.
+- `format_host.l` (`Std.FormatHost`) — formatting calls that require
+  format-string overloads; `System.String.PadLeft`/`PadRight`.
+- `encoding_host.l` (`Std.EncodingHost`) — `System.Convert.ToBase64String`,
+  `ToHexString`; F#-shim-backed `TryFromBase64`, `TryFromHex`,
+  `EncodeUtf8`, `TryDecodeUtf8`.
+- `uuid_host.l` (`Std.UuidHost`) — `extern type Uuid = "System.Guid"`;
+  `NewGuid`, `Empty`, `ToString`, `TryParse`.
+
+`Std.CollectionsHost` extended with `extern type Set[T]`,
+`newSet[T]()`, and `setToSlice[T]()` (the latter via
+`Lyric.Stdlib.SetHost.SetToArray`).
+
+Three new F# types added to `Lyric.Stdlib/Stdlib.fs`:
+`SetHost`, `FormatHost`, `EncodingHost`.
+
+#### Design choices
+
+- **Sort algorithm.** Top-down merge sort chosen for simplicity and
+  provable stability.  Each level materialises sub-slices via
+  `List[T]`, giving O(n log n) allocation.  A future Phase 2 revision
+  can reduce this to O(n) once mutable slice views ship.
+
+- **Set iteration via `setToSlice`.** `HashSet<T>` exposes `.ToArray()`
+  only as a LINQ extension method, which the emitter cannot target
+  directly.  The `Lyric.Stdlib.SetHost.SetToArray` shim is the
+  minimal workaround; a future revision could use a direct
+  `IEnumerable<T>` foreach lowering.
+
+- **Encoding decode paths return `Option`.** BCL decode methods throw
+  on bad input.  Wrapping in `Option` keeps the error model consistent
+  with `Std.Parse` and avoids `Bug` escaping across package boundaries.
+
+- **`Std.Char` classification uses BCL.** `System.Char.IsLetter` etc.
+  are Unicode-conformant and tested.  Pure-Lyric range checks are used
+  only for the ASCII-specific helpers (`digitValue`, `hexDigitValue`,
+  `isAscii`) where the ranges are stable and the prover can reason
+  about them directly.
+
+- **`Std.Format` decimal separator.** `formatFixed` uses invariant
+  (English) locale so the decimal separator is always ".".  Programs
+  that need locale-specific formatting remain the caller's
+  responsibility.
+
+### Alternatives considered
+
+- **Sort with `where T: Comparable` constraint.** Would allow a
+  zero-comparator `sort[T]()` but requires a trait/constraint system
+  that does not yet exist in the type checker.  Explicit comparator
+  is the lowest-friction bootstrap shape.
+
+- **`Set[T]` as `Map[T, Unit]`.** Avoids adding a new extern type but
+  couples the set API to the Map shim and wastes a key slot per entry.
+  A true `HashSet<T>` extern is cleaner and costs only a handful of
+  kernel declarations.
+
+- **Hex encoding as pure Lyric.** Requires either `Char` arithmetic
+  with integer-to-char conversion (adds complexity) or a lookup table
+  approach (string indexing returns `Char`, which cannot be trivially
+  concatenated without `Std.Char.fromInt` → `Std.Format` → circular
+  import risk).  Routing through `System.Convert.ToHexString` avoids
+  the dependency loop.
+
+### Tracked follow-ups
+
+- `Std.Sort`: add `sortBy[T, K]` once a `Comparable[K]` constraint or
+  first-class key-extraction + comparison tuple is available.
+- `Std.Set`: expose `for x in s` directly once the emitter's `foreach`
+  lowering handles arbitrary `IEnumerable<T>` extern types, removing
+  the need for the `setToSlice` conversion step.
+- `Std.Encoding`: consider a `Std.Encoding.UrlBase64` variant (using
+  `-` and `_` instead of `+` and `/`) once there is a consumer.
+- `Stdlib.fs` declaration count: verify the new additions remain below
+  the 150-declaration cap tracked by `KernelBoundaryTests.fs`.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -65,9 +65,46 @@ func testSliceHelpers(): Unit {
   assertEqualInt(countWhere(xs, { x: Int -> x > 100 }), 0, "countWhere none match")
 }
 
+func testAndThen(): Unit {
+  val doubled = andThen(Some(value = 5), { x: Int -> Some(value = x * 2) })
+  assertTrue(isSome(doubled), "andThen Some produces Some")
+  assertEqualInt(unwrapOr(doubled, 0), 10, "andThen Some value")
+
+  val chained = andThen(Some(value = 0), { x: Int -> None })
+  assertTrue(isNone(chained), "andThen f returns None")
+
+  assertTrue(isNone(andThen(None, { x: Int -> Some(value = x) })), "andThen on None is None")
+}
+
+func testOrElse(): Unit {
+  val found = orElse(Some(value = 42), { () -> Some(value = 99) })
+  assertEqualInt(unwrapOr(found, 0), 42, "orElse Some returns original")
+
+  val fallback = orElse(None, { () -> Some(value = 99) })
+  assertEqualInt(unwrapOr(fallback, 0), 99, "orElse None uses fallback")
+
+  assertTrue(isNone(orElse(None, { () -> None })), "orElse None fallback None is None")
+}
+
+func testAndThenResult(): Unit {
+  val ok = andThenResult(Ok(value = 5), { x: Int -> Ok(value = x + 1) })
+  assertTrue(isOk(ok), "andThenResult Ok stays Ok")
+  assertEqualInt(unwrapResultOr(ok, 0), 6, "andThenResult Ok value")
+
+  val err: Result[Int, Int] = andThenResult(Ok(value = 5), { x: Int -> Err(error = 42) })
+  assertTrue(isErr(err), "andThenResult returning Err yields Err")
+
+  val passThrough: Result[Int, Int] = andThenResult(Err(error = 7), { x: Int -> Ok(value = x) })
+  assertTrue(isErr(passThrough), "andThenResult on Err passes Err through")
+  assertEqualInt(unwrapErrOr(passThrough, 0), 7, "andThenResult Err payload preserved")
+}
+
 func main(): Unit {
   testOption()
   testResult()
   testSliceHelpers()
+  testAndThen()
+  testOrElse()
+  testAndThenResult()
   println("core: ok")
 }

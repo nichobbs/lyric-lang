@@ -32,3 +32,24 @@ pub func newMap[K, V](): Map[K, V] = ()
 // else { return false }.
 @externTarget("lyric.stdlib.jvm.CollectionsHost.tryGetValue")
 pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
+
+// =====================================================================
+// Set[T] — alias over java.util.HashSet.
+//
+// BCL-style method dispatch on the extern type:
+//   s.add(item)      → HashSet.add(E)      : boolean (discarded)
+//   s.contains(x)    → HashSet.contains(E) : boolean
+//   s.remove(x)      → HashSet.remove(E)   : boolean
+//   s.size()         → HashSet.size()      : int
+//
+// `setToSlice` routes through the JVM shim because java.util.HashSet
+// has no .toArray(T[]) convenience variant matching the Lyric call shape.
+// =====================================================================
+
+extern type Set[T] = "java.util.HashSet"
+
+@externTarget("java.util.HashSet.<init>")
+pub func newSet[T](): Set[T] = ()
+
+@externTarget("lyric.stdlib.jvm.SetHost.setToArray")
+pub func setToSlice[T](s: in Set[T]): slice[T] = ()

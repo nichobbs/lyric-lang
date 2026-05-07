@@ -558,6 +558,90 @@ type JsonHost private () =
 // `stdlib/std/_kernel/file_host.l`, with the `byte[]`/`slice[Byte]`
 // to `List[Byte]` shuttle done in pure Lyric inside `Std.File`.
 
+// ── Stdlib expansion shims (D-progress-stdlib-expand-01) ──────────────────────
+//
+// Three host classes that support the new stdlib modules added in the
+// expand-lyric-stdlib branch: `Std.Set`, `Std.Format`, and `Std.Encoding`.
+// Each follows the same pattern as the retired shim classes above: thin
+// wrappers around BCL APIs that the emitter cannot target directly via a
+// single @externTarget declaration.
+
+/// Host helper for `Std.Set` — converts a `HashSet<T>` to a plain array
+/// so the Lyric side can iterate it with `for x in setToSlice(s)`.
+/// A direct `Enumerable.ToArray` @externTarget would require a LINQ import
+/// that the emitter's extern resolver does not currently handle.
+[<Sealed; AbstractClass>]
+type SetHost private () =
+    static member SetToArray<'T>(s: System.Collections.Generic.HashSet<'T>) : 'T[] =
+        System.Linq.Enumerable.ToArray(s)
+
+/// Host helpers for `Std.Format` — format-string overloads of `ToString`
+/// and `PadLeft`/`PadRight` that the emitter's arity-based overload
+/// resolution cannot distinguish without an explicit shim.
+[<Sealed; AbstractClass>]
+type FormatHost private () =
+    /// `n.ToString("x")` — lowercase hex.
+    static member ToHexString(n: int) : string = n.ToString("x")
+    /// `n.ToString("X")` — uppercase hex.
+    static member ToHexStringUpper(n: int) : string = n.ToString("X")
+    /// `x.ToString("F{decimals}", InvariantCulture)` — fixed-point double.
+    static member FormatFixed(x: double, decimals: int) : string =
+        x.ToString("F" + string decimals,
+                    System.Globalization.CultureInfo.InvariantCulture)
+    /// `s.PadLeft(width, ch)`.
+    static member PadLeft(s: string, width: int, ch: char) : string =
+        s.PadLeft(width, ch)
+    /// `s.PadRight(width, ch)`.
+    static member PadRight(s: string, width: int, ch: char) : string =
+        s.PadRight(width, ch)
+
+/// Host helpers for `Std.Encoding` — Base64, hex, and UTF-8 operations
+/// that either can throw (and need try/catch wrapping) or go through a
+/// non-static class instance (`Encoding.UTF8`).
+[<Sealed; AbstractClass>]
+type EncodingHost private () =
+    /// Decode Base64.  Returns true and writes bytes on success; false on any
+    /// format error — `Convert.FromBase64String` throws `FormatException`.
+    static member TryFromBase64
+            (s: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<byte[]>) : bool =
+        try
+            value <- System.Convert.FromBase64String(s)
+            true
+        with _ ->
+            value <- Array.empty
+            false
+
+    /// Decode hex string (upper or lower case).  Returns true on success;
+    /// false on any format error — `Convert.FromHexString` throws on bad input.
+    static member TryFromHex
+            (s: string,
+             [<System.Runtime.InteropServices.Out>] value: byref<byte[]>) : bool =
+        try
+            value <- System.Convert.FromHexString(s)
+            true
+        with _ ->
+            value <- Array.empty
+            false
+
+    /// `System.Text.Encoding.UTF8.GetBytes(string)` — never throws for valid
+    /// .NET strings (which are always valid Unicode).
+    static member EncodeUtf8(s: string) : byte[] =
+        System.Text.Encoding.UTF8.GetBytes(s)
+
+    /// `System.Text.Encoding.UTF8.GetString(byte[])` wrapped in try/catch so
+    /// invalid UTF-8 sequences return false rather than throwing
+    /// `DecoderFallbackException`.
+    static member TryDecodeUtf8
+            (bytes: byte[],
+             [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
+        try
+            value <- System.Text.Encoding.UTF8.GetString(bytes)
+            true
+        with _ ->
+            value <- ""
+            false
+
 // ── JVM class-file emission helpers moved out (Phase 1 Bucket D) ─────────────
 //
 // `JvmByteBuilder`, `JvmByteHost`, `JvmZipHost`, `JvmConstantPool`, and
