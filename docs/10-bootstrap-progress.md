@@ -63,7 +63,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.iv — `lyric restore` writes `_extern/<lyric-pkg>.l` + `.skip.md` shims for every `[nuget]` entry after restore completes; B0030-flavoured warnings for unlocatable DLLs | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (this branch) | D-progress-122 |
-| JVM self-tests B111-B124 — lowerSealedUnion, lowerEnum, lowerOutInoutParam, lowerNatTag, makeLyricSignatureAttr, lowerExposedRecord, lowerProjectable, lowerProtectedWithBarriers, lowerHotAsync, lowerScopeBlock, lowerFuncWithContract, lowerDeriveEquality, lowerDeriveOrd, lowerPackage | **Shipped** (this branch) | D-progress-124 |
+| JVM self-tests B111-B124 — lowerSealedUnion, lowerEnum, lowerOutInoutParam, lowerNatTag, makeLyricSignatureAttr, lowerExposedRecord, lowerProjectable, lowerProtectedWithBarriers, lowerHotAsync, lowerScopeBlock, lowerFuncWithContract, lowerDeriveEquality, lowerDeriveOrd, lowerPackage | **Shipped** (PR #183 / #184) | D-progress-124 |
+| JVM stage B2 smoke test unskipped — `hello_class_bytes_are_jvm_loadable` now passes; stale `BadImageFormatException` workaround in `JvmSelfTest.fs` removed; `docs/18-jvm-emission.md` B111–B124 status table updated to Shipped | **Shipped** (this branch) | D-progress-125 |
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
@@ -184,6 +185,29 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-125: JVM stage B2 smoke test unskipped; B111–B124 doc status update
+
+*claude/continue-jvm-emitter-T9Gdj branch.*  The `[hello_class_bytes_are_jvm_loadable]`
+test in `compiler/tests/Lyric.Emitter.Tests/JvmSelfTest.fs` was marked `ptestCase`
+(pending) since the stage-B2 PR with the note that `buildLabelMap` / `emitAllInsns`
+in `bytecode.l` failed JIT-time verification with `BadImageFormatException` when the
+compiled .NET program was executed.  The root cause was a codegen bug with `match`
+over a local union type in statement position.  That bug was fixed as a side effect of
+the B90–B124 emitter improvements (stack-map frame computation, `assembleCodeWithFrames`,
+and StackMapTable fixes across `lowerFuncImpl`).  The test now passes cleanly (627
+tests, 0 ignored).
+
+**Changes:**
+- `JvmSelfTest.fs`: `ptestCase` → `testCase`; stale bug-description comment removed.
+- `docs/18-jvm-emission.md` §23.11: B111–B124 status updated from "Planned" → "Shipped";
+  intro sentence updated to "All stages B90–B124 have shipped."  Function names corrected
+  (`makeLyricSignatureAttr`, `lowerProtectedWithBarriers`, `lowerScopeBlock`,
+  `lowerFuncWithContract`) to match `lowering.l` exports.
+- `docs/10-bootstrap-progress.md` Phase 5 table: PR numbers filled in for D-progress-124;
+  D-progress-125 row added.
+
+---
 
 ### D-progress-124: JVM self-tests B111-B124 — sealed-union, enum, out-param, nat-tag, signature attr, exposed-record, projectable, protected-barriers, hot-async, scope-block, func-with-contract, derive-equality, derive-ord, lowerPackage
 
