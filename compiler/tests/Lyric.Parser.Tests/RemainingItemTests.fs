@@ -287,4 +287,53 @@ let tests =
                 Expect.equal fn.Params.Length 1 "one param"
             | other -> failtestf "expected IFunc, got %A" other
         }
+
+        // ----- aspect block (D047) -----
+
+        test "aspect block with matches and around" {
+            let src = """aspect Logging {
+                matches: name like "handle*"
+                around(args) -> ret {
+                    proceed(args)
+                }
+            }"""
+            let f = parseClean src
+            match (getOnlyItem f).Kind with
+            | IAspect ad ->
+                Expect.equal ad.Name "Logging" "name"
+                Expect.equal ad.Matches.Length 1 "one matcher"
+                match ad.Matches.[0] with
+                | AMNameLike (g, _) ->
+                    Expect.equal g "handle*" "glob"
+                Expect.isSome ad.Around "around present"
+                let around = ad.Around |> Option.get
+                Expect.equal around.ArgsName "args" "args binder"
+                Expect.equal around.RetName (Some "ret") "ret binder"
+            | other -> failtestf "expected IAspect, got %A" other
+        }
+
+        test "aspect block without -> ret is OK" {
+            let src = """aspect Trace {
+                matches: name like "*"
+                around(a) {
+                    proceed(a)
+                }
+            }"""
+            let f = parseClean src
+            match (getOnlyItem f).Kind with
+            | IAspect ad ->
+                let around = ad.Around |> Option.get
+                Expect.isNone around.RetName "no ret binder"
+            | other -> failtestf "expected IAspect, got %A" other
+        }
+
+        test "'aspect' as parameter name still works (no keyword conflict)" {
+            let f =
+                parseClean "func tag(aspect: in String): String { aspect }"
+            match (getOnlyItem f).Kind with
+            | IFunc fn ->
+                Expect.equal fn.Name "tag" "function parsed"
+                Expect.equal fn.Params.Length 1 "one param"
+            | other -> failtestf "expected IFunc, got %A" other
+        }
     ]

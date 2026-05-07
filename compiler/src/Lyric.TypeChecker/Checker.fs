@@ -146,6 +146,7 @@ let private registerItem
     | IFixture x       -> Some (mkSym x.Name (DKFixture x))
     | IImpl _          -> None       // impl blocks have no identifier
     | IConfig c        -> Some (mkSym c.Name (DKConfig c))
+    | IAspect a        -> Some (mkSym a.Name (DKAspect a))
     | IError           -> None
 
 /// The closed set of derive markers recognised in `where T: M` bounds.

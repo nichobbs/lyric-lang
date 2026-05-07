@@ -165,4 +165,16 @@ let tests =
             let r = parseAndCheck src
             Expect.isEmpty r.Diagnostics "all v1 types accepted"
         }
+
+        // ----- D047 aspect blocks -----
+
+        test "aspect block registers a symbol" {
+            let src = """aspect Logging {
+                matches: name like "handle*"
+                around(args) -> ret { proceed(args) }
+            }"""
+            let r = parseAndCheck src
+            Expect.isSome (r.Symbols.TryFindOne("Logging"))
+                "aspect symbol registered"
+        }
     ]

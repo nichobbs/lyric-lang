@@ -640,7 +640,44 @@ pub union ItemKind {
   case ITest(decl: TestDecl)
   case IProperty(decl: PropertyDecl)
   case IFixture(decl: FixtureDecl)
+  /// `config Name { ... }` per `docs/25-config-blocks.md` (D046).
+  case IConfig(decl: ConfigDecl)
+  /// `aspect Name { ... }` per `docs/26-aspects.md` (D047).
+  case IAspect(decl: AspectDecl)
   case IError
+}
+
+pub record ConfigField {
+  docComments: List[DocComment]
+  annotations: List[Annotation]
+  name:        String
+  ty:          TypeExpr
+  default:     Option[Expr]
+  span:        Span
+}
+
+pub record ConfigDecl {
+  name:   String
+  fields: List[ConfigField]
+  span:   Span
+}
+
+pub union AspectMatcher {
+  case AMNameLike(glob: String, span: Span)
+}
+
+pub record AspectAround {
+  argsName: String
+  retName:  Option[String]
+  body:     Block
+  span:     Span
+}
+
+pub record AspectDecl {
+  name:    String
+  matches: List[AspectMatcher]
+  around:  Option[AspectAround]
+  span:    Span
 }
 
 pub record Item {

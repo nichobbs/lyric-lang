@@ -723,6 +723,34 @@ and private itemDoc (item: Item) : Doc =
         @ fieldLines
         @ ["}"]
 
+    | IAspect ad ->
+        // D047: render `aspect Name { matches: ...; around(args) -> ret { ... } }`.
+        // v1 surface only; later slices add wraps:/inside:, requires:,
+        // ensures:, config { ... }.
+        let matchesLines =
+            ad.Matches
+            |> List.map (fun m ->
+                match m with
+                | AMNameLike (g, _) ->
+                    sprintf "  matches: name like \"%s\"" g)
+        let aroundLines =
+            match ad.Around with
+            | Some ar ->
+                let ret =
+                    match ar.RetName with
+                    | Some r -> sprintf " -> %s" r
+                    | None   -> ""
+                let body = blockLines ar.Body |> List.map (fun l -> "  " + l)
+                [sprintf "  around(%s)%s {" ar.ArgsName ret]
+                @ body
+                @ ["  }"]
+            | None -> []
+        header
+        @ [sprintf "aspect %s {" ad.Name]
+        @ matchesLines
+        @ aroundLines
+        @ ["}"]
+
     | IError ->
         ["// <parse-error>"]
 

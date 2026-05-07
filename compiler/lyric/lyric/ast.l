@@ -792,6 +792,8 @@ pub union ItemKind {
   case IFixture(decl: FixtureDecl)
   /// Module-scope `config Name { ... }` per `docs/25-config-blocks.md` (D046).
   case IConfig(decl: ConfigDecl)
+  /// Module-scope `aspect Name { ... }` per `docs/26-aspects.md` (D047).
+  case IAspect(decl: AspectDecl)
   case IError
 }
 
@@ -813,6 +815,29 @@ pub record ConfigDecl {
   name:   String
   fields: List[ConfigField]
   span:   Span
+}
+
+@stable(since="0.1")
+pub union AspectMatcher {
+  /// `matches: name like "<glob>"` — single positive predicate
+  /// supported in v1 of D047.
+  case AMNameLike(glob: String, span: Span)
+}
+
+@stable(since="0.1")
+pub record AspectAround {
+  argsName: String
+  retName:  Option[String]
+  body:     Block
+  span:     Span
+}
+
+@stable(since="0.1")
+pub record AspectDecl {
+  name:    String
+  matches: List[AspectMatcher]
+  around:  Option[AspectAround]
+  span:    Span
 }
 
 @stable(since="0.1")

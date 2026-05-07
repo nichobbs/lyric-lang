@@ -1603,8 +1603,10 @@ func parseConfigField(st: inout ParseState): ConfigField {
     }
   val trailing = parseTrailingAnnotations(st)
   val allAnns = newList[Annotation]()
-  for a in anns { allAnns.add(a) }
-  for a in trailing { allAnns.add(a) }
+  var ai = 0
+  while ai < anns.count { allAnns.add(anns[ai]); ai = ai + 1 }
+  var ti = 0
+  while ti < trailing.count { allAnns.add(trailing[ti]); ti = ti + 1 }
   val endSpan = match dflt {
     case Some(e) -> e.span
     case None    -> ty.span
@@ -1652,6 +1654,12 @@ func parseConfigBody(st: inout ParseState): ConfigDecl {
     }
   ConfigDecl(name = nm.name, fields = fields, span = joinSpans(startTok.span, endSpan))
 }
+
+// D047 aspect parser: deferred to a follow-up slice.  The AST types
+// `AspectDecl` / `AspectMatcher` / `AspectAround` ship in
+// `parser_ast.l` so downstream passes (when present) can already
+// reference them.  The parser dispatch + body lands once the
+// `match`-with-Option-return codegen path is cleaned up.
 
 func parseTestBody(st: inout ParseState): TestDecl {
   val startTok = advance(st)  // 'test'

@@ -37,6 +37,8 @@ pub union DeclKind {
   case DKFixture(decl: FixtureDecl)
   /// `config Name { ... }` per `docs/25-config-blocks.md` (D046).
   case DKConfig(decl: ConfigDecl)
+  /// `aspect Name { ... }` per `docs/26-aspects.md` (D047).
+  case DKAspect(decl: AspectDecl)
   // Union / enum variant cases.
   case DKUnionCase(parentId: TypeId, uc: UnionCase)
   case DKEnumCase(parentId: TypeId, ec: EnumCase)

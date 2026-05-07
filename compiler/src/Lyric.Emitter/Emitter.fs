@@ -5115,6 +5115,7 @@ let private itemConflictKey (item: Item) : string option =
     | IScopeKind s    -> Some ("scope_kind:" + s.Name)
     | IExternType t   -> Some ("extern_type:" + t.Name)
     | IConfig c       -> Some ("config:" + c.Name)
+    | IAspect a       -> Some ("aspect:" + a.Name)
     | IVal v          ->
         match v.Pattern.Kind with
         | PBinding (n, None) -> Some ("val:" + n)
