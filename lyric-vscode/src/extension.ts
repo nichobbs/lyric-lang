@@ -14,6 +14,8 @@ import {
 } from './tomlEditor';
 import { LyricProjectProvider } from './projectNavigator';
 import { LyricTaskProvider, runLyricInTerminal, runLyricRestore } from './taskProvider';
+import { LyricDocumentFormatter } from './formatter';
+import { registerTomlValidator } from './tomlValidator';
 
 let client: LanguageClient | undefined;
 
@@ -22,6 +24,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerNavigator(context);
     registerCommands(context);
     registerTasks(context);
+    registerFormatter(context);
+    registerTomlValidator(context);
     setManifestContext();
     watchManifest(context);
 }
@@ -265,6 +269,17 @@ async function cmdUpdateDependency(): Promise<void> {
         'Restore', 'Later',
     );
     if (restore === 'Restore') await runLyricRestore(manifest);
+}
+
+// Formatter -------------------------------------------------------------------
+
+function registerFormatter(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+        vscode.languages.registerDocumentFormattingEditProvider(
+            { language: 'lyric', scheme: 'file' },
+            new LyricDocumentFormatter(),
+        ),
+    );
 }
 
 // Utilities -------------------------------------------------------------------
