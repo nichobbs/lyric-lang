@@ -72,9 +72,10 @@ deferred to Phase 3 by design.
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 PR #171) | D-progress-120 / D-progress-121 |
 | M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (PR #190) | D-progress-128 |
-| M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (this branch) | D-progress-130 |
-| M5.1 — self-hosted type checker | Not shipped | — |
-| M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
+| M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (PR #197) | D-progress-130 |
+| M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
+| M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (this branch) | D-progress-133 |
+| M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`) | D-progress-129 |
 
 ### Phase 2 — type system completion (in progress)
@@ -352,6 +353,7 @@ stdout.  All 613 emitter tests pass with 0 failures.
    and deeply nested `match` expressions.
 
 ---
+
 
 ### D-progress-125: JVM stage B2 smoke test unskipped; B111–B124 doc status update
 
@@ -7189,3 +7191,101 @@ UUID generation and parsing over `System.Guid`.  `newUuid()` — version
 4 (cryptographic RNG).  `nilUuid()` — all-zeros sentinel.
 `uuidToString` — lowercase hyphenated string.  `parseUuidOpt` — accepts
 any `System.Guid.TryParse`-recognised format; returns `Option[Uuid]`.
+
+---
+
+### D-progress-132: M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker`)
+
+*PR #195.*
+
+The self-hosted Lyric type checker ships as a nine-file `Lyric.TypeChecker`
+library under `compiler/lyric/lyric/type_checker/`:
+
+- `typechecker_types.l` — `PrimType` / `Type` union and helpers
+  (`typeEquiv`, `renderType`).
+- `typechecker_symbols.l` — `DeclKind` / `Symbol` / `SymbolTable` helpers.
+- `typechecker_scope.l` — lexical `Scope` + `GenericContext` stacks.
+- `typechecker_signature.l` — `ResolvedParam` / `ResolvedBound` /
+  `ResolvedSignature` record types.
+- `typechecker_constfold.l` — compile-time integer constant folding
+  (used for `T0090`/`T0093` range-subtype diagnostics).
+- `typechecker_resolver.l` — `TypeExpr` → `Type` (`resolveType` /
+  `resolveTypePath`).
+- `typechecker_exprs.l` — bottom-up expression inference (`inferExpr`),
+  covering arithmetic, comparisons, field access, calls, closures, match,
+  and `if`/`while` control flow.
+- `typechecker_stmts.l` — statement and function-body checking
+  (`checkStatement`).
+- `typechecker_checker.l` — public entry point: `check(file: SourceFile):
+  CheckResult`; orchestrates symbol registration, signature resolution,
+  and expression/statement checking over all items.
+
+`compiler/lyric/lyric/typechecker_self_test.l` is the self-test consumer.
+It imports both `Lyric.Parser` and `Lyric.TypeChecker`, exercises 15
+in-process assertions (empty source, function/record/union registration,
+duplicate-name T0001, return-type T0070, val-type T0060, return-without-
+value T0064, range-subtype T0090/T0093, `where`-clause T0050, arithmetic
+mismatch T0031, unknown-name T0020), and writes `"ok"` on success.
+
+`compiler/tests/Lyric.Emitter.Tests/SelfHostedTypeCheckerTests.fs`
+(`[typechecker_self_test_passes]`) compiles `typechecker_self_test.l` via
+the bootstrap emitter, runs the resulting PE, and asserts exit 0 + `"ok"`
+in stdout.  All 635 emitter tests pass.
+
+**Porting issues resolved (no emitter changes required):**
+
+1. **`TyFunction` field rename** — `result` is a Lyric keyword (`KwResult`);
+   the field was renamed `ret` throughout.
+
+2. **Pattern-variable naming** — `as` is a Lyric keyword; pattern-bound
+   variables named `as1`/`as2` (from the F# `as`-pattern idiom) were
+   renamed `asy1`/`asy2`.
+
+3. **`DeclKind` construction field names** — The Lyric-side union case
+   construction syntax uses `id`/`decl` rather than the F# discriminated
+   union shorthand; all four `DeclKind` constructors corrected.
+
+4. **`resolveExprPath` mixed-arm type** — the final match arm produced
+   a `Void` result where the other arms produced `Type`, causing a CLR
+   `InvalidProgramException` at runtime.  Restructured to return a
+   consistent `Type` from all arms.
+
+---
+
+### D-progress-133: M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker`)
+
+*claude/continue-jvm-emitter-T9Gdj branch.*
+
+The self-hosted Lyric mode checker ships as a two-file `Lyric.ModeChecker`
+library under `compiler/lyric/lyric/mode_checker/`:
+
+- `modechecker_mode.l` — `VerificationLevel` union (VLRuntimeChecked,
+  VLProofRequired, VLProofRequiredUnsafe, VLProofRequiredChecked, VLAxiom)
+  plus helpers `vlIsProofRequired`, `vlDominates`, `vlDisplay`, `vlRank`;
+  file-level and function-level level computation (`levelOfFile`,
+  `levelOfFunction`, `isFuncPure`); annotation helpers (`findAnnotation`,
+  `proofRequiredModifier`).  Mirrors `compiler/src/Lyric.Verifier/Mode.fs`.
+
+- `modechecker_check.l` — public entry points (`checkFile`,
+  `checkFileWithImports`), callee-table construction (`calleeTableOfFile`),
+  and all diagnostic checks: V0001 (proof-required importing
+  runtime-checked), V0002 (impure call / `await` / `spawn` from
+  proof-required code), V0003 (`unsafe` block without
+  `unsafe_blocks_allowed`), V0004 (`@axiom` with body), V0005 (loop
+  without `invariant:` clause), V0006 (unbounded quantifier domain in
+  contract clause), V0009 (`assume` outside `unsafe {}`), V0010 (conflicting
+  level annotations), V0011 (unknown `@proof_required` modifier).  Mirrors
+  `compiler/src/Lyric.Verifier/ModeCheck.fs`.  Cross-package import
+  metadata uses a simplified `ImportedMeta` record (name + level string)
+  rather than the full F#-side `Imports.ImportedPackage` type.
+
+Consumer and harness:
+
+- `compiler/lyric/lyric/modechecker_self_test.l` — 17 in-process tests
+  covering level detection, conflict/unknown-modifier errors, V0001–V0006
+  and V0009–V0011 diagnostics, pure-callee pass, and no-check for
+  `@runtime_checked` packages.
+- `compiler/tests/Lyric.Emitter.Tests/SelfHostedModeCheckerTests.fs` —
+  F# Expecto wrapper (`[modechecker_self_test_passes]`).
+
+All 636 emitter tests pass.
