@@ -57,15 +57,19 @@ deferred to Phase 3 by design.
 | `docs/23` G12 (2/N) — F# `Lyric.Stdlib.HttpClientHost` retired (16 of 17 methods); `_kernel/http_host.l` declares direct-extern primitives for the BCL surface and Lyric-level helpers compose them.  Multi-step orchestration (`MakeRequest`, `WithHeader`, `WithStringBody`, `ClientWithRedirects`, `PostString`) all moves into Lyric on top of `HttpClient/HttpClientHandler/HttpRequestMessage/StringContent/HttpHeaders` extern types and property setters.  `ResponseHeader` survives as the only F# member because `TryGetValues`'s `out IEnumerable<string>` shape isn't yet expressible at the FFI surface | **Shipped** (PR #173) | D-progress-118 |
 | `docs/23` G12 (3/N) — F# `Lyric.Stdlib.HttpServerHost` retired entirely (8/8 methods); `_kernel/http_server.l` adds direct-extern primitives over `HttpListener` / `HttpListenerContext` / `HttpListenerRequest` / `HttpListenerResponse` / `Stream` / `StreamReader` / `Encoding` and rebuilds `startListener` / `nextContext` / `requestMethod` / `requestPath` / `requestBody` / `respondText` / `respondJson` as native Lyric (try/catch defensive arms preserved) | **Shipped** (PR #175) | D-progress-119 |
 | `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (this branch) | D-progress-120 |
+| `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (this branch) | D-progress-123 |
 | M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.iv — `lyric restore` writes `_extern/<lyric-pkg>.l` + `.skip.md` shims for every `[nuget]` entry after restore completes; B0030-flavoured warnings for unlocatable DLLs | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (this branch) | D-progress-122 |
-| Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
+| JVM self-tests B111-B124 — lowerSealedUnion, lowerEnum, lowerOutInoutParam, lowerNatTag, makeLyricSignatureAttr, lowerExposedRecord, lowerProjectable, lowerProtectedWithBarriers, lowerHotAsync, lowerScopeBlock, lowerFuncWithContract, lowerDeriveEquality, lowerDeriveOrd, lowerPackage | **Shipped** (PR #183 / #184) | D-progress-124 |
+| JVM stage B2 smoke test unskipped — `hello_class_bytes_are_jvm_loadable` now passes; stale `BadImageFormatException` workaround in `JvmSelfTest.fs` removed; `docs/18-jvm-emission.md` B111–B124 status table updated to Shipped | **Shipped** (this branch) | D-progress-125 |
+| Phase 6 — stdlib distribution per `docs/22-distribution-and-tooling.md` §2–§5 — §4 SDK root discovery, §5 `Lyric.SdkVersion` embed, `lyric --sdk-info`, bundle expansion to 11 packages, B0040/B0042 | **Shipped** (PR #187) | D-progress-126 |
+| Phase 6 — VS Code tooling §6.1–§6.4 per `docs/22-distribution-and-tooling.md` — JSON schema for `lyric.toml`; manifest-backed package management commands (Add/Remove/Update dependency, Add NuGet, Restore); project navigator tree view; Lyric task definitions and provider (build, run, test, prove) | **Shipped** (this branch) | D-progress-127 |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
-| M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (this branch) | D-progress-123 |
+| M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (this branch) | D-progress-128 |
 | M5.1 — self-hosted type checker | Not shipped | — |
 | M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | Not shipped | — |
@@ -183,7 +187,7 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 
 ## Active session decisions
 
-### D-progress-123: M5.1 stage 5 — self-hosted parser (`Lyric.Parser`)
+### D-progress-128: M5.1 stage 5 — self-hosted parser (`Lyric.Parser`)
 
 *claude/lyric-parser-selfhosted-AvCuy branch.*
 
@@ -244,6 +248,157 @@ stdout.  All 613 emitter tests pass with 0 failures.
 5. **Type-checker / symbol fixes** (`Checker.fs`, `Symbol.fs`): Various
    minor fixes to support the parser's use of closures, mutual recursion,
    and deeply nested `match` expressions.
+
+---
+
+### D-progress-125: JVM stage B2 smoke test unskipped; B111–B124 doc status update
+
+*claude/continue-jvm-emitter-T9Gdj branch.*  The `[hello_class_bytes_are_jvm_loadable]`
+test in `compiler/tests/Lyric.Emitter.Tests/JvmSelfTest.fs` was marked `ptestCase`
+(pending) since the stage-B2 PR with the note that `buildLabelMap` / `emitAllInsns`
+in `bytecode.l` failed JIT-time verification with `BadImageFormatException` when the
+compiled .NET program was executed.  The root cause was a codegen bug with `match`
+over a local union type in statement position.  That bug was fixed as a side effect of
+the B90–B124 emitter improvements (stack-map frame computation, `assembleCodeWithFrames`,
+and StackMapTable fixes across `lowerFuncImpl`).  The test now passes cleanly (627
+tests, 0 ignored).
+
+**Changes:**
+- `JvmSelfTest.fs`: `ptestCase` → `testCase`; stale bug-description comment removed.
+- `docs/18-jvm-emission.md` §23.11: B111–B124 status updated from "Planned" → "Shipped";
+  intro sentence updated to "All stages B90–B124 have shipped."  Function names corrected
+  (`makeLyricSignatureAttr`, `lowerProtectedWithBarriers`, `lowerScopeBlock`,
+  `lowerFuncWithContract`) to match `lowering.l` exports.
+- `docs/10-bootstrap-progress.md` Phase 5 table: PR numbers filled in for D-progress-124;
+  D-progress-125 row added.
+
+---
+
+### D-progress-124: JVM self-tests B111-B124 — sealed-union, enum, out-param, nat-tag, signature attr, exposed-record, projectable, protected-barriers, hot-async, scope-block, func-with-contract, derive-equality, derive-ord, lowerPackage
+
+*claude/jvm-scope-b111-XNq6s branch.*  Completes the JVM lowering
+self-test series B111–B124 exercising the full range of Lyric-level
+lowering functions.  Each stage has a self-test Lyric source in
+`compiler/lyric/jvm/` and an F# Expecto test in
+`compiler/tests/Lyric.Emitter.Tests/`.
+
+**Stages shipped:**
+
+| Stage | Lyric API exercised | Key issue fixed |
+|---|---|---|
+| B111 | `lowerSealedUnion` | sealed interface + permitted-subclasses attr |
+| B112 | `lowerEnum` | `assembleCodeWithFrames` needed for branching `switch` |
+| B113 | `lowerOutInoutParam` | out-alloc / out-store / out-load helpers |
+| B114 | `lowerNatTag` | `42L` not valid; use `42i64` Lyric syntax |
+| B115 | `makeLyricSignatureAttr` | SIGSEGV: direct `ClassFile(...)` ctor outside module; fix via `makeClassWithAttrs` helper in `classfile.l` |
+| B116 | `lowerExposedRecord` | `makeRecordAttr` + `makeRecordClass` helpers |
+| B117 | `lowerProjectable` | `makeClassWithMethodsAndAttrs` helper |
+| B118 | `lowerProtectedWithBarriers` | `invokevirtual` on `Condition` (interface) → `invokeinterface`; result-slot pre-init before barrier branch targets |
+| B119 | `lowerHotAsync` | `thenApply` + `completedFuture` nesting; fix: stage2 returns raw value |
+| B120 | `lowerScopeBlock` | direct `ClassFile(...)` ctor SIGSEGV; fix via `makeFinalClass`/`makeClassWithInterfaces` |
+| B121 | `lowerFuncWithContract` | StackMapTable empty-stack assumption; fix: skip result slot when ensures is empty; simplify requires to avoid diamond-with-stack-value |
+| B122 | `lowerDeriveEquality` | `equals` branch targets before slot-2 assigned; fix: `LIfAcmpeq`/`LIfAcmpne` LInsn cases + pre-init slot 2 + `lowerFuncForClass` path |
+| B123 | `lowerDeriveOrd` | `compareTo` with long comparison |
+| B124 | `lowerPackage` | `LIreturn` missing from static `add` body |
+
+**Lowering infrastructure changes (in `lowering.l`):**
+
+- `lowerFuncImpl(f, thisTypeName, pool)` — internal impl taking explicit `this`-type for StackMapTable frame generation
+- `lowerFunc(f, pool)` — public wrapper using `java/lang/Object` as `this`-type (static / top-level methods)
+- `lowerFuncForClass(f, declaringClass, pool)` — public wrapper using the actual class name (instance methods)
+- `lowerEntry` and `lowerProtectedWithBarriers` updated to call `lowerFuncForClass`
+- Fixed `paramSlotCount` double-counting of `this` in non-static methods
+- Added `LIfAcmpeq` and `LIfAcmpne` to the `LInsn` union, `lowerInsn`, and `collectBranchTargets`
+- `lowerDeriveEquality` refactored to use `LInsn` list + `lowerFuncForClass` for correct StackMapTable
+
+---
+
+### D-progress-126: Phase 6 (partial) — stdlib distribution + `lyric --sdk-info`
+
+*claude/phase-6-distribution-tooling-gNldX branch.*  Ships the
+non-VS-Code deliverables from `docs/22-distribution-and-tooling.md`:
+SDK root discovery, `Lyric.SdkVersion` resource embedding, the
+`lyric --sdk-info` command, B0040/B0042 diagnostics, stdlib bundle
+expansion, and a dedup fix for in-project `mergedImportedItems`.
+
+**New module: `compiler/src/Lyric.Emitter/SdkRoot.fs`**
+
+`Lyric.Emitter.SdkRoot` implements `docs/22` §4:
+
+- `SdkSource` discriminated union: `EnvVar | BinaryRelative | NotFound`.
+- `SdkInfo` record: `Root`, `StdlibDll`, `Version` (4-tuple read from
+  the `Lyric.SdkVersion` embedded resource), `Source`.
+- `locate(binaryDir)` — checks `LYRIC_SDK_ROOT` first, then walks up
+  from `binaryDir` looking for `lib/Lyric.Stdlib.dll`.
+- `tryReadSdkVersion(dllPath)` — reads the `Lyric.SdkVersion` managed
+  resource via Mono.Cecil (no file lock, no AppDomain load).
+
+**`Emitter.fs` changes**
+
+1. **Binary DLL fast path** in `ensureStdlibArtifact`: before falling
+   back to source-tree compilation, `locate AppContext.BaseDirectory`
+   is called; if a `Lyric.StdlibBundle.dll` (or any DLL with the right
+   `Lyric.Contract.<Pkg>` resource) is found at the SDK root, it is
+   loaded via `loadRestoredPackage` and cached in
+   `stdlibArtifactCache`.
+2. **`Lyric.SdkVersion` embedding** in `emitProject` Phase D: after
+   the per-package `Lyric.Contract` resources are written, a single
+   JSON object `{ "language_version", "stdlib_version",
+   "compiler_version", "build_date" }` is embedded as a
+   `Lyric.SdkVersion` managed resource via `ContractMeta.embedIntoAssemblyAs`.
+   Failure emits B0042.
+3. **`getSdkInfo()`** public helper calls `SdkRoot.locate` and is
+   consumed by `lyric --sdk-info`.
+4. **`mergedImportedItems` dedup fix** in `emitProject`'s per-package
+   emit loop: `intraItems @ restoredItems @ importedItems` is filtered
+   through `itemConflictKey` so that `Std.Core` (auto-added by
+   `resolveStdlibImports` for every kernel dependency) is not
+   registered twice when a package already imports `Std.Core` as an
+   in-project import.
+
+**`Program.fs` changes**
+
+`lyric --sdk-info` dispatches to `Lyric.Emitter.Emitter.getSdkInfo()`
+and prints:
+
+```
+sdk-root: /usr/local/lib/lyric (from LYRIC_SDK_ROOT)
+stdlib-dll: /usr/local/lib/lyric/lib/Lyric.Stdlib.dll
+language-version: 0.1
+stdlib-version: 0.1.0
+compiler-version: 0.1.0-bootstrap
+build-date: 2026-05-07T03:00:00Z
+```
+
+B0040 is printed as an error to stderr when `LYRIC_SDK_ROOT` is set
+but the DLL is not found; B0042 is a warning when the DLL exists but
+carries no `Lyric.SdkVersion` resource.  Exit code 1 when SDK root is
+`NotFound` with `LYRIC_SDK_ROOT` set, 0 otherwise (source-tree
+fallback is a valid mode).
+
+**`stdlib/lyric.toml` expansion**
+
+Bundle grew from 3 smoke packages to 11 packages across 5 tiers:
+
+| Tier | Packages |
+|---|---|
+| 0 | `Std.Core`, `Std.Errors`, `Std.String`, `Std.Core.Proof` |
+| 1 | `Std.Collections` |
+| 2 | `Std.Math`, `Std.Parse`, `Std.Stream` |
+| 3 | `Std.Time` |
+| 4 | `Std.Json` |
+| 5 | `Std.Testing.Mocking` |
+
+`Std.Environment` and `Std.Log` remain excluded: their kernel packages
+(`Std.EnvironmentHost`, `Std.LogHost`) use `extern package {}` syntax
+whose `EMSig` members the type checker does not flatten into the symbol
+table.  Fix path: rewrite those kernel files to use `@externTarget
+pub func` (like `math_host.l`).
+
+**VS Code extension** (`docs/22` §6) — deferred; requires a separate
+build toolchain outside this F# solution.
+
+---
 
 ### D-progress-122: M5.1 stage 2d.v — build-time wiring for NuGet packages
 
@@ -6751,3 +6906,87 @@ Tier 5 items (`Std.Http` cancellation/timeouts shipped via
 D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).
 Tier 6 items: AST-based `lyric fmt` and `lyric lint` shipped (see above);
 CST formatter (v2), format5+, Regex RE2, C4 phase 2/3 remain on-demand.
+
+---
+
+### D-progress-127: Phase 6 VS Code tooling — §6.1–§6.4 per `docs/22-distribution-and-tooling.md`
+
+*claude/phase-6-vscode-extension-vYx1j branch.*
+
+Implements the four VS Code extension feature blocks specified in
+`docs/22-distribution-and-tooling.md` §6.  The LSP skeleton (M-L1–M-L4)
+already landed; this entry covers everything on top of that.
+
+**§6.1 Manifest editor**
+
+- `lyric-vscode/schemas/lyric-toml.schema.json` — JSON schema covering
+  `[project]`, `[project.packages]`, `[dependencies]`, `[nuget]`, and
+  `[nuget.options]`.  All keys have descriptions, enums, and patterns.
+- `contributes.jsonValidation` association (VS Code native) and
+  `contributes.tomlValidation` association (Taplo / Even Better TOML
+  extension) both point at the schema, so `lyric.toml` gets validation
+  and completion regardless of which TOML extension the user has.
+
+**§6.2 Package management commands**
+
+- `lyric.addDependency` — prompts for package id + version, appends to
+  `[dependencies]`, offers to run `lyric restore`.
+- `lyric.addNugetPackage` — same flow targeting `[nuget]`.
+- `lyric.removeDependency` — quick-pick from all current Lyric + NuGet
+  entries, removes the selected entry.
+- `lyric.updateDependency` — quick-pick then version input, removes and
+  re-inserts with the new version, offers restore.
+- `lyric.restore` — runs `lyric restore --manifest <lyric.toml>` in an
+  integrated terminal with a progress notification.
+- `lyric.build` / `lyric.run` / `lyric.test` — command palette shortcuts
+  that execute VS Code tasks (see §6.4 below).
+- `lyric.proveCurrentFile` — runs `lyric prove <active .l file>` in
+  a terminal.
+
+New source file: `lyric-vscode/src/tomlEditor.ts` — regex-based TOML
+section reader and writer used by the commands above.  Handles both
+quoted-key (`"My.Pkg" = "1.0"`) and bare-key entries; reads `[section]`
+blocks without a third-party TOML library.
+
+**§6.3 Project navigator**
+
+- `lyric-vscode/src/projectNavigator.ts` — `LyricProjectProvider`
+  (`vscode.TreeDataProvider`) registered under the `lyricProjectNavigator`
+  view in the Explorer sidebar.
+- Three collapsible group nodes: **Packages** (from `[project.packages]`),
+  **Lyric dependencies** (from `[dependencies]`), and **NuGet dependencies**
+  (from `[nuget]`).  Each child node shows the package name and version /
+  source directory as the description.
+- Refresh triggered by `lyric.refreshNavigator` command (toolbar icon)
+  and automatically on `lyric.toml` create / change / delete events.
+- The view is hidden (`when: lyric.hasManifest`) when no `lyric.toml` is
+  present in the workspace root.
+
+**§6.4 Build / run launch configurations**
+
+- `lyric-vscode/src/taskProvider.ts` — `LyricTaskProvider` registered for
+  the `lyric` task type.
+- `provideTasks` returns four auto-discovered tasks: **Build current
+  project**, **Run**, **Test**, **Restore**.  Each wires `lyric <cmd>
+  --manifest <lyric.toml>` as a `ShellExecution`.
+- **Build** and **Test** tasks are placed in `TaskGroup.Build` and
+  `TaskGroup.Test` respectively, so they appear under
+  `Terminal > Run Build Task` / `Run Test Task`.
+- `resolveTask` honours custom definitions from `.vscode/tasks.json`
+  (type `lyric`, command enum: `build | run | test | prove | restore`,
+  optional `args` and `manifestPath`).
+- `lyric.cliPath` setting (default `"lyric"`) controls the executable
+  used by all commands and the task provider.
+- `contributes.taskDefinitions` entry in `package.json` lets users author
+  their own `lyric`-typed task entries with IntelliSense.
+
+**Other changes**
+
+- `package.json` version bumped to 0.0.2; description updated; new
+  `activationEvents` entry (`workspaceContains:**/lyric.toml`) so the
+  extension activates without opening a `.l` file.
+- `lyric.defaultRestoreFeed` setting added (reserved for future
+  package-search palette feature).
+- `extension.ts` fully rewritten to wire LSP + navigator + tasks +
+  commands and to set the `lyric.hasManifest` context key on activation
+  and on manifest file-system events.

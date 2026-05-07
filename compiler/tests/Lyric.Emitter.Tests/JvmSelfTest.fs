@@ -48,14 +48,7 @@ let private javap (classFile: string) : string =
 let tests =
     testList "Jvm.SelfTest (stage B2)" [
 
-        // Pending: the program compiles end-to-end and the IL is emitted,
-        // but `buildLabelMap` / `emitAllInsns` (in lyric/jvm/bytecode.l)
-        // currently fail JIT-time verification with BadImageFormatException
-        // when run.  Root cause is an emitter codegen bug with `match`
-        // over a local union type in statement position — outside the
-        // scope of this stage-B2 PR.  Unskip once the codegen issue is
-        // fixed.
-        ptestCase "[hello_class_bytes_are_jvm_loadable]" <| fun () ->
+        testCase "[hello_class_bytes_are_jvm_loadable]" <| fun () ->
             let src =
                 match findSelfTestSource () with
                 | Some path -> File.ReadAllText path

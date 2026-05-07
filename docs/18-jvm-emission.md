@@ -1903,6 +1903,40 @@ The emitter is staged into existence:
 | B7    | Native-image integration (driver)           | invokes native-image binary (not a library dep) |
 | B8    | Differential-fuzzing tooling                | none                        |
 
+The coarse B1–B8 buckets above map to fine-grained self-test stages.
+All stages B90–B124 have shipped; the full-pipeline smoke test (stage B2)
+was also verified passing after the B90–B124 codegen improvements:
+
+| Stage | Function added | Construct covered (§ ref) | Status |
+|-------|---------------|--------------------------|--------|
+| B90   | `lowerFunc` stack-map + Java 21 | §11.1, §23.6 | Shipped |
+| B91   | `lowerRecord` | §5 | Shipped |
+| B92   | `lowerUnion` (abstract-class form) | §8.1 bootstrap | Shipped |
+| B93   | `lowerProtected` | §17 | Shipped |
+| B94   | `lowerWire` | §18 | Shipped |
+| B95   | float fields in `lowerRecord` | §4.2 | Shipped |
+| B96   | `Jvm.Reader` round-trip | §23.13 | Shipped |
+| B97–B103 | `lowerMatchUnion`, `lowerMatchInt`, `lowerMatchStr` | §13 | Shipped |
+| B104–B106 | `lowerClosure` | §11.3 | Shipped |
+| B107  | `lowerSpawnVirtualThread`, `lowerThreadJoin` | §14.1 | Shipped |
+| B108  | `lowerDistinctType` | §6 | Shipped |
+| B109  | `lowerRangeType` | §6.4 | Shipped |
+| B110  | `lowerOpaqueType` | §7 | Shipped |
+| B111  | `lowerSealedUnion` | §8.1 production form | Shipped |
+| B112  | `lowerEnum` | §8.2 | Shipped |
+| B113  | `lowerOutInoutParam` helpers | §11.2 | Shipped |
+| B114  | `lowerNatTag` | §10.5 | Shipped |
+| B115  | `makeLyricSignatureAttr` | §10.4 | Shipped |
+| B116  | `lowerExposedRecord` | §9 | Shipped |
+| B117  | `lowerProjectable` | §7.3 | Shipped |
+| B118  | `lowerProtectedWithBarriers` | §17.3 | Shipped |
+| B119  | `lowerHotAsync` | §14.2 | Shipped |
+| B120  | `lowerScopeBlock` | §15 | Shipped |
+| B121  | `lowerFuncWithContract` | §20 | Shipped |
+| B122  | `lowerDeriveEquality` | §21, §5.4 | Shipped |
+| B123  | `lowerDeriveOrd` | §21, §6.3 | Shipped |
+| B124  | `lowerPackage` | §23.7 | Shipped |
+
 Estimated effort: 8–14 person-months for stages B1–B6, and another
 3–4 person-months for B7–B8.  This is comparable to the F# emitter's
 ramp from M1.1 to M1.4 (about 9 months in the actual timeline).

@@ -24,10 +24,47 @@ output          = "single"
 output_assembly = "Lyric.StdlibBundle.dll"
 
 [project.packages]
-# Tier 0 — no intra-stdlib imports beyond Std.Core.  This batch is
-# the working subset of the stdlib bundle proof; expanding to the full
-# stdlib surfaces individual codegen gaps tracked separately
-# (see `docs/10-bootstrap-progress.md` D-progress-103).
+# Tier 0 — base layer; no intra-stdlib imports beyond Std.Core.
 "Std.Core"             = "std/core.l"
 "Std.Errors"           = "std/errors.l"
 "Std.String"           = "std/string.l"
+"Std.Core.Proof"       = "std/core_proof.l"
+
+# Tier 1 — collections; depends on Tier 0 + kernel.
+"Std.Collections"      = "std/collections.l"
+
+# Tier 2 — numeric, text, stream utilities.
+"Std.Math"             = "std/math.l"
+"Std.Parse"            = "std/parse.l"
+"Std.Stream"           = "std/stream.l"
+
+# Tier 3 — time (environment and logging deferred; see below).
+"Std.Time"             = "std/time.l"
+
+# Tier 4 — structured data.
+"Std.Json"             = "std/json.l"
+
+# Tier 5 — testing utilities.
+"Std.Testing.Mocking"  = "std/testing_mocking.l"
+
+# Not yet included:
+#   Std.Environment — Std.EnvironmentHost uses `extern package {}` syntax;
+#                     the type checker does not flatten EMSig members into the
+#                     symbol table, so `getEnvironmentVariable` etc. are
+#                     unresolvable.  Fix: rewrite environment_host.l to use
+#                     `@externTarget pub func` (like math_host.l), then re-add.
+#   Std.Log         — same issue as Std.Environment (log_host.l uses
+#                     `extern package System.Diagnostics { ... }`).
+#   Std.Iter      — calls List[T].add / toArray across the in-project →
+#                   kernel boundary; needs project-emitter fix for CLR type
+#                   resolution of extern generics in intra-project artifacts.
+#   Std.File      — same issue as Std.Iter (uses newList + .add + .toArray).
+#   Std.Console   — uses `import System.Console` BCL direct import (not yet
+#                   handled in project-mode emit)
+#   Std.Directory — uses `import System.IO` BCL direct import
+#   Std.Path      — uses `import System.IO` BCL direct import
+#   Std.Http      — depends on Std.Task; HTTP client surface still settling
+#   Std.App       — depends on Std.File; App entrypoint wiring TBD
+#   Std.Testing   — depends on Std.File; expand once Std.File lands
+#   Std.Testing.Property  — depends on Std.Random (kernel)
+#   Std.Testing.Snapshot  — depends on Std.File

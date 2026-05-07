@@ -11,6 +11,7 @@
     <Compile Include="ContractMeta.fs" />
     <Compile Include="ProofMeta.fs" />
     <Compile Include="RestoredPackages.fs" />
+    <Compile Include="SdkRoot.fs" />
     <Compile Include="AsyncStateMachine.fs" />
     <Compile Include="Codegen.fs" />
     <Compile Include="Emitter.fs" />
