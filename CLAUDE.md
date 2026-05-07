@@ -220,7 +220,8 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
   `ManagedPEBuilder`.
 - `compiler/lyric/lyric/` — the **self-hosted Lyric compiler** sources.
-  M5.1 stages 1–5 have shipped (D-progress-093 through D-progress-128):
+  M5.1 (lexer / parser / type checker / CST) and M5.2 stages 1–2
+  (mode checker, contract elaborator) have shipped:
   - `lexer.l` — full self-hosted lexer: identifiers (NFC-normalised,
     UAX #31 XID_Start/Continue), keyword table, all integer/float
     literal forms, plain/interpolated/triple/raw strings, character
@@ -232,8 +233,31 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   - `parser/` — self-hosted parser as a four-file `Lyric.Parser`
     library: `parser_ast.l`, `parser_core.l`, `parser_exprs.l`,
     `parser_items.l` (PR #190, D-progress-128).
-  - `lexer_self_test.l`, `parser_self_test.l` — self-test consumers
-    run by the F# emitter test suite.
+  - `type_checker/` — self-hosted type checker `Lyric.TypeChecker`
+    (PR #195, D-progress-132).
+  - `mode_checker/` — self-hosted mode checker `Lyric.ModeChecker`
+    (PR #198, D-progress-133); enforces V0001–V0006 / V0009–V0011
+    against the parsed AST.
+  - `contract_elaborator/elaborator.l` — `Lyric.ContractElaborator`
+    (M5.2 stage 2).  Walks each `IFunc` item and produces an AST
+    where `requires:` / `ensures:` clauses are lowered into runtime
+    `assert(...)` statements: requires asserts are prepended to the
+    body block, and each top-level `SReturn` / trailing implicit
+    fall-off is rewritten to bind the produced value into a synthetic
+    `__lyric_result_<n>` local, run every ensures assert (with
+    `EResult` substituted for the local), then yield / return the
+    local.  The original `contracts` list on each `FunctionDecl` is
+    preserved so the verifier and contract-meta consumers see the
+    source-level clauses unchanged.  `@axiom` functions and
+    body-less signatures are passed through untouched.  Nested
+    returns inside `if` / `match` / loop bodies, protected-type
+    entries, and loop `invariant:` lowering are deferred to a
+    follow-up stage (the bootstrap emitter still inserts runtime
+    checks for those via the exit-label routing in `Emitter.fs`).
+  - `lexer_self_test.l`, `parser_self_test.l`,
+    `typechecker_self_test.l`, `modechecker_self_test.l`,
+    `contract_elaborator_self_test.l` — self-test consumers run by
+    the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler

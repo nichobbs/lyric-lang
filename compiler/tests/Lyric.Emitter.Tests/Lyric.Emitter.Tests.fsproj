@@ -194,6 +194,7 @@
     <Compile Include="SelfHostedTypeCheckerTests.fs" />
     <Compile Include="SelfHostedFmtTests.fs" />
     <Compile Include="SelfHostedModeCheckerTests.fs" />
+    <Compile Include="SelfHostedContractElaboratorTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="Program.fs" />
