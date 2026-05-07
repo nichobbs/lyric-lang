@@ -113,6 +113,33 @@ pub func warningDiagnostic(code: in String, msg: in String, sp: in Span): Diagno
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Trivia — the lossless `red/green` foundation.  Every `SpannedToken`
+// carries the run of whitespace, newlines, and (non-doc) comments that
+// preceded it in source order, so a downstream consumer (a formatter,
+// LSP, or refactoring tool) can reconstruct the source byte-for-byte.
+// Doc and module-doc comments remain real tokens (`TDocComment` /
+// `TModuleDocComment`) because the parser binds them into the AST.
+// Trailing-trivia attachment (Roslyn-style split at end-of-line) is not
+// performed; the entire run between two real tokens is recorded as the
+// second token's `leadingTrivia`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@stable(since="0.1")
+pub union TriviaKind {
+  case TKWhitespace
+  case TKNewline
+  case TKLineComment
+  case TKBlockComment
+}
+
+@stable(since="0.1")
+pub record Trivia {
+  kind: TriviaKind
+  text: String
+  span: Span
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tokens — mirror compiler/src/Lyric.Lexer/Token.fs.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -296,8 +323,23 @@ pub union Token {
 
 @stable(since="0.1")
 pub record SpannedToken {
-  token: Token
-  span:  Span
+  token:         Token
+  span:          Span
+  /// Whitespace, newlines, and non-doc comments that appeared in the
+  /// source between the previous token's end and this token's start.
+  /// Always non-null; empty for the very first token in a file (and for
+  /// synthetic tokens manufactured by the parser at out-of-bounds peek
+  /// positions).  See the `Trivia` union for the recognised kinds.
+  leadingTrivia: List[Trivia]
+}
+
+/// Construct a `SpannedToken` with no leading trivia.  Used by helpers
+/// that synthesise tokens (sentinels for out-of-bounds peeks, and
+/// constructors prior to trivia capture wiring).
+@stable(since="0.1")
+pub func makeSpannedToken(tok: in Token, sp: in Span): SpannedToken {
+  val empty: List[Trivia] = newList()
+  SpannedToken(token = tok, span = sp, leadingTrivia = empty)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,6 +560,10 @@ record LexerState {
   // String / interpolation mode stack.  Empty during plain top-
   // level lexing; see the `Mode` union.
   modes:       List[Mode]
+  // Trivia accumulated since the previous emit; flushed onto the next
+  // emitted token's `leadingTrivia` (the synthesised STMT_END if one
+  // is inserted first, otherwise the real token).  Always non-null.
+  pendingTrivia: List[Trivia]
 }
 
 func newState(source: in String): LexerState {
@@ -533,8 +579,34 @@ func newState(source: in String): LexerState {
     haveAnyToken   = false,
     tokens         = newList(),
     diagnostics    = newList(),
-    modes          = newList()
+    modes          = newList(),
+    pendingTrivia  = newList()
   )
+}
+
+/// Drain `state.pendingTrivia` into a fresh list, leaving the buffer
+/// empty.  Used by every token-emission site (real and synthetic) to
+/// hand off the accumulated leading trivia atomically.
+/// (`out` is a reserved parameter-mode keyword in this dialect, so the
+/// local binding is named `drained`.)
+func takePendingTrivia(state: inout LexerState): List[Trivia] {
+  val drained = state.pendingTrivia
+  state.pendingTrivia = newList()
+  drained
+}
+
+/// Substring of the source covered by `[startOffset, endOffset)`.
+@pure
+func sourceSlice(state: in LexerState, startOffset: in Int, endOffset: in Int): String {
+  Str.substring(state.source, startOffset, endOffset - startOffset)
+}
+
+/// Append a captured trivia run.  `startP` was recorded before the run
+/// began; the current position bounds the end.
+func recordTrivia(state: inout LexerState, kind: in TriviaKind, startP: in Position): Unit {
+  val sp = makeSpan(startP, currentPosition(state))
+  val text = sourceSlice(state, sp.startPos.offset, sp.endPos.offset)
+  state.pendingTrivia.add(Trivia(kind = kind, text = text, span = sp))
 }
 
 /// `topMode`: peek the most recently pushed mode, if any.
@@ -847,14 +919,18 @@ func punctIsCloseBracket(p: in Punct): Bool {
 }
 
 /// Maybe insert a synthesised STMT_END before emitting the next token.
-/// Mirrors `maybeEmitStmtEnd` in the F# lexer.
+/// Mirrors `maybeEmitStmtEnd` in the F# lexer.  When inserted, the
+/// pending trivia (the whitespace/newline/comment run that triggered
+/// the boundary) attaches to the STMT_END as its leading trivia, so
+/// the next real token starts with an empty trivia list.
 func maybeEmitStmtEnd(state: inout LexerState): Unit {
   if state.newlinePending and state.bracketDepth == 0 {
     val suppress =
       state.prevWasStmtEnd or state.prevSuppresses or (not state.haveAnyToken)
     if not suppress {
       val sp = pointSpan(currentPosition(state))
-      state.tokens.add(SpannedToken(token = TStmtEnd, span = sp))
+      val triv = takePendingTrivia(state)
+      state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = triv))
       state.prevWasStmtEnd = true
       state.prevSuppresses = false
       state.haveAnyToken = true
@@ -864,11 +940,14 @@ func maybeEmitStmtEnd(state: inout LexerState): Unit {
 }
 
 /// Emit a token, threading STMT_END insertion and bracket-depth
-/// bookkeeping.  All non-STMT_END token writes go through here.
+/// bookkeeping.  All non-STMT_END token writes go through here.  Any
+/// pending trivia not consumed by an inserted STMT_END is attached to
+/// `tok` as its leading trivia.
 func emit(state: inout LexerState, tok: in Token, startP: in Position): Unit {
   maybeEmitStmtEnd(state)
   val sp = makeSpan(startP, currentPosition(state))
-  state.tokens.add(SpannedToken(token = tok, span = sp))
+  val triv = takePendingTrivia(state)
+  state.tokens.add(SpannedToken(token = tok, span = sp, leadingTrivia = triv))
   // Removed match — bracket-tracking is moved to a separate helper to
   // sidestep a bootstrap codegen bug with field assignment inside a
   // match arm whose scrutinee is a discriminated-union value.  See the
@@ -948,18 +1027,30 @@ func emitModuleDocComment(state: inout LexerState, startP: in Position): Unit {
   emit(state, TModuleDocComment(text = text), startP)
 }
 
-/// Skip whitespace, line/block comments, and newlines.  Doc comments
-/// (`///` and `//!`) are emitted as their own tokens; ordinary
-/// `//` and `/* … */` are dropped.
+/// Skip whitespace, line/block comments, and newlines, capturing each
+/// run as a `Trivia` event into `state.pendingTrivia`.  Doc comments
+/// (`///` and `//!`) remain real tokens emitted via `emitDocComment` /
+/// `emitModuleDocComment` (which themselves flush the pending trivia
+/// onto the doc-comment token's `leadingTrivia`).  Captured trivia is
+/// attached to the next emitted token; see `emit` and
+/// `maybeEmitStmtEnd`.
 func skipTrivia(state: inout LexerState): Unit {
   while not isAtEnd(state) {
     val c = peek(state)
-    if isAsciiWhitespace(c) {
-      // `newlinePending` carries forward across multiple newlines:
-      // OR-in the new flag so a `\n` followed by `\t` keeps the
-      // pending state set until the next non-trivia emit.
-      state.newlinePending = state.newlinePending or (c == '\n')
-      advance(state)
+    if c == ' ' or c == '\t' {
+      val startP = currentPosition(state)
+      while not isAtEnd(state) and (peek(state) == ' ' or peek(state) == '\t') {
+        val _ = advance(state)
+      }
+      recordTrivia(state, TKWhitespace, startP)
+    } else if c == '\n' {
+      val startP = currentPosition(state)
+      val _ = advance(state)
+      // Each '\n' is its own trivium so a formatter can preserve
+      // intentional blank lines.  The STMT_END insertion logic still
+      // gates on `newlinePending`, which is set per-newline below.
+      state.newlinePending = true
+      recordTrivia(state, TKNewline, startP)
     } else if isLineCommentStart(state) {
       consumeLineCommentOrDocComment(state)
     } else if isBlockCommentStart(state) {
@@ -994,12 +1085,14 @@ func consumeLineCommentOrDocComment(state: inout LexerState): Unit {
     val startP = currentPosition(state)
     emitModuleDocComment(state, startP)
   } else {
-    // Plain line comment — drop everything up to but not including
-    // the newline (which the next skipTrivia iteration handles as a
-    // normal newline-trivia event).
+    // Plain line comment — capture the run (excluding the trailing
+    // newline, which the next `skipTrivia` iteration records on its
+    // own as a TKNewline trivium).
+    val startP = currentPosition(state)
     while not isAtEnd(state) and peek(state) != '\n' {
-      advance(state)
+      val _ = advance(state)
     }
+    recordTrivia(state, TKLineComment, startP)
   }
 }
 
@@ -1008,6 +1101,7 @@ func consumeBlockComment(state: inout LexerState): Unit {
   advance(state)   // '/'
   advance(state)   // '*'
   skipBlockComment(state, startP)
+  recordTrivia(state, TKBlockComment, startP)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1916,10 +2010,12 @@ func lexPunct(state: inout LexerState): Unit {
       }
       if punctIsSemi(p) {
         // Explicit `;` always wins over the suppression rules and
-        // emits STMT_END.
+        // emits STMT_END.  Any trivia not consumed by an inserted
+        // synthetic STMT_END attaches to the explicit `;` here.
         maybeEmitStmtEnd(state)
         val sp = makeSpan(startP, currentPosition(state))
-        state.tokens.add(SpannedToken(token = TStmtEnd, span = sp))
+        val triv = takePendingTrivia(state)
+        state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = triv))
         state.prevWasStmtEnd = true
         state.prevSuppresses = false
         state.haveAnyToken = true
@@ -2028,12 +2124,16 @@ pub func lex(source: in String): LexResult {
      and not state.prevSuppresses
      and not state.prevWasStmtEnd {
     val sp = pointSpan(currentPosition(state))
-    state.tokens.add(SpannedToken(token = TStmtEnd, span = sp))
+    val stmtTriv = takePendingTrivia(state)
+    state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = stmtTriv))
     state.prevWasStmtEnd = true
   }
   state.newlinePending = false
-  // EOF marker.
+  // EOF marker.  Any trailing trivia (final whitespace, a dangling
+  // line comment without a newline, etc.) attaches here so
+  // round-trip-formatting reproduces the original source byte-for-byte.
   val eofSp = pointSpan(currentPosition(state))
-  state.tokens.add(SpannedToken(token = TEof, span = eofSp))
+  val eofTriv = takePendingTrivia(state)
+  state.tokens.add(SpannedToken(token = TEof, span = eofSp, leadingTrivia = eofTriv))
   LexResult(tokens = state.tokens, diagnostics = state.diagnostics)
 }

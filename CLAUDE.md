@@ -160,6 +160,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
   tree alone; do not add unrelated packages here.
+  Phase 5 §M5.1 stage 5' (D-progress-129) layers a red/green CST on
+  top of the self-hosted lexer + parser: `SpannedToken.leadingTrivia`
+  preserves whitespace, newlines, and non-doc comments; the parser
+  builds a `GreenNode` tree alongside the AST at the
+  file/import/item/annotation granularity and exposes it as
+  `ParseResult.cst` (with `ParseResult.source` for byte-faithful
+  reconstruction via `nodeSourceText`).  CST types and the
+  event-based builder live in
+  `compiler/lyric/lyric/parser/parser_cst.l`.  The F# bootstrap
+  parser/lexer are deliberately untouched.
 - `compiler/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`
   parses `lyric.toml`; `Pack.fs` lowers it to a generated `.csproj` for
   `lyric publish` / `lyric restore`; `Program.fs` is the command dispatch.

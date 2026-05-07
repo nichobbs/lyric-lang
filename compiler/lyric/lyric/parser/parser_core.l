@@ -22,13 +22,33 @@ pub record NameAndSpan {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub record ParseState {
-  tokens: List[SpannedToken]
-  pos:    Int
-  diags:  List[Diagnostic]
+  tokens:    List[SpannedToken]
+  pos:       Int
+  diags:     List[Diagnostic]
+  /// Concrete-syntax-tree event log — see `parser_cst.l`.  Token
+  /// indices in `CeStart` / `CeFinish` reference `tokens` directly,
+  /// so internal `mark` / `reset` speculation does not need to
+  /// truncate the log.
+  cstEvents: List[CstEvent]
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
-  ParseState(tokens = tokens, pos = 0, diags = diags)
+  val events: List[CstEvent] = newList()
+  ParseState(tokens = tokens, pos = 0, diags = diags, cstEvents = events)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CST event helpers.  Each parser production wraps its body with
+// `cstStart(st, kind)` ... `cstFinish(st)`; tokens consumed in
+// between (via `advance` / `tryEatXxx`) are claimed by that node.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub func cstStart(st: inout ParseState, kind: in SyntaxKind): Unit {
+  st.cstEvents.add(CeStart(kind = kind, tokenStart = st.pos))
+}
+
+pub func cstFinish(st: inout ParseState): Unit {
+  st.cstEvents.add(CeFinish(tokenEnd = st.pos))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +69,7 @@ pub func isAtEnd(st: in ParseState): Bool {
 pub func peek(st: in ParseState): SpannedToken {
   if st.pos >= st.tokens.count {
     val p = initialPosition()
-    SpannedToken(token = TEof, span = pointSpan(p))
+    makeSpannedToken(TEof, pointSpan(p))
   } else {
     st.tokens[st.pos]
   }
@@ -59,7 +79,7 @@ pub func peekAt(st: in ParseState, k: in Int): SpannedToken {
   val i = st.pos + k
   if i < 0 or i >= st.tokens.count {
     val p = initialPosition()
-    SpannedToken(token = TEof, span = pointSpan(p))
+    makeSpannedToken(TEof, pointSpan(p))
   } else {
     st.tokens[i]
   }
@@ -344,6 +364,7 @@ pub func parseAnnotation(st: inout ParseState): Option[Annotation] {
   if not isPunct(peekToken(st), At) {
     None
   } else {
+    cstStart(st, SkAnnotation)
     val atTok = advance(st)
     val name = parseModulePath(st)
     val args: List[AnnotationArg] = newList()
@@ -371,7 +392,9 @@ pub func parseAnnotation(st: inout ParseState): Option[Annotation] {
         }
       }
     }
-    Some(value = Annotation(name = name, args = args, span = joinSpans(atTok.span, endSpan)))
+    val result = Some(value = Annotation(name = name, args = args, span = joinSpans(atTok.span, endSpan)))
+    cstFinish(st)
+    result
   }
 }
 
@@ -403,6 +426,8 @@ pub func parseTrailingAnnotations(st: inout ParseState): List[Annotation] {
 }
 
 pub func parseFileLevelAnnotations(st: inout ParseState): List[Annotation] {
+  cstStart(st, SkFileAnnotationsSection)
+  val _ = skipStmtEnds(st)
   val xs: List[Annotation] = newList()
   var keepGoing = true
   while keepGoing {
@@ -412,6 +437,7 @@ pub func parseFileLevelAnnotations(st: inout ParseState): List[Annotation] {
       case None -> { keepGoing = false }
     }
   }
+  cstFinish(st)
   xs
 }
 
@@ -420,6 +446,8 @@ pub func parseFileLevelAnnotations(st: inout ParseState): List[Annotation] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func parseModuleDocComments(st: inout ParseState): List[DocComment] {
+  cstStart(st, SkModuleDocSection)
+  val _ = skipStmtEnds(st)
   val xs: List[DocComment] = newList()
   var keepGoing = true
   while keepGoing {
@@ -433,6 +461,7 @@ pub func parseModuleDocComments(st: inout ParseState): List[DocComment] {
       case _ -> { keepGoing = false }
     }
   }
+  cstFinish(st)
   xs
 }
 
@@ -459,7 +488,8 @@ pub func parseItemDocComments(st: inout ParseState): List[DocComment] {
 
 pub func parsePackageDecl(st: inout ParseState): PackageDecl {
   val _ = skipStmtEnds(st)
-  match tryEatKw(st, KwPackage) {
+  cstStart(st, SkPackageDecl)
+  val result = match tryEatKw(st, KwPackage) {
     case Some(pkgTok) -> {
       val path = parseModulePath(st)
       PackageDecl(path = path, span = joinSpans(pkgTok.span, path.span))
@@ -476,6 +506,8 @@ pub func parsePackageDecl(st: inout ParseState): PackageDecl {
       PackageDecl(path = ModulePath(segments = emptySegs, span = sp), span = sp)
     }
   }
+  cstFinish(st)
+  result
 }
 
 func parseImportItem(st: inout ParseState): ImportItem {
@@ -511,6 +543,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
   if not isImport and not isPubUse {
     None
   } else {
+    cstStart(st, SkImportDecl)
     val startSp = peekSpan(st)
     if isPubUse {
       val _ = advance(st)  // pub
@@ -552,7 +585,7 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
       }
 
     var endSp = path.span
-    match tryEatKw(st, KwAs) {
+    val result = match tryEatKw(st, KwAs) {
       case Some(_) -> {
         match tryEatIdent(st) {
           case Some(al) -> {
@@ -576,10 +609,14 @@ func parseImportDecl(st: inout ParseState): Option[ImportDecl] {
                                 span = joinSpans(startSp, endSp)))
       }
     }
+    cstFinish(st)
+    result
   }
 }
 
 pub func parseImports(st: inout ParseState): List[ImportDecl] {
+  cstStart(st, SkImportSection)
+  val _ = skipStmtEnds(st)
   val xs: List[ImportDecl] = newList()
   var keepGoing = true
   while keepGoing {
@@ -589,5 +626,6 @@ pub func parseImports(st: inout ParseState): List[ImportDecl] {
       case None -> { keepGoing = false }
     }
   }
+  cstFinish(st)
   xs
 }

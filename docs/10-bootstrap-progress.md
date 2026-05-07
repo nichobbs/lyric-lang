@@ -70,6 +70,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
 | M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (this branch) | D-progress-128 |
+| M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (this branch) | D-progress-129 |
 | M5.1 — self-hosted type checker | Not shipped | — |
 | M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | Not shipped | — |
@@ -186,6 +187,105 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-129: M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser
+
+*claude/lyric-parser-ast-cst-trivia-47fTT branch.*
+
+The self-hosted formatter (planned for M5.3) needs a lossless source
+view to preserve comments and whitespace.  This stage lays the
+Roslyn-style red/green CST foundation entirely on the self-hosted
+side; the F# bootstrap is not touched.
+
+**Lexer changes (`compiler/lyric/lyric/lexer.l`):**
+
+- New `TriviaKind` (`TKWhitespace`, `TKNewline`, `TKLineComment`,
+  `TKBlockComment`) and `Trivia { kind, text, span }` records.
+- `SpannedToken` gains `leadingTrivia: List[Trivia]`.  The lexer
+  accumulates whitespace, newlines, and non-doc comments into a
+  `pendingTrivia` buffer and flushes them onto every emitted token —
+  including synthesised STMT_END and the trailing TEof, so trailing
+  trivia at end-of-file is also preserved.
+- Doc comments (`///` and `//!`) remain real tokens (`TDocComment`,
+  `TModuleDocComment`) because the parser still binds them into the
+  AST.
+- `makeSpannedToken(tok, sp)` is a public helper for synthetic
+  out-of-bounds tokens (used by parser sentinels).
+
+**CST data model (`compiler/lyric/lyric/parser/parser_cst.l`):**
+
+- `SyntaxKind` enumerates structural CST node kinds (`SkSourceFile`,
+  `SkModuleDocSection`, `SkFileAnnotationsSection`, `SkPackageDecl`,
+  `SkImportSection`, `SkImportDecl`, `SkItemSection`, `SkItem`,
+  `SkAnnotation`, `SkRaw`).
+- `GreenNode { kind, children, width }` plus `GreenChild` (`GcToken`
+  or `GcNode`) is the immutable, parent-pointer-free green tree.
+  `width` is precomputed in bytes so a downstream consumer can map
+  any node to an absolute source offset.
+- `RedNode { green, parent, offset }` plus `redChildren` lazily
+  expose absolute offsets and parent pointers.
+- `nodeSourceText(source, node)` walks the green tree and produces
+  the original source byte-for-byte (modulo CR/LF normalisation
+  performed by `lex`).
+
+**Event-based builder:**
+
+- `CstEvent` (`CeStart(kind, tokenStart)` / `CeFinish(tokenEnd)`)
+  is pushed into `ParseState.cstEvents` by the parser as it enters
+  and exits each production.  Token indices reference `st.tokens`
+  directly, so internal `mark` / `reset` speculation does not need
+  to truncate the event log.
+- `buildGreenTree(events, tokens)` walks the events plus the lexer's
+  token list to materialise the root.  A single `cursor` tracks
+  the next unclaimed token; when a child opens at `tokenStart >
+  cursor`, the gap belongs to the parent as direct token children.
+
+**Parser wrapping (`compiler/lyric/lyric/parser/parser_*.l`):**
+
+The parser now opens / closes nodes at the file / package / import /
+item / annotation granularity:
+
+- `parse` wraps the entire file in `SkSourceFile`; the trailing TEof
+  is included so its leading trivia (final whitespace, dangling
+  comments) survives.
+- `parseModuleDocComments` → `SkModuleDocSection`.
+- `parseFileLevelAnnotations` → `SkFileAnnotationsSection`.
+- `parsePackageDecl` → `SkPackageDecl`.
+- `parseImports` → `SkImportSection`; each `parseImportDecl` →
+  `SkImportDecl`.
+- `parseItems` → `SkItemSection`; each `parseItemOpt` →
+  `SkItem`.
+- `parseAnnotation` → `SkAnnotation` (covers both file-level and
+  item-level annotations).
+
+Inside an item, every consumed token still appears as a token leaf
+of the surrounding `SkItem` node in source order.  Future passes can
+refine the granularity (expression, statement, contract clause) by
+adding `cstStart` / `cstFinish` calls without changing the data
+model.
+
+**`ParseResult` shape change:**
+
+- New `cst: GreenNode` field on `ParseResult` — the lossless tree.
+- New `source: String` field — the post-CR/LF-normalised input,
+  retained so callers can render token text via `tokenSourceText` /
+  `nodeSourceText` without holding the file contents themselves.
+
+**Tests:**
+
+- `lexer_self_test.l` gains six trivia tests covering the four
+  trivia kinds, the synthetic-STMT_END flush, the doc-comment
+  carve-out, and a full lossless round-trip on a mixed source.
+- `parser_self_test.l` gains six CST tests: root kind,
+  byte-faithful round-trip on a comment-rich source, structural
+  child counts, the empty-source case, the `width == source.length`
+  invariant, and red-tree offset monotonicity.
+
+All 1595 tests across the seven F# Expecto suites continue to pass
+unchanged (lexer 123, parser 312, type-checker 137, CLI 105,
+verifier 256, LSP 28, emitter 634).
+
+---
 
 ### D-progress-128: M5.1 stage 5 — self-hosted parser (`Lyric.Parser`)
 
