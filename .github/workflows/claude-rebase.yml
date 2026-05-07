@@ -37,7 +37,7 @@ jobs:
       - name: Resolve conflicting PRs with Claude
         uses: anthropics/claude-code-action@beta
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             A commit was just pushed to `main` in `nichobbs/lyric-lang`.
