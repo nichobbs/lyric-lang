@@ -636,7 +636,9 @@ type EncodingHost private () =
             (bytes: byte[],
              [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
         try
-            value <- System.Text.Encoding.UTF8.GetString(bytes)
+            // ThrowOnInvalidBytes=true so invalid sequences return false
+            // rather than silently substituting the replacement character.
+            value <- System.Text.UTF8Encoding(false, true).GetString(bytes)
             true
         with _ ->
             value <- ""

@@ -2306,6 +2306,40 @@ let private emitExternCall
             il.Emit(OpCodes.Newobj, c)
             c.DeclaringType
         | EBMMethod m ->
+            // If the resolved method is still an open generic (i.e., a
+            // generic method on a non-generic declaring type, like
+            // `SetHost.SetToArray<T>`), infer type arguments from the
+            // resolved parameter CLR types and close it now.
+            let m =
+                if not m.IsGenericMethodDefinition then m
+                else
+                    let gtpbs   = m.GetGenericArguments()
+                    let mParams = m.GetParameters()
+                    let bindings = Array.create gtpbs.Length typeof<obj>
+                    let rec matchTy (methTy: System.Type) (actualTy: System.Type) =
+                        if methTy.IsGenericParameter then
+                            match Array.tryFindIndex
+                                      (fun (tp: System.Type) -> tp.Name = methTy.Name)
+                                      gtpbs with
+                            | Some pos -> bindings.[pos] <- actualTy
+                            | None     -> ()
+                        elif methTy.IsGenericType && actualTy.IsGenericType then
+                            try
+                                if methTy.GetGenericTypeDefinition()
+                                   = actualTy.GetGenericTypeDefinition() then
+                                    Array.iter2 matchTy
+                                        (methTy.GetGenericArguments())
+                                        (actualTy.GetGenericArguments())
+                            with _ -> ()
+                        elif methTy.IsArray && actualTy.IsArray then
+                            match Option.ofObj (methTy.GetElementType()),
+                                  Option.ofObj (actualTy.GetElementType()) with
+                            | Some mt, Some at -> matchTy mt at
+                            | _                -> ()
+                    for i in 0 .. mParams.Length - 1 do
+                        if i < paramTypes.Length then
+                            matchTy (mParams.[i].ParameterType) paramTypes.[i]
+                    m.MakeGenericMethod bindings
             if m.IsStatic then il.Emit(OpCodes.Call, m)
             else
                 // Value-type instance methods — `Call` against a
