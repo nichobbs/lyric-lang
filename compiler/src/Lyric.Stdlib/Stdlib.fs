@@ -573,30 +573,14 @@ type JsonHost private () =
 // `stdlib/std/_kernel/file_host.l`, with the `byte[]`/`slice[Byte]`
 // to `List[Byte]` shuttle done in pure Lyric inside `Std.File`.
 
-// ── Stdlib expansion shims (D-progress-stdlib-expand-01 → P0/4d) ─────────────
+// ── Stdlib expansion shims retired (D-progress-stdlib-expand-01 → P0/4d) ──────
 //
-// FormatHost and EncodingHost lived here during the expand-lyric-stdlib phase.
-// They are now eliminated:
+// SetHost, FormatHost, and EncodingHost all eliminated:
 //
-//   FormatHost   — replaced by direct BCL externs in _kernel/format_host.l;
-//                  Int32.ToString(string), Double.ToString(string,IFormatProvider),
-//                  and String.PadLeft/PadRight resolve via instanceTyped.
-//   EncodingHost — replaced by direct BCL externs in _kernel/encoding_host.l;
-//                  throwing variants (FromBase64String, FromHexString,
-//                  UTF8Encoding.GetString) are wrapped in Lyric try/catch in
-//                  encoding.l.
-//
-// SetHost remains until Group B (IEnumerable for-loop emitter + pure-Lyric
-// setToSlice) lands; see docs/23-fsharp-shim-elimination.md §4.2.
-
-/// Host helper for `Std.Set` — converts a `HashSet<T>` to a plain array
-/// so the Lyric side can iterate it with `for x in setToSlice(s)`.
-/// Pending elimination: Group B extends the `SFor` emitter to handle
-/// `IEnumerable<T>`, after which `setToSlice` becomes a pure Lyric for-loop.
-[<Sealed; AbstractClass>]
-type SetHost private () =
-    static member SetToArray<'T>(s: System.Collections.Generic.HashSet<'T>) : 'T[] =
-        System.Linq.Enumerable.ToArray(s)
+//   FormatHost   — replaced by direct BCL externs in _kernel/format_host.l.
+//   EncodingHost — replaced by direct BCL externs in _kernel/encoding_host.l.
+//   SetHost      — setToSlice now uses IEnumerable for-loop in set.l (Group B);
+//                  SFor emitter extended to handle IEnumerable<T> in Codegen.fs.
 
 // ── JVM class-file emission helpers moved out (Phase 1 Bucket D) ─────────────
 //
