@@ -1,0 +1,139 @@
+name: Claude-assisted rebase — conflict resolution
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Don't stack multiple runs for the same push; the later run supersedes.
+concurrency:
+  group: claude-rebase
+  cancel-in-progress: true
+
+jobs:
+  claude-rebase:
+    runs-on: ubuntu-latest
+    # Skip pushes made by bots (including the auto-rebase action and Claude
+    # itself) to avoid infinite loops.
+    if: |
+      github.actor != 'github-actions[bot]' &&
+      github.actor != 'claude[bot]'
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The peter-evans/rebase action (auto-rebase.yml) already handles PRs
+      # that can be rebased cleanly.  This job picks up the remainder: PRs
+      # that are in a CONFLICTING state and need intelligent conflict
+      # resolution.  Claude is given tools (bash, file read/write, gh CLI)
+      # and instructed to resolve each conflict conservatively.
+      - name: Resolve conflicting PRs with Claude
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            A commit was just pushed to `main` in `nichobbs/lyric-lang`.
+
+            Your task: for every open PR targeting `main` that currently has
+            merge conflicts, rebase it onto the latest `main` and resolve the
+            conflicts, then push the result.
+
+            Procedure for each conflicting PR:
+
+            1. Fetch latest state:
+               ```
+               git fetch origin
+               ```
+
+            2. List open PRs and their mergeability:
+               ```
+               gh pr list --base main --state open \
+                 --json number,headRefName,mergeable,title
+               ```
+               Focus on PRs where `mergeable` is `"CONFLICTING"`.  If the
+               field is `"UNKNOWN"` (GitHub hasn't computed it yet), attempt
+               the rebase anyway — let git decide whether conflicts exist.
+
+            3. For each candidate PR (process them one at a time):
+
+               a. Check out the PR branch:
+                  ```
+                  gh pr checkout <number>
+                  ```
+
+               b. Attempt the rebase:
+                  ```
+                  git rebase origin/main
+                  ```
+
+               c. If the rebase exits cleanly (exit code 0): push and move on:
+                  ```
+                  git push --force-with-lease
+                  ```
+
+               d. If the rebase stops with conflicts:
+                  - Identify conflicting files: `git diff --name-only --diff-filter=U`
+                  - For each conflicting file, read it (it will contain
+                    `<<<<<<<`, `=======`, `>>>>>>>` markers).
+                  - Resolve the conflict by producing a version that honours
+                    **both** the incoming `main` change and the PR change:
+                    * For documentation edits (`.md`, `.ebnf`, `CLAUDE.md`):
+                      keep all text from both sides; merge prose and renumber
+                      lists or progress entries as needed.
+                    * For F# source: keep all code from both sides; if the
+                      same line was edited differently on each side, prefer
+                      the main version for scaffolding/style and the PR
+                      version for logic, unless you can see clearly that one
+                      supersedes the other.
+                    * For YAML/TOML config: keep all keys from both sides;
+                      if the same key has different values, pick the more
+                      specific/newer one and add an inline comment explaining
+                      the choice.
+                  - After editing each file to remove markers: `git add <file>`
+                  - Continue the rebase (suppress the editor prompt):
+                    ```
+                    GIT_EDITOR=true git rebase --continue
+                    ```
+                  - Repeat for subsequent conflict stops until the rebase
+                    finishes or you hit a stop you cannot resolve.
+
+               e. When the full rebase completes without error:
+                  ```
+                  git push --force-with-lease
+                  ```
+
+               f. If you encounter a conflict you cannot resolve safely
+                  (e.g. two logically incompatible approaches to the same
+                  problem, or a conflict in generated code you don't
+                  understand):
+                  ```
+                  git rebase --abort
+                  ```
+                  Then post a comment on the PR:
+                  ```
+                  gh pr comment <number> --body "..."
+                  ```
+                  Explain exactly which file(s) and which sections need
+                  manual attention, and why you aborted rather than guessing.
+
+            4. After processing all PRs, return to main:
+               ```
+               git checkout main
+               ```
+
+            Important constraints:
+            - Be conservative.  When in doubt about which version of a
+              conflicting hunk is correct, abort and comment — do not guess.
+            - Never force-push without `--force-with-lease`.
+            - Never amend commits that have already been pushed.
+            - Do not modify any file outside the PR's own branch.
+            - Do not close, merge, or approve any PR — only push the rebased
+              branch.
