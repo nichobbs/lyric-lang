@@ -1116,7 +1116,7 @@ pub func pageCount(page: Int, size: Int, total: Int): Int
 
 **Verification output** (`lyric prove examples/pagination.l --verbose`):
 
-```
+```text
 4/4 obligations discharged (@proof_required)
   [pageStart$post]  postcondition of pageStart    -> discharged
   [pageStart$side]  loop invariant (establish)    -> discharged
@@ -1185,8 +1185,8 @@ pub func make(capacity: in Double): Bucket
 
 **Verification output** (`lyric prove examples/token_bucket_proof.l --verbose`):
 
-```
-8/8 obligations discharged (@proof_required)
+```text
+6/6 obligations discharged (@proof_required)
   [Bucket.tryAcquire$side]  user assertion  -> discharged
   [Bucket.tryAcquire$side]  user assertion  -> discharged
   [Bucket.refill$side]      user assertion  -> discharged
