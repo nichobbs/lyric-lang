@@ -109,6 +109,45 @@ Repeat until GitHub shows the branch as mergeable. If auto-merge was
 enabled before the conflict appeared, re-enable it after pushing the
 resolution.
 
+#### Watching an open PR
+
+`.github/workflows/auto-rebase.yml` rebases every open PR onto `main`
+on each push to `main`, but it only performs *clean* rebases — if a
+PR has conflicts the action skips it and the branch stays in a
+conflicted state.  Don't wait for the user to flag the conflict.
+
+Treat **any of these signals** as a cue to fetch `main` and rebase
+the open PR:
+
+- A `<github-webhook-activity>` event arrives mentioning the PR (in
+  particular: a new push or a CI failure on a PR that previously
+  passed).
+- The user pings the session about an open PR.
+- A `git status` / `git fetch` shows new commits on `origin/main`
+  while you have an open PR on the current branch.
+- You've just resumed a session and the current branch has an open
+  PR.
+
+Action:
+
+```sh
+git fetch origin main
+git rebase origin/main
+```
+
+If conflicts appear, resolve them in line with the existing rebase
+instructions (stage, `git rebase --continue`), build, run the
+impacted test suites, then `git push --force-with-lease`.  Open
+PRs that have gone stale because of unrelated docs / progress-log
+churn on `main` are the typical case — renumber any
+`D-progress-N` entries that collide with main, keep both the
+incoming and your-branch entries, and delete only your own
+duplicate hunk.
+
+If you only need to verify the surface state without fetching, the
+GitHub MCP `mcp__github__pull_request_read` tool with `method:
+"get"` reports `mergeable` / `mergeable_state` directly.
+
 ### Style
 
 - No emojis in any file unless the user asks.
