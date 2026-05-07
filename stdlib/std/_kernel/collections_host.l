@@ -41,16 +41,12 @@ pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool = ()
 //   s.remove(x)     → HashSet.Remove(T)  : Bool
 //   s.count         → HashSet.Count      : Int
 //
-// `setToSlice` is routed through the `Lyric.Stdlib.SetHost.SetToArray`
-// shim because `HashSet<T>` has no `.ToArray()` instance method —
-// only the LINQ extension method, which the emitter cannot resolve
-// without help.
+// `setToSlice` was previously a shim (Lyric.Stdlib.SetHost.SetToArray).
+// It is now implemented in pure Lyric in `set.l` using `for x in s`
+// (IEnumerable for-loop) and `List[T].toArray()`.  No extern needed.
 // =====================================================================
 
 extern type Set[T] = "System.Collections.Generic.HashSet`1"
 
 @externTarget("System.Collections.Generic.HashSet`1..ctor")
 pub func newSet[T](): Set[T] = ()
-
-@externTarget("Lyric.Stdlib.SetHost.SetToArray")
-pub func setToSlice[T](s: in Set[T]): slice[T] = ()

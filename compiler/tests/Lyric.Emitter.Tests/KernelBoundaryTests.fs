@@ -121,7 +121,12 @@ let tests =
                     total totalSoftCap
             // Sanity: kernel can't be negative or wildly huge.
             Expect.isGreaterThanOrEqual inside 0 "kernel count >= 0"
-            Expect.isLessThanOrEqual total 250
+            // Bumped from 250 → 260 during F# shim elimination (P0/4d):
+            // migrating FormatHost + EncodingHost + SetHost to direct BCL
+            // externs temporarily increases the Lyric extern count while
+            // shrinking Stdlib.fs.  Will drop back below 250 when the
+            // remaining Groups C/D land and Stdlib.fs is deleted.
+            Expect.isLessThanOrEqual total 260
                 "total extern surface unexpectedly large"
         }
     ]

@@ -18,13 +18,20 @@ type private ClrType = System.Type
 
 /// A single loop frame — break exits, continue rejoins the head.
 /// `TryDepthAtFrame` snapshots `FunctionCtx.TryDepth` at the loop
+/// entry for break/continue disambiguation.  For `for x in IEnumerable`
+/// loops the try/finally wrapper sits around the whole loop body, so
+/// `continue` (going back to the loop head inside the try block) must
+/// use `Br` not `Leave`; `ContinueTryDepth` captures the depth at the
+/// continue label's location so `SContinue` can pick the right opcode.
+/// For all other loops `ContinueTryDepth == TryDepthAtFrame`.
 /// header; `break` / `continue` use `leave` instead of `br` when the
 /// current depth exceeds this baseline (i.e. the branch crosses a
 /// protected region opened inside the loop body).
 type LoopFrame =
-    { BreakLabel:      Label
-      ContinueLabel:   Label
-      TryDepthAtFrame: int }
+    { BreakLabel:       Label
+      ContinueLabel:    Label
+      TryDepthAtFrame:  int
+      ContinueTryDepth: int }
 
 /// Per-function emit context. Mutable on purpose: F# expression
 /// emission threads through a long mutual-recursion graph and a
@@ -97,6 +104,11 @@ type FunctionCtx =
       /// the folded int64.  Used by `EPath { Segments = [name] }`
       /// so constants like `ACC_PUBLIC` resolve without a static field.
       Consts: Dictionary<string, int64>
+      /// Package-level `@asyncLocal val` declarations.  Each entry maps
+      /// the Lyric identifier to the static `AsyncLocal<T>` field on the
+      /// package's program type.  Reading the name in an expression emits
+      /// `ldsfld <field>` which pushes the `AsyncLocal<T>` object.
+      AsyncLocalFields: Dictionary<string, System.Reflection.FieldInfo>
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -189,6 +201,7 @@ module FunctionCtx =
             (resolveType: Lyric.Parser.Ast.TypeExpr -> System.Type)
             (lookup: Lyric.TypeChecker.TypeId -> System.Type option)
             (consts: Dictionary<string, int64>)
+            (asyncLocalFields: Dictionary<string, System.Reflection.FieldInfo>)
             (diags: ResizeArray<Lyric.Lexer.Diagnostic>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
@@ -220,6 +233,7 @@ module FunctionCtx =
           ImportedDistinctTypes = importedDistinctTypes
           ExternTypeNames = externTypeNames
           Consts       = consts
+          AsyncLocalFields = asyncLocalFields
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -306,20 +320,6 @@ let private codegenErrStmt
 // ---------------------------------------------------------------------------
 // Stdlib bindings.
 // ---------------------------------------------------------------------------
-
-/// `Lyric.Stdlib.UnionEquality.SameType(object, object)` — used by BEq
-/// on abstract union base types to compare by runtime type class rather
-/// than by reference identity.  A static `Call` avoids both virtual-
-/// dispatch issues (PersistedAssemblyBuilder nested-type vtable bugs)
-/// and `DeclareLocal` ordering issues.
-let private sameTypeMethod : Lazy<MethodInfo> =
-    lazy (
-        let mi =
-            typeof<Lyric.Stdlib.UnionEquality>
-                .GetMethod("SameType", [| typeof<obj>; typeof<obj> |])
-        match Option.ofObj mi with
-        | Some m -> m
-        | None   -> failwith "Lyric.Stdlib.UnionEquality::SameType(obj,obj) not found")
 
 let private compareOrdinalMethod : Lazy<MethodInfo> =
     lazy (
@@ -503,10 +503,10 @@ let private isGenericInstantiationOnGtpb (t: ClrType) : bool =
 /// callers should pass each candidate through `closeBclMethod` to
 /// substitute the GTPBs once a name match is found.
 let private getRecvMethods (recvTy: ClrType) : MethodInfo array =
-    if isGenericInstantiationOnGtpb recvTy then
-        recvTy.GetGenericTypeDefinition().GetMethods()
-    else
-        recvTy.GetMethods()
+    match recvTy with
+    | :? System.Reflection.Emit.TypeBuilder as tb when not (tb.IsCreated()) -> [||]
+    | _ when isGenericInstantiationOnGtpb recvTy -> recvTy.GetGenericTypeDefinition().GetMethods()
+    | _ -> recvTy.GetMethods()
 
 /// Close `openMi` against `recvTy` if `recvTy` is a TypeBuilder
 /// instantiation; otherwise return it unchanged.  Use after picking a
@@ -764,6 +764,9 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
                         | None    -> t
                     else t
                 | _ ->
+                    match ctx.AsyncLocalFields.TryGetValue name with
+                    | true, fb -> fb.FieldType
+                    | _ ->
                     match ctx.Consts.TryGetValue name with
                     | true, v ->
                         if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue
@@ -1902,7 +1905,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 else recvTy
             ctx.ProtectedTypes
             |> Seq.tryPick (fun kv ->
-                if (kv.Value.Type :> System.Type) = recvOpenDef then
+                let ptTy = kv.Value.Type :> System.Type
+                let matches =
+                    ptTy = recvOpenDef
+                    || (ptTy.FullName <> null
+                        && recvOpenDef.FullName <> null
+                        && ptTy.FullName = recvOpenDef.FullName)
+                if matches then
                     kv.Value.Methods
                     |> List.tryFind (fun m -> m.Name = methodName)
                     |> Option.map (fun m -> kv.Value, m)
@@ -2359,6 +2368,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 il.Emit(OpCodes.Newobj, constructedCtor)
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
+                            match ctx.AsyncLocalFields.TryGetValue name with
+                            | true, fb ->
+                                il.Emit(OpCodes.Ldsfld, fb)
+                                fb.FieldType
+                            | _ ->
                             match ctx.Consts.TryGetValue name with
                             | true, v ->
                                 if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue then
@@ -4113,7 +4127,7 @@ and private emitLambdaWith
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
-            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.Diags
+            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.AsyncLocalFields ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
     // single-exit discipline.
@@ -5191,7 +5205,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     | SWhile (_label, cond, body) ->
         let lblHead = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth }
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth; ContinueTryDepth = ctx.TryDepth }
         il.MarkLabel(lblHead)
         let _ = emitExpr ctx cond
         il.Emit(OpCodes.Brfalse, lblEnd)
@@ -5203,7 +5217,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     | SLoop (_label, body) ->
         let lblHead = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth }
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth; ContinueTryDepth = ctx.TryDepth }
         il.MarkLabel(lblHead)
         emitBlock ctx body
         il.Emit(OpCodes.Br, lblHead)
@@ -5222,7 +5236,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
     | SContinue _ ->
         match FunctionCtx.currentLoop ctx with
         | Some f ->
-            if ctx.TryDepth > f.TryDepthAtFrame then
+            if ctx.TryDepth > f.ContinueTryDepth then
                 il.Emit(OpCodes.Leave, f.ContinueLabel)
             else
                 il.Emit(OpCodes.Br, f.ContinueLabel)
@@ -5239,7 +5253,96 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // emit naturally use `name` without seeing the field shape.
         let iterTy = emitExpr ctx iter
         if not iterTy.IsArray then
-            failwithf "E3 codegen: for-in expects an array/slice, got %A" iterTy
+            // IEnumerable<T> path — `for x in IEnumerable<T>` lowers to a
+            // GetEnumerator/MoveNext/Current loop wrapped in try/finally for Dispose.
+            // The non-generic IEnumerable interface is used for universal compatibility;
+            // the element type is taken from the first generic argument of iterTy (when
+            // available) so that `unbox.any T` or `castclass T` can cast Current (Object)
+            // to the right element type without requiring a generic IEnumerable<T> cast.
+            // Note: break/continue handling is correct for non-async loops.  The foreach
+            // try/finally wraps the loop body, so `ContinueTryDepth` is set to the depth
+            // INSIDE the protected region so `continue` emits `Br` (not `Leave`) to the
+            // loop head that sits inside the same try block.
+            let elemTy =
+                if iterTy.IsGenericType && iterTy.GetGenericArguments().Length >= 1 then
+                    iterTy.GetGenericArguments().[0]
+                elif isGenericInstantiationOnGtpb iterTy
+                     && iterTy.GetGenericTypeDefinition().GetGenericArguments().Length >= 1 then
+                    // GTPB instantiation — the open def has T as its first arg; we want
+                    // the closed arg from our instantiation.
+                    iterTy.GetGenericArguments().[0]
+                else typeof<obj>
+            let nonGenIEnum  = typeof<System.Collections.IEnumerable>
+            let nonGenIEnumt = typeof<System.Collections.IEnumerator>
+            let iDisposable  = typeof<System.IDisposable>
+            let getEnumMi =
+                match Option.ofObj (nonGenIEnum.GetMethod("GetEnumerator")) with
+                | Some m -> m | None -> failwith "IEnumerable.GetEnumerator not found"
+            let moveNextMi =
+                match Option.ofObj (nonGenIEnumt.GetMethod("MoveNext")) with
+                | Some m -> m | None -> failwith "IEnumerator.MoveNext not found"
+            let currGetter =
+                match Option.ofObj (nonGenIEnumt.GetProperty("Current")) with
+                | Some p ->
+                    match Option.ofObj (p.GetGetMethod()) with
+                    | Some g -> g | None -> failwith "IEnumerator.Current getter not found"
+                | None -> failwith "IEnumerator.Current not found"
+            let disposeMi =
+                match Option.ofObj (iDisposable.GetMethod("Dispose")) with
+                | Some m -> m | None -> failwith "IDisposable.Dispose not found"
+            let enumLoc = FunctionCtx.defineLocal ctx ("__enum_" + name) nonGenIEnumt
+            // iter is still on the stack; cast to IEnumerable then GetEnumerator.
+            il.Emit(OpCodes.Callvirt, getEnumMi)
+            il.Emit(OpCodes.Stloc, enumLoc)
+            let outerTryDepth = ctx.TryDepth
+            let afterAll = il.BeginExceptionBlock()
+            ctx.TryDepth <- ctx.TryDepth + 1
+            let lblHead = il.DefineLabel()
+            let lblEnd  = il.DefineLabel()
+            // BreakLabel outside the try block (afterAll), TryDepthAtFrame = outerDepth
+            // → break uses Leave to exit.  ContinueTryDepth = innerDepth → continue
+            // uses Br (not Leave) to the loop head inside the same protected region.
+            FunctionCtx.pushLoop ctx
+                { BreakLabel      = afterAll
+                  ContinueLabel   = lblHead
+                  TryDepthAtFrame = outerTryDepth
+                  ContinueTryDepth = ctx.TryDepth }
+            il.MarkLabel(lblHead)
+            il.Emit(OpCodes.Ldloc, enumLoc)
+            il.Emit(OpCodes.Callvirt, moveNextMi)
+            il.Emit(OpCodes.Brfalse, lblEnd)
+            FunctionCtx.pushScope ctx
+            let elemLoc = FunctionCtx.defineLocal ctx name elemTy
+            il.Emit(OpCodes.Ldloc, enumLoc)
+            il.Emit(OpCodes.Callvirt, currGetter)
+            if elemTy = typeof<obj> then ()
+            elif elemTy.IsValueType || elemTy.IsGenericParameter then
+                il.Emit(OpCodes.Unbox_Any, elemTy)
+            else
+                il.Emit(OpCodes.Castclass, elemTy)
+            il.Emit(OpCodes.Stloc, elemLoc)
+            emitBlock ctx body
+            FunctionCtx.popScope ctx
+            il.Emit(OpCodes.Br, lblHead)
+            il.MarkLabel(lblEnd)
+            il.Emit(OpCodes.Leave, afterAll)
+            ctx.TryDepth <- ctx.TryDepth - 1
+            FunctionCtx.popLoop ctx
+            // Finally: nullable Dispose pattern.
+            il.BeginFinallyBlock()
+            let dispLoc = il.DeclareLocal(iDisposable)
+            il.Emit(OpCodes.Ldloc, enumLoc)
+            il.Emit(OpCodes.Isinst, iDisposable)
+            il.Emit(OpCodes.Stloc, dispLoc)
+            il.Emit(OpCodes.Ldloc, dispLoc)
+            let lblNoDispose = il.DefineLabel()
+            il.Emit(OpCodes.Brfalse, lblNoDispose)
+            il.Emit(OpCodes.Ldloc, dispLoc)
+            il.Emit(OpCodes.Callvirt, disposeMi)
+            il.MarkLabel(lblNoDispose)
+            il.EndExceptionBlock()
+            ignore afterAll
+        else
         let elemTy =
             match Option.ofObj (iterTy.GetElementType()) with
             | Some t -> t
@@ -5278,7 +5381,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             let lblHead = il.DefineLabel()
             let lblIncr = il.DefineLabel()
             let lblEnd  = il.DefineLabel()
-            FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblIncr; TryDepthAtFrame = ctx.TryDepth }
+            FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblIncr; TryDepthAtFrame = ctx.TryDepth; ContinueTryDepth = ctx.TryDepth }
             il.MarkLabel(lblHead)
             // if (idx >= length) goto end
             il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, idxField)
@@ -5324,7 +5427,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         il.Emit(OpCodes.Stloc, idxLocal)
         let lblHead = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth }
+        FunctionCtx.pushLoop ctx { BreakLabel = lblEnd; ContinueLabel = lblHead; TryDepthAtFrame = ctx.TryDepth; ContinueTryDepth = ctx.TryDepth }
         il.MarkLabel(lblHead)
         // if (idx >= length) goto end
         il.Emit(OpCodes.Ldloc, idxLocal)

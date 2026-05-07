@@ -18,16 +18,33 @@
 // (separate combinators in this module): each creates a fresh
 // source, runs the user closure, and disposes the source on
 // exit so spawned children don't leak.
+//
+// Group C / D-progress-stdlib-expand (2026-05):
+//   - `extern type Scope = "Lyric.Stdlib.LyricTaskScope"` retired.
+//     `Scope` is now a native Lyric `protected type` backed by a
+//     `CancellationTokenSource` + `List[Task]`.  `TaskScopeHost`
+//     statics are replaced by thin Lyric wrapper functions calling
+//     the protected type's entry/func methods.  Bootstrap note:
+//     the `ContinueWith`-based "cancel-siblings-on-first-fault"
+//     feature is dropped for now; `Task.WhenAll` still propagates
+//     the first exception to the caller.
+//
+// Group D1 / D-progress-stdlib-expand (2026-05):
+//   - `@externTarget("Lyric.Stdlib.AmbientSlot.Slot")` retired.
+//     The ambient `AsyncLocal[CancellationToken]` slot is now
+//     declared with `@asyncLocal val __ambientSlot` so the emitter
+//     synthesises the static `AsyncLocal<T>` field + `.cctor` init
+//     directly on this package's program type.
 @runtime_checked
 package Std.Task
 
 import Std.Core
 import Std.Errors
+import Std.CollectionsHost
 
 extern type Task   = "System.Threading.Tasks.Task"
 extern type CancellationToken       = "System.Threading.CancellationToken"
 extern type CancellationTokenSource = "System.Threading.CancellationTokenSource"
-extern type Scope                   = "Lyric.Stdlib.LyricTaskScope"
 extern type AsyncLocal[T]           = "System.Threading.AsyncLocal`1"
 
 // =====================================================================
@@ -113,12 +130,43 @@ pub func delay(ms: in Int): Task = ()
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
 
 // =====================================================================
-// Structured concurrency.  Phase C / D-progress-069.
+// BCL primitives used by structured-concurrency wrappers.
+// =====================================================================
+
+/// `Task.Run(action, token)` — schedule a `() -> Unit` closure
+/// on the thread pool with scope-level cancellation.  Lyric's
+/// `() -> Unit` closures lower to `System.Action`, so the BCL
+/// `Task.Run(Action, CancellationToken)` overload is targeted.
+@externTarget("System.Threading.Tasks.Task.Run")
+func taskRunWithCancel(action: in () -> Unit, token: in CancellationToken): Task = ()
+
+/// `Task.WhenAll(tasks)` — returns a task that completes when
+/// every element of `tasks` completes.  Throws the first failure
+/// exception when any child faults.
+@externTarget("System.Threading.Tasks.Task.WhenAll")
+func taskWhenAll(tasks: in slice[Task]): Task = ()
+
+// =====================================================================
+// Structured concurrency.  Group C / D-progress-stdlib-expand.
 //
-// A `Scope` owns a `CancellationTokenSource` and a list of spawned
-// child tasks.  Spawning a task registers it as a child; if any
-// child fails, the scope's source is cancelled so siblings observe
-// and bail.  The canonical pattern:
+// `Scope` is now a native Lyric `protected type` rather than an
+// extern alias for `Lyric.Stdlib.LyricTaskScope`.  It holds:
+//   - `source`: a `CancellationTokenSource` for scope-level cancel
+//   - `tasks`:  the list of registered child tasks
+//
+// Lock flavour: `PLRwLock` (has both `entry` and `func` members).
+// Entry methods (addChild, cancel, dispose) acquire the write lock;
+// func methods (token, snapshot) acquire the read lock.
+//
+// Bootstrap note: the original F# `LyricTaskScope.Add` attached a
+// `Task.ContinueWith` continuation so that any child fault
+// automatically cancelled siblings.  That continuation requires a
+// `(Task) -> Unit` delegate (G12 audit pending).  For now `addChild`
+// just tracks the task; `awaitAll` uses `Task.WhenAll` which still
+// surfaces the first fault to the caller.  Add `ContinueWith`-based
+// cancel-on-fault in a follow-up once G12 is fully audited.
+//
+// The canonical usage pattern is unchanged:
 //
 //     async func parent(): Unit {
 //       val scope = makeScope()
@@ -127,83 +175,79 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task = ()
 //         disposeScope(scope)
 //       }
 //       val tok = scopeToken(scope)
-//       spawn(scope, child1(tok))
-//       spawn(scope, child2(tok))
+//       scopeSpawn(scope, child1(tok))
+//       scopeSpawn(scope, child2(tok))
 //       try {
 //         await awaitAll(scope)
 //       } catch Exception as e {
 //         println("at least one child failed")
 //       }
 //     }
-//
-// Bootstrap-grade scope: only Unit-returning child tasks (`Task`,
-// not `Task[T]`) are accepted by `spawn`; typed-result aggregation
-// remains a Phase 4 follow-up.  AsyncLocal flow (so children see
-// the scope's token without explicit threading) is deferred.
 // =====================================================================
+
+pub protected type Scope {
+  var source: CancellationTokenSource = makeCancelSource()
+  var tasks: List[Task] = newList()
+
+  entry addChild(t: in Task): Unit { tasks.add(t) }
+  func token(): CancellationToken { return sourceToken(source) }
+  func snapshot(): slice[Task] { return tasks.toArray() }
+  entry cancel(): Unit { cancelSource(source) }
+  entry dispose(): Unit { disposeSource(source) }
+}
 
 /// Construct a fresh scope.  The scope owns a cancellation source
 /// and an empty children list; spawn child tasks against it via
-/// `spawn`, then `await awaitAll(scope)` to join them.  Always
+/// `scopeSpawn`, then `await awaitAll(scope)` to join them.  Always
 /// pair construction with `defer { cancelScope(scope);
 /// disposeScope(scope) }` so the source is released on scope exit.
-@externTarget("Lyric.Stdlib.TaskScopeHost.MakeScope")
-pub func makeScope(): Scope = ()
+pub func makeScope(): Scope { return Scope() }
 
 /// Project the scope's cancellation token.  Pass to child tasks
 /// so they observe scope-level cancellation requests.
-@externTarget("Lyric.Stdlib.TaskScopeHost.ScopeToken")
-pub func scopeToken(s: in Scope): CancellationToken = ()
+pub func scopeToken(s: in Scope): CancellationToken { return s.token() }
 
-/// Register an existing `Task` as a child of the scope.  Lyric's
-/// type system doesn't yet surface `Task` values from async-func
-/// calls (the typechecker erases the wrapper), so this overload
-/// is mainly used for tasks the user obtains via host helpers
-/// such as `delayWithCancel(ms, token)` whose declared return
-/// type is `Task`.  Phase 4 follow-up: surface Task[T] from
-/// async-func calls so this is the primary spawn path.
-@externTarget("Lyric.Stdlib.TaskScopeHost.Add")
-pub func scopeAdd(s: in Scope, child: in Task): Unit = ()
+/// Register an existing `Task` as a child of the scope.
+pub func scopeAdd(s: in Scope, child: in Task): Unit { s.addChild(child) }
 
 /// Spawn a zero-arg closure on the thread pool, scoped to `scope`.
-/// The closure runs synchronously on a thread-pool thread; it can
-/// poll `isCancelled(scopeToken(scope))` or call
-/// `throwIfCancelled(scopeToken(scope))` to honour cancellation.
+/// The closure runs on a thread-pool thread with the scope's token;
+/// it can poll `isCancelled(scopeToken(scope))` to honour cancel.
 ///
 /// Named `scopeSpawn` rather than the more idiomatic `spawn`
 /// because `spawn` is a soft keyword reserved for the future
 /// `spawn expr` syntactic form (`ESpawn` in the parser AST).
-///
-/// Bootstrap-grade scope: closures can't `await` directly (the
-/// Phase B state machine doesn't synthesise async lambdas), so
-/// async I/O inside the closure auto-awaits via the M1.4 blocking
-/// shim — which still runs concurrently with siblings since each
-/// closure has its own thread-pool task.  Phase 4 follow-up: real
-/// async lambdas with cooperative suspension.
-@externTarget("Lyric.Stdlib.TaskScopeHost.SpawnAction")
-pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit = ()
+pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
+  val tok = s.token()
+  val t = taskRunWithCancel(action, tok)
+  s.addChild(t)
+}
 
 /// Wait for every registered child to complete.  When any child
-/// fails the call rethrows the underlying exception so the
-/// caller's `try/catch` surfaces it; the scope's source has
-/// already been cancelled at the moment of failure (eagerly, via
-/// a per-child continuation in the host) so siblings observing
-/// the token will have started winding down.
-@externTarget("Lyric.Stdlib.TaskScopeHost.AwaitAll")
-pub func awaitAll(s: in Scope): Task = ()
+/// faults the call rethrows the underlying exception so the
+/// caller's `try/catch` surfaces it.
+pub func awaitAll(s: in Scope): Task { return taskWhenAll(s.snapshot()) }
 
 /// Explicitly cancel the scope's source.  Idempotent.  Useful
 /// for defer-based cleanup that signals children to abort.
-@externTarget("Lyric.Stdlib.TaskScopeHost.Cancel")
-pub func cancelScope(s: in Scope): Unit = ()
+pub func cancelScope(s: in Scope): Unit { s.cancel() }
 
 /// Release the scope's underlying source.  Always safe to call
 /// from a `defer { ... }`.
-@externTarget("Lyric.Stdlib.TaskScopeHost.Dispose")
-pub func disposeScope(s: in Scope): Unit = ()
+pub func disposeScope(s: in Scope): Unit { s.dispose() }
 
 // =====================================================================
 // AsyncLocal-backed ambient cancellation (D-progress-071).
+//
+// Group D1 (D-progress-stdlib-expand, 2026-05):
+//   The singleton `AsyncLocal<CancellationToken>` slot that backs
+//   this API was previously held by the F# `AmbientSlot` class and
+//   accessed via `@externTarget("Lyric.Stdlib.AmbientSlot.Slot")`.
+//   It is now declared with `@asyncLocal val __ambientSlot` so the
+//   emitter synthesises:
+//     static readonly AsyncLocal<CancellationToken> __asynclocal___ambientSlot
+//         = new AsyncLocal<CancellationToken>();
+//   directly on this package's program type, with no F# involved.
 //
 // `currentToken()` reads an ambient slot that flows naturally
 // across `await` boundaries via .NET's `AsyncLocal<T>`.
@@ -220,14 +264,7 @@ pub func disposeScope(s: in Scope): Unit = ()
 // back to "no cancellation" when the caller didn't supply one.
 // =====================================================================
 
-// G11 (`docs/23-fsharp-shim-elimination.md`): the ambient slot is now
-// a process-shared `AsyncLocal[CancellationToken]` accessed through
-// direct BCL externs.  `Lyric.Stdlib.AmbientSlot.Slot` holds the one
-// instance; the read/write helpers are native Lyric on top of
-// `AsyncLocal\`1.{Value, set_Value}` plus `CancellationToken.CanBeCanceled`.
-
-@externTarget("Lyric.Stdlib.AmbientSlot.Slot")
-func ambientSlot(): AsyncLocal[CancellationToken] = ()
+@asyncLocal val __ambientSlot: AsyncLocal[CancellationToken] = ()
 
 @externTarget("System.Threading.AsyncLocal`1.Value")
 func ambientValue(slot: in AsyncLocal[CancellationToken]): CancellationToken = ()
@@ -242,7 +279,7 @@ func tokenCanBeCanceled(token: in CancellationToken): Bool = ()
 /// never-cancelled `CancellationToken.None` when no scope is
 /// active.
 pub func currentToken(): CancellationToken {
-  ambientValue(ambientSlot())
+  ambientValue(__ambientSlot)
 }
 
 /// Install `token` as the ambient.  Returns the previous value;
@@ -250,14 +287,14 @@ pub func currentToken(): CancellationToken {
 /// is restored on scope exit (success or exception).
 pub func installToken(token: in CancellationToken): CancellationToken {
   val previous = currentToken()
-  setAmbientValue(ambientSlot(), token)
-  previous
+  setAmbientValue(__ambientSlot, token)
+  return previous
 }
 
 /// Restore the ambient slot to `previous`.  Idempotent when
 /// `previous` is the same value already installed.
 pub func restoreToken(previous: in CancellationToken): Unit {
-  setAmbientValue(ambientSlot(), previous)
+  setAmbientValue(__ambientSlot, previous)
 }
 
 /// True when the ambient slot holds a non-default token.  Used by

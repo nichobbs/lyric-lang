@@ -5,12 +5,13 @@
 ///
 ///   - Null-aware `obj` formatting (`PrintlnAny`, `ToStr`): no Lyric
 ///     surface for `obj | null` discrimination.
-///   - Out-parameter readers (`JsonHost.Get*`, `Parse.*Value`):
-///     Lyric has no out-params.
+///   - Slice readers (`JsonHost.Get*Slice`): iteration over
+///     `JsonElement.ArrayEnumerator` (a nested CLR type) requires
+///     extern-type resolution for `+`-separated names, not yet done.
 ///   - Try/catch wrappers (`FileHost.*`, `TryHost.*`): no try/catch
 ///     bridging across the FFI boundary yet.
-///   - Concurrency primitives (`LyricTaskScope`, `AmbientHost`):
-///     `protected type` deferred to Phase 3.
+///   - There are no remaining concurrency shims; `LyricTaskScope`,
+///     `TaskScopeHost`, and `AmbientSlot` have all been retired.
 ///
 /// Trivial wrappers (`println(string) -> Console.WriteLine(string)`,
 /// integer math) have been hoisted out: see
@@ -57,172 +58,28 @@ open System
 // directly — `CancellationToken.None`, `CancellationTokenSource..ctor`,
 // `.Token`, `.Cancel`, `.Dispose`, and the matching token methods.
 
-/// Cross-assembly union-case equality helper.
-///
-/// Two Lyric nullary union cases compare equal when they are the same
-/// case class, even if the two object references are different instances
-/// (e.g. one is a singleton from an imported assembly and the other is a
-/// freshly constructed wrapper in the caller's assembly).  The codegen
-/// emits `Call SameType(a, b)` via a direct `Call` instruction (no
-/// virtual dispatch through a TypeBuilder vtable) so the CLR verifier
-/// accepts the comparison for any abstract reference type.
-type UnionEquality private () =
-    static member SameType(a: obj, b: obj) : bool =
-        if obj.ReferenceEquals(a, null) && obj.ReferenceEquals(b, null) then true
-        elif obj.ReferenceEquals(a, null) || obj.ReferenceEquals(b, null) then false
-        else a.GetType() = b.GetType()
+// `Lyric.Stdlib.LyricTaskScope` and `Lyric.Stdlib.TaskScopeHost` retired
+// (D-progress-stdlib-expand Group C, D-progress-069).  `Scope` is now a
+// native Lyric `protected type` in `stdlib/std/_kernel/task.l` backed by
+// a `CancellationTokenSource` + `List[Task]`.  All scope operations
+// (`makeScope`, `scopeSpawn`, `awaitAll`, `cancelScope`, `disposeScope`)
+// are pure Lyric on top of direct BCL externs.
 
-/// Per-stub call counter for `@stubbable` mocking enhancements
-/// (D-progress-073).  Each stub method's auto-synthesised body
-/// increments its associated counter on entry; tests can read the
-/// counter at the end to assert that the dependency was called the
-/// expected number of times.  A counter is just a shared mutable
-/// `int` cell wrapped in a class so Lyric records can hold a
-/// reference and the increments persist across calls.
-type StubCounter() =
-    let mutable count = 0
-    let lockObj = obj ()
-    member _.Increment () : unit =
-        lock lockObj (fun () -> count <- count + 1)
-    member _.Get () : int =
-        lock lockObj (fun () -> count)
-    member _.Reset () : unit =
-        lock lockObj (fun () -> count <- 0)
+// `Lyric.Stdlib.UnionEquality` retired (D-progress-stdlib-expand).
+// `SameType(obj, obj)` was referenced via a `sameTypeMethod` lazy in
+// Codegen.fs but the call site was never reached; union-case equality
+// uses `Ceq` directly.  Both the F# type and the lazy are now deleted.
 
-[<Sealed; AbstractClass>]
-type StubCounterHost private () =
-    static member Make () : StubCounter = new StubCounter()
-    static member Increment (c: StubCounter) : unit = c.Increment()
-    static member Get (c: StubCounter) : int = c.Get()
-    static member Reset (c: StubCounter) : unit = c.Reset()
+// G7 (`docs/23-fsharp-shim-elimination.md`; D-progress-123): F#
+// `StubCounter` and `StubCounterHost` retired.  `stdlib/std/testing_mocking.l`
+// (top-level, shadows `_kernel/testing_mocking.l` on .NET) now declares
+// `pub protected type StubCounter { … }` in pure Lyric.  No F# types needed.
 
-/// Holder for the process-shared `AsyncLocal<CancellationToken>` slot
-/// backing `Std.Task`'s ambient cancellation primitive (D-progress-071).
-/// Owns nothing else — `currentToken` / `installToken` / `restoreToken` /
-/// `hasAmbient` are now native Lyric on top of direct BCL externs to
-/// `AsyncLocal\`1.Value` and `CancellationToken.CanBeCanceled`
-/// (`docs/23-fsharp-shim-elimination.md` G11; D-progress-NNN).
-[<Sealed; AbstractClass>]
-type AmbientSlot private () =
-    static let slot =
-        System.Threading.AsyncLocal<System.Threading.CancellationToken>()
-    static member Slot = slot
-
-/// A structured-concurrency scope.  Holds a `CancellationTokenSource`
-/// (for cancelling spawned children when the scope exits abnormally)
-/// and a list of registered child tasks.  When any single child
-/// faults or is cancelled, the scope's source is cancelled so
-/// siblings observe the request and bail.
-///
-/// Phase C / D-progress-069 — pairs with `TaskScopeHost` below.
-type LyricTaskScope() =
-    let source = new System.Threading.CancellationTokenSource()
-    let tasks  = System.Collections.Generic.List<System.Threading.Tasks.Task>()
-    let lockObj = obj ()
-    let mutable disposed = false
-
-    member _.Source = source
-    member _.Token  = source.Token
-
-    /// Register `task` as a child of this scope.  Attaches a
-    /// continuation that cancels the source on first failure so
-    /// siblings observe and bail.  Idempotent on disposed scopes —
-    /// disposed scopes silently swallow new spawns (the scope's
-    /// `awaitAll` has already returned).
-    member this.Add (task: System.Threading.Tasks.Task) : unit =
-        lock lockObj (fun () ->
-            if not disposed then tasks.Add(task))
-        // Continuation runs OUT of band; we attach unconditionally
-        // so even tasks added post-dispose still cancel the (already
-        // cancelled) source if they happen to fault.
-        task.ContinueWith(
-            System.Action<System.Threading.Tasks.Task>(fun t ->
-                if t.IsFaulted || t.IsCanceled then
-                    try source.Cancel() with _ -> ()),
-            System.Threading.Tasks.TaskContinuationOptions.NotOnRanToCompletion)
-        |> ignore
-
-    /// Cancel every spawned child.  Idempotent.
-    member _.Cancel () : unit =
-        try source.Cancel() with _ -> ()
-
-    /// Snapshot the current task list — used by AwaitAll to take a
-    /// stable view that won't see post-snapshot spawns.
-    member _.Snapshot () : System.Threading.Tasks.Task array =
-        lock lockObj (fun () -> tasks.ToArray())
-
-    /// Dispose the underlying source.  Subsequent `Add`s are
-    /// silently dropped.
-    member _.Dispose () : unit =
-        lock lockObj (fun () -> disposed <- true)
-        try source.Dispose() with _ -> ()
-
-/// `Std.Task.Scope` operations.  Lyric's `extern type Scope =
-/// "Lyric.Stdlib.LyricTaskScope"` plus `@externTarget` annotations
-/// route to these statics.  See `lyric/std/task.l` for the surface
-/// API.
-[<Sealed; AbstractClass>]
-type TaskScopeHost private () =
-
-    /// Construct a fresh scope with its own token source and an
-    /// empty task list.
-    static member MakeScope () : LyricTaskScope =
-        new LyricTaskScope()
-
-    /// The scope's cancellation token.  Pass to spawned children
-    /// so they observe scope-level cancellation requests.
-    static member ScopeToken (scope: LyricTaskScope) : System.Threading.CancellationToken =
-        scope.Token
-
-    /// Register `task` as a child of `scope`.  Failure of any
-    /// registered task cancels the scope's source automatically.
-    static member Add (scope: LyricTaskScope, task: System.Threading.Tasks.Task) : unit =
-        scope.Add(task)
-
-    /// Spawn an `Action` (zero-arg `() -> unit` closure) as a
-    /// thread-pool task scoped to `scope`.  Lyric's `() -> Unit`
-    /// closures lower to `System.Action`, so user code passes a
-    /// bare lambda.  Useful when the work is CPU-bound or
-    /// honours cancellation by polling `throwIfCancelled(token)`
-    /// manually.
-    static member SpawnAction (scope: LyricTaskScope, action: System.Action) : unit =
-        let token = scope.Token
-        let task = System.Threading.Tasks.Task.Run((fun () -> action.Invoke()), token)
-        scope.Add(task)
-
-    /// Variant for closures that Lyric's typechecker lowers to
-    /// `Func<unit>` (zero-arg, Unit-returning) instead of `Action`.
-    /// The lambda emitter peeks the body's last expression's type;
-    /// when that's `Unit` (i.e. `System.ValueTuple`) the resulting
-    /// delegate is `Func<ValueTuple>` rather than `Action`, so we
-    /// expose a parallel host method to receive it.
-    static member SpawnFunc (scope: LyricTaskScope, fn: System.Func<System.ValueTuple>) : unit =
-        let token = scope.Token
-        let task = System.Threading.Tasks.Task.Run((fun () -> fn.Invoke() |> ignore), token)
-        scope.Add(task)
-
-    /// Wait for every registered child to complete.  When any
-    /// child fails (`Task.WhenAll` re-raises the AggregateException),
-    /// the scope's source has already been cancelled by the
-    /// per-child continuation; surrogates that honoured the token
-    /// will have started winding down.  This call still throws the
-    /// underlying exception so the user's `try { ... } catch ...`
-    /// surfaces it.
-    static member AwaitAll (scope: LyricTaskScope) : System.Threading.Tasks.Task =
-        let snapshot = scope.Snapshot()
-        if snapshot.Length = 0 then
-            System.Threading.Tasks.Task.CompletedTask
-        else
-            System.Threading.Tasks.Task.WhenAll(snapshot)
-
-    /// Cancel the scope's source — every child task observing the
-    /// token sees `IsCancellationRequested = true`.
-    static member Cancel (scope: LyricTaskScope) : unit =
-        scope.Cancel()
-
-    /// Dispose the scope.  Safe to call from `defer { ... }`.
-    static member Dispose (scope: LyricTaskScope) : unit =
-        scope.Dispose()
+// `Lyric.Stdlib.AmbientSlot` retired (D-progress-stdlib-expand Group D1).
+// `stdlib/std/_kernel/task.l` now declares the singleton slot with
+// `@asyncLocal val __ambientSlot` so the emitter synthesises the
+// static `AsyncLocal<CancellationToken>` field directly on the
+// package's program type — no F# involved.
 
 // `TryHost<'T>` retired (`docs/23-fsharp-shim-elimination.md`).
 // Designed as a generic try/catch wrapper for FFI calls but never
@@ -290,89 +147,29 @@ type JsonHost private () =
                 |> ignore
             sb.Append(']').ToString()
 
-    // -------- fromJson primitive field readers --------
-    //
-    // Per-primitive-type out-param helpers used by the synthesiser
-    // (D-progress-046).  Each reader takes a JSON string + property
-    // name and writes the parsed value via an `out` parameter,
-    // returning `true` on success.  Re-parsing the document per
-    // call is wasteful but avoids exposing JsonDocument across
-    // the FFI boundary; the synthesiser is bootstrap-grade and a
-    // future revision can pass a parsed handle.
-
-    static member GetInt (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
-                e.TryGetInt32(&value)
-            else false
-        with _ -> false
-
-    static member GetLong (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int64>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
-                e.TryGetInt64(&value)
-            else false
-        with _ -> false
-
-    static member GetDouble (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<double>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
-                e.TryGetDouble(&value)
-            else false
-        with _ -> false
-
-    static member GetBool (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<bool>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e) then
-                match e.ValueKind with
-                | System.Text.Json.JsonValueKind.True  -> value <- true ; true
-                | System.Text.Json.JsonValueKind.False -> value <- false ; true
-                | _ -> false
-            else false
-        with _ -> false
-
-    static member GetString (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.String then
-                let raw = e.GetString()
-                value <-
-                    match Option.ofObj raw with
-                    | Some s -> s
-                    | None   -> ""
-                true
-            else false
-        with _ -> false
-
     // P3-3: `RenderStringSlice` retired; the synthesiser now emits an
     // inline `while`-loop renderer that calls
     // `__lyricJsonEscape(items[i])` per element (which still routes
     // through `JsonHost.EncodeString` — `EncodeString` stays kernel
     // because it depends on `System.Text.Json.JsonEncodedText`).
 
-    // -------- fromJson slice / sub-object readers --------
+    // GetInt/Long/Double/Bool/String and GetSubObject retired
+    // (D-progress-stdlib-expand).  The `@derive(Json)` synthesiser
+    // (`JsonDerive.fs`) now emits Lyric function bodies that call
+    // `lyricJsonGet*` in `Std.JsonHost` (`_kernel/json_host.l`),
+    // which chains `hostParseJson` → `hostRootElement` →
+    // `hostTryGetProperty` → `hostTryGet*` directly on BCL externs.
+    // GetSubObject similarly routes through `hostGetRawText`.
+
+    // -------- fromJson slice readers --------
     //
-    // Per-element-type slice readers + a generic sub-object reader
-    // that returns the matching field as a JSON-encoded string so
-    // the synthesised `Inner.fromJson(subStr)` call can recurse.
-    // All readers return `false` and leave `value` at `default(T)`
-    // when the field is missing or the type doesn't match — the
-    // synthesiser ignores the return value (the caller then sees a
-    // default-initialised array / empty string and constructs the
-    // record with a default field value).
+    // Per-element-type slice readers that return the matching field as
+    // a primitive array so the synthesised `fromJson` can assign it.
+    // These still route through this shim because iterating
+    // `JsonElement.ArrayEnumerator` (a nested BCL struct type) requires
+    // `System.Text.Json.JsonElement+ArrayEnumerator` in the extern type
+    // table, which Lyric doesn't yet resolve for nested CLR types.
+    // Deferred to a follow-up once nested-type extern resolution lands.
 
     static member GetIntSlice
             (json: string, name: string,
@@ -484,62 +281,13 @@ type JsonHost private () =
             value <- Array.empty<string>
             false
 
-    /// Extract a sub-object field as its raw JSON-text representation.
-    /// Used by the synthesiser for nested `@derive(Json)` record
-    /// fields: `field: Inner` → call `GetSubObject(s, "field",
-    /// subStr)` and recurse on `Inner.fromJson(subStr)`.
-    static member GetSubObject
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && (e.ValueKind = System.Text.Json.JsonValueKind.Object
-                   || e.ValueKind = System.Text.Json.JsonValueKind.Array) then
-                value <- e.GetRawText()
-                true
-            else
-                value <- "{}"
-                false
-        with _ ->
-            value <- "{}"
-            false
-
-    /// Returns true when `name` is a present, non-null field on the
-    /// JSON document.  Used by Option-typed fields to distinguish
-    /// `None` (missing/null) from `Some` (present + parseable).
-    static member HasField (json: string, name: string) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            doc.RootElement.TryGetProperty(name, &e)
-            && e.ValueKind <> System.Text.Json.JsonValueKind.Null
-
-        with _ -> false
-
-    /// Read a sub-array field's elements as raw JSON strings.  Used
-    /// by `slice[Inner]` field synthesis where each element needs
-    /// to recurse via `Inner.fromJson(elemStr)`.
-    static member GetSubArrayElements
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<string[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<string>()
-                for el in e.EnumerateArray() do
-                    arr.Add(el.GetRawText())
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<string>
-                false
-        with _ ->
-            value <- Array.empty<string>
-            false
+    // GetSubObject retired (D-progress-stdlib-expand): implemented in
+    // pure Lyric via `hostTryGetProperty` + `hostGetRawText` in
+    // `_kernel/json_host.l`.
+    //
+    // HasField retired: unused by `@derive(Json)` synthesiser.
+    //
+    // GetSubArrayElements retired: unused by `@derive(Json)` synthesiser.
 
 // G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
 // `Lyric.Stdlib.HttpClientHost` retires entirely.  Every member
@@ -573,91 +321,14 @@ type JsonHost private () =
 // `stdlib/std/_kernel/file_host.l`, with the `byte[]`/`slice[Byte]`
 // to `List[Byte]` shuttle done in pure Lyric inside `Std.File`.
 
-// ── Stdlib expansion shims (D-progress-stdlib-expand-01) ──────────────────────
+// ── Stdlib expansion shims retired (D-progress-stdlib-expand-01 → P0/4d) ──────
 //
-// Three host classes that support the new stdlib modules added in the
-// expand-lyric-stdlib branch: `Std.Set`, `Std.Format`, and `Std.Encoding`.
-// Each follows the same pattern as the retired shim classes above: thin
-// wrappers around BCL APIs that the emitter cannot target directly via a
-// single @externTarget declaration.
-
-/// Host helper for `Std.Set` — converts a `HashSet<T>` to a plain array
-/// so the Lyric side can iterate it with `for x in setToSlice(s)`.
-/// A direct `Enumerable.ToArray` @externTarget would require a LINQ import
-/// that the emitter's extern resolver does not currently handle.
-[<Sealed; AbstractClass>]
-type SetHost private () =
-    static member SetToArray<'T>(s: System.Collections.Generic.HashSet<'T>) : 'T[] =
-        System.Linq.Enumerable.ToArray(s)
-
-/// Host helpers for `Std.Format` — format-string overloads of `ToString`
-/// and `PadLeft`/`PadRight` that the emitter's arity-based overload
-/// resolution cannot distinguish without an explicit shim.
-[<Sealed; AbstractClass>]
-type FormatHost private () =
-    /// `n.ToString("x")` — lowercase hex.
-    static member ToHexString(n: int) : string = n.ToString("x")
-    /// `n.ToString("X")` — uppercase hex.
-    static member ToHexStringUpper(n: int) : string = n.ToString("X")
-    /// `x.ToString("F{decimals}", InvariantCulture)` — fixed-point double.
-    static member FormatFixed(x: double, decimals: int) : string =
-        x.ToString("F" + string decimals,
-                    System.Globalization.CultureInfo.InvariantCulture)
-    /// `s.PadLeft(width, ch)`.
-    static member PadLeft(s: string, width: int, ch: char) : string =
-        s.PadLeft(width, ch)
-    /// `s.PadRight(width, ch)`.
-    static member PadRight(s: string, width: int, ch: char) : string =
-        s.PadRight(width, ch)
-
-/// Host helpers for `Std.Encoding` — Base64, hex, and UTF-8 operations
-/// that either can throw (and need try/catch wrapping) or go through a
-/// non-static class instance (`Encoding.UTF8`).
-[<Sealed; AbstractClass>]
-type EncodingHost private () =
-    /// Decode Base64.  Returns true and writes bytes on success; false on any
-    /// format error — `Convert.FromBase64String` throws `FormatException`.
-    static member TryFromBase64
-            (s: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<byte[]>) : bool =
-        try
-            value <- System.Convert.FromBase64String(s)
-            true
-        with _ ->
-            value <- Array.empty
-            false
-
-    /// Decode hex string (upper or lower case).  Returns true on success;
-    /// false on any format error — `Convert.FromHexString` throws on bad input.
-    static member TryFromHex
-            (s: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<byte[]>) : bool =
-        try
-            value <- System.Convert.FromHexString(s)
-            true
-        with _ ->
-            value <- Array.empty
-            false
-
-    /// `System.Text.Encoding.UTF8.GetBytes(string)` — never throws for valid
-    /// .NET strings (which are always valid Unicode).
-    static member EncodeUtf8(s: string) : byte[] =
-        System.Text.Encoding.UTF8.GetBytes(s)
-
-    /// `System.Text.Encoding.UTF8.GetString(byte[])` wrapped in try/catch so
-    /// invalid UTF-8 sequences return false rather than throwing
-    /// `DecoderFallbackException`.
-    static member TryDecodeUtf8
-            (bytes: byte[],
-             [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
-        try
-            // ThrowOnInvalidBytes=true so invalid sequences return false
-            // rather than silently substituting the replacement character.
-            value <- System.Text.UTF8Encoding(false, true).GetString(bytes)
-            true
-        with _ ->
-            value <- ""
-            false
+// SetHost, FormatHost, and EncodingHost all eliminated:
+//
+//   FormatHost   — replaced by direct BCL externs in _kernel/format_host.l.
+//   EncodingHost — replaced by direct BCL externs in _kernel/encoding_host.l.
+//   SetHost      — setToSlice now uses IEnumerable for-loop in set.l (Group B);
+//                  SFor emitter extended to handle IEnumerable<T> in Codegen.fs.
 
 // ── JVM class-file emission helpers moved out (Phase 1 Bucket D) ─────────────
 //

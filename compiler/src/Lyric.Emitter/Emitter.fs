@@ -2530,6 +2530,7 @@ let private emitFunctionBody
         (programType: TypeBuilder)
         (symbols: SymbolTable)
         (consts: Dictionary<string, int64>)
+        (asyncLocals: Dictionary<string, System.Reflection.FieldInfo>)
         (diags: ResizeArray<Diagnostic>) : unit =
     let il = mb.GetILGenerator()
     // For an async function the *body* still computes a value of
@@ -2615,7 +2616,7 @@ let private emitFunctionBody
             interfaces impls distinctTypes protectedTypes projectables
             importedRecords importedUnions importedUnionCases
             importedFuncs importedDistinctTypes externTypeNames
-            effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup consts diags
+            effectiveIsInstance effectiveSelfType programType resolveTypeForCtx lookup consts asyncLocals diags
     // Populate SmFields from the SM's parameter fields so EPath
     // reads / SAssign writes route through `Ldarg.0; Ldfld <field>`
     // instead of the regular `Ldarg N` parameter slot path.
@@ -2738,6 +2739,15 @@ let private emitFunctionBody
                         match last.Kind with
                         | SExpr e ->
                             let t = Codegen.emitExpr ctx e
+                            routeReturn t
+                        | STry _ ->
+                            // A bare `try { … } catch … { … }` as the last statement
+                            // in a non-void function body is value-producing.  Wrap in
+                            // EBlock so the try-as-expression handler fires and the
+                            // result is routed back through the single-exit discipline.
+                            let wrappedBlk : Lyric.Parser.Ast.Block = { Statements = [last]; Span = last.Span }
+                            let wrappedExpr : Lyric.Parser.Ast.Expr = { Kind = EBlock wrappedBlk; Span = last.Span }
+                            let t = Codegen.emitExpr ctx wrappedExpr
                             routeReturn t
                         | _ -> Codegen.emitStatement ctx last
                     else
@@ -3828,6 +3838,65 @@ let private emitAssembly
             foldConstsFrom artifact.Source.Items artifact.Symbols
         foldConstsFrom sf.Items symbols
 
+        // Pass A.4b — `@asyncLocal val name: AsyncLocal[T] = ()` declarations.
+        //
+        // For each `IVal` annotated with `@asyncLocal`, emit a static
+        // readonly field of type `AsyncLocal<T>` on `programTy` and
+        // initialise it in a type initializer (`.cctor`).  Reading `name`
+        // in function bodies then emits `ldsfld <field>` which pushes the
+        // `AsyncLocal<T>` singleton.
+        //
+        // The annotation is purely a hint to the emitter; the `= ()` init
+        // expression in the source is ignored — the emitter always calls
+        // `new AsyncLocal<T>()` so there is exactly one slot per package.
+        //
+        // D-progress-stdlib-expand (Group D1, 2026-05): used by
+        // `_kernel/task.l` to replace the F# `AmbientSlot.Slot` static.
+        let asyncLocalTable = Dictionary<string, System.Reflection.FieldInfo>()
+        let asyncLocalVals =
+            sf.Items
+            |> List.choose (fun it ->
+                match it.Kind with
+                | IVal v
+                    when it.Annotations |> List.exists (fun a ->
+                             match a.Name.Segments with
+                             | ["asyncLocal"] -> true
+                             | _ -> false) ->
+                    match v.Pattern.Kind with
+                    | PBinding (name, None) ->
+                        match v.Type with
+                        | Some te -> Some (name, te)
+                        | None    -> None
+                    | _ -> None
+                | _ -> None)
+        if not asyncLocalVals.IsEmpty then
+            let resolveCtxAl = GenericContext()
+            let scratchAl    = ResizeArray<Diagnostic>()
+            let cctor = programTy.DefineTypeInitializer()
+            let ccil  = cctor.GetILGenerator()
+            for (name, te) in asyncLocalVals do
+                let lty = Resolver.resolveType symbols resolveCtxAl scratchAl te
+                let valueTy = TypeMap.toClrTypeWith lookup lty
+                let asyncLocalOpenTy = typedefof<System.Threading.AsyncLocal<_>>
+                let asyncLocalTy = asyncLocalOpenTy.MakeGenericType(valueTy)
+                let fieldName = "__asynclocal_" + name
+                let fb =
+                    programTy.DefineField(
+                        fieldName,
+                        asyncLocalTy,
+                        FieldAttributes.Private
+                        ||| FieldAttributes.Static
+                        ||| FieldAttributes.InitOnly)
+                asyncLocalTable.[name] <- fb :> System.Reflection.FieldInfo
+                let asyncLocalCtor =
+                    match Option.ofObj (asyncLocalTy.GetConstructor([||])) with
+                    | Some c -> c
+                    | None ->
+                        failwithf "AsyncLocal<%s> no-arg ctor not found" valueTy.FullName
+                ccil.Emit(OpCodes.Newobj, asyncLocalCtor)
+                ccil.Emit(OpCodes.Stsfld, fb)
+            ccil.Emit(OpCodes.Ret)
+
         // Pass A.5 — process impl blocks. For each `impl Foo for Bar`,
         // attach interface methods to Bar's TypeBuilder, both as
         // method headers and as interface implementations via
@@ -4117,7 +4186,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags
                 smTypesToFinalize.Add sm.Type
             elif phaseBSpecOpt.IsSome then
                 // Phase B: real `AwaitUnsafeOnCompleted` suspend/resume
@@ -4210,7 +4279,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags
                 // Dispatch.
                 il.MarkLabel(dispatchLabel)
                 il.Emit(OpCodes.Ldarg_0)
@@ -4256,7 +4325,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags
 
         // Pass B.5 — emit impl-method bodies as instance methods.
         // Async impl methods route through the SM path the same way
@@ -4330,7 +4399,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags
                 smTypesToFinalize.Add sm.Type
             elif phaseBSpecOpt.IsSome then
                 // Phase B for impl methods — same shape as the
@@ -4392,7 +4461,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags
                 il.MarkLabel(dispatchLabel)
                 il.Emit(OpCodes.Ldarg_0)
                 il.Emit(OpCodes.Ldfld, sm.State)
@@ -4434,7 +4503,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     true
-                    (Option.ofObj selfTy) programTy symbols constsTable codegenDiags
+                    (Option.ofObj selfTy) programTy symbols constsTable asyncLocalTable codegenDiags
 
         // Pass B.6 — emit protected-type method bodies (D-progress-079).
         //
@@ -4462,7 +4531,7 @@ let private emitAssembly
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable externTypeNames
                 true
-                (Some (p.Owner.Type :> System.Type)) programTy symbols constsTable codegenDiags
+                (Some (p.Owner.Type :> System.Type)) programTy symbols constsTable asyncLocalTable codegenDiags
 
             // Emit the public wrapper.  Pattern (with barriers +
             // invariants from D-progress-079 follow-ups):
@@ -4513,7 +4582,7 @@ let private emitAssembly
                     importedFuncTable importedDistinctTypeTable
                     externTypeNames
                     true (Some (p.Owner.Type :> System.Type))
-                    programTy wrapResolveType lookup constsTable codegenDiags
+                    programTy wrapResolveType lookup constsTable asyncLocalTable codegenDiags
 
             // Generic-type self-references: when emitting IL inside a
             // generic class, member references (Ldfld <>__lock,
@@ -4689,10 +4758,17 @@ let private emitAssembly
                         importedFuncTable importedDistinctTypeTable
                         externTypeNames
                         true (Some (cp.Owner.Type :> System.Type))
-                        programTy resolveTypeForCtorCtx lookup constsTable codegenDiags
+                        programTy resolveTypeForCtorCtx lookup constsTable asyncLocalTable codegenDiags
                 for (name, fb, expr) in cp.Initializers do
+                    // Set the field's CLR type as the ExpectedType hint
+                    // so generic constructors like `newList()` in
+                    // `var tasks: List[Task] = newList()` infer `T =
+                    // Task` from the declared field type.
+                    let savedExpected = ctorCtx.ExpectedType
+                    ctorCtx.ExpectedType <- Some fb.FieldType
                     cil.Emit(OpCodes.Ldarg_0)
                     let _ = Codegen.emitExpr ctorCtx expr
+                    ctorCtx.ExpectedType <- savedExpected
                     cil.Emit(OpCodes.Stfld, fb)
             cil.Emit(OpCodes.Ret)
 
