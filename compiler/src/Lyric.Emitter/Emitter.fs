@@ -5114,6 +5114,7 @@ let private itemConflictKey (item: Item) : string option =
     | IWire w         -> Some ("wire:" + w.Name)
     | IScopeKind s    -> Some ("scope_kind:" + s.Name)
     | IExternType t   -> Some ("extern_type:" + t.Name)
+    | IConfig c       -> Some ("config:" + c.Name)
     | IVal v          ->
         match v.Pattern.Kind with
         | PBinding (n, None) -> Some ("val:" + n)

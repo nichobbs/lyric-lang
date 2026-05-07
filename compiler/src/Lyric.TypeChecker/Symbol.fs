@@ -32,6 +32,12 @@ type DeclKind =
     | DKWire     of WireDecl
     | DKExtern   of ExternPackageDecl
     | DKScopeKind of ScopeKindDecl
+    /// `config Name { ... }` block per `docs/25-config-blocks.md` (D046).
+    /// Treated as a static namespace whose fields are read once at
+    /// process startup; field access goes through the resolver's
+    /// dot-notation path, mirroring how a record's fields are
+    /// addressed once an instance has been bound.
+    | DKConfig   of ConfigDecl
 
     /// Test-only declarations. Always rejected outside @test_module.
     | DKTest     of TestDecl

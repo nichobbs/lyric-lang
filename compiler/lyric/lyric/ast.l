@@ -790,7 +790,29 @@ pub union ItemKind {
   case ITest(decl: TestDecl)
   case IProperty(decl: PropertyDecl)
   case IFixture(decl: FixtureDecl)
+  /// Module-scope `config Name { ... }` per `docs/25-config-blocks.md` (D046).
+  case IConfig(decl: ConfigDecl)
   case IError
+}
+
+@stable(since="0.1")
+pub record ConfigField {
+  docComments: List[DocComment]
+  annotations: List[Annotation]
+  name:        String
+  ty:          TypeExpr
+  /// `None` for required fields (process aborts at startup if env
+  /// var is unset).  `Some(expr)` accepts a literal default of the
+  /// declared field type.
+  default:     Option[Expr]
+  span:        Span
+}
+
+@stable(since="0.1")
+pub record ConfigDecl {
+  name:   String
+  fields: List[ConfigField]
+  span:   Span
 }
 
 @stable(since="0.1")

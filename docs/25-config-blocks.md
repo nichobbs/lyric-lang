@@ -1,9 +1,19 @@
 # 25 — Config Blocks (typed, env-backed, read-once)
 
-**Status:** Drafted.
+**Status:** Drafted.  v1 implementation in progress.
 **Implementation:** prerequisite for `docs/26-aspects.md` runtime
 toggles.  Independently useful for application-level configuration.
 **Decision-log entry:** D046.
+
+> **v1 scope note.** The first implementation ships a deliberately
+> narrow subset of the design below: module-scope `config Name { ... }`
+> blocks; field types limited to `Bool`, `Int`, and `String` (no
+> range subtypes, enums, or lists in v1); literal defaults only (no
+> imported-constant references); auto-derived env vars
+> `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` (no `via "NAME"` overrides);
+> read-once-at-startup with fail-fast on required fields.  Lists,
+> ranges, enums, `via`, and `@sensitive` behaviour are deferred to
+> v1.1; the design below describes the full target.
 
 ---
 

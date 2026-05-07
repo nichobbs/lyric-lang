@@ -35,6 +35,8 @@ pub union DeclKind {
   case DKTest(decl: TestDecl)
   case DKProperty(decl: PropertyDecl)
   case DKFixture(decl: FixtureDecl)
+  /// `config Name { ... }` per `docs/25-config-blocks.md` (D046).
+  case DKConfig(decl: ConfigDecl)
   // Union / enum variant cases.
   case DKUnionCase(parentId: TypeId, uc: UnionCase)
   case DKEnumCase(parentId: TypeId, ec: EnumCase)

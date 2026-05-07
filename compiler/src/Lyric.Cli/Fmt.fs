@@ -704,6 +704,25 @@ and private itemDoc (item: Item) : Doc =
         header
         @ [sprintf "fixture %s%s = %s" fd.Name tyStr (exprInline 0 fd.Init)]
 
+    | IConfig cd ->
+        // D046: render config blocks as `config Name { ... }` with one
+        // field per line.  Field annotations (e.g. @sensitive) precede
+        // the field line; fields with defaults render `name: T = expr`.
+        let fieldLines =
+            cd.Fields
+            |> List.collect (fun f ->
+                let annos = f.Annotations |> List.map annotationStr
+                let dflt =
+                    match f.Default with
+                    | Some e -> " = " + exprInline 0 e
+                    | None   -> ""
+                annos
+                @ [sprintf "  %s: %s%s" f.Name (typeStr f.Type) dflt])
+        header
+        @ [sprintf "config %s {" cd.Name]
+        @ fieldLines
+        @ ["}"]
+
     | IError ->
         ["// <parse-error>"]
 

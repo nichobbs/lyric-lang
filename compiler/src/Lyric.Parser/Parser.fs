@@ -3730,6 +3730,83 @@ and private parseScopeKindBody
     { Name = name
       Span = joinSpans startTok.Span sp }
 
+/// Parse a single field inside a `config { ... }` block per
+/// `docs/25-config-blocks.md` (D046).  Shape:
+///   `name: Type [= default]`
+/// Doc-comments and annotations precede the field name; trailing
+/// annotations after the optional default attach to the field.
+and private parseConfigField
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ConfigField =
+    let startSpan = Cursor.peekSpan cursor
+    let docs = parseItemDocComments cursor
+    let anns = parseItemAnnotations cursor diags
+    let name, _nameSpan = readIdent cursor diags "config field"
+    match Cursor.tryEatPunct Colon cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0120"
+            "expected ':' after config field name"
+            (Cursor.peekSpan cursor)
+    let ty = parseTypeExpr cursor diags
+    let dflt =
+        match Cursor.tryEatPunct Eq cursor with
+        | Some _ -> Some (parseExpr cursor diags)
+        | None -> None
+    let trailingAnns = parseTrailingAnnotations cursor diags
+    let allAnns = List.append anns trailingAnns
+    let endSpan =
+        match dflt with
+        | Some e -> e.Span
+        | None   -> ty.Span
+    { DocComments = docs
+      Annotations = allAnns
+      Name        = name
+      Type        = ty
+      Default     = dflt
+      Span        = joinSpans startSpan endSpan }
+
+/// Parse a `config Name { ... }` block per `docs/25-config-blocks.md`.
+/// Called when the current token is `TIdent "config"` at module scope.
+and private parseConfigBody
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : ConfigDecl =
+    let startTok = Cursor.advance cursor   // 'config' (TIdent)
+    let name, _nameSpan = readIdent cursor diags "config block"
+    Cursor.skipStmtEnds cursor |> ignore
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0121"
+            "expected '{' to start config block body"
+            (Cursor.peekSpan cursor)
+    Cursor.skipStmtEnds cursor |> ignore
+    let fields = ResizeArray<ConfigField>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        let _before = Cursor.mark cursor
+        fields.Add(parseConfigField cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+        forceAdvanceIfStuck cursor _before
+    let endSpan =
+        match Cursor.tryEatPunct RBrace cursor with
+        | Some t -> t.Span
+        | None ->
+            let s = Cursor.peekSpan cursor
+            err diags "P0122"
+                "expected '}' to close config block body"
+                s
+            s
+    { Name   = name
+      Fields = List.ofSeq fields
+      Span   = joinSpans startTok.Span endSpan }
+
 and private parseTestBody
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
@@ -3946,6 +4023,15 @@ and private parseItem
                 IFixture (parseFixtureBody cursor diags)
             | TIdent "scope_kind" ->
                 IScopeKind (parseScopeKindBody cursor diags)
+            | TIdent "config"
+                when (match (Cursor.peekAt cursor 1).Token with
+                      | TIdent _ -> true
+                      | _ -> false) ->
+                // D046: `config Name { ... }` at module scope.  We
+                // require the next token to be an identifier so that
+                // `config` can still appear elsewhere as a parameter
+                // or local-variable name without grabbing this branch.
+                IConfig (parseConfigBody cursor diags)
             | tok when isItemStartToken tok ->
                 // Recognised but not yet implemented; fall back to
                 // the P3 skip-and-IError path.

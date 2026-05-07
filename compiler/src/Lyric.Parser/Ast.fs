@@ -437,6 +437,26 @@ and ScopeKindDecl =
     { Name: string
       Span: Span }
 
+/// `config Name { ... }` block field per `docs/25-config-blocks.md`
+/// (D046).  v1 supports `Bool` / `Int` / `String` typed fields with
+/// optional literal defaults.  Required fields (no default) fail-fast
+/// at startup if the env var is unset.
+and ConfigField =
+    { DocComments: DocComment list
+      Annotations: Annotation list
+      Name:        string
+      Type:        TypeExpr
+      /// Default expression.  v1 accepts any expression that the
+      /// type-checker classifies as a compile-time constant of the
+      /// declared type.  When `None`, the field is required.
+      Default:     Expr option
+      Span:        Span }
+
+and ConfigDecl =
+    { Name:   string
+      Fields: ConfigField list
+      Span:   Span }
+
 and ExternMember =
     | EMRecord       of RecordDecl
     | EMExposedRec   of ExposedRecordDecl
@@ -724,6 +744,9 @@ and ItemKind =
     | ITest         of TestDecl
     | IProperty     of PropertyDecl
     | IFixture      of FixtureDecl
+    /// Module-scope `config Name { ... }` block per
+    /// `docs/25-config-blocks.md` (D046).
+    | IConfig       of ConfigDecl
     | IError        // recovery placeholder
 
 and ConstDecl =

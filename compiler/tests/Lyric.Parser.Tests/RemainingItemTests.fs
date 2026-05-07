@@ -227,4 +227,64 @@ let tests =
                 Expect.isNone x.Type "no type"
             | other -> failtestf "expected IFixture, got %A" other
         }
+
+        // ----- config block (D046) -----
+
+        test "config block with mixed required and defaulted fields" {
+            let src = """config Settings {
+                port: Int = 8080
+                host: String = "0.0.0.0"
+                secret: String
+            }"""
+            let f = parseClean src
+            match (getOnlyItem f).Kind with
+            | IConfig cd ->
+                Expect.equal cd.Name "Settings" "name"
+                Expect.equal cd.Fields.Length 3 "three fields"
+                let port = cd.Fields.[0]
+                Expect.equal port.Name "port" "first field name"
+                Expect.isSome port.Default "port has a default"
+                let secret = cd.Fields.[2]
+                Expect.equal secret.Name "secret" "third field name"
+                Expect.isNone secret.Default "secret has no default (required)"
+            | other -> failtestf "expected IConfig, got %A" other
+        }
+
+        test "empty config block parses" {
+            let f = parseClean "config Empty { }"
+            match (getOnlyItem f).Kind with
+            | IConfig cd ->
+                Expect.equal cd.Name "Empty" "name"
+                Expect.isEmpty cd.Fields "no fields"
+            | other -> failtestf "expected IConfig, got %A" other
+        }
+
+        test "config field accepts @sensitive annotation" {
+            let src = """config Auth {
+                @sensitive
+                token: String
+            }"""
+            let f = parseClean src
+            match (getOnlyItem f).Kind with
+            | IConfig cd ->
+                Expect.equal cd.Fields.Length 1 "one field"
+                let tok = cd.Fields.[0]
+                Expect.equal tok.Annotations.Length 1 "@sensitive parsed"
+                Expect.equal tok.Annotations.[0].Name.Segments ["sensitive"]
+                    "annotation name"
+            | other -> failtestf "expected IConfig, got %A" other
+        }
+
+        test "'config' as parameter name still works (no keyword conflict)" {
+            // This used to be a regression risk: making `config` a
+            // module-scope keyword would break stdlib uses like
+            // `func Config.path(config: in Config): String`.
+            let f =
+                parseClean "func describe(config: in String): String { config }"
+            match (getOnlyItem f).Kind with
+            | IFunc fn ->
+                Expect.equal fn.Name "describe" "function parsed"
+                Expect.equal fn.Params.Length 1 "one param"
+            | other -> failtestf "expected IFunc, got %A" other
+        }
     ]

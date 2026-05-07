@@ -120,4 +120,49 @@ let tests =
             Expect.equal ids.Length 3 "three TypeIds"
             Expect.equal (ids |> List.distinct |> List.length) 3 "all distinct"
         }
+
+        // ----- D046 config blocks -----
+
+        test "config block registers a symbol" {
+            let src = """config Settings { port: Int = 8080 }"""
+            let r = parseAndCheck src
+            Expect.isEmpty r.Diagnostics "no diagnostics on minimal config"
+            Expect.isSome (r.Symbols.TryFindOne("Settings"))
+                "Settings symbol registered"
+        }
+
+        test "config field disallowed type triggers G0009" {
+            let src = """config Settings { weight: Double = 1.0 }"""
+            let r = (parse ("package P\n" + src)).File |> check
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "G0009"
+                "Double rejected (allow-list is Bool/Int/String in v1)"
+        }
+
+        test "config field with composite type rejected" {
+            let src = """config Settings { items: List[String] = [] }"""
+            let r = (parse ("package P\n" + src)).File |> check
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "G0009" "List[String] rejected in v1"
+        }
+
+        test "config field name duplicate triggers G0013" {
+            let src = """config Settings {
+                port: Int = 8080
+                port: Int = 9090
+            }"""
+            let r = (parse ("package P\n" + src)).File |> check
+            let codes = r.Diagnostics |> List.map (fun d -> d.Code)
+            Expect.contains codes "G0013" "duplicate field name"
+        }
+
+        test "Bool / Int / String all accepted" {
+            let src = """config Settings {
+                debug: Bool = false
+                port:  Int = 8080
+                host:  String = "0.0.0.0"
+            }"""
+            let r = parseAndCheck src
+            Expect.isEmpty r.Diagnostics "all v1 types accepted"
+        }
     ]
