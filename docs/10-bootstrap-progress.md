@@ -75,6 +75,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (PR #197) | D-progress-130 |
 | M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (this branch) | D-progress-133 |
+| MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`) | D-progress-129 |
 
@@ -460,6 +461,56 @@ lowering functions.  Each stage has a self-test Lyric source in
 - Fixed `paramSlotCount` double-counting of `this` in non-static methods
 - Added `LIfAcmpeq` and `LIfAcmpne` to the `LInsn` union, `lowerInsn`, and `collectBranchTargets`
 - `lowerDeriveEquality` refactored to use `LInsn` list + `lowerFuncForClass` for correct StackMapTable
+
+---
+
+### D-progress-134: MSIL PE emitter Stage M1 — pure-Lyric PE/COFF image generator
+
+*claude/self-hosted-msil-emitter-pe branch.*
+
+Stage M1 of the self-hosted MSIL emitter produces a structurally valid 1024-byte
+PE/COFF + CLR-metadata image for a fixed "Hello" assembly without any new F#
+host code.  The implementation reuses the `Lyric.Jvm.Hosts.JvmByteBuilder` /
+`JvmByteHost` infrastructure already present for the JVM emitter.
+
+**New files:**
+
+- `compiler/lyric/msil/_kernel/kernel.l` — `Msil.Kernel` package; declares
+  `extern type ByteWriter = "Lyric.Jvm.Hosts.JvmByteBuilder"` and re-exports
+  the JVM LE byte-write helpers (`bufU1`, `bufU2`, `bufU4`, `bufAppend`,
+  `bufLen`, `bufToList`) under PE-centric names, plus `bufZero` and `bufPadTo`
+  in native Lyric.
+
+- `compiler/lyric/msil/pe.l` — `Msil.Pe` package; full fixed-layout serializer.
+  Sections: DOS stub (128 B), PE/COFF headers (384 B, padded), CLR header
+  IMAGE_COR20_HEADER (72 B), MSIL method body in tiny format (12 B, ldstr +
+  call + ret), and ECMA-335 metadata (408 B: BSJB root + #~ tables stream +
+  #Strings + #US + #Blob + #GUID).  Entry points: `buildHelloAssemblyBuf()`,
+  `buildHelloAssembly(): List[Byte]`, `buildHelloAssemblySize(): Int`.
+
+- `compiler/lyric/msil/msil_self_test_m1.l` — `Msil.SelfTestM1` package;
+  calls `buildHelloAssemblySize()` + `buildHelloAssembly()` and prints five
+  structural invariants: `pe_size_ok=true`, `mz_ok=true`, `pe_sig_ok=true`,
+  `clr_header_ok=true`, `bsjb_ok=true`.
+
+**Emitter change:**
+
+- `compiler/src/Lyric.Emitter/Emitter.fs` — `isBuiltinHead` extended to
+  include `"Msil"`, mapping `import Msil.X` to `compiler/lyric/msil/`.
+
+**F# test:**
+
+- `compiler/tests/Lyric.Emitter.Tests/MsilSelfTestM1.fs` — `Msil.SelfTest M1`
+  Expecto test: compiles `msil_self_test_m1.l` via the bootstrap emitter, runs
+  it, asserts all five `*=true` lines are present in stdout.  Wired into
+  `Lyric.Emitter.Tests.fsproj` and `Program.fs`.
+
+All 635 emitter tests pass.
+
+**Design note:** `List[Byte].length` is not available (CLR `List<T>` exposes
+`Count`, not `length`); size checking uses `bufLen(w)` on the raw `ByteWriter`
+before `bufToList`.  Multi-line boolean expressions use `and` (not `&&`, which
+the parser splits into two prefix-ref operators across line boundaries).
 
 ---
 
