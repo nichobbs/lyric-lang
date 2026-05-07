@@ -691,4 +691,17 @@ pub record SourceFile {
 pub record ParseResult {
   file:        SourceFile
   diagnostics: List[Diagnostic]
+  /// Concrete syntax tree — lossless red/green representation that
+  /// preserves every byte of the original source (including comments
+  /// and whitespace).  Built alongside the AST; downstream consumers
+  /// that only care about semantics can ignore it, while a formatter
+  /// or LSP walks it to render or refactor without losing trivia.
+  /// See `parser_cst.l` for the data model and `nodeSourceText` for
+  /// byte-faithful reconstruction.
+  cst:         GreenNode
+  /// Original source string (post CR/LF normalisation by `lex`).
+  /// Carried alongside the CST so callers can render token text via
+  /// `tokenSourceText` / `nodeSourceText` without retaining the file
+  /// contents themselves.
+  source:      String
 }
