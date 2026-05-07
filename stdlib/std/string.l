@@ -213,6 +213,17 @@ pub func equalsCaseInsensitive(s1: in String, s2: in String): Bool {
 }
 
 // ---------------------------------------------------------------------------
+// Conversion from primitives.
+// ---------------------------------------------------------------------------
+
+// Convert an integer to its decimal string representation.
+@pure
+@stable(since="1.0")
+pub func fromInt(n: in Int): String {
+  toString(n)
+}
+
+// ---------------------------------------------------------------------------
 // Character access.
 // ---------------------------------------------------------------------------
 

@@ -34,11 +34,14 @@ npm run compile
 
 ```json
 {
-  "lyric.serverPath": "/absolute/path/to/lyric-lsp"
+  "lyric.serverPath": "/absolute/path/to/lyric-lsp",
+  "lyric.cliPath":    "lyric"
 }
 ```
 
-If `lyric-lsp` is on your `$PATH`, you can omit this setting entirely. The extension will find the binary automatically.
+`lyric.serverPath` — path to the `lyric-lsp` binary. If `lyric-lsp` is on your `$PATH`, omit this setting; the extension finds the binary automatically.
+
+`lyric.cliPath` — path to the `lyric` CLI used by package management commands and the task provider. Defaults to `"lyric"` (found via `$PATH`). Set an absolute path if you publish the CLI to a non-standard location.
 
 To format Lyric files on save, add the following to your settings:
 
@@ -53,7 +56,11 @@ To format Lyric files on save, add the following to your settings:
 
 ## Features
 
-The language server runs the full lex → parse → type-check pipeline on every document change. The results are cached so that hover, completion, and go-to-definition requests are served from the cached typed AST rather than re-checking from scratch on every query.
+The extension bundles a language server and a suite of project-management commands.
+
+### Language server
+
+The language server runs the full lex → parse → type-check pipeline on every document change. Results are cached so hover, completion, and go-to-definition requests are served from the cached typed AST.
 
 | Feature | Details |
 |---------|---------|
@@ -65,6 +72,58 @@ The language server runs the full lex → parse → type-check pipeline on every
 | Workspace support | Cross-file diagnostics across all `.l` files in the open workspace; go-to-definition resolves across package boundaries |
 
 Cross-file features depend on the workspace being opened as a folder (not a single file). The server scans all `*.l` files under the workspace root on startup and rebuilds the index when files are created or deleted.
+
+### Manifest editor (lyric.toml IntelliSense)
+
+When `lyric.toml` is open, VS Code validates the file against the bundled JSON schema and provides completion for all keys. This works with both the built-in JSON language support and the Taplo / Even Better TOML extension — whichever is active picks up the schema automatically.
+
+### Package management commands
+
+The following commands are available in the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) when a `lyric.toml` is present in the workspace root:
+
+| Command | Action |
+|---------|--------|
+| `Lyric: Add Dependency` | Prompts for a package ID and version, appends it to `[dependencies]`, and offers to run `lyric restore` |
+| `Lyric: Add NuGet Package` | Same flow, targeting the `[nuget]` table |
+| `Lyric: Remove Dependency` | Quick-pick of all current Lyric and NuGet entries; removes the selected entry |
+| `Lyric: Update Dependency` | Quick-pick then version input; replaces the entry with the new version, and offers restore |
+| `Lyric: Restore Packages` | Runs `lyric restore --manifest lyric.toml` in an integrated terminal with a progress notification |
+| `Lyric: Prove Current File` | Runs `lyric prove <active .l file>` in an integrated terminal |
+
+### Project navigator
+
+A **Lyric Project** tree view appears in the Explorer sidebar when `lyric.toml` is present. It shows three groups:
+
+- **Packages** — entries from `[project.packages]` with their source directories
+- **Lyric dependencies** — entries from `[dependencies]` with their declared version constraints
+- **NuGet dependencies** — entries from `[nuget]` with their version strings
+
+Click the refresh icon in the view header to reload after manual edits to `lyric.toml`. The view updates automatically when `lyric.toml` is created, changed, or deleted.
+
+### Build and run tasks
+
+The extension registers a `lyric` task provider. Four tasks are auto-discovered when `lyric.toml` is present:
+
+| Task | VS Code group | Command |
+|------|---------------|---------|
+| Build current project | Build (`Ctrl+Shift+B`) | `lyric build --manifest lyric.toml` |
+| Run | — | `lyric run --manifest lyric.toml` |
+| Test | Test | `lyric test --manifest lyric.toml` |
+| Restore packages | — | `lyric restore --manifest lyric.toml` |
+
+You can also define custom `lyric`-typed tasks in `.vscode/tasks.json` with IntelliSense support:
+
+```json
+{
+  "type": "lyric",
+  "command": "prove",
+  "args": ["--allow-unverified"],
+  "manifestPath": "src/core/lyric.toml",
+  "label": "Prove core package"
+}
+```
+
+Valid `command` values: `build`, `run`, `test`, `prove`, `restore`.
 
 ## Syntax highlighting
 

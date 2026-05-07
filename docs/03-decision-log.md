@@ -1488,6 +1488,59 @@ on both targets.
 - JVM shim classes (`lyric.stdlib.jvm.*`) need to be published alongside the
   BCL shim DLL as part of the Phase 6 SDK package (see D042).
 
+---
+
+## D044 — CLI migration strategy: pure BCL externs, no new F# shim
+
+**Date:** 2026-05-07  
+**Branch:** claude/migrate-lyric-cli-3WDhT
+
+### Context
+
+Phase 5 §M5.3 targets a self-hosted Lyric CLI.  The F# bootstrap CLI
+(`compiler/src/Lyric.Cli/Program.fs`) spawns child processes via
+`ProcessStartInfo.ArgumentList.Add(...)` — a mutable generic collection.
+The straightforward port would have required either a new F# shim method
+(against the G-series shim-elimination direction) or a complex generic-FFI
+path that the emitter's `paramsExactMatch` doesn't support for covariant
+types.
+
+### Decision
+
+Use `Process.Start(string, string)` — the two-argument overload — so child
+process creation goes through a BCL extern with an exact CLR type signature
+(`[typeof<string>, typeof<string>]`).  Argument quoting (spaces, embedded
+double-quotes) is handled in pure Lyric in `buildArgString`.  The kernel
+boundary is:
+
+```
+stdlib/std/_kernel/process_host.l   @axiom + extern type ProcessHandle + 3 extern funcs
+stdlib/std/process.l                Std.Process — run / runChecked surface API
+```
+
+No new F# shim was added.  `Lyric.Manifest` (TOML parser) and `Lyric.Cli`
+(command dispatch) are written entirely in Lyric under
+`compiler/lyric/lyric/`.
+
+### Forward imports
+
+`Lyric.Cli` imports `Lyric.Parser`, `Lyric.Emitter`, `Lyric.Fmt`,
+`Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, and `Lyric.ContractMeta` with
+`as` aliases.  These packages do not yet exist; they are the deliverables for
+the remainder of M5.2 and M5.3.  The CLI file is compiled only by the
+self-hosted compiler (which won't run until those packages ship), so forward
+references are safe.  The CLI source documents the expected API surface in
+header comments, acting as the consumer contract that future packages must
+satisfy.
+
+### Rationale
+
+- Consistent with the G-series shim-elimination work (`docs/23-fsharp-shim-elimination.md`).
+- Keeps the kernel boundary reviewable; `KernelBoundaryTests` enforces the
+  count.
+- Writing the CLI consumer first (before the packages it calls) pins the API
+  surface early and keeps Phase 5 milestones aligned.
+
 **Revisions:** None.
 
 ---
