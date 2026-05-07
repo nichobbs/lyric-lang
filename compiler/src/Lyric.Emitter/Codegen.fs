@@ -104,6 +104,11 @@ type FunctionCtx =
       /// the folded int64.  Used by `EPath { Segments = [name] }`
       /// so constants like `ACC_PUBLIC` resolve without a static field.
       Consts: Dictionary<string, int64>
+      /// Package-level `@asyncLocal val` declarations.  Each entry maps
+      /// the Lyric identifier to the static `AsyncLocal<T>` field on the
+      /// package's program type.  Reading the name in an expression emits
+      /// `ldsfld <field>` which pushes the `AsyncLocal<T>` object.
+      AsyncLocalFields: Dictionary<string, System.Reflection.FieldInfo>
       /// `true` when emitting an instance method (impl method) — at
       /// CLR level arg 0 is `self` and named params shift by one.
       IsInstance: bool
@@ -196,6 +201,7 @@ module FunctionCtx =
             (resolveType: Lyric.Parser.Ast.TypeExpr -> System.Type)
             (lookup: Lyric.TypeChecker.TypeId -> System.Type option)
             (consts: Dictionary<string, int64>)
+            (asyncLocalFields: Dictionary<string, System.Reflection.FieldInfo>)
             (diags: ResizeArray<Lyric.Lexer.Diagnostic>) : FunctionCtx =
         let s = Stack<Dictionary<string, LocalBuilder>>()
         s.Push(Dictionary())
@@ -227,6 +233,7 @@ module FunctionCtx =
           ImportedDistinctTypes = importedDistinctTypes
           ExternTypeNames = externTypeNames
           Consts       = consts
+          AsyncLocalFields = asyncLocalFields
           IsInstance   = isInstance
           SelfType     = selfType
           ReturnLabel  = None
@@ -510,10 +517,10 @@ let private isGenericInstantiationOnGtpb (t: ClrType) : bool =
 /// callers should pass each candidate through `closeBclMethod` to
 /// substitute the GTPBs once a name match is found.
 let private getRecvMethods (recvTy: ClrType) : MethodInfo array =
-    if isGenericInstantiationOnGtpb recvTy then
-        recvTy.GetGenericTypeDefinition().GetMethods()
-    else
-        recvTy.GetMethods()
+    match recvTy with
+    | :? System.Reflection.Emit.TypeBuilder as tb when not (tb.IsCreated()) -> [||]
+    | _ when isGenericInstantiationOnGtpb recvTy -> recvTy.GetGenericTypeDefinition().GetMethods()
+    | _ -> recvTy.GetMethods()
 
 /// Close `openMi` against `recvTy` if `recvTy` is a TypeBuilder
 /// instantiation; otherwise return it unchanged.  Use after picking a
@@ -771,6 +778,9 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
                         | None    -> t
                     else t
                 | _ ->
+                    match ctx.AsyncLocalFields.TryGetValue name with
+                    | true, fb -> fb.FieldType
+                    | _ ->
                     match ctx.Consts.TryGetValue name with
                     | true, v ->
                         if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue
@@ -1909,7 +1919,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 else recvTy
             ctx.ProtectedTypes
             |> Seq.tryPick (fun kv ->
-                if (kv.Value.Type :> System.Type) = recvOpenDef then
+                let ptTy = kv.Value.Type :> System.Type
+                let matches =
+                    ptTy = recvOpenDef
+                    || (ptTy.FullName <> null
+                        && recvOpenDef.FullName <> null
+                        && ptTy.FullName = recvOpenDef.FullName)
+                if matches then
                     kv.Value.Methods
                     |> List.tryFind (fun m -> m.Name = methodName)
                     |> Option.map (fun m -> kv.Value, m)
@@ -2366,6 +2382,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                 il.Emit(OpCodes.Newobj, constructedCtor)
                                 info.Type.MakeGenericType typeArgs
                         | _ ->
+                            match ctx.AsyncLocalFields.TryGetValue name with
+                            | true, fb ->
+                                il.Emit(OpCodes.Ldsfld, fb)
+                                fb.FieldType
+                            | _ ->
                             match ctx.Consts.TryGetValue name with
                             | true, v ->
                                 if v >= int64 System.Int32.MinValue && v <= int64 System.Int32.MaxValue then
@@ -4120,7 +4141,7 @@ and private emitLambdaWith
             ctx.Projectables
             ctx.ImportedRecords ctx.ImportedUnions ctx.ImportedUnionCases
             ctx.ImportedFuncs ctx.ImportedDistinctTypes ctx.ExternTypeNames
-            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.Diags
+            false None ctx.ProgramType ctx.ResolveType ctx.Lookup ctx.Consts ctx.AsyncLocalFields ctx.Diags
     // Emit the body. For non-void lambdas, the last statement must leave
     // its value on the IL stack for `ret` — mirror emitFunctionBody's
     // single-exit discipline.
