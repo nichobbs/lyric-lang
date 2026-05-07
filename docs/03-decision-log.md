@@ -1604,6 +1604,312 @@ tables; Stage M1 provides the structural foundation and smoke test.
 
 ---
 
+## D045 — Build-time feature gating via `[features]` + `@cfg(...)`
+
+**Date:** 2026-05-07
+**Branch:** claude/compile-time-aspects-logging-SIhqA
+
+### Context
+
+`docs/26-aspects.md` (compile-time aspects) needs a way to compile
+out unwanted aspects without runtime overhead — a build flag that
+erases an item entirely when off. Platform-specific code in the
+stdlib (Windows vs Unix process shims, future) wants the same
+mechanism. No existing primitive in Lyric serves both.
+
+The Cargo precedent is well-understood: features declared in the
+manifest, selectable via CLI, and source items gated via a
+`@cfg(...)` annotation. Lyric's existing `lyric.toml` schema
+(D-progress-077) extends naturally.
+
+### Decision
+
+Add a compile-time feature mechanism with three parts:
+
+- A `[features]` section in `lyric.toml` declaring named features
+  with implication arrays. `default = [...]` names the auto-active
+  set.
+- CLI flags `--features`, `--no-default-features`, `--all-features`
+  on `lyric build` / `run` / `test` / `prove` / `publish`. The
+  active feature set is fixed for one build and recorded in the
+  output's `Lyric.BuildInfo` resource.
+- A `@cfg(...)` annotation on top-level items (`func`, `type`,
+  `aspect`, `wire`, `config`, `package`). Predicate grammar:
+  `feature = "X"`, `all(...)`, `any(...)`, `not(...)`. When false,
+  the item is erased — no metadata, no IL, imports referencing
+  it fail at the import site.
+
+Cross-package feature plumbing is **deferred** (Q-features-001).
+Statement- and expression-level `@cfg` is **out of scope**.
+
+Full specification in `docs/24-build-features.md`.
+
+### Rationale
+
+- **Aspects need it.** The aspect feature `docs/26-aspects.md` is
+  blocked without compile-time gating; runtime-only gating leaves
+  cost in builds that don't want the aspect.
+- **General-purpose.** Feature gating recurs across language design;
+  Cargo's fifteen years of experience is the strongest body of
+  evidence for the additive-conjunctive shape.
+- **Builds on existing infra.** `lyric.toml` already exists; the
+  manifest parser (D-progress-077) is small. The `Lyric.BuildInfo`
+  resource is parallel to the existing `Lyric.Contract` resource.
+- **Cargo's cross-package unification problem is real.** Deferring
+  it explicitly is better than half-implementing it; aspects
+  (the immediate consumer) only need single-package gating.
+
+### Alternatives considered
+
+- **Aspect-only gating (no general feature mechanism).** An aspect
+  could declare a flag and the compiler would gate the wrapper.
+  Rejected: doesn't help the platform-specific stdlib case; bakes
+  aspect assumptions into a primitive that should be general.
+- **Boolean cfg flags only, no implications.** Simpler, but every
+  Cargo user knows you need `tracing` to imply `logging` after
+  about a week. Pre-empt the request.
+- **Statement/expression-level `@cfg`.** Rust's design. More
+  flexible, much more parser surface, more diagnostic complexity.
+  Two functions with `@cfg` at the item level cover the use case.
+
+**Revisions:** None.
+
+---
+
+## D046 — Typed env-backed config blocks
+
+**Date:** 2026-05-07
+**Branch:** claude/compile-time-aspects-logging-SIhqA
+
+### Context
+
+Service-shaped Lyric programs need a typed way to read configuration
+at startup — ports, DB URLs, log levels, sample rates, secrets.
+Today the only path is hand-rolled `Std.Environment.getVar` calls
+sprinkled across startup, with manual `tryParseInt` per field, no
+fail-fast, and no central declaration of what a service reads.
+
+Aspects (`docs/26-aspects.md`) need typed config to support runtime
+toggles (log levels, sample rates) without inventing a new
+mechanism. Promoting "typed env-var config" to a general primitive
+serves both.
+
+### Decision
+
+Add a `config` block as a top-level item, peer to `func`, `type`,
+`wire`, `aspect`. Each block declares a named record of typed
+fields:
+
+- **Field types:** primitives (`Bool`, `Int`, `Long`, `Float`,
+  `Double`, `String`), range subtypes, simple enums, and lists
+  `[T]` of any of the above. Records, maps, and nested lists are
+  rejected.
+- **Required vs defaulted:** a field with no `=` default is
+  required; the process aborts with exit code 78 before `main`
+  runs if the env var is unset / empty / unparseable.
+- **Visibility:** package-private. `pub config` is rejected.
+- **Env var derivation:** auto-derived as
+  `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>`. A `via "NAME"` clause on a
+  field overrides the auto-derived name.
+- **Read-once-at-startup:** all fields populated once, before
+  `main`; immutable thereafter.
+- **Multiple named blocks per package** allowed; each independent.
+- **`@sensitive` field marker** is parsed and recorded but
+  declarative-only in v1 (no behaviour bound to it).
+
+File-based sources, layered config, hot reload, and richer field
+types are out of scope. Full specification in
+`docs/25-config-blocks.md`.
+
+### Rationale
+
+- **Single mechanism for two consumers.** Application config and
+  aspect runtime parameters share parsing, fail-fast behaviour,
+  and env-var conventions. Building two parallel mechanisms would
+  be wasted work.
+- **Fail-fast over half-initialised.** A service that boots with
+  half its config missing is worse than one that doesn't boot.
+  Exit code 78 (sysexits.h `EX_CONFIG`) is the conventional signal.
+- **Read-once keeps the verifier sane.** `Settings.port` is an
+  opaque static `Int` from the verifier's perspective; no
+  control-flow analysis needed for `@proof_required` packages.
+- **Package-private avoids action-at-a-distance.** Cross-package
+  config sharing is ambient global state; if package B wants
+  package A's config, it should receive it through a wire
+  parameter. Forcing this composes better with `@proof_required`.
+
+### Alternatives considered
+
+- **`Std.Config` library, not a language feature.** A function
+  `Std.Config.read[T](field-name): T` with reflection-driven
+  binding. Rejected: Lyric has no reflection (D006); a build-time
+  primitive avoids the issue entirely.
+- **Lazy / on-demand config reads.** Read each field the first
+  time it's accessed. Rejected: hides startup-time errors until
+  whichever code path first touches the field. Fail-fast is the
+  right default.
+- **Cross-package public config.** `pub config` exposing fields
+  to importers. Rejected: encourages ambient global state and
+  conflicts with the per-package contract model.
+
+**Revisions:** None.
+
+---
+
+## D047 — Compile-time aspects (`aspect` blocks)
+
+**Date:** 2026-05-07
+**Branch:** claude/compile-time-aspects-logging-SIhqA
+
+### Context
+
+Cross-cutting concerns — logging, timing, validation, authorisation,
+metrics — recur in every service-shaped Lyric program. Today the
+only way to apply them is per-method boilerplate, which violates
+DRY and rots silently when new methods are added without it.
+
+Lyric already has two precedents for "package-level declaration the
+compiler reads and emits derived code from": `wire` blocks and the
+`@projectable` / `@stubbable` annotation pair. Aspects extend the
+same family.
+
+The design tension is between AOP's classic cross-cutting cleanliness
+and Lyric's safety-oriented ethos (explicit contracts, predictable
+behaviour, no spooky action at a distance). The chosen design
+resolves the tension by **scoping aspects to a single package**,
+**making the composed contract the published contract**, and
+**requiring strong tooling visibility** (LSP code-lens, `lyric
+explain`).
+
+### Decision
+
+Add an `aspect` block as a top-level item, peer to `func`, `type`,
+`wire`, `config`. The full specification is `docs/26-aspects.md`;
+key points:
+
+- **Package-scoped weaving.** An aspect declared in package P
+  weaves only over P's own targets. Cross-package aspect
+  application is rejected (not deferred).
+- **`around`-only advice.** `before` / `after` desugar trivially
+  and are not separate primitives. Skip / replace via early
+  `return` or omitting `proceed(args)`.
+- **Pattern selector via `matches:`.** v1 supports
+  `name like "<glob>"` plus `except name in {...}`. Reserved syntax
+  for `signature:`, `annotated:`, `visibility:` predicates in v2.
+- **Per-target opt-out via `@no_aspect` / `@no_aspect(X)`.**
+- **Contract augmentation.** Aspects may declare aspect-level
+  `requires:` / `ensures:` clauses. The wrapper's effective
+  contract is the conjunction of target + every matched aspect.
+  Aspects cannot weaken or remove existing clauses but **can add
+  to either side, including strengthening preconditions**. The
+  composed contract is the published contract.
+- **Composition order: lexical within file; explicit `wraps:` /
+  `inside:` clauses across files.** Cross-file overlap without
+  explicit ordering is a compile error (`A0007`).
+- **Compile-time gating** via `@cfg(...)` (D045): erased aspects
+  emit no wrapper, no metadata, no overhead.
+- **Runtime configuration** via per-aspect `config { ... }`
+  block (D046) with env prefix `LYRIC_ASPECT_<NAME>_<FIELD>`. No
+  implicit `enabled` flag; aspects opt in to toggling explicitly.
+- **`args` and `ret` are ordinary `let`-bindings.** Rebinding is
+  allowed and triggers compiler-inserted contract-preservation
+  checks at the boundary; no `mut` modifier.
+- **Verifier integration.** Woven body + composed contract is the
+  input to the VC pipeline (`docs/15-phase-4-proof-plan.md`).
+- **Async aspects emit a warning until Phase 2's real
+  state-machine async lowering ships** (D035 → ?).
+
+### Rationale
+
+- **DRY without invisibility.** A module-scoped declaration is
+  visible at the file header (like `wire`). LSP code-lens makes
+  the woven set discoverable per-method. Aspects scattered across
+  the call graph (AspectJ-style) would defeat the safety story.
+- **Composed contract preserves modular reasoning.** The wrapper
+  *is* the API. The verifier and runtime see one contract; the
+  caller sees one contract; the published `Lyric.Contract`
+  resource records one contract. Aspects don't sneak around the
+  type system; they extend it visibly.
+- **Strengthening preconditions is a feature, not a bug.** An
+  aspect that adds `requires: nonNull(args.user)` across every
+  public handler is the entire point. Callers see a stricter API;
+  the compiler enforces it at every call site.
+- **Package-scoped weaving keeps separate verification possible.**
+  Cross-package aspects would require closed-world re-verification
+  at link time and break the published-contract model
+  (D-progress-031). Not worth the power.
+- **`around` only.** Subsumes `before` / `after`; one mental
+  model; one inlining strategy. Cleaner spec, cleaner verifier
+  story.
+- **No implicit runtime toggle.** An automatic `enabled` flag
+  would make security-critical aspects (`Validation`,
+  `Authorization`) silently switchable from the env. Opt-in
+  toggling forces aspect authors to declare disableability
+  intentionally.
+
+### Alternatives considered
+
+- **Per-method derive (`@derive(Logging)`).** Doesn't solve "no
+  manual annotation." Rejected as the *only* mechanism; remains
+  available as a future shape.
+- **AspectJ-style cross-package pointcuts.** Maximal power.
+  Rejected: breaks package isolation, hostile to separate
+  verification, hostile to the published-contract model.
+- **General macros.** Aspects-as-a-macro-library. Rejected for
+  v1: macro hygiene, sandboxing, error-message quality, and IDE
+  support are each multi-year projects. Aspects are a small,
+  bounded primitive that ships sooner.
+- **Trait-based with blanket impl.** `impl Logged for fn matching
+  "*"`. Rejected: methods aren't first-class on .NET; the
+  syntax is novel and awkward; doesn't compose with contracts,
+  async, or generics without bespoke rules.
+- **Manifest-driven weaving.** Aspect rules in `lyric.toml`.
+  Rejected: source no longer self-describes behaviour; worst
+  case for local readability.
+- **Codegen tool.** `lyric gen-aspect` writes wrapper functions
+  to disk. Rejected: not really aspects; merge-conflict prone;
+  re-run requirements. Remains available as a user-space pattern
+  if someone wants it.
+
+### Consequences
+
+- **Phase 2** gains a substantial feature: parser, weaver,
+  contract-composition pass, verifier integration, LSP support,
+  `lyric explain` extension.
+- **Published contract format** (D-progress-031) gains a
+  composed-contract path. Restored packages already consume
+  `Lyric.Contract`; aspect-affected functions surface their
+  composed contract through the same channel transparently.
+- **Diagnostic catalogue** gains the `A####` series. Existing
+  contract-failure diagnostics gain a provenance field naming the
+  aspect.
+- **D035 async-lowering follow-ups** explicitly accept aspect
+  awareness as a design constraint. The Phase 2 state-machine
+  work lifts the `A0020` warning.
+- **Self-hosted compiler (Phase 5)** must implement aspects in
+  Lyric. The package-scoped scope keeps this tractable; the
+  weaving pass is a tree transformation peer to the existing
+  contract-elaboration pass.
+
+### Tracked follow-ups
+
+- **Q-aspects-001:** Aspects on type constructors and operator
+  overloads. Defer.
+- **Q-aspects-002:** Mangling scheme for `<name>_target`.
+- **Q-aspects-003:** `call.elapsed` shape before `proceed`
+  (zero, `Option`, panic).
+- **Q-aspects-004:** Aspects across packages within a single
+  multi-package project (`docs/20-project-as-dll.md`). Defer.
+- **Q-aspects-005:** `call.contractValues` for the values of
+  `requires:` / `ensures:` predicates at the weave point. Defer
+  behind an `@expensive` marker if shipped.
+- **Q-aspects-006:** Inheritance of contracts *across* aspects
+  (one aspect's clauses visible to subsequent aspects' bodies).
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
