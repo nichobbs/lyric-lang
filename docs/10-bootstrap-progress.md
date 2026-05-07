@@ -65,7 +65,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (this branch) | D-progress-122 |
 | JVM self-tests B111-B124 — lowerSealedUnion, lowerEnum, lowerOutInoutParam, lowerNatTag, makeLyricSignatureAttr, lowerExposedRecord, lowerProjectable, lowerProtectedWithBarriers, lowerHotAsync, lowerScopeBlock, lowerFuncWithContract, lowerDeriveEquality, lowerDeriveOrd, lowerPackage | **Shipped** (PR #183 / #184) | D-progress-124 |
 | JVM stage B2 smoke test unskipped — `hello_class_bytes_are_jvm_loadable` now passes; stale `BadImageFormatException` workaround in `JvmSelfTest.fs` removed; `docs/18-jvm-emission.md` B111–B124 status table updated to Shipped | **Shipped** (this branch) | D-progress-125 |
-| Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | **Partial** (§4 SDK root discovery, §5 `Lyric.SdkVersion` embed, `lyric --sdk-info`, bundle expansion to 11 packages, B0040/B0042; VS Code extension §6 deferred) | D-progress-126 |
+| Phase 6 — stdlib distribution per `docs/22-distribution-and-tooling.md` §2–§5 — §4 SDK root discovery, §5 `Lyric.SdkVersion` embed, `lyric --sdk-info`, bundle expansion to 11 packages, B0040/B0042 | **Shipped** (PR #187) | D-progress-126 |
+| Phase 6 — VS Code tooling §6.1–§6.4 per `docs/22-distribution-and-tooling.md` — JSON schema for `lyric.toml`; manifest-backed package management commands (Add/Remove/Update dependency, Add NuGet, Restore); project navigator tree view; Lyric task definitions and provider (build, run, test, prove) | **Shipped** (this branch) | D-progress-127 |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
 | M5.1 — self-hosted parser | Not shipped | — |
@@ -6841,3 +6842,87 @@ Tier 5 items (`Std.Http` cancellation/timeouts shipped via
 D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).
 Tier 6 items: AST-based `lyric fmt` and `lyric lint` shipped (see above);
 CST formatter (v2), format5+, Regex RE2, C4 phase 2/3 remain on-demand.
+
+---
+
+### D-progress-127: Phase 6 VS Code tooling — §6.1–§6.4 per `docs/22-distribution-and-tooling.md`
+
+*claude/phase-6-vscode-extension-vYx1j branch.*
+
+Implements the four VS Code extension feature blocks specified in
+`docs/22-distribution-and-tooling.md` §6.  The LSP skeleton (M-L1–M-L4)
+already landed; this entry covers everything on top of that.
+
+**§6.1 Manifest editor**
+
+- `lyric-vscode/schemas/lyric-toml.schema.json` — JSON schema covering
+  `[project]`, `[project.packages]`, `[dependencies]`, `[nuget]`, and
+  `[nuget.options]`.  All keys have descriptions, enums, and patterns.
+- `contributes.jsonValidation` association (VS Code native) and
+  `contributes.tomlValidation` association (Taplo / Even Better TOML
+  extension) both point at the schema, so `lyric.toml` gets validation
+  and completion regardless of which TOML extension the user has.
+
+**§6.2 Package management commands**
+
+- `lyric.addDependency` — prompts for package id + version, appends to
+  `[dependencies]`, offers to run `lyric restore`.
+- `lyric.addNugetPackage` — same flow targeting `[nuget]`.
+- `lyric.removeDependency` — quick-pick from all current Lyric + NuGet
+  entries, removes the selected entry.
+- `lyric.updateDependency` — quick-pick then version input, removes and
+  re-inserts with the new version, offers restore.
+- `lyric.restore` — runs `lyric restore --manifest <lyric.toml>` in an
+  integrated terminal with a progress notification.
+- `lyric.build` / `lyric.run` / `lyric.test` — command palette shortcuts
+  that execute VS Code tasks (see §6.4 below).
+- `lyric.proveCurrentFile` — runs `lyric prove <active .l file>` in
+  a terminal.
+
+New source file: `lyric-vscode/src/tomlEditor.ts` — regex-based TOML
+section reader and writer used by the commands above.  Handles both
+quoted-key (`"My.Pkg" = "1.0"`) and bare-key entries; reads `[section]`
+blocks without a third-party TOML library.
+
+**§6.3 Project navigator**
+
+- `lyric-vscode/src/projectNavigator.ts` — `LyricProjectProvider`
+  (`vscode.TreeDataProvider`) registered under the `lyricProjectNavigator`
+  view in the Explorer sidebar.
+- Three collapsible group nodes: **Packages** (from `[project.packages]`),
+  **Lyric dependencies** (from `[dependencies]`), and **NuGet dependencies**
+  (from `[nuget]`).  Each child node shows the package name and version /
+  source directory as the description.
+- Refresh triggered by `lyric.refreshNavigator` command (toolbar icon)
+  and automatically on `lyric.toml` create / change / delete events.
+- The view is hidden (`when: lyric.hasManifest`) when no `lyric.toml` is
+  present in the workspace root.
+
+**§6.4 Build / run launch configurations**
+
+- `lyric-vscode/src/taskProvider.ts` — `LyricTaskProvider` registered for
+  the `lyric` task type.
+- `provideTasks` returns four auto-discovered tasks: **Build current
+  project**, **Run**, **Test**, **Restore**.  Each wires `lyric <cmd>
+  --manifest <lyric.toml>` as a `ShellExecution`.
+- **Build** and **Test** tasks are placed in `TaskGroup.Build` and
+  `TaskGroup.Test` respectively, so they appear under
+  `Terminal > Run Build Task` / `Run Test Task`.
+- `resolveTask` honours custom definitions from `.vscode/tasks.json`
+  (type `lyric`, command enum: `build | run | test | prove | restore`,
+  optional `args` and `manifestPath`).
+- `lyric.cliPath` setting (default `"lyric"`) controls the executable
+  used by all commands and the task provider.
+- `contributes.taskDefinitions` entry in `package.json` lets users author
+  their own `lyric`-typed task entries with IntelliSense.
+
+**Other changes**
+
+- `package.json` version bumped to 0.0.2; description updated; new
+  `activationEvents` entry (`workspaceContains:**/lyric.toml`) so the
+  extension activates without opening a `.l` file.
+- `lyric.defaultRestoreFeed` setting added (reserved for future
+  package-search palette feature).
+- `extension.ts` fully rewritten to wire LSP + navigator + tasks +
+  commands and to set the `lyric.hasManifest` context key on activation
+  and on manifest file-system events.
