@@ -76,7 +76,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
-| M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
+| M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
+| M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 |
 
 ### Phase 2 — type system completion (in progress)
@@ -194,6 +195,101 @@ discharge cleanly under Z3.
 
 ## Active session decisions
 
+### D-progress-137: M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator`)
+
+*claude/contract-elaborator-stage-2-3k3r2 branch.*
+
+Phase 5 §M5.2 stage 2 ships the self-hosted contract elaborator as a
+single-file `Lyric.ContractElaborator` library under
+`compiler/lyric/lyric/contract_elaborator/`:
+
+- `elaborator.l` — public entry points `elaborateFile(file)` and
+  `elaborateFunction(fn)`; helpers for synthetic-name generation
+  (`RenameCounter` / `freshResultName`), AST builders
+  (`mkPath`, `mkAssertCall`, `mkLetBinding`), and the recursive
+  `result` substitution (`substResult` / `substResultStmt` /
+  `substResultBlock` / `substResultEob` / `substResultBinding` /
+  `substResultRange`).  The elaboration pipeline:
+
+  1. **`requires:` clauses** — for every non-`@axiom` `IFunc` with
+     a body, prepend one `assert(req)` `SExpr` statement per
+     `CCRequires` clause to the body block (in source order).
+
+  2. **`ensures:` clauses** — top-level shape only.  Each
+     `SReturn(Some(e))` directly under the function body block is
+     rewritten to:
+
+     ```text
+     let __lyric_result_<n> = e
+     assert(<ensures with EResult -> __lyric_result_<n>>)*
+     return __lyric_result_<n>
+     ```
+
+     `SReturn(None)` paths get the asserts prepended verbatim
+     (no synthetic local — `result` would be `Unit` and the
+     type-checker rejects `EResult` on Unit-returning functions).
+     The trailing `SExpr(e)` of the body block is rewritten the
+     same way as `SReturn(Some(e))` but yields the synthetic local
+     as the implicit fall-off instead of returning it.  `FBExpr(e)`
+     bodies are wrapped into a single-statement block before
+     elaboration so the same pipeline applies.
+
+  3. **`@axiom` functions and body-less signatures** — pass through
+     unchanged.
+
+  4. **Other contract clauses** (`when:`, `decreases:`, `raises:`)
+     and loop `SInvariant` statements — left as-is.  The bootstrap
+     emitter does not insert runtime checks for these; the verifier
+     is the consumer.
+
+  5. **Other item kinds** (records, unions, interfaces, protected
+     types, …) — passed through.  Protected-type entries
+     (`PMEntry`) are deferred: the bootstrap emitter still wraps
+     them in IL with barrier (`when:`) checks and protected-type
+     `invariant:` re-evaluation, so the bootstrap remains correct;
+     the self-host elaborator picks them up alongside the
+     protected-type lowering in a follow-up stage.
+
+The original `contracts: List[ContractClause]` field on each
+`FunctionDecl` is preserved on the elaborated decl, so the verifier
+and the contract-meta consumers still see the source-level clauses.
+
+**Stage 2 deferrals** (tracked for stage 3):
+
+- Returns nested inside `if` / `match` / `try` / loop bodies are
+  not yet rewritten.  Top-level `SReturn` in the function body
+  block is the only return shape elaborated.  The bootstrap
+  emitter still inserts a runtime check for nested returns via the
+  exit-label routing (see `Emitter.fs:2807-2812`), so the bootstrap
+  remains correct independently of elaborator coverage.
+- Protected-type `EntryDecl` elaboration (barrier `when:` checks,
+  protected-type `invariant:` re-evaluation).
+- Loop `SInvariant` runtime lowering (the F# bootstrap does not
+  insert these either; the elaborator follows the bootstrap).
+
+**Consumer and harness:**
+
+- `compiler/lyric/lyric/contract_elaborator_self_test.l` — 14
+  in-process tests covering: empty-contracts identity, single /
+  multiple `requires:`, single / multiple `ensures:` (trailing
+  fall-off and explicit return paths), bare `return`, combined
+  requires + ensures, `@axiom` skip, signature pass-through,
+  preservation of the original `contracts` list, synthetic-name
+  uniqueness across multiple returns, file-level identity
+  (package decl + imports + items), and non-function items
+  pass-through.
+- `compiler/tests/Lyric.Emitter.Tests/SelfHostedContractElaboratorTests.fs`
+  — F# Expecto wrapper (`[contract_elaborator_self_test_passes]`)
+  added under the
+  `Lyric.ContractElaborator self-host (Phase 5 §M5.2)` test list and
+  registered in `Program.fs` next to `SelfHostedModeCheckerTests`.
+
+The pre-existing environment-gated z3 failure in
+`Lyric.Verifier.Tests` (D-D1.3 EIf branch test) is unaffected and
+unrelated to this stage.
+
+---
+
 ### D-progress-136: M5.3 stage 4 — item-internal comment preservation via `FmtCtx` cursor
 
 *claude/lyric-fmt-internal-comments branch.*
@@ -253,6 +349,8 @@ Out of scope for this stage: per-expression CST nodes (so a
 comment inside a single expression's sub-tree may still anchor at
 the enclosing statement).  Mechanically additive when needed.
 
+---
+
 ### D-progress-135: M5.3 stage 3 — F# CLI `lyric fmt` reflection bridge
 
 *claude/lyric-fmt-cli-wiring branch.*
@@ -307,6 +405,8 @@ inside the DLL are unaffected (`Lyric.Fmt.Program`).  Cleaning the
 DLL naming is its own concern; for now the bridge looks up
 `Lyric.Lyric.Fmt.dll` explicitly with a comment.
 
+---
+
 ### D-progress-131: M5.3 stage 2 — self-hosted formatter (`Lyric.Fmt`) port
 
 *claude/lyric-self-hosted-formatter branch.*
@@ -354,6 +454,8 @@ calls `Lyric.Cli.Fmt.format` (F#).  The next stage routes
 `lyric fmt` through this Lyric formatter via in-process compile +
 reflection (matching the existing emitter pattern for stdlib DLL
 loading).
+
+---
 
 ### D-progress-130: M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser
 
