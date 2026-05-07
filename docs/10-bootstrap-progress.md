@@ -233,6 +233,19 @@ F# Expecto bridge that drives `stdlib/tests/*_tests.l` today goes
 away with the F# host, so a native runner is a Phase 5
 prerequisite that we paid down early.
 
+**Self-hosted port (follow-up commit).**  The same rewriter is
+also implemented in Lyric at `compiler/lyric/lyric/test_synth/test_synth.l`
+(`Lyric.TestSynth`), with a self-test consumer at
+`compiler/lyric/lyric/test_synth_self_test.l` driven by the F#
+Expecto runner `tests/Lyric.Emitter.Tests/SelfHostedTestSynthTests.fs`.
+Seven in-program assertions cover passing/parsing-error/no-`@test_module`/
+user-main/fixture/property-skip/filter/`listEntries` paths and pass
+end-to-end.  Mirrors the formatter pattern from D-progress-131:
+both the F# implementation (used by the F# CLI today) and the Lyric
+implementation (Phase 5 ready-to-route artifact) ship side-by-side
+until a follow-up stage routes `lyric test` through the Lyric
+library via in-process compile + reflection.
+
 ### D-progress-137: M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator`)
 
 *claude/contract-elaborator-stage-2-3k3r2 branch.*

@@ -194,6 +194,7 @@ let main argv =
             SelfHostedFmtTests.tests
             SelfHostedModeCheckerTests.tests
             SelfHostedContractElaboratorTests.tests
+            SelfHostedTestSynthTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
         ]
