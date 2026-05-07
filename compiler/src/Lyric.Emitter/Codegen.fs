@@ -307,6 +307,20 @@ let private codegenErrStmt
 // Stdlib bindings.
 // ---------------------------------------------------------------------------
 
+/// `Lyric.Stdlib.UnionEquality.SameType(object, object)` — used by BEq
+/// on abstract union base types to compare by runtime type class rather
+/// than by reference identity.  A static `Call` avoids both virtual-
+/// dispatch issues (PersistedAssemblyBuilder nested-type vtable bugs)
+/// and `DeclareLocal` ordering issues.
+let private sameTypeMethod : Lazy<MethodInfo> =
+    lazy (
+        let mi =
+            typeof<Lyric.Stdlib.UnionEquality>
+                .GetMethod("SameType", [| typeof<obj>; typeof<obj> |])
+        match Option.ofObj mi with
+        | Some m -> m
+        | None   -> failwith "Lyric.Stdlib.UnionEquality::SameType(obj,obj) not found")
+
 let private compareOrdinalMethod : Lazy<MethodInfo> =
     lazy (
         let mi = typeof<System.String>.GetMethod("CompareOrdinal", [| typeof<string>; typeof<string> |])
@@ -2172,7 +2186,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
                         // Nullary case literal — `None` / `Leaf` etc.
                         if List.isEmpty info.Generics then
-                            il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                            // Use singleton Instance field when available so
+                            // `==` (Ceq) compares references correctly.
+                            match caseInfo.Instance with
+                            | Some instField ->
+                                il.Emit(OpCodes.Ldsfld, instField)
+                            | None ->
+                                il.Emit(OpCodes.Newobj, caseInfo.Ctor)
                             info.Type :> ClrType
                         else
                             let typeArgs =
@@ -2186,11 +2206,17 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                             il.Emit(OpCodes.Newobj, constructedCtor)
                             constructedParent
                     | _ ->
-                        // Imported nullary case (cross-assembly).
                         match ctx.ImportedUnionCases.TryGetValue name with
                         | true, (info, caseInfo) when caseInfo.Fields.IsEmpty ->
                             if List.isEmpty info.Generics then
-                                il.Emit(OpCodes.Newobj, caseInfo.Ctor)
+                                // Prefer the static `Get<Name>()` accessor on the
+                                // base type (cross-assembly call works in
+                                // PersistedAssemblyBuilder; cross-assembly ldsfld
+                                // crashes it).  Fall back to newobj only when no
+                                // getter was resolved (in-project TypeBuilder cases).
+                                match caseInfo.GetterMethod with
+                                | Some m -> il.Emit(OpCodes.Call, m)
+                                | None   -> il.Emit(OpCodes.Newobj, caseInfo.Ctor)
                                 info.Type
                             else
                                 let typeArgs =
@@ -2271,9 +2297,12 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         let _ = emitExpr ctx lhs
         let lblFalse = il.DefineLabel()
         let lblEnd   = il.DefineLabel()
-        il.Emit(OpCodes.Brfalse_S, lblFalse)
+        // Use long-form branches: PersistedAssemblyBuilder's short-branch upgrade
+        // logic corrupts IL when the gap between label definition and use crosses
+        // other IL that PersistedAssemblyBuilder also resizes.
+        il.Emit(OpCodes.Brfalse, lblFalse)
         let _ = emitExpr ctx rhs
-        il.Emit(OpCodes.Br_S, lblEnd)
+        il.Emit(OpCodes.Br, lblEnd)
         il.MarkLabel(lblFalse)
         emitLdcI4 il 0
         il.MarkLabel(lblEnd)
@@ -2283,9 +2312,9 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         let _ = emitExpr ctx lhs
         let lblTrue = il.DefineLabel()
         let lblEnd  = il.DefineLabel()
-        il.Emit(OpCodes.Brtrue_S, lblTrue)
+        il.Emit(OpCodes.Brtrue, lblTrue)
         let _ = emitExpr ctx rhs
-        il.Emit(OpCodes.Br_S, lblEnd)
+        il.Emit(OpCodes.Br, lblEnd)
         il.MarkLabel(lblTrue)
         emitLdcI4 il 1
         il.MarkLabel(lblEnd)
@@ -2436,6 +2465,26 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             | None ->
                 il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq)
                 typeof<bool>
+        | BEq
+            when not lt.IsValueType && lt.IsAbstract && lt = rt ->
+            // Abstract union base: nullary cases are singletons (ldsfld
+            // Instance), so callvirt Equals dispatches to object.Equals
+            // which is reference equality — correct for singletons.
+            let equalsM = typeof<obj>.GetMethod("Equals", [| typeof<obj> |]) |> Option.ofObj
+            match equalsM with
+            | Some m -> il.Emit(OpCodes.Callvirt, m)
+            | None   -> il.Emit(OpCodes.Ceq)
+            typeof<bool>
+        | BNeq
+            when not lt.IsValueType && lt.IsAbstract && lt = rt ->
+            let equalsM = typeof<obj>.GetMethod("Equals", [| typeof<obj> |]) |> Option.ofObj
+            match equalsM with
+            | Some m ->
+                il.Emit(OpCodes.Callvirt, m)
+                emitLdcI4 il 0; il.Emit(OpCodes.Ceq)
+            | None ->
+                il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq)
+            typeof<bool>
         | BEq  -> il.Emit(OpCodes.Ceq); typeof<bool>
         | BNeq -> il.Emit(OpCodes.Ceq); emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
         | BLt  when opTy = typeof<string> ->
@@ -4512,7 +4561,21 @@ and private emitMatch
             il.Emit(OpCodes.Brfalse, nextArm)
         FunctionCtx.pushScope ctx
         emitPatternBind ctx tmp arm.Pattern
-        let rawArmTy = emitBranch ctx arm.Body
+        // Propagate the match result type (from the first arm) as ExpectedType
+        // for subsequent arms so nullary generic cases (e.g. `None` in
+        // `case None -> None` when the first arm is `Some(parseExpr(st))`)
+        // pick the same type arg as the other arm.  Using the prior arm's
+        // result type is more precise than the scrutinee type (which is the
+        // input type, not the output type, and can mislead construction of
+        // e.g. `Some(ImportDecl(...))` in a `case None ->` arm of a
+        // `match tryEatKw(st, KwAs)` whose scrutinee is `Option<SpannedToken>`).
+        let savedExpected = ctx.ExpectedType
+        if i > 0 && ctx.ExpectedType.IsNone then
+            match resultTy with
+            | Some rt when rt <> typeof<System.Void> -> ctx.ExpectedType <- Some rt
+            | _ -> ()
+        let rawArmTy = emitBranchValue ctx arm.Body
+        ctx.ExpectedType <- savedExpected
         let isNever  = isNeverBranch arm.Body
         // Never-returning arms (e.g. `-> panic(...)`): close the path with
         // `ldnull; throw` so the CLR verifier doesn't require a stack value
@@ -4523,11 +4586,12 @@ and private emitMatch
             il.Emit(OpCodes.Throw)
         // Reconcile stack height with previously established result type.
         // Lyric Unit (ValueTuple) expression arms push a value; block arms
-        // push nothing.  When the two are mixed the CLR verifier rejects the
-        // inconsistent stack heights at the branch target with
-        // InvalidProgramException.  Normalise here: if a prior arm set a Unit
-        // result and this arm is void, push a zero Unit; if the prior result is
-        // void and this arm pushed Unit, pop it.
+        // ending in a non-expr statement (SAssign, SLocal, etc.) push
+        // nothing (Void).  When the two are mixed the CLR verifier rejects
+        // the inconsistent stack heights at the branch target with
+        // InvalidProgramException.  Normalise: if a prior arm set a Unit
+        // result and this arm is void, push a zero Unit; if the prior result
+        // is void and this arm pushed Unit, pop it.
         let unitTy = typeof<System.ValueTuple>
         let armTy =
             if isNever then rawArmTy  // path is closed; type doesn't matter
@@ -4749,7 +4813,11 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         | Some name ->
             match FunctionCtx.tryLookup ctx name with
             | Some lb ->
+                let saved = ctx.ExpectedType
+                if ctx.ExpectedType.IsNone then
+                    ctx.ExpectedType <- Some lb.LocalType
                 let _ = emitExpr ctx value
+                ctx.ExpectedType <- saved
                 il.Emit(OpCodes.Stloc, lb)
             | None ->
                 match ctx.SmFields.TryGetValue name with

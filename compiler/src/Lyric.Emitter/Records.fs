@@ -80,11 +80,21 @@ type UnionPayloadField =
 
 /// One case of a Lyric union, post-CLR-lowering.
 type UnionCaseInfo =
-    { Name:    string
+    { Name:     string
       /// Sealed CLR class implementing the case.
-      Type:    TypeBuilder
-      Fields:  UnionPayloadField list
-      Ctor:    ConstructorBuilder }
+      Type:     TypeBuilder
+      Fields:   UnionPayloadField list
+      Ctor:     ConstructorBuilder
+      /// Singleton static field `Instance` on the case class; present only
+      /// for non-generic nullary cases so that `==` via `Ceq` works correctly
+      /// (two references to the same singleton compare equal by identity).
+      Instance: FieldBuilder option
+      /// Static accessor `Get<Name>()` on the union base class; present for
+      /// the same cases as `Instance`.  Body: `ldsfld Instance; ret`.
+      /// Defined on the BASE type so external assemblies can call it via a
+      /// cross-assembly method call (which PersistedAssemblyBuilder encodes
+      /// correctly) instead of a cross-assembly `ldsfld` (which it cannot).
+      GetterMethod: MethodBuilder option }
 
 /// What the codegen needs to know about a Lyric union.  `Generics` is
 /// the (ordered) list of type-parameter names — empty for non-generic
@@ -295,7 +305,15 @@ type ImportedUnionCaseInfo =
       /// concrete runtime type for non-generic unions.
       Type:   ClrType
       Fields: ImportedField list
-      Ctor:   ConstructorInfo }
+      Ctor:   ConstructorInfo
+      /// Static singleton field `Instance` on the case class; present
+      /// only for non-generic nullary cases.
+      Instance: FieldInfo option
+      /// Static `Get<Name>()` on the union BASE class — the cross-assembly
+      /// callable accessor that returns the singleton.  Codegen emits
+      /// `call` on this instead of `ldsfld Instance` (cross-assembly
+      /// field references crash PersistedAssemblyBuilder; method calls work).
+      GetterMethod: MethodInfo option }
 
 type ImportedUnionInfo =
     { Name:     string

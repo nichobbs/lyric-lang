@@ -166,6 +166,7 @@ pub union Keyword {
   case KwIn
   case KwInout
   case KwInterface
+  case KwInternal
   case KwInvariant
   case KwIs
   case KwLet
@@ -334,6 +335,7 @@ pub func keywordSpelling(kw: in Keyword): String {
     case KwIn        -> "in"
     case KwInout     -> "inout"
     case KwInterface -> "interface"
+    case KwInternal  -> "internal"
     case KwInvariant -> "invariant"
     case KwIs        -> "is"
     case KwLet       -> "let"
@@ -413,6 +415,7 @@ pub func tryKeywordFromString(s: in String): Option[Keyword] {
   else if s == "in"        { Some(value = KwIn) }
   else if s == "inout"     { Some(value = KwInout) }
   else if s == "interface" { Some(value = KwInterface) }
+  else if s == "internal"  { Some(value = KwInternal) }
   else if s == "invariant" { Some(value = KwInvariant) }
   else if s == "is"        { Some(value = KwIs) }
   else if s == "let"       { Some(value = KwLet) }

@@ -1,0 +1,2022 @@
+// parser_items.l — item body parsers and top-level parse entry point.
+// Mirrors P5b–P8 of compiler/src/Lyric.Parser/Parser.fs.
+package Lyric.Parser
+
+import Std.Core
+import Std.Collections
+import Lyric.Lexer
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skip helper (error recovery).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func skipItemBody(st: inout ParseState): Span {
+  val startSpan = peekSpan(st)
+  var depth = 0
+  var seenBrace = false
+  var keepGoing = true
+  var lastSpan = startSpan
+  while keepGoing and not isAtEnd(st) {
+    val tok = peek(st)
+    lastSpan = tok.span
+    match tok.token {
+      case TPunct(p) -> {
+        match p {
+          case LBrace -> {
+            seenBrace = true
+            depth = depth + 1
+            val _ = advance(st)
+          }
+          case LParen -> { depth = depth + 1; val _ = advance(st) }
+          case LBracket -> { depth = depth + 1; val _ = advance(st) }
+          case RBrace -> {
+            if depth > 0 { depth = depth - 1 }
+            val _ = advance(st)
+            if seenBrace and depth == 0 { keepGoing = false }
+          }
+          case RParen -> { if depth > 0 { depth = depth - 1 }; val _ = advance(st) }
+          case RBracket -> { if depth > 0 { depth = depth - 1 }; val _ = advance(st) }
+          case _ -> { val _ = advance(st) }
+        }
+      }
+      case TStmtEnd -> {
+        if depth == 0 { keepGoing = false }
+        else { val _ = advance(st) }
+      }
+      case _ -> { val _ = advance(st) }
+    }
+  }
+  joinSpans(startSpan, lastSpan)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P5b helpers: field decl, type-alias, distinct-type, record, union, enum,
+// opaque type.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseFieldDecl(st: inout ParseState): FieldDecl {
+  val startSpan = peekSpan(st)
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  val vis =
+    match tryEatKw(st, KwPub) {
+      case Some(t) -> Some(VisPub(span = t.span))
+      case None -> {
+        match tryEatKw(st, KwInternal) {
+          case Some(t) -> Some(VisInternal(span = t.span))
+          case None -> None
+        }
+      }
+    }
+  val ns = readIdent(st, "field")
+  match tryEatPunct(st, Colon) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0120", "expected ':' after field name", peekSpan(st)) }
+  }
+  val ty = parseTypeExpr(st)
+  val dflt =
+    match tryEatPunct(st, Eq) {
+      case Some(_) -> Some(parseExpr(st))
+      case None -> None
+    }
+  val trailingAnns = parseTrailingAnnotations(st)
+  val allAnns = listConcat(anns, trailingAnns)
+  val endSpan =
+    match dflt {
+      case Some(e) -> e.span
+      case None -> ty.span
+    }
+  FieldDecl(
+    docComments = docs,
+    annotations = allAnns,
+    visibility  = vis,
+    name        = ns.name,
+    ty          = ty,
+    dflt        = dflt,
+    span        = joinSpans(startSpan, endSpan))
+}
+
+func parseTypeAliasBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): TypeAliasDecl {
+  val startTok = advance(st)  // 'alias'
+  val ns = readIdent(st, "alias")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0110", "expected '=' in type alias", peekSpan(st)) }
+  }
+  val rhs = parseTypeExpr(st)
+  TypeAliasDecl(name = ns.name, generics = generics, rhs = rhs, span = joinSpans(startTok.span, rhs.span))
+}
+
+func parseDerivesClauseOpt(st: inout ParseState): List[String] {
+  val xs: List[String] = newList()
+  if identStr(peekToken(st)) == "derives" {
+    val _ = advance(st)
+    match tryEatIdent(st) {
+      case Some(ns) -> { xs.add(ns.name) }
+      case None -> { emitErr(st, "P0111", "expected a marker name in 'derives' clause", peekSpan(st)) }
+    }
+    while isPunct(peekToken(st), Comma) {
+      val _ = advance(st)
+      match tryEatIdent(st) {
+        case Some(ns) -> { xs.add(ns.name) }
+        case None -> { emitErr(st, "P0111", "expected a marker name in 'derives' clause", peekSpan(st)) }
+      }
+    }
+  }
+  xs
+}
+
+func parseDistinctTypeBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): DistinctTypeDecl {
+  val startTok = advance(st)  // 'type'
+  val ns = readIdent(st, "type")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0112", "expected '=' in distinct type declaration", peekSpan(st)) }
+  }
+  val initial = parseTypeExpr(st)
+  // Unwrap TRefined back into head + bound for distinct-type context.
+  var underlying = initial
+  var rangeOpt: Option[RangeBound] = None
+  match initial.kind {
+    case TRefined(path, bound) -> {
+      underlying = mkType(TRef(path = path), path.span)
+      rangeOpt = Some(bound)
+    }
+    case _ -> {}
+  }
+  if rangeOpt == None {
+    if identStr(peekToken(st)) == "range" {
+      val _ = advance(st)
+      rangeOpt = Some(parseRangeBound(st))
+    }
+  }
+  val derives = parseDerivesClauseOpt(st)
+  val endSpan = peekSpan(st)
+  DistinctTypeDecl(
+    name       = ns.name,
+    generics   = generics,
+    underlying = underlying,
+    rangeClause = rangeOpt,
+    derives    = derives,
+    span       = joinSpans(startTok.span, endSpan))
+}
+
+func parseRecordMembers(st: inout ParseState): List[RecordMember] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0121", "expected '{' to start record body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[RecordMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    match peekToken(st) {
+      case TKeyword(k) -> {
+        match k {
+          case KwInvariant -> { xs.add(RMInvariant(inv = parseInvariantClause(st))) }
+          case KwFunc -> { xs.add(RMFunc(fn = parseFunctionDeclBody(st, None))) }
+          case KwAsync -> {
+            val next1 = peekAt(st, 1)
+            match next1.token {
+              case TKeyword(k2) -> {
+                match k2 {
+                  case KwFunc -> { xs.add(RMFunc(fn = parseFunctionDeclBody(st, None))) }
+                  case _ -> { xs.add(RMField(field = parseFieldDecl(st))) }
+                }
+              }
+              case _ -> { xs.add(RMField(field = parseFieldDecl(st))) }
+            }
+          }
+          case _ -> { xs.add(RMField(field = parseFieldDecl(st))) }
+        }
+      }
+      case _ -> { xs.add(RMField(field = parseFieldDecl(st))) }
+    }
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0122", "expected '}' to close record body", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams], isExposed: Bool): RecordDecl {
+  val startSpan = peekSpan(st)
+  if isExposed { val _ = advance(st) }  // 'exposed'
+  val _ = advance(st)                   // 'record'
+  val ns = readIdent(st, "record")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val _ = parseTrailingAnnotations(st)
+  val members = parseRecordMembers(st)
+  val endSpan = peekSpan(st)
+  RecordDecl(
+    name       = ns.name,
+    generics   = generics,
+    whereClause = whereClause,
+    members    = members,
+    span       = joinSpans(startSpan, endSpan))
+}
+
+func parseUnionField(st: inout ParseState): UnionField {
+  val saved = mark(st)
+  match peekToken(st) {
+    case TIdent(_) -> {
+      val nameTok = advance(st)
+      if isPunct(peekToken(st), Colon) {
+        val _ = advance(st)
+        val ty = parseTypeExpr(st)
+        val fieldName = identStr(nameTok.token)
+        UFNamed(name = fieldName, ty = ty, span = joinSpans(nameTok.span, ty.span))
+      } else {
+        reset(st, saved)
+        val ty = parseTypeExpr(st)
+        UFPos(ty = ty, span = ty.span)
+      }
+    }
+    case _ -> {
+      val ty = parseTypeExpr(st)
+      UFPos(ty = ty, span = ty.span)
+    }
+  }
+}
+
+func parseUnionCase(st: inout ParseState): UnionCase {
+  val startSpan = peekSpan(st)
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  match tryEatKw(st, KwCase) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0130", "expected 'case' to start a union case", peekSpan(st)) }
+  }
+  val ns = readIdent(st, "case")
+  val fields: List[UnionField] = newList()
+  if isPunct(peekToken(st), LParen) {
+    val _ = advance(st)
+    if not isPunct(peekToken(st), RParen) {
+      fields.add(parseUnionField(st))
+      while isPunct(peekToken(st), Comma) {
+        val _ = advance(st)
+        if not isPunct(peekToken(st), RParen) {
+          fields.add(parseUnionField(st))
+        }
+      }
+    }
+    match tryEatPunct(st, RParen) {
+      case Some(_) -> {}
+      case None -> { emitErr(st, "P0131", "expected ')' to close union case payload", peekSpan(st)) }
+    }
+  }
+  val endSpan = peekSpan(st)
+  UnionCase(
+    docComments = docs,
+    annotations = anns,
+    name        = ns.name,
+    fields      = fields,
+    span        = joinSpans(startSpan, endSpan))
+}
+
+func parseUnionCases(st: inout ParseState): List[UnionCase] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0132", "expected '{' to start union body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[UnionCase] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    xs.add(parseUnionCase(st))
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0133", "expected '}' to close union body", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseUnionBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): UnionDecl {
+  val startTok = advance(st)  // 'union'
+  val ns = readIdent(st, "union")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val _ = parseTrailingAnnotations(st)
+  val cases = parseUnionCases(st)
+  val endSpan = peekSpan(st)
+  UnionDecl(
+    name        = ns.name,
+    generics    = generics,
+    whereClause = whereClause,
+    cases       = cases,
+    span        = joinSpans(startTok.span, endSpan))
+}
+
+func parseEnumCase(st: inout ParseState): EnumCase {
+  val startSpan = peekSpan(st)
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  match tryEatKw(st, KwCase) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0140", "expected 'case' to start an enum case", peekSpan(st)) }
+  }
+  val ns = readIdent(st, "case")
+  EnumCase(
+    docComments = docs,
+    annotations = anns,
+    name        = ns.name,
+    span        = joinSpans(startSpan, ns.span))
+}
+
+func parseEnumCases(st: inout ParseState): List[EnumCase] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0141", "expected '{' to start enum body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[EnumCase] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    xs.add(parseEnumCase(st))
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0142", "expected '}' to close enum body", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseEnumBody(st: inout ParseState): EnumDecl {
+  val startTok = advance(st)  // 'enum'
+  val ns = readIdent(st, "enum")
+  val cases = parseEnumCases(st)
+  val endSpan = peekSpan(st)
+  EnumDecl(name = ns.name, cases = cases, span = joinSpans(startTok.span, endSpan))
+}
+
+func parseOpaqueMembers(st: inout ParseState): List[OpaqueMember] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0150", "expected '{' to start opaque type body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[OpaqueMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    match peekToken(st) {
+      case TKeyword(k) -> {
+        match k {
+          case KwInvariant -> { xs.add(OMInvariant(inv = parseInvariantClause(st))) }
+          case _ -> { xs.add(OMField(field = parseFieldDecl(st))) }
+        }
+      }
+      case _ -> { xs.add(OMField(field = parseFieldDecl(st))) }
+    }
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0151", "expected '}' to close opaque type body", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseOpaqueTypeBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): OpaqueTypeDecl {
+  val startTok = peek(st)
+  match tryEatKw(st, KwOpaque) {
+    case Some(_) -> {}
+    case None -> {}
+  }
+  match tryEatKw(st, KwType) {
+    case Some(_) -> {}
+    case None -> {}
+  }
+  val ns = readIdent(st, "opaque type")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val postAnns = parseTrailingAnnotations(st)
+  var hasBody = false
+  var members: List[OpaqueMember] = newList()
+  match peekToken(st) {
+    case TPunct(p) -> {
+      match p {
+        case LBrace -> {
+          hasBody = true
+          members = parseOpaqueMembers(st)
+        }
+        case Eq -> {
+          val _ = advance(st)
+          match tryEatKw(st, KwRecord) {
+            case Some(_) -> {}
+            case None -> {}
+          }
+          hasBody = true
+          members = parseOpaqueMembers(st)
+        }
+        case _ -> {}
+      }
+    }
+    case _ -> {}
+  }
+  val endSpan = peekSpan(st)
+  OpaqueTypeDecl(
+    name        = ns.name,
+    generics    = generics,
+    whereClause = whereClause,
+    annotations = postAnns,
+    members     = members,
+    hasBody     = hasBody,
+    span        = joinSpans(startTok.span, endSpan))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P6a: parameters, contract clauses, function body, function decl.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseParam(st: inout ParseState): Param {
+  val startSpan = peekSpan(st)
+  val paramName =
+    match peekToken(st) {
+      case TKeyword(k) -> {
+        match k {
+          case KwSelf -> {
+            val _ = advance(st)
+            "self"
+          }
+          case _ -> {
+            val ns = readIdent(st, "parameter")
+            ns.name
+          }
+        }
+      }
+      case _ -> {
+        val ns = readIdent(st, "parameter")
+        ns.name
+      }
+    }
+  match tryEatPunct(st, Colon) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0161", "expected ':' after parameter name", peekSpan(st)) }
+  }
+  val mode =
+    match peekToken(st) {
+      case TKeyword(k) -> {
+        match k {
+          case KwIn    -> { val _ = advance(st); PMIn }
+          case KwOut   -> { val _ = advance(st); PMOut }
+          case KwInout -> { val _ = advance(st); PMInout }
+          case _       -> PMIn
+        }
+      }
+      case _ -> PMIn
+    }
+  val ty = parseTypeExpr(st)
+  val dflt =
+    match tryEatPunct(st, Eq) {
+      case Some(_) -> Some(parseExpr(st))
+      case None -> None
+    }
+  val endSpan =
+    match dflt {
+      case Some(e) -> e.span
+      case None -> ty.span
+    }
+  Param(mode = mode, name = paramName, ty = ty, dflt = dflt, span = joinSpans(startSpan, endSpan))
+}
+
+func parseParamList(st: inout ParseState): List[Param] {
+  match tryEatPunct(st, LParen) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0162", "expected '(' to start parameter list", peekSpan(st)) }
+  }
+  val xs: List[Param] = newList()
+  if not isPunct(peekToken(st), RParen) {
+    xs.add(parseParam(st))
+    while isPunct(peekToken(st), Comma) {
+      val _ = advance(st)
+      if not isPunct(peekToken(st), RParen) {
+        xs.add(parseParam(st))
+      }
+    }
+  }
+  match tryEatPunct(st, RParen) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0163", "expected ')' to close parameter list", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseContractClauseOpt(st: inout ParseState): Option[ContractClause] {
+  val startSpan = peekSpan(st)
+  match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwRequires -> {
+          val _ = advance(st)
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0170", "expected ':' after 'requires'", peekSpan(st)) }
+          }
+          val e = parseExpr(st)
+          Some(CCRequires(expr = e, span = joinSpans(startSpan, e.span)))
+        }
+        case KwEnsures -> {
+          val _ = advance(st)
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0170", "expected ':' after 'ensures'", peekSpan(st)) }
+          }
+          val e = parseExpr(st)
+          Some(CCEnsures(expr = e, span = joinSpans(startSpan, e.span)))
+        }
+        case KwWhen -> {
+          val _ = advance(st)
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0170", "expected ':' after 'when'", peekSpan(st)) }
+          }
+          val e = parseExpr(st)
+          Some(CCWhen(expr = e, span = joinSpans(startSpan, e.span)))
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func parseContractClauses(st: inout ParseState): List[ContractClause] {
+  val xs: List[ContractClause] = newList()
+  var keepGoing = true
+  while keepGoing {
+    val _ = skipStmtEnds(st)
+    match parseContractClauseOpt(st) {
+      case Some(c) -> { xs.add(c) }
+      case None -> { keepGoing = false }
+    }
+  }
+  xs
+}
+
+func parseFunctionBody(st: inout ParseState): FunctionBody {
+  match peekToken(st) {
+    case TPunct(p) -> {
+      match p {
+        case Eq -> {
+          val _ = advance(st)
+          FBExpr(expr = parseExpr(st))
+        }
+        case LBrace -> {
+          FBBlock(block = parseBlock(st))
+        }
+        case _ -> {
+          emitErr(st, "P0172", "expected '=' or '{' to start function body", peekSpan(st))
+          val sp = peekSpan(st)
+          FBBlock(block = Block(statements = newList(), span = sp))
+        }
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0172", "expected '=' or '{' to start function body", peekSpan(st))
+      val sp = peekSpan(st)
+      FBBlock(block = Block(statements = newList(), span = sp))
+    }
+  }
+}
+
+func parseFunctionDeclBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): FunctionDecl {
+  val startSpan = peekSpan(st)
+  val isAsync =
+    match tryEatKw(st, KwAsync) {
+      case Some(_) -> true
+      case None -> false
+    }
+  match tryEatKw(st, KwFunc) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0173", "expected 'func' keyword", peekSpan(st)) }
+  }
+  val firstNs = readIdent(st, "function")
+  val parts: List[String] = newList()
+  parts.add(firstNs.name)
+  while isPunct(peekToken(st), Dot) {
+    val _ = advance(st)
+    match tryEatIdent(st) {
+      case Some(ns) -> { parts.add(ns.name) }
+      case None -> {}
+    }
+  }
+  var funcName = parts[0]
+  var i = 1
+  while i < parts.count {
+    funcName = funcName + "." + parts[i]
+    i = i + 1
+  }
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  val _ = skipStmtEnds(st)
+  val parameters = parseParamList(st)
+  val _ = skipStmtEnds(st)
+  val returnType =
+    match tryEatPunct(st, Colon) {
+      case Some(_) -> Some(parseTypeExpr(st))
+      case None -> None
+    }
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val _ = parseTrailingAnnotations(st)
+  val contracts = parseContractClauses(st)
+  val body =
+    match peekToken(st) {
+      case TPunct(p) -> {
+        match p {
+          case Eq -> Some(parseFunctionBody(st))
+          case LBrace -> Some(parseFunctionBody(st))
+          case _ -> None
+        }
+      }
+      case _ -> None
+    }
+  val emptyDocs: List[DocComment] = newList()
+  val emptyAnns: List[Annotation] = newList()
+  val endSpan = peekSpan(st)
+  FunctionDecl(
+    docComments = emptyDocs,
+    annotations = emptyAnns,
+    visibility  = None,
+    isAsync     = isAsync,
+    name        = funcName,
+    generics    = generics,
+    params      = parameters,
+    ret         = returnType,
+    whereClause = whereClause,
+    contracts   = contracts,
+    body        = body,
+    span        = joinSpans(startSpan, endSpan))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P6b: interface and impl.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseAssociatedTypeDecl(st: inout ParseState): AssociatedTypeDecl {
+  val startTok = advance(st)  // 'type'
+  val ns = readIdent(st, "associated type")
+  val dflt =
+    match tryEatPunct(st, Eq) {
+      case Some(_) -> Some(parseTypeExpr(st))
+      case None -> None
+    }
+  val endSpan =
+    match dflt {
+      case Some(t) -> t.span
+      case None -> ns.span
+    }
+  AssociatedTypeDecl(name = ns.name, dflt = dflt, span = joinSpans(startTok.span, endSpan))
+}
+
+func parseInterfaceMemberOpt(st: inout ParseState): Option[InterfaceMember] {
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwType -> {
+          Some(IMAssoc(assoc = parseAssociatedTypeDecl(st)))
+        }
+        case KwFunc -> {
+          val fn0 = parseFunctionDeclBody(st, None)
+          val fn = FunctionDecl(
+            docComments = docs,
+            annotations = anns,
+            visibility  = fn0.visibility,
+            isAsync     = fn0.isAsync,
+            name        = fn0.name,
+            generics    = fn0.generics,
+            params      = fn0.params,
+            ret         = fn0.ret,
+            whereClause = fn0.whereClause,
+            contracts   = fn0.contracts,
+            body        = fn0.body,
+            span        = fn0.span)
+          match fn.body {
+            case None -> {
+              Some(IMSig(sig = FunctionSig(
+                isAsync   = fn.isAsync,
+                name      = fn.name,
+                generics  = fn.generics,
+                params    = fn.params,
+                ret       = fn.ret,
+                whereClause = fn.whereClause,
+                contracts = fn.contracts,
+                span      = fn.span)))
+            }
+            case Some(_) -> {
+              Some(IMFunc(fn = fn))
+            }
+          }
+        }
+        case KwAsync -> {
+          val fn0 = parseFunctionDeclBody(st, None)
+          val fn = FunctionDecl(
+            docComments = docs,
+            annotations = anns,
+            visibility  = fn0.visibility,
+            isAsync     = fn0.isAsync,
+            name        = fn0.name,
+            generics    = fn0.generics,
+            params      = fn0.params,
+            ret         = fn0.ret,
+            whereClause = fn0.whereClause,
+            contracts   = fn0.contracts,
+            body        = fn0.body,
+            span        = fn0.span)
+          match fn.body {
+            case None -> {
+              Some(IMSig(sig = FunctionSig(
+                isAsync   = fn.isAsync,
+                name      = fn.name,
+                generics  = fn.generics,
+                params    = fn.params,
+                ret       = fn.ret,
+                whereClause = fn.whereClause,
+                contracts = fn.contracts,
+                span      = fn.span)))
+            }
+            case Some(_) -> {
+              Some(IMFunc(fn = fn))
+            }
+          }
+        }
+        case _ -> {
+          emitErr(st, "P0181", "expected 'func', 'async func', or 'type' inside interface body", peekSpan(st))
+          if not isAtEnd(st) { val _ = advance(st) }
+          None
+        }
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0181", "expected 'func', 'async func', or 'type' inside interface body", peekSpan(st))
+      if not isAtEnd(st) { val _ = advance(st) }
+      None
+    }
+  }
+}
+
+func parseInterfaceMembers(st: inout ParseState): List[InterfaceMember] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0182", "expected '{' to start interface body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[InterfaceMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    match parseInterfaceMemberOpt(st) {
+      case Some(m) -> { xs.add(m) }
+      case None -> {}
+    }
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0183", "expected '}' to close interface body", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseInterfaceBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): InterfaceDecl {
+  val startTok = advance(st)  // 'interface'
+  val ns = readIdent(st, "interface")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val _ = parseTrailingAnnotations(st)
+  val members = parseInterfaceMembers(st)
+  val endSpan = peekSpan(st)
+  InterfaceDecl(
+    name        = ns.name,
+    generics    = generics,
+    whereClause = whereClause,
+    members     = members,
+    span        = joinSpans(startTok.span, endSpan))
+}
+
+func parseImplMemberOpt(st: inout ParseState): Option[ImplMember] {
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwType -> {
+          Some(IMplAssoc(assoc = parseAssociatedTypeDecl(st)))
+        }
+        case KwFunc -> {
+          val fn0 = parseFunctionDeclBody(st, None)
+          val fn = FunctionDecl(
+            docComments = docs,
+            annotations = anns,
+            visibility  = fn0.visibility,
+            isAsync     = fn0.isAsync,
+            name        = fn0.name,
+            generics    = fn0.generics,
+            params      = fn0.params,
+            ret         = fn0.ret,
+            whereClause = fn0.whereClause,
+            contracts   = fn0.contracts,
+            body        = fn0.body,
+            span        = fn0.span)
+          Some(IMplFunc(fn = fn))
+        }
+        case KwAsync -> {
+          val fn0 = parseFunctionDeclBody(st, None)
+          val fn = FunctionDecl(
+            docComments = docs,
+            annotations = anns,
+            visibility  = fn0.visibility,
+            isAsync     = fn0.isAsync,
+            name        = fn0.name,
+            generics    = fn0.generics,
+            params      = fn0.params,
+            ret         = fn0.ret,
+            whereClause = fn0.whereClause,
+            contracts   = fn0.contracts,
+            body        = fn0.body,
+            span        = fn0.span)
+          Some(IMplFunc(fn = fn))
+        }
+        case _ -> {
+          emitErr(st, "P0184", "expected 'func', 'async func', or 'type' inside impl body", peekSpan(st))
+          if not isAtEnd(st) { val _ = advance(st) }
+          None
+        }
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0184", "expected 'func', 'async func', or 'type' inside impl body", peekSpan(st))
+      if not isAtEnd(st) { val _ = advance(st) }
+      None
+    }
+  }
+}
+
+func parseImplMembers(st: inout ParseState): List[ImplMember] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0185", "expected '{' to start impl body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[ImplMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    match parseImplMemberOpt(st) {
+      case Some(m) -> { xs.add(m) }
+      case None -> {}
+    }
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0186", "expected '}' to close impl body", peekSpan(st)) }
+  }
+  xs
+}
+
+func parseImplBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): ImplDecl {
+  val startTok = advance(st)  // 'impl'
+  val suffixGenerics = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, suffixGenerics)
+  val iface = parseConstraintRef(st)
+  match tryEatKw(st, KwFor) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0180", "expected 'for' in impl declaration", peekSpan(st)) }
+  }
+  val target = parseTypeExpr(st)
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val _ = parseTrailingAnnotations(st)
+  val members = parseImplMembers(st)
+  val endSpan = peekSpan(st)
+  ImplDecl(
+    generics    = generics,
+    iface       = iface,
+    target      = target,
+    whereClause = whereClause,
+    members     = members,
+    span        = joinSpans(startTok.span, endSpan))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P8: remaining item kinds.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseEntryDecl(st: inout ParseState): EntryDecl {
+  val startSpan = peekSpan(st)
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  val vis =
+    match tryEatKw(st, KwPub) {
+      case Some(t) -> Some(VisPub(span = t.span))
+      case None -> {
+        match tryEatKw(st, KwInternal) {
+          case Some(t) -> Some(VisInternal(span = t.span))
+          case None -> None
+        }
+      }
+    }
+  val _ = advance(st)  // 'entry'
+  val ns = readIdent(st, "entry")
+  val parameters = parseParamList(st)
+  val returnType =
+    match tryEatPunct(st, Colon) {
+      case Some(_) -> Some(parseTypeExpr(st))
+      case None -> None
+    }
+  val contracts = parseContractClauses(st)
+  val body = parseFunctionBody(st)
+  val endSpan = peekSpan(st)
+  EntryDecl(
+    docComments = docs,
+    annotations = anns,
+    visibility  = vis,
+    name        = ns.name,
+    params      = parameters,
+    ret         = returnType,
+    contracts   = contracts,
+    body        = body,
+    span        = joinSpans(startSpan, endSpan))
+}
+
+func parseProtectedField(st: inout ParseState): ProtectedField {
+  val startSpan = peekSpan(st)
+  match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwVar -> {
+          val _ = advance(st)
+          val ns = readIdent(st, "field")
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0240", "expected ':' after field name", peekSpan(st)) }
+          }
+          val ty = parseTypeExpr(st)
+          val init =
+            match tryEatPunct(st, Eq) {
+              case Some(_) -> Some(parseExpr(st))
+              case None -> None
+            }
+          val endSpan =
+            match init {
+              case Some(e) -> e.span
+              case None -> ty.span
+            }
+          PFVar(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, endSpan))
+        }
+        case KwLet -> {
+          val _ = advance(st)
+          val ns = readIdent(st, "field")
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0240", "expected ':' after field name", peekSpan(st)) }
+          }
+          val ty = parseTypeExpr(st)
+          val init =
+            match tryEatPunct(st, Eq) {
+              case Some(_) -> Some(parseExpr(st))
+              case None -> None
+            }
+          val endSpan =
+            match init {
+              case Some(e) -> e.span
+              case None -> ty.span
+            }
+          PFLet(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, endSpan))
+        }
+        case _ -> { PFImmutable(field = parseFieldDecl(st)) }
+      }
+    }
+    case _ -> { PFImmutable(field = parseFieldDecl(st)) }
+  }
+}
+
+func parseProtectedMember(st: inout ParseState): ProtectedMember {
+  val _ = skipStmtEnds(st)
+  match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwInvariant -> {
+          PMInvariant(inv = parseInvariantClause(st))
+        }
+        case KwEntry -> {
+          PMEntry(entryDecl = parseEntryDecl(st))
+        }
+        case KwPub -> {
+          val next1 = peekAt(st, 1)
+          match next1.token {
+            case TKeyword(k2) -> {
+              match k2 {
+                case KwEntry -> {
+                  PMEntry(entryDecl = parseEntryDecl(st))
+                }
+                case KwFunc -> {
+                  val docs = parseItemDocComments(st)
+                  val anns = parseItemAnnotations(st)
+                  val visTok = advance(st)  // pub
+                  val fn0 = parseFunctionDeclBody(st, None)
+                  val fn = FunctionDecl(
+                    docComments = docs,
+                    annotations = anns,
+                    visibility  = Some(VisPub(span = visTok.span)),
+                    isAsync     = fn0.isAsync,
+                    name        = fn0.name,
+                    generics    = fn0.generics,
+                    params      = fn0.params,
+                    ret         = fn0.ret,
+                    whereClause = fn0.whereClause,
+                    contracts   = fn0.contracts,
+                    body        = fn0.body,
+                    span        = fn0.span)
+                  PMFunc(fn = fn)
+                }
+                case KwAsync -> {
+                  val docs = parseItemDocComments(st)
+                  val anns = parseItemAnnotations(st)
+                  val visTok = advance(st)  // pub
+                  val fn0 = parseFunctionDeclBody(st, None)
+                  val fn = FunctionDecl(
+                    docComments = docs,
+                    annotations = anns,
+                    visibility  = Some(VisPub(span = visTok.span)),
+                    isAsync     = fn0.isAsync,
+                    name        = fn0.name,
+                    generics    = fn0.generics,
+                    params      = fn0.params,
+                    ret         = fn0.ret,
+                    whereClause = fn0.whereClause,
+                    contracts   = fn0.contracts,
+                    body        = fn0.body,
+                    span        = fn0.span)
+                  PMFunc(fn = fn)
+                }
+                case _ -> { PMField(field = parseProtectedField(st)) }
+              }
+            }
+            case _ -> { PMField(field = parseProtectedField(st)) }
+          }
+        }
+        case KwFunc -> { PMFunc(fn = parseFunctionDeclBody(st, None)) }
+        case KwAsync -> { PMFunc(fn = parseFunctionDeclBody(st, None)) }
+        case KwVar -> { PMField(field = parseProtectedField(st)) }
+        case KwLet -> { PMField(field = parseProtectedField(st)) }
+        case _ -> { PMField(field = parseProtectedField(st)) }
+      }
+    }
+    case _ -> { PMField(field = parseProtectedField(st)) }
+  }
+}
+
+func parseProtectedTypeBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): ProtectedTypeDecl {
+  val startTok = advance(st)  // 'protected'
+  val _ = advance(st)         // 'type'
+  val ns = readIdent(st, "protected type")
+  val _ = skipStmtEnds(st)
+  val genericsSuffix = parseGenericParamsOpt(st)
+  val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
+  val _ = skipStmtEnds(st)
+  val whereClause = parseWhereClauseOpt(st)
+  val _ = skipStmtEnds(st)
+  val _ = parseTrailingAnnotations(st)
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0241", "expected '{' to start protected type body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[ProtectedMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    xs.add(parseProtectedMember(st))
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0242", "expected '}' to close protected type body", peekSpan(st)) }
+  }
+  val endSpan = peekSpan(st)
+  ProtectedTypeDecl(
+    name        = ns.name,
+    generics    = generics,
+    whereClause = whereClause,
+    members     = xs,
+    span        = joinSpans(startTok.span, endSpan))
+}
+
+func parseWireMember(st: inout ParseState): WireMember {
+  val startSpan = peekSpan(st)
+  match peekToken(st) {
+    case TPunct(p) -> {
+      match p {
+        case At -> {
+          val next1 = peekAt(st, 1)
+          if identStr(next1.token) == "provided" {
+            val _ = advance(st)  // @
+            val _ = advance(st)  // provided
+            val ns = readIdent(st, "@provided")
+            match tryEatPunct(st, Colon) {
+              case Some(_) -> {}
+              case None -> { emitErr(st, "P0250", "expected ':' after @provided name", peekSpan(st)) }
+            }
+            val ty = parseTypeExpr(st)
+            WMProvided(name = ns.name, ty = ty, span = joinSpans(startSpan, ty.span))
+          } else {
+            emitErr(st, "P0258", "expected wire member", peekSpan(st))
+            if not isAtEnd(st) { val _ = advance(st) }
+            WMExpose(name = "<error>", span = startSpan)
+          }
+        }
+        case _ -> {
+          emitErr(st, "P0258", "expected wire member", peekSpan(st))
+          if not isAtEnd(st) { val _ = advance(st) }
+          WMExpose(name = "<error>", span = startSpan)
+        }
+      }
+    }
+    case TKeyword(k) -> {
+      match k {
+        case KwSingleton -> {
+          val _ = advance(st)
+          val ns = readIdent(st, "singleton")
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0251", "expected ':' after 'singleton' name", peekSpan(st)) }
+          }
+          val ty = parseTypeExpr(st)
+          match tryEatPunct(st, Eq) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0252", "expected '=' in singleton declaration", peekSpan(st)) }
+          }
+          val init = parseExpr(st)
+          WMSingleton(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, init.span))
+        }
+        case KwScoped -> {
+          val _ = advance(st)
+          match tryEatPunct(st, LBracket) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0253", "expected '[' after 'scoped'", peekSpan(st)) }
+          }
+          val scopeNs = readIdent(st, "scope tag")
+          match tryEatPunct(st, RBracket) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0254", "expected ']' to close 'scoped[…]'", peekSpan(st)) }
+          }
+          val ns = readIdent(st, "scoped")
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0251", "expected ':' after 'scoped' name", peekSpan(st)) }
+          }
+          val ty = parseTypeExpr(st)
+          match tryEatPunct(st, Eq) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0252", "expected '=' in scoped declaration", peekSpan(st)) }
+          }
+          val init = parseExpr(st)
+          WMScoped(scopeName = scopeNs.name, name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, init.span))
+        }
+        case KwBind -> {
+          val _ = advance(st)
+          val atom = parseAtomNonParenType(st)
+          val iface = applyNullableSuffix(st, atom)
+          match tryEatPunct(st, Arrow) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0255", "expected '->' in bind declaration", peekSpan(st)) }
+          }
+          val provider = parseExpr(st)
+          WMBind(iface = iface, provider = provider, span = joinSpans(startSpan, provider.span))
+        }
+        case KwVal -> {
+          val _ = advance(st)
+          val ns = readIdent(st, "wire-local val")
+          val ty =
+            match tryEatPunct(st, Colon) {
+              case Some(_) -> Some(parseTypeExpr(st))
+              case None -> None
+            }
+          match tryEatPunct(st, Eq) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0257", "expected '=' in wire-local val", peekSpan(st)) }
+          }
+          val init = parseExpr(st)
+          WMLocal(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, init.span))
+        }
+        case KwUse -> {
+          emitErr(st, "P0256", "unexpected 'use' inside wire body (did you mean 'expose'?)", peekSpan(st))
+          val _ = advance(st)
+          val ns = readIdent(st, "expose")
+          WMExpose(name = ns.name, span = joinSpans(startSpan, ns.span))
+        }
+        case _ -> {
+          emitErr(st, "P0258", "expected wire member", peekSpan(st))
+          if not isAtEnd(st) { val _ = advance(st) }
+          WMExpose(name = "<error>", span = startSpan)
+        }
+      }
+    }
+    case TIdent(_) -> {
+      if identStr(peekToken(st)) == "expose" {
+        val _ = advance(st)
+        val ns = readIdent(st, "expose")
+        WMExpose(name = ns.name, span = joinSpans(startSpan, ns.span))
+      } else {
+        emitErr(st, "P0258", "expected wire member", peekSpan(st))
+        if not isAtEnd(st) { val _ = advance(st) }
+        WMExpose(name = "<error>", span = startSpan)
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0258", "expected wire member", peekSpan(st))
+      if not isAtEnd(st) { val _ = advance(st) }
+      WMExpose(name = "<error>", span = startSpan)
+    }
+  }
+}
+
+func parseWireBody(st: inout ParseState): WireDecl {
+  val startTok = advance(st)  // 'wire'
+  val ns = readIdent(st, "wire")
+  val parameters =
+    if isPunct(peekToken(st), LParen) { parseParamList(st) }
+    else { newList() }
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0259", "expected '{' to start wire body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[WireMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    xs.add(parseWireMember(st))
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0260", "expected '}' to close wire body", peekSpan(st)) }
+  }
+  val endSpan = peekSpan(st)
+  WireDecl(name = ns.name, params = parameters, members = xs, span = joinSpans(startTok.span, endSpan))
+}
+
+func parseExternMemberOpt(st: inout ParseState): Option[ExternMember] {
+  val _ = parseItemDocComments(st)
+  val _ = parseItemAnnotations(st)
+  match tryEatKw(st, KwPub) {
+    case Some(_) -> {}
+    case None -> {}
+  }
+  match peekToken(st) {
+    case TKeyword(k) -> {
+      match k {
+        case KwExposed -> {
+          val next1 = peekAt(st, 1)
+          match next1.token {
+            case TKeyword(k2) -> {
+              match k2 {
+                case KwRecord -> {
+                  Some(EMExposedRec(decl = parseRecordBody(st, None, true)))
+                }
+                case KwType -> {
+                  val _ = advance(st)  // 'exposed'
+                  val inlineDecl = parseOpaqueTypeBody(st, None)
+                  val exposedTag = Annotation(
+                    name = ModulePath(segments = singletonStrList("exposed"), span = inlineDecl.span),
+                    args = newList(),
+                    span = inlineDecl.span)
+                  val taggedAnns: List[Annotation] = newList()
+                  taggedAnns.add(exposedTag)
+                  var i2 = 0
+                  while i2 < inlineDecl.annotations.count {
+                    taggedAnns.add(inlineDecl.annotations[i2])
+                    i2 = i2 + 1
+                  }
+                  val tagged = OpaqueTypeDecl(
+                    name        = inlineDecl.name,
+                    generics    = inlineDecl.generics,
+                    whereClause = inlineDecl.whereClause,
+                    annotations = taggedAnns,
+                    members     = inlineDecl.members,
+                    hasBody     = inlineDecl.hasBody,
+                    span        = inlineDecl.span)
+                  Some(EMOpaque(decl = tagged))
+                }
+                case _ -> {
+                  emitErr(st, "P0270", "expected an extern declaration", peekSpan(st))
+                  if not isAtEnd(st) { val _ = advance(st) }
+                  None
+                }
+              }
+            }
+            case _ -> {
+              emitErr(st, "P0270", "expected an extern declaration", peekSpan(st))
+              if not isAtEnd(st) { val _ = advance(st) }
+              None
+            }
+          }
+        }
+        case KwRecord -> {
+          Some(EMRecord(decl = parseRecordBody(st, None, false)))
+        }
+        case KwUnion -> {
+          Some(EMUnion(decl = parseUnionBody(st, None)))
+        }
+        case KwEnum -> {
+          Some(EMEnum(decl = parseEnumBody(st)))
+        }
+        case KwOpaque -> {
+          val next1 = peekAt(st, 1)
+          match next1.token {
+            case TKeyword(k2) -> {
+              match k2 {
+                case KwType -> { Some(EMOpaque(decl = parseOpaqueTypeBody(st, None))) }
+                case _ -> {
+                  emitErr(st, "P0270", "expected an extern declaration", peekSpan(st))
+                  if not isAtEnd(st) { val _ = advance(st) }
+                  None
+                }
+              }
+            }
+            case _ -> {
+              emitErr(st, "P0270", "expected an extern declaration", peekSpan(st))
+              if not isAtEnd(st) { val _ = advance(st) }
+              None
+            }
+          }
+        }
+        case KwAlias -> {
+          Some(EMTypeAlias(decl = parseTypeAliasBody(st, None)))
+        }
+        case KwType -> {
+          Some(EMDistinctType(decl = parseDistinctTypeBody(st, None)))
+        }
+        case KwFunc -> {
+          val fn = parseFunctionDeclBody(st, None)
+          Some(EMSig(sig = FunctionSig(
+            isAsync   = fn.isAsync,
+            name      = fn.name,
+            generics  = fn.generics,
+            params    = fn.params,
+            ret       = fn.ret,
+            whereClause = fn.whereClause,
+            contracts = fn.contracts,
+            span      = fn.span)))
+        }
+        case KwAsync -> {
+          val fn = parseFunctionDeclBody(st, None)
+          Some(EMSig(sig = FunctionSig(
+            isAsync   = fn.isAsync,
+            name      = fn.name,
+            generics  = fn.generics,
+            params    = fn.params,
+            ret       = fn.ret,
+            whereClause = fn.whereClause,
+            contracts = fn.contracts,
+            span      = fn.span)))
+        }
+        case _ -> {
+          emitErr(st, "P0270", "expected an extern declaration", peekSpan(st))
+          if not isAtEnd(st) { val _ = advance(st) }
+          None
+        }
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0270", "expected an extern declaration", peekSpan(st))
+      if not isAtEnd(st) { val _ = advance(st) }
+      None
+    }
+  }
+}
+
+func parseExternPackageBody(st: inout ParseState, anns: List[Annotation]): ExternPackageDecl {
+  val startTok = advance(st)  // 'extern'
+  val _ = advance(st)          // 'package'
+  val path = parseModulePath(st)
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0271", "expected '{' to start extern package body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val xs: List[ExternMember] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = mark(st)
+    match parseExternMemberOpt(st) {
+      case Some(m) -> { xs.add(m) }
+      case None -> {}
+    }
+    match peekToken(st) {
+      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+      case TPunct(p) -> {
+        match p {
+          case Comma -> { val _ = advance(st); val _ = skipStmtEnds(st) }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0272", "expected '}' to close extern package body", peekSpan(st)) }
+  }
+  val endSpan = peekSpan(st)
+  ExternPackageDecl(path = path, annotations = anns, members = xs, span = joinSpans(startTok.span, endSpan))
+}
+
+func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
+  val startTok = advance(st)  // 'extern'
+  val _ = advance(st)          // 'type'
+  val ns = readIdent(st, "extern type")
+  val generics = parseGenericParamsOpt(st)
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0273", "expected '=' after extern type name", peekSpan(st)) }
+  }
+  val clrNameResult =
+    match peekToken(st) {
+      case TString(s) -> {
+        val tok = advance(st)
+        NameAndSpan(name = s, span = tok.span)
+      }
+      case _ -> {
+        emitErr(st, "P0274", "expected a string literal naming the CLR type (e.g. \"System.DateTime\")", peekSpan(st))
+        NameAndSpan(name = "<error>", span = peekSpan(st))
+      }
+    }
+  ExternTypeDecl(
+    name     = ns.name,
+    generics = generics,
+    clrName  = clrNameResult.name,
+    span     = joinSpans(startTok.span, clrNameResult.span))
+}
+
+func parseModuleValBody(st: inout ParseState): ValDecl {
+  val startTok = advance(st)  // 'val'
+  val pat = parsePattern(st)
+  val ty =
+    match tryEatPunct(st, Colon) {
+      case Some(_) -> Some(parseTypeExpr(st))
+      case None -> None
+    }
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0280", "expected '=' in module-level val", peekSpan(st)) }
+  }
+  val init = parseExpr(st)
+  ValDecl(pattern = pat, ty = ty, init = init, span = joinSpans(startTok.span, init.span))
+}
+
+func parseScopeKindBody(st: inout ParseState): ScopeKindDecl {
+  val startTok = advance(st)  // 'scope_kind' (TIdent)
+  val ns = readIdent(st, "scope_kind")
+  ScopeKindDecl(name = ns.name, span = joinSpans(startTok.span, ns.span))
+}
+
+func parseTestBody(st: inout ParseState): TestDecl {
+  val startTok = advance(st)  // 'test'
+  val title =
+    match peekToken(st) {
+      case TString(s) -> {
+        val _ = advance(st)
+        s
+      }
+      case _ -> {
+        val sp = peekSpan(st)
+        emitErr(st, "P0290", "expected a string literal as test name", sp)
+        "<error>"
+      }
+    }
+  val _ = skipStmtEnds(st)
+  val body = parseBlock(st)
+  TestDecl(title = title, body = body, span = joinSpans(startTok.span, body.span))
+}
+
+func parsePropertyBinder(st: inout ParseState): PropertyBinder {
+  val ns = readIdent(st, "property binder")
+  match tryEatPunct(st, Colon) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0291", "expected ':' in property binder", peekSpan(st)) }
+  }
+  val ty = parseTypeExpr(st)
+  PropertyBinder(name = ns.name, ty = ty, span = joinSpans(ns.span, ty.span))
+}
+
+func parsePropertyBody(st: inout ParseState): PropertyDecl {
+  val startTok = advance(st)  // 'property'
+  val title =
+    match peekToken(st) {
+      case TString(s) -> {
+        val _ = advance(st)
+        s
+      }
+      case _ -> {
+        val sp = peekSpan(st)
+        emitErr(st, "P0292", "expected a string literal as property name", sp)
+        "<error>"
+      }
+    }
+  val binders: List[PropertyBinder] = newList()
+  if identStr(peekToken(st)) == "forall" {
+    val _ = advance(st)
+    match tryEatPunct(st, LParen) {
+      case Some(_) -> {}
+      case None -> { emitErr(st, "P0293", "expected '(' after 'forall' in property", peekSpan(st)) }
+    }
+    if not isPunct(peekToken(st), RParen) {
+      binders.add(parsePropertyBinder(st))
+      while isPunct(peekToken(st), Comma) {
+        val _ = advance(st)
+        if not isPunct(peekToken(st), RParen) {
+          binders.add(parsePropertyBinder(st))
+        }
+      }
+    }
+    match tryEatPunct(st, RParen) {
+      case Some(_) -> {}
+      case None -> { emitErr(st, "P0294", "expected ')' to close 'forall' binder list", peekSpan(st)) }
+    }
+  }
+  val _ = skipStmtEnds(st)
+  val whereExpr: Expr? =
+    match tryEatKw(st, KwWhere) {
+      case Some(_) -> Some(parseExpr(st))
+      case None -> None
+    }
+  val _ = skipStmtEnds(st)
+  val body = parseBlock(st)
+  PropertyDecl(
+    title     = title,
+    forAll    = binders,
+    guardExpr = whereExpr,
+    body      = body,
+    span      = joinSpans(startTok.span, body.span))
+}
+
+func parseFixtureBody(st: inout ParseState): FixtureDecl {
+  val startTok = advance(st)  // 'fixture'
+  val ns = readIdent(st, "fixture")
+  val ty =
+    match tryEatPunct(st, Colon) {
+      case Some(_) -> Some(parseTypeExpr(st))
+      case None -> None
+    }
+  match tryEatPunct(st, Eq) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0295", "expected '=' in fixture declaration", peekSpan(st)) }
+  }
+  val init = parseExpr(st)
+  FixtureDecl(name = ns.name, ty = ty, init = init, span = joinSpans(startTok.span, init.span))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: create a singleton List[String] (used for synthetic annotations).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func singletonStrList(s: in String): List[String] {
+  val xs: List[String] = newList()
+  xs.add(s)
+  xs
+}
+
+// Helper: concatenate two lists (used for combining field annotations).
+func listConcat(a: in List[Annotation], b: in List[Annotation]): List[Annotation] {
+  val combined: List[Annotation] = newList()
+  var i = 0
+  while i < a.count { combined.add(a[i]); i = i + 1 }
+  var j = 0
+  while j < b.count { combined.add(b[j]); j = j + 1 }
+  combined
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top-level item loop.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseItemOpt(st: inout ParseState): Option[Item] {
+  val _ = skipStmtEnds(st)
+  if isAtEnd(st) { return None }
+
+  val prefixStart = peekSpan(st)
+  val docs = parseItemDocComments(st)
+  val collectedAnns: List[Annotation] = newList()
+  var vis: Option[Visibility] = None
+  var genericsPrefix: Option[GenericParams] = None
+  var progress = true
+
+  while progress {
+    val _ = skipStmtEnds(st)
+    match peekToken(st) {
+      case TKeyword(k) -> {
+        match k {
+          case KwPub -> {
+            match vis {
+              case None -> {
+                val t = advance(st)
+                vis = Some(VisPub(span = t.span))
+              }
+              case Some(_) -> { progress = false }
+            }
+          }
+          case KwInternal -> {
+            match vis {
+              case None -> {
+                val t = advance(st)
+                vis = Some(VisInternal(span = t.span))
+              }
+              case Some(_) -> { progress = false }
+            }
+          }
+          case KwGeneric -> {
+            match genericsPrefix {
+              case None -> { genericsPrefix = parseGenericParamsOpt(st) }
+              case Some(_) -> { progress = false }
+            }
+          }
+          case _ -> { progress = false }
+        }
+      }
+      case TPunct(p) -> {
+        match p {
+          case At -> {
+            match parseAnnotation(st) {
+              case Some(a) -> { collectedAnns.add(a) }
+              case None -> { progress = false }
+            }
+          }
+          case _ -> { progress = false }
+        }
+      }
+      case _ -> { progress = false }
+    }
+  }
+
+  val anns: List[Annotation] = collectedAnns
+  val nextTok = peek(st)
+  val kind =
+    match nextTok.token {
+      case TKeyword(k) -> {
+        match k {
+          case KwAlias -> {
+            ITypeAlias(decl = parseTypeAliasBody(st, genericsPrefix))
+          }
+          case KwType -> {
+            IDistinctType(decl = parseDistinctTypeBody(st, genericsPrefix))
+          }
+          case KwRecord -> {
+            IRecord(decl = parseRecordBody(st, genericsPrefix, false))
+          }
+          case KwExposed -> {
+            val next1 = peekAt(st, 1)
+            match next1.token {
+              case TKeyword(k2) -> {
+                match k2 {
+                  case KwRecord -> {
+                    IExposedRec(decl = parseRecordBody(st, genericsPrefix, true))
+                  }
+                  case _ -> {
+                    emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                    if not isAtEnd(st) { val _ = advance(st) }
+                    IError
+                  }
+                }
+              }
+              case _ -> {
+                emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                if not isAtEnd(st) { val _ = advance(st) }
+                IError
+              }
+            }
+          }
+          case KwUnion -> {
+            IUnion(decl = parseUnionBody(st, genericsPrefix))
+          }
+          case KwEnum -> {
+            match genericsPrefix {
+              case Some(g) -> {
+                emitErr(st, "P0100", "enum does not accept generic parameters", g.span)
+              }
+              case None -> {}
+            }
+            IEnum(decl = parseEnumBody(st))
+          }
+          case KwOpaque -> {
+            val next1 = peekAt(st, 1)
+            match next1.token {
+              case TKeyword(k2) -> {
+                match k2 {
+                  case KwType -> {
+                    IOpaque(decl = parseOpaqueTypeBody(st, genericsPrefix))
+                  }
+                  case _ -> {
+                    emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                    if not isAtEnd(st) { val _ = advance(st) }
+                    IError
+                  }
+                }
+              }
+              case _ -> {
+                emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                if not isAtEnd(st) { val _ = advance(st) }
+                IError
+              }
+            }
+          }
+          case KwFunc -> {
+            val fn0 = parseFunctionDeclBody(st, genericsPrefix)
+            val fn = FunctionDecl(
+              docComments = docs,
+              annotations = anns,
+              visibility  = vis,
+              isAsync     = fn0.isAsync,
+              name        = fn0.name,
+              generics    = fn0.generics,
+              params      = fn0.params,
+              ret         = fn0.ret,
+              whereClause = fn0.whereClause,
+              contracts   = fn0.contracts,
+              body        = fn0.body,
+              span        = fn0.span)
+            IFunc(decl = fn)
+          }
+          case KwAsync -> {
+            val next1 = peekAt(st, 1)
+            match next1.token {
+              case TKeyword(k2) -> {
+                match k2 {
+                  case KwFunc -> {
+                    val fn0 = parseFunctionDeclBody(st, genericsPrefix)
+                    val fn = FunctionDecl(
+                      docComments = docs,
+                      annotations = anns,
+                      visibility  = vis,
+                      isAsync     = fn0.isAsync,
+                      name        = fn0.name,
+                      generics    = fn0.generics,
+                      params      = fn0.params,
+                      ret         = fn0.ret,
+                      whereClause = fn0.whereClause,
+                      contracts   = fn0.contracts,
+                      body        = fn0.body,
+                      span        = fn0.span)
+                    IFunc(decl = fn)
+                  }
+                  case _ -> {
+                    emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                    if not isAtEnd(st) { val _ = advance(st) }
+                    IError
+                  }
+                }
+              }
+              case _ -> {
+                emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                if not isAtEnd(st) { val _ = advance(st) }
+                IError
+              }
+            }
+          }
+          case KwInterface -> {
+            IInterface(decl = parseInterfaceBody(st, genericsPrefix))
+          }
+          case KwImpl -> {
+            IImpl(decl = parseImplBody(st, genericsPrefix))
+          }
+          case KwProtected -> {
+            val next1 = peekAt(st, 1)
+            match next1.token {
+              case TKeyword(k2) -> {
+                match k2 {
+                  case KwType -> {
+                    IProtected(decl = parseProtectedTypeBody(st, genericsPrefix))
+                  }
+                  case _ -> {
+                    emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                    if not isAtEnd(st) { val _ = advance(st) }
+                    IError
+                  }
+                }
+              }
+              case _ -> {
+                emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                if not isAtEnd(st) { val _ = advance(st) }
+                IError
+              }
+            }
+          }
+          case KwWire -> {
+            IWire(decl = parseWireBody(st))
+          }
+          case KwExtern -> {
+            val next1 = peekAt(st, 1)
+            match next1.token {
+              case TKeyword(k2) -> {
+                match k2 {
+                  case KwPackage -> {
+                    IExtern(decl = parseExternPackageBody(st, anns))
+                  }
+                  case KwType -> {
+                    IExternType(decl = parseExternTypeBody(st))
+                  }
+                  case _ -> {
+                    emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                    if not isAtEnd(st) { val _ = advance(st) }
+                    IError
+                  }
+                }
+              }
+              case _ -> {
+                emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+                if not isAtEnd(st) { val _ = advance(st) }
+                IError
+              }
+            }
+          }
+          case KwVal -> {
+            IVal(decl = parseModuleValBody(st))
+          }
+          case KwTest -> {
+            ITest(decl = parseTestBody(st))
+          }
+          case KwProperty -> {
+            IProperty(decl = parsePropertyBody(st))
+          }
+          case KwFixture -> {
+            IFixture(decl = parseFixtureBody(st))
+          }
+          case _ -> {
+            emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+            if not isAtEnd(st) { val _ = advance(st) }
+            IError
+          }
+        }
+      }
+      case TIdent(_) -> {
+        if identStr(nextTok.token) == "scope_kind" {
+          IScopeKind(decl = parseScopeKindBody(st))
+        } else {
+          emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+          if not isAtEnd(st) { val _ = advance(st) }
+          IError
+        }
+      }
+      case _ -> {
+        emitErr(st, "P0040", "expected an item declaration", nextTok.span)
+        if not isAtEnd(st) { val _ = advance(st) }
+        IError
+      }
+    }
+
+  val endSpan = peekSpan(st)
+  Some(Item(
+    docComments = docs,
+    annotations = anns,
+    visibility  = vis,
+    kind        = kind,
+    span        = joinSpans(prefixStart, endSpan)))
+}
+
+func parseItems(st: inout ParseState): List[Item] {
+  val xs: List[Item] = newList()
+  var keepGoing = true
+  while keepGoing {
+    match parseItemOpt(st) {
+      case Some(it) -> { xs.add(it) }
+      case None -> { keepGoing = false }
+    }
+  }
+  xs
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public entry point.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub func parse(source: in String): ParseResult {
+  val lexResult = lex(source)
+  var st = makeParseState(lexResult.tokens, lexResult.diagnostics)
+  val startSpan = peekSpan(st)
+  val moduleDoc = parseModuleDocComments(st)
+  val fileAnnotations = parseFileLevelAnnotations(st)
+  val packageDecl = parsePackageDecl(st)
+  val imports = parseImports(st)
+  val items = parseItems(st)
+  val endSpan = peekSpan(st)
+  val file = SourceFile(
+    moduleDoc       = moduleDoc,
+    fileAnnotations = fileAnnotations,
+    packageDecl     = packageDecl,
+    imports         = imports,
+    items           = items,
+    span            = joinSpans(startSpan, endSpan))
+  ParseResult(file = file, diagnostics = st.diags)
+}

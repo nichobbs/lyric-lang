@@ -175,6 +175,7 @@
     <Compile Include="JvmLoweringB109Test.fs" />
     <Compile Include="JvmLoweringB110Test.fs" />
     <Compile Include="SelfHostedLexerTests.fs" />
+    <Compile Include="SelfHostedParserTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="Program.fs" />

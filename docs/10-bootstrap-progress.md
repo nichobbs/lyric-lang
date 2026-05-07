@@ -65,7 +65,7 @@ deferred to Phase 3 by design.
 | Phase 6 — stdlib distribution + VS Code tooling per `docs/22-distribution-and-tooling.md` | Designed; not shipped | — |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
-| M5.1 — self-hosted parser | Not shipped | — |
+| M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (this branch) | D-progress-123 |
 | M5.1 — self-hosted type checker | Not shipped | — |
 | M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | Not shipped | — |
@@ -182,6 +182,68 @@ likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
 ---
 
 ## Active session decisions
+
+### D-progress-123: M5.1 stage 5 — self-hosted parser (`Lyric.Parser`)
+
+*claude/lyric-parser-selfhosted-AvCuy branch.*
+
+The self-hosted Lyric parser ships as a four-file `Lyric.Parser` library
+under `compiler/lyric/lyric/parser/`:
+
+- `parser_ast.l` — AST variant types (`Expr`, `Stmt`, `Item`, `Pattern`,
+  `TypeRef`, `ContractClause`, …) that mirror the F# `Ast.fs` definition.
+- `parser_core.l` — shared primitives: `ParseState`, token-stream helpers
+  (`peekToken`, `consume`, `expect`), span arithmetic, and the diagnostic
+  accumulator.
+- `parser_exprs.l` — expression parser (Pratt-style precedence climbing
+  from primary → comparison → logic → `if`/`match` → block).
+- `parser_items.l` — item parser: `func`, `type`, `alias`, `interface`,
+  `impl`, `import`, `module`, `val`, contract clauses, and the top-level
+  `parseFile` entry point.
+
+`compiler/lyric/lyric/parser_self_test.l` is the self-test consumer.  It
+imports `Lyric.Lexer` and `Lyric.Parser`, exercises the full parse path
+(imports, function decls with contracts, expression types, match, loops,
+closures, …) through assertions, and writes `"ok"` on success.
+
+The F# test
+`compiler/tests/Lyric.Emitter.Tests/SelfHostedParserTests.fs`
+(`[parser_self_test_passes]`) compiles `parser_self_test.l` via the
+bootstrap emitter, runs the resulting PE, and asserts exit 0 + `"ok"` in
+stdout.  All 613 emitter tests pass with 0 failures.
+
+**Emitter fixes required to make the self-hosted parser compile and run:**
+
+1. **`SAssign` `ExpectedType` propagation** (`Codegen.fs`): When emitting
+   `target = rhs` where `target` is a typed local, the emitter now sets
+   `ctx.ExpectedType <- Some lb.LocalType` (if not already set) before
+   emitting the RHS.  Without this, `op = Some(value = BEq)` produced
+   `Option_Some<object>` instead of `Option_Some<BinOp>`; subsequent
+   `isinst Option_Some<BinOp>` always failed, causing match fall-through
+   to `null` and a `NullReferenceException` in `parseContractClauseOpt`.
+
+2. **`emitMatch` arm `ExpectedType` propagation** (`Codegen.fs`): When
+   emitting match arms after the first, the emitter now sets
+   `ctx.ExpectedType <- Some resultTy` (the type inferred from arm 0) for
+   arms i > 0 when `ctx.ExpectedType` is None.  This fixed incorrect
+   `Option_Some<object>` construction in multi-arm matches inside parser
+   helper functions.
+
+3. **Nullary union-case singletons** (`Codegen.fs` / `Emitter.fs`):
+   Cross-assembly nullary cases (e.g. `None`, `KwRequires`) are now
+   fetched via their `Get<Name>()` static accessor rather than `newobj`
+   so that `isinst` / `ceq` comparisons work correctly against the shared
+   singleton.  In-project nullary cases use a `Instance` static field
+   when available.
+
+4. **`UnionEquality.SameType`** (`Stdlib.fs` / `Codegen.fs`): Added a
+   `Lyric.Stdlib.UnionEquality.SameType(obj, obj)` helper and wired `BEq`
+   on abstract union base types through it to avoid virtual-dispatch and
+   TypeBuilder vtable issues in `PersistedAssemblyBuilder`.
+
+5. **Type-checker / symbol fixes** (`Checker.fs`, `Symbol.fs`): Various
+   minor fixes to support the parser's use of closures, mutual recursion,
+   and deeply nested `match` expressions.
 
 ### D-progress-122: M5.1 stage 2d.v — build-time wiring for NuGet packages
 
