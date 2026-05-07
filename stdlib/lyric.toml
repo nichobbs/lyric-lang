@@ -29,9 +29,12 @@ output_assembly = "Lyric.StdlibBundle.dll"
 "Std.Errors"           = "std/errors.l"
 "Std.String"           = "std/string.l"
 "Std.Core.Proof"       = "std/core_proof.l"
+# Kernel boundary for process execution — only Std.Core dependency.
+"Std.ProcessHost"      = "std/_kernel/process_host.l"
 
 # Tier 1 — collections; depends on Tier 0 + kernel.
 "Std.Collections"      = "std/collections.l"
+"Std.Process"          = "std/process.l"
 
 # Tier 2 — numeric, text, stream utilities.
 "Std.Math"             = "std/math.l"

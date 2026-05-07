@@ -269,7 +269,11 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
 
 1. **M5.1 (month 57-66):** Self-hosted lexer, parser, type checker
 2. **M5.2 (month 66-75):** Self-hosted mode checker, contract elaborator, monomorphizer, MSIL emitter
-3. **M5.3 (month 75-81):** Self-hosted standard library, LSP, formatter, package manager
+3. **M5.3 (month 75-81):** Self-hosted standard library, LSP, formatter, package manager, CLI
+   - Stage 1 (shipped): `Std.ProcessHost` kernel extern, `Std.Process` surface, `Lyric.Manifest`
+     TOML parser, `Lyric.Cli` command dispatch (forward-references M5.2 packages).
+   - Remaining: `Lyric.Parser`, `Lyric.TypeChecker`, `Lyric.Emitter` (M5.2), `Lyric.Fmt`,
+     `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta`, `Pack.l`.
 
 ### Exit criteria
 
