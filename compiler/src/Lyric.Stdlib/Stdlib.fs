@@ -57,6 +57,21 @@ open System
 // directly — `CancellationToken.None`, `CancellationTokenSource..ctor`,
 // `.Token`, `.Cancel`, `.Dispose`, and the matching token methods.
 
+/// Cross-assembly union-case equality helper.
+///
+/// Two Lyric nullary union cases compare equal when they are the same
+/// case class, even if the two object references are different instances
+/// (e.g. one is a singleton from an imported assembly and the other is a
+/// freshly constructed wrapper in the caller's assembly).  The codegen
+/// emits `Call SameType(a, b)` via a direct `Call` instruction (no
+/// virtual dispatch through a TypeBuilder vtable) so the CLR verifier
+/// accepts the comparison for any abstract reference type.
+type UnionEquality private () =
+    static member SameType(a: obj, b: obj) : bool =
+        if obj.ReferenceEquals(a, null) && obj.ReferenceEquals(b, null) then true
+        elif obj.ReferenceEquals(a, null) || obj.ReferenceEquals(b, null) then false
+        else a.GetType() = b.GetType()
+
 /// Per-stub call counter for `@stubbable` mocking enhancements
 /// (D-progress-073).  Each stub method's auto-synthesised body
 /// increments its associated counter on entry; tests can read the
