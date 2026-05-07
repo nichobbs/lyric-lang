@@ -1320,6 +1320,72 @@ has its own budget.  Before the JVM target ships, a parallel
 
 ---
 
+## D042: Phase 6 stdlib distribution — SDK root discovery + `Lyric.SdkVersion`
+
+**Status:** ACCEPTED
+**Date:** 2026-05-07
+
+### Decision
+
+Phase 6 distribution tooling (`docs/22-distribution-and-tooling.md`)
+ships as three cohesive pieces:
+
+1. **SDK root discovery** (`Lyric.Emitter.SdkRoot`): `LYRIC_SDK_ROOT`
+   env-var first; binary-relative `lib/Lyric.Stdlib.dll` walk second;
+   `NotFound` otherwise.  B0040 fires (error) when `LYRIC_SDK_ROOT` is
+   set but the DLL is absent.
+
+2. **`Lyric.SdkVersion` embedded resource**: `emitProject` writes a
+   compact JSON resource into every project-mode DLL immediately after
+   the per-package `Lyric.Contract.*` resources.  Four fields:
+   `language_version`, `stdlib_version`, `compiler_version`,
+   `build_date`.  B0042 fires (warning) when `tryReadSdkVersion` can
+   read a DLL but finds no such resource.
+
+3. **`lyric --sdk-info` command**: reads the SDK root, prints the four
+   version fields, and exits 1 when `LYRIC_SDK_ROOT` is set but the
+   DLL is not found.
+
+The VS Code extension (§6 of `docs/22`) is deferred: it requires a
+separate TypeScript build toolchain outside the F# solution.
+
+### Rationale
+
+- Mono.Cecil's `InMemory = true` flag is used for all DLL reads so
+  there is no file lock on Windows and no AppDomain pollution.
+- Binary DLL fast path in `ensureStdlibArtifact` means a deployed SDK
+  skips source-tree re-compilation entirely; the `stdlibArtifactCache`
+  ensures the DLL is read at most once per process.
+- `itemConflictKey`-based dedup on `mergedImportedItems` in
+  `emitProject` fixes a latent duplicate-symbol error that surfaced
+  when in-project packages both (a) explicitly import `Std.Core` and
+  (b) depend on a kernel package whose stdlib artifact auto-adds
+  `Std.Core` through `resolveStdlibImports`.
+
+### Alternatives considered
+
+- **Embed version via Cecil post-process rather than in-emitter.**
+  Rejected: the emitter already calls `ContractMeta.embedIntoAssemblyAs`
+  and adding a second resource in the same pass avoids a second Cecil
+  open/save cycle.
+- **Walk `$PATH` for the SDK root.**  Rejected: convention-over-PATH
+  discovery adds OS-specific complexity; env-var + binary-relative
+  covers both installed and developer-tree deployments cleanly.
+
+### Stdlib bundle exclusions
+
+`Std.Environment` and `Std.Log` are excluded from `stdlib/lyric.toml`
+because their kernel packages (`Std.EnvironmentHost`, `Std.LogHost`)
+use `extern package {}` syntax.  The type checker's `registerItem`
+returns `None` for `IExtern`, so the `EMSig` members inside the block
+are never entered into the symbol table.  Re-inclusion path: rewrite
+`environment_host.l` and `log_host.l` to use `@externTarget pub func`
+declarations, matching the pattern in `math_host.l`.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

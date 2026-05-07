@@ -4621,6 +4621,18 @@ let private emitAssembly
 let private stdlibArtifactCache : Dictionary<string, StdlibArtifact> = Dictionary()
 let private stdlibLock : obj = obj()
 
+/// Convert a `RestoredPackages.RestoredArtifact` to the internal
+/// `StdlibArtifact` shape so a pre-built binary `Lyric.Stdlib.dll`
+/// can be consumed by the same import pipeline as source-compiled artifacts.
+let private restoredToStdlib (ra: RestoredPackages.RestoredArtifact) : StdlibArtifact =
+    let asm = ra.Assembly
+    { AssemblyPath = ra.AssemblyPath
+      Assembly     = Some asm
+      Source       = ra.Source
+      Symbols      = ra.Symbols
+      Signatures   = ra.Signatures
+      Lookup       = fun n -> Option.ofObj (asm.GetType n) }
+
 /// The shared cache directory for compiled stdlib artifacts.  Per-
 /// process so concurrent test runs don't trample each other.
 let private stdlibCacheDir : string =
@@ -4963,6 +4975,33 @@ let rec private ensureStdlibArtifact
         match stdlibArtifactCache.TryGetValue key with
         | true, a -> Ok a
         | _ ->
+            // Fast path: try a pre-built binary stdlib DLL (docs/22 §3)
+            // before recompiling from source.  Checks SdkRoot for
+            // `lib/Lyric.Stdlib.dll`; if found and it carries the package
+            // we need as a `Lyric.Contract.<Pkg>` resource, uses that
+            // artifact directly.  Falls through to source on any failure.
+            let binaryArtifact =
+                let sdkInfo = SdkRoot.locate AppContext.BaseDirectory
+                match sdkInfo.StdlibDll with
+                | None -> None
+                | Some dllPath ->
+                    let pkgName = packageKey segments
+                    let ref' =
+                        { RestoredPackages.Name    = pkgName
+                          RestoredPackages.Version = "0.1.0"
+                          RestoredPackages.DllPath = dllPath }
+                    match RestoredPackages.loadRestoredPackage ref' with
+                    | Error _ -> None
+                    | Ok arts ->
+                        arts
+                        |> List.tryFind (fun a -> a.Contract.PackageName = pkgName)
+                        |> Option.map restoredToStdlib
+            match binaryArtifact with
+            | Some artifact ->
+                stdlibArtifactCache.[key] <- artifact
+                Ok artifact
+            | None ->
+            // Source fallback: walk stdlib/ tree and compile from .l files.
             let foundPaths, layoutDiag =
                 locateBuiltinFilesWithLayout AppContext.BaseDirectory target segments
             match parseAndMergeBuiltinFiles foundPaths with
@@ -5138,6 +5177,11 @@ let stdlibAssemblyPaths () : string list =
         stdlibArtifactCache.Values
         |> Seq.map (fun a -> a.AssemblyPath)
         |> List.ofSeq)
+
+/// Public SDK-info accessor for `lyric --sdk-info`.  Returns the located SDK
+/// root (or NotFound) based on the same search order used by the stdlib loader.
+let getSdkInfo () : SdkRoot.SdkInfo =
+    SdkRoot.locate AppContext.BaseDirectory
 
 /// Resolve `import Std.X` / `import Jvm.X` (and any other built-in package)
 /// declarations: walk the dependency closure, compile what's missing, and hand
@@ -5729,6 +5773,12 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         // as we iterate in topo order.  Each downstream package's
         // intra-project import resolution consults this map.
         let intraArtifacts = Dictionary<string, StdlibArtifact>()
+        // Map from package name → the stdlib (kernel/builtin) artifacts
+        // that were in scope when that package was emitted.  Used by
+        // resolveIntraImports to propagate transitive stdlib items to
+        // downstream in-project importers (e.g. so Std.Iter can see
+        // Std.CollectionsHost items via its import of Std.Collections).
+        let intraStdlibDeps = Dictionary<string, StdlibArtifact list>()
         // Shared `qualifiedName -> System.Type` lookup table populated
         // by every package's `emitAssembly` call as its `TypeBuilder`s
         // get sealed.  We can't use `ModuleBuilder.GetType` for this
@@ -5756,8 +5806,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         /// Strip intra-project imports from a parsed source so the
         /// downstream `resolveStdlibImports` / type checker stops
         /// flagging them as unknown.  Returns the stripped source +
-        /// the matched in-project artifacts so `emitAssembly` sees
-        /// them as if they were stdlib.
+        /// the matched in-project artifacts (plus their transitive stdlib
+        /// deps) so `emitAssembly` sees all necessary items.
         let resolveIntraImports (sf: SourceFile)
                                 : SourceFile * Item list * StdlibArtifact list =
             let intraImps, otherImps =
@@ -5767,6 +5817,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     projectPackageSet.Contains key)
             if List.isEmpty intraImps then sf, [], []
             else
+                // Packages already present in the remaining (non-intra) imports
+                // will be resolved by resolveStdlibImports; skip them when
+                // propagating transitive deps to avoid duplicate items.
+                let remainingKeys =
+                    otherImps
+                    |> List.map (fun i -> String.concat "." i.Path.Segments)
+                    |> HashSet<string>
                 let arts = ResizeArray<StdlibArtifact>()
                 let items = ResizeArray<Item>()
                 let visited = HashSet<string>()
@@ -5776,6 +5833,26 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     | true, a when visited.Add key ->
                         arts.Add a
                         for it in a.Source.Items do items.Add it
+                        // Propagate transitive stdlib (kernel/builtin) deps
+                        // so downstream type-checks see their items.
+                        // Example: Std.Iter imports Std.Collections (in-
+                        // project); Std.Collections needed Std.CollectionsHost
+                        // for List[T] / newList.  Without this, Std.Iter
+                        // would not see those names.
+                        // Skip any dep whose package key is already in the
+                        // remaining import set (resolveStdlibImports will
+                        // handle those, avoiding duplicates).
+                        match intraStdlibDeps.TryGetValue key with
+                        | true, sdeps ->
+                            for sdep in sdeps do
+                                let sdepPkgKey =
+                                    String.concat "." sdep.Source.Package.Path.Segments
+                                if not (remainingKeys.Contains sdepPkgKey) then
+                                    let visitKey = "stdlib:" + sdepPkgKey
+                                    if visited.Add visitKey then
+                                        arts.Add sdep
+                                        for it in sdep.Source.Items do items.Add it
+                        | _ -> ()
                     | _ -> ()
                 { sf with Imports = otherImps },
                 List.ofSeq items,
@@ -5815,7 +5892,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
                 resolveStdlibImports req.Target afterRestored
-            let mergedImportedItems = intraItems @ restoredItems @ importedItems
+            let mergedImportedItems =
+                let seen = System.Collections.Generic.HashSet<string>()
+                (intraItems @ restoredItems @ importedItems)
+                |> List.filter (fun it ->
+                    match itemConflictKey it with
+                    | None     -> true
+                    | Some key -> seen.Add key)
             let mergedArtifacts = intraArts @ restoredArtifacts @ stdlibArtifacts
             let checked' =
                 Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
@@ -5864,6 +5947,7 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
             if not pkgFatal then
                 intraArtifacts.[pkgName] <-
                     buildIntraArtifact resolved checked'.Symbols checked'.Signatures
+                intraStdlibDeps.[pkgName] <- stdlibArtifacts
         // B0021 — multiple `pub func main` across packages in the
         // single-output project.  Surface once after the full pass
         // so a downstream test can ASSERT the diagnostic regardless
@@ -5919,5 +6003,22 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                                 "could not embed Lyric.Contract.%s resource: %s"
                                 pkgName e.Message
                           Span     = Span.make Position.initial Position.initial }
+            // Phase D — embed `Lyric.SdkVersion` resource (docs/22 §5).
+            // Present on every project DLL so installed builds can verify
+            // language / stdlib / compiler version at compile time.
+            try
+                let now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                let json =
+                    sprintf
+                        "{ \"language_version\": \"0.1\", \"stdlib_version\": \"0.1.0\", \"compiler_version\": \"0.1.0-bootstrap\", \"build_date\": \"%s\" }"
+                        now
+                ContractMeta.embedIntoAssemblyAs req.OutputPath "Lyric.SdkVersion" json
+            with e ->
+                allDiags.Add
+                    { Severity = DiagWarning
+                      Code     = "B0042"
+                      Message  =
+                        sprintf "could not embed Lyric.SdkVersion resource: %s" e.Message
+                      Span     = Span.make Position.initial Position.initial }
             { OutputPath  = Some req.OutputPath
               Diagnostics = List.ofSeq allDiags }
