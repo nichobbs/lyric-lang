@@ -138,6 +138,59 @@ func testFormatModuleDoc(): Unit {
              "format: module doc preserved")
 }
 
+func testCommentInsideFunctionBody(): Unit {
+  // Phase 5 §M5.3 stage 4 (D-progress-136): comments INSIDE a function
+  // body must survive.  The block's harvested comments are popped at
+  // each statement boundary and at the closing brace.
+  val src = "package P\nfunc f(): Unit {\n  // setup\n  val x = 1\n  // process\n  val y = x\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// setup"),
+             "internal: comment before first stmt preserved")
+  assertTrue(Str.contains(acc, "// process"),
+             "internal: comment between stmts preserved")
+  assertTrue(Str.contains(acc, "val x = 1"), "internal: stmt 1 emitted")
+  assertTrue(Str.contains(acc, "val y = x"), "internal: stmt 2 emitted")
+}
+
+func testCommentInsideRecordBody(): Unit {
+  // Comments BETWEEN record fields must survive the record body walk.
+  val src = "package P\nrecord Point {\n  x: Int\n  // y is the second axis\n  y: Int\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// y is the second axis"),
+             "internal: between-field comment preserved")
+  assertTrue(Str.contains(acc, "x: Int"), "internal: first field emitted")
+  assertTrue(Str.contains(acc, "y: Int"), "internal: second field emitted")
+}
+
+func testCommentInsideUnionBody(): Unit {
+  // Comments between union cases.
+  val src = "package P\nunion Color {\n  case Red\n  // primaries\n  case Green\n  case Blue\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// primaries"),
+             "internal: between-case comment preserved")
+}
+
+func testCommentInsideEnumBody(): Unit {
+  // Comments between enum cases.
+  val src = "package P\nenum Dir {\n  case North\n  // horizontal\n  case East\n  case West\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// horizontal"),
+             "internal: enum between-case comment preserved")
+}
+
+func testCommentInsideNestedBlock(): Unit {
+  // Comments inside a nested block (if-then-block).
+  val src = "package P\nfunc f(x: in Int): Unit {\n  if x > 0 {\n    // positive branch\n    val y = x\n  }\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// positive branch"),
+             "internal: nested-block comment preserved")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -167,5 +220,10 @@ func main(): Unit {
   testFormatVal()
   testFormatModuleDoc()
   testFormatSourceFacade()
+  testCommentInsideFunctionBody()
+  testCommentInsideRecordBody()
+  testCommentInsideUnionBody()
+  testCommentInsideEnumBody()
+  testCommentInsideNestedBlock()
   println("fmt self-test: ok")
 }

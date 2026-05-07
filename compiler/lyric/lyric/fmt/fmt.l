@@ -33,6 +33,50 @@ record HarvestedComment {
   offset: Int        // byte offset into the (CR/LF-normalised) source
 }
 
+/// Pretty-printer state.  The harvested comment list is sorted by
+/// source offset (the CST traversal visits tokens in document order),
+/// and `cursor` points at the next un-emitted comment.  Multi-line
+/// printers thread `ctx: inout FmtCtx` so they can pop pending
+/// comments at every structural boundary (top-level item, statement,
+/// record / union / enum member).  Inline printers don't take it
+/// because nothing emits across multiple source lines.
+pub record FmtCtx {
+  comments: List[HarvestedComment]
+  cursor:   Int
+}
+
+pub func newFmtCtx(comments: in List[HarvestedComment]): FmtCtx {
+  FmtCtx(comments = comments, cursor = 0)
+}
+
+/// Pop every comment whose offset is `< hi` from the front of
+/// `ctx.cursor` and render the runs as `Doc` lines.  Block comments
+/// retain their internal newlines (split on `\n` so each rendered
+/// line is one source line).
+pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
+  val acc: List[String] = newList()
+  while ctx.cursor < ctx.comments.count and ctx.comments[ctx.cursor].offset < hi {
+    val text = ctx.comments[ctx.cursor].text
+    val parts = Str.split(text, "\n")
+    var j = 0
+    while j < parts.length {
+      acc.add(parts[j])
+      j = j + 1
+    }
+    ctx.cursor = ctx.cursor + 1
+  }
+  acc
+}
+
+/// Skip past any comments with offset `< hi` without emitting them.
+/// Used at the very start of a structural section when a higher-level
+/// caller has already taken responsibility for a span.
+pub func skipCommentsBefore(ctx: inout FmtCtx, hi: in Int): Unit {
+  while ctx.cursor < ctx.comments.count and ctx.comments[ctx.cursor].offset < hi {
+    ctx.cursor = ctx.cursor + 1
+  }
+}
+
 func harvestCommentsFromToken(t: in SpannedToken, acc: inout List[HarvestedComment]): Unit {
   var i = 0
   while i < t.leadingTrivia.count {
@@ -158,48 +202,11 @@ func nodeLastTokenEndOffset(n: in GreenNode): Int {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3. Comment-aware item rendering.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Comments whose offset falls in the half-open range [lo, hi).  Linear scan
-/// over the harvested list — cost is O(items × comments) which is fine for
-/// real source files.  Returned in source order.
-func commentsInRange(all: in List[HarvestedComment], lo: in Int, hi: in Int): List[HarvestedComment] {
-  val acc: List[HarvestedComment] = newList()
-  var i = 0
-  while i < all.count {
-    val c = all[i]
-    if c.offset >= lo and c.offset < hi {
-      acc.add(c)
-    }
-    i = i + 1
-  }
-  acc
-}
-
-/// Render a list of comments as `Doc` lines.  Block comments may span
-/// multiple lines internally; we emit them verbatim and let the consumer
-/// concatenate with newlines.
-func commentLines(cs: in List[HarvestedComment]): List[String] {
-  val acc: List[String] = newList()
-  var i = 0
-  while i < cs.count {
-    val text = cs[i].text
-    // Block comments may already contain embedded newlines.  Split on '\n'
-    // so each line of the comment lands on its own line of the output.
-    val parts = Str.split(text, "\n")
-    var j = 0
-    while j < parts.length {
-      acc.add(parts[j])
-      j = j + 1
-    }
-    i = i + 1
-  }
-  acc
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §4. Top-level `format`.  Mirrors `Lyric.Cli.Fmt.format` in F#.
+// §3. Top-level `format`.  Mirrors `Lyric.Cli.Fmt.format` in F#, but
+// threads `ctx: inout FmtCtx` through every multi-line printer so
+// item-internal comments (between statements in a function body,
+// between cases in a union, etc.) get woven in alongside the
+// already-handled inter-item comments.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @stable(since="0.1")
@@ -207,7 +214,7 @@ pub func format(parsed: in ParseResult): String {
   val file = parsed.file
   val cst  = parsed.cst
   val nodes = itemNodes(cst)
-  val allComments = harvestComments(cst)
+  var ctx  = newFmtCtx(harvestComments(cst))
 
   val sb: List[String] = newList()
 
@@ -231,76 +238,84 @@ pub func format(parsed: in ParseResult): String {
   // `package …`.
   sb.add("package " + pathStr(file.packageDecl.path))
 
+  // The header (module doc + file annotations + package decl) ends at
+  // the package decl's last token.  Skip past any harvested comments
+  // that fall inside the header — they'd only be doc-comments which we
+  // already emit via `file.moduleDoc`, but the cursor must move past
+  // them so subsequent lookups stay honest.
+  skipCommentsBefore(ctx, file.packageDecl.span.endPos.offset)
+
   // Imports.
   if file.imports.count > 0 {
     sb.add("")
     i = 0
     while i < file.imports.count {
-      val ds = importDoc(file.imports[i])
+      val imp = file.imports[i]
+      // Comments before this import (e.g. an explanatory line comment).
+      val pre = popCommentsBefore(ctx, imp.span.startPos.offset)
+      var k = 0
+      while k < pre.count { sb.add(pre[k]); k = k + 1 }
+      val ds = importDoc(imp)
       var j = 0
       while j < ds.count { sb.add(ds[j]); j = j + 1 }
       i = i + 1
     }
   }
 
-  // Items, with between-item comments preserved from the CST.
+  // Items, with between-item AND item-internal comments preserved.
   if file.items.count > 0 {
     sb.add("")
-    var prevEnd = file.packageDecl.span.endPos.offset
-    if file.imports.count > 0 {
-      val lastImp = file.imports[file.imports.count - 1]
-      prevEnd = lastImp.span.endPos.offset
-    }
     val n = file.items.count
     var idx = 0
     while idx < n {
       val item = file.items[idx]
-      val itemStart = if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) } else { item.span.startPos.offset }
+      val itemStart =
+        if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) }
+        else                  { item.span.startPos.offset }
 
-      // Comments between the previous item / header and this item.
-      val between = commentsInRange(allComments, prevEnd, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
+      // Comments between the previous item / header and this item's
+      // first token (excluding any item-internal comments — those are
+      // popped *during* `itemDoc` traversal).
+      val between =
+        popCommentsBefore(ctx, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
       if idx > 0 { sb.add("") }
-      if between.count > 0 {
-        val cl = commentLines(between)
-        var k = 0
-        while k < cl.count { sb.add(cl[k]); k = k + 1 }
-      }
+      var k = 0
+      while k < between.count { sb.add(between[k]); k = k + 1 }
 
-      val ds = itemDoc(item)
+      val ds = itemDoc(item, ctx)
       var j = 0
       while j < ds.count { sb.add(ds[j]); j = j + 1 }
 
-      val itemEnd = if idx < nodes.count {
-        val o = nodeLastTokenEndOffset(nodes[idx])
-        if o >= 0 { o } else { item.span.endPos.offset }
-      } else {
-        item.span.endPos.offset
-      }
-      prevEnd = itemEnd
+      // After emitting the item, fast-forward the cursor past any
+      // comments that still sit inside the item's source range — those
+      // should have been consumed by the recursive `itemDoc`/`blockLines`
+      // walk, but if a deeper construct is not yet ctx-aware (e.g. an
+      // expression sub-tree), we don't want them re-emitting at the
+      // next item boundary.
+      val itemEnd =
+        if idx < nodes.count {
+          val o = nodeLastTokenEndOffset(nodes[idx])
+          if o >= 0 { o } else { item.span.endPos.offset }
+        } else {
+          item.span.endPos.offset
+        }
+      skipCommentsBefore(ctx, itemEnd)
       idx = idx + 1
     }
 
     // Trailing comments after the last item.
-    val tail = commentsInRange(allComments, prevEnd, parsed.source.length + 1)
+    val tail = popCommentsBefore(ctx, parsed.source.length + 1)
     if tail.count > 0 {
       sb.add("")
-      val cl = commentLines(tail)
       var k = 0
-      while k < cl.count { sb.add(cl[k]); k = k + 1 }
+      while k < tail.count { sb.add(tail[k]); k = k + 1 }
     }
   } else {
-    // No items, but trailing comments may still exist after the header.
-    var prevEnd = file.packageDecl.span.endPos.offset
-    if file.imports.count > 0 {
-      val lastImp = file.imports[file.imports.count - 1]
-      prevEnd = lastImp.span.endPos.offset
-    }
-    val tail = commentsInRange(allComments, prevEnd, parsed.source.length + 1)
+    val tail = popCommentsBefore(ctx, parsed.source.length + 1)
     if tail.count > 0 {
       sb.add("")
-      val cl = commentLines(tail)
       var k = 0
-      while k < cl.count { sb.add(cl[k]); k = k + 1 }
+      while k < tail.count { sb.add(tail[k]); k = k + 1 }
     }
   }
 
