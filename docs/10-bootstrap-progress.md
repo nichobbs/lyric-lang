@@ -77,7 +77,7 @@ deferred to Phase 3 by design.
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge) | D-progress-129 / D-progress-131 / D-progress-135 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -193,6 +193,65 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-136: M5.3 stage 4 — item-internal comment preservation via `FmtCtx` cursor
+
+*claude/lyric-fmt-internal-comments branch.*
+
+Stage 2 (D-progress-131) preserved comments at top-level item boundaries
+by harvesting them from the CST and emitting them between items.  This
+stage extends the same idea **inside** an item: comments between
+statements in a function body, between fields in a record, between
+cases in a union or enum, and inside nested blocks (`if` / `for` /
+`while` / `match` / `try` / `defer` / `scope`).
+
+Mechanism:
+
+- New `FmtCtx { comments, cursor }` record in `fmt.l`.  `comments` is
+  the harvested list (in source order, since the green-tree visit
+  produces them in source order); `cursor` advances monotonically as
+  the formatter walks AST nodes.
+- `popCommentsBefore(ctx, hi)` returns every comment with offset
+  `< hi` and bumps the cursor past them.  The block / member iteration
+  loops call this just before emitting each statement / member /
+  arm / case.  At the closing brace of a block, a final `popCommentsBefore`
+  drains any trailing in-body comments.
+- Every multi-line printer that can contain inner constructs gains
+  `ctx: inout FmtCtx`: `blockLines`, `stmtLines`, `matchLines`,
+  `ifBlockLines`, `forLines`, `whileLines`, `loopLines`, `tryLines`,
+  `deferLines`, `scopeLines`, `funcDoc`, `recordDoc`, `unionDoc`,
+  `enumDoc`, `opaqueDoc`, `protectedTypeDoc`, `interfaceDoc`,
+  `implDoc`, `wireDoc`, `entryDoc`, `protectedMemberDoc`, `testDoc`,
+  `propertyDoc`, `recordMemberLines`, `itemDoc`, `itemFunc`.  Single-
+  line / inline printers are unchanged — they don't span source
+  boundaries.
+- The top-level `format` constructs the ctx once from the harvested
+  comments and threads it through.  Between items it pops comments
+  before the next item's first token (as before, plus a defensive
+  `skipCommentsBefore` after each item to fast-forward past any
+  unconsumed in-item comments — e.g. those that fall inside an
+  expression sub-tree which is not yet ctx-aware).
+
+Self-test additions (`compiler/lyric/lyric/fmt_self_test.l`):
+
+- `testCommentInsideFunctionBody` — `// setup` / `// process` between
+  statements survive.
+- `testCommentInsideRecordBody` — `// y is the second axis` between
+  fields survives.
+- `testCommentInsideUnionBody` — `// primaries` between cases
+  survives.
+- `testCommentInsideEnumBody` — `// horizontal` between enum cases
+  survives.
+- `testCommentInsideNestedBlock` — `// positive branch` inside an
+  `if`-body survives.
+
+End-to-end smoke via the actual `lyric` binary on a multi-construct
+file: function bodies, records, and unions all keep their inline
+`//` comments.
+
+Out of scope for this stage: per-expression CST nodes (so a
+comment inside a single expression's sub-tree may still anchor at
+the enclosing statement).  Mechanically additive when needed.
 
 ### D-progress-135: M5.3 stage 3 — F# CLI `lyric fmt` reflection bridge
 

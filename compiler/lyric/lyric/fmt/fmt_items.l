@@ -44,7 +44,7 @@ pub func funcSigStr(sg: in FunctionSig): String {
 // Function decl.  Mirrors `funcDoc`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func funcDoc(visStr: in String, fn: in FunctionDecl): List[String] {
+pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): List[String] {
   val annoLines = annotationLines(fn.annotations)
   val fnDocLs   = docLines(fn.docComments)
   val asyncStr  = if fn.isAsync { "async " } else { "" }
@@ -79,14 +79,14 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl): List[String] {
     case Some(FBBlock(b)) -> {
       if extras.count == 0 {
         val head = singleLineDoc(sig + " {")
-        concatDoc3(head, indentDoc(2, blockLines(b)), singleLineDoc("}"))
+        concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
       } else {
         val acc: List[String] = newList()
         acc.add(sig)
         var j = 0
         while j < extras.count { acc.add(extras[j]); j = j + 1 }
         acc.add("{")
-        val bd = indentDoc(2, blockLines(b))
+        val bd = indentDoc(2, blockLines(b, ctx))
         j = 0
         while j < bd.count { acc.add(bd[j]); j = j + 1 }
         acc.add("}")
@@ -106,27 +106,46 @@ func whereClauseLines(wc: in Option[WhereClause]): List[String] {
   if s == "" { emptyDoc() } else { singleLineDoc("  " + s) }
 }
 
-pub func recordMemberLines(m: in RecordMember): List[String] {
+pub func recordMemberLines(m: in RecordMember, ctx: inout FmtCtx): List[String] {
   match m {
-    case RMField(field) -> singleLineDoc(fieldDeclStr(field))
+    case RMField(field)   -> singleLineDoc(fieldDeclStr(field))
     case RMInvariant(inv) -> singleLineDoc("invariant: " + exprInline(0, inv.expr))
-    case RMFunc(fn) -> funcDoc("", fn)
+    case RMFunc(fn)       -> funcDoc("", fn, ctx)
+  }
+}
+
+@pure
+func recordMemberStartOffset(m: in RecordMember): Int {
+  match m {
+    case RMField(field)   -> field.span.startPos.offset
+    case RMInvariant(inv) -> inv.span.startPos.offset
+    case RMFunc(fn)       -> fn.span.startPos.offset
   }
 }
 
 pub func recordDoc(visStr: in String, kw: in String, name: in String,
                    gens: in Option[GenericParams], wc: in Option[WhereClause],
-                   members: in List[RecordMember]): List[String] {
+                   members: in List[RecordMember], bodyEnd: in Int,
+                   ctx: inout FmtCtx): List[String] {
   val genStr = genParamsStr(gens)
   val whereL = whereClauseLines(wc)
   val mLines: List[String] = newList()
   var i = 0
   while i < members.count {
-    val ml = recordMemberLines(members[i])
+    val m = members[i]
+    val pre = popCommentsBefore(ctx, recordMemberStartOffset(m))
+    var k = 0
+    while k < pre.count { mLines.add(pre[k]); k = k + 1 }
+    val ml = recordMemberLines(m, ctx)
     var j = 0
     while j < ml.count { mLines.add(ml[j]); j = j + 1 }
     i = i + 1
   }
+  // Trailing comments before the closing brace.
+  val tail = popCommentsBefore(ctx, bodyEnd)
+  var k = 0
+  while k < tail.count { mLines.add(tail[k]); k = k + 1 }
+
   val acc: List[String] = newList()
   acc.add(visStr + kw + " " + name + genStr + " {")
   i = 0
@@ -142,13 +161,16 @@ pub func recordDoc(visStr: in String, kw: in String, name: in String,
 // Union decl.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func unionDoc(visStr: in String, ud: in UnionDecl): List[String] {
+pub func unionDoc(visStr: in String, ud: in UnionDecl, ctx: inout FmtCtx): List[String] {
   val gens   = genParamsStr(ud.generics)
   val whereL = whereClauseLines(ud.whereClause)
   val cases: List[String] = newList()
   var i = 0
   while i < ud.cases.count {
     val c = ud.cases[i]
+    val pre = popCommentsBefore(ctx, c.span.startPos.offset)
+    var k = 0
+    while k < pre.count { cases.add(pre[k]); k = k + 1 }
     val cd = docLines(c.docComments)
     val ca = annotationLines(c.annotations)
     var j = 0
@@ -156,13 +178,13 @@ pub func unionDoc(visStr: in String, ud: in UnionDecl): List[String] {
     j = 0
     while j < ca.count { cases.add(ca[j]); j = j + 1 }
     val fields: List[String] = newList()
-    var k = 0
-    while k < c.fields.count {
-      match c.fields[k] {
+    var ki = 0
+    while ki < c.fields.count {
+      match c.fields[ki] {
         case UFNamed(n, ty, _) -> fields.add(n + ": " + typeStr(ty))
         case UFPos(ty, _)      -> fields.add(typeStr(ty))
       }
-      k = k + 1
+      ki = ki + 1
     }
     if c.fields.count == 0 {
       cases.add("case " + c.name)
@@ -171,6 +193,11 @@ pub func unionDoc(visStr: in String, ud: in UnionDecl): List[String] {
     }
     i = i + 1
   }
+  // Trailing comments before the closing brace.
+  val tail = popCommentsBefore(ctx, ud.span.endPos.offset)
+  var ki = 0
+  while ki < tail.count { cases.add(tail[ki]); ki = ki + 1 }
+
   val acc: List[String] = newList()
   acc.add(visStr + "union " + ud.name + gens + " {")
   i = 0
@@ -186,11 +213,14 @@ pub func unionDoc(visStr: in String, ud: in UnionDecl): List[String] {
 // Enum decl.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func enumDoc(visStr: in String, ed: in EnumDecl): List[String] {
+pub func enumDoc(visStr: in String, ed: in EnumDecl, ctx: inout FmtCtx): List[String] {
   val cases: List[String] = newList()
   var i = 0
   while i < ed.cases.count {
     val c = ed.cases[i]
+    val pre = popCommentsBefore(ctx, c.span.startPos.offset)
+    var k = 0
+    while k < pre.count { cases.add(pre[k]); k = k + 1 }
     val cd = docLines(c.docComments)
     val ca = annotationLines(c.annotations)
     var j = 0
@@ -200,6 +230,11 @@ pub func enumDoc(visStr: in String, ed: in EnumDecl): List[String] {
     cases.add("case " + c.name)
     i = i + 1
   }
+  // Trailing comments before the closing brace.
+  val tail = popCommentsBefore(ctx, ed.span.endPos.offset)
+  var ki = 0
+  while ki < tail.count { cases.add(tail[ki]); ki = ki + 1 }
+
   val acc: List[String] = newList()
   acc.add(visStr + "enum " + ed.name + " {")
   val ind = indentDoc(2, cases)
@@ -233,7 +268,7 @@ func protectedFieldStr(pf: in ProtectedField): List[String] {
   }
 }
 
-func entryDoc(ed: in EntryDecl): List[String] {
+func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
   val vStr = match ed.visibility {
     case Some(_) -> "pub "
     case None    -> ""
@@ -251,7 +286,7 @@ func entryDoc(ed: in EntryDecl): List[String] {
     i = i + 1
   }
   val bodyLines: List[String] = match ed.body {
-    case FBBlock(b) -> blockLines(b)
+    case FBBlock(b) -> blockLines(b, ctx)
     case FBExpr(e)  -> singleLineDoc(exprInline(0, e))
   }
   if conLines.count == 0 {
@@ -271,12 +306,12 @@ func entryDoc(ed: in EntryDecl): List[String] {
   }
 }
 
-pub func protectedMemberDoc(pm: in ProtectedMember): List[String] {
+pub func protectedMemberDoc(pm: in ProtectedMember, ctx: inout FmtCtx): List[String] {
   match pm {
-    case PMField(pf)    -> protectedFieldStr(pf)
+    case PMField(pf)     -> protectedFieldStr(pf)
     case PMInvariant(ic) -> singleLineDoc("invariant: " + exprInline(0, ic.expr))
-    case PMEntry(ed)    -> entryDoc(ed)
-    case PMFunc(fn)     -> funcDoc("", fn)
+    case PMEntry(ed)     -> entryDoc(ed, ctx)
+    case PMFunc(fn)      -> funcDoc("", fn, ctx)
   }
 }
 
@@ -284,7 +319,7 @@ pub func protectedMemberDoc(pm: in ProtectedMember): List[String] {
 // Top-level item dispatch.  Mirrors `itemDoc` in Fmt.fs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func itemDoc(item: in Item): List[String] {
+pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
   val visStr = match item.visibility {
     case Some(_) -> "pub "
     case None    -> ""
@@ -292,38 +327,38 @@ pub func itemDoc(item: in Item): List[String] {
   val annoLines = annotationLines(item.annotations)
   val header = concatDoc(docLines(item.docComments), annoLines)
   match item.kind {
-    case IFunc(fn)        -> itemFunc(visStr, fn)
-    case IRecord(rd)      -> concatDoc(header, recordDoc(visStr, "record", rd.name, rd.generics, rd.whereClause, rd.members))
-    case IExposedRec(rd)  -> concatDoc(header, recordDoc(visStr, "exposed record", rd.name, rd.generics, rd.whereClause, rd.members))
-    case IUnion(ud)       -> concatDoc(header, unionDoc(visStr, ud))
-    case IEnum(ed)        -> concatDoc(header, enumDoc(visStr, ed))
-    case IOpaque(od)      -> opaqueDoc(visStr, item, od)
+    case IFunc(fn)        -> itemFunc(visStr, fn, ctx)
+    case IRecord(rd)      -> concatDoc(header, recordDoc(visStr, "record", rd.name, rd.generics, rd.whereClause, rd.members, rd.span.endPos.offset, ctx))
+    case IExposedRec(rd)  -> concatDoc(header, recordDoc(visStr, "exposed record", rd.name, rd.generics, rd.whereClause, rd.members, rd.span.endPos.offset, ctx))
+    case IUnion(ud)       -> concatDoc(header, unionDoc(visStr, ud, ctx))
+    case IEnum(ed)        -> concatDoc(header, enumDoc(visStr, ed, ctx))
+    case IOpaque(od)      -> opaqueDoc(visStr, item, od, ctx)
     case IDistinctType(dt)-> concatDoc(header, distinctDoc(visStr, dt))
     case ITypeAlias(ta)   -> concatDoc(header, typeAliasDoc(visStr, ta))
-    case IProtected(pd)   -> concatDoc(header, protectedTypeDoc(visStr, pd))
-    case IInterface(id)   -> concatDoc(header, interfaceDoc(visStr, id))
-    case IImpl(id)        -> concatDoc(header, implDoc(id))
-    case IWire(wd)        -> concatDoc(header, wireDoc(wd))
+    case IProtected(pd)   -> concatDoc(header, protectedTypeDoc(visStr, pd, ctx))
+    case IInterface(id)   -> concatDoc(header, interfaceDoc(visStr, id, ctx))
+    case IImpl(id)        -> concatDoc(header, implDoc(id, ctx))
+    case IWire(wd)        -> concatDoc(header, wireDoc(wd, ctx))
     case IScopeKind(sd)   -> concatDoc(header, singleLineDoc("scope_kind " + sd.name))
     case IConst(cd)       -> concatDoc(header, constDoc(visStr, cd))
     case IVal(vd)         -> concatDoc(header, valDoc(visStr, vd))
     case IExtern(ep)      -> externDoc(item, ep)
     case IExternType(et)  -> concatDoc(header, externTypeDoc(visStr, et))
-    case ITest(td)        -> concatDoc(header, testDoc(td))
-    case IProperty(pd)    -> concatDoc(header, propertyDoc(pd))
+    case ITest(td)        -> concatDoc(header, testDoc(td, ctx))
+    case IProperty(pd)    -> concatDoc(header, propertyDoc(pd, ctx))
     case IFixture(fd)     -> concatDoc(header, fixtureDoc(fd))
     case IError           -> singleLineDoc("// <parse-error>")
   }
 }
 
-func itemFunc(visStr: in String, fn: in FunctionDecl): List[String] {
+func itemFunc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): List[String] {
   // funcDoc already prepends doc comments + annotations from `fn`
   // itself; we don't re-emit `item.DocComments` because Item's doc
   // comments are the same list (see parser).
-  funcDoc(visStr, fn)
+  funcDoc(visStr, fn, ctx)
 }
 
-func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl): List[String] {
+func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: inout FmtCtx): List[String] {
   val odAnnos = annotationLines(od.annotations)
   val gens = genParamsStr(od.generics)
   val whereL = whereClauseLines(od.whereClause)
@@ -372,13 +407,13 @@ func typeAliasDoc(visStr: in String, ta: in TypeAliasDecl): List[String] {
   singleLineDoc(visStr + "alias " + ta.name + genParamsStr(ta.generics) + " = " + typeStr(ta.rhs))
 }
 
-func protectedTypeDoc(visStr: in String, pd: in ProtectedTypeDecl): List[String] {
+func protectedTypeDoc(visStr: in String, pd: in ProtectedTypeDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(pd.generics)
   val whereL = whereClauseLines(pd.whereClause)
   val mLines: List[String] = newList()
   var i = 0
   while i < pd.members.count {
-    val ml = protectedMemberDoc(pd.members[i])
+    val ml = protectedMemberDoc(pd.members[i], ctx)
     var j = 0
     while j < ml.count { mLines.add(ml[j]); j = j + 1 }
     i = i + 1
@@ -394,7 +429,7 @@ func protectedTypeDoc(visStr: in String, pd: in ProtectedTypeDecl): List[String]
   acc
 }
 
-func interfaceDoc(visStr: in String, id: in InterfaceDecl): List[String] {
+func interfaceDoc(visStr: in String, id: in InterfaceDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(id.generics)
   val whereL = whereClauseLines(id.whereClause)
   val mLines: List[String] = newList()
@@ -403,7 +438,7 @@ func interfaceDoc(visStr: in String, id: in InterfaceDecl): List[String] {
     match id.members[i] {
       case IMSig(sg)   -> mLines.add(funcSigStr(sg))
       case IMFunc(fn)  -> {
-        val fd = funcDoc("", fn)
+        val fd = funcDoc("", fn, ctx)
         var j = 0
         while j < fd.count { mLines.add(fd[j]); j = j + 1 }
       }
@@ -427,7 +462,7 @@ func interfaceDoc(visStr: in String, id: in InterfaceDecl): List[String] {
   acc
 }
 
-func implDoc(id: in ImplDecl): List[String] {
+func implDoc(id: in ImplDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(id.generics)
   val target = typeStr(id.target)
   val ifStr = constraintRefStr(id.iface)
@@ -437,7 +472,7 @@ func implDoc(id: in ImplDecl): List[String] {
   while i < id.members.count {
     match id.members[i] {
       case IMplFunc(fn) -> {
-        val fd = funcDoc("", fn)
+        val fd = funcDoc("", fn, ctx)
         var j = 0
         while j < fd.count { mLines.add(fd[j]); j = j + 1 }
       }
@@ -461,7 +496,7 @@ func implDoc(id: in ImplDecl): List[String] {
   acc
 }
 
-func wireDoc(wd: in WireDecl): List[String] {
+func wireDoc(wd: in WireDecl, ctx: inout FmtCtx): List[String] {
   val params = paramsStr(wd.params)
   val mLines: List[String] = newList()
   var i = 0
@@ -538,17 +573,17 @@ func externTypeDoc(visStr: in String, et: in ExternTypeDecl): List[String] {
   singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = \"" + et.clrName + "\"")
 }
 
-func testDoc(td: in TestDecl): List[String] {
+func testDoc(td: in TestDecl, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   acc.add("test \"" + escapeStr(td.title) + "\" {")
-  val ind = indentDoc(2, blockLines(td.body))
+  val ind = indentDoc(2, blockLines(td.body, ctx))
   var i = 0
   while i < ind.count { acc.add(ind[i]); i = i + 1 }
   acc.add("}")
   acc
 }
 
-func propertyDoc(pd: in PropertyDecl): List[String] {
+func propertyDoc(pd: in PropertyDecl, ctx: inout FmtCtx): List[String] {
   val parts: List[String] = newList()
   var i = 0
   while i < pd.forAll.count {
@@ -562,7 +597,7 @@ func propertyDoc(pd: in PropertyDecl): List[String] {
   }
   val acc: List[String] = newList()
   acc.add("property \"" + escapeStr(pd.title) + "\" forall (" + joinStrings(parts, ", ") + ")" + whereStr + " {")
-  val ind = indentDoc(2, blockLines(pd.body))
+  val ind = indentDoc(2, blockLines(pd.body, ctx))
   i = 0
   while i < ind.count { acc.add(ind[i]); i = i + 1 }
   acc.add("}")

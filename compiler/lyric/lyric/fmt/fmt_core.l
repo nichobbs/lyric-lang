@@ -1015,18 +1015,32 @@ func loopInlineStr(lbl: in Option[String], b: in Block): String {
 func itemInlineFallback(item: in Item): String {
   // Items that appear inline (e.g. inside a stmt list) are uncommon
   // but Fmt.fs joins their multi-line form with "; ".  Mirror that.
-  joinStrings(itemDoc(item), "; ")
+  // The inline form has no opportunity to weave in inter-construct
+  // comments, so we hand `itemDoc` a fresh, empty `FmtCtx`.
+  val empty: List[HarvestedComment] = newList()
+  var ctx = newFmtCtx(empty)
+  joinStrings(itemDoc(item, ctx), "; ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §10. Multi-line block printer.  Mirrors `blockLines` and `stmtLines`.
+// §10. Multi-line block printer.  Mirrors `blockLines` and `stmtLines` from
+// the F# `Fmt.fs`, but threads `ctx: inout FmtCtx` so item-internal comments
+// (between statements, inside `if`/`for`/`while`/`match` bodies, etc.) get
+// woven in at every structural boundary.  The cursor advances monotonically
+// in source order; statements parse in source order, blocks contain
+// statements in source order, so the iteration in `blockLines` lines up
+// with the comment list naturally.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func blockLines(b: in Block): List[String] {
+pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   var i = 0
   while i < b.statements.count {
-    val sl = stmtLines(b.statements[i])
+    val s = b.statements[i]
+    val pre = popCommentsBefore(ctx, s.span.startPos.offset)
+    var k = 0
+    while k < pre.count { acc.add(pre[k]); k = k + 1 }
+    val sl = stmtLines(s, ctx)
     var j = 0
     while j < sl.count {
       acc.add(sl[j])
@@ -1034,47 +1048,56 @@ pub func blockLines(b: in Block): List[String] {
     }
     i = i + 1
   }
+  // Pop any trailing comments that fall before the block's closing brace.
+  // Block.span.endPos.offset is the offset just after `}`, so comments
+  // strictly inside the block satisfy `< endOffset`.
+  val tail = popCommentsBefore(ctx, b.span.endPos.offset)
+  var k = 0
+  while k < tail.count { acc.add(tail[k]); k = k + 1 }
   acc
 }
 
-pub func stmtLines(s: in Statement): List[String] {
+pub func stmtLines(s: in Statement, ctx: inout FmtCtx): List[String] {
   match s.kind {
-    case SLocal(_)         -> singleLineDoc(stmtInline(s))
-    case SAssign(_, _, _)  -> singleLineDoc(stmtInline(s))
-    case SReturn(_)        -> singleLineDoc(stmtInline(s))
-    case SBreak(_)         -> singleLineDoc(stmtInline(s))
-    case SContinue(_)      -> singleLineDoc(stmtInline(s))
-    case SThrow(_)         -> singleLineDoc(stmtInline(s))
-    case SInvariant(_)     -> singleLineDoc(stmtInline(s))
-    case SRule(_, _)       -> singleLineDoc(stmtInline(s))
-    case SExpr(e)          -> stmtExprLines(s, e)
-    case SFor(lbl, p, it, b) -> forLines(lbl, p, it, b)
-    case SWhile(lbl, c, b)   -> whileLines(lbl, c, b)
-    case SLoop(lbl, b)       -> loopLines(lbl, b)
-    case STry(body, catches) -> tryLines(body, catches)
-    case SDefer(b)         -> deferLines(b)
-    case SScope(bindStr, b)   -> scopeLines(bindStr, b)
-    case SItem(item)       -> itemDoc(item)
+    case SLocal(_)            -> singleLineDoc(stmtInline(s))
+    case SAssign(_, _, _)     -> singleLineDoc(stmtInline(s))
+    case SReturn(_)           -> singleLineDoc(stmtInline(s))
+    case SBreak(_)            -> singleLineDoc(stmtInline(s))
+    case SContinue(_)         -> singleLineDoc(stmtInline(s))
+    case SThrow(_)            -> singleLineDoc(stmtInline(s))
+    case SInvariant(_)        -> singleLineDoc(stmtInline(s))
+    case SRule(_, _)          -> singleLineDoc(stmtInline(s))
+    case SExpr(e)             -> stmtExprLines(s, e, ctx)
+    case SFor(lbl, p, it, b)  -> forLines(lbl, p, it, b, ctx)
+    case SWhile(lbl, c, b)    -> whileLines(lbl, c, b, ctx)
+    case SLoop(lbl, b)        -> loopLines(lbl, b, ctx)
+    case STry(body, catches)  -> tryLines(body, catches, ctx)
+    case SDefer(b)            -> deferLines(b, ctx)
+    case SScope(bindStr, b)   -> scopeLines(bindStr, b, ctx)
+    case SItem(item)          -> itemDoc(item, ctx)
   }
 }
 
-func stmtExprLines(s: in Statement, e: in Expr): List[String] {
+func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String] {
   match e.kind {
-    case EMatch(scrut, arms)             -> matchLines(scrut, arms)
+    case EMatch(scrut, arms)             -> matchLines(scrut, arms, ctx)
     case EIf(cond, thn, els, thenForm)   -> {
       if thenForm { singleLineDoc(stmtInline(s)) }
-      else { ifBlockLines(cond, thn, els) }
+      else { ifBlockLines(cond, thn, els, ctx) }
     }
     case _                               -> singleLineDoc(stmtInline(s))
   }
 }
 
-func matchLines(scrut: in Expr, arms: in List[MatchArm]): List[String] {
+func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): List[String] {
   val head = singleLineDoc("match " + exprInline(0, scrut) + " {")
   val armLines: List[String] = newList()
   var i = 0
   while i < arms.count {
     val a = arms[i]
+    val pre = popCommentsBefore(ctx, a.span.startPos.offset)
+    var k = 0
+    while k < pre.count { armLines.add(pre[k]); k = k + 1 }
     val guard = match a.guard {
       case Some(g) -> " if " + exprInline(0, g)
       case None    -> ""
@@ -1085,7 +1108,7 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm]): List[String] {
       }
       case EOBBlock(blk) -> {
         armLines.add("case " + patStr(a.pattern) + guard + " -> {")
-        val inner = indentDoc(2, blockLines(blk))
+        val inner = indentDoc(2, blockLines(blk, ctx))
         var j = 0
         while j < inner.count { armLines.add(inner[j]); j = j + 1 }
         armLines.add("}")
@@ -1096,10 +1119,10 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm]): List[String] {
   concatDoc3(head, indentDoc(2, armLines), singleLineDoc("}"))
 }
 
-func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock]): List[String] {
+func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock], ctx: inout FmtCtx): List[String] {
   val condStr = exprInline(0, cond)
   val thenDoc = match thn {
-    case EOBBlock(b) -> blockLines(b)
+    case EOBBlock(b) -> blockLines(b, ctx)
     case EOBExpr(e)  -> singleLineDoc(exprInline(0, e))
   }
   val acc: List[String] = newList()
@@ -1112,7 +1135,7 @@ func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock
     case None -> { acc.add("}") }
     case Some(EOBBlock(b)) -> {
       acc.add("} else {")
-      val eb = indentDoc(2, blockLines(b))
+      val eb = indentDoc(2, blockLines(b, ctx))
       i = 0
       while i < eb.count { acc.add(eb[i]); i = i + 1 }
       acc.add("}")
@@ -1122,7 +1145,7 @@ func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock
       // as an `} else if` chain to mirror Fmt.fs.
       match e2.kind {
         case EIf(c2, t2, eb2, false) -> {
-          val inner = ifBlockLines(c2, t2, eb2)
+          val inner = ifBlockLines(c2, t2, eb2, ctx)
           if inner.count == 0 {
             acc.add("}")
           } else {
@@ -1144,37 +1167,37 @@ func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock
   acc
 }
 
-func forLines(lbl: in Option[String], p: in Pattern, it: in Expr, b: in Block): List[String] {
+func forLines(lbl: in Option[String], p: in Pattern, it: in Expr, b: in Block, ctx: inout FmtCtx): List[String] {
   val ls = match lbl {
     case Some(l) -> l + ": "
     case None    -> ""
   }
   val head = singleLineDoc(ls + "for " + patStr(p) + " in " + exprInline(0, it) + " {")
-  concatDoc3(head, indentDoc(2, blockLines(b)), singleLineDoc("}"))
+  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
 }
 
-func whileLines(lbl: in Option[String], c: in Expr, b: in Block): List[String] {
+func whileLines(lbl: in Option[String], c: in Expr, b: in Block, ctx: inout FmtCtx): List[String] {
   val ls = match lbl {
     case Some(l) -> l + ": "
     case None    -> ""
   }
   val head = singleLineDoc(ls + "while " + exprInline(0, c) + " {")
-  concatDoc3(head, indentDoc(2, blockLines(b)), singleLineDoc("}"))
+  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
 }
 
-func loopLines(lbl: in Option[String], b: in Block): List[String] {
+func loopLines(lbl: in Option[String], b: in Block, ctx: inout FmtCtx): List[String] {
   val ls = match lbl {
     case Some(l) -> l + ": "
     case None    -> ""
   }
   val head = singleLineDoc(ls + "do {")
-  concatDoc3(head, indentDoc(2, blockLines(b)), singleLineDoc("}"))
+  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
 }
 
-func tryLines(body: in Block, catches: in List[CatchClause]): List[String] {
+func tryLines(body: in Block, catches: in List[CatchClause], ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   acc.add("try {")
-  val bd = indentDoc(2, blockLines(body))
+  val bd = indentDoc(2, blockLines(body, ctx))
   var i = 0
   while i < bd.count { acc.add(bd[i]); i = i + 1 }
   i = 0
@@ -1185,7 +1208,7 @@ func tryLines(body: in Block, catches: in List[CatchClause]): List[String] {
       case None    -> ""
     }
     acc.add("} catch " + c.typeName + bindStr + " {")
-    val cb = indentDoc(2, blockLines(c.body))
+    val cb = indentDoc(2, blockLines(c.body, ctx))
     var j = 0
     while j < cb.count { acc.add(cb[j]); j = j + 1 }
     i = i + 1
@@ -1194,16 +1217,16 @@ func tryLines(body: in Block, catches: in List[CatchClause]): List[String] {
   acc
 }
 
-func deferLines(b: in Block): List[String] {
+func deferLines(b: in Block, ctx: inout FmtCtx): List[String] {
   val head = singleLineDoc("defer {")
-  concatDoc3(head, indentDoc(2, blockLines(b)), singleLineDoc("}"))
+  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
 }
 
-func scopeLines(bindStr: in Option[String], b: in Block): List[String] {
+func scopeLines(bindStr: in Option[String], b: in Block, ctx: inout FmtCtx): List[String] {
   val bs = match bindStr {
     case Some(n) -> " " + n
     case None    -> ""
   }
   val head = singleLineDoc("scope" + bs + " {")
-  concatDoc3(head, indentDoc(2, blockLines(b)), singleLineDoc("}"))
+  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
 }
