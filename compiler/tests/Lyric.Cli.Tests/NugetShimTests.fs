@@ -13,7 +13,7 @@ open Lyric.Cli.NugetShim
 let private locateProbeDll () : string =
     let candidates =
         [ Path.Combine(AppContext.BaseDirectory, "Lyric.Lexer.dll")
-          Path.Combine(AppContext.BaseDirectory, "Lyric.Stdlib.dll") ]
+          Path.Combine(AppContext.BaseDirectory, "Lyric.Parser.dll") ]
     match candidates |> List.tryFind File.Exists with
     | Some p -> p
     | None ->

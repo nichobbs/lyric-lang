@@ -39,12 +39,6 @@ let runDll (dll: string) : string * string * int =
     proc.WaitForExit()
     stdout, stderr, proc.ExitCode
 
-/// Path to the in-tree Lyric.Stdlib.dll that the emitted assembly
-/// references. The runtime probing finds it next to the produced PE.
-let private stdlibDll () : string =
-    let baseDir = AppContext.BaseDirectory
-    Path.Combine(baseDir, "Lyric.Stdlib.dll")
-
 /// Copy every cached `Lyric.Stdlib.<X>.dll` into `outDir` so user
 /// programs that import multiple `Std.X` modules can resolve every
 /// cross-assembly reference at runtime.
@@ -57,26 +51,19 @@ let private copyAllStdlibDlls (outDir: string) : unit =
                 | None   -> "Lyric.Stdlib.Core.dll"
             File.Copy(p, Path.Combine(outDir, fname), overwrite = true)
 
-/// Produce a clean output directory and copy the stdlib next to it.
-/// Also copies any precompiled `Lyric.Stdlib.<X>.dll` if it exists,
-/// so emitted assemblies that `import Std.X` can satisfy their
-/// cross-assembly references at runtime.
+/// Produce a clean output directory and stage every precompiled
+/// `Lyric.Stdlib.<X>.dll` next to it so emitted assemblies that
+/// `import Std.X` resolve their cross-assembly references at runtime.
+/// `Lyric.Jvm.Hosts.dll` (Bucket D) and `FSharp.Core.dll` are copied
+/// unconditionally — non-JVM / non-FSharp programs don't reference
+/// them, but staging them uniformly keeps the test runner simple.
 let prepareOutputDir (name: string) : string =
     let dir = Path.Combine(Path.GetTempPath(), "lyric-emit-" + name + "-" + Guid.NewGuid().ToString("N"))
     Directory.CreateDirectory(dir) |> ignore
-    File.Copy(stdlibDll (), Path.Combine(dir, "Lyric.Stdlib.dll"), overwrite = true)
-    // `Lyric.Jvm.Hosts.dll` must ship next to JVM-self-test PEs so the
-    // `compiler/lyric/jvm/_kernel/kernel.l` `@externTarget`s resolve at
-    // runtime (D-progress-107 / Bucket D split).  Non-JVM tests don't
-    // reference it but copying unconditionally keeps the staging path
-    // simple.
     let jvmHosts =
         Path.Combine(AppContext.BaseDirectory, "Lyric.Jvm.Hosts.dll")
     if File.Exists jvmHosts then
         File.Copy(jvmHosts, Path.Combine(dir, "Lyric.Jvm.Hosts.dll"), overwrite = true)
-    // FSharp.Core needs to be next to the user program so any F#
-    // method on Lyric.Stdlib whose IL touches FSharp.Core helpers
-    // (e.g. `Array.zeroCreate`) resolves at runtime.
     let fsharpCore =
         Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
     if File.Exists fsharpCore then

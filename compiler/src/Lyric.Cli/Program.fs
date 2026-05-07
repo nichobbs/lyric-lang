@@ -16,8 +16,8 @@
 ///
 /// The CLI is a thin wrapper over `Lyric.Emitter.Emitter.emit`: it
 /// resolves the source path, picks a default output path next to the
-/// source if `-o` is omitted, copies `Lyric.Stdlib.dll` and any
-/// precompiled `Lyric.Stdlib.<X>.dll` into the output directory, and
+/// source if `-o` is omitted, copies the precompiled
+/// `Lyric.Stdlib.<X>.dll` package DLLs into the output directory, and
 /// writes a sibling `runtimeconfig.json` so `dotnet exec` can pick up
 /// the right runtime version.  Diagnostics are printed in the same
 /// `<code> <line>:<col>: <message>` shape the test kit produces.
@@ -93,14 +93,6 @@ let private printDiag (d: Diagnostic) : unit =
     printErr (sprintf "%s %s [%d:%d]: %s"
                 d.Code sev span.Start.Line span.Start.Column d.Message)
 
-let private locateStdlibDll () : string option =
-    // Adjacent to the CLI assembly during `dotnet run` and also after
-    // `dotnet publish`; the build copies Lyric.Stdlib.dll over via
-    // the project reference.
-    let candidate =
-        Path.Combine(AppContext.BaseDirectory, "Lyric.Stdlib.dll")
-    if File.Exists candidate then Some candidate else None
-
 /// Write a minimal `runtimeconfig.json` next to the produced PE so
 /// `dotnet exec` knows which runtime to load.
 let private writeRuntimeConfig (dllPath: string) : unit =
@@ -124,23 +116,15 @@ let private writeRuntimeConfig (dllPath: string) : unit =
         sb.ToString()
     File.WriteAllText(configPath, json)
 
-/// Copy the F# stdlib shim + any precompiled `Lyric.Stdlib.<X>.dll`
+/// Copy the precompiled Lyric stdlib package DLLs (`Lyric.Stdlib.<X>.dll`)
 /// into `outDir` so `dotnet exec` resolves cross-assembly references.
-/// `FSharp.Core.dll` (next to the CLI binary) is also copied: any F#
-/// member on `Lyric.Stdlib` whose IL references FSharp.Core helpers
-/// (e.g. `Array.zeroCreate`) needs the assembly resolvable at runtime.
+/// `Lyric.Jvm.Hosts.dll` ships alongside the stdlib (D-progress-107 /
+/// Bucket D split): the JVM emitter's `_kernel/kernel.l`
+/// `@externTarget`s `Lyric.Jvm.Hosts.JvmByteHost.…` etc., so any user
+/// program emitting JVM bytecode resolves the host helpers at runtime.
+/// The F# `Lyric.Stdlib.dll` shim retired in D-progress-137; we no
+/// longer copy it because it doesn't exist.
 let private copyStdlibArtifacts (outDir: string) : unit =
-    match locateStdlibDll () with
-    | Some src ->
-        File.Copy(src, Path.Combine(outDir, "Lyric.Stdlib.dll"), overwrite = true)
-    | None ->
-        printErr "warning: Lyric.Stdlib.dll not found alongside the CLI; runtime resolution may fail"
-    // `Lyric.Jvm.Hosts.dll` ships alongside the stdlib (D-progress-107
-    // / Bucket D split): the JVM emitter's `_kernel/kernel.l`
-    // `@externTarget`s `Lyric.Jvm.Hosts.JvmByteHost.…` etc., so any
-    // user program emitting JVM bytecode resolves the host helpers
-    // at runtime.  Non-JVM programs don't reference it, but copying
-    // unconditionally keeps the staging path uniform.
     let jvmHosts =
         Path.Combine(AppContext.BaseDirectory, "Lyric.Jvm.Hosts.dll")
     if File.Exists jvmHosts then
@@ -713,7 +697,6 @@ let private publishAot
             eprintfn "AOT rewrite: %s on %s" e.Message path
 
     copyIfExists lyricDll
-    copyIfExists (Path.Combine(cliDir, "Lyric.Stdlib.dll"))
     copyIfExists (Path.Combine(cliDir, "Lyric.Jvm.Hosts.dll"))
     copyIfExists (Path.Combine(cliDir, "FSharp.Core.dll"))
     for p in Lyric.Emitter.Emitter.stdlibAssemblyPaths () do
@@ -722,9 +705,8 @@ let private publishAot
     // Rewrite the `System.Private.CoreLib` reference name in every
     // Lyric-emitted DLL we copied — the user's main PE plus each
     // `Lyric.Stdlib.<X>.dll` from the stdlib precompile cache.
-    // `Lyric.Stdlib.dll` (built by F#) and `FSharp.Core.dll` already
-    // reference `System.Runtime`, so the no-match path is a fast
-    // scan; the patcher is idempotent.
+    // `FSharp.Core.dll` already references `System.Runtime`, so the
+    // no-match path is a fast scan; the patcher is idempotent.
     for f in Directory.GetFiles(scratch, "*.dll") do
         rewriteCoreLibRefs f
 

@@ -211,12 +211,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   it covers and asserts correctness via `Std.Testing`. The F# runner
   `compiler/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs` discovers and
   executes these files automatically as part of the emitter test suite.
-- `compiler/src/Lyric.Stdlib/` — the F#-side standard-library shim. After
-  D-progress-139 it contains zero host types: every former `Lyric.Stdlib.*`
-  target migrated to direct BCL externs in `stdlib/std/_kernel/*.l` or
-  inline codegen.  The project still ships so existing CLI / emitter
-  packaging plumbing continues to work; future work may delete it
-  outright (`docs/23` Phase 5 decision).
+- The F# `compiler/src/Lyric.Stdlib/` project was deleted entirely
+  (D-progress-140).  Every former `Lyric.Stdlib.*` host target has
+  migrated to direct BCL externs in `stdlib/std/_kernel/*.l` or
+  inline codegen, so the assembly was empty of types and adding nothing.
+  The Lyric-compiled stdlib bundle (per `stdlib/lyric.toml`) now ships
+  as `Lyric.Stdlib.dll` directly — the SDK's `lib/Lyric.Stdlib.dll` is
+  this bundle, not the retired F# shim.
 - `compiler/src/Lyric.Emitter/` — the MSIL emitter (Phase 1, milestone M1.3,
   complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
   runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and

@@ -1,6 +1,8 @@
-# Stdlib-bundle proof manifest — bundles every `Std.X` package in
-# `std/` (including the kernel sub-packages under `std/_kernel/`)
-# into a single `Lyric.Stdlib.dll` per `docs/20-project-as-dll.md` §5.1.
+# Stdlib-bundle manifest — bundles every `Std.X` package in `std/`
+# (including the kernel sub-packages under `std/_kernel/`) into a
+# single `Lyric.Stdlib.dll` per `docs/20-project-as-dll.md` §5.1.
+# Post D-progress-137 (F# shim retirement) this is the only
+# `Lyric.Stdlib.dll` the SDK ships.
 #
 # Currently only a smoke set wires up; expand the [project.packages]
 # table once each batch lands cleanly.  See
@@ -16,12 +18,11 @@ license     = "Apache-2.0"
 [project]
 name            = "Lyric.Stdlib"
 output          = "single"
-# Distinct from the F# `Lyric.Stdlib.dll` shim that `copyStdlibArtifacts`
-# stages next to every emitted DLL — using `Lyric.Stdlib.dll` here would
-# clobber the bundle.  Once the F# shim merges into the bundle (or the
-# project emit grows a "this IS the stdlib, skip the copy" hook), this can
-# revert to `Lyric.Stdlib.dll`.
-output_assembly = "Lyric.StdlibBundle.dll"
+# The F# `Lyric.Stdlib.dll` shim retired entirely (D-progress-137), so
+# the bundle reclaims the canonical name — `lib/Lyric.Stdlib.dll` in
+# the installed SDK is now this Lyric-compiled bundle, not the F#
+# shim it replaced.
+output_assembly = "Lyric.Stdlib.dll"
 
 [project.packages]
 # Tier 0 — base layer; no intra-stdlib imports beyond Std.Core.

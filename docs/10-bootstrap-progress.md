@@ -59,6 +59,7 @@ deferred to Phase 3 by design.
 | `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (PR #179) | D-progress-120 |
 | `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (PR #182) | D-progress-123 |
 | `docs/23` JsonHost retirement — final eight live methods retired from `Lyric.Stdlib.JsonHost` (`Parse`, `EncodeString`, `RenderDoubleSlice`, `Get{Int,Long,Double,Bool,String}Slice`).  Compiler fixes unblock the migration: (1) FFI default-arg overload selection now filters by leading-param exact type so `JsonDocument.Parse(string, JsonDocumentOptions = default)` resolves correctly when other 2-arg `Parse` overloads exist; (2) `emitExternCall` honours `inout`-mode value-type receivers (load arg pointer directly instead of `Ldarga`-ing the parameter slot) so mutating instance methods like `JsonElement+ArrayEnumerator.MoveNext` work; (3) `toString(Double)` / `toString(Float)` codegen calls `Double.ToString(InvariantCulture)` for round-trip-safe locale-stable formatting.  `_kernel/json_host.l` declares `extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"` and `extern type JsonEncodedText` and implements `hostEncodeString` and `lyricJsonGet*Slice` in pure Lyric on top of direct externs (`EnumerateArray` / `MoveNext` / `Current` / `JsonEncodedText.{Encode, ToString}`).  `JsonDerive.fs` synthesiser routes `__lyricJsonEscape` and slice readers through the new pure-Lyric kernel functions; `mkSliceHelperExtern` deleted (Double now uses inline `toString`-based rendering like Int/Long).  `Lyric.Stdlib.JsonHost` class removed; the `Lyric.Stdlib` F# shim is now empty of types | **Shipped** | D-progress-139 |
+| `docs/23` F# shim project deleted — with `Lyric.Stdlib.dll` empty of host types after D-progress-139, the `compiler/src/Lyric.Stdlib/` project is deleted outright: `.fsproj` / `Stdlib.fs` removed, `<ProjectReference>` lines pulled from `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Emitter.Tests`, and the project entry / configuration / nesting tag scrubbed from `Lyric.sln`.  CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`, `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their `Lyric.Stdlib.dll` copy / probe paths.  `stdlib/lyric.toml` reverts `output_assembly` from `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll` — the SDK's `lib/Lyric.Stdlib.dll` is now the Lyric-compiled bundle (no F# / FSharp.Core dep) | **Shipped** | D-progress-140 |
 | M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
@@ -402,6 +403,59 @@ comment inside a single expression's sub-tree may still anchor at
 the enclosing statement).  Mechanically additive when needed.
 
 ---
+
+### D-progress-140: F# `Lyric.Stdlib` project deleted entirely
+
+*claude/remove-stdlib-live-methods-wZ199 branch (continued from D-progress-139).*
+
+After D-progress-139 emptied the F# shim of host types, the assembly
+was 0 LoC of live code and pure ceremony.  This commit deletes the
+project outright.
+
+Files removed:
+
+- `compiler/src/Lyric.Stdlib/Lyric.Stdlib.fsproj`
+- `compiler/src/Lyric.Stdlib/Stdlib.fs`
+
+Files updated:
+
+- `compiler/Lyric.sln` — removes the `Lyric.Stdlib` project entry,
+  configuration block, and nesting tag.
+- `compiler/src/Lyric.Cli/Lyric.Cli.fsproj`,
+  `compiler/src/Lyric.Emitter/Lyric.Emitter.fsproj`,
+  `compiler/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj` —
+  drop the `<ProjectReference Include="...Lyric.Stdlib.fsproj" />`
+  line.
+- `compiler/src/Lyric.Cli/Program.fs` — `locateStdlibDll` and the
+  F# shim copy in `copyStdlibArtifacts` deleted; the second copy in
+  the AOT path also drops the `Lyric.Stdlib.dll` line.  Comments
+  rewritten to reflect that the only `Lyric.Stdlib.<X>.dll` files
+  staged are the precompiled Lyric-compiled package DLLs.
+- `compiler/tests/Lyric.Emitter.Tests/EmitTestKit.fs` — `stdlibDll ()`
+  helper and the corresponding `File.Copy` call deleted from
+  `prepareOutputDir`.
+- `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` — drops
+  the `Lyric.Stdlib.dll` copy in the test scratch dir helper.
+- `compiler/tests/Lyric.Cli.Tests/NugetShimTests.fs` — replaces the
+  `Lyric.Stdlib.dll` probe-DLL fallback with `Lyric.Parser.dll`.
+- `stdlib/lyric.toml` — `output_assembly` reverts from
+  `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll`
+  (the comment carve-out for "once the F# shim merges into the
+  bundle" is now obsolete; the SDK's `lib/Lyric.Stdlib.dll` is
+  now this Lyric-compiled bundle).
+- `CLAUDE.md` — updates the `Lyric.Stdlib` project description.
+
+`SdkRoot.fs` is unchanged in logic (`lib/Lyric.Stdlib.dll` is still
+the SDK install sentinel — it just resolves to the Lyric-compiled
+bundle now).  Comments about `Lyric.Stdlib.dll` (built by F#) in
+the AOT-copy block are scrubbed.
+
+`docs/23-fsharp-shim-elimination.md` Phase 5 decision is now moot:
+"keep / rewrite in C# / Cecil-merge" all collapse to "delete the
+project" with the F# shim itself gone.
+
+All 638 emitter tests pass; full sweep across Lexer (123), Parser
+(312), TypeChecker (137), Cli (112), Lsp (28) all green.
 
 ### D-progress-139: F# `Lyric.Stdlib.JsonHost` retirement — final eight live methods migrated to pure Lyric
 

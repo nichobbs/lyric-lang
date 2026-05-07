@@ -381,23 +381,27 @@ overload disambiguation, `Ldarg` vs `Ldarga` for inout-mode value-
 type receivers, culture-invariant `toString` for floating-point).
 Net F# shim is now zero LoC of host types.
 
-### Phase 5 — distribution-shape decision
+### Phase 5 — F# shim project deleted (D-progress-140)
 
-With the shim at its irreducible floor (zero LoC of host types
-post-D-progress-139), decide whether to:
+Decision: **delete entirely.**  With the shim empty of host types,
+keeping the project around added zero value — no IL hosted, no
+runtime resolution required.  D-progress-140 ships:
 
-- **Keep as empty F# project** — `Lyric.Stdlib.dll` is referenced
-  by the CLI / emitter for runtime probing but contains no host
-  types.  Cheapest option since it preserves all the existing
-  packaging plumbing.
-- **Delete entirely** — drop the project; update CLI / emitter to
-  not copy or reference `Lyric.Stdlib.dll`.  Frees the bundle
-  shape from one DLL, no `FSharp.Core.dll` dep.
-- **Cecil-merge into bundle** — irrelevant once the project is
-  empty.
+- Removal of `compiler/src/Lyric.Stdlib/` (project + source).
+- `<ProjectReference>` lines pulled from `Lyric.Cli`,
+  `Lyric.Emitter`, and `Lyric.Emitter.Tests`.
+- Solution entry / configuration / nesting tag scrubbed from
+  `Lyric.sln`.
+- CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`,
+  `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their
+  `Lyric.Stdlib.dll` copy / probe paths.
+- `stdlib/lyric.toml` reverts `output_assembly` to the canonical
+  `Lyric.Stdlib.dll`; the Lyric-compiled stdlib bundle now ships
+  under that name with no F# shim to clobber.
 
-This is a packaging decision, not language work. Tracked as a
-follow-up open question (see §9).
+End state: the only `Lyric.Stdlib.dll` the SDK ever ships is the
+Lyric-compiled bundle.  No F# host code, no FSharp.Core dep at
+runtime, no Cecil-merge step needed.
 
 ---
 
