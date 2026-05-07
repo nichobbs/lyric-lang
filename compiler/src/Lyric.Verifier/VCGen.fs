@@ -267,6 +267,14 @@ let rec translateExpr (env: Env) (e: Expr)
         let rT, rDiags = translateExpr env r
         match builtinOfBinop op with
         | Some b ->
+            // Float32/Float64 operands map to SMT Real; division
+            // must use `/` (Real division) rather than `div` (integer
+            // Euclidean division).
+            let b =
+                match b with
+                | BOpDiv when (match Term.sortOf lT.Term with SFloat32 | SFloat64 -> true | _ -> false) ->
+                    BOpRealDiv
+                | _ -> b
             let term = TBuiltin(b, [lT.Term; rT.Term])
             // @proof_required(checked_arithmetic): for signed Int
             // arithmetic, emit side conditions that the result stays
@@ -924,10 +932,16 @@ let rec wpBody
                   SideGoals = []
                   Assumed = []
                   Diags = [] }
-            | [{ Kind = SReturn(Some e) }]
+            // SReturn anywhere in a sequence terminates that path.
+            // The canonical `[SReturn e]` case and the mid-sequence
+            // case are unified here; trailing dead statements are
+            // dropped (they arise when an if-branch that ends in
+            // `return` is appended with the outer continuation).
+            | { Kind = SReturn(Some e) } :: _ ->
+                wpExpr env resultSort q e
             | [{ Kind = SExpr e }] ->
                 wpExpr env resultSort q e
-            | [{ Kind = SReturn None }] ->
+            | { Kind = SReturn None } :: _ ->
                 { Wp = q (TLit(LUnit, SDatatype("Unit", [])))
                   SideGoals = []
                   Assumed = []
@@ -970,6 +984,61 @@ let rec wpBody
                     |> List.collect (fun r -> r.Term :: r.SideConds)
                 let inner = walk env rest
                 { inner with Assumed = unsafeAssumed @ inner.Assumed }
+
+            // General function call in statement position (return value
+            // discarded).  Apply the §10.4 call rule via translateExpr:
+            // callee `requires:` become side conditions; callee
+            // `ensures:` become assumed hypotheses for the continuation.
+            // This covers zero- and multi-argument calls that aren't
+            // the special `assert` form handled above.
+            | { Kind = SExpr ({ Kind = ECall _ } as callExpr) } :: rest ->
+                let callT, callDiags = translateExpr env callExpr
+                let inner = walk env rest
+                let sideGoals =
+                    callT.SideConds
+                    |> List.map (fun t -> t, GKAssertion, callExpr.Span)
+                { Wp        = inner.Wp
+                  SideGoals = sideGoals @ inner.SideGoals
+                  Assumed   = callT.Assumed @ inner.Assumed
+                  Diags     = callDiags @ inner.Diags }
+
+            // `if c { S1 } [else { S2 }]` in statement position: split
+            // the continuation into both branches.  wp(if c {S1} {S2}; K, Q)
+            // = ite(c, wp(S1;K, Q), wp(S2;K, Q)).
+            // Because SReturn is now handled anywhere in a sequence,
+            // appending `rest` to each branch is safe even when a branch
+            // ends with an early return — the tail is unreachable and
+            // the SReturn arm short-circuits before it.
+            | { Kind = SExpr { Kind = EIf(cond, thenOB, elseOBOpt, _) }
+                Span = sp } :: rest ->
+                let condT, condDiags = translateExpr env cond
+                let toStmts (ob: ExprOrBlock) : Statement list =
+                    match ob with
+                    | EOBBlock b -> b.Statements
+                    | EOBExpr e  -> [{ Kind = SExpr e; Span = e.Span }]
+                let thenStmts = toStmts thenOB
+                let elseStmts =
+                    elseOBOpt
+                    |> Option.map toStmts
+                    |> Option.defaultValue []
+                let thenR = walk env (thenStmts @ rest)
+                let elseR = walk env (elseStmts @ rest)
+                // Guard each branch's side goals by the branch condition so
+                // that assertions inside a branch have it as a hypothesis.
+                // E.g., `assert φ` inside the then-block becomes `cond ⇒ φ`.
+                // This is equivalent to adding `cond` to the goal hypotheses.
+                let guard cond goals =
+                    goals |> List.map (fun (t, k, s) ->
+                        TBuiltin(BOpImplies, [cond; t]), k, s)
+                let notCond = TBuiltin(BOpNot, [condT.Term])
+                { Wp        = TIte(condT.Term, thenR.Wp, elseR.Wp)
+                  SideGoals =
+                      (condT.SideConds |> List.map (fun t -> t, GKAssertion, sp))
+                      @ guard condT.Term thenR.SideGoals
+                      @ guard notCond    elseR.SideGoals
+                  Assumed   = thenR.Assumed @ elseR.Assumed
+                  Diags     = condDiags @ thenR.Diags @ elseR.Diags }
+
             | { Kind = SLocal lb } :: rest ->
                 match lb with
                 | LBVal(pat, _, init) ->
@@ -1333,6 +1402,99 @@ let goalsForFunction
     let diags = preDiags @ postDiags @ wpRes.Diags
     mainGoal :: sideGoals, diags
 
+/// Generate proof goals for a single `protected type` declaration.
+/// Each `entry` and `func` method gets goals equivalent to those
+/// produced by `goalsForFunction`, but with the type's fields
+/// pre-bound as symbolic variables and the type invariant injected
+/// as additional `requires:` clauses (precondition hypotheses).
+///
+/// Invariant PRESERVATION is checked via explicit `assert φ`
+/// statements in the entry body rather than as postconditions,
+/// avoiding the complexity of re-translating the invariant at each
+/// potential return site with the current (post-mutation) env.
+/// Return a copy of `env` with a fresh (empty) Symbols accumulator so
+/// that datatype registrations from one function's translation do not
+/// bleed into the next function's SMT goal.
+let private freshSymbols (env: Env) : Env =
+    { env with Symbols = ResizeArray<SymbolDecl>() }
+
+let private goalsForProtectedType
+        (env0: Env)
+        (pd: ProtectedTypeDecl)
+        : Goal list * Diagnostic list =
+
+    // Collect fields: (name, SortInfo)
+    let fieldBindings =
+        pd.Members
+        |> List.choose (fun m ->
+            match m with
+            | PMField (PFVar(n, te, _, _)) -> Some (n, sortOfTypeExpr te)
+            | PMField (PFLet(n, te, _, _)) -> Some (n, sortOfTypeExpr te)
+            | PMField (PFImmutable fd)     -> Some (fd.Name, sortOfTypeExpr fd.Type)
+            | _ -> None)
+
+    // Bind fields into the env as symbolic variables.
+    let envWithFields =
+        fieldBindings
+        |> List.fold (fun env (n, info) -> Env.bind n info env) env0
+
+    // Synthesise invariant clauses as additional `requires:` contracts.
+    let invariantRequires =
+        pd.Members
+        |> List.choose (fun m ->
+            match m with
+            | PMInvariant ic -> Some (CCRequires(ic.Expr, ic.Span))
+            | _ -> None)
+
+    // Add the protected type's `func` methods to Callees so that
+    // entries that call them can apply the call rule.
+    let envWithFuncCallees =
+        pd.Members
+        |> List.fold
+            (fun env m ->
+                match m with
+                | PMFunc fn ->
+                    { env with Callees = Map.add fn.Name fn env.Callees }
+                | _ -> env)
+            envWithFields
+
+    // Convert an EntryDecl to a FunctionDecl for use with goalsForFunction.
+    let entryToFn (ed: EntryDecl) : FunctionDecl =
+        { DocComments = ed.DocComments
+          Annotations = ed.Annotations
+          Visibility  = ed.Visibility
+          IsAsync     = false
+          Name        = pd.Name + "." + ed.Name
+          Generics    = None
+          Params      = ed.Params
+          Return      = ed.Return
+          Where       = None
+          Contracts   = ed.Contracts @ invariantRequires
+          Body        = Some ed.Body
+          Span        = ed.Span }
+
+    let entryGoals, entryDiags =
+        pd.Members
+        |> List.choose (fun m -> match m with PMEntry e -> Some e | _ -> None)
+        |> List.map (fun ed -> goalsForFunction (freshSymbols envWithFuncCallees) (entryToFn ed))
+        |> List.unzip
+
+    let funcGoals, funcDiags =
+        pd.Members
+        |> List.choose (fun m -> match m with PMFunc f -> Some f | _ -> None)
+        |> List.choose (fun fn ->
+            match fn.Body with
+            | None   -> None
+            | Some _ ->
+                let synFn = { fn with
+                                Name      = pd.Name + "." + fn.Name
+                                Contracts = fn.Contracts @ invariantRequires }
+                Some (goalsForFunction (freshSymbols envWithFuncCallees) synFn))
+        |> List.unzip
+
+    List.concat entryGoals @ List.concat funcGoals,
+    List.concat entryDiags @ List.concat funcDiags
+
 /// Top-level entry: walk every proof-required function in a file
 /// and emit the Goals.  `imports` carries cross-package contract
 /// metadata loaded by `Lyric.Verifier.Imports` (D-progress-086);
@@ -1373,7 +1535,7 @@ let goalsForFileWithImports
             Imports            = imports
             Datatypes          = datatypes
             CheckedArithmetic  = (level = ProofRequiredChecked) }
-    let allGoals, allDiags =
+    let fnGoals, fnDiags =
         file.Items
         |> List.choose (fun it ->
             match it.Kind with
@@ -1383,9 +1545,20 @@ let goalsForFileWithImports
                 | RuntimeChecked -> None
                 | _            -> Some fn
             | _ -> None)
-        |> List.map (goalsForFunction env0)
+        |> List.map (fun fn -> goalsForFunction (freshSymbols env0) fn)
         |> List.unzip
-    List.concat allGoals, List.concat allDiags
+
+    let protGoals, protDiags =
+        file.Items
+        |> List.choose (fun it ->
+            match it.Kind with
+            | IProtected pd -> Some pd
+            | _ -> None)
+        |> List.map (goalsForProtectedType (freshSymbols env0))
+        |> List.unzip
+
+    List.concat fnGoals @ List.concat protGoals,
+    List.concat fnDiags @ List.concat protDiags
 
 /// Backwards-compatible alias for callers that haven't been
 /// updated to pass an imports list.

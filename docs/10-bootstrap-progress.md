@@ -183,9 +183,11 @@ M4.2 close-out (D-progress-091) ships the remaining three deliverables
 flagged "Not shipped" in D-progress-090 — `Std.Core.Proof`,
 `--allow-unverified`, and the 200-test regression suite — so the M4.2
 status table flips fully to **Shipped**. The pagination-helper /
-token-bucket end-to-end worked-example proof tracked in
-`docs/12-todo-plan.md` Band D-D1.3 remains scheduled separately as it
-likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
+token-bucket end-to-end worked-example proofs tracked in
+`docs/12-todo-plan.md` Band D-D1.3 shipped in D-progress-129: four verifier
+bugs were fixed (float/Real mapping, branch-condition propagation, shared
+Symbols accumulator, free-var/selector name collision) and both examples
+discharge cleanly under Z3.
 
 ---
 
@@ -7289,3 +7291,79 @@ Consumer and harness:
   F# Expecto wrapper (`[modechecker_self_test_passes]`).
 
 All 636 emitter tests pass.
+
+---
+
+### D-progress-129: D-D1.3 — pagination + token-bucket end-to-end proofs; float/real verifier fixes
+
+*claude/proof-system-followups-5d9rH branch.*
+
+Closes `docs/12-todo-plan.md` Band D-D1.3: the two end-to-end worked-example
+proofs for the pagination helper and the token-bucket rate limiter now
+discharge fully under Z3.  Four verifier bugs were surfaced and fixed in the
+process.
+
+**Verifier fixes**
+
+1. **Float/Real SMT mapping** (`Smt.fs`, `Vcir.fs`): `SFloat32`/`SFloat64`
+   now render as SMT `Real` instead of the previously unregistered sort names.
+   A new `BOpRealDiv` builtin was added to `Vcir.fs` so that float division
+   (`/`) emits as the Real-arithmetic `/` operator rather than integer `div`.
+   `VCGen.fs` selects `BOpRealDiv` over `BOpDiv` whenever both operands have
+   a float sort.
+
+2. **EIf branch-condition propagation** (`VCGen.fs`): assertions (`assert φ`)
+   inside an `if`/`else` body were not receiving the branch condition as a
+   hypothesis, causing them to fail with infeasible counterexamples (e.g.
+   `tokens = 0`, `count = 0.5` entering the taken branch and then failing
+   `tokens - count >= 0`).  The EIf-in-statement handler now guards each
+   branch's side goals with the branch condition using `cond ⇒ φ` wrapping,
+   which is equivalent to adding `cond` as a hypothesis for assertions in the
+   then-block (and `¬cond` for the else-block).
+
+3. **Shared `Symbols` ResizeArray** (`VCGen.fs`): `env.Symbols` is mutable;
+   all functions in a file shared the same instance via record copy-and-update.
+   After the `make` function registered the `Bucket` datatype, entry-method
+   goals inherited it, and Z3 flagged "ambiguous constant reference" when a
+   parameter was named identically to a selector.  Fixed by adding
+   `freshSymbols : Env -> Env` and passing `freshSymbols env` to each
+   `goalsForFunction` call so every function starts with a clean accumulator.
+
+4. **Free-variable / selector name conflict** (`Smt.fs`): even after fix 3,
+   a function whose parameter shares a name with a datatype selector (e.g.
+   `capacity` in both `make`'s parameter list and `Bucket`'s field list)
+   caused Z3 to report ambiguity.  Added `datatypeReservedNames` + a
+   pre-emit renaming pass in `renderGoalBlock`: any free variable whose name
+   clashes with a constructor, selector, or user-fun name is renamed to
+   `name$p` before the `declare-const` and `assert` are emitted.
+
+**Protected-type proof support**
+
+`VCGen.goalsForFileWithImports` now processes `IProtected` items:
+fields are bound as symbolic variables; `invariant:` clauses are injected
+as additional `requires:` preconditions on each entry; `goalsForProtectedType`
+converts each `entry` to a synthetic `FunctionDecl` and calls
+`goalsForFunction`.  `ProofMeta.buildProofMeta` was extended to include
+`IProtected` fields in the proof-type registry so the SMT emitter can
+declare the Bucket datatype.
+
+**New worked examples**
+
+- `examples/token_bucket_proof.l` — `@proof_required` token bucket with
+  `protected type Bucket` (fields `tokens: Double`, `capacity: Double`),
+  invariants `tokens >= 0.0` and `tokens <= capacity`, entry methods
+  `tryAcquire` and `refill` with explicit `assert` statements for invariant
+  preservation, and `make` constructor with structural postconditions.
+  6/6 obligations discharge.
+- `examples/pagination.l` (already existed from PR #129) — 4/4 obligations
+  discharge unchanged.
+- `docs/02-worked-examples.md` — Examples 12 (pagination) and 13 (token
+  bucket) added to the worked-examples catalogue.
+
+**Test coverage**
+
+Four new `[D-D1.3]`-tagged tests added to `SmtTests.fs` (float-sort rendering,
+`BOpRealDiv`, float-literal rendering) and six to `DriverTests.fs` (EIf-in-
+statement, mid-sequence SReturn, general ECall, float arithmetic, protected
+type goals, protected type invariant-as-hypothesis).  Total verifier tests:
+266, all passing.

@@ -13,8 +13,12 @@ let rec private renderSort (s: Sort) : string =
     | SBool       -> "Bool"
     | SInt        -> "Int"
     | SBitVec n   -> sprintf "(_ BitVec %d)" n
-    | SFloat32    -> "Float32"
-    | SFloat64    -> "Float64"
+    // Float32/Float64 are mapped to SMT Real for proof purposes.
+    // This treats Lyric doubles as mathematical reals (sound
+    // approximation for invariant reasoning; avoids the full
+    // IEEE-754 FP theory and its rounding-mode complexity).
+    | SFloat32    -> "Real"
+    | SFloat64    -> "Real"
     | SString     -> "String"
     | SDatatype("Unit", []) -> "Unit"
     | SDatatype(name, []) -> name
@@ -116,6 +120,22 @@ let private freeVars (t: Term) : (string * Sort) list =
     go t
     List.ofSeq result
 
+/// Every name that a set of symbol declarations introduces into the
+/// SMT namespace (constructor names, selector names, user-fun names).
+/// A free variable whose name collides with one of these would cause
+/// Z3 to report "ambiguous constant reference" even when arities
+/// differ, so we rename such variables by appending "$p".
+let private datatypeReservedNames (symbols: SymbolDecl list) : Set<string> =
+    symbols
+    |> List.collect (fun sym ->
+        match sym with
+        | Datatype(typeName, ctors) ->
+            typeName
+            :: (ctors |> List.collect (fun (ctorName, fields) ->
+                    ctorName :: (fields |> List.map fst)))
+        | UserFun(name, _, _) -> [name])
+    |> Set.ofList
+
 /// Render a SMT-LIB session preamble: the logic + option +
 /// `Unit` datatype.  Sent once per persistent z3 session
 /// (decision 5c) and shared across goals.
@@ -181,8 +201,30 @@ let renderGoalBlock
     // Per-goal section: push, declare-const free variables, assert,
     // check-sat + get-model, pop.
     appendln "(push 1)"
-    let claim = Goal.asImplication g
-    let frees = freeVars claim
+    let claim0 = Goal.asImplication g
+    // Rename free variables that clash with datatype/selector names to
+    // avoid Z3 "ambiguous constant reference" errors (Z3 treats a
+    // declare-const with the same name as a selector as ambiguous even
+    // though the arities differ).  Append "$p" to conflicting names.
+    let reserved = datatypeReservedNames g.Symbols
+    let frees0 = freeVars claim0
+    let renamingMap =
+        frees0
+        |> List.choose (fun (n, s) ->
+            if Set.contains n reserved then Some (n, TVar(n + "$p", s))
+            else None)
+        |> Map.ofList
+    let claim, frees =
+        if Map.isEmpty renamingMap then claim0, frees0
+        else
+            let claim' = Term.subst renamingMap claim0
+            let frees' =
+                frees0
+                |> List.map (fun (n, s) ->
+                    match Map.tryFind n renamingMap with
+                    | Some (TVar(n2, _)) -> n2, s
+                    | _                  -> n, s)
+            claim', frees'
     for (name, sort) in frees do
         appendln (sprintf "(declare-const %s %s)"
                     (sanitizeIdent name) (renderSort sort))
