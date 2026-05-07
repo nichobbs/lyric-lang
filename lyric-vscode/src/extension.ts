@@ -14,7 +14,7 @@ import {
 } from './tomlEditor';
 import { LyricProjectProvider } from './projectNavigator';
 import { LyricTaskProvider, runLyricInTerminal, runLyricRestore } from './taskProvider';
-import { LyricDocumentFormatter } from './formatter';
+import { createFormatter } from './formatter';
 import { registerTomlValidator } from './tomlValidator';
 
 let client: LanguageClient | undefined;
@@ -277,7 +277,7 @@ function registerFormatter(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.languages.registerDocumentFormattingEditProvider(
             { language: 'lyric', scheme: 'file' },
-            new LyricDocumentFormatter(),
+            createFormatter(context),
         ),
     );
 }
