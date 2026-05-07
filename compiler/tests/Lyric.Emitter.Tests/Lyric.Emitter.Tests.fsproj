@@ -192,6 +192,7 @@
     <Compile Include="SelfHostedLexerTests.fs" />
     <Compile Include="SelfHostedParserTests.fs" />
     <Compile Include="SelfHostedTypeCheckerTests.fs" />
+    <Compile Include="SelfHostedFmtTests.fs" />
     <Compile Include="SelfHostedModeCheckerTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />

@@ -74,10 +74,10 @@ deferred to Phase 3 by design.
 | M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (PR #190) | D-progress-128 |
 | M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (PR #197) | D-progress-130 |
 | M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
-| M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (this branch) | D-progress-133 |
+| M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`) | D-progress-129 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port) | D-progress-129 / D-progress-131 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -193,6 +193,54 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-131: M5.3 stage 2 — self-hosted formatter (`Lyric.Fmt`) port
+
+*claude/lyric-self-hosted-formatter branch.*
+
+The F# `lyric fmt` (compiler/src/Lyric.Cli/Fmt.fs) drops `//` comments
+because it walks the AST exclusively.  D-progress-130's red/green CST
+gave the parser a lossless source view; this stage ports the formatter
+to Lyric so it can consume that CST and preserve comments.
+
+Scope:
+
+- New `Lyric.Fmt` package at `compiler/lyric/lyric/fmt/{fmt_core,fmt_items,fmt}.l`
+  mirroring the F# Fmt.fs structure (helpers + line model + type /
+  pattern / literal / expression / statement printers in `fmt_core`,
+  item printers in `fmt_items`, top-level entry points in `fmt`).
+- Public API matching the contract advertised in `compiler/lyric/lyric/cli.l`:
+  `pub func format(parsed: in ParseResult): String`
+  `pub func isFormatted(source: in String, parsed: in ParseResult): Bool`
+- Comment preservation at item granularity: line and block comments
+  between items, before the first item, and after the last item are
+  harvested from the CST (`harvestCommentsFromNode` walks every
+  green-token's `leadingTrivia` and records `TKLineComment` /
+  `TKBlockComment` runs with their offsets) and re-emitted at the
+  appropriate item boundary.  Item-internal comments are deferred
+  until the CST is refined to per-statement / per-expression
+  granularity.
+- `fmt_self_test.l` covers the file-level format (package, imports,
+  module doc), every supported item kind exercised end-to-end (alias,
+  distinct type, record, union, enum, func, val, pub func), and the
+  three comment-preservation paths (before first item, between items,
+  trailing after last item).  A new F# Expecto runner
+  `tests/Lyric.Emitter.Tests/SelfHostedFmtTests.fs` compiles and
+  runs the self-test.
+
+Bootstrap codegen workaround in `patStr`'s `PBinding` arm: the obvious
+`match innerOpt { Some(ip) / None }` shape silently falls through under
+the bootstrap codegen when `innerOpt` is destructured out of an outer
+union case in the same arm (`Option[Pattern]` specifically).
+Routed around with `isSome` + `unwrapOr`; both are pure helpers from
+`Std.Core` and the recursion still terminates on the inner pattern's
+kind.  Tracked for follow-up against the bootstrap emitter.
+
+CLI wiring is intentionally out of scope: the F# `lyric fmt` still
+calls `Lyric.Cli.Fmt.format` (F#).  The next stage routes
+`lyric fmt` through this Lyric formatter via in-process compile +
+reflection (matching the existing emitter pattern for stdlib DLL
+loading).
 
 ### D-progress-130: M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser
 
