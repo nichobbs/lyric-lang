@@ -321,20 +321,6 @@ let private codegenErrStmt
 // Stdlib bindings.
 // ---------------------------------------------------------------------------
 
-/// `Lyric.Stdlib.UnionEquality.SameType(object, object)` — used by BEq
-/// on abstract union base types to compare by runtime type class rather
-/// than by reference identity.  A static `Call` avoids both virtual-
-/// dispatch issues (PersistedAssemblyBuilder nested-type vtable bugs)
-/// and `DeclareLocal` ordering issues.
-let private sameTypeMethod : Lazy<MethodInfo> =
-    lazy (
-        let mi =
-            typeof<Lyric.Stdlib.UnionEquality>
-                .GetMethod("SameType", [| typeof<obj>; typeof<obj> |])
-        match Option.ofObj mi with
-        | Some m -> m
-        | None   -> failwith "Lyric.Stdlib.UnionEquality::SameType(obj,obj) not found")
-
 let private compareOrdinalMethod : Lazy<MethodInfo> =
     lazy (
         let mi = typeof<System.String>.GetMethod("CompareOrdinal", [| typeof<string>; typeof<string> |])

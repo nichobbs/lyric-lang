@@ -81,3 +81,88 @@ pub func tryGetLong(elem: in JsonElement): Option[Long] {
 /// backslashes, surrounds with `"` characters.
 @stable(since="1.0")
 pub func encodeString(s: in String): String { hostEncodeString(s) }
+
+// =====================================================================
+// fromJson scalar field readers — used by @derive(Json) synthesised stubs.
+// Each re-parses the JSON string and walks to the named property.
+// =====================================================================
+
+pub func lyricJsonGetInt(s: in String, name: in String, value: out Int): Bool {
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = default()
+    return false
+  }
+  return hostTryGetInt32(elem, value)
+}
+
+pub func lyricJsonGetLong(s: in String, name: in String, value: out Long): Bool {
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = default()
+    return false
+  }
+  return hostTryGetInt64(elem, value)
+}
+
+pub func lyricJsonGetDouble(s: in String, name: in String, value: out Double): Bool {
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = default()
+    return false
+  }
+  return hostTryGetDouble(elem, value)
+}
+
+pub func lyricJsonGetBool(s: in String, name: in String, value: out Bool): Bool {
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = default()
+    return false
+  }
+  // JsonValueKind.True = 5, JsonValueKind.False = 6
+  val kind = hostValueKind(elem)
+  if kind == 5 or kind == 6 {
+    value = hostGetBoolean(elem)
+    return true
+  }
+  value = default()
+  return false
+}
+
+pub func lyricJsonGetString(s: in String, name: in String, value: out String): Bool {
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = default()
+    return false
+  }
+  // JsonValueKind.String = 3
+  if hostValueKind(elem) != 3 {
+    value = default()
+    return false
+  }
+  value = hostGetString(elem)
+  return true
+}
+
+pub func lyricJsonGetSubObject(s: in String, name: in String, value: out String): Bool {
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = "{}"
+    return false
+  }
+  value = hostGetRawText(elem)
+  return true
+}

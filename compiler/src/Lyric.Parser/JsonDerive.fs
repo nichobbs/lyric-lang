@@ -461,6 +461,33 @@ let private synthesiseFromJsonOpt
               Body        = Some (FBBlock body)
               Span        = span }
 
+/// Synthetic imports required by `@derive(Json)` synthesis.
+///
+/// Returns `[import Std.Json]` if any `@derive(Json)` record exists
+/// in the item list; returns `[]` otherwise.  The emitter's
+/// `resolveStdlibImports` deduplicates via `HashSet`, so injecting a
+/// duplicate when the user already has `import Std.Json` is harmless.
+let synthesizeImports (items: Item list) : ImportDecl list =
+    let hasDerive =
+        items |> List.exists (fun it ->
+            hasDeriveJson it &&
+            match it.Kind with
+            | IRecord _ | IExposedRec _ -> true
+            | _ -> false)
+    if not hasDerive then []
+    else
+        let span =
+            items
+            |> List.tryPick (fun it ->
+                if hasDeriveJson it then Some it.Span else None)
+            |> Option.defaultWith (fun () ->
+                Lyric.Lexer.Span.pointAt Lyric.Lexer.Position.initial)
+        [ { Path     = { Segments = ["Std"; "Json"]; Span = span }
+            Selector = None
+            Alias    = None
+            IsPubUse = false
+            Span     = span } ]
+
 let synthesizeItems (items: Item list) : Item list =
     // First pass: collect the names of every record with
     // `@derive(Json)` so the per-field renderer knows which fields
@@ -860,6 +887,8 @@ let synthesizeItems (items: Item list) : Item list =
         // fromJson primitive shims — added unconditionally per
         // D-progress-046.  See `synthesiseFromJsonOpt` for the
         // per-record `fromJson` synthesis itself.
+        // Emit a shim that routes to a BCL extern via @externTarget.
+        // Used for slice readers that still go through the F# shim.
         let mkGetShim
                 (helperName: string)
                 (clrName: string)
@@ -904,29 +933,62 @@ let synthesizeItems (items: Item list) : Item list =
               Visibility  = None
               Kind        = IFunc fn
               Span        = firstSpan }
-        result.Add (mkGetShim
-            "__lyricJsonGetInt"
-            "Lyric.Stdlib.JsonHost.GetInt"
-            (mkRefTy "Int"))
-        result.Add (mkGetShim
-            "__lyricJsonGetLong"
-            "Lyric.Stdlib.JsonHost.GetLong"
-            (mkRefTy "Long"))
-        result.Add (mkGetShim
-            "__lyricJsonGetDouble"
-            "Lyric.Stdlib.JsonHost.GetDouble"
-            (mkRefTy "Double"))
-        result.Add (mkGetShim
-            "__lyricJsonGetBool"
-            "Lyric.Stdlib.JsonHost.GetBool"
-            (mkRefTy "Bool"))
-        result.Add (mkGetShim
-            "__lyricJsonGetString"
-            "Lyric.Stdlib.JsonHost.GetString"
-            (mkRefTy "String"))
-        // Slice + sub-object readers — landed alongside D-progress-060
-        // so nested `@derive(Json)` records and primitive-slice fields
-        // get a working `fromJson` path.
+        // Emit a shim whose body calls a Lyric stdlib function (no
+        // @externTarget).  Used for scalar readers that are now
+        // implemented in pure Lyric in `_kernel/json_host.l`.
+        let mkGetShimBody
+                (helperName: string)
+                (lyricCallee: string)
+                (valueTy: TypeExpr) : Item =
+            let boolTy = mkType (TRef (mkPath "Bool" firstSpan)) firstSpan
+            let callBody =
+                let callee = mkExpr (EPath (mkPath lyricCallee firstSpan)) firstSpan
+                let args =
+                    [ CAPositional (mkExpr (EPath (mkPath "s"     firstSpan)) firstSpan)
+                      CAPositional (mkExpr (EPath (mkPath "name"  firstSpan)) firstSpan)
+                      CAPositional (mkExpr (EPath (mkPath "value" firstSpan)) firstSpan) ]
+                mkExpr (ECall (callee, args)) firstSpan
+            let fn : FunctionDecl =
+                { DocComments = []
+                  Annotations = []
+                  Visibility  = None
+                  IsAsync     = false
+                  Name        = helperName
+                  Generics    = None
+                  Params      =
+                    [ { Mode    = PMIn
+                        Name    = "s"
+                        Type    = stringTy
+                        Default = None
+                        Span    = firstSpan }
+                      { Mode    = PMIn
+                        Name    = "name"
+                        Type    = stringTy
+                        Default = None
+                        Span    = firstSpan }
+                      { Mode    = PMOut
+                        Name    = "value"
+                        Type    = valueTy
+                        Default = None
+                        Span    = firstSpan } ]
+                  Return      = Some boolTy
+                  Where       = None
+                  Contracts   = []
+                  Body        = Some (FBExpr callBody)
+                  Span        = firstSpan }
+            { DocComments = []
+              Annotations = []
+              Visibility  = None
+              Kind        = IFunc fn
+              Span        = firstSpan }
+        // Scalar readers — implemented in pure Lyric in _kernel/json_host.l
+        result.Add (mkGetShimBody "__lyricJsonGetInt"    "lyricJsonGetInt"    (mkRefTy "Int"))
+        result.Add (mkGetShimBody "__lyricJsonGetLong"   "lyricJsonGetLong"   (mkRefTy "Long"))
+        result.Add (mkGetShimBody "__lyricJsonGetDouble" "lyricJsonGetDouble" (mkRefTy "Double"))
+        result.Add (mkGetShimBody "__lyricJsonGetBool"   "lyricJsonGetBool"   (mkRefTy "Bool"))
+        result.Add (mkGetShimBody "__lyricJsonGetString" "lyricJsonGetString" (mkRefTy "String"))
+        // Slice readers — still route through Lyric.Stdlib.JsonHost (F# shim)
+        // pending nested-CLR-type extern support for JsonElement.ArrayEnumerator.
         let mkSliceTy elemRefName =
             mkType (TSlice (mkRefTy elemRefName)) firstSpan
         result.Add (mkGetShim
@@ -949,10 +1011,8 @@ let synthesizeItems (items: Item list) : Item list =
             "__lyricJsonGetStringSlice"
             "Lyric.Stdlib.JsonHost.GetStringSlice"
             (mkSliceTy "String"))
-        result.Add (mkGetShim
-            "__lyricJsonGetSubObject"
-            "Lyric.Stdlib.JsonHost.GetSubObject"
-            (mkRefTy "String"))
+        // Sub-object reader — implemented in pure Lyric in _kernel/json_host.l
+        result.Add (mkGetShimBody "__lyricJsonGetSubObject" "lyricJsonGetSubObject" (mkRefTy "String"))
         for it in items do
             if hasDeriveJson it then
                 match it.Kind with
