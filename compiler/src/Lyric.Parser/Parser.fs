@@ -4100,11 +4100,12 @@ let parse (source: string) : ParseResult =
             | _ -> result.Add(it)
         List.ofSeq result
 
+    let syntheticImports = JsonDerive.synthesizeImports items
     let file =
         { ModuleDoc            = moduleDoc
           FileLevelAnnotations = fileAnnotations
           Package              = packageDecl
-          Imports              = imports
+          Imports              = imports @ syntheticImports
           Items                =
               items
               |> hoistInlineMethods

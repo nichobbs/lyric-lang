@@ -69,6 +69,15 @@ pub func hostTryGetInt32(elem: in JsonElement, value: out Int): Bool = ()
 @externTarget("System.Text.Json.JsonElement.TryGetInt64")
 pub func hostTryGetInt64(elem: in JsonElement, value: out Long): Bool = ()
 
+@externTarget("System.Text.Json.JsonElement.TryGetDouble")
+pub func hostTryGetDouble(elem: in JsonElement, value: out Double): Bool = ()
+
+@externTarget("System.Text.Json.JsonElement.GetRawText")
+pub func hostGetRawText(elem: in JsonElement): String = ()
+
+@externTarget("System.Text.Json.JsonElement.ValueKind")
+pub func hostValueKind(elem: in JsonElement): Int = ()
+
 // =====================================================================
 // Manual serialization helpers.  Routes through
 // `Lyric.Stdlib.JsonHost.EncodeString` (the BCL's

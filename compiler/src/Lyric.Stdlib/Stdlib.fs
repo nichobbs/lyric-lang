@@ -5,8 +5,9 @@
 ///
 ///   - Null-aware `obj` formatting (`PrintlnAny`, `ToStr`): no Lyric
 ///     surface for `obj | null` discrimination.
-///   - Out-parameter readers (`JsonHost.Get*`, `Parse.*Value`):
-///     Lyric has no out-params.
+///   - Slice readers (`JsonHost.Get*Slice`): iteration over
+///     `JsonElement.ArrayEnumerator` (a nested CLR type) requires
+///     extern-type resolution for `+`-separated names, not yet done.
 ///   - Try/catch wrappers (`FileHost.*`, `TryHost.*`): no try/catch
 ///     bridging across the FFI boundary yet.
 ///   - There are no remaining concurrency shims; `LyricTaskScope`,
@@ -64,20 +65,10 @@ open System
 // (`makeScope`, `scopeSpawn`, `awaitAll`, `cancelScope`, `disposeScope`)
 // are pure Lyric on top of direct BCL externs.
 
-/// Cross-assembly union-case equality helper.
-///
-/// Two Lyric nullary union cases compare equal when they are the same
-/// case class, even if the two object references are different instances
-/// (e.g. one is a singleton from an imported assembly and the other is a
-/// freshly constructed wrapper in the caller's assembly).  The codegen
-/// emits `Call SameType(a, b)` via a direct `Call` instruction (no
-/// virtual dispatch through a TypeBuilder vtable) so the CLR verifier
-/// accepts the comparison for any abstract reference type.
-type UnionEquality private () =
-    static member SameType(a: obj, b: obj) : bool =
-        if obj.ReferenceEquals(a, null) && obj.ReferenceEquals(b, null) then true
-        elif obj.ReferenceEquals(a, null) || obj.ReferenceEquals(b, null) then false
-        else a.GetType() = b.GetType()
+// `Lyric.Stdlib.UnionEquality` retired (D-progress-stdlib-expand).
+// `SameType(obj, obj)` was referenced via a `sameTypeMethod` lazy in
+// Codegen.fs but the call site was never reached; union-case equality
+// uses `Ceq` directly.  Both the F# type and the lazy are now deleted.
 
 // G7 (`docs/23-fsharp-shim-elimination.md`; D-progress-123): F#
 // `StubCounter` and `StubCounterHost` retired.  `stdlib/std/testing_mocking.l`
@@ -156,89 +147,29 @@ type JsonHost private () =
                 |> ignore
             sb.Append(']').ToString()
 
-    // -------- fromJson primitive field readers --------
-    //
-    // Per-primitive-type out-param helpers used by the synthesiser
-    // (D-progress-046).  Each reader takes a JSON string + property
-    // name and writes the parsed value via an `out` parameter,
-    // returning `true` on success.  Re-parsing the document per
-    // call is wasteful but avoids exposing JsonDocument across
-    // the FFI boundary; the synthesiser is bootstrap-grade and a
-    // future revision can pass a parsed handle.
-
-    static member GetInt (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
-                e.TryGetInt32(&value)
-            else false
-        with _ -> false
-
-    static member GetLong (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<int64>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
-                e.TryGetInt64(&value)
-            else false
-        with _ -> false
-
-    static member GetDouble (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<double>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Number then
-                e.TryGetDouble(&value)
-            else false
-        with _ -> false
-
-    static member GetBool (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<bool>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e) then
-                match e.ValueKind with
-                | System.Text.Json.JsonValueKind.True  -> value <- true ; true
-                | System.Text.Json.JsonValueKind.False -> value <- false ; true
-                | _ -> false
-            else false
-        with _ -> false
-
-    static member GetString (json: string, name: string, [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.String then
-                let raw = e.GetString()
-                value <-
-                    match Option.ofObj raw with
-                    | Some s -> s
-                    | None   -> ""
-                true
-            else false
-        with _ -> false
-
     // P3-3: `RenderStringSlice` retired; the synthesiser now emits an
     // inline `while`-loop renderer that calls
     // `__lyricJsonEscape(items[i])` per element (which still routes
     // through `JsonHost.EncodeString` — `EncodeString` stays kernel
     // because it depends on `System.Text.Json.JsonEncodedText`).
 
-    // -------- fromJson slice / sub-object readers --------
+    // GetInt/Long/Double/Bool/String and GetSubObject retired
+    // (D-progress-stdlib-expand).  The `@derive(Json)` synthesiser
+    // (`JsonDerive.fs`) now emits Lyric function bodies that call
+    // `lyricJsonGet*` in `Std.JsonHost` (`_kernel/json_host.l`),
+    // which chains `hostParseJson` → `hostRootElement` →
+    // `hostTryGetProperty` → `hostTryGet*` directly on BCL externs.
+    // GetSubObject similarly routes through `hostGetRawText`.
+
+    // -------- fromJson slice readers --------
     //
-    // Per-element-type slice readers + a generic sub-object reader
-    // that returns the matching field as a JSON-encoded string so
-    // the synthesised `Inner.fromJson(subStr)` call can recurse.
-    // All readers return `false` and leave `value` at `default(T)`
-    // when the field is missing or the type doesn't match — the
-    // synthesiser ignores the return value (the caller then sees a
-    // default-initialised array / empty string and constructs the
-    // record with a default field value).
+    // Per-element-type slice readers that return the matching field as
+    // a primitive array so the synthesised `fromJson` can assign it.
+    // These still route through this shim because iterating
+    // `JsonElement.ArrayEnumerator` (a nested BCL struct type) requires
+    // `System.Text.Json.JsonElement+ArrayEnumerator` in the extern type
+    // table, which Lyric doesn't yet resolve for nested CLR types.
+    // Deferred to a follow-up once nested-type extern resolution lands.
 
     static member GetIntSlice
             (json: string, name: string,
@@ -350,62 +281,13 @@ type JsonHost private () =
             value <- Array.empty<string>
             false
 
-    /// Extract a sub-object field as its raw JSON-text representation.
-    /// Used by the synthesiser for nested `@derive(Json)` record
-    /// fields: `field: Inner` → call `GetSubObject(s, "field",
-    /// subStr)` and recurse on `Inner.fromJson(subStr)`.
-    static member GetSubObject
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<string>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && (e.ValueKind = System.Text.Json.JsonValueKind.Object
-                   || e.ValueKind = System.Text.Json.JsonValueKind.Array) then
-                value <- e.GetRawText()
-                true
-            else
-                value <- "{}"
-                false
-        with _ ->
-            value <- "{}"
-            false
-
-    /// Returns true when `name` is a present, non-null field on the
-    /// JSON document.  Used by Option-typed fields to distinguish
-    /// `None` (missing/null) from `Some` (present + parseable).
-    static member HasField (json: string, name: string) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            doc.RootElement.TryGetProperty(name, &e)
-            && e.ValueKind <> System.Text.Json.JsonValueKind.Null
-
-        with _ -> false
-
-    /// Read a sub-array field's elements as raw JSON strings.  Used
-    /// by `slice[Inner]` field synthesis where each element needs
-    /// to recurse via `Inner.fromJson(elemStr)`.
-    static member GetSubArrayElements
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<string[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<string>()
-                for el in e.EnumerateArray() do
-                    arr.Add(el.GetRawText())
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<string>
-                false
-        with _ ->
-            value <- Array.empty<string>
-            false
+    // GetSubObject retired (D-progress-stdlib-expand): implemented in
+    // pure Lyric via `hostTryGetProperty` + `hostGetRawText` in
+    // `_kernel/json_host.l`.
+    //
+    // HasField retired: unused by `@derive(Json)` synthesiser.
+    //
+    // GetSubArrayElements retired: unused by `@derive(Json)` synthesiser.
 
 // G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
 // `Lyric.Stdlib.HttpClientHost` retires entirely.  Every member
