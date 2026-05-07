@@ -156,9 +156,18 @@ let renderPreamble () : string =
 /// in this session — datatypes / declare-fun lines for symbols in
 /// that set are skipped.  Returns the new set after this goal's
 /// declarations are added.
+///
+/// `sessionGlobalNames` is the accumulated set of constructor/
+/// selector/user-fun names that have been declared OUTSIDE push/pop
+/// in this session (i.e. they persist across goals in Z3's global
+/// context).  Free variables whose names collide with any of these
+/// names must also be renamed, not just those colliding with the
+/// current goal's own symbols.  Returns the updated set that includes
+/// names introduced by this goal's new declarations.
 let renderGoalBlock
         (declaredSymbols: Set<string>)
-        (g: Goal) : string * Set<string> =
+        (sessionGlobalNames: Set<string>)
+        (g: Goal) : string * Set<string> * Set<string> =
     let sb = StringBuilder()
     let appendln (s: string) = sb.Append(s).Append('\n') |> ignore
 
@@ -206,7 +215,14 @@ let renderGoalBlock
     // avoid Z3 "ambiguous constant reference" errors (Z3 treats a
     // declare-const with the same name as a selector as ambiguous even
     // though the arities differ).  Append "$p" to conflicting names.
-    let reserved = datatypeReservedNames g.Symbols
+    //
+    // In a persistent session, datatypes declared by earlier goals
+    // remain in Z3's global context (they are emitted outside push/pop).
+    // We must check sessionGlobalNames (from prior goals) in addition to
+    // the current goal's own symbols so cross-goal selector collisions
+    // are also renamed.
+    let reserved =
+        Set.union sessionGlobalNames (datatypeReservedNames g.Symbols)
     let frees0 = freeVars claim0
     let renamingMap =
         frees0
@@ -233,7 +249,11 @@ let renderGoalBlock
     appendln "(get-model)"
     appendln "(pop 1)"
 
-    sb.ToString(), declared
+    // Return accumulated session-global names including the new ones
+    // declared outside push/pop by this goal.
+    let sessionGlobalNames' =
+        Set.union sessionGlobalNames (datatypeReservedNames g.Symbols)
+    sb.ToString(), declared, sessionGlobalNames'
 
 /// Render a single goal as a self-contained SMT-LIB v2.6 file.
 /// Used by the `--proof-dir` writer (so each goal lives in its own
@@ -241,5 +261,5 @@ let renderGoalBlock
 /// persistent session is in use.
 let renderGoal (g: Goal) : string =
     let preamble = renderPreamble ()
-    let body, _ = renderGoalBlock Set.empty g
+    let body, _, _ = renderGoalBlock Set.empty Set.empty g
     preamble + body
