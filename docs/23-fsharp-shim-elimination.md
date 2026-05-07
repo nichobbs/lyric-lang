@@ -113,7 +113,7 @@ targeting.
 | `LyricTaskScope` / `TaskScopeHost` | 111 | G7 + G12 (delegate lowering) | Lyric `protected type Scope { var tasks: List[Task]; … }`. |
 | `AmbientHost` | 35 | G11 (`AsyncLocal[T]` primitive) | Lyric `@asyncLocal val ambient: CancellationToken`. |
 | `TaskHost` | 25 | G12 (delegate lowering completeness audit) | Direct `@externTarget("System.Threading.Tasks.Task.…")` declarations. |
-| `JsonHost.Get*Slice` family + readers | ~150 | G10 (FFI try/catch); rest stays kernel | Inline try/catch wrappers, skipping the F# layer. The remaining tokenizer-coupled methods (`Parse`, `EncodeString`, `RenderDoubleSlice`) stay kernel forever. |
+| `JsonHost.Get*Slice` family + readers | ~150 | shipped per D-progress-139 (no G-item — fixed via three small emitter changes: leading-param exact-type filter on default-arg overload selection; `Ldarg`-not-`Ldarga` for inout-mode value-type receivers; culture-invariant `toString(Double | Float)`) | Pure-Lyric `lyricJsonGet*Slice` in `_kernel/json_host.l` driving `JsonElement+ArrayEnumerator` via a `while hostEnumMoveNext(en) { … }` loop. `Parse` / `EncodeString` / `RenderDoubleSlice` also retired (Parse → direct extern with default-arg struct; EncodeString → split into `JsonEncodedText.Encode` + `ToString` + Lyric concat; RenderDoubleSlice → inline `mkSliceHelperInline` with culture-invariant `toString`). |
 | `HttpClientHost`, `HttpServerHost` | 200 | G12 audit | Direct `@externTarget` against `System.Net.Http.…` and `System.Net.HttpListener.…` once delegate handling is fully audited. Currently these wrap `Task<T>` returns and that path may already work — needs verification. |
 
 **Bucket C subtotal:** ~691 LoC eliminated (or migrated to direct
@@ -372,15 +372,29 @@ user-defined exceptions across the FFI):
 kernel surface (`JsonHost` tokenizer-coupled methods +
 `RenderDoubleSlice`).
 
+**Update (D-progress-139):** the `JsonHost` carve-out also
+retired — the eight remaining live methods migrated to pure Lyric
+in `_kernel/json_host.l` (Parse, EncodeString, RenderDoubleSlice,
+and the five `Get*Slice` readers).  No new G-item was needed; the
+migration was unblocked by three small emitter fixes (default-arg
+overload disambiguation, `Ldarg` vs `Ldarga` for inout-mode value-
+type receivers, culture-invariant `toString` for floating-point).
+Net F# shim is now zero LoC of host types.
+
 ### Phase 5 — distribution-shape decision
 
-With the shim at its irreducible floor, decide whether to:
+With the shim at its irreducible floor (zero LoC of host types
+post-D-progress-139), decide whether to:
 
-- **Keep as F#** — ship one `Lyric.Stdlib.Kernel.dll` (~150 LoC
-  of F#) alongside the Lyric stdlib bundle. Two DLLs but tiny.
-- **Rewrite in C#** — same ~150 LoC, no FSharp.Core dep.
-- **Cecil-merge into bundle** — one DLL, no F# runtime dep
-  (assuming C# rewrite first).
+- **Keep as empty F# project** — `Lyric.Stdlib.dll` is referenced
+  by the CLI / emitter for runtime probing but contains no host
+  types.  Cheapest option since it preserves all the existing
+  packaging plumbing.
+- **Delete entirely** — drop the project; update CLI / emitter to
+  not copy or reference `Lyric.Stdlib.dll`.  Frees the bundle
+  shape from one DLL, no `FSharp.Core.dll` dep.
+- **Cecil-merge into bundle** — irrelevant once the project is
+  empty.
 
 This is a packaging decision, not language work. Tracked as a
 follow-up open question (see §9).

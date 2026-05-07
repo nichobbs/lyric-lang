@@ -3342,6 +3342,29 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         if argTy = typeof<string> then
             // Already a string — no boxing or call needed.
             ()
+        elif argTy = typeof<double> || argTy = typeof<single> then
+            // Culture-invariant formatting for floating-point.  On .NET 10
+            // the default format is the shortest round-trip representation,
+            // and InvariantCulture pins the decimal separator to "." so the
+            // output is locale-stable and JSON-safe.
+            let invariantGetter =
+                let p = typeof<System.Globalization.CultureInfo>.GetProperty("InvariantCulture")
+                match Option.ofObj p with
+                | Some prop ->
+                    match Option.ofObj (prop.GetGetMethod()) with
+                    | Some g -> g
+                    | None   -> failwith "CultureInfo.InvariantCulture getter not found"
+                | None -> failwith "CultureInfo.InvariantCulture not found"
+            let toStringMi =
+                match Option.ofObj
+                          (argTy.GetMethod("ToString", [| typeof<System.IFormatProvider> |])) with
+                | Some m -> m
+                | None   -> failwith "Floating-point ToString(IFormatProvider) not found"
+            let tmp = il.DeclareLocal(argTy)
+            il.Emit(OpCodes.Stloc, tmp)
+            il.Emit(OpCodes.Ldloca, tmp)
+            il.Emit(OpCodes.Call, invariantGetter)
+            il.Emit(OpCodes.Call, toStringMi)
         else
             // G8: inline the `null -> "()" else value.ToString()`
             // lowering instead of routing through the F# shim.

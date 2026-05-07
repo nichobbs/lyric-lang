@@ -97,197 +97,28 @@ open System
 /// The error message is normalised to `<exception type>: <message>` so
 /// callers can include it in `IoError(path, message)` without needing
 /// the exception object itself.
-/// Thin host helpers that dodge the `default-parameter` shape on a
-/// few BCL APIs whose canonical overloads only ship as
-/// `Method(input, options = default)`.  Lyric's FFI default-arg
-/// emit works for primitives but not always for unmanaged structs
-/// like `JsonDocumentOptions`; this layer is a stable workaround.
-[<Sealed; AbstractClass>]
-type JsonHost private () =
-
-    /// Parse a JSON document from a UTF-16 string with default
-    /// `JsonDocumentOptions`.
-    static member Parse (input: string) : System.Text.Json.JsonDocument =
-        System.Text.Json.JsonDocument.Parse(input)
-
-    /// Encode `s` as a JSON-string literal (including surrounding
-    /// quotes).  Backslashes / quotes / control characters are
-    /// escaped via the BCL's `JsonEncodedText`.
-    static member EncodeString (s: string) : string =
-        let encoded = System.Text.Json.JsonEncodedText.Encode(s)
-        "\"" + encoded.ToString() + "\""
-
-    // -------- Slice / array rendering for `@derive(Json)` --------
-    //
-    // Per-element-type helpers because Lyric's stdlib FFI has no
-    // first-class generic delegate dispatch.  Each primitive slice
-    // gets its own renderer that emits a comma-separated `[...]`
-    // JSON array literal.  Elements that are themselves objects
-    // (records / `obj[]` slices via auto-boxing) route through
-    // `RenderObjSlice` which calls `EncodeString` on String / falls
-    // through to `Convert.ToString` for everything else.
-
-    // P3-3 (native-stdlib plan §6): `RenderIntSlice` / `RenderLongSlice` /
-    // `RenderBoolSlice` / `RenderStringSlice` were retired; the
-    // `@derive(Json)` synthesiser (`Lyric.Parser.JsonDerive.fs`) now
-    // emits inline `while`-loop renderers in pure Lyric for those
-    // primitives.  `RenderDoubleSlice` stays here because round-trip-
-    // faithful `ToString("R", InvariantCulture)` formatting isn't yet
-    // covered by Lyric's `toString`.
-
-    static member RenderDoubleSlice (items: double[] | null) : string =
-        match Option.ofObj items with
-        | None    -> "[]"
-        | Some xs ->
-            let sb = System.Text.StringBuilder("[")
-            for i = 0 to xs.Length - 1 do
-                if i > 0 then sb.Append(',') |> ignore
-                // Use round-trip "R" so 1.5 → "1.5" not "1.5000000000000002".
-                sb.Append(xs.[i].ToString("R", System.Globalization.CultureInfo.InvariantCulture))
-                |> ignore
-            sb.Append(']').ToString()
-
-    // P3-3: `RenderStringSlice` retired; the synthesiser now emits an
-    // inline `while`-loop renderer that calls
-    // `__lyricJsonEscape(items[i])` per element (which still routes
-    // through `JsonHost.EncodeString` — `EncodeString` stays kernel
-    // because it depends on `System.Text.Json.JsonEncodedText`).
-
-    // GetInt/Long/Double/Bool/String and GetSubObject retired
-    // (D-progress-stdlib-expand).  The `@derive(Json)` synthesiser
-    // (`JsonDerive.fs`) now emits Lyric function bodies that call
-    // `lyricJsonGet*` in `Std.JsonHost` (`_kernel/json_host.l`),
-    // which chains `hostParseJson` → `hostRootElement` →
-    // `hostTryGetProperty` → `hostTryGet*` directly on BCL externs.
-    // GetSubObject similarly routes through `hostGetRawText`.
-
-    // -------- fromJson slice readers --------
-    //
-    // Per-element-type slice readers that return the matching field as
-    // a primitive array so the synthesised `fromJson` can assign it.
-    // These still route through this shim because iterating
-    // `JsonElement.ArrayEnumerator` (a nested BCL struct type) requires
-    // `System.Text.Json.JsonElement+ArrayEnumerator` in the extern type
-    // table, which Lyric doesn't yet resolve for nested CLR types.
-    // Deferred to a follow-up once nested-type extern resolution lands.
-
-    static member GetIntSlice
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<int[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<int>()
-                for el in e.EnumerateArray() do
-                    let mutable v = 0
-                    if el.TryGetInt32(&v) then arr.Add(v)
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<int>
-                false
-        with _ ->
-            value <- Array.empty<int>
-            false
-
-    static member GetLongSlice
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<int64[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<int64>()
-                for el in e.EnumerateArray() do
-                    let mutable v = 0L
-                    if el.TryGetInt64(&v) then arr.Add(v)
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<int64>
-                false
-        with _ ->
-            value <- Array.empty<int64>
-            false
-
-    static member GetDoubleSlice
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<double[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<double>()
-                for el in e.EnumerateArray() do
-                    let mutable v = 0.0
-                    if el.TryGetDouble(&v) then arr.Add(v)
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<double>
-                false
-        with _ ->
-            value <- Array.empty<double>
-            false
-
-    static member GetBoolSlice
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<bool[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<bool>()
-                for el in e.EnumerateArray() do
-                    match el.ValueKind with
-                    | System.Text.Json.JsonValueKind.True  -> arr.Add(true)
-                    | System.Text.Json.JsonValueKind.False -> arr.Add(false)
-                    | _ -> ()
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<bool>
-                false
-        with _ ->
-            value <- Array.empty<bool>
-            false
-
-    static member GetStringSlice
-            (json: string, name: string,
-             [<System.Runtime.InteropServices.Out>] value: byref<string[]>) : bool =
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(json)
-            let mutable e = Unchecked.defaultof<System.Text.Json.JsonElement>
-            if doc.RootElement.TryGetProperty(name, &e)
-               && e.ValueKind = System.Text.Json.JsonValueKind.Array then
-                let arr = ResizeArray<string>()
-                for el in e.EnumerateArray() do
-                    if el.ValueKind = System.Text.Json.JsonValueKind.String then
-                        let raw = el.GetString()
-                        match Option.ofObj raw with
-                        | Some s -> arr.Add(s)
-                        | None   -> arr.Add("")
-                value <- arr.ToArray()
-                true
-            else
-                value <- Array.empty<string>
-                false
-        with _ ->
-            value <- Array.empty<string>
-            false
-
-    // GetSubObject retired (D-progress-stdlib-expand): implemented in
-    // pure Lyric via `hostTryGetProperty` + `hostGetRawText` in
-    // `_kernel/json_host.l`.
-    //
-    // HasField retired: unused by `@derive(Json)` synthesiser.
-    //
-    // GetSubArrayElements retired: unused by `@derive(Json)` synthesiser.
+// `Lyric.Stdlib.JsonHost` retired entirely.  The remaining live
+// methods (`Parse`, `EncodeString`, `RenderDoubleSlice`, and the five
+// `Get<T>Slice` readers) all migrated out:
+//
+//   - `Parse`: now resolves directly to
+//     `System.Text.Json.JsonDocument.Parse(string, JsonDocumentOptions=default)`
+//     via the FFI default-arg emitter, with overload disambiguation
+//     by leading-param exact-type match (Emitter.fs `staticArityWithDefaults`).
+//   - `EncodeString`: implemented in pure Lyric in `_kernel/json_host.l`,
+//     splitting `JsonEncodedText.Encode(string)` (returns struct) and
+//     `JsonEncodedText.ToString()` into two externs glued by Lyric.
+//   - `RenderDoubleSlice`: replaced by an inline `mkSliceHelperInline`
+//     using `toString(items[i])`, now culture-invariant for `Double`
+//     / `Float` (Codegen.fs special-cases floating-point in the
+//     `toString` builtin to call `Double.ToString(InvariantCulture)`).
+//   - `Get<T>Slice` readers: implemented in pure Lyric using direct
+//     externs over `JsonElement+ArrayEnumerator` (the nested CLR
+//     struct).  The emitter's `findClrType` already handles
+//     `+`-separated nested type names via the AppDomain walk; the
+//     inout-receiver `Ldarga`/`Ldarg` selection in `emitExternCall`
+//     was fixed to honour `inout`-mode value-type receivers so
+//     `MoveNext` mutates the enumerator in place.
 
 // G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
 // `Lyric.Stdlib.HttpClientHost` retires entirely.  Every member

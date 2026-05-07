@@ -515,16 +515,18 @@ let synthesizeItems (items: Item list) : Item list =
                 if hasDeriveJson it then Some it.Span else None)
             |> Option.defaultWith (fun () -> Lyric.Lexer.Span.pointAt Lyric.Lexer.Position.initial)
         let stringTy = mkType (TRef (mkPath "String" firstSpan)) firstSpan
-        let escAnn : Annotation =
-            { Name = mkPath "externTarget" firstSpan
-              Args =
-                [ ALiteral
-                    (AVString ("Lyric.Stdlib.JsonHost.EncodeString", firstSpan),
-                     firstSpan) ]
-              Span = firstSpan }
+        // `__lyricJsonEscape` now calls the Lyric-kernel
+        // `hostEncodeString` from `Std.JsonHost` instead of routing
+        // through an `@externTarget` to the F# shim.  The
+        // `synthesizeImports` pass adds `Std.Json`, which transitively
+        // pulls `Std.JsonHost` and brings `hostEncodeString` into scope.
+        let escBody : Expr =
+            let callee = mkExpr (EPath (mkPath "hostEncodeString" firstSpan)) firstSpan
+            let arg = mkExpr (EPath (mkPath "s" firstSpan)) firstSpan
+            mkExpr (ECall (callee, [ CAPositional arg ])) firstSpan
         let escFn : FunctionDecl =
             { DocComments = []
-              Annotations = [ escAnn ]
+              Annotations = []
               Visibility  = None
               IsAsync     = false
               Name        = "__lyricJsonEscape"
@@ -538,7 +540,7 @@ let synthesizeItems (items: Item list) : Item list =
               Return      = Some stringTy
               Where       = None
               Contracts   = []
-              Body        = Some (FBExpr (mkExpr (ELiteral LUnit) firstSpan))
+              Body        = Some (FBExpr escBody)
               Span        = firstSpan }
         result.Add
             { DocComments = []
@@ -678,48 +680,11 @@ let synthesizeItems (items: Item list) : Item list =
               Visibility  = None
               Kind        = IFunc fn
               Span        = firstSpan }
-        /// Legacy extern stub form, kept only for `Double` whose
-        /// round-trip rendering Lyric's plain `toString` doesn't
-        /// preserve (`xs[i].ToString("R", InvariantCulture)` is what
-        /// the host did and what callers expect).  All other
-        /// primitive renderers go through `mkSliceHelperInline`.
-        let mkSliceHelperExtern
-                (helperName: string)
-                (clrName: string)
-                (elemTy: TypeExpr) : Item =
-            let sliceTy =
-                mkType (TSlice elemTy) firstSpan
-            let ann : Annotation =
-                { Name = mkPath "externTarget" firstSpan
-                  Args =
-                    [ ALiteral
-                        (AVString (clrName, firstSpan),
-                         firstSpan) ]
-                  Span = firstSpan }
-            let fn : FunctionDecl =
-                { DocComments = []
-                  Annotations = [ ann ]
-                  Visibility  = None
-                  IsAsync     = false
-                  Name        = helperName
-                  Generics    = None
-                  Params      =
-                    [ { Mode    = PMIn
-                        Name    = "s"
-                        Type    = sliceTy
-                        Default = None
-                        Span    = firstSpan } ]
-                  Return      = Some stringTy
-                  Where       = None
-                  Contracts   = []
-                  Body        = Some (FBExpr (mkExpr (ELiteral LUnit) firstSpan))
-                  Span        = firstSpan }
-            { DocComments = []
-              Annotations = []
-              Visibility  = None
-              Kind        = IFunc fn
-              Span        = firstSpan }
-        // Int / Long render via `toString(items[i])`.
+        // Int / Long / Double render via `toString(items[i])`.  The
+        // codegen's `toString` builtin emits culture-invariant
+        // formatting for `Double` / `Float` (round-trip-safe under
+        // `Double.ToString(InvariantCulture)`), so JSON output is
+        // locale-stable.
         let toStringCall (e: Expr) =
             mkExpr (ECall (pathExpr "toString", [ CAPositional e ])) firstSpan
         result.Add (mkSliceHelperInline
@@ -730,12 +695,10 @@ let synthesizeItems (items: Item list) : Item list =
             "__lyricJsonRenderLongSlice"
             (mkRefTy "Long")
             toStringCall)
-        // Double keeps the host shim — round-trip culture-invariant
-        // formatting isn't yet equivalent to `toString` in Lyric.
-        result.Add (mkSliceHelperExtern
+        result.Add (mkSliceHelperInline
             "__lyricJsonRenderDoubleSlice"
-            "Lyric.Stdlib.JsonHost.RenderDoubleSlice"
-            (mkRefTy "Double"))
+            (mkRefTy "Double")
+            toStringCall)
         // Bool renders via inline `if items[i] { "true" } else { "false" }`.
         let boolRender (e: Expr) =
             mkExpr
@@ -887,55 +850,10 @@ let synthesizeItems (items: Item list) : Item list =
         // fromJson primitive shims — added unconditionally per
         // D-progress-046.  See `synthesiseFromJsonOpt` for the
         // per-record `fromJson` synthesis itself.
-        // Emit a shim that routes to a BCL extern via @externTarget.
-        // Used for slice readers that still go through the F# shim.
-        let mkGetShim
-                (helperName: string)
-                (clrName: string)
-                (valueTy: TypeExpr) : Item =
-            let ann : Annotation =
-                { Name = mkPath "externTarget" firstSpan
-                  Args =
-                    [ ALiteral
-                        (AVString (clrName, firstSpan), firstSpan) ]
-                  Span = firstSpan }
-            let boolTy = mkType (TRef (mkPath "Bool" firstSpan)) firstSpan
-            let fn : FunctionDecl =
-                { DocComments = []
-                  Annotations = [ ann ]
-                  Visibility  = None
-                  IsAsync     = false
-                  Name        = helperName
-                  Generics    = None
-                  Params      =
-                    [ { Mode    = PMIn
-                        Name    = "s"
-                        Type    = stringTy
-                        Default = None
-                        Span    = firstSpan }
-                      { Mode    = PMIn
-                        Name    = "name"
-                        Type    = stringTy
-                        Default = None
-                        Span    = firstSpan }
-                      { Mode    = PMOut
-                        Name    = "value"
-                        Type    = valueTy
-                        Default = None
-                        Span    = firstSpan } ]
-                  Return      = Some boolTy
-                  Where       = None
-                  Contracts   = []
-                  Body        = Some (FBExpr (mkExpr (ELiteral LUnit) firstSpan))
-                  Span        = firstSpan }
-            { DocComments = []
-              Annotations = []
-              Visibility  = None
-              Kind        = IFunc fn
-              Span        = firstSpan }
-        // Emit a shim whose body calls a Lyric stdlib function (no
-        // @externTarget).  Used for scalar readers that are now
-        // implemented in pure Lyric in `_kernel/json_host.l`.
+        // Emit a shim whose body calls a Lyric stdlib function.
+        // Both scalar and slice readers are now implemented in pure
+        // Lyric in `_kernel/json_host.l` (the slice readers iterate
+        // `JsonElement.ArrayEnumerator` via direct externs).
         let mkGetShimBody
                 (helperName: string)
                 (lyricCallee: string)
@@ -987,30 +905,28 @@ let synthesizeItems (items: Item list) : Item list =
         result.Add (mkGetShimBody "__lyricJsonGetDouble" "lyricJsonGetDouble" (mkRefTy "Double"))
         result.Add (mkGetShimBody "__lyricJsonGetBool"   "lyricJsonGetBool"   (mkRefTy "Bool"))
         result.Add (mkGetShimBody "__lyricJsonGetString" "lyricJsonGetString" (mkRefTy "String"))
-        // Slice readers — still route through Lyric.Stdlib.JsonHost (F# shim)
-        // pending nested-CLR-type extern support for JsonElement.ArrayEnumerator.
+        // Slice readers — implemented in pure Lyric in _kernel/json_host.l
+        // (`lyricJsonGet*Slice`) on top of direct `JsonElement+ArrayEnumerator`
+        // externs.  The `__lyricJsonGet*Slice` helpers are thin Lyric
+        // wrappers that call into the kernel implementations, matching
+        // the shape of the scalar readers above.
         let mkSliceTy elemRefName =
             mkType (TSlice (mkRefTy elemRefName)) firstSpan
-        result.Add (mkGetShim
-            "__lyricJsonGetIntSlice"
-            "Lyric.Stdlib.JsonHost.GetIntSlice"
-            (mkSliceTy "Int"))
-        result.Add (mkGetShim
-            "__lyricJsonGetLongSlice"
-            "Lyric.Stdlib.JsonHost.GetLongSlice"
-            (mkSliceTy "Long"))
-        result.Add (mkGetShim
-            "__lyricJsonGetDoubleSlice"
-            "Lyric.Stdlib.JsonHost.GetDoubleSlice"
-            (mkSliceTy "Double"))
-        result.Add (mkGetShim
-            "__lyricJsonGetBoolSlice"
-            "Lyric.Stdlib.JsonHost.GetBoolSlice"
-            (mkSliceTy "Bool"))
-        result.Add (mkGetShim
-            "__lyricJsonGetStringSlice"
-            "Lyric.Stdlib.JsonHost.GetStringSlice"
-            (mkSliceTy "String"))
+        result.Add (mkGetShimBody "__lyricJsonGetIntSlice"
+                                  "lyricJsonGetIntSlice"
+                                  (mkSliceTy "Int"))
+        result.Add (mkGetShimBody "__lyricJsonGetLongSlice"
+                                  "lyricJsonGetLongSlice"
+                                  (mkSliceTy "Long"))
+        result.Add (mkGetShimBody "__lyricJsonGetDoubleSlice"
+                                  "lyricJsonGetDoubleSlice"
+                                  (mkSliceTy "Double"))
+        result.Add (mkGetShimBody "__lyricJsonGetBoolSlice"
+                                  "lyricJsonGetBoolSlice"
+                                  (mkSliceTy "Bool"))
+        result.Add (mkGetShimBody "__lyricJsonGetStringSlice"
+                                  "lyricJsonGetStringSlice"
+                                  (mkSliceTy "String"))
         // Sub-object reader — implemented in pure Lyric in _kernel/json_host.l
         result.Add (mkGetShimBody "__lyricJsonGetSubObject" "lyricJsonGetSubObject" (mkRefTy "String"))
         for it in items do

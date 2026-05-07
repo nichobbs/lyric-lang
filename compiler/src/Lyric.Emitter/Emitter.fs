@@ -1975,12 +1975,11 @@ let private emitContractCheck
 
 let private findClrType (qualifiedName: string) : System.Type option =
     // Force-touch a few well-known assemblies so they're loaded into
-    // the AppDomain before we walk it.  `Lyric.Stdlib` carries the
-    // host-side wrapper types (`MapHelpers`, `JsonHost`, etc.); the
-    // others back common stdlib modules (`Std.Json`, `Std.Regex`,
-    // `Std.Time`) and aren't auto-loaded by the BCL on demand.
-    // Pin `JsonHost` (any survivor would do) to force-load `Lyric.Stdlib`.
-    let _ = typeof<Lyric.Stdlib.JsonHost>
+    // the AppDomain before we walk it.  `Lyric.Stdlib` no longer
+    // hosts any types worth pinning (every shim retired into
+    // `_kernel/*` Lyric code), but the BCL assemblies referenced by
+    // common stdlib modules (`Std.Json`, `Std.Regex`, `Std.Time`,
+    // `Std.Http`) aren't auto-loaded on demand and need a touch.
     // Pin `JvmByteHost` to force-load `Lyric.Jvm.Hosts` — the JVM emitter's
     // `compiler/lyric/jvm/_kernel/kernel.l` `@externTarget`s these.
     let _ = typeof<Lyric.Jvm.Hosts.JvmByteHost>
@@ -2129,21 +2128,53 @@ let private resolveExternTarget
         // `HasDefaultValue`; e.g. `JsonDocument.Parse(string, opts =
         // default)` is reachable as 1-arg from C#.  Match those when
         // an exact-arity hit is missing.
+        //
+        // Two passes per candidate: first prefer methods whose leading
+        // parameters exactly match the Lyric `paramTypes`, falling
+        // back to a name+arity match if no exact-typed match exists.
+        // The exact-typed pass is what disambiguates between
+        // `JsonDocument.Parse(string, opts=default)` and
+        // `JsonDocument.Parse(ReadOnlyMemory<char>, opts=default)`
+        // when the Lyric extern declares `String` only.
+        let leadingExact (m: MethodInfo) (skipReceiver: int) (lyricArgs: System.Type array) =
+            let ps = m.GetParameters()
+            let mutable ok = ps.Length >= lyricArgs.Length + skipReceiver
+            let mutable i = 0
+            while ok && i < lyricArgs.Length do
+                if ps.[i].ParameterType <> lyricArgs.[i] then ok <- false
+                i <- i + 1
+            ok
+        let trailingHasDefaults (m: MethodInfo) (lyricSupplied: int) =
+            let ps = m.GetParameters()
+            ps.Length > lyricSupplied
+            && ps |> Array.skip lyricSupplied
+                  |> Array.forall (fun p -> p.HasDefaultValue)
         let staticArityWithDefaults () =
-            candidates memberName isStatic
-            |> Array.tryFind (fun m ->
-                let ps = m.GetParameters()
-                ps.Length > arity
-                && ps |> Array.skip arity
-                      |> Array.forall (fun p -> p.HasDefaultValue))
+            let cands = candidates memberName isStatic
+            let typed =
+                cands
+                |> Array.tryFind (fun m ->
+                    trailingHasDefaults m arity
+                    && leadingExact m 0 paramTypes)
+            match typed with
+            | Some m -> Some m
+            | None ->
+                cands
+                |> Array.tryFind (fun m -> trailingHasDefaults m arity)
         let instanceArityWithDefaults () =
             if arity >= 1 then
-                candidates memberName isInstance
-                |> Array.tryFind (fun m ->
-                    let ps = m.GetParameters()
-                    ps.Length > arity - 1
-                    && ps |> Array.skip (arity - 1)
-                          |> Array.forall (fun p -> p.HasDefaultValue))
+                let cands = candidates memberName isInstance
+                let recvSupplied = arity - 1
+                let typed =
+                    cands
+                    |> Array.tryFind (fun m ->
+                        trailingHasDefaults m recvSupplied
+                        && leadingExact m 0 (Array.skip 1 paramTypes))
+                match typed with
+                | Some m -> Some m
+                | None ->
+                    cands
+                    |> Array.tryFind (fun m -> trailingHasDefaults m recvSupplied)
             else None
         let propGetter () =
             let prop = t.GetProperty memberName
@@ -2331,7 +2362,10 @@ let private emitExternCall
         // For instance methods on value-type receivers, the CLR needs
         // a managed pointer (`T&`) for the `this` slot.  Use `Ldarga`
         // for arg 0 in that case (later `call` instead of `callvirt`
-        // is selected below).
+        // is selected below) — but only when Lyric's arg 0 is the
+        // value itself (`in T`); if Lyric declared it `inout T` the
+        // arg slot already holds the managed pointer, so a plain
+        // `Ldarg` is what loads the receiver pointer.
         let isValueRecv =
             match closedResolved with
             | EBMMethod m when not m.IsStatic ->
@@ -2340,9 +2374,14 @@ let private emitExternCall
                 | Some d -> d.IsValueType
                 | None   -> false
             | _ -> false
+        let arg0AlreadyByRef =
+            match paramList with
+            | (_, t) :: _ -> t.IsByRef
+            | _           -> false
         paramList
         |> List.iteri (fun i _ ->
-            if i = 0 && isValueRecv then il.Emit(OpCodes.Ldarga, i)
+            if i = 0 && isValueRecv && not arg0AlreadyByRef then
+                il.Emit(OpCodes.Ldarga, i)
             else il.Emit(OpCodes.Ldarg, i))
     // Push default values for any trailing BCL params that the user
     // didn't supply.  Used when the resolver matched a method whose
