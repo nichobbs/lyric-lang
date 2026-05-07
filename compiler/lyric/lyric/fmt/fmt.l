@@ -1,0 +1,335 @@
+// fmt/fmt.l — top-level entry points for the self-hosted Lyric formatter.
+//
+// `format(parsed)` walks the AST to produce canonical Lyric source, mirroring
+// the F# bootstrap formatter at `compiler/src/Lyric.Cli/Fmt.fs`, and uses the
+// red/green CST attached to `ParseResult` (Phase 5 §M5.1 stage 5′) to
+// preserve line and block comments at item boundaries — the comments today's
+// F# `lyric fmt` drops.  Item-internal comment preservation (inside function
+// bodies, record fields, etc.) is intentionally deferred until the CST is
+// refined to per-statement / per-expression granularity.
+//
+// Public API (matches the Future-package contract advertised in
+// compiler/lyric/lyric/cli.l):
+//
+//     pub func format(parsed: in ParseResult): String
+//     pub func isFormatted(source: in String, parsed: in ParseResult): Bool
+package Lyric.Fmt
+
+import Std.Core
+import Std.Collections
+import Std.String as Str
+import Lyric.Lexer
+import Lyric.Parser
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1. Comment harvesting from the green CST.  We collect every line and
+// block-comment trivium and store it with its source offset so the formatter
+// can replay them at the appropriate item boundary.  The list is in source
+// order because the CST visit is in source order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+record HarvestedComment {
+  text:   String     // includes the `//` or `/* */` prefix verbatim
+  offset: Int        // byte offset into the (CR/LF-normalised) source
+}
+
+func harvestCommentsFromToken(t: in SpannedToken, acc: inout List[HarvestedComment]): Unit {
+  var i = 0
+  while i < t.leadingTrivia.count {
+    val tr = t.leadingTrivia[i]
+    match tr.kind {
+      case TKLineComment  -> acc.add(HarvestedComment(text = tr.text, offset = tr.span.startPos.offset))
+      case TKBlockComment -> acc.add(HarvestedComment(text = tr.text, offset = tr.span.startPos.offset))
+      case _ -> {}
+    }
+    i = i + 1
+  }
+}
+
+func harvestCommentsFromNode(n: in GreenNode, acc: inout List[HarvestedComment]): Unit {
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcToken(t) -> harvestCommentsFromToken(t, acc)
+      case GcNode(child) -> harvestCommentsFromNode(child, acc)
+    }
+    i = i + 1
+  }
+}
+
+func harvestComments(cst: in GreenNode): List[HarvestedComment] {
+  val acc: List[HarvestedComment] = newList()
+  harvestCommentsFromNode(cst, acc)
+  acc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §2. CST navigation: locate the `SkItem` green nodes in document order so we
+// can match them up with the AST `Item` list.  The CST and AST are built in
+// lock-step by the parser, so the n-th `SkItem` corresponds to the n-th AST
+// item.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func collectItemNodes(n: in GreenNode, acc: inout List[GreenNode]): Unit {
+  match n.kind {
+    case SkItem -> { acc.add(n); return }
+    case _      -> {}
+  }
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcNode(child) -> collectItemNodes(child, acc)
+      case GcToken(_)    -> {}
+    }
+    i = i + 1
+  }
+}
+
+func itemNodes(cst: in GreenNode): List[GreenNode] {
+  val acc: List[GreenNode] = newList()
+  collectItemNodes(cst, acc)
+  acc
+}
+
+/// Offset of the first token (real or via leading trivia) inside `n`.
+/// Returns `-1` when the node is empty, which only occurs in error
+/// recovery paths.
+func nodeStartOffset(n: in GreenNode): Int {
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcToken(t) -> {
+        if t.leadingTrivia.count > 0 {
+          return t.leadingTrivia[0].span.startPos.offset
+        }
+        return t.span.startPos.offset
+      }
+      case GcNode(child) -> {
+        val o = nodeStartOffset(child)
+        if o >= 0 { return o }
+      }
+    }
+    i = i + 1
+  }
+  -1
+}
+
+func nodeFirstTokenOffset(n: in GreenNode): Int {
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcToken(t)    -> { return t.span.startPos.offset }
+      case GcNode(child) -> {
+        val o = nodeFirstTokenOffset(child)
+        if o >= 0 { return o }
+      }
+    }
+    i = i + 1
+  }
+  -1
+}
+
+/// End offset of the last real (non-trivia) token in `n`, walking
+/// children in reverse.  Used to bound the "between this item and the
+/// next" comment range tightly: the item's AST `span.endPos` typically
+/// points at the *next* token's start (parser emits `peekSpan` as the
+/// item's end), which would zero out the inter-item range.
+func nodeLastTokenEndOffset(n: in GreenNode): Int {
+  var i = n.children.count - 1
+  while i >= 0 {
+    match n.children[i] {
+      case GcToken(t)    -> {
+        // Skip synthetic STMT_END tokens — their span is zero-width and
+        // also at the next-token offset.  Real tokens have non-zero
+        // span lengths.
+        match t.token {
+          case TStmtEnd -> {}
+          case _ -> { return t.span.endPos.offset }
+        }
+      }
+      case GcNode(child) -> {
+        val o = nodeLastTokenEndOffset(child)
+        if o >= 0 { return o }
+      }
+    }
+    i = i - 1
+  }
+  -1
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3. Comment-aware item rendering.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Comments whose offset falls in the half-open range [lo, hi).  Linear scan
+/// over the harvested list — cost is O(items × comments) which is fine for
+/// real source files.  Returned in source order.
+func commentsInRange(all: in List[HarvestedComment], lo: in Int, hi: in Int): List[HarvestedComment] {
+  val acc: List[HarvestedComment] = newList()
+  var i = 0
+  while i < all.count {
+    val c = all[i]
+    if c.offset >= lo and c.offset < hi {
+      acc.add(c)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// Render a list of comments as `Doc` lines.  Block comments may span
+/// multiple lines internally; we emit them verbatim and let the consumer
+/// concatenate with newlines.
+func commentLines(cs: in List[HarvestedComment]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < cs.count {
+    val text = cs[i].text
+    // Block comments may already contain embedded newlines.  Split on '\n'
+    // so each line of the comment lands on its own line of the output.
+    val parts = Str.split(text, "\n")
+    var j = 0
+    while j < parts.length {
+      acc.add(parts[j])
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4. Top-level `format`.  Mirrors `Lyric.Cli.Fmt.format` in F#.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@stable(since="0.1")
+pub func format(parsed: in ParseResult): String {
+  val file = parsed.file
+  val cst  = parsed.cst
+  val nodes = itemNodes(cst)
+  val allComments = harvestComments(cst)
+
+  val sb: List[String] = newList()
+
+  // Module-doc comments.
+  var i = 0
+  while i < file.moduleDoc.count {
+    val d = file.moduleDoc[i]
+    val prefix = if d.isModule { "//!" } else { "///" }
+    if d.text == "" { sb.add(prefix) }
+    else { sb.add(prefix + " " + d.text) }
+    i = i + 1
+  }
+
+  // File-level annotations.
+  i = 0
+  while i < file.fileAnnotations.count {
+    sb.add(annotationStr(file.fileAnnotations[i]))
+    i = i + 1
+  }
+
+  // `package …`.
+  sb.add("package " + pathStr(file.packageDecl.path))
+
+  // Imports.
+  if file.imports.count > 0 {
+    sb.add("")
+    i = 0
+    while i < file.imports.count {
+      val ds = importDoc(file.imports[i])
+      var j = 0
+      while j < ds.count { sb.add(ds[j]); j = j + 1 }
+      i = i + 1
+    }
+  }
+
+  // Items, with between-item comments preserved from the CST.
+  if file.items.count > 0 {
+    sb.add("")
+    var prevEnd = file.packageDecl.span.endPos.offset
+    if file.imports.count > 0 {
+      val lastImp = file.imports[file.imports.count - 1]
+      prevEnd = lastImp.span.endPos.offset
+    }
+    val n = file.items.count
+    var idx = 0
+    while idx < n {
+      val item = file.items[idx]
+      val itemStart = if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) } else { item.span.startPos.offset }
+
+      // Comments between the previous item / header and this item.
+      val between = commentsInRange(allComments, prevEnd, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
+      if idx > 0 { sb.add("") }
+      if between.count > 0 {
+        val cl = commentLines(between)
+        var k = 0
+        while k < cl.count { sb.add(cl[k]); k = k + 1 }
+      }
+
+      val ds = itemDoc(item)
+      var j = 0
+      while j < ds.count { sb.add(ds[j]); j = j + 1 }
+
+      val itemEnd = if idx < nodes.count {
+        val o = nodeLastTokenEndOffset(nodes[idx])
+        if o >= 0 { o } else { item.span.endPos.offset }
+      } else {
+        item.span.endPos.offset
+      }
+      prevEnd = itemEnd
+      idx = idx + 1
+    }
+
+    // Trailing comments after the last item.
+    val tail = commentsInRange(allComments, prevEnd, parsed.source.length + 1)
+    if tail.count > 0 {
+      sb.add("")
+      val cl = commentLines(tail)
+      var k = 0
+      while k < cl.count { sb.add(cl[k]); k = k + 1 }
+    }
+  } else {
+    // No items, but trailing comments may still exist after the header.
+    var prevEnd = file.packageDecl.span.endPos.offset
+    if file.imports.count > 0 {
+      val lastImp = file.imports[file.imports.count - 1]
+      prevEnd = lastImp.span.endPos.offset
+    }
+    val tail = commentsInRange(allComments, prevEnd, parsed.source.length + 1)
+    if tail.count > 0 {
+      sb.add("")
+      val cl = commentLines(tail)
+      var k = 0
+      while k < cl.count { sb.add(cl[k]); k = k + 1 }
+    }
+  }
+
+  // Join with '\n', strip trailing whitespace per line.  Final newline.
+  joinLines(sb)
+}
+
+func joinLines(lines: in List[String]): String {
+  var acc = ""
+  var i = 0
+  while i < lines.count {
+    acc = acc + Str.trimEnd(lines[i]) + "\n"
+    i = i + 1
+  }
+  acc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. `isFormatted` — true when `source` already matches its canonical form.
+// Mirrors the same helper in F# Fmt.fs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@stable(since="0.1")
+pub func isFormatted(source: in String, parsed: in ParseResult): Bool {
+  val canonical = format(parsed)
+  normaliseEnd(source) == normaliseEnd(canonical)
+}
+
+@pure
+func normaliseEnd(s: in String): String {
+  Str.trimEnd(Str.replace(s, "\r\n", "\n"))
+}

@@ -190,6 +190,7 @@ let main argv =
             SelfHostedLexerTests.tests
             SelfHostedParserTests.tests
             SelfHostedTypeCheckerTests.tests
+            SelfHostedFmtTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
         ]
