@@ -4844,7 +4844,7 @@ let private segmentToFileBase (seg: string) : string =
 /// synthetic temp-directory package — there is no real `Testpkg`
 /// directory shipped with the compiler.
 let private isBuiltinHead (head: string) : bool =
-    head = "Std" || head = "Jvm" || head = "Lyric" || head = "Testpkg"
+    head = "Std" || head = "Jvm" || head = "Lyric" || head = "Testpkg" || head = "Msil"
 
 /// Locate the `.l` source files for any built-in package.  Two
 /// shapes are accepted (per `docs/19-multi-file-packages.md`):

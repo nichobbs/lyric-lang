@@ -1545,6 +1545,65 @@ satisfy.
 
 ---
 
+## D044: Self-hosted MSIL PE emitter — Stage M1 approach
+
+**Date:** 2026-05-07
+**Status:** Accepted
+
+**Context:**
+Phase 5 §M5.2 requires a self-hosted MSIL emitter written in Lyric itself.
+Three implementation approaches were considered:
+
+a) **Full reflection-driven emitter** — mirror `System.Reflection.Emit` calls
+   from pure Lyric, requiring extensive FFI surface and a non-trivial
+   extern-type footprint.
+
+b) **Raw PE bytes ("option b, raw")** — emit the PE/COFF/CLR binary directly
+   as a sequence of little-endian byte writes, analogous to how the JVM emitter
+   produces raw `.class` files.  No new F# host code needed; reuses the
+   existing `Lyric.Jvm.Hosts.JvmByteBuilder` infrastructure.
+
+c) **Hybrid** — Lyric-side metadata tables serialised to a byte buffer, handed
+   off to a thin F# host that assembles the final PE.
+
+**Decision:**
+Adopt option (b).  Stage M1 ships a fixed-layout, 1024-byte PE image for a
+"Hello, World!" assembly.  The `Msil.Kernel` package declares
+`extern type ByteWriter = "Lyric.Jvm.Hosts.JvmByteBuilder"` and re-exports
+the existing LE write helpers; no new F# code is required.  `Msil.Pe`
+implements the full ECMA-335-conformant binary layout in pure Lyric.
+Later stages (M2+) parameterise the serialiser to accept arbitrary type
+tables; Stage M1 provides the structural foundation and smoke test.
+
+**Rationale:**
+- The JVM kernel already provides all the byte-write primitives needed for
+  little-endian PE output; adding a second extern type pointing at the same
+  CLR class is zero-cost.
+- A raw-bytes approach keeps the Lyric surface minimal (no `Reflection.Emit`
+  dependency), is easily auditable, and matches the existing JVM emitter
+  design precedent.
+- The fixed-layout Stage M1 file gives a complete, runnable test of the PE
+  format knowledge before parameterisation complexity is introduced.
+
+**Constraints noted:**
+- `List[Byte].length` is not directly available; size checking uses
+  `bufLen(w: ByteWriter): Int` on the raw buffer before conversion.
+- Multi-line boolean expressions must use the `and` keyword; `&&` is not a
+  valid binary infix operator in Lyric (the lexer does not tokenise it as a
+  single token, and the parser currently sees `& &` as two prefix-ref ops).
+- `isBuiltinHead` in `Emitter.fs` extended to include `"Msil"`, mapping
+  `import Msil.X` to `compiler/lyric/msil/`.
+
+**Follow-up tracked:**
+- Stage M2: parameterise `Msil.Pe` to accept a `PeModule` record with
+  arbitrary type/method/field tables.
+- Stage M3: integrate into the self-hosted type-checker output pipeline so
+  `lyric build` can drive the pure-Lyric MSIL path end-to-end.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
