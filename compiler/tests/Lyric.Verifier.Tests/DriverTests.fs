@@ -874,4 +874,144 @@ let tests =
                 "@proof_required(checked_arithmetic)"
                 "level surfaces the checked_arithmetic modifier"
         }
+
+        // ---------------------------------------------------------------
+        // New wp/sp rules: EIf in statement position, SReturn anywhere,
+        // general ECall in statement position, float arithmetic, and
+        // protected type invariant goals (D-progress-129).
+        // ---------------------------------------------------------------
+
+        test "[D-D1.3] EIf in statement position — if-branch with early return discharges" {
+            // Tests the new `SExpr (EIf block) :: rest` walk case.
+            // The if-branch ends in `return true` before `rest`.
+            let src = """
+                @proof_required
+                package P
+
+                pub func gated(x: Int): Bool
+                  requires: x >= 0
+                  ensures:  result == true or result == false
+                {
+                  if x > 0 {
+                    return true
+                  }
+                  return false
+                }
+                """
+            let summary = prove src
+            Expect.isGreaterThan (ProofSummary.totalCount summary) 0 "has goals"
+            let allOk = summary.Results |> List.forall isDischarged
+            Expect.isTrue allOk "all goals discharged (trivial discharger)"
+        }
+
+        test "[D-D1.3] SReturn mid-sequence dead code is silently dropped" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func early(x: Int): Int
+                  ensures: result == x
+                {
+                  return x
+                  return 0
+                }
+                """
+            let summary = prove src
+            let allOk = summary.Results |> List.forall isDischarged
+            Expect.isTrue allOk "dead return after first return is ignored"
+        }
+
+        test "[D-D1.3] general ECall in statement position applies call rule" {
+            // `helper()` is called in statement position; its postcondition
+            // should be assumed for the continuation.
+            let src = """
+                @proof_required
+                package P
+
+                pub func helper(): Int
+                  ensures: result == 42
+                { return 42 }
+
+                pub func useHelper(): Int
+                  ensures: result == 42
+                {
+                  val r = helper()
+                  return r
+                }
+                """
+            let summary = prove src
+            Expect.isGreaterThan (ProofSummary.totalCount summary) 0 "has goals"
+            let allOk = summary.Results |> List.forall isDischarged
+            Expect.isTrue allOk "call rule feeds callee ensures into continuation"
+        }
+
+        test "[D-D1.3] float arithmetic — Double add/sub trivially discharged" {
+            // Exercises the SFloat64-as-Real path.
+            let src = """
+                @proof_required
+                package P
+
+                pub func doubleId(x: Double): Double
+                  ensures: result == x
+                { return x }
+                """
+            let summary = prove src
+            let allOk = summary.Results |> List.forall isDischarged
+            Expect.isTrue allOk "identity postcondition on Double discharges"
+        }
+
+        test "[D-D1.3] protected type entry goals are emitted" {
+            // The protected type has two entries; the verifier must emit
+            // at least one goal per entry (the assert side goals).
+            let src = """
+                @proof_required
+                package P
+
+                pub protected type Counter {
+                  var count: Int
+
+                  invariant: count >= 0
+
+                  pub entry increment(): Unit
+                    requires: count >= 0
+                  {
+                    count = count + 1
+                    assert(count >= 0)
+                  }
+
+                  pub entry reset(): Unit
+                  {
+                    count = 0
+                    assert(count >= 0)
+                  }
+                }
+                """
+            let summary = prove src
+            Expect.isGreaterThan (ProofSummary.totalCount summary) 0
+                "protected type entries produce goals"
+            let allOk = summary.Results |> List.forall isDischarged
+            Expect.isTrue allOk "all Counter entry assertions discharge"
+        }
+
+        test "[D-D1.3] protected type invariant as requires is a precondition hypothesis" {
+            // The invariant `count >= 0` should be available as a hypothesis
+            // inside the entry body; the assertion `count + 1 >= 0` follows.
+            let src = """
+                @proof_required
+                package P
+
+                pub protected type C {
+                  var count: Int
+                  invariant: count >= 0
+
+                  pub entry bump(): Unit {
+                    count = count + 1
+                    assert(count >= 0)
+                  }
+                }
+                """
+            let summary = prove src
+            let allOk = summary.Results |> List.forall isDischarged
+            Expect.isTrue allOk "invariant hypothesis makes bump assertion trivially true"
+        }
     ]

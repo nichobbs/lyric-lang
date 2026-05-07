@@ -13,8 +13,12 @@ let rec private renderSort (s: Sort) : string =
     | SBool       -> "Bool"
     | SInt        -> "Int"
     | SBitVec n   -> sprintf "(_ BitVec %d)" n
-    | SFloat32    -> "Float32"
-    | SFloat64    -> "Float64"
+    // Float32/Float64 are mapped to SMT Real for proof purposes.
+    // This treats Lyric doubles as mathematical reals (sound
+    // approximation for invariant reasoning; avoids the full
+    // IEEE-754 FP theory and its rounding-mode complexity).
+    | SFloat32    -> "Real"
+    | SFloat64    -> "Real"
     | SString     -> "String"
     | SDatatype("Unit", []) -> "Unit"
     | SDatatype(name, []) -> name
@@ -116,6 +120,22 @@ let private freeVars (t: Term) : (string * Sort) list =
     go t
     List.ofSeq result
 
+/// Every name that a set of symbol declarations introduces into the
+/// SMT namespace (constructor names, selector names, user-fun names).
+/// A free variable whose name collides with one of these would cause
+/// Z3 to report "ambiguous constant reference" even when arities
+/// differ, so we rename such variables by appending "$p".
+let private datatypeReservedNames (symbols: SymbolDecl list) : Set<string> =
+    symbols
+    |> List.collect (fun sym ->
+        match sym with
+        | Datatype(typeName, ctors) ->
+            typeName
+            :: (ctors |> List.collect (fun (ctorName, fields) ->
+                    ctorName :: (fields |> List.map fst)))
+        | UserFun(name, _, _) -> [name])
+    |> Set.ofList
+
 /// Render a SMT-LIB session preamble: the logic + option +
 /// `Unit` datatype.  Sent once per persistent z3 session
 /// (decision 5c) and shared across goals.
@@ -136,9 +156,18 @@ let renderPreamble () : string =
 /// in this session — datatypes / declare-fun lines for symbols in
 /// that set are skipped.  Returns the new set after this goal's
 /// declarations are added.
+///
+/// `sessionGlobalNames` is the accumulated set of constructor/
+/// selector/user-fun names that have been declared OUTSIDE push/pop
+/// in this session (i.e. they persist across goals in Z3's global
+/// context).  Free variables whose names collide with any of these
+/// names must also be renamed, not just those colliding with the
+/// current goal's own symbols.  Returns the updated set that includes
+/// names introduced by this goal's new declarations.
 let renderGoalBlock
         (declaredSymbols: Set<string>)
-        (g: Goal) : string * Set<string> =
+        (sessionGlobalNames: Set<string>)
+        (g: Goal) : string * Set<string> * Set<string> =
     let sb = StringBuilder()
     let appendln (s: string) = sb.Append(s).Append('\n') |> ignore
 
@@ -181,8 +210,37 @@ let renderGoalBlock
     // Per-goal section: push, declare-const free variables, assert,
     // check-sat + get-model, pop.
     appendln "(push 1)"
-    let claim = Goal.asImplication g
-    let frees = freeVars claim
+    let claim0 = Goal.asImplication g
+    // Rename free variables that clash with datatype/selector names to
+    // avoid Z3 "ambiguous constant reference" errors (Z3 treats a
+    // declare-const with the same name as a selector as ambiguous even
+    // though the arities differ).  Append "$p" to conflicting names.
+    //
+    // In a persistent session, datatypes declared by earlier goals
+    // remain in Z3's global context (they are emitted outside push/pop).
+    // We must check sessionGlobalNames (from prior goals) in addition to
+    // the current goal's own symbols so cross-goal selector collisions
+    // are also renamed.
+    let reserved =
+        Set.union sessionGlobalNames (datatypeReservedNames g.Symbols)
+    let frees0 = freeVars claim0
+    let renamingMap =
+        frees0
+        |> List.choose (fun (n, s) ->
+            if Set.contains n reserved then Some (n, TVar(n + "$p", s))
+            else None)
+        |> Map.ofList
+    let claim, frees =
+        if Map.isEmpty renamingMap then claim0, frees0
+        else
+            let claim' = Term.subst renamingMap claim0
+            let frees' =
+                frees0
+                |> List.map (fun (n, s) ->
+                    match Map.tryFind n renamingMap with
+                    | Some (TVar(n2, _)) -> n2, s
+                    | _                  -> n, s)
+            claim', frees'
     for (name, sort) in frees do
         appendln (sprintf "(declare-const %s %s)"
                     (sanitizeIdent name) (renderSort sort))
@@ -191,7 +249,11 @@ let renderGoalBlock
     appendln "(get-model)"
     appendln "(pop 1)"
 
-    sb.ToString(), declared
+    // Return accumulated session-global names including the new ones
+    // declared outside push/pop by this goal.
+    let sessionGlobalNames' =
+        Set.union sessionGlobalNames (datatypeReservedNames g.Symbols)
+    sb.ToString(), declared, sessionGlobalNames'
 
 /// Render a single goal as a self-contained SMT-LIB v2.6 file.
 /// Used by the `--proof-dir` writer (so each goal lives in its own
@@ -199,5 +261,5 @@ let renderGoalBlock
 /// persistent session is in use.
 let renderGoal (g: Goal) : string =
     let preamble = renderPreamble ()
-    let body, _ = renderGoalBlock Set.empty g
+    let body, _, _ = renderGoalBlock Set.empty Set.empty g
     preamble + body

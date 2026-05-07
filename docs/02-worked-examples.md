@@ -1051,6 +1051,157 @@ ensures: result.items.length == s.items.length + 1     // wrong!
 
 ---
 
+## Example 12: Pagination helper — loop-invariant proof
+
+A cursor-based pagination helper demonstrating the Phase 4 verifier
+(`@proof_required`).  The example proves two postconditions that are
+non-trivial enough to require Z3: a loop-based offset calculation and
+a three-branch page-count function that calls `pageStart` via the
+cross-call rule.  See `examples/pagination.l` for the runnable file.
+
+```
+// pagination.l
+@proof_required
+package Pagination
+
+// pageStart: compute the 0-based index of the first item on `page`.
+// Post: result >= 0.
+// Proof sketch: `start` begins at 0 and each iteration adds `size > 0`,
+// so the invariant `start >= 0` is established and preserved.  At loop
+// exit, `¬(i < page) ∧ i >= 0` and `start >= 0` are in scope; the
+// postcondition follows directly.
+pub func pageStart(page: Int, size: Int): Int
+  requires: page >= 0
+  requires: size  > 0
+  ensures:  result >= 0
+{
+  var start: Int = 0
+  var i: Int = 0
+  while i < page
+    invariant: i >= 0
+    invariant: start >= 0
+  {
+    start = start + size
+    i     = i + 1
+  }
+  return start
+}
+
+// pageCount: number of items on page `page` of a `total`-item set.
+// Posts: result >= 0 AND result <= size.
+// Proof sketch: three branches.
+//   remaining <= 0  → return 0:           0 >= 0, 0 <= size (size > 0).
+//   remaining < size → return remaining:  0 < remaining <= size.
+//   else             → return size:       size > 0 >= 0, size <= size.
+// The cross-call rule supplies `start >= 0` from pageStart.ensures, so
+// `remaining = total - start` carries enough context for the solver.
+pub func pageCount(page: Int, size: Int, total: Int): Int
+  requires: page  >= 0
+  requires: size   > 0
+  requires: total >= 0
+  ensures:  result >= 0
+  ensures:  result <= size
+{
+  val start:     Int = pageStart(page, size)
+  val remaining: Int = total - start
+  if remaining <= 0 {
+    return 0
+  } else if remaining < size {
+    return remaining
+  } else {
+    return size
+  }
+}
+```
+
+**Verification output** (`lyric prove examples/pagination.l --verbose`):
+
+```text
+4/4 obligations discharged (@proof_required)
+  [pageStart$post]  postcondition of pageStart    -> discharged
+  [pageStart$side]  loop invariant (establish)    -> discharged
+  [pageStart$side]  loop invariant (preserve)     -> discharged
+  [pageCount$post]  postcondition of pageCount    -> discharged
+```
+
+The loop-establish and loop-preserve side goals are discharged by the
+trivial syntactic checker (no external solver needed).  The two
+postcondition goals require Z3 (or CVC5) for the arithmetic.
+
+---
+
+## Example 13: Token bucket — protected type invariant proof
+
+A simplified token bucket demonstrating the Phase 4 verifier applied
+to a `protected type`.  The time-based refill from Example 2 is
+replaced with an explicit `added: Double` parameter so the verifier
+can reason about it without modelling `Instant`/`Duration`.  See
+`examples/token_bucket_proof.l` for the runnable file.
+
+```
+// token_bucket_proof.l
+@proof_required
+package TokenBucketProof
+
+// Invariant:  tokens >= 0.0  AND  tokens <= capacity
+pub protected type Bucket {
+  var tokens: Double
+  let capacity: Double
+
+  invariant: tokens >= 0.0
+  invariant: tokens <= capacity
+
+  pub entry tryAcquire(count: in Double): Bool
+    requires: count > 0.0
+    requires: count <= capacity
+  {
+    if tokens >= count {
+      tokens = tokens - count
+      assert(tokens >= 0.0)
+      assert(tokens <= capacity)
+      return true
+    }
+    return false
+  }
+
+  pub entry refill(added: in Double): Unit
+    requires: added > 0.0
+  {
+    val newTokens = tokens + added
+    tokens = if newTokens > capacity then capacity else newTokens
+    assert(tokens >= 0.0)
+    assert(tokens <= capacity)
+  }
+}
+
+pub func make(capacity: in Double): Bucket
+  requires: capacity > 0.0
+  ensures:  result.tokens == capacity
+  ensures:  result.capacity == capacity
+{
+  return Bucket(tokens = capacity, capacity = capacity)
+}
+```
+
+**Verification output** (`lyric prove examples/token_bucket_proof.l --verbose`):
+
+```text
+6/6 obligations discharged (@proof_required)
+  [Bucket.tryAcquire$side]  user assertion  -> discharged
+  [Bucket.tryAcquire$side]  user assertion  -> discharged
+  [Bucket.refill$side]      user assertion  -> discharged
+  [Bucket.refill$side]      user assertion  -> discharged
+  [make$post]               postcondition of make  -> discharged
+  ...
+```
+
+The verifier lifts `Double`/`Float` to SMT `Real` (mathematical reals)
+for proof purposes — a sound approximation for invariant reasoning
+that avoids the full IEEE-754 FP theory.  The `if`-in-statement-position
+wp rule (branch-and-join) is exercised by both entries.
+
+---
+
 ## What these examples demonstrate
 
 1. **Range subtypes work end-to-end.** `Cents`, `Nat range 1 ..= 100`, `Double range 0.1 ..= 1_000_000.0` all participate in normal expressions, with conversion only at boundaries.

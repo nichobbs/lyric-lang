@@ -423,7 +423,8 @@ type SolverSession =
     private
         { Process:        Process
           Flavor:         SolverFlavor
-          mutable Declared: Set<string>
+          mutable Declared:     Set<string>
+          mutable GlobalNames:  Set<string>
           SolverVersion:  string
           Cache:          System.Collections.Generic.Dictionary<string, SolverOutcome>
           CachePath:      string option
@@ -470,6 +471,7 @@ let private startSession
             { Process       = proc
               Flavor        = flavor
               Declared      = Set.empty
+              GlobalNames   = Set.empty
               SolverVersion = version
               Cache         = cache
               CachePath     = cachePath
@@ -548,9 +550,10 @@ let dischargeIn (session: SolverSession) (g: Goal) : SolverOutcome =
         match session.Cache.TryGetValue key with
         | true, cached -> cached
         | _ ->
-            let body, declared' =
-                Smt.renderGoalBlock session.Declared g
-            session.Declared <- declared'
+            let body, declared', globalNames' =
+                Smt.renderGoalBlock session.Declared session.GlobalNames g
+            session.Declared  <- declared'
+            session.GlobalNames <- globalNames'
             session.Process.StandardInput.Write body
             session.Process.StandardInput.Flush()
             let outcome = readResponse session.Flavor session.Process

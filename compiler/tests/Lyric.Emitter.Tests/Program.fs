@@ -65,6 +65,7 @@ let main argv =
             StdlibLyricTests.tests
             KernelBoundaryTests.tests
             JvmSelfTest.tests
+            MsilSelfTestM1.tests
             JvmLoweringTest.tests
             JvmLoweringB4Test.tests
             JvmLoweringB5Test.tests
@@ -191,6 +192,7 @@ let main argv =
             SelfHostedParserTests.tests
             SelfHostedTypeCheckerTests.tests
             SelfHostedFmtTests.tests
+            SelfHostedModeCheckerTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
         ]

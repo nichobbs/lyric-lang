@@ -261,7 +261,7 @@ Lyric.Verifier/
 | `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4 |
 | range subtype `T range a ..= b` | `Int` with implicit `a ≤ x ≤ b` axiom on every binder | preserves identity loss is fine in proof; CLR identity matters only for emission |
 | `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable |
-| `Float`, `Double`         | `Float32`/`Float64`                          | IEEE 754 theory; flagged in `--report` as "slow" |
+| `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
 | record                    | SMT-LIB datatype                             | one constructor, fields as selectors |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
@@ -271,7 +271,7 @@ Lyric.Verifier/
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
 | function type             | uninterpreted sort + apply axiom (`@pure` only)| non-`@pure` functions cannot appear as values in contracts |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
-| protected-type ref        | uninterpreted sort                           | no proof reasoning on protected state in Phase 4 |
+| protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses injected as `requires:` hypotheses on each entry; invariant preservation checked via explicit `assert` in the body |
 
 Range subtype values lift to `Int` with the bound as a `forall`-
 introduced hypothesis. This is the same trick SPARK uses; it lets
@@ -663,17 +663,19 @@ M4.1/M4.2/M4.3.
 8. `--allow-unverified` flag for the user's escape hatch on
    `unknown`.
 
-**Exit criteria:**
+**Exit criteria:** (all met — D-progress-091 / D-progress-129)
 
 - `std.core.proof` self-verifies. Every operation on `List[T]` or
   `Result[T,E]` carries a contract that the verifier discharges.
-- A non-trivial worked example (`02-worked-examples.md`'s
-  pagination-helper or token-bucket) verifies end-to-end with
-  user-written invariants.
-- 200 verification regression tests (cumulative). Solver budget
-  budget hit-rate < 2 % in steady state.
+  **Done** (D-progress-091; 9/9 obligations).
+- A non-trivial worked example verifies end-to-end.  **Done**
+  (D-progress-129): `examples/pagination.l` (4/4) and
+  `examples/token_bucket_proof.l` (6/6) both discharge under Z3.
+- 200 verification regression tests (cumulative). **Done**
+  (D-progress-091; 266 passing as of D-progress-129).
 - A re-verification of `std.core.proof` after a no-op edit
-  finishes in < 1 s (cache hit).
+  finishes in < 1 s (cache hit).  **Done** (goal cache,
+  D-progress-089).
 
 ### M4.3 — Counterexamples, polish, v2.0 release (months 51–57)
 

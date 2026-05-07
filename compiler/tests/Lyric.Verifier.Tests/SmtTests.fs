@@ -115,4 +115,54 @@ let tests =
             Expect.stringContains smt "(declare-datatypes ((Pair 0))" "datatype"
             Expect.stringContains smt "(Mk (fst Int) (snd Int))" "ctor"
         }
+
+        // D-progress-129: Float32/Float64 render as SMT Real; BOpRealDiv as "/".
+        test "[D-D1.3] SFloat32 renders as Real in declare-const" {
+            let g =
+                { Hypotheses = [ TBuiltin(BOpGte, [TVar("t", SFloat32); TLit(LFloat 0.0, SFloat32)]) ]
+                  Conclusion = TLit(LBool true, SBool)
+                  Symbols    = [ UserFun("t", [], SFloat32) ]
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "f32" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(declare-fun t () Real)" "SFloat32 renders as Real"
+        }
+
+        test "[D-D1.3] SFloat64 renders as Real in declare-const" {
+            let g =
+                { Hypotheses = [ TBuiltin(BOpGte, [TVar("x", SFloat64); TLit(LFloat 1.5, SFloat64)]) ]
+                  Conclusion = TLit(LBool true, SBool)
+                  Symbols    = [ UserFun("x", [], SFloat64) ]
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "f64" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(declare-fun x () Real)" "SFloat64 renders as Real"
+        }
+
+        test "[D-D1.3] BOpRealDiv renders as /" {
+            let t = TBuiltin(BOpRealDiv, [TVar("a", SFloat64); TVar("b", SFloat64)])
+            let g =
+                { Hypotheses = []
+                  Conclusion = TBuiltin(BOpGte, [t; TLit(LFloat 0.0, SFloat64)])
+                  Symbols    = []
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "rdiv" }
+            let smt = renderGoal g
+            Expect.stringContains smt "(/ a b)" "BOpRealDiv renders as /"
+        }
+
+        test "[D-D1.3] float literal renders as decimal in Real context" {
+            let g =
+                { Hypotheses = []
+                  Conclusion = TBuiltin(BOpGte, [TLit(LFloat 1.5, SFloat64); TLit(LFloat 0.0, SFloat64)])
+                  Symbols    = []
+                  Origin     = spanZero
+                  Kind       = GKAssertion
+                  Label      = "flit" }
+            let smt = renderGoal g
+            Expect.stringContains smt "1.5" "float literal preserved"
+        }
     ]

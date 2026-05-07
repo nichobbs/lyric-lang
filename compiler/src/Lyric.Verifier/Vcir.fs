@@ -51,6 +51,9 @@ type Builtin =
     /// Integer / bitvector
     | BOpAdd | BOpSub | BOpMul | BOpDiv | BOpMod | BOpNeg
     | BOpLt  | BOpLte | BOpGt  | BOpGte
+    /// Real-number division (SMT `/`).  Used when the operands are
+    /// Float32/Float64 — those sorts map to SMT Real for proof purposes.
+    | BOpRealDiv
     /// Slice (`length` is total over the slice sort)
     | BOpSliceLength
     | BOpSliceIndex
@@ -67,6 +70,7 @@ module Builtin =
         | BOpAdd -> "+"   | BOpSub -> "-" | BOpMul -> "*"
         | BOpDiv -> "div" | BOpMod -> "mod" | BOpNeg -> "-"
         | BOpLt  -> "<"   | BOpLte -> "<=" | BOpGt -> ">" | BOpGte -> ">="
+        | BOpRealDiv -> "/"
         | BOpSliceLength -> "slice.length"
         | BOpSliceIndex  -> "slice.select"
         | BOpIte         -> "ite"
@@ -143,7 +147,8 @@ module Term =
             match b with
             | BOpAnd | BOpOr | BOpNot | BOpXor | BOpImplies | BOpIff
             | BOpEq  | BOpNeq | BOpLt  | BOpLte | BOpGt  | BOpGte -> SBool
-            | BOpAdd | BOpSub | BOpMul | BOpDiv | BOpMod | BOpNeg ->
+            | BOpAdd | BOpSub | BOpMul | BOpDiv | BOpMod | BOpNeg
+            | BOpRealDiv ->
                 match args with x :: _ -> sortOf x | [] -> SInt
             | BOpSliceLength -> SInt
             | BOpSliceIndex  ->

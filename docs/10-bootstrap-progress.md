@@ -72,9 +72,11 @@ deferred to Phase 3 by design.
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
 | M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 PR #171) | D-progress-120 / D-progress-121 |
 | M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (PR #190) | D-progress-128 |
-| M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (this branch) | D-progress-130 |
-| M5.1 — self-hosted type checker | Not shipped | — |
-| M5.2 — mode checker / contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
+| M5.1 stage 5' — red/green CST foundation in self-hosted lexer + parser (lossless trivia capture, `GreenNode` / `RedNode`, event-based builder, file/import/item granularity) | **Shipped** (PR #197) | D-progress-130 |
+| M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
+| M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
+| MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
+| M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port) | D-progress-129 / D-progress-131 |
 
 ### Phase 2 — type system completion (in progress)
@@ -182,9 +184,11 @@ M4.2 close-out (D-progress-091) ships the remaining three deliverables
 flagged "Not shipped" in D-progress-090 — `Std.Core.Proof`,
 `--allow-unverified`, and the 200-test regression suite — so the M4.2
 status table flips fully to **Shipped**. The pagination-helper /
-token-bucket end-to-end worked-example proof tracked in
-`docs/12-todo-plan.md` Band D-D1.3 remains scheduled separately as it
-likely surfaces 1-2 missing wp/sp rules (per the original todo entry).
+token-bucket end-to-end worked-example proofs tracked in
+`docs/12-todo-plan.md` Band D-D1.3 shipped in D-progress-129: four verifier
+bugs were fixed (float/Real mapping, branch-condition propagation, shared
+Symbols accumulator, free-var/selector name collision) and both examples
+discharge cleanly under Z3.
 
 ---
 
@@ -401,6 +405,7 @@ stdout.  All 613 emitter tests pass with 0 failures.
 
 ---
 
+
 ### D-progress-125: JVM stage B2 smoke test unskipped; B111–B124 doc status update
 
 *claude/continue-jvm-emitter-T9Gdj branch.*  The `[hello_class_bytes_are_jvm_loadable]`
@@ -504,6 +509,56 @@ lowering functions.  Each stage has a self-test Lyric source in
 - Fixed `paramSlotCount` double-counting of `this` in non-static methods
 - Added `LIfAcmpeq` and `LIfAcmpne` to the `LInsn` union, `lowerInsn`, and `collectBranchTargets`
 - `lowerDeriveEquality` refactored to use `LInsn` list + `lowerFuncForClass` for correct StackMapTable
+
+---
+
+### D-progress-134: MSIL PE emitter Stage M1 — pure-Lyric PE/COFF image generator
+
+*claude/self-hosted-msil-emitter-pe branch.*
+
+Stage M1 of the self-hosted MSIL emitter produces a structurally valid 1024-byte
+PE/COFF + CLR-metadata image for a fixed "Hello" assembly without any new F#
+host code.  The implementation reuses the `Lyric.Jvm.Hosts.JvmByteBuilder` /
+`JvmByteHost` infrastructure already present for the JVM emitter.
+
+**New files:**
+
+- `compiler/lyric/msil/_kernel/kernel.l` — `Msil.Kernel` package; declares
+  `extern type ByteWriter = "Lyric.Jvm.Hosts.JvmByteBuilder"` and re-exports
+  the JVM LE byte-write helpers (`bufU1`, `bufU2`, `bufU4`, `bufAppend`,
+  `bufLen`, `bufToList`) under PE-centric names, plus `bufZero` and `bufPadTo`
+  in native Lyric.
+
+- `compiler/lyric/msil/pe.l` — `Msil.Pe` package; full fixed-layout serializer.
+  Sections: DOS stub (128 B), PE/COFF headers (384 B, padded), CLR header
+  IMAGE_COR20_HEADER (72 B), MSIL method body in tiny format (12 B, ldstr +
+  call + ret), and ECMA-335 metadata (408 B: BSJB root + #~ tables stream +
+  #Strings + #US + #Blob + #GUID).  Entry points: `buildHelloAssemblyBuf()`,
+  `buildHelloAssembly(): List[Byte]`, `buildHelloAssemblySize(): Int`.
+
+- `compiler/lyric/msil/msil_self_test_m1.l` — `Msil.SelfTestM1` package;
+  calls `buildHelloAssemblySize()` + `buildHelloAssembly()` and prints five
+  structural invariants: `pe_size_ok=true`, `mz_ok=true`, `pe_sig_ok=true`,
+  `clr_header_ok=true`, `bsjb_ok=true`.
+
+**Emitter change:**
+
+- `compiler/src/Lyric.Emitter/Emitter.fs` — `isBuiltinHead` extended to
+  include `"Msil"`, mapping `import Msil.X` to `compiler/lyric/msil/`.
+
+**F# test:**
+
+- `compiler/tests/Lyric.Emitter.Tests/MsilSelfTestM1.fs` — `Msil.SelfTest M1`
+  Expecto test: compiles `msil_self_test_m1.l` via the bootstrap emitter, runs
+  it, asserts all five `*=true` lines are present in stdout.  Wired into
+  `Lyric.Emitter.Tests.fsproj` and `Program.fs`.
+
+All 635 emitter tests pass.
+
+**Design note:** `List[Byte].length` is not available (CLR `List<T>` exposes
+`Count`, not `length`); size checking uses `bufLen(w)` on the raw `ByteWriter`
+before `bufToList`.  Multi-line boolean expressions use `and` (not `&&`, which
+the parser splits into two prefix-ref operators across line boundaries).
 
 ---
 
@@ -7237,3 +7292,177 @@ UUID generation and parsing over `System.Guid`.  `newUuid()` — version
 4 (cryptographic RNG).  `nilUuid()` — all-zeros sentinel.
 `uuidToString` — lowercase hyphenated string.  `parseUuidOpt` — accepts
 any `System.Guid.TryParse`-recognised format; returns `Option[Uuid]`.
+
+---
+
+### D-progress-132: M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker`)
+
+*PR #195.*
+
+The self-hosted Lyric type checker ships as a nine-file `Lyric.TypeChecker`
+library under `compiler/lyric/lyric/type_checker/`:
+
+- `typechecker_types.l` — `PrimType` / `Type` union and helpers
+  (`typeEquiv`, `renderType`).
+- `typechecker_symbols.l` — `DeclKind` / `Symbol` / `SymbolTable` helpers.
+- `typechecker_scope.l` — lexical `Scope` + `GenericContext` stacks.
+- `typechecker_signature.l` — `ResolvedParam` / `ResolvedBound` /
+  `ResolvedSignature` record types.
+- `typechecker_constfold.l` — compile-time integer constant folding
+  (used for `T0090`/`T0093` range-subtype diagnostics).
+- `typechecker_resolver.l` — `TypeExpr` → `Type` (`resolveType` /
+  `resolveTypePath`).
+- `typechecker_exprs.l` — bottom-up expression inference (`inferExpr`),
+  covering arithmetic, comparisons, field access, calls, closures, match,
+  and `if`/`while` control flow.
+- `typechecker_stmts.l` — statement and function-body checking
+  (`checkStatement`).
+- `typechecker_checker.l` — public entry point: `check(file: SourceFile):
+  CheckResult`; orchestrates symbol registration, signature resolution,
+  and expression/statement checking over all items.
+
+`compiler/lyric/lyric/typechecker_self_test.l` is the self-test consumer.
+It imports both `Lyric.Parser` and `Lyric.TypeChecker`, exercises 15
+in-process assertions (empty source, function/record/union registration,
+duplicate-name T0001, return-type T0070, val-type T0060, return-without-
+value T0064, range-subtype T0090/T0093, `where`-clause T0050, arithmetic
+mismatch T0031, unknown-name T0020), and writes `"ok"` on success.
+
+`compiler/tests/Lyric.Emitter.Tests/SelfHostedTypeCheckerTests.fs`
+(`[typechecker_self_test_passes]`) compiles `typechecker_self_test.l` via
+the bootstrap emitter, runs the resulting PE, and asserts exit 0 + `"ok"`
+in stdout.  All 635 emitter tests pass.
+
+**Porting issues resolved (no emitter changes required):**
+
+1. **`TyFunction` field rename** — `result` is a Lyric keyword (`KwResult`);
+   the field was renamed `ret` throughout.
+
+2. **Pattern-variable naming** — `as` is a Lyric keyword; pattern-bound
+   variables named `as1`/`as2` (from the F# `as`-pattern idiom) were
+   renamed `asy1`/`asy2`.
+
+3. **`DeclKind` construction field names** — The Lyric-side union case
+   construction syntax uses `id`/`decl` rather than the F# discriminated
+   union shorthand; all four `DeclKind` constructors corrected.
+
+4. **`resolveExprPath` mixed-arm type** — the final match arm produced
+   a `Void` result where the other arms produced `Type`, causing a CLR
+   `InvalidProgramException` at runtime.  Restructured to return a
+   consistent `Type` from all arms.
+
+---
+
+### D-progress-133: M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker`)
+
+*claude/continue-jvm-emitter-T9Gdj branch.*
+
+The self-hosted Lyric mode checker ships as a two-file `Lyric.ModeChecker`
+library under `compiler/lyric/lyric/mode_checker/`:
+
+- `modechecker_mode.l` — `VerificationLevel` union (VLRuntimeChecked,
+  VLProofRequired, VLProofRequiredUnsafe, VLProofRequiredChecked, VLAxiom)
+  plus helpers `vlIsProofRequired`, `vlDominates`, `vlDisplay`, `vlRank`;
+  file-level and function-level level computation (`levelOfFile`,
+  `levelOfFunction`, `isFuncPure`); annotation helpers (`findAnnotation`,
+  `proofRequiredModifier`).  Mirrors `compiler/src/Lyric.Verifier/Mode.fs`.
+
+- `modechecker_check.l` — public entry points (`checkFile`,
+  `checkFileWithImports`), callee-table construction (`calleeTableOfFile`),
+  and all diagnostic checks: V0001 (proof-required importing
+  runtime-checked), V0002 (impure call / `await` / `spawn` from
+  proof-required code), V0003 (`unsafe` block without
+  `unsafe_blocks_allowed`), V0004 (`@axiom` with body), V0005 (loop
+  without `invariant:` clause), V0006 (unbounded quantifier domain in
+  contract clause), V0009 (`assume` outside `unsafe {}`), V0010 (conflicting
+  level annotations), V0011 (unknown `@proof_required` modifier).  Mirrors
+  `compiler/src/Lyric.Verifier/ModeCheck.fs`.  Cross-package import
+  metadata uses a simplified `ImportedMeta` record (name + level string)
+  rather than the full F#-side `Imports.ImportedPackage` type.
+
+Consumer and harness:
+
+- `compiler/lyric/lyric/modechecker_self_test.l` — 17 in-process tests
+  covering level detection, conflict/unknown-modifier errors, V0001–V0006
+  and V0009–V0011 diagnostics, pure-callee pass, and no-check for
+  `@runtime_checked` packages.
+- `compiler/tests/Lyric.Emitter.Tests/SelfHostedModeCheckerTests.fs` —
+  F# Expecto wrapper (`[modechecker_self_test_passes]`).
+
+All 636 emitter tests pass.
+
+---
+
+### D-progress-129: D-D1.3 — pagination + token-bucket end-to-end proofs; float/real verifier fixes
+
+*claude/proof-system-followups-5d9rH branch.*
+
+Closes `docs/12-todo-plan.md` Band D-D1.3: the two end-to-end worked-example
+proofs for the pagination helper and the token-bucket rate limiter now
+discharge fully under Z3.  Four verifier bugs were surfaced and fixed in the
+process.
+
+**Verifier fixes**
+
+1. **Float/Real SMT mapping** (`Smt.fs`, `Vcir.fs`): `SFloat32`/`SFloat64`
+   now render as SMT `Real` instead of the previously unregistered sort names.
+   A new `BOpRealDiv` builtin was added to `Vcir.fs` so that float division
+   (`/`) emits as the Real-arithmetic `/` operator rather than integer `div`.
+   `VCGen.fs` selects `BOpRealDiv` over `BOpDiv` whenever both operands have
+   a float sort.
+
+2. **EIf branch-condition propagation** (`VCGen.fs`): assertions (`assert φ`)
+   inside an `if`/`else` body were not receiving the branch condition as a
+   hypothesis, causing them to fail with infeasible counterexamples (e.g.
+   `tokens = 0`, `count = 0.5` entering the taken branch and then failing
+   `tokens - count >= 0`).  The EIf-in-statement handler now guards each
+   branch's side goals with the branch condition using `cond ⇒ φ` wrapping,
+   which is equivalent to adding `cond` as a hypothesis for assertions in the
+   then-block (and `¬cond` for the else-block).
+
+3. **Shared `Symbols` ResizeArray** (`VCGen.fs`): `env.Symbols` is mutable;
+   all functions in a file shared the same instance via record copy-and-update.
+   After the `make` function registered the `Bucket` datatype, entry-method
+   goals inherited it, and Z3 flagged "ambiguous constant reference" when a
+   parameter was named identically to a selector.  Fixed by adding
+   `freshSymbols : Env -> Env` and passing `freshSymbols env` to each
+   `goalsForFunction` call so every function starts with a clean accumulator.
+
+4. **Free-variable / selector name conflict** (`Smt.fs`): even after fix 3,
+   a function whose parameter shares a name with a datatype selector (e.g.
+   `capacity` in both `make`'s parameter list and `Bucket`'s field list)
+   caused Z3 to report ambiguity.  Added `datatypeReservedNames` + a
+   pre-emit renaming pass in `renderGoalBlock`: any free variable whose name
+   clashes with a constructor, selector, or user-fun name is renamed to
+   `name$p` before the `declare-const` and `assert` are emitted.
+
+**Protected-type proof support**
+
+`VCGen.goalsForFileWithImports` now processes `IProtected` items:
+fields are bound as symbolic variables; `invariant:` clauses are injected
+as additional `requires:` preconditions on each entry; `goalsForProtectedType`
+converts each `entry` to a synthetic `FunctionDecl` and calls
+`goalsForFunction`.  `ProofMeta.buildProofMeta` was extended to include
+`IProtected` fields in the proof-type registry so the SMT emitter can
+declare the Bucket datatype.
+
+**New worked examples**
+
+- `examples/token_bucket_proof.l` — `@proof_required` token bucket with
+  `protected type Bucket` (fields `tokens: Double`, `capacity: Double`),
+  invariants `tokens >= 0.0` and `tokens <= capacity`, entry methods
+  `tryAcquire` and `refill` with explicit `assert` statements for invariant
+  preservation, and `make` constructor with structural postconditions.
+  6/6 obligations discharge.
+- `examples/pagination.l` (already existed from PR #129) — 4/4 obligations
+  discharge unchanged.
+- `docs/02-worked-examples.md` — Examples 12 (pagination) and 13 (token
+  bucket) added to the worked-examples catalogue.
+
+**Test coverage**
+
+Four new `[D-D1.3]`-tagged tests added to `SmtTests.fs` (float-sort rendering,
+`BOpRealDiv`, float-literal rendering) and six to `DriverTests.fs` (EIf-in-
+statement, mid-sequence SReturn, general ECall, float arithmetic, protected
+type goals, protected type invariant-as-hypothesis).  Total verifier tests:
+266, all passing.

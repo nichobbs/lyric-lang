@@ -677,16 +677,16 @@ criteria) and "M4.3" (the v2.0 release scope).
    remain hard errors. Summary surfaces `[N unverified, allowed]`
    when the flag is set and at least one obligation came back
    `unknown`.
-3. **Pagination-helper or token-bucket end-to-end proof.** Pick
-   one worked example from `docs/02-worked-examples.md`, add the
-   loop invariants, prove. Replaces the
-   `examples/prove_demo.l` integration test as the M4.2
-   demonstration. Likely surfaces 1-2 missing wp/sp rules. Still
-   open after D-progress-091 — `02-worked-examples.md` Example 2
-   (token-bucket) uses Doubles + `protected type`, neither in the
-   M4.2-core verifier scope; `pagination-helper` is referenced in
-   `15-phase-4-proof-plan.md` §M4.2 but not yet drafted as a
-   worked example.
+3. **Pagination-helper or token-bucket end-to-end proof.**
+   **SHIPPED** — D-progress-129.  Both examples now discharge
+   fully under Z3: `examples/pagination.l` (4/4 obligations) and
+   `examples/token_bucket_proof.l` (6/6 obligations).  Four
+   verifier bugs were fixed: float/Real SMT mapping, branch-
+   condition propagation into EIf side goals, shared `Symbols`
+   ResizeArray across functions, and free-variable/selector name
+   collision in the SMT emitter.  `docs/02-worked-examples.md`
+   Examples 12 (pagination) and 13 (token bucket) added.  266
+   verifier unit tests pass.
 4. **Verification regression suite to 200.** **SHIPPED** —
    D-progress-091. `Lyric.Verifier.Tests` is 217 tests today (216
    passing; 1 environment-gated `z3`-only failure that predates
