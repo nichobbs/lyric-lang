@@ -71,8 +71,43 @@ changed behaviour), update **all three** of:
    Also update `docs/05-implementation-plan.md` if it contains planning text that
    contradicts what actually shipped.
 
-These updates should be committed in the same PR as the feature, or in an
-immediate follow-up if the feature was merged without them.
+These updates are part of the task, not optional follow-ups. A task is not
+complete until the docs and book reflect the shipped state. Commit them in the
+same PR as the feature. If they were omitted from an already-merged PR, create
+an immediate follow-up and land it before starting the next task.
+
+### PR hygiene
+
+#### Before creating a PR
+
+1. Fetch the latest `main` and rebase the working branch onto it:
+   ```sh
+   git fetch origin main
+   git rebase origin/main
+   ```
+2. Resolve any conflicts, stage the resolutions, and `git rebase --continue`.
+3. Push (with `--force-with-lease` if the rebase rewrote commits already
+   pushed) before opening the PR.
+
+A PR that has conflicts on creation blocks auto-merge and review. Do not
+open a PR in a conflicted state.
+
+#### After creating a PR
+
+After opening a PR, check whether GitHub reports merge conflicts (the
+"This branch has conflicts" banner). If it does:
+
+1. Fetch and rebase:
+   ```sh
+   git fetch origin main
+   git rebase origin/main
+   ```
+2. Resolve conflicts, stage, and `git rebase --continue`.
+3. Push with `--force-with-lease` to update the PR branch.
+
+Repeat until GitHub shows the branch as mergeable. If auto-merge was
+enabled before the conflict appeared, re-enable it after pushing the
+resolution.
 
 ### Style
 
