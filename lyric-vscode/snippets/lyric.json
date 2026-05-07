@@ -1,0 +1,239 @@
+{
+    "Function": {
+        "prefix": "fn",
+        "body": [
+            "pub func ${1:name}(${2:param}: in ${3:Type}): ${4:Unit} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Function declaration"
+    },
+    "Function with contracts": {
+        "prefix": "fnc",
+        "body": [
+            "pub func ${1:name}(${2:param}: in ${3:Type}): ${4:Bool}",
+            "  requires: ${5:true}",
+            "  ensures: ${6:result}",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Function declaration with requires/ensures contracts"
+    },
+    "Async function": {
+        "prefix": "afn",
+        "body": [
+            "pub async func ${1:name}(${2:param}: in ${3:Type}): ${4:Unit} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Async function declaration"
+    },
+    "Record": {
+        "prefix": "rec",
+        "body": [
+            "pub record ${1:Name} {",
+            "\tpub ${2:field}: ${3:Type}",
+            "\t$0",
+            "}"
+        ],
+        "description": "Record type declaration"
+    },
+    "Opaque record": {
+        "prefix": "orec",
+        "body": [
+            "pub opaque record ${1:Name} {",
+            "\t${2:field}: ${3:Type}",
+            "\t$0",
+            "}"
+        ],
+        "description": "Opaque record type (representation hidden outside package)"
+    },
+    "Union (sum type)": {
+        "prefix": "union",
+        "body": [
+            "pub union ${1:Name} {",
+            "\t| ${2:CaseA}",
+            "\t| ${3:CaseB}(${4:Type})",
+            "\t$0",
+            "}"
+        ],
+        "description": "Sum type (discriminated union) declaration"
+    },
+    "Enum": {
+        "prefix": "enum",
+        "body": [
+            "pub enum ${1:Name} {",
+            "\t${2:ValueA},",
+            "\t${3:ValueB},",
+            "\t$0",
+            "}"
+        ],
+        "description": "Enum declaration"
+    },
+    "Interface": {
+        "prefix": "iface",
+        "body": [
+            "pub interface ${1:Name} {",
+            "\tfunc ${2:method}(${3:self}: in Self): ${4:Unit}",
+            "\t$0",
+            "}"
+        ],
+        "description": "Interface declaration"
+    },
+    "Impl block": {
+        "prefix": "impl",
+        "body": [
+            "impl ${1:Interface} for ${2:Type} {",
+            "\tfunc ${3:method}(${4:self}: in Self): ${5:Unit} {",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Interface implementation block"
+    },
+    "Match expression": {
+        "prefix": "match",
+        "body": [
+            "match ${1:value} {",
+            "\t| ${2:Pattern} -> ${3:expr}",
+            "\t| _ -> $0",
+            "}"
+        ],
+        "description": "Match expression with exhaustive cases"
+    },
+    "Wire block": {
+        "prefix": "wire",
+        "body": [
+            "wire ${1:Name} {",
+            "\t${2:service}: ${3:ServiceType} = ${4:impl}",
+            "\t$0",
+            "}"
+        ],
+        "description": "Wire block (compile-time dependency injection graph)"
+    },
+    "Requires clause": {
+        "prefix": "req",
+        "body": "requires: ${1:condition}",
+        "description": "requires: contract precondition"
+    },
+    "Ensures clause": {
+        "prefix": "ens",
+        "body": "ensures: ${1:condition}",
+        "description": "ensures: contract postcondition"
+    },
+    "Invariant clause": {
+        "prefix": "inv",
+        "body": "invariant: ${1:condition}",
+        "description": "invariant: loop or type invariant"
+    },
+    "For loop": {
+        "prefix": "for",
+        "body": [
+            "for ${1:item} in ${2:collection} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "For-in loop"
+    },
+    "While loop": {
+        "prefix": "while",
+        "body": [
+            "while ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "While loop"
+    },
+    "While with invariant": {
+        "prefix": "whilei",
+        "body": [
+            "while ${1:condition}",
+            "  invariant: ${2:condition}",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "While loop with invariant clause (for @proof_required)"
+    },
+    "If expression": {
+        "prefix": "if",
+        "body": [
+            "if ${1:condition} {",
+            "\t${2:then}",
+            "} else {",
+            "\t$0",
+            "}"
+        ],
+        "description": "If/else expression"
+    },
+    "Test function": {
+        "prefix": "test",
+        "body": [
+            "test \"${1:description}\" {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Test function"
+    },
+    "Property test": {
+        "prefix": "prop",
+        "body": [
+            "property \"${1:description}\" {",
+            "\tforall ${2:x}: ${3:Type} =>",
+            "\t\t$0",
+            "}"
+        ],
+        "description": "Property-based test"
+    },
+    "Try/catch": {
+        "prefix": "try",
+        "body": [
+            "try {",
+            "\t${1:body}",
+            "} catch ${2:ErrorType} as ${3:e} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Try/catch block"
+    },
+    "Defer block": {
+        "prefix": "defer",
+        "body": [
+            "defer {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Defer block (runs on scope exit)"
+    },
+    "Distinct type alias": {
+        "prefix": "dtype",
+        "body": "pub type ${1:Name} = ${2:Long}",
+        "description": "Nominally distinct type (not an alias)"
+    },
+    "Range subtype": {
+        "prefix": "rtype",
+        "body": "pub type ${1:Age} = ${2:Int} range ${3:0} ..= ${4:150}",
+        "description": "Range-constrained numeric subtype"
+    },
+    "Package declaration": {
+        "prefix": "pkg",
+        "body": "package ${1:My.Package}",
+        "description": "Package declaration"
+    },
+    "Import": {
+        "prefix": "import",
+        "body": "import ${1:Std.Core}",
+        "description": "Import declaration"
+    },
+    "Assert": {
+        "prefix": "assert",
+        "body": "assert ${1:condition}",
+        "description": "Runtime assertion"
+    },
+    "Annotation": {
+        "prefix": "@",
+        "body": "@${1|runtime_checked,proof_required,axiom,projectable,stubbable,derive|}",
+        "description": "Module/item annotation"
+    }
+}

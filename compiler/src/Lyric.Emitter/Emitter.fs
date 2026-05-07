@@ -624,19 +624,34 @@ let private defineEnum
       Records.EnumInfo.Type  = ty
       Records.EnumInfo.Cases = cases }
 
-/// Define the abstract base + sealed per-case subclasses for a Lyric
-/// union.  Non-generic unions use proper CLR nested types for the
-/// case classes (keeps the PE TypeRef metadata clean for cross-
-/// assembly references).  Generic unions emit each case as its own
-/// top-level generic class whose type params shadow the parent's,
-/// inheriting from the constructed parent — Reflection.Emit's nested-
-/// generic-type story has friction the bootstrap sidesteps.
-let private defineUnion
+/// Intermediate state between union pass 1 (TypeBuilder stub creation)
+/// and union pass 2 (field + ctor population with the full type lookup).
+/// Carrying this between the two passes avoids the D035 erasure of
+/// non-generic union case fields to `obj`.
+type private UnionBase =
+    { Decl:           UnionDecl
+      FullName:       string
+      BaseTy:         TypeBuilder
+      BaseCtor:       ConstructorBuilder
+      TypeParamNames: string list
+      IsGeneric:      bool
+      /// (case-decl, case-TypeBuilder, type-param-subst,
+      ///  parent-ctor-receiver for generic cases: Some parentOnCaseTps)
+      CaseStubs:      (UnionCase * TypeBuilder * Map<string, System.Type> * System.Type option) list }
+
+/// Phase-1: create the abstract base + sealed case TypeBuilders and emit
+/// the base protected ctor.  Field and constructor definition is deferred
+/// to `defineUnionPopulate` so the full type-lookup is available.
+///
+/// Non-generic unions use proper CLR nested types for case classes (keeps
+/// cross-assembly TypeRef metadata clean).  Generic unions emit each case
+/// as its own top-level generic class whose type params shadow the
+/// parent's, inheriting from the constructed parent.
+let private defineUnionBase
         (md: ModuleBuilder)
         (nsName: string)
-        (symbols: SymbolTable)
         (vis: Visibility option)
-        (ud: UnionDecl) : Records.UnionInfo =
+        (ud: UnionDecl) : UnionBase =
     let fullName =
         if String.IsNullOrEmpty nsName then ud.Name
         else nsName + "." + ud.Name
@@ -654,10 +669,9 @@ let private defineUnion
             fullName,
             typeAttrsForVis vis TypeAttributes.Abstract,
             typeof<obj>)
-    let baseTps =
-        if isGeneric
-        then baseTy.DefineGenericParameters(typeParamNames |> List.toArray)
-        else [||]
+    // Side-effect: marks baseTy as a generic type definition.
+    if isGeneric then
+        baseTy.DefineGenericParameters(typeParamNames |> List.toArray) |> ignore
 
     // Protected default ctor on the base so subclass ctors can chain.
     let baseCtor =
@@ -673,18 +687,10 @@ let private defineUnion
     | None   -> failwith "object's no-arg ctor not found"
     baseCtorIl.Emit(OpCodes.Ret)
 
-    let resolveCtx = GenericContext()
-    let scratchDiags = ResizeArray<Diagnostic>()
-    if isGeneric then resolveCtx.Push(typeParamNames)
-
-    let cases =
+    let caseStubs =
         ud.Cases
         |> List.map (fun c ->
-            // Generic unions emit cases as top-level generic classes
-            // (each with its own copy of the parent's type params,
-            // inheriting from the constructed parent).  Non-generic
-            // unions stay nested so cross-assembly TypeRefs are clean.
-            let caseTy, caseTps, caseSubst, caseParentForCtor =
+            let caseTy, caseSubst, caseParentForCtor =
                 if isGeneric then
                     let caseFull = fullName + "_" + c.Name
                     let tb =
@@ -700,39 +706,68 @@ let private defineUnion
                         typeParamNames
                         |> List.mapi (fun i name -> name, tps.[i] :> System.Type)
                         |> Map.ofList
-                    tb, tps, subst, Some parentOnCaseTps
+                    tb, subst, Some parentOnCaseTps
                 else
+                    // Top-level type with `_` separator (same convention as
+                    // generic unions) avoids PersistedAssemblyBuilder bugs
+                    // with nested-type field / method references in external
+                    // assemblies (ldsfld / callvirt on nested-type members
+                    // produces invalid MemberRef signatures).
+                    let caseFull = fullName + "_" + c.Name
                     let tb =
-                        baseTy.DefineNestedType(
-                            c.Name,
-                            nestedTypeAttrsForVis vis TypeAttributes.Sealed,
+                        md.DefineType(
+                            caseFull,
+                            typeAttrsForVis vis TypeAttributes.Sealed,
                             baseTy :> System.Type)
-                    tb, [||], Map.empty, None
+                    tb, Map.empty, None
+            (c, caseTy, caseSubst, caseParentForCtor))
+
+    { Decl           = ud
+      FullName       = fullName
+      BaseTy         = baseTy
+      BaseCtor       = baseCtor
+      TypeParamNames = typeParamNames
+      IsGeneric      = isGeneric
+      CaseStubs      = caseStubs }
+
+/// Phase-2: populate union case fields and emit their constructors using
+/// the full `lookup` (which now has every record/union TypeBuilder stub
+/// registered).  For non-generic unions this resolves field types to
+/// their proper CLR TypeBuilders instead of erasing them to `obj`.
+let private defineUnionPopulate
+        (symbols: SymbolTable)
+        (lookup: TypeId -> System.Type option)
+        (ub: UnionBase) : Records.UnionInfo =
+    let resolveCtx = GenericContext()
+    let scratchDiags = ResizeArray<Diagnostic>()
+    if ub.IsGeneric then resolveCtx.Push(ub.TypeParamNames)
+
+    let cases =
+        ub.CaseStubs
+        |> List.map (fun (c, caseTy, caseSubst, caseParentForCtor) ->
             let payload =
                 c.Fields
                 |> List.mapi (fun i f ->
                     let lty, fname =
                         match f with
                         | UFNamed (n, te, _) ->
-                            Resolver.resolveType symbols resolveCtx scratchDiags te,
-                            n
+                            Resolver.resolveType symbols resolveCtx scratchDiags te, n
                         | UFPos (te, _) ->
                             Resolver.resolveType symbols resolveCtx scratchDiags te,
                             sprintf "Item%d" (i + 1)
                     let cty =
-                        if isGeneric then
-                            // Generic unions: substitute TyVar via the
-                            // case's GTPBs, leaving everything else to
-                            // the regular type lowering.
+                        if ub.IsGeneric then
+                            // Generic unions: substitute TyVar via the case's
+                            // GTPBs; leave TyUser unresolved — type application
+                            // happens at call sites.
                             TypeMap.toClrTypeWithGenerics
                                 (fun _ -> None) caseSubst lty
                         else
-                            // Erasure path (D035) for non-generic
-                            // unions: keep TyVar / TyUser as `obj`.
-                            match lty with
-                            | TyPrim _ | TySlice _ | TyArray _ | TyTuple _ ->
-                                TypeMap.toClrType lty
-                            | _ -> typeof<obj>
+                            // Non-generic unions: use the full lookup so
+                            // user-defined field types (records, unions, etc.)
+                            // get their proper CLR TypeBuilders rather than
+                            // being erased to `obj`.
+                            TypeMap.toClrTypeWithGenerics lookup Map.empty lty
                     let fb =
                         caseTy.DefineField(
                             fname,
@@ -751,29 +786,73 @@ let private defineUnion
                     paramTypes)
             let cil = ctor.GetILGenerator()
             cil.Emit(OpCodes.Ldarg_0)
-            // Reference parent ctor: for generic unions, the call must
-            // go through `TypeBuilder.GetConstructor` on the parent
+            // Reference parent ctor: for generic unions the call must go
+            // through `TypeBuilder.GetConstructor` on the parent
             // instantiated to the case's GTPBs.
             match caseParentForCtor with
             | Some parent ->
-                let parentCtorRef = TypeBuilder.GetConstructor(parent, baseCtor)
+                let parentCtorRef = TypeBuilder.GetConstructor(parent, ub.BaseCtor)
                 cil.Emit(OpCodes.Call, parentCtorRef)
             | None ->
-                cil.Emit(OpCodes.Call, baseCtor)
+                cil.Emit(OpCodes.Call, ub.BaseCtor)
             payload
             |> List.iteri (fun i f ->
                 cil.Emit(OpCodes.Ldarg_0)
                 cil.Emit(OpCodes.Ldarg, i + 1)
                 cil.Emit(OpCodes.Stfld, f.Field))
             cil.Emit(OpCodes.Ret)
-            { Records.UnionCaseInfo.Name   = c.Name
-              Records.UnionCaseInfo.Type   = caseTy
-              Records.UnionCaseInfo.Fields = payload
-              Records.UnionCaseInfo.Ctor   = ctor })
-    { Records.UnionInfo.Name     = ud.Name
-      Records.UnionInfo.Type     = baseTy
+            // For non-generic nullary cases: emit a singleton `Instance`
+            // static field so local references within the same assembly all
+            // point to the same object.  Generic cases are skipped.
+            let instanceField =
+                if payload.IsEmpty && not ub.IsGeneric then
+                    let fb =
+                        caseTy.DefineField(
+                            "Instance",
+                            caseTy :> System.Type,
+                            FieldAttributes.Public
+                            ||| FieldAttributes.Static
+                            ||| FieldAttributes.InitOnly)
+                    let cctor = caseTy.DefineTypeInitializer()
+                    let ccil = cctor.GetILGenerator()
+                    ccil.Emit(OpCodes.Newobj, ctor)
+                    ccil.Emit(OpCodes.Stsfld, fb)
+                    ccil.Emit(OpCodes.Ret)
+                    Some fb
+                else
+                    None
+            // For non-generic nullary cases: define a static `Get<Name>()`
+            // method on the BASE type that does `ldsfld Instance; ret`.
+            // External assemblies call this (cross-assembly method call works in
+            // PersistedAssemblyBuilder) instead of emitting `ldsfld Instance`
+            // directly (cross-assembly field references crash the IL writer).
+            let getterMethod =
+                match instanceField with
+                | Some instField ->
+                    let mb =
+                        ub.BaseTy.DefineMethod(
+                            "Get" + c.Name,
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Static
+                            ||| MethodAttributes.HideBySig,
+                            ub.BaseTy :> System.Type,
+                            [||])
+                    let gil = mb.GetILGenerator()
+                    gil.Emit(OpCodes.Ldsfld, instField)
+                    gil.Emit(OpCodes.Ret)
+                    Some mb
+                | None -> None
+            { Records.UnionCaseInfo.Name         = c.Name
+              Records.UnionCaseInfo.Type         = caseTy
+              Records.UnionCaseInfo.Fields       = payload
+              Records.UnionCaseInfo.Ctor         = ctor
+              Records.UnionCaseInfo.Instance     = instanceField
+              Records.UnionCaseInfo.GetterMethod = getterMethod })
+
+    { Records.UnionInfo.Name     = ub.Decl.Name
+      Records.UnionInfo.Type     = ub.BaseTy
       Records.UnionInfo.Cases    = cases
-      Records.UnionInfo.Generics = typeParamNames }
+      Records.UnionInfo.Generics = ub.TypeParamNames }
 
 /// Define the CLR class + fields + ctor for one Lyric record. The
 /// resulting `RecordInfo` goes into the per-emit `RecordTable` so
@@ -2306,6 +2385,40 @@ let private emitExternCall
             il.Emit(OpCodes.Newobj, c)
             c.DeclaringType
         | EBMMethod m ->
+            // If the resolved method is still an open generic (i.e., a
+            // generic method on a non-generic declaring type, like
+            // `SetHost.SetToArray<T>`), infer type arguments from the
+            // resolved parameter CLR types and close it now.
+            let m =
+                if not m.IsGenericMethodDefinition then m
+                else
+                    let gtpbs   = m.GetGenericArguments()
+                    let mParams = m.GetParameters()
+                    let bindings = Array.create gtpbs.Length typeof<obj>
+                    let rec matchTy (methTy: System.Type) (actualTy: System.Type) =
+                        if methTy.IsGenericParameter then
+                            match Array.tryFindIndex
+                                      (fun (tp: System.Type) -> tp.Name = methTy.Name)
+                                      gtpbs with
+                            | Some pos -> bindings.[pos] <- actualTy
+                            | None     -> ()
+                        elif methTy.IsGenericType && actualTy.IsGenericType then
+                            try
+                                if methTy.GetGenericTypeDefinition()
+                                   = actualTy.GetGenericTypeDefinition() then
+                                    Array.iter2 matchTy
+                                        (methTy.GetGenericArguments())
+                                        (actualTy.GetGenericArguments())
+                            with _ -> ()
+                        elif methTy.IsArray && actualTy.IsArray then
+                            match Option.ofObj (methTy.GetElementType()),
+                                  Option.ofObj (actualTy.GetElementType()) with
+                            | Some mt, Some at -> matchTy mt at
+                            | _                -> ()
+                    for i in 0 .. mParams.Length - 1 do
+                        if i < paramTypes.Length then
+                            matchTy (mParams.[i].ParameterType) paramTypes.[i]
+                    m.MakeGenericMethod bindings
             if m.IsStatic then il.Emit(OpCodes.Call, m)
             else
                 // Value-type instance methods — `Call` against a
@@ -3026,16 +3139,14 @@ let private emitAssembly
                         let cases =
                             ud.Cases
                             |> List.choose (fun c ->
-                                // Generic unions emit case classes as top-
-                                // level types named `<NS>.<Union>_<Case>`
-                                // (per `defineUnion`'s generic path).  Non-
-                                // generic unions use proper nested CLR
-                                // types so `+` is the right separator.
+                                // Both generic and non-generic unions now
+                                // emit case classes as top-level types with
+                                // `_` separator (non-generic unions were
+                                // switched from DefineNestedType to top-level
+                                // to fix ldsfld MemberRef encoding in
+                                // PersistedAssemblyBuilder).
                                 let caseFullName =
-                                    if isGeneric then
-                                        qualify ud.Name + "_" + c.Name
-                                    else
-                                        qualify ud.Name + "+" + c.Name
+                                    qualify ud.Name + "_" + c.Name
                                 match getType caseFullName with
                                 | None -> None
                                 | Some caseTy ->
@@ -3086,14 +3197,44 @@ let private emitAssembly
                                                       Records.ImportedField.LyricType = lty
                                                       Records.ImportedField.Field     = fi }
                                             | None -> None)
+                                    // For nullary cases: look up the static
+                                    // Instance singleton field (informational)
+                                    // and the Get<Name>() accessor on baseTy
+                                    // (used by Codegen for cross-assembly calls).
+                                    // Only safe on real CLR types — TypeBuilder
+                                    // reflection methods throw NotSupportedException.
+                                    let isRealClr (t: System.Type) =
+                                        not (t :? System.Reflection.Emit.TypeBuilder)
+                                    let instanceFieldOpt =
+                                        if fields.IsEmpty && isRealClr caseTy then
+                                            let sf =
+                                                BindingFlags.Public
+                                                ||| BindingFlags.Static
+                                                ||| BindingFlags.DeclaredOnly
+                                            caseTy.GetField("Instance", sf)
+                                            |> Option.ofObj
+                                        else None
+                                    // Get<Name>() is defined on baseTy; look it
+                                    // up only when both types are real CLR types.
+                                    let getterMethodOpt =
+                                        if fields.IsEmpty && isRealClr caseTy && isRealClr baseTy then
+                                            let sf =
+                                                BindingFlags.Public
+                                                ||| BindingFlags.Static
+                                                ||| BindingFlags.DeclaredOnly
+                                            baseTy.GetMethod("Get" + c.Name, sf)
+                                            |> Option.ofObj
+                                        else None
                                     match ctorOpt with
                                     | None -> None
                                     | Some ctor ->
                                         Some
-                                            { Records.ImportedUnionCaseInfo.Name = c.Name
-                                              Records.ImportedUnionCaseInfo.Type = caseTy
-                                              Records.ImportedUnionCaseInfo.Fields = fields
-                                              Records.ImportedUnionCaseInfo.Ctor = ctor })
+                                            { Records.ImportedUnionCaseInfo.Name         = c.Name
+                                              Records.ImportedUnionCaseInfo.Type         = caseTy
+                                              Records.ImportedUnionCaseInfo.Fields       = fields
+                                              Records.ImportedUnionCaseInfo.Ctor         = ctor
+                                              Records.ImportedUnionCaseInfo.Instance     = instanceFieldOpt
+                                              Records.ImportedUnionCaseInfo.GetterMethod = getterMethodOpt })
                         let info =
                             { Records.ImportedUnionInfo.Name     = ud.Name
                               Records.ImportedUnionInfo.Type     = baseTy
@@ -3329,16 +3470,17 @@ let private emitAssembly
 
         let unionTable = Records.UnionTable()
         let unionCaseLookup = Records.UnionCaseLookup()
+        // Union pass 1: create TypeBuilder stubs (base + case classes) and
+        // register the base in typeIdToClr.  Field + ctor definition is
+        // deferred to pass 2 so the full lookup is available.
+        let unionBases = ResizeArray<UnionBase>()
         for ud in unionItems sf do
-            let info = defineUnion ctx.Module nsName symbols (visOf ud.Name) ud
-            unionTable.[ud.Name] <- info
-            for c in info.Cases do
-                unionCaseLookup.[c.Name] <- (info, c)
-                unionCaseLookup.[ud.Name + "." + c.Name] <- (info, c)
+            let ub = defineUnionBase ctx.Module nsName (visOf ud.Name) ud
+            unionBases.Add(ub)
             symbols.TryFind ud.Name
             |> Seq.tryHead
             |> Option.bind Symbol.typeIdOpt
-            |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type :> System.Type)
+            |> Option.iter (fun id -> typeIdToClr.[id] <- ub.BaseTy :> System.Type)
 
         let lookup =
             fun (id: TypeId) ->
@@ -3362,6 +3504,17 @@ let private emitAssembly
                     (opaqueAsRecord od)
             recordTable.[od.Name] <- info
             if isProjectable od then projectableOpaques.Add(od, info)
+
+        // Union pass 2: populate case fields + ctors using the full lookup
+        // (all record/union TypeBuilder stubs are now registered).  For
+        // non-generic unions this resolves field types to their proper CLR
+        // TypeBuilders rather than erasing them to `obj`.
+        for ub in unionBases do
+            let info = defineUnionPopulate symbols lookup ub
+            unionTable.[ub.Decl.Name] <- info
+            for c in info.Cases do
+                unionCaseLookup.[c.Name] <- (info, c)
+                unionCaseLookup.[ub.Decl.Name + "." + c.Name] <- (info, c)
 
         // Pass A.4 — synthesise CLR class scaffolding for every
         // `protected type` (D-progress-079).  Returns a list of
@@ -3601,6 +3754,36 @@ let private emitAssembly
         // share a name but differ in parameter count).
         let methodTable = Dictionary<string, MethodBuilder>()
         let funcSigsTable = Dictionary<string, ResolvedSignature>()
+
+        // Synthetic helper for cross-assembly union case equality.
+        // Comparing nullary union case instances across assemblies with Ceq
+        // fails (different objects); calling GetType on both sides and Ceq-ing
+        // the Type objects works. We define the helper in the compiled assembly
+        // itself so the Call is intra-assembly (no cross-assembly FieldInfo /
+        // DeclareLocal ordering issues that crash PersistedAssemblyBuilder).
+        // Body: ldarg.0 callvirt GetType ldarg.1 callvirt GetType ceq ret
+        let sameTypeHelper =
+            let smb =
+                programTy.DefineMethod(
+                    "__SameType",
+                    MethodAttributes.Public ||| MethodAttributes.Static ||| MethodAttributes.HideBySig,
+                    typeof<bool>,
+                    [| typeof<obj>; typeof<obj> |])
+            let ilh = smb.GetILGenerator()
+            let getTypeM =
+                typeof<obj>.GetMethod("GetType")
+                |> Option.ofObj
+                |> Option.defaultWith (fun () ->
+                    failwith "object.GetType() not found")
+            ilh.Emit(OpCodes.Ldarg_0)
+            ilh.Emit(OpCodes.Callvirt, getTypeM)
+            ilh.Emit(OpCodes.Ldarg_1)
+            ilh.Emit(OpCodes.Callvirt, getTypeM)
+            ilh.Emit(OpCodes.Ceq)
+            ilh.Emit(OpCodes.Ret)
+            smb
+        methodTable.["__SameType"] <- sameTypeHelper
+
         for fn in funcs do
             // Prefer arity-qualified key so overloaded functions each get
             // the right resolved signature; fall back to bare name for
@@ -4621,6 +4804,18 @@ let private emitAssembly
 let private stdlibArtifactCache : Dictionary<string, StdlibArtifact> = Dictionary()
 let private stdlibLock : obj = obj()
 
+/// Convert a `RestoredPackages.RestoredArtifact` to the internal
+/// `StdlibArtifact` shape so a pre-built binary `Lyric.Stdlib.dll`
+/// can be consumed by the same import pipeline as source-compiled artifacts.
+let private restoredToStdlib (ra: RestoredPackages.RestoredArtifact) : StdlibArtifact =
+    let asm = ra.Assembly
+    { AssemblyPath = ra.AssemblyPath
+      Assembly     = Some asm
+      Source       = ra.Source
+      Symbols      = ra.Symbols
+      Signatures   = ra.Signatures
+      Lookup       = fun n -> Option.ofObj (asm.GetType n) }
+
 /// The shared cache directory for compiled stdlib artifacts.  Per-
 /// process so concurrent test runs don't trample each other.
 let private stdlibCacheDir : string =
@@ -4963,6 +5158,33 @@ let rec private ensureStdlibArtifact
         match stdlibArtifactCache.TryGetValue key with
         | true, a -> Ok a
         | _ ->
+            // Fast path: try a pre-built binary stdlib DLL (docs/22 §3)
+            // before recompiling from source.  Checks SdkRoot for
+            // `lib/Lyric.Stdlib.dll`; if found and it carries the package
+            // we need as a `Lyric.Contract.<Pkg>` resource, uses that
+            // artifact directly.  Falls through to source on any failure.
+            let binaryArtifact =
+                let sdkInfo = SdkRoot.locate AppContext.BaseDirectory
+                match sdkInfo.StdlibDll with
+                | None -> None
+                | Some dllPath ->
+                    let pkgName = packageKey segments
+                    let ref' =
+                        { RestoredPackages.Name    = pkgName
+                          RestoredPackages.Version = "0.1.0"
+                          RestoredPackages.DllPath = dllPath }
+                    match RestoredPackages.loadRestoredPackage ref' with
+                    | Error _ -> None
+                    | Ok arts ->
+                        arts
+                        |> List.tryFind (fun a -> a.Contract.PackageName = pkgName)
+                        |> Option.map restoredToStdlib
+            match binaryArtifact with
+            | Some artifact ->
+                stdlibArtifactCache.[key] <- artifact
+                Ok artifact
+            | None ->
+            // Source fallback: walk stdlib/ tree and compile from .l files.
             let foundPaths, layoutDiag =
                 locateBuiltinFilesWithLayout AppContext.BaseDirectory target segments
             match parseAndMergeBuiltinFiles foundPaths with
@@ -5138,6 +5360,11 @@ let stdlibAssemblyPaths () : string list =
         stdlibArtifactCache.Values
         |> Seq.map (fun a -> a.AssemblyPath)
         |> List.ofSeq)
+
+/// Public SDK-info accessor for `lyric --sdk-info`.  Returns the located SDK
+/// root (or NotFound) based on the same search order used by the stdlib loader.
+let getSdkInfo () : SdkRoot.SdkInfo =
+    SdkRoot.locate AppContext.BaseDirectory
 
 /// Resolve `import Std.X` / `import Jvm.X` (and any other built-in package)
 /// declarations: walk the dependency closure, compile what's missing, and hand
@@ -5729,6 +5956,12 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         // as we iterate in topo order.  Each downstream package's
         // intra-project import resolution consults this map.
         let intraArtifacts = Dictionary<string, StdlibArtifact>()
+        // Map from package name → the stdlib (kernel/builtin) artifacts
+        // that were in scope when that package was emitted.  Used by
+        // resolveIntraImports to propagate transitive stdlib items to
+        // downstream in-project importers (e.g. so Std.Iter can see
+        // Std.CollectionsHost items via its import of Std.Collections).
+        let intraStdlibDeps = Dictionary<string, StdlibArtifact list>()
         // Shared `qualifiedName -> System.Type` lookup table populated
         // by every package's `emitAssembly` call as its `TypeBuilder`s
         // get sealed.  We can't use `ModuleBuilder.GetType` for this
@@ -5756,8 +5989,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         /// Strip intra-project imports from a parsed source so the
         /// downstream `resolveStdlibImports` / type checker stops
         /// flagging them as unknown.  Returns the stripped source +
-        /// the matched in-project artifacts so `emitAssembly` sees
-        /// them as if they were stdlib.
+        /// the matched in-project artifacts (plus their transitive stdlib
+        /// deps) so `emitAssembly` sees all necessary items.
         let resolveIntraImports (sf: SourceFile)
                                 : SourceFile * Item list * StdlibArtifact list =
             let intraImps, otherImps =
@@ -5767,6 +6000,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     projectPackageSet.Contains key)
             if List.isEmpty intraImps then sf, [], []
             else
+                // Packages already present in the remaining (non-intra) imports
+                // will be resolved by resolveStdlibImports; skip them when
+                // propagating transitive deps to avoid duplicate items.
+                let remainingKeys =
+                    otherImps
+                    |> List.map (fun i -> String.concat "." i.Path.Segments)
+                    |> HashSet<string>
                 let arts = ResizeArray<StdlibArtifact>()
                 let items = ResizeArray<Item>()
                 let visited = HashSet<string>()
@@ -5776,6 +6016,26 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     | true, a when visited.Add key ->
                         arts.Add a
                         for it in a.Source.Items do items.Add it
+                        // Propagate transitive stdlib (kernel/builtin) deps
+                        // so downstream type-checks see their items.
+                        // Example: Std.Iter imports Std.Collections (in-
+                        // project); Std.Collections needed Std.CollectionsHost
+                        // for List[T] / newList.  Without this, Std.Iter
+                        // would not see those names.
+                        // Skip any dep whose package key is already in the
+                        // remaining import set (resolveStdlibImports will
+                        // handle those, avoiding duplicates).
+                        match intraStdlibDeps.TryGetValue key with
+                        | true, sdeps ->
+                            for sdep in sdeps do
+                                let sdepPkgKey =
+                                    String.concat "." sdep.Source.Package.Path.Segments
+                                if not (remainingKeys.Contains sdepPkgKey) then
+                                    let visitKey = "stdlib:" + sdepPkgKey
+                                    if visited.Add visitKey then
+                                        arts.Add sdep
+                                        for it in sdep.Source.Items do items.Add it
+                        | _ -> ()
                     | _ -> ()
                 { sf with Imports = otherImps },
                 List.ofSeq items,
@@ -5815,7 +6075,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =
                 resolveStdlibImports req.Target afterRestored
-            let mergedImportedItems = intraItems @ restoredItems @ importedItems
+            let mergedImportedItems =
+                let seen = System.Collections.Generic.HashSet<string>()
+                (intraItems @ restoredItems @ importedItems)
+                |> List.filter (fun it ->
+                    match itemConflictKey it with
+                    | None     -> true
+                    | Some key -> seen.Add key)
             let mergedArtifacts = intraArts @ restoredArtifacts @ stdlibArtifacts
             let checked' =
                 Lyric.TypeChecker.Checker.checkWithImports resolved mergedImportedItems
@@ -5864,6 +6130,7 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
             if not pkgFatal then
                 intraArtifacts.[pkgName] <-
                     buildIntraArtifact resolved checked'.Symbols checked'.Signatures
+                intraStdlibDeps.[pkgName] <- stdlibArtifacts
         // B0021 — multiple `pub func main` across packages in the
         // single-output project.  Surface once after the full pass
         // so a downstream test can ASSERT the diagnostic regardless
@@ -5919,5 +6186,22 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                                 "could not embed Lyric.Contract.%s resource: %s"
                                 pkgName e.Message
                           Span     = Span.make Position.initial Position.initial }
+            // Phase D — embed `Lyric.SdkVersion` resource (docs/22 §5).
+            // Present on every project DLL so installed builds can verify
+            // language / stdlib / compiler version at compile time.
+            try
+                let now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                let json =
+                    sprintf
+                        "{ \"language_version\": \"0.1\", \"stdlib_version\": \"0.1.0\", \"compiler_version\": \"0.1.0-bootstrap\", \"build_date\": \"%s\" }"
+                        now
+                ContractMeta.embedIntoAssemblyAs req.OutputPath "Lyric.SdkVersion" json
+            with e ->
+                allDiags.Add
+                    { Severity = DiagWarning
+                      Code     = "B0042"
+                      Message  =
+                        sprintf "could not embed Lyric.SdkVersion resource: %s" e.Message
+                      Span     = Span.make Position.initial Position.initial }
             { OutputPath  = Some req.OutputPath
               Diagnostics = List.ofSeq allDiags }

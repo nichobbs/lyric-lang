@@ -1059,9 +1059,19 @@ and private parseLambdaExpr
         if Cursor.peekToken cursor = TPunct Arrow then
             saw <- true
         elif Cursor.peekToken cursor = TPunct LParen then
-            // Parenthesised parameter list — not consumed in this
-            // first prototype; bail out and treat as a body-only block.
-            headOk <- false
+            // Only the zero-arg `() ->` form is supported here.
+            // Full parenthesised param lists are deferred.
+            Cursor.advance cursor |> ignore  // tentatively consume '('
+            if Cursor.peekToken cursor = TPunct RParen then
+                Cursor.advance cursor |> ignore  // tentatively consume ')'
+                if Cursor.peekToken cursor = TPunct Arrow then
+                    saw <- true  // confirmed `() ->`; '->' consumed below
+                else
+                    Cursor.reset cursor savePos
+                    headOk <- false
+            else
+                Cursor.reset cursor savePos
+                headOk <- false
         else
             // Try a comma-separated identifier list followed by '->'.
             let mutable keep = true

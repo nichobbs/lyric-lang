@@ -15,6 +15,12 @@ VS Code language support for [Lyric](https://github.com/nichobbs/lyric-lang), a 
 | Code actions | Quickfixes for common verifier diagnostics (see below) |
 | Rename | Word-boundary rename across all open `.l` files |
 | Background diagnostics | All workspace `.l` files are analysed on startup; dependents are re-analysed on change |
+| Formatter | `lyric fmt` via **Format Document** (`Shift+Alt+F`); see [note on comment preservation](#formatter) |
+| Snippets | 27 snippets for functions, records, unions, contracts, loops, tests, and more (type `fn`, `rec`, `match`, …) |
+| Project navigator | Explorer sidebar tree showing packages, Lyric dependencies, and NuGet dependencies from `lyric.toml` |
+| Package commands | **Lyric: Add/Remove/Update dependency**, **Add NuGet package**, **Restore** in the command palette |
+| Build tasks | **Lyric: Build**, **Run**, **Test**, **Prove current file** as VS Code tasks |
+| `lyric.toml` validation | Semantic diagnostics on `lyric.toml`: unknown sections, missing fields, invalid versions, dead package references, missing source directories |
 
 ### Code actions
 
@@ -44,12 +50,39 @@ This writes `lyric-lsp` (Linux/macOS) or `lyric-lsp.exe` (Windows) into
 `bin/lsp/` at the repository root.  Add that directory to your `$PATH`, or
 point the `lyric.serverPath` setting at the full path.
 
+## Formatter
+
+The extension registers `lyric fmt` as the document formatter for `.l` files.
+Trigger it with **Format Document** (`Shift+Alt+F`) or enable
+`editor.formatOnSave` for the `lyric` language in your VS Code settings.
+
+### Comment preservation
+
+> **Important:** `lyric fmt` works from the AST. The Lyric lexer discards
+> plain `//` comments before the AST is built, so **the formatter will remove
+> all non-doc `//` comments** from a file.
+>
+> Only `///` doc comments and `//!` module-doc comments survive formatting,
+> because they are attached to AST nodes.
+>
+> This is a known limitation of the current AST-based formatter. The planned
+> Phase 5 self-hosted formatter will use a CST and preserve all comments. Until
+> then, use `///` for any comment you want to keep, and avoid running
+> **Format on Save** on files that contain explanatory `//` comments you care
+> about.
+
+The extension shows a one-time information banner the first time you format a
+file as a reminder. You can disable the formatter entirely with
+`"lyric.format.enable": false`.
+
 ## Extension settings
 
 | Setting | Default | Description |
 |---|---|---|
 | `lyric.serverPath` | `"lyric-lsp"` | Path to the `lyric-lsp` executable. Set to an absolute path if the binary is not on `$PATH`. |
 | `lyric.trace.server` | `"off"` | LSP trace level (`"off"`, `"messages"`, `"verbose"`). View output in the **Lyric Language Server Trace** output channel. |
+| `lyric.cliPath` | `"lyric"` | Path to the `lyric` CLI binary. Used for build, restore, test, prove, and format commands. |
+| `lyric.format.enable` | `true` | Enable/disable the `lyric fmt` document formatter for `.l` files. |
 
 ## Installing the extension (VSIX)
 

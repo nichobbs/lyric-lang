@@ -1,0 +1,99 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Lyric manifest (lyric.toml)",
+    "description": "Schema for lyric.toml project manifests.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "project": {
+            "description": "Top-level project settings.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+                "name": {
+                    "description": "The CLR assembly name that will be produced (e.g. \"MyApp\").",
+                    "type": "string",
+                    "minLength": 1
+                },
+                "output": {
+                    "description": "Emit mode: \"single\" bundles every package into one DLL; \"multi\" emits one DLL per package.",
+                    "type": "string",
+                    "enum": ["single", "multi"],
+                    "default": "single"
+                },
+                "output_assembly": {
+                    "description": "File name of the emitted assembly (e.g. \"MyApp.dll\"). Defaults to <name>.dll.",
+                    "type": "string"
+                },
+                "entry": {
+                    "description": "The package that contains the program entry point (the one with an `entry` function).",
+                    "type": "string"
+                },
+                "version": {
+                    "description": "SemVer version of this project (e.g. \"1.0.0\").",
+                    "type": "string",
+                    "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$"
+                },
+                "authors": {
+                    "description": "Author names.",
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "description": {
+                    "description": "Short human-readable description of the project.",
+                    "type": "string"
+                },
+                "license": {
+                    "description": "SPDX license identifier (e.g. \"MIT\").",
+                    "type": "string"
+                },
+                "packages": {
+                    "description": "Map of Lyric package name to the source directory that contains its .l files.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string",
+                        "description": "Relative path to the package source directory."
+                    }
+                }
+            }
+        },
+        "dependencies": {
+            "description": "Lyric package dependencies. Keys are package identifiers; values are SemVer version constraints.",
+            "type": "object",
+            "additionalProperties": {
+                "type": "string",
+                "description": "SemVer version constraint (e.g. \"1.2.3\" or \"^1.0\")."
+            }
+        },
+        "nuget": {
+            "description": "NuGet package dependencies. Keys are NuGet package IDs; values are version constraints.",
+            "type": "object",
+            "additionalProperties": {
+                "type": "string",
+                "description": "NuGet version constraint (e.g. \"13.0.3\")."
+            }
+        },
+        "nuget.options": {
+            "description": "Options forwarded to dotnet restore for NuGet dependency resolution.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "source": {
+                    "description": "Additional NuGet feed URLs to search.",
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "target_framework": {
+                    "description": "Target framework moniker for NuGet restore (e.g. \"net10.0\"). Defaults to the compiler's TFM.",
+                    "type": "string"
+                },
+                "no_cache": {
+                    "description": "Pass --no-cache to dotnet restore.",
+                    "type": "boolean",
+                    "default": false
+                }
+            }
+        }
+    }
+}

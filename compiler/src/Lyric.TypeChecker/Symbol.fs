@@ -46,10 +46,11 @@ type DeclKind =
 /// A single entry in the symbol table. One per top-level item plus
 /// one per union/enum variant case.
 type Symbol =
-    { Name:    string
-      Kind:    DeclKind
-      DeclSpan: Span
-      Visibility: Visibility option }
+    { Name:       string
+      Kind:       DeclKind
+      DeclSpan:   Span
+      Visibility: Visibility option
+      IsImported: bool }
 
 module Symbol =
 

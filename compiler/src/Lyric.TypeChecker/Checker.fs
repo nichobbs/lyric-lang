@@ -48,10 +48,11 @@ type private TypeIdSource() =
 /// constructed Symbol, or None if the item kind has no name to
 /// register (e.g. an `impl` block or a recovered IError).
 let private registerItem
-        (table:  SymbolTable)
-        (idSrc:  TypeIdSource)
-        (diags:  ResizeArray<Diagnostic>)
-        (it:     Item)
+        (table:      SymbolTable)
+        (idSrc:      TypeIdSource)
+        (diags:      ResizeArray<Diagnostic>)
+        (isImported: bool)
+        (it:         Item)
         : Symbol option =
 
     let mkSym (name: string) (kind: DeclKind) : Symbol =
@@ -59,31 +60,43 @@ let private registerItem
             { Name        = name
               Kind        = kind
               DeclSpan    = it.Span
-              Visibility  = it.Visibility }
+              Visibility  = it.Visibility
+              IsImported  = isImported }
         // Duplicate-name check: same name, same kind class.
-        // Exception: DKFunc entries with DIFFERENT arity are overloads — allowed.
-        // Two DKFunc entries with the same arity are still a duplicate error.
-        let isFuncOverload =
-            match sym.Kind with
-            | DKFunc newFn ->
-                table.TryFind name
-                |> Seq.forall (fun prior ->
-                    match prior.Kind with
-                    | DKFunc priorFn -> priorFn.Params.Length <> newFn.Params.Length
-                    | _ -> true)
-                && table.TryFind name |> Seq.exists (fun s ->
-                    match s.Kind with DKFunc _ -> true | _ -> false)
-            | _ -> false
-        if not isFuncOverload then
-            match table.TryFindOne(name) with
-            | Some prior when Symbol.isType prior = Symbol.isType sym ->
-                err diags "T0001"
-                    (sprintf "duplicate %s name '%s' (previously declared at line %d)"
-                        (if Symbol.isType sym then "type" else "value")
-                        name
-                        prior.DeclSpan.Start.Line)
-                    it.Span
-            | _ -> ()
+        // Exception 1: DKFunc entries with DIFFERENT arity are overloads — allowed.
+        // Exception 2: a user-defined item may shadow an imported item without error.
+        // Two user-defined items with the same name and arity are a duplicate error.
+        if not isImported then
+            let isFuncOverload =
+                match sym.Kind with
+                | DKFunc newFn ->
+                    table.TryFind name
+                    |> Seq.forall (fun prior ->
+                        match prior.Kind with
+                        | DKFunc priorFn -> priorFn.Params.Length <> newFn.Params.Length
+                        | _ -> true)
+                    && table.TryFind name
+                       |> Seq.filter (fun s -> not s.IsImported)
+                       |> Seq.exists (fun s ->
+                           match s.Kind with DKFunc _ -> true | _ -> false)
+                | _ -> false
+            if not isFuncOverload then
+                // Only flag as duplicate when the prior entry is also a
+                // user item (not an import).  Shadowing an import is legal.
+                let priorUserEntry =
+                    table.TryFind name
+                    |> Seq.tryFind (fun s ->
+                        Symbol.isType s = Symbol.isType sym
+                        && not s.IsImported)
+                match priorUserEntry with
+                | Some prior ->
+                    err diags "T0001"
+                        (sprintf "duplicate %s name '%s' (previously declared at line %d)"
+                            (if Symbol.isType sym then "type" else "value")
+                            name
+                            prior.DeclSpan.Start.Line)
+                        it.Span
+                | None -> ()
         table.Add(sym)
         sym
 
@@ -316,10 +329,14 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     let idSrc = TypeIdSource()
 
     // Register imported items first so user items can shadow / refer to them.
+    // Imported items are marked IsImported=true so the duplicate check allows
+    // user items to shadow imported names without error (e.g. two overloads
+    // with the same name in different packages, or a self-hosted module that
+    // re-defines a helper from an imported package).
     for it in importedItems do
-        registerItem table idSrc diags it |> ignore
+        registerItem table idSrc diags true it |> ignore
     for it in file.Items do
-        registerItem table idSrc diags it |> ignore
+        registerItem table idSrc diags false it |> ignore
 
     // T2.5: validate range subtypes — empty/inverted bounds, non-numeric
     // underlying.  Catches `type X = Int range 10 ..= 5` at type-check

@@ -916,6 +916,9 @@ let private printUsage () : unit =
     printErr "  restore wraps `dotnet restore` over `[dependencies]` from"
     printErr "          lyric.toml so transitive .nupkg packages land in the"
     printErr "          NuGet cache."
+    printErr "  --sdk-info  print the resolved SDK root, stdlib DLL path, and"
+    printErr "              embedded version info; useful for diagnosing install"
+    printErr "              layout issues (B0040-B0042)."
 
 [<EntryPoint>]
 let main (argv: string array) : int =
@@ -1670,6 +1673,40 @@ let main (argv: string array) : int =
             | Error msg ->
                 printErr msg
                 1
+    | "--sdk-info" :: _ ->
+        // Print SDK root discovery results and version info.
+        // Mirrors docs/22 §4 + §5; diagnostics B0040-B0042 surface here.
+        let info = Lyric.Emitter.Emitter.getSdkInfo ()
+        (match info.Source with
+         | Lyric.Emitter.SdkRoot.SdkSource.EnvVar ->
+             printfn "sdk-root:    %s (from LYRIC_SDK_ROOT)"
+                     (Option.defaultValue "(unset)" info.Root)
+         | Lyric.Emitter.SdkRoot.SdkSource.BinaryRelative ->
+             printfn "sdk-root:    %s (binary-relative)"
+                     (Option.defaultValue "(none)" info.Root)
+         | Lyric.Emitter.SdkRoot.SdkSource.NotFound ->
+             let envSet =
+                 Option.isSome (Option.ofObj (System.Environment.GetEnvironmentVariable "LYRIC_SDK_ROOT"))
+             if envSet then
+                 printErr "B0040 error [0:0]: LYRIC_SDK_ROOT is set but lib/Lyric.Stdlib.dll was not found there"
+             printfn "sdk-root:    (not found — source-tree fallback active)")
+        (match info.StdlibDll with
+         | Some dll -> printfn "stdlib-dll:  %s" dll
+         | None     -> printfn "stdlib-dll:  (not found)")
+        (match info.Version with
+         | Some (lv, sv, cv, bd) ->
+             printfn "language:    %s" lv
+             printfn "stdlib:      %s" sv
+             printfn "compiler:    %s" cv
+             printfn "build-date:  %s" bd
+         | None ->
+             match info.StdlibDll with
+             | Some dll ->
+                 printErr (sprintf "B0042 warning [0:0]: '%s' is missing the Lyric.SdkVersion resource" dll)
+                 printfn "version:     (no Lyric.SdkVersion resource in stdlib DLL)"
+             | None ->
+                 printfn "version:     (n/a)")
+        if info.Source = Lyric.Emitter.SdkRoot.SdkSource.NotFound then 1 else 0
     | unknown :: _ ->
         printErr (sprintf "unknown command: %s" unknown)
         printUsage ()

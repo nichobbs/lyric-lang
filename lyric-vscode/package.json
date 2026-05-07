@@ -1,8 +1,8 @@
 {
     "name": "lyric-lang",
     "displayName": "Lyric",
-    "description": "Lyric language support: syntax highlighting, diagnostics, hover, completion, go-to-definition, and signature help.",
-    "version": "0.0.1",
+    "description": "Lyric language support: syntax highlighting, diagnostics, hover, completion, go-to-definition, signature help, formatter, project navigator, build tasks, and semantic lyric.toml validation.",
+    "version": "0.0.3",
     "publisher": "lyric-lang",
     "license": "MIT",
     "repository": {
@@ -15,7 +15,11 @@
     "categories": [
         "Programming Languages"
     ],
-    "activationEvents": [],
+    "activationEvents": [
+        "workspaceContains:**/lyric.toml",
+        "onLanguage:lyric",
+        "onLanguage:lyric-manifest"
+    ],
     "main": "./dist/extension.js",
     "contributes": {
         "languages": [
@@ -24,6 +28,12 @@
                 "aliases": ["Lyric", "lyric"],
                 "extensions": [".l"],
                 "configuration": "./language-configuration.json"
+            },
+            {
+                "id": "lyric-manifest",
+                "aliases": ["Lyric Manifest"],
+                "filenames": ["lyric.toml"],
+                "mimetypes": ["text/x-lyric-manifest"]
             }
         ],
         "grammars": [
@@ -31,6 +41,24 @@
                 "language": "lyric",
                 "scopeName": "source.lyric",
                 "path": "./syntaxes/lyric.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "lyric",
+                "path": "./snippets/lyric.json"
+            }
+        ],
+        "jsonValidation": [
+            {
+                "fileMatch": "lyric.toml",
+                "url": "./schemas/lyric-toml.schema.json"
+            }
+        ],
+        "tomlValidation": [
+            {
+                "fileMatch": "lyric.toml",
+                "url": "./schemas/lyric-toml.schema.json"
             }
         ],
         "configuration": {
@@ -47,9 +75,117 @@
                     "enum": ["off", "messages", "verbose"],
                     "default": "off",
                     "description": "Trace LSP communication between VS Code and lyric-lsp. Useful for debugging."
+                },
+                "lyric.cliPath": {
+                    "type": "string",
+                    "default": "lyric",
+                    "description": "Path to the lyric CLI executable. Used for build, restore, test, and prove commands."
+                },
+                "lyric.defaultRestoreFeed": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Default Lyric package feed URL for dependency search. Leave empty to use the official feed."
+                },
+                "lyric.format.enable": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable the lyric fmt document formatter for .l files. Requires lyric.cliPath to be set correctly."
                 }
             }
-        }
+        },
+        "commands": [
+            {
+                "command": "lyric.addDependency",
+                "title": "Lyric: Add dependency",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.addNugetPackage",
+                "title": "Lyric: Add NuGet package",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.removeDependency",
+                "title": "Lyric: Remove dependency",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.updateDependency",
+                "title": "Lyric: Update dependency",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.restore",
+                "title": "Lyric: Restore",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.build",
+                "title": "Lyric: Build",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.run",
+                "title": "Lyric: Run",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.test",
+                "title": "Lyric: Test",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.proveCurrentFile",
+                "title": "Lyric: Prove current file",
+                "category": "Lyric"
+            },
+            {
+                "command": "lyric.refreshNavigator",
+                "title": "Refresh",
+                "icon": "$(refresh)",
+                "category": "Lyric"
+            }
+        ],
+        "views": {
+            "explorer": [
+                {
+                    "id": "lyricProjectNavigator",
+                    "name": "Lyric Project",
+                    "when": "lyric.hasManifest"
+                }
+            ]
+        },
+        "menus": {
+            "view/title": [
+                {
+                    "command": "lyric.refreshNavigator",
+                    "when": "view == lyricProjectNavigator",
+                    "group": "navigation"
+                }
+            ]
+        },
+        "taskDefinitions": [
+            {
+                "type": "lyric",
+                "required": ["command"],
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The lyric sub-command to run (build, run, test, prove, restore).",
+                        "enum": ["build", "run", "test", "prove", "restore"]
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Extra arguments forwarded to the lyric command."
+                    },
+                    "manifestPath": {
+                        "type": "string",
+                        "description": "Path to the lyric.toml manifest. Defaults to lyric.toml in the workspace root."
+                    }
+                }
+            }
+        ]
     },
     "scripts": {
         "compile": "node esbuild.mjs",
