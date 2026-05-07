@@ -1583,83 +1583,11 @@ func parseScopeKindBody(st: inout ParseState): ScopeKindDecl {
   ScopeKindDecl(name = ns.name, span = joinSpans(startTok.span, ns.span))
 }
 
-/// Parse one `name: Type [= default]` field inside a `config { ... }`.
-/// Mirrors `parseFieldDecl` but with no visibility prefix, and uses
-/// the trailing-annotation conventions used elsewhere in the parser.
-func parseConfigField(st: inout ParseState): ConfigField {
-  val startSpan = peekSpan(st)
-  val docs = parseItemDocComments(st)
-  val anns = parseItemAnnotations(st)
-  val nm = readIdent(st, "config field")
-  if not tryEatPunct(st, Colon) {
-    emitErr(st, "P0120", "expected ':' after config field name", peekSpan(st))
-  }
-  val ty = parseTypeExpr(st)
-  val dflt =
-    if tryEatPunct(st, Eq) {
-      Some(value = parseExpr(st))
-    } else {
-      None
-    }
-  val trailing = parseTrailingAnnotations(st)
-  val allAnns = newList[Annotation]()
-  var ai = 0
-  while ai < anns.count { allAnns.add(anns[ai]); ai = ai + 1 }
-  var ti = 0
-  while ti < trailing.count { allAnns.add(trailing[ti]); ti = ti + 1 }
-  val endSpan = match dflt {
-    case Some(e) -> e.span
-    case None    -> ty.span
-  }
-  ConfigField(
-    docComments = docs,
-    annotations = allAnns,
-    name        = nm.name,
-    ty          = ty,
-    default     = dflt,
-    span        = joinSpans(startSpan, endSpan))
-}
-
-/// Parse a `config Name { ... }` block per `docs/25-config-blocks.md` (D046).
-/// Called when the cursor is at `TIdent "config"` followed by an
-/// identifier (the disambiguation is handled by parseItemOpt).
-func parseConfigBody(st: inout ParseState): ConfigDecl {
-  val startTok = advance(st)  // 'config' (TIdent)
-  val nm = readIdent(st, "config block")
-  val _ = skipStmtEnds(st)
-  if not tryEatPunct(st, LBrace) {
-    emitErr(st, "P0121", "expected '{' to start config block body", peekSpan(st))
-  }
-  val _ = skipStmtEnds(st)
-  val fields = newList[ConfigField]()
-  while peekToken(st) != TPunct(RBrace) && not isAtEnd(st) {
-    val before = mark(st)
-    fields.add(parseConfigField(st))
-    match peekToken(st) {
-      case TStmtEnd -> { val _ = advance(st); val _ = skipStmtEnds(st) }
-      case TPunct(Comma) -> { val _ = advance(st); val _ = skipStmtEnds(st) }
-      case _ -> ()
-    }
-    forceAdvanceIfStuck(st, before)
-  }
-  val endSpan =
-    if tryEatPunct(st, RBrace) {
-      // tryEatPunct already advanced; reconstruct span via prev token.
-      val prev = peekAt(st, -1)
-      prev.span
-    } else {
-      val sp = peekSpan(st)
-      emitErr(st, "P0122", "expected '}' to close config block body", sp)
-      sp
-    }
-  ConfigDecl(name = nm.name, fields = fields, span = joinSpans(startTok.span, endSpan))
-}
-
-// D047 aspect parser: deferred to a follow-up slice.  The AST types
-// `AspectDecl` / `AspectMatcher` / `AspectAround` ship in
-// `parser_ast.l` so downstream passes (when present) can already
-// reference them.  The parser dispatch + body lands once the
-// `match`-with-Option-return codegen path is cleaned up.
+// D046 / D047 self-hosted parser dispatch + bodies are deferred —
+// see the note at the top of `parser_ast.l`.  The F# bootstrap
+// parser has the full implementation; the self-hosted mirror lights
+// up once the F# emitter's `emitLambdaWith` codegen path can handle
+// the resulting Lyric source shape.
 
 func parseTestBody(st: inout ParseState): TestDecl {
   val startTok = advance(st)  // 'test'
@@ -2043,12 +1971,6 @@ func parseItemOpt(st: inout ParseState): Option[Item] {
         val identName = identStr(nextTok.token)
         if identName == "scope_kind" {
           IScopeKind(decl = parseScopeKindBody(st))
-        } else if identName == "config" && (
-            match peekAt(st, 1).token { case TIdent(_) -> true; case _ -> false }) {
-          // D046: `config Name { ... }` at module scope.  Require the
-          // next token to be an identifier so `config` can still appear
-          // as a parameter or local-variable name elsewhere.
-          IConfig(decl = parseConfigBody(st))
         } else {
           emitErr(st, "P0040", "expected an item declaration", nextTok.span)
           if not isAtEnd(st) { val _ = advance(st) }

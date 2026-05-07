@@ -640,45 +640,18 @@ pub union ItemKind {
   case ITest(decl: TestDecl)
   case IProperty(decl: PropertyDecl)
   case IFixture(decl: FixtureDecl)
-  /// `config Name { ... }` per `docs/25-config-blocks.md` (D046).
-  case IConfig(decl: ConfigDecl)
-  /// `aspect Name { ... }` per `docs/26-aspects.md` (D047).
-  case IAspect(decl: AspectDecl)
   case IError
 }
 
-pub record ConfigField {
-  docComments: List[DocComment]
-  annotations: List[Annotation]
-  name:        String
-  ty:          TypeExpr
-  default:     Option[Expr]
-  span:        Span
-}
-
-pub record ConfigDecl {
-  name:   String
-  fields: List[ConfigField]
-  span:   Span
-}
-
-pub union AspectMatcher {
-  case AMNameLike(glob: String, span: Span)
-}
-
-pub record AspectAround {
-  argsName: String
-  retName:  Option[String]
-  body:     Block
-  span:     Span
-}
-
-pub record AspectDecl {
-  name:    String
-  matches: List[AspectMatcher]
-  around:  Option[AspectAround]
-  span:    Span
-}
+// D046 / D047: ConfigDecl and AspectDecl AST shapes are implemented
+// in the F# bootstrap parser (`compiler/src/Lyric.Parser/Ast.fs`)
+// only.  The self-hosted mirror is deferred — landing the new
+// `IConfig` / `IAspect` cases here triggers a TypeBuilder generic
+// instantiation issue in the F# bootstrap's `emitLambdaWith` codegen
+// path when downstream Lyric.Fmt / parser-self-test code matches
+// over the wider `ItemKind` union.  The mirror lights up once the
+// codegen path in `compiler/src/Lyric.Emitter/Codegen.fs:emitLambdaWith`
+// is fixed.
 
 pub record Item {
   docComments: List[DocComment]

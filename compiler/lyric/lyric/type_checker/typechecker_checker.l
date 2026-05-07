@@ -201,13 +201,6 @@ func registerItem(
     case IFixture(decl) -> {
       val _ = addSym(tbl, diag, isImported, decl.name, DKFixture(decl = decl), vis, span)
     }
-    case IConfig(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKConfig(decl = decl), vis, span)
-    }
-    case IAspect(_) -> {
-      // D047: aspect-symbol registration ships with the parser
-      // dispatch in a follow-up slice.  AST mirror exists today.
-    }
     case IExtern(_) -> {}
     case IImpl(_)   -> {}
     case IError     -> {}

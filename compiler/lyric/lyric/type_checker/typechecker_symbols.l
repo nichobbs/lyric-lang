@@ -35,10 +35,8 @@ pub union DeclKind {
   case DKTest(decl: TestDecl)
   case DKProperty(decl: PropertyDecl)
   case DKFixture(decl: FixtureDecl)
-  /// `config Name { ... }` per `docs/25-config-blocks.md` (D046).
-  case DKConfig(decl: ConfigDecl)
-  /// `aspect Name { ... }` per `docs/26-aspects.md` (D047).
-  case DKAspect(decl: AspectDecl)
+  // D046 / D047: DKConfig / DKAspect deferred to the self-hosted
+  // mirror's follow-up slice — see the note in `parser/parser_ast.l`.
   // Union / enum variant cases.
   case DKUnionCase(parentId: TypeId, uc: UnionCase)
   case DKEnumCase(parentId: TypeId, ec: EnumCase)
