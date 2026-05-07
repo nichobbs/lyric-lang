@@ -15,5 +15,6 @@ let main argv =
             LintTests.tests
             ProjectBuildTests.tests
             ProveTests.tests
+            TestRunnerTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

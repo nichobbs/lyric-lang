@@ -566,10 +566,13 @@ lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
 
 # Test
-lyric test                             # run test blocks in @test_module packages
-lyric test --properties                # include property-based tests (slower; CI-only by default)
-lyric test --doctests                  # include code examples from doc comments
-lyric test --update-snapshots          # accept current output as the new snapshot baseline
+# Bootstrap-grade v1: single-file mode only. Multi-file --manifest
+# discovery, --properties, --doctests, and --update-snapshots are
+# v2 work — see docs/24-test-runner-plan.md.
+lyric test <file.l>                    # run test blocks in a @test_module file
+                                       # (TAP-shaped output; exit 1 on any failure)
+lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
+lyric test <file.l> --list             # print test titles only; do not compile or run
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)

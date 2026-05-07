@@ -254,10 +254,18 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
     entries, and loop `invariant:` lowering are deferred to a
     follow-up stage (the bootstrap emitter still inserts runtime
     checks for those via the exit-label routing in `Emitter.fs`).
+  - `test_synth/test_synth.l` — `Lyric.TestSynth` library: source-text
+    rewriter that backs `lyric test`.  Walks a `@test_module` file's
+    AST, replaces each `ITest` with a synthesised `func __lyric_test_<i>`,
+    and appends a synthesised `func main(): Int` that runs them and
+    prints TAP-shaped output.  Mirrors the F# `compiler/src/Lyric.Cli/TestSynth.fs`
+    (which the F# CLI still calls today; routing `lyric test` through
+    this Lyric implementation is a follow-up stage, matching the
+    formatter's pattern in D-progress-131).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
-    `contract_elaborator_self_test.l` — self-test consumers run by
-    the F# emitter test suite.
+    `contract_elaborator_self_test.l`, `test_synth_self_test.l` —
+    self-test consumers run by the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler

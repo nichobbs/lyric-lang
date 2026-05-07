@@ -1020,7 +1020,9 @@ API surface and stability guarantees: governed by `@stable(since="1.0")` / `@exp
 
 ### 13.2 Test runner
 
-`lyric test` runs `test` and `property` declarations in `@test_module` packages. `lyric test --properties` includes auto-generated contract property tests (slower; CI-only by default).
+`lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
+
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds `--manifest` discovery, cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the bootstrap-grade design.
 
 ### 13.3 Verifier
 
