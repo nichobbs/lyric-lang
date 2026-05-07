@@ -9,10 +9,9 @@ on:
       - '**.md'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'book/**'
-      - 'docs/**'
-      - '**.md'
+    # No paths-ignore here — the job itself detects docs-only PRs and
+    # exits early so the required status check always reports success,
+    # which is needed for auto-merge to proceed.
 
 permissions:
   contents: read
@@ -30,32 +29,55 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only change (PR only)
+        id: skip
+        if: github.event_name == 'pull_request'
+        run: |
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          echo "Changed files:"
+          echo "$changed"
+          non_docs=$(printf '%s\n' "$changed" | grep -vE '^(book/|docs/)' | grep -v '\.md$' || true)
+          if [ -z "$non_docs" ]; then
+            echo "Docs-only PR — build steps will be skipped."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up .NET (uses compiler/global.json)
+        if: steps.skip.outputs.skip != 'true'
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: compiler/global.json
 
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
+        if: steps.skip.outputs.skip != 'true'
         run: sudo apt-get update && sudo apt-get install -y z3
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        if: steps.skip.outputs.skip != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Install coverage tools
+        if: steps.skip.outputs.skip != 'true'
         run: |
           dotnet tool install --global coverlet.console
           dotnet tool install --global dotnet-reportgenerator-globaltool
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Restore
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet restore Lyric.sln
 
       - name: Build
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet build Lyric.sln --configuration Debug --no-restore
 
@@ -68,36 +90,43 @@ jobs:
       # ----------------------------------------------------------------
 
       - name: Lexer tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
 
       - name: Parser tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
 
       - name: Type-checker tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
 
       - name: Emitter tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
 
       - name: LSP tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Lsp.Tests --no-build --configuration Debug
 
       - name: CLI tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration Debug
 
       - name: Verifier tests
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: dotnet run --project tests/Lyric.Verifier.Tests --no-build --configuration Debug
 
       - name: Collect coverage (best-effort)
         id: coverage
-        if: always()
+        if: always() && steps.skip.outputs.skip != 'true'
         continue-on-error: true
         working-directory: compiler
         run: |
@@ -138,7 +167,7 @@ jobs:
           exit 0
 
       - name: Generate coverage report
-        if: always()
+        if: always() && steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: |
           shopt -s nullglob
@@ -153,7 +182,7 @@ jobs:
             -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
 
       - name: Append coverage to job summary
-        if: always()
+        if: always() && steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: |
           {
@@ -167,7 +196,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Print coverage summary to log
-        if: always()
+        if: always() && steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: |
           if [ -f coverage/report/Summary.txt ]; then
@@ -177,7 +206,7 @@ jobs:
           fi
 
       - name: Upload coverage report artifact
-        if: always()
+        if: always() && steps.skip.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -186,6 +215,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Smoke-test the CLI on examples
+        if: steps.skip.outputs.skip != 'true'
         working-directory: compiler
         run: |
           set -euo pipefail

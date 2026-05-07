@@ -56,24 +56,26 @@ deferred to Phase 3 by design.
 | `docs/23` G10 (2/2) — bytes paths in `Std.File` go direct to `System.IO.File.{ReadAllBytes, WriteAllBytes}` via new kernel externs in `_kernel/file_host.l`; `slice[Byte] ↔ List[Byte]` shuttle done in pure Lyric (`for b in raw { acc.add(b) }` for read; `bytes.toArray()` for write).  F# `FileHost` retired entirely; `hostFileBuiltins` codegen map and `fileHostMethod` helper deleted | **Shipped** (PR #158) | D-progress-113 |
 | `docs/23` G12 (2/N) — F# `Lyric.Stdlib.HttpClientHost` retired (16 of 17 methods); `_kernel/http_host.l` declares direct-extern primitives for the BCL surface and Lyric-level helpers compose them.  Multi-step orchestration (`MakeRequest`, `WithHeader`, `WithStringBody`, `ClientWithRedirects`, `PostString`) all moves into Lyric on top of `HttpClient/HttpClientHandler/HttpRequestMessage/StringContent/HttpHeaders` extern types and property setters.  `ResponseHeader` survives as the only F# member because `TryGetValues`'s `out IEnumerable<string>` shape isn't yet expressible at the FFI surface | **Shipped** (PR #173) | D-progress-118 |
 | `docs/23` G12 (3/N) — F# `Lyric.Stdlib.HttpServerHost` retired entirely (8/8 methods); `_kernel/http_server.l` adds direct-extern primitives over `HttpListener` / `HttpListenerContext` / `HttpListenerRequest` / `HttpListenerResponse` / `Stream` / `StreamReader` / `Encoding` and rebuilds `startListener` / `nextContext` / `requestMethod` / `requestPath` / `requestBody` / `respondText` / `respondJson` as native Lyric (try/catch defensive arms preserved) | **Shipped** (PR #175) | D-progress-119 |
-| `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (this branch) | D-progress-120 |
-| `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (this branch) | D-progress-123 |
+| `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (PR #179) | D-progress-120 |
+| `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (PR #182) | D-progress-123 |
 | M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
 | M5.1 stage 2d.iv — `lyric restore` writes `_extern/<lyric-pkg>.l` + `.skip.md` shims for every `[nuget]` entry after restore completes; B0030-flavoured warnings for unlocatable DLLs | **Shipped** (PR #162) | D-progress-118 |
-| M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (this branch) | D-progress-122 |
+| M5.1 stage 2d.v — build-time wiring: `project.assets.json` walker, `_extern/<pkg>.l` shim auto-compile to cached DLL, NuGet DLL pre-load into emitter AppDomain, NuGet + shim DLL copy alongside output, end-to-end smoke (`Newtonsoft.Json.JValue.CreateString`) | **Shipped** (PR #177) | D-progress-122 |
 | JVM self-tests B111-B124 — lowerSealedUnion, lowerEnum, lowerOutInoutParam, lowerNatTag, makeLyricSignatureAttr, lowerExposedRecord, lowerProjectable, lowerProtectedWithBarriers, lowerHotAsync, lowerScopeBlock, lowerFuncWithContract, lowerDeriveEquality, lowerDeriveOrd, lowerPackage | **Shipped** (PR #183 / #184) | D-progress-124 |
-| JVM stage B2 smoke test unskipped — `hello_class_bytes_are_jvm_loadable` now passes; stale `BadImageFormatException` workaround in `JvmSelfTest.fs` removed; `docs/18-jvm-emission.md` B111–B124 status table updated to Shipped | **Shipped** (this branch) | D-progress-125 |
+| JVM stage B2 smoke test unskipped — `hello_class_bytes_are_jvm_loadable` now passes; stale `BadImageFormatException` workaround in `JvmSelfTest.fs` removed; `docs/18-jvm-emission.md` B111–B124 status table updated to Shipped | **Shipped** (PR #186) | D-progress-125 |
 | Phase 6 — stdlib distribution per `docs/22-distribution-and-tooling.md` §2–§5 — §4 SDK root discovery, §5 `Lyric.SdkVersion` embed, `lyric --sdk-info`, bundle expansion to 11 packages, B0040/B0042 | **Shipped** (PR #187) | D-progress-126 |
 | Phase 6 — VS Code tooling §6.1–§6.4 per `docs/22-distribution-and-tooling.md` — JSON schema for `lyric.toml`; manifest-backed package management commands (Add/Remove/Update dependency, Add NuGet, Restore); project navigator tree view; Lyric task definitions and provider (build, run, test, prove) | **Shipped** (PR #188) | D-progress-127 |
+| Phase 5 — `Lyric.Ast` — self-hosted AST type declarations mirroring `Ast.fs` (`Expr`, `Stmt`, `Item`, `Pattern`, `TypeRef`, `ContractClause`, …); prerequisite for the self-hosted parser | **Shipped** (PR #185) | — |
+| Phase 6 — stdlib expansion D042 — `Std.Sort` (stable merge sort), `Std.Set` (`Set[T]` over `HashSet<T>`), `Std.Char` (Unicode classification + case), `Std.Format` (hex, fixed-point, padding), `Std.Encoding` (Base64, hex, UTF-8), `Std.Uuid` (`Uuid` over `System.Guid`) | **Shipped** (PR #189) | D-progress-D042 |
 | M5.1 stage 3 — interpolated / triple-quoted / raw string lexing in self-hosted lexer | **Shipped** (PR #162) | D-progress-119 |
-| M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 this branch) | D-progress-120 / D-progress-121 |
+| M5.1 stage 4 — NFC normalisation + L0040 reserved-name diagnostic + full UAX #31 XID_Start / XID_Continue acceptance in self-hosted lexer | **Shipped** (NFC + L0040 PR #167; UAX #31 PR #171) | D-progress-120 / D-progress-121 |
 | M5.1 stage 5 — self-hosted parser (`Lyric.Parser` library + `parser_self_test.l`) | **Shipped** (PR #190) | D-progress-128 |
-| M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-129 |
-| M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (this branch) | D-progress-130 |
+| M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-130 |
+| M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (this branch) | D-progress-131 |
 | M5.2 stage 2+ — contract elaborator / monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | Not shipped | — |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`) | D-progress-129 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -273,6 +275,50 @@ tests, 0 ignored).
   `lowerFuncWithContract`) to match `lowering.l` exports.
 - `docs/10-bootstrap-progress.md` Phase 5 table: PR numbers filled in for D-progress-124;
   D-progress-125 row added.
+
+---
+
+### D-progress-129: M5.3 (stage 1) — self-hosted CLI migration
+
+*claude/migrate-lyric-cli-3WDhT branch.*  Phase 5 §M5.3 begins
+migrating the Lyric CLI from F# to Lyric itself, keeping the F# bootstrap
+compiler in place for compilation.
+
+**Files shipped:**
+
+| File | Role |
+|---|---|
+| `stdlib/std/_kernel/process_host.l` | Trusted BCL extern boundary for `System.Diagnostics.Process` |
+| `stdlib/std/process.l` | `Std.Process` — `run` / `runChecked` wrapping the process kernel |
+| `compiler/lyric/lyric/manifest.l` | `Lyric.Manifest` — pure-Lyric TOML parser for `lyric.toml` (mirrors `Manifest.fs`) |
+| `compiler/lyric/lyric/cli.l` | `Lyric.Cli` — self-hosted command dispatch (mirrors `Program.fs`) |
+| `stdlib/std/string.l` | Added `pub func fromInt(n: in Int): String` convenience wrapper over `toString` |
+
+**Architecture decisions:**
+
+- `Std.ProcessHost` lives in `stdlib/std/_kernel/` (kernel boundary), using
+  `Process.Start(string, string)` — the two-string overload — so argument
+  quoting is done in pure Lyric (`buildArgString` in `process.l`).  This
+  avoids `ProcessStartInfo.ArgumentList` (a generic mutable collection
+  with no exact-CLR-type match in the emitter's `paramsExactMatch`).
+- No new F# shim modules were added.  `G10` pattern (`try/catch Bug`) is
+  used throughout for host-failure conversion.
+- `Lyric.Manifest` uses a cursor-based recursive descent parser with
+  `inout Cursor` for mutable state, matching the `lexer.l` style.
+- `Lyric.Cli` forward-imports `Lyric.Parser`, `Lyric.Emitter`, `Lyric.Fmt`,
+  `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, and `Lyric.ContractMeta`.
+  These packages do not exist yet; they will ship in M5.2 (parser/emitter)
+  and the remainder of M5.3.  The CLI source documents their expected API
+  surface in header comments.  The file lives in `compiler/lyric/lyric/`
+  and is only compiled by the self-hosted compiler, so forward references
+  are safe.
+- `stdlib/lyric.toml` gains `Std.ProcessHost` in Tier 0 (only depends on
+  `Std.Core`).  `Std.Process` is queued for Tier 1 once `Std.Collections`
+  is wired into the bundle.
+
+**Kernel boundary count** (after this PR): `Std.ProcessHost` adds 3 extern
+declarations (`hostSpawn`, `hostWait`, `hostExitCode`).  Total kernel
+extern count: ~217, well under the 250 hard limit.
 
 ---
 
@@ -6995,47 +7041,60 @@ blocks without a third-party TOML library.
 
 ---
 
-### D-progress-130: M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker`)
+### D-progress-D042: stdlib expansion — `Std.Sort`, `Std.Set`, `Std.Char`, `Std.Format`, `Std.Encoding`, `Std.Uuid`
 
-*claude/continue-jvm-emitter-T9Gdj branch.*
+*claude/update-docs-sync-EKZwy branch (PR #189).*  Six new stdlib
+packages expanding the usable surface without requiring new kernel
+`@externTarget` entries beyond what already existed.
 
-The self-hosted Lyric mode checker ships as a two-file `Lyric.ModeChecker`
-library under `compiler/lyric/lyric/mode_checker/`:
+**`Std.Sort`** (`stdlib/std/sort.l`)
 
-- `modechecker_mode.l` — `VerificationLevel` union (VLRuntimeChecked,
-  VLProofRequired, VLProofRequiredUnsafe, VLProofRequiredChecked, VLAxiom)
-  plus helpers `vlIsProofRequired`, `vlDominates`, `vlDisplay`, `vlRank`;
-  file-level and function-level level computation (`levelOfFile`,
-  `levelOfFunction`, `isFuncPure`); annotation helpers (`findAnnotation`,
-  `proofRequiredModifier`).  Mirrors `compiler/src/Lyric.Verifier/Mode.fs`.
+Top-down stable merge sort over slices.  Public surface:
 
-- `modechecker_check.l` — public entry points (`checkFile`,
-  `checkFileWithImports`), callee-table construction (`calleeTableOfFile`),
-  and all diagnostic checks: V0001 (proof-required importing
-  runtime-checked), V0002 (impure call / `await` / `spawn` from
-  proof-required code), V0003 (`unsafe` block without
-  `unsafe_blocks_allowed`), V0004 (`@axiom` with body), V0005 (loop
-  without `invariant:` clause), V0006 (unbounded quantifier domain in
-  contract clause), V0009 (`assume` outside `unsafe {}`), V0010 (conflicting
-  level annotations), V0011 (unknown `@proof_required` modifier).  Mirrors
-  `compiler/src/Lyric.Verifier/ModeCheck.fs`.  Cross-package import
-  metadata uses a simplified `ImportedMeta` record (name + level string)
-  rather than the full F#-side `Imports.ImportedPackage` type.
+- `sort[T](xs, cmp)` — sort any slice with an explicit `(T, T) -> Int`
+  comparator; returns a fresh slice; O(n log n).
+- `sortInts`, `sortLongs`, `sortStrings` — convenience wrappers with
+  natural orderings baked in.
 
-Consumer and harness:
+**`Std.Set`** (`stdlib/std/set.l`)
 
-- `compiler/lyric/lyric/modechecker_self_test.l` — 17 in-process tests
-  covering level detection, conflict/unknown-modifier errors, V0001–V0006
-  and V0009–V0011 diagnostics, pure-callee pass, and no-check for
-  `@runtime_checked` packages.
-- `compiler/tests/Lyric.Emitter.Tests/SelfHostedModeCheckerTests.fs` —
-  F# Expecto wrapper (`[modechecker_self_test_passes]`).
+Hash-based set wrapping BCL `HashSet<T>` via `extern type Set[T]`.
+Public surface: `setContains`, `setAdd`, `setRemove`, `setSize`,
+`setIsEmpty`, `setFromSlice`, `setToSlice`, `newSet`, `setUnion`,
+`setIntersection`, `setDifference`.  Naming carries the `set` prefix
+to avoid shadowing BCL dispatch calls in function bodies.
 
-All 636 emitter tests pass.
+**`Std.Char`** (`stdlib/std/char.l`)
+
+Unicode character classification and case conversion.  BCL-backed:
+`isLetter`, `isDigit`, `isLetterOrDigit`, `isWhiteSpace`, `isUpperCase`,
+`isLowerCase`, `toUpperCase`, `toLowerCase`.  Pure-Lyric (with
+`@pure` + contracts): `toInt`, `fromInt`, `isAscii`, `digitValue`,
+`hexDigitValue`.
+
+**`Std.Format`** (`stdlib/std/format.l`)
+
+Number and string formatting.  BCL-backed: `toHexString` (lowercase),
+`toHexStringUpper`, `formatFixed` (fixed-point double with invariant
+locale), `padLeft`, `padRight`.  Pure-Lyric: `zeroPad`, `hexPad`.
+
+**`Std.Encoding`** (`stdlib/std/encoding.l`)
+
+Byte-level encoding.  `encodeBase64` / `tryDecodeBase64` (standard
+Base64 with `=` padding).  `encodeHex` / `tryDecodeHex` (uppercase hex;
+`System.Convert.ToHexString`).  `encodeUtf8` / `tryDecodeUtf8` for
+`String ↔ slice[Byte]` conversion.
+
+**`Std.Uuid`** (`stdlib/std/uuid.l`)
+
+UUID generation and parsing over `System.Guid`.  `newUuid()` — version
+4 (cryptographic RNG).  `nilUuid()` — all-zeros sentinel.
+`uuidToString` — lowercase hyphenated string.  `parseUuidOpt` — accepts
+any `System.Guid.TryParse`-recognised format; returns `Option[Uuid]`.
 
 ---
 
-### D-progress-129: M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker`)
+### D-progress-130: M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker`)
 
 *PR #195.*
 
@@ -7090,3 +7149,43 @@ in stdout.  All 635 emitter tests pass.
    a `Void` result where the other arms produced `Type`, causing a CLR
    `InvalidProgramException` at runtime.  Restructured to return a
    consistent `Type` from all arms.
+
+---
+
+### D-progress-131: M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker`)
+
+*claude/continue-jvm-emitter-T9Gdj branch.*
+
+The self-hosted Lyric mode checker ships as a two-file `Lyric.ModeChecker`
+library under `compiler/lyric/lyric/mode_checker/`:
+
+- `modechecker_mode.l` — `VerificationLevel` union (VLRuntimeChecked,
+  VLProofRequired, VLProofRequiredUnsafe, VLProofRequiredChecked, VLAxiom)
+  plus helpers `vlIsProofRequired`, `vlDominates`, `vlDisplay`, `vlRank`;
+  file-level and function-level level computation (`levelOfFile`,
+  `levelOfFunction`, `isFuncPure`); annotation helpers (`findAnnotation`,
+  `proofRequiredModifier`).  Mirrors `compiler/src/Lyric.Verifier/Mode.fs`.
+
+- `modechecker_check.l` — public entry points (`checkFile`,
+  `checkFileWithImports`), callee-table construction (`calleeTableOfFile`),
+  and all diagnostic checks: V0001 (proof-required importing
+  runtime-checked), V0002 (impure call / `await` / `spawn` from
+  proof-required code), V0003 (`unsafe` block without
+  `unsafe_blocks_allowed`), V0004 (`@axiom` with body), V0005 (loop
+  without `invariant:` clause), V0006 (unbounded quantifier domain in
+  contract clause), V0009 (`assume` outside `unsafe {}`), V0010 (conflicting
+  level annotations), V0011 (unknown `@proof_required` modifier).  Mirrors
+  `compiler/src/Lyric.Verifier/ModeCheck.fs`.  Cross-package import
+  metadata uses a simplified `ImportedMeta` record (name + level string)
+  rather than the full F#-side `Imports.ImportedPackage` type.
+
+Consumer and harness:
+
+- `compiler/lyric/lyric/modechecker_self_test.l` — 17 in-process tests
+  covering level detection, conflict/unknown-modifier errors, V0001–V0006
+  and V0009–V0011 diagnostics, pure-callee pass, and no-check for
+  `@runtime_checked` packages.
+- `compiler/tests/Lyric.Emitter.Tests/SelfHostedModeCheckerTests.fs` —
+  F# Expecto wrapper (`[modechecker_self_test_passes]`).
+
+All 636 emitter tests pass.
