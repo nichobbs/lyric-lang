@@ -11,6 +11,7 @@ let main argv =
             NugetShimTests.tests
             RestoredPackagesTests.tests
             FmtTests.tests
+            SelfHostedFmtBridgeTests.tests
             LintTests.tests
             ProjectBuildTests.tests
             ProveTests.tests
