@@ -15,6 +15,7 @@
     <Compile Include="LintTests.fs" />
     <Compile Include="ProjectBuildTests.fs" />
     <Compile Include="ProveTests.fs" />
+    <Compile Include="TestRunnerTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

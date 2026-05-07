@@ -177,7 +177,9 @@ You will use four commands constantly:
 |---------|-------------|
 | `lyric build <file.l>` | Compile; produce a `.dll` |
 | `lyric run <file.l>` | Compile and immediately execute |
-| `lyric test` | Run `test` and `property` declarations in `@test_module` packages |
+| `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
+| `lyric test <file.l> --list` | Print test titles without compiling |
+| `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
 | `lyric fmt` | Format source code to the standard style |
 | `lyric fmt --check` | Exit 1 if the file is not formatted (CI gate) |
 | `lyric fmt --write` | Overwrite file in place |

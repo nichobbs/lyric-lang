@@ -195,6 +195,44 @@ discharge cleanly under Z3.
 
 ## Active session decisions
 
+### D-progress-138: native `lyric test` runner — bootstrap-grade v1
+
+*claude/lyric-test-runner-evaluation-0IpPg branch.*
+
+`lyric test <source.l>` ships single-file mode: a `@test_module`
+file with `test "title" { … }` items compiles into a synthesised
+program that runs each test inside a `try`/`catch Bug as b` and
+prints a TAP-shaped report (`1..N`, `ok`/`not ok`, summary
+counters).  Exit codes per the design: `0` (all selected tests
+passed), `1` (failure), `2` (compilation / language-class error,
+including `T0901` fixture and `T0902` user-main rejections), `64`
+(usage error / missing `@test_module`).
+
+Implementation is a 200-line source-text rewriter
+(`compiler/src/Lyric.Cli/TestSynth.fs`): parse, walk items, replace
+each `ITest` with a synthesised `func __lyric_test_<i>(): Unit
+<body-slice>`, and append a synthesised `func main(): Int` that
+runs each in order and `return`s `1` on failure / `0` on
+success.  No emitter changes; no AST construction in F#.  The user's
+test bodies are sliced byte-identically from the original source so
+diagnostics still point at user code.  Property declarations parse
+but report as `# skip` lines (v1 surface; property execution is
+v2).  Fixtures hard-error today (`T0901`); the worked-example
+pattern that uses `wire` blocks for test fixtures works as-is.
+
+`--filter <substring>` and `--list` ship; the richer surface
+(`--manifest` discovery, `--properties`, `--doctests`,
+`--update-snapshots`, cross-package non-`pub` access) is staged
+in `docs/24-test-runner-plan.md` §5.  CLI integration tests live
+at `compiler/tests/Lyric.Cli.Tests/TestRunnerTests.fs` (8 cases
+covering pass / fail / no-`@test_module` / user-main / fixture /
+`--list` / `--filter` / property-skip).
+
+The motivation, beyond §13.2 spec parity, is Phase 5 §M5.4: the
+F# Expecto bridge that drives `stdlib/tests/*_tests.l` today goes
+away with the F# host, so a native runner is a Phase 5
+prerequisite that we paid down early.
+
 ### D-progress-137: M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator`)
 
 *claude/contract-elaborator-stage-2-3k3r2 branch.*
@@ -2773,16 +2811,22 @@ These two patches are the minimum needed for the lexer's
 `List[SpannedToken]` indexing to JIT cleanly; the rest of the
 emitter's TBI-aware code paths already used the helpers.
 
-**Pattern-shape work-arounds.**  The lexer carefully avoids
-constructs the bootstrap parser/codegen does not yet handle:
-or-patterns in `match` arms, nested constructor patterns
-(`case Some(KwTrue)` matches every `Some` because `emitPatternTest`
-does not recurse into sub-patterns), tuple destructuring in `val`
-or match patterns, and bare `func()` statements that return non-Unit
-(JIT-verifier rejects the resulting IL on `inout` recipients —
-binding to `val _ =` Stloc-discards instead, which works).  The
-file header documents each work-around so they can be removed in
-lock-step with the relevant Phase 1 polish work.
+**Pattern-shape work-arounds.**  At the time the lexer was first
+written the bootstrap parser/codegen did not yet handle or-patterns
+in `match` arms, nested constructor patterns, or tuple destructuring
+in `val` / match patterns, and the lexer was hand-shaped around those
+gaps.  All three have since landed (E20: see
+`compiler/tests/Lyric.Emitter.Tests/PatternMatchingTests.fs` —
+`tuple_nested_in_function`, `nested_two_levels`, and
+`nested_constructor_in_or` exercise tuple destructuring in `val`,
+`case Wrap(A(x))`-style nested constructor patterns recursing via
+`emitPatternTest` at `Codegen.fs:4451-4462`, and `case Circle(r) |
+Square(r)` or-patterns at `Codegen.fs:4526` / `:4657`).  The lexer's
+hand-rolled style is therefore now defensive rather than necessary —
+future stages can use the natural pattern-matching forms.  The one
+work-around that still applies is bare `func()` statements that return
+non-Unit on `inout` recipients (JIT-verifier rejects the resulting IL);
+binding to `val _ =` Stloc-discards instead, which works.
 
 **Local non-generic union shim for `Option[LocalType]`.**  The
 imported nullary case codegen (`Codegen.fs:2118-2139`) calls

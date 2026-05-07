@@ -878,6 +878,7 @@ let private printUsage () : unit =
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>] [--target dotnet|jvm]"
     printErr "  lyric build --manifest <lyric.toml>  (project mode: bundles every [project.packages] entry into one DLL)"
     printErr "  lyric run   <source.l> [-- <args>...]"
+    printErr "  lyric test  <source.l> [--filter <substring>] [--list]"
     printErr "  lyric fmt   <source.l> [--check] [--write] [--legacy]"
     printErr "  lyric lint  <source.l> [--error-on-warning]"
     printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]"
@@ -1129,6 +1130,134 @@ let main (argv: string array) : int =
                 | "--" :: rest -> List.toArray rest
                 | _            -> List.toArray more
             run sourcePath userArgs
+    | "test" :: rest ->
+        // `lyric test <source.l> [--filter <substring>] [--list]`
+        // — bootstrap-grade test runner.  See
+        // `docs/24-test-runner-plan.md` for the design.
+        //
+        // Strategy: parse the source, validate `@test_module` is
+        // present, rewrite each `test "title" { body }` into a
+        // synthesised `func __lyric_test_<i>(): Unit { body }`, and
+        // append a synthesised `func main(): Int` that runs each in
+        // a try/catch and prints a TAP-shaped report.  The rewritten
+        // source is written to a temp file and handed to the regular
+        // `build` + `dotnet exec` pipeline.
+        let mutable filter : string option = None
+        let mutable listOnly = false
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        let mutable usageError = false
+        while not (List.isEmpty cursor) && not usageError do
+            match cursor with
+            | "--filter" :: v :: tail ->
+                filter <- Some v
+                cursor <- tail
+            | "--filter" :: [] ->
+                printErr "test: --filter requires an argument"
+                usageError <- true
+                cursor <- []
+            | "--list" :: tail ->
+                listOnly <- true
+                cursor <- tail
+            | "-v" :: tail | "--verbose" :: tail ->
+                cursor <- tail   // currently unused; reserved for v2
+            | x :: tail when x.StartsWith "-" ->
+                printErr (sprintf "test: unknown flag '%s'" x)
+                usageError <- true
+                cursor <- []
+            | x :: tail ->
+                positional <- positional @ [x]
+                cursor <- tail
+            | [] -> ()
+        if usageError then 64
+        else
+            match positional with
+            | [] ->
+                printErr "test: missing source file"
+                printUsage ()
+                64
+            | sourcePath :: _ ->
+                if not (File.Exists sourcePath) then
+                    printErr (sprintf "test: source file not found: %s"
+                                sourcePath)
+                    64
+                else
+                let source = File.ReadAllText sourcePath
+                if listOnly then
+                    match TestSynth.listEntries source with
+                    | Error diags ->
+                        for d in diags do printDiag d
+                        2
+                    | Ok entries ->
+                        for e in entries do
+                            match e with
+                            | TestSynth.TestEntry t -> printfn "%s" t
+                            | TestSynth.PropertyEntry (t, _) ->
+                                printfn "%s (skipped: property)" t
+                            | TestSynth.FixtureEntry n ->
+                                printfn "%s (fixture; not runnable)" n
+                        0
+                else
+                match TestSynth.synthesize source filter with
+                | TestSynth.NoTestModule _ ->
+                    printErr (sprintf
+                        "T0900 %s: lyric test requires '@test_module' at the file head"
+                        sourcePath)
+                    64
+                | TestSynth.UserMainExists sp ->
+                    printErr (sprintf
+                        "T0902 %s [%d:%d]: @test_module package may not declare 'func main()'"
+                        sourcePath sp.Start.Line sp.Start.Column)
+                    2
+                | TestSynth.FixtureUnsupported sp ->
+                    printErr (sprintf
+                        "T0901 %s [%d:%d]: 'fixture' declarations are not yet supported by lyric test"
+                        sourcePath sp.Start.Line sp.Start.Column)
+                    2
+                | TestSynth.ParseFailures diags ->
+                    for d in diags do printDiag d
+                    2
+                | TestSynth.Synthesised (rewritten, _testCount, _skipCount) ->
+                    // Write the rewritten source to a temp file so
+                    // diagnostics path-prefixes don't conflict with
+                    // the user's working tree.
+                    let tmp =
+                        Path.Combine(Path.GetTempPath(),
+                                     "lyric-test-"
+                                     + Guid.NewGuid().ToString("N"))
+                    Directory.CreateDirectory(tmp) |> ignore
+                    let stem =
+                        safeStr (Path.GetFileNameWithoutExtension sourcePath)
+                                "tests"
+                    let synthPath = Path.Combine(tmp, stem + ".l")
+                    File.WriteAllText(synthPath, rewritten)
+                    let outPath = Path.Combine(tmp, stem + ".dll")
+                    let buildExit =
+                        build synthPath outPath true [] [] None Emitter.Dotnet
+                    if buildExit <> 0 then
+                        // Strip the temp-path prefix from any diagnostic
+                        // line so users see "their" path.  build()
+                        // already printed diagnostics; we only re-map
+                        // the exit code from "build failed" (1) to
+                        // "compilation failed" (2) per the design's
+                        // exit-code table.
+                        2
+                    else
+                        let psi = Diagnostics.ProcessStartInfo()
+                        psi.FileName <- "dotnet"
+                        psi.ArgumentList.Add "exec"
+                        psi.ArgumentList.Add outPath
+                        psi.UseShellExecute <- false
+                        let proc =
+                            match Option.ofObj
+                                    (Diagnostics.Process.Start psi) with
+                            | Some p -> p
+                            | None ->
+                                printErr "failed to start dotnet"
+                                exit 1
+                        use _ = proc
+                        proc.WaitForExit()
+                        proc.ExitCode
     | "prove" :: rest ->
         // `lyric prove <source.l> [--proof-dir <dir>] [--verbose]
         //                         [--allow-unverified]
