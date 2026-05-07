@@ -11,16 +11,17 @@ export class LyricProjectNode extends vscode.TreeItem {
         readonly kind: NodeKind,
         readonly detail: string,
         readonly collapsible: vscode.TreeItemCollapsibleState,
+        readonly absPath?: string,
     ) {
         super(label, collapsible);
         this.description = detail;
         this.contextValue = kind;
         this.iconPath = iconFor(kind);
-        if (kind === 'package' && detail) {
-            this.resourceUri = vscode.Uri.file(detail);
+        if (kind === 'package' && absPath) {
+            this.resourceUri = vscode.Uri.file(absPath);
             this.command = {
-                command: 'vscode.openFolder',
-                title: 'Open package directory',
+                command: 'revealInExplorer',
+                title: 'Reveal in Explorer',
                 arguments: [this.resourceUri],
             };
         }
@@ -97,6 +98,7 @@ export class LyricProjectProvider implements vscode.TreeDataProvider<LyricProjec
                 return new LyricProjectNode(
                     name, 'package', srcDir,
                     vscode.TreeItemCollapsibleState.None,
+                    absDir,
                 );
             });
         }
