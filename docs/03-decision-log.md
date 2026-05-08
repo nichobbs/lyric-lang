@@ -2006,6 +2006,243 @@ key points:
 
 ---
 
+## D048 — Config v2 semantics (file source + layered precedence)
+
+**Date:** 2026-05-08
+**Branch:** claude/compile-time-aspects-logging-SIhqA
+
+### Context
+
+D046 specifies env-only / read-once / fail-fast config blocks.
+The v2 sketch at `docs/29-config-v2-sketch.md` extends D046
+with file-based source + layered precedence
+(CLI > env > file > defaults), addressing Q-config-001
+and Q-config-002.  Four §9 "before-implementation" tensions
+need binding answers so future implementation doesn't
+re-litigate them.
+
+### Decision
+
+Adopt `docs/29-config-v2-sketch.md` as the v2 design.  The
+four §9 tensions resolve as follows:
+
+- **§7.1 — Required-field semantics across layers.** A
+  required field (no `=` default) is satisfied if **any
+  layer** (CLI / env / file) supplies a value; otherwise
+  exit 78.  This is a v1→v2 contract shift — v1's
+  "required = env must be set" loosens to "required = some
+  layer supplies a value."  Operators may need to retest
+  deployments where env was the audit surface.
+
+- **§7.2 — TOML type-coercion strictness.**  Strict at
+  parse time.  TOML supplied a string but the field expects
+  Int → reject with `G0014`.  No coercion.  Range-subtype
+  validation runs at the same config-resolution phase as
+  type checking; out-of-range values fail the same way
+  type mismatches do (exit 78, diagnostic naming the field
+  + source layer + failing range).
+
+- **§7.3 — File-env conflict diagnostics.** Silent override
+  by default; `LYRIC_CONFIG_VERBOSE=1` opt-in prints the
+  layer trail at startup for diagnosis.
+
+- **§7.5 — `@cfg` × file-source mismatch.** Warn, don't
+  error.  Production configs need to span environments
+  where features differ at compile time.
+
+- **§3.4 — `@sensitive` opt-out from file source.** CLI /
+  build-time flag (`--config-sensitive-env-only` or
+  `[build] config_sensitive_env_only` in `lyric.toml`),
+  not in-file metadata.  When set, any `@sensitive` field
+  whose **TOML key is present in the file source** is
+  rejected loudly with exit code 78.
+
+Format restricted to TOML in v2; YAML / JSON / env-files
+out of scope.  Multi-file composition deferred to v2.x.
+Hot reload (Q-config-003) remains explicitly out of scope.
+
+### Rationale
+
+- **Field-granularity layering** matches every comparable
+  tool (Cargo, Spring, Rails); industry-standard,
+  low-surprise.
+- **Strict-at-parse-time** keeps the fail-fast contract
+  tight; coercion would muddy the audit story (`"8080"`
+  vs `8080` is exactly the kind of audit-grade surprise
+  this avoids).
+- **Silent-by-default** for env-overrides-file is what
+  container deployments expect; the verbose opt-in handles
+  dev / debug.
+- **Warn-on-feature-mismatch** is operator-friendly;
+  hard-error would break common workflows where a single
+  file ships across environments with different feature
+  sets.
+- **CLI flag** for sensitive-from-env-only beats a magic
+  TOML section because it doesn't break the §3.2 1:1
+  mapping between TOML sections and declared `config { … }`
+  blocks, and because the policy is a deployment concern
+  (not a per-file concern).
+
+### Alternatives considered
+
+- **Strict at use time, not parse time** — rejected;
+  fail-fast must happen before `main` runs.
+- **Auto-coerce TOML primitives** to declared field types
+  — rejected per audit-grade reasoning above.
+- **Hard error on `@cfg` × file-source mismatch** —
+  rejected; production configs span environments.
+- **Magic `[__lyric_meta]` TOML section** for sensitive
+  opt-out — rejected per the docs/29 §3.4 review feedback;
+  CLI / build-time flag is cleaner.
+- **Multi-file composition** as v2 baseline — rejected;
+  defer to v2.x once a real consumer needs it.
+
+### Consequences
+
+- Implementation gates on M5.2 stage 3+ (the AST→MSIL
+  bridge in the self-hosted compiler) — until then, this
+  decision is the spec future implementation will follow,
+  not running code.
+- D046's `Lyric.BuildInfo` schema recording (Q-config-004,
+  resolved 2026-05-08) extends naturally — names + types
+  + defaults + `@sensitive` markers + the new
+  `--config-sensitive-env-only` flag's setting are all
+  recorded; runtime resolution (which layer supplied
+  which value) is not.
+- D047 aspect runtime config blocks inherit v2 layering
+  for free via the consumer's synthesised `config { … }`
+  block.
+
+### Tracked follow-ups
+
+- **Q-config-001'** (multi-file composition) — v2.x
+  extension.
+- **Q-config-002'** (richer validation beyond range
+  subtypes — regex strings, enum-conditional fields, etc.)
+  — v3 conversation.
+
+**Revisions:** None.
+
+---
+
+## D049 — Aspect contract inheritance (v1.x semantics)
+
+**Date:** 2026-05-08
+**Branch:** claude/compile-time-aspects-logging-SIhqA
+
+### Context
+
+D047 §11 verifies each aspect's body individually against
+the *target's* bare contract — no upstream aspect's clauses
+flow into a downstream aspect's body.  Q-aspects-006 was
+earmarked "desirable, deferred."  The v1.x sketch at
+`docs/30-aspect-contract-inheritance-sketch.md` proposes a
+pre/post-symmetric inheritance rule.  Four §8
+"before-implementation" tensions need binding answers.
+
+### Decision
+
+Adopt `docs/30-aspect-contract-inheritance-sketch.md` §3 as
+the v1.x semantic rule.  For wrapper `W = A₁ ⊃ A₂ ⊃ ... ⊃
+Aₙ ⊃ T`:
+
+- **Pre-`proceed` assumption set for Aₖ.around:**
+  `T.requires ∧ ⋀_{i=1..n} A_i.requires`.  Every aspect's
+  `requires:` is part of the wrapper's composed precondition,
+  checked once at boundary 1 — they all hold from that point
+  on, regardless of nesting position.
+
+- **Post-`proceed` assumption set for Aₖ.around:**
+  `T.ensures ∧ ⋀_{i>k} A_i.ensures` (against `ret`).  Only
+  strictly-inner aspects' ensures inherit; outer aspects'
+  after-halves haven't run yet when Aₖ.after runs.
+
+The four §8 tensions resolve as follows:
+
+- **§6.1 — Mut-args inheritance.** Conservative.
+  Inheritance breaks at any upstream `mut args` rewrite
+  (D047 §4.2); downstream aspects fall back to T-only
+  assumptions for the rewritten args.  Aggressive
+  `@preserves(<aspects>)` annotation deferred to v2.
+
+- **§6.3 — Diagnostic provenance.** When the verifier
+  proves a fact about Aₖ's body using an upstream aspect's
+  clause, the diagnostic names the originating aspect plus
+  the consumer's `use` site (mirroring D047 §5.3
+  contract-failure provenance), e.g.
+  `verified: args.user.permissions is non-null because
+  nonNull(args.user) holds (Validating, from Std.Aspects,
+  used at app.l:7) inherited at this point in the
+  composition`.
+
+- **§6.5 — Async opt-in.**  No inheritance through async
+  aspects for v1.x.  Async aspects already warn under
+  D047 §13's bootstrap-grade lowering; inheritance lights
+  up when proper async lowering ships in Phase 2.
+
+- **§6.6 — Args-only `requires:` inheritance.**  Inheritance
+  only works on `args.*` / `call.*`-referencing clauses
+  (constants up to `proceed`).  Clauses referencing
+  globals or external state don't participate; the verifier
+  falls back to T-only assumptions for those specific
+  clauses.
+
+### Rationale
+
+- The pre/post asymmetry is justified by the temporal
+  asymmetry that already governs D047's wrapper-boundary
+  semantics: the composed precondition is checked once at
+  entry (every `requires:` available pre-proceed); the
+  composed postcondition is established as the call
+  unwinds (only inner ensures available post-proceed).
+- Conservative mut-args inheritance subsumes the aggressive
+  rule (strictly less expressive but always sound); can
+  relax later without breaking existing aspects.
+- Args-only restriction prevents inheritance from leaking
+  global state into the assumption set — keeps the
+  contract surface declarative and verifier-friendly.
+
+### Alternatives considered
+
+- **No inheritance** (v1 status quo) — rejected; the
+  canonical `Validating` + `Auth` pattern (28 §3) requires
+  every auth-flavoured aspect to repeat preconditions
+  without it.  Library aspects don't reuse cleanly.
+- **Symmetric inheritance** (post-proceed inherits all
+  ensures, including outer) — rejected; outer aspects'
+  after-halves haven't run when Aₖ.after runs, so their
+  ensures aren't established yet.
+- **Aggressive mut-args inheritance** with `@preserves`
+  — deferred to v2; rare use case, can land later.
+- **Always-on inheritance through async** — rejected;
+  bootstrap-grade async lowering doesn't preserve
+  enough to make inheritance sound.
+
+### Consequences
+
+- D047 §11 step (3) gains the inheritance-aware
+  assumption set logic — small mechanical extension.
+  Wrapper-level VCs (D047 §11 steps 1, 2) and the
+  composition graph (D047 §6) are unchanged.
+- The `Std.Aspects` ecosystem becomes ergonomic:
+  declaring `nonNull(args.user)` once on `Validating`
+  is enough; downstream `Auth` / `Logging` / etc. inherit
+  it.  Per docs/28 §10.
+- Implementation gates on M5.2 stage 3+ (the AST→MSIL
+  bridge in the self-hosted compiler).  Until then, this
+  decision is the spec future implementation will follow.
+
+### Tracked follow-ups
+
+- **Q-aspects-006'** (mut-args `@preserves` annotation) —
+  v2 extension.
+- **Q-aspects-006''** (inheritance through async lowering)
+  — Phase 2, when proper async state machines ship.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -7,11 +7,12 @@ self-hosted compiler (PRs #206, #227).  Emitter lowering
 resolution) is the remaining v1 work; deferred to whichever
 compiler ships it first (the F# bootstrap is being retired,
 so most likely the self-hosted compiler once M5.2 stage 3+
-ships the AST→MSIL bridge).  v2 sketch:
-`docs/29-config-v2-sketch.md`.
+ships the AST→MSIL bridge).  v2 spec:
+`docs/29-config-v2-sketch.md` (D048, file source + layered
+precedence — settled, implementation gated on M5.2 stage 3+).
 **Implementation:** prerequisite for `docs/26-aspects.md` runtime
 toggles.  Independently useful for application-level configuration.
-**Decision-log entry:** D046.
+**Decision-log entry:** D046; v2 in D048.
 
 > **v1 scope note.** The first implementation ships a deliberately
 > narrow subset of the design below: module-scope `config Name { ... }`
