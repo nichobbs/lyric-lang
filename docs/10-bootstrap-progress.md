@@ -1978,6 +1978,335 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-201: MSIL PE emitter Stages M66–M70 — checked conversions and float literal loads
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched:
+
+- **M66** (conv.ovf.i1/i2/i4/i8, 0xB3/0xB5/0xB7/0xB9): checked signed conversions. `42` round-trips
+  through all four without overflow. Tiny header (codeSize=13 → 0x36).
+
+- **M67** (conv.ovf.u1/u2/u4/u8, 0xB4/0xB6/0xB8/0xBA): checked unsigned conversions. Same round-trip.
+  Tiny header (codeSize=13 → 0x36).
+
+- **M68** (conv.ovf.i1.un/i2.un/i4.un/i8.un, 0x82/0x83/0x84/0x85): checked from-unsigned signed
+  conversions. Same pattern. Tiny header (codeSize=13 → 0x36).
+
+- **M69** (conv.ovf.u1.un/u2.un/u4.un/u8.un, 0x86/0x87/0x88/0x89): checked from-unsigned unsigned
+  conversions. Same pattern. Tiny header (codeSize=13 → 0x36).
+
+- **M70** (ldc.r8/ckfinite/ldc.r4, 0x23/0xC3/0x22): float literal loads and finiteness check.
+  `ldc.r8 42.0 / ckfinite / conv.i4 + ldc.r4 0.0 / conv.i4 / add = 42`. Tiny header (codeSize=24 → 0x62).
+
+74 MSIL self-tests pass (M1–M70).
+
+---
+
+### D-progress-200: MSIL PE emitter Stages M61–M65 — overflow arith, int/float conversions, misc loads
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched:
+
+- **M61** (add.ovf/sub.ovf/mul.ovf + .un, 0xD6/0xDA/0xD8/0xD7/0xDB/0xD9): checked arithmetic.
+  `21+21=42`, sub.ovf/mul.ovf/+un variants keep 42. Tiny header (codeSize=21 → 0x56).
+
+- **M62** (conv.i1/i2/i4/i8, 0x67/0x68/0x69/0x6A): signed integer conversions. `42` round-trips
+  through all four. Tiny header (codeSize=13 → 0x36). conv.i4 used twice (4 and 6).
+
+- **M63** (conv.u1/u2/u4/u8, 0xD2/0xD1/0x6D/0x6E): unsigned integer conversions. Same round-trip.
+  Tiny header (codeSize=13 → 0x36).
+
+- **M64** (conv.r8/r4/r.un, 0x6C/0x6B/0x76): float conversions with int round-trip.
+  `42→r8→i4 + 0→r4→i4 + 0→r.un→i4 = 42`. Tiny header (codeSize=18 → 0x4A).
+
+- **M65** (ldc.i8/ldc.i4.m1/ldnull, 0x21/0x15/0x14): misc loads. `ldc.i8 43i64 + ldc.i4.m1(-1) = 42`;
+  ldnull/pop exercises null push without printing. Tiny header (codeSize=20 → 0x52).
+
+69 MSIL self-tests pass (M1–M65).
+
+---
+
+### D-progress-199: MSIL PE emitter Stages M56–M60 — bitwise, unary, shift, remainder, stack misc
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched together:
+
+- **M56** (`or`/`and`/`xor`, 0x60/0x5F/0x61): bitwise binary ops. `(40|2)&63^0 = 42`.
+  Tiny header (codeSize=16 → 0x42). Checks or at 0x24D, and at 0x250, xor at 0x252, BSJB at 0x259.
+
+- **M57** (`neg`/`not`, 0x65/0x66): unary arithmetic/bitwise ops. `~(neg(43)) = ~(-43) = 42`.
+  Tiny header (codeSize=10 → 0x2A). Checks neg at 0x24B, not at 0x24C, BSJB at 0x253.
+
+- **M58** (`shl`/`shr`/`shr.un`, 0x62/0x63/0x64): shift ops. `21<<1=42`, shr/shr.un add zeros.
+  Tiny header (codeSize=18 → 0x4A). Checks shl at 0x24C, shr at 0x24F, shr.un at 0x253, BSJB at 0x25B.
+
+- **M59** (`rem`/`rem.un`/`div.un`, 0x5D/0x5E/0x5C): remainder and unsigned division.
+  `85%43=42`, `0%1=0`, `42/1=42`. Tiny header (codeSize=17 → 0x46). Checks rem at 0x24D,
+  rem.un at 0x250, div.un at 0x253, BSJB at 0x25A.
+
+- **M60** (`nop`/`dup`/`pop`, 0x00/0x25/0x26): stack misc. `push 42; nop; dup; pop; print`.
+  Tiny header (codeSize=11 → 0x2E). Checks nop at 0x24B, dup at 0x24C, pop at 0x24D, BSJB at 0x254.
+
+64 MSIL self-tests pass (M1, M2a–M2d, M3–M60).
+
+---
+
+### D-progress-194: MSIL PE emitter Stage M55 — `initobj`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M55 tests the `initobj` instruction (0xFE 0x15, Token2 form):
+- `initobj` — zero-initialises the value type at the managed pointer on the stack.
+
+Test: `ldloca.s 0 / initobj System.Int32 / ldloc.0` loads a zeroed I4 from a
+local, then `ldc.i4.s 42 / add` gives 42.  Requires a fat header (InitLocals) due
+to the local variable.  `MsilSelfTestM55.fs` verifies fat header at 0x248, LocalVarSig
+token at 0x250–0x253, initobj FE prefix at file 0x256, 0x15 at 0x257, BSJB at 0x266.
+TypeRef[3] = System.Int32 (same token as M50).
+
+59 MSIL self-tests pass (M1, M2a–M2d, M3–M55).
+
+---
+
+### D-progress-193: MSIL PE emitter Stage M54 — `cgt.un` + `clt.un`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M54 tests the two unsigned integer comparison opcodes (Nullary2 form):
+- `cgt.un` (0xFE 0x03) — pushes 1 if `a > b` (unsigned), else 0
+- `clt.un` (0xFE 0x05) — pushes 1 if `a < b` (unsigned), else 0
+
+Test: `(10>9 unsigned) * (3<7 unsigned) + 41 = 1*1 + 41 = 42`, prints `42`.
+Tiny header (codeSize=22 → 0x5A). `MsilSelfTestM54.fs` verifies cgt.un at
+0x24D–0x24E (FE 03), clt.un at 0x253–0x254 (FE 05), and BSJB at 0x25F.
+
+58 MSIL self-tests pass (M1, M2a–M2d, M3–M54).
+
+---
+
+### D-progress-192: MSIL PE emitter Stage M53 — `ceq` + `cgt` + `clt`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M53 tests the three signed integer comparison opcodes (Nullary2 form):
+- `ceq` (0xFE 0x01) — pushes 1 if `a == b`, else 0
+- `cgt` (0xFE 0x02) — pushes 1 if `a > b` (signed), else 0
+- `clt` (0xFE 0x04) — pushes 1 if `a < b` (signed), else 0
+
+Test: `(5==5) * (10>9) * (3<7) + 41 = 1*1*1 + 41 = 42`, prints `42`.
+Tiny header (codeSize=29 → 0x76). `MsilSelfTestM53.fs` verifies ceq at
+0x24D–0x24E (FE 01), cgt at 0x253–0x254 (FE 02), clt at 0x25A–0x25B (FE 04),
+and BSJB at 0x266.
+
+57 MSIL self-tests pass (M1, M2a–M2d, M3–M53).
+
+---
+
+### D-progress-191: MSIL PE emitter Stage M52 — `tail.` prefix
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M52 tests the `tail.` prefix (0xFE 0x14, Nullary2 form):
+- `tail.` — marks the immediately-following call instruction as a tail call.
+
+Test: `ldc.i4.s 42 / tail. / call Console.WriteLine(Int32) / ret` prints `42`.
+Tiny header (codeSize=10 → header byte 0x2A = 42 itself).
+`MsilSelfTestM52.fs` verifies tiny header at 0x248 (0x2A), tail. FE prefix at
+file offset 0x24B (code offset 2), second byte 0x14 at 0x24C, and BSJB at 0x253.
+
+56 MSIL self-tests pass (M1, M2a–M2d, M3–M52).
+
+---
+
+### D-progress-190: MSIL PE emitter Stage M51 — `volatile.` prefix
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M51 tests the `volatile.` prefix (0xFE 0x13, Nullary2 form):
+- `volatile.` — marks the immediately-following load or store as volatile.
+
+Test: `ldc.i4.s 4 / localloc` allocates 4 bytes on the stack (`rawPtr`);
+`stind.i4` writes 42; `volatile. / ldind.i4` performs a volatile load of 42;
+`call Console.WriteLine(Int32) / ret` prints `42`.  Requires a fat method header
+(InitLocals flag) because `localloc` is used; a dummy I4 local forces the fat path.
+`MsilSelfTestM51.fs` verifies fat header at 0x248 (0x13 0x30), LocalVarSig token
+at 0x250–0x253, volatile. FE prefix at file offset 0x25C (code offset 8),
+second byte 0x13 at 0x25D, and BSJB at 0x265.
+
+55 MSIL self-tests pass (M1, M2a–M2d, M3–M51).
+
+---
+
+### D-progress-189: MSIL PE emitter Stage M50 — `sizeof`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M50 tests the `sizeof` instruction (0xFE 0x1C, Token2 form):
+- `sizeof` — pushes the byte size of a value type onto the stack as I4.
+
+Test: `sizeof System.Int32` (TypeRef[3] token) pushes 4, then `ldc.i4.s 38` /
+`add` = 42, prints `42`.  `MsilSelfTestM50.fs` verifies the tiny header (0x3E
+at 0x248), FE prefix at 0x249, 0x1C at 0x24A, BSJB at 0x258.
+
+54 MSIL self-tests pass (M1, M2a–M2d, M3–M50).
+
+---
+
+### D-progress-188: MSIL PE emitter Stage M49 — `ldelem.i4` + `stelem.i4`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M49 adds typed int32 array element operations and fills in all 18 missing
+typed ldelem/stelem opcode constants:
+- `ldelem.i1/u1/i2/u2/i4/u4/i8/i/r4/r8/ref` (0x90–0x9A) — typed element loads.
+- `stelem.i/i1/i2/i4/i8/r4/r8` (0x9B–0xA1) — typed element stores.
+
+Test: builds a PE that creates a 1-element `int32[]` via `newarr System.Int32`
+(TypeRef[3] token 0x01000003), stores 42 via `stelem.i4` (0x9E), reads it back
+via `ldelem.i4` (0x94), and prints `42`.  `MsilSelfTestM49.fs` verifies the
+tiny header (0x4E at 0x248), newarr at 0x24A, stelem.i4 at 0x253, ldelem.i4
+at 0x255, BSJB at 0x25C, and PE execution output `"42"`.
+
+Also fixes a pre-existing verifier bug: `Solver.fs` `isTautology` now handles
+`TIte(_, a, b)` when both branches `a` and `b` are individually tautological
+(closes the `[D-D1.3] EIf in statement position` test that was failing due to
+the trivial discharger not reducing ite-conclusions with tautological branches).
+
+53 MSIL self-tests pass (M1, M2a–M2d, M3–M49).
+
+---
+
+### D-progress-187: MSIL PE emitter Stage M48 — `stind.i` + `ldind.i`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M48 completes the indirect load/store family with the native-int variants:
+- `stind.i` (0xDF) — store native int at a raw pointer address.
+- `ldind.i` (0x4D) — load native int from a raw pointer address.
+
+Uses `localloc` (M43) to obtain 8 bytes of stack memory (sufficient for a native
+int on 64-bit), `conv.i` to widen 42 to native int before storing, and `conv.i4`
+to narrow the loaded value back to a printable I4.
+
+**New in `opcodes.l`**: `OP_STIND_I` (0xDF), `OP_LDIND_I` (0x4D); smart constructors
+`iStind_I()`, `iLdind_I()`; emit wrappers `emitStind_I()`, `emitLdind_I()`.
+
+**Test wiring**: `MsilSelfTestM48.fs` added to `Lyric.Emitter.Tests`; all 52
+MSIL self-tests pass (M1, M2a–M2d, M3–M48).  CLR: `"42"` printed.
+
+---
+
+### D-progress-186: MSIL PE emitter Stage M47 — `conv.i` + `conv.u`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M47 exercises the native-int conversion opcodes:
+- `conv.i` (0xD3) — convert top-of-stack to native int (pointer-sized signed).
+- `conv.u` (0xE0) — convert top-of-stack to native uint (pointer-sized unsigned).
+
+Both are followed by `conv.i4` to return to a printable I4. For 42, the round-trip
+is lossless on all platforms (42 fits in any integer width).
+
+**New in `opcodes.l`**: `OP_CONV_I` (0xD3), `OP_CONV_U` (0xE0); smart constructors
+`iConv_I()`, `iConv_U()`; emit wrappers `emitConv_I()`, `emitConv_U()`.
+
+**Test wiring**: `MsilSelfTestM47.fs` added to `Lyric.Emitter.Tests`; all 51
+MSIL self-tests pass (M1, M2a–M2d, M3–M47).  CLR: `"42"` printed twice.
+
+---
+
+### D-progress-185: MSIL PE emitter Stage M46 — `conv.i1` + `conv.i2`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M46 exercises two narrow signed conversion opcodes:
+- `conv.i1` (0x67) — truncate top-of-stack to int8 and sign-extend to I4.
+- `conv.i2` (0x68) — truncate to int16 and sign-extend to I4.
+
+For in-range values (42 < 128) the result is identical to the source. The self-test
+verifies both opcodes independently by converting 42 through each and printing.
+
+**New in `opcodes.l`**: `OP_CONV_I1` (0x67), `OP_CONV_I2` (0x68); smart constructors
+`iConv_I1()`, `iConv_I2()`; emit wrappers `emitConv_I1()`, `emitConv_I2()`.
+
+**Test wiring**: `MsilSelfTestM46.fs` added to `Lyric.Emitter.Tests`; all 50
+MSIL self-tests pass (M1, M2a–M2d, M3–M46).  CLR: `"42"` printed twice.
+
+---
+
+### D-progress-184: MSIL PE emitter Stage M45 — `initblk` + `cpblk`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M45 exercises two bulk-memory instructions:
+- `initblk` (0xFE 0x18) — fill `count` bytes at a managed pointer with a byte value.
+  Stack protocol: `addr, value (I4), count → (empty)`.
+- `cpblk` (0xFE 0x17) — copy `count` bytes from source address to destination.
+  Stack protocol: `destaddr, srcaddr, count → (empty)`.
+
+Two I4 locals provide managed pointers without `localloc`, enabling re-entrant
+access to the same address after the block operation.
+
+**Code flow:**
+1. `initblk`: fill 1 byte at `&local0` with 42; `ldind.u1` → 42; print.
+2. `cpblk`: set `local0 = 42`; copy 4 bytes from `&local0` to `&local1`; `ldloc.1` → 42; print.
+CLR prints two `"42"` lines.
+
+**New in `opcodes.l`**: `OP2_CPBLK` (0x17), `OP2_INITBLK` (0x18); smart constructors
+`iCpblk()`, `iInitblk()`; emit wrappers `emitCpblk()`, `emitInitblk()`.
+
+**Test wiring**: `MsilSelfTestM45.fs` added to `Lyric.Emitter.Tests`; all 49
+MSIL self-tests pass (M1, M2a–M2d, M3–M45).
+
+---
+
+### D-progress-183: MSIL PE emitter Stage M44 — `conv.r.un` + `ckfinite`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M44 exercises two float-related opcodes:
+- `conv.r.un` (0x76) — convert integer to R8 treating the source as unsigned; for
+  non-negative values within I4 range the result is identical to `conv.r8`.
+- `ckfinite` (0xC3) — throw `ArithmeticException` if the top-of-stack F value is
+  NaN or infinity; otherwise leave the value unchanged.
+
+**Code flow:** `ldc.i4.s 42 / conv.r.un` → 42.0; `ckfinite` passes (finite);
+`conv.i4` → 42; `call Console.WriteLine(int)` prints `"42"`.  Tiny header.
+
+**New in `opcodes.l`**: `OP_CONV_R_UN` (0x76), `OP_CKFINITE` (0xC3); smart
+constructors `iConv_R_Un()`, `iCkfinite()`; emit wrappers `emitConv_R_Un()`,
+`emitCkfinite()`.
+
+**Test wiring**: `MsilSelfTestM44.fs` added to `Lyric.Emitter.Tests`; all 48
+MSIL self-tests pass (M1, M2a–M2d, M3–M44).  CLR: `"42"` printed.
+
+---
+
+### D-progress-182: MSIL PE emitter Stage M43 — `localloc` (stack allocation)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M43 exercises `localloc` (0xFE 0x0F), which allocates a caller-specified
+number of zeroed bytes on the evaluation stack and pushes a native-int pointer.
+`localloc` requires `InitLocals` which is only present in fat method headers;
+a dummy I4 local forces fat-header emission.
+
+**Code flow:**
+1. `ldc.i4.s 4` / `localloc` — allocate 4 bytes, push pointer.
+2. `dup` / `ldc.i4.s 42` / `stind.i4` — write 42 at the address.
+3. `ldind.i4` / `call Console.WriteLine(int)` — read 42 back, print.
+
+**New in `opcodes.l`**: `OP2_LOCALLOC = 0x0F`, `iLocalloc()` smart constructor,
+`emitLocalloc()` wrapper.
+
+**Test wiring**: `MsilSelfTestM43.fs` added to `Lyric.Emitter.Tests`; all 47
+MSIL self-tests pass (M1, M2a–M2d, M3–M43).  CLR: `"42"` printed.
+
+---
+
 ### D-progress-181: MSIL PE emitter Stage M42 — `stind.i1`/`i2` + `ldind.u1`/`i2` (narrow indirect access)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
