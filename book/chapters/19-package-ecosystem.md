@@ -168,7 +168,62 @@ The compiler treats the pair identically to a single unified file; the split is 
 
 The compiler enforces that implementation details — private functions, local bindings, unexported types — are absent from `.lspec` files.
 
-## §19.7 The registry
+## §19.7 Build features and conditional compilation
+
+Lyric supports a Cargo-style `[features]` section in `lyric.toml` plus a `@cfg(feature = "X")` annotation that gates source items at compile time. A typical service might use it to compile out a logging aspect when shipping a release build:
+
+```toml
+# lyric.toml
+[features]
+default = ["logging"]
+logging = []
+tracing = []
+metrics = []
+```
+
+```lyric
+// app.l
+@cfg(feature = "logging")
+pub aspect Logging { … }
+
+@cfg(any(feature = "tracing", feature = "metrics"))
+func emitSpan(name: in String): Unit { … }
+```
+
+The CLI flags `--features X,Y`, `--no-default-features`, and `--all-features` on `lyric build` / `run` / `test` / `prove` / `publish` choose the **active feature set** for one build. Items whose `@cfg(...)` predicate is false are physically erased from the output — there is no IL, no metadata, and no runtime branch.
+
+### §19.7.1 Features are publish-time, not consumer-toggleable
+
+This is the most common confusion. **A consumer cannot toggle features on a published dependency.** Lyric distributes packages as binary `.dll` files (§19.4 and the `Lyric.Contract` resource); the library author's `lyric publish` pins the feature set into the DLL once. Consumers see only the items that were active at publish time.
+
+Cargo lets consumers enable features on dependencies because Cargo distributes *source* and rebuilds dependencies on the consumer's machine. Lyric's model is different — and intentionally so, because deterministic binary builds and reproducible deployment are core promises.
+
+If you need a behaviour that varies per deployment, **use runtime config (chapter 11 / D046), not features**:
+
+| Need | Use |
+|---|---|
+| "Compile out logging when not deploying with the logging build" | `@cfg(feature = "logging")` on the aspect |
+| "Toggle log level at deploy time" | `config { level: LogLevel = … }` |
+| "Enable tracing in staging, disable in prod" | `config { tracingEnabled: Bool = false }` |
+| "Pick TLS implementation for a transitive dep" | Library author's call at publish, or a runtime `config` block |
+
+**Rule of thumb.** `@cfg` answers *"is this code in my binary at all?"* `config { … }` answers *"given that it's in my binary, what behaviour does it exhibit at runtime?"* When in doubt, use `config { … }` — it's strictly more permissive and works across the package boundary.
+
+### §19.7.2 Diagnostics
+
+| Code | Meaning |
+|---|---|
+| `F0001` | Cycle in feature implications. |
+| `F0002` | Unknown feature referenced in implication array. |
+| `F0003` | `--features` names a feature not declared in the manifest. |
+| `F0010` | Import targets an item gated off in the current build. |
+| `F0011` | Overlapping `@cfg` predicates on items sharing a name. |
+| `F0012` | Malformed `@cfg(...)` predicate syntax. |
+| `F0013` | `feature = "X"` references a feature not declared in the manifest. |
+
+The full design is in `docs/24-build-features.md`.
+
+## §19.8 The registry
 
 Lyric packages live on NuGet at `nuget.org` under their declared `name`. The NuGet package ID is the `name` field from `lyric.toml` verbatim.
 

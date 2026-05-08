@@ -570,6 +570,13 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # [project.packages] entry into one DLL with one
                                        # Lyric.Contract.<Pkg> resource per package)
 
+# Build features (compile-time gating; see chapter 19 §19.7)
+lyric build --features X,Y <file.l>    # additive over manifest's [features] default
+lyric build --no-default-features      # suppress the default = […] set
+lyric build --all-features             # transitive closure of every declared feature
+                                       # (all of the above flags also work on
+                                       #  lyric run / test / prove / publish)
+
 # Run
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
