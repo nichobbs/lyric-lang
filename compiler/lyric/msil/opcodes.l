@@ -89,6 +89,14 @@ pub val OP_SUB_OVF_UN  : Int = 0xDB
 pub val OP_ENDFINALLY  : Int = 0xDC
 pub val OP_CONV_U1     : Int = 0xD2
 pub val OP_CONV_U2     : Int = 0xD1
+pub val OP_CONV_OVF_I1 : Int = 0xB3
+pub val OP_CONV_OVF_U1 : Int = 0xB4
+pub val OP_CONV_OVF_I2 : Int = 0xB5
+pub val OP_CONV_OVF_U2 : Int = 0xB6
+pub val OP_CONV_OVF_I4 : Int = 0xB7
+pub val OP_CONV_OVF_U4 : Int = 0xB8
+pub val OP_CONV_OVF_I8 : Int = 0xB9
+pub val OP_CONV_OVF_U8 : Int = 0xBA
 
 // Short-form arg/local opcodes (single-byte opcode + 1-byte index)
 pub val OP_LDARG_S     : Int = 0x0E
@@ -150,6 +158,7 @@ pub val OP2_CGT        : Int = 0x02
 pub val OP2_CGT_UN     : Int = 0x03
 pub val OP2_CLT        : Int = 0x04
 pub val OP2_CLT_UN     : Int = 0x05
+pub val OP2_VOLATILE   : Int = 0x13
 pub val OP2_TAIL       : Int = 0x14
 pub val OP2_RETHROW    : Int = 0x1A
 
@@ -288,12 +297,21 @@ pub func iConv_I4():    Insn = Nullary(op = OP_CONV_I4)
 pub func iConv_I8():    Insn = Nullary(op = OP_CONV_I8)
 pub func iConv_R4():    Insn = Nullary(op = OP_CONV_R4)
 pub func iConv_R8():    Insn = Nullary(op = OP_CONV_R8)
-pub func iConv_U1():    Insn = Nullary(op = OP_CONV_U1)
-pub func iConv_U2():    Insn = Nullary(op = OP_CONV_U2)
-pub func iConv_U4():    Insn = Nullary(op = OP_CONV_U4)
-pub func iConv_U8():    Insn = Nullary(op = OP_CONV_U8)
+pub func iConv_U1():       Insn = Nullary(op = OP_CONV_U1)
+pub func iConv_U2():       Insn = Nullary(op = OP_CONV_U2)
+pub func iConv_U4():       Insn = Nullary(op = OP_CONV_U4)
+pub func iConv_U8():       Insn = Nullary(op = OP_CONV_U8)
+pub func iConv_Ovf_I1():   Insn = Nullary(op = OP_CONV_OVF_I1)
+pub func iConv_Ovf_U1():   Insn = Nullary(op = OP_CONV_OVF_U1)
+pub func iConv_Ovf_I2():   Insn = Nullary(op = OP_CONV_OVF_I2)
+pub func iConv_Ovf_U2():   Insn = Nullary(op = OP_CONV_OVF_U2)
+pub func iConv_Ovf_I4():   Insn = Nullary(op = OP_CONV_OVF_I4)
+pub func iConv_Ovf_U4():   Insn = Nullary(op = OP_CONV_OVF_U4)
+pub func iConv_Ovf_I8():   Insn = Nullary(op = OP_CONV_OVF_I8)
+pub func iConv_Ovf_U8():   Insn = Nullary(op = OP_CONV_OVF_U8)
 pub func iLdlen():      Insn = Nullary(op = OP_LDLEN)
 pub func iThrow():      Insn = Nullary(op = OP_THROW)
+pub func iVolatile():   Insn = Nullary2(op = OP2_VOLATILE)
 pub func iTail():       Insn = Nullary2(op = OP2_TAIL)
 pub func iRethrow():    Insn = Nullary2(op = OP2_RETHROW)
 pub func iEndfinally(): Insn = Nullary(op = OP_ENDFINALLY)
@@ -477,12 +495,21 @@ pub func emitConv_I4(b: in MethodBody): Unit    = mbEmit(b, iConv_I4())
 pub func emitConv_I8(b: in MethodBody): Unit    = mbEmit(b, iConv_I8())
 pub func emitConv_R4(b: in MethodBody): Unit    = mbEmit(b, iConv_R4())
 pub func emitConv_R8(b: in MethodBody): Unit    = mbEmit(b, iConv_R8())
-pub func emitConv_U1(b: in MethodBody): Unit    = mbEmit(b, iConv_U1())
-pub func emitConv_U2(b: in MethodBody): Unit    = mbEmit(b, iConv_U2())
-pub func emitConv_U4(b: in MethodBody): Unit    = mbEmit(b, iConv_U4())
-pub func emitConv_U8(b: in MethodBody): Unit    = mbEmit(b, iConv_U8())
+pub func emitConv_U1(b: in MethodBody): Unit       = mbEmit(b, iConv_U1())
+pub func emitConv_U2(b: in MethodBody): Unit       = mbEmit(b, iConv_U2())
+pub func emitConv_U4(b: in MethodBody): Unit       = mbEmit(b, iConv_U4())
+pub func emitConv_U8(b: in MethodBody): Unit       = mbEmit(b, iConv_U8())
+pub func emitConv_Ovf_I1(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I1())
+pub func emitConv_Ovf_U1(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U1())
+pub func emitConv_Ovf_I2(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I2())
+pub func emitConv_Ovf_U2(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U2())
+pub func emitConv_Ovf_I4(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I4())
+pub func emitConv_Ovf_U4(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U4())
+pub func emitConv_Ovf_I8(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I8())
+pub func emitConv_Ovf_U8(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U8())
 pub func emitLdlen(b: in MethodBody): Unit      = mbEmit(b, iLdlen())
 pub func emitThrow(b: in MethodBody): Unit      = mbEmit(b, iThrow())
+pub func emitVolatile(b: in MethodBody): Unit   = mbEmit(b, iVolatile())
 pub func emitTail(b: in MethodBody): Unit       = mbEmit(b, iTail())
 pub func emitRethrow(b: in MethodBody): Unit    = mbEmit(b, iRethrow())
 pub func emitEndfinally(b: in MethodBody): Unit = mbEmit(b, iEndfinally())
