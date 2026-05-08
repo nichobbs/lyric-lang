@@ -441,12 +441,15 @@ poked.
   detail: §6 fully spec'd; library DLL carries both generic IL
   for B-mode aspects *and* embedded source resources for C-mode
   aspects; consumer's compiler routes per-aspect at use time.
-- **Q-aspectlib-002 — `pub aspect` without `around`.**  A
-  contract-only library aspect like `Validating` has no IL to
-  ship — it's pure metadata.  Should this require a different
-  syntax (`pub aspect_contract`) or just be a degenerate `pub
-  aspect`?  Leaning toward the latter; it's symmetric with D047
-  contract-only aspects.
+- **Q-aspectlib-002 — `pub aspect` without `around`.**
+  ~~Should contract-only library aspects need a different syntax
+  (`pub aspect_contract`)?~~ **Resolved.** Same syntax — a
+  `pub aspect` whose body has `requires:` / `ensures:` clauses
+  but no `around` is valid and ships pure metadata (no IL).
+  This is symmetric with D047 §5.5 contract-only aspects in the
+  consumer's own package; library distribution shouldn't fork the
+  surface.  Worked example `Std.Aspects.Validating` in §11
+  already uses this shape.
 - **Q-aspectlib-003 — `use` clause without alias when names
   collide.**  Two libraries both export `Logging`.  Consumer
   imports both.  `use Logging matches: …` is now ambiguous.
@@ -458,14 +461,24 @@ poked.
   break for every consumer, exactly the same as bumping a
   function's `requires:`.  Documented; the
   `@stable(since="X.Y")` machinery already covers this.
-- **Q-aspectlib-005 — `config` field overrides and v1 type
-  set.**  D046 §3 limits config fields to primitives + ranges +
-  enums + lists.  Library aspects inherit that.  Open: should
-  the library be allowed to declare *required* config fields
-  (no default) that *every consumer must override locally*?
-  Plausibly yes — `Std.Aspects.Auth { config { tenantId: String
-  } }` forces consumers to bind a tenant ID.  But it complicates
-  the "library is a closed type" promise.
+- **Q-aspectlib-005 — Required library-aspect config fields.**
+  ~~Should the library be allowed to declare required (no-default)
+  config fields?~~ **Resolved.** Yes — required library-aspect
+  fields just propagate D046 §4's existing rule: a field with no
+  `=` default reads from the consumer-side env var at startup,
+  and the consumer's process aborts with exit code 78 if the var
+  is unset.  No new syntax, no compile-time override mechanism.
+  Library author writes `tenantId: String` and consumer binaries
+  fail-fast on missing `LYRIC_ASPECT_<NAME>_TENANT_ID`.
+
+  **Out of scope for v1, plausible v2 (Q-aspectlib-005':**
+  compile-time-required fields where the consumer must bind a
+  literal at the `use` site (`use Std.Aspects.Auth config {
+  tenantId = "myapp-prod" }`).  Useful for tenant IDs, build
+  markers, anything that doesn't fit env-var distribution.
+  Requires a new `@must_override` marker on the library side and
+  consumer-side syntax for compile-time config bindings.  Defer
+  until a real use case demands it.
 - **Q-aspectlib-006 — Calling convention and the F# bootstrap.**
   The F# bootstrap is being retired (CLAUDE.md / `docs/23`); the
   ABI choice from §6 only really matters for the self-hosted

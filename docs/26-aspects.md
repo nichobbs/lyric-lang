@@ -853,8 +853,14 @@ fields naming the aspect that introduced the failing clause (§5.3).
 - **Q-aspects-006:** Inheritance of contracts from an aspect across
   *aspects* (an aspect adding a clause that subsequent aspects'
   bodies can reason against). Today each aspect sees the unwrapped
-  target's contract; this is fine but limits some patterns. Revisit
-  when a real use case appears.
+  target's contract; this is fine for v1 but limits some patterns —
+  e.g. a downstream `Authorization` aspect can't depend on an
+  upstream `Validation` aspect's `requires: nonNull(args.user)`
+  having been discharged. **Status:** desirable, deferred. The
+  composition rule from §5.1 stays as-is for v1 (each aspect's
+  contract clauses augment the *target's* contract, not the
+  cumulative wrapper-so-far); inheritance is a v1.x revisit when a
+  concrete pattern hits the limitation.
 
 ---
 
