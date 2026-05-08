@@ -1978,6 +1978,25 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-186: MSIL PE emitter Stage M47 — `conv.i` + `conv.u`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M47 exercises the native-int conversion opcodes:
+- `conv.i` (0xD3) — convert top-of-stack to native int (pointer-sized signed).
+- `conv.u` (0xE0) — convert top-of-stack to native uint (pointer-sized unsigned).
+
+Both are followed by `conv.i4` to return to a printable I4. For 42, the round-trip
+is lossless on all platforms (42 fits in any integer width).
+
+**New in `opcodes.l`**: `OP_CONV_I` (0xD3), `OP_CONV_U` (0xE0); smart constructors
+`iConv_I()`, `iConv_U()`; emit wrappers `emitConv_I()`, `emitConv_U()`.
+
+**Test wiring**: `MsilSelfTestM47.fs` added to `Lyric.Emitter.Tests`; all 51
+MSIL self-tests pass (M1, M2a–M2d, M3–M47).  CLR: `"42"` printed twice.
+
+---
+
 ### D-progress-185: MSIL PE emitter Stage M46 — `conv.i1` + `conv.i2`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
