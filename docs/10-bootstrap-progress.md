@@ -99,7 +99,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M20 — exception handling (try/catch): `msil_self_test_m20.l` builds a PE whose `Main()` throws `System.Exception` in a try block and catches it, printing `42`; exercises `EHClause` record + `mbAddEHClause`, `MoreSects` flag (0x1B) in fat header, fat EH section (kind=0x41), `leave` (0xDD), `throw` (0x7A), and `newobj` (0x73); CLR prints `42` | **Shipped** (this branch) | D-progress-159 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -215,6 +215,93 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-146: M5.3 stage 10 — binop-operand / list-element / function-param comment preservation, plus `out` mode rendering bug fix
+
+*claude/lyric-fmt-binop-list-param-comments branch.*
+
+Three new comment-anchoring sites + one regression fix.
+
+**Binary-op operand comments.**  `exprBinopMulti` now pops trivia at
+the RHS's source-start before emitting, so a `// sum carry` between
+two operands lands between operator and RHS:
+
+```
+val x = a +
+  // sum carry
+  b
+```
+
+**List / tuple element comments.**  `exprListMulti` pops trivia at
+each element's source-start, mirroring the per-arg pop in
+`exprCallMulti`.  A `// primes` between two elements stays inside
+the bracketed group:
+
+```
+val xs = [
+  // primes
+  2,
+  3,
+  5
+]
+```
+
+**Function-parameter comments + width-driven multi-line signatures.**
+
+- New `paramsAtCol(col, ctx, ps)` returns a `Doc`.  Inline if budget
+  allows AND no unpopped trivia falls in `[0, lastEnd)` (the broad
+  range catches comments before the FIRST param, which sit in the
+  first param's leading trivia at offset `< ps[0].span.startPos`).
+  Otherwise, multi-line with one parameter per line and a
+  Black-style trailing comma on every entry.
+- New `paramsFitInline(col, ps, suffixLen)` for the precise budget
+  check including the caller's suffix length (e.g. `") -> Foo"`).
+- `funcSigDocFromParts(prefix, suffix, paramsCol, ctx, ps)` returns
+  the signature `Doc`.  Inline keeps it on one line; multi-line
+  emits `prefix(`, params indented, `)suffix` on its own line.
+- New `appendToLastLine(doc, suffix)` helper attaches `" = expr"` /
+  `" {"` / etc. to a multi-line signature whose last line is the
+  closing `)` plus return type.
+- `funcDoc` is rewired to thread the multi-line signature `Doc`
+  through every body shape (no body / `FBExpr` / `FBBlock` ± extras).
+
+```
+func process(
+  // x is the input
+  x: in Int,
+  y: in Int,
+): Int {
+  x + y
+}
+```
+
+**`out` mode rendering bug fix.**  `paramStr`'s `PMOut` arm read
+`"acc "` — a leftover from the original sed-driven `out` →
+`acc` reserved-keyword cleanup (D-progress-131).  Restored to
+`"out "` so an `out` parameter round-trips as `: out Int`.
+
+Self-test additions (`fmt_self_test.l`):
+
+- `testCommentBetweenBinopOperands` — `// sum carry` between operands.
+- `testCommentBetweenListElements` — `// primes` between list elements.
+- `testCommentBeforeFunctionParam` — `// x is the input` before the
+  first param triggers multi-line signature.
+- `testWidthDrivenLongParamList` — 9-param signature (~145 chars
+  inline) breaks across lines with one param per line.
+- `testOutModeRendersCorrectly` — regression lock for the `out`
+  mode rendering fix.
+
+Out of scope for this stage:
+
+- Multi-line variants for `entryDoc` parameter lists (entry decls
+  inside `protected type` bodies follow the same pattern; not yet
+  wired but mechanically additive).
+- Type-expression multi-line layout (rare in practice; deferred).
+- `where`-clause bound list multi-line.
+- `EIf` (inline form), `EMatch` (inline form), `ELambda`,
+  `EForall`, `EExists`, record-constructor multi-line layouts.
+
+
 
 ### D-progress-145: M5.3 stage 9 — width-driven multi-line expression rendering in `Lyric.Fmt` (120-char budget)
 

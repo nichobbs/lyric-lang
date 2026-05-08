@@ -650,7 +650,11 @@ pub func whereClauseStr(wc: in Option[WhereClause]): String {
 pub func paramStr(p: in Param): String {
   val modeStr = match p.mode {
     case PMIn    -> "in "
-    case PMOut   -> "acc "
+    // The Lyric keyword is `out`; the original `out` → `acc` rename
+    // (D-progress-131 reserved-keyword cleanup) accidentally rewrote
+    // this display string.  Drive the output off the source spelling
+    // instead.
+    case PMOut   -> "out "
     case PMInout -> "inout "
   }
   val defStr = match p.dflt {
@@ -669,6 +673,63 @@ pub func paramsStr(ps: in List[Param]): String {
     i = i + 1
   }
   s
+}
+
+/// Width-driven multi-line parameter-list rendering.  Returns a `Doc`
+/// that's either a single line "p1, p2, …, pN" (no trailing comma) or
+/// a multi-line list with one parameter per line and a trailing comma
+/// after every entry (Black-style "magic trailing comma" — keeps git
+/// diffs tight when adding a new parameter).  Caller is responsible
+/// for the surrounding `(` / `)` punctuation.
+///
+/// The `col` argument is the source column where the FIRST parameter
+/// starts (i.e. just after the `(`).  When the inline rendering plus
+/// any caller-supplied suffix length (e.g. `") -> Foo"`) overruns the
+/// 120-char budget at that column, the multi-line form fires.  The
+/// caller telegraphs `suffixLen` via the budget-check helper
+/// `paramsFitInline`; here we just assume a 0-length suffix and let
+/// the caller make the final decision when it knows what comes after
+/// the closing paren.
+pub func paramsAtCol(col: in Int, ctx: inout FmtCtx, ps: in List[Param]): List[String] {
+  if ps.count == 0 { return singleLineDoc("") }
+  val inline = paramsStr(ps)
+  // Budget peek + cursor-relative trivia peek.  `lo = 0` so we catch
+  // unpopped trivia anywhere up to the last param's end — including
+  // comments between `(` and the FIRST param, which are in the first
+  // param's leading trivia (offset < `ps[0].span.startPos.offset`).
+  // Caller's `paramsFitInline` does the precise budget check.
+  val lastEnd = ps[ps.count - 1].span.endPos.offset
+  val triviaInside = hasTriviaInRange(ctx, 0, lastEnd)
+  if not triviaInside and col + inline.length <= maxWidth() {
+    return singleLineDoc(inline)
+  }
+  // Multi-line: each param on its own line, trailing comma.
+  val acc: List[String] = newList()
+  var i = 0
+  while i < ps.count {
+    val p = ps[i]
+    val pre = popTriviaBefore(ctx, p.span.startPos.offset)
+    var k = 0
+    while k < pre.count {
+      val line = pre[k]
+      if line == "" { acc.add("") } else { acc.add(line) }
+      k = k + 1
+    }
+    acc.add(paramStr(p) + ",")
+    i = i + 1
+  }
+  acc
+}
+
+/// Companion budget check for callers who know the suffix length
+/// (typically `") <retStr>"` for a function decl signature).  Returns
+/// `true` when the params CAN be rendered inline given the suffix
+/// budget; `false` forces the multi-line path.
+@pure
+pub func paramsFitInline(col: in Int, ps: in List[Param], suffixLen: in Int): Bool {
+  if ps.count == 0 { return true }
+  val inline = paramsStr(ps)
+  col + inline.length + suffixLen <= maxWidth()
 }
 
 pub func contractStr(cc: in ContractClause): String {
@@ -923,6 +984,11 @@ func exprBinopMulti(col: in Int, ctx: inout FmtCtx, op: in BinOp, lhs: in Expr, 
   val prec = binPrec(op)
   // Render LHS at the same precedence so paren rules match `exprInline`.
   val lhsDoc = exprAtCol(col, ctx, lhs)
+  // Trivia between LHS and RHS — comments and intentional blank lines
+  // anchored at the RHS's source-start.  Popping here weaves them
+  // BETWEEN the two operand renderings; without this they'd escape
+  // to the next outer structural boundary (the enclosing statement).
+  val betweenOperands = popTriviaBefore(ctx, rhs.span.startPos.offset)
   val rhsPrec = match op {
     case BImplies  -> prec
     case BCoalesce -> prec
@@ -937,6 +1003,13 @@ func exprBinopMulti(col: in Int, ctx: inout FmtCtx, op: in BinOp, lhs: in Expr, 
     val isLast = i + 1 >= lhsDoc.count
     if isLast { acc.add(lhsDoc[i] + opStr) }
     else      { acc.add(lhsDoc[i]) }
+    i = i + 1
+  }
+  // Inter-operand trivia: indented to RHS's column (col + 2).
+  i = 0
+  while i < betweenOperands.count {
+    val line = betweenOperands[i]
+    if line == "" { acc.add("") } else { acc.add("  " + line) }
     i = i + 1
   }
   // RHS lines: indent every line by 2 (relative to col).
@@ -968,6 +1041,17 @@ func exprListMulti(col: in Int, ctx: inout FmtCtx, elems: in List[Expr], opener:
   while i < elems.count {
     val isLast = i + 1 >= elems.count
     val tail = if isLast { "" } else { "," }
+    // Comments / intentional blank lines that sit before this element
+    // in the source.  Same per-arg pattern used in `exprCallMulti` —
+    // anchors the trivia between the previous element and this one
+    // instead of letting it escape to the next outer boundary.
+    val pre = popTriviaBefore(ctx, elems[i].span.startPos.offset)
+    var p = 0
+    while p < pre.count {
+      val line = pre[p]
+      if line == "" { acc.add("") } else { acc.add("  " + line) }
+      p = p + 1
+    }
     val elemDoc = exprAtCol(elemCol, ctx, elems[i])
     var j = 0
     while j < elemDoc.count {
