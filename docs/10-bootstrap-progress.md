@@ -88,6 +88,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M9 — multiple TypeDefs: `msil_self_test_m9.l` builds a PE with three classes (`Foo`, `Bar`, `Hello`) each owning one static method; verifies that `TypeDef.methodList` correctly partitions `MethodDef` rows across TypeDefs; CLR prints `GetFoo()+GetBar() = 30` | **Shipped** (this branch) | D-progress-148 |
 | MSIL PE emitter Stage M10 — virtual method dispatch (`callvirt`): `msil_self_test_m10.l` builds a PE with abstract `Base` (virtual `GetValue():int`), concrete `Impl` (override returning 77), and `Hello.Main()` using `newobj` + `callvirt` on the base token; verifies CLR dispatches to the override and prints 77 | **Shipped** (this branch) | D-progress-149 |
 | MSIL PE emitter Stage M11 — `InterfaceImpl` table: `msil_self_test_m11.l` builds a PE with CLR interface `IGetter` (abstract `GetValue():int`), concrete `Impl` implementing it (returning 42), `InterfaceImpl[1]` wiring the relationship, and `Hello.Main()` dispatching via `callvirt` on the interface token; verifies the `InterfaceImpl` (0x09) table is serialised correctly | **Shipped** (this branch) | D-progress-150 |
+| MSIL PE emitter Stage M12 — conditional branch: `msil_self_test_m12.l` builds a PE with `Main()` computing `if 7 > 4 { 1 } else { 0 }` using `cgt` + `brfalse` + `br` + label resolution; verifies 2-byte `0xFE`-prefixed comparison opcode, 5-byte branch instructions with correct signed relative offsets, and CLR execution prints `1` | **Shipped** (this branch) | D-progress-151 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1049,6 +1050,52 @@ in CLR stdout, confirming the CLR resolved the interface dispatch correctly.
 
 **Test wiring**: `MsilSelfTestM11.fs` added to `Lyric.Emitter.Tests`; all 14
 MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10, M11).
+
+---
+
+### D-progress-151: MSIL PE emitter Stage M12 — conditional branch (cgt / brfalse / br)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M12 verifies conditional control flow — the fundamental building block
+for any non-trivial computation in the self-hosted MSIL emitter.
+
+**`msil_self_test_m12.l`** builds a single-method PE whose `Main()` computes
+`if 7 > 4 { Console.WriteLine(1) } else { Console.WriteLine(0) }`:
+
+```
+offset  0  1D          ldc.i4.7
+offset  1  1A          ldc.i4.4
+offset  2  FE 02       cgt            (2-byte prefixed opcode)
+offset  4  39 06 00 00 00  brfalse else_lbl  (relative offset +6)
+offset  9  17          ldc.i4.1
+offset 10  38 01 00 00 00  br end_lbl  (relative offset +1)
+[else_lbl = offset 15]
+offset 15  16          ldc.i4.0
+[end_lbl = offset 16]
+offset 16  28 01 00 00 0A  call Console.WriteLine(int)
+offset 21  2A          ret
+```
+
+Key verified properties:
+- `cgt` is a 2-byte `0xFE`-prefixed opcode (OP2_CGT = 0x02); the serializer
+  correctly emits `FE 02` as a `Nullary2` instruction.
+- `brfalse` and `br` are 5-byte instructions: opcode + signed i32 LE relative
+  offset (from the start of the next instruction). The label resolver
+  computes `else_lbl - (brfalse_end) = 15 - 9 = 6` and
+  `end_lbl - (br_end) = 16 - 15 = 1` correctly.
+- The `mbNewLabel` / `mbMarkLabel` two-pass label system resolves forward
+  references correctly.
+
+Body codeSize = 22; tiny header = `(22 << 2) | 2 = 0x5A` at file offset 0x248.
+BSJB metadata root at 0x25F (= 0x248 + 1 + 22).
+
+Structural checks verify `main_hdr_ok`, `ldc_ok`, `cgt_ok`, `brfalse_ok`,
+`br_ok`, `branches_ok`, and `bsjb_ok`. The F# harness executes the PE
+and asserts `"1"` appears in CLR stdout (7 > 4 is true).
+
+**Test wiring**: `MsilSelfTestM12.fs` added to `Lyric.Emitter.Tests`; all 15
+MSIL self-tests pass (M1, M2a–M2d, M3–M12).
 
 ---
 
