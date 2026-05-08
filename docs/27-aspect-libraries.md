@@ -5,6 +5,18 @@
 without superseding it; the package-scoped weaving rule from D047
 §16 still holds — only the *advice body and contract clauses*
 travel across the package boundary, not the `matches:` site.
+**Worked example / pressure-test:** `docs/28-std-aspects-sketch.md`
+sketches a putative `Std.Aspects` library with five candidate
+aspects (`Logging` / `Timing` / `Validating` / `Auth` / `Tracing`)
+plus a real-shaped consumer that exercises §6's hybrid B+C ABI,
+§9.1's shape verification, and Q-aspectlib-005's required-config
+propagation.  Most §5 tensions surfaced there have been folded
+back into this doc as numbered subsections.
+**Aspect-to-aspect contract inheritance:**
+`docs/30-aspect-contract-inheritance-sketch.md` extends Q-aspects-006
+with a pre/post-symmetric inheritance rule — applies to library
+aspects participating in the consumer's composition graph
+unchanged from D047 §6.
 **Decision-log entry:** TBD on adoption.
 
 ---
@@ -596,11 +608,12 @@ poked.
   Requires a new `@must_override` marker on the library side and
   consumer-side syntax for compile-time config bindings.  Defer
   until a real use case demands it.
-- **Q-aspectlib-006 — Calling convention and the F# bootstrap.**
-  The F# bootstrap is being retired (CLAUDE.md / `docs/23`); the
-  ABI choice from §6 only really matters for the self-hosted
-  emitter.  Implication: aspect libraries land *after* M5.2
-  stage 3+ ships the AST→MSIL bridge.  Not blocked on F#.
+- **Q-aspectlib-006 — Implementation sequencing.**  Not really
+  an open design question; just a sequencing fact.  Aspect
+  libraries land *after* M5.2 stage 3+ ships the AST→MSIL
+  bridge in the self-hosted compiler.  The F# bootstrap is
+  being retired (CLAUDE.md / `docs/23`) and won't carry the
+  weaver, so there's no parallel-implementation concern.
 - **Q-aspectlib-007 — Cross-package `use` ordering.**  A `use`
   block in package A can name aspect `B.Foo` in `wraps:` /
   `inside:` only if `Foo` is also `use`d (or locally declared)

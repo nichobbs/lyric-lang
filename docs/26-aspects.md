@@ -1,6 +1,15 @@
 # 26 — Compile-time Aspects
 
-**Status:** Drafted.  v1 implementation in progress.
+**Status:** Partially shipped — v1 surface (parser + AST +
+type-check + symbol table) implemented in the F# bootstrap and
+self-hosted compiler (PRs #206, #227).  Runtime weaver
+(wrapper synthesis, contract composition, ordering, runtime
+config, `@no_aspect` opt-out) is the remaining v1 work;
+deferred to whichever compiler ships it first.  Library
+distribution: `docs/27-aspect-libraries.md`.  Worked-example
+pressure-test: `docs/28-std-aspects-sketch.md`.  Aspect
+contract inheritance v1.x sketch:
+`docs/30-aspect-contract-inheritance-sketch.md`.
 **Implementation:** Phase 2 — depends on `docs/24-build-features.md`
 (compile-time gating) and `docs/25-config-blocks.md` (typed env-backed
 config) shipping first. The verifier-side discharge (§11) lights up
@@ -183,7 +192,7 @@ wrapper.
 ### 3.4 What can match
 
 Aspects only weave over `func` definitions. Method calls, free
-function calls, and trait methods (when those exist) are all
+function calls, and interface-method implementations are all
 candidates. Type constructors and operator overloads are **not**
 candidates in v1 (tracked as Q-aspects-001).
 
@@ -726,7 +735,7 @@ metadata fields and calls into the helpers). The helpers exist once.
 
 Typed access to generic args inside advice (e.g. `args.x: T`) re-bloats
 the helper unless the aspect author erases to a uniform shape (`String`
-formatting, `Std.Display`-like trait, etc.). v1 does not solve this for
+formatting, `Std.Display`-like interface, etc.). v1 does not solve this for
 the aspect author; it's the same trade-off any monomorphised generic
 faces.
 

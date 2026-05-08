@@ -1,6 +1,14 @@
 # 25 — Config Blocks (typed, env-backed, read-once)
 
-**Status:** Drafted.  v1 implementation in progress.
+**Status:** Partially shipped — v1 surface (parser + AST +
+type-check + symbol table) implemented in the F# bootstrap and
+self-hosted compiler (PRs #206, #227).  Emitter lowering
+(env-var startup hook + static fields + field-access
+resolution) is the remaining v1 work; deferred to whichever
+compiler ships it first (the F# bootstrap is being retired,
+so most likely the self-hosted compiler once M5.2 stage 3+
+ships the AST→MSIL bridge).  v2 sketch:
+`docs/29-config-v2-sketch.md`.
 **Implementation:** prerequisite for `docs/26-aspects.md` runtime
 toggles.  Independently useful for application-level configuration.
 **Decision-log entry:** D046.
@@ -332,13 +340,15 @@ The `G0001`–`G0005` codes are runtime; the rest are compile time.
 The following are **deliberately deferred**. The v1 design preserves
 syntactic and runtime room for each.
 
-- **File-based config source.** Reading a TOML/JSON/YAML file in
-  addition to env vars. Plausibly adds a `from "config.toml"` clause
-  to `config` blocks. Tracked as Q-config-001.
+- **File-based config source.** Reading a TOML file in addition
+  to env vars. Tracked as Q-config-001; v2 sketch at
+  `docs/29-config-v2-sketch.md`.
 - **Layered config.** Defaults → file → env → CLI flags, with each
-  layer overriding the previous. Tracked as Q-config-002. The v1
-  design's "env-only, read-once" is a clean subset of any layered
-  scheme.
+  layer overriding the previous. Tracked as Q-config-002; v2
+  sketch at `docs/29-config-v2-sketch.md` (covers Q-config-001
+  and Q-config-002 together since they're tightly coupled). The
+  v1 design's "env-only, read-once" is a clean subset of the
+  layered scheme.
 - **Hot reload.** Changing a config value after process startup. Hard
   to reconcile with `@proof_required` (proofs depend on the value
   being fixed). Probably never; tracked as Q-config-003.

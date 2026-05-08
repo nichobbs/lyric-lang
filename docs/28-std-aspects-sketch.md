@@ -503,6 +503,11 @@ bridge ships.
 
 - `docs/26-aspects.md` (D047) — the base aspect design.
 - `docs/27-aspect-libraries.md` — the library/consumer split.
+- `docs/30-aspect-contract-inheritance-sketch.md` — the v1.x
+  inheritance design that unlocks the canonical
+  `Validating + Auth` composition (§3) without forcing every
+  auth-flavoured aspect to repeat preconditions.  See §10
+  for the connection back to this sketch.
 - `docs/25-config-blocks.md` (D046) — required-field
   fail-fast rule that Auth.tenantId rides on.
 - `docs/24-build-features.md` (D045) — `@cfg` gating, mostly

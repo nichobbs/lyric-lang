@@ -1672,7 +1672,17 @@ Full specification in `docs/24-build-features.md`.
   flexible, much more parser surface, more diagnostic complexity.
   Two functions with `@cfg` at the item level cover the use case.
 
-**Revisions:** None.
+**Revisions:**
+
+- 2026-05-08 — **Q-features-001 closed** (cross-package feature
+  unification).  Not applicable to Lyric's binary-distribution
+  model: published `.dll`s pin the library's feature set at
+  `lyric publish` time, so consumers cannot toggle features on
+  a dependency the way Cargo allows (Cargo's source-distribution
+  model is fundamentally different).  Library authors who want
+  consumer-toggleable behaviour should use D046 runtime config
+  instead.  Spec: `docs/24-build-features.md` §1.1 + §7 + §8;
+  user-facing equivalent: book chapter 19 §19.7.1.
 
 ---
 
@@ -1752,7 +1762,22 @@ types are out of scope. Full specification in
   to importers. Rejected: encourages ambient global state and
   conflicts with the per-package contract model.
 
-**Revisions:** None.
+**Revisions:**
+
+- 2026-05-08 — **Q-config-004 resolved.**  Config block field
+  names, types, defaults, and `@sensitive` markers ship in
+  the `Lyric.BuildInfo` resource so ops tooling can enumerate
+  the env-var surface of a binary without running it.  Field
+  *values* are not recorded (those are runtime-only).  Spec:
+  `docs/25-config-blocks.md` §10.
+
+- 2026-05-08 — **v2 sketch published** at
+  `docs/29-config-v2-sketch.md` covering Q-config-001 (file
+  source) and Q-config-002 (layered precedence).  Six
+  tensions surfaced; four flagged as needing resolution
+  before any v2 implementation.  v1 contract shift
+  (required-field semantics across layers) flagged as
+  needing its own decision-log entry on adoption.
 
 ---
 
@@ -1965,11 +1990,19 @@ key points:
     `docs/27-aspect-libraries.md` §9.1.  Diagnostic
     `A0042`.
 
-- 2026-05-08 — Q-config-004 (D046 / `Lyric.BuildInfo`)
-  resolved: config block field names, types, defaults, and
-  `@sensitive` markers ship in `Lyric.BuildInfo` for ops
-  tooling.  Field *values* are not recorded.  Spec:
-  `docs/25-config-blocks.md` §10.
+  (Q-config-004 originally listed here was a D046 question;
+  moved to the D046 revisions block above.)
+
+- 2026-05-08 — **v1.x sketch published** at
+  `docs/30-aspect-contract-inheritance-sketch.md` extending
+  Q-aspects-006's "desirable, deferred" status with a
+  pre/post-symmetric inheritance rule: pre-`proceed` inherits
+  every aspect's `requires:` (wrapper-boundary check
+  guarantees them), post-`proceed` inherits only
+  strictly-inner aspects' `ensures:` (temporal walk back).
+  Conservative `mut args` lean (inheritance breaks at
+  upstream rewrites; aggressive `@preserves` deferred to v2).
+  Four "before-implementation" tensions flagged.
 
 ---
 
