@@ -92,6 +92,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M13 — while loop / backward branch: `msil_self_test_m13.l` builds a PE with `Main()` summing 1..5 via a while loop; uses fat method header (2 int32 locals via `StandAloneSig`), `cgt` + `brtrue` for exit condition, and a backward `br` with negative signed offset; CLR prints `15` | **Shipped** (this branch) | D-progress-152 |
 | MSIL PE emitter Stage M14 — `newarr` + array element access: `msil_self_test_m14.l` builds a PE with `Main()` creating an `int32[3]` array, storing 10/20/30 via `stelem`, loading and summing via `ldelem`, and calling `Console.WriteLine(60)`; adds `TypeRef[3]` for `System.Int32` as element-type token; CLR prints `60` | **Shipped** (this branch) | D-progress-153 |
 | MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4` (64-bit literals): `msil_self_test_m15.l` builds a PE with `Main()` pushing `1000000000i64` and `2i64` via `ldc.i8` (9-byte instruction), multiplying, narrowing to `int32` via `conv.i4`, and calling `Console.WriteLine(2000000000)`; verifies the 8-byte LE constant encoding | **Shipped** (this branch) | D-progress-154 |
+| MSIL PE emitter Stage M16 — `switch` table: `msil_self_test_m16.l` builds a PE with `Main()` dispatching value `2` via a 3-target `switch` instruction; target[2] pushes 42 and falls through to `Console.WriteLine`; verifies opcode `0x45`, count encoding, and each target's signed relative offset | **Shipped** (this branch) | D-progress-155 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1213,6 +1214,45 @@ Key verified byte positions:
 
 **Test wiring**: `MsilSelfTestM15.fs` added to `Lyric.Emitter.Tests`; all 19
 MSIL self-tests pass (M1, M2a–M2d, M3–M15).
+
+---
+
+### D-progress-155: MSIL PE emitter Stage M16 — `switch` table
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M16 verifies the variable-length `switch` table instruction — the
+primary mechanism for dispatching on enum/union tag values in the self-hosted
+MSIL emitter.
+
+**`msil_self_test_m16.l`** builds a PE with `Main()`:
+
+```
+ldc.i4.2                       push 2 (dispatch key)
+switch [lbl0, lbl1, lbl2]      3-target switch
+  (default) ldc.i4.s 99 / br end
+  lbl0: ldc.i4.s 10 / br end
+  lbl1: ldc.i4.s 20 / br end
+  lbl2: ldc.i4.s 42            (reached; fall through)
+end: call Console.WriteLine(int) / ret
+```
+
+The switch instruction is: opcode `0x45` + count (u32 LE) + count × target
+(i32 LE signed offsets from the instruction after the switch). Targets are:
+- target[0] = +7 (lbl0 at code offset 25, next-after-switch at 18)
+- target[1] = +14 (lbl1 at offset 32)
+- target[2] = +21 (lbl2 at offset 39)
+
+Key verified byte positions:
+- Tiny header `0xBE` at 0x248 (codeSize=47, (47<<2)|2=190=0xBE).
+- `switch` opcode `0x45` at file 0x24A (code offset 1).
+- Count `03 00 00 00` at file 0x24B–0x24E.
+- target[0] = `07 00 00 00` at file 0x24F.
+- target[2] = `15 00 00 00` at file 0x257 (21 = 0x15).
+- BSJB at 0x278.
+
+**Test wiring**: `MsilSelfTestM16.fs` added to `Lyric.Emitter.Tests`; all 20
+MSIL self-tests pass (M1, M2a–M2d, M3–M16).
 
 ---
 
