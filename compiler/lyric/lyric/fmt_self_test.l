@@ -294,6 +294,77 @@ func testBlankLineBetweenContractClauses(): Unit {
              "contract: blank line between clauses preserved")
 }
 
+func testCommentBeforeWhereClause(): Unit {
+  // Phase 5 §M5.3 stage 8: a comment immediately before a `where`
+  // clause on a function signature must survive — anchored at the
+  // where clause's start offset.
+  val src =
+    "package P\n" +
+    "func max[T](a: in T, b: in T): T\n" +
+    "  // T must be ordered\n" +
+    "  where T: Compare\n" +
+    "  { if a > b { a } else { b } }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// T must be ordered"),
+             "where: comment before where clause preserved")
+  assertTrue(Str.contains(acc, "where T: Compare"),
+             "where: where clause itself emitted")
+}
+
+func testCommentBetweenWhereAndContract(): Unit {
+  // The self-hosted parser expects `where` BEFORE contract clauses on
+  // a function signature.  A comment sitting between the where clause
+  // and the following contract clause anchors at the contract clause
+  // boundary.
+  val src =
+    "package P\n" +
+    "func cap[T](x: in T): T\n" +
+    "  where T: Compare\n" +
+    "  // x is unchanged\n" +
+    "  requires: true\n" +
+    "  { x }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "where T: Compare"),
+             "where+contract: where clause emitted")
+  assertTrue(Str.contains(acc, "// x is unchanged"),
+             "where+contract: comment between where and contract preserved")
+  assertTrue(Str.contains(acc, "requires: true"),
+             "where+contract: requires emitted")
+}
+
+func testWhereThenContractRoundTrips(): Unit {
+  // Round-trip lock: the self-hosted parser accepts `where` only
+  // before contract clauses, so the formatter must output them in
+  // that order.  `format(format(parse(src))) == format(parse(src))`
+  // and the second parse must succeed without diagnostics.
+  val src =
+    "package P\n" +
+    "func cap[T](x: in T): T\n" +
+    "  where T: Compare\n" +
+    "  requires: true\n" +
+    "  { x }\n"
+  val pr1 = parse(src)
+  assertEqualInt(pr1.diagnostics.count, 0, "round-trip: first parse clean")
+  val once = format(pr1)
+  val pr2 = parse(once)
+  assertEqualInt(pr2.diagnostics.count, 0, "round-trip: re-parse of format output is clean")
+  val twice = format(pr2)
+  assertEqual(twice, once, "round-trip: format is idempotent for where+contracts")
+  // Lock in the wire order: `where` must precede `requires` in the output.
+  val wIdx = match Str.indexOf(once, "where T: Compare") {
+    case Some(i) -> i
+    case None    -> -1
+  }
+  val rIdx = match Str.indexOf(once, "requires: true") {
+    case Some(i) -> i
+    case None    -> -1
+  }
+  assertTrue(wIdx >= 0 and rIdx >= 0, "round-trip: both clauses emitted")
+  assertTrue(wIdx < rIdx, "round-trip: where appears before requires")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -335,5 +406,8 @@ func main(): Unit {
   testTrailingBlankBeforeClosingBrace()
   testCommentBeforeContractClause()
   testBlankLineBetweenContractClauses()
+  testCommentBeforeWhereClause()
+  testCommentBetweenWhereAndContract()
+  testWhereThenContractRoundTrips()
   println("fmt self-test: ok")
 }
