@@ -90,6 +90,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M11 — `InterfaceImpl` table: `msil_self_test_m11.l` builds a PE with CLR interface `IGetter` (abstract `GetValue():int`), concrete `Impl` implementing it (returning 42), `InterfaceImpl[1]` wiring the relationship, and `Hello.Main()` dispatching via `callvirt` on the interface token; verifies the `InterfaceImpl` (0x09) table is serialised correctly | **Shipped** (this branch) | D-progress-150 |
 | MSIL PE emitter Stage M12 — conditional branch: `msil_self_test_m12.l` builds a PE with `Main()` computing `if 7 > 4 { 1 } else { 0 }` using `cgt` + `brfalse` + `br` + label resolution; verifies 2-byte `0xFE`-prefixed comparison opcode, 5-byte branch instructions with correct signed relative offsets, and CLR execution prints `1` | **Shipped** (this branch) | D-progress-151 |
 | MSIL PE emitter Stage M13 — while loop / backward branch: `msil_self_test_m13.l` builds a PE with `Main()` summing 1..5 via a while loop; uses fat method header (2 int32 locals via `StandAloneSig`), `cgt` + `brtrue` for exit condition, and a backward `br` with negative signed offset; CLR prints `15` | **Shipped** (this branch) | D-progress-152 |
+| MSIL PE emitter Stage M14 — `newarr` + array element access: `msil_self_test_m14.l` builds a PE with `Main()` creating an `int32[3]` array, storing 10/20/30 via `stelem`, loading and summing via `ldelem`, and calling `Console.WriteLine(60)`; adds `TypeRef[3]` for `System.Int32` as element-type token; CLR prints `60` | **Shipped** (this branch) | D-progress-153 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1138,8 +1139,49 @@ Structural checks verify `fat_hdr_ok`, `code_size_ok`, `local_sig_ok`,
 `cgt_ok`, `brtrue_ok`, `br_back_ok`, and `bsjb_ok`. The F# harness
 executes the PE and asserts `"15"` appears in CLR stdout.
 
-**Test wiring**: `MsilSelfTestM13.fs` added to `Lyric.Emitter.Tests`; all 16
+**Test wiring**: `MsilSelfTestM13.fs` added to `Lyric.Emitter.Tests`; all 17
 MSIL self-tests pass (M1, M2a–M2d, M3–M13).
+
+---
+
+### D-progress-153: MSIL PE emitter Stage M14 — `newarr` + array element access
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M14 verifies array creation (`newarr`), indexed stores (`stelem`), and
+indexed loads (`ldelem`) — all token-bearing 5-byte instructions using a
+`TypeRef` for the element type.
+
+**`msil_self_test_m14.l`** builds a PE with `Main()` that:
+
+```
+ldc.i4.3 / newarr Int32 / stloc.0   arr = new int32[3]
+ldloc.0 / ldc.i4.0 / ldc.i4.s 10 / stelem Int32   arr[0] = 10
+ldloc.0 / ldc.i4.1 / ldc.i4.s 20 / stelem Int32   arr[1] = 20
+ldloc.0 / ldc.i4.2 / ldc.i4.s 30 / stelem Int32   arr[2] = 30
+ldloc.0 / ldc.i4.0 / ldelem Int32   push arr[0]=10
+ldloc.0 / ldc.i4.1 / ldelem Int32   push arr[1]=20
+add                                  30
+ldloc.0 / ldc.i4.2 / ldelem Int32   push arr[2]=30
+add                                  60
+call Console.WriteLine(int) / ret
+```
+
+A `TypeRef[3]` for `System.Int32` is added (beyond the existing Console and
+Object refs) and used as the element-type token `0x01000003` for `newarr`,
+`stelem`, and `ldelem`. The local `int32[]` array is held in local 0 via a
+fat method header; `LocalVarSig` = `{0x07, 0x01, 0x1D, 0x08}` (LOCALS, 1
+variable, SZARRAY, I4).
+
+Key verified byte positions:
+- Fat header at 0x248; codeSize = 63 (`0x3F`), `localVarSigTok = 0x11000001`.
+- `newarr` opcode `0x8D` at 0x255; token LE `03 00 00 01` at 0x256–0x259.
+- First `stelem` opcode `0xA4` at 0x25F; token LE at 0x260–0x263.
+- First `ldelem` opcode `0xA3` at 0x278; token LE at 0x279–0x27C.
+- BSJB at 0x293.
+
+**Test wiring**: `MsilSelfTestM14.fs` added to `Lyric.Emitter.Tests`; all 18
+MSIL self-tests pass (M1, M2a–M2d, M3–M14).
 
 ---
 
