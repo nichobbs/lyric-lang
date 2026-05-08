@@ -1978,6 +1978,31 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-200: MSIL PE emitter Stages M61–M65 — overflow arith, int/float conversions, misc loads
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched:
+
+- **M61** (add.ovf/sub.ovf/mul.ovf + .un, 0xD6/0xDA/0xD8/0xD7/0xDB/0xD9): checked arithmetic.
+  `21+21=42`, sub.ovf/mul.ovf/+un variants keep 42. Tiny header (codeSize=21 → 0x56).
+
+- **M62** (conv.i1/i2/i4/i8, 0x67/0x68/0x69/0x6A): signed integer conversions. `42` round-trips
+  through all four. Tiny header (codeSize=13 → 0x36). conv.i4 used twice (4 and 6).
+
+- **M63** (conv.u1/u2/u4/u8, 0xD2/0xD1/0x6D/0x6E): unsigned integer conversions. Same round-trip.
+  Tiny header (codeSize=13 → 0x36).
+
+- **M64** (conv.r8/r4/r.un, 0x6C/0x6B/0x76): float conversions with int round-trip.
+  `42→r8→i4 + 0→r4→i4 + 0→r.un→i4 = 42`. Tiny header (codeSize=18 → 0x4A).
+
+- **M65** (ldc.i8/ldc.i4.m1/ldnull, 0x21/0x15/0x14): misc loads. `ldc.i8 43i64 + ldc.i4.m1(-1) = 42`;
+  ldnull/pop exercises null push without printing. Tiny header (codeSize=20 → 0x52).
+
+69 MSIL self-tests pass (M1–M65).
+
+---
+
 ### D-progress-199: MSIL PE emitter Stages M56–M60 — bitwise, unary, shift, remainder, stack misc
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
