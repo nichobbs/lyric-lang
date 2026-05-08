@@ -96,6 +96,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M17 — bitwise operations: `msil_self_test_m17.l` builds a PE with `Main()` computing `(60 & 13) + (60 | 13) = 12 + 61 = 73`; exercises `and` (0x5F), `or` (0x60) opcodes; CLR prints `73` | **Shipped** (this branch) | D-progress-156 |
 | MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals): `msil_self_test_m18.l` builds a PE with `Main()` pushing `3.0` and `2.0` via `ldc.r8` (9-byte instruction with IEEE 754 f64 LE constant), multiplying via `mul`, and calling `Console.WriteLine(double)`; verifies opcode and the 8-byte encoding of `3.0`; CLR prints `6` | **Shipped** (this branch) | D-progress-157 |
 | MSIL PE emitter Stage M19 — `sub` + `rem`: `msil_self_test_m19.l` builds a PE with `Main()` computing `(23 - 3) % 13 = 7`; exercises `sub` (0x59) and `rem` (0x5D); CLR prints `7` | **Shipped** (this branch) | D-progress-158 |
+| MSIL PE emitter Stage M20 — exception handling (try/catch): `msil_self_test_m20.l` builds a PE whose `Main()` throws `System.Exception` in a try block and catches it, printing `42`; exercises `EHClause` record + `mbAddEHClause`, `MoreSects` flag (0x1B) in fat header, fat EH section (kind=0x41), `leave` (0xDD), `throw` (0x7A), and `newobj` (0x73); CLR prints `42` | **Shipped** (this branch) | D-progress-159 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1341,6 +1342,60 @@ Key verified byte positions:
 
 **Test wiring**: `MsilSelfTestM19.fs` added to `Lyric.Emitter.Tests`; all 23
 MSIL self-tests pass (M1, M2a–M2d, M3–M19).
+
+---
+
+### D-progress-159: MSIL PE emitter Stage M20 — exception handling (try/catch)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M20 introduces exception handling sections — the most structurally
+complex addition to the method-body serialiser so far.
+
+**New infrastructure in `opcodes.l`**:
+
+- `EHClause` record: `flags` (0=typed catch, 2=finally, 4=fault),
+  `tryStart`/`tryEnd`/`handlerStart`/`handlerEnd` (label IDs),
+  `catchToken` (TypeRef/TypeDef token).
+- `ehClauses: List[EHClause]` field added to `MethodBody`.
+- `mbAddEHClause(b, clause)` — appends a clause to the method body.
+- Fat header `flags1` becomes `0x1B` (FatFormat|InitLocals|MoreSects)
+  when any EH clauses are attached; otherwise stays `0x13`.
+- After the code bytes (and 4-byte alignment padding), the serialiser
+  emits a fat EH section: kind `0x41` (SectEHTable|SectFatFormat),
+  3-byte little-endian `dataSize` = 4 + 24×nClauses, then one 24-byte
+  fat clause per entry.
+
+**`msil_self_test_m20.l`** code layout (fat header):
+
+```
+offset  0  newobj  System.Exception::.ctor()   [5 bytes]
+offset  5  throw                                [1 byte]
+offset  6  leave   end_lbl (rel=12)             [5 bytes]
+offset 11  [handler_start]
+offset 11  pop                                  [1 byte]
+offset 12  ldc.i4.s 42                          [2 bytes]
+offset 14  stloc.0                              [1 byte]
+offset 15  leave   end_lbl (rel=3)              [5 bytes]
+offset 20  [handler_end / try_end / end_lbl]
+offset 20  ldloc.0                              [1 byte]
+offset 21  call Console.WriteLine(int)          [5 bytes]
+offset 26  ret                                  [1 byte]
+```
+
+EH clause: flags=0 (typed catch), tryOffset=0, tryLength=11,
+handlerOffset=11, handlerLength=9,
+catchToken=0x01000003 (TypeRef[3]=System.Exception).
+
+File layout:
+- Fat header at 0x248 (`0x1B 0x30`).
+- Code (27 bytes) at 0x254; ends at 0x26F → 1 pad byte → EH at 0x270.
+- EH section: kind=0x41 at 0x270, dataSize=0x1C at 0x271.
+- BSJB at 0x28C.
+
+**Test wiring**: `MsilSelfTestM20.fs` added to `Lyric.Emitter.Tests`; all 24
+MSIL self-tests pass (M1, M2a–M2d, M3–M20).  CLR execution: throw →
+caught → prints `42`.
 
 ---
 

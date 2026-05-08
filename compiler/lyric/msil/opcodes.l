@@ -328,16 +328,35 @@ pub func iLeave(lbl: in Int):    Insn = Branch(op = OP_LEAVE, label = lbl)
 
 // ── MethodBody ───────────────────────────────────────────────────────────────
 
+// Exception handling clause for a method body (ECMA-335 §II.25.4.6).
+// flags: 0=typed catch, 2=finally, 4=fault.
+// tryStart/tryEnd:       label IDs bracketing the try region (tryEnd = first insn after).
+// handlerStart/handlerEnd: label IDs bracketing the handler (handlerEnd = first insn after).
+// catchToken: metadata token for the catch type (TypeRef/TypeDef), or 0 for finally/fault.
+pub record EHClause {
+  flags:        Int
+  tryStart:     Int
+  tryEnd:       Int
+  handlerStart: Int
+  handlerEnd:   Int
+  catchToken:   Int
+}
+
 pub record MethodBody {
   insns:    List[Insn]
   maxStack: Int
   localSig: Int
   nextLbl:  Int
   swData:   List[Int]
+  ehClauses: List[EHClause]
 }
 
 pub func newMethodBody(): MethodBody {
-  MethodBody(insns = newList(), maxStack = 8, localSig = 0, nextLbl = 0, swData = newList())
+  MethodBody(insns = newList(), maxStack = 8, localSig = 0, nextLbl = 0, swData = newList(), ehClauses = newList())
+}
+
+pub func mbAddEHClause(b: in MethodBody, clause: in EHClause): Unit {
+  b.ehClauses.add(clause)
 }
 
 // Allocate a fresh label ID.  The label is unplaced until mbMarkLabel is called.
@@ -546,12 +565,15 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
   }
   val codeSize = pos
 
+  val hasEH = b.ehClauses.count > 0
+
   // Write method header.
-  if codeSize <= 63 and b.localSig == 0 {
+  if codeSize <= 63 and b.localSig == 0 and not hasEH {
     bufU1(w, (codeSize * 4) + 2)
   } else {
-    // Fat header: CorILMethod_FatFormat(0x3) | CorILMethod_InitLocals(0x10) | headerSize=3 in bits 12-15
-    bufU1(w, 0x13)
+    // Fat header flags: FatFormat(0x3) | InitLocals(0x10) | MoreSects(0x08 if EH present)
+    val fflags1 = if hasEH { 0x1B } else { 0x13 }
+    bufU1(w, fflags1)
     bufU1(w, 0x30)
     bufU2(w, b.maxStack)
     bufU4(w, codeSize)
@@ -641,5 +663,35 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
       }
     }
     ji = ji + 1
+  }
+
+  // Write fat exception handling section (ECMA-335 §II.25.4.5) if needed.
+  if hasEH {
+    // Align to 4-byte boundary.
+    while bufLen(w) % 4 != 0 { bufU1(w, 0x00) }
+
+    val nClauses = b.ehClauses.count
+    // Fat EH section: kind(1) + dataSize-u24(3) + n*24 bytes.
+    val dataSize = 4 + nClauses * 24
+    bufU1(w, 0x41)             // SectEHTable(0x01) | SectFatFormat(0x40)
+    bufU1(w, dataSize % 256)   // dataSize low byte
+    bufU1(w, (dataSize / 256) % 256)
+    bufU1(w, (dataSize / 65536) % 256)
+
+    var ci = 0
+    while ci < nClauses {
+      val clause = b.ehClauses[ci]
+      val tStart = resolveLbl(offsets, clause.tryStart)
+      val tEnd   = resolveLbl(offsets, clause.tryEnd)
+      val hStart = resolveLbl(offsets, clause.handlerStart)
+      val hEnd   = resolveLbl(offsets, clause.handlerEnd)
+      bufU4(w, clause.flags)
+      bufU4(w, tStart)
+      bufU4(w, tEnd - tStart)
+      bufU4(w, hStart)
+      bufU4(w, hEnd - hStart)
+      bufU4(w, clause.catchToken)
+      ci = ci + 1
+    }
   }
 }
