@@ -232,6 +232,31 @@ Lyric, verifier reasons over the parametric body once at publish
 and over the call boundary at consumer-side.  This is the right
 default for stable / large-bodied aspects.
 
+#### 6.1.1 `args` as an anonymous parametric record
+
+Inside a B-mode `pub aspect` body, `args` is an **anonymous
+parametric record** of the consumer-side target's parameters.
+The library author cannot read named fields off `args`
+(`args.x`, `args.user`, etc.) because the field set differs per
+consumer target.  The author *can* pass `args` along — to
+`proceed(args)`, to a logger that prints the record via a
+`Display` interface implementation, to anything generic over
+the parametric record type — but field access is reserved for
+consumer-side local aspects (D047).
+
+This is the right default for the same reason `Logging` /
+`Tracing` / `Timing` work: they're observers, not value
+inspectors.  Aspects that need typed field access (like a
+hypothetical `Sanitise` that rewrites `args.input`) belong as
+**local** aspects in the consumer's package, not as library
+aspects.  The library/consumer split deliberately surfaces this
+distinction.
+
+If a future use case demands field-typed library aspects, the
+mechanism is C-mode (`@inline_template`): the body is
+re-compiled inside the consumer's package, so `args.x` resolves
+against the consumer's actual target shape.
+
 ### 6.2 Opt-in — Option C: source-template via `@inline_template`
 
 ```lyric
@@ -263,6 +288,36 @@ Trade-offs vs. B:
   sites compounds.
 - The library DLL ships the body as bytes, not IL — it's not
   consumable from non-Lyric languages.
+
+#### 6.2.1 Imports inside an `@inline_template` body
+
+The template's body is re-compiled in the consumer's package, so
+every name it references must be resolvable in **the consumer's
+import scope**.  Lyric does **not** auto-hoist imports from the
+library into the consumer.  If a `@inline_template` aspect uses
+`Std.Time.nowMs()`, the consumer must `import Std.Time` itself.
+
+The library's contract surface advertises which imports the body
+needs (the published metadata records every package the body
+references — stdlib `Std.X`, compiler-namespace `Lyric.X`, and
+third-party / user packages alike).  Consumers that miss a
+required import get a
+type-check error at the `use` site:
+
+```
+A0041: aspect 'Timing' requires 'import Std.Time' in the consumer
+       package; add the import or omit the use declaration.
+```
+
+Auto-hoist was rejected because:
+- It's magic that scales badly: the consumer's import list no
+  longer reflects what the consumer's *source* depends on.
+- It conflicts with Lyric's "nothing is in scope unless
+  imported" rule that holds everywhere else.
+- Diagnostics get murkier — name-not-found errors point at
+  template source the consumer didn't write.
+
+Explicit imports keep the dependency surface visible.
 
 ### 6.3 Why no `@runtime_dispatch` (Option A) escape hatch
 
@@ -353,6 +408,68 @@ package, its body's correctness wasn't proven.  The consumer
 either accepts that (treating the library aspect as an extern
 boundary) or rejects the import (`@proof_required` packages
 typically refuse axiom-only imports already; same rule).
+
+### 9.1 Use-site shape verification
+
+A library `requires:` / `ensures:` clause may reference
+`args.<field>` — and that field has to actually exist on every
+target the consumer matches.  The consumer's compiler runs a
+shape-verification pass at every `use` site:
+
+For each `use Std.Aspects.X matches: <selector>`:
+1. Load `X`'s published `requires:` / `ensures:` clauses.
+2. Collect the set of fields they reference on `args`.
+3. For each target the selector matches, check that the target's
+   parameter list (treated as a record) carries every referenced
+   field with a compatible type.
+4. If any target is missing a referenced field, emit
+   `A0042: aspect 'X' requires args.<field> but target <T> has
+   no <field> field`.
+
+This gives `Std.Aspects.Auth.requires: args.callerToken != ""`
+sound semantics: the aspect can only be applied to handlers that
+all carry a `callerToken: String` field, and trying to apply it
+elsewhere is a compile-time error.
+
+#### 9.1.1 Applies to **both** B-mode and C-mode aspects
+
+Shape verification operates on the published *contract metadata*,
+not on the body's IL.  A B-mode aspect can declare a clause
+referencing `args.callerToken` even though §6.1.1 forbids the
+B-mode body from reading `args.callerToken` at runtime.  These
+are separate concerns:
+
+- **Body-level access** (§6.1.1, B-mode): the around-body's IL
+  cannot read named fields off `args`, because the body is
+  compiled once and the field set differs per consumer.
+- **Contract-clause shape check** (§9.1, both modes): the
+  consumer's compiler — which knows both the library's clauses
+  *and* the local target shapes — can verify clause references
+  against each matched target.  At runtime, the wrapper checks
+  `args.callerToken != ""` *before* dispatching to the library's
+  generic `Around` method, so the field access happens in
+  consumer-emitted code where the type is known.
+
+Concretely, `Std.Aspects.Auth` is **B-mode** (default).  The
+consumer's wrapper checks `args.callerToken != ""` (using the
+target's typed record), then calls
+`Auth.Around<TArgs, TRet>(call, args, proceed)`.  The library's
+generic `Around` body never sees a typed `args.callerToken`; it
+receives the parametric `args` and either passes it to `proceed`
+or short-circuits on the auth-check result.  This is sound and
+consistent with the §6.1.1 division of labour.
+
+C-mode aspects also pass shape verification, with the additional
+benefit that the body can read `args.x` directly because it's
+re-compiled inside the consumer's package.
+
+Verification is purely on the *consumer* side — the library
+publishes its clauses and is silent about what targets they fit;
+the consumer, at the `use` site, knows both the library's
+requirements and the local target shapes.  It composes with the
+existing wrapper-VC discharge in §9 step 2: shape verification
+runs first (does this clause typecheck against this target?),
+then VC discharge runs (does the clause hold at the call site?).
 
 ---
 

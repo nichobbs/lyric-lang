@@ -1906,7 +1906,70 @@ key points:
 - **Q-aspects-006:** Inheritance of contracts *across* aspects
   (one aspect's clauses visible to subsequent aspects' bodies).
 
-**Revisions:** None.
+**Revisions:**
+
+- 2026-05-08 — Resolved seven open questions across D047 / 27 /
+  28 (PRs #234, #235, #241):
+
+  - **Q-aspects-003** — `call.elapsed` is `Option[Int]`
+    (`None` before `proceed`, `Some(ms)` after).  Worked
+    examples updated to use `call.elapsed.unwrapOr(0)` for
+    printing.  Spec: `docs/26-aspects.md` §4.3.
+
+  - **Q-aspects-006** — Aspect-to-aspect contract
+    inheritance: status changed to "desirable, deferred."
+    Each aspect's contract clauses augment the *target's*
+    contract in v1, not the cumulative wrapper-so-far.
+    v1.x revisit.
+
+  - **Q-aspectlib-001** — Library ABI: hybrid B + C.
+    Default is generic-monomorphised IL distribution; opt
+    individual aspects into source-template via
+    `@inline_template`.  Typed-erased delegate (option A)
+    rejected.  Spec: `docs/27-aspect-libraries.md` §6.
+
+  - **Q-aspectlib-002** — Contract-only `pub aspect` (no
+    `around` body) uses the same syntax as a body-bearing
+    `pub aspect`; no `pub aspect_contract` fork.
+
+  - **Q-aspectlib-005** — Required (no-default) library-aspect
+    config fields propagate D046 §4's runtime fail-fast rule;
+    no compile-time override mechanism.  Compile-time-required
+    fields are tracked as Q-aspectlib-005' for v2.
+
+  - **Q-aspectlib-§5.1 (sketch)** — In B-mode library
+    aspects, `args` is an **anonymous parametric record**
+    opaque to field access (`args.x` reserved for local /
+    C-mode aspects).  Refines D047 §4.2 ("`args` and `ret`
+    are ordinary `let`-bindings"): the `let`-binding rule
+    holds for *local* aspects and C-mode `@inline_template`
+    library aspects; B-mode bodies see `args` parametrically.
+    Spec: `docs/27-aspect-libraries.md` §6.1.1.
+
+  - **Q-aspectlib-§5.2 (sketch)** — `@inline_template` bodies
+    require **explicit consumer-side imports**; auto-hoist
+    rejected.  Spec: `docs/27-aspect-libraries.md` §6.2.1.
+    Diagnostic `A0041`.
+
+  - **Q-aspectlib-§5.4 (sketch)** — `call.*` is in scope
+    inside `ensures:` clauses but **not** inside `requires:`
+    (footgun: `call.elapsed` is always `None` before
+    `proceed`).  Spec: `docs/26-aspects.md` §4.3.1.
+    Diagnostic `A0040`.
+
+  - **Q-aspectlib-§5.6 (sketch)** — Use-site shape
+    verification of library `requires:` / `ensures:`
+    clauses is mandatory.  Consumer's compiler shape-checks
+    every `args.<field>` reference against each matched
+    target before the wrapper is emitted.  Spec:
+    `docs/27-aspect-libraries.md` §9.1.  Diagnostic
+    `A0042`.
+
+- 2026-05-08 — Q-config-004 (D046 / `Lyric.BuildInfo`)
+  resolved: config block field names, types, defaults, and
+  `@sensitive` markers ship in `Lyric.BuildInfo` for ops
+  tooling.  Field *values* are not recorded.  Spec:
+  `docs/25-config-blocks.md` §10.
 
 ---
 
