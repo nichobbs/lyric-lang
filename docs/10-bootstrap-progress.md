@@ -1978,6 +1978,32 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-177: MSIL PE emitter Stage M38 — `add.ovf` / `sub.ovf` / `mul.ovf` (overflow-checked arithmetic)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M38 exercises the three overflow-checked integer arithmetic opcodes:
+`add.ovf` (0xD6), `sub.ovf` (0xDA), and `mul.ovf` (0xD8).  Each throws
+`OverflowException` when the result exceeds the representable range; for
+in-range inputs the behaviour is identical to the unchecked variants.
+
+**Code flow:** Three independent computations each yielding 42:
+1. `ldc.i4.s 21 / ldc.i4.s 21 / add.ovf` → 42 → `Console.WriteLine`
+2. `ldc.i4.s 43 / ldc.i4.1 / sub.ovf` → 42 → `Console.WriteLine`
+3. `ldc.i4.s 21 / ldc.i4.s 2 / mul.ovf` → 42 → `Console.WriteLine`
+
+Tiny header (codeSize=30, header byte 0x7A) at 0x248.  `add.ovf` at file
+offset 0x24D, `sub.ovf` at 0x256, `mul.ovf` at 0x260.  BSJB at 0x267.
+
+All three opcodes were already present in `opcodes.l` (emitters
+`emitAdd_Ovf`, `emitSub_Ovf`, `emitMul_Ovf`) so no new instruction
+definitions were required.
+
+**Test wiring**: `MsilSelfTestM38.fs` added to `Lyric.Emitter.Tests`; all 42
+MSIL self-tests pass (M1, M2a–M2d, M3–M38).  CLR: three `"42"` lines printed.
+
+---
+
 ### D-progress-176: MSIL PE emitter Stage M37 — `ldelema` (load address of array element)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
