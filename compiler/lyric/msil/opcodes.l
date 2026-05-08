@@ -184,6 +184,8 @@ pub val OP2_CLT_UN     : Int = 0x05
 pub val OP2_VOLATILE   : Int = 0x13
 pub val OP2_LOCALLOC   : Int = 0x0F
 pub val OP2_TAIL       : Int = 0x14
+pub val OP2_CPBLK      : Int = 0x17
+pub val OP2_INITBLK    : Int = 0x18
 pub val OP2_RETHROW    : Int = 0x1A
 
 // 0xFE-prefixed token opcodes (second byte)
@@ -348,6 +350,8 @@ pub func iThrow():      Insn = Nullary(op = OP_THROW)
 pub func iLocalloc():   Insn = Nullary2(op = OP2_LOCALLOC)
 pub func iVolatile():   Insn = Nullary2(op = OP2_VOLATILE)
 pub func iTail():       Insn = Nullary2(op = OP2_TAIL)
+pub func iCpblk():      Insn = Nullary2(op = OP2_CPBLK)
+pub func iInitblk():    Insn = Nullary2(op = OP2_INITBLK)
 pub func iRethrow():    Insn = Nullary2(op = OP2_RETHROW)
 pub func iEndfinally(): Insn = Nullary(op = OP_ENDFINALLY)
 pub func iStelem_Ref(): Insn = Nullary(op = OP_STELEM_REF)
@@ -570,6 +574,8 @@ pub func emitThrow(b: in MethodBody): Unit      = mbEmit(b, iThrow())
 pub func emitLocalloc(b: in MethodBody): Unit   = mbEmit(b, iLocalloc())
 pub func emitVolatile(b: in MethodBody): Unit   = mbEmit(b, iVolatile())
 pub func emitTail(b: in MethodBody): Unit       = mbEmit(b, iTail())
+pub func emitCpblk(b: in MethodBody): Unit      = mbEmit(b, iCpblk())
+pub func emitInitblk(b: in MethodBody): Unit    = mbEmit(b, iInitblk())
 pub func emitRethrow(b: in MethodBody): Unit    = mbEmit(b, iRethrow())
 pub func emitEndfinally(b: in MethodBody): Unit = mbEmit(b, iEndfinally())
 pub func emitStelem_Ref(b: in MethodBody): Unit = mbEmit(b, iStelem_Ref())

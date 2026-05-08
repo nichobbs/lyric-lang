@@ -1978,6 +1978,32 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-184: MSIL PE emitter Stage M45 — `initblk` + `cpblk`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M45 exercises two bulk-memory instructions:
+- `initblk` (0xFE 0x18) — fill `count` bytes at a managed pointer with a byte value.
+  Stack protocol: `addr, value (I4), count → (empty)`.
+- `cpblk` (0xFE 0x17) — copy `count` bytes from source address to destination.
+  Stack protocol: `destaddr, srcaddr, count → (empty)`.
+
+Two I4 locals provide managed pointers without `localloc`, enabling re-entrant
+access to the same address after the block operation.
+
+**Code flow:**
+1. `initblk`: fill 1 byte at `&local0` with 42; `ldind.u1` → 42; print.
+2. `cpblk`: set `local0 = 42`; copy 4 bytes from `&local0` to `&local1`; `ldloc.1` → 42; print.
+CLR prints two `"42"` lines.
+
+**New in `opcodes.l`**: `OP2_CPBLK` (0x17), `OP2_INITBLK` (0x18); smart constructors
+`iCpblk()`, `iInitblk()`; emit wrappers `emitCpblk()`, `emitInitblk()`.
+
+**Test wiring**: `MsilSelfTestM45.fs` added to `Lyric.Emitter.Tests`; all 49
+MSIL self-tests pass (M1, M2a–M2d, M3–M45).
+
+---
+
 ### D-progress-183: MSIL PE emitter Stage M44 — `conv.r.un` + `ckfinite`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
