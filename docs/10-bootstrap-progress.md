@@ -1978,6 +1978,26 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-173: MSIL PE emitter Stage M34 — `sizeof` (byte size of value type)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M34 exercises `sizeof` (0xFE 0x1C), which pushes the byte size of a
+value type as an unsigned `int32`.  The test: `sizeof System.Int32` → push 4 →
+`Console.WriteLine(int)` → prints `"4"`.
+
+`sizeof` encodes as `Token2(op=0x1C, token)` = 6 bytes (0xFE 0x1C + 4-byte
+TypeRef token).  Tiny header 0x32 (codeSize=12).  BSJB at 0x255.
+
+**New opcode** added to `opcodes.l`: `OP2_SIZEOF = 0x1C`, `iSizeof`,
+`emitSizeof`.
+
+**Test wiring**: `MsilSelfTestM34.fs` added to `Lyric.Emitter.Tests`; all 38
+MSIL self-tests pass (M1, M2a–M2d, M3–M34).  CLR: `sizeof Int32` = 4 → prints
+`"4"`.
+
+---
+
 ### D-progress-172: MSIL PE emitter Stage M33 — `ldtoken` + `Type.GetTypeFromHandle`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

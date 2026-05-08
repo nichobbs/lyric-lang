@@ -153,6 +153,7 @@ pub val OP2_RETHROW    : Int = 0x1A
 // 0xFE-prefixed token opcodes (second byte)
 pub val OP2_LDFTN      : Int = 0x06
 pub val OP2_INITOBJ    : Int = 0x15
+pub val OP2_SIZEOF     : Int = 0x1C
 
 // 0xFE-prefixed full-form arg/local opcodes (second byte + 2-byte index)
 pub val OP2_LDARG      : Int = 0x09
@@ -256,6 +257,7 @@ pub func iStelem(tok: in Int):    Insn = Token(op = OP_STELEM, token = tok)
 pub func iLdelema(tok: in Int):   Insn = Token(op = OP_LDELEMA, token = tok)
 pub func iInitobj(tok: in Int):   Insn = Token2(op = OP2_INITOBJ, token = tok)
 pub func iLdftn(tok: in Int):     Insn = Token2(op = OP2_LDFTN, token = tok)
+pub func iSizeof(tok: in Int):    Insn = Token2(op = OP2_SIZEOF, token = tok)
 pub func iLdtoken(tok: in Int):   Insn = Token(op = OP_LDTOKEN, token = tok)
 
 pub func iAdd():        Insn = Nullary(op = OP_ADD)
@@ -441,6 +443,7 @@ pub func emitStelem(b: in MethodBody, tok: in Int): Unit    = mbEmit(b, iStelem(
 pub func emitLdelema(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdelema(tok))
 pub func emitInitobj(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iInitobj(tok))
 pub func emitLdftn(b: in MethodBody, tok: in Int): Unit     = mbEmit(b, iLdftn(tok))
+pub func emitSizeof(b: in MethodBody, tok: in Int): Unit    = mbEmit(b, iSizeof(tok))
 pub func emitLdtoken(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdtoken(tok))
 
 pub func emitAdd(b: in MethodBody): Unit        = mbEmit(b, iAdd())
