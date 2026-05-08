@@ -78,7 +78,8 @@ deferred to Phase 3 by design.
 | M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
-| MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (this branch) | D-progress-141 |
+| MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (PR #219) | D-progress-141 |
+| MSIL PE emitter Stage M3 — end-to-end execution test: `msil_self_test_m3.l` assembles a Hello-World PE, writes it to disk via `Std.File.writeBytes`, and the F# harness executes it with `dotnet exec`, verifying "Hello, World!" in stdout | **Shipped** (this branch) | D-progress-142 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -655,6 +656,48 @@ token, method tiny header, ldstr opcode + token, BSJB magic, stream count).
 
 **Test wiring**: `MsilSelfTestM2a.fs`, `MsilSelfTestM2b.fs`, `MsilSelfTestM2c.fs`,
 `MsilSelfTestM2d.fs` added to `Lyric.Emitter.Tests`; all 5 MSIL self-tests pass.
+
+---
+
+### D-progress-142: MSIL PE emitter Stage M3 — end-to-end CLR execution test
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M3 closes the loop on the M2a–M2d pipeline by verifying that
+`Msil.Assembler.assemblePe` produces a PE image that the CLR can actually
+load and execute, not just one that passes byte-layout checks.
+
+**`msil_self_test_m3.l`** (`compiler/lyric/msil/msil_self_test_m3.l`)
+
+The self-test program:
+1. Builds a Hello-World PE using the full M2a–M2d stack (`Msil.Heaps`,
+   `Msil.Opcodes`, `Msil.Tables`, `Msil.Assembler`).
+2. Writes the assembled bytes to `/tmp/lyric_msil_m3_hello.dll` via
+   `Std.File.writeBytes` — the first exercise of the `Std.File` byte-write
+   surface from within a self-hosted MSIL context.
+3. Prints `wrote_pe=true` on success.
+
+**Key correction versus M2d** (`System.Console` assembly reference):
+
+In .NET 5+, `System.Console` lives in `System.Console.dll`, not
+`System.Runtime.dll`. The M2d metadata (matching the Stage-M1 reference
+image) used a single `System.Runtime` AssemblyRef for both `System.Object`
+and `System.Console`, which passes byte-layout checks but fails at CLR load
+time with `TypeLoadException`. M3 adds a second `AssemblyRef` for
+`System.Console` and points the `Console` TypeRef at it, producing a PE
+that executes cleanly under .NET 10.
+
+**F# test harness** (`MsilSelfTestM3.fs`):
+
+1. Compiles and runs `msil_self_test_m3.l` via the bootstrap emitter.
+2. Verifies `wrote_pe=true` in stdout.
+3. Writes a matching `runtimeconfig.json` alongside the PE (same logic as
+   `Backend.fs:writeRuntimeConfig`), then calls `runDll` on the produced
+   file.
+4. Asserts PE exit code = 0 and stdout contains `"Hello, World!"`.
+
+**Test wiring**: `MsilSelfTestM3.fs` added to `Lyric.Emitter.Tests`; all 6
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3).
 
 ---
 
