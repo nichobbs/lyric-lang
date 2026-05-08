@@ -60,7 +60,7 @@ func main(): Unit {
 
 ### Using the standard library
 
-The stdlib lives in `compiler/lyric/std/`.  Import individual modules with
+The stdlib lives in `stdlib/std/`.  Import individual modules with
 `import Std.X`:
 
 ```lyric

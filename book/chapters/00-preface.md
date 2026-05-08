@@ -53,7 +53,7 @@ The appendices cover the VS Code extension and a quick-reference card for syntax
 
 This is not a language specification. The authoritative language specification is `docs/01-language-reference.md` in the repository. If this book and the spec disagree, the spec wins. This book is a learning guide, not a contract.
 
-This is also not an API reference. The standard library's source lives in `compiler/lyric/std/`; `lyric doc` generates the rendered API docs. The appendix has a quick-reference card, but for detailed API coverage, use the generated docs.
+This is also not an API reference. The standard library's source lives in `stdlib/std/`; `lyric doc` generates the rendered API docs. The appendix has a quick-reference card, but for detailed API coverage, use the generated docs.
 
 ## A note on the compiler
 

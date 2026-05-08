@@ -100,7 +100,7 @@ The `try { } catch Bug as b` block converts a platform exception into a typed `R
 
 Downstream callers of `Fs.readBytes` see only the Lyric API. They receive `Result[slice[Byte], FsError]`. They never see a platform exception. The axiom block is isolated to one file, one review diff, and does not leak into the rest of the codebase.
 
-This is how `Std.File` is built. Its `@axiom` block is in `compiler/lyric/std/file.l`. The file exports `readText`, `writeText`, `fileExists`, and `createDir` — all returning `Result` or `Bool` — and internally calls the wrapped BCL functions. You can read its source to see exactly what is trusted and what is derived.
+This is how `Std.File` is built. Its `@axiom` block is in `stdlib/std/file.l`. The file exports `readText`, `writeText`, `fileExists`, and `createDir` — all returning `Result` or `Bool` — and internally calls the wrapped BCL functions. You can read its source to see exactly what is trusted and what is derived.
 
 ::: sidebar
 **Why not just catch exceptions everywhere?** Some languages encourage catching `Exception` broadly and converting to a local error type at every call site. This works but erases information: you lose the distinction between "the file was not found" and "the disk is full." The wrapper-package pattern converts BCL exceptions once, at the extern boundary, into a union that names each condition. Callers get exhaustive match coverage and precise error types. The cost is one more source file per BCL surface area; the benefit is a typed error channel across the entire codebase above it.
