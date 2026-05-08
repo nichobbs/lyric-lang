@@ -83,6 +83,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M4 — multi-method PE assembler: `AssemblerInput.methodBodies` replaces single `methodBody`; `methodBodyRvas()` computes per-method RVAs; `msil_self_test_m4.l` builds a two-method PE (`Greet` + `Main`) with structural and CLR-execution checks | **Shipped** (this branch) | D-progress-143 |
 | MSIL PE emitter Stage M5 — local variables / fat method header: `StandAloneSig` table (0x11) added to `Msil.Tables`; `msil_self_test_m5.l` builds a PE whose `Main()` stores a string in a local variable (fat header, `InitLocals`) and prints it twice via `Console.WriteLine` | **Shipped** (this branch) | D-progress-144 |
 | MSIL PE emitter Stage M6 — method arguments and non-void return: `msil_self_test_m6.l` builds a PE with `Add(int,int):int` (ldarg.0/ldarg.1/add/ret) called from `Main()` which passes the result to `Console.WriteLine(int)`; exercises int32 method signatures and argument-passing | **Shipped** (this branch) | D-progress-145 |
+| MSIL PE emitter Stage M7 — static fields: `msil_self_test_m7.l` builds a PE with a static int32 field `s_val`; `Main()` stores 42 via `stsfld`, reloads via `ldsfld`, and prints it; exercises the `Field` (0x04) metadata table and `FieldSig` blob | **Shipped** (this branch) | D-progress-146 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -784,6 +785,43 @@ exactly twice in CLR stdout.
 
 **Test wiring**: `MsilSelfTestM5.fs` added to `Lyric.Emitter.Tests`; all 8
 MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5).
+
+---
+
+### D-progress-146: MSIL PE emitter Stage M7 — static fields
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M7 exercises the `Field` metadata table (0x04) and the `ldsfld` /
+`stsfld` instruction pair, both of which are required to emit module-level
+`val` bindings and class fields in the self-hosted code generator.
+
+**`msil_self_test_m7.l`** builds a PE with:
+
+- **`FieldRow { flags = FDA_PUBLIC + FDA_STATIC, name = "s_val", signature = FieldSig(I4) }`** — Field[1].
+  FieldSig blob: `{0x06, 0x08}` (FIELD marker + ELEMENT_TYPE_I4).
+- **`Main()`** — MethodDef[1], entry point.  Body: `ldc.i4.s 42`,
+  `stsfld 0x04000001`, `ldsfld 0x04000001`, `call 0x0A000001`
+  (Console.WriteLine(int)), `ret` — 18 bytes CIL; tiny header `0x4A`.
+
+Layout at file offset 0x248:
+
+```
+0x248  4A             Main tiny header (codeSize=18)
+0x249  1F 2A          ldc.i4.s 42
+0x24B  80 01 00 00 04 stsfld Field[1]
+0x250  7E 01 00 00 04 ldsfld Field[1]
+0x255  28 01 00 00 0A call MemberRef[1] (Console.WriteLine(int))
+0x25A  2A             ret
+0x25B  42 53 4A 42    BSJB metadata root
+```
+
+Structural checks verify `main_hdr_ok`, `ldc42_ok`, `stsfld_ok`,
+`ldsfld_ok`, and `bsjb_ok`.  The F# harness executes the PE and asserts
+`"42"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM7.fs` added to `Lyric.Emitter.Tests`; all 10
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7).
 
 ---
 
