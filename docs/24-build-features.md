@@ -36,8 +36,36 @@ The need is general enough that aspects shouldn't own it. This document
 specifies a Cargo-style **feature** mechanism on `lyric.toml` plus a
 `@cfg(...)` annotation that gates source items.
 
-This is a *compile-time* selector only. Runtime configuration is
-`docs/25-config-blocks.md`'s job.
+### 1.1 Compile-time only — runtime behaviour goes through D046
+
+**Features are a publish-time, compile-time mechanism.**  An item
+gated by `@cfg(feature = "X")` is either present in the output DLL
+or *physically erased* — there is no runtime branching, no
+zero-cost-when-off, just zero IL.
+
+That has a consequence the rest of this doc leans on: **a published
+binary cannot have its features toggled by a downstream consumer.**
+The library author's `lyric publish` pins the active feature set into
+the DLL; consumers see only the items that were active at publish.
+Cargo's source-distribution model lets consumers pick features
+because the consumer's compiler builds the dependency from source;
+Lyric's binary-distribution model (D-progress-077 / 078,
+`Lyric.Contract` resource) does not have that lever.
+
+If you need behaviour that *does* differ per deployment, **use runtime
+config (`docs/25-config-blocks.md`, D046), not features**:
+
+| Need | Wrong tool | Right tool |
+|---|---|---|
+| "Compile out logging when not deploying with the logging build" | `@cfg` works fine — it's compile-time, library author's call. | — |
+| "Toggle log level at deploy time" | `@cfg` (consumer can't toggle a published library) | `config { level: LogLevel = … }` (D046) |
+| "Enable tracing in staging, disable in prod" | `--features` on the consumer (only affects the consumer's own package) | `config { tracingEnabled: Bool = false }` (D046) |
+| "Pick TLS implementation for a transitive dep" | Cross-package features (Q-features-001 — closed; not Lyric's model) | Library author's call at publish, or library exposes a runtime config block |
+
+Rule of thumb: **`@cfg` answers "is this code in my binary at all?"
+D046 answers "given that it's in my binary, what behaviour does it
+exhibit at runtime?"**  When in doubt, use D046 — it's strictly more
+permissive, and it works across the package boundary.
 
 ---
 
@@ -83,7 +111,12 @@ If a package wants to expose configurable behaviour to importers, it
 should use `docs/25-config-blocks.md` (runtime) or expose explicit
 type-level selectors (compile-time).
 
-Cross-package feature plumbing is **deferred**; tracked as Q-features-001.
+Cross-package feature plumbing is **closed as out-of-scope** per
+Q-features-001: with binary `.dll` distribution there is nothing
+for the consumer to toggle, since the library's feature set is
+baked at `lyric publish` time.  See §1.1 for the recommended
+alternative (D046 runtime config) and Q-features-001 in §8 for
+the closure rationale.
 
 ---
 
@@ -278,10 +311,21 @@ is erased without warning).
 
 ## 8. Open questions
 
-- **Q-features-001:** Cross-package feature plumbing. Cargo's design
-  is the reference; the unification problem (multiple consumers
-  picking different feature sets for a shared dependency) is
-  non-trivial. Defer until a real consumer demands it.
+- **Q-features-001:** ~~Cross-package feature plumbing.~~
+  **Closed — not applicable to Lyric's distribution model.**
+  Cargo's feature unification works because Cargo distributes
+  source via crates.io and the consumer's compiler builds
+  dependencies on the consumer's machine with the consumer's
+  feature set.  Lyric's binary-distribution model (D-progress-077
+  / 078) does not give consumers that lever — published `.dll`s
+  pin the library's features at `lyric publish` time.
+  Library authors who want consumer-toggleable behaviour should
+  use D046 runtime config instead; the §1.1 table makes the
+  recommendation explicit.  If a future Lyric ever adds a
+  Cargo-style source-distribution path (the `@inline_template`
+  precedent in 27 §6.2 is one example for aspects), this
+  question may reopen — but that's a different design effort,
+  not a "defer until demanded" of this one.
 - **Q-features-002:** Body parsing of erased items. Rust accepts
   syntactic-but-not-semantic garbage inside `#[cfg(false)]` items.
   Stricter behaviour (full parse but no type-check) is plausible;

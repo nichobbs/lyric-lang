@@ -848,6 +848,10 @@ fields naming the aspect that introduced the failing clause (§5.3).
 
 ## 17. Open questions
 
+> A v1.x sketch addressing Q-aspects-006 (aspect-to-aspect
+> contract inheritance) lives at
+> `docs/30-aspect-contract-inheritance-sketch.md`.
+
 - **Q-aspects-001:** Should aspects match constructors and operator
   overloads? Probably yes for symmetry, but the `args` shape becomes
   awkward (no parameter names for operators). Defer.
