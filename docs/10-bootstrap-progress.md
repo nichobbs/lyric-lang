@@ -1978,6 +1978,25 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-185: MSIL PE emitter Stage M46 — `conv.i1` + `conv.i2`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M46 exercises two narrow signed conversion opcodes:
+- `conv.i1` (0x67) — truncate top-of-stack to int8 and sign-extend to I4.
+- `conv.i2` (0x68) — truncate to int16 and sign-extend to I4.
+
+For in-range values (42 < 128) the result is identical to the source. The self-test
+verifies both opcodes independently by converting 42 through each and printing.
+
+**New in `opcodes.l`**: `OP_CONV_I1` (0x67), `OP_CONV_I2` (0x68); smart constructors
+`iConv_I1()`, `iConv_I2()`; emit wrappers `emitConv_I1()`, `emitConv_I2()`.
+
+**Test wiring**: `MsilSelfTestM46.fs` added to `Lyric.Emitter.Tests`; all 50
+MSIL self-tests pass (M1, M2a–M2d, M3–M46).  CLR: `"42"` printed twice.
+
+---
+
 ### D-progress-184: MSIL PE emitter Stage M45 — `initblk` + `cpblk`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

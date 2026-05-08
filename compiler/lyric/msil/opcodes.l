@@ -84,6 +84,8 @@ pub val OP_SHR         : Int = 0x63
 pub val OP_SHR_UN      : Int = 0x64
 pub val OP_NEG         : Int = 0x65
 pub val OP_NOT         : Int = 0x66
+pub val OP_CONV_I1     : Int = 0x67
+pub val OP_CONV_I2     : Int = 0x68
 pub val OP_CONV_I4     : Int = 0x69
 pub val OP_CONV_I8     : Int = 0x6A
 pub val OP_CONV_R4     : Int = 0x6B
@@ -319,6 +321,8 @@ pub func iSub_Ovf():    Insn = Nullary(op = OP_SUB_OVF)
 pub func iSub_Ovf_Un(): Insn = Nullary(op = OP_SUB_OVF_UN)
 pub func iMul_Ovf():    Insn = Nullary(op = OP_MUL_OVF)
 pub func iMul_Ovf_Un(): Insn = Nullary(op = OP_MUL_OVF_UN)
+pub func iConv_I1():    Insn = Nullary(op = OP_CONV_I1)
+pub func iConv_I2():    Insn = Nullary(op = OP_CONV_I2)
 pub func iConv_I4():    Insn = Nullary(op = OP_CONV_I4)
 pub func iConv_I8():    Insn = Nullary(op = OP_CONV_I8)
 pub func iConv_R4():    Insn = Nullary(op = OP_CONV_R4)
@@ -543,6 +547,8 @@ pub func emitSub_Ovf(b: in MethodBody): Unit    = mbEmit(b, iSub_Ovf())
 pub func emitSub_Ovf_Un(b: in MethodBody): Unit = mbEmit(b, iSub_Ovf_Un())
 pub func emitMul_Ovf(b: in MethodBody): Unit    = mbEmit(b, iMul_Ovf())
 pub func emitMul_Ovf_Un(b: in MethodBody): Unit = mbEmit(b, iMul_Ovf_Un())
+pub func emitConv_I1(b: in MethodBody): Unit    = mbEmit(b, iConv_I1())
+pub func emitConv_I2(b: in MethodBody): Unit    = mbEmit(b, iConv_I2())
 pub func emitConv_I4(b: in MethodBody): Unit    = mbEmit(b, iConv_I4())
 pub func emitConv_I8(b: in MethodBody): Unit    = mbEmit(b, iConv_I8())
 pub func emitConv_R4(b: in MethodBody): Unit    = mbEmit(b, iConv_R4())
