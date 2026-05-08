@@ -127,6 +127,14 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
   // between newlines doesn't reset the run — `\n  \n` is still a
   // blank-line run).  `blankRecorded` ensures we emit at most one
   // `HiBlank` per run, no matter how many extra newlines follow.
+  //
+  // Lexer invariant: every whitespace / newline / non-doc-comment
+  // trivium between two tokens is accumulated in
+  // `state.pendingTrivia` and flushed atomically onto the *next*
+  // token's `leadingTrivia` at `emit()` time (see
+  // `compiler/lyric/lyric/lexer.l:takePendingTrivia`).  A blank-line
+  // run therefore never straddles a token boundary, so the per-call
+  // reset of `newlineRun` / `blankRecorded` here is sufficient.
   var newlineRun = 0
   var blankRecorded = false
   var runStart = 0

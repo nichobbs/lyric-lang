@@ -259,8 +259,6 @@ Out of scope for this stage: per-expression CST granularity
 statement), and the F# `Fmt.fs` sunset.  Both are tracked as
 follow-ups.
 
-
-
 ### D-progress-138: native `lyric test` runner — bootstrap-grade v1
 
 *claude/lyric-test-runner-evaluation-0IpPg branch.*
