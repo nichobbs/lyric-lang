@@ -205,30 +205,16 @@ points at the consumer's `use` declaration.
 
 ## 6. Calling the library `around` body — ABI
 
-This is the load-bearing technical question.  Three options, in
-increasing order of magic:
+This is the load-bearing technical question.  **Resolved (Q-aspectlib-001):
+hybrid B + C.**  The library author picks per-aspect; the consumer's
+compiler routes accordingly.  The third option (A — typed-erased
+delegate) is rejected outright because Lyric is a static-safety
+language and giving up type safety on the most security-sensitive
+surface (logging, validation, auth) is the wrong default.
 
-### 6.1 Option A — typed-erased delegate
+### 6.1 Default — Option B: generic `around` with monomorphisation
 
-The library compiles the `around` body to a static method with a
-fixed signature:
-
-```clr
-static object Around(
-    AspectCallContext call,
-    object[] args,
-    Func<object[], object> proceed)
-```
-
-The consumer's wrapper boxes args / unboxes return value at the
-call boundary.  Pros: simple, library doesn't need to know
-consumer's types.  Cons: per-call boxing for primitives and
-struct-typed args; type-erasure means losing the static type
-guarantees Lyric otherwise provides.
-
-### 6.2 Option B — generic `around` with monomorphisation
-
-The library compiles `around` as a generic method:
+A `pub aspect` ships as a generic method in the library DLL:
 
 ```clr
 static TRet Around<TArgs, TRet>(
@@ -238,26 +224,62 @@ static TRet Around<TArgs, TRet>(
 ```
 
 The consumer's wrapper instantiates the generic at the target's
-exact arg/ret types.  Pros: zero boxing on primitives, full type
-safety.  Cons: monomorphisation per target × per use-site means
-binary bloat (same trade-off as D035-era generics); the library
-must compile its body so it's safely instantiable across consumer
-type universes.
+exact arg / return types.  Per-target × per-use-site
+monomorphisations land in the consumer DLL — same binary-bloat
+trade-off as D035-era generic functions.  Zero boxing on
+primitives, full static type safety, library author writes natural
+Lyric, verifier reasons over the parametric body once at publish
+and over the call boundary at consumer-side.  This is the right
+default for stable / large-bodied aspects.
 
-### 6.3 Option C — source-level inline expansion ("template" model)
+### 6.2 Opt-in — Option C: source-template via `@inline_template`
 
-The library distributes the source for the `around` body alongside
-the IL.  At consumer compile time, the source is *re-compiled*
-inside the consumer's package, so every monomorphisation is local.
-Pros: cleanest type story; the library aspect behaves identically
-to a copy-pasted local aspect.  Cons: consumer compile time grows;
-the library DLL is essentially a Lyric package that ships its
-source as a resource (similar to how `Lyric.Contract` already
-ships type info).
+```lyric
+@inline_template
+pub aspect Logging {
+  config { ... }
+  around(args) -> ret { ... }
+}
+```
 
-I lean towards **B for v1** (real ABI, monomorphised, type-safe)
-with **C as a future optimisation** for cases where the library's
-body is small and inlining wins.
+Marks an aspect for source-template distribution.  The library DLL
+embeds the parsed body as a resource (alongside the contract
+metadata), and the consumer's compiler **re-compiles the body
+inside the consumer's package** at every use site.  This is the
+right pick for tiny / hot-path aspects where:
+
+- Inlining the body into the wrapper unlocks further consumer-side
+  optimisation (the consumer's compiler can see through the body).
+- Per-target monomorphisation cost is trivial because the body is
+  small.
+- Source-level evolvability matters more than IL ABI stability
+  (the library can change its lowering strategy without breaking
+  consumers).
+
+Trade-offs vs. B:
+- Consumer pays full lex+parse+type-check on the body **per use
+  site, per consumer**.  An ecosystem of N libraries each with M
+  inline-template aspects used in K consumer packages with L use
+  sites compounds.
+- The library DLL ships the body as bytes, not IL — it's not
+  consumable from non-Lyric languages.
+
+### 6.3 Why no `@runtime_dispatch` (Option A) escape hatch
+
+A typed-erased delegate ABI is the standard AOP shape elsewhere
+(Spring AOP, dynamic proxies) but it's wrong for Lyric:
+
+- Boxing per primitive arg, heap-allocated `object[]` per call.
+  Logging-on-hot-paths feels this immediately.
+- Lost compile-time type safety at the most security-sensitive
+  surface — opposite of Lyric's stated values.
+- Verifier integration weakens: `obj → obj` boundary signature
+  means `@proof_required` consumers can't reason through the call.
+
+If a future use case demands cross-language consumption from
+non-Lyric .NET languages, that's its own design (revisit with a
+`@cross_language` annotation that cleanly opts into the
+type-erased ABI for that one aspect).  Out of scope for v1.
 
 ---
 
@@ -410,11 +432,15 @@ The whole doc is exploratory; these are the specific holes I want
 poked.
 
 - **Q-aspectlib-001 — Source distribution vs. IL distribution.**
-  §6's option C (re-compile inside the consumer) is cleaner for
-  type safety but doubles compile times.  Option B (generic IL)
-  has the binary-bloat problem.  Which trade-off is right?  Is a
-  hybrid (B by default, opt-in to C via a library annotation)
-  worth the complexity?
+  ~~Which trade-off is right?~~ **Resolved.** Hybrid B + C.
+  Default is generic-monomorphised IL distribution (option B);
+  library authors opt individual aspects into source-template
+  distribution (option C) via `@inline_template`.  The
+  typed-erased delegate ABI (option A) is rejected outright as
+  incompatible with Lyric's static-safety stance.  Implementation
+  detail: §6 fully spec'd; library DLL carries both generic IL
+  for B-mode aspects *and* embedded source resources for C-mode
+  aspects; consumer's compiler routes per-aspect at use time.
 - **Q-aspectlib-002 — `pub aspect` without `around`.**  A
   contract-only library aspect like `Validating` has no IL to
   ship — it's pure metadata.  Should this require a different

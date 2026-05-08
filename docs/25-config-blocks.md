@@ -369,10 +369,14 @@ syntactic and runtime room for each.
 - **Q-config-003:** Hot reload — almost certainly never, but worth
   recording the closure of the design space.
 - **Q-config-004:** Should config fields be visible in
-  `Lyric.BuildInfo`? Recording **names + types + defaults** in the
-  published metadata aids ops tooling ("what env vars does this
-  service read?"). Names yes; values no (sensitive). Defer
-  decision until tooling exists to consume it.
+  `Lyric.BuildInfo`? **Resolved.** Names, types, and defaults
+  *are* recorded in the published metadata so ops tooling
+  (`lyric explain`, deployment-time env-var inspectors) can
+  enumerate "what env vars does this service read" without
+  running the binary. **Values are not recorded** — those are
+  runtime-only (env-var-derived). The `@sensitive` marker travels
+  with the field's metadata so external tools can match the
+  redaction policy automatically.
 
 ---
 

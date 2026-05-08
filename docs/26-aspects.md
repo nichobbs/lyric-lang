@@ -91,7 +91,7 @@ aspect Logging {
     }
     Std.Log.log(config.level, "→ ${call.shortName}")
     let r = proceed(args)
-    Std.Log.log(config.level, "← ${call.shortName} (${call.elapsed}ms)")
+    Std.Log.log(config.level, "← ${call.shortName} (${call.elapsed.unwrapOr(0)}ms)")
     r
   }
 }
@@ -266,7 +266,7 @@ weave site:
 | `call.sourceLocation` | `SourceLoc` | `{ file, line, column }` of the target's definition |
 | `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls |
 | `call.annotations` | `[Annotation]` | The target's annotations (so an aspect can read `@deprecated`, `@public_api`, etc.) |
-| `call.elapsed` | `Int` | Milliseconds since `proceed` last returned, or `0` if `proceed` was not (yet) called |
+| `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003). |
 | `call.aspect` | `String` | The current aspect's name (useful when one helper serves several aspects) |
 
 `SourceLoc` is a simple stdlib record; full layout in
@@ -522,7 +522,7 @@ aspect Logging {
     if !config.enabled { return proceed(args) }
     Std.Log.log(config.level, "→ ${call.shortName}")
     let r = proceed(args)
-    Std.Log.log(config.level, "← ${call.shortName} (${call.elapsed}ms)")
+    Std.Log.log(config.level, "← ${call.shortName} (${call.elapsed.unwrapOr(0)}ms)")
     r
   }
 }
@@ -691,7 +691,7 @@ aspect Logging {
   around(args) -> ret {
     logEntry(call.qualifiedName, call.shortName)   // non-generic helper
     let r = proceed(args)
-    logExit(call.qualifiedName, call.elapsed)
+    logExit(call.qualifiedName, call.elapsed.unwrapOr(0))
     r
   }
 }
@@ -833,11 +833,14 @@ fields naming the aspect that introduced the failing clause (§5.3).
 - **Q-aspects-002:** Mangling scheme for `<name>_target`. Conflicts
   with hand-written `_target` suffix names. Probably escape with a
   reserved sigil only the compiler emits.
-- **Q-aspects-003:** Should `call.elapsed` be available inside the
-  *before-half* (before `proceed`)? Currently the spec says zero
-  there, which is a quiet footgun. Alternatives: `Option[Int]`
-  (`None` before proceed, `Some(ms)` after) or a panic on access
-  before proceed. The `Option` shape is most honest.
+- **Q-aspects-003:** ~~Should `call.elapsed` be available inside
+  the *before-half* (before `proceed`)?~~ **Resolved.** The type
+  is `Option[Int]` — `None` before `proceed` returns (or if the
+  body never calls `proceed`), `Some(ms)` after. The earlier
+  zero-sentinel was rejected as a footgun: a logging aspect that
+  prints "elapsed=0ms" looks legitimate but is meaningless. The
+  worked examples in §7 / §9 are updated to use
+  `call.elapsed.unwrapOr(0)` for printing.
 - **Q-aspects-004:** Aspect over multiple packages in the same
   *project* (`docs/20-project-as-dll.md` introduces multi-package
   projects). Project-level aspects are a natural extension, but
