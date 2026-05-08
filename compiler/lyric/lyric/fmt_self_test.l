@@ -447,6 +447,94 @@ func testShortExpressionStaysInline(): Unit {
              "width: no spurious break for short expression")
 }
 
+func testCommentBetweenBinopOperands(): Unit {
+  // Phase 5 §M5.3 stage 10 (D-progress-146): a comment between two
+  // operands of a binary op survives `lyric fmt` — the multi-line
+  // EBinop layout pops trivia at the RHS's start offset.
+  val src =
+    "package P\n" +
+    "func f(): Int {\n" +
+    "  val x = a +\n" +
+    "    // sum carry\n" +
+    "    b\n" +
+    "  x\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// sum carry"),
+             "binop: comment between operands preserved")
+  assertTrue(Str.contains(acc, "a +\n    // sum carry"),
+             "binop: comment lands between operator and RHS")
+}
+
+func testCommentBetweenListElements(): Unit {
+  // A `// primes` comment between two list elements anchors at the
+  // following element's start offset and renders inside the multi-
+  // line list layout.
+  val src =
+    "package P\n" +
+    "func f(): Int {\n" +
+    "  val xs = [\n" +
+    "    // primes\n" +
+    "    2,\n" +
+    "    3,\n" +
+    "    5\n" +
+    "  ]\n" +
+    "  0\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "    // primes\n    2,"),
+             "list: comment between elements stays inside the list")
+}
+
+func testCommentBeforeFunctionParam(): Unit {
+  // A `// x is the input` comment sitting before the first parameter
+  // in a multi-line function signature anchors at the first param's
+  // leading trivia.  The signature breaks across lines because the
+  // formatter detects the comment in the param region.
+  val src =
+    "package P\n" +
+    "func process(\n" +
+    "  // x is the input\n" +
+    "  x: in Int,\n" +
+    "  y: in Int\n" +
+    "): Int { x + y }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// x is the input"),
+             "param: comment before first param preserved")
+  assertTrue(Str.contains(acc, "func process(\n"),
+             "param: signature breaks across lines when params have comments")
+  assertTrue(Str.contains(acc, "  x: in Int,\n"),
+             "param: each param on its own line with trailing comma")
+}
+
+func testWidthDrivenLongParamList(): Unit {
+  // A function with so many parameters that the inline rendering
+  // exceeds the 120-char budget gets a multi-line signature.
+  val src =
+    "package P\n" +
+    "func longSig(aaaa: in Int, bbbb: in Int, cccc: in Int, dddd: in Int, eeee: in Int, ffff: in Int, gggg: in Int, hhhh: in Int, iiii: in Int): Int { 0 }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "func longSig(\n"),
+             "param: signature breaks at the (")
+  assertTrue(Str.contains(acc, "  aaaa: in Int,\n"),
+             "param: first param on its own line")
+}
+
+func testOutModeRendersCorrectly(): Unit {
+  // Regression test for the `PMOut` → `"acc "` rename slip from the
+  // original sed-driven reserved-keyword cleanup.  An `out` parameter
+  // must round-trip as `: out Type`.
+  val src = "package P\nfunc set(x: out Int): Unit { }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "x: out Int"),
+             "param: PMOut renders as `out`, not `acc`")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -496,5 +584,10 @@ func main(): Unit {
   testCommentInsideCallArgs()
   testWidthDrivenLongBinopBreaks()
   testShortExpressionStaysInline()
+  testCommentBetweenBinopOperands()
+  testCommentBetweenListElements()
+  testCommentBeforeFunctionParam()
+  testWidthDrivenLongParamList()
+  testOutModeRendersCorrectly()
   println("fmt self-test: ok")
 }

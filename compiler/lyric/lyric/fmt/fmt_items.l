@@ -13,6 +13,74 @@ import Lyric.Parser
 // Field decl (used by record / opaque / extern / protected immutable).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Build a function-signature `Doc` from a `prefix` (e.g.
+/// `"pub func foo("`), a `suffix` (e.g. `"): Int"`), the column where
+/// the first param starts (`paramsCol`, = `prefix.length` at item-
+/// indent 0), and the parameter list.  Inline if the inline rendering
+/// fits the 120-char budget given `suffix.length`; otherwise multi-
+/// line with one param per line and the closing paren + suffix on
+/// its own line.
+pub func funcSigDocFromParts(
+    prefix: in String,
+    suffix: in String,
+    paramsCol: in Int,
+    ctx: inout FmtCtx,
+    params: in List[Param]): List[String] {
+  if paramsFitInline(paramsCol, params, suffix.length)
+     and not hasTriviaBetweenParams(ctx, params) {
+    val inline = paramsStr(params)
+    return singleLineDoc(prefix + inline + suffix)
+  }
+  val pd = paramsAtCol(paramsCol, ctx, params)
+  // Multi-line: prefix on first line, params indented by 2, suffix
+  // on its own line at the prefix's indent (== col 0 of the sigDoc).
+  val acc: List[String] = newList()
+  acc.add(prefix)
+  var i = 0
+  while i < pd.count {
+    val line = pd[i]
+    if line == "" { acc.add("") } else { acc.add("  " + line) }
+    i = i + 1
+  }
+  acc.add(suffix)
+  acc
+}
+
+@pure
+func hasTriviaBetweenParams(ctx: in FmtCtx, ps: in List[Param]): Bool {
+  if ps.count == 0 { return false }
+  // Use the cursor's current position as the lower bound rather than
+  // `ps[0].span.startPos.offset`: a parameter's `span` starts at the
+  // parameter's first token (the name), so comments living BEFORE the
+  // first param (e.g. between `(` and `// x is the input`) are not
+  // covered by `[firstStart, lastEnd)`.  If any unpopped trivia falls
+  // before the last param's end, force multi-line.
+  val last = ps[ps.count - 1].span.endPos.offset
+  if ctx.cursor >= ctx.items.count { return false }
+  // Compare against `harvestedItemOffset` of the next unpopped item.
+  // `hasTriviaInRange(ctx, lo, hi)` does the right thing when `lo` is
+  // already at-or-below the cursor's first item — since the function
+  // walks the cursor forward and stops at `hi`.  Pass `lo = 0`: any
+  // unpopped item with offset `< last` triggers multi-line.
+  hasTriviaInRange(ctx, 0, last)
+}
+
+/// Append `suffix` to the last line of `doc`.  Used to attach
+/// `" = expr"` / `" {"` / etc. to a multi-line signature whose last
+/// line is the closing paren + return-type segment.
+@pure
+pub func appendToLastLine(doc: in List[String], suffix: in String): List[String] {
+  if doc.count == 0 { return singleLineDoc(suffix) }
+  val acc: List[String] = newList()
+  var i = 0
+  while i < doc.count - 1 {
+    acc.add(doc[i])
+    i = i + 1
+  }
+  acc.add(doc[doc.count - 1] + suffix)
+  acc
+}
+
 @pure
 func contractClauseStartOffset(cc: in ContractClause): Int {
   match cc {
@@ -73,12 +141,20 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   val fnDocLs   = docLines(fn.docComments)
   val asyncStr  = if fn.isAsync { "async " } else { "" }
   val gens      = genParamsStr(fn.generics)
-  val params    = paramsStr(fn.params)
   val retStr = match fn.ret {
     case Some(t) -> ": " + typeStr(t)
     case None    -> ""
   }
-  val sig = visStr + asyncStr + "func " + fn.name + gens + "(" + params + ")" + retStr
+  // Width-driven multi-line signature: keep inline when budget +
+  // trivia-peek allow, otherwise break on the parameter list with
+  // Black-style "magic trailing comma".  Item col is 0 (top-level)
+  // or 2 (member of a record/protected type body); we use 0 here as
+  // the conservative default — funcs nested 1 level deep run a few
+  // chars under budget rather than over.
+  val sigPrefix = visStr + asyncStr + "func " + fn.name + gens + "("
+  val sigSuffix = ")" + retStr
+  val paramsCol = sigPrefix.length
+  val sig = funcSigDocFromParts(sigPrefix, sigSuffix, paramsCol, ctx, fn.params)
 
   // Order on the wire: signature → where? → contracts → body.
   // The self-hosted parser accepts `where` only BEFORE the contract
@@ -110,20 +186,22 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   val body: List[String] = match fn.body {
     case None -> {
       val acc: List[String] = newList()
-      acc.add(sig)
       var j = 0
+      while j < sig.count { acc.add(sig[j]); j = j + 1 }
+      j = 0
       while j < extras.count { acc.add(extras[j]); j = j + 1 }
       acc
     }
-    case Some(FBExpr(e)) -> singleLineDoc(sig + " = " + exprInline(0, e))
+    case Some(FBExpr(e)) -> appendToLastLine(sig, " = " + exprInline(0, e))
     case Some(FBBlock(b)) -> {
       if extras.count == 0 {
-        val head = singleLineDoc(sig + " {")
+        val head = appendToLastLine(sig, " {")
         concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
       } else {
         val acc: List[String] = newList()
-        acc.add(sig)
         var j = 0
+        while j < sig.count { acc.add(sig[j]); j = j + 1 }
+        j = 0
         while j < extras.count { acc.add(extras[j]); j = j + 1 }
         acc.add("{")
         val bd = indentDoc(2, blockLines(b, ctx))
