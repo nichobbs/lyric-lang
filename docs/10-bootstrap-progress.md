@@ -1978,6 +1978,39 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-172: MSIL PE emitter Stage M33 — `ldtoken` + `Type.GetTypeFromHandle`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M33 exercises `ldtoken` (0xD0), which pushes a `RuntimeTypeHandle` /
+`RuntimeMethodHandle` / `RuntimeFieldHandle` onto the evaluation stack for a
+metadata token.
+
+**Code flow:**
+1. `ldtoken TypeRef[3]=System.Int32` → `RuntimeTypeHandle` on stack.
+2. `call Type::GetTypeFromHandle(RuntimeTypeHandle)` → `System.Type` object.
+3. `callvirt Type::get_Name()` → string `"Int32"`.
+4. `call Console::WriteLine(string)` → prints `"Int32"`.
+
+`ldtoken` encodes as `Token(op=0xD0, token)` = 5 bytes.  `GetTypeFromHandle`
+signature uses `ELEMENT_TYPE_CLASS` + compressed TypeRef token for the return
+type and `ELEMENT_TYPE_VALUETYPE` + compressed TypeRef token for the
+`RuntimeTypeHandle` parameter.
+
+TypeRefs: [1]=Console, [2]=Object (Hello extends), [3]=Int32 (ldtoken target),
+[4]=Type (GetTypeFromHandle class + get_Name class), [5]=RuntimeTypeHandle
+(GetTypeFromHandle param type).  Tiny header 0x56 (codeSize=21).  BSJB at
+0x25E.
+
+**New opcode** added to `opcodes.l`: `OP_LDTOKEN = 0xD0`, `iLdtoken`,
+`emitLdtoken`.
+
+**Test wiring**: `MsilSelfTestM33.fs` added to `Lyric.Emitter.Tests`; all 37
+MSIL self-tests pass (M1, M2a–M2d, M3–M33).  CLR: `ldtoken` → `GetTypeFromHandle`
+→ `get_Name` → prints `"Int32"`.
+
+---
+
 ### D-progress-171: MSIL PE emitter Stage M32 — `initobj` (zero-initialise value type)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

@@ -101,6 +101,7 @@ let main argv =
             MsilSelfTestM30.tests
             MsilSelfTestM31.tests
             MsilSelfTestM32.tests
+            MsilSelfTestM33.tests
             JvmLoweringTest.tests
             JvmLoweringB4Test.tests
             JvmLoweringB5Test.tests

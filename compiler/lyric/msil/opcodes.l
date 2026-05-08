@@ -123,6 +123,7 @@ pub val OP_LDFLDA      : Int = 0x7C
 pub val OP_STFLD       : Int = 0x7D
 pub val OP_LDSFLD      : Int = 0x7E
 pub val OP_STSFLD      : Int = 0x80
+pub val OP_LDTOKEN     : Int = 0xD0
 
 // Branch opcodes (single-byte opcode + 4-byte signed offset)
 pub val OP_BR          : Int = 0x38
@@ -255,6 +256,7 @@ pub func iStelem(tok: in Int):    Insn = Token(op = OP_STELEM, token = tok)
 pub func iLdelema(tok: in Int):   Insn = Token(op = OP_LDELEMA, token = tok)
 pub func iInitobj(tok: in Int):   Insn = Token2(op = OP2_INITOBJ, token = tok)
 pub func iLdftn(tok: in Int):     Insn = Token2(op = OP2_LDFTN, token = tok)
+pub func iLdtoken(tok: in Int):   Insn = Token(op = OP_LDTOKEN, token = tok)
 
 pub func iAdd():        Insn = Nullary(op = OP_ADD)
 pub func iSub():        Insn = Nullary(op = OP_SUB)
@@ -439,6 +441,7 @@ pub func emitStelem(b: in MethodBody, tok: in Int): Unit    = mbEmit(b, iStelem(
 pub func emitLdelema(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdelema(tok))
 pub func emitInitobj(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iInitobj(tok))
 pub func emitLdftn(b: in MethodBody, tok: in Int): Unit     = mbEmit(b, iLdftn(tok))
+pub func emitLdtoken(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdtoken(tok))
 
 pub func emitAdd(b: in MethodBody): Unit        = mbEmit(b, iAdd())
 pub func emitSub(b: in MethodBody): Unit        = mbEmit(b, iSub())
