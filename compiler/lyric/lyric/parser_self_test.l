@@ -333,6 +333,100 @@ func testRedRootOffsets(): Unit {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CST per-expression / per-statement / per-block / per-contract granularity
+// (Phase 5 §M5.3 stage 6, D-progress-142).
+// ─────────────────────────────────────────────────────────────────────────────
+
+@pure
+func skName(k: in SyntaxKind): String {
+  match k {
+    case SkSourceFile             -> "source_file"
+    case SkModuleDocSection       -> "module_doc"
+    case SkFileAnnotationsSection -> "file_anns"
+    case SkPackageDecl            -> "package"
+    case SkImportSection          -> "import_section"
+    case SkImportDecl             -> "import"
+    case SkItemSection            -> "item_section"
+    case SkItem                   -> "item"
+    case SkAnnotation             -> "annotation"
+    case SkBlock                  -> "block"
+    case SkStatement              -> "statement"
+    case SkExpr                   -> "expr"
+    case SkContractClause         -> "contract"
+    case SkRaw                    -> "raw"
+  }
+}
+
+/// Walk a green tree and count occurrences of each `SyntaxKind`
+/// across the whole sub-tree (root included).  `target` matches any
+/// node with that kind.
+func countKind(n: in GreenNode, target: in SyntaxKind): Int {
+  var hit = 0
+  if skName(n.kind) == skName(target) { hit = 1 }
+  var i = 0
+  while i < n.children.count {
+    match n.children[i] {
+      case GcNode(child) -> { hit = hit + countKind(child, target) }
+      case GcToken(_)    -> {}
+    }
+    i = i + 1
+  }
+  hit
+}
+
+func testCstHasSkBlockInsideFunc(): Unit {
+  val pr = parse("package P\nfunc f(): Unit { val a = 1 }\n")
+  val n = countKind(pr.cst, SkBlock)
+  assertTrue(n >= 1, "CST: at least one SkBlock inside func")
+}
+
+func testCstHasSkStatementInsideFunc(): Unit {
+  val pr = parse("package P\nfunc f(): Unit { val a = 1; val b = 2 }\n")
+  val n = countKind(pr.cst, SkStatement)
+  assertTrue(n >= 2, "CST: each statement gets its own SkStatement node")
+}
+
+func testCstHasSkExprInsideStatement(): Unit {
+  // `parseExpr` is the wrapper-bearing entry — sub-precedence
+  // helpers (`parseImpliesExpr`, `parseAddExpr`, etc.) don't re-enter
+  // it, so a single binary expression like `1 + 2` produces only one
+  // SkExpr node (the init).  Parens, function args, indices, and
+  // explicit subscripts re-enter `parseExpr`, yielding nested
+  // SkExpr nodes — exercise that here.
+  val pr = parse("package P\nfunc f(): Int { val a = (1 + 2); a }\n")
+  val n = countKind(pr.cst, SkExpr)
+  // At minimum: the `(1 + 2)` init's outer parseExpr, the inner
+  // parenthesised parseExpr, and the trailing-expression `a` —
+  // three SkExpr nodes.
+  assertTrue(n >= 3, "CST: SkExpr nests across paren / sub-expr boundaries")
+}
+
+func testCstHasSkContractClause(): Unit {
+  val src =
+    "package P\nfunc divide(x: in Int, y: in Int): Int\n" +
+    "  requires: y != 0\n  ensures: result * y == x\n  { x / y }\n"
+  val pr = parse(src)
+  val n = countKind(pr.cst, SkContractClause)
+  assertTrue(n == 2, "CST: two contract clauses (requires + ensures)")
+}
+
+func testCstNoSkContractClauseWhenAbsent(): Unit {
+  val pr = parse("package P\nfunc f(): Int { 0 }\n")
+  val n = countKind(pr.cst, SkContractClause)
+  assertEqualInt(n, 0, "CST: no SkContractClause node when no clauses")
+}
+
+func testCstShapeIsLossless(): Unit {
+  // Per-expression / per-statement granularity must keep the green
+  // tree's lossless guarantee — `nodeSourceText` reproduces the
+  // input byte-for-byte (modulo CR/LF normalisation).
+  val src = "package P\nfunc f(): Int {\n  val a = 1 + 2\n  a\n}\n"
+  val pr = parse(src)
+  val rendered = nodeSourceText(pr.source, pr.cst)
+  assertEqual(rendered, pr.source, "CST: lossless round-trip with finer granularity")
+}
+
 func main(): Unit {
   testEmptySource()
   testPackageDecl()
@@ -358,5 +452,11 @@ func main(): Unit {
   testCstEmptySourceLossless()
   testCstWidthMatchesText()
   testRedRootOffsets()
+  testCstHasSkBlockInsideFunc()
+  testCstHasSkStatementInsideFunc()
+  testCstHasSkExprInsideStatement()
+  testCstHasSkContractClause()
+  testCstNoSkContractClauseWhenAbsent()
+  testCstShapeIsLossless()
   println("parser self-test: ok")
 }

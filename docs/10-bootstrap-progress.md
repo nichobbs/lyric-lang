@@ -80,7 +80,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -196,6 +196,69 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-142: M5.3 stage 6 — per-expression / per-statement / per-block / per-contract-clause CST granularity
+
+*claude/lyric-cst-expr-stmt-granularity branch.*
+
+Extends the self-hosted parser's CST below the `SkItem` boundary: each
+`parseExpr`, `parseStatement`, `parseBlock`, and committed
+`parseContractClauseOpt` invocation now opens its own green node.
+The previous shape (everything inside an `SkItem` was a flat token
+run) made it impossible for the formatter to anchor sub-expression
+trivia at the right depth — the gap called out in `D-progress-141`'s
+"Out of scope" note.
+
+Mechanism:
+
+- New `SyntaxKind`s in `parser_cst.l`: `SkBlock`, `SkStatement`,
+  `SkExpr`, `SkContractClause`.  Each is documented with the kind
+  of source construct it wraps and where its children come from.
+- `parseExpr` (the precedence-climber entry) wraps with
+  `cstStart(SkExpr)` / `cstFinish` once per call.  The internal
+  precedence helpers (`parseImpliesExpr`, `parseAddExpr`, …) do not
+  re-wrap — they're parts of one expression node.  Sub-expression
+  recursions through parens / function args / indices / type args
+  / etc. *do* hit `parseExpr` again and produce nested `SkExpr`
+  children, matching how `Expr` is structured in the AST.
+- `parseStatement` is split into a thin wrapper (`cstStart(SkStatement)`
+  / `cstFinish`) and a renamed `parseStatementInner` that owns the
+  body — same pattern used by `parseExpr`.
+- `parseBlock` wraps the entire `{ … }` form as `SkBlock`, including
+  the brace tokens, statement nodes, and `TStmtEnd` separators.
+- `parseContractClauseOpt` peeks the upcoming token before opening
+  a node — only commits to `SkContractClause` when we know the next
+  keyword is `requires`, `ensures`, or `when`.  Avoids spurious
+  empty nodes on items that have no contracts.
+
+Self-test additions in `compiler/lyric/lyric/parser_self_test.l`:
+
+- `testCstHasSkBlockInsideFunc` — at least one `SkBlock` per
+  function body.
+- `testCstHasSkStatementInsideFunc` — each statement has its own
+  `SkStatement` node.
+- `testCstHasSkExprInsideStatement` — `SkExpr` nests across paren /
+  sub-expr boundaries (≥ 3 in `(1 + 2); a`).
+- `testCstHasSkContractClause` — exactly two `SkContractClause`
+  nodes for a `requires:` + `ensures:` pair.
+- `testCstNoSkContractClauseWhenAbsent` — zero clause nodes when no
+  contract is present.
+- `testCstShapeIsLossless` — finer granularity preserves the
+  byte-for-byte round-trip via `nodeSourceText`.
+
+The formatter already takes a `FmtCtx` cursor, but it doesn't yet
+*use* the new sub-`SkItem` nodes.  This stage is the parser-side
+scaffolding; a follow-up stage can teach `Lyric.Fmt` to anchor
+expression-internal trivia at sub-expression boundaries (e.g. a
+comment between operands of a binary op).  CST-driven AST
+projection from the LSP / refactoring tools also benefits from the
+finer granularity even before the formatter does.
+
+End-to-end smoke via the F# `lyric fmt` bridge confirms the existing
+formatter behaviour is unchanged on a sample with comments,
+contracts, and blank lines.
+
+
 
 ### D-progress-141: M5.3 stage 5 — blank-line preservation in `Lyric.Fmt` (+ documenting why the `Lyric.Lyric.<X>.dll` naming wart is intentional)
 

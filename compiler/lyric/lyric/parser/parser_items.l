@@ -565,7 +565,32 @@ func parseParamList(st: inout ParseState): List[Param] {
   xs
 }
 
+@pure
+func isContractKeyword(k: in Keyword): Bool {
+  match k {
+    case KwRequires -> true
+    case KwEnsures  -> true
+    case KwWhen     -> true
+    case _          -> false
+  }
+}
+
 func parseContractClauseOpt(st: inout ParseState): Option[ContractClause] {
+  // Peek before opening the CST node — only emit `SkContractClause`
+  // when we know we're committing to a clause; otherwise leave the
+  // event log untouched.
+  val isClause = match peekToken(st) {
+    case TKeyword(k) -> isContractKeyword(k)
+    case _           -> false
+  }
+  if not isClause { return None }
+  cstStart(st, SkContractClause)
+  val r = parseContractClauseOptInner(st)
+  cstFinish(st)
+  r
+}
+
+func parseContractClauseOptInner(st: inout ParseState): Option[ContractClause] {
   val startSpan = peekSpan(st)
   match peekToken(st) {
     case TKeyword(k) -> {

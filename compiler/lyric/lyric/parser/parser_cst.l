@@ -43,6 +43,26 @@ pub union SyntaxKind {
   case SkItemSection
   case SkItem
   case SkAnnotation
+  /// A `{ … }` block — function body, lambda body, control-flow body.
+  /// Children are an opening `{` token, zero or more `SkStatement`
+  /// nodes interleaved with `TStmtEnd` separator tokens, and a
+  /// closing `}` token.
+  case SkBlock
+  /// A single statement inside a block.  The kind covers `val` / `var`
+  /// / `let` bindings, `return`, `break`, `continue`, `throw`, `try`
+  /// / `defer` / `scope` / `for` / `while` / `loop` / `invariant`
+  /// statements, and bare expression statements.  An expression
+  /// statement contains an `SkExpr` child for the expression itself.
+  case SkStatement
+  /// An expression node.  `parseExpr` is recursive through precedence
+  /// climbers, but only the top of each `parseExpr` call wraps this
+  /// node — sub-expressions appear as nested `SkExpr` children when
+  /// any operand is itself a recursive `parseExpr` call, plus token
+  /// leaves for operator / punctuation tokens consumed at this level.
+  case SkExpr
+  /// A `requires:` / `ensures:` / `when:` / `decreases:` / `raises:`
+  /// contract clause attached to a function or entry declaration.
+  case SkContractClause
   /// Catch-all for nodes that have not been broken out into their
   /// own kind yet.  Carries no semantic meaning beyond "structurally
   /// distinct from its surroundings".
