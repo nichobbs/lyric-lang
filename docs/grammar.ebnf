@@ -350,6 +350,8 @@ ItemKind =
     | InterfaceDecl
     | ImplDecl
     | WireDecl
+    | AspectDecl
+    | AspectTemplateDecl
     | ScopeKindDecl
     | ExternPackageDecl
     | TestItem                                  (* only valid in @test_module *)
@@ -1108,6 +1110,7 @@ ContractExpr = Expr ;
 
 (* §10.1 Wire blocks (compile-time DI graph; reference §10) *)
 
+
 WireDecl =
     'wire' IDENT [ WireParams ]
         '{' { NL } { WireMember NL } '}' ;
@@ -1140,11 +1143,77 @@ ExposeDecl =
 LocalAlias =
       'val' IDENT [ ':' Type ] '=' Expr ;     (* internal helper binding inside a wire *)
 
-(* §10.2 User-defined scopes *)
+(* §10.2 Aspects (docs/26-aspects.md; Phase 2) *)
+
+(* A standalone aspect or a template instantiation.
+ *
+ * Without 'from': standalone aspect. Must contain at least one of
+ *   AroundAdvice, RequiresClause, EnsuresClause. MatchesClause is optional
+ *   (an aspect without it never fires). OrderingClause, AspectConfigDecl
+ *   may also appear.
+ *
+ * With 'from ModulePath': template instantiation. Must contain exactly
+ *   one MatchesClause. May contain AspectConfigDecl for field-default
+ *   overrides. AroundAdvice, RequiresClause, EnsuresClause are rejected
+ *   post-parse (A0022). OrderingClause is allowed. *)
+AspectDecl =
+    'aspect' IDENT [ 'from' ModulePath ]
+        '{' { NL } { AspectMember NL } '}' ;
+
+AspectMember =
+      MatchesClause
+    | AspectConfigDecl
+    | AroundAdvice
+    | OrderingClause
+    | RequiresClause
+    | EnsuresClause ;
+
+(* An exportable template: same body content as AspectDecl but no
+ * MatchesClause (A0021) and no OrderingClause. May be 'pub'. *)
+AspectTemplateDecl =
+    'aspect_template' IDENT
+        '{' { NL } { AspectTemplateMember NL } '}' ;
+
+AspectTemplateMember =
+      AspectConfigDecl
+    | AroundAdvice
+    | RequiresClause
+    | EnsuresClause ;
+
+MatchesClause =
+    'matches' ':' NL MatchesPredicate { 'and' MatchesPredicate }
+        [ NL ExceptClause ] ;
+
+MatchesPredicate =
+    'name' 'like' StringLit ;
+
+(* Reserved future forms (not valid in v1):
+ *   'signature' ':' ...
+ *   'annotated' ':' Annotation
+ *   'visibility' ':' 'pub' *)
+
+ExceptClause =
+    'except' 'name' 'in' '{' IDENT { ',' IDENT } [ ',' ] '}' ;
+
+AspectConfigDecl =
+    'config' '{' { NL } { ConfigField NL } '}' ;
+
+ConfigField =
+    IDENT ':' Type '=' Expr ;      (* default is ConstExpr in practice *)
+
+AroundAdvice =
+    'around' '(' IDENT ')' '->' IDENT Block ;
+
+OrderingClause =
+      'inside' ':' IDENT { ',' IDENT }
+    | 'wraps'  ':' IDENT { ',' IDENT } ;
+
+
+(* §10.3 User-defined scopes *)
 
 ScopeKindDecl = 'scope_kind' IDENT ;          (* declares a new scope tag, e.g. Tenant *)
 
-(* §10.3 Extern packages *)
+(* §10.4 Extern packages *)
 
 ExternPackageDecl =
     'extern' 'package' ModulePath
