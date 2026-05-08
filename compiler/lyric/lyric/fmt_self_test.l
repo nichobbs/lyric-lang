@@ -225,15 +225,32 @@ func testBlankLinesBetweenCommentBlocks(): Unit {
 }
 
 func testMultipleBlankLinesCollapseToOne(): Unit {
-  // Two consecutive blank lines collapse to one (canonical 1-blank-max).
+  // 3 consecutive newlines (= 2 blank lines in source) collapse to a
+  // single blank line in canonical output.  Use exact-match
+  // `assertEqual` rather than `Str.contains` so the assertion locks
+  // in the entire surrounding context, not just the substring shape.
   val src = "package P\nfunc f(): Unit {\n  val a = 1\n\n\n\n  val b = 2\n}\n"
   val pr = parse(src)
   val acc = format(pr)
-  // Canonical output has exactly one blank line between the two stmts.
-  assertTrue(Str.contains(acc, "val a = 1\n\n  val b = 2"),
-             "blank: 3-newline run collapses to one blank line")
-  assertTrue(not Str.contains(acc, "val a = 1\n\n\n  val b"),
-             "blank: 3-newline run does NOT produce 2 blanks")
+  val expected = "package P\n\nfunc f(): Unit {\n  val a = 1\n\n  val b = 2\n}\n"
+  assertEqual(acc, expected, "blank: multiple-newline run collapses to one blank")
+}
+
+func testTrailingBlankBeforeClosingBrace(): Unit {
+  // A blank line immediately before `}` should be suppressed — the
+  // closing brace itself is the visual terminator, and a trailing
+  // empty line in the body just looks unfinished.  This locks in the
+  // `popCommentsBefore` (not `popTriviaBefore`) choice at the tail of
+  // `blockLines` / `recordDoc` / `unionDoc` / `enumDoc`.
+  val funcSrc = "package P\nfunc f(): Unit {\n  val a = 1\n\n}\n"
+  val funcOut = format(parse(funcSrc))
+  val funcExpected = "package P\n\nfunc f(): Unit {\n  val a = 1\n}\n"
+  assertEqual(funcOut, funcExpected, "blank: trailing blank before func `}` suppressed")
+
+  val recSrc = "package P\nrecord R {\n  x: Int\n\n}\n"
+  val recOut = format(parse(recSrc))
+  val recExpected = "package P\n\nrecord R {\n  x: Int\n}\n"
+  assertEqual(recOut, recExpected, "blank: trailing blank before record `}` suppressed")
 }
 
 func testFormatSourceFacade(): Unit {
@@ -274,5 +291,6 @@ func main(): Unit {
   testBlankLineInsideRecordBody()
   testBlankLinesBetweenCommentBlocks()
   testMultipleBlankLinesCollapseToOne()
+  testTrailingBlankBeforeClosingBrace()
   println("fmt self-test: ok")
 }
