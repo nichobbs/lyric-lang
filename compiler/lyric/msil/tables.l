@@ -10,7 +10,7 @@
 // Supported tables (the minimum set needed to emit a valid CLI assembly):
 //   Module (0x00), TypeRef (0x01), TypeDef (0x02), Field (0x04),
 //   MethodDef (0x06), Param (0x08), MemberRef (0x0A), CustomAttr (0x0C),
-//   Assembly (0x20), AssemblyRef (0x23).
+//   StandAloneSig (0x11), Assembly (0x20), AssemblyRef (0x23).
 //
 // All heap references (name, signature, …) are stored as Int indices into
 // the corresponding heap (#Strings, #Blob, #GUID); the heap builder (heaps.l)
@@ -243,6 +243,13 @@ pub record AssemblyRow {
   culture:        Int  // #Strings (0 = culture-neutral)
 }
 
+// StandAloneSig (Table 0x11) — ECMA-335 §II.22.36.
+// Holds a standalone signature blob, used for local variable type lists
+// (LocalVarSig) referenced by a fat method header's LocalVarSigTok field.
+pub record StandAloneSigRow {
+  signature: Int  // #Blob: LocalVarSig or MethodSig
+}
+
 // AssemblyRef (Table 0x23) — ECMA-335 §II.22.5.
 pub record AssemblyRefRow {
   majorVersion:   Int
@@ -259,30 +266,32 @@ pub record AssemblyRefRow {
 // ── MetadataTables container ───────────────────────────────────────────────────
 
 pub record MetadataTables {
-  modules:      List[ModuleRow]
-  typeRefs:     List[TypeRefRow]
-  typeDefs:     List[TypeDefRow]
-  fields:       List[FieldRow]
-  methodDefs:   List[MethodDefRow]
-  params_:      List[ParamRow]
-  memberRefs:   List[MemberRefRow]
-  customAttrs:  List[CustomAttrRow]
-  assemblies:   List[AssemblyRow]
-  assemblyRefs: List[AssemblyRefRow]
+  modules:          List[ModuleRow]
+  typeRefs:         List[TypeRefRow]
+  typeDefs:         List[TypeDefRow]
+  fields:           List[FieldRow]
+  methodDefs:       List[MethodDefRow]
+  params_:          List[ParamRow]
+  memberRefs:       List[MemberRefRow]
+  customAttrs:      List[CustomAttrRow]
+  standAloneSigs:   List[StandAloneSigRow]
+  assemblies:       List[AssemblyRow]
+  assemblyRefs:     List[AssemblyRefRow]
 }
 
 pub func newMetadataTables(): MetadataTables {
   MetadataTables(
-    modules      = newList(),
-    typeRefs     = newList(),
-    typeDefs     = newList(),
-    fields       = newList(),
-    methodDefs   = newList(),
-    params_      = newList(),
-    memberRefs   = newList(),
-    customAttrs  = newList(),
-    assemblies   = newList(),
-    assemblyRefs = newList()
+    modules        = newList(),
+    typeRefs       = newList(),
+    typeDefs       = newList(),
+    fields         = newList(),
+    methodDefs     = newList(),
+    params_        = newList(),
+    memberRefs     = newList(),
+    customAttrs    = newList(),
+    standAloneSigs = newList(),
+    assemblies     = newList(),
+    assemblyRefs   = newList()
   )
 }
 
@@ -334,9 +343,20 @@ pub func addAssembly(t: in MetadataTables, r: in AssemblyRow): Int {
   t.assemblies.count
 }
 
+pub func addStandAloneSig(t: in MetadataTables, r: in StandAloneSigRow): Int {
+  t.standAloneSigs.add(r)
+  t.standAloneSigs.count
+}
+
 pub func addAssemblyRef(t: in MetadataTables, r: in AssemblyRefRow): Int {
   t.assemblyRefs.add(r)
   t.assemblyRefs.count
+}
+
+/// Build the StandAloneSig metadata token for the given 1-based row index.
+/// Token = (table 0x11) << 24 | rowIndex.
+pub func standaloneToken(row: in Int): Int {
+  0x11000000 + row
 }
 
 // ── Metadata stream serializer (#~ stream) ────────────────────────────────────
@@ -368,9 +388,10 @@ val TABLE_BIT_FIELD       : Long = 16i64          // table 0x04, bit 4
 val TABLE_BIT_METHOD_DEF  : Long = 64i64          // table 0x06, bit 6
 val TABLE_BIT_PARAM       : Long = 256i64         // table 0x08, bit 8
 val TABLE_BIT_MEMBER_REF  : Long = 1024i64        // table 0x0A, bit 10
-val TABLE_BIT_CUSTOM_ATTR : Long = 4096i64        // table 0x0C, bit 12
-val TABLE_BIT_ASSEMBLY    : Long = 4294967296i64  // table 0x20, bit 32 (2^32)
-val TABLE_BIT_ASSEMBLY_REF: Long = 34359738368i64 // table 0x23, bit 35 (2^35)
+val TABLE_BIT_CUSTOM_ATTR     : Long = 4096i64          // table 0x0C, bit 12
+val TABLE_BIT_STAND_ALONE_SIG : Long = 131072i64        // table 0x11, bit 17 (2^17)
+val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
+val TABLE_BIT_ASSEMBLY_REF    : Long = 34359738368i64   // table 0x23, bit 35 (2^35)
 
 // Emit a 2-byte LE integer.
 func w2(buf: in ByteWriter, v: in Int): Unit {
@@ -414,9 +435,10 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.methodDefs.count > 0   { valid = valid + TABLE_BIT_METHOD_DEF }
   if t.params_.count > 0      { valid = valid + TABLE_BIT_PARAM }
   if t.memberRefs.count > 0   { valid = valid + TABLE_BIT_MEMBER_REF }
-  if t.customAttrs.count > 0  { valid = valid + TABLE_BIT_CUSTOM_ATTR }
-  if t.assemblies.count > 0   { valid = valid + TABLE_BIT_ASSEMBLY }
-  if t.assemblyRefs.count > 0 { valid = valid + TABLE_BIT_ASSEMBLY_REF }
+  if t.customAttrs.count > 0      { valid = valid + TABLE_BIT_CUSTOM_ATTR }
+  if t.standAloneSigs.count > 0   { valid = valid + TABLE_BIT_STAND_ALONE_SIG }
+  if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
+  if t.assemblyRefs.count > 0     { valid = valid + TABLE_BIT_ASSEMBLY_REF }
   w8(buf, valid)
 
   // Sorted bitmask: all zero (no sorting performed here)
@@ -430,9 +452,10 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.methodDefs.count > 0   { w4(buf, t.methodDefs.count) }
   if t.params_.count > 0      { w4(buf, t.params_.count) }
   if t.memberRefs.count > 0   { w4(buf, t.memberRefs.count) }
-  if t.customAttrs.count > 0  { w4(buf, t.customAttrs.count) }
-  if t.assemblies.count > 0   { w4(buf, t.assemblies.count) }
-  if t.assemblyRefs.count > 0 { w4(buf, t.assemblyRefs.count) }
+  if t.customAttrs.count > 0      { w4(buf, t.customAttrs.count) }
+  if t.standAloneSigs.count > 0   { w4(buf, t.standAloneSigs.count) }
+  if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
+  if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
 
   // Row data — each table in table-number order.
   // Heap ref size: heapSizes bit 0 → Strings, bit 1 → GUID, bit 2 → Blob.
@@ -525,6 +548,14 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.type_)
     w2(buf, r.value)
     cai = cai + 1
+  }
+
+  // StandAloneSig rows (table 0x11)
+  var ssi = 0
+  while ssi < t.standAloneSigs.count {
+    val r = t.standAloneSigs[ssi]
+    w2(buf, r.signature)
+    ssi = ssi + 1
   }
 
   // Assembly rows (table 0x20)
