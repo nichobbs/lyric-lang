@@ -336,4 +336,68 @@ let tests =
                 Expect.equal fn.Params.Length 1 "one param"
             | other -> failtestf "expected IFunc, got %A" other
         }
+
+        // ----- aspect template + instantiation (D051) -----
+
+        test "aspect template form: pub aspect without matches" {
+            let src = """pub aspect Tracing {
+                config {
+                    enabled: Bool = true
+                }
+                around(call) -> ret {
+                    proceed(call)
+                }
+            }"""
+            let f = parseClean src
+            match (getOnlyItem f).Kind with
+            | IAspect ad ->
+                Expect.equal ad.Name "Tracing" "name"
+                Expect.isNone ad.From "no from"
+                Expect.equal ad.Matches.Length 0 "no matchers (template form)"
+                Expect.equal ad.Config.Length 1 "one config field"
+                Expect.equal ad.Config.[0].Name "enabled" "config field name"
+                Expect.isSome ad.Around "around present"
+            | other -> failtestf "expected IAspect, got %A" other
+        }
+
+        test "aspect instantiation form: from clause with matches" {
+            let src = """aspect HttpTracing from OTel.Tracing {
+                matches: name like "*/Http/*"
+                config {
+                    sampleRate: Float = 0.1
+                }
+            }"""
+            let f = parseClean src
+            match (getOnlyItem f).Kind with
+            | IAspect ad ->
+                Expect.equal ad.Name "HttpTracing" "name"
+                Expect.isSome ad.From "from present"
+                let fromPath = ad.From |> Option.get
+                Expect.equal fromPath.Segments ["OTel"; "Tracing"] "from path"
+                Expect.equal ad.Matches.Length 1 "one matcher"
+                Expect.equal ad.Config.Length 1 "one config override"
+                Expect.equal ad.Config.[0].Name "sampleRate" "config field name"
+                Expect.isNone ad.Around "no around on instantiation"
+            | other -> failtestf "expected IAspect, got %A" other
+        }
+
+        test "aspect config block without braces emits P0306" {
+            let src = prelude + "aspect T { config enabled: Bool = true }"
+            let r = parse src
+            Expect.isTrue
+                (r.Diagnostics |> List.exists (fun d -> d.Code = "P0306"))
+                "P0306 emitted"
+        }
+
+        test "duplicate config block emits P0308" {
+            let src = prelude + """aspect T {
+                config { enabled: Bool = true }
+                config { enabled: Bool = false }
+                around(c) { proceed(c) }
+            }"""
+            let r = parse src
+            Expect.isTrue
+                (r.Diagnostics |> List.exists (fun d -> d.Code = "P0308"))
+                "P0308 emitted"
+        }
     ]

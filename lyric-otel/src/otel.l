@@ -16,6 +16,11 @@
 package OTel
 
 import OTel.Types
+// Both kernel packages are imported unconditionally at the source level.
+// Each package is gated by @cfg(feature = ...) in its own file, so the
+// manifest resolver emits nothing for inactive features — the import
+// resolves to an empty namespace and the @cfg-gated wrapper functions
+// below provide the only bindings actually used at call sites.
 import OTel.Kernel.Net
 import OTel.Kernel.Jvm
 import Std.Log
@@ -88,6 +93,18 @@ pub func recordHistogram(name: String, value: Float, unit: String): Unit {
 ///   enabled    — gate the whole aspect at startup; default true.
 ///   sampleRate — fraction of calls to trace (0.0–1.0); default 1.0.
 ///   spanKind   — OTel SpanKind for every span; default Internal.
+/// Map `SpanKind` to its OTel integer ordinal.
+/// OTel SDK convention: Internal=0, Server=1, Client=2, Producer=3, Consumer=4.
+func spanKindToInt(k: SpanKind): Int {
+  match k {
+    case SpanKind.Internal  -> 0
+    case SpanKind.Server    -> 1
+    case SpanKind.Client    -> 2
+    case SpanKind.Producer  -> 3
+    case SpanKind.Consumer  -> 4
+  }
+}
+
 pub aspect Tracing {
   config {
     enabled:    Bool      = true
@@ -98,7 +115,7 @@ pub aspect Tracing {
     if not enabled {
       ret = call.proceed()
     } else {
-      val span = startSpan(call.qualifiedName, spanKind.toInt())
+      val span = startSpan(call.qualifiedName, spanKindToInt(spanKind))
       match call.proceed() {
         case Ok(v) -> {
           endSpan(span)

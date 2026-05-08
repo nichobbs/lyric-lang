@@ -1818,6 +1818,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
   val _ = skipStmtEnds(st)
   val matches: List[AspectMatcher] = newList()
   val config: List[ConfigField] = newList()
+  var configSeen: Bool = false
   var around: Option[AspectAround] = None
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = st.pos
@@ -1834,13 +1835,21 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
             case None -> {}
           }
         } else if s == "config" {
-          val _ = advance(st)
-          val fields = parseAspectConfigBlock(st)
-          for f in fields { config.add(f) }
+          if not configSeen {
+            val _ = advance(st)
+            val fields = parseAspectConfigBlock(st)
+            for f in fields { config.add(f) }
+            configSeen = true
+          } else {
+            emitErr(st, "P0308", "duplicate 'config' block in aspect body", peekSpan(st))
+            val _ = advance(st)
+            val _ = parseAspectConfigBlock(st)
+          }
         } else if s == "around" {
           match around {
             case Some(_) -> {
               emitErr(st, "P0303", "duplicate 'around' clause in aspect block", peekSpan(st))
+              // Skip the duplicate by parsing it for error recovery.
               val _ = parseAspectAround(st)
             }
             case None -> {
@@ -1849,6 +1858,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
           }
         } else {
           emitErr(st, "P0304", "expected 'matches:', 'config', or 'around' in aspect body", peekSpan(st))
+          // Skip the offending token to prevent an infinite loop.
           val _ = advance(st)
         }
       }

@@ -2430,6 +2430,9 @@ the soft-keyword table. `from` remains a soft keyword.
 - `docs/grammar.ebnf` §10.2 updated.
 - D050's entry title retains `pub aspect_template` for historical
   accuracy; this entry supersedes D050's syntax choice only.
+- Both parsers (F# + self-hosted) implement all three forms:
+  `From: ModulePath option` and `Config: ConfigField list` added to
+  `AspectDecl`. Parser error codes P0306–P0308 added.
 
 **Revisions:** None.
 
