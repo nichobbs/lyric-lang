@@ -49,6 +49,8 @@ func firstItemKindName(pr: in ParseResult): String {
     case ITest(_)         -> "test"
     case IProperty(_)     -> "property"
     case IFixture(_)      -> "fixture"
+    case IConfig(_)       -> "config"
+    case IAspect(_)       -> "aspect"
     case IError           -> "error"
   }
 }

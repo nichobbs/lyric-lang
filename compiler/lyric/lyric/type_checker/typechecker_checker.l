@@ -201,6 +201,12 @@ func registerItem(
     case IFixture(decl) -> {
       val _ = addSym(tbl, diag, isImported, decl.name, DKFixture(decl = decl), vis, span)
     }
+    case IConfig(decl) -> {
+      val _ = addSym(tbl, diag, isImported, decl.name, DKConfig(decl = decl), vis, span)
+    }
+    case IAspect(decl) -> {
+      val _ = addSym(tbl, diag, isImported, decl.name, DKAspect(decl = decl), vis, span)
+    }
     case IExtern(_) -> {}
     case IImpl(_)   -> {}
     case IError     -> {}

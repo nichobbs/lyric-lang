@@ -640,18 +640,55 @@ pub union ItemKind {
   case ITest(decl: TestDecl)
   case IProperty(decl: PropertyDecl)
   case IFixture(decl: FixtureDecl)
+  /// Module-scope `config Name { ... }` per `docs/25-config-blocks.md` (D046).
+  case IConfig(decl: ConfigDecl)
+  /// Module-scope `aspect Name { ... }` per `docs/26-aspects.md` (D047).
+  case IAspect(decl: AspectDecl)
   case IError
 }
 
-// D046 / D047: ConfigDecl and AspectDecl AST shapes are implemented
-// in the F# bootstrap parser (`compiler/src/Lyric.Parser/Ast.fs`)
-// only.  The self-hosted mirror is deferred — landing the new
-// `IConfig` / `IAspect` cases here triggers a TypeBuilder generic
-// instantiation issue in the F# bootstrap's `emitLambdaWith` codegen
-// path when downstream Lyric.Fmt / parser-self-test code matches
-// over the wider `ItemKind` union.  The mirror lights up once the
-// codegen path in `compiler/src/Lyric.Emitter/Codegen.fs:emitLambdaWith`
-// is fixed.
+/// One field inside a `config { ... }` block (D046).  `default` is
+/// `None` for required fields (the runtime aborts at startup if the
+/// env var is unset / unparseable); a literal default of the
+/// declared type otherwise.
+pub record ConfigField {
+  docComments: List[DocComment]
+  annotations: List[Annotation]
+  name:        String
+  ty:          TypeExpr
+  default:     Option[Expr]
+  span:        Span
+}
+
+pub record ConfigDecl {
+  name:   String
+  fields: List[ConfigField]
+  span:   Span
+}
+
+/// `matches:` predicate for D047 aspect blocks.  v1 ships only
+/// name-glob matching; future predicates (signature, annotation,
+/// visibility) extend this union.
+pub union AspectMatcher {
+  case AMNameLike(glob: String, span: Span)
+}
+
+pub record AspectAround {
+  argsName: String
+  retName:  Option[String]
+  body:     Block
+  span:     Span
+}
+
+pub record AspectDecl {
+  name:    String
+  matches: List[AspectMatcher]
+  around:  Option[AspectAround]
+  span:    Span
+}
+
+// D046 / D047 self-hosted parser dispatch + bodies are added in
+// `parser_items.l` alongside the AST shapes above.
 
 pub record Item {
   docComments: List[DocComment]
