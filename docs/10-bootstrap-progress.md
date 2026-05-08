@@ -104,6 +104,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M25 — `isinst` + `box`: `msil_self_test_m25.l` builds a PE whose `Main()` boxes integer 42 as `System.Object` via `box` (0x8C), tests it with `isinst System.Object` (0x75), branches on null via `brfalse` (0x39), then boxes 42 again and calls `Console.WriteLine(object)`; exercises `isinst` token encoding (TypeRef[2]=System.Object), `box` with TypeRef[3]=System.Int32, and the `object` MemberRef sig `{0x00,0x01,0x01,0x1C}`; CLR prints `42` | **Shipped** (this branch) | D-progress-164 |
 | MSIL PE emitter Stage M26 — `newarr` + `ldelem` + `stelem` (managed arrays): `msil_self_test_m26.l` builds a PE whose `Main()` allocates a 2-element `int32[]` via `newarr` (0x8D), stores 21 at indices 0 and 1 via `stelem` (0xA4), loads both elements via `ldelem` (0xA3), adds them (42), and calls `Console.WriteLine(int)`; exercises fat header with `ELEMENT_TYPE_SZARRAY` LocalVarSig, `StandAloneSig` table, and the typed array instruction forms; CLR prints `42` | **Shipped** (this branch) | D-progress-165 |
 | MSIL PE emitter Stage M27 — `callvirt` (virtual dispatch): `msil_self_test_m27.l` builds a PE whose `Main()` boxes 42 as `System.Object`, calls `callvirt System.Object::ToString()` (MemberRef[1] with HASTHIS sig `{0x20,0x00,0x0E}`) to produce the string `"42"`, then calls `Console.WriteLine(string)` (MemberRef[2]); exercises the `callvirt` (0x6F) opcode and a HASTHIS signature with a string return type; CLR prints `42` | **Shipped** (this branch) | D-progress-166 |
+| MSIL PE emitter Stage M28 — `ldsfld` + `stsfld` (static fields): `msil_self_test_m28.l` builds a PE whose `Hello` class declares two public static I4 fields `_x` and `_y` (Field[1], Field[2], flags=`FDA_PUBLIC+FDA_STATIC`); `Main` stores 20 via `stsfld` (0x80), stores 22, loads both via `ldsfld` (0x7E), adds (42), and calls `Console.WriteLine(int)`; exercises the `Field` table with `FDA_STATIC`, static-field token encoding (`0x04000001`, `0x04000002`), and field-sig `{0x06, 0x08}`; CLR prints `42` | **Shipped** (this branch) | D-progress-167 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 |
@@ -1930,6 +1931,27 @@ TypeRefs: [1]=System.Console, [2]=System.Object (Hello extends + callvirt target
 
 **Test wiring**: `MsilSelfTestM27.fs` added to `Lyric.Emitter.Tests`; all 31
 MSIL self-tests pass (M1, M2a–M2d, M3–M27).  CLR: box 42 → `ToString()` → `"42"`.
+
+---
+
+### D-progress-167: MSIL PE emitter Stage M28 — `ldsfld` + `stsfld` (static fields)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M28 introduces the `Field` table with static fields and the `ldsfld`/`stsfld` instructions.
+
+**Field layout:** Hello class owns Field[1]=`_x` and Field[2]=`_y`, both flagged `FDA_PUBLIC + FDA_STATIC` (0x0016) with sig `{0x06, 0x08}` (FIELD + I4).  Field tokens: `_x`=0x04000001, `_y`=0x04000002.
+
+**Code flow:**
+1. `ldc.i4.s 20` / `stsfld 0x04000001` — writes 20 to `_x`.
+2. `ldc.i4.s 22` / `stsfld 0x04000002` — writes 22 to `_y`.
+3. `ldsfld 0x04000001` + `ldsfld 0x04000002` — loads both fields.
+4. `add` → 42 / `call Console.WriteLine(int)` / `ret`.
+
+Tiny header at 0x248 = 0x7E (codeSize=31).  BSJB at 0x268.
+
+**Test wiring**: `MsilSelfTestM28.fs` added to `Lyric.Emitter.Tests`; all 32
+MSIL self-tests pass (M1, M2a–M2d, M3–M28).  CLR: `_x=20`, `_y=22`; 20+22=42 → prints `42`.
 
 ---
 
