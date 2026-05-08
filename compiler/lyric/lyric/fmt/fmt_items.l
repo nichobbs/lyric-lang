@@ -101,7 +101,9 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
     val c = fn.contracts[i]
     val pre = popTriviaBefore(ctx, contractClauseStartOffset(c))
     appendIndentedTrivia(contractLines, pre)
-    contractLines.add("  " + contractStr(c))
+    val cd = indentDoc(2, contractDoc(2, ctx, c))
+    var k = 0
+    while k < cd.count { contractLines.add(cd[k]); k = k + 1 }
     i = i + 1
   }
   val extras = concatDoc(whereLines, contractLines)
@@ -323,7 +325,9 @@ func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
     val c = ed.contracts[i]
     val pre = popTriviaBefore(ctx, contractClauseStartOffset(c))
     appendIndentedTrivia(conLines, pre)
-    conLines.add("  " + contractStr(c))
+    val cd = indentDoc(2, contractDoc(2, ctx, c))
+    var k = 0
+    while k < cd.count { conLines.add(cd[k]); k = k + 1 }
     i = i + 1
   }
   val bodyLines: List[String] = match ed.body {

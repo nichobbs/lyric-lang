@@ -81,7 +81,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (this branch) | D-progress-141 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -197,6 +197,101 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-145: M5.3 stage 9 — width-driven multi-line expression rendering in `Lyric.Fmt` (120-char budget)
+
+*claude/lyric-fmt-width-driven-multi-line branch.*
+
+The formatter now breaks long expressions across lines when the
+inline rendering would exceed a 120-character line budget at the
+expression's current column.  Comments inside an expression's source
+span also force a multi-line layout so they can be woven in at sub-
+expression boundaries (e.g. between call args).
+
+Architecture (`compiler/lyric/lyric/fmt/fmt_core.l`):
+
+- `maxWidth() = 120` — process-wide constant.
+- `exprFitsInline(col, ctx, e, inline) -> Bool` — true when
+  `col + inline.length <= maxWidth()` AND no `HarvestedItem` falls
+  inside `e`'s source span (peek-only via `hasTriviaInRange`).
+- `exprAtCol(col, ctx, e) -> Doc` — the new entry point.  Computes
+  the inline rendering via `exprInline`; if it fits, returns
+  `singleLineDoc(inline)`; otherwise dispatches on `ExprKind` to a
+  per-construct multi-line layout.
+- Multi-line layouts ship for `ECall`, `EBinop`, `EList`, `ETuple`,
+  `EParen`.  Other constructs (`ELiteral`, `EPath`, `EMember`,
+  `EIndex`, `EPrefix`, `EAwait`, `ESpawn`, `ETry`, `ESelf`,
+  `EResult`, `ELambda`, `EIf` (inline form), `EMatch` (inline form),
+  `EForall`, `EExists`, `EBlock`, `EUnsafe`, `EAssign`, `ETypeApp`,
+  `EPropagate`, `EOld`, `ERange`, `EError`, `EInterpolated`) fall
+  back to the inline rendering even if it exceeds budget — adding
+  multi-line variants for them is mechanical follow-up work.
+- Black-style "magic trailing comma" placement: opener on the first
+  line, items one-per-line indented by 2, closer on its own line at
+  the original indent.  Operators in binary chains end the LHS line
+  and the RHS starts a new indented line — keeps the operator
+  visually attached to its left operand.
+- `exprCallMulti` pops trivia at each arg's start offset and
+  prepends the popped lines (indented to match arg column) so a
+  comment between two args lands inside the call instead of
+  escaping to the next outer statement boundary.
+
+Statement-level wiring:
+
+- New doc-returning helpers in `fmt_core.l`: `localBindingDoc`,
+  `assignDoc`, `returnDoc`, `throwDoc`, `invariantDoc`,
+  `bareExprDoc`.  Each wraps `exprAtCol` with the keyword/prefix
+  prepended to the first line via `prependPrefix`.
+- `stmtLines`'s `SLocal` / `SAssign` / `SReturn` / `SThrow` /
+  `SInvariant` arms now route through these doc-returning helpers.
+  `SExpr`'s fall-through path (non-match, non-if-block) goes
+  through `bareExprDoc` so a long bare expression statement
+  participates in width-driven multi-line.
+- `stmtExprLines` keeps the existing `EMatch` / `EIf-block`
+  multi-line specialisations.
+
+Contract-clause wiring (`fmt_items.l`):
+
+- New `contractDoc(col, ctx, cc)` — width-driven variant of
+  `contractStr` that returns `Doc`.  `funcDoc` and `entryDoc` now
+  emit each clause via `indentDoc(2, contractDoc(2, ctx, c))`,
+  preserving the canonical 2-space contract indent and breaking
+  long clause bodies across lines.
+
+Reference column tracking is pragmatic for v1: `stmtLines` uses a
+hardcoded `col = 2` (the typical function-body indent).  Statements
+nested inside `if` / `for` / `while` / `match` blocks run a few
+chars over budget per nesting level — close enough for the budget
+to catch real overruns without threading `col` through every
+signature in the multi-line printer family.  Threading `col` end-to-
+end is a follow-up improvement.
+
+Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+
+- `testWidthDrivenLongCallBreaks` — a 32-arg call to a
+  long-named function breaks into one-arg-per-line layout.
+- `testWidthDrivenLongCallIdempotent` — round-trip lock.
+- `testCommentInsideCallArgs` — a `// first arg` comment between
+  two call arguments lands inside the multi-line call layout, not
+  at the next outer statement boundary.
+- `testWidthDrivenLongBinopBreaks` — long `+` chain breaks with
+  operator at end-of-line.
+- `testShortExpressionStaysInline` — negative test: short
+  expressions are never broken (no over-eager triggering).
+
+Out of scope for this stage:
+
+- Multi-line variants for `ELambda`, `EForall`, `EExists`, `EIf`
+  (inline form), record/struct constructors used inline, and the
+  remaining `ExprKind` arms.  Mechanically additive; same shape
+  as the existing layouts.
+- Threading `col` end-to-end through `blockLines` /
+  `stmtLines` / control-flow helpers (currently hardcoded
+  `col = 2`).
+- Width-driven multi-line for type expressions, patterns, and
+  `where`-clause bound lists.
+
+
 
 ### D-progress-144: M5.3 stage 8 — where-clause comment preservation + clause-order round-trip fix
 
