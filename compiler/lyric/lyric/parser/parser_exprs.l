@@ -1667,7 +1667,16 @@ func parseImpliesExpr(st: inout ParseState): Expr {
 }
 
 pub func parseExpr(st: inout ParseState): Expr {
-  parseImpliesExpr(st)
+  // Wrap each `parseExpr` invocation as an `SkExpr` node so the CST
+  // mirrors the recursive structure of the AST.  Sub-expression
+  // recursions (e.g. operands of a binary op) reach this same entry
+  // point and produce nested `SkExpr` children.  The single internal
+  // helper `parseImpliesExpr` is *not* wrapped — it's the precedence-
+  // climbing seam, not a distinct expression node.
+  cstStart(st, SkExpr)
+  val e = parseImpliesExpr(st)
+  cstFinish(st)
+  e
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1675,8 +1684,14 @@ pub func parseExpr(st: inout ParseState): Expr {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func parseBlock(st: inout ParseState): Block {
+  // Each `{ … }` block becomes an `SkBlock` CST node, regardless of
+  // whether it's a function body, lambda body, or control-flow
+  // body.  Children are the `{` token, statement nodes (each
+  // `SkStatement`), `TStmtEnd` separators consumed inline, and the
+  // `}` token.
+  cstStart(st, SkBlock)
   val startSpan = peekSpan(st)
-  match tryEatPunct(st, LBrace) {
+  val result = match tryEatPunct(st, LBrace) {
     case None -> {
       emitErr(st, "P0230", "expected '{' to start block", peekSpan(st))
       val emptyStmts: List[Statement] = newList()
@@ -1716,9 +1731,21 @@ pub func parseBlock(st: inout ParseState): Block {
       Block(statements = stmts, span = joinSpans(startSpan, endSpan))
     }
   }
+  cstFinish(st)
+  result
 }
 
 pub func parseStatement(st: inout ParseState): Statement {
+  // Wrap every statement as an `SkStatement` node.  Inner expression
+  // / block / contract recursion produces nested CST nodes of the
+  // matching kind.
+  cstStart(st, SkStatement)
+  val s = parseStatementInner(st)
+  cstFinish(st)
+  s
+}
+
+func parseStatementInner(st: inout ParseState): Statement {
   val startSpan = peekSpan(st)
   match peekToken(st) {
     case TKeyword(k) -> {
