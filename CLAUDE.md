@@ -49,6 +49,7 @@ on a base spec doc and is cited from that doc's open-questions section.
 - `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047).
 - `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27.
 - `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046).
+- `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006).
 
 ## Reading order (for Claude)
 
