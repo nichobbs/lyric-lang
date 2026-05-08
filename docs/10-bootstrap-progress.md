@@ -91,6 +91,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M12 — conditional branch: `msil_self_test_m12.l` builds a PE with `Main()` computing `if 7 > 4 { 1 } else { 0 }` using `cgt` + `brfalse` + `br` + label resolution; verifies 2-byte `0xFE`-prefixed comparison opcode, 5-byte branch instructions with correct signed relative offsets, and CLR execution prints `1` | **Shipped** (this branch) | D-progress-151 |
 | MSIL PE emitter Stage M13 — while loop / backward branch: `msil_self_test_m13.l` builds a PE with `Main()` summing 1..5 via a while loop; uses fat method header (2 int32 locals via `StandAloneSig`), `cgt` + `brtrue` for exit condition, and a backward `br` with negative signed offset; CLR prints `15` | **Shipped** (this branch) | D-progress-152 |
 | MSIL PE emitter Stage M14 — `newarr` + array element access: `msil_self_test_m14.l` builds a PE with `Main()` creating an `int32[3]` array, storing 10/20/30 via `stelem`, loading and summing via `ldelem`, and calling `Console.WriteLine(60)`; adds `TypeRef[3]` for `System.Int32` as element-type token; CLR prints `60` | **Shipped** (this branch) | D-progress-153 |
+| MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4` (64-bit literals): `msil_self_test_m15.l` builds a PE with `Main()` pushing `1000000000i64` and `2i64` via `ldc.i8` (9-byte instruction), multiplying, narrowing to `int32` via `conv.i4`, and calling `Console.WriteLine(2000000000)`; verifies the 8-byte LE constant encoding | **Shipped** (this branch) | D-progress-154 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1182,6 +1183,36 @@ Key verified byte positions:
 
 **Test wiring**: `MsilSelfTestM14.fs` added to `Lyric.Emitter.Tests`; all 18
 MSIL self-tests pass (M1, M2a–M2d, M3–M14).
+
+---
+
+### D-progress-154: MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M15 verifies 64-bit integer literal encoding (`ldc.i8`) and
+widening/narrowing type conversion (`conv.i4`).
+
+**`msil_self_test_m15.l`** builds a PE with a tiny-header `Main()`:
+
+```
+ldc.i8 1000000000i64   (0x21 + 8-byte LE: 00 CA 9A 3B 00 00 00 00)
+ldc.i8 2i64            (0x21 + 8-byte LE: 02 00 00 00 00 00 00 00)
+mul                    (2000000000L)
+conv.i4                (2000000000i32 — fits within signed i32 range)
+call Console.WriteLine(int)
+ret
+```
+
+Key verified byte positions:
+- Tiny header `0x6A` at 0x248 (codeSize=26, (26<<2)|2=106=0x6A).
+- `ldc.i8` opcode `0x21` at 0x249; LE bytes `00 CA 9A 3B 00 00 00 00` at 0x24A–0x251.
+- `mul` opcode `0x5A` at 0x25B (code offset 18).
+- `conv.i4` opcode `0x69` at 0x25C (code offset 19).
+- BSJB at 0x263 (= 0x249 + 26).
+
+**Test wiring**: `MsilSelfTestM15.fs` added to `Lyric.Emitter.Tests`; all 19
+MSIL self-tests pass (M1, M2a–M2d, M3–M15).
 
 ---
 
