@@ -1978,6 +1978,43 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-170: MSIL PE emitter Stage M31 — `ldftn` + delegate (System.Action)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M31 exercises `ldftn` (0xFE 0x06), a two-byte prefix opcode that loads a
+function pointer for a `MethodDef` onto the evaluation stack, and then wraps it
+in a `System.Action` delegate via the standard `ldnull / ldftn / newobj
+Action::.ctor / callvirt Action::Invoke` pattern.
+
+**Methods:**
+- `Main` (MethodDef[1], entry point): `ldnull / ldftn 0x06000002 / newobj
+  MemberRef[1]=Action::.ctor / callvirt MemberRef[2]=Action::Invoke / ret`
+  (codeSize=18, tiny header 0x4A at 0x248).
+- `PrintFortyTwo` (MethodDef[2]): `ldc.i4.s 42 / call
+  MemberRef[3]=Console.WriteLine(int) / ret` (codeSize=8, tiny header 0x22 at
+  0x25B).
+
+**Signatures:**
+- `Action::.ctor` — HASTHIS, 2 params, void, OBJECT (0x1C), I (0x18): `{0x20,
+  0x02, 0x01, 0x1C, 0x18}`.
+- `Action::Invoke` — HASTHIS, 0 params, void: `{0x20, 0x00, 0x01}`.
+
+TypeRefs: [1]=Console (AssemblyRef[2]=System.Console), [2]=Object
+(AssemblyRef[1]=System.Runtime, Hello extends), [3]=Action
+(AssemblyRef[1]=System.Runtime).  MemberRefs: [1]=Action::.ctor,
+[2]=Action::Invoke, [3]=Console.WriteLine(int).  BSJB at 0x264.
+
+`ldftn` token is 6 bytes total: `FE 06` opcode + 4-byte method token.  No
+padding between consecutive tiny method bodies confirmed (0x248+1+18=0x25B for
+second body, 0x25B+1+8=0x264 for BSJB).
+
+**Test wiring**: `MsilSelfTestM31.fs` added to `Lyric.Emitter.Tests`; all 35
+MSIL self-tests pass (M1, M2a–M2d, M3–M31).  CLR: `ldftn` → `Action`
+constructor → `Invoke()` → `PrintFortyTwo()` → prints `42`.
+
+---
+
 ### D-progress-169: MSIL PE emitter Stage M30 — `unbox_any` (value-type unboxing)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
