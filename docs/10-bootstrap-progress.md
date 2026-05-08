@@ -93,6 +93,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M14 — `newarr` + array element access: `msil_self_test_m14.l` builds a PE with `Main()` creating an `int32[3]` array, storing 10/20/30 via `stelem`, loading and summing via `ldelem`, and calling `Console.WriteLine(60)`; adds `TypeRef[3]` for `System.Int32` as element-type token; CLR prints `60` | **Shipped** (this branch) | D-progress-153 |
 | MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4` (64-bit literals): `msil_self_test_m15.l` builds a PE with `Main()` pushing `1000000000i64` and `2i64` via `ldc.i8` (9-byte instruction), multiplying, narrowing to `int32` via `conv.i4`, and calling `Console.WriteLine(2000000000)`; verifies the 8-byte LE constant encoding | **Shipped** (this branch) | D-progress-154 |
 | MSIL PE emitter Stage M16 — `switch` table: `msil_self_test_m16.l` builds a PE with `Main()` dispatching value `2` via a 3-target `switch` instruction; target[2] pushes 42 and falls through to `Console.WriteLine`; verifies opcode `0x45`, count encoding, and each target's signed relative offset | **Shipped** (this branch) | D-progress-155 |
+| MSIL PE emitter Stage M17 — bitwise operations: `msil_self_test_m17.l` builds a PE with `Main()` computing `(60 & 13) + (60 | 13) = 12 + 61 = 73`; exercises `and` (0x5F), `or` (0x60) opcodes; CLR prints `73` | **Shipped** (this branch) | D-progress-156 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1253,6 +1254,35 @@ Key verified byte positions:
 
 **Test wiring**: `MsilSelfTestM16.fs` added to `Lyric.Emitter.Tests`; all 20
 MSIL self-tests pass (M1, M2a–M2d, M3–M16).
+
+---
+
+### D-progress-156: MSIL PE emitter Stage M17 — bitwise operations
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M17 verifies the bitwise `and` (0x5F) and `or` (0x60) opcodes, and
+establishes the pattern for all one-byte bitwise instructions (`xor`, `shl`,
+`shr`).
+
+**`msil_self_test_m17.l`** builds a tiny-header `Main()`:
+
+```
+ldc.i4.s 60 / ldc.i4.s 13 / and   → 12  (0b00111100 & 0b00001101 = 0b00001100)
+ldc.i4.s 60 / ldc.i4.s 13 / or    → 61  (0b00111100 | 0b00001101 = 0b00111101)
+add                                → 73
+call Console.WriteLine(int) / ret
+```
+
+Key verified byte positions:
+- Tiny header `0x46` at 0x248 (codeSize=17, (17<<2)|2=70=0x46).
+- `and` opcode `0x5F` at file 0x24D (code offset 4).
+- `or`  opcode `0x60` at file 0x252 (code offset 9).
+- `add` opcode `0x58` at file 0x253 (code offset 10).
+- BSJB at 0x25A.
+
+**Test wiring**: `MsilSelfTestM17.fs` added to `Lyric.Emitter.Tests`; all 21
+MSIL self-tests pass (M1, M2a–M2d, M3–M17).
 
 ---
 
