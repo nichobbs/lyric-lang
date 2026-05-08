@@ -1978,6 +1978,23 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-194: MSIL PE emitter Stage M55 — `initobj`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M55 tests the `initobj` instruction (0xFE 0x15, Token2 form):
+- `initobj` — zero-initialises the value type at the managed pointer on the stack.
+
+Test: `ldloca.s 0 / initobj System.Int32 / ldloc.0` loads a zeroed I4 from a
+local, then `ldc.i4.s 42 / add` gives 42.  Requires a fat header (InitLocals) due
+to the local variable.  `MsilSelfTestM55.fs` verifies fat header at 0x248, LocalVarSig
+token at 0x250–0x253, initobj FE prefix at file 0x256, 0x15 at 0x257, BSJB at 0x266.
+TypeRef[3] = System.Int32 (same token as M50).
+
+59 MSIL self-tests pass (M1, M2a–M2d, M3–M55).
+
+---
+
 ### D-progress-193: MSIL PE emitter Stage M54 — `cgt.un` + `clt.un`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
