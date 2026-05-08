@@ -1978,6 +1978,27 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-179: MSIL PE emitter Stage M40 — `volatile.` prefix
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M40 exercises the `volatile.` prefix (0xFE 0x13), a Nullary2 instruction
+that must immediately precede a memory-access opcode and instructs the JIT that
+the access must not be cached, hoisted, or reordered.
+
+**Code flow:** `ldloca_S 0 / ldc.i4.s 42 / volatile. / stind.i4` — volatile-write
+42 to a local int via managed pointer; then `ldloca_S 0 / volatile. / ldind.i4`
+— volatile-read it back; `Console.WriteLine` prints `"42"`.  Fat header with
+one I4 local (codeSize=18, BSJB at 0x266).
+
+**New in `opcodes.l`**: `OP2_VOLATILE = 0x13` constant, `iVolatile()` constructor,
+and `emitVolatile` wrapper.
+
+**Test wiring**: `MsilSelfTestM40.fs` added to `Lyric.Emitter.Tests`; all 44
+MSIL self-tests pass (M1, M2a–M2d, M3–M40).  CLR: prints `"42"`.
+
+---
+
 ### D-progress-178: MSIL PE emitter Stage M39 — `conv.ovf.i4` / `conv.ovf.i8` (overflow-checked conversions)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
