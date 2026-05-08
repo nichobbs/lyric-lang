@@ -134,10 +134,9 @@ Keyword =
  * Default, Copyable, Send, Mul, Div, Mod) are ordinary identifiers.
  *)
 
-SoftKeyword = 'range'          | 'derives'        | 'forall'   | 'exists'
-            | 'implies'        | 'scope_kind'
-            | 'aspect_template'                   (* aspect body template *)
-            | 'from'           ;                  (* aspect instantiation clause *)
+SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
+            | 'implies'  | 'scope_kind'
+            | 'from'     ;                        (* aspect instantiation clause *)
 
 (* §1.6.1 Reserved-but-unused keywords
  *
@@ -353,7 +352,6 @@ ItemKind =
     | ImplDecl
     | WireDecl
     | AspectDecl
-    | AspectTemplateDecl
     | ScopeKindDecl
     | ExternPackageDecl
     | TestItem                                  (* only valid in @test_module *)
@@ -1146,17 +1144,21 @@ LocalAlias =
 
 (* §10.2 Aspects (docs/26-aspects.md; Phase 2) *)
 
-(* A standalone aspect or a template instantiation.
+(* Three forms, distinguished post-parse by visibility and MatchesClause:
  *
- * Without 'from': standalone aspect. Must contain at least one of
- *   AroundAdvice, RequiresClause, EnsuresClause. MatchesClause is optional
- *   (an aspect without it never fires). OrderingClause, AspectConfigDecl
- *   may also appear.
+ * Standalone aspect: no 'pub', has MatchesClause. Weaves in this package.
+ *   Must contain at least one of AroundAdvice, RequiresClause, EnsuresClause.
+ *   OrderingClause and AspectConfigDecl may also appear.
  *
- * With 'from ModulePath': template instantiation. Must contain exactly
- *   one MatchesClause. May contain AspectConfigDecl for field-default
- *   overrides. AroundAdvice, RequiresClause, EnsuresClause are rejected
- *   post-parse (A0022). OrderingClause is allowed. *)
+ * Template: 'pub' (or no 'pub' for package-private reuse), no MatchesClause.
+ *   Exported advice body; never weaves directly. 'pub' + no MatchesClause
+ *   is the cross-package form. No MatchesClause and no 'pub' is the
+ *   intra-package reuse form. A0001 rejects 'pub' + MatchesClause.
+ *
+ * Instantiation: no 'pub', has 'from ModulePath', has MatchesClause.
+ *   Binds a template's body to a local selector. May contain AspectConfigDecl
+ *   for field-default overrides and OrderingClause. AroundAdvice,
+ *   RequiresClause, EnsuresClause rejected post-parse (A0022). *)
 AspectDecl =
     'aspect' IDENT [ 'from' ModulePath ]
         '{' { NL } { AspectMember NL } '}' ;
@@ -1166,18 +1168,6 @@ AspectMember =
     | AspectConfigDecl
     | AroundAdvice
     | OrderingClause
-    | RequiresClause
-    | EnsuresClause ;
-
-(* An exportable template: same body content as AspectDecl but no
- * MatchesClause (A0021) and no OrderingClause. May be 'pub'. *)
-AspectTemplateDecl =
-    'aspect_template' IDENT
-        '{' { NL } { AspectTemplateMember NL } '}' ;
-
-AspectTemplateMember =
-      AspectConfigDecl
-    | AroundAdvice
     | RequiresClause
     | EnsuresClause ;
 
