@@ -1978,6 +1978,30 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-171: MSIL PE emitter Stage M32 — `initobj` (zero-initialise value type)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M32 exercises `initobj` (0xFE 0x15), which zero-initialises a value type
+at a managed pointer.  The test uses a fat method header (one I4 local) and the
+sequence `ldloca_S 0 / initobj TypeRef[Int32] / ldloc_0 / ldc.i4.s 42 / add /
+call Console.WriteLine(int) / ret` — the zeroed local is added to 42 and
+printed.
+
+**Key details:**
+- LocalVarSig `{0x07, 0x01, 0x08}` (one I4 local), StandAloneSig[1].
+- Fat header: flags=0x13 (FatFormat|InitLocals), size=0x30, maxStack=2,
+  codeSize=18, localVarSigTok=0x11000001.
+- `initobj` token = TypeRef[3]=System.Int32 = 0x01000003.
+- `initobj` encodes as Token2 (0xFE 0x15 + 4-byte token) = 6 bytes.
+- BSJB at 0x248+12+18 = 0x266.
+
+**Test wiring**: `MsilSelfTestM32.fs` added to `Lyric.Emitter.Tests`; all 36
+MSIL self-tests pass (M1, M2a–M2d, M3–M32).  CLR: `initobj` → 0+42 → prints
+`42`.
+
+---
+
 ### D-progress-170: MSIL PE emitter Stage M31 — `ldftn` + delegate (System.Action)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
