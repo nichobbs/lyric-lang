@@ -1978,6 +1978,28 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-174: MSIL PE emitter Stage M35 — `tail.` prefix (tail-call hint)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M35 exercises the `tail.` prefix opcode (0xFE 0x14), a `Nullary2`
+instruction that hints the JIT may recycle the current call frame for the
+immediately following `call` / `callvirt` / `calli`.
+
+**Code flow:** `ldc.i4.s 42 / tail. / call Console.WriteLine(int) / ret`
+(codeSize=10, tiny header 0x2A).  The prefix is observable in the binary at
+offset 2 from code start.  CLR behaviour is identical to the non-tail
+variant — observable output is `"42"`.
+
+`tail.` encodes as `Nullary2(op=0x14)` = 2 bytes (0xFE 0x14).  BSJB at 0x253.
+
+**New opcode** added to `opcodes.l`: `OP2_TAIL = 0x14`, `iTail`, `emitTail`.
+
+**Test wiring**: `MsilSelfTestM35.fs` added to `Lyric.Emitter.Tests`; all 39
+MSIL self-tests pass (M1, M2a–M2d, M3–M35).  CLR: `tail.` hint → prints `"42"`.
+
+---
+
 ### D-progress-173: MSIL PE emitter Stage M34 — `sizeof` (byte size of value type)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

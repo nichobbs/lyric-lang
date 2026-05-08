@@ -148,6 +148,7 @@ pub val OP2_CGT        : Int = 0x02
 pub val OP2_CGT_UN     : Int = 0x03
 pub val OP2_CLT        : Int = 0x04
 pub val OP2_CLT_UN     : Int = 0x05
+pub val OP2_TAIL       : Int = 0x14
 pub val OP2_RETHROW    : Int = 0x1A
 
 // 0xFE-prefixed token opcodes (second byte)
@@ -291,6 +292,7 @@ pub func iConv_U4():    Insn = Nullary(op = OP_CONV_U4)
 pub func iConv_U8():    Insn = Nullary(op = OP_CONV_U8)
 pub func iLdlen():      Insn = Nullary(op = OP_LDLEN)
 pub func iThrow():      Insn = Nullary(op = OP_THROW)
+pub func iTail():       Insn = Nullary2(op = OP2_TAIL)
 pub func iRethrow():    Insn = Nullary2(op = OP2_RETHROW)
 pub func iEndfinally(): Insn = Nullary(op = OP_ENDFINALLY)
 pub func iStelem_Ref(): Insn = Nullary(op = OP_STELEM_REF)
@@ -477,6 +479,7 @@ pub func emitConv_U4(b: in MethodBody): Unit    = mbEmit(b, iConv_U4())
 pub func emitConv_U8(b: in MethodBody): Unit    = mbEmit(b, iConv_U8())
 pub func emitLdlen(b: in MethodBody): Unit      = mbEmit(b, iLdlen())
 pub func emitThrow(b: in MethodBody): Unit      = mbEmit(b, iThrow())
+pub func emitTail(b: in MethodBody): Unit       = mbEmit(b, iTail())
 pub func emitRethrow(b: in MethodBody): Unit    = mbEmit(b, iRethrow())
 pub func emitEndfinally(b: in MethodBody): Unit = mbEmit(b, iEndfinally())
 pub func emitStelem_Ref(b: in MethodBody): Unit = mbEmit(b, iStelem_Ref())
