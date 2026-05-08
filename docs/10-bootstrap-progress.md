@@ -1978,6 +1978,26 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-187: MSIL PE emitter Stage M48 — `stind.i` + `ldind.i`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M48 completes the indirect load/store family with the native-int variants:
+- `stind.i` (0xDF) — store native int at a raw pointer address.
+- `ldind.i` (0x4D) — load native int from a raw pointer address.
+
+Uses `localloc` (M43) to obtain 8 bytes of stack memory (sufficient for a native
+int on 64-bit), `conv.i` to widen 42 to native int before storing, and `conv.i4`
+to narrow the loaded value back to a printable I4.
+
+**New in `opcodes.l`**: `OP_STIND_I` (0xDF), `OP_LDIND_I` (0x4D); smart constructors
+`iStind_I()`, `iLdind_I()`; emit wrappers `emitStind_I()`, `emitLdind_I()`.
+
+**Test wiring**: `MsilSelfTestM48.fs` added to `Lyric.Emitter.Tests`; all 52
+MSIL self-tests pass (M1, M2a–M2d, M3–M48).  CLR: `"42"` printed.
+
+---
+
 ### D-progress-186: MSIL PE emitter Stage M47 — `conv.i` + `conv.u`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

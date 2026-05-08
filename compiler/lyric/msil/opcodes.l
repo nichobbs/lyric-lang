@@ -58,6 +58,7 @@ pub val OP_LDIND_I2    : Int = 0x48
 pub val OP_LDIND_U2    : Int = 0x49
 pub val OP_LDIND_I4    : Int = 0x4A
 pub val OP_LDIND_U4    : Int = 0x4B
+pub val OP_LDIND_I     : Int = 0x4D
 pub val OP_LDIND_I8    : Int = 0x4C
 pub val OP_LDIND_R4    : Int = 0x4E
 pub val OP_LDIND_R8    : Int = 0x4F
@@ -105,6 +106,7 @@ pub val OP_SUB_OVF     : Int = 0xDA
 pub val OP_SUB_OVF_UN  : Int = 0xDB
 pub val OP_ENDFINALLY  : Int = 0xDC
 pub val OP_CONV_I      : Int = 0xD3
+pub val OP_STIND_I     : Int = 0xDF
 pub val OP_CONV_U      : Int = 0xE0
 pub val OP_CONV_U1     : Int = 0xD2
 pub val OP_CONV_U2     : Int = 0xD1
@@ -365,6 +367,7 @@ pub func iEndfinally(): Insn = Nullary(op = OP_ENDFINALLY)
 pub func iStelem_Ref(): Insn = Nullary(op = OP_STELEM_REF)
 pub func iLdind_I1():   Insn = Nullary(op = OP_LDIND_I1)
 pub func iLdind_U1():   Insn = Nullary(op = OP_LDIND_U1)
+pub func iLdind_I():    Insn = Nullary(op = OP_LDIND_I)
 pub func iLdind_I2():   Insn = Nullary(op = OP_LDIND_I2)
 pub func iLdind_U2():   Insn = Nullary(op = OP_LDIND_U2)
 pub func iLdind_I4():   Insn = Nullary(op = OP_LDIND_I4)
@@ -373,6 +376,7 @@ pub func iLdind_I8():   Insn = Nullary(op = OP_LDIND_I8)
 pub func iLdind_R4():   Insn = Nullary(op = OP_LDIND_R4)
 pub func iLdind_R8():   Insn = Nullary(op = OP_LDIND_R8)
 pub func iLdind_Ref():  Insn = Nullary(op = OP_LDIND_REF)
+pub func iStind_I():    Insn = Nullary(op = OP_STIND_I)
 pub func iStind_I1():   Insn = Nullary(op = OP_STIND_I1)
 pub func iStind_I2():   Insn = Nullary(op = OP_STIND_I2)
 pub func iStind_I4():   Insn = Nullary(op = OP_STIND_I4)
@@ -595,6 +599,7 @@ pub func emitLdind_I1(b: in MethodBody): Unit   = mbEmit(b, iLdind_I1())
 pub func emitLdind_U1(b: in MethodBody): Unit   = mbEmit(b, iLdind_U1())
 pub func emitLdind_I2(b: in MethodBody): Unit   = mbEmit(b, iLdind_I2())
 pub func emitLdind_U2(b: in MethodBody): Unit   = mbEmit(b, iLdind_U2())
+pub func emitLdind_I(b: in MethodBody): Unit    = mbEmit(b, iLdind_I())
 pub func emitLdind_I4(b: in MethodBody): Unit   = mbEmit(b, iLdind_I4())
 pub func emitLdind_U4(b: in MethodBody): Unit   = mbEmit(b, iLdind_U4())
 pub func emitLdind_I8(b: in MethodBody): Unit   = mbEmit(b, iLdind_I8())
@@ -603,6 +608,7 @@ pub func emitLdind_R8(b: in MethodBody): Unit   = mbEmit(b, iLdind_R8())
 pub func emitLdind_Ref(b: in MethodBody): Unit  = mbEmit(b, iLdind_Ref())
 pub func emitStind_I1(b: in MethodBody): Unit   = mbEmit(b, iStind_I1())
 pub func emitStind_I2(b: in MethodBody): Unit   = mbEmit(b, iStind_I2())
+pub func emitStind_I(b: in MethodBody): Unit    = mbEmit(b, iStind_I())
 pub func emitStind_I4(b: in MethodBody): Unit   = mbEmit(b, iStind_I4())
 pub func emitStind_I8(b: in MethodBody): Unit   = mbEmit(b, iStind_I8())
 pub func emitStind_R4(b: in MethodBody): Unit   = mbEmit(b, iStind_R4())
