@@ -222,6 +222,15 @@ pub record MemberRefRow {
   signature: Int  // #Blob: MethodSig or FieldSig
 }
 
+// InterfaceImpl (Table 0x09) — ECMA-335 §II.22.23.
+// Each row records that TypeDef[class_] implements the interface identified by
+// the TypeDefOrRef coded index `interface_`.  Must be sorted by class_, then
+// by interface_ (ascending) for CLR compatibility.
+pub record InterfaceImplRow {
+  class_:     Int  // 1-based TypeDef row index
+  interface_: Int  // coded: TypeDefOrRef
+}
+
 // CustomAttribute (Table 0x0C) — ECMA-335 §II.22.10.
 // `type_` is the constructor being called; `value` is the serialized arguments.
 pub record CustomAttrRow {
@@ -272,6 +281,7 @@ pub record MetadataTables {
   fields:           List[FieldRow]
   methodDefs:       List[MethodDefRow]
   params_:          List[ParamRow]
+  interfaceImpls:   List[InterfaceImplRow]
   memberRefs:       List[MemberRefRow]
   customAttrs:      List[CustomAttrRow]
   standAloneSigs:   List[StandAloneSigRow]
@@ -287,6 +297,7 @@ pub func newMetadataTables(): MetadataTables {
     fields         = newList(),
     methodDefs     = newList(),
     params_        = newList(),
+    interfaceImpls = newList(),
     memberRefs     = newList(),
     customAttrs    = newList(),
     standAloneSigs = newList(),
@@ -326,6 +337,11 @@ pub func addMethodDef(t: in MetadataTables, r: in MethodDefRow): Int {
 pub func addParam(t: in MetadataTables, r: in ParamRow): Int {
   t.params_.add(r)
   t.params_.count
+}
+
+pub func addInterfaceImpl(t: in MetadataTables, r: in InterfaceImplRow): Int {
+  t.interfaceImpls.add(r)
+  t.interfaceImpls.count
 }
 
 pub func addMemberRef(t: in MetadataTables, r: in MemberRefRow): Int {
@@ -387,7 +403,8 @@ val TABLE_BIT_TYPE_DEF    : Long = 4i64           // table 0x02, bit 2
 val TABLE_BIT_FIELD       : Long = 16i64          // table 0x04, bit 4
 val TABLE_BIT_METHOD_DEF  : Long = 64i64          // table 0x06, bit 6
 val TABLE_BIT_PARAM       : Long = 256i64         // table 0x08, bit 8
-val TABLE_BIT_MEMBER_REF  : Long = 1024i64        // table 0x0A, bit 10
+val TABLE_BIT_INTERFACE_IMPL  : Long = 512i64           // table 0x09, bit 9
+val TABLE_BIT_MEMBER_REF      : Long = 1024i64          // table 0x0A, bit 10
 val TABLE_BIT_CUSTOM_ATTR     : Long = 4096i64          // table 0x0C, bit 12
 val TABLE_BIT_STAND_ALONE_SIG : Long = 131072i64        // table 0x11, bit 17 (2^17)
 val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
@@ -433,8 +450,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.typeDefs.count > 0     { valid = valid + TABLE_BIT_TYPE_DEF }
   if t.fields.count > 0       { valid = valid + TABLE_BIT_FIELD }
   if t.methodDefs.count > 0   { valid = valid + TABLE_BIT_METHOD_DEF }
-  if t.params_.count > 0      { valid = valid + TABLE_BIT_PARAM }
-  if t.memberRefs.count > 0   { valid = valid + TABLE_BIT_MEMBER_REF }
+  if t.params_.count > 0          { valid = valid + TABLE_BIT_PARAM }
+  if t.interfaceImpls.count > 0   { valid = valid + TABLE_BIT_INTERFACE_IMPL }
+  if t.memberRefs.count > 0       { valid = valid + TABLE_BIT_MEMBER_REF }
   if t.customAttrs.count > 0      { valid = valid + TABLE_BIT_CUSTOM_ATTR }
   if t.standAloneSigs.count > 0   { valid = valid + TABLE_BIT_STAND_ALONE_SIG }
   if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
@@ -450,8 +468,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.typeDefs.count > 0     { w4(buf, t.typeDefs.count) }
   if t.fields.count > 0       { w4(buf, t.fields.count) }
   if t.methodDefs.count > 0   { w4(buf, t.methodDefs.count) }
-  if t.params_.count > 0      { w4(buf, t.params_.count) }
-  if t.memberRefs.count > 0   { w4(buf, t.memberRefs.count) }
+  if t.params_.count > 0          { w4(buf, t.params_.count) }
+  if t.interfaceImpls.count > 0   { w4(buf, t.interfaceImpls.count) }
+  if t.memberRefs.count > 0       { w4(buf, t.memberRefs.count) }
   if t.customAttrs.count > 0      { w4(buf, t.customAttrs.count) }
   if t.standAloneSigs.count > 0   { w4(buf, t.standAloneSigs.count) }
   if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
@@ -528,6 +547,15 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.sequence)
     w2(buf, r.name)
     pi = pi + 1
+  }
+
+  // InterfaceImpl rows (table 0x09)
+  var ifii = 0
+  while ifii < t.interfaceImpls.count {
+    val r = t.interfaceImpls[ifii]
+    w2(buf, r.class_)
+    w2(buf, r.interface_)
+    ifii = ifii + 1
   }
 
   // MemberRef rows (table 0x0A)

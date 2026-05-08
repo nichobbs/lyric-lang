@@ -87,6 +87,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M8 — `newobj` + instance fields: `msil_self_test_m8.l` builds a PE with an instance int32 field `x_val`, a HASTHIS constructor `.ctor(int v)` that stores `v` via `stfld`, and `Main()` that creates `Hello(99)` via `newobj`, reads `x_val` via `ldfld`, and prints it | **Shipped** (this branch) | D-progress-147 |
 | MSIL PE emitter Stage M9 — multiple TypeDefs: `msil_self_test_m9.l` builds a PE with three classes (`Foo`, `Bar`, `Hello`) each owning one static method; verifies that `TypeDef.methodList` correctly partitions `MethodDef` rows across TypeDefs; CLR prints `GetFoo()+GetBar() = 30` | **Shipped** (this branch) | D-progress-148 |
 | MSIL PE emitter Stage M10 — virtual method dispatch (`callvirt`): `msil_self_test_m10.l` builds a PE with abstract `Base` (virtual `GetValue():int`), concrete `Impl` (override returning 77), and `Hello.Main()` using `newobj` + `callvirt` on the base token; verifies CLR dispatches to the override and prints 77 | **Shipped** (this branch) | D-progress-149 |
+| MSIL PE emitter Stage M11 — `InterfaceImpl` table: `msil_self_test_m11.l` builds a PE with CLR interface `IGetter` (abstract `GetValue():int`), concrete `Impl` implementing it (returning 42), `InterfaceImpl[1]` wiring the relationship, and `Hello.Main()` dispatching via `callvirt` on the interface token; verifies the `InterfaceImpl` (0x09) table is serialised correctly | **Shipped** (this branch) | D-progress-150 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -928,6 +929,46 @@ The F# harness executes the PE and asserts `"77"` appears in CLR stdout.
 
 **Test wiring**: `MsilSelfTestM10.fs` added to `Lyric.Emitter.Tests`; all 13
 MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10).
+
+---
+
+### D-progress-150: MSIL PE emitter Stage M11 — InterfaceImpl table
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M11 adds the `InterfaceImpl` (0x09) metadata table — the mechanism by
+which the CLR knows a class implements a given interface and builds the
+interface dispatch table.
+
+**tables.l changes**:
+- Added `InterfaceImplRow { class_: Int; interface_: Int }` record.
+- Added `interfaceImpls: List[InterfaceImplRow]` to `MetadataTables`.
+- Added `addInterfaceImpl` accessor function.
+- Added `TABLE_BIT_INTERFACE_IMPL = 512i64` (bit 9).
+- Updated `serializeTablesStream` to include the table in the valid bitmask,
+  row count section, and row data section (in correct table-number order
+  between Param=0x08 and MemberRef=0x0A).
+
+**`msil_self_test_m11.l`** builds a PE with four TypeDefs:
+
+| TypeDef | flags | Extends | Owns |
+|---------|-------|---------|------|
+| `<Module>` | 0 | — | none |
+| `IGetter` | PUBLIC\|INTERFACE\|ABSTRACT | 0 (interfaces have no base in metadata) | MethodDef[1] GetValue():int (abstract, rva=0) |
+| `Impl` | PUBLIC | `System.Object` (TypeRef[2]) | MethodDef[2] .ctor(), MethodDef[3] GetValue():int (override) |
+| `Hello` | PUBLIC | `System.Object` | MethodDef[4] Main() |
+
+InterfaceImpl[1]: `class_=3` (Impl), `interface_=tdrTypeDef(2)` (IGetter = coded index 8).
+
+The body layout is identical to M10 (same code sizes). The InterfaceImpl table
+adds 4 bytes to the metadata section but does not change method body offsets.
+
+Structural checks verify the same layout as M10 (except `getv_ldc_ok` checks
+value 0x2A = 42). The F# harness executes the PE and asserts `"42"` appears
+in CLR stdout, confirming the CLR resolved the interface dispatch correctly.
+
+**Test wiring**: `MsilSelfTestM11.fs` added to `Lyric.Emitter.Tests`; all 14
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10, M11).
 
 ---
 
