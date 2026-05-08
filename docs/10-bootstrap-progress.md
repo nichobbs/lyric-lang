@@ -1978,6 +1978,150 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-176: MSIL PE emitter Stage M37 — `ldelema` (load address of array element)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M37 exercises `ldelema` (0x8F), which pops an array reference and an
+index from the stack and pushes a managed pointer (byref) to that array
+element.
+
+**Code flow:** `newarr Int32 / stloc_0` → allocate `int32[1]`; `ldloc_0 /
+ldc.i4.0 / ldelema Int32` → push byref to element[0]; `ldc.i4.s 42 /
+stind.i4` → write 42 via byref; `ldloc_0 / ldc.i4.0 / ldelem Int32` → read 42
+normally; `Console.WriteLine(42)` → prints `"42"`.
+
+Fat header with one `int32[]` local (LocalVarSig `{0x07,0x01,0x1D,0x08}`).
+BSJB at 0x272.
+
+**Test wiring**: `MsilSelfTestM37.fs` added to `Lyric.Emitter.Tests`; all 41
+MSIL self-tests pass (M1, M2a–M2d, M3–M37).  CLR: `ldelema` → `stind.i4` 42 →
+`ldelem` → prints `"42"`.
+
+---
+
+### D-progress-175: MSIL PE emitter Stage M36 — `ldind.i4` + `stind.i4` (indirect int32 load/store)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M36 exercises `stind.i4` (0x54) and `ldind.i4` (0x4A), the indirect
+integer store and load opcodes used to read/write through a managed pointer
+(byref).
+
+**Code flow:** `ldloca_S 0 / ldc.i4.s 42 / stind.i4 / ldloca_S 0 / ldind.i4 /
+call Console.WriteLine(int) / ret` — stores 42 into local[0] via a byref, then
+reads it back and prints.  Fat header with one I4 local.
+
+Both opcodes are `Nullary` (single-byte, no operand).  BSJB at 0x262.
+
+**New opcodes** added to `opcodes.l`: `OP_LDIND_I4 = 0x4A`, `OP_STIND_I4 = 0x54`,
+`iLdind_I4`, `iStind_I4`, `emitLdind_I4`, `emitStind_I4`.
+
+**Test wiring**: `MsilSelfTestM36.fs` added to `Lyric.Emitter.Tests`; all 40
+MSIL self-tests pass (M1, M2a–M2d, M3–M36).  CLR: `stind.i4` stores 42,
+`ldind.i4` retrieves it → prints `"42"`.
+
+---
+
+### D-progress-174: MSIL PE emitter Stage M35 — `tail.` prefix (tail-call hint)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M35 exercises the `tail.` prefix opcode (0xFE 0x14), a `Nullary2`
+instruction that hints the JIT may recycle the current call frame for the
+immediately following `call` / `callvirt` / `calli`.
+
+**Code flow:** `ldc.i4.s 42 / tail. / call Console.WriteLine(int) / ret`
+(codeSize=10, tiny header 0x2A).  The prefix is observable in the binary at
+offset 2 from code start.  CLR behaviour is identical to the non-tail
+variant — observable output is `"42"`.
+
+`tail.` encodes as `Nullary2(op=0x14)` = 2 bytes (0xFE 0x14).  BSJB at 0x253.
+
+**New opcode** added to `opcodes.l`: `OP2_TAIL = 0x14`, `iTail`, `emitTail`.
+
+**Test wiring**: `MsilSelfTestM35.fs` added to `Lyric.Emitter.Tests`; all 39
+MSIL self-tests pass (M1, M2a–M2d, M3–M35).  CLR: `tail.` hint → prints `"42"`.
+
+---
+
+### D-progress-173: MSIL PE emitter Stage M34 — `sizeof` (byte size of value type)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M34 exercises `sizeof` (0xFE 0x1C), which pushes the byte size of a
+value type as an unsigned `int32`.  The test: `sizeof System.Int32` → push 4 →
+`Console.WriteLine(int)` → prints `"4"`.
+
+`sizeof` encodes as `Token2(op=0x1C, token)` = 6 bytes (0xFE 0x1C + 4-byte
+TypeRef token).  Tiny header 0x32 (codeSize=12).  BSJB at 0x255.
+
+**New opcode** added to `opcodes.l`: `OP2_SIZEOF = 0x1C`, `iSizeof`,
+`emitSizeof`.
+
+**Test wiring**: `MsilSelfTestM34.fs` added to `Lyric.Emitter.Tests`; all 38
+MSIL self-tests pass (M1, M2a–M2d, M3–M34).  CLR: `sizeof Int32` = 4 → prints
+`"4"`.
+
+---
+
+### D-progress-172: MSIL PE emitter Stage M33 — `ldtoken` + `Type.GetTypeFromHandle`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M33 exercises `ldtoken` (0xD0), which pushes a `RuntimeTypeHandle` /
+`RuntimeMethodHandle` / `RuntimeFieldHandle` onto the evaluation stack for a
+metadata token.
+
+**Code flow:**
+1. `ldtoken TypeRef[3]=System.Int32` → `RuntimeTypeHandle` on stack.
+2. `call Type::GetTypeFromHandle(RuntimeTypeHandle)` → `System.Type` object.
+3. `callvirt Type::get_Name()` → string `"Int32"`.
+4. `call Console::WriteLine(string)` → prints `"Int32"`.
+
+`ldtoken` encodes as `Token(op=0xD0, token)` = 5 bytes.  `GetTypeFromHandle`
+signature uses `ELEMENT_TYPE_CLASS` + compressed TypeRef token for the return
+type and `ELEMENT_TYPE_VALUETYPE` + compressed TypeRef token for the
+`RuntimeTypeHandle` parameter.
+
+TypeRefs: [1]=Console, [2]=Object (Hello extends), [3]=Int32 (ldtoken target),
+[4]=Type (GetTypeFromHandle class + get_Name class), [5]=RuntimeTypeHandle
+(GetTypeFromHandle param type).  Tiny header 0x56 (codeSize=21).  BSJB at
+0x25E.
+
+**New opcode** added to `opcodes.l`: `OP_LDTOKEN = 0xD0`, `iLdtoken`,
+`emitLdtoken`.
+
+**Test wiring**: `MsilSelfTestM33.fs` added to `Lyric.Emitter.Tests`; all 37
+MSIL self-tests pass (M1, M2a–M2d, M3–M33).  CLR: `ldtoken` → `GetTypeFromHandle`
+→ `get_Name` → prints `"Int32"`.
+
+---
+
+### D-progress-171: MSIL PE emitter Stage M32 — `initobj` (zero-initialise value type)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M32 exercises `initobj` (0xFE 0x15), which zero-initialises a value type
+at a managed pointer.  The test uses a fat method header (one I4 local) and the
+sequence `ldloca_S 0 / initobj TypeRef[Int32] / ldloc_0 / ldc.i4.s 42 / add /
+call Console.WriteLine(int) / ret` — the zeroed local is added to 42 and
+printed.
+
+**Key details:**
+- LocalVarSig `{0x07, 0x01, 0x08}` (one I4 local), StandAloneSig[1].
+- Fat header: flags=0x13 (FatFormat|InitLocals), size=0x30, maxStack=2,
+  codeSize=18, localVarSigTok=0x11000001.
+- `initobj` token = TypeRef[3]=System.Int32 = 0x01000003.
+- `initobj` encodes as Token2 (0xFE 0x15 + 4-byte token) = 6 bytes.
+- BSJB at 0x248+12+18 = 0x266.
+
+**Test wiring**: `MsilSelfTestM32.fs` added to `Lyric.Emitter.Tests`; all 36
+MSIL self-tests pass (M1, M2a–M2d, M3–M32).  CLR: `initobj` → 0+42 → prints
+`42`.
+
+---
+
 ### D-progress-170: MSIL PE emitter Stage M31 — `ldftn` + delegate (System.Action)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

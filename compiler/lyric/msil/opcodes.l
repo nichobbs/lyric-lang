@@ -52,8 +52,10 @@ pub val OP_LDC_I4_8    : Int = 0x1E
 pub val OP_DUP         : Int = 0x25
 pub val OP_POP         : Int = 0x26
 pub val OP_RET         : Int = 0x2A
+pub val OP_LDIND_I4    : Int = 0x4A
 pub val OP_LDIND_REF   : Int = 0x50
 pub val OP_STIND_REF   : Int = 0x51
+pub val OP_STIND_I4    : Int = 0x54
 pub val OP_ADD         : Int = 0x58
 pub val OP_SUB         : Int = 0x59
 pub val OP_MUL         : Int = 0x5A
@@ -123,6 +125,7 @@ pub val OP_LDFLDA      : Int = 0x7C
 pub val OP_STFLD       : Int = 0x7D
 pub val OP_LDSFLD      : Int = 0x7E
 pub val OP_STSFLD      : Int = 0x80
+pub val OP_LDTOKEN     : Int = 0xD0
 
 // Branch opcodes (single-byte opcode + 4-byte signed offset)
 pub val OP_BR          : Int = 0x38
@@ -147,11 +150,13 @@ pub val OP2_CGT        : Int = 0x02
 pub val OP2_CGT_UN     : Int = 0x03
 pub val OP2_CLT        : Int = 0x04
 pub val OP2_CLT_UN     : Int = 0x05
+pub val OP2_TAIL       : Int = 0x14
 pub val OP2_RETHROW    : Int = 0x1A
 
 // 0xFE-prefixed token opcodes (second byte)
 pub val OP2_LDFTN      : Int = 0x06
 pub val OP2_INITOBJ    : Int = 0x15
+pub val OP2_SIZEOF     : Int = 0x1C
 
 // 0xFE-prefixed full-form arg/local opcodes (second byte + 2-byte index)
 pub val OP2_LDARG      : Int = 0x09
@@ -255,6 +260,8 @@ pub func iStelem(tok: in Int):    Insn = Token(op = OP_STELEM, token = tok)
 pub func iLdelema(tok: in Int):   Insn = Token(op = OP_LDELEMA, token = tok)
 pub func iInitobj(tok: in Int):   Insn = Token2(op = OP2_INITOBJ, token = tok)
 pub func iLdftn(tok: in Int):     Insn = Token2(op = OP2_LDFTN, token = tok)
+pub func iSizeof(tok: in Int):    Insn = Token2(op = OP2_SIZEOF, token = tok)
+pub func iLdtoken(tok: in Int):   Insn = Token(op = OP_LDTOKEN, token = tok)
 
 pub func iAdd():        Insn = Nullary(op = OP_ADD)
 pub func iSub():        Insn = Nullary(op = OP_SUB)
@@ -287,10 +294,13 @@ pub func iConv_U4():    Insn = Nullary(op = OP_CONV_U4)
 pub func iConv_U8():    Insn = Nullary(op = OP_CONV_U8)
 pub func iLdlen():      Insn = Nullary(op = OP_LDLEN)
 pub func iThrow():      Insn = Nullary(op = OP_THROW)
+pub func iTail():       Insn = Nullary2(op = OP2_TAIL)
 pub func iRethrow():    Insn = Nullary2(op = OP2_RETHROW)
 pub func iEndfinally(): Insn = Nullary(op = OP_ENDFINALLY)
 pub func iStelem_Ref(): Insn = Nullary(op = OP_STELEM_REF)
+pub func iLdind_I4():   Insn = Nullary(op = OP_LDIND_I4)
 pub func iLdind_Ref():  Insn = Nullary(op = OP_LDIND_REF)
+pub func iStind_I4():   Insn = Nullary(op = OP_STIND_I4)
 pub func iStind_Ref():  Insn = Nullary(op = OP_STIND_REF)
 pub func iCeq():        Insn = Nullary2(op = OP2_CEQ)
 pub func iCgt():        Insn = Nullary2(op = OP2_CGT)
@@ -439,6 +449,8 @@ pub func emitStelem(b: in MethodBody, tok: in Int): Unit    = mbEmit(b, iStelem(
 pub func emitLdelema(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdelema(tok))
 pub func emitInitobj(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iInitobj(tok))
 pub func emitLdftn(b: in MethodBody, tok: in Int): Unit     = mbEmit(b, iLdftn(tok))
+pub func emitSizeof(b: in MethodBody, tok: in Int): Unit    = mbEmit(b, iSizeof(tok))
+pub func emitLdtoken(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdtoken(tok))
 
 pub func emitAdd(b: in MethodBody): Unit        = mbEmit(b, iAdd())
 pub func emitSub(b: in MethodBody): Unit        = mbEmit(b, iSub())
@@ -471,10 +483,13 @@ pub func emitConv_U4(b: in MethodBody): Unit    = mbEmit(b, iConv_U4())
 pub func emitConv_U8(b: in MethodBody): Unit    = mbEmit(b, iConv_U8())
 pub func emitLdlen(b: in MethodBody): Unit      = mbEmit(b, iLdlen())
 pub func emitThrow(b: in MethodBody): Unit      = mbEmit(b, iThrow())
+pub func emitTail(b: in MethodBody): Unit       = mbEmit(b, iTail())
 pub func emitRethrow(b: in MethodBody): Unit    = mbEmit(b, iRethrow())
 pub func emitEndfinally(b: in MethodBody): Unit = mbEmit(b, iEndfinally())
 pub func emitStelem_Ref(b: in MethodBody): Unit = mbEmit(b, iStelem_Ref())
+pub func emitLdind_I4(b: in MethodBody): Unit   = mbEmit(b, iLdind_I4())
 pub func emitLdind_Ref(b: in MethodBody): Unit  = mbEmit(b, iLdind_Ref())
+pub func emitStind_I4(b: in MethodBody): Unit   = mbEmit(b, iStind_I4())
 pub func emitStind_Ref(b: in MethodBody): Unit  = mbEmit(b, iStind_Ref())
 pub func emitCeq(b: in MethodBody): Unit        = mbEmit(b, iCeq())
 pub func emitCgt(b: in MethodBody): Unit        = mbEmit(b, iCgt())
