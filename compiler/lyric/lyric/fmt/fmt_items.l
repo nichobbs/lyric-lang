@@ -79,6 +79,22 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
     case None    -> ""
   }
   val sig = visStr + asyncStr + "func " + fn.name + gens + "(" + params + ")" + retStr
+
+  // Order on the wire: signature → where? → contracts → body.
+  // The self-hosted parser accepts `where` only BEFORE the contract
+  // clauses (see `parseFunctionDeclBody`), so emitting them in the
+  // reverse order would round-trip the formatter's own output into a
+  // P0040 parse error.  Pop trivia and emit lines in source order so
+  // the `FmtCtx` cursor advances monotonically too.
+  val whereLines: List[String] = newList()
+  match fn.whereClause {
+    case Some(wc) -> {
+      val pre = popTriviaBefore(ctx, wc.span.startPos.offset)
+      appendIndentedTrivia(whereLines, pre)
+      whereLines.add("  " + whereClauseStr(Some(value = wc)))
+    }
+    case None -> {}
+  }
   val contractLines: List[String] = newList()
   var i = 0
   while i < fn.contracts.count {
@@ -88,12 +104,7 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
     contractLines.add("  " + contractStr(c))
     i = i + 1
   }
-  val whereLines: List[String] = newList()
-  match fn.whereClause {
-    case Some(wc) -> { whereLines.add("  " + whereClauseStr(Some(value = wc))) }
-    case None     -> {}
-  }
-  val extras = concatDoc(contractLines, whereLines)
+  val extras = concatDoc(whereLines, contractLines)
   val body: List[String] = match fn.body {
     case None -> {
       val acc: List[String] = newList()

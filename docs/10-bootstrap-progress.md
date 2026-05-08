@@ -81,7 +81,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (this branch) | D-progress-141 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -197,6 +197,63 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-144: M5.3 stage 8 — where-clause comment preservation + clause-order round-trip fix
+
+*claude/lyric-fmt-where-and-arm-comments branch.*
+
+Two related improvements to `Lyric.Fmt`:
+
+**1. Where-clause comment preservation.**  Mechanically the same as
+contract-clause preservation (D-progress-143).  `funcDoc` now calls
+`popTriviaBefore(ctx, wc.span.startPos.offset)` before emitting the
+`where` line, then `appendIndentedTrivia` to weave the popped
+comments / blank-line markers above it with the canonical
+two-space contract indent.
+
+```
+func max[T](a: in T, b: in T): T
+  // T must be ordered      <-- preserved
+  where T: Compare
+{
+  if a > b { a } else { b }
+}
+```
+
+**2. Clause-order round-trip fix.**  Pre-existing latent bug: the
+self-hosted parser accepts `where` only BEFORE the contract clauses
+(`parseFunctionDeclBody` reads `parseWhereClauseOpt` before
+`parseContractClauses`), but the formatter was emitting `contracts
+→ where`.  Round-tripping a function with both clauses through
+`lyric fmt` produced output the parser then rejected with `P0040
+expected an item declaration`.  Reordered the formatter to emit
+`where → contracts` to match the parser's expectation, and reordered
+the trivia pops to stay in source order so the `FmtCtx` cursor
+advances monotonically.
+
+Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+
+- `testCommentBeforeWhereClause` — `// T must be ordered` survives.
+- `testCommentBetweenWhereAndContract` — comment between `where` and
+  the following `requires:` survives.
+- `testWhereThenContractRoundTrips` — locks in the round-trip
+  invariant: parse, format, re-parse must succeed without
+  diagnostics; format is idempotent; `where` appears before
+  `requires` in the output.
+
+Out of scope for this stage:
+
+- Comments inside contract-clause expressions (`forall`/`exists`/
+  `match` bodies) — needs multi-line expression rendering.
+- Comments inside arbitrary expression sub-trees (between operands
+  of a binary op, between function args).  Same blocker.
+- Where-clause emission position on records / unions / enums /
+  opaque / protected / interface / impl bodies — the formatter
+  currently puts the `where` line INSIDE the braces between header
+  and members, which is structurally fine but unusual.  Consistent
+  with the F# `Fmt.fs`; left untouched.
+
+
 
 ### D-progress-143: M5.3 stage 7 — contract-clause comment + blank-line preservation in `Lyric.Fmt`
 
