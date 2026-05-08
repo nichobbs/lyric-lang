@@ -85,6 +85,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M6 — method arguments and non-void return: `msil_self_test_m6.l` builds a PE with `Add(int,int):int` (ldarg.0/ldarg.1/add/ret) called from `Main()` which passes the result to `Console.WriteLine(int)`; exercises int32 method signatures and argument-passing | **Shipped** (this branch) | D-progress-145 |
 | MSIL PE emitter Stage M7 — static fields: `msil_self_test_m7.l` builds a PE with a static int32 field `s_val`; `Main()` stores 42 via `stsfld`, reloads via `ldsfld`, and prints it; exercises the `Field` (0x04) metadata table and `FieldSig` blob | **Shipped** (this branch) | D-progress-146 |
 | MSIL PE emitter Stage M8 — `newobj` + instance fields: `msil_self_test_m8.l` builds a PE with an instance int32 field `x_val`, a HASTHIS constructor `.ctor(int v)` that stores `v` via `stfld`, and `Main()` that creates `Hello(99)` via `newobj`, reads `x_val` via `ldfld`, and prints it | **Shipped** (this branch) | D-progress-147 |
+| MSIL PE emitter Stage M9 — multiple TypeDefs: `msil_self_test_m9.l` builds a PE with three classes (`Foo`, `Bar`, `Hello`) each owning one static method; verifies that `TypeDef.methodList` correctly partitions `MethodDef` rows across TypeDefs; CLR prints `GetFoo()+GetBar() = 30` | **Shipped** (this branch) | D-progress-148 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -831,6 +832,51 @@ and asserts `"99"` appears in CLR stdout.
 
 **Test wiring**: `MsilSelfTestM8.fs` added to `Lyric.Emitter.Tests`; all 11
 MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8).
+
+---
+
+### D-progress-148: MSIL PE emitter Stage M9 — multiple TypeDefs
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M9 verifies that `TypeDef.methodList` correctly partitions `MethodDef`
+rows across multiple TypeDefs in a single assembly — a prerequisite for
+emitting Lyric records, module-level functions, and auxiliary types in the
+self-hosted MSIL code generator.
+
+**`msil_self_test_m9.l`** builds a PE with four TypeDefs:
+
+| TypeDef | methodList | Owns |
+|---------|-----------|------|
+| `<Module>` | 1 | none (range 1..0) |
+| `Foo` | 1 | MethodDef[1] (GetFoo → 10) |
+| `Bar` | 2 | MethodDef[2] (GetBar → 20) |
+| `Hello` | 3 | MethodDef[3] (Main → entry) |
+
+CIL for `GetFoo()` and `GetBar()` each returns their constant via `ldc.i4.s`;
+`Main()` calls both, adds the results, and passes 30 to
+`Console.WriteLine(int)`.
+
+Layout at file offset 0x248:
+
+```
+0x248  0E          GetFoo tiny header (codeSize=3)
+0x249  1F 0A 2A   ldc.i4.s 10, ret
+0x24C  0E          GetBar tiny header (codeSize=3)
+0x24D  1F 14 2A   ldc.i4.s 20, ret
+0x250  46          Main tiny header (codeSize=17)
+0x251..0x25A       call GetFoo (5B), call GetBar (5B)
+0x25B  58          add
+0x25C..0x261       call Console.WriteLine(int) (5B), ret (1B)
+0x262  42 53 4A 42 BSJB metadata root
+```
+
+Structural checks verify `foo_hdr_ok`, `foo_ldc_ok`, `bar_hdr_ok`,
+`bar_ldc_ok`, `main_hdr_ok`, `main_call1_ok`, `main_add_ok`, and `bsjb_ok`.
+The F# harness executes the PE and asserts `"30"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM9.fs` added to `Lyric.Emitter.Tests`; all 12
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9).
 
 ---
 
