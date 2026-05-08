@@ -89,6 +89,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M10 — virtual method dispatch (`callvirt`): `msil_self_test_m10.l` builds a PE with abstract `Base` (virtual `GetValue():int`), concrete `Impl` (override returning 77), and `Hello.Main()` using `newobj` + `callvirt` on the base token; verifies CLR dispatches to the override and prints 77 | **Shipped** (this branch) | D-progress-149 |
 | MSIL PE emitter Stage M11 — `InterfaceImpl` table: `msil_self_test_m11.l` builds a PE with CLR interface `IGetter` (abstract `GetValue():int`), concrete `Impl` implementing it (returning 42), `InterfaceImpl[1]` wiring the relationship, and `Hello.Main()` dispatching via `callvirt` on the interface token; verifies the `InterfaceImpl` (0x09) table is serialised correctly | **Shipped** (this branch) | D-progress-150 |
 | MSIL PE emitter Stage M12 — conditional branch: `msil_self_test_m12.l` builds a PE with `Main()` computing `if 7 > 4 { 1 } else { 0 }` using `cgt` + `brfalse` + `br` + label resolution; verifies 2-byte `0xFE`-prefixed comparison opcode, 5-byte branch instructions with correct signed relative offsets, and CLR execution prints `1` | **Shipped** (this branch) | D-progress-151 |
+| MSIL PE emitter Stage M13 — while loop / backward branch: `msil_self_test_m13.l` builds a PE with `Main()` summing 1..5 via a while loop; uses fat method header (2 int32 locals via `StandAloneSig`), `cgt` + `brtrue` for exit condition, and a backward `br` with negative signed offset; CLR prints `15` | **Shipped** (this branch) | D-progress-152 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1096,6 +1097,49 @@ and asserts `"1"` appears in CLR stdout (7 > 4 is true).
 
 **Test wiring**: `MsilSelfTestM12.fs` added to `Lyric.Emitter.Tests`; all 15
 MSIL self-tests pass (M1, M2a–M2d, M3–M12).
+
+---
+
+### D-progress-152: MSIL PE emitter Stage M13 — while loop / backward branch
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M13 verifies backward branch instructions — required for any loop in
+the self-hosted MSIL emitter.
+
+**`msil_self_test_m13.l`** builds a PE with `Main()` summing 1+2+3+4+5=15:
+
+```
+ldc.i4.0 / stloc.0      sum = 0
+ldc.i4.1 / stloc.1      i = 1
+[loop_start:]
+ldloc.1 / ldc.i4.5 / cgt  i > 5?
+brtrue end               exit if true
+ldloc.0 / ldloc.1 / add / stloc.0  sum += i
+ldloc.1 / ldc.i4.1 / add / stloc.1  i += 1
+br loop_start            backward branch
+[end:]
+ldloc.0 / call Console.WriteLine(int) / ret
+```
+
+Key verified properties:
+- Fat method header (12 bytes) required because `localSig != 0`; flags
+  `0x13 0x30`, codeSize = 33 (`0x21`), `localVarSigTok = 0x11000001`.
+- `StandAloneSig[1]` holds `LocalVarSig { 2 I4 I4 }` = `{0x07, 0x02, 0x08, 0x08}`.
+- `brtrue` exits the loop with positive offset +13 (forward jump).
+- `br loop_start` uses a **negative** signed offset: next-instruction at
+  offset 26, target at offset 4, relative = 4 − 26 = −22 = `0xFFFFFFEA` (LE).
+- The `mbNewLabel` / `mbMarkLabel` system resolves both forward and backward
+  references in a single pass.
+
+Fat header at 0x248, code at 0x254, BSJB at 0x275 (= 0x248 + 12 + 33).
+
+Structural checks verify `fat_hdr_ok`, `code_size_ok`, `local_sig_ok`,
+`cgt_ok`, `brtrue_ok`, `br_back_ok`, and `bsjb_ok`. The F# harness
+executes the PE and asserts `"15"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM13.fs` added to `Lyric.Emitter.Tests`; all 16
+MSIL self-tests pass (M1, M2a–M2d, M3–M13).
 
 ---
 
