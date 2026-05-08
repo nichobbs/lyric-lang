@@ -1978,6 +1978,32 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-199: MSIL PE emitter Stages M56–M60 — bitwise, unary, shift, remainder, stack misc
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched together:
+
+- **M56** (`or`/`and`/`xor`, 0x60/0x5F/0x61): bitwise binary ops. `(40|2)&63^0 = 42`.
+  Tiny header (codeSize=16 → 0x42). Checks or at 0x24D, and at 0x250, xor at 0x252, BSJB at 0x259.
+
+- **M57** (`neg`/`not`, 0x65/0x66): unary arithmetic/bitwise ops. `~(neg(43)) = ~(-43) = 42`.
+  Tiny header (codeSize=10 → 0x2A). Checks neg at 0x24B, not at 0x24C, BSJB at 0x253.
+
+- **M58** (`shl`/`shr`/`shr.un`, 0x62/0x63/0x64): shift ops. `21<<1=42`, shr/shr.un add zeros.
+  Tiny header (codeSize=18 → 0x4A). Checks shl at 0x24C, shr at 0x24F, shr.un at 0x253, BSJB at 0x25B.
+
+- **M59** (`rem`/`rem.un`/`div.un`, 0x5D/0x5E/0x5C): remainder and unsigned division.
+  `85%43=42`, `0%1=0`, `42/1=42`. Tiny header (codeSize=17 → 0x46). Checks rem at 0x24D,
+  rem.un at 0x250, div.un at 0x253, BSJB at 0x25A.
+
+- **M60** (`nop`/`dup`/`pop`, 0x00/0x25/0x26): stack misc. `push 42; nop; dup; pop; print`.
+  Tiny header (codeSize=11 → 0x2E). Checks nop at 0x24B, dup at 0x24C, pop at 0x24D, BSJB at 0x254.
+
+64 MSIL self-tests pass (M1, M2a–M2d, M3–M60).
+
+---
+
 ### D-progress-194: MSIL PE emitter Stage M55 — `initobj`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
