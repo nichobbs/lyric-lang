@@ -313,26 +313,62 @@ let private defineInterface
         |> List.choose (fun m ->
             match m with
             | IMSig fs ->
-                let pTys =
-                    fs.Params
-                    |> List.map (fun p -> resolveTy p.Type)
-                    |> List.toArray
-                let bareRet = resolveRet fs.Return
-                let rTy = if fs.IsAsync then toTaskType bareRet else bareRet
-                let mb =
-                    tb.DefineMethod(
-                        fs.Name,
-                        MethodAttributes.Public
-                        ||| MethodAttributes.Abstract
-                        ||| MethodAttributes.Virtual
-                        ||| MethodAttributes.HideBySig
-                        ||| MethodAttributes.NewSlot,
-                        rTy,
-                        pTys)
+                // Method-level generic params on interface signatures.
+                let methGenericNames : string list =
+                    match fs.Generics with
+                    | Some gs ->
+                        gs.Params
+                        |> List.map (function GPType(n, _) | GPValue(n, _, _) -> n)
+                    | None -> []
+                if not methGenericNames.IsEmpty then resolveCtx.Push methGenericNames
+                let methodAttrs =
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Abstract
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot
+                let mb, pTys, rTy =
+                    if methGenericNames.IsEmpty then
+                        let pts =
+                            fs.Params
+                            |> List.map (fun p -> resolveTy p.Type)
+                            |> List.toArray
+                        let bareRet = resolveRet fs.Return
+                        let rt = if fs.IsAsync then toTaskType bareRet else bareRet
+                        let m = tb.DefineMethod(fs.Name, methodAttrs, rt, pts)
+                        m, pts, rt
+                    else
+                        let m = tb.DefineMethod(fs.Name, methodAttrs)
+                        let gtpbs =
+                            m.DefineGenericParameters(methGenericNames |> List.toArray)
+                            |> Array.map (fun g -> g :> System.Type)
+                        let gsubst =
+                            methGenericNames
+                            |> List.mapi (fun i name -> name, gtpbs.[i])
+                            |> Map.ofList
+                        let pts =
+                            fs.Params
+                            |> List.map (fun p ->
+                                let lty =
+                                    Resolver.resolveType symbols resolveCtx scratchDiags p.Type
+                                TypeMap.toClrTypeWithGenerics lookup gsubst lty)
+                            |> List.toArray
+                        let bareRet =
+                            match fs.Return with
+                            | Some t ->
+                                let lty =
+                                    Resolver.resolveType symbols resolveCtx scratchDiags t
+                                TypeMap.toClrReturnTypeWithGenerics lookup gsubst lty
+                            | None -> typeof<System.Void>
+                        let rt = if fs.IsAsync then toTaskType bareRet else bareRet
+                        m.SetParameters pts
+                        m.SetReturnType rt
+                        m, pts, rt
                 fs.Params
                 |> List.iteri (fun i p ->
                     mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name)
                     |> ignore)
+                if not methGenericNames.IsEmpty then resolveCtx.Pop()
                 Some
                     { Records.InterfaceMember.Name   = fs.Name
                       Records.InterfaceMember.Method = mb
@@ -2619,11 +2655,21 @@ let private emitFunctionBody
                         // generics in `sg.Generics`.  Recover the
                         // GTPBs from the enclosing class via
                         // `selfType.GetGenericArguments()`.
+                        //
+                        // Impl-block + method-level generics: sg.Generics
+                        // is ordered [implNames...; methodNames...].  The
+                        // combined array is class GTPBs ++ method GTPBs.
                         match selfType with
                         | Some st when st.IsGenericType
                                        && st.GetGenericArguments().Length
                                           = sg.Generics.Length ->
                             st.GetGenericArguments()
+                        | Some st when st.IsGenericType ->
+                            let clsGtpbs = st.GetGenericArguments()
+                            if clsGtpbs.Length + methodGtpbs.Length
+                               = sg.Generics.Length then
+                                Array.append clsGtpbs methodGtpbs
+                            else methodGtpbs
                         | _ -> methodGtpbs
             sg.Generics
             |> List.mapi (fun i name -> name, gtpbs.[i])
@@ -3961,10 +4007,17 @@ let private emitAssembly
             // Resolve the impl's target. M1.4 only handles record
             // targets; impls on opaque/distinct/extern types are
             // tracked into Phase 2.
+            // Extract the base name of the target type.  `impl Foo for Bar`
+            // has a plain TRef; `impl[T] Foo for Bar[T]` has a TGenericApp
+            // with the same base name.
             let targetName =
                 match impl.Target.Kind with
                 | TRef p ->
                     match p.Segments with
+                    | [n] -> Some n
+                    | xs  -> Some (List.last xs)
+                | TGenericApp (head, _) ->
+                    match head.Segments with
                     | [n] -> Some n
                     | xs  -> Some (List.last xs)
                 | _ -> None
@@ -4000,20 +4053,79 @@ let private emitAssembly
                 ifaces.Add(iface.Name) |> ignore
                 let resolveCtx = GenericContext()
                 let scratchDiags = ResizeArray<Diagnostic>()
+                // Impl-level type parameter names (e.g. T in `impl[T] Foo for Bar[T]`).
+                // Push them into resolveCtx so Resolver.resolveType recognises them.
+                let implGenericNames : string list =
+                    match impl.Generics with
+                    | Some gs ->
+                        gs.Params
+                        |> List.map (function GPType(n, _) | GPValue(n, _, _) -> n)
+                    | None -> []
+                if not implGenericNames.IsEmpty then resolveCtx.Push implGenericNames
                 for m in impl.Members do
                     match m with
                     | IMplFunc fd ->
-                        // Impl-method signatures aren't in the type
-                        // checker's top-level signature map; resolve
-                        // each parameter and the return type directly.
-                        let resolveTy (te: TypeExpr) : System.Type =
-                            let lty =
-                                Resolver.resolveType
-                                    symbols resolveCtx scratchDiags te
-                            TypeMap.toClrTypeWith lookup lty
+                        // Method-level type parameter names (e.g. U in `func[U] foo(): U`).
+                        let methodGenericNames : string list =
+                            match fd.Generics with
+                            | Some gs ->
+                                gs.Params
+                                |> List.map (function GPType(n, _) | GPValue(n, _, _) -> n)
+                            | None -> []
+                        if not methodGenericNames.IsEmpty then
+                            resolveCtx.Push methodGenericNames
+                        // synthSig.Generics is ordered [implNames...; methodNames...].
+                        // emitFunctionBody's genericSubst rebuilds the substitution using
+                        // class GTPBs (impl-level) ++ method GTPBs (method-level) in the
+                        // same order.
+                        let allGenericNames = implGenericNames @ methodGenericNames
+                        // Class-level GTPBs backing the impl generic params.
+                        let clsGtpbs : System.Type[] =
+                            if implGenericNames.IsEmpty then [||]
+                            else recInfo.Type.GetGenericArguments()
+                        // Define the method builder.  Generic methods require the
+                        // three-step Reflection.Emit pattern: DefineMethod (no sig),
+                        // DefineGenericParameters, then SetParameters / SetReturnType.
+                        // Non-generic methods can be defined with the full signature
+                        // in one call.
+                        let mbAndMethGtpbs : (MethodBuilder * System.Type[]) option =
+                            if methodGenericNames.IsEmpty then None
+                            else
+                                let m =
+                                    recInfo.Type.DefineMethod(
+                                        fd.Name,
+                                        MethodAttributes.Public
+                                        ||| MethodAttributes.Virtual
+                                        ||| MethodAttributes.HideBySig
+                                        ||| MethodAttributes.Final)
+                                let gtpbs =
+                                    m.DefineGenericParameters(
+                                        methodGenericNames |> List.toArray)
+                                    |> Array.map (fun g -> g :> System.Type)
+                                Some (m, gtpbs)
+                        let methGtpbs =
+                            match mbAndMethGtpbs with
+                            | Some (_, gs) -> gs
+                            | None         -> [||]
+                        // Combined substitution: impl GTPBs first, then method GTPBs.
+                        let allGtpbs = Array.append clsGtpbs methGtpbs
+                        let genericSubst : Map<string, System.Type> =
+                            if allGenericNames.IsEmpty then Map.empty
+                            elif allGtpbs.Length >= allGenericNames.Length then
+                                allGenericNames
+                                |> List.mapi (fun i name -> name, allGtpbs.[i])
+                                |> Map.ofList
+                            else Map.empty
+                        // Impl-method signatures aren't in the type checker's
+                        // top-level signature map; resolve each parameter and
+                        // the return type directly using the generic subst above.
                         let pTys =
                             fd.Params
-                            |> List.map (fun p -> resolveTy p.Type)
+                            |> List.map (fun p ->
+                                let lty =
+                                    Resolver.resolveType
+                                        symbols resolveCtx scratchDiags p.Type
+                                TypeMap.toClrTypeWithGenerics lookup genericSubst lty)
                             |> List.toArray
                         let bareRet =
                             match fd.Return with
@@ -4021,19 +4133,25 @@ let private emitAssembly
                                 let lty =
                                     Resolver.resolveType
                                         symbols resolveCtx scratchDiags t
-                                TypeMap.toClrReturnTypeWith lookup lty
+                                TypeMap.toClrReturnTypeWithGenerics lookup genericSubst lty
                             | None -> typeof<System.Void>
                         let rTy =
                             if fd.IsAsync then toTaskType bareRet else bareRet
                         let mb =
-                            recInfo.Type.DefineMethod(
-                                fd.Name,
-                                MethodAttributes.Public
-                                ||| MethodAttributes.Virtual
-                                ||| MethodAttributes.HideBySig
-                                ||| MethodAttributes.Final,
-                                rTy,
-                                pTys)
+                            match mbAndMethGtpbs with
+                            | Some (m, _) ->
+                                m.SetParameters pTys
+                                m.SetReturnType rTy
+                                m
+                            | None ->
+                                recInfo.Type.DefineMethod(
+                                    fd.Name,
+                                    MethodAttributes.Public
+                                    ||| MethodAttributes.Virtual
+                                    ||| MethodAttributes.HideBySig
+                                    ||| MethodAttributes.Final,
+                                    rTy,
+                                    pTys)
                         fd.Params
                         |> List.iteri (fun i p ->
                             mb.DefineParameter(i + 1, ParameterAttributes.None, p.Name)
@@ -4042,10 +4160,11 @@ let private emitAssembly
                         | Some im ->
                             recInfo.Type.DefineMethodOverride(mb, im.Method)
                         | None -> ()
-                        // Synthesise a ResolvedSignature so the body
-                        // emitter can use the same code path.
+                        // Synthesise a ResolvedSignature so the body emitter can use
+                        // the same code path.  Generics carries allGenericNames so that
+                        // emitFunctionBody rebuilds the correct substitution for the body.
                         let synthSig : ResolvedSignature =
-                            { Generics = []
+                            { Generics = allGenericNames
                               Bounds   = []
                               Params =
                                 fd.Params
@@ -4067,6 +4186,7 @@ let private emitAssembly
                               IsAsync = fd.IsAsync
                               Span    = fd.Span }
                         implMethods.Add(fd, mb, synthSig)
+                        if not methodGenericNames.IsEmpty then resolveCtx.Pop()
                     | IMplAssoc _ -> ()
             | _ ->
                 // Target type or interface not in scope — skipped.
@@ -4394,10 +4514,28 @@ let private emitAssembly
                 match Option.ofObj selfTy with
                 | Some t -> t
                 | None   -> typeof<obj>
+            // Rebuild the generic substitution used in body emission.
+            // sg.Generics is ordered [implNames...; methodNames...] per Pass A.5.
+            // Class GTPBs cover the impl-level names; method GTPBs cover the
+            // method-level names.
+            let implMethodGenericSubst : Map<string, System.Type> =
+                if sg.Generics.IsEmpty then Map.empty
+                else
+                    let methGtpbs = mb.GetGenericArguments()
+                    let clsGtpbs =
+                        if selfTyNonNull.IsGenericType then
+                            selfTyNonNull.GetGenericArguments()
+                        else [||]
+                    let allGtpbs = Array.append clsGtpbs methGtpbs
+                    if allGtpbs.Length >= sg.Generics.Length then
+                        sg.Generics
+                        |> List.mapi (fun i name -> name, allGtpbs.[i])
+                        |> Map.ofList
+                    else Map.empty
             let asyncSmEligible =
                 sg.IsAsync
                 && AsyncStateMachine.isAsyncSmEligible fd
-                && fd.Generics.IsNone   // impl-method path doesn't carry SM-side generics yet
+                && sg.Generics.IsEmpty   // SM path deferred for generic impl methods
                 && (not (isNull selfTy))
             // Phase A — impl method, await-free body.
             let usePhaseA =
@@ -4427,12 +4565,14 @@ let private emitAssembly
                             Some resolved
                         else None
                 else None
-            // Common: build the prepended-self paramSpecs.
+            // Common: build the prepended-self paramSpecs using the
+            // generic substitution so T / U in param types resolve to
+            // the right GTPBs.
             let buildParamSpecs () =
                 ("self", selfTyNonNull)
                 :: (sg.Params
                     |> List.map (fun p ->
-                        p.Name, paramClrType lookup Map.empty p))
+                        p.Name, paramClrType lookup implMethodGenericSubst p))
 
             if usePhaseA then
                 let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return

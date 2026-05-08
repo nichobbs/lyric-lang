@@ -606,18 +606,13 @@ progress-per-session and dependency unblocking:
     require the consumer's source to also `import Std.Core`;
     enriching the contract format with explicit re-exports is a
     follow-up.
-16. **Generic interface methods + impl-block generics.**  The
-    grammar accepts `impl[T] Foo for Bar[T] { func[U] foo(): U }`
-    but neither the type checker nor the emitter wires the generics
-    through (`Lyric.TypeChecker/Checker.fs:134` skips `IImpl` in
-    symbol collection; `Lyric.Emitter/Emitter.fs`'s interface
-    method definition uses `tb.DefineMethod` without
-    `DefineGenericParameters`; Pass A.5 ignores `impl.Generics`).
-    Zero stdlib usage today.  When this lands, the async SM
-    extension is mechanical: extend the impl-method `defineState
-    MachineHeader` caller to thread impl-block + method-level
-    GTPBs and re-use the free-standing path's `kickoffBuilder*`
-    helpers.
+16. ~~**Generic interface methods + impl-block generics.**~~ **Shipped**
+    (D-progress-141).  All three shapes work: method-level generics
+    (`func name[U](…): U` in both interface and impl), impl-block-level
+    generics (`impl[T] Foo for Bar[T]`), and combined.  Async SM for
+    generic impl methods is a follow-up: `asyncSmEligible` gates on
+    `sg.Generics.IsEmpty`; the SM threading is mechanical per the
+    original note.
 
 ### Why this order
 
@@ -642,9 +637,9 @@ the actual session order followed:
 - **Tier 5** was the post-C2 cleanup that completed the Http /
   wire-scope stories.
 - **Tier 6** is the work that doesn't gate v1.0 — formatter,
-  varargs polish, RE2, FFI fanciness, generic interface methods +
-  impl-block generics — done on demand as bootstrap consumers
-  surface real needs.
+  varargs polish, RE2, FFI fanciness — done on demand as bootstrap
+  consumers surface real needs.  Generic interface methods +
+  impl-block generics shipped (D-progress-141, #16 above).
 
 ---
 

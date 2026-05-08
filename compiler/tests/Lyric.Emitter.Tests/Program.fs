@@ -16,6 +16,7 @@ let main argv =
             EnumMatchTests.tests
             UnionTests.tests
             InterfaceTests.tests
+            ImplBlockGenericsTests.tests
             ContractTests.tests
             GenericsTests.tests
             AsyncTests.tests
