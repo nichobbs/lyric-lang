@@ -166,6 +166,39 @@ If you only need to verify the surface state without fetching, the
 GitHub MCP `mcp__github__pull_request_read` tool with `method:
 "get"` reports `mergeable` / `mergeable_state` directly.
 
+#### Polling for PR feedback (review comments, claude-review)
+
+Comment-polling timing matters.  Three separate surfaces exist
+on `mcp__github__pull_request_read`, and they don't overlap:
+
+- `get_review_comments` — line-level review threads (PR diff
+  comments).
+- `get_reviews` — formal review submissions (Approve / Request
+  Changes / Comment with body).
+- `get_comments` — **issue-level comments on the PR body**.
+  This is where the `claude-review` GitHub App posts its
+  findings.
+
+Treat them as three independent buckets — one being empty does
+**not** mean there's no feedback.  In particular,
+`claude-review` posts to `get_comments`, not the review surfaces.
+
+Timing:
+
+- The `claude-review` check fires *after* the PR is opened and
+  takes 1-3 minutes to land its comment.  An immediate poll
+  after `create_pull_request` will show `[]` because the review
+  hasn't run yet.
+- Re-poll `get_comments` when the `claude-review` check run
+  transitions from `queued` / `in_progress` to `completed`
+  (the `<github-webhook-activity>` event for that check
+  completing is a clean trigger), or when the user pings the
+  session about review feedback.
+- If you've polled once and seen `[]` while CI was pending,
+  poll again at least once more after CI completes.  Don't
+  declare "no review feedback" until every relevant check is
+  `completed` and all three comment surfaces are empty.
+
 ### Style
 
 - No emojis in any file unless the user asks.
