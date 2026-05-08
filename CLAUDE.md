@@ -39,11 +39,23 @@ compiler is written in F# and lives in `compiler/`. The repository contains:
 - `docs/25-config-blocks.md` — `config { }` block design for compile-time DI configuration.
 - `docs/26-aspects.md` — aspect-oriented cross-cutting concern design.
 
+### Exploratory sketches (numbered ≥ 27)
+
+These are pressure-test docs, not authoritative spec. They surface
+design tensions before any implementation; they don't appear in the
+reading order and don't carry decision-log entries. Each sketch builds
+on a base spec doc and is cited from that doc's open-questions section.
+
+- `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047).
+- `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27.
+- `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046).
+
 ## Reading order (for Claude)
 
 When picking up cold, follow the README's newcomer order: **00 → 02 → 01 → 03**.
 For implementation work consult **05** (phasing) and **06** (open questions).
 For "is this in scope?" questions consult **04**.
+Numbered docs ≥ 27 are exploratory sketches and not part of the reading order.
 
 ## Status of Phase 0 deliverables
 
@@ -165,6 +177,39 @@ duplicate hunk.
 If you only need to verify the surface state without fetching, the
 GitHub MCP `mcp__github__pull_request_read` tool with `method:
 "get"` reports `mergeable` / `mergeable_state` directly.
+
+#### Polling for PR feedback (review comments, claude-review)
+
+Comment-polling timing matters.  Three separate surfaces exist
+on `mcp__github__pull_request_read`, and they don't overlap:
+
+- `get_review_comments` — line-level review threads (PR diff
+  comments).
+- `get_reviews` — formal review submissions (Approve / Request
+  Changes / Comment with body).
+- `get_comments` — **issue-level comments on the PR body**.
+  This is where the `claude-review` GitHub App posts its
+  findings.
+
+Treat them as three independent buckets — one being empty does
+**not** mean there's no feedback.  In particular,
+`claude-review` posts to `get_comments`, not the review surfaces.
+
+Timing:
+
+- The `claude-review` check fires *after* the PR is opened and
+  takes 1-3 minutes to land its comment.  An immediate poll
+  after `create_pull_request` will show `[]` because the review
+  hasn't run yet.
+- Re-poll `get_comments` when the `claude-review` check run
+  transitions from `queued` / `in_progress` to `completed`
+  (the `<github-webhook-activity>` event for that check
+  completing is a clean trigger), or when the user pings the
+  session about review feedback.
+- If you've polled once and seen `[]` while CI was pending,
+  poll again at least once more after CI completes.  Don't
+  declare "no review feedback" until every relevant check is
+  `completed` and all three comment surfaces are empty.
 
 ### Style
 
