@@ -1978,6 +1978,29 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-175: MSIL PE emitter Stage M36 — `ldind.i4` + `stind.i4` (indirect int32 load/store)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M36 exercises `stind.i4` (0x54) and `ldind.i4` (0x4A), the indirect
+integer store and load opcodes used to read/write through a managed pointer
+(byref).
+
+**Code flow:** `ldloca_S 0 / ldc.i4.s 42 / stind.i4 / ldloca_S 0 / ldind.i4 /
+call Console.WriteLine(int) / ret` — stores 42 into local[0] via a byref, then
+reads it back and prints.  Fat header with one I4 local.
+
+Both opcodes are `Nullary` (single-byte, no operand).  BSJB at 0x262.
+
+**New opcodes** added to `opcodes.l`: `OP_LDIND_I4 = 0x4A`, `OP_STIND_I4 = 0x54`,
+`iLdind_I4`, `iStind_I4`, `emitLdind_I4`, `emitStind_I4`.
+
+**Test wiring**: `MsilSelfTestM36.fs` added to `Lyric.Emitter.Tests`; all 40
+MSIL self-tests pass (M1, M2a–M2d, M3–M36).  CLR: `stind.i4` stores 42,
+`ldind.i4` retrieves it → prints `"42"`.
+
+---
+
 ### D-progress-174: MSIL PE emitter Stage M35 — `tail.` prefix (tail-call hint)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
