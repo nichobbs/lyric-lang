@@ -46,7 +46,7 @@ func main(): Unit {
 
   // ── Build #US heap ────────────────────────────────────────────────────────
   val uh    = newUsHeap()
-  val usIdx = internUs(uh, "Hello, World!")
+  val _ = internUs(uh, "Hello, World!")
 
   // ── Build #Blob heap ──────────────────────────────────────────────────────
   val bh = newBlobHeap()

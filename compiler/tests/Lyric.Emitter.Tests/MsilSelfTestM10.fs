@@ -5,49 +5,23 @@
 /// the PE with `dotnet exec` verifying that "77" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM10
 
-open System
 open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
-
-let private findSource () : string option =
-    let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
-    let mutable found : string option = None
-    while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "msil", "msil_self_test_m10.l")
-        if File.Exists candidate then found <- Some candidate
-        dir <- dir.Value.Parent |> Option.ofObj
-    found
-
-let private writeRuntimeConfig (path: string) : unit =
-    let v   = Environment.Version
-    let tfm = sprintf "net%d.0" v.Major
-    let ver = sprintf "%d.%d.%d" v.Major v.Minor v.Build
-    let config =
-        "{\n"
-        + "  \"runtimeOptions\": {\n"
-        + "    \"tfm\": \"" + tfm + "\",\n"
-        + "    \"framework\": {\n"
-        + "      \"name\": \"Microsoft.NETCore.App\",\n"
-        + "      \"version\": \"" + ver + "\"\n"
-        + "    }\n"
-        + "  }\n"
-        + "}\n"
-    File.WriteAllText(path, config)
 
 let tests =
     testList "Msil.SelfTest M10 (callvirt virtual dispatch)" [
 
         testCase "msil_self_test_m10" <| fun () ->
             let src =
-                match findSource () with
+                match findMsilSource "msil_self_test_m10.l" with
                 | Some path -> File.ReadAllText path
                 | None      -> failwith "cannot locate compiler/lyric/msil/msil_self_test_m10.l"
 
             let dllPath = "/tmp/lyric_msil_m10_callvirt.dll"
             let cfgPath = "/tmp/lyric_msil_m10_callvirt.runtimeconfig.json"
 
-            writeRuntimeConfig cfgPath
+            writeMsilRuntimeConfig cfgPath
             if File.Exists dllPath then File.Delete dllPath
 
             let result, stdout, stderr, exitCode = compileAndRun "msil_self_test_m10" src

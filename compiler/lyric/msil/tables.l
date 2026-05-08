@@ -477,9 +477,14 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
 
   // Row data — each table in table-number order.
-  // Heap ref size: heapSizes bit 0 → Strings, bit 1 → GUID, bit 2 → Blob.
-  // For M2c we always use 2-byte heap refs (heapSizes=0 assumed for row format).
-  // The heapSizes byte is passed in for the header; row format uses 2-byte refs.
+  // Row wire format: all heap indices (Strings, GUID, Blob) and simple table
+  // indices are written as 2 bytes.  The `heapSizes` byte is written into the
+  // stream header above so the CLR knows the intended index widths, but the
+  // row data always uses 2-byte indices here.  This is valid as long as no
+  // individual heap exceeds 65535 bytes (heapSizes=0 is the only supported
+  // value for the current self-hosted emitter).  Assemblies with heaps ≥ 64 KB
+  // would require 4-byte indices and a heapSizes != 0 header — that path is not
+  // yet implemented; all heap-index writes below must be widened when needed.
 
   // Module rows (table 0x00)
   var mi = 0

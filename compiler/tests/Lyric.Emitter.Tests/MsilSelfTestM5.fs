@@ -11,44 +11,19 @@ open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
-let private findSource () : string option =
-    let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
-    let mutable found : string option = None
-    while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "msil", "msil_self_test_m5.l")
-        if File.Exists candidate then found <- Some candidate
-        dir <- dir.Value.Parent |> Option.ofObj
-    found
-
-let private writeRuntimeConfig (path: string) : unit =
-    let v   = Environment.Version
-    let tfm = sprintf "net%d.0" v.Major
-    let ver = sprintf "%d.%d.%d" v.Major v.Minor v.Build
-    let config =
-        "{\n"
-        + "  \"runtimeOptions\": {\n"
-        + "    \"tfm\": \"" + tfm + "\",\n"
-        + "    \"framework\": {\n"
-        + "      \"name\": \"Microsoft.NETCore.App\",\n"
-        + "      \"version\": \"" + ver + "\"\n"
-        + "    }\n"
-        + "  }\n"
-        + "}\n"
-    File.WriteAllText(path, config)
-
 let tests =
     testList "Msil.SelfTest M5 (local variables / fat method header)" [
 
         testCase "msil_self_test_m5" <| fun () ->
             let src =
-                match findSource () with
+                match findMsilSource "msil_self_test_m5.l" with
                 | Some path -> File.ReadAllText path
                 | None      -> failwith "cannot locate compiler/lyric/msil/msil_self_test_m5.l"
 
             let dllPath = "/tmp/lyric_msil_m5_hello.dll"
             let cfgPath = "/tmp/lyric_msil_m5_hello.runtimeconfig.json"
 
-            writeRuntimeConfig cfgPath
+            writeMsilRuntimeConfig cfgPath
             if File.Exists dllPath then File.Delete dllPath
 
             let result, stdout, stderr, exitCode = compileAndRun "msil_self_test_m5" src
@@ -86,7 +61,7 @@ let tests =
                 (sprintf "PE exit code expected 0 (stderr=%s stdout=%s)" peStderr peStdout)
 
             let lines =
-                peStdout.Split([| '\n' |], StringSplitOptions.RemoveEmptyEntries)
+                peStdout.Split([| '\n' |], System.StringSplitOptions.RemoveEmptyEntries)
                 |> Array.filter (fun l -> l.Contains "Hello from locals!")
             Expect.equal lines.Length 2
                 (sprintf "expected 'Hello from locals!' twice in PE stdout, got: '%s'" peStdout)

@@ -792,6 +792,86 @@ MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5).
 
 ---
 
+### D-progress-145: MSIL PE emitter Stage M6 — method arguments and non-void return
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M6 exercises method argument passing (`ldarg.0`, `ldarg.1`) and a
+non-void int32 return value, both of which are required for any meaningful
+computation in the self-hosted MSIL code generator.
+
+**`msil_self_test_m6.l`** builds a two-method PE:
+
+- **`Add(int a, int b): int`** — MethodDef[1].  Signature blob
+  `{0x00, 0x02, 0x08, 0x08, 0x08}` (DEFAULT, 2 params, I4 return, I4, I4).
+  Body: `ldarg.0`, `ldarg.1`, `add`, `ret` — 4 bytes CIL; tiny header `0x12`.
+- **`Main()`** — MethodDef[2], entry point.  Body: `ldc.i4.3`, `ldc.i4.4`,
+  `call 0x06000001` (Add), `call 0x0A000001` (Console.WriteLine(int)), `ret`
+  — 13 bytes CIL; tiny header `0x36`.
+
+No US heap entries are needed (no string literals); the MemberRef for
+`Console.WriteLine` uses the int32 signature `{0x00, 0x01, 0x01, 0x08}`.
+
+Layout at file offset 0x248:
+
+```
+0x248  0x12          Add tiny header (codeSize=4)
+0x249  02 03 58 2A   ldarg.0, ldarg.1, add, ret
+0x24D  0x36          Main tiny header (codeSize=13)
+0x24E  19 1A         ldc.i4.3, ldc.i4.4
+0x250  28 01 00 00 06  call MethodDef[1] (Add)
+0x255  28 01 00 00 0A  call MemberRef[1] (Console.WriteLine(int))
+0x25A  2A            ret
+0x25B  42 53 4A 42   BSJB metadata root
+```
+
+Structural checks verify `add_hdr_ok`, `add_ldarg0_ok`, `add_ldarg1_ok`,
+`add_add_ok`, `main_hdr_ok`, `main_ldc3_ok`, `main_ldc4_ok`, `main_call_ok`,
+and `bsjb_ok`.  The F# harness executes the PE and asserts `"7"` appears in
+CLR stdout.
+
+**Test wiring**: `MsilSelfTestM6.fs` added to `Lyric.Emitter.Tests`; all 9
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5, M6).
+
+---
+
+### D-progress-146: MSIL PE emitter Stage M7 — static fields
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M7 exercises the `Field` metadata table (0x04) and the `ldsfld` /
+`stsfld` instruction pair, both of which are required to emit module-level
+`val` bindings and class fields in the self-hosted code generator.
+
+**`msil_self_test_m7.l`** builds a PE with:
+
+- **`FieldRow { flags = FDA_PUBLIC + FDA_STATIC, name = "s_val", signature = FieldSig(I4) }`** — Field[1].
+  FieldSig blob: `{0x06, 0x08}` (FIELD marker + ELEMENT_TYPE_I4).
+- **`Main()`** — MethodDef[1], entry point.  Body: `ldc.i4.s 42`,
+  `stsfld 0x04000001`, `ldsfld 0x04000001`, `call 0x0A000001`
+  (Console.WriteLine(int)), `ret` — 18 bytes CIL; tiny header `0x4A`.
+
+Layout at file offset 0x248:
+
+```
+0x248  4A             Main tiny header (codeSize=18)
+0x249  1F 2A          ldc.i4.s 42
+0x24B  80 01 00 00 04 stsfld Field[1]
+0x250  7E 01 00 00 04 ldsfld Field[1]
+0x255  28 01 00 00 0A call MemberRef[1] (Console.WriteLine(int))
+0x25A  2A             ret
+0x25B  42 53 4A 42    BSJB metadata root
+```
+
+Structural checks verify `main_hdr_ok`, `ldc42_ok`, `stsfld_ok`,
+`ldsfld_ok`, and `bsjb_ok`.  The F# harness executes the PE and asserts
+`"42"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM7.fs` added to `Lyric.Emitter.Tests`; all 10
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7).
+
+---
+
 ### D-progress-147: MSIL PE emitter Stage M8 — newobj + instance fields
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
@@ -969,86 +1049,6 @@ in CLR stdout, confirming the CLR resolved the interface dispatch correctly.
 
 **Test wiring**: `MsilSelfTestM11.fs` added to `Lyric.Emitter.Tests`; all 14
 MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10, M11).
-
----
-
-### D-progress-146: MSIL PE emitter Stage M7 — static fields
-
-*claude/plan-emitter-next-steps-6jGK7 branch.*
-
-Stage M7 exercises the `Field` metadata table (0x04) and the `ldsfld` /
-`stsfld` instruction pair, both of which are required to emit module-level
-`val` bindings and class fields in the self-hosted code generator.
-
-**`msil_self_test_m7.l`** builds a PE with:
-
-- **`FieldRow { flags = FDA_PUBLIC + FDA_STATIC, name = "s_val", signature = FieldSig(I4) }`** — Field[1].
-  FieldSig blob: `{0x06, 0x08}` (FIELD marker + ELEMENT_TYPE_I4).
-- **`Main()`** — MethodDef[1], entry point.  Body: `ldc.i4.s 42`,
-  `stsfld 0x04000001`, `ldsfld 0x04000001`, `call 0x0A000001`
-  (Console.WriteLine(int)), `ret` — 18 bytes CIL; tiny header `0x4A`.
-
-Layout at file offset 0x248:
-
-```
-0x248  4A             Main tiny header (codeSize=18)
-0x249  1F 2A          ldc.i4.s 42
-0x24B  80 01 00 00 04 stsfld Field[1]
-0x250  7E 01 00 00 04 ldsfld Field[1]
-0x255  28 01 00 00 0A call MemberRef[1] (Console.WriteLine(int))
-0x25A  2A             ret
-0x25B  42 53 4A 42    BSJB metadata root
-```
-
-Structural checks verify `main_hdr_ok`, `ldc42_ok`, `stsfld_ok`,
-`ldsfld_ok`, and `bsjb_ok`.  The F# harness executes the PE and asserts
-`"42"` appears in CLR stdout.
-
-**Test wiring**: `MsilSelfTestM7.fs` added to `Lyric.Emitter.Tests`; all 10
-MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7).
-
----
-
-### D-progress-145: MSIL PE emitter Stage M6 — method arguments and non-void return
-
-*claude/plan-emitter-next-steps-6jGK7 branch.*
-
-Stage M6 exercises method argument passing (`ldarg.0`, `ldarg.1`) and a
-non-void int32 return value, both of which are required for any meaningful
-computation in the self-hosted MSIL code generator.
-
-**`msil_self_test_m6.l`** builds a two-method PE:
-
-- **`Add(int a, int b): int`** — MethodDef[1].  Signature blob
-  `{0x00, 0x02, 0x08, 0x08, 0x08}` (DEFAULT, 2 params, I4 return, I4, I4).
-  Body: `ldarg.0`, `ldarg.1`, `add`, `ret` — 4 bytes CIL; tiny header `0x12`.
-- **`Main()`** — MethodDef[2], entry point.  Body: `ldc.i4.3`, `ldc.i4.4`,
-  `call 0x06000001` (Add), `call 0x0A000001` (Console.WriteLine(int)), `ret`
-  — 13 bytes CIL; tiny header `0x36`.
-
-No US heap entries are needed (no string literals); the MemberRef for
-`Console.WriteLine` uses the int32 signature `{0x00, 0x01, 0x01, 0x08}`.
-
-Layout at file offset 0x248:
-
-```
-0x248  0x12          Add tiny header (codeSize=4)
-0x249  02 03 58 2A   ldarg.0, ldarg.1, add, ret
-0x24D  0x36          Main tiny header (codeSize=13)
-0x24E  19 1A         ldc.i4.3, ldc.i4.4
-0x250  28 01 00 00 06  call MethodDef[1] (Add)
-0x255  28 01 00 00 0A  call MemberRef[1] (Console.WriteLine(int))
-0x25A  2A            ret
-0x25B  42 53 4A 42   BSJB metadata root
-```
-
-Structural checks verify `add_hdr_ok`, `add_ldarg0_ok`, `add_ldarg1_ok`,
-`add_add_ok`, `main_hdr_ok`, `main_ldc3_ok`, `main_ldc4_ok`, `main_call_ok`,
-and `bsjb_ok`.  The F# harness executes the PE and asserts `"7"` appears in
-CLR stdout.
-
-**Test wiring**: `MsilSelfTestM6.fs` added to `Lyric.Emitter.Tests`; all 9
-MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5, M6).
 
 ---
 
