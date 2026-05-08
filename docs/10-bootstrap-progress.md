@@ -1978,6 +1978,31 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-201: MSIL PE emitter Stages M66–M70 — checked conversions and float literal loads
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched:
+
+- **M66** (conv.ovf.i1/i2/i4/i8, 0xB3/0xB5/0xB7/0xB9): checked signed conversions. `42` round-trips
+  through all four without overflow. Tiny header (codeSize=13 → 0x36).
+
+- **M67** (conv.ovf.u1/u2/u4/u8, 0xB4/0xB6/0xB8/0xBA): checked unsigned conversions. Same round-trip.
+  Tiny header (codeSize=13 → 0x36).
+
+- **M68** (conv.ovf.i1.un/i2.un/i4.un/i8.un, 0x82/0x83/0x84/0x85): checked from-unsigned signed
+  conversions. Same pattern. Tiny header (codeSize=13 → 0x36).
+
+- **M69** (conv.ovf.u1.un/u2.un/u4.un/u8.un, 0x86/0x87/0x88/0x89): checked from-unsigned unsigned
+  conversions. Same pattern. Tiny header (codeSize=13 → 0x36).
+
+- **M70** (ldc.r8/ckfinite/ldc.r4, 0x23/0xC3/0x22): float literal loads and finiteness check.
+  `ldc.r8 42.0 / ckfinite / conv.i4 + ldc.r4 0.0 / conv.i4 / add = 42`. Tiny header (codeSize=24 → 0x62).
+
+74 MSIL self-tests pass (M1–M70).
+
+---
+
 ### D-progress-200: MSIL PE emitter Stages M61–M65 — overflow arith, int/float conversions, misc loads
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
