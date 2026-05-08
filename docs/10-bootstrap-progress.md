@@ -1978,6 +1978,34 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-178: MSIL PE emitter Stage M39 — `conv.ovf.i4` / `conv.ovf.i8` (overflow-checked conversions)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M39 exercises the `conv.ovf` integer conversion opcodes: `conv.ovf.i4`
+(0xB7) — overflow-checked convert-to-int32, and `conv.ovf.i8` (0xB9) —
+overflow-checked convert-to-int64.  Both throw `OverflowException` when the
+result is out of range; for in-range inputs the behaviour is identical to
+the unchecked `conv.*` variants.
+
+**Code flow:**
+1. `ldc.i8 42 / conv.ovf.i4` → int32 42 → `Console.WriteLine` prints `"42"`
+2. `ldc.i4.s 42 / conv.ovf.i8 / conv.ovf.i4` → int32 42 → `Console.WriteLine` prints `"42"`
+
+Tiny header (codeSize=25, header byte 0x66) at 0x248.  First `conv.ovf.i4`
+at 0x252, `conv.ovf.i8` at 0x25A, second `conv.ovf.i4` at 0x25B.  BSJB at
+0x262.
+
+**New in `opcodes.l`**: `OP_CONV_OVF_I1/U1/I2/U2/I4/U4/I8/U8` constants
+(0xB3–0xBA) plus corresponding `iConv_Ovf_*` constructors and
+`emitConv_Ovf_*` wrappers for all eight signed/unsigned overflow-checked
+conversion variants.
+
+**Test wiring**: `MsilSelfTestM39.fs` added to `Lyric.Emitter.Tests`; all 43
+MSIL self-tests pass (M1, M2a–M2d, M3–M39).  CLR: two `"42"` lines printed.
+
+---
+
 ### D-progress-177: MSIL PE emitter Stage M38 — `add.ovf` / `sub.ovf` / `mul.ovf` (overflow-checked arithmetic)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
