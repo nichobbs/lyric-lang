@@ -1978,6 +1978,21 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-189: MSIL PE emitter Stage M50 — `sizeof`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M50 tests the `sizeof` instruction (0xFE 0x1C, Token2 form):
+- `sizeof` — pushes the byte size of a value type onto the stack as I4.
+
+Test: `sizeof System.Int32` (TypeRef[3] token) pushes 4, then `ldc.i4.s 38` /
+`add` = 42, prints `42`.  `MsilSelfTestM50.fs` verifies the tiny header (0x3E
+at 0x248), FE prefix at 0x249, 0x1C at 0x24A, BSJB at 0x258.
+
+54 MSIL self-tests pass (M1, M2a–M2d, M3–M50).
+
+---
+
 ### D-progress-188: MSIL PE emitter Stage M49 — `ldelem.i4` + `stelem.i4`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
