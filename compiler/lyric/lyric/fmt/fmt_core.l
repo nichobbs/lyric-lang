@@ -887,12 +887,15 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
   // shape (literals, paths, prefix ops over fitting operands) fall back
   // to the inline rendering even if it exceeds the budget.
   match e.kind {
-    case ECall(fn, args)      -> exprCallMulti(col, ctx, fn, args)
-    case EBinop(op, lhs, rhs) -> exprBinopMulti(col, ctx, op, lhs, rhs)
-    case EList(elems)         -> exprListMulti(col, ctx, elems, "[", "]")
-    case ETuple(elems)        -> exprListMulti(col, ctx, elems, "(", ")")
-    case EParen(inner)        -> exprParenMulti(col, ctx, inner)
-    case _                    -> singleLineDoc(inline)
+    case ECall(fn, args)            -> exprCallMulti(col, ctx, fn, args)
+    case EBinop(op, lhs, rhs)       -> exprBinopMulti(col, ctx, op, lhs, rhs)
+    case EList(elems)               -> exprListMulti(col, ctx, elems, "[", "]")
+    case ETuple(elems)              -> exprListMulti(col, ctx, elems, "(", ")")
+    case EParen(inner)              -> exprParenMulti(col, ctx, inner)
+    case ELambda(ps, body)          -> exprLambdaMulti(col, ctx, ps, body)
+    case EForall(bs, w, body)       -> exprQuantMulti(col, ctx, "forall", bs, w, body)
+    case EExists(bs, w, body)       -> exprQuantMulti(col, ctx, "exists", bs, w, body)
+    case _                          -> singleLineDoc(inline)
   }
 }
 
@@ -1086,8 +1089,82 @@ func exprParenMulti(col: in Int, ctx: inout FmtCtx, inner: in Expr): List[String
   acc
 }
 
+/// `ELambda` multi-line layout:
+///
+///     { param1, param2 ->
+///       stmt1
+///       stmt2
+///     }
+///
+/// The lambda body is a `Block`, so `blockLines` (already trivia-aware)
+/// handles per-statement comments and blank-line preservation inside.
+/// Empty-param lambdas drop the `->` arrow on the opening line:
+///
+///     {
+///       stmt
+///     }
+func exprLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], body: in Block): List[String] {
+  val opener = if ps.count == 0 { "{" } else { "{ " + lambdaParamsStr(ps) + " ->" }
+  val acc: List[String] = newList()
+  acc.add(opener)
+  val bd = indentDoc(2, blockLines(body, ctx))
+  var i = 0
+  while i < bd.count { acc.add(bd[i]); i = i + 1 }
+  acc.add("}")
+  acc
+}
 
-// without wrapping in parens.
+@pure
+func lambdaParamsStr(ps: in List[LambdaParam]): String {
+  val parts: List[String] = newList()
+  var i = 0
+  while i < ps.count {
+    val lp = ps[i]
+    match lp.ty {
+      case Some(t) -> parts.add(lp.name + ": " + typeStr(t))
+      case None    -> parts.add(lp.name)
+    }
+    i = i + 1
+  }
+  joinStrings(parts, ", ")
+}
+
+/// Shared multi-line layout for `EForall` / `EExists`:
+///
+///     forall (a: Int, b: Int) where guard {
+///       body
+///     }
+///
+/// When the binders + where-guard line itself overruns budget the
+/// multi-line break still puts the body on a separate line — that's
+/// the highest-leverage break, since contracts with quantifiers
+/// usually have long bodies.  Threading multi-line layouts through
+/// the binder tuple and the where-guard expression as well is a
+/// follow-up; for now they render inline.
+func exprQuantMulti(col: in Int, ctx: inout FmtCtx, kw: in String, bs: in List[PropertyBinder], w: in Option[Expr], body: in Expr): List[String] {
+  val parts: List[String] = newList()
+  var i = 0
+  while i < bs.count {
+    parts.add(bs[i].name + ": " + typeStr(bs[i].ty))
+    i = i + 1
+  }
+  val whereStr = match w {
+    case Some(we) -> " where " + exprInline(0, we)
+    case None     -> ""
+  }
+  val opener = kw + " (" + joinStrings(parts, ", ") + ")" + whereStr + " {"
+  val acc: List[String] = newList()
+  acc.add(opener)
+  val bd = indentDoc(2, exprAtCol(col + 2, ctx, body))
+  var j = 0
+  while j < bd.count { acc.add(bd[j]); j = j + 1 }
+  acc.add("}")
+  acc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §8. Inline expression printer.  `minPrec` is the minimum precedence the
+// caller is willing to accept without wrapping in parens.
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func exprInline(minPrec: in Int, e: in Expr): String {

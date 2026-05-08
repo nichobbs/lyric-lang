@@ -535,6 +535,44 @@ func testOutModeRendersCorrectly(): Unit {
              "param: PMOut renders as `out`, not `acc`")
 }
 
+func testCommentInsideLambdaBody(): Unit {
+  // Phase 5 §M5.3 stage 11 (D-progress-147): a `// process input`
+  // comment inside a lambda body anchors via `blockLines` (the body
+  // is parsed as a `Block`).  The lambda renders multi-line because
+  // the inner trivia trigger forces it.
+  val src =
+    "package P\n" +
+    "func go(): Int {\n" +
+    "  val cb = { x: Int ->\n" +
+    "    // process input\n" +
+    "    val y = x + 1\n" +
+    "    y\n" +
+    "  }\n" +
+    "  cb(0)\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// process input"),
+             "lambda: comment inside body preserved")
+  assertTrue(Str.contains(acc, "{ x: Int ->\n"),
+             "lambda: opener with params on its own line")
+}
+
+func testWidthDrivenLongLambdaBody(): Unit {
+  // A lambda whose body — with the lambda braces, params, and
+  // arrow — exceeds the 120-char budget breaks across lines.
+  val src =
+    "package P\n" +
+    "func go(): Int {\n" +
+    "  val cb = { x: Int, y: Int, z: Int -> aLongHelper(x) + bLongHelper(y) + cLongHelper(z) + dLongHelper(x) + eLongHelper(y) }\n" +
+    "  cb(1, 2, 3)\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "{ x: Int, y: Int, z: Int ->\n"),
+             "lambda: long body breaks after `->`")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -589,5 +627,7 @@ func main(): Unit {
   testCommentBeforeFunctionParam()
   testWidthDrivenLongParamList()
   testOutModeRendersCorrectly()
+  testCommentInsideLambdaBody()
+  testWidthDrivenLongLambdaBody()
   println("fmt self-test: ok")
 }
