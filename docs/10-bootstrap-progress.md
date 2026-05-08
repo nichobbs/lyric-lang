@@ -103,7 +103,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M24 — instance methods + instance fields: `msil_self_test_m24.l` builds a PE with `Counter` class (TypeDef[2]) owning Field[1]=`_value`, MethodDef[1]=`.ctor`, [2]=`Increment`, [3]=`GetValue`; Main (MethodDef[4]) creates Counter via `newobj`, calls Increment 3× via `dup`+`call`, then GetValue; exercises `Field` table, `ldfld`/`stfld`, HASTHIS sig convention, `MDA_SPECIAL_NAME+MDA_RTS_SPECIAL_NAME` on `.ctor`, three-TypeDef methodList/fieldList partitioning; CLR prints `3` | **Shipped** (this branch) | D-progress-163 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -219,6 +219,88 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-147: M5.3 stage 11 — `ELambda` / `EForall` / `EExists` multi-line layouts; type-expression multi-line formally deferred
+
+*claude/lyric-fmt-lambda-forall-multi branch.*
+
+Three more `ExprKind` arms wired into the width-driven multi-line
+pretty-printer.  Plus a documentation note formally deferring
+multi-line type-expression layout (scenario "comments inside type
+expressions" from PR #224's out-of-scope list).
+
+**`ELambda` multi-line layout** (`exprLambdaMulti`):
+
+```
+{ param1, param2 ->
+  stmt1
+  stmt2
+}
+```
+
+The lambda body is a `Block`, so the existing `blockLines` (already
+trivia-aware via `popTriviaBefore` at each statement boundary)
+handles per-statement comments and blank-line preservation inside
+the lambda for free.  Empty-param lambdas drop the `->` arrow on
+the opening line.
+
+**`EForall` / `EExists` multi-line layout** (`exprQuantMulti`):
+
+```
+forall (a: Int, b: Int) where guard {
+  body
+}
+```
+
+When the inline form would overrun the budget, the quantifier breaks
+on the body (the highest-leverage break — contract quantifiers
+usually have long bodies).  Threading multi-line layouts through the
+binder tuple and the where-guard expression as well is a follow-up;
+for now they render inline.
+
+**Pre-existing double-brace forall body bug** (out of scope for
+this stage): when a quantifier body is parsed as `forall (i) { p(i) }`,
+the parser wraps the inner expression in `EBlock` (the `{ … }` is a
+block).  Both `quantifierStr` (inline) and `exprQuantMulti`
+(multi-line) emit a `{` opener and a `}` closer around the body.
+The body's `EBlock` rendering (`{ blockInline }`) adds another
+pair, producing `forall (i) { { p(i) } }`.  The F# legacy
+`Lyric.Cli.Fmt` shares this bug.  Fix is structural — either drop
+the formatter's outer braces when body is `EBlock`, or change the
+parser to not wrap a single-stmt block.  Out of scope here.
+
+Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+
+- `testCommentInsideLambdaBody` — `// process input` inside a lambda
+  body anchors via `blockLines`.
+- `testWidthDrivenLongLambdaBody` — long lambda body breaks after
+  `->`.
+
+### Type-expression multi-line — formally deferred
+
+The "comments inside type expressions" scenario from PR #224's
+out-of-scope list (e.g. `array[\n // size\n N,\n (Int, Int)\n]`) is
+formally deferred:
+
+- It needs a parallel `typeAtCol` family mirroring `exprAtCol` —
+  per-`TypeExprKind` multi-line layouts for `TGenericApp`, `TArray`,
+  `TSlice`, `TFunction`, `TTuple`, `TParen`.  Roughly 200-300 LoC of
+  new Lyric, similar shape to the existing expression layouts.
+- User-visible benefit is small: comments inside a `Foo[A, B, C]`
+  argument list are vanishingly rare in practice (we've not seen
+  them in the stdlib or any example file).  `array[N, T]` and
+  `slice[T]` are usually short.
+- The same is true for **patterns** and **where-clause bound
+  lists** — both can be made multi-line via the same pattern,
+  same low-priority status.
+
+The next-largest user-visible gap remaining is the inline `EIf` /
+`EMatch` forms when long; `EIf` (brace form) and `EMatch` (brace
+form) already have multi-line printers.  Those would convert the
+inline form to the brace form when budget exceeds — small,
+mechanical, and tracked as a future stage.
+
+
 
 ### D-progress-146: M5.3 stage 10 — binop-operand / list-element / function-param comment preservation, plus `out` mode rendering bug fix
 
