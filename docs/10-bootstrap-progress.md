@@ -86,6 +86,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M7 — static fields: `msil_self_test_m7.l` builds a PE with a static int32 field `s_val`; `Main()` stores 42 via `stsfld`, reloads via `ldsfld`, and prints it; exercises the `Field` (0x04) metadata table and `FieldSig` blob | **Shipped** (this branch) | D-progress-146 |
 | MSIL PE emitter Stage M8 — `newobj` + instance fields: `msil_self_test_m8.l` builds a PE with an instance int32 field `x_val`, a HASTHIS constructor `.ctor(int v)` that stores `v` via `stfld`, and `Main()` that creates `Hello(99)` via `newobj`, reads `x_val` via `ldfld`, and prints it | **Shipped** (this branch) | D-progress-147 |
 | MSIL PE emitter Stage M9 — multiple TypeDefs: `msil_self_test_m9.l` builds a PE with three classes (`Foo`, `Bar`, `Hello`) each owning one static method; verifies that `TypeDef.methodList` correctly partitions `MethodDef` rows across TypeDefs; CLR prints `GetFoo()+GetBar() = 30` | **Shipped** (this branch) | D-progress-148 |
+| MSIL PE emitter Stage M10 — virtual method dispatch (`callvirt`): `msil_self_test_m10.l` builds a PE with abstract `Base` (virtual `GetValue():int`), concrete `Impl` (override returning 77), and `Hello.Main()` using `newobj` + `callvirt` on the base token; verifies CLR dispatches to the override and prints 77 | **Shipped** (this branch) | D-progress-149 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -877,6 +878,56 @@ The F# harness executes the PE and asserts `"30"` appears in CLR stdout.
 
 **Test wiring**: `MsilSelfTestM9.fs` added to `Lyric.Emitter.Tests`; all 12
 MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9).
+
+---
+
+### D-progress-149: MSIL PE emitter Stage M10 — virtual method dispatch (callvirt)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M10 verifies `callvirt` virtual dispatch — the core mechanism Lyric uses
+for interface and union dispatch in the self-hosted MSIL emitter.
+
+**`msil_self_test_m10.l`** builds a PE with four TypeDefs:
+
+| TypeDef | flags | Extends | Owns |
+|---------|-------|---------|------|
+| `<Module>` | 0 | — | none |
+| `Base` | PUBLIC\|ABSTRACT | `System.Object` (TypeRef[2]) | MethodDef[1] GetValue():int (abstract, rva=0) |
+| `Impl` | PUBLIC | `Base` (TypeDef[2]) | MethodDef[2] .ctor(), MethodDef[3] GetValue():int (override) |
+| `Hello` | PUBLIC | `System.Object` | MethodDef[4] Main() |
+
+Key metadata decisions:
+- `Base.GetValue` has flags `VIRTUAL|NEWSLOT|ABSTRACT` and `rva=0` (no body); its
+  signature is HASTHIS (`0x20`) + 0 params + I4 return.
+- `Impl.GetValue` has flags `VIRTUAL` without `NEWSLOT` (= override); CLR links
+  it to the same vtable slot as `Base.GetValue` because the name and signature match.
+- `Impl` uses the `tdrTypeDef(2)` coded index (`2*4+0 = 8`) in `extends` to
+  reference the same-assembly `Base` class.
+- `Main()` emits `newobj 0x06000002` (Impl..ctor) then `callvirt 0x06000001`
+  (Base.GetValue token); the CLR dispatches to `Impl.GetValue`, returning 77.
+
+Layout at file offset 0x248:
+
+```
+0x248  06          Impl..ctor tiny header (codeSize=1)
+0x249  2A          ret
+0x24A  0E          Impl.GetValue tiny header (codeSize=3)
+0x24B  1F 4D 2A   ldc.i4.s 77, ret
+0x24E  42          Main tiny header (codeSize=16)
+0x24F  73 02 00 00 06   newobj Impl..ctor
+0x254  6F 01 00 00 06   callvirt Base.GetValue
+0x259  28 01 00 00 0A   call Console.WriteLine(int)
+0x25E  2A          ret
+0x25F  42 53 4A 42 BSJB metadata root
+```
+
+Structural checks verify `ctor_hdr_ok`, `getv_hdr_ok`, `getv_ldc_ok`,
+`main_hdr_ok`, `newobj_ok`, `callvirt_ok`, and `bsjb_ok`.
+The F# harness executes the PE and asserts `"77"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM10.fs` added to `Lyric.Emitter.Tests`; all 13
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10).
 
 ---
 
