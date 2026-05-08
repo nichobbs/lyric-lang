@@ -1,8 +1,12 @@
 name: Claude-assisted rebase — conflict resolution
 
 on:
-  push:
-    branches: [main]
+  # Run after the fast-path auto-rebase workflow finishes on main.
+  # By then all cleanly-rebasing PRs are already handled; Claude only
+  # needs to deal with the remaining CONFLICTING ones.
+  workflow_run:
+    workflows: ["Auto-rebase open PRs onto main"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -17,8 +21,7 @@ concurrency:
 jobs:
   claude-rebase:
     runs-on: ubuntu-latest
-    # Skip pushes made by bots (including the auto-rebase action and Claude
-    # itself) to avoid infinite loops.
+    # Skip runs triggered by bot actors to avoid infinite loops.
     if: |
       github.actor != 'github-actions[bot]' &&
       github.actor != 'claude[bot]'
@@ -39,7 +42,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: |
+          direct_prompt: |
             A commit was just pushed to `main` in `nichobbs/lyric-lang`.
 
             Your task: for every open PR targeting `main` that currently has
