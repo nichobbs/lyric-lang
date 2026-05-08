@@ -129,6 +129,7 @@ let private trivialDischarge (g: Goal) : SolverOutcome option =
         | TBuiltin(BOpAnd, args) -> args |> List.forall isTautology
         | TBuiltin(BOpOr,  args) -> args |> List.exists isTautology
         | TIte(_, a, b) when termEq a b -> true
+        | TIte(_, a, b) when isTautology a && isTautology b -> true
         | _ -> false
 
     // Flatten an `And` term into its individual conjuncts (recursing

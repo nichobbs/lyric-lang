@@ -1978,6 +1978,30 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-188: MSIL PE emitter Stage M49 — `ldelem.i4` + `stelem.i4`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M49 adds typed int32 array element operations and fills in all 18 missing
+typed ldelem/stelem opcode constants:
+- `ldelem.i1/u1/i2/u2/i4/u4/i8/i/r4/r8/ref` (0x90–0x9A) — typed element loads.
+- `stelem.i/i1/i2/i4/i8/r4/r8` (0x9B–0xA1) — typed element stores.
+
+Test: builds a PE that creates a 1-element `int32[]` via `newarr System.Int32`
+(TypeRef[3] token 0x01000003), stores 42 via `stelem.i4` (0x9E), reads it back
+via `ldelem.i4` (0x94), and prints `42`.  `MsilSelfTestM49.fs` verifies the
+tiny header (0x4E at 0x248), newarr at 0x24A, stelem.i4 at 0x253, ldelem.i4
+at 0x255, BSJB at 0x25C, and PE execution output `"42"`.
+
+Also fixes a pre-existing verifier bug: `Solver.fs` `isTautology` now handles
+`TIte(_, a, b)` when both branches `a` and `b` are individually tautological
+(closes the `[D-D1.3] EIf in statement position` test that was failing due to
+the trivial discharger not reducing ite-conclusions with tautological branches).
+
+53 MSIL self-tests pass (M1, M2a–M2d, M3–M49).
+
+---
+
 ### D-progress-187: MSIL PE emitter Stage M48 — `stind.i` + `ldind.i`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
