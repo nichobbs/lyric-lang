@@ -149,23 +149,34 @@ Convention:
   level; the runtime trusts the layer.
 
 For audit-grade deployments, ops can opt to refuse `@sensitive`
-fields in file sources (env-only):
+fields in file sources (env-only) via a **CLI / build-time
+flag**, not in-file metadata:
 
-```toml
-# config/prod.toml — opt out of file source for sensitive fields
-[__lyric_meta]
-sensitive_from_env_only = true
+```sh
+# Deployment-time refusal of file-source @sensitive values:
+lyric run app.l --config-sensitive-env-only
+# Or pinned in lyric.toml:
+[build]
+config_sensitive_env_only = true
 ```
 
-If set, any `@sensitive` field provided by the file source is
-**rejected loudly** with exit code 78 and a diagnostic naming
-the offending field.  Silent ignoring was considered (file
-is not authoritative for sensitive data) but rejected because
-typo'd or accidentally-checked-in secrets in a TOML file are
-exactly the kind of audit-grade failure the marker is meant
-to catch — silent ignore would mask the very bug
-`sensitive_from_env_only` exists to surface.  Tracked as
-§9 item below.
+When set, any `@sensitive` field whose **TOML key is present in
+the file source** is rejected loudly with exit code 78 and a
+diagnostic naming the offending field — even if env / CLI
+would override it (presence in the file is what's audited, not
+which layer "wins").  Silent ignoring was considered but
+rejected: typo'd or accidentally-checked-in secrets in a TOML
+file are exactly the kind of audit-grade failure the marker is
+meant to surface; silent ignore would mask the very bug.
+
+Earlier drafts of this sketch put the flag in a magic
+`[__lyric_meta]` TOML section — withdrawn because (a) it
+breaks §3.2's clean 1:1 mapping between TOML sections and
+declared `config { … }` blocks, (b) it pushes a deployment
+policy into application source / config files where it
+doesn't belong, and (c) it would collide if any consumer
+ever declared `config __lyric_meta { … }`.  CLI / build-flag
+is the cleaner shape.
 
 ---
 
@@ -270,7 +281,12 @@ consumer for layering purposes.
 
 ## 7. Tensions surfaced
 
-### 7.1 — Layering vs. fail-fast: what counts as "missing"?
+### 7.1 — Layering vs. fail-fast: a v1→v2 breaking contract shift
+
+> **⚠ Top-priority tension.**  This is the only finding in this
+> sketch that's a *behavioural* break from v1, not just an
+> additive feature.  A decision-log entry must land **before**
+> any v2 implementation work begins, not "on adoption."
 
 D046 §4 says a required field with no default must be
 provided at startup or the process aborts.  In a layered
@@ -283,15 +299,25 @@ the field.  So:
   required at all — the default is its value if nothing
   overrides.  This is just D046's existing rule.
 
-Implication: declaring a field `required` (no default)
-becomes more flexible — it just means "no built-in default,
-ops must provide somehow."  This is more permissive than
-v1 (where "required = must be set via env") and probably the
-right semantics — but it's a v1→v2 contract shift that
-**will need its own decision-log entry on adoption**.  A
-consumer's `lyric.toml`-driven config may stop fail-fasting
-in scenarios where v1 used to (file now satisfies the
-requirement); existing operators may need to retest.
+The v1→v2 shift:
+
+- **v1 contract:** "required = env var must be set."  Operators
+  enumerate `LYRIC_CONFIG_*` in deployment manifests; an
+  unset env var fail-fasts the process.
+- **v2 contract:** "required = some layer must supply a
+  value."  A checked-in `config/dev.toml` with a value for a
+  required field will now satisfy the requirement, even when
+  ops thought they were running with env-only config.
+
+Concrete risk: a `config { @sensitive password: String }`
+that was env-driven in v1 may pick up a value from a
+`config/dev.toml` accidentally bundled into a prod build,
+without the process fail-fasting.  v1's env-only path was
+implicitly audit-auditable (`LYRIC_CONFIG_*` is enumerable);
+v2's file layer is harder to enumerate inside a running
+container.  The §3.4 `--config-sensitive-env-only` flag is
+the partial mitigation, but the *contract change itself*
+needs explicit acknowledgement before implementation lands.
 
 ### 7.2 — Type coercion across layers
 
@@ -307,6 +333,16 @@ port = "8080"        # string, but field is `Int`
 Lean: **strict at parse time**.  TOML supplied a string but
 the field expects Int → reject with `G0014: file source
 provides Http.port as String, declared as Int`.  No coercion.
+
+**Range subtypes** (e.g. `port: Int range 1 ..= 65535`) are
+checked at the **same** config-resolution phase, not deferred
+to first use.  A TOML value of `port = 0` is a valid TOML
+integer but an out-of-range Lyric value; it fails the same
+way a type mismatch does (exit 78, diagnostic naming the
+field, the source layer, and the failing range).  This
+matches §2's step 4 ("type-check the resolved value against
+the field's declared type") and keeps the fail-fast
+guarantee tight across env / CLI / file alike.
 
 ### 7.3 — File vs. env conflict diagnostics
 

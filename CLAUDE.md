@@ -39,11 +39,23 @@ compiler is written in F# and lives in `compiler/`. The repository contains:
 - `docs/25-config-blocks.md` — `config { }` block design for compile-time DI configuration.
 - `docs/26-aspects.md` — aspect-oriented cross-cutting concern design.
 
+### Exploratory sketches (numbered ≥ 27)
+
+These are pressure-test docs, not authoritative spec. They surface
+design tensions before any implementation; they don't appear in the
+reading order and don't carry decision-log entries. Each sketch builds
+on a base spec doc and is cited from that doc's open-questions section.
+
+- `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047).
+- `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27.
+- `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046).
+
 ## Reading order (for Claude)
 
 When picking up cold, follow the README's newcomer order: **00 → 02 → 01 → 03**.
 For implementation work consult **05** (phasing) and **06** (open questions).
 For "is this in scope?" questions consult **04**.
+Numbered docs ≥ 27 are exploratory sketches and not part of the reading order.
 
 ## Status of Phase 0 deliverables
 
