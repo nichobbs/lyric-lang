@@ -121,3 +121,35 @@ let compileAndRunWith
 /// should use `compileAndRunWith` instead.
 let compileAndRun (label: string) (source: string) : EmitResult * string * string * int =
     compileAndRunWith label source id
+
+/// Walk up the directory tree from the test binary's base directory
+/// looking for `lyric/msil/<filename>`.  Returns the full path when
+/// found, or None.  Used by every MSIL self-test to locate its
+/// `msil_self_test_<stage>.l` source file regardless of working
+/// directory.
+let findMsilSource (filename: string) : string option =
+    let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
+    let mutable found : string option = None
+    while found.IsNone && dir.IsSome do
+        let candidate = Path.Combine(dir.Value.FullName, "lyric", "msil", filename)
+        if File.Exists candidate then found <- Some candidate
+        dir <- dir.Value.Parent |> Option.ofObj
+    found
+
+/// Write a minimal `runtimeconfig.json` next to the given path so
+/// `dotnet exec` can locate the correct .NET runtime version.
+let writeMsilRuntimeConfig (path: string) : unit =
+    let v   = Environment.Version
+    let tfm = sprintf "net%d.0" v.Major
+    let ver = sprintf "%d.%d.%d" v.Major v.Minor v.Build
+    let config =
+        "{\n"
+        + "  \"runtimeOptions\": {\n"
+        + "    \"tfm\": \"" + tfm + "\",\n"
+        + "    \"framework\": {\n"
+        + "      \"name\": \"Microsoft.NETCore.App\",\n"
+        + "      \"version\": \"" + ver + "\"\n"
+        + "    }\n"
+        + "  }\n"
+        + "}\n"
+    File.WriteAllText(path, config)

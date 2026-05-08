@@ -71,6 +71,24 @@ let main argv =
             MsilSelfTestM2b.tests
             MsilSelfTestM2c.tests
             MsilSelfTestM2d.tests
+            MsilSelfTestM3.tests
+            MsilSelfTestM4.tests
+            MsilSelfTestM5.tests
+            MsilSelfTestM6.tests
+            MsilSelfTestM7.tests
+            MsilSelfTestM8.tests
+            MsilSelfTestM9.tests
+            MsilSelfTestM10.tests
+            MsilSelfTestM11.tests
+            MsilSelfTestM12.tests
+            MsilSelfTestM13.tests
+            MsilSelfTestM14.tests
+            MsilSelfTestM15.tests
+            MsilSelfTestM16.tests
+            MsilSelfTestM17.tests
+            MsilSelfTestM18.tests
+            MsilSelfTestM19.tests
+            MsilSelfTestM20.tests
             JvmLoweringTest.tests
             JvmLoweringB4Test.tests
             JvmLoweringB5Test.tests

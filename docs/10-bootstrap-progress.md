@@ -78,7 +78,25 @@ deferred to Phase 3 by design.
 | M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
-| MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (this branch) | D-progress-141 |
+| MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (PR #219) | D-progress-141 |
+| MSIL PE emitter Stage M3 — end-to-end execution test: `msil_self_test_m3.l` assembles a Hello-World PE, writes it to disk via `Std.File.writeBytes`, and the F# harness executes it with `dotnet exec`, verifying "Hello, World!" in stdout | **Shipped** (PR #220) | D-progress-142 |
+| MSIL PE emitter Stage M4 — multi-method PE assembler: `AssemblerInput.methodBodies` replaces single `methodBody`; `methodBodyRvas()` computes per-method RVAs; `msil_self_test_m4.l` builds a two-method PE (`Greet` + `Main`) with structural and CLR-execution checks | **Shipped** (this branch) | D-progress-143 |
+| MSIL PE emitter Stage M5 — local variables / fat method header: `StandAloneSig` table (0x11) added to `Msil.Tables`; `msil_self_test_m5.l` builds a PE whose `Main()` stores a string in a local variable (fat header, `InitLocals`) and prints it twice via `Console.WriteLine` | **Shipped** (this branch) | D-progress-144 |
+| MSIL PE emitter Stage M6 — method arguments and non-void return: `msil_self_test_m6.l` builds a PE with `Add(int,int):int` (ldarg.0/ldarg.1/add/ret) called from `Main()` which passes the result to `Console.WriteLine(int)`; exercises int32 method signatures and argument-passing | **Shipped** (this branch) | D-progress-145 |
+| MSIL PE emitter Stage M7 — static fields: `msil_self_test_m7.l` builds a PE with a static int32 field `s_val`; `Main()` stores 42 via `stsfld`, reloads via `ldsfld`, and prints it; exercises the `Field` (0x04) metadata table and `FieldSig` blob | **Shipped** (this branch) | D-progress-146 |
+| MSIL PE emitter Stage M8 — `newobj` + instance fields: `msil_self_test_m8.l` builds a PE with an instance int32 field `x_val`, a HASTHIS constructor `.ctor(int v)` that stores `v` via `stfld`, and `Main()` that creates `Hello(99)` via `newobj`, reads `x_val` via `ldfld`, and prints it | **Shipped** (this branch) | D-progress-147 |
+| MSIL PE emitter Stage M9 — multiple TypeDefs: `msil_self_test_m9.l` builds a PE with three classes (`Foo`, `Bar`, `Hello`) each owning one static method; verifies that `TypeDef.methodList` correctly partitions `MethodDef` rows across TypeDefs; CLR prints `GetFoo()+GetBar() = 30` | **Shipped** (this branch) | D-progress-148 |
+| MSIL PE emitter Stage M10 — virtual method dispatch (`callvirt`): `msil_self_test_m10.l` builds a PE with abstract `Base` (virtual `GetValue():int`), concrete `Impl` (override returning 77), and `Hello.Main()` using `newobj` + `callvirt` on the base token; verifies CLR dispatches to the override and prints 77 | **Shipped** (this branch) | D-progress-149 |
+| MSIL PE emitter Stage M11 — `InterfaceImpl` table: `msil_self_test_m11.l` builds a PE with CLR interface `IGetter` (abstract `GetValue():int`), concrete `Impl` implementing it (returning 42), `InterfaceImpl[1]` wiring the relationship, and `Hello.Main()` dispatching via `callvirt` on the interface token; verifies the `InterfaceImpl` (0x09) table is serialised correctly | **Shipped** (this branch) | D-progress-150 |
+| MSIL PE emitter Stage M12 — conditional branch: `msil_self_test_m12.l` builds a PE with `Main()` computing `if 7 > 4 { 1 } else { 0 }` using `cgt` + `brfalse` + `br` + label resolution; verifies 2-byte `0xFE`-prefixed comparison opcode, 5-byte branch instructions with correct signed relative offsets, and CLR execution prints `1` | **Shipped** (this branch) | D-progress-151 |
+| MSIL PE emitter Stage M13 — while loop / backward branch: `msil_self_test_m13.l` builds a PE with `Main()` summing 1..5 via a while loop; uses fat method header (2 int32 locals via `StandAloneSig`), `cgt` + `brtrue` for exit condition, and a backward `br` with negative signed offset; CLR prints `15` | **Shipped** (this branch) | D-progress-152 |
+| MSIL PE emitter Stage M14 — `newarr` + array element access: `msil_self_test_m14.l` builds a PE with `Main()` creating an `int32[3]` array, storing 10/20/30 via `stelem`, loading and summing via `ldelem`, and calling `Console.WriteLine(60)`; adds `TypeRef[3]` for `System.Int32` as element-type token; CLR prints `60` | **Shipped** (this branch) | D-progress-153 |
+| MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4` (64-bit literals): `msil_self_test_m15.l` builds a PE with `Main()` pushing `1000000000i64` and `2i64` via `ldc.i8` (9-byte instruction), multiplying, narrowing to `int32` via `conv.i4`, and calling `Console.WriteLine(2000000000)`; verifies the 8-byte LE constant encoding | **Shipped** (this branch) | D-progress-154 |
+| MSIL PE emitter Stage M16 — `switch` table: `msil_self_test_m16.l` builds a PE with `Main()` dispatching value `2` via a 3-target `switch` instruction; target[2] pushes 42 and falls through to `Console.WriteLine`; verifies opcode `0x45`, count encoding, and each target's signed relative offset | **Shipped** (this branch) | D-progress-155 |
+| MSIL PE emitter Stage M17 — bitwise operations: `msil_self_test_m17.l` builds a PE with `Main()` computing `(60 & 13) + (60 | 13) = 12 + 61 = 73`; exercises `and` (0x5F), `or` (0x60) opcodes; CLR prints `73` | **Shipped** (this branch) | D-progress-156 |
+| MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals): `msil_self_test_m18.l` builds a PE with `Main()` pushing `3.0` and `2.0` via `ldc.r8` (9-byte instruction with IEEE 754 f64 LE constant), multiplying via `mul`, and calling `Console.WriteLine(double)`; verifies opcode and the 8-byte encoding of `3.0`; CLR prints `6` | **Shipped** (this branch) | D-progress-157 |
+| MSIL PE emitter Stage M19 — `sub` + `rem`: `msil_self_test_m19.l` builds a PE with `Main()` computing `(23 - 3) % 13 = 7`; exercises `sub` (0x59) and `rem` (0x5D); CLR prints `7` | **Shipped** (this branch) | D-progress-158 |
+| MSIL PE emitter Stage M20 — exception handling (try/catch): `msil_self_test_m20.l` builds a PE whose `Main()` throws `System.Exception` in a try block and catches it, printing `42`; exercises `EHClause` record + `mbAddEHClause`, `MoreSects` flag (0x1B) in fat header, fat EH section (kind=0x41), `leave` (0xDD), `throw` (0x7A), and `newobj` (0x73); CLR prints `42` | **Shipped** (this branch) | D-progress-159 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 |
@@ -807,6 +825,729 @@ token, method tiny header, ldstr opcode + token, BSJB magic, stream count).
 
 **Test wiring**: `MsilSelfTestM2a.fs`, `MsilSelfTestM2b.fs`, `MsilSelfTestM2c.fs`,
 `MsilSelfTestM2d.fs` added to `Lyric.Emitter.Tests`; all 5 MSIL self-tests pass.
+
+---
+
+### D-progress-142: MSIL PE emitter Stage M3 — end-to-end CLR execution test
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M3 closes the loop on the M2a–M2d pipeline by verifying that
+`Msil.Assembler.assemblePe` produces a PE image that the CLR can actually
+load and execute, not just one that passes byte-layout checks.
+
+**`msil_self_test_m3.l`** (`compiler/lyric/msil/msil_self_test_m3.l`)
+
+The self-test program:
+1. Builds a Hello-World PE using the full M2a–M2d stack (`Msil.Heaps`,
+   `Msil.Opcodes`, `Msil.Tables`, `Msil.Assembler`).
+2. Writes the assembled bytes to `/tmp/lyric_msil_m3_hello.dll` via
+   `Std.File.writeBytes` — the first exercise of the `Std.File` byte-write
+   surface from within a self-hosted MSIL context.
+3. Prints `wrote_pe=true` on success.
+
+**Key correction versus M2d** (`System.Console` assembly reference):
+
+In .NET 5+, `System.Console` lives in `System.Console.dll`, not
+`System.Runtime.dll`. The M2d metadata (matching the Stage-M1 reference
+image) used a single `System.Runtime` AssemblyRef for both `System.Object`
+and `System.Console`, which passes byte-layout checks but fails at CLR load
+time with `TypeLoadException`. M3 adds a second `AssemblyRef` for
+`System.Console` and points the `Console` TypeRef at it, producing a PE
+that executes cleanly under .NET 10.
+
+**F# test harness** (`MsilSelfTestM3.fs`):
+
+1. Compiles and runs `msil_self_test_m3.l` via the bootstrap emitter.
+2. Verifies `wrote_pe=true` in stdout.
+3. Writes a matching `runtimeconfig.json` alongside the PE (same logic as
+   `Backend.fs:writeRuntimeConfig`), then calls `runDll` on the produced
+   file.
+4. Asserts PE exit code = 0 and stdout contains `"Hello, World!"`.
+
+**Test wiring**: `MsilSelfTestM3.fs` added to `Lyric.Emitter.Tests`; all 6
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3).
+
+---
+
+### D-progress-143: MSIL PE emitter Stage M4 — multi-method PE assembler
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M4 extends `Msil.Assembler` from single-method to multi-method
+assemblies, which is the minimum requirement for any real Lyric program.
+
+**API change in `assembler.l`**:
+
+- `AssemblerInput.methodBody: MethodBody` → `methodBodies: List[MethodBody]`.
+  Any number of method bodies can now be described in a single input record.
+- New public function `methodBodyRvas(bodies: List[MethodBody]): List[Int]`:
+  serializes each body in a scratch buffer, measures its size, and returns
+  a list of RVAs starting at `FIRST_METHOD_RVA`.  The caller assigns
+  `result[i]` to `MethodDef[i+1].rva` before calling `assemblePe`.
+- `assemblePe` now serializes all bodies consecutively in the `.text`
+  section and computes `mdRva` / `textVSize` from their total raw size.
+
+**Migration of existing self-tests**: `msil_self_test_m2d.l` and
+`msil_self_test_m3.l` updated to use `methodBodies = [mb]`; byte-layout
+is identical to the old single-body path so all structural checks pass
+unchanged.
+
+**`msil_self_test_m4.l`** builds a two-method PE:
+- `MethodDef[1] Greet()` — `ldstr US[1] + call MemberRef[1] + ret`
+- `MethodDef[2] Main()` — `call MethodDef[1] + call MethodDef[1] + ret`
+
+RVAs are computed via `methodBodyRvas` before populating the table.
+The PE uses two AssemblyRefs (System.Runtime / System.Console) per the
+D-progress-142 finding.  Structural checks verify the Greet tiny-header
+at file offset 0x248, Main at 0x254, and BSJB at 0x260.  The PE is
+written to disk and the F# harness executes it, asserting "Hello from
+Greet!" appears twice in stdout.
+
+**Test wiring**: `MsilSelfTestM4.fs` added to `Lyric.Emitter.Tests`; all 7
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4).
+
+---
+
+### D-progress-144: MSIL PE emitter Stage M5 — local variables / fat method header
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M5 exercises the fat method header path and the `StandAloneSig`
+metadata table, both of which are required to emit any Lyric function that
+declares a local variable.
+
+**`StandAloneSig` table (0x11) added to `tables.l`**:
+
+- New `StandAloneSigRow { signature: Int }` record.
+- `standAloneSigs: List[StandAloneSigRow]` field on `MetadataTables`;
+  `newMetadataTables()` initialises it to an empty list.
+- `TABLE_BIT_STAND_ALONE_SIG = 131072i64` (bit 17 = 2^17).
+- `addStandAloneSig(t, r): Int` appends a row and returns its 1-based index.
+- `standaloneToken(row: Int): Int` builds the `0x11xxxxxx` metadata token.
+- `serializeTablesStream` updated: valid bitmask, row-count section, and
+  row-data section (between CustomAttr 0x0C and Assembly 0x20).
+- Existing self-tests (M2d, M3, M4) produce an empty `standAloneSigs` list
+  so the #~ stream is byte-identical to before.
+
+**`msil_self_test_m5.l`** builds a PE with a single `Main()` that:
+
+1. Interns `"Hello from locals!"` in the US heap.
+2. Creates a `LocalVarSig` blob `{0x07, 0x01, 0x0E}` (one `string` local).
+3. Adds a `StandAloneSig` row referencing the blob; calls `standaloneToken`
+   to get `0x11000001`.
+4. Sets `mbSetLocalSig(mbMain, 0x11000001)` so `serializeMethodBody` emits a
+   fat header.
+5. Emits `ldstr`, `stloc.0`, `ldloc.0`, `call`, `ldloc.0`, `call`, `ret`.
+
+Fat header at file offset 0x248: `0x13 0x30` (FatFormat | InitLocals,
+headerSize=3), maxStack=8, codeSize=19, localSig=0x11000001.  CIL starts
+at 0x254; BSJB at 0x267.  Structural checks verify fat header flags,
+code size, localSig token, ldstr opcode, and BSJB magic.
+
+The F# harness executes the PE and asserts `"Hello from locals!"` appears
+exactly twice in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM5.fs` added to `Lyric.Emitter.Tests`; all 8
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5).
+
+---
+
+### D-progress-145: MSIL PE emitter Stage M6 — method arguments and non-void return
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M6 exercises method argument passing (`ldarg.0`, `ldarg.1`) and a
+non-void int32 return value, both of which are required for any meaningful
+computation in the self-hosted MSIL code generator.
+
+**`msil_self_test_m6.l`** builds a two-method PE:
+
+- **`Add(int a, int b): int`** — MethodDef[1].  Signature blob
+  `{0x00, 0x02, 0x08, 0x08, 0x08}` (DEFAULT, 2 params, I4 return, I4, I4).
+  Body: `ldarg.0`, `ldarg.1`, `add`, `ret` — 4 bytes CIL; tiny header `0x12`.
+- **`Main()`** — MethodDef[2], entry point.  Body: `ldc.i4.3`, `ldc.i4.4`,
+  `call 0x06000001` (Add), `call 0x0A000001` (Console.WriteLine(int)), `ret`
+  — 13 bytes CIL; tiny header `0x36`.
+
+No US heap entries are needed (no string literals); the MemberRef for
+`Console.WriteLine` uses the int32 signature `{0x00, 0x01, 0x01, 0x08}`.
+
+Layout at file offset 0x248:
+
+```
+0x248  0x12          Add tiny header (codeSize=4)
+0x249  02 03 58 2A   ldarg.0, ldarg.1, add, ret
+0x24D  0x36          Main tiny header (codeSize=13)
+0x24E  19 1A         ldc.i4.3, ldc.i4.4
+0x250  28 01 00 00 06  call MethodDef[1] (Add)
+0x255  28 01 00 00 0A  call MemberRef[1] (Console.WriteLine(int))
+0x25A  2A            ret
+0x25B  42 53 4A 42   BSJB metadata root
+```
+
+Structural checks verify `add_hdr_ok`, `add_ldarg0_ok`, `add_ldarg1_ok`,
+`add_add_ok`, `main_hdr_ok`, `main_ldc3_ok`, `main_ldc4_ok`, `main_call_ok`,
+and `bsjb_ok`.  The F# harness executes the PE and asserts `"7"` appears in
+CLR stdout.
+
+**Test wiring**: `MsilSelfTestM6.fs` added to `Lyric.Emitter.Tests`; all 9
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5, M6).
+
+---
+
+### D-progress-146: MSIL PE emitter Stage M7 — static fields
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M7 exercises the `Field` metadata table (0x04) and the `ldsfld` /
+`stsfld` instruction pair, both of which are required to emit module-level
+`val` bindings and class fields in the self-hosted code generator.
+
+**`msil_self_test_m7.l`** builds a PE with:
+
+- **`FieldRow { flags = FDA_PUBLIC + FDA_STATIC, name = "s_val", signature = FieldSig(I4) }`** — Field[1].
+  FieldSig blob: `{0x06, 0x08}` (FIELD marker + ELEMENT_TYPE_I4).
+- **`Main()`** — MethodDef[1], entry point.  Body: `ldc.i4.s 42`,
+  `stsfld 0x04000001`, `ldsfld 0x04000001`, `call 0x0A000001`
+  (Console.WriteLine(int)), `ret` — 18 bytes CIL; tiny header `0x4A`.
+
+Layout at file offset 0x248:
+
+```
+0x248  4A             Main tiny header (codeSize=18)
+0x249  1F 2A          ldc.i4.s 42
+0x24B  80 01 00 00 04 stsfld Field[1]
+0x250  7E 01 00 00 04 ldsfld Field[1]
+0x255  28 01 00 00 0A call MemberRef[1] (Console.WriteLine(int))
+0x25A  2A             ret
+0x25B  42 53 4A 42    BSJB metadata root
+```
+
+Structural checks verify `main_hdr_ok`, `ldc42_ok`, `stsfld_ok`,
+`ldsfld_ok`, and `bsjb_ok`.  The F# harness executes the PE and asserts
+`"42"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM7.fs` added to `Lyric.Emitter.Tests`; all 10
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7).
+
+---
+
+### D-progress-147: MSIL PE emitter Stage M8 — newobj + instance fields
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M8 exercises `newobj`, instance field access (`ldfld` / `stfld`), and
+the HASTHIS calling convention — the three prerequisites for emitting Lyric
+record types as .NET classes.
+
+**`msil_self_test_m8.l`** builds a PE with a class `Hello` that has:
+
+- **`Field[1]: x_val`** — public int32 instance field.  FieldSig:
+  `{0x06, 0x08}`.
+- **`MethodDef[1]: .ctor(int v)`** — HASTHIS constructor; signature
+  `{0x20, 0x01, 0x01, 0x08}` (HASTHIS, 1 param, void return, I4).  Body:
+  `ldarg.0`, `ldarg.1`, `stfld 0x04000001`, `ret` — 8 bytes; tiny header
+  `0x22`.  Flags include `SpecialName | RTSpecialName`.
+- **`MethodDef[2]: Main()`** — static entry point.  Body: `ldc.i4.s 99`,
+  `newobj 0x06000001`, `ldfld 0x04000001`, `call 0x0A000001`
+  (Console.WriteLine(int)), `ret` — 18 bytes; tiny header `0x4A`.
+
+Layout at file offset 0x248:
+
+```
+0x248  22             .ctor tiny header (codeSize=8)
+0x249  02 03          ldarg.0, ldarg.1
+0x24B  7D 01 00 00 04 stfld Field[1]
+0x250  2A             ret
+0x251  4A             Main tiny header (codeSize=18)
+0x252  1F 63          ldc.i4.s 99
+0x254  73 01 00 00 06 newobj MethodDef[1] (.ctor)
+0x259  7B 01 00 00 04 ldfld Field[1]
+0x25E  28 01 00 00 0A call MemberRef[1] (Console.WriteLine(int))
+0x263  2A             ret
+0x264  42 53 4A 42    BSJB metadata root
+```
+
+Structural checks verify `ctor_hdr_ok`, `ctor_stfld_ok`, `main_hdr_ok`,
+`newobj_ok`, `ldfld_ok`, and `bsjb_ok`.  The F# harness executes the PE
+and asserts `"99"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM8.fs` added to `Lyric.Emitter.Tests`; all 11
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8).
+
+---
+
+### D-progress-148: MSIL PE emitter Stage M9 — multiple TypeDefs
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M9 verifies that `TypeDef.methodList` correctly partitions `MethodDef`
+rows across multiple TypeDefs in a single assembly — a prerequisite for
+emitting Lyric records, module-level functions, and auxiliary types in the
+self-hosted MSIL code generator.
+
+**`msil_self_test_m9.l`** builds a PE with four TypeDefs:
+
+| TypeDef | methodList | Owns |
+|---------|-----------|------|
+| `<Module>` | 1 | none (range 1..0) |
+| `Foo` | 1 | MethodDef[1] (GetFoo → 10) |
+| `Bar` | 2 | MethodDef[2] (GetBar → 20) |
+| `Hello` | 3 | MethodDef[3] (Main → entry) |
+
+CIL for `GetFoo()` and `GetBar()` each returns their constant via `ldc.i4.s`;
+`Main()` calls both, adds the results, and passes 30 to
+`Console.WriteLine(int)`.
+
+Layout at file offset 0x248:
+
+```
+0x248  0E          GetFoo tiny header (codeSize=3)
+0x249  1F 0A 2A   ldc.i4.s 10, ret
+0x24C  0E          GetBar tiny header (codeSize=3)
+0x24D  1F 14 2A   ldc.i4.s 20, ret
+0x250  46          Main tiny header (codeSize=17)
+0x251..0x25A       call GetFoo (5B), call GetBar (5B)
+0x25B  58          add
+0x25C..0x261       call Console.WriteLine(int) (5B), ret (1B)
+0x262  42 53 4A 42 BSJB metadata root
+```
+
+Structural checks verify `foo_hdr_ok`, `foo_ldc_ok`, `bar_hdr_ok`,
+`bar_ldc_ok`, `main_hdr_ok`, `main_call1_ok`, `main_add_ok`, and `bsjb_ok`.
+The F# harness executes the PE and asserts `"30"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM9.fs` added to `Lyric.Emitter.Tests`; all 12
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9).
+
+---
+
+### D-progress-149: MSIL PE emitter Stage M10 — virtual method dispatch (callvirt)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M10 verifies `callvirt` virtual dispatch — the core mechanism Lyric uses
+for interface and union dispatch in the self-hosted MSIL emitter.
+
+**`msil_self_test_m10.l`** builds a PE with four TypeDefs:
+
+| TypeDef | flags | Extends | Owns |
+|---------|-------|---------|------|
+| `<Module>` | 0 | — | none |
+| `Base` | PUBLIC\|ABSTRACT | `System.Object` (TypeRef[2]) | MethodDef[1] GetValue():int (abstract, rva=0) |
+| `Impl` | PUBLIC | `Base` (TypeDef[2]) | MethodDef[2] .ctor(), MethodDef[3] GetValue():int (override) |
+| `Hello` | PUBLIC | `System.Object` | MethodDef[4] Main() |
+
+Key metadata decisions:
+- `Base.GetValue` has flags `VIRTUAL|NEWSLOT|ABSTRACT` and `rva=0` (no body); its
+  signature is HASTHIS (`0x20`) + 0 params + I4 return.
+- `Impl.GetValue` has flags `VIRTUAL` without `NEWSLOT` (= override); CLR links
+  it to the same vtable slot as `Base.GetValue` because the name and signature match.
+- `Impl` uses the `tdrTypeDef(2)` coded index (`2*4+0 = 8`) in `extends` to
+  reference the same-assembly `Base` class.
+- `Main()` emits `newobj 0x06000002` (Impl..ctor) then `callvirt 0x06000001`
+  (Base.GetValue token); the CLR dispatches to `Impl.GetValue`, returning 77.
+
+Layout at file offset 0x248:
+
+```
+0x248  06          Impl..ctor tiny header (codeSize=1)
+0x249  2A          ret
+0x24A  0E          Impl.GetValue tiny header (codeSize=3)
+0x24B  1F 4D 2A   ldc.i4.s 77, ret
+0x24E  42          Main tiny header (codeSize=16)
+0x24F  73 02 00 00 06   newobj Impl..ctor
+0x254  6F 01 00 00 06   callvirt Base.GetValue
+0x259  28 01 00 00 0A   call Console.WriteLine(int)
+0x25E  2A          ret
+0x25F  42 53 4A 42 BSJB metadata root
+```
+
+Structural checks verify `ctor_hdr_ok`, `getv_hdr_ok`, `getv_ldc_ok`,
+`main_hdr_ok`, `newobj_ok`, `callvirt_ok`, and `bsjb_ok`.
+The F# harness executes the PE and asserts `"77"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM10.fs` added to `Lyric.Emitter.Tests`; all 13
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10).
+
+---
+
+### D-progress-150: MSIL PE emitter Stage M11 — InterfaceImpl table
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M11 adds the `InterfaceImpl` (0x09) metadata table — the mechanism by
+which the CLR knows a class implements a given interface and builds the
+interface dispatch table.
+
+**tables.l changes**:
+- Added `InterfaceImplRow { class_: Int; interface_: Int }` record.
+- Added `interfaceImpls: List[InterfaceImplRow]` to `MetadataTables`.
+- Added `addInterfaceImpl` accessor function.
+- Added `TABLE_BIT_INTERFACE_IMPL = 512i64` (bit 9).
+- Updated `serializeTablesStream` to include the table in the valid bitmask,
+  row count section, and row data section (in correct table-number order
+  between Param=0x08 and MemberRef=0x0A).
+
+**`msil_self_test_m11.l`** builds a PE with four TypeDefs:
+
+| TypeDef | flags | Extends | Owns |
+|---------|-------|---------|------|
+| `<Module>` | 0 | — | none |
+| `IGetter` | PUBLIC\|INTERFACE\|ABSTRACT | 0 (interfaces have no base in metadata) | MethodDef[1] GetValue():int (abstract, rva=0) |
+| `Impl` | PUBLIC | `System.Object` (TypeRef[2]) | MethodDef[2] .ctor(), MethodDef[3] GetValue():int (override) |
+| `Hello` | PUBLIC | `System.Object` | MethodDef[4] Main() |
+
+InterfaceImpl[1]: `class_=3` (Impl), `interface_=tdrTypeDef(2)` (IGetter = coded index 8).
+
+The body layout is identical to M10 (same code sizes). The InterfaceImpl table
+adds 4 bytes to the metadata section but does not change method body offsets.
+
+Structural checks verify the same layout as M10 (except `getv_ldc_ok` checks
+value 0x2A = 42). The F# harness executes the PE and asserts `"42"` appears
+in CLR stdout, confirming the CLR resolved the interface dispatch correctly.
+
+**Test wiring**: `MsilSelfTestM11.fs` added to `Lyric.Emitter.Tests`; all 14
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8, M9, M10, M11).
+
+---
+
+### D-progress-151: MSIL PE emitter Stage M12 — conditional branch (cgt / brfalse / br)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M12 verifies conditional control flow — the fundamental building block
+for any non-trivial computation in the self-hosted MSIL emitter.
+
+**`msil_self_test_m12.l`** builds a single-method PE whose `Main()` computes
+`if 7 > 4 { Console.WriteLine(1) } else { Console.WriteLine(0) }`:
+
+```
+offset  0  1D          ldc.i4.7
+offset  1  1A          ldc.i4.4
+offset  2  FE 02       cgt            (2-byte prefixed opcode)
+offset  4  39 06 00 00 00  brfalse else_lbl  (relative offset +6)
+offset  9  17          ldc.i4.1
+offset 10  38 01 00 00 00  br end_lbl  (relative offset +1)
+[else_lbl = offset 15]
+offset 15  16          ldc.i4.0
+[end_lbl = offset 16]
+offset 16  28 01 00 00 0A  call Console.WriteLine(int)
+offset 21  2A          ret
+```
+
+Key verified properties:
+- `cgt` is a 2-byte `0xFE`-prefixed opcode (OP2_CGT = 0x02); the serializer
+  correctly emits `FE 02` as a `Nullary2` instruction.
+- `brfalse` and `br` are 5-byte instructions: opcode + signed i32 LE relative
+  offset (from the start of the next instruction). The label resolver
+  computes `else_lbl - (brfalse_end) = 15 - 9 = 6` and
+  `end_lbl - (br_end) = 16 - 15 = 1` correctly.
+- The `mbNewLabel` / `mbMarkLabel` two-pass label system resolves forward
+  references correctly.
+
+Body codeSize = 22; tiny header = `(22 << 2) | 2 = 0x5A` at file offset 0x248.
+BSJB metadata root at 0x25F (= 0x248 + 1 + 22).
+
+Structural checks verify `main_hdr_ok`, `ldc_ok`, `cgt_ok`, `brfalse_ok`,
+`br_ok`, `branches_ok`, and `bsjb_ok`. The F# harness executes the PE
+and asserts `"1"` appears in CLR stdout (7 > 4 is true).
+
+**Test wiring**: `MsilSelfTestM12.fs` added to `Lyric.Emitter.Tests`; all 15
+MSIL self-tests pass (M1, M2a–M2d, M3–M12).
+
+---
+
+### D-progress-152: MSIL PE emitter Stage M13 — while loop / backward branch
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M13 verifies backward branch instructions — required for any loop in
+the self-hosted MSIL emitter.
+
+**`msil_self_test_m13.l`** builds a PE with `Main()` summing 1+2+3+4+5=15:
+
+```
+ldc.i4.0 / stloc.0      sum = 0
+ldc.i4.1 / stloc.1      i = 1
+[loop_start:]
+ldloc.1 / ldc.i4.5 / cgt  i > 5?
+brtrue end               exit if true
+ldloc.0 / ldloc.1 / add / stloc.0  sum += i
+ldloc.1 / ldc.i4.1 / add / stloc.1  i += 1
+br loop_start            backward branch
+[end:]
+ldloc.0 / call Console.WriteLine(int) / ret
+```
+
+Key verified properties:
+- Fat method header (12 bytes) required because `localSig != 0`; flags
+  `0x13 0x30`, codeSize = 33 (`0x21`), `localVarSigTok = 0x11000001`.
+- `StandAloneSig[1]` holds `LocalVarSig { 2 I4 I4 }` = `{0x07, 0x02, 0x08, 0x08}`.
+- `brtrue` exits the loop with positive offset +13 (forward jump).
+- `br loop_start` uses a **negative** signed offset: next-instruction at
+  offset 26, target at offset 4, relative = 4 − 26 = −22 = `0xFFFFFFEA` (LE).
+- The `mbNewLabel` / `mbMarkLabel` system resolves both forward and backward
+  references in a single pass.
+
+Fat header at 0x248, code at 0x254, BSJB at 0x275 (= 0x248 + 12 + 33).
+
+Structural checks verify `fat_hdr_ok`, `code_size_ok`, `local_sig_ok`,
+`cgt_ok`, `brtrue_ok`, `br_back_ok`, and `bsjb_ok`. The F# harness
+executes the PE and asserts `"15"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM13.fs` added to `Lyric.Emitter.Tests`; all 17
+MSIL self-tests pass (M1, M2a–M2d, M3–M13).
+
+---
+
+### D-progress-153: MSIL PE emitter Stage M14 — `newarr` + array element access
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M14 verifies array creation (`newarr`), indexed stores (`stelem`), and
+indexed loads (`ldelem`) — all token-bearing 5-byte instructions using a
+`TypeRef` for the element type.
+
+**`msil_self_test_m14.l`** builds a PE with `Main()` that:
+
+```
+ldc.i4.3 / newarr Int32 / stloc.0   arr = new int32[3]
+ldloc.0 / ldc.i4.0 / ldc.i4.s 10 / stelem Int32   arr[0] = 10
+ldloc.0 / ldc.i4.1 / ldc.i4.s 20 / stelem Int32   arr[1] = 20
+ldloc.0 / ldc.i4.2 / ldc.i4.s 30 / stelem Int32   arr[2] = 30
+ldloc.0 / ldc.i4.0 / ldelem Int32   push arr[0]=10
+ldloc.0 / ldc.i4.1 / ldelem Int32   push arr[1]=20
+add                                  30
+ldloc.0 / ldc.i4.2 / ldelem Int32   push arr[2]=30
+add                                  60
+call Console.WriteLine(int) / ret
+```
+
+A `TypeRef[3]` for `System.Int32` is added (beyond the existing Console and
+Object refs) and used as the element-type token `0x01000003` for `newarr`,
+`stelem`, and `ldelem`. The local `int32[]` array is held in local 0 via a
+fat method header; `LocalVarSig` = `{0x07, 0x01, 0x1D, 0x08}` (LOCALS, 1
+variable, SZARRAY, I4).
+
+Key verified byte positions:
+- Fat header at 0x248; codeSize = 63 (`0x3F`), `localVarSigTok = 0x11000001`.
+- `newarr` opcode `0x8D` at 0x255; token LE `03 00 00 01` at 0x256–0x259.
+- First `stelem` opcode `0xA4` at 0x25F; token LE at 0x260–0x263.
+- First `ldelem` opcode `0xA3` at 0x278; token LE at 0x279–0x27C.
+- BSJB at 0x293.
+
+**Test wiring**: `MsilSelfTestM14.fs` added to `Lyric.Emitter.Tests`; all 18
+MSIL self-tests pass (M1, M2a–M2d, M3–M14).
+
+---
+
+### D-progress-154: MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M15 verifies 64-bit integer literal encoding (`ldc.i8`) and
+widening/narrowing type conversion (`conv.i4`).
+
+**`msil_self_test_m15.l`** builds a PE with a tiny-header `Main()`:
+
+```
+ldc.i8 1000000000i64   (0x21 + 8-byte LE: 00 CA 9A 3B 00 00 00 00)
+ldc.i8 2i64            (0x21 + 8-byte LE: 02 00 00 00 00 00 00 00)
+mul                    (2000000000L)
+conv.i4                (2000000000i32 — fits within signed i32 range)
+call Console.WriteLine(int)
+ret
+```
+
+Key verified byte positions:
+- Tiny header `0x6A` at 0x248 (codeSize=26, (26<<2)|2=106=0x6A).
+- `ldc.i8` opcode `0x21` at 0x249; LE bytes `00 CA 9A 3B 00 00 00 00` at 0x24A–0x251.
+- `mul` opcode `0x5A` at 0x25B (code offset 18).
+- `conv.i4` opcode `0x69` at 0x25C (code offset 19).
+- BSJB at 0x263 (= 0x249 + 26).
+
+**Test wiring**: `MsilSelfTestM15.fs` added to `Lyric.Emitter.Tests`; all 19
+MSIL self-tests pass (M1, M2a–M2d, M3–M15).
+
+---
+
+### D-progress-155: MSIL PE emitter Stage M16 — `switch` table
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M16 verifies the variable-length `switch` table instruction — the
+primary mechanism for dispatching on enum/union tag values in the self-hosted
+MSIL emitter.
+
+**`msil_self_test_m16.l`** builds a PE with `Main()`:
+
+```
+ldc.i4.2                       push 2 (dispatch key)
+switch [lbl0, lbl1, lbl2]      3-target switch
+  (default) ldc.i4.s 99 / br end
+  lbl0: ldc.i4.s 10 / br end
+  lbl1: ldc.i4.s 20 / br end
+  lbl2: ldc.i4.s 42            (reached; fall through)
+end: call Console.WriteLine(int) / ret
+```
+
+The switch instruction is: opcode `0x45` + count (u32 LE) + count × target
+(i32 LE signed offsets from the instruction after the switch). Targets are:
+- target[0] = +7 (lbl0 at code offset 25, next-after-switch at 18)
+- target[1] = +14 (lbl1 at offset 32)
+- target[2] = +21 (lbl2 at offset 39)
+
+Key verified byte positions:
+- Tiny header `0xBE` at 0x248 (codeSize=47, (47<<2)|2=190=0xBE).
+- `switch` opcode `0x45` at file 0x24A (code offset 1).
+- Count `03 00 00 00` at file 0x24B–0x24E.
+- target[0] = `07 00 00 00` at file 0x24F.
+- target[2] = `15 00 00 00` at file 0x257 (21 = 0x15).
+- BSJB at 0x278.
+
+**Test wiring**: `MsilSelfTestM16.fs` added to `Lyric.Emitter.Tests`; all 20
+MSIL self-tests pass (M1, M2a–M2d, M3–M16).
+
+---
+
+### D-progress-156: MSIL PE emitter Stage M17 — bitwise operations
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M17 verifies the bitwise `and` (0x5F) and `or` (0x60) opcodes, and
+establishes the pattern for all one-byte bitwise instructions (`xor`, `shl`,
+`shr`).
+
+**`msil_self_test_m17.l`** builds a tiny-header `Main()`:
+
+```
+ldc.i4.s 60 / ldc.i4.s 13 / and   → 12  (0b00111100 & 0b00001101 = 0b00001100)
+ldc.i4.s 60 / ldc.i4.s 13 / or    → 61  (0b00111100 | 0b00001101 = 0b00111101)
+add                                → 73
+call Console.WriteLine(int) / ret
+```
+
+Key verified byte positions:
+- Tiny header `0x46` at 0x248 (codeSize=17, (17<<2)|2=70=0x46).
+- `and` opcode `0x5F` at file 0x24D (code offset 4).
+- `or`  opcode `0x60` at file 0x252 (code offset 9).
+- `add` opcode `0x58` at file 0x253 (code offset 10).
+- BSJB at 0x25A.
+
+**Test wiring**: `MsilSelfTestM17.fs` added to `Lyric.Emitter.Tests`; all 21
+MSIL self-tests pass (M1, M2a–M2d, M3–M17).
+
+---
+
+### D-progress-157: MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M18 verifies `ldc.r8` — the 9-byte instruction for pushing a 64-bit
+IEEE 754 floating-point literal — and demonstrates calling
+`Console.WriteLine(double)` with a new MemberRef signature.
+
+**`msil_self_test_m18.l`** builds a tiny-header `Main()`:
+
+```
+ldc.r8 3.0   (0x23 + 8-byte LE: 00 00 00 00 00 00 08 40)
+ldc.r8 2.0   (0x23 + 8-byte LE: 00 00 00 00 00 00 00 40)
+mul          → 6.0
+call Console.WriteLine(double)   [MemberRef[1], sig {00,01,01,0D}]
+ret
+```
+
+Key verified byte positions:
+- Tiny header `0x66` at 0x248 (codeSize=25, (25<<2)|2=102=0x66).
+- `ldc.r8` opcode `0x23` at file 0x249.
+- `3.0` bytes: `bs[0x250]==0x08, bs[0x251]==0x40` (high bytes of 0x4008000000000000).
+- `mul` opcode `0x5A` at file 0x25B (code offset 18).
+- BSJB at 0x262.
+
+**Test wiring**: `MsilSelfTestM18.fs` added to `Lyric.Emitter.Tests`; all 22
+MSIL self-tests pass (M1, M2a–M2d, M3–M18).
+
+---
+
+### D-progress-158: MSIL PE emitter Stage M19 — `sub` + `rem`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M19 verifies `sub` (0x59) and `rem` (0x5D) — the remaining
+core arithmetic opcodes.
+
+**`msil_self_test_m19.l`** builds a tiny-header `Main()`:
+
+```
+ldc.i4.s 23 / ldc.i4.s 3 / sub   → 20
+ldc.i4.s 13 / rem                 → 7  (20 % 13)
+call Console.WriteLine(int) / ret
+```
+
+Key verified byte positions:
+- Tiny header `0x3A` at 0x248 (codeSize=14, (14<<2)|2=58=0x3A).
+- `sub` opcode `0x59` at file 0x24D (code offset 4).
+- `rem` opcode `0x5D` at file 0x250 (code offset 7).
+- BSJB at 0x257.
+
+**Test wiring**: `MsilSelfTestM19.fs` added to `Lyric.Emitter.Tests`; all 23
+MSIL self-tests pass (M1, M2a–M2d, M3–M19).
+
+---
+
+### D-progress-159: MSIL PE emitter Stage M20 — exception handling (try/catch)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M20 introduces exception handling sections — the most structurally
+complex addition to the method-body serialiser so far.
+
+**New infrastructure in `opcodes.l`**:
+
+- `EHClause` record: `flags` (0=typed catch, 2=finally, 4=fault),
+  `tryStart`/`tryEnd`/`handlerStart`/`handlerEnd` (label IDs),
+  `catchToken` (TypeRef/TypeDef token).
+- `ehClauses: List[EHClause]` field added to `MethodBody`.
+- `mbAddEHClause(b, clause)` — appends a clause to the method body.
+- Fat header `flags1` becomes `0x1B` (FatFormat|InitLocals|MoreSects)
+  when any EH clauses are attached; otherwise stays `0x13`.
+- After the code bytes (and 4-byte alignment padding), the serialiser
+  emits a fat EH section: kind `0x41` (SectEHTable|SectFatFormat),
+  3-byte little-endian `dataSize` = 4 + 24×nClauses, then one 24-byte
+  fat clause per entry.
+
+**`msil_self_test_m20.l`** code layout (fat header):
+
+```
+offset  0  newobj  System.Exception::.ctor()   [5 bytes]
+offset  5  throw                                [1 byte]
+offset  6  leave   end_lbl (rel=12)             [5 bytes]
+offset 11  [handler_start]
+offset 11  pop                                  [1 byte]
+offset 12  ldc.i4.s 42                          [2 bytes]
+offset 14  stloc.0                              [1 byte]
+offset 15  leave   end_lbl (rel=3)              [5 bytes]
+offset 20  [handler_end / try_end / end_lbl]
+offset 20  ldloc.0                              [1 byte]
+offset 21  call Console.WriteLine(int)          [5 bytes]
+offset 26  ret                                  [1 byte]
+```
+
+EH clause: flags=0 (typed catch), tryOffset=0, tryLength=11,
+handlerOffset=11, handlerLength=9,
+catchToken=0x01000003 (TypeRef[3]=System.Exception).
+
+File layout:
+- Fat header at 0x248 (`0x1B 0x30`).
+- Code (27 bytes) at 0x254; ends at 0x26F → 1 pad byte → EH at 0x270.
+- EH section: kind=0x41 at 0x270, dataSize=0x1C at 0x271.
+- BSJB at 0x28C.
+
+**Test wiring**: `MsilSelfTestM20.fs` added to `Lyric.Emitter.Tests`; all 24
+MSIL self-tests pass (M1, M2a–M2d, M3–M20).  CLR execution: throw →
+caught → prints `42`.
 
 ---
 
