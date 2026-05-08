@@ -48,7 +48,7 @@ becomes the source-of-truth design for its slice once a decision-log
 entry codifies its tensions; the sketch's status header carries the
 backing entry's id.
 
-- `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047). _Drafted._
+- `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047). _Specced in D050._
 - `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27. _Drafted (worked example, not spec)._
 - `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046). _Specced in D048._
 - `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006). _Specced in D049._

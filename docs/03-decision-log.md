@@ -2243,6 +2243,124 @@ The four §8 tensions resolve as follows:
 
 ---
 
+## D050 — Aspect templates (`pub aspect_template`)
+
+**Date:** 2026-05-08
+**Branch:** claude/opentelemetry-design-Fgww0
+
+### Context
+
+D047 established that aspects are package-scoped: an aspect declared
+in package P weaves only over P's own functions. This was the right
+call for safety and separate verification, but it left library packages
+unable to ship reusable cross-cutting logic. Every consumer would need
+to hand-write the same `around` body to instrument their handlers —
+exactly the DRY problem aspects were meant to solve.
+
+The motivating case is observability: an `Std.OTel` package should be
+able to ship a `Tracing` template that any consumer can bind to a local
+`matches:` selector without reproducing the span-start / span-end
+boilerplate. The same pattern applies to logging templates, auth
+templates, metrics templates.
+
+### Decision
+
+Add `aspect_template` as a top-level item peer to `aspect`. Specify
+full semantics in `docs/26-aspects.md` §19. Key points:
+
+- **`pub aspect_template Name { ... }`** — declares an exportable
+  advice body. Contains `config { }`, `around`, `requires:`, `ensures:`
+  in any combination (same as a standalone `aspect`), but **no
+  `matches:` clause** (`A0021`). May also be package-private (no `pub`)
+  for intra-package reuse across multiple files.
+- **`aspect Name from Pkg.Template { matches: ... }`** — instantiates a
+  template in the consumer's package. The body must contain exactly one
+  `matches:` clause and may contain a `config { }` block to override
+  field defaults. `around`, `requires:`, `ensures:` in the instantiation
+  body are rejected (`A0022`).
+- **Config field overrides** — the consumer redeclares individual fields
+  with new defaults. Field name and type must match the template's
+  declaration (`A0023` / `A0024`). Runtime env vars always win, using
+  the **local instantiation name**: `LYRIC_ASPECT_<NAME>_<FIELD>`.
+  Two packages instantiating the same template under different local
+  names have independent env-var namespaces.
+- **`@cfg` on both sides** — template-level `@cfg` erases the template
+  and all its instantiations silently. Instantiation-level `@cfg` erases
+  only that instantiation. If a template is erased but an instantiation's
+  predicate would have been true, the instantiation is silently erased
+  too (not an error — the feature flag is the signal).
+- **Cross-package weaving still rejected.** Templates share advice
+  *logic*; the weaving authority remains package-local. An instantiation
+  in package B weaves over B's functions only; the template in A has no
+  reach into B. The compiled output is identical to a consumer who
+  hand-wrote the `around` body locally.
+- **Ordering clauses allowed on instantiations.** `wraps:` / `inside:`
+  may reference other local aspects (whether standalone or
+  template-derived) by their local name, following §6 exactly.
+
+### Rationale
+
+- **Shares logic, not weave authority.** The key insight is that the
+  package-isolation rule is about *where weaving happens*, not about
+  *where the advice code comes from*. A template is syntactic sugar:
+  the compiler inlines the template body into the consumer's aspect
+  declaration at build time. No cross-package action; no closed-world
+  re-verification; no impact on the published-contract model.
+- **Local naming for env vars.** Using the instantiation's local name
+  (`LYRIC_ASPECT_TRACING_*`) rather than the template's qualified name
+  (`LYRIC_ASPECT_STD_OTEL_TRACING_*`) gives operators a stable,
+  per-service namespace. Two services can have different sampling rates
+  for the "same" Tracing template without either seeing the other's
+  configuration.
+- **No implicit `enabled` — still.** Inherited from D047. A template
+  that wants runtime toggling declares `enabled: Bool = true` in its
+  `config`. Security-critical templates (e.g. a blanket `Validation`
+  template) deliberately omit the field.
+- **Override rather than merge.** Config field override replaces the
+  default value; the type is invariant. Allowing type widening would
+  create surprising coercions at the extern boundary; allowing new
+  fields would imply the template and the instantiation share a schema
+  that neither party owns.
+
+### Alternatives considered
+
+- **Import-and-re-export the `around` helper function.** Consumers call
+  `Std.OTel.spanAround(call, proc)` inside their own locally-declared
+  aspect. Already possible today; templates are ergonomic sugar that
+  eliminate the local aspect declaration boilerplate entirely.
+- **Project-level aspects (Q-aspects-004).** Would allow a single
+  aspect to weave across all packages in a multi-package project.
+  Deferred; templates address the library-sharing use case without
+  opening that scope.
+- **Parameterised aspects (arguments to the aspect block).** Allow
+  `aspect Tracing(sampleRate: Float) from ...`. Rejected for v1:
+  adds a new call-site syntax, complicates the `matches:` evaluation
+  order, and the `config { }` block with env-var override covers the
+  runtime-parameterisation need without new syntax.
+
+### Consequences
+
+- **Grammar** gains `aspect_template` keyword, `from` clause on
+  `AspectDecl`, `AspectTemplateDecl` production, `MatchesClause`,
+  `AspectConfigDecl`, `ConfigField`, `AroundAdvice`, `OrderingClause`
+  (`docs/grammar.ebnf` §10.2).
+- **Diagnostic catalogue** gains `A0021`–`A0026`.
+- **`Std.OTel`** becomes the canonical motivating example in
+  `docs/26-aspects.md` §19.5.
+- **Self-hosted compiler (Phase 5)** must implement template resolution
+  and inlining. The implementation is a straightforward substitution pass
+  over the aspect AST node after import resolution.
+
+### Tracked follow-ups
+
+- **Q-aspects-007:** Ordering clause interaction between two
+  template-derived instantiations in the same package when the template
+  declares `requires:` / `ensures:`. Defer to v1 implementation pass.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

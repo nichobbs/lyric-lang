@@ -110,6 +110,12 @@ The block is a top-level item, peer to `func`, `type`, `wire`,
 `config`. Multiple `aspect` blocks per file are allowed (matches
 `wire`'s rule).
 
+A related form, `aspect_template`, exports a reusable advice body
+without a selector so that library packages can share instrumentation
+logic. Consumers bind a `matches:` clause locally via
+`aspect Name from Pkg.Template { ... }`. See §18 for the full
+specification.
+
 ### 2.1 Required content
 
 An aspect must define **at least one** of:
@@ -826,6 +832,12 @@ compiler.
 | `A0015` | Rebound `args` cannot be proven to satisfy target `requires:`. |
 | `A0016` | Rebound return cannot be proven to satisfy composed `ensures:`. |
 | `A0020` | Aspect applied to async function with bootstrap-grade lowering (warning). |
+| `A0021` | `aspect_template` body declares a `matches:` clause (templates have no selector; the consumer provides one). |
+| `A0022` | `aspect ... from Pkg.Template` instantiation declares `around`, `requires:`, or `ensures:` (those come from the template; only `matches:` and `config` override are allowed). |
+| `A0023` | `aspect ... from Pkg.Template` config override declares a field whose type differs from the template's declaration. |
+| `A0024` | `aspect ... from Pkg.Template` config override declares a field not present in the template. |
+| `A0025` | `from` references an `aspect_template` that is not `pub` (cross-package reference to a package-private template). |
+| `A0026` | `from` references a name that is not an `aspect_template` (e.g. a regular `aspect` or an ordinary type). |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).
@@ -837,7 +849,9 @@ fields naming the aspect that introduced the failing clause (§5.3).
 - **Cross-package aspect application.** An aspect in package A
   weaving over functions in package B. Conflicts with package
   isolation, separate verification, and the published-contract model.
-  Not deferred — actively rejected.
+  Not deferred — actively rejected. Note: `aspect_template` (§18)
+  does *not* relax this rule. A template shares advice *logic*; the
+  weaving still happens exclusively inside the consumer's own package.
 - **Aspects on type constructors and operator overloads.**
   Tracked as Q-aspects-001.
 - **Aspects on macro expansions.** Macros don't exist yet; revisit
@@ -895,10 +909,260 @@ fields naming the aspect that introduced the failing clause (§5.3).
   contract clauses augment the *target's* contract, not the
   cumulative wrapper-so-far); inheritance is a v1.x revisit when a
   concrete pattern hits the limitation.
+- **Q-aspects-007:** When two `aspect ... from Template` instantiations
+  coexist in the same package and the template declares `requires:` /
+  `ensures:`, can a consumer's ordering clause (`wraps:` / `inside:`)
+  reference the other instantiation by its local name? The answer is
+  almost certainly yes (ordering always uses local names), but the
+  interaction between template-derived contracts and the composition
+  rule (§5.1) across ordering boundaries needs an explicit spec test.
+  Defer to the v1 implementation pass.
 
 ---
 
-## 18. References
+## 18. Aspect templates
+
+An `aspect_template` is an exportable aspect body without a selector.
+A library package declares the template; consumer packages instantiate
+it, binding a `matches:` clause locally. The weaving still happens
+inside the consumer's package — the constraint from §16 (no
+cross-package weaving) is unchanged. What templates share is the
+*advice logic*, not the *weave authority*. The compiled result is
+indistinguishable from a consumer who hand-wrote the same `around`
+body locally; the template is a maintenance-reduction tool.
+
+### 18.1 Template declaration
+
+```lyric
+package Std.OTel
+
+import Std.Core
+
+pub aspect_template Tracing {
+  config {
+    enabled:    Bool  = true
+    sampleRate: Float = 1.0
+  }
+
+  around(args) -> ret {
+    if !config.enabled { return proceed(args) }
+    let span = Std.OTel.startSpan(call.qualifiedName, call.sourceLocation)
+    let r = proceed(args)
+    span.record(elapsedMs = call.elapsed.unwrapOr(0))
+    r
+  }
+}
+
+pub aspect_template Metrics {
+  config {
+    enabled: Bool = true
+  }
+
+  around(args) -> ret {
+    if !config.enabled { return proceed(args) }
+    Std.OTel.incrementCounter(call.qualifiedName)
+    let r = proceed(args)
+    Std.OTel.recordHistogram(call.qualifiedName, call.elapsed.unwrapOr(0))
+    r
+  }
+}
+```
+
+A template declares the same body content as an ordinary `aspect`
+(`config { }`, `around`, `requires:`, `ensures:`), with one
+restriction: **no `matches:` clause**. The selector is the consumer's
+responsibility, so the template never weaves anything directly.
+
+A template may be `pub` (cross-package use) or package-private
+(intra-package reuse across files in the same package). `pub
+aspect_template` is the common case; an unprefixed `aspect_template`
+is package-private and may only be instantiated within the same
+package.
+
+### 18.2 Template instantiation
+
+```lyric
+package MyApp.Handlers
+
+import Std.OTel
+import Std.Core
+
+aspect Tracing from Std.OTel.Tracing {
+  matches: name like "handle*"
+  except name in { handleHealthcheck, handlePing }
+}
+
+@cfg(feature = "metrics")
+aspect Metrics from Std.OTel.Metrics {
+  matches: name like "handle*"
+
+  config {
+    enabled: Bool = false    // off by default in this package; operator can override via env
+  }
+}
+```
+
+An instantiation is written `aspect Name from Pkg.Template { ... }`.
+The body may contain:
+
+- Exactly one `matches:` clause (required).
+- An optional `config { }` block that overrides the template's field
+  default values (see §18.3).
+- Ordering clauses (`wraps:` / `inside:`), composing with other local
+  aspects per §6.
+
+An instantiation may **not** declare `around`, `requires:`, or
+`ensures:` — those come from the template (`A0022`).
+
+All other aspect semantics apply unchanged: `@cfg` gating, `@no_aspect`
+opt-outs, verifier integration, LSP code-lens.
+
+### 18.3 Config field overrides
+
+When a consumer's instantiation declares a `config { }` block, each
+field in the block *overrides the default* from the template. The
+field name and type must match the template's declaration exactly;
+differing types are `A0023`. Declaring a field not present in the
+template is `A0024`.
+
+```lyric
+aspect Tracing from Std.OTel.Tracing {
+  matches: name like "handle*"
+
+  config {
+    sampleRate: Float = 0.1   // lower default for this package
+    // 'enabled' not overridden; stays at template's default of true
+  }
+}
+```
+
+The effective default for each field is: the consumer's override if
+present, otherwise the template's declared default. Runtime env vars
+always win over any compile-time default, using the **local
+instantiation name**:
+
+```
+LYRIC_ASPECT_TRACING_ENABLED=false
+LYRIC_ASPECT_TRACING_SAMPLERATE=0.5
+```
+
+If two packages both instantiate `Std.OTel.Tracing` and name their
+local aspect differently (`Tracing` vs. `OtelTracing`), their env var
+namespaces are separate. Operators configure each package's weaving
+independently.
+
+### 18.4 `@cfg` interaction
+
+`@cfg` works independently on the template and on each instantiation:
+
+```lyric
+// In the library
+@cfg(feature = "otel")
+pub aspect_template Tracing { ... }
+
+// In the consumer
+@cfg(feature = "tracing")
+aspect Tracing from Std.OTel.Tracing {
+  matches: name like "handle*"
+}
+```
+
+- If the template's `@cfg` predicate is false, the template is erased;
+  every instantiation silently disappears (treated as if the `from`
+  reference doesn't exist). No error.
+- If the instantiation's `@cfg` predicate is false but the template
+  exists, only that instantiation is erased.
+- If the instantiation's predicate is true but the template was erased
+  by its own `@cfg`, the instantiation is also silently erased.
+
+The zero-cost property (§7) holds for templates: a fully erased
+instantiation emits no wrapper, no metadata, no branch.
+
+### 18.5 Worked example — OpenTelemetry library
+
+A `Std.OTel` package provides tracing, metrics, and logging templates.
+Consumers opt in per-package with a one-block declaration.
+
+```lyric
+// stdlib/std/otel.l  (simplified)
+package Std.OTel
+
+import Std.Core
+import Std._kernel.OTelKernel    // @externTarget externs for ActivitySource etc.
+
+pub aspect_template Tracing {
+  config {
+    enabled:     Bool   = true
+    sampleRate:  Float  = 1.0
+    spanKind:    String = "internal"
+  }
+
+  around(args) -> ret {
+    if !config.enabled { return proceed(args) }
+    if !OTelKernel.sample(config.sampleRate) { return proceed(args) }
+    let span = OTelKernel.startSpan(
+                 call.qualifiedName, config.spanKind, call.sourceLocation)
+    let r = proceed(args)
+    span.setStatus(Ok)
+    span.end(elapsedMs = call.elapsed.unwrapOr(0))
+    r
+  }
+}
+
+pub aspect_template RequestLogging {
+  config {
+    enabled: Bool     = true
+    level:   LogLevel = LogLevel.Info
+  }
+
+  around(args) -> ret {
+    if !config.enabled { return proceed(args) }
+    Std.Log.log(config.level, "→ ${call.qualifiedName}", [])
+    let r = proceed(args)
+    Std.Log.log(config.level, "← ${call.qualifiedName} (${call.elapsed.unwrapOr(0)}ms)", [])
+    r
+  }
+}
+```
+
+Consumer package:
+
+```lyric
+package MyService.Api
+
+import Std.OTel
+import Std.Core
+
+@cfg(feature = "otel")
+aspect RequestLogging from Std.OTel.RequestLogging {
+  matches: name like "handle*"
+  except name in { handleHealthcheck }
+
+  config {
+    level: LogLevel = LogLevel.Debug   // override to Debug in this service
+  }
+}
+
+@cfg(feature = "otel")
+aspect Tracing from Std.OTel.Tracing {
+  matches: name like "handle*"
+  except name in { handleHealthcheck }
+  wraps: RequestLogging
+}
+```
+
+The kernel extern boundary (`stdlib/std/_kernel/otel.l`) holds
+`@externTarget` / `extern type` declarations for
+`System.Diagnostics.ActivitySource`, `Activity`, and related BCL
+types. Standard OTel env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_SERVICE_NAME`, etc.) flow through to the .NET SDK at the extern
+boundary; Lyric config fields cover Lyric-specific knobs (sampling,
+enabled flag, log level). Operators do not need to learn a Lyric-
+specific naming scheme for the exporter endpoint.
+
+---
+
+## 19. References
 
 - AspectJ (https://www.eclipse.org/aspectj/) — the canonical AOP
   reference, particularly for around-advice and pointcut design.

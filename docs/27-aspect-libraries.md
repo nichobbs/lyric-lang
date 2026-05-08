@@ -1,6 +1,6 @@
 # 27 — Aspect Libraries (cross-package aspect distribution)
 
-**Status:** Drafted, exploratory.
+**Status:** Specced in D050 (`docs/03-decision-log.md`).
 **Builds on:** `docs/26-aspects.md` (D047). This note **extends** D047
 without superseding it; the package-scoped weaving rule from D047
 §16 still holds — only the *advice body and contract clauses*
@@ -17,7 +17,7 @@ back into this doc as numbered subsections.
 with a pre/post-symmetric inheritance rule — applies to library
 aspects participating in the consumer's composition graph
 unchanged from D047 §6.
-**Decision-log entry:** TBD on adoption.
+**Decision-log entry:** D050.
 
 ---
 
