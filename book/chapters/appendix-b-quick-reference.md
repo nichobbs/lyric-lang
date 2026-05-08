@@ -544,8 +544,14 @@ output_assembly = "myapp.dll"
 | `Std.Testing.Property` | Property-based testing | `forAllIntRange`, `forAllBool`, `forAllDouble`, `forAllIntPair` |
 | `Std.Testing.Mocking` | Stub call-count tracking | `StubCounter`, `makeStubCounter`, `stubCounterGet`, `stubCounterIncrement`, `stubCounterReset` |
 | `Std.Iter` | Lazy iteration | `map`, `filter`, `fold`, `take`, `skip`, `collect` |
+| `Std.App` | Application entry and config | `run(main: func Unit): Int`, `withConfig`, `Config` (opaque), `Config.path`, `Config.rawText` |
+| `Std.Console` | Console I/O | `print`, `println`, `error`, `readLine` |
+| `Std.Directory` | Directory operations | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `enumerateDirectories`, `delete`, `deleteRecursive` |
+| `Std.Environment` | Process environment | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
+| `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |
+| `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
 
-Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`, `default()`.
+Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
 ---
 
@@ -554,8 +560,11 @@ Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `to
 ```sh
 # Build
 lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
-lyric build --release <file.l>         # release build (contracts elided for @runtime_checked)
+lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
 lyric build --aot <file.l>             # Native AOT; no .NET runtime at deployment
+lyric build --target dotnet <file.l>   # target .NET (default)
+lyric build --target jvm <file.l>      # target JVM bytecode
+lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
                                        # [project.packages] entry into one DLL with one
@@ -565,10 +574,7 @@ lyric build --manifest lyric.toml      # build from project manifest
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
 
-# Test
-# Bootstrap-grade v1: single-file mode only. Multi-file --manifest
-# discovery, --properties, --doctests, and --update-snapshots are
-# v2 work — see docs/24-test-runner-plan.md.
+# Test  (single-file mode; --manifest and --doctests are planned for v2)
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
@@ -587,13 +593,15 @@ lyric lint --error-on-warning <file.l> # treat warnings as errors (CI gate)
 #        L004 TODO/FIXME in doc, L005 pub func without contracts
 
 # Documentation
-lyric doc <file.l>                     # generate HTML/JSON docs from doc comments + contracts
+lyric doc <file.l>                     # generate Markdown docs from doc comments + contracts
 
 # Verification
 lyric prove <file.l>                   # run SMT verifier on @proof_required modules
 lyric prove --allow-unverified <file.l> # downgrade V0007 (unknown) from error to warning
 lyric prove --explain --goal N <file.l> # show the VC IR for goal N
 lyric prove --json <file.l>            # machine-readable output
+lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: target/proofs/)
+lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
 
 # Package management
 lyric restore                          # download dependencies declared in lyric.toml

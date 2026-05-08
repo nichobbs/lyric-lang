@@ -1208,7 +1208,7 @@ The compiler enforces one direction: a non-experimental `pub` function may not c
 
 ### stdlib cut (Q011)
 
-Every `pub` item in `compiler/lyric/std/` is annotated. See `docs/10-stdlib-plan.md` §"Stability cut" for the full table.
+Every `pub` item in `stdlib/std/` is annotated. See `docs/10-stdlib-plan.md` §"Stability cut" for the full table.
 
 Summary:
 - **Experimental:** `Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`; HTTP retry/cancel/timeout helpers; time DTO-conversion and timezone-lookup helpers.

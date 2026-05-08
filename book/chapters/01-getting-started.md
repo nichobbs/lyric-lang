@@ -93,11 +93,10 @@ dotnet hello.dll           # run the produced assembly
 
 `lyric build` is incremental: if neither the source nor the standard library has changed since the last build, it is a no-op. Pass `--force` to rebuild unconditionally.
 
-For release binaries:
+For a Native AOT binary (no .NET runtime needed at deployment):
 
 ```sh
-lyric build --release hello.l
-lyric build --aot    hello.l    # Native AOT, no .NET runtime needed at deployment
+lyric build --aot hello.l
 ```
 
 ## The anatomy of a Lyric file
@@ -185,7 +184,7 @@ You will use four commands constantly:
 | `lyric fmt --write` | Overwrite file in place |
 | `lyric lint` | Report style and quality diagnostics |
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
-| `lyric doc <file.l>` | Generate HTML documentation from doc comments |
+| `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
 
 `lyric fmt` is opinionated and has no configuration. The format is the format. Run it on save.
@@ -267,7 +266,7 @@ Lyric supports three kinds of comments:
 //! Doc comment for the enclosing module (placed at the top of a file)
 ```
 
-Write doc comments on every `pub` declaration. The `lyric doc` command generates browsable HTML from them, including your `requires` and `ensures` clauses. Doc comments are also checked for code examples by `lyric test --doctests`.
+Write doc comments on every `pub` declaration. The `lyric doc` command generates Markdown documentation from them, including your `requires` and `ensures` clauses.
 
 ## Exercises
 

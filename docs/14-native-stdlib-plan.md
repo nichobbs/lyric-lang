@@ -16,7 +16,7 @@
 
 ## 1. Motivation
 
-Today, `compiler/lyric/std/*.l` (≈3500 lines) layers safe Lyric APIs
+Today, `stdlib/std/*.l` (≈3500 lines) layers safe Lyric APIs
 over `Lyric.Stdlib/Stdlib.fs` (≈1200 lines of F#) and `extern type`
 declarations bound directly to BCL generics. The Lyric source is
 mostly *syntactic* — it defines the surface (`Std.List[T]`,
@@ -91,7 +91,7 @@ The kernel is the floor. Every language has one (Rust's `std` calls
 | String parsing of `Double` / `Decimal` | Correct float parsing is a research-grade problem (Bellerophon, Eisel-Lemire). Use BCL `Double.TryParse`. | 5 methods |
 
 **Target kernel size:** ≤120 extern declarations, all in
-`compiler/lyric/std/_kernel/*.l`, all `@axiom`-marked, all
+`stdlib/std/_kernel/*.l`, all `@axiom`-marked, all
 hand-audited at every release. This replaces the ad-hoc shim surface
 of `Lyric.Stdlib/Stdlib.fs` with a structured boundary.
 
@@ -245,7 +245,7 @@ No language changes. Doable today.
    `@externTarget` declarations.** *(PR #71 covered the Console arms;
    `Format.Of1..6` deferred to a follow-up because the emitter would need
    to pack `object[]` for arity 4-6.)*
-4. ✅ **Establish `compiler/lyric/std/_kernel/*.l`** as the audited
+4. ✅ **Establish `stdlib/std/_kernel/*.l`** as the audited
    extern boundary. Move every `@externTarget` declaration into this
    subdirectory. Add a CI lint that rejects new `@externTarget`s
    outside `_kernel/`.
@@ -280,7 +280,7 @@ No language changes. Doable today.
      (the practical blocker is gone; `pub use` proper and opaque
      wrapping with generic params remain as language work for
      future stdlibs).
-5. ✅ **Document the kernel** in `compiler/lyric/std/_kernel/README.md`
+5. ✅ **Document the kernel** in `stdlib/std/_kernel/README.md`
    plus the §3 / §6 sections of this doc. Cross-references to the
    decision log (D038) and open-questions doc (Q022) in place.
 

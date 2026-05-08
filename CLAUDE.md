@@ -4,8 +4,8 @@ Guidance for Claude Code (and future agents) working in this repository.
 
 ## What this repository is
 
-Lyric is a safety-oriented application language targeting .NET. **It is in
-the design phase.** No compiler exists. The repository currently contains:
+Lyric is a safety-oriented application language targeting .NET. The bootstrap
+compiler is written in F# and lives in `compiler/`. The repository contains:
 
 - `README.md` — entry point. Lists the documentation map and reading order.
 - `docs/00-overview.md` — design philosophy, target audience.
@@ -19,7 +19,25 @@ the design phase.** No compiler exists. The repository currently contains:
 - `docs/grammar.ebnf` — formal grammar (Phase 0 deliverable #4).
 - `docs/08-contract-semantics.md` — operational semantics for contracts (Phase 0 deliverable #5).
 - `docs/09-msil-emission.md` — MSIL emission strategy (Phase 0 deliverable #7).
+- `docs/10-bootstrap-progress.md` — append-only log of shipped milestones.
+- `docs/10-stdlib-plan.md` — standard library module design and stability cut plan.
+- `docs/11-stdlib-examples.md` — worked examples that exercise the standard library.
+- `docs/12-todo-plan.md` — running task list for in-flight and upcoming work.
+- `docs/13-tutorial.md` — narrative tutorial walking from hello-world to contracts.
+- `docs/14-native-stdlib-plan.md` — `stdlib/std/_kernel/` extern-boundary design.
+- `docs/15-phase-4-proof-plan.md` — Phase 4 verifier design (VC IR, SMT bridge).
+- `docs/16-lsp-vscode-plan.md` — LSP server and VS Code extension plan.
+- `docs/17-axiom-audit.md` — audit checklist for `@axiom` declarations.
 - `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6+; emitter to be written in Lyric itself).
+- `docs/19-multi-file-packages.md` — multi-file package linking design.
+- `docs/20-project-as-dll.md` — `lyric.toml`-driven multi-package build and DLL bundling.
+- `docs/21-nuget-linking.md` — NuGet dependency resolution and `[nuget]` table design.
+- `docs/22-distribution-and-tooling.md` — CLI distribution, install, and update design.
+- `docs/23-fsharp-shim-elimination.md` — plan for removing F#-side shims as the self-hosted compiler matures.
+- `docs/24-build-features.md` — `--features` / `[features]` conditional-compilation design.
+- `docs/24-test-runner-plan.md` — `lyric test` design (single-file v1, multi-file v2).
+- `docs/25-config-blocks.md` — `config { }` block design for compile-time DI configuration.
+- `docs/26-aspects.md` — aspect-oriented cross-cutting concern design.
 
 ## Reading order (for Claude)
 

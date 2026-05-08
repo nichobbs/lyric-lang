@@ -119,10 +119,20 @@ Single-pass per file; parallel across files. No optimizations beyond what the .N
 
 ### Phase 1 standard library
 
-Hand-written in Phase-1-Lyric, very minimal:
-- `std.core`: option, result, basic collections (List, Map)
-- `std.io`: console, basic file IO
-- `std.testing`: minimal test harness
+Shipped in `stdlib/std/` (30 modules as of M1.4+):
+
+Core: `core`, `core_proof`, `errors`, `string`, `parse`, `format`, `char`
+Collections: `collections`, `set`, `sort`, `iter`
+I/O: `console`, `file`, `stream`, `directory`, `path`, `environment`, `process`
+Application: `app`, `log`
+Networking/Data: `http`, `json`, `time`, `uuid`, `encoding`
+Math: `math`
+Testing: `testing`, `testing_property`, `testing_snapshot`, `testing_mocking`
+
+Each module maps to an `import Std.X` declaration in source. The stdlib
+source lives in `stdlib/std/`; `stdlib/std/_kernel/` holds the audited
+extern boundary (only kernel files may contain `@externTarget` / `extern type`
+declarations).
 
 ### Exit criteria for Phase 1
 
@@ -294,12 +304,26 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
 
 Open-ended. Successful languages spend most of their lifetime here.
 
-### Likely areas
+### Shipped (Phase 6 early work)
 
-- **JVM backend** (separate codegen path, post-v1)
+- **JVM emitter** — `compiler/src/Lyric.Emitter/` supports `--target jvm`,
+  emitting JVM class files via a custom bytecode writer (D-progress-126, PR #179).
+  The JVM _kernel_ (`stdlib/std/_kernel_jvm/`) contains the JVM-side extern stubs.
+  The JVM emitter strategy is documented in `docs/18-jvm-emission.md`.
+- **VS Code extension** — `lyric-vscode/` ships a full LSP-backed extension with
+  syntax highlighting, diagnostics, completion, go-to-definition, manifest
+  IntelliSense, package-management commands, project navigator, and task provider
+  (D-progress-127).
+- **Stability annotations** — `@stable(since="1.0")` / `@experimental` on every
+  `pub` stdlib item; `lyric public-api-diff` treats experimental removals as
+  non-breaking; compiler enforces S0001 (stable may not call experimental)
+  (D042, PR #189).
+
+### Likely future areas
+
 - **Industrial sponsorship and certifiable conformance** (annex-style)
 - **Framework ecosystem**: HTTP framework, ORM-shaped persistence layer, observability libraries, message queue clients
-- **Domain-specific tooling**: editor plugins beyond LSP basics, debugger UI, performance profiler integration
+- **Domain-specific tooling**: debugger UI, performance profiler integration
 - **Standards work**: pinning the language reference into a versioned spec, possibly with ISO involvement at very high maturity
 
 ## Cross-cutting concerns

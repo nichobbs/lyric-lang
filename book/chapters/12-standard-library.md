@@ -8,25 +8,43 @@ The stdlib is separate from the compiler and versioned independently. Every `pub
 
 ## §12.1 How the stdlib is structured
 
-The standard library lives in `compiler/lyric/std/`. Each module is a `.l` file; you import a module with `import Std.X`, where `X` is the module name. The compiler locates the source file, compiles it on demand, and links the produced assembly into your output.
+The standard library lives in `stdlib/std/`. Each module is a `.l` file; you import a module with `import Std.X`, where `X` is the module name. The compiler locates the source file, compiles it on demand, and links the produced assembly into your output.
 
 Here is the full module inventory:
 
 | Module | Contents |
 |--------|----------|
 | `Std.Core` | `Result`, `Option`, built-in ops — always implicitly available for `println` etc. |
+| `Std.Core.Proof` | Proof-only lemmas and quantifier helpers for `@proof_required` modules |
 | `Std.String` | `trim`, `split`, `join`, case conversion, `substring`, `startsWith`, `endsWith` |
 | `Std.Parse` | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
+| `Std.Format` | `toHexString`, `formatFixed`, `zeroPad`, `padLeft`, `padRight` |
+| `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpperCase`, `toLowerCase`, `digitValue` |
 | `Std.Errors` | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | `readText`, `writeText`, `fileExists`, `createDir` |
+| `Std.Console` | `print`, `println`, `error`, `readLine` |
+| `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
+| `Std.Path` | Pure path helpers: `join`, `extension`, `basename`, `dirname`, `isAbsolute` |
+| `Std.Environment` | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
+| `Std.Process` | `spawn`, `ProcessResult`, `run` |
+| `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
+| `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |
+| `Std.Stream` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Collections` | `List[T]`, `Map[K, V]` |
-| `Std.Math` | `abs`, `sqrt`, `pow`, `min`, `max`, trigonometric functions |
+| `Std.Set` | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setUnion`, `setIntersection` |
+| `Std.Sort` | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
+| `Std.Iter` | `map`, `filter`, `fold`, `zip`, `take`, `drop` over slices |
+| `Std.Math` | `abs`, `sqrt`, `pow`, `min`, `max`, `floor`, `ceil` |
 | `Std.Random` | seeded RNG: `makeRandom`, `nextInt`, `nextDouble` |
+| `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
+| `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `Clock` interface, ISO 8601 parsing |
 | `Std.Json` | `toJson`, `fromJson` for `@derive(Json)` types |
 | `Std.Http` | HTTP client and server primitives |
-| `Std.Testing` | `assertEqual`, `assertTrue`, `assertEqualInt`, snapshot, property |
-| `Std.Iter` | `map`, `filter`, `fold`, `zip`, `take`, `drop` over slices |
+| `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
+| `Std.Testing.Property` | Property-based testing: `forAllIntRange`, `forAllBool`, `forAllDouble` |
+| `Std.Testing.Snapshot` | `snapshot(label, actual)`, `snapshotMatch` |
+| `Std.Testing.Mocking` | `StubCounter`, `makeStubCounter`, `stubCounterIncrement` |
 
 The `Std.Core` module is special: `println`, `panic`, `assert`, `toString`, and a few others are codegen builtins — the compiler emits calls to them directly, so they are available without an explicit import. Everything else in the table requires an explicit `import`.
 
@@ -87,7 +105,7 @@ val ends    = endsWith("hello", "lo")       // true
 
 `split` and `join` are counterparts: `split` takes a string and a separator, `join` takes a separator and a `slice[String]`. `substring(s, start, end)` follows the half-open convention (`start` inclusive, `end` exclusive) — the same convention slices use everywhere in Lyric. Indices out of range produce a `Bug`, not a silently truncated result, so validate before calling if the inputs are not known at compile time.
 
-`Std.String` also exports `toLower`, `contains`, `replace`, and `padLeft`/`padRight`. The full API is in `compiler/lyric/std/string.l`.
+`Std.String` also exports `toLower`, `contains`, `replace`, and `padLeft`/`padRight`. The full API is in `stdlib/std/string.l`.
 
 ## §12.4 `Std.Collections`
 
@@ -119,7 +137,7 @@ match m.get("age") {
 `List[T]` also has `remove(index)`, `get(index)` (returns `Option[T]`), and `toSlice()` for converting to an immutable slice. If you need to remove by value rather than by index, use `Std.Iter` to filter and rebuild.
 
 ::: sidebar
-**Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. Immutable persistent data structures are on that roadmap. For now, `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. Immutable variants — once shipped — will carry the same names under a different import (`Std.Immutable` is the current proposal). The module inventory note says "immutable/persistent variants" are in scope; they are not yet `@stable`.
+**Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. Immutable persistent data structures are on that roadmap. For now, `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. Immutable persistent variants are planned; they are not yet `@stable`.
 :::
 
 ## §12.5 `Std.Time`
@@ -173,7 +191,7 @@ Every operation that can fail returns `Result`. `fileExists` is the exception: i
 Path strings are unchecked at compile time. The compiler does not know whether `/tmp/output.txt` is a valid path on the target system. If you are constructing paths from user input, validate them before passing them in.
 
 ::: note
-**Note:** `Std.File` is a Lyric wrapper around `System.IO.File`. Its `@axiom` block is in `compiler/lyric/std/file.l`. If you are calling it in a `@proof_required` module, the prover will trust the axiom contracts and not check them. Chapter 13 explains what that means and when it matters.
+**Note:** `Std.File` is a Lyric wrapper around `System.IO.File`. Its `@axiom` block is in `stdlib/std/file.l`. If you are calling it in a `@proof_required` module, the prover will trust the axiom contracts and not check them. Chapter 13 explains what that means and when it matters.
 :::
 
 ## §12.7 JSON with `@derive`

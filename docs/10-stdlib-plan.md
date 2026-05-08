@@ -29,7 +29,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 1. **Source layout**
 
    ```
-   compiler/lyric/std/
+   stdlib/std/
      ├── core.l          (primitives, Option, Result, slice helpers)
      ├── errors.l        (ParseError, IOError, HttpError)
      ├── parse.l         (safe primitive parsing)
@@ -404,7 +404,7 @@ Phase 6 (examples & docs)
 
 ## Stability cut (Q011 / D040)
 
-Every `pub` item in `compiler/lyric/std/` carries either `@stable(since="1.0")` or `@experimental`.  This table is the authoritative cut list for v1.0.
+Every `pub` item in `stdlib/std/` carries either `@stable(since="1.0")` or `@experimental`.  This table is the authoritative cut list for v1.0.
 
 | Module | Stability | Rationale |
 |--------|-----------|-----------|
