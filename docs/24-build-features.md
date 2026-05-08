@@ -1,6 +1,8 @@
 # 24 — Build Features (compile-time gating)
 
-**Status:** Drafted.  v1 implementation in progress.
+**Status:** Shipped — v1 surface fully implemented end-to-end
+in the F# bootstrap (PR #206) with the self-hosted manifest /
+CLI mirror.
 **Implementation:** prerequisite for `docs/25-config-blocks.md` and
 `docs/26-aspects.md`. No phase commitment yet; can land any time after
 M5.1 stage 5'.
@@ -296,9 +298,11 @@ is erased without warning).
 ## 7. Out of scope
 
 - **Cross-package feature unification.** A consumer enabling features
-  on a dependency. Cargo's headline feature; deferred (Q-features-001).
+  on a dependency.  **Closed** (Q-features-001) — not applicable to
+  Lyric's binary distribution model.  See §1.1 for the recommended
+  D046 alternative.
 - **Per-build override of a published library's features.** Same
-  question, same deferral.
+  question, same closure.  Use D046 runtime config.
 - **Statement-level / expression-level `@cfg`.** Two functions are the
   workaround.
 - **Feature flags resolved at runtime.** That's `docs/25-config-blocks.md`'s
