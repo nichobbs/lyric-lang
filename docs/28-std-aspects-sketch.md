@@ -364,10 +364,10 @@ D047 / 27.  Numbered for tracking.
 **Resolution: anonymous parametric record (option a).**  Inside
 a B-mode `pub aspect` body, `args` is opaque to field access.
 The library author can pass `args` to `proceed`, log it via a
-`Display` representation, or pattern-match its parametric type
-— but `args.x` is reserved for consumer-side local aspects
-(D047) and for C-mode `@inline_template` aspects (where the
-body re-compiles inside the consumer's package).
+`Display` interface implementation, or pattern-match its
+parametric type — but `args.x` is reserved for consumer-side
+local aspects (D047) and for C-mode `@inline_template` aspects
+(where the body re-compiles inside the consumer's package).
 
 This forces the right division of labour: observer / wrapper
 aspects (`Logging`, `Timing`, `Tracing`) are library-distributable;
@@ -435,7 +435,7 @@ shape-verification pass at every `use` site: load the library
 aspect's `requires:` / `ensures:` clauses, collect the set of
 `args.<field>` references, and check that every target the
 selector matches carries each referenced field with a
-compatible type.  Mismatches emit `A0030`.
+compatible type.  Mismatches emit `A0042`.
 
 This gives `Std.Aspects.Auth.requires: args.callerToken != ""`
 sound semantics — the aspect compiles only when applied to
@@ -489,7 +489,7 @@ for the resolution headers).  Spec changes:
 - **§5.4 → 26 §4.3.1.** `call` visible inside `ensures:`,
   rejected inside `requires:` (`A0040`).
 - **§5.6 → 27 §9.1.** Use-site shape verification mandatory;
-  `A0030` on missing-field mismatches.
+  `A0042` on missing-field mismatches.
 
 The remaining tensions (§5.3 budget, §5.5 multi-use ordering,
 §5.7 `@stable`, §5.8 cross-language) are smaller — known
