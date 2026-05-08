@@ -274,6 +274,27 @@ weave site:
 
 The `call` value is read-only.
 
+#### 4.3.1 Visibility of `call` inside contract clauses
+
+`call` is in scope inside the `around` body and inside any
+`ensures:` clause attached to the aspect.  It is **not** in scope
+inside `requires:` clauses.
+
+The asymmetry is justified by the same temporal asymmetry that
+governs `requires:` vs `ensures:` for the target's own contract:
+
+- `requires:` is evaluated *before* `proceed` runs.  At that
+  point `call.elapsed` is always `None`, and the other fields
+  are constants the consumer already knows by other means.
+  Allowing `call` here only enables footgun contracts.
+- `ensures:` is evaluated *after* the wrapper returns.  Then
+  `call.elapsed.unwrapOr(0)` is meaningful, enabling SLO-style
+  postconditions like
+  `ensures: call.elapsed.unwrapOr(0) <= 1000`.
+
+Putting `call` in `requires:` is a compile error
+(`A0040: call is not in scope inside requires: clauses`).
+
 ---
 
 ## 5. Contract augmentation

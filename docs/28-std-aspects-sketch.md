@@ -101,7 +101,7 @@ pub aspect Timing {
   }
 
   ensures:
-    ret.elapsedMs >= 0  // synthesised companion field?  see §5.4
+    call.elapsed.unwrapOr(0) >= 0   // §5.4 resolution: `call` in scope inside `ensures:`
 
   around(args) -> ret {
     if !config.enabled { return proceed(args) }
@@ -118,8 +118,9 @@ Library-side compilation (C-mode):
 
 - The body source is embedded as a resource in `Std.Aspects.dll`.
 - No generic IL is emitted for `Timing.Around`.
-- The contract clause (`ret.elapsedMs >= 0`) is published in the
-  contract resource.
+- The contract clause is published in the contract resource and
+  references `call.elapsed` — visible to the verifier at every
+  consumer-side `use` site.
 
 Consumer-side: when a consumer's `use Std.Aspects.Timing matches:
 …` is encountered, the compiler **re-parses, type-checks, and
@@ -358,45 +359,34 @@ Config (consumer-side):
 This sketch caught a handful of issues that aren't called out in
 D047 / 27.  Numbered for tracking.
 
-### 5.1 — `args` shape on generic targets (B-mode)
+### 5.1 — `args` shape on generic targets (B-mode)  ✅ Resolved
 
-`Logging` ships a `Around<TArgs, TRet>` generic.  For a target
-`func map[T,U](xs: List[T], f: (T) -> U): List[U]`, the
-consumer's wrapper instantiates with `TArgs = MapArgs[T, U]`
-where `MapArgs` is a synthesised record `{ xs: List[T], f: (T)
--> U }` with the target's type parameters appearing in `TArgs`.
+**Resolution: anonymous parametric record (option a).**  Inside
+a B-mode `pub aspect` body, `args` is opaque to field access.
+The library author can pass `args` to `proceed`, log it via a
+`Display` representation, or pattern-match its parametric type
+— but `args.x` is reserved for consumer-side local aspects
+(D047) and for C-mode `@inline_template` aspects (where the
+body re-compiles inside the consumer's package).
 
-The library's `around` body never reads typed fields off `args`
-— `Std.Log.log(level, …)` doesn't look inside.  But the
-library's body *can* refer to `args` opaquely (e.g. printing
-its representation via a `Display` trait if one is in scope).
+This forces the right division of labour: observer / wrapper
+aspects (`Logging`, `Timing`, `Tracing`) are library-distributable;
+field-typed transformers (`Sanitise`, validators that read
+specific shapes) are local-only or `@inline_template`.
 
-**Open issue (Q-aspects-007? — new):** What's the type of
-`args` inside a B-mode `pub aspect`?  Three options:
+Spec'd in 27 §6.1.1.
 
-- (a) An *anonymous* parametric record: the body sees `args`
-  as opaque, can't read fields.
-- (b) A *typed* parametric record: the body can `args.x` if
-  every consumer's target has a field named `x`.  Shaky.
-- (c) Reflection-shaped access: `args.field("x")`.  Loses type
-  safety; matches Option A's shape.
+### 5.2 — Hoisted imports in C-mode (`@inline_template`)  ✅ Resolved
 
-The 27 §6 spec implicitly assumes (a).  Worth pinning down.
+**Resolution: explicit imports.**  The library publishes its
+import dependency list in the contract metadata; the consumer
+must explicitly `import` each before any `use` of the
+`@inline_template` aspect, otherwise the consumer's compiler
+emits `A0041` and points at the missing import.  Auto-hoist
+was rejected because it conflicts with Lyric's "nothing is in
+scope unless imported" rule and degrades diagnostic quality.
 
-### 5.2 — Hoisted imports in C-mode (`@inline_template`)
-
-`Timing` imports `Std.Time` and `Std.Metrics` at the library
-level.  When the body re-compiles in the consumer's package,
-those imports must be in the consumer's view.  Two paths:
-
-- **Auto-hoist:** the consumer's compiler implicitly pulls the
-  template's imports.  Magic, but ergonomic.
-- **Explicit:** the consumer must `import Std.Time` /
-  `Std.Metrics` itself; otherwise compile error.  Exposes the
-  template's dependencies.
-
-I lean explicit; it's consistent with how Lyric handles imports
-elsewhere ("nothing is in scope unless imported").
+Spec'd in 27 §6.2.1.
 
 ### 5.3 — `@inline_template` body size budget
 
@@ -407,24 +397,22 @@ massively bloat consumer DLLs.  Plausibly need a budget — say,
 instructions" — or just document the trade-off and leave it to
 library author judgement.
 
-### 5.4 — `ret.elapsedMs` in `Timing.ensures:` is fictional
+### 5.4 — `call` visibility inside contract clauses  ✅ Resolved
 
-`Timing`'s ensures clause uses `ret.elapsedMs` — but Lyric
-return values don't have an `elapsedMs` field.  The contract
-makes sense intuitively ("the elapsed time we observed is
-non-negative") but doesn't typecheck.
+**Resolution: visible in `ensures:`, not in `requires:`.**
+`call.*` (including `call.elapsed: Option[Int]`) is now in
+scope inside any `ensures:` clause attached to an aspect.  This
+unlocks SLO-style postconditions like
+`ensures: call.elapsed.unwrapOr(0) <= 1000` and fixes the
+`Timing` example (now `ensures: call.elapsed.unwrapOr(0) >= 0`).
 
-Two paths:
+`requires:` excludes `call` because (a) `call.elapsed` would
+always be `None` there, and (b) the other `call.*` fields are
+constants the author already knows by other means — adding
+them only enables footgun contracts.  Putting `call` in
+`requires:` is a compile error (`A0040`).
 
-- Drop the contract clause; use a different mechanism (e.g. a
-  postcondition assertion inside the body).
-- Introduce a `call.elapsed` reference inside `ensures:`,
-  promoting `call` from "ambient inside `around`" to "ambient
-  inside contract clauses too."
-
-Worth thinking about whether `call` should be visible in
-`requires:` / `ensures:` clauses at all — D047 §4.3 says it's
-"in scope only inside `around`."
+Spec'd in 26 §4.3.1.
 
 ### 5.5 — Multiple `use` of the same library aspect
 
@@ -440,29 +428,21 @@ rule is unaffected.  But the diagnostic for ordering conflicts
 should be clear: "TenantA and TenantB both match handleX; add
 ordering."
 
-### 5.6 — Library aspect with a `requires:` referencing
-unverifiable consumer state
+### 5.6 — Use-site shape verification for library `requires:`  ✅ Resolved
 
-`Auth.requires: args.callerToken != ""` works because every
-match-target shape includes a `callerToken` field — by
-convention.  But the library can't enforce that; if a consumer
-applies `Auth` to a target that lacks `callerToken`, the
-contract is unprovable.
+**Resolution: yes, mandatory.**  The consumer's compiler runs a
+shape-verification pass at every `use` site: load the library
+aspect's `requires:` / `ensures:` clauses, collect the set of
+`args.<field>` references, and check that every target the
+selector matches carries each referenced field with a
+compatible type.  Mismatches emit `A0030`.
 
-This is a *use-site type error*, not a library bug.  The
-consumer's compiler should reject:
+This gives `Std.Aspects.Auth.requires: args.callerToken != ""`
+sound semantics — the aspect compiles only when applied to
+targets all carrying a `callerToken: String` field.  Trying to
+apply it elsewhere is a compile-time error.
 
-```
-A0030: aspect 'TenantAuth' (from Std.Aspects.Auth)
-       requires `args.callerToken != ""`,
-       but target `handleX` has no `callerToken` field.
-```
-
-The library's contract clauses are part of its published
-surface; the consumer's compiler verifies they're applicable
-at each `use` site.
-
-Worth nailing this down in 27 §9 (verifier interaction).
+Spec'd in 27 §9.1.
 
 ### 5.7 — `@stable(since="X.Y")` on library aspects
 
@@ -498,19 +478,24 @@ Lyric-consumer-only.
 
 ## 7. What this sketch wants nailed down before implementation
 
-- §5.1 — **`args` shape on generic targets** (B-mode).  Highest
-  priority; affects every B-mode aspect that touches `args.x`.
-- §5.2 — **Import hoisting in `@inline_template`** (explicit vs.
-  auto).  Affects every C-mode aspect.
-- §5.4 — **`call` visibility inside `requires:` / `ensures:`**.
-  Affects contract clauses on aspects with timing-flavoured
-  semantics.
-- §5.6 — **Use-site shape verification** for library
-  `requires:` clauses.  Affects auth-flavoured aspects.
+All four "before-implementation" tensions are resolved (see §5
+for the resolution headers).  Spec changes:
 
-The other tensions (§5.3 budget, §5.5 multi-use ordering,
+- **§5.1 → 27 §6.1.1.** `args` is an anonymous parametric
+  record in B-mode; field access reserved for local /
+  C-mode aspects.
+- **§5.2 → 27 §6.2.1.** `@inline_template` requires explicit
+  consumer-side imports; auto-hoist rejected.
+- **§5.4 → 26 §4.3.1.** `call` visible inside `ensures:`,
+  rejected inside `requires:` (`A0040`).
+- **§5.6 → 27 §9.1.** Use-site shape verification mandatory;
+  `A0030` on missing-field mismatches.
+
+The remaining tensions (§5.3 budget, §5.5 multi-use ordering,
 §5.7 `@stable`, §5.8 cross-language) are smaller — known
-follow-ups, not implementation blockers.
+follow-ups, not implementation blockers.  The aspect-library
+implementation can now begin once the M5.2 stage 3+ AST→MSIL
+bridge ships.
 
 ---
 
