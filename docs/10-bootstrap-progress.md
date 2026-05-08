@@ -1978,6 +1978,24 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-192: MSIL PE emitter Stage M53 — `ceq` + `cgt` + `clt`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M53 tests the three signed integer comparison opcodes (Nullary2 form):
+- `ceq` (0xFE 0x01) — pushes 1 if `a == b`, else 0
+- `cgt` (0xFE 0x02) — pushes 1 if `a > b` (signed), else 0
+- `clt` (0xFE 0x04) — pushes 1 if `a < b` (signed), else 0
+
+Test: `(5==5) * (10>9) * (3<7) + 41 = 1*1*1 + 41 = 42`, prints `42`.
+Tiny header (codeSize=29 → 0x76). `MsilSelfTestM53.fs` verifies ceq at
+0x24D–0x24E (FE 01), cgt at 0x253–0x254 (FE 02), clt at 0x25A–0x25B (FE 04),
+and BSJB at 0x266.
+
+57 MSIL self-tests pass (M1, M2a–M2d, M3–M53).
+
+---
+
 ### D-progress-191: MSIL PE emitter Stage M52 — `tail.` prefix
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
