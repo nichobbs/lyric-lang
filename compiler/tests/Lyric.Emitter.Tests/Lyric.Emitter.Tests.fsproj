@@ -206,7 +206,6 @@
     <ProjectReference Include="..\..\src\Lyric.Lexer\Lyric.Lexer.fsproj" />
     <ProjectReference Include="..\..\src\Lyric.Parser\Lyric.Parser.fsproj" />
     <ProjectReference Include="..\..\src\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
-    <ProjectReference Include="..\..\src\Lyric.Stdlib\Lyric.Stdlib.fsproj" />
     <ProjectReference Include="..\..\src\Lyric.Emitter\Lyric.Emitter.fsproj" />
   </ItemGroup>
 

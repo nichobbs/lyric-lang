@@ -340,9 +340,22 @@ Land G3 if not already done. Then:
    isn't yet expressible in Lyric and a tiny BCL escape stays
    the simplest path.  *(D-progress-104.)*
 
+   *Update (D-progress-139):* `RenderDoubleSlice` also retired.
+   Codegen's `toString(Double | Float)` now emits
+   `Double.ToString(InvariantCulture)` for round-trip-safe locale-
+   stable formatting, so the synthesiser uses the same
+   `mkSliceHelperInline` shape as Int / Long.  Same change retired
+   the remaining live `JsonHost` methods (`Parse`, `EncodeString`,
+   `Get{Int,Long,Double,Bool,String}Slice`); the F# `JsonHost`
+   class is gone.
+
 **Exit criterion:** `Stdlib.fs` is reduced to the kernel surface
 defined in §3.  Achieved modulo `RenderDoubleSlice`, which the
 plan accepted as a kernel-grade item.
+
+**Update (D-progress-139):** even `RenderDoubleSlice` retired;
+`Stdlib.fs` now contains zero host types.  See `docs/23` Phase 5
+for the post-zero packaging-shape decision.
 
 ### P4. Iterator protocol overhaul (Phase 3 alongside `protected type`)
 

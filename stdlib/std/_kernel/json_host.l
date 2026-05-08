@@ -13,21 +13,25 @@
 @axiom("System.Text.Json operations conform to their documented .NET contracts")
 package Std.JsonHost
 
+import Std.Collections    // brings `List[T]` into scope for the slice readers
+
 extern type JsonDoc     = "System.Text.Json.JsonDocument"
 extern type JsonElement = "System.Text.Json.JsonElement"
+// Nested CLR type — `+` separates the outer type from the nested
+// `ArrayEnumerator` struct.  Used by the slice-reader helpers to
+// iterate `JsonElement.EnumerateArray()` without an F#-side shim.
+extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"
+extern type JsonEncodedText     = "System.Text.Json.JsonEncodedText"
 
 // =====================================================================
 // Parsing.
 //
-// Routed through `Lyric.Stdlib.JsonHost.Parse` instead of the BCL
-// `JsonDocument.Parse(string, JsonDocumentOptions = default)`
-// directly: the FFI default-arg emit for `JsonDocumentOptions` still
-// produces invalid IL.  The host wrapper is a one-liner and the
-// indirection collapses if/when default-arg emit is fixed for
-// arbitrary structs.
+// Resolves to `JsonDocument.Parse(string, JsonDocumentOptions = default)`
+// via the FFI default-arg emit (the BCL overload is reachable as 1-arg
+// from C# because the second parameter has a default value).
 // =====================================================================
 
-@externTarget("Lyric.Stdlib.JsonHost.Parse")
+@externTarget("System.Text.Json.JsonDocument.Parse")
 pub func hostParseJson(s: in String): JsonDoc = ()
 
 @externTarget("System.Text.Json.JsonDocument.RootElement")
@@ -79,11 +83,180 @@ pub func hostGetRawText(elem: in JsonElement): String = ()
 pub func hostValueKind(elem: in JsonElement): Int = ()
 
 // =====================================================================
-// Manual serialization helpers.  Routes through
-// `Lyric.Stdlib.JsonHost.EncodeString` (the BCL's
-// `JsonEncodedText.Encode` returns a struct that's awkward to bridge
-// directly).
+// Array iteration — direct externs over `JsonElement.ArrayEnumerator`
+// (the nested-CLR struct) so slice readers can stay in pure Lyric.
+// MoveNext mutates the enumerator's internal index, so the Lyric
+// param is `inout`; Current is a property getter and doesn't mutate
+// but routes through `propGetter ()` in the FFI resolver.
 // =====================================================================
 
-@externTarget("Lyric.Stdlib.JsonHost.EncodeString")
-pub func hostEncodeString(s: in String): String = ()
+@externTarget("System.Text.Json.JsonElement.EnumerateArray")
+pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator = ()
+
+@externTarget("System.Text.Json.JsonElement+ArrayEnumerator.MoveNext")
+pub func hostEnumMoveNext(en: inout JsonArrayEnumerator): Bool = ()
+
+@externTarget("System.Text.Json.JsonElement+ArrayEnumerator.Current")
+pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
+
+// =====================================================================
+// Manual serialization helpers.
+//
+// `JsonEncodedText.Encode(string)` returns a struct (`JsonEncodedText`)
+// rather than a string, so the encode-and-quote operation is split
+// into two extern calls plus a native-Lyric concat.  The struct's
+// `ToString()` instance method renders the escaped UTF-16 form
+// without the surrounding quotes; we add those in Lyric.
+// =====================================================================
+
+@externTarget("System.Text.Json.JsonEncodedText.Encode")
+pub func hostEncodeText(s: in String): JsonEncodedText = ()
+
+@externTarget("System.Text.Json.JsonEncodedText.ToString")
+pub func hostEncodedTextToString(t: in JsonEncodedText): String = ()
+
+/// Wrap `s` as a JSON string literal — escapes quotes / backslashes /
+/// control characters via `JsonEncodedText.Encode` and surrounds the
+/// result with `"` characters.
+pub func hostEncodeString(s: in String): String {
+  val encoded = hostEncodeText(s)
+  return "\"" + hostEncodedTextToString(encoded) + "\""
+}
+
+// =====================================================================
+// fromJson slice readers — pure-Lyric implementations of the
+// `Lyric.Stdlib.JsonHost.Get<T>Slice` methods.  Each parses the JSON,
+// walks to `name`, and (if it's an array) enumerates the elements
+// applying the type-specific `tryGet*` accessor.  Elements that
+// don't match the expected kind are silently skipped, matching the
+// retired F# shim's behaviour.
+// =====================================================================
+
+pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[Int]): Bool {
+  val list: List[Int] = newList()
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  // JsonValueKind.Array = 2
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    var v: Int = default()
+    if hostTryGetInt32(curr, v) {
+      list.add(v)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[Long]): Bool {
+  val list: List[Long] = newList()
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    var v: Long = default()
+    if hostTryGetInt64(curr, v) {
+      list.add(v)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice[Double]): Bool {
+  val list: List[Double] = newList()
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    var v: Double = default()
+    if hostTryGetDouble(curr, v) {
+      list.add(v)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[Bool]): Bool {
+  val list: List[Bool] = newList()
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    // JsonValueKind.True = 5, JsonValueKind.False = 6
+    val k = hostValueKind(curr)
+    if k == 5 {
+      list.add(true)
+    } else if k == 6 {
+      list.add(false)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetStringSlice(s: in String, name: in String, value: out slice[String]): Bool {
+  val list: List[String] = newList()
+  val doc = hostParseJson(s)
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    // JsonValueKind.String = 3
+    if hostValueKind(curr) == 3 {
+      list.add(hostGetString(curr))
+    }
+  }
+  value = list.toArray()
+  return true
+}

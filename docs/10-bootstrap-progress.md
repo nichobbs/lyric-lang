@@ -58,6 +58,8 @@ deferred to Phase 3 by design.
 | `docs/23` G12 (3/N) — F# `Lyric.Stdlib.HttpServerHost` retired entirely (8/8 methods); `_kernel/http_server.l` adds direct-extern primitives over `HttpListener` / `HttpListenerContext` / `HttpListenerRequest` / `HttpListenerResponse` / `Stream` / `StreamReader` / `Encoding` and rebuilds `startListener` / `nextContext` / `requestMethod` / `requestPath` / `requestBody` / `respondText` / `respondJson` as native Lyric (try/catch defensive arms preserved) | **Shipped** (PR #175) | D-progress-119 |
 | `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (PR #179) | D-progress-120 |
 | `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (PR #182) | D-progress-123 |
+| `docs/23` JsonHost retirement — final eight live methods retired from `Lyric.Stdlib.JsonHost` (`Parse`, `EncodeString`, `RenderDoubleSlice`, `Get{Int,Long,Double,Bool,String}Slice`).  Compiler fixes unblock the migration: (1) FFI default-arg overload selection now filters by leading-param exact type so `JsonDocument.Parse(string, JsonDocumentOptions = default)` resolves correctly when other 2-arg `Parse` overloads exist; (2) `emitExternCall` honours `inout`-mode value-type receivers (load arg pointer directly instead of `Ldarga`-ing the parameter slot) so mutating instance methods like `JsonElement+ArrayEnumerator.MoveNext` work; (3) `toString(Double)` / `toString(Float)` codegen calls `Double.ToString(InvariantCulture)` for round-trip-safe locale-stable formatting.  `_kernel/json_host.l` declares `extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"` and `extern type JsonEncodedText` and implements `hostEncodeString` and `lyricJsonGet*Slice` in pure Lyric on top of direct externs (`EnumerateArray` / `MoveNext` / `Current` / `JsonEncodedText.{Encode, ToString}`).  `JsonDerive.fs` synthesiser routes `__lyricJsonEscape` and slice readers through the new pure-Lyric kernel functions; `mkSliceHelperExtern` deleted (Double now uses inline `toString`-based rendering like Int/Long).  `Lyric.Stdlib.JsonHost` class removed; the `Lyric.Stdlib` F# shim is now empty of types | **Shipped** | D-progress-139 |
+| `docs/23` F# shim project deleted — with `Lyric.Stdlib.dll` empty of host types after D-progress-139, the `compiler/src/Lyric.Stdlib/` project is deleted outright: `.fsproj` / `Stdlib.fs` removed, `<ProjectReference>` lines pulled from `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Emitter.Tests`, and the project entry / configuration / nesting tag scrubbed from `Lyric.sln`.  CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`, `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their `Lyric.Stdlib.dll` copy / probe paths.  `stdlib/lyric.toml` reverts `output_assembly` from `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll` — the SDK's `lib/Lyric.Stdlib.dll` is now the Lyric-compiled bundle (no F# / FSharp.Core dep) | **Shipped** | D-progress-140 |
 | M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
@@ -401,6 +403,126 @@ comment inside a single expression's sub-tree may still anchor at
 the enclosing statement).  Mechanically additive when needed.
 
 ---
+
+### D-progress-140: F# `Lyric.Stdlib` project deleted entirely
+
+*claude/remove-stdlib-live-methods-wZ199 branch (continued from D-progress-139).*
+
+After D-progress-139 emptied the F# shim of host types, the assembly
+was 0 LoC of live code and pure ceremony.  This commit deletes the
+project outright.
+
+Files removed:
+
+- `compiler/src/Lyric.Stdlib/Lyric.Stdlib.fsproj`
+- `compiler/src/Lyric.Stdlib/Stdlib.fs`
+
+Files updated:
+
+- `compiler/Lyric.sln` — removes the `Lyric.Stdlib` project entry,
+  configuration block, and nesting tag.
+- `compiler/src/Lyric.Cli/Lyric.Cli.fsproj`,
+  `compiler/src/Lyric.Emitter/Lyric.Emitter.fsproj`,
+  `compiler/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj` —
+  drop the `<ProjectReference Include="...Lyric.Stdlib.fsproj" />`
+  line.
+- `compiler/src/Lyric.Cli/Program.fs` — `locateStdlibDll` and the
+  F# shim copy in `copyStdlibArtifacts` deleted; the second copy in
+  the AOT path also drops the `Lyric.Stdlib.dll` line.  Comments
+  rewritten to reflect that the only `Lyric.Stdlib.<X>.dll` files
+  staged are the precompiled Lyric-compiled package DLLs.
+- `compiler/tests/Lyric.Emitter.Tests/EmitTestKit.fs` — `stdlibDll ()`
+  helper and the corresponding `File.Copy` call deleted from
+  `prepareOutputDir`.
+- `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` — drops
+  the `Lyric.Stdlib.dll` copy in the test scratch dir helper.
+- `compiler/tests/Lyric.Cli.Tests/NugetShimTests.fs` — replaces the
+  `Lyric.Stdlib.dll` probe-DLL fallback with `Lyric.Parser.dll`.
+- `stdlib/lyric.toml` — `output_assembly` reverts from
+  `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll`
+  (the comment carve-out for "once the F# shim merges into the
+  bundle" is now obsolete; the SDK's `lib/Lyric.Stdlib.dll` is
+  now this Lyric-compiled bundle).
+- `CLAUDE.md` — updates the `Lyric.Stdlib` project description.
+
+`SdkRoot.fs` is unchanged in logic (`lib/Lyric.Stdlib.dll` is still
+the SDK install sentinel — it just resolves to the Lyric-compiled
+bundle now).  Comments about `Lyric.Stdlib.dll` (built by F#) in
+the AOT-copy block are scrubbed.
+
+`docs/23-fsharp-shim-elimination.md` Phase 5 decision is now moot:
+"keep / rewrite in C# / Cecil-merge" all collapse to "delete the
+project" with the F# shim itself gone.
+
+All 638 emitter tests pass; full sweep across Lexer (123), Parser
+(312), TypeChecker (137), Cli (112), Lsp (28) all green.
+
+### D-progress-139: F# `Lyric.Stdlib.JsonHost` retirement — final eight live methods migrated to pure Lyric
+
+*claude/remove-stdlib-live-methods-wZ199 branch.*
+
+The last live F# methods in `compiler/src/Lyric.Stdlib/Stdlib.fs` were
+all on `Lyric.Stdlib.JsonHost` and split into three buckets, each
+gated on a different compiler limitation:
+
+| Method(s) | Blocker | Fix |
+|---|---|---|
+| `Parse` | FFI default-arg overload selection picked an arbitrary `JsonDocument.Parse(X, JsonDocumentOptions = default)` overload — `staticArityWithDefaults` matched on count only, so `Parse(ReadOnlyMemory<char>, …)` could win over `Parse(string, …)` | Filter by leading-param exact type before falling back to count-only |
+| `EncodeString` | `JsonEncodedText.Encode(string)` returns a struct (`JsonEncodedText`); calling instance `ToString()` on it from Lyric needed BCL struct return bridging | Already worked via `Ldarga 0` for value-type receivers; split into `hostEncodeText` + `hostEncodedTextToString` and a native-Lyric concat-with-quotes |
+| `Get{Int,Long,Double,Bool,String}Slice` (5 methods) | `JsonElement.EnumerateArray()` returns the nested CLR struct `JsonElement+ArrayEnumerator`; `extern type X = "Foo+Bar"` parsed but `MoveNext` (mutating instance method) failed because the emitter `Ldarga`-ed the parameter slot when `inout` already gave it a managed pointer | Skip the `Ldarga` when `paramList[0]` is already byref so `Ldarg 0` loads the pointer directly |
+| `RenderDoubleSlice` | `Lyric.toString(Double)` boxed and called `Object.ToString()` (locale-dependent, not round-trip-safe) | Special-case `toString(Double | Float)` in codegen to call `Double.ToString(InvariantCulture)` — .NET 10's default format is already round-trip-shortest, and `InvariantCulture` pins the decimal separator |
+
+Files touched:
+
+- `compiler/src/Lyric.Emitter/Emitter.fs` — three edits.  (1)
+  `staticArityWithDefaults` / `instanceArityWithDefaults` get a
+  two-pass match: leading-param exact-type first, then count-only as
+  fallback — fixes the `Parse(ReadOnlyMemory<char>, opts=default)`
+  ambiguity.  (2) `emitExternCall` arg push: when `paramList[0]` is
+  already a byref (Lyric `inout T`), use `Ldarg 0` instead of
+  `Ldarga 0` so the loaded pointer matches the BCL receiver shape.
+  (3) `findClrType` no longer pins `typeof<Lyric.Stdlib.JsonHost>` —
+  the type doesn't exist anymore.
+- `compiler/src/Lyric.Emitter/Codegen.fs` — `toString` builtin gains a
+  branch for `argTy = typeof<double>` / `typeof<single>` that emits
+  `Stloc + Ldloca + Call CultureInfo.get_InvariantCulture + Call
+  Double.ToString(IFormatProvider)`.
+- `stdlib/std/_kernel/json_host.l` — adds `extern type
+  JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"`
+  and `extern type JsonEncodedText`; direct externs for
+  `EnumerateArray` / `ArrayEnumerator.MoveNext` (inout) /
+  `ArrayEnumerator.Current` (inout property getter); pure-Lyric
+  `hostEncodeString` (split into `hostEncodeText` + Lyric concat with
+  surrounding quotes); pure-Lyric `lyricJsonGet{Int,Long,Double,Bool,
+  String}Slice` that drive the enumerator with a `while
+  hostEnumMoveNext(en) { … }` loop.  `hostParseJson` now `@externTarget`s
+  `System.Text.Json.JsonDocument.Parse` directly (the default-arg
+  fix lets it resolve to the `(string, JsonDocumentOptions=default)`
+  overload).
+- `compiler/src/Lyric.Parser/JsonDerive.fs` — synthesiser updates.
+  `__lyricJsonEscape` becomes a Lyric body (`hostEncodeString(s)`)
+  instead of `@externTarget`-ing the F# shim; the five
+  `__lyricJsonGet*Slice` helpers route through `mkGetShimBody` to
+  the new `lyricJsonGet*Slice` kernel functions; the Double slice
+  renderer uses `mkSliceHelperInline` with `toString(items[i])`
+  (now culture-invariant).  `mkSliceHelperExtern` and the legacy
+  count-only `mkGetShim` builders deleted — both unused after
+  migration.
+- `compiler/src/Lyric.Stdlib/Stdlib.fs` — the `JsonHost` class is
+  deleted; the file is now entirely retirement-log comments.
+
+The `Lyric.Stdlib` F# project still ships (the assembly is referenced
+by the CLI and emitter tests for runtime probing) but contains no
+host types.  The packaging-shape decision tracked in
+`docs/23-fsharp-shim-elimination.md` Phase 5 ("keep as F# / rewrite
+in C# / Cecil-merge") can now be made on an empty assembly — net F#
+shim size is zero LoC.
+
+All 638 emitter tests pass, including `JsonDeriveTests` (Int / Long /
+Bool / String / Double slice round-trip via the new pure-Lyric
+readers and renderers) and the `@derive(Json)` end-to-end smoke
+covering `User { name: String, address: Address }` with
+`address.zip` round-tripped through the synthesiser.
 
 ### D-progress-135: M5.3 stage 3 — F# CLI `lyric fmt` reflection bridge
 

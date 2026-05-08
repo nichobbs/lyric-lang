@@ -28,10 +28,6 @@ let private withTempDll (label: string) (action: string -> 'a) : 'a =
     // Stage the stdlib next to the bundled DLL so any `import Std.*`
     // imports resolve at runtime.  Mirrors `prepareOutputDir` in
     // EmitTestKit but keyed off the project test name.
-    let stdlibDll =
-        Path.Combine(AppContext.BaseDirectory, "Lyric.Stdlib.dll")
-    if File.Exists stdlibDll then
-        File.Copy(stdlibDll, Path.Combine(dir, "Lyric.Stdlib.dll"), overwrite = true)
     for p in Lyric.Emitter.Emitter.stdlibAssemblyPaths () do
         if File.Exists p then
             let fname =

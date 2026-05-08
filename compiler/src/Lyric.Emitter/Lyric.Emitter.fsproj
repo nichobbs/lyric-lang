@@ -22,7 +22,6 @@
     <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
     <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
     <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
-    <ProjectReference Include="..\Lyric.Stdlib\Lyric.Stdlib.fsproj" />
     <!-- JVM emit helpers — `Lyric.Jvm.Hosts.JvmByteHost` etc. The
          emitter doesn't call into them at compile time, but having the
          assembly in the AppDomain means `findClrType` resolves the
