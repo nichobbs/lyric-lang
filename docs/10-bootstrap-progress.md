@@ -1978,6 +1978,25 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-181: MSIL PE emitter Stage M42 — `stind.i1`/`i2` + `ldind.u1`/`i2` (narrow indirect access)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M42 exercises narrow indirect stores and loads through a managed pointer.
+Using one I4 local:
+1. `stind.i1` (0x52) — store low byte; `ldind.u1` (0x47) — load unsigned byte → 42
+2. `stind.i2` (0x53) — store low two bytes; `ldind.i2` (0x48) — load signed short → 42
+
+**New in `opcodes.l`**: The complete `ldind.*`/`stind.*` family:
+`OP_LDIND_I1/U1/I2/U2/U4/I8/R4/R8` (0x46–0x4F) and `OP_STIND_I1/I2/I8/R4/R8`
+(0x52–0x57) constants, smart constructors, and `emitLdind_*/emitStind_*`
+wrappers for all variants (adding to the existing I4 and Ref forms).
+
+**Test wiring**: `MsilSelfTestM42.fs` added to `Lyric.Emitter.Tests`; all 46
+MSIL self-tests pass (M1, M2a–M2d, M3–M42).  CLR: two `"42"` lines printed.
+
+---
+
 ### D-progress-180: MSIL PE emitter Stage M41 — `conv.ovf.*.un` (unsigned-input overflow conversions)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
