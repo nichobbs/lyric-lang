@@ -80,7 +80,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -196,6 +196,70 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-141: M5.3 stage 5 — blank-line preservation in `Lyric.Fmt` (+ documenting why the `Lyric.Lyric.<X>.dll` naming wart is intentional)
+
+*claude/lyric-fmt-blank-lines branch.*
+
+Two follow-ups from the M5.3 formatter arc:
+
+**Blank-line preservation.**  Previously the formatter collapsed every
+run of newlines in the original source down to the canonical
+"between-statement" or "between-member" zero-blank shape, which made
+intentional spacing inside function bodies and record/union/enum
+bodies vanish.  This stage tracks blank-line markers as a new variant
+in the harvested-trivia stream:
+
+- `HarvestedItem` is now a union: `HiComment(text, offset)` |
+  `HiBlank(offset)`.  Every run of 2+ consecutive `TKNewline` trivia
+  in a token's leading trivia produces exactly one `HiBlank` marker
+  (whitespace between newlines doesn't break the run; multiple
+  consecutive blank lines collapse to a single marker so the formatter
+  emits at most one blank line in any spot — Black-style).
+- `popTriviaBefore(ctx, hi)` emits both comments and blanks (the
+  blank as `""`).  Used at every block-internal / member-internal
+  boundary (`blockLines`, `matchLines`, `recordDoc`, `unionDoc`,
+  `enumDoc`).
+- `popCommentsBefore(ctx, hi)` (the old name) now drops `HiBlank`
+  markers and emits comments only.  Used at top-level item /
+  import boundaries and at every block's closing-brace tail —
+  the canonical formatter already emits its own inter-item blank,
+  and a trailing blank just before `}` is visual noise.
+- `skipCommentsBefore(ctx, hi)` is the no-emit fast-forward, used
+  defensively after each top-level item to drop trivia from
+  expression sub-trees that aren't yet ctx-aware.
+
+Self-test additions (`fmt_self_test.l`):
+`testBlankLineInsideFunctionBody`,
+`testBlankLineInsideRecordBody`,
+`testBlankLinesBetweenCommentBlocks`,
+`testMultipleBlankLinesCollapseToOne`.
+
+End-to-end smoke through the F# `lyric fmt` bridge confirms blank
+lines between statements, between record fields, and between union
+cases all survive a round-trip.
+
+**DLL naming wart documentation.**  The earlier note about the
+`Lyric.Lyric.<X>.dll` filename shape (D-progress-135 follow-up
+"clean up DLL naming") was investigated and turns out to be load-
+bearing: the F# bootstrap ships its own `Lyric.Lexer.dll` /
+`Lyric.Parser.dll` / `Lyric.TypeChecker.dll` and exports types under
+the same CLR namespace as the self-hosted versions but with PascalCase
+record fields (`Token` / `Span`) — not the lower-case `token`/`span`
+the self-hosted records carry.  Renaming the self-hosted DLLs to drop
+the duplicate prefix lets the AppDomain resolve cross-assembly type
+refs to the F# version, and codegen blows up with `imported record
+'SpannedToken' has no field 'token'`.  The duplicated `Lyric.` is
+what disambiguates the assembly identity.  Comments in
+`Emitter.fs:assemblyName` and `SelfHostedFmt.fs` now spell this out
+so the next agent doesn't try the same dead end.
+
+Out of scope for this stage: per-expression CST granularity
+(comments inside expression sub-trees still anchor at the enclosing
+statement), and the F# `Fmt.fs` sunset.  Both are tracked as
+follow-ups.
+
+
 
 ### D-progress-138: native `lyric test` runner — bootstrap-grade v1
 

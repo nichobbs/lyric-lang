@@ -191,6 +191,51 @@ func testCommentInsideNestedBlock(): Unit {
              "internal: nested-block comment preserved")
 }
 
+func testBlankLineInsideFunctionBody(): Unit {
+  // Phase 5 §M5.3 stage 5: a blank line between two statements inside
+  // a function body must survive `lyric fmt`.
+  val src = "package P\nfunc f(): Unit {\n  val a = 1\n\n  val b = 2\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  val expected = "package P\n\nfunc f(): Unit {\n  val a = 1\n\n  val b = 2\n}\n"
+  assertEqual(acc, expected, "blank: between stmts in func body")
+}
+
+func testBlankLineInsideRecordBody(): Unit {
+  val src = "package P\nrecord Point {\n  x: Int\n\n  y: Int\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  val expected = "package P\n\nrecord Point {\n  x: Int\n\n  y: Int\n}\n"
+  assertEqual(acc, expected, "blank: between record fields")
+}
+
+func testBlankLinesBetweenCommentBlocks(): Unit {
+  // Two comment groups separated by a blank line.  Both comments
+  // survive AND the blank between them stays.
+  val src = "package P\nfunc f(): Unit {\n  // group 1\n  val a = 1\n\n  // group 2\n  val b = 2\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// group 1"),
+             "blank: first comment group preserved")
+  assertTrue(Str.contains(acc, "// group 2"),
+             "blank: second comment group preserved")
+  // The blank line shows as `\n\n` between the two groups.
+  assertTrue(Str.contains(acc, "val a = 1\n\n  // group 2"),
+             "blank: blank line preserved between comment groups")
+}
+
+func testMultipleBlankLinesCollapseToOne(): Unit {
+  // Two consecutive blank lines collapse to one (canonical 1-blank-max).
+  val src = "package P\nfunc f(): Unit {\n  val a = 1\n\n\n\n  val b = 2\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  // Canonical output has exactly one blank line between the two stmts.
+  assertTrue(Str.contains(acc, "val a = 1\n\n  val b = 2"),
+             "blank: 3-newline run collapses to one blank line")
+  assertTrue(not Str.contains(acc, "val a = 1\n\n\n  val b"),
+             "blank: 3-newline run does NOT produce 2 blanks")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -225,5 +270,9 @@ func main(): Unit {
   testCommentInsideUnionBody()
   testCommentInsideEnumBody()
   testCommentInsideNestedBlock()
+  testBlankLineInsideFunctionBody()
+  testBlankLineInsideRecordBody()
+  testBlankLinesBetweenCommentBlocks()
+  testMultipleBlankLinesCollapseToOne()
   println("fmt self-test: ok")
 }

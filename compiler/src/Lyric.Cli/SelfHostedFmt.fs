@@ -84,12 +84,16 @@ let private ensureLyricFmtAssembly () : string =
 
     preloadStdlibAssemblies ()
 
-    // The emitter's stdlib precompile path mints assembly names from
-    // package segments via `sprintf "Lyric.%s.%s" head (concat rest)`,
-    // so `Lyric.Fmt` lands as `Lyric.Lyric.Fmt.dll` in the cache (the
-    // double `Lyric.` is the head + the per-package basename, not a
-    // typo).  The CLR type inside the DLL is unaffected — it is named
-    // for the package path, e.g. `Lyric.Fmt.Program`.
+    // Emitter mints stdlib assemblies as `Lyric.<head>.<rest>.dll` for
+    // builtin heads, so `Lyric.Fmt` lands as `Lyric.Lyric.Fmt.dll` in
+    // the cache (the double `Lyric.` is head + per-package basename, by
+    // design — see `Emitter.fs:assemblyName`).  Renaming it to drop
+    // the prefix would collide with the F# bootstrap's same-named
+    // assemblies (`Lyric.Lexer.dll` etc.) which export the same CLR
+    // namespace but with PascalCase record fields, breaking type
+    // resolution at codegen time.  The CLR type inside the DLL is
+    // unaffected — it is named for the package path,
+    // `Lyric.Fmt.Program`.
     let lyricFmtDll =
         Emitter.stdlibAssemblyPaths ()
         |> List.tryFind (fun p ->

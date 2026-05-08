@@ -5402,6 +5402,16 @@ let rec private ensureStdlibArtifact
                         depArtifacts |> List.collect (fun a -> a.Source.Items)
                     let checked' =
                         Lyric.TypeChecker.Checker.checkWithImports stripped importedItems
+                    // The `Lyric.<head>.<rest>.dll` shape is intentional —
+                    // dropping the per-head prefix would let the self-hosted
+                    // `Lyric.Lexer` / `Lyric.Parser` / `Lyric.TypeChecker`
+                    // assemblies collide with the F# bootstrap's same-named
+                    // DLLs in the AppDomain (both export type names under the
+                    // `Lyric.Lexer.*` CLR namespace, but the F# records have
+                    // PascalCase fields like `Token`/`Span` while the self-
+                    // hosted records are lower-case `token`/`span`).  The
+                    // assembly-qualified type-ref in the self-hosted DLL keeps
+                    // them disambiguated as long as the assembly names differ.
                     let assemblyName =
                         match segments with
                         | "Std" :: rest -> "Lyric.Stdlib." + String.concat "" rest
