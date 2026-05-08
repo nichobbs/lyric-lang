@@ -1978,6 +1978,28 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-182: MSIL PE emitter Stage M43 — `localloc` (stack allocation)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M43 exercises `localloc` (0xFE 0x0F), which allocates a caller-specified
+number of zeroed bytes on the evaluation stack and pushes a native-int pointer.
+`localloc` requires `InitLocals` which is only present in fat method headers;
+a dummy I4 local forces fat-header emission.
+
+**Code flow:**
+1. `ldc.i4.s 4` / `localloc` — allocate 4 bytes, push pointer.
+2. `dup` / `ldc.i4.s 42` / `stind.i4` — write 42 at the address.
+3. `ldind.i4` / `call Console.WriteLine(int)` — read 42 back, print.
+
+**New in `opcodes.l`**: `OP2_LOCALLOC = 0x0F`, `iLocalloc()` smart constructor,
+`emitLocalloc()` wrapper.
+
+**Test wiring**: `MsilSelfTestM43.fs` added to `Lyric.Emitter.Tests`; all 47
+MSIL self-tests pass (M1, M2a–M2d, M3–M43).  CLR: `"42"` printed.
+
+---
+
 ### D-progress-181: MSIL PE emitter Stage M42 — `stind.i1`/`i2` + `ldind.u1`/`i2` (narrow indirect access)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
