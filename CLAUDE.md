@@ -38,6 +38,7 @@ compiler is written in F# and lives in `compiler/`. The repository contains:
 - `docs/24-test-runner-plan.md` — `lyric test` design (single-file v1, multi-file v2).
 - `docs/25-config-blocks.md` — `config { }` block design for compile-time DI configuration.
 - `docs/26-aspects.md` — aspect-oriented cross-cutting concern design.
+- `docs/31-maven-linking.md` — Maven Central dependency resolution and `[maven]` table design (JVM target). _Specced in D051._
 
 ### Exploratory sketches (numbered ≥ 27)
 

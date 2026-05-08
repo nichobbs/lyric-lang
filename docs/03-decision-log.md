@@ -2361,6 +2361,7 @@ full semantics in `docs/26-aspects.md` §19. Key points:
 
 ---
 
+<<<<<<< HEAD
 ## D051 — Unify `aspect_template` into `aspect` — template = `pub aspect` without `matches:`
 
 **Date:** 2026-05-08
@@ -2433,6 +2434,110 @@ the soft-keyword table. `from` remains a soft keyword.
 - Both parsers (F# + self-hosted) implement all three forms:
   `From: ModulePath option` and `Config: ConfigField list` added to
   `AspectDecl`. Parser error codes P0306–P0308 added.
+
+---
+
+## D052 — Maven Central linking design decisions
+
+**Date:** 2026-05-08
+**Branch:** claude/java-dependency-support-MC6Xz
+
+### Context
+
+`docs/31-maven-linking.md` specifies how JVM-targeted Lyric projects
+consume Java libraries from Maven Central, parallel to the NuGet linking
+design in `docs/21-nuget-linking.md`.  Three design decisions required
+explicit resolution before the spec could be written.
+
+### Decision 1: Bundled resolver, not `mvn` shell-out
+
+**Decision:** Ship `lyric-resolver.jar` in the SDK (`$LYRIC_SDK/lib/`).
+The JAR embeds Apache Maven Resolver 2.x (Apache-2.0 licensed) and is
+invoked via `java -jar` — the only runtime requirement is `java` on
+`PATH`, which is guaranteed for any JVM-targeted build. No `mvn`
+installation is required.
+
+**Alternatives considered:**
+- Shell out to `mvn dependency:resolve`. Simple, but adds a mandatory
+  `mvn` installation requirement. Inconsistent with the `.NET` side,
+  which shells out to `dotnet` (always available alongside the runtime,
+  not a separate install).
+- Embed Gradle tooling API. More powerful but pulls in a large footprint
+  and Gradle daemon lifecycle that is disproportionate for dependency
+  resolution alone.
+
+**Rationale:** The `dotnet restore` analogy holds: on the .NET side, the
+runtime and restore tool are co-installed. On the JVM side, `java` is
+always co-installed with the runtime; `mvn` is not. Embedding Apache Maven
+Resolver — the library that backs `mvn` itself — gives full Maven Central
+resolution semantics without the installation requirement. The resolver JAR
+is an implementation detail of the SDK; the user-visible API is
+`lyric restore`.
+
+### Decision 2: Full group ID retained in Lyric package name
+
+**Decision:** A Maven coordinate `groupId:artifactId` maps to a Lyric
+package path `{PascalGroup}.{PascalArtifact}`, where the full group ID is
+PascalCased and concatenated (dots dropped). The group is never dropped or
+truncated.
+
+**Alternatives considered:**
+- Drop group ID entirely: `jackson-databind` → `JacksonDatabind`. Used by
+  the NuGet naming convention (package IDs are already globally unique).
+  Maven artifact IDs are not globally unique — `guava`, `commons-lang3`,
+  and others exist under multiple group IDs — so dropping the group creates
+  collisions.
+- Use only the last group segment: `core:jackson-databind` →
+  `Core.JacksonDatabind`. Shorter but still ambiguous (`org.apache.core`
+  and `com.example.core` would collide).
+
+**Rationale:** Maven Central's uniqueness guarantee lives at the full
+`groupId:artifactId` coordinate level. The Lyric package name must be
+derivable deterministically and without collisions from the coordinate.
+Retaining the full group — at the cost of verbose names for deeply-nested
+groups — is the only approach that preserves uniqueness in general. Users
+who find a generated name unwieldy can declare a `type alias` at import
+time.
+
+### Decision 3: Checked exceptions wrapped as `Result[T, JvmException]`
+
+**Decision:** Java methods that declare checked exceptions (`throws`
+clause with non-`RuntimeException` / non-`Error` types) get a shim return
+type of `Result[T, JvmException]`. Methods with only unchecked exceptions
+or no `throws` clause return `T` directly. `JvmException` is a single
+opaque extern wrapper over `java.lang.Exception` declared in the JVM
+stdlib kernel.
+
+**Alternatives considered:**
+- Let checked exceptions propagate as unhandled bugs (same as unchecked).
+  Loses the "checked" signal entirely; callers cannot recover.
+- Generate a per-method union type listing the declared exception classes.
+  Precise but fragile: Java exception hierarchies are deep, frequently
+  contain dozens of subclasses, and change between library versions.
+  Generating union types per-method would produce enormous shim files and
+  break on upstream upgrades.
+- Map each declared exception class to a distinct Lyric `extern type` and
+  generate a library-wide union. Better precision but still generates
+  large, volatile shim surface.
+
+**Rationale:** `Result[T, JvmException]` gives callers an explicit
+recovery path while keeping the shim surface stable and concise. The
+single-wrapper approach mirrors how most JVM languages (Kotlin, Scala)
+treat Java checked exceptions at the language boundary: as something the
+caller must handle but need not enumerate in detail. Callers that need
+finer-grained dispatch call `JvmException.typeName` and match on the
+string — an escape hatch that avoids coupling Lyric code to Java exception
+class hierarchies.
+
+### Consequences
+
+- `docs/31-maven-linking.md` is the canonical spec for Maven linking.
+- `docs/18-jvm-emission.md` §24 gains `Q-J008` referencing the spec.
+- `$LYRIC_SDK/lib/lyric-resolver.jar` is added to the SDK distribution
+  manifest (see `docs/22-distribution-and-tooling.md`).
+- The JVM stdlib kernel gains `stdlib/std/_kernel/jvm_exception.l`
+  declaring `extern type JvmException`.
+- Diagnostics `B0050`–`B0054` are added to the error catalogue.
 
 **Revisions:** None.
 
