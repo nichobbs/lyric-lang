@@ -101,6 +101,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M22 — `ldstr` + `#US` heap: `msil_self_test_m22.l` builds a PE whose `Main()` loads user string `"Hello, World!"` via `ldstr` (token `0x70000001`) and calls `Console.WriteLine(string)`; exercises `internUs`, UTF-16LE encoding with flag byte, and the `0x70` user-string token form; CLR prints `"Hello, World!"` | **Shipped** (this branch) | D-progress-161 |
 | MSIL PE emitter Stage M23 — multiple static methods: `msil_self_test_m23.l` builds a PE with two `MethodDef` rows — `Main` (MethodDef[1]) and `Add(int,int):int` (MethodDef[2]); Main calls Add(20,22) via token `0x06000002`, Add uses `ldarg.0`/`ldarg.1`/`add`/`ret`; verifies two consecutive tiny-header method bodies and a MethodDef call token; CLR prints `42` | **Shipped** (this branch) | D-progress-162 |
 | MSIL PE emitter Stage M24 — instance methods + instance fields: `msil_self_test_m24.l` builds a PE with `Counter` class (TypeDef[2]) owning Field[1]=`_value`, MethodDef[1]=`.ctor`, [2]=`Increment`, [3]=`GetValue`; Main (MethodDef[4]) creates Counter via `newobj`, calls Increment 3× via `dup`+`call`, then GetValue; exercises `Field` table, `ldfld`/`stfld`, HASTHIS sig convention, `MDA_SPECIAL_NAME+MDA_RTS_SPECIAL_NAME` on `.ctor`, three-TypeDef methodList/fieldList partitioning; CLR prints `3` | **Shipped** (this branch) | D-progress-163 |
+| MSIL PE emitter Stage M25 — `isinst` + `box`: `msil_self_test_m25.l` builds a PE whose `Main()` boxes integer 42 as `System.Object` via `box` (0x8C), tests it with `isinst System.Object` (0x75), branches on null via `brfalse` (0x39), then boxes 42 again and calls `Console.WriteLine(object)`; exercises `isinst` token encoding (TypeRef[2]=System.Object), `box` with TypeRef[3]=System.Int32, and the `object` MemberRef sig `{0x00,0x01,0x01,0x1C}`; CLR prints `42` | **Shipped** (this branch) | D-progress-164 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 |
@@ -1778,6 +1779,31 @@ BSJB at 0x28C.
 **Test wiring**: `MsilSelfTestM24.fs` added to `Lyric.Emitter.Tests`; all 28
 MSIL self-tests pass (M1, M2a–M2d, M3–M24).  CLR: Counter.Increment × 3;
 GetValue() = 3 → prints `3`.
+
+---
+
+### D-progress-164: MSIL PE emitter Stage M25 — `isinst` + `box`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M25 exercises two value-type boxing / type-testing instructions:
+`box` (0x8C) wraps an `I4` on the stack into a `System.Object` reference;
+`isinst` (0x75) tests whether that reference is an instance of a given type,
+leaving the reference on the stack if it is or null if it isn't.
+
+**Code flow:**
+1. `ldc.i4.s 42` / `box TypeRef[3]=System.Int32` → object ref on stack.
+2. `isinst TypeRef[2]=System.Object` → ref (succeeds) or null.
+3. `brfalse printZero` — long-form (0x39, 4-byte offset) as emitted by `emitBrfalse`.
+4. Happy path: `ldc.i4.s 42` / `box System.Int32` / `call Console.WriteLine(object)` / `ret`.
+5. `printZero`: `ldc.i4.0` (0x16, 1-byte) / `box System.Int32` / `call Console.WriteLine(object)` / `ret`.
+
+**Token layout:** TypeRef[2]=System.Object (token 0x01000002); TypeRef[3]=System.Int32 (token 0x01000003); MemberRef[1]=Console.WriteLine(object) with sig `{0x00,0x01,0x01,0x1C}`.
+
+codeSize=42; tiny header=0xAA; BSJB at 0x273.
+
+**Test wiring**: `MsilSelfTestM25.fs` added to `Lyric.Emitter.Tests`; all 29
+MSIL self-tests pass (M1, M2a–M2d, M3–M25). CLR: isinst succeeds; prints `42`.
 
 ---
 
