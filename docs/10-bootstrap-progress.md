@@ -94,6 +94,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M15 — `ldc.i8` + `conv.i4` (64-bit literals): `msil_self_test_m15.l` builds a PE with `Main()` pushing `1000000000i64` and `2i64` via `ldc.i8` (9-byte instruction), multiplying, narrowing to `int32` via `conv.i4`, and calling `Console.WriteLine(2000000000)`; verifies the 8-byte LE constant encoding | **Shipped** (this branch) | D-progress-154 |
 | MSIL PE emitter Stage M16 — `switch` table: `msil_self_test_m16.l` builds a PE with `Main()` dispatching value `2` via a 3-target `switch` instruction; target[2] pushes 42 and falls through to `Console.WriteLine`; verifies opcode `0x45`, count encoding, and each target's signed relative offset | **Shipped** (this branch) | D-progress-155 |
 | MSIL PE emitter Stage M17 — bitwise operations: `msil_self_test_m17.l` builds a PE with `Main()` computing `(60 & 13) + (60 | 13) = 12 + 61 = 73`; exercises `and` (0x5F), `or` (0x60) opcodes; CLR prints `73` | **Shipped** (this branch) | D-progress-156 |
+| MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals): `msil_self_test_m18.l` builds a PE with `Main()` pushing `3.0` and `2.0` via `ldc.r8` (9-byte instruction with IEEE 754 f64 LE constant), multiplying via `mul`, and calling `Console.WriteLine(double)`; verifies opcode and the 8-byte encoding of `3.0`; CLR prints `6` | **Shipped** (this branch) | D-progress-157 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1283,6 +1284,36 @@ Key verified byte positions:
 
 **Test wiring**: `MsilSelfTestM17.fs` added to `Lyric.Emitter.Tests`; all 21
 MSIL self-tests pass (M1, M2a–M2d, M3–M17).
+
+---
+
+### D-progress-157: MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M18 verifies `ldc.r8` — the 9-byte instruction for pushing a 64-bit
+IEEE 754 floating-point literal — and demonstrates calling
+`Console.WriteLine(double)` with a new MemberRef signature.
+
+**`msil_self_test_m18.l`** builds a tiny-header `Main()`:
+
+```
+ldc.r8 3.0   (0x23 + 8-byte LE: 00 00 00 00 00 00 08 40)
+ldc.r8 2.0   (0x23 + 8-byte LE: 00 00 00 00 00 00 00 40)
+mul          → 6.0
+call Console.WriteLine(double)   [MemberRef[1], sig {00,01,01,0D}]
+ret
+```
+
+Key verified byte positions:
+- Tiny header `0x66` at 0x248 (codeSize=25, (25<<2)|2=102=0x66).
+- `ldc.r8` opcode `0x23` at file 0x249.
+- `3.0` bytes: `bs[0x250]==0x08, bs[0x251]==0x40` (high bytes of 0x4008000000000000).
+- `mul` opcode `0x5A` at file 0x25B (code offset 18).
+- BSJB at 0x262.
+
+**Test wiring**: `MsilSelfTestM18.fs` added to `Lyric.Emitter.Tests`; all 22
+MSIL self-tests pass (M1, M2a–M2d, M3–M18).
 
 ---
 
