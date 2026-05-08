@@ -41,22 +41,28 @@ compiler is written in F# and lives in `compiler/`. The repository contains:
 
 ### Exploratory sketches (numbered ≥ 27)
 
-These are pressure-test docs, not authoritative spec. They surface
-design tensions before any implementation; they don't appear in the
-reading order and don't carry decision-log entries. Each sketch builds
-on a base spec doc and is cited from that doc's open-questions section.
+These are pressure-test docs that surface design tensions before any
+implementation. Each sketch builds on a base spec doc and is cited
+from that doc's open-questions section. A sketch starts unbacked and
+becomes the source-of-truth design for its slice once a decision-log
+entry codifies its tensions; the sketch's status header carries the
+backing entry's id.
 
-- `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047).
-- `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27.
-- `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046).
-- `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006).
+- `docs/27-aspect-libraries.md` — cross-package aspect distribution design (extends D047). _Drafted._
+- `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27. _Drafted (worked example, not spec)._
+- `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046). _Specced in D048._
+- `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006). _Specced in D049._
 
 ## Reading order (for Claude)
 
 When picking up cold, follow the README's newcomer order: **00 → 02 → 01 → 03**.
 For implementation work consult **05** (phasing) and **06** (open questions).
 For "is this in scope?" questions consult **04**.
-Numbered docs ≥ 27 are exploratory sketches and not part of the reading order.
+Numbered docs ≥ 27 are sketches and not part of the reading order;
+read one only when working on (or implementing) the slice it specs,
+and pair it with its backing decision-log entry (e.g. docs/29 ↔ D048,
+docs/30 ↔ D049). When opening a new sketch, link it from the relevant
+spec doc's open-questions section and add an entry to the list above.
 
 ## Status of Phase 0 deliverables
 

@@ -1,12 +1,15 @@
 # 29 — Config v2: file-based source + layered precedence (sketch)
 
-**Status:** Drafted, exploratory.  Pressure-tests the v2 surface
-of `docs/25-config-blocks.md` (D046).
+**Status:** Specced.  This sketch is the source-of-truth design
+for the v2 config surface; the four §9 "before-implementation"
+tensions plus §3.4 are settled in **D048** (decision log).
+Implementation gates on M5.2 stage 3+ (the AST→MSIL bridge in
+the self-hosted compiler).
 **Builds on:** D046 (env-only, read-once, fail-fast),
 Q-config-004 (`Lyric.BuildInfo` records names + types + defaults
 + `@sensitive`).
-**Decision-log entry:** None — this is a v2 sketch, not a
-spec.
+**Decision-log entry:** **D048** — Config v2 semantics
+(file source + layered precedence).
 
 ---
 

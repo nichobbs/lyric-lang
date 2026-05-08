@@ -9,13 +9,13 @@ deferred to whichever compiler ships it first.  Library
 distribution: `docs/27-aspect-libraries.md`.  Worked-example
 pressure-test: `docs/28-std-aspects-sketch.md`.  Aspect
 contract inheritance v1.x sketch:
-`docs/30-aspect-contract-inheritance-sketch.md`.
+`docs/30-aspect-contract-inheritance-sketch.md` (specced in D049).
 **Implementation:** Phase 2 — depends on `docs/24-build-features.md`
 (compile-time gating) and `docs/25-config-blocks.md` (typed env-backed
 config) shipping first. The verifier-side discharge (§11) lights up
 when `docs/15-phase-4-proof-plan.md`'s VC pipeline can ingest woven
 contracts.
-**Decision-log entry:** D047.
+**Decision-log entry:** D047; contract inheritance v1.x in D049.
 
 > **v1 scope note.** The first slice of implementation lands the
 > *language surface* — parser, AST, and basic type-check

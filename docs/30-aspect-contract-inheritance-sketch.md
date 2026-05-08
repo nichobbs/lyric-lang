@@ -1,13 +1,17 @@
 # 30 — Aspect-to-aspect contract inheritance (sketch)
 
-**Status:** Drafted, exploratory.  Pressure-tests Q-aspects-006
-in `docs/26-aspects.md`.
+**Status:** Specced.  This sketch is the source-of-truth design
+for v1.x aspect contract inheritance; the §3 inheritance rule
+plus the four §8 "before-implementation" tensions are settled
+in **D049** (decision log).  Implementation gates on M5.2 stage
+3+ (the AST→MSIL bridge in the self-hosted compiler).
 **Builds on:** D047 (composed contracts in §5.1, around-body
 nesting in §6, verifier interaction in §11),
 `docs/27-aspect-libraries.md` (library aspects' contract
 clauses participating in composition), `docs/28-std-aspects-sketch.md`
 (the `Validation` + `Authorization` motivating example).
-**Decision-log entry:** None — this is a sketch, not a spec.
+**Decision-log entry:** **D049** — Aspect contract inheritance
+(v1.x semantics).
 
 ---
 
