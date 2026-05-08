@@ -95,6 +95,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M16 — `switch` table: `msil_self_test_m16.l` builds a PE with `Main()` dispatching value `2` via a 3-target `switch` instruction; target[2] pushes 42 and falls through to `Console.WriteLine`; verifies opcode `0x45`, count encoding, and each target's signed relative offset | **Shipped** (this branch) | D-progress-155 |
 | MSIL PE emitter Stage M17 — bitwise operations: `msil_self_test_m17.l` builds a PE with `Main()` computing `(60 & 13) + (60 | 13) = 12 + 61 = 73`; exercises `and` (0x5F), `or` (0x60) opcodes; CLR prints `73` | **Shipped** (this branch) | D-progress-156 |
 | MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals): `msil_self_test_m18.l` builds a PE with `Main()` pushing `3.0` and `2.0` via `ldc.r8` (9-byte instruction with IEEE 754 f64 LE constant), multiplying via `mul`, and calling `Console.WriteLine(double)`; verifies opcode and the 8-byte encoding of `3.0`; CLR prints `6` | **Shipped** (this branch) | D-progress-157 |
+| MSIL PE emitter Stage M19 — `sub` + `rem`: `msil_self_test_m19.l` builds a PE with `Main()` computing `(23 - 3) % 13 = 7`; exercises `sub` (0x59) and `rem` (0x5D); CLR prints `7` | **Shipped** (this branch) | D-progress-158 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -1314,6 +1315,32 @@ Key verified byte positions:
 
 **Test wiring**: `MsilSelfTestM18.fs` added to `Lyric.Emitter.Tests`; all 22
 MSIL self-tests pass (M1, M2a–M2d, M3–M18).
+
+---
+
+### D-progress-158: MSIL PE emitter Stage M19 — `sub` + `rem`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M19 verifies `sub` (0x59) and `rem` (0x5D) — the remaining
+core arithmetic opcodes.
+
+**`msil_self_test_m19.l`** builds a tiny-header `Main()`:
+
+```
+ldc.i4.s 23 / ldc.i4.s 3 / sub   → 20
+ldc.i4.s 13 / rem                 → 7  (20 % 13)
+call Console.WriteLine(int) / ret
+```
+
+Key verified byte positions:
+- Tiny header `0x3A` at 0x248 (codeSize=14, (14<<2)|2=58=0x3A).
+- `sub` opcode `0x59` at file 0x24D (code offset 4).
+- `rem` opcode `0x5D` at file 0x250 (code offset 7).
+- BSJB at 0x257.
+
+**Test wiring**: `MsilSelfTestM19.fs` added to `Lyric.Emitter.Tests`; all 23
+MSIL self-tests pass (M1, M2a–M2d, M3–M19).
 
 ---
 
