@@ -1978,6 +1978,51 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-181: MSIL PE emitter Stage M42 — `stind.i1`/`i2` + `ldind.u1`/`i2` (narrow indirect access)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M42 exercises narrow indirect stores and loads through a managed pointer.
+Using one I4 local:
+1. `stind.i1` (0x52) — store low byte; `ldind.u1` (0x47) — load unsigned byte → 42
+2. `stind.i2` (0x53) — store low two bytes; `ldind.i2` (0x48) — load signed short → 42
+
+**New in `opcodes.l`**: The complete `ldind.*`/`stind.*` family:
+`OP_LDIND_I1/U1/I2/U2/U4/I8/R4/R8` (0x46–0x4F) and `OP_STIND_I1/I2/I8/R4/R8`
+(0x52–0x57) constants, smart constructors, and `emitLdind_*/emitStind_*`
+wrappers for all variants (adding to the existing I4 and Ref forms).
+
+**Test wiring**: `MsilSelfTestM42.fs` added to `Lyric.Emitter.Tests`; all 46
+MSIL self-tests pass (M1, M2a–M2d, M3–M42).  CLR: two `"42"` lines printed.
+
+---
+
+### D-progress-180: MSIL PE emitter Stage M41 — `conv.ovf.*.un` (unsigned-input overflow conversions)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M41 exercises the unsigned-input variants of the overflow-checked
+conversion opcodes: `conv.ovf.i8.un` (0x85), `conv.ovf.i4.un` (0x84), and
+`conv.ovf.u4.un` (0x88).  These treat the source value as unsigned before
+converting; for non-negative operands within range the result is identical to
+the signed variants.
+
+**Code flow:** Two computations, both yielding 42:
+1. `ldc.i4.s 42 / conv.ovf.i8.un / conv.ovf.i4.un` → int32 42 → `Console.WriteLine`
+2. `ldc.i4.s 42 / conv.ovf.u4.un` → uint32 42 (same bits) → `Console.WriteLine`
+
+Tiny header (codeSize=18, header byte 0x4A) at 0x248.  BSJB at 0x25B.
+
+**New in `opcodes.l`**: `OP_CONV_OVF_I1_UN/I2_UN/I4_UN/I8_UN/U1_UN/U2_UN/U4_UN/U8_UN`
+constants (0x82–0x89) plus corresponding `iConv_Ovf_*_Un` constructors and
+`emitConv_Ovf_*_Un` wrappers for all eight unsigned-input overflow-checked
+conversion variants.
+
+**Test wiring**: `MsilSelfTestM41.fs` added to `Lyric.Emitter.Tests`; all 45
+MSIL self-tests pass (M1, M2a–M2d, M3–M41).  CLR: two `"42"` lines printed.
+
+---
+
 ### D-progress-179: MSIL PE emitter Stage M40 — `volatile.` prefix
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

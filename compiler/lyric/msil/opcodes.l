@@ -52,10 +52,23 @@ pub val OP_LDC_I4_8    : Int = 0x1E
 pub val OP_DUP         : Int = 0x25
 pub val OP_POP         : Int = 0x26
 pub val OP_RET         : Int = 0x2A
+pub val OP_LDIND_I1    : Int = 0x46
+pub val OP_LDIND_U1    : Int = 0x47
+pub val OP_LDIND_I2    : Int = 0x48
+pub val OP_LDIND_U2    : Int = 0x49
 pub val OP_LDIND_I4    : Int = 0x4A
+pub val OP_LDIND_U4    : Int = 0x4B
+pub val OP_LDIND_I8    : Int = 0x4C
+pub val OP_LDIND_R4    : Int = 0x4E
+pub val OP_LDIND_R8    : Int = 0x4F
 pub val OP_LDIND_REF   : Int = 0x50
 pub val OP_STIND_REF   : Int = 0x51
+pub val OP_STIND_I1    : Int = 0x52
+pub val OP_STIND_I2    : Int = 0x53
 pub val OP_STIND_I4    : Int = 0x54
+pub val OP_STIND_I8    : Int = 0x55
+pub val OP_STIND_R4    : Int = 0x56
+pub val OP_STIND_R8    : Int = 0x57
 pub val OP_ADD         : Int = 0x58
 pub val OP_SUB         : Int = 0x59
 pub val OP_MUL         : Int = 0x5A
@@ -89,6 +102,14 @@ pub val OP_SUB_OVF_UN  : Int = 0xDB
 pub val OP_ENDFINALLY  : Int = 0xDC
 pub val OP_CONV_U1     : Int = 0xD2
 pub val OP_CONV_U2     : Int = 0xD1
+pub val OP_CONV_OVF_I1_UN : Int = 0x82
+pub val OP_CONV_OVF_I2_UN : Int = 0x83
+pub val OP_CONV_OVF_I4_UN : Int = 0x84
+pub val OP_CONV_OVF_I8_UN : Int = 0x85
+pub val OP_CONV_OVF_U1_UN : Int = 0x86
+pub val OP_CONV_OVF_U2_UN : Int = 0x87
+pub val OP_CONV_OVF_U4_UN : Int = 0x88
+pub val OP_CONV_OVF_U8_UN : Int = 0x89
 pub val OP_CONV_OVF_I1 : Int = 0xB3
 pub val OP_CONV_OVF_U1 : Int = 0xB4
 pub val OP_CONV_OVF_I2 : Int = 0xB5
@@ -301,14 +322,22 @@ pub func iConv_U1():       Insn = Nullary(op = OP_CONV_U1)
 pub func iConv_U2():       Insn = Nullary(op = OP_CONV_U2)
 pub func iConv_U4():       Insn = Nullary(op = OP_CONV_U4)
 pub func iConv_U8():       Insn = Nullary(op = OP_CONV_U8)
-pub func iConv_Ovf_I1():   Insn = Nullary(op = OP_CONV_OVF_I1)
-pub func iConv_Ovf_U1():   Insn = Nullary(op = OP_CONV_OVF_U1)
-pub func iConv_Ovf_I2():   Insn = Nullary(op = OP_CONV_OVF_I2)
-pub func iConv_Ovf_U2():   Insn = Nullary(op = OP_CONV_OVF_U2)
-pub func iConv_Ovf_I4():   Insn = Nullary(op = OP_CONV_OVF_I4)
-pub func iConv_Ovf_U4():   Insn = Nullary(op = OP_CONV_OVF_U4)
-pub func iConv_Ovf_I8():   Insn = Nullary(op = OP_CONV_OVF_I8)
-pub func iConv_Ovf_U8():   Insn = Nullary(op = OP_CONV_OVF_U8)
+pub func iConv_Ovf_I1():      Insn = Nullary(op = OP_CONV_OVF_I1)
+pub func iConv_Ovf_U1():      Insn = Nullary(op = OP_CONV_OVF_U1)
+pub func iConv_Ovf_I2():      Insn = Nullary(op = OP_CONV_OVF_I2)
+pub func iConv_Ovf_U2():      Insn = Nullary(op = OP_CONV_OVF_U2)
+pub func iConv_Ovf_I4():      Insn = Nullary(op = OP_CONV_OVF_I4)
+pub func iConv_Ovf_U4():      Insn = Nullary(op = OP_CONV_OVF_U4)
+pub func iConv_Ovf_I8():      Insn = Nullary(op = OP_CONV_OVF_I8)
+pub func iConv_Ovf_U8():      Insn = Nullary(op = OP_CONV_OVF_U8)
+pub func iConv_Ovf_I1_Un():   Insn = Nullary(op = OP_CONV_OVF_I1_UN)
+pub func iConv_Ovf_I2_Un():   Insn = Nullary(op = OP_CONV_OVF_I2_UN)
+pub func iConv_Ovf_I4_Un():   Insn = Nullary(op = OP_CONV_OVF_I4_UN)
+pub func iConv_Ovf_I8_Un():   Insn = Nullary(op = OP_CONV_OVF_I8_UN)
+pub func iConv_Ovf_U1_Un():   Insn = Nullary(op = OP_CONV_OVF_U1_UN)
+pub func iConv_Ovf_U2_Un():   Insn = Nullary(op = OP_CONV_OVF_U2_UN)
+pub func iConv_Ovf_U4_Un():   Insn = Nullary(op = OP_CONV_OVF_U4_UN)
+pub func iConv_Ovf_U8_Un():   Insn = Nullary(op = OP_CONV_OVF_U8_UN)
 pub func iLdlen():      Insn = Nullary(op = OP_LDLEN)
 pub func iThrow():      Insn = Nullary(op = OP_THROW)
 pub func iVolatile():   Insn = Nullary2(op = OP2_VOLATILE)
@@ -316,9 +345,22 @@ pub func iTail():       Insn = Nullary2(op = OP2_TAIL)
 pub func iRethrow():    Insn = Nullary2(op = OP2_RETHROW)
 pub func iEndfinally(): Insn = Nullary(op = OP_ENDFINALLY)
 pub func iStelem_Ref(): Insn = Nullary(op = OP_STELEM_REF)
+pub func iLdind_I1():   Insn = Nullary(op = OP_LDIND_I1)
+pub func iLdind_U1():   Insn = Nullary(op = OP_LDIND_U1)
+pub func iLdind_I2():   Insn = Nullary(op = OP_LDIND_I2)
+pub func iLdind_U2():   Insn = Nullary(op = OP_LDIND_U2)
 pub func iLdind_I4():   Insn = Nullary(op = OP_LDIND_I4)
+pub func iLdind_U4():   Insn = Nullary(op = OP_LDIND_U4)
+pub func iLdind_I8():   Insn = Nullary(op = OP_LDIND_I8)
+pub func iLdind_R4():   Insn = Nullary(op = OP_LDIND_R4)
+pub func iLdind_R8():   Insn = Nullary(op = OP_LDIND_R8)
 pub func iLdind_Ref():  Insn = Nullary(op = OP_LDIND_REF)
+pub func iStind_I1():   Insn = Nullary(op = OP_STIND_I1)
+pub func iStind_I2():   Insn = Nullary(op = OP_STIND_I2)
 pub func iStind_I4():   Insn = Nullary(op = OP_STIND_I4)
+pub func iStind_I8():   Insn = Nullary(op = OP_STIND_I8)
+pub func iStind_R4():   Insn = Nullary(op = OP_STIND_R4)
+pub func iStind_R8():   Insn = Nullary(op = OP_STIND_R8)
 pub func iStind_Ref():  Insn = Nullary(op = OP_STIND_REF)
 pub func iCeq():        Insn = Nullary2(op = OP2_CEQ)
 pub func iCgt():        Insn = Nullary2(op = OP2_CGT)
@@ -505,8 +547,16 @@ pub func emitConv_Ovf_I2(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I2())
 pub func emitConv_Ovf_U2(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U2())
 pub func emitConv_Ovf_I4(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I4())
 pub func emitConv_Ovf_U4(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U4())
-pub func emitConv_Ovf_I8(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I8())
-pub func emitConv_Ovf_U8(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U8())
+pub func emitConv_Ovf_I8(b: in MethodBody): Unit     = mbEmit(b, iConv_Ovf_I8())
+pub func emitConv_Ovf_U8(b: in MethodBody): Unit     = mbEmit(b, iConv_Ovf_U8())
+pub func emitConv_Ovf_I1_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I1_Un())
+pub func emitConv_Ovf_I2_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I2_Un())
+pub func emitConv_Ovf_I4_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I4_Un())
+pub func emitConv_Ovf_I8_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I8_Un())
+pub func emitConv_Ovf_U1_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U1_Un())
+pub func emitConv_Ovf_U2_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U2_Un())
+pub func emitConv_Ovf_U4_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U4_Un())
+pub func emitConv_Ovf_U8_Un(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U8_Un())
 pub func emitLdlen(b: in MethodBody): Unit      = mbEmit(b, iLdlen())
 pub func emitThrow(b: in MethodBody): Unit      = mbEmit(b, iThrow())
 pub func emitVolatile(b: in MethodBody): Unit   = mbEmit(b, iVolatile())
@@ -514,9 +564,22 @@ pub func emitTail(b: in MethodBody): Unit       = mbEmit(b, iTail())
 pub func emitRethrow(b: in MethodBody): Unit    = mbEmit(b, iRethrow())
 pub func emitEndfinally(b: in MethodBody): Unit = mbEmit(b, iEndfinally())
 pub func emitStelem_Ref(b: in MethodBody): Unit = mbEmit(b, iStelem_Ref())
+pub func emitLdind_I1(b: in MethodBody): Unit   = mbEmit(b, iLdind_I1())
+pub func emitLdind_U1(b: in MethodBody): Unit   = mbEmit(b, iLdind_U1())
+pub func emitLdind_I2(b: in MethodBody): Unit   = mbEmit(b, iLdind_I2())
+pub func emitLdind_U2(b: in MethodBody): Unit   = mbEmit(b, iLdind_U2())
 pub func emitLdind_I4(b: in MethodBody): Unit   = mbEmit(b, iLdind_I4())
+pub func emitLdind_U4(b: in MethodBody): Unit   = mbEmit(b, iLdind_U4())
+pub func emitLdind_I8(b: in MethodBody): Unit   = mbEmit(b, iLdind_I8())
+pub func emitLdind_R4(b: in MethodBody): Unit   = mbEmit(b, iLdind_R4())
+pub func emitLdind_R8(b: in MethodBody): Unit   = mbEmit(b, iLdind_R8())
 pub func emitLdind_Ref(b: in MethodBody): Unit  = mbEmit(b, iLdind_Ref())
+pub func emitStind_I1(b: in MethodBody): Unit   = mbEmit(b, iStind_I1())
+pub func emitStind_I2(b: in MethodBody): Unit   = mbEmit(b, iStind_I2())
 pub func emitStind_I4(b: in MethodBody): Unit   = mbEmit(b, iStind_I4())
+pub func emitStind_I8(b: in MethodBody): Unit   = mbEmit(b, iStind_I8())
+pub func emitStind_R4(b: in MethodBody): Unit   = mbEmit(b, iStind_R4())
+pub func emitStind_R8(b: in MethodBody): Unit   = mbEmit(b, iStind_R8())
 pub func emitStind_Ref(b: in MethodBody): Unit  = mbEmit(b, iStind_Ref())
 pub func emitCeq(b: in MethodBody): Unit        = mbEmit(b, iCeq())
 pub func emitCgt(b: in MethodBody): Unit        = mbEmit(b, iCgt())
