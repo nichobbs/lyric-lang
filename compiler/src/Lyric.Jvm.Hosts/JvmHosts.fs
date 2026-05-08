@@ -116,6 +116,27 @@ type JvmByteBuilder() =
         buf.Add(byte ((u >>> 16) &&& 0xFFu))
         buf.Add(byte ((u >>> 24) &&& 0xFFu))
 
+    member _.AppendI8Le(v: int64) : unit =
+        let u = uint64 v
+        buf.Add(byte (u &&& 0xFFUL))
+        buf.Add(byte ((u >>> 8)  &&& 0xFFUL))
+        buf.Add(byte ((u >>> 16) &&& 0xFFUL))
+        buf.Add(byte ((u >>> 24) &&& 0xFFUL))
+        buf.Add(byte ((u >>> 32) &&& 0xFFUL))
+        buf.Add(byte ((u >>> 40) &&& 0xFFUL))
+        buf.Add(byte ((u >>> 48) &&& 0xFFUL))
+        buf.Add(byte ((u >>> 56) &&& 0xFFUL))
+
+    member _.AppendF4Le(v: float) : unit =
+        let bs = System.BitConverter.GetBytes(single v)
+        if System.BitConverter.IsLittleEndian then buf.AddRange(bs)
+        else buf.Add(bs.[3]); buf.Add(bs.[2]); buf.Add(bs.[1]); buf.Add(bs.[0])
+
+    member _.AppendF8Le(v: float) : unit =
+        let bs = System.BitConverter.GetBytes(v)
+        if System.BitConverter.IsLittleEndian then buf.AddRange(bs)
+        else for i in 7 .. -1 .. 0 do buf.Add(bs.[i])
+
     member _.PatchU2Be(offset: int, v: int) : unit =
         buf.[offset]   <- byte ((v >>> 8) &&& 0xFF)
         buf.[offset+1] <- byte (v &&& 0xFF)
@@ -183,6 +204,15 @@ type JvmByteHost private () =
 
     static member AppendU4Le(w: JvmByteBuilder, v: int) : unit =
         w.AppendU4Le(v)
+
+    static member AppendI8Le(w: JvmByteBuilder, v: int64) : unit =
+        w.AppendI8Le(v)
+
+    static member AppendF4Le(w: JvmByteBuilder, v: float) : unit =
+        w.AppendF4Le(v)
+
+    static member AppendF8Le(w: JvmByteBuilder, v: float) : unit =
+        w.AppendF8Le(v)
 
     static member ToList
             (w: JvmByteBuilder) : System.Collections.Generic.List<byte> =

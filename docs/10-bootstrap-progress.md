@@ -78,6 +78,7 @@ deferred to Phase 3 by design.
 | M5.1 stage 6 — self-hosted type checker (`Lyric.TypeChecker` library + `typechecker_self_test.l`) | **Shipped** (PR #195) | D-progress-132 |
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
+| MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (this branch) | D-progress-141 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 |
@@ -526,6 +527,66 @@ file: function bodies, records, and unions all keep their inline
 Out of scope for this stage: per-expression CST nodes (so a
 comment inside a single expression's sub-tree may still anchor at
 the enclosing statement).  Mechanically additive when needed.
+
+---
+
+### D-progress-141: MSIL PE emitter Stages M2a–M2d — parameterized heap/opcode/table/layout pipeline
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stages M2a through M2d build the four foundational layers that a self-hosted
+MSIL emitter needs to produce real PE binaries, replacing the fixed-layout
+`Msil.Pe` generator from Stage M1.
+
+**M2a — `Msil.Heaps` parameterized heap builders** (`heaps.l`, `msil_self_test_m2a.l`)
+
+Four ECMA-335 metadata heaps with deduplication and serialization:
+- `StringHeap` — null-terminated UTF-8 strings; `internString` returns byte offset.
+- `BlobHeap` — compressed-length-prefixed blobs; `internBlob` returns byte offset.
+- `UsHeap` — UTF-16LE user-string literals with ECMA flag byte; `internUs` returns offset.
+- `GuidHeap` — 16-byte GUIDs; `appendGuid` returns 1-based index.
+Each heap serializes via `serialize*(h, w)` into a `ByteWriter`.
+
+**M2b — `Msil.Opcodes` CIL instruction IR + two-pass assembler** (`opcodes.l`, `msil_self_test_m2b.l`)
+
+Typed `Insn` union covering all ECMA-335 instruction forms (nullary, token,
+branch, local/arg-index, constant, prefix-2).  `MethodBody` accumulates
+instructions and label bindings.  `serializeMethodBody` assembles in two
+passes: pass 1 computes label→offset map; pass 2 emits bytes with resolved
+4-byte branch offsets.  Tiny vs. fat method header selection is automatic.
+`switch` targets stored in a parallel flat list on `MethodBody` to avoid the
+D035 List[T]-in-union-field erasure constraint.
+
+**M2c — `Msil.Tables` metadata table model + #~ stream serializer** (`tables.l`, `msil_self_test_m2c.l`)
+
+Typed row records for all ten tables used by minimal assemblies (Module,
+TypeRef, TypeDef, Field, MethodDef, Param, MemberRef, CustomAttribute,
+Assembly, AssemblyRef) plus `MetadataTables` container with `addXxx()`
+row-index allocators.  Coded-index helpers: `rsModule/rsAssemblyRef/rsTypeRef`,
+`tdrTypeDef/tdrTypeRef/tdrTypeSpec`, `mrpTypeRef/mrpMethodDef`,
+`hcaAssembly/catMemberRef`, etc.  `serializeTablesStream` emits a complete
+ECMA-335 #~ stream body including header, valid bitmask, sorted bitmask, row
+counts, and row data.
+
+**M2d — `Msil.Assembler` single-method PE layout engine** (`assembler.l`, `msil_self_test_m2d.l`)
+
+`assemblePe(inp)` accepts an `AssemblerInput` (one `MethodBody`, populated
+`MetadataTables`, four heap objects, and an entry-point token) and produces a
+correct CLR-runnable PE image as a `ByteWriter`.  Two-pass layout:
+1. Serialize method body and all streams to temp buffers; compute sizes.
+2. Write DOS stub → PE/COFF headers → CLR header → method body → BSJB
+   metadata root (32-byte header + 5 stream headers + stream data) → section
+   padding.
+Computes `MetaData.VirtualAddress`, `SizeOfImage`, `SizeOfRawData`, and stream
+offsets dynamically from actual content sizes.  `FIRST_METHOD_RVA = 0x2048`.
+
+Smoke test (`msil_self_test_m2d.l`) reconstructs the Hello-World assembly from
+Stage M1 using the parameterized pipeline and verifies 11 structural invariants
+(DOS magic, PE signature, CLR header `cb`, MetaData RVA and size, entry-point
+token, method tiny header, ldstr opcode + token, BSJB magic, stream count).
+
+**Test wiring**: `MsilSelfTestM2a.fs`, `MsilSelfTestM2b.fs`, `MsilSelfTestM2c.fs`,
+`MsilSelfTestM2d.fs` added to `Lyric.Emitter.Tests`; all 5 MSIL self-tests pass.
 
 ---
 

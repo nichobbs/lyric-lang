@@ -26,6 +26,21 @@ pub func bufLen(w: in ByteWriter): Int = ()
 @externTarget("Lyric.Jvm.Hosts.JvmByteHost.ToList")
 pub func bufToList(w: in ByteWriter): List[Byte] = ()
 
+@externTarget("Lyric.Jvm.Hosts.JvmByteHost.AppendBytes")
+pub func bufBytes(w: in ByteWriter, bs: in slice[Byte]): Unit = ()
+
+@externTarget("Lyric.Jvm.Hosts.JvmByteHost.AppendByteList")
+pub func bufByteList(w: in ByteWriter, bs: in List[Byte]): Unit = ()
+
+@externTarget("Lyric.Jvm.Hosts.JvmByteHost.AppendI8Le")
+pub func bufI8Le(w: in ByteWriter, v: in Long): Unit = ()
+
+@externTarget("Lyric.Jvm.Hosts.JvmByteHost.AppendF4Le")
+pub func bufF4Le(w: in ByteWriter, v: in Double): Unit = ()
+
+@externTarget("Lyric.Jvm.Hosts.JvmByteHost.AppendF8Le")
+pub func bufF8Le(w: in ByteWriter, v: in Double): Unit = ()
+
 pub func bufZero(w: in ByteWriter, n: in Int): Unit {
   var i = 0
   while i < n {
