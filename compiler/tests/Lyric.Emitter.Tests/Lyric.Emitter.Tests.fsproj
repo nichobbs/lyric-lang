@@ -17,6 +17,7 @@
     <Compile Include="EnumMatchTests.fs" />
     <Compile Include="UnionTests.fs" />
     <Compile Include="InterfaceTests.fs" />
+    <Compile Include="ImplBlockGenericsTests.fs" />
     <Compile Include="ContractTests.fs" />
     <Compile Include="GenericsTests.fs" />
     <Compile Include="AsyncTests.fs" />

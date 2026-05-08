@@ -399,6 +399,20 @@ impl Repository[User, UserId] for PostgresUserRepository {
 }
 ```
 
+**Impl-block generics and generic interface methods** are supported:
+
+- An impl block can carry its own type parameters with `impl[T] Iface for Target[T] { … }`.
+  The type parameters correspond to the target record's own class-level GTPBs.
+- An interface or impl method can be generic with the bare-bracket form
+  `func name[U](x: in U): U`.  This makes the CLR method itself generic;
+  call sites emit `MakeGenericMethod` with type arguments inferred from
+  the argument expressions.
+- Both forms may be combined:
+  `impl[T] Transformer for Container[T] { func transform[U](x: in U): U = x }`.
+
+Async state-machine lowering for generic impl methods (Phase B SM) is deferred;
+generic async impl methods fall back to the `Task.FromResult` path.
+
 Interfaces support default methods. Interfaces may be stable or `@stubbable` (generates a stub builder for tests; see §10).
 
 Multiple inheritance of interfaces is permitted; diamond conflicts are resolved by requiring explicit override.

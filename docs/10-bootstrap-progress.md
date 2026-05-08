@@ -7580,36 +7580,20 @@ The infrastructure pieces touched by C2:
 | 18. Spill-prior-siblings ordering preservation | **Shipped (Phase B+++, D-progress-076)** |
 
 C2 is **complete** for every shape Lyric currently supports.  The
-single remaining bullet — generic **impl** methods (e.g.
-`impl[T] Foo for Bar[T] { async func twiddle(x: in T): T = x }`)
-— is gated on infrastructure that pre-dates async and is genuinely
-orthogonal to C2:
-
-- **Generic interface methods** are not yet modelled.
-  `Lyric.Emitter/Emitter.fs:208`'s interface-method definition
-  uses `tb.DefineMethod` without `DefineGenericParameters`, so an
-  interface method declared with `[T]` couldn't be implemented as
-  a real generic method anywhere.
-- **Impl-block-level generics** (the `[ GenericParams ]` slot on
-  `ImplDecl` per `docs/grammar.ebnf:572`) are recognised by the
-  parser but discarded by both the type checker
-  (`Lyric.TypeChecker/Checker.fs:134` returns `None` for `IImpl`
-  in the symbol-collection pass) and the emitter (Pass A.5 ignores
-  `impl.Generics`).
-- **The stdlib doesn't use the construct** (a repo-wide grep for
-  `impl[` / generic impl methods returns zero hits).
-
-Adding async-state-machine support on top of these is futile until
-the underlying generic-impl-methods feature ships — that work is
-tracked as a separate Phase 2 follow-up rather than as remaining
-C2 scope.  When/if it lands, the SM-side wiring is mechanical:
-extend `defineStateMachineHeader`'s caller to thread impl-block +
-method-level GTPBs, mirror the free-standing generic path
-(D-progress-075), and re-use the same `kickoffBuilder*` helpers.
+previously open bullet — generic **impl** methods — shipped in
+D-progress-141 (see below).  The async-SM extension for generic impl
+methods (e.g. `impl[T] Foo for Bar[T] { async func twiddle(): T }`)
+remains a follow-up: `asyncSmEligible` in Pass B.5 gates on
+`sg.Generics.IsEmpty` until the SM-side generic-param threading lands.
+The SM wiring is mechanical: extend `defineStateMachineHeader`'s caller
+to thread impl-block + method-level GTPBs, mirror the free-standing
+generic path (D-progress-075), and re-use the same `kickoffBuilder*`
+helpers.
 
 Tier 5 items (`Std.Http` cancellation/timeouts shipped via
 D-progress-070; `wire` scoped lifetimes shipped via D-progress-072).
 Tier 6 items: AST-based `lyric fmt` and `lyric lint` shipped (see above);
+generic interface methods + impl-block generics shipped (D-progress-141);
 CST formatter (v2), format5+, Regex RE2, C4 phase 2/3 remain on-demand.
 
 ---
@@ -7922,3 +7906,85 @@ Four new `[D-D1.3]`-tagged tests added to `SmtTests.fs` (float-sort rendering,
 statement, mid-sequence SReturn, general ECall, float arithmetic, protected
 type goals, protected type invariant-as-hypothesis).  Total verifier tests:
 266, all passing.
+
+---
+
+### D-progress-141: Tier 6 #16 — generic interface methods + impl-block generics
+
+*claude/impl-block-generics-XM6Mu branch.*
+
+Implements the three shapes the grammar already accepted but the emitter
+and Codegen silently dropped:
+
+**1. Method-level generics in impl blocks** (`func name[U](…): U`)
+
+- `defineInterface` in `Emitter.fs` now calls `DefineGenericParameters`
+  on interface methods that carry `Generics` in the AST.  The
+  three-step Reflection.Emit pattern (DefineMethod with no signature,
+  DefineGenericParameters, SetParameters / SetReturnType) is applied
+  the same way as for free-standing generic functions.
+- Pass A.5 in `Emitter.fs` detects method-level generic names from
+  `fd.Generics`, calls `DefineGenericParameters` on the impl
+  `MethodBuilder`, builds a combined `genericSubst` (impl-class GTPBs
+  prepended to method GTPBs), and resolves param/return types through
+  `TypeMap.toClrTypeWithGenerics`.
+- Call-site dispatch in `Codegen.fs` (`ECall { Kind = EMember … }`):
+  a new branch intercepts the case where `im.Method.IsGenericMethodDefinition`
+  is true.  It emits args to temp locals, infers type bindings from
+  GTPB positions in the param type list, calls
+  `im.Method.MakeGenericMethod(bindings)`, and emits `callvirt` on the
+  closed instantiation.  The return type is reconstructed from the
+  binding map to side-step the pre-sealing limitation on
+  `MethodBuilder.ReturnType`.
+
+**2. Impl-block-level generics** (`impl[T] Foo for Bar[T]`)
+
+- Pass A.5 target lookup now handles `TGenericApp` (e.g. `Box[T]`) in
+  addition to `TRef` (e.g. `Box`), extracting the base name and
+  resolving the record entry by the same key.  Previously the
+  `TGenericApp` branch fell through to `| _ -> None`, silently skipping
+  the entire impl block.
+- The impl-level generic names (`impl.Generics`) are pushed into
+  `resolveCtx` before iterating members so `Resolver.resolveType`
+  recognises them as type parameters.  The class-level GTPBs from
+  `recInfo.Type.GetGenericArguments()` back the substitution.
+- `synthSig.Generics` carries the impl-level names so
+  `emitFunctionBody`'s existing `selfType.GetGenericArguments()` fallback
+  recovers the correct GTPBs at body-emission time.
+
+**3. Combined impl-block + method-level generics**
+
+- `synthSig.Generics` is ordered `[implNames...; methodNames...]`.
+  Pass B.5 builds `implMethodGenericSubst` by concatenating class GTPBs
+  (impl-level) with method GTPBs (method-level) in the same order.
+- `emitFunctionBody`'s GTPB resolution gains a new fallback:
+  ```
+  | Some st when st.IsGenericType ->
+      let clsGtpbs = st.GetGenericArguments()
+      if clsGtpbs.Length + methodGtpbs.Length = sg.Generics.Length then
+          Array.append clsGtpbs methodGtpbs
+      else methodGtpbs
+  ```
+  This covers the combined case that neither the "all from method" nor
+  "all from class" branches matched before.
+
+**Async SM eligibility**
+
+`asyncSmEligible` in Pass B.5 previously checked `fd.Generics.IsNone`
+(method-level only).  It now checks `sg.Generics.IsEmpty` so that
+impl-block-level generics also defer through the direct-emit path.
+Async SM wiring for generic impl methods is a follow-up.
+
+**Test coverage**
+
+`compiler/tests/Lyric.Emitter.Tests/ImplBlockGenericsTests.fs` —
+six new end-to-end tests covering:
+- Method-level generic identity (`func wrap[U](x: in U): U`)
+- Method-level generic with multiple type params (`func pair[A, B](…)`)
+- Method-level generic on a record with fields
+- Impl-block generic on a generic record (`impl[T] Holder for Box[T]`)
+- Impl-block generic with two instantiations of the same generic record
+- Combined impl-block + method-level generics
+
+655 emitter tests, 319 parser tests, 143 type-checker tests, 123 lexer
+tests — all passing.

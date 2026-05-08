@@ -1993,6 +1993,44 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             ctx.Interfaces.Values
             |> Seq.collect (fun i -> i.Members |> List.map (fun m -> i, m))
             |> Seq.tryFind (fun (_, m) -> m.Name = methodName)
+        // Generic interface method dispatch: when the interface declares
+        // `func name[U](U): U`, the MethodBuilder is generic.  Emit args
+        // to temp locals, infer type bindings from observed CLR arg types,
+        // `MakeGenericMethod`, then `callvirt` the closed instantiation.
+        // Return type is reconstructed from the binding map.
+        match ifaceMethod with
+        | Some (_, im) when im.Method.IsGenericMethodDefinition ->
+            let paramTypes = im.Params |> List.toArray
+            let gtpbs      = im.Method.GetGenericArguments()
+            let bindings   = Array.create gtpbs.Length typeof<obj>
+            let argLocals =
+                args |> List.mapi (fun i a ->
+                    let payload =
+                        match a with
+                        | CAPositional ex | CANamed (_, ex, _) -> ex
+                    let argTy = emitExpr ctx payload
+                    let lb = FunctionCtx.defineLocal ctx ("__iface_garg_" + string i) argTy
+                    il.Emit(OpCodes.Stloc, lb)
+                    // Bind if the param slot is a direct generic type parameter.
+                    if i < paramTypes.Length then
+                        let pt = paramTypes.[i]
+                        if pt.IsGenericParameter then
+                            let pos = pt.GenericParameterPosition
+                            if pos < bindings.Length then
+                                bindings.[pos] <- argTy
+                    lb, argTy)
+            let closed = im.Method.MakeGenericMethod bindings
+            argLocals |> List.iter (fun (lb, _) -> il.Emit(OpCodes.Ldloc, lb))
+            il.Emit(OpCodes.Callvirt, closed)
+            // Reconstruct the return type from the binding map; MethodBuilder's
+            // ReturnType is unreliable before the host type is sealed.
+            let openRet = im.Return
+            if openRet = typeof<System.Void> then typeof<System.Void>
+            elif openRet.IsGenericParameter then
+                let pos = openRet.GenericParameterPosition
+                if pos < bindings.Length then bindings.[pos] else typeof<obj>
+            else openRet
+        | _ ->
         // (method, extra-default-params): extra is [] except for BCL calls
         // that match a method with more params than supplied args.
         let miOpt : (MethodInfo * System.Reflection.ParameterInfo array) option =
