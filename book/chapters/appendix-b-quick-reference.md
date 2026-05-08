@@ -584,7 +584,9 @@ lyric test <file.l> --list             # print test titles only; do not compile 
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
 lyric fmt --write <file.l>             # overwrite file in place
 lyric fmt --check <file.l>             # exit 1 if not formatted; print nothing (CI gate)
-# Note: non-doc (//) comments are not preserved — only /// and //! survive
+lyric fmt --legacy <file.l>            # AST-only fallback (drops `//` comments, soak release)
+# Default: walks the red/green CST and preserves all comments
+# (//, /* */, ///, //!) plus intentional blank lines (max one per spot).
 
 # Lint
 lyric lint <file.l>                    # report style/quality diagnostics (AST-only; fast)

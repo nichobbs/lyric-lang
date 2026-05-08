@@ -259,7 +259,7 @@ The framing for users: "use proof for the parts where it's easy, runtime checks 
 - **Self-hosted parser, type checker, mode checker, contract elaborator, monomorphizer, MSIL emitter** — all written in Lyric
 - **Bootstrap compiler retained** for emergency use, no longer the primary build path
 - **Self-hosted standard library**, including the LSP server and formatter
-- **`lyric fmt`** (CST-faithful, round-trip-preserving) with the full CST layer it requires. The bootstrap shipped an AST-based formatter (`Fmt.fs` in `Lyric.Cli`) that covers the canonical style rules and is idempotent, but does not preserve non-doc comments. The self-hosted v1.0 formatter will use a CST for full fidelity.
+- **`lyric fmt`** (CST-faithful, round-trip-preserving) with the full CST layer it requires. The bootstrap shipped an AST-based formatter (`Fmt.fs` in `Lyric.Cli`) that covers the canonical style rules and is idempotent, but does not preserve non-doc comments. The self-hosted formatter (`Lyric.Fmt`) shipped in M5.3 stages 2–5 (D-progress-131 / 135 / 136 / 141): walks the red/green CST built in M5.1 stage 5′ (D-progress-130), preserves `//` and `/* */` comments at item / member / statement / nested-block boundaries, preserves intentional blank lines (max one per spot, Black-style), and is wired through the F# `lyric fmt` subcommand by default with a `--legacy` / `LYRIC_FMT_LEGACY=1` escape hatch back to `Fmt.fs` for one release of soak. Per-expression CST granularity (so a comment inside `1 + 2` anchors at the `+` rather than the enclosing statement) is the remaining gap.
 
 ### Phase 5 strategy
 
@@ -289,10 +289,24 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
      checks remain in stage 3.
    - Remaining: monomorphizer, MSIL emitter (`Lyric.Emitter`).
 3. **M5.3 (month 75-81):** Self-hosted standard library, LSP, formatter, package manager, CLI
-   - Stage 1 (shipped): `Std.ProcessHost` kernel extern, `Std.Process` surface, `Lyric.Manifest`
+   - Stage 1 (shipped, D-progress-129): `Std.ProcessHost` kernel extern, `Std.Process` surface, `Lyric.Manifest`
      TOML parser, `Lyric.Cli` command dispatch (forward-references M5.2 packages).
-   - Remaining: `Lyric.Parser`, `Lyric.TypeChecker`, `Lyric.Emitter` (M5.2), `Lyric.Fmt`,
-     `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta`, `Pack.l`.
+   - Stage 2 (shipped, D-progress-131): `Lyric.Fmt` formatter port — walks the red/green CST,
+     preserves comments at item granularity.
+   - Stage 3 (shipped, D-progress-135): F# `lyric fmt` subcommand routes through the self-hosted
+     formatter via in-process compile + reflection bridge; `--legacy` / `LYRIC_FMT_LEGACY=1`
+     fallback retained for one release of soak.
+   - Stage 4 (shipped, D-progress-136): item-internal comment preservation via `FmtCtx` cursor —
+     comments between statements, between record fields, between union/enum cases, and inside
+     nested `if`/`for`/`while`/`match`/`try`/`defer`/`scope` blocks now survive.
+   - Stage 5 (shipped, D-progress-141): blank-line preservation via `HiBlank` markers (Black-style
+     "max one blank in any spot"), plus documentation of why the self-hosted DLL filename shape
+     `Lyric.Lyric.<X>.dll` is load-bearing (CLR namespace collision with the F# bootstrap's
+     same-named assemblies but different field casing).
+   - Remaining: per-expression CST granularity (comments inside expression sub-trees still anchor
+     at the enclosing statement); `Lyric.Parser`, `Lyric.TypeChecker`, `Lyric.Emitter` (M5.2);
+     `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta`, `Pack.l`; F# `Fmt.fs`
+     sunset.
 
 ### Exit criteria
 

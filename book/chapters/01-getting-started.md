@@ -189,7 +189,9 @@ You will use four commands constantly:
 
 `lyric fmt` is opinionated and has no configuration. The format is the format. Run it on save.
 
-One important caveat: `lyric fmt` works from the parsed AST, so **non-doc comments (`//`) are not preserved** — the lexer discards them. Doc comments (`///` and `//!`) survive because they are part of the AST.
+`lyric fmt` walks the parser's red/green concrete syntax tree, so **all comments are preserved**: `///` and `//!` doc comments, `//` line comments, and `/* … */` block comments — at item, member, statement, and nested-block boundaries.  Intentional blank lines are also preserved (collapsed to at most one blank per spot, Black-style).
+
+If you need the older AST-based formatter (which drops `//` comments, retained for one release as a compatibility fallback), pass `--legacy` or set the environment variable `LYRIC_FMT_LEGACY=1`.
 
 `lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`.
 
