@@ -66,6 +66,7 @@ let main argv =
             KernelBoundaryTests.tests
             JvmSelfTest.tests
             MsilSelfTestM1.tests
+            MsilSelfTestM2a.tests
             JvmLoweringTest.tests
             JvmLoweringB4Test.tests
             JvmLoweringB5Test.tests
