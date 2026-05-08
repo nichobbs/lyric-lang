@@ -102,6 +102,11 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M23 — multiple static methods: `msil_self_test_m23.l` builds a PE with two `MethodDef` rows — `Main` (MethodDef[1]) and `Add(int,int):int` (MethodDef[2]); Main calls Add(20,22) via token `0x06000002`, Add uses `ldarg.0`/`ldarg.1`/`add`/`ret`; verifies two consecutive tiny-header method bodies and a MethodDef call token; CLR prints `42` | **Shipped** (this branch) | D-progress-162 |
 | MSIL PE emitter Stage M24 — instance methods + instance fields: `msil_self_test_m24.l` builds a PE with `Counter` class (TypeDef[2]) owning Field[1]=`_value`, MethodDef[1]=`.ctor`, [2]=`Increment`, [3]=`GetValue`; Main (MethodDef[4]) creates Counter via `newobj`, calls Increment 3× via `dup`+`call`, then GetValue; exercises `Field` table, `ldfld`/`stfld`, HASTHIS sig convention, `MDA_SPECIAL_NAME+MDA_RTS_SPECIAL_NAME` on `.ctor`, three-TypeDef methodList/fieldList partitioning; CLR prints `3` | **Shipped** (this branch) | D-progress-163 |
 | MSIL PE emitter Stage M25 — `isinst` + `box`: `msil_self_test_m25.l` builds a PE whose `Main()` boxes integer 42 as `System.Object` via `box` (0x8C), tests it with `isinst System.Object` (0x75), branches on null via `brfalse` (0x39), then boxes 42 again and calls `Console.WriteLine(object)`; exercises `isinst` token encoding (TypeRef[2]=System.Object), `box` with TypeRef[3]=System.Int32, and the `object` MemberRef sig `{0x00,0x01,0x01,0x1C}`; CLR prints `42` | **Shipped** (this branch) | D-progress-164 |
+| MSIL PE emitter Stage M26 — `newarr` + `ldelem` + `stelem` (managed arrays): `msil_self_test_m26.l` builds a PE whose `Main()` allocates a 2-element `int32[]` via `newarr` (0x8D), stores 21 at indices 0 and 1 via `stelem` (0xA4), loads both elements via `ldelem` (0xA3), adds them (42), and calls `Console.WriteLine(int)`; exercises fat header with `ELEMENT_TYPE_SZARRAY` LocalVarSig, `StandAloneSig` table, and the typed array instruction forms; CLR prints `42` | **Shipped** (this branch) | D-progress-165 |
+| MSIL PE emitter Stage M27 — `callvirt` (virtual dispatch): `msil_self_test_m27.l` builds a PE whose `Main()` boxes 42 as `System.Object`, calls `callvirt System.Object::ToString()` (MemberRef[1] with HASTHIS sig `{0x20,0x00,0x0E}`) to produce the string `"42"`, then calls `Console.WriteLine(string)` (MemberRef[2]); exercises the `callvirt` (0x6F) opcode and a HASTHIS signature with a string return type; CLR prints `42` | **Shipped** (this branch) | D-progress-166 |
+| MSIL PE emitter Stage M28 — `ldsfld` + `stsfld` (static fields): `msil_self_test_m28.l` builds a PE whose `Hello` class declares two public static I4 fields `_x` and `_y` (Field[1], Field[2], flags=`FDA_PUBLIC+FDA_STATIC`); `Main` stores 20 via `stsfld` (0x80), stores 22, loads both via `ldsfld` (0x7E), adds (42), and calls `Console.WriteLine(int)`; exercises the `Field` table with `FDA_STATIC`, static-field token encoding (`0x04000001`, `0x04000002`), and field-sig `{0x06, 0x08}`; CLR prints `42` | **Shipped** (this branch) | D-progress-167 |
+| MSIL PE emitter Stage M29 — `castclass` (reference-type cast): `msil_self_test_m29.l` builds a PE whose `Main()` boxes 42, calls `callvirt System.Object::ToString()` to produce `"42"`, casts the result via `castclass System.String` (TypeRef[4], token 0x01000004), then calls `Console.WriteLine(string)`; exercises `castclass` (0x74) with a TypeRef token and verifies that a successful cast leaves the reference intact; CLR prints `42` | **Shipped** (this branch) | D-progress-168 |
+| MSIL PE emitter Stage M30 — `unbox_any` (value-type unboxing): `msil_self_test_m30.l` builds a PE whose `Main()` boxes 42 via `box` (0x8C), then unboxes it back to Int32 via `unbox_any` (0xA5) with TypeRef[3]=System.Int32 (token 0x01000003), and calls `Console.WriteLine(int)`; completes the box / isinst / castclass / unbox_any quartet; CLR prints `42` | **Shipped** (this branch) | D-progress-169 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 |
@@ -1886,6 +1891,110 @@ codeSize=42; tiny header=0xAA; BSJB at 0x273.
 
 **Test wiring**: `MsilSelfTestM25.fs` added to `Lyric.Emitter.Tests`; all 29
 MSIL self-tests pass (M1, M2a–M2d, M3–M25). CLR: isinst succeeds; prints `42`.
+
+---
+
+### D-progress-165: MSIL PE emitter Stage M26 — `newarr` + `ldelem` + `stelem`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M26 introduces managed single-dimension array allocation and element access.
+
+**New instructions:**
+- `newarr` (0x8D) — allocates a zero-based, single-dimension array of the given element type.
+- `stelem` (0xA4) — stores a typed value into an array element (token-bearing form).
+- `ldelem` (0xA3) — loads a typed element from an array (token-bearing form).
+
+**Code flow:** `ldc.i4.2 / newarr TypeRef[3]=System.Int32` allocates `int32[2]`, stored in local 0 via `stloc.0`.  Two `stelem` sequences write 21 at indices 0 and 1.  Two `ldelem` loads feed `add`, yielding 42, which `Console.WriteLine(int)` prints.
+
+**Fat header:** flags=0x13 (FatFormat | InitLocals), maxStack=3, codeSize=46.  LocalVarSig `{0x07, 0x01, 0x1D, 0x08}` = 1 local of type `SZARRAY I4`.  StandAloneSig[1] referenced via `localVarSigTok = 0x11000001`.
+
+TypeRef layout: [1]=System.Console, [2]=System.Object (Hello extends), [3]=System.Int32 (array element token).  BSJB at 0x282.
+
+**Test wiring**: `MsilSelfTestM26.fs` added to `Lyric.Emitter.Tests`; all 30
+MSIL self-tests pass (M1, M2a–M2d, M3–M26).  CLR: `int32[2]{21,21}`, sum=42 → prints `42`.
+
+---
+
+### D-progress-166: MSIL PE emitter Stage M27 — `callvirt` (virtual dispatch)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M27 exercises virtual method dispatch via `callvirt` (0x6F).
+
+**Code flow:**
+1. `ldc.i4.s 42` / `box TypeRef[3]=System.Int32` → boxed `System.Object` on stack.
+2. `callvirt MemberRef[1]=System.Object::ToString()` — HASTHIS signature `{0x20, 0x00, 0x0E}`, returns `System.String`; CLR dispatches to `Int32.ToString()`.
+3. `call MemberRef[2]=Console.WriteLine(string)` — prints `"42"`.
+
+**Signature detail:** HASTHIS calling convention (0x20) is required for all instance method signatures; the return type is `ELEMENT_TYPE_STRING` (0x0E).
+
+TypeRefs: [1]=System.Console, [2]=System.Object (Hello extends + callvirt target), [3]=System.Int32.  Tiny header at 0x248 = 0x4A (codeSize=18).  BSJB at 0x25B.
+
+**Test wiring**: `MsilSelfTestM27.fs` added to `Lyric.Emitter.Tests`; all 31
+MSIL self-tests pass (M1, M2a–M2d, M3–M27).  CLR: box 42 → `ToString()` → `"42"`.
+
+---
+
+### D-progress-167: MSIL PE emitter Stage M28 — `ldsfld` + `stsfld` (static fields)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M28 introduces the `Field` table with static fields and the `ldsfld`/`stsfld` instructions.
+
+**Field layout:** Hello class owns Field[1]=`_x` and Field[2]=`_y`, both flagged `FDA_PUBLIC + FDA_STATIC` (0x0016) with sig `{0x06, 0x08}` (FIELD + I4).  Field tokens: `_x`=0x04000001, `_y`=0x04000002.
+
+**Code flow:**
+1. `ldc.i4.s 20` / `stsfld 0x04000001` — writes 20 to `_x`.
+2. `ldc.i4.s 22` / `stsfld 0x04000002` — writes 22 to `_y`.
+3. `ldsfld 0x04000001` + `ldsfld 0x04000002` — loads both fields.
+4. `add` → 42 / `call Console.WriteLine(int)` / `ret`.
+
+Tiny header at 0x248 = 0x7E (codeSize=31).  BSJB at 0x268.
+
+**Test wiring**: `MsilSelfTestM28.fs` added to `Lyric.Emitter.Tests`; all 32
+MSIL self-tests pass (M1, M2a–M2d, M3–M28).  CLR: `_x=20`, `_y=22`; 20+22=42 → prints `42`.
+
+---
+
+### D-progress-168: MSIL PE emitter Stage M29 — `castclass` (reference-type cast)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M29 exercises `castclass` (0x74), the always-or-throw reference-type cast.
+
+**Code flow:**
+1. `ldc.i4.s 42` / `box TypeRef[3]=System.Int32` → `System.Object` ref on stack.
+2. `callvirt MemberRef[1]=System.Object::ToString()` → `System.String` ref "42".
+3. `castclass TypeRef[4]=System.String` — explicit cast; succeeds here.
+4. `call MemberRef[2]=Console.WriteLine(string)` / `ret`.
+
+**Token detail:** TypeRef[4]=System.String, token 0x01000004.  `castclass` opcode = 0x74, 5-byte instruction (opcode + 4-byte token).
+
+TypeRefs: [1]=Console, [2]=Object (Hello extends), [3]=Int32, [4]=String.  Tiny header 0x5E (codeSize=23).  BSJB at 0x260.
+
+**Test wiring**: `MsilSelfTestM29.fs` added to `Lyric.Emitter.Tests`; all 33
+MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → castclass String → print `42`.
+
+---
+
+### D-progress-169: MSIL PE emitter Stage M30 — `unbox_any` (value-type unboxing)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M30 exercises `unbox_any` (0xA5), the inverse of `box`.
+
+**Code flow:**
+1. `ldc.i4.s 42` / `box TypeRef[3]=System.Int32` → boxed object ref on stack.
+2. `unbox_any TypeRef[3]=System.Int32` → extracts the Int32 value 42 back to the stack.
+3. `call Console.WriteLine(int)` / `ret`.
+
+This completes the boxing/unboxing/casting quartet alongside M25 (box+isinst), M29 (castclass), and M30 (unbox_any).
+
+TypeRefs: [1]=Console, [2]=Object (Hello extends), [3]=Int32 (box + unbox_any token 0x01000003).  Tiny header 0x4A (codeSize=18).  BSJB at 0x25B.
+
+**Test wiring**: `MsilSelfTestM30.fs` added to `Lyric.Emitter.Tests`; all 34
+MSIL self-tests pass (M1, M2a–M2d, M3–M30).  CLR: box 42 → unbox_any → 42 (I4) → prints `42`.
 
 ---
 
