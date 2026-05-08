@@ -359,6 +359,10 @@ syntactic and runtime room for each.
 
 ## 10. Open questions
 
+> A v2 sketch addressing Q-config-001 (file source) and
+> Q-config-002 (layered precedence) lives at
+> `docs/29-config-v2-sketch.md`.
+
 - **Q-config-001:** File-based config source. The `via` mechanism
   already lets a field name a non-default env var; a file source
   would add a parallel "read this key from the file" path. Plausible

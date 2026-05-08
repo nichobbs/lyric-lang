@@ -122,9 +122,9 @@ block in the consumer's package.  Field names map 1:1.
 
 ### 3.3 What about cross-package config in a file?
 
-D046 §2.2 makes config blocks package-private.  A file can
-contain config sections for multiple consumer packages?  Two
-options:
+D046 §2.2 makes config blocks package-private.  Should a file
+be allowed to contain config sections for multiple consumer
+packages?  Two options:
 
 - **One file per consumer** — `LYRIC_CONFIG_FILE` is
   per-binary; each binary's file has its own sections.
@@ -158,10 +158,14 @@ sensitive_from_env_only = true
 ```
 
 If set, any `@sensitive` field provided by the file source is
-ignored (silently — file is not authoritative for sensitive
-data) or rejected (loudly, exit code 78).  Defer the
-silent-vs-loud choice to v2 implementation; my lean is
-**loud**.
+**rejected loudly** with exit code 78 and a diagnostic naming
+the offending field.  Silent ignoring was considered (file
+is not authoritative for sensitive data) but rejected because
+typo'd or accidentally-checked-in secrets in a TOML file are
+exactly the kind of audit-grade failure the marker is meant
+to catch — silent ignore would mask the very bug
+`sensitive_from_env_only` exists to surface.  Tracked as
+§9 item below.
 
 ---
 
@@ -178,9 +182,11 @@ fields.  Repeatable.  Highest precedence.  String values are
 parsed against the field's declared type (same parser as
 the env-var path).
 
-`--config-file` overrides `LYRIC_CONFIG_FILE` for the run.
-Both serve the same role; the env var wins for daemons,
-the flag wins for CI / local dev.
+`--config-file` overrides `LYRIC_CONFIG_FILE` for the run,
+consistent with the layer ordering in §2 (CLI > env).  In
+practice, the env var is what container platforms set, and
+the flag is the CI / local-dev override — but the precedence
+is just CLI > env, no inversion.
 
 ---
 
@@ -195,11 +201,10 @@ Three layers contribute values for `Http.port`:
 | Env | unset | — |
 | CLI | `9090` | `--config Http.port=9090` |
 
-Result: `9090` (CLI wins).  If CLI weren't set, `8443`
-(file).  If neither, `8443` is still the file's value;
-falling back to env is unnecessary because the file
-already provided one.  Default `8080` only applies if
-none of file / env / CLI does.
+Result: `9090` (CLI wins).  With CLI unset, `8443` (file
+wins, since env is unset).  With CLI and file both unset,
+env would be next; here env is also unset, so the default
+`8080` applies.
 
 For a required field (`@sensitive password: String`):
 
@@ -281,8 +286,12 @@ the field.  So:
 Implication: declaring a field `required` (no default)
 becomes more flexible — it just means "no built-in default,
 ops must provide somehow."  This is more permissive than
-v1 and probably the right semantics, but it changes the
-contract slightly.
+v1 (where "required = must be set via env") and probably the
+right semantics — but it's a v1→v2 contract shift that
+**will need its own decision-log entry on adoption**.  A
+consumer's `lyric.toml`-driven config may stop fail-fasting
+in scenarios where v1 used to (file now satisfies the
+requirement); existing operators may need to retest.
 
 ### 7.2 — Type coercion across layers
 
