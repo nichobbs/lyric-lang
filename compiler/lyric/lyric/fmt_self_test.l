@@ -253,6 +253,47 @@ func testTrailingBlankBeforeClosingBrace(): Unit {
   assertEqual(recOut, recExpected, "blank: trailing blank before record `}` suppressed")
 }
 
+func testCommentBeforeContractClause(): Unit {
+  // Phase 5 §M5.3 stage 7: a comment immediately before a contract
+  // clause must survive — anchored at the clause's own start offset
+  // via the new SkContractClause CST node (D-progress-142 scaffolding).
+  val src =
+    "package P\n" +
+    "func divide(x: in Int, y: in Int): Int\n" +
+    "  // y must not be zero\n" +
+    "  requires: y != 0\n" +
+    "  // result times y reconstitutes x\n" +
+    "  ensures: result * y == x\n" +
+    "  { x / y }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "// y must not be zero"),
+             "contract: comment before requires preserved")
+  assertTrue(Str.contains(acc, "// result times y reconstitutes x"),
+             "contract: comment between requires and ensures preserved")
+  assertTrue(Str.contains(acc, "requires: y != 0"),
+             "contract: requires clause emitted")
+  assertTrue(Str.contains(acc, "ensures: result * y == x"),
+             "contract: ensures clause emitted")
+}
+
+func testBlankLineBetweenContractClauses(): Unit {
+  // A blank line between two contract clauses survives via the
+  // HiBlank trivia stream + popTriviaBefore at the clause boundary.
+  val src =
+    "package P\n" +
+    "func f(x: in Int): Int\n" +
+    "  requires: x > 0\n" +
+    "\n" +
+    "  ensures: result > 0\n" +
+    "  { x }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  // The blank line shows as `\n\n  ensures` in the output.
+  assertTrue(Str.contains(acc, "requires: x > 0\n\n  ensures: result > 0"),
+             "contract: blank line between clauses preserved")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -292,5 +333,7 @@ func main(): Unit {
   testBlankLinesBetweenCommentBlocks()
   testMultipleBlankLinesCollapseToOne()
   testTrailingBlankBeforeClosingBrace()
+  testCommentBeforeContractClause()
+  testBlankLineBetweenContractClauses()
   println("fmt self-test: ok")
 }

@@ -13,6 +13,30 @@ import Lyric.Parser
 // Field decl (used by record / opaque / extern / protected immutable).
 // ─────────────────────────────────────────────────────────────────────────────
 
+@pure
+func contractClauseStartOffset(cc: in ContractClause): Int {
+  match cc {
+    case CCRequires(_, sp)  -> sp.startPos.offset
+    case CCEnsures(_, sp)   -> sp.startPos.offset
+    case CCWhen(_, sp)      -> sp.startPos.offset
+    case CCDecreases(_, sp) -> sp.startPos.offset
+    case CCRaises(_, sp)    -> sp.startPos.offset
+  }
+}
+
+/// Append `popTriviaBefore` output to `acc`, prefixing each non-blank
+/// line with the contract-clause indent (`  `).  Blank-line markers
+/// stay literally `""` so `joinLines`' `trimEnd` doesn't try to
+/// strip indented whitespace.
+func appendIndentedTrivia(acc: inout List[String], items: in List[String]): Unit {
+  var k = 0
+  while k < items.count {
+    val line = items[k]
+    if line == "" { acc.add("") } else { acc.add("  " + line) }
+    k = k + 1
+  }
+}
+
 pub func fieldDeclStr(fd: in FieldDecl): String {
   val vis = match fd.visibility {
     case Some(_) -> "pub "
@@ -58,7 +82,10 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   val contractLines: List[String] = newList()
   var i = 0
   while i < fn.contracts.count {
-    contractLines.add("  " + contractStr(fn.contracts[i]))
+    val c = fn.contracts[i]
+    val pre = popTriviaBefore(ctx, contractClauseStartOffset(c))
+    appendIndentedTrivia(contractLines, pre)
+    contractLines.add("  " + contractStr(c))
     i = i + 1
   }
   val whereLines: List[String] = newList()
@@ -282,7 +309,10 @@ func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
   val conLines: List[String] = newList()
   var i = 0
   while i < ed.contracts.count {
-    conLines.add("  " + contractStr(ed.contracts[i]))
+    val c = ed.contracts[i]
+    val pre = popTriviaBefore(ctx, contractClauseStartOffset(c))
+    appendIndentedTrivia(conLines, pre)
+    conLines.add("  " + contractStr(c))
     i = i + 1
   }
   val bodyLines: List[String] = match ed.body {

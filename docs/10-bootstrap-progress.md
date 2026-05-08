@@ -81,7 +81,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (this branch) | D-progress-141 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -197,6 +197,74 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+### D-progress-143: M5.3 stage 7 — contract-clause comment + blank-line preservation in `Lyric.Fmt`
+
+*claude/lyric-fmt-contract-clause-comments branch.*
+
+First user-visible payoff from the per-expression / per-statement /
+per-contract-clause CST granularity that landed in D-progress-142:
+the formatter now preserves comments and blank lines that sit
+between contract clauses on a function signature.
+
+Before this stage, a function with explanatory `//` comments
+attached to its `requires:` / `ensures:` / `when:` clauses lost them
+across `lyric fmt`:
+
+```
+func divide(x: in Int, y: in Int): Int
+  // y must not be zero      <-- DROPPED
+  requires: y != 0
+  // result times y reconstitutes x  <-- DROPPED
+  ensures: result * y == x
+  { x / y }
+```
+
+After:
+
+```
+func divide(x: in Int, y: in Int): Int
+  // y must not be zero
+  requires: y != 0
+  // result times y reconstitutes x
+  ensures: result * y == x
+{
+  x / y
+}
+```
+
+Mechanism (`compiler/lyric/lyric/fmt/fmt_items.l`):
+
+- New `contractClauseStartOffset(cc)` helper extracts the source
+  offset of any `ContractClause` variant.
+- `funcDoc` and `entryDoc` now call `popTriviaBefore(ctx, …)` before
+  emitting each clause line.  The popped lines (comments + blank-line
+  markers) are routed through `appendIndentedTrivia` so each non-
+  blank line is prefixed with the canonical contract indent (`  `),
+  matching the indent of the clause line itself.  Blank lines stay
+  literally `""` so `joinLines` doesn't strip indented whitespace.
+
+Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+
+- `testCommentBeforeContractClause` — `// y must not be zero` and
+  `// result times y reconstitutes x` both survive.
+- `testBlankLineBetweenContractClauses` — blank line between
+  `requires:` and `ensures:` survives.
+
+End-to-end smoke through the F# `lyric fmt` bridge confirms.
+
+Out of scope for this stage:
+
+- Comments inside contract-clause expressions (e.g. inside a
+  `requires: forall (i: Int) where i >= 0 { … }` body) — would
+  require multi-line expression rendering, which the formatter
+  doesn't yet do.
+- Comments inside arbitrary expression sub-trees (between operands
+  of a binary op, between function args).  Same blocker as above.
+- Comments before the function's `where` clause.  Mechanically
+  similar to contract clauses; held out for a follow-up stage.
+
+
 
 ### D-progress-142: M5.3 stage 6 — per-expression / per-statement / per-block / per-contract-clause CST granularity
 
