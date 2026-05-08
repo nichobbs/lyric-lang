@@ -1978,6 +1978,22 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-191: MSIL PE emitter Stage M52 — `tail.` prefix
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M52 tests the `tail.` prefix (0xFE 0x14, Nullary2 form):
+- `tail.` — marks the immediately-following call instruction as a tail call.
+
+Test: `ldc.i4.s 42 / tail. / call Console.WriteLine(Int32) / ret` prints `42`.
+Tiny header (codeSize=10 → header byte 0x2A = 42 itself).
+`MsilSelfTestM52.fs` verifies tiny header at 0x248 (0x2A), tail. FE prefix at
+file offset 0x24B (code offset 2), second byte 0x14 at 0x24C, and BSJB at 0x253.
+
+56 MSIL self-tests pass (M1, M2a–M2d, M3–M52).
+
+---
+
 ### D-progress-190: MSIL PE emitter Stage M51 — `volatile.` prefix
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
