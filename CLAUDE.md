@@ -309,9 +309,15 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
   embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
   into the existing import pipeline.  `lyric prove <source.l>` runs the
-  Phase 4 verifier (M4.1 fragment).  `Fmt.fs` is the AST-based formatter
-  (`lyric fmt`): canonical style rules, `--write`/`--check` flags; non-doc
-  `//` comments are not preserved (lexer discards them).  `Lint.fs` is the
+  Phase 4 verifier (M4.1 fragment).  `Fmt.fs` is the legacy AST-based
+  formatter (`lyric fmt --legacy` or `LYRIC_FMT_LEGACY=1`): canonical
+  style rules, `--write`/`--check` flags; non-doc `//` comments are
+  not preserved.  The default `lyric fmt` path (M5.3 stages 2–5)
+  routes through the self-hosted `Lyric.Fmt` package via
+  `SelfHostedFmt.fs` (in-process compile + reflection): walks the
+  red/green CST, preserves `//` and `/* */` comments at item /
+  member / statement / nested-block boundaries, preserves intentional
+  blank lines (max one per spot, Black-style).  `Lint.fs` is the
   linter (`lyric lint`): five AST-only rules (L001–L005), `--error-on-warning`
   flag, runs on non-compiling code.
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
