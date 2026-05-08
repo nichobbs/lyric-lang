@@ -365,6 +365,88 @@ func testWhereThenContractRoundTrips(): Unit {
   assertTrue(wIdx < rIdx, "round-trip: where appears before requires")
 }
 
+func testWidthDrivenLongCallBreaks(): Unit {
+  // Phase 5 §M5.3 stage 9 (D-progress-145): a function call whose
+  // inline rendering would exceed the 120-character line budget at
+  // its current column gets broken into one-arg-per-line layout.
+  // Use a call comfortably over 120 chars to avoid budget-edge
+  // flakiness.
+  val src =
+    "package P\n" +
+    "func go(a: in Int): Int {\n" +
+    "  val r = anExtraordinarilyLongFunctionName(a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a)\n" +
+    "  r\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "anExtraordinarilyLongFunctionName(\n"),
+             "width: long call opens with `(` on the same line and breaks args")
+  assertTrue(Str.contains(acc, "  )\n"),
+             "width: long call closes with `)` on its own indented line")
+}
+
+func testWidthDrivenLongCallIdempotent(): Unit {
+  // The width-driven multi-line layout must round-trip: format(format(x)) == format(x).
+  val src =
+    "package P\n" +
+    "func go(a: in Int): Int {\n" +
+    "  val r = anExtraordinarilyLongFunctionName(a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a)\n" +
+    "  r\n" +
+    "}\n"
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(twice, once, "width: long-call layout is idempotent")
+}
+
+func testCommentInsideCallArgs(): Unit {
+  // A `// ...` comment between two call arguments anchors at the
+  // following arg's start offset and renders inside the multi-line
+  // call layout, not at the next outer statement boundary.
+  val src =
+    "package P\n" +
+    "func go(): Int {\n" +
+    "  val x = foo(\n" +
+    "    // first arg\n" +
+    "    1,\n" +
+    "    2\n" +
+    "  )\n" +
+    "  x\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "    // first arg\n    1,"),
+             "width: comment between call args stays inside the call")
+}
+
+func testWidthDrivenLongBinopBreaks(): Unit {
+  // A long chain of binary `+` operators breaks to one operand per
+  // line with the operator at the end of the previous line.  The
+  // test source is long enough to force the break.
+  val src =
+    "package P\n" +
+    "func sum(a: in Int): Int {\n" +
+    "  val x = aLongHelper(a) + bLongHelper(a) + cLongHelper(a) + dLongHelper(a) + eLongHelper(a) + fLongHelper(a) + gLongHelper(a)\n" +
+    "  x\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  // At least one operator-at-end-of-line break must show up.
+  assertTrue(Str.contains(acc, "+\n  "),
+             "width: long binop breaks with operator at end-of-line")
+}
+
+func testShortExpressionStaysInline(): Unit {
+  // Negative test: a short expression must NOT be split.  Locks in
+  // the budget threshold: don't over-eagerly break.
+  val src = "package P\nfunc f(): Int { val x = a + b; x }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "val x = a + b\n"),
+             "width: short expression stays inline")
+  assertTrue(not Str.contains(acc, "val x = a +\n"),
+             "width: no spurious break for short expression")
+}
+
 func testFormatSourceFacade(): Unit {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
@@ -409,5 +491,10 @@ func main(): Unit {
   testCommentBeforeWhereClause()
   testCommentBetweenWhereAndContract()
   testWhereThenContractRoundTrips()
+  testWidthDrivenLongCallBreaks()
+  testWidthDrivenLongCallIdempotent()
+  testCommentInsideCallArgs()
+  testWidthDrivenLongBinopBreaks()
+  testShortExpressionStaysInline()
   println("fmt self-test: ok")
 }

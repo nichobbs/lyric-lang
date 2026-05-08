@@ -681,6 +681,25 @@ pub func contractStr(cc: in ContractClause): String {
   }
 }
 
+/// Width-driven multi-line variant of `contractStr`.  `col` is the
+/// output column where the contract line will START — i.e. the
+/// caller's outer indent (e.g. the function decl indents contracts by
+/// 2, so `col = 2`).  The returned `Doc` carries no leading indent;
+/// the caller wraps it with `indentDoc` as usual.
+pub func contractDoc(col: in Int, ctx: inout FmtCtx, cc: in ContractClause): List[String] {
+  match cc {
+    case CCRequires(ex, _)  -> contractWithBody("requires: ",  col, ctx, ex)
+    case CCEnsures(ex, _)   -> contractWithBody("ensures: ",   col, ctx, ex)
+    case CCWhen(ex, _)      -> contractWithBody("when: ",      col, ctx, ex)
+    case CCDecreases(ex, _) -> contractWithBody("decreases: ", col, ctx, ex)
+    case CCRaises(tys, _)   -> singleLineDoc("raises: " + typesStr(tys))
+  }
+}
+
+func contractWithBody(prefix: in String, col: in Int, ctx: inout FmtCtx, ex: in Expr): List[String] {
+  prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, ex))
+}
+
 pub func annotationValueStr(av: in AnnotationValue): String {
   match av {
     case AVInt(v, _)    -> longToStr(v)
@@ -723,8 +742,267 @@ pub func annotationLines(anns: in List[Annotation]): List[String] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §8. Inline expression printer.  Mirrors `exprInline` in Fmt.fs.
-// `minPrec` is the minimum precedence the caller is willing to accept
+// §7a. Width-driven pretty-printer infrastructure (Phase 5 §M5.3 stage 9,
+// D-progress-145).
+//
+// The canonical line-width budget for `lyric fmt` is `MAX_WIDTH` characters.
+// `exprAtCol(col, ctx, e)` returns a `Doc` (`List[String]`) for an expression
+// rendered starting at source column `col`.  The decision tree is:
+//
+//   1. Compute the inline rendering via `exprInline`.
+//   2. If `col + len(inline) <= MAX_WIDTH`, return the single-line `Doc`.
+//   3. Otherwise dispatch on `ExprKind` to a per-construct multi-line layout
+//      that recurses through `exprAtCol` for sub-expressions.
+//
+// Per-construct multi-line layouts use Black-style "magic trailing comma"
+// placement: opener on the first line, items one-per-line indented by 2,
+// closer on its own line at the original indent.  Operators in binary
+// chains end the lhs line and the rhs starts a new indented line — keeps
+// the operator visually attached to its left operand.
+//
+// The returned `Doc`'s first line carries no leading indent; subsequent
+// lines carry indent relative to the expression's own first column (`col`).
+// Outer callers (`indentDoc`, `blockLines`) add their own outer indent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@stable(since="0.1")
+pub func maxWidth(): Int { 120 }
+
+/// Length of a `Doc`'s first line.  Used by callers that want to know how
+/// far the cursor will have moved after printing.
+@pure
+pub func firstLineLen(doc: in List[String]): Int {
+  if doc.count == 0 { 0 } else { doc[0].length }
+}
+
+/// Length of a `Doc`'s last line.  Same use case as `firstLineLen` but at
+/// the end of a multi-line construct.
+@pure
+pub func lastLineLen(doc: in List[String]): Int {
+  if doc.count == 0 { 0 } else { doc[doc.count - 1].length }
+}
+
+/// True when the inline rendering of `e` fits within the remaining
+/// width budget at column `col`.  Comments inside the expression's
+/// source span force `false` so the multi-line layout can weave them in.
+pub func exprFitsInline(col: in Int, ctx: in FmtCtx, e: in Expr, inline: in String): Bool {
+  if col + inline.length > maxWidth() { return false }
+  if hasTriviaInRange(ctx, e.span.startPos.offset, e.span.endPos.offset) { return false }
+  true
+}
+
+/// True when any harvested-trivia item (comment OR blank-line marker)
+/// has an offset in `[lo, hi)`.  Doesn't consume — pure peek.
+@pure
+pub func hasTriviaInRange(ctx: in FmtCtx, lo: in Int, hi: in Int): Bool {
+  var i = ctx.cursor
+  while i < ctx.items.count {
+    val o = harvestedItemOffset(ctx.items[i])
+    if o >= hi { return false }
+    if o >= lo { return true }
+    i = i + 1
+  }
+  false
+}
+
+@pure
+func harvestedItemOffset(h: in HarvestedItem): Int {
+  match h {
+    case HiComment(_, o) -> o
+    case HiBlank(o)      -> o
+  }
+}
+
+/// Width-driven multi-line entry point.  Always returns a non-empty
+/// `Doc`; the first line never has leading whitespace (the caller
+/// owns the outer indent).
+pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
+  val inline = exprInline(0, e)
+  if exprFitsInline(col, ctx, e, inline) {
+    return singleLineDoc(inline)
+  }
+  // Doesn't fit (or has trivia inside).  Switch on `ExprKind` and pick
+  // a multi-line layout per construct.  Constructs without a multi-line
+  // shape (literals, paths, prefix ops over fitting operands) fall back
+  // to the inline rendering even if it exceeds the budget.
+  match e.kind {
+    case ECall(fn, args)      -> exprCallMulti(col, ctx, fn, args)
+    case EBinop(op, lhs, rhs) -> exprBinopMulti(col, ctx, op, lhs, rhs)
+    case EList(elems)         -> exprListMulti(col, ctx, elems, "[", "]")
+    case ETuple(elems)        -> exprListMulti(col, ctx, elems, "(", ")")
+    case EParen(inner)        -> exprParenMulti(col, ctx, inner)
+    case _                    -> singleLineDoc(inline)
+  }
+}
+
+/// `ECall` multi-line layout:
+///
+///     fn(
+///       arg1,
+///       arg2,
+///       ...,
+///     )
+///
+/// `fn` is rendered inline (calls render their head as a path / member
+/// access / nested call; nested-call argument lists handle their own
+/// breaking).  Each argument recursively uses `exprAtCol(col + 2, …)`
+/// — the +2 reflects the per-argument indent.
+func exprCallMulti(col: in Int, ctx: inout FmtCtx, fn: in Expr, args: in List[CallArg]): List[String] {
+  val fnStr = exprInline(0, fn)
+  val acc: List[String] = newList()
+  if args.count == 0 {
+    // Empty call still inline.
+    return singleLineDoc(fnStr + "()")
+  }
+  acc.add(fnStr + "(")
+  val argCol = col + 2
+  var i = 0
+  while i < args.count {
+    val isLast = i + 1 >= args.count
+    val tail = if isLast { "" } else { "," }
+    // Comments and intentional blank lines that precede this arg in
+    // the source.  Pop at the arg's start offset so they land between
+    // the previous arg and this one — same trivia-anchoring shape
+    // used at every other structural boundary in the formatter.
+    val pre = popTriviaBefore(ctx, callArgStartOffset(args[i]))
+    var k = 0
+    while k < pre.count { acc.add("  " + pre[k]); k = k + 1 }
+    val argDoc = callArgAtCol(argCol, ctx, args[i])
+    var j = 0
+    while j < argDoc.count {
+      val isLastLine = j + 1 >= argDoc.count
+      val line = argDoc[j]
+      if isLastLine and not isLast { acc.add("  " + line + tail) }
+      else if isLastLine and isLast { acc.add("  " + line) }
+      else { acc.add("  " + line) }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc.add(")")
+  acc
+}
+
+@pure
+func callArgStartOffset(ca: in CallArg): Int {
+  match ca {
+    case CANamed(_, v, sp) -> sp.startPos.offset
+    case CAPositional(e)   -> e.span.startPos.offset
+  }
+}
+
+func callArgAtCol(col: in Int, ctx: inout FmtCtx, ca: in CallArg): List[String] {
+  match ca {
+    case CANamed(n, v, _) -> {
+      val prefix = n + " = "
+      val inner = exprAtCol(col + prefix.length, ctx, v)
+      val acc: List[String] = newList()
+      if inner.count == 0 {
+        acc.add(prefix)
+      } else {
+        acc.add(prefix + inner[0])
+        var j = 1
+        while j < inner.count { acc.add(inner[j]); j = j + 1 }
+      }
+      acc
+    }
+    case CAPositional(e) -> exprAtCol(col, ctx, e)
+  }
+}
+
+/// `EBinop` multi-line layout — operator at end of LHS line, RHS on
+/// its own indented line:
+///
+///     lhs op
+///       rhs
+///
+/// Chained applications (left-associative) flatten naturally because
+/// the lhs of an outer `BinopMulti` is itself a binary op rendered
+/// recursively.
+func exprBinopMulti(col: in Int, ctx: inout FmtCtx, op: in BinOp, lhs: in Expr, rhs: in Expr): List[String] {
+  val prec = binPrec(op)
+  // Render LHS at the same precedence so paren rules match `exprInline`.
+  val lhsDoc = exprAtCol(col, ctx, lhs)
+  val rhsPrec = match op {
+    case BImplies  -> prec
+    case BCoalesce -> prec
+    case _         -> prec + 1
+  }
+  val rhsDoc = exprAtCol(col + 2, ctx, rhs)
+  val opStr = " " + binStr(op)
+  val acc: List[String] = newList()
+  // LHS lines: copy verbatim except append op to the last line.
+  var i = 0
+  while i < lhsDoc.count {
+    val isLast = i + 1 >= lhsDoc.count
+    if isLast { acc.add(lhsDoc[i] + opStr) }
+    else      { acc.add(lhsDoc[i]) }
+    i = i + 1
+  }
+  // RHS lines: indent every line by 2 (relative to col).
+  i = 0
+  while i < rhsDoc.count {
+    acc.add("  " + rhsDoc[i])
+    i = i + 1
+  }
+  // Precedence-driven outer paren is left to the caller — the inline
+  // path's `exprInline` handles it; for the multi-line path, an outer
+  // construct that needs paren-wrapping calls `exprParenMulti` itself.
+  acc
+}
+
+/// `EList` / `ETuple` multi-line layout — same shape as a call:
+///
+///     [
+///       elem1,
+///       elem2,
+///     ]
+func exprListMulti(col: in Int, ctx: inout FmtCtx, elems: in List[Expr], opener: in String, closer: in String): List[String] {
+  val acc: List[String] = newList()
+  if elems.count == 0 {
+    return singleLineDoc(opener + closer)
+  }
+  acc.add(opener)
+  val elemCol = col + 2
+  var i = 0
+  while i < elems.count {
+    val isLast = i + 1 >= elems.count
+    val tail = if isLast { "" } else { "," }
+    val elemDoc = exprAtCol(elemCol, ctx, elems[i])
+    var j = 0
+    while j < elemDoc.count {
+      val isLastLine = j + 1 >= elemDoc.count
+      val line = elemDoc[j]
+      if isLastLine { acc.add("  " + line + tail) }
+      else          { acc.add("  " + line) }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc.add(closer)
+  acc
+}
+
+/// `EParen` multi-line: just unwrap one layer and let the inner
+/// expression decide.  Black-style elision of redundant parens around
+/// already-multi-line content.
+func exprParenMulti(col: in Int, ctx: inout FmtCtx, inner: in Expr): List[String] {
+  val innerDoc = exprAtCol(col + 1, ctx, inner)
+  if innerDoc.count <= 1 {
+    return singleLineDoc("(" + (if innerDoc.count == 0 { "" } else { innerDoc[0] }) + ")")
+  }
+  val acc: List[String] = newList()
+  acc.add("(")
+  var i = 0
+  while i < innerDoc.count {
+    acc.add("  " + innerDoc[i])
+    i = i + 1
+  }
+  acc.add(")")
+  acc
+}
+
+
 // without wrapping in parens.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -921,6 +1199,89 @@ pub func stmtInline(s: in Statement): String {
   }
 }
 
+/// Width-driven multi-line variants for the statement constructs whose
+/// payload is a single expression.  Each prepends the keyword/prefix to
+/// the first line of the expression's `Doc` and emits subsequent lines
+/// verbatim (the expression's `Doc` already carries its own indent
+/// relative to the prefix's right edge).
+pub func localBindingDoc(col: in Int, ctx: inout FmtCtx, lb: in LocalBinding): List[String] {
+  match lb {
+    case LBVal(p, ty, init) -> {
+      val tyStr = match ty {
+        case Some(t) -> ": " + typeStr(t)
+        case None    -> ""
+      }
+      val prefix = "val " + patStr(p) + tyStr + " = "
+      prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, init))
+    }
+    case LBVar(name, ty, init) -> {
+      val tyStr = match ty {
+        case Some(t) -> ": " + typeStr(t)
+        case None    -> ""
+      }
+      match init {
+        case Some(e) -> {
+          val prefix = "var " + name + tyStr + " = "
+          prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, e))
+        }
+        case None -> singleLineDoc("var " + name + tyStr)
+      }
+    }
+    case LBLet(name, ty, init) -> {
+      val tyStr = match ty {
+        case Some(t) -> ": " + typeStr(t)
+        case None    -> ""
+      }
+      val prefix = "let " + name + tyStr + " = "
+      prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, init))
+    }
+  }
+}
+
+pub func returnDoc(col: in Int, ctx: inout FmtCtx, value: in Option[Expr]): List[String] {
+  match value {
+    case Some(e) -> {
+      val prefix = "return "
+      prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, e))
+    }
+    case None -> singleLineDoc("return")
+  }
+}
+
+pub func assignDoc(col: in Int, ctx: inout FmtCtx, target: in Expr, op: in AssignOp, value: in Expr): List[String] {
+  val tgtInline = exprInline(0, target)
+  val prefix = tgtInline + " " + assignStr(op) + " "
+  prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, value))
+}
+
+pub func throwDoc(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
+  val prefix = "throw "
+  prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, e))
+}
+
+pub func bareExprDoc(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
+  exprAtCol(col, ctx, e)
+}
+
+/// Concatenate `prefix` with the first line of `body`, leaving body's
+/// subsequent lines untouched.  Used to attach a keyword (`val ` /
+/// `return ` / `throw `) to a multi-line expression rendering.
+@pure
+func prependPrefix(prefix: in String, body: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  if body.count == 0 {
+    acc.add(prefix)
+    return acc
+  }
+  acc.add(prefix + body[0])
+  var i = 1
+  while i < body.count {
+    acc.add(body[i])
+    i = i + 1
+  }
+  acc
+}
+
 func localBindingStr(lb: in LocalBinding): String {
   match lb {
     case LBVal(p, ty, init) -> {
@@ -1060,14 +1421,21 @@ pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
 }
 
 pub func stmtLines(s: in Statement, ctx: inout FmtCtx): List[String] {
+  // Width-budget reference column.  Most blocks are nested 1 level
+  // deep (function body, lambda body), placing statements at output
+  // col 2.  Deeper nestings (statement inside an `if` inside a `for`)
+  // run a touch over budget by a few chars per nesting level — close
+  // enough for the budget to catch real overruns without threading
+  // `col` through every signature in the multi-line printer family.
+  val col = 2
   match s.kind {
-    case SLocal(_)            -> singleLineDoc(stmtInline(s))
-    case SAssign(_, _, _)     -> singleLineDoc(stmtInline(s))
-    case SReturn(_)           -> singleLineDoc(stmtInline(s))
+    case SLocal(lb)           -> localBindingDoc(col, ctx, lb)
+    case SAssign(t, op, v)    -> assignDoc(col, ctx, t, op, v)
+    case SReturn(value)       -> returnDoc(col, ctx, value)
     case SBreak(_)            -> singleLineDoc(stmtInline(s))
     case SContinue(_)         -> singleLineDoc(stmtInline(s))
-    case SThrow(_)            -> singleLineDoc(stmtInline(s))
-    case SInvariant(_)        -> singleLineDoc(stmtInline(s))
+    case SThrow(e)            -> throwDoc(col, ctx, e)
+    case SInvariant(e)        -> invariantDoc(col, ctx, e)
     case SRule(_, _)          -> singleLineDoc(stmtInline(s))
     case SExpr(e)             -> stmtExprLines(s, e, ctx)
     case SFor(lbl, p, it, b)  -> forLines(lbl, p, it, b, ctx)
@@ -1080,6 +1448,11 @@ pub func stmtLines(s: in Statement, ctx: inout FmtCtx): List[String] {
   }
 }
 
+pub func invariantDoc(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
+  val prefix = "invariant: "
+  prependPrefix(prefix, exprAtCol(col + prefix.length, ctx, e))
+}
+
 func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String] {
   match e.kind {
     case EMatch(scrut, arms)             -> matchLines(scrut, arms, ctx)
@@ -1087,7 +1460,7 @@ func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String]
       if thenForm { singleLineDoc(stmtInline(s)) }
       else { ifBlockLines(cond, thn, els, ctx) }
     }
-    case _                               -> singleLineDoc(stmtInline(s))
+    case _                               -> bareExprDoc(2, ctx, e)
   }
 }
 
