@@ -100,6 +100,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M21 — `finally` block: `msil_self_test_m21.l` builds a PE whose `Main()` sets a local to 10 in a try block, adds 32 in a finally handler (flags=2, catchToken=0), and prints 42; exercises `endfinally` (0xDC) and a fat EH clause with `flags=2`; CLR prints `42` | **Shipped** (this branch) | D-progress-160 |
 | MSIL PE emitter Stage M22 — `ldstr` + `#US` heap: `msil_self_test_m22.l` builds a PE whose `Main()` loads user string `"Hello, World!"` via `ldstr` (token `0x70000001`) and calls `Console.WriteLine(string)`; exercises `internUs`, UTF-16LE encoding with flag byte, and the `0x70` user-string token form; CLR prints `"Hello, World!"` | **Shipped** (this branch) | D-progress-161 |
 | MSIL PE emitter Stage M23 — multiple static methods: `msil_self_test_m23.l` builds a PE with two `MethodDef` rows — `Main` (MethodDef[1]) and `Add(int,int):int` (MethodDef[2]); Main calls Add(20,22) via token `0x06000002`, Add uses `ldarg.0`/`ldarg.1`/`add`/`ret`; verifies two consecutive tiny-header method bodies and a MethodDef call token; CLR prints `42` | **Shipped** (this branch) | D-progress-162 |
+| MSIL PE emitter Stage M24 — instance methods + instance fields: `msil_self_test_m24.l` builds a PE with `Counter` class (TypeDef[2]) owning Field[1]=`_value`, MethodDef[1]=`.ctor`, [2]=`Increment`, [3]=`GetValue`; Main (MethodDef[4]) creates Counter via `newobj`, calls Increment 3× via `dup`+`call`, then GetValue; exercises `Field` table, `ldfld`/`stfld`, HASTHIS sig convention, `MDA_SPECIAL_NAME+MDA_RTS_SPECIAL_NAME` on `.ctor`, three-TypeDef methodList/fieldList partitioning; CLR prints `3` | **Shipped** (this branch) | D-progress-163 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 |
@@ -1746,6 +1747,37 @@ Key verified bytes:
 **Test wiring**: `MsilSelfTestM23.fs` added to `Lyric.Emitter.Tests`; all 27
 MSIL self-tests pass (M1, M2a–M2d, M3–M23).  CLR execution: Add(20,22)=42
 → prints `42`.
+
+---
+
+### D-progress-163: MSIL PE emitter Stage M24 — instance methods + instance fields
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M24 introduces the `Field` metadata table and instance-method signatures,
+exercising `ldfld`/`stfld`, `newobj` with same-assembly MethodDef tokens, and
+multi-TypeDef `methodList`/`fieldList` partitioning.
+
+**Class layout:**
+- TypeDef[1] `<Module>`: methodList=1, fieldList=1 (owns nothing)
+- TypeDef[2] `Counter`: methodList=1, fieldList=1 → owns MethodDef[1..3] and Field[1]
+- TypeDef[3] `Hello`: methodList=4, fieldList=2 → owns MethodDef[4]=Main
+
+**Field[1]** `_value`: sig `{0x06, 0x08}` (FIELD, I4).
+
+**MethodDef[1]** `.ctor`: `MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME` required; HASTHIS void() sig; body: `ldarg.0 / ldc.i4.0 / stfld 0x04000001 / ret`.
+
+**MethodDef[2]** `Increment`: HASTHIS void(); `ldarg.0 / ldarg.0 / ldfld / ldc.i4.1 / add / stfld / ret`.
+
+**MethodDef[3]** `GetValue`: HASTHIS I4(); `ldarg.0 / ldfld / ret`.
+
+**MethodDef[4]** `Main`: tiny header; `newobj 0x06000001 / dup / call 0x06000002` × 3 / `call 0x06000003 / call 0x0A000001 / ret`.
+
+BSJB at 0x28C.
+
+**Test wiring**: `MsilSelfTestM24.fs` added to `Lyric.Emitter.Tests`; all 28
+MSIL self-tests pass (M1, M2a–M2d, M3–M24).  CLR: Counter.Increment × 3;
+GetValue() = 3 → prints `3`.
 
 ---
 
