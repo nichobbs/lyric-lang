@@ -1978,6 +1978,25 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-190: MSIL PE emitter Stage M51 — `volatile.` prefix
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M51 tests the `volatile.` prefix (0xFE 0x13, Nullary2 form):
+- `volatile.` — marks the immediately-following load or store as volatile.
+
+Test: `ldc.i4.s 4 / localloc` allocates 4 bytes on the stack (`rawPtr`);
+`stind.i4` writes 42; `volatile. / ldind.i4` performs a volatile load of 42;
+`call Console.WriteLine(Int32) / ret` prints `42`.  Requires a fat method header
+(InitLocals flag) because `localloc` is used; a dummy I4 local forces the fat path.
+`MsilSelfTestM51.fs` verifies fat header at 0x248 (0x13 0x30), LocalVarSig token
+at 0x250–0x253, volatile. FE prefix at file offset 0x25C (code offset 8),
+second byte 0x13 at 0x25D, and BSJB at 0x265.
+
+55 MSIL self-tests pass (M1, M2a–M2d, M3–M51).
+
+---
+
 ### D-progress-189: MSIL PE emitter Stage M50 — `sizeof`
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
