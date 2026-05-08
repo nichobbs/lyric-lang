@@ -1688,12 +1688,41 @@ func parseConfigBody(st: inout ParseState): ConfigDecl {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// D047 — `aspect Name { ... }` block parser.  v1 surface: a `matches:`
-// clause with a `name like "<glob>"` predicate, and an `around` advice
-// body.  Contract clauses (`requires:`/`ensures:`), ordering clauses
-// (`wraps:`/`inside:`), and per-aspect `config { ... }` blocks are
-// deferred — they parse as P0040 errors today.
+// D047/D051 — `aspect Name { ... }` block parser.
+// Three forms: standalone, template (pub, no matches), instantiation (from).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Parse an anonymous `config { fields... }` block inside an aspect body.
+/// Caller has already consumed the `config` keyword.
+func parseAspectConfigBlock(st: inout ParseState): List[ConfigField] {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0306", "expected '{' to start aspect config block", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val fields: List[ConfigField] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = st.pos
+    fields.add(parseConfigField(st))
+    match peekToken(st) {
+      case TStmtEnd -> {
+        val _ = advance(st)
+        val _ = skipStmtEnds(st)
+      }
+      case TPunct(Comma) -> {
+        val _ = advance(st)
+        val _ = skipStmtEnds(st)
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0307", "expected '}' to close aspect config block", peekSpan(st)) }
+  }
+  fields
+}
 
 func parseAspectMatcher(st: inout ParseState): Option[AspectMatcher] {
   val _ = skipStmtEnds(st)
@@ -1768,6 +1797,19 @@ func parseAspectAround(st: inout ParseState): AspectAround {
 func parseAspectBody(st: inout ParseState): AspectDecl {
   val startTok = advance(st)  // 'aspect' (TIdent)
   val ns = readIdent(st, "aspect")
+  // Optional `from Pkg.Template` clause (instantiation form, D051).
+  val fromPath: Option[ModulePath] =
+    match peekToken(st) {
+      case TIdent(s) -> {
+        if s == "from" {
+          val _ = advance(st)
+          Some(parseModulePath(st))
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
   val _ = skipStmtEnds(st)
   match tryEatPunct(st, LBrace) {
     case Some(_) -> {}
@@ -1775,6 +1817,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
   }
   val _ = skipStmtEnds(st)
   val matches: List[AspectMatcher] = newList()
+  val config: List[ConfigField] = newList()
   var around: Option[AspectAround] = None
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = st.pos
@@ -1790,6 +1833,10 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
             case Some(m) -> matches.add(m)
             case None -> {}
           }
+        } else if s == "config" {
+          val _ = advance(st)
+          val fields = parseAspectConfigBlock(st)
+          for f in fields { config.add(f) }
         } else if s == "around" {
           match around {
             case Some(_) -> {
@@ -1801,12 +1848,12 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
             }
           }
         } else {
-          emitErr(st, "P0304", "expected 'matches:' or 'around' in aspect body", peekSpan(st))
+          emitErr(st, "P0304", "expected 'matches:', 'config', or 'around' in aspect body", peekSpan(st))
           val _ = advance(st)
         }
       }
       case _ -> {
-        emitErr(st, "P0304", "expected 'matches:' or 'around' in aspect body", peekSpan(st))
+        emitErr(st, "P0304", "expected 'matches:', 'config', or 'around' in aspect body", peekSpan(st))
         if not isAtEnd(st) { val _ = advance(st) }
       }
     }
@@ -1825,6 +1872,8 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
     }
   AspectDecl(
     name    = ns.name,
+    from    = fromPath,
+    config  = config,
     matches = matches,
     around  = around,
     span    = joinSpans(startTok.span, endSpan))

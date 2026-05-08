@@ -457,10 +457,11 @@ and ConfigDecl =
       Fields: ConfigField list
       Span:   Span }
 
-/// `aspect Name { ... }` block per `docs/26-aspects.md` (D047).
-/// v1 surface: a `matches:` clause and an `around` advice body.
-/// Future slices add `requires:`/`ensures:` (contract augmentation),
-/// `wraps:`/`inside:` ordering clauses, and a `config { ... }` block.
+/// `aspect Name { ... }` block per `docs/26-aspects.md` (D047/D051).
+/// Three forms:
+///   standalone  — no `Visibility`, no `From`, has `Matches`
+///   template    — `Pub` visibility, no `From`, no `Matches`
+///   instantiation — no `Visibility`, has `From`, has `Matches`
 and AspectMatcher =
     /// `matches: name like "<glob>"`.  Single positive predicate in
     /// v1; conjunction (`and signature: …`, `and annotated: …`) is
@@ -477,6 +478,10 @@ and AspectAround =
 
 and AspectDecl =
     { Name:    string
+      /// `from Pkg.Template` — present only on instantiation-form aspects.
+      From:    ModulePath option
+      /// Anonymous `config { }` block inside the aspect body (D047/D051).
+      Config:  ConfigField list
       Matches: AspectMatcher list
       Around:  AspectAround option
       Span:    Span }

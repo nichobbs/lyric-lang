@@ -682,6 +682,10 @@ pub record AspectAround {
 
 pub record AspectDecl {
   name:    String
+  /// `from Pkg.Template` — present only on instantiation-form aspects (D051).
+  from:    Option[ModulePath]
+  /// Anonymous `config { }` block inside the aspect body (D047/D051).
+  config:  List[ConfigField]
   matches: List[AspectMatcher]
   around:  Option[AspectAround]
   span:    Span

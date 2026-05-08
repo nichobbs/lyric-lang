@@ -1,0 +1,155 @@
+/// Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
+/// templates.
+///
+/// Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
+/// so the aspect templates remain platform-neutral.  Consumers bind a
+/// `matches:` selector and optionally override config defaults:
+///
+///   aspect HttpTracing from OTel.Tracing {
+///     matches: name like "*/Http/*"
+///     config {
+///       spanKind: SpanKind = SpanKind.Server
+///     }
+///   }
+///
+/// See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
+package OTel
+
+import OTel.Types
+import OTel.Kernel.Net
+import OTel.Kernel.Jvm
+import Std.Log
+
+// ─── Source / meter name used across all OTel emissions ──────────────────────
+
+val sourceName: String = "lyric.otel"
+
+// ─── Tracing wrappers ────────────────────────────────────────────────────────
+
+/// Start a new tracing span.  `kind` is the integer value of `SpanKind`.
+@cfg(feature = "dotnet")
+pub func startSpan(operationName: String, kind: Int): Span {
+  netStartSpan(sourceName, operationName, kind)
+}
+
+@cfg(feature = "jvm")
+pub func startSpan(operationName: String, kind: Int): Span {
+  jvmStartSpan(sourceName, operationName, kind)
+}
+
+/// Record an error on the span (does not end it).
+@cfg(feature = "dotnet")
+pub func setSpanError(span: Span, message: String): Unit {
+  netSetSpanError(span, message)
+}
+
+@cfg(feature = "jvm")
+pub func setSpanError(span: Span, message: String): Unit {
+  jvmSetSpanError(span, message)
+}
+
+/// End the span.  Must be called even when an error was recorded.
+@cfg(feature = "dotnet")
+pub func endSpan(span: Span): Unit {
+  netEndSpan(span)
+}
+
+@cfg(feature = "jvm")
+pub func endSpan(span: Span): Unit {
+  jvmEndSpan(span)
+}
+
+// ─── Metrics wrappers ────────────────────────────────────────────────────────
+
+@cfg(feature = "dotnet")
+pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
+  netIncrementCounter(sourceName, name, delta, unit)
+}
+
+@cfg(feature = "jvm")
+pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
+  jvmIncrementCounter(sourceName, name, delta, unit)
+}
+
+@cfg(feature = "dotnet")
+pub func recordHistogram(name: String, value: Float, unit: String): Unit {
+  netRecordHistogram(sourceName, name, value, unit)
+}
+
+@cfg(feature = "jvm")
+pub func recordHistogram(name: String, value: Float, unit: String): Unit {
+  jvmRecordHistogram(sourceName, name, value, unit)
+}
+
+// ─── Aspect templates ────────────────────────────────────────────────────────
+
+/// Wrap every matched call in an OTel trace span.
+/// Config fields:
+///   enabled    — gate the whole aspect at startup; default true.
+///   sampleRate — fraction of calls to trace (0.0–1.0); default 1.0.
+///   spanKind   — OTel SpanKind for every span; default Internal.
+pub aspect Tracing {
+  config {
+    enabled:    Bool      = true
+    sampleRate: Float     = 1.0
+    spanKind:   SpanKind  = SpanKind.Internal
+  }
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      val span = startSpan(call.qualifiedName, spanKind.toInt())
+      match call.proceed() {
+        case Ok(v) -> {
+          endSpan(span)
+          ret = Ok(v)
+        }
+        case Err(e) -> {
+          setSpanError(span, e.message)
+          endSpan(span)
+          ret = Err(e)
+        }
+      }
+    }
+  }
+}
+
+/// Emit a call counter and a latency histogram for every matched call.
+/// Config fields:
+///   enabled — gate the whole aspect at startup; default true.
+pub aspect Metrics {
+  config {
+    enabled: Bool = true
+  }
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      incrementCounter(call.qualifiedName, 1, "requests")
+      ret = call.proceed()
+      val elapsed = call.elapsed.unwrapOr(0)
+      recordHistogram(call.qualifiedName + ".latency", elapsed.toFloat(), "ms")
+    }
+  }
+}
+
+/// Log entry / exit for every matched call at a configurable level.
+/// Config fields:
+///   enabled — gate the whole aspect; default true.
+///   level   — log level string ("debug" | "info" | "warn"); default "debug".
+pub aspect RequestLogging {
+  config {
+    enabled: Bool   = true
+    level:   String = "debug"
+  }
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      Std.Log.log(level, "enter: " + call.qualifiedName, [])
+      ret = call.proceed()
+      val elapsed = call.elapsed.unwrapOr(0)
+      Std.Log.log(level, "exit: " + call.qualifiedName + " (" + elapsed.toString() + "ms)", [])
+    }
+  }
+}
