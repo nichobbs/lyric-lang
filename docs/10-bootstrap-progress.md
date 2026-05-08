@@ -1978,6 +1978,28 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-176: MSIL PE emitter Stage M37 — `ldelema` (load address of array element)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M37 exercises `ldelema` (0x8F), which pops an array reference and an
+index from the stack and pushes a managed pointer (byref) to that array
+element.
+
+**Code flow:** `newarr Int32 / stloc_0` → allocate `int32[1]`; `ldloc_0 /
+ldc.i4.0 / ldelema Int32` → push byref to element[0]; `ldc.i4.s 42 /
+stind.i4` → write 42 via byref; `ldloc_0 / ldc.i4.0 / ldelem Int32` → read 42
+normally; `Console.WriteLine(42)` → prints `"42"`.
+
+Fat header with one `int32[]` local (LocalVarSig `{0x07,0x01,0x1D,0x08}`).
+BSJB at 0x272.
+
+**Test wiring**: `MsilSelfTestM37.fs` added to `Lyric.Emitter.Tests`; all 41
+MSIL self-tests pass (M1, M2a–M2d, M3–M37).  CLR: `ldelema` → `stind.i4` 42 →
+`ldelem` → prints `"42"`.
+
+---
+
 ### D-progress-175: MSIL PE emitter Stage M36 — `ldind.i4` + `stind.i4` (indirect int32 load/store)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
