@@ -97,6 +97,9 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M18 — `ldc.r8` (64-bit float literals): `msil_self_test_m18.l` builds a PE with `Main()` pushing `3.0` and `2.0` via `ldc.r8` (9-byte instruction with IEEE 754 f64 LE constant), multiplying via `mul`, and calling `Console.WriteLine(double)`; verifies opcode and the 8-byte encoding of `3.0`; CLR prints `6` | **Shipped** (this branch) | D-progress-157 |
 | MSIL PE emitter Stage M19 — `sub` + `rem`: `msil_self_test_m19.l` builds a PE with `Main()` computing `(23 - 3) % 13 = 7`; exercises `sub` (0x59) and `rem` (0x5D); CLR prints `7` | **Shipped** (this branch) | D-progress-158 |
 | MSIL PE emitter Stage M20 — exception handling (try/catch): `msil_self_test_m20.l` builds a PE whose `Main()` throws `System.Exception` in a try block and catches it, printing `42`; exercises `EHClause` record + `mbAddEHClause`, `MoreSects` flag (0x1B) in fat header, fat EH section (kind=0x41), `leave` (0xDD), `throw` (0x7A), and `newobj` (0x73); CLR prints `42` | **Shipped** (this branch) | D-progress-159 |
+| MSIL PE emitter Stage M21 — `finally` block: `msil_self_test_m21.l` builds a PE whose `Main()` sets a local to 10 in a try block, adds 32 in a finally handler (flags=2, catchToken=0), and prints 42; exercises `endfinally` (0xDC) and a fat EH clause with `flags=2`; CLR prints `42` | **Shipped** (this branch) | D-progress-160 |
+| MSIL PE emitter Stage M22 — `ldstr` + `#US` heap: `msil_self_test_m22.l` builds a PE whose `Main()` loads user string `"Hello, World!"` via `ldstr` (token `0x70000001`) and calls `Console.WriteLine(string)`; exercises `internUs`, UTF-16LE encoding with flag byte, and the `0x70` user-string token form; CLR prints `"Hello, World!"` | **Shipped** (this branch) | D-progress-161 |
+| MSIL PE emitter Stage M23 — multiple static methods: `msil_self_test_m23.l` builds a PE with two `MethodDef` rows — `Main` (MethodDef[1]) and `Add(int,int):int` (MethodDef[2]); Main calls Add(20,22) via token `0x06000002`, Add uses `ldarg.0`/`ldarg.1`/`add`/`ret`; verifies two consecutive tiny-header method bodies and a MethodDef call token; CLR prints `42` | **Shipped** (this branch) | D-progress-162 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 |
@@ -1635,6 +1638,114 @@ File layout:
 **Test wiring**: `MsilSelfTestM20.fs` added to `Lyric.Emitter.Tests`; all 24
 MSIL self-tests pass (M1, M2a–M2d, M3–M20).  CLR execution: throw →
 caught → prints `42`.
+
+---
+
+### D-progress-160: MSIL PE emitter Stage M21 — `finally` block
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M21 exercises the `finally` EH clause variant (flags=2, catchToken=0)
+and the `endfinally` (0xDC) instruction.
+
+**`msil_self_test_m21.l`** code layout (fat header, codeSize=21):
+
+```
+offset  0  ldc.i4.s 10                     [2 bytes]
+offset  2  stloc.0                          [1 byte]
+offset  3  leave end_lbl (rel=6)            [5 bytes]
+offset  8  [finally_start]
+offset  8  ldloc.0                          [1 byte]
+offset  9  ldc.i4.s 32                      [2 bytes]
+offset 11  add                              [1 byte]
+offset 12  stloc.0                          [1 byte]
+offset 13  endfinally                       [1 byte]
+offset 14  [finally_end / try_end / end_lbl]
+offset 14  ldloc.0 / call WriteLine / ret   [7 bytes]
+```
+
+EH clause: flags=2 (finally), tryOffset=0, tryLength=8,
+handlerOffset=8, handlerLength=6, catchToken=0.
+
+File layout:
+- Fat header at 0x248 (`0x1B 0x30`).
+- Code (21 bytes) at 0x254; ends at 0x268 → 0x269; 3 pad bytes → EH at 0x26C.
+- EH section: kind=0x41 at 0x26C, dataSize=0x1C at 0x26D.
+- BSJB at 0x288.
+
+Key verified byte positions:
+- `leave` (0xDD) at 0x257 (code offset 3).
+- `endfinally` (0xDC) at 0x261 (code offset 13).
+- EH flags=2 at 0x270.
+
+**Test wiring**: `MsilSelfTestM21.fs` added to `Lyric.Emitter.Tests`; all 25
+MSIL self-tests pass (M1, M2a–M2d, M3–M21).  CLR execution: try sets 10,
+finally adds 32 → prints `42`.
+
+---
+
+### D-progress-161: MSIL PE emitter Stage M22 — `ldstr` + `#US` heap
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M22 exercises the user-string heap and `ldstr` instruction.
+
+**`msil_self_test_m22.l`** calls `internUs(uh, "Hello, World!")` which
+returns byte offset 1 (offset 0 is the empty entry), then computes
+`ldstrTok = 0x70000000 + 1 = 0x70000001`.
+
+#US heap layout for "Hello, World!" (13 chars, all ASCII):
+- offset 0: `0x00` empty entry
+- offset 1: `0x1B` length prefix (27 = 13×2+1)
+- offsets 2–27: UTF-16LE code units (`48 00  65 00  6C 00 ...`)
+- offset 28: `0x00` flag byte (no high code units)
+
+Code layout (tiny header, codeSize=11):
+```
+ldstr 0x70000001  [5 bytes]
+call MemberRef[1] [5 bytes]  — Console.WriteLine(string)
+ret               [1 byte]
+```
+
+File layout: tiny header `0x2E` at 0x248; code at 0x249; BSJB at 0x254.
+
+**Test wiring**: `MsilSelfTestM22.fs` added to `Lyric.Emitter.Tests`; all 26
+MSIL self-tests pass (M1, M2a–M2d, M3–M22).  CLR execution: prints
+`"Hello, World!"`.
+
+---
+
+### D-progress-162: MSIL PE emitter Stage M23 — multiple static methods
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M23 verifies that the PE assembler correctly places two `MethodDef`
+rows in one type and that a `call` to the second method's token works.
+
+**`msil_self_test_m23.l`** defines:
+
+- `MethodDef[1]` = `Main()`: tiny header `0x3E` (codeSize=15)
+  ```
+  ldc.i4.s 20 / ldc.i4.s 22 / call 0x06000002 / call 0x0A000001 / ret
+  ```
+  Body = 16 bytes at file 0x248.
+- `MethodDef[2]` = `Add(int,int):int`: tiny header `0x12` (codeSize=4)
+  ```
+  ldarg.0 / ldarg.1 / add / ret
+  ```
+  Body = 5 bytes at file 0x258.
+
+BSJB at 0x25D (= 0x248 + 16 + 5).
+
+Key verified bytes:
+- Main tiny header `0x3E` at 0x248.
+- `call 0x06000002` (28 02 00 00 06) at 0x24D (Main code offset 4).
+- Add tiny header `0x12` at 0x258.
+- `ldarg.0` (0x02) at 0x259, `ldarg.1` (0x03) at 0x25A, `add` (0x58) at 0x25B.
+
+**Test wiring**: `MsilSelfTestM23.fs` added to `Lyric.Emitter.Tests`; all 27
+MSIL self-tests pass (M1, M2a–M2d, M3–M23).  CLR execution: Add(20,22)=42
+→ prints `42`.
 
 ---
 
