@@ -110,9 +110,9 @@ The block is a top-level item, peer to `func`, `type`, `wire`,
 `config`. Multiple `aspect` blocks per file are allowed (matches
 `wire`'s rule).
 
-A related form, `aspect_template`, exports a reusable advice body
-without a selector so that library packages can share instrumentation
-logic. Consumers bind a `matches:` clause locally via
+A `pub aspect` without a `matches:` clause is a template: it exports
+a reusable advice body so that library packages can share
+instrumentation logic. Consumers bind a `matches:` clause locally via
 `aspect Name from Pkg.Template { ... }`. See §18 for the full
 specification.
 
@@ -129,9 +129,12 @@ An aspect with none of the above is a compile error
 
 ### 2.2 Visibility
 
-Aspects are package-private. `pub aspect` is rejected
-(`A0001: aspects are package-private; remove 'pub'`). Cross-package
-aspect application is deliberately out of scope (§14).
+Matching aspects (those with a `matches:` clause) are package-private;
+`pub` is rejected on them (`A0001: pub is not allowed on a matching
+aspect; remove pub or remove the matches: clause`). A `pub aspect`
+without a `matches:` clause is a template (§18); templates are
+intentionally exportable. Cross-package weaving is still out of scope
+(§16) — templates share advice logic, not weave authority.
 
 ---
 
@@ -819,7 +822,7 @@ compiler.
 
 | Code | Meaning |
 |---|---|
-| `A0001` | `pub aspect` rejected (aspects are package-private). |
+| `A0001` | `pub` rejected on a matching aspect (one that declares `matches:`); `pub` is only valid on template aspects (no `matches:`). |
 | `A0002` | `aspect` redeclares an existing aspect name in the package. |
 | `A0007` | Two aspects' `matches:` overlap on a target with no explicit ordering. |
 | `A0008` | Cycle in `wraps:` / `inside:` ordering graph. |
@@ -832,12 +835,12 @@ compiler.
 | `A0015` | Rebound `args` cannot be proven to satisfy target `requires:`. |
 | `A0016` | Rebound return cannot be proven to satisfy composed `ensures:`. |
 | `A0020` | Aspect applied to async function with bootstrap-grade lowering (warning). |
-| `A0021` | `aspect_template` body declares a `matches:` clause (templates have no selector; the consumer provides one). |
+| `A0021` | Template aspect (`pub aspect` without `matches:`) declares a `matches:` clause; subsumed by A0001 — use A0001 for this case. Reserved. |
 | `A0022` | `aspect ... from Pkg.Template` instantiation declares `around`, `requires:`, or `ensures:` (those come from the template; only `matches:` and `config` override are allowed). |
 | `A0023` | `aspect ... from Pkg.Template` config override declares a field whose type differs from the template's declaration. |
 | `A0024` | `aspect ... from Pkg.Template` config override declares a field not present in the template. |
-| `A0025` | `from` references an `aspect_template` that is not `pub` (cross-package reference to a package-private template). |
-| `A0026` | `from` references a name that is not an `aspect_template` (e.g. a regular `aspect` or an ordinary type). |
+| `A0025` | `from` references a `pub aspect` template that is not `pub` (cross-package reference to a package-private template). |
+| `A0026` | `from` references a name that is not a template aspect (e.g. a matching aspect or an ordinary type). |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).
@@ -849,8 +852,8 @@ fields naming the aspect that introduced the failing clause (§5.3).
 - **Cross-package aspect application.** An aspect in package A
   weaving over functions in package B. Conflicts with package
   isolation, separate verification, and the published-contract model.
-  Not deferred — actively rejected. Note: `aspect_template` (§18)
-  does *not* relax this rule. A template shares advice *logic*; the
+  Not deferred — actively rejected. Note: `pub aspect` templates (§18)
+  do *not* relax this rule. A template shares advice *logic*; the
   weaving still happens exclusively inside the consumer's own package.
 - **Aspects on type constructors and operator overloads.**
   Tracked as Q-aspects-001.
@@ -922,10 +925,10 @@ fields naming the aspect that introduced the failing clause (§5.3).
 
 ## 18. Aspect templates
 
-An `aspect_template` is an exportable aspect body without a selector.
-A library package declares the template; consumer packages instantiate
-it, binding a `matches:` clause locally. The weaving still happens
-inside the consumer's package — the constraint from §16 (no
+A template is a `pub aspect` with no `matches:` clause. A library
+package declares it; consumer packages instantiate it by binding a
+local `matches:` clause via the `from` clause. The weaving still
+happens inside the consumer's package — the constraint from §16 (no
 cross-package weaving) is unchanged. What templates share is the
 *advice logic*, not the *weave authority*. The compiled result is
 indistinguishable from a consumer who hand-wrote the same `around`
@@ -938,7 +941,7 @@ package Std.OTel
 
 import Std.Core
 
-pub aspect_template Tracing {
+pub aspect Tracing {
   config {
     enabled:    Bool  = true
     sampleRate: Float = 1.0
@@ -953,7 +956,7 @@ pub aspect_template Tracing {
   }
 }
 
-pub aspect_template Metrics {
+pub aspect Metrics {
   config {
     enabled: Bool = true
   }
@@ -968,16 +971,16 @@ pub aspect_template Metrics {
 }
 ```
 
-A template declares the same body content as an ordinary `aspect`
-(`config { }`, `around`, `requires:`, `ensures:`), with one
-restriction: **no `matches:` clause**. The selector is the consumer's
-responsibility, so the template never weaves anything directly.
+A template is an `aspect` with no `matches:` clause. It declares the
+same body content as a standalone aspect (`config { }`, `around`,
+`requires:`, `ensures:`), but never weaves anything directly — the
+`matches:` selector is the consumer's responsibility.
 
 A template may be `pub` (cross-package use) or package-private
-(intra-package reuse across files in the same package). `pub
-aspect_template` is the common case; an unprefixed `aspect_template`
-is package-private and may only be instantiated within the same
-package.
+(intra-package reuse across files in the same package). `pub aspect`
+without `matches:` is the common cross-package form; an unprefixed
+`aspect` without `matches:` is package-private and may only be
+instantiated within the same package.
 
 ### 18.2 Template instantiation
 
@@ -1058,7 +1061,7 @@ independently.
 ```lyric
 // In the library
 @cfg(feature = "otel")
-pub aspect_template Tracing { ... }
+pub aspect Tracing { ... }
 
 // In the consumer
 @cfg(feature = "tracing")
@@ -1090,7 +1093,7 @@ package Std.OTel
 import Std.Core
 import Std._kernel.OTelKernel    // @externTarget externs for ActivitySource etc.
 
-pub aspect_template Tracing {
+pub aspect Tracing {
   config {
     enabled:     Bool   = true
     sampleRate:  Float  = 1.0
@@ -1109,7 +1112,7 @@ pub aspect_template Tracing {
   }
 }
 
-pub aspect_template RequestLogging {
+pub aspect RequestLogging {
   config {
     enabled: Bool     = true
     level:   LogLevel = LogLevel.Info

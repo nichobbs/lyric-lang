@@ -2243,7 +2243,7 @@ The four §8 tensions resolve as follows:
 
 ---
 
-## D050 — Aspect templates (`pub aspect_template`)
+## D050 — Aspect templates (`pub aspect_template`) — SUPERSEDED in D051 (syntax only)
 
 **Date:** 2026-05-08
 **Branch:** claude/opentelemetry-design-Fgww0
@@ -2356,6 +2356,80 @@ full semantics in `docs/26-aspects.md` §19. Key points:
 - **Q-aspects-007:** Ordering clause interaction between two
   template-derived instantiations in the same package when the template
   declares `requires:` / `ensures:`. Defer to v1 implementation pass.
+
+**Revisions:** None.
+
+---
+
+## D051 — Unify `aspect_template` into `aspect` — template = `pub aspect` without `matches:`
+
+**Date:** 2026-05-08
+**Branch:** claude/aspect-unified-keyword
+**Amends:** D050 (syntax only; all semantic decisions in D050 stand unchanged).
+
+### Context
+
+D050 introduced `aspect_template` as a new top-level keyword for
+exportable aspect bodies. On reflection, a separate keyword adds
+unnecessary cognitive overhead: the `aspect` block already handles
+standalone aspects and instantiations, and the template form is
+simply an aspect body that has no `matches:` clause and is `pub`.
+The distinction the language needs is already captured by two
+existing signals — `pub` and the presence or absence of `matches:`.
+
+### Decision
+
+**Retire the `aspect_template` keyword.** Templates are declared
+using the same `aspect` keyword as standalone aspects and
+instantiations. The three forms are distinguished post-parse by
+visibility and the presence of `matches:`:
+
+| Form | `pub` | `matches:` | `from` | Meaning |
+|---|---|---|---|---|
+| Standalone | no | yes | no | Package-private; weaves in this package. |
+| Template | yes (or no for intra-package) | no | no | Exported advice body; never weaves. |
+| Instantiation | no | yes | yes | Binds a template to a local selector. |
+
+The `pub` + `matches:` combination is rejected (`A0001`, updated):
+`pub` is not allowed on a matching aspect. All other semantic rules
+from D050 (config overrides, `@cfg` interaction, env-var naming,
+ordering clauses, `from` clause, diagnostics A0022–A0026) are
+unchanged.
+
+**Grammar change:** `AspectTemplateDecl` production removed.
+`AspectDecl` covers all three forms. `aspect_template` removed from
+the soft-keyword table. `from` remains a soft keyword.
+
+### Rationale
+
+- **One keyword, one mental model.** `aspect` is already the word
+  for "a cross-cutting thing the compiler weaves." A template is
+  just an unbound aspect — a `pub aspect` with no selector. Users
+  don't need a new word; they need to know that `pub` without
+  `matches:` means "I'm offering this body for others to bind."
+- **Less parser complexity.** Two productions (`AspectDecl` +
+  `AspectTemplateDecl`) collapse to one. The three forms are
+  syntactically identical up to `pub` and the presence of `matches:`
+  / `from`; post-parse disambiguation is a single predicate check.
+- **Consistent with `wire`.** `wire` doesn't have a separate
+  `wire_template` keyword for parameterised wires. The same "one
+  keyword, different modifiers" convention applies here.
+
+### Alternatives considered
+
+- **Keep `aspect_template`.** Maximally explicit; no ambiguity about
+  intent from a glance at the keyword. Rejected: the extra keyword
+  solves a problem readers don't have (the absence of `matches:` and
+  the presence of `pub` already communicate "template" unambiguously).
+
+### Consequences
+
+- `docs/26-aspects.md` §2.2 updated: A0001 now reads "pub rejected
+  on matching aspects" (not "pub always rejected").
+- `docs/26-aspects.md` §18 prose and all examples updated.
+- `docs/grammar.ebnf` §10.2 updated.
+- D050's entry title retains `pub aspect_template` for historical
+  accuracy; this entry supersedes D050's syntax choice only.
 
 **Revisions:** None.
 
