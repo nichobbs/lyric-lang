@@ -2243,7 +2243,7 @@ The four §8 tensions resolve as follows:
 
 ---
 
-## D048 — Aspect templates (`pub aspect_template`)
+## D050 — Aspect templates (`pub aspect_template`)
 
 **Date:** 2026-05-08
 **Branch:** claude/opentelemetry-design-Fgww0

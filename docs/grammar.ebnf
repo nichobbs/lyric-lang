@@ -99,7 +99,7 @@ IDENT = UnicodeIdStart { UnicodeIdContinue } ;
  *)
 
 Keyword =
-    'alias'    | 'and'       | 'as'        | 'async'     | 'await'
+    'alias'    | 'and'       | 'as'        | 'aspect'    | 'async'     | 'await'
   | 'bind'     | 'case'      | 'do'        | 'else'      | 'end'
   | 'ensures'  | 'entry'     | 'enum'      | 'exposed'   | 'extern'
   | 'false'    | 'fixture'   | 'for'       | 'func'      | 'generic'
@@ -134,8 +134,10 @@ Keyword =
  * Default, Copyable, Send, Mul, Div, Mod) are ordinary identifiers.
  *)
 
-SoftKeyword = 'range' | 'derives' | 'forall' | 'exists' | 'implies'
-            | 'scope_kind' ;
+SoftKeyword = 'range'          | 'derives'        | 'forall'   | 'exists'
+            | 'implies'        | 'scope_kind'
+            | 'aspect_template'                   (* aspect body template *)
+            | 'from'           ;                  (* aspect instantiation clause *)
 
 (* §1.6.1 Reserved-but-unused keywords
  *
@@ -1110,7 +1112,6 @@ ContractExpr = Expr ;
 
 (* §10.1 Wire blocks (compile-time DI graph; reference §10) *)
 
-
 WireDecl =
     'wire' IDENT [ WireParams ]
         '{' { NL } { WireMember NL } '}' ;
@@ -1207,7 +1208,6 @@ AroundAdvice =
 OrderingClause =
       'inside' ':' IDENT { ',' IDENT }
     | 'wraps'  ':' IDENT { ',' IDENT } ;
-
 
 (* §10.3 User-defined scopes *)
 

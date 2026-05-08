@@ -113,7 +113,7 @@ The block is a top-level item, peer to `func`, `type`, `wire`,
 A related form, `aspect_template`, exports a reusable advice body
 without a selector so that library packages can share instrumentation
 logic. Consumers bind a `matches:` clause locally via
-`aspect Name from Pkg.Template { ... }`. See §19 for the full
+`aspect Name from Pkg.Template { ... }`. See §18 for the full
 specification.
 
 ### 2.1 Required content
@@ -849,7 +849,7 @@ fields naming the aspect that introduced the failing clause (§5.3).
 - **Cross-package aspect application.** An aspect in package A
   weaving over functions in package B. Conflicts with package
   isolation, separate verification, and the published-contract model.
-  Not deferred — actively rejected. Note: `aspect_template` (§19)
+  Not deferred — actively rejected. Note: `aspect_template` (§18)
   does *not* relax this rule. A template shares advice *logic*; the
   weaving still happens exclusively inside the consumer's own package.
 - **Aspects on type constructors and operator overloads.**
@@ -920,7 +920,7 @@ fields naming the aspect that introduced the failing clause (§5.3).
 
 ---
 
-## 19. Aspect templates
+## 18. Aspect templates
 
 An `aspect_template` is an exportable aspect body without a selector.
 A library package declares the template; consumer packages instantiate
@@ -931,7 +931,7 @@ cross-package weaving) is unchanged. What templates share is the
 indistinguishable from a consumer who hand-wrote the same `around`
 body locally; the template is a maintenance-reduction tool.
 
-### 19.1 Template declaration
+### 18.1 Template declaration
 
 ```lyric
 package Std.OTel
@@ -948,7 +948,7 @@ pub aspect_template Tracing {
     if !config.enabled { return proceed(args) }
     let span = Std.OTel.startSpan(call.qualifiedName, call.sourceLocation)
     let r = proceed(args)
-    span.record(elapsedMs = call.elapsed)
+    span.record(elapsedMs = call.elapsed.unwrapOr(0))
     r
   }
 }
@@ -962,7 +962,7 @@ pub aspect_template Metrics {
     if !config.enabled { return proceed(args) }
     Std.OTel.incrementCounter(call.qualifiedName)
     let r = proceed(args)
-    Std.OTel.recordHistogram(call.qualifiedName, call.elapsed)
+    Std.OTel.recordHistogram(call.qualifiedName, call.elapsed.unwrapOr(0))
     r
   }
 }
@@ -979,7 +979,7 @@ aspect_template` is the common case; an unprefixed `aspect_template`
 is package-private and may only be instantiated within the same
 package.
 
-### 19.2 Template instantiation
+### 18.2 Template instantiation
 
 ```lyric
 package MyApp.Handlers
@@ -1006,8 +1006,8 @@ An instantiation is written `aspect Name from Pkg.Template { ... }`.
 The body may contain:
 
 - Exactly one `matches:` clause (required).
-- An optional `config { }` block that narrows or widens the template's
-  field defaults (see §19.3).
+- An optional `config { }` block that overrides the template's field
+  default values (see §18.3).
 - Ordering clauses (`wraps:` / `inside:`), composing with other local
   aspects per §6.
 
@@ -1017,7 +1017,7 @@ An instantiation may **not** declare `around`, `requires:`, or
 All other aspect semantics apply unchanged: `@cfg` gating, `@no_aspect`
 opt-outs, verifier integration, LSP code-lens.
 
-### 19.3 Config field overrides
+### 18.3 Config field overrides
 
 When a consumer's instantiation declares a `config { }` block, each
 field in the block *overrides the default* from the template. The
@@ -1051,7 +1051,7 @@ local aspect differently (`Tracing` vs. `OtelTracing`), their env var
 namespaces are separate. Operators configure each package's weaving
 independently.
 
-### 19.4 `@cfg` interaction
+### 18.4 `@cfg` interaction
 
 `@cfg` works independently on the template and on each instantiation:
 
@@ -1078,7 +1078,7 @@ aspect Tracing from Std.OTel.Tracing {
 The zero-cost property (§7) holds for templates: a fully erased
 instantiation emits no wrapper, no metadata, no branch.
 
-### 19.5 Worked example — OpenTelemetry library
+### 18.5 Worked example — OpenTelemetry library
 
 A `Std.OTel` package provides tracing, metrics, and logging templates.
 Consumers opt in per-package with a one-block declaration.
@@ -1104,7 +1104,7 @@ pub aspect_template Tracing {
                  call.qualifiedName, config.spanKind, call.sourceLocation)
     let r = proceed(args)
     span.setStatus(Ok)
-    span.end(elapsedMs = call.elapsed)
+    span.end(elapsedMs = call.elapsed.unwrapOr(0))
     r
   }
 }
@@ -1117,9 +1117,9 @@ pub aspect_template RequestLogging {
 
   around(args) -> ret {
     if !config.enabled { return proceed(args) }
-    Std.Log.log(config.level, "→ ${call.qualifiedName}")
+    Std.Log.log(config.level, "→ ${call.qualifiedName}", [])
     let r = proceed(args)
-    Std.Log.log(config.level, "← ${call.qualifiedName} (${call.elapsed}ms)")
+    Std.Log.log(config.level, "← ${call.qualifiedName} (${call.elapsed.unwrapOr(0)}ms)", [])
     r
   }
 }
@@ -1134,13 +1134,6 @@ import Std.OTel
 import Std.Core
 
 @cfg(feature = "otel")
-aspect Tracing from Std.OTel.Tracing {
-  matches: name like "handle*"
-  except name in { handleHealthcheck }
-  wraps: RequestLogging
-}
-
-@cfg(feature = "otel")
 aspect RequestLogging from Std.OTel.RequestLogging {
   matches: name like "handle*"
   except name in { handleHealthcheck }
@@ -1148,6 +1141,13 @@ aspect RequestLogging from Std.OTel.RequestLogging {
   config {
     level: LogLevel = LogLevel.Debug   // override to Debug in this service
   }
+}
+
+@cfg(feature = "otel")
+aspect Tracing from Std.OTel.Tracing {
+  matches: name like "handle*"
+  except name in { handleHealthcheck }
+  wraps: RequestLogging
 }
 ```
 
@@ -1162,7 +1162,7 @@ specific naming scheme for the exporter endpoint.
 
 ---
 
-## 18. References
+## 19. References
 
 - AspectJ (https://www.eclipse.org/aspectj/) — the canonical AOP
   reference, particularly for around-advice and pointcut design.
