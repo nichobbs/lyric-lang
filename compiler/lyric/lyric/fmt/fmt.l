@@ -22,88 +22,159 @@ import Lyric.Lexer
 import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1. Comment harvesting from the green CST.  We collect every line and
-// block-comment trivium and store it with its source offset so the formatter
-// can replay them at the appropriate item boundary.  The list is in source
-// order because the CST visit is in source order.
+// §1. Trivia harvesting from the green CST.  We collect every line and
+// block-comment trivium AND every "blank-line" marker (a run of two or
+// more `TKNewline` trivia, optionally separated by `TKWhitespace`), each
+// stored with its source offset so the formatter can replay them at the
+// appropriate boundary.  The list is in source order because the CST
+// visit is in source order.
 // ─────────────────────────────────────────────────────────────────────────────
 
-record HarvestedComment {
-  text:   String     // includes the `//` or `/* */` prefix verbatim
-  offset: Int        // byte offset into the (CR/LF-normalised) source
+pub union HarvestedItem {
+  /// A `//` or `/* */` comment.  `text` includes the leading prefix.
+  case HiComment(text: String, offset: Int)
+  /// One blank line in the original source (a run of 2+ consecutive
+  /// `TKNewline` trivia).  Offset is the start of the run; multiple
+  /// consecutive blank lines collapse to a single marker so the
+  /// formatter never emits more than one blank line in a row.
+  case HiBlank(offset: Int)
 }
 
-/// Pretty-printer state.  The harvested comment list is sorted by
+@pure
+func harvestedOffset(h: in HarvestedItem): Int {
+  match h {
+    case HiComment(_, o) -> o
+    case HiBlank(o)      -> o
+  }
+}
+
+/// Pretty-printer state.  The harvested trivia list is sorted by
 /// source offset (the CST traversal visits tokens in document order),
-/// and `cursor` points at the next un-emitted comment.  Multi-line
+/// and `cursor` points at the next un-emitted item.  Multi-line
 /// printers thread `ctx: inout FmtCtx` so they can pop pending
-/// comments at every structural boundary (top-level item, statement,
+/// trivia at every structural boundary (top-level item, statement,
 /// record / union / enum member).  Inline printers don't take it
 /// because nothing emits across multiple source lines.
 pub record FmtCtx {
-  comments: List[HarvestedComment]
-  cursor:   Int
+  items:  List[HarvestedItem]
+  cursor: Int
 }
 
-pub func newFmtCtx(comments: in List[HarvestedComment]): FmtCtx {
-  FmtCtx(comments = comments, cursor = 0)
+pub func newFmtCtx(items: in List[HarvestedItem]): FmtCtx {
+  FmtCtx(items = items, cursor = 0)
 }
 
-/// Pop every comment whose offset is `< hi` from the front of
-/// `ctx.cursor` and render the runs as `Doc` lines.  Block comments
-/// retain their internal newlines (split on `\n` so each rendered
-/// line is one source line).
-pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
+/// Pop every item whose offset is `< hi` and render comments as `Doc`
+/// lines and blank-line markers as empty strings.  Used inside blocks
+/// and member lists so the formatter preserves intentional spacing
+/// alongside comments.
+pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
-  while ctx.cursor < ctx.comments.count and ctx.comments[ctx.cursor].offset < hi {
-    val text = ctx.comments[ctx.cursor].text
-    val parts = Str.split(text, "\n")
-    var j = 0
-    while j < parts.length {
-      acc.add(parts[j])
-      j = j + 1
+  while ctx.cursor < ctx.items.count
+        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+    match ctx.items[ctx.cursor] {
+      case HiComment(text, _) -> {
+        val parts = Str.split(text, "\n")
+        var j = 0
+        while j < parts.length {
+          acc.add(parts[j])
+          j = j + 1
+        }
+      }
+      case HiBlank(_) -> { acc.add("") }
     }
     ctx.cursor = ctx.cursor + 1
   }
   acc
 }
 
-/// Skip past any comments with offset `< hi` without emitting them.
-/// Used at the very start of a structural section when a higher-level
-/// caller has already taken responsibility for a span.
+/// Pop every comment whose offset is `< hi` and render as `Doc` lines.
+/// Blank-line markers in the same range are silently dropped — used at
+/// top-level item / import boundaries where the canonical formatter
+/// already emits its own spacing rules.
+pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
+  val acc: List[String] = newList()
+  while ctx.cursor < ctx.items.count
+        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+    match ctx.items[ctx.cursor] {
+      case HiComment(text, _) -> {
+        val parts = Str.split(text, "\n")
+        var j = 0
+        while j < parts.length {
+          acc.add(parts[j])
+          j = j + 1
+        }
+      }
+      case HiBlank(_) -> {}
+    }
+    ctx.cursor = ctx.cursor + 1
+  }
+  acc
+}
+
+/// Fast-forward past any trivia (comments and blanks) with offset
+/// `< hi` without emission.  Used at item end to drop leftovers from
+/// expression sub-trees that are not yet ctx-aware.
 pub func skipCommentsBefore(ctx: inout FmtCtx, hi: in Int): Unit {
-  while ctx.cursor < ctx.comments.count and ctx.comments[ctx.cursor].offset < hi {
+  while ctx.cursor < ctx.items.count
+        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     ctx.cursor = ctx.cursor + 1
   }
 }
 
-func harvestCommentsFromToken(t: in SpannedToken, acc: inout List[HarvestedComment]): Unit {
+func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]): Unit {
+  // `newlineRun` counts consecutive `TKNewline` trivia (whitespace
+  // between newlines doesn't reset the run — `\n  \n` is still a
+  // blank-line run).  `blankRecorded` ensures we emit at most one
+  // `HiBlank` per run, no matter how many extra newlines follow.
+  var newlineRun = 0
+  var blankRecorded = false
+  var runStart = 0
   var i = 0
   while i < t.leadingTrivia.count {
     val tr = t.leadingTrivia[i]
     match tr.kind {
-      case TKLineComment  -> acc.add(HarvestedComment(text = tr.text, offset = tr.span.startPos.offset))
-      case TKBlockComment -> acc.add(HarvestedComment(text = tr.text, offset = tr.span.startPos.offset))
-      case _ -> {}
+      case TKNewline -> {
+        if newlineRun == 0 { runStart = tr.span.startPos.offset }
+        newlineRun = newlineRun + 1
+        if newlineRun >= 2 and not blankRecorded {
+          acc.add(HiBlank(offset = runStart))
+          blankRecorded = true
+        }
+      }
+      case TKWhitespace -> {
+        // Doesn't break a newline run — `\n  \n` is still a blank
+        // line, just with leading spaces on the empty line.
+      }
+      case TKLineComment -> {
+        newlineRun = 0
+        blankRecorded = false
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset))
+      }
+      case TKBlockComment -> {
+        newlineRun = 0
+        blankRecorded = false
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset))
+      }
     }
     i = i + 1
   }
 }
 
-func harvestCommentsFromNode(n: in GreenNode, acc: inout List[HarvestedComment]): Unit {
+func harvestTriviaFromNode(n: in GreenNode, acc: inout List[HarvestedItem]): Unit {
   var i = 0
   while i < n.children.count {
     match n.children[i] {
-      case GcToken(t) -> harvestCommentsFromToken(t, acc)
-      case GcNode(child) -> harvestCommentsFromNode(child, acc)
+      case GcToken(t)    -> harvestTriviaFromToken(t, acc)
+      case GcNode(child) -> harvestTriviaFromNode(child, acc)
     }
     i = i + 1
   }
 }
 
-func harvestComments(cst: in GreenNode): List[HarvestedComment] {
-  val acc: List[HarvestedComment] = newList()
-  harvestCommentsFromNode(cst, acc)
+func harvestTrivia(cst: in GreenNode): List[HarvestedItem] {
+  val acc: List[HarvestedItem] = newList()
+  harvestTriviaFromNode(cst, acc)
   acc
 }
 
@@ -214,7 +285,7 @@ pub func format(parsed: in ParseResult): String {
   val file = parsed.file
   val cst  = parsed.cst
   val nodes = itemNodes(cst)
-  var ctx  = newFmtCtx(harvestComments(cst))
+  var ctx  = newFmtCtx(harvestTrivia(cst))
 
   val sb: List[String] = newList()
 

@@ -133,7 +133,7 @@ pub func recordDoc(visStr: in String, kw: in String, name: in String,
   var i = 0
   while i < members.count {
     val m = members[i]
-    val pre = popCommentsBefore(ctx, recordMemberStartOffset(m))
+    val pre = popTriviaBefore(ctx, recordMemberStartOffset(m))
     var k = 0
     while k < pre.count { mLines.add(pre[k]); k = k + 1 }
     val ml = recordMemberLines(m, ctx)
@@ -168,7 +168,7 @@ pub func unionDoc(visStr: in String, ud: in UnionDecl, ctx: inout FmtCtx): List[
   var i = 0
   while i < ud.cases.count {
     val c = ud.cases[i]
-    val pre = popCommentsBefore(ctx, c.span.startPos.offset)
+    val pre = popTriviaBefore(ctx, c.span.startPos.offset)
     var k = 0
     while k < pre.count { cases.add(pre[k]); k = k + 1 }
     val cd = docLines(c.docComments)
@@ -218,7 +218,7 @@ pub func enumDoc(visStr: in String, ed: in EnumDecl, ctx: inout FmtCtx): List[St
   var i = 0
   while i < ed.cases.count {
     val c = ed.cases[i]
-    val pre = popCommentsBefore(ctx, c.span.startPos.offset)
+    val pre = popTriviaBefore(ctx, c.span.startPos.offset)
     var k = 0
     while k < pre.count { cases.add(pre[k]); k = k + 1 }
     val cd = docLines(c.docComments)

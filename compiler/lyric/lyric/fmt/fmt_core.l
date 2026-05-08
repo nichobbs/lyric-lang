@@ -1017,7 +1017,7 @@ func itemInlineFallback(item: in Item): String {
   // but Fmt.fs joins their multi-line form with "; ".  Mirror that.
   // The inline form has no opportunity to weave in inter-construct
   // comments, so we hand `itemDoc` a fresh, empty `FmtCtx`.
-  val empty: List[HarvestedComment] = newList()
+  val empty: List[HarvestedItem] = newList()
   var ctx = newFmtCtx(empty)
   joinStrings(itemDoc(item, ctx), "; ")
 }
@@ -1037,7 +1037,7 @@ pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
   var i = 0
   while i < b.statements.count {
     val s = b.statements[i]
-    val pre = popCommentsBefore(ctx, s.span.startPos.offset)
+    val pre = popTriviaBefore(ctx, s.span.startPos.offset)
     var k = 0
     while k < pre.count { acc.add(pre[k]); k = k + 1 }
     val sl = stmtLines(s, ctx)
@@ -1048,9 +1048,11 @@ pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
     }
     i = i + 1
   }
-  // Pop any trailing comments that fall before the block's closing brace.
-  // Block.span.endPos.offset is the offset just after `}`, so comments
-  // strictly inside the block satisfy `< endOffset`.
+  // Pop trailing comments before the block's closing brace.  We use
+  // `popCommentsBefore` here (not `popTriviaBefore`): a blank line
+  // immediately before `}` should not become a trailing empty line in
+  // the formatted body — the closing brace already provides a visual
+  // terminator.  Comments before `}` are still preserved.
   val tail = popCommentsBefore(ctx, b.span.endPos.offset)
   var k = 0
   while k < tail.count { acc.add(tail[k]); k = k + 1 }
@@ -1095,7 +1097,7 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
   var i = 0
   while i < arms.count {
     val a = arms[i]
-    val pre = popCommentsBefore(ctx, a.span.startPos.offset)
+    val pre = popTriviaBefore(ctx, a.span.startPos.offset)
     var k = 0
     while k < pre.count { armLines.add(pre[k]); k = k + 1 }
     val guard = match a.guard {
