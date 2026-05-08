@@ -1,18 +1,19 @@
-// msil/assembler.l — Single-method PE layout engine (Stage M2d).
+// msil/assembler.l — Single-assembly PE layout engine (Stage M2d / M4).
 //
-// Takes a populated AssemblerInput (tables, heaps, one MethodBody, entry token)
-// and produces a complete, CLR-runnable .NET PE image in a ByteWriter.
+// Takes a populated AssemblerInput (tables, heaps, one or more MethodBodies,
+// entry token) and produces a complete, CLR-runnable .NET PE image in a
+// ByteWriter.
 //
 // File layout (FILE_ALIGN = 0x200):
 //   0x000–0x07F  DOS stub (128 bytes)
 //   0x080–0x1FF  PE/COFF headers + section table, padded to FILE_ALIGN
 //   0x200–0x247  CLR IMAGE_COR20_HEADER (72 bytes)
-//   0x248–…      Method body (serialized by Msil.Opcodes)
-//   <after body> BSJB metadata root + 5 stream headers + stream data
+//   0x248–…      Method bodies (each serialized by Msil.Opcodes, in order)
+//   <after last body> BSJB metadata root + 5 stream headers + stream data
 //   <align>      Zero-padding to FILE_ALIGN
 //
-// Caller must set MethodDef.rva = FIRST_METHOD_RVA in MetadataTables before
-// calling assemblePe.
+// Caller must set MethodDef.rva for each method using methodBodyRvas()
+// before calling assemblePe.
 
 package Msil.Assembler
 
@@ -23,14 +24,14 @@ import Msil.Heaps
 import Std.Core
 import Std.Collections
 
-// RVA at which the first (only) method body begins.
+// RVA at which the first method body begins.
 // .text starts at RVA 0x2000; CLR header is 72 bytes.
 pub val FIRST_METHOD_RVA: Int = 0x2048
 
-// Input descriptor for the single-method PE assembler.
+// Input descriptor for the multi-method PE assembler.
 pub record AssemblerInput {
-  entryPointToken: Int    // metadata token, e.g. 0x06000001 for MethodDef[1]
-  methodBody:      MethodBody
+  entryPointToken: Int       // e.g. 0x06000001 for MethodDef[1]
+  methodBodies:    List[MethodBody]
   tables:          MetadataTables
   strings:         StringHeap
   us:              UsHeap
@@ -216,17 +217,47 @@ func writeMeta(w: in ByteWriter,
   bufAppend(w, guBuf)      bufZero(w, gSize - gRaw)
 }
 
+// ── Public helpers ────────────────────────────────────────────────────────────
+
+/// Compute the RVA for each method body in `bodies`.
+///
+/// Returns a list of the same length: `result[i]` is the RVA the caller
+/// must assign to `MethodDef[i+1].rva` before calling `assemblePe`.
+/// Method bodies are laid out consecutively starting at `FIRST_METHOD_RVA`.
+pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
+  val rvas: List[Int] = newList()
+  var rva = FIRST_METHOD_RVA
+  var i = 0
+  val count = bodies.count
+  while i < count {
+    rvas.add(rva)
+    val buf = bufNew()
+    serializeMethodBody(bodies[i], buf)
+    rva = rva + bufLen(buf)
+    i = i + 1
+  }
+  return rvas
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
-// Assemble a complete, CLR-runnable PE image.
-//
-// The caller is responsible for setting MethodDef.rva = FIRST_METHOD_RVA
-// in inp.tables before calling this function.
+/// Assemble a complete, CLR-runnable PE image.
+///
+/// Caller must populate `inp.tables` with MethodDef.rva values obtained
+/// from `methodBodyRvas(inp.methodBodies)` before calling this function.
 pub func assemblePe(inp: in AssemblerInput): ByteWriter {
-  // Serialize method body
-  val mbBuf = bufNew()
-  serializeMethodBody(inp.methodBody, mbBuf)
-  val mbRaw = bufLen(mbBuf)
+  // Serialize all method bodies and measure total raw size
+  val mbBufs: List[ByteWriter] = newList()
+  var i = 0
+  val mbCount = inp.methodBodies.count
+  var mbTotalRaw = 0
+  while i < mbCount {
+    val buf = bufNew()
+    serializeMethodBody(inp.methodBodies[i], buf)
+    mbBufs.add(buf)
+    mbTotalRaw = mbTotalRaw + bufLen(buf)
+    i = i + 1
+  }
 
   // Serialize heap data
   val strBuf = bufNew()
@@ -257,9 +288,9 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
 
   // PE layout
   val clrHdrSz  = 72
-  val mdRva     = 0x2000 + clrHdrSz + mbRaw   // metadata RVA in .text section
-  val textVSize = clrHdrSz + mbRaw + metaSize  // actual content bytes in .text
-  val textRSize = roundTo(textVSize, 0x200)    // file-aligned .text size
+  val mdRva     = 0x2000 + clrHdrSz + mbTotalRaw   // metadata RVA in .text section
+  val textVSize = clrHdrSz + mbTotalRaw + metaSize  // actual content bytes in .text
+  val textRSize = roundTo(textVSize, 0x200)          // file-aligned .text size
   val imgSize   = 0x2000 + roundTo(textVSize, 0x2000)  // SizeOfImage
 
   // Write PE image
@@ -267,7 +298,14 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   writeDos(w)                                              // 0x000–0x07F
   writePeHdrs(w, textVSize, textRSize, imgSize)            // 0x080–0x1FF
   writeClrHdr(w, mdRva, metaSize, inp.entryPointToken)     // 0x200–0x247
-  bufAppend(w, mbBuf)                                      // method body
+
+  // Method bodies
+  var j = 0
+  while j < mbCount {
+    bufAppend(w, mbBufs[j])
+    j = j + 1
+  }
+
   writeMeta(w, tildeBuf, strBuf, usBuf, blBuf, guBuf)      // metadata
   bufZero(w, textRSize - textVSize)                        // section padding
   return w

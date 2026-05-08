@@ -150,9 +150,11 @@ func main(): Unit {
   emitRet(mb)
 
   // ── Assemble PE ───────────────────────────────────────────────────────────
+  val bodies: List[MethodBody] = newList()
+  bodies.add(mb)
   val inp = AssemblerInput(
     entryPointToken = 0x06000001,
-    methodBody      = mb,
+    methodBodies    = bodies,
     tables          = t,
     strings         = sh,
     us              = uh,

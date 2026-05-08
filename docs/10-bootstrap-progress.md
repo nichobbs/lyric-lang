@@ -79,7 +79,8 @@ deferred to Phase 3 by design.
 | M5.2 stage 1 — self-hosted mode checker (`Lyric.ModeChecker` library + `modechecker_self_test.l`) | **Shipped** (PR #198) | D-progress-133 |
 | MSIL PE emitter Stage M1 — `Msil.Pe` + `Msil.Kernel` packages; fixed-layout 1024-byte PE image for a minimal "Hello" assembly; structural smoke test via `msil_self_test_m1.l` | **Shipped** (PR #199) | D-progress-134 |
 | MSIL PE emitter Stages M2a–M2d — parameterized heap builders (`Msil.Heaps`), opcode IR + two-pass assembler (`Msil.Opcodes`), metadata table model (`Msil.Tables`), and layout engine (`Msil.Assembler`) producing a correct, runnable PE from structured input; four self-tests verify each layer | **Shipped** (PR #219) | D-progress-141 |
-| MSIL PE emitter Stage M3 — end-to-end execution test: `msil_self_test_m3.l` assembles a Hello-World PE, writes it to disk via `Std.File.writeBytes`, and the F# harness executes it with `dotnet exec`, verifying "Hello, World!" in stdout | **Shipped** (this branch) | D-progress-142 |
+| MSIL PE emitter Stage M3 — end-to-end execution test: `msil_self_test_m3.l` assembles a Hello-World PE, writes it to disk via `Std.File.writeBytes`, and the F# harness executes it with `dotnet exec`, verifying "Hello, World!" in stdout | **Shipped** (PR #220) | D-progress-142 |
+| MSIL PE emitter Stage M4 — multi-method PE assembler: `AssemblerInput.methodBodies` replaces single `methodBody`; `methodBodyRvas()` computes per-method RVAs; `msil_self_test_m4.l` builds a two-method PE (`Greet` + `Main`) with structural and CLR-execution checks | **Shipped** (this branch) | D-progress-143 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -698,6 +699,45 @@ that executes cleanly under .NET 10.
 
 **Test wiring**: `MsilSelfTestM3.fs` added to `Lyric.Emitter.Tests`; all 6
 MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3).
+
+---
+
+### D-progress-143: MSIL PE emitter Stage M4 — multi-method PE assembler
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M4 extends `Msil.Assembler` from single-method to multi-method
+assemblies, which is the minimum requirement for any real Lyric program.
+
+**API change in `assembler.l`**:
+
+- `AssemblerInput.methodBody: MethodBody` → `methodBodies: List[MethodBody]`.
+  Any number of method bodies can now be described in a single input record.
+- New public function `methodBodyRvas(bodies: List[MethodBody]): List[Int]`:
+  serializes each body in a scratch buffer, measures its size, and returns
+  a list of RVAs starting at `FIRST_METHOD_RVA`.  The caller assigns
+  `result[i]` to `MethodDef[i+1].rva` before calling `assemblePe`.
+- `assemblePe` now serializes all bodies consecutively in the `.text`
+  section and computes `mdRva` / `textVSize` from their total raw size.
+
+**Migration of existing self-tests**: `msil_self_test_m2d.l` and
+`msil_self_test_m3.l` updated to use `methodBodies = [mb]`; byte-layout
+is identical to the old single-body path so all structural checks pass
+unchanged.
+
+**`msil_self_test_m4.l`** builds a two-method PE:
+- `MethodDef[1] Greet()` — `ldstr US[1] + call MemberRef[1] + ret`
+- `MethodDef[2] Main()` — `call MethodDef[1] + call MethodDef[1] + ret`
+
+RVAs are computed via `methodBodyRvas` before populating the table.
+The PE uses two AssemblyRefs (System.Runtime / System.Console) per the
+D-progress-142 finding.  Structural checks verify the Greet tiny-header
+at file offset 0x248, Main at 0x254, and BSJB at 0x260.  The PE is
+written to disk and the F# harness executes it, asserting "Hello from
+Greet!" appears twice in stdout.
+
+**Test wiring**: `MsilSelfTestM4.fs` added to `Lyric.Emitter.Tests`; all 7
+MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4).
 
 ---
 
