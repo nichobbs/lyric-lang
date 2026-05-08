@@ -49,6 +49,8 @@ func firstItemKindName(pr: in ParseResult): String {
     case ITest(_)         -> "test"
     case IProperty(_)     -> "property"
     case IFixture(_)      -> "fixture"
+    case IConfig(_)       -> "config"
+    case IAspect(_)       -> "aspect"
     case IError           -> "error"
   }
 }
@@ -192,6 +194,71 @@ func testGenericFunc(): Unit {
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "generic: no diagnostics")
   assertEqual(firstItemKindName(pr), "func", "generic: kind")
+}
+
+// ── D046 config block parser (self-host mirror of F# bootstrap) ──
+
+func testConfigBlock(): Unit {
+  val src = "package P\nconfig Settings { port: Int = 8080 }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "config: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "config: one item")
+  assertEqual(firstItemKindName(pr), "config", "config: kind")
+}
+
+func testConfigBlockMultipleFields(): Unit {
+  val src = "package P\nconfig Settings { port: Int = 8080; host: String = \"0.0.0.0\"; secret: String }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "config-multi: no diagnostics")
+  match pr.file.items[0].kind {
+    case IConfig(cd) -> {
+      assertEqual(cd.name, "Settings", "config-multi: name")
+      assertEqualInt(cd.fields.count, 3, "config-multi: three fields")
+    }
+    case _ -> assertTrue(false, "config-multi: expected IConfig")
+  }
+}
+
+func testConfigAsParamName(): Unit {
+  // `config` must remain usable as a parameter name; the dispatch is
+  // context-sensitive (only fires when followed by an identifier in
+  // module scope, not inside a function signature).
+  val src = "package P\nfunc describe(config: in String): String { config }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "config-as-param: no diagnostics")
+  assertEqual(firstItemKindName(pr), "func", "config-as-param: kind is func")
+}
+
+// ── D047 aspect block parser (self-host mirror of F# bootstrap) ──
+
+func testAspectBlock(): Unit {
+  val src =
+    "package P\naspect Logging {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "aspect: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "aspect: one item")
+  assertEqual(firstItemKindName(pr), "aspect", "aspect: kind")
+  match pr.file.items[0].kind {
+    case IAspect(ad) -> {
+      assertEqual(ad.name, "Logging", "aspect: name")
+      assertEqualInt(ad.matches.count, 1, "aspect: one matcher")
+      match ad.around {
+        case Some(_) -> {}
+        case None -> assertTrue(false, "aspect: around present")
+      }
+    }
+    case _ -> assertTrue(false, "aspect: expected IAspect")
+  }
+}
+
+func testAspectAsParamName(): Unit {
+  val src = "package P\nfunc tag(aspect: in String): String { aspect }\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "aspect-as-param: no diagnostics")
+  assertEqual(firstItemKindName(pr), "func", "aspect-as-param: kind is func")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,6 +513,11 @@ func main(): Unit {
   testMatchExpr()
   testIfExpr()
   testGenericFunc()
+  testConfigBlock()
+  testConfigBlockMultipleFields()
+  testConfigAsParamName()
+  testAspectBlock()
+  testAspectAsParamName()
   testCstRootKind()
   testCstLossless()
   testCstShape()

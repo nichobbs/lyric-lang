@@ -1608,11 +1608,227 @@ func parseScopeKindBody(st: inout ParseState): ScopeKindDecl {
   ScopeKindDecl(name = ns.name, span = joinSpans(startTok.span, ns.span))
 }
 
-// D046 / D047 self-hosted parser dispatch + bodies are deferred —
-// see the note at the top of `parser_ast.l`.  The F# bootstrap
-// parser has the full implementation; the self-hosted mirror lights
-// up once the F# emitter's `emitLambdaWith` codegen path can handle
-// the resulting Lyric source shape.
+// ─────────────────────────────────────────────────────────────────────────────
+// D046 — `config Name { ... }` block parser.  Mirrors the F# bootstrap
+// `parseConfigBody` in `compiler/src/Lyric.Parser/Parser.fs`.  Each field
+// is `name: Type [= default]` with optional preceding annotations.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseConfigField(st: inout ParseState): ConfigField {
+  val startSpan = peekSpan(st)
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  val ns = readIdent(st, "config field")
+  match tryEatPunct(st, Colon) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0120", "expected ':' after config field name", peekSpan(st)) }
+  }
+  val ty = parseTypeExpr(st)
+  val dflt =
+    match tryEatPunct(st, Eq) {
+      case Some(_) -> Some(parseExpr(st))
+      case None -> None
+    }
+  val trailingAnns = parseTrailingAnnotations(st)
+  val allAnns = listConcat(anns, trailingAnns)
+  val endSpan =
+    match dflt {
+      case Some(e) -> e.span
+      case None -> ty.span
+    }
+  ConfigField(
+    docComments = docs,
+    annotations = allAnns,
+    name        = ns.name,
+    ty          = ty,
+    default     = dflt,
+    span        = joinSpans(startSpan, endSpan))
+}
+
+func parseConfigBody(st: inout ParseState): ConfigDecl {
+  val startTok = advance(st)  // 'config' (TIdent)
+  val ns = readIdent(st, "config block")
+  val _ = skipStmtEnds(st)
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0121", "expected '{' to start config block body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val fields: List[ConfigField] = newList()
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = st.pos
+    fields.add(parseConfigField(st))
+    match peekToken(st) {
+      case TStmtEnd -> {
+        val _ = advance(st)
+        val _ = skipStmtEnds(st)
+      }
+      case TPunct(Comma) -> {
+        val _ = advance(st)
+        val _ = skipStmtEnds(st)
+      }
+      case _ -> {}
+    }
+    forceAdvanceIfStuck(st, before)
+  }
+  val closeTok = tryEatPunct(st, RBrace)
+  val endSpan =
+    match closeTok {
+      case Some(t) -> t.span
+      case None -> {
+        val sp = peekSpan(st)
+        emitErr(st, "P0122", "expected '}' to close config block body", sp)
+        sp
+      }
+    }
+  ConfigDecl(
+    name   = ns.name,
+    fields = fields,
+    span   = joinSpans(startTok.span, endSpan))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D047 — `aspect Name { ... }` block parser.  v1 surface: a `matches:`
+// clause with a `name like "<glob>"` predicate, and an `around` advice
+// body.  Contract clauses (`requires:`/`ensures:`), ordering clauses
+// (`wraps:`/`inside:`), and per-aspect `config { ... }` blocks are
+// deferred — they parse as P0040 errors today.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseAspectMatcher(st: inout ParseState): Option[AspectMatcher] {
+  val _ = skipStmtEnds(st)
+  match peekToken(st) {
+    case TIdent(s) -> {
+      if s == "name" {
+        val _ = advance(st)
+        match peekToken(st) {
+          case TIdent(s2) -> {
+            if s2 == "like" {
+              val _ = advance(st)
+            } else {
+              emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st))
+            }
+          }
+          case _ -> {
+            emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st))
+          }
+        }
+        match peekToken(st) {
+          case TString(g) -> {
+            val sp = peekSpan(st)
+            val _ = advance(st)
+            Some(value = AMNameLike(glob = g, span = sp))
+          }
+          case _ -> {
+            emitErr(st, "P0299", "expected a string-literal glob after 'name like'", peekSpan(st))
+            None
+          }
+        }
+      } else {
+        emitErr(st, "P0297", "expected 'name like \"...\"' in matches: clause", peekSpan(st))
+        None
+      }
+    }
+    case _ -> {
+      emitErr(st, "P0297", "expected 'name like \"...\"' in matches: clause", peekSpan(st))
+      None
+    }
+  }
+}
+
+func parseAspectAround(st: inout ParseState): AspectAround {
+  val startTok = advance(st)  // 'around'
+  match tryEatPunct(st, LParen) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0301", "expected '(' after 'around'", peekSpan(st)) }
+  }
+  val args = readIdent(st, "around args")
+  match tryEatPunct(st, RParen) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0302", "expected ')' after around args binder", peekSpan(st)) }
+  }
+  val ret =
+    match peekToken(st) {
+      case TPunct(Arrow) -> {
+        val _ = advance(st)
+        val r = readIdent(st, "around return")
+        Some(value = r.name)
+      }
+      case _ -> None
+    }
+  val _ = skipStmtEnds(st)
+  val body = parseBlock(st)
+  AspectAround(
+    argsName = args.name,
+    retName  = ret,
+    body     = body,
+    span     = joinSpans(startTok.span, body.span))
+}
+
+func parseAspectBody(st: inout ParseState): AspectDecl {
+  val startTok = advance(st)  // 'aspect' (TIdent)
+  val ns = readIdent(st, "aspect")
+  val _ = skipStmtEnds(st)
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {}
+    case None -> { emitErr(st, "P0300", "expected '{' to start aspect body", peekSpan(st)) }
+  }
+  val _ = skipStmtEnds(st)
+  val matches: List[AspectMatcher] = newList()
+  var around: Option[AspectAround] = None
+  while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
+    val before = st.pos
+    match peekToken(st) {
+      case TIdent(s) -> {
+        if s == "matches" {
+          val _ = advance(st)
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0296", "expected ':' after 'matches'", peekSpan(st)) }
+          }
+          match parseAspectMatcher(st) {
+            case Some(m) -> matches.add(m)
+            case None -> {}
+          }
+        } else if s == "around" {
+          match around {
+            case Some(_) -> {
+              emitErr(st, "P0303", "duplicate 'around' clause in aspect block", peekSpan(st))
+              val _ = parseAspectAround(st)
+            }
+            case None -> {
+              around = Some(value = parseAspectAround(st))
+            }
+          }
+        } else {
+          emitErr(st, "P0304", "expected 'matches:' or 'around' in aspect body", peekSpan(st))
+          val _ = advance(st)
+        }
+      }
+      case _ -> {
+        emitErr(st, "P0304", "expected 'matches:' or 'around' in aspect body", peekSpan(st))
+        if not isAtEnd(st) { val _ = advance(st) }
+      }
+    }
+    val _ = skipStmtEnds(st)
+    forceAdvanceIfStuck(st, before)
+  }
+  val closeTok = tryEatPunct(st, RBrace)
+  val endSpan =
+    match closeTok {
+      case Some(t) -> t.span
+      case None -> {
+        val sp = peekSpan(st)
+        emitErr(st, "P0305", "expected '}' to close aspect body", sp)
+        sp
+      }
+    }
+  AspectDecl(
+    name    = ns.name,
+    matches = matches,
+    around  = around,
+    span    = joinSpans(startTok.span, endSpan))
+}
 
 func parseTestBody(st: inout ParseState): TestDecl {
   val startTok = advance(st)  // 'test'
@@ -1994,8 +2210,20 @@ func parseItemOpt(st: inout ParseState): Option[Item] {
       }
       case TIdent(_) -> {
         val identName = identStr(nextTok.token)
+        // D046 / D047: `config` and `aspect` are context-sensitive item
+        // starters — they must be followed by an identifier so the
+        // names remain usable as parameters or local-variable names
+        // in normal code.
+        val nextIsIdent = match peekAt(st, 1).token {
+          case TIdent(_) -> true
+          case _ -> false
+        }
         if identName == "scope_kind" {
           IScopeKind(decl = parseScopeKindBody(st))
+        } else if identName == "config" and nextIsIdent {
+          IConfig(decl = parseConfigBody(st))
+        } else if identName == "aspect" and nextIsIdent {
+          IAspect(decl = parseAspectBody(st))
         } else {
           emitErr(st, "P0040", "expected an item declaration", nextTok.span)
           if not isAtEnd(st) { val _ = advance(st) }

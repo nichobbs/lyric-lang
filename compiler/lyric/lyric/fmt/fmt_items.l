@@ -470,6 +470,8 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case ITest(td)        -> concatDoc(header, testDoc(td, ctx))
     case IProperty(pd)    -> concatDoc(header, propertyDoc(pd, ctx))
     case IFixture(fd)     -> concatDoc(header, fixtureDoc(fd))
+    case IConfig(cd)      -> concatDoc(header, configDoc(visStr, cd))
+    case IAspect(ad)      -> concatDoc(header, aspectDoc(visStr, ad, ctx))
     case IError           -> singleLineDoc("// <parse-error>")
   }
 }
@@ -733,6 +735,73 @@ func fixtureDoc(fd: in FixtureDecl): List[String] {
     case None    -> ""
   }
   singleLineDoc("fixture " + fd.name + tyStr + " = " + exprInline(0, fd.init))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D046 config block render.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func configFieldLine(f: in ConfigField): String {
+  val annPrefix: List[String] = annotationLines(f.annotations)
+  // Annotations on a config field render on their own preceding lines;
+  // the field itself is one line with `name: T = default?`.
+  val dflt = match f.default {
+    case Some(e) -> " = " + exprInline(0, e)
+    case None    -> ""
+  }
+  "  " + f.name + ": " + typeStr(f.ty) + dflt
+}
+
+func configDoc(visStr: in String, cd: in ConfigDecl): List[String] {
+  val acc: List[String] = newList()
+  acc.add(visStr + "config " + cd.name + " {")
+  var i = 0
+  while i < cd.fields.count {
+    val f = cd.fields[i]
+    val annLines = annotationLines(f.annotations)
+    var k = 0
+    while k < annLines.count { acc.add("  " + annLines[k]); k = k + 1 }
+    acc.add(configFieldLine(f))
+    i = i + 1
+  }
+  acc.add("}")
+  acc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D047 aspect block render.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func aspectMatcherLine(m: in AspectMatcher): String {
+  match m {
+    case AMNameLike(g, _) -> "matches: name like \"" + g + "\""
+  }
+}
+
+func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
+  val acc: List[String] = newList()
+  acc.add(visStr + "aspect " + ad.name + " {")
+  var i = 0
+  while i < ad.matches.count {
+    acc.add("  " + aspectMatcherLine(ad.matches[i]))
+    i = i + 1
+  }
+  match ad.around {
+    case Some(ar) -> {
+      val retStr = match ar.retName {
+        case Some(r) -> " -> " + r
+        case None    -> ""
+      }
+      acc.add("  around(" + ar.argsName + ")" + retStr + " {")
+      val body = blockLines(ar.body, ctx)
+      var k = 0
+      while k < body.count { acc.add("    " + body[k]); k = k + 1 }
+      acc.add("  }")
+    }
+    case None -> {}
+  }
+  acc.add("}")
+  acc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
