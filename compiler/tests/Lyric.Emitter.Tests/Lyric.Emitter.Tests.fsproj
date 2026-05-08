@@ -77,6 +77,7 @@
     <Compile Include="MsilSelfTestM5.fs" />
     <Compile Include="MsilSelfTestM6.fs" />
     <Compile Include="MsilSelfTestM7.fs" />
+    <Compile Include="MsilSelfTestM8.fs" />
     <Compile Include="JvmLoweringTest.fs" />
     <Compile Include="JvmLoweringB4Test.fs" />
     <Compile Include="JvmLoweringB5Test.fs" />

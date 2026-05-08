@@ -84,6 +84,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M5 — local variables / fat method header: `StandAloneSig` table (0x11) added to `Msil.Tables`; `msil_self_test_m5.l` builds a PE whose `Main()` stores a string in a local variable (fat header, `InitLocals`) and prints it twice via `Console.WriteLine` | **Shipped** (this branch) | D-progress-144 |
 | MSIL PE emitter Stage M6 — method arguments and non-void return: `msil_self_test_m6.l` builds a PE with `Add(int,int):int` (ldarg.0/ldarg.1/add/ret) called from `Main()` which passes the result to `Console.WriteLine(int)`; exercises int32 method signatures and argument-passing | **Shipped** (this branch) | D-progress-145 |
 | MSIL PE emitter Stage M7 — static fields: `msil_self_test_m7.l` builds a PE with a static int32 field `s_val`; `Main()` stores 42 via `stsfld`, reloads via `ldsfld`, and prints it; exercises the `Field` (0x04) metadata table and `FieldSig` blob | **Shipped** (this branch) | D-progress-146 |
+| MSIL PE emitter Stage M8 — `newobj` + instance fields: `msil_self_test_m8.l` builds a PE with an instance int32 field `x_val`, a HASTHIS constructor `.ctor(int v)` that stores `v` via `stfld`, and `Main()` that creates `Hello(99)` via `newobj`, reads `x_val` via `ldfld`, and prints it | **Shipped** (this branch) | D-progress-147 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 |
@@ -785,6 +786,51 @@ exactly twice in CLR stdout.
 
 **Test wiring**: `MsilSelfTestM5.fs` added to `Lyric.Emitter.Tests`; all 8
 MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5).
+
+---
+
+### D-progress-147: MSIL PE emitter Stage M8 — newobj + instance fields
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M8 exercises `newobj`, instance field access (`ldfld` / `stfld`), and
+the HASTHIS calling convention — the three prerequisites for emitting Lyric
+record types as .NET classes.
+
+**`msil_self_test_m8.l`** builds a PE with a class `Hello` that has:
+
+- **`Field[1]: x_val`** — public int32 instance field.  FieldSig:
+  `{0x06, 0x08}`.
+- **`MethodDef[1]: .ctor(int v)`** — HASTHIS constructor; signature
+  `{0x20, 0x01, 0x01, 0x08}` (HASTHIS, 1 param, void return, I4).  Body:
+  `ldarg.0`, `ldarg.1`, `stfld 0x04000001`, `ret` — 8 bytes; tiny header
+  `0x22`.  Flags include `SpecialName | RTSpecialName`.
+- **`MethodDef[2]: Main()`** — static entry point.  Body: `ldc.i4.s 99`,
+  `newobj 0x06000001`, `ldfld 0x04000001`, `call 0x0A000001`
+  (Console.WriteLine(int)), `ret` — 18 bytes; tiny header `0x4A`.
+
+Layout at file offset 0x248:
+
+```
+0x248  22             .ctor tiny header (codeSize=8)
+0x249  02 03          ldarg.0, ldarg.1
+0x24B  7D 01 00 00 04 stfld Field[1]
+0x250  2A             ret
+0x251  4A             Main tiny header (codeSize=18)
+0x252  1F 63          ldc.i4.s 99
+0x254  73 01 00 00 06 newobj MethodDef[1] (.ctor)
+0x259  7B 01 00 00 04 ldfld Field[1]
+0x25E  28 01 00 00 0A call MemberRef[1] (Console.WriteLine(int))
+0x263  2A             ret
+0x264  42 53 4A 42    BSJB metadata root
+```
+
+Structural checks verify `ctor_hdr_ok`, `ctor_stfld_ok`, `main_hdr_ok`,
+`newobj_ok`, `ldfld_ok`, and `bsjb_ok`.  The F# harness executes the PE
+and asserts `"99"` appears in CLR stdout.
+
+**Test wiring**: `MsilSelfTestM8.fs` added to `Lyric.Emitter.Tests`; all 11
+MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7, M8).
 
 ---
 
