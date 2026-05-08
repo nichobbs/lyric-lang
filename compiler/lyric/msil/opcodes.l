@@ -90,6 +90,8 @@ pub val OP_CONV_R4     : Int = 0x6B
 pub val OP_CONV_R8     : Int = 0x6C
 pub val OP_CONV_U4     : Int = 0x6D
 pub val OP_CONV_U8     : Int = 0x6E
+pub val OP_CONV_R_UN   : Int = 0x76
+pub val OP_CKFINITE    : Int = 0xC3
 pub val OP_THROW       : Int = 0x7A
 pub val OP_LDLEN       : Int = 0x8E
 pub val OP_STELEM_REF  : Int = 0xA2
@@ -323,6 +325,8 @@ pub func iConv_U1():       Insn = Nullary(op = OP_CONV_U1)
 pub func iConv_U2():       Insn = Nullary(op = OP_CONV_U2)
 pub func iConv_U4():       Insn = Nullary(op = OP_CONV_U4)
 pub func iConv_U8():       Insn = Nullary(op = OP_CONV_U8)
+pub func iConv_R_Un():     Insn = Nullary(op = OP_CONV_R_UN)
+pub func iCkfinite():      Insn = Nullary(op = OP_CKFINITE)
 pub func iConv_Ovf_I1():      Insn = Nullary(op = OP_CONV_OVF_I1)
 pub func iConv_Ovf_U1():      Insn = Nullary(op = OP_CONV_OVF_U1)
 pub func iConv_Ovf_I2():      Insn = Nullary(op = OP_CONV_OVF_I2)
@@ -543,6 +547,8 @@ pub func emitConv_U1(b: in MethodBody): Unit       = mbEmit(b, iConv_U1())
 pub func emitConv_U2(b: in MethodBody): Unit       = mbEmit(b, iConv_U2())
 pub func emitConv_U4(b: in MethodBody): Unit       = mbEmit(b, iConv_U4())
 pub func emitConv_U8(b: in MethodBody): Unit       = mbEmit(b, iConv_U8())
+pub func emitConv_R_Un(b: in MethodBody): Unit     = mbEmit(b, iConv_R_Un())
+pub func emitCkfinite(b: in MethodBody): Unit      = mbEmit(b, iCkfinite())
 pub func emitConv_Ovf_I1(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I1())
 pub func emitConv_Ovf_U1(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_U1())
 pub func emitConv_Ovf_I2(b: in MethodBody): Unit  = mbEmit(b, iConv_Ovf_I2())

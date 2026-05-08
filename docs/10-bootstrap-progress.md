@@ -1978,6 +1978,28 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-183: MSIL PE emitter Stage M44 — `conv.r.un` + `ckfinite`
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Stage M44 exercises two float-related opcodes:
+- `conv.r.un` (0x76) — convert integer to R8 treating the source as unsigned; for
+  non-negative values within I4 range the result is identical to `conv.r8`.
+- `ckfinite` (0xC3) — throw `ArithmeticException` if the top-of-stack F value is
+  NaN or infinity; otherwise leave the value unchanged.
+
+**Code flow:** `ldc.i4.s 42 / conv.r.un` → 42.0; `ckfinite` passes (finite);
+`conv.i4` → 42; `call Console.WriteLine(int)` prints `"42"`.  Tiny header.
+
+**New in `opcodes.l`**: `OP_CONV_R_UN` (0x76), `OP_CKFINITE` (0xC3); smart
+constructors `iConv_R_Un()`, `iCkfinite()`; emit wrappers `emitConv_R_Un()`,
+`emitCkfinite()`.
+
+**Test wiring**: `MsilSelfTestM44.fs` added to `Lyric.Emitter.Tests`; all 48
+MSIL self-tests pass (M1, M2a–M2d, M3–M44).  CLR: `"42"` printed.
+
+---
+
 ### D-progress-182: MSIL PE emitter Stage M43 — `localloc` (stack allocation)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
