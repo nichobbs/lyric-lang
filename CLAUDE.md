@@ -52,6 +52,7 @@ backing entry's id.
 - `docs/28-std-aspects-sketch.md` — `Std.Aspects` worked-example pressure-test for D047 + 27. _Drafted (worked example, not spec)._
 - `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046). _Specced in D048._
 - `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006). _Specced in D049._
+- `docs/31-maven-linking.md` — Maven Central dependency resolution and `[maven]` table design (JVM target). _Specced in D052._
 
 ## Reading order (for Claude)
 

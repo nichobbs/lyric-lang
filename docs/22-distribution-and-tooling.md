@@ -84,6 +84,8 @@ lyric/                          (install root, e.g. /usr/local/lib/lyric)
 │   ├── Lyric.Stdlib.Json       (per-package contract metadata
 │   │                            extracted as a sibling JSON file
 │   │                            so `lyric doc` can render fast)
+│   ├── lyric-resolver.jar      (bundled Maven resolver for JVM targets;
+│   │                            see docs/31-maven-linking.md §3)
 │   └── …
 ├── share/
 │   └── stdlib/                 (optional source bundle for
