@@ -2438,6 +2438,119 @@ the soft-keyword table. `from` remains a soft keyword.
 
 ---
 
+## D052 — `lyric-logging` library: structured logging with runtime config and aspect templates
+
+**Date:** 2026-05-09
+**Branch:** claude/logging-library-runtime-config-SPkIA
+**Builds on:** D046 (config blocks), D047 (aspects), D050/D051 (pub aspect templates), D-progress-142 (`lyric-otel` precedent).
+
+### Context
+
+`Std.Log` (stdlib) is deliberately minimal: four levels, best-effort
+output, no named loggers, no level filtering, no structured formatting
+beyond key=value fields in a flat string.  That is correct for the
+stdlib's role but insufficient for service-shaped applications that
+need per-component level control, JSON output for log aggregators, and
+automatic instrumentation without hand-written boilerplate.
+
+The `lyric-otel` library (D-progress-142) established the pattern for
+a first-party library that is physically separate from the stdlib DLL.
+A logging library fits the same pattern: rich enough to be a real
+dependency, but not general-purpose enough to deserve stdlib residency.
+
+### Decision
+
+Ship `lyric-logging/` as a standalone `Std.Logging.dll` containing
+two packages:
+
+- **`Std.Logging`** — named loggers, a six-level scale (Trace / Debug /
+  Info / Warn / Error / Fatal), structured fields, text and JSON
+  formatters, a global level filter backed by a `config` block.
+  Writes through `Std.LogHost` (same host boundary as `Std.Log`).
+- **`Std.Logging.Aspects`** — three `pub aspect` templates:
+  - `CallLogging` (B-mode) — logs `→ name` / `← name (Nms)` around
+    every matched call; config: `enabled`, `level`, `loggerName`.
+  - `SlowCallAlert` (B-mode, carries `ensures: call.elapsed.unwrapOr(0) >= 0`)
+    — logs a warning when a call exceeds `thresholdMs`; config:
+    `enabled`, `thresholdMs`, `alertLevel`, `loggerName`.
+  - `ErrorResultLogging` (`@inline_template`, C-mode) — logs when a
+    matched function returns `Err(...)`; body reads `ret.isErr` directly
+    because it is re-compiled inside the consumer's package; only
+    applicable to Result-returning functions (shape-verified at the
+    `use` / `aspect … from` site per D050 §9.1).
+
+### Key design decisions
+
+**Why not extend `Std.Log`?**  `Std.Log` is intentionally opaque —
+its host boundary is `extern package System.Diagnostics { ... }` which
+cannot currently be bundled into `Lyric.Stdlib.dll` (see `stdlib/lyric.toml`
+deferred list).  Adding named loggers and level filtering to `Std.Log`
+would grow its surface considerably and block the bundling fix.  A
+separate library avoids that entanglement.
+
+**Six levels vs. four.**  `Std.Log` has Debug/Info/Warn/Error.
+`Std.Logging` adds Trace (below Debug, for per-call tracing) and Fatal
+(above Error, for unrecoverable conditions).  Trace and Fatal map to
+Debug and Error respectively at the `Std.LogHost` boundary so the
+underlying sink needs no changes.
+
+**`Logger` as a pure value type.**  A `Logger` record holds only a
+name string.  `getLogger(name)` is pure (creates no shared state).
+Per-logger level configuration (different loggers filtering at different
+levels) is deferred to v2; the global `Defaults.level` config block
+applies to all loggers uniformly in v1.  This keeps the library free
+of mutable global state, which is important for `@proof_required`
+consumers.
+
+**`loggerName` config field on aspects.**  All three templates accept
+an optional `loggerName` config override.  When empty (the default),
+the aspect uses `call.modulePath` (the containing package) as the
+logger name.  This means every package that instantiates `CallLogging`
+automatically gets a logger named after itself without any configuration.
+
+**`SlowCallAlert` carries `ensures:`.**  The `ensures: call.elapsed.unwrapOr(0) >= 0`
+clause is trivially true but deliberately included: it surfaces the
+elapsed-time measurement in the composed contract, allowing downstream
+`@proof_required` consumers to reason about latency bounds when they
+import a package that uses this aspect.  It also pressure-tests the
+contract-propagation path of the template distribution mechanism (D050 §9).
+
+**`ErrorResultLogging` is `@inline_template`.**  B-mode bodies cannot
+access named fields on the parametric return value; reading `ret.isErr`
+requires C-mode re-compilation in the consumer's package.  This
+matches the division-of-labour principle from D050 §6.1.1: observer
+aspects (CallLogging, SlowCallAlert) are B-mode; field-inspecting
+aspects are C-mode.
+
+### Consequences
+
+- `lyric-logging/` directory added at the repo root, following
+  `lyric-otel/` precedent.
+- `lyric-logging/lyric.toml` declares `Std.Logging.dll` as the output
+  assembly with `Lyric.Stdlib` as a dependency.
+- `lyric-logging/src/logging.l` — `Std.Logging` package.
+- `lyric-logging/src/logging_aspects.l` — `Std.Logging.Aspects` package.
+- `lyric-logging/README.md` — installation, usage, config reference.
+- No changes to stdlib; no changes to the compiler.
+- Implementation gated on the same milestones as `lyric-otel`: config-block
+  emitter and aspect weaver must ship before the library is fully functional.
+
+### Alternatives considered
+
+- **Extend `Std.Log`.**  Rejected; see "Why not extend Std.Log?" above.
+- **Single package (no aspects sub-package).**  Would require consumers
+  to import all aspect templates even if they only want the core API.
+  Two packages keeps imports explicit.
+- **`Logger` as an interface** (allowing custom sink implementations).
+  Deferred; the interface approach requires the consumer to wire a
+  concrete implementation via `wire {}`, which adds friction for the
+  common case.  A v2 `LogSink` interface can be added without breaking
+  the v1 API.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
