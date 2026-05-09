@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <Compile Include="Manifest.fs" />
+    <Compile Include="Maven.fs" />
+    <Compile Include="MavenShim.fs" />
     <Compile Include="Pack.fs" />
     <Compile Include="NugetShim.fs" />
     <Compile Include="NugetAssets.fs" />

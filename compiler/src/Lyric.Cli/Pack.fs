@@ -17,6 +17,7 @@ open System
 open System.Diagnostics
 open System.IO
 open Lyric.Cli.Manifest
+open Lyric.Cli.Maven
 
 /// Result of a `dotnet` invocation: the captured stdout/stderr plus
 /// the exit code.  The wrappers stream stdout/stderr directly to
@@ -315,3 +316,54 @@ let runRestore (manifest: Manifest)
             else "(see dotnet restore output above)"
         Error (sprintf "restore: dotnet restore exited %d %s"
                        result.ExitCode detail)
+
+/// Run the Maven Central resolver for `[maven]` dependencies.
+///
+/// Locates `lyric-resolver.jar` via `Maven.findResolverJar`, builds a
+/// `MavenResolveRequest` from the manifest's `[maven]` section, and
+/// invokes the resolver.  Returns the resolved JARs (top-level and
+/// transitive) on success.  The caller (`Program.fs`) then drives
+/// shim generation for top-level JARs.
+///
+/// `jarOutputDir` is where the resolver copies downloaded JARs;
+/// defaults to `<manifestDir>/target/restore/jars`.
+let runMavenRestore
+        (manifest:    Manifest)
+        (manifestDir: string)
+        (quiet:       bool)
+        : Result<ResolvedMavenJar list, string> =
+    match manifest.Maven with
+    | None -> Ok []
+    | Some maven ->
+        if List.isEmpty maven.Packages then Ok []
+        else
+        match findResolverJar () with
+        | Error locErr -> Error (Maven.renderLocateError locErr)
+        | Ok jarPath ->
+        let cacheDir = Path.Combine(Maven.userCacheDir (), "maven")
+        let outputDir = Path.Combine(manifestDir, "target", "restore", "jars")
+        Directory.CreateDirectory cacheDir  |> ignore
+        Directory.CreateDirectory outputDir |> ignore
+        let repos =
+            match maven.Options.Repositories with
+            | [] -> [ "central" ]
+            | rs -> rs
+        let javaVersion =
+            match maven.Options.JavaVersion with
+            | Some v -> v
+            | None   -> "21"
+        let coordinates =
+            maven.Packages
+            |> List.map (fun e ->
+                { Group    = e.Group
+                  Artifact = e.Artifact
+                  Version  = e.Version })
+        let req : MavenResolveRequest =
+            { Coordinates  = coordinates
+              Repositories = repos
+              JavaVersion  = javaVersion
+              CacheDir     = cacheDir
+              OutputDir    = outputDir }
+        match runMavenResolve jarPath req quiet with
+        | Error resolveErr -> Error (Maven.renderResolveError resolveErr)
+        | Ok jars -> Ok jars

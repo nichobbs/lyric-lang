@@ -2074,7 +2074,7 @@ name from a `groupId:artifactId` coordinate; and how to map Java
 checked exceptions into Lyric's `Result` type.
 
 **Design document:** `docs/31-maven-linking.md`. **Status:** Specced
-in D052.  Key decisions: bundled Apache Maven Resolver (no `mvn`
+in D053.  Key decisions: bundled Apache Maven Resolver (no `mvn`
 required); full group ID retained in Lyric package name; checked
 exceptions wrapped as `Result[T, JvmException]`.
 
@@ -2160,7 +2160,7 @@ exceptions wrapped as `Result[T, JvmException]`.
 | Q-J005 | Java interop facade               | §24: emit per-opaque facade class                |
 | Q-J006 | Modified UTF-8 vs UTF-8           | §24: Modified UTF-8 in class files; standard UTF-8 elsewhere |
 | Q-J007 | Test-runner integration            | §24: JUnit 5 `LauncherFactory` adapter           |
-| Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D052 |
+| Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D053 |
 
 
 ## Appendix C. JVM-specific class-file attributes emitted by Lyric

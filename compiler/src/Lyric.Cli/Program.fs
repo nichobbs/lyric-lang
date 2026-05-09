@@ -1898,6 +1898,45 @@ let main (argv: string array) : int =
                                 "restore: %d of %d NuGet shim%s did not generate cleanly — see B0030 above"
                                 (nugetCount - shimsOk) nugetCount
                                 (if nugetCount = 1 then "" else "s"))
+                // Maven Central resolution (docs/31-maven-linking.md,
+                // D053).  Runs only when `[maven]` is present.
+                let mavenEntries =
+                    match manifest.Maven with
+                    | None -> []
+                    | Some m -> m.Packages
+                let mavenCount = List.length mavenEntries
+                if mavenCount > 0 then
+                    printfn "restore: resolving %d Maven package%s..."
+                        mavenCount (if mavenCount = 1 then "" else "s")
+                match Lyric.Cli.Pack.runMavenRestore manifest manifestDir false with
+                | Error msg ->
+                    printErr (sprintf "restore: %s" msg)
+                    // Non-fatal for the overall restore if NuGet already
+                    // succeeded; report but carry on (exit 0).
+                | Ok jars ->
+                    let topLevelJars =
+                        jars |> List.filter (fun (j: Lyric.Cli.Maven.ResolvedMavenJar) ->
+                            j.IsTopLevel)
+                    let mutable mavenShimsOk = 0
+                    for jar in topLevelJars do
+                        let shim = Lyric.Cli.MavenShim.generate jar
+                        // B0053 drift check: skip regeneration when the
+                        // existing shim already matches the JAR's SHA-256.
+                        if not (Lyric.Cli.MavenShim.shimIsCurrentFor
+                                    manifestDir shim.RelativePath jar.Sha256) then
+                            Lyric.Cli.MavenShim.writeShim manifestDir shim
+                        mavenShimsOk <- mavenShimsOk + 1
+                        printfn
+                            "restore:   %s:%s -> %s (%d types, %d methods, %d skipped)"
+                            jar.Group jar.Artifact shim.RelativePath
+                            shim.ExternTypes shim.ExternMethods
+                            shim.SkippedMembers
+                    if mavenCount > 0 && mavenShimsOk < mavenCount then
+                        printErr
+                            (sprintf
+                                "restore: %d of %d Maven shim%s did not generate cleanly"
+                                (mavenCount - mavenShimsOk) mavenCount
+                                (if mavenCount = 1 then "" else "s"))
                 0
             | Error msg ->
                 printErr msg
