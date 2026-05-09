@@ -1,8 +1,8 @@
 # 17 — Axiom Audit
 
 Every `@axiom`-annotated declaration in the Lyric standard library
-and bootstrap runtime shims (`std.bcl.*`).  This document is the
-authoritative list.  Each entry records:
+kernel (`stdlib/std/_kernel/*.l`).  This document is the authoritative
+list.  Each entry records:
 
 - **What** the axiom claims (the contract it asserts without proof).
 - **Why** it cannot be proved inside Lyric (the BCL gap, performance
@@ -27,236 +27,415 @@ axioms the only source of unverified assumptions in a
 
 ## 1. How to read this document
 
-Each entry is formatted:
+Kernel files use *package-level* `@axiom` annotations — a single claim
+covers every `@externTarget`-declared function in that file.  The format
+for each entry is:
 
 ```
-### std.bcl.<Module>.<functionOrType>
+### `Std.<HostPackage>` — `stdlib/std/_kernel/<file>.l`
 
 @axiom("<claim>")
-pub func …
-  requires: …
-  ensures: …
 
-**Gap**: Why this cannot be proved in Lyric.
+**BCL surface**: Which .NET namespaces / types are covered.
+**Gap**: Why the claim cannot be proved inside Lyric.
 **Caller obligation**: What the caller must ensure.
 **Review**: Stable / Under review / Provisional.
 ```
 
----
-
-## 2. `std.bcl.Console`
-
-### `std.bcl.Console.writeLine`
-
-```
-@axiom("System.Console.WriteLine is total and has no observable return value")
-pub func writeLine(s: in String): Unit
-```
-
-**Gap**: The BCL `Console.WriteLine` call is I/O; it has observable
-side-effects that cannot be modelled in first-order logic without an
-explicit I/O monad (out of scope for M4.x).
-
-**Caller obligation**: None.  The postcondition is vacuous (Unit);
-the axiom merely stops the prover from treating the call as unknown.
-
-**Review**: Stable.
+Only files under `stdlib/std/_kernel/` may contain `@externTarget` or
+`extern type` declarations (per `docs/14-native-stdlib-plan.md`
+Decision F).  A new `@axiom` always goes in a new or existing kernel
+file.
 
 ---
 
-## 3. `std.bcl.String`
+## 2. I/O
 
-### `std.bcl.String.length`
-
-```
-@axiom("String.Length is non-negative and equals the UTF-16 code-unit count")
-pub func length(s: in String): Int
-  ensures: result >= 0
-```
-
-**Gap**: The internal representation of .NET strings is opaque to
-the Lyric prover; the BCL specification guarantees non-negativity.
-
-**Caller obligation**: None.
-
-**Review**: Stable.
-
-### `std.bcl.String.concat`
+### `Std.IO` — `stdlib/std/_kernel/io.l`
 
 ```
-@axiom("String concatenation is associative and length-additive")
-pub func concat(a: in String, b: in String): String
-  ensures: result.length == a.length + b.length
+@axiom("System.Console and System.IO operations conform to their documented .NET contracts")
 ```
 
-**Gap**: String internal layout is BCL-opaque.  The length-additivity
-claim holds for all UTF-16 strings by definition of the BCL.
+**BCL surface**: `System.Console` (write, writeLine, errorWriteLine,
+readLine) and `System.IO` (File static helpers, Directory static
+helpers, Path static helpers).
 
-**Caller obligation**: The caller must ensure
-`a.length + b.length <= Int.max` to avoid overflow — enforced by
-V0008 when `@proof_required(checked_arithmetic)` is set on the
-caller.
+**Gap**: Console I/O and file I/O have observable side-effects and
+depend on OS state that cannot be modelled in first-order logic without
+an explicit I/O monad (out of scope for M4.x).  Path helpers are pure
+but involve host-OS string conventions (Windows vs. POSIX) that the
+prover does not model.
 
-**Review**: Stable.
-
-### `std.bcl.String.contains`
-
-```
-@axiom("String.Contains returns true iff the substring appears in the receiver")
-pub func contains(s: in String, sub: in String): Bool
-  ensures: result implies s.length >= sub.length
-```
-
-**Gap**: Full substring semantics require quantifier reasoning over
-character sequences, which is outside the decidable fragment for
-arbitrary-length strings.
-
-**Caller obligation**: None — the postcondition is deliberately weak
-(it only captures the necessary length condition, not the full
-semantic definition).  Callers that need the full semantic guarantee
-must use an `@axiom` contract at their own call site.
+**Caller obligation**: None for the Console write path (postcondition
+is `Unit`).  For the file-read/write operations, callers must ensure
+`path.length > 0` (enforced by the kernel's own `requires:` clauses).
 
 **Review**: Stable.
 
 ---
 
-## 4. `std.bcl.Int`
+## 3. Collections
 
-### `std.bcl.Int.parse`
+### `Std.CollectionsHost` — `stdlib/std/_kernel/collections_host.l`
 
 ```
-@axiom("Int.parse is total: it either succeeds with a value in [Int.min, Int.max] or fails")
-pub func parse(s: in String): Result[Int, ParseError]
-  ensures: result.isOk implies result.value >= Int.min and result.value <= Int.max
+@axiom("System.Collections.Generic.List / Dictionary conform to their documented .NET contracts")
 ```
 
-**Gap**: Parsing logic involves character-level iteration that is not
-in the decidable fragment.  The range postcondition is trivially true
-by type but is recorded explicitly so the prover can use it.
+**BCL surface**: `System.Collections.Generic.List<T>` (backed by
+`List[T]` in Lyric), `System.Collections.Generic.Dictionary<K,V>`
+(backed by `Map[K,V]`), and `System.Collections.Generic.HashSet<T>`
+(backed by `Set[T]`).
 
-**Caller obligation**: None.
+**Gap**: Mutation semantics of BCL generic collections (resizing,
+rehashing, iteration invalidation, `Dictionary.TryGetValue` `out`-param
+write) require heap modelling that is outside first-order scope.
+Complexity guarantees (O(1) amortised) cannot be expressed as Lyric
+contracts.
+
+**Caller obligation**: The usual BCL preconditions — e.g., `i >= 0
+and i < list.count` before index access.  The `requires:` on kernel
+functions capture only the minimally checkable subset; callers in
+`@proof_required` code must establish range bounds through the type
+system or explicit contracts.
 
 **Review**: Stable.
 
 ---
 
-## 5. `std.bcl.Math`
+## 4. Math and parsing
 
-### `std.bcl.Math.abs`
-
-```
-@axiom("Math.Abs returns the absolute value; result is non-negative")
-pub func abs(x: in Int): Int
-  requires: x > Int.min
-  ensures: result >= 0
-  ensures: result == x or result == (0 - x)
-```
-
-**Gap**: The CLR implementation is a branch or CMOV instruction;
-the postcondition is definitionally true but the prover does not
-have a built-in `abs` operator.
-
-**Caller obligation**: The caller must ensure `x > Int.min`.
-`abs(Int.min)` overflows in two's-complement arithmetic and the BCL
-behaviour is undefined (returns `Int.min` on .NET but this is
-a known BCL quirk).  V0003 fires if this `requires:` is not
-established in proof-required code.
-
-**Review**: Stable.  The `requires: x > Int.min` guard is the
-deliberately conservative choice — tighter than the actual BCL
-behaviour, but correct.
-
-### `std.bcl.Math.min` and `std.bcl.Math.max`
+### `Std.MathHost` — `stdlib/std/_kernel/math_host.l`
 
 ```
-@axiom("Math.Min/Max return the smaller/larger of two values")
-pub func min(a: in Int, b: in Int): Int
-  ensures: result <= a and result <= b
-  ensures: result == a or result == b
-
-pub func max(a: in Int, b: in Int): Int
-  ensures: result >= a and result >= b
-  ensures: result == a or result == b
+@axiom("System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts")
 ```
 
-**Gap**: Definition-level; the prover has comparison operators but
-no built-in `min`/`max` terms.
+**BCL surface**: `System.Math` (abs, min, max, floor, ceiling, round,
+sqrt, pow, log, sin, cos, tan, and related) and `System.Double` (NaN,
+infinity, IsNaN, IsInfinity).
 
-**Caller obligation**: None.
+**Gap**: IEEE 754 floating-point semantics involve rounding modes,
+NaN propagation, and underflow/overflow behaviour that are not
+expressible in the decidable fragment.  Integer variants (Math.Abs on
+Int) have the two's-complement overflow corner case at `Int.min` that
+the prover cannot discharge without arithmetic overflow support.
+
+**Caller obligation**: For `Math.Abs(int)`, the caller must ensure
+`x > Int.min` (two's-complement overflow otherwise).  Floating-point
+callers should be aware that `NaN != NaN` (IEEE semantics) and that
+the prover treats `NaN` as an uninterpreted value.
+
+**Review**: Stable.
+
+### `Std.ParseHost` — `stdlib/std/_kernel/parse_host.l`
+
+```
+@axiom("System.Int32/Int64/Double/Boolean.TryParse conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Int32.TryParse`, `System.Int64.TryParse`,
+`System.Double.TryParse`, `System.Boolean.TryParse` — each invoked
+via the `out`-param FFI pattern.
+
+**Gap**: Parsing involves character-level iteration over the input
+string, which is outside the decidable fragment.  The result-range
+postconditions (`result.value >= Int.min` etc.) are trivially true by
+type but must be axiomatised so the prover can use them downstream.
+
+**Caller obligation**: None.  The parsing functions are total; they
+return `Option[T]` (or equivalent) without throwing.
 
 **Review**: Stable.
 
 ---
 
-## 6. `std.bcl.Array`
+## 5. Text and encoding
 
-### `std.bcl.Array.length`
+### `Std.FormatHost` — `stdlib/std/_kernel/format_host.l`
 
 ```
-@axiom("Array.Length returns the element count; always non-negative")
-pub func length[T](arr: in array[?, T]): Int
-  ensures: result >= 0
+@axiom("System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts")
 ```
 
-**Gap**: The CLR array object carries its length as an internal
-field; the Lyric sort encoding uses a logical `length` function but
-does not model the heap.
+**BCL surface**: `String.Format` and the numeric `ToString` overloads
+that accept a format specifier and a `CultureInfo`, backing the `format`
+family in `Std.Core`.
 
-**Caller obligation**: None.
+**Gap**: Culture-sensitive formatting depends on locale data that
+changes at runtime; the prover has no model of culture or locale.
+The output type (`String`) carries no structural postcondition.
+
+**Caller obligation**: The format string must be a compile-time
+constant if the caller is in `@proof_required` code — dynamic format
+strings are an unchecked invariant in the kernel (V0009 / unsafe block
+required).
 
 **Review**: Stable.
 
-### `std.bcl.Array.get`
+### `Std.EncodingHost` — `stdlib/std/_kernel/encoding_host.l`
 
 ```
-@axiom("Array element access is defined for indices in [0, length-1]")
-pub func get[T](arr: in array[?, T], i: in Int): T
-  requires: i >= 0 and i < arr.length
+@axiom("System.Convert and System.Text.Encoding encoding operations conform to their documented .NET contracts")
 ```
 
-**Gap**: Memory safety of the access is guaranteed by the CLR
-bounds check; the postcondition (the returned value equals the
-element) is a heap-modelling statement outside first-order scope.
+**BCL surface**: `System.Text.Encoding.UTF8` (GetBytes, GetString),
+`System.Convert` (ToBase64String, FromBase64String), backing
+`Std.Encoding`.
 
-**Caller obligation**: The caller must prove
-`i >= 0 and i < arr.length`.  This is the primary use case for
-`@proof_required` range subtypes or explicit contract clauses on
-loop induction variables.
+**Gap**: Base-64 and UTF-8 encode/decode involve byte-level iteration
+and produce `slice[Byte]` / `String` values whose contents cannot be
+characterised in first-order terms without a full string model.
 
-**Review**: Stable.  The `requires:` is the most important contract
-in the array API — it is what allows bounds-check elimination in
-`@proof_required` code compiled with the optimising back-end.
+**Caller obligation**: `FromBase64String` input must be a valid
+Base64 string (BCL throws `FormatException` otherwise); the kernel
+does not validate this.  In `@proof_required` code, callers must
+establish input validity.
+
+**Review**: Stable.
+
+### `Std.CharHost` — `stdlib/std/_kernel/char_host.l`
+
+```
+@axiom("System.Char and System.Convert character operations conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Char` (IsLetter, IsDigit, IsWhiteSpace,
+IsUpper, IsLower, ToUpper, ToLower, IsHighSurrogate, IsLowSurrogate)
+and `System.Convert` (ToChar), backing `Std.Char`.
+
+**Gap**: Unicode character properties depend on Unicode table data
+that is version-specific and cannot be captured in first-order contracts.
+
+**Caller obligation**: None.  All predicates and conversions are total
+on the `Char` (UTF-16 code unit) domain.
+
+**Review**: Stable.
+
+### `Std.UnicodeHost` — `stdlib/std/_kernel/unicode_host.l`
+
+```
+@axiom("System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32")
+```
+
+**BCL surface**: `System.Char.GetUnicodeCategory`, used by the
+self-hosted lexer's UAX #31 XID_Start / XID_Continue classifier.
+
+**Gap**: The BCL returns an `enum` value; Lyric sees it as an `Int`
+via the underlying type.  The enumeration member values (0–29) are
+part of the .NET public API but cannot be proved in Lyric without
+enumerating all of Unicode.
+
+**Caller obligation**: The caller must treat the `Int` result as one
+of the 30 known category values and not as an arbitrary integer.
+
+**Review**: Stable.
 
 ---
 
-## 7. `std.bcl.Guid`
+## 6. Storage
 
-### `std.bcl.Guid.newGuid`
+### `Std.FileHost` — `stdlib/std/_kernel/file_host.l`
 
 ```
-@axiom("Guid.NewGuid produces a value that is not equal to Guid.empty")
-pub func newGuid(): Guid
-  ensures: result != Guid.empty
+@axiom("System.IO.File / Directory operations conform to their documented .NET contracts")
 ```
 
-**Gap**: Uniqueness of GUIDs is a probabilistic property; the prover
-cannot reason about randomness.  The `!= empty` postcondition is
-the weakest useful claim that can be axiomatised without a
-randomness model.
+**BCL surface**: `System.IO.File` (ReadAllText, WriteAllText,
+ReadAllBytes, WriteAllBytes, Exists, Delete), `System.IO.Directory`
+(Exists, CreateDirectory, GetFiles, GetDirectories, Delete),
+`System.IO.Path` helpers.  Note: these are separate from `Std.IO`'s
+declarations — `FileHost` handles the typed `Result`-returning
+wrappers; `Std.IO`'s file functions are the raw thin shims used
+internally.
+
+**Gap**: Filesystem state is observable shared mutable state;
+pre/postconditions depend on OS state that the prover does not model.
+
+**Caller obligation**: Non-empty paths (enforced by the kernel's own
+`requires:` clauses).  Callers that need existence guarantees must
+probe with `fileExists` / `directoryExists` first; the prover cannot
+track filesystem state changes across calls.
+
+**Review**: Stable.
+
+---
+
+## 7. Time
+
+### `Std.TimeHost` — `stdlib/std/_kernel/time_host.l`
+
+```
+@axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.DateTime` (UtcNow, Add, AddMonths, etc.),
+`System.TimeSpan` (arithmetic), `System.DateTimeOffset`
+(FromUnixTimeMilliseconds, ToUnixTimeMilliseconds), `System.TimeZoneInfo`
+(FindSystemTimeZoneById, ConvertTime), backing `Std.Time`.
+
+**Gap**: Wall-clock time is an observable external input; `DateTime.UtcNow`
+is non-deterministic from the prover's perspective.  Calendar arithmetic
+(AddMonths, AddYears) involves month-length and leap-year rules that are
+not captured in first-order arithmetic.
+
+**Caller obligation**: `TimeZoneInfo.FindSystemTimeZoneById` may throw
+if the IANA timezone database is missing on the host; in practice this
+is a deployment concern, not a precondition that the prover can check.
+
+**Review**: Stable.
+
+---
+
+## 8. Network
+
+### `Std.HttpHost` — `stdlib/std/_kernel/http_host.l`
+
+```
+@axiom("System.Net.Http operations conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Net.Http.HttpClient` (GetStringAsync,
+PostAsync, etc.) and `System.Net.Http.HttpResponseMessage`, backing
+`Std.Http`.
+
+**Gap**: Network I/O is non-deterministic; responses depend on
+external state.  Cancellation tokens, timeout policy, and redirect
+policy involve async state machines that are outside first-order scope.
+
+**Caller obligation**: URLs must be well-formed (BCL throws `UriFormatException`
+otherwise).  In `@proof_required` code, URL construction must be
+validated before the kernel call.
+
+**Review**: Stable.
+
+---
+
+## 9. System and process
+
+### `Std.EnvironmentHost` — `stdlib/std/_kernel/environment_host.l`
+
+```
+@axiom("System.Environment operations conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Environment` (GetEnvironmentVariable,
+GetEnvironmentVariables, CurrentDirectory, ProcessId, Exit), backing
+`Std.Environment`.
+
+**Gap**: Environment variables are observable external process state;
+their values are non-deterministic at the point where the Lyric program
+calls them.
+
+**Caller obligation**: None for reads.  `Environment.Exit` terminates
+the process; it is a non-returning call that the prover treats as
+unreachable beyond the call site.
+
+**Review**: Stable.
+
+### `Std.ProcessHost` — `stdlib/std/_kernel/process_host.l`
+
+```
+@axiom("System.Diagnostics.Process conforms to its documented .NET contracts")
+```
+
+**BCL surface**: `System.Diagnostics.Process` (Start, WaitForExit,
+ExitCode, Kill), backing `Std.Process`.
+
+**Gap**: Child-process lifecycle (exit code, stdio redirection, signal
+handling) is OS-observable state that the prover cannot model.  Spawn
+failure (`Process.Start` returning `null` or throwing) is a runtime
+error the prover cannot predict.
+
+**Caller obligation**: `fileName` must be a non-empty, accessible
+executable path.  The kernel has no `requires:` for existence; the
+wrapper (`Std.Process`) converts OS-level failures to a `Result` type.
+
+**Review**: Stable.
+
+---
+
+## 10. Serialization
+
+### `Std.JsonHost` — `stdlib/std/_kernel/json_host.l`
+
+```
+@axiom("System.Text.Json operations conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Text.Json.JsonSerializer` (Serialize,
+Deserialize) and related types, backing the `@derive(Json)` source-gen
+in `Std.Json`.
+
+**Gap**: JSON serialization involves reflection (for the BCL-side codegen
+path) and string-based encoding that is outside first-order scope.
+The `@derive(Json)` compile-time path generates type-specific code
+and does not use runtime reflection; the axiom covers the kernel FFI
+layer regardless.
+
+**Caller obligation**: Input to `Deserialize` must be valid JSON; the
+BCL throws `JsonException` on malformed input.  `Std.Json.fromJson`
+wraps this in a `Result`; in `@proof_required` code, callers must
+not assume the `Result.value` is a specific Lyric value without an
+explicit postcondition.
+
+**Review**: Stable.
+
+---
+
+## 11. Identity
+
+### `Std.UuidHost` — `stdlib/std/_kernel/uuid_host.l`
+
+```
+@axiom("System.Guid conforms to its documented .NET contract")
+```
+
+**BCL surface**: `System.Guid` (NewGuid, Empty, ToString, Parse,
+TryParse), backing `Std.Uuid`.
+
+**Gap**: `Guid.NewGuid()` uniqueness is a probabilistic property;
+the prover cannot reason about randomness.  The `!= empty`
+postcondition is the weakest useful claim that can be axiomatised
+without a randomness model.
 
 **Caller obligation**: If the caller needs identity guarantees
 (two calls produce distinct values), that cannot be established
 through this axiom alone and must be handled architecturally (e.g.,
-storing and comparing in a repository).
+storing and comparing IDs in a repository with a unique constraint).
 
 **Review**: Provisional.  The V4 UUID collision probability is
-negligible in practice but not zero; a stronger model (e.g., an
-opaque `UniqueId` type with a factory that tracks used values) is
-tracked as a future improvement in `docs/06-open-questions.md`.
+negligible in practice but not zero; a stronger model is tracked in
+`docs/06-open-questions.md`.
 
 ---
 
-## 8. `lyric-otel` kernel boundary
+## 12. Logging
+
+### `Std.LogHost` — `stdlib/std/_kernel/log_host.l`
+
+```
+@axiom("Host logging writes diagnostic messages according to its configured sinks")
+```
+
+**BCL surface**: The host logging abstraction (Microsoft.Extensions.Logging
+or equivalent) used by `Std.Log`.
+
+**Gap**: Logging is I/O with observable side-effects (writes to sinks,
+structured log records, rate limiting).  The configured sinks are a
+runtime deployment concern that cannot be modelled in first-order logic.
+
+**Caller obligation**: None.  Log calls are fire-and-forget; the
+postcondition is `Unit`.  Structured log fields must not contain
+`null` in the underlying BCL sense — the kernel converts `Option[String]`
+to a safe representation before dispatch.
+
+**Review**: Stable.
+
+---
+
+## 13. `lyric-otel` library kernel boundary
 
 These axioms appear in the `lyric-otel` library's kernel files and
 follow the same extern-boundary pattern as `stdlib/std/_kernel/`.
@@ -264,14 +443,14 @@ They assert that the named CLR / JVM namespaces are present in the
 runtime and expose the functions declared in the `extern package` block.
 All are provisional pending weaver integration.
 
-### 8.1. .NET kernel (`OTel.Kernel.Net`, `@cfg(feature = "dotnet")`)
+### 13.1. .NET kernel (`OTel.Kernel.Net`, `@cfg(feature = "dotnet")`)
 
 | Claim | `@axiom` argument | Status |
 |---|---|---|
 | `System.Diagnostics.ActivitySource.StartActivity` is callable | `"System.Diagnostics"` | Provisional |
 | `System.Diagnostics.Metrics.Meter` counter/histogram are callable | `"System.Diagnostics.Metrics"` | Provisional |
 
-### 8.2. JVM kernel (`OTel.Kernel.Jvm`, `@cfg(feature = "jvm")`, Phase 6)
+### 13.2. JVM kernel (`OTel.Kernel.Jvm`, `@cfg(feature = "jvm")`, Phase 6)
 
 | Claim | `@axiom` argument | Status |
 |---|---|---|
@@ -280,33 +459,54 @@ All are provisional pending weaver integration.
 
 ---
 
-## 9. How to add a new axiom
+## 14. How to add a new axiom
 
-1. Write the function or type in the appropriate `std.bcl.*` source
-   file.
-2. Annotate it `@axiom("<claim>")` where `<claim>` is a one-sentence
-   plain-English description of what is being assumed.
-3. Add an entry to this document in the appropriate section,
-   following the template in §1.
-4. Submit the entry for review.  The decision log entry
+1. Identify the appropriate `stdlib/std/_kernel/<module>.l` file.  If no
+   existing file covers the BCL surface, create a new one following the
+   kernel file template (package-level `@axiom`, single-concern extern
+   boundary, `Internal: only Std.<X> should import this` comment).
+2. Add the `@externTarget` function(s) with any checkable `requires:` /
+   `ensures:` clauses the BCL specification supports.
+3. Annotate the **package** with `@axiom("<claim>")` if the file is new,
+   or extend the existing axiom's claim string if the gap is the same.
+4. Add an entry to this document in the appropriate section, following the
+   template in §1.
+5. Submit the entry for review.  The decision log entry
    (`docs/03-decision-log.md`) records the reviewer's sign-off.
-5. The `lyric public-api-diff` tool includes `@axiom` declarations
+6. The `lyric public-api-diff` tool includes `@axiom` declarations
    in its diff output; removing or weakening an axiom's `ensures:`
    is a semver-breaking change.
 
 ---
 
-## 10. Axiom count by module (M4.3 baseline)
+## 15. Axiom count by kernel package
 
-| Module            | Axiom count | Stable | Provisional |
-|-------------------|-------------|--------|-------------|
-| `std.bcl.Console` | 1           | 1      | 0           |
-| `std.bcl.String`  | 3           | 3      | 0           |
-| `std.bcl.Int`     | 1           | 1      | 0           |
-| `std.bcl.Math`    | 3           | 3      | 0           |
-| `std.bcl.Array`   | 2           | 2      | 0           |
-| `std.bcl.Guid`    | 1           | 0      | 1           |
-| **Total**         | **11**      | **10** | **1**       |
+| Kernel package         | File                       | Stable | Provisional |
+|------------------------|----------------------------|--------|-------------|
+| `Std.IO`               | `io.l`                     | 1      | 0           |
+| `Std.CollectionsHost`  | `collections_host.l`       | 1      | 0           |
+| `Std.MathHost`         | `math_host.l`              | 1      | 0           |
+| `Std.ParseHost`        | `parse_host.l`             | 1      | 0           |
+| `Std.FormatHost`       | `format_host.l`            | 1      | 0           |
+| `Std.EncodingHost`     | `encoding_host.l`          | 1      | 0           |
+| `Std.CharHost`         | `char_host.l`              | 1      | 0           |
+| `Std.UnicodeHost`      | `unicode_host.l`           | 1      | 0           |
+| `Std.FileHost`         | `file_host.l`              | 1      | 0           |
+| `Std.TimeHost`         | `time_host.l`              | 1      | 0           |
+| `Std.HttpHost`         | `http_host.l`              | 1      | 0           |
+| `Std.EnvironmentHost`  | `environment_host.l`       | 1      | 0           |
+| `Std.ProcessHost`      | `process_host.l`           | 1      | 0           |
+| `Std.JsonHost`         | `json_host.l`              | 1      | 0           |
+| `Std.UuidHost`         | `uuid_host.l`              | 1      | 0           |
+| `Std.LogHost`          | `log_host.l`               | 1      | 0           |
+| **Total**              |                            | **16** | **0**       |
 
-The single provisional axiom (`Guid.newGuid`) is tracked in
-`docs/06-open-questions.md` for a future resolution.
+Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
+modules) were the conceptual design-doc predecessors of the current
+kernel axioms.  The kernel refactor (D-progress-140 and surrounding
+entries) moved every BCL extern to `stdlib/std/_kernel/`, replacing
+per-function `@axiom` annotations with package-level annotations that
+cover the entire extern boundary of each kernel file.  The axiom count
+increased from 11 to 16 because several BCL surfaces (HTTP, Environment,
+Process, Encoding, Log, Unicode) were added in D-progress-140's
+follow-on work and were not present in the original M4.3 baseline.

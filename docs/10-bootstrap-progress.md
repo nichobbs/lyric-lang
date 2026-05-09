@@ -1979,6 +1979,39 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-212: Axiom audit — updated to reflect kernel package-level axiom design
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+M4.3 item D12: `docs/17-axiom-audit.md` updated from the old per-function
+`std.bcl.*` format (M4.3 baseline: 11 axioms in 6 modules) to the current
+kernel design where each `stdlib/std/_kernel/*.l` file carries a single
+package-level `@axiom` claim covering its entire BCL extern boundary.
+
+The audit now enumerates all 16 kernel packages, grouped by BCL domain:
+
+- **I/O** — `Std.IO` (Console + I/O static helpers)
+- **Collections** — `Std.CollectionsHost` (List, Map, Set)
+- **Math / Parsing** — `Std.MathHost`, `Std.ParseHost`
+- **Text / Encoding** — `Std.FormatHost`, `Std.EncodingHost`, `Std.CharHost`, `Std.UnicodeHost`
+- **Storage** — `Std.FileHost`
+- **Time** — `Std.TimeHost`
+- **Network** — `Std.HttpHost`
+- **System / Process** — `Std.EnvironmentHost`, `Std.ProcessHost`
+- **Serialization** — `Std.JsonHost`
+- **Identity** — `Std.UuidHost`
+- **Logging** — `Std.LogHost`
+
+Each entry documents: claim string, covered BCL namespaces, decidability gap,
+caller obligations, and review status.  All 16 kernel axioms are marked Stable
+(the `Guid.newGuid` Provisional flag from the old audit carries over to
+`Std.UuidHost`'s `newGuid` entry).
+
+Updated §13 (how to add a new axiom) to refer to the kernel file pattern.
+Updated §14 (count table) — 16 axioms, 0 provisional.
+
+---
+
 ### D-progress-211: FBExpr + contracts formatter bug — both formatters
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
