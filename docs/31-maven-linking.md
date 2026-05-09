@@ -2,7 +2,7 @@
 
 **Status:** Drafted. 2026-05-08.
 **Implementation:** Phase 6 (JVM backend; see `docs/18-jvm-emission.md`).
-**Decision-log entry:** D051.
+**Decision-log entry:** D052.
 
 ## 1. Motivation
 
