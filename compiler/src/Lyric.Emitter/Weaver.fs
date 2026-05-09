@@ -1,8 +1,9 @@
-/// Aspect weaver — A1 bootstrap-grade implementation.
+/// Aspect weaver — A1/A2 bootstrap-grade implementation.
 ///
 /// Transforms a SourceFile's item list before IL emission:
 ///   1. Collects every IAspect item (those with Around advice).
-///   2. Matches each IFunc against the aspect's `matches:` glob(s).
+///   2. Matches each IFunc against the aspect's `matches:` glob(s),
+///      respecting `@no_aspect` and `@no_aspect("Name")` opt-outs.
 ///   3. For each matched function, renames the original to
 ///      `<name>__aspect_target` and splices in a wrapper IFunc that
 ///      carries the aspect's `around` body, with every call of the form
@@ -19,8 +20,8 @@
 ///   - Multi-aspect composition and ordering (§6 of docs/26-aspects.md)
 ///     is deferred; multiple aspects compose naively in declaration order.
 ///   - Contract augmentation (§5) is deferred; aspect requires:/ensures:
-///     clauses are not yet merged into the wrapper's contract list.
-///   - `@no_aspect` opt-out annotations are not yet checked.
+///     clauses on the aspect item are not yet parsed or merged into the
+///     wrapper's contract list (requires parser support for aspect contracts).
 ///
 /// Glob syntax supported: * (any), ? (one char), [abc]/[a-z] (char set),
 /// all other chars literal.  Glob is matched against the short function name.
@@ -203,6 +204,23 @@ let private buildWrapper
     }
 
 // ---------------------------------------------------------------------------
+// @no_aspect opt-out check
+// ---------------------------------------------------------------------------
+
+/// Returns true if `fn` opts out of aspect `aspectName` via @no_aspect.
+/// @no_aspect with no args opts out of all aspects.
+/// @no_aspect("Name") opts out of just the named aspect.
+let private isOptedOut (fn: FunctionDecl) (aspectName: string) : bool =
+    fn.Annotations
+    |> List.exists (fun ann ->
+        ann.Name.Segments = [ "no_aspect" ] &&
+        (ann.Args.IsEmpty ||
+         ann.Args |> List.exists (fun arg ->
+             match arg with
+             | ALiteral (AVString (s, _), _) -> s = aspectName
+             | _ -> false)))
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -233,6 +251,7 @@ let weaveItems (items: Item list) : Item list =
                 let matchedAspect =
                     aspects
                     |> List.tryFind (fun a ->
+                        not (isOptedOut fn a.Name) &&
                         a.Matches
                         |> List.exists (fun m ->
                             match m with

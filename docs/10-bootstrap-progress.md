@@ -1978,6 +1978,28 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-207: Aspect weaver A2 — `@no_aspect` per-target opt-out
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Implements §3.3 of `docs/26-aspects.md`: functions annotated with `@no_aspect`
+or `@no_aspect("AspectName")` are skipped by the weaver.
+
+- **`isOptedOut`** in `Weaver.fs`: checks a `FunctionDecl`'s `Annotations`
+  list for an annotation whose `Name.Segments = ["no_aspect"]`.
+  - No args → opts out of all aspects.
+  - `@no_aspect("Name")` → opts out of only the named aspect (checked via
+    `ALiteral(AVString(s, _), _)` matching).
+- **Tests** in `AspectWeaverTest.fs`:
+  - `aspect_weaver_no_aspect_all` — `@no_aspect` on `greetAdmin()` while
+    `greet()` is glob-matched; verifies exactly one "before" in stdout.
+  - `aspect_weaver_no_aspect_named` — `@no_aspect("Loud")` on `greetQuiet()`
+    while `greet()` is still wrapped; verifies "quiet" printed without wrapping.
+
+All 5 aspect weaver tests pass.
+
+---
+
 ### D-progress-206: Aspect weaver A1 — bootstrap-grade wrapper synthesis
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

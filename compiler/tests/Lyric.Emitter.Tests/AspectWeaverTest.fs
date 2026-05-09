@@ -124,4 +124,98 @@ func main(): Unit {
             // skip is not wrapped
             Expect.stringContains stdout "skip"
                 (sprintf "expected 'skip' in stdout, got: '%s'" stdout)
+
+        testCase "aspect_weaver_no_aspect_all" <| fun () ->
+            // @no_aspect (no arg) opts the function out of all aspects.
+            let src = """
+package Test.NoAspectAll
+
+import Std.Core
+
+aspect Loud {
+  matches: name like "greet*"
+
+  around(args) -> ret {
+    println("before")
+    proceed(args)
+    println("after")
+  }
+}
+
+func greet(): Unit {
+  println("hi")
+}
+
+@no_aspect
+func greetAdmin(): Unit {
+  println("admin")
+}
+
+func main(): Unit {
+  greet()
+  greetAdmin()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_no_aspect_all" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            // greet() is wrapped
+            Expect.stringContains stdout "before"
+                (sprintf "expected 'before' in stdout, got: '%s'" stdout)
+            Expect.stringContains stdout "hi"
+                (sprintf "expected 'hi' in stdout, got: '%s'" stdout)
+            Expect.stringContains stdout "after"
+                (sprintf "expected 'after' in stdout, got: '%s'" stdout)
+            // greetAdmin() is NOT wrapped
+            Expect.stringContains stdout "admin"
+                (sprintf "expected 'admin' in stdout, got: '%s'" stdout)
+            let adminIdx = stdout.IndexOf "admin"
+            let beforeCount = stdout.Split("before").Length - 1
+            Expect.equal beforeCount 1
+                (sprintf "expected exactly one 'before' (admin should not be wrapped), got stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_no_aspect_named" <| fun () ->
+            // @no_aspect("AspectName") opts out of just that aspect.
+            let src = """
+package Test.NoAspectNamed
+
+import Std.Core
+
+aspect Loud {
+  matches: name like "greet*"
+
+  around(args) -> ret {
+    println("before")
+    proceed(args)
+    println("after")
+  }
+}
+
+func greet(): Unit {
+  println("hi")
+}
+
+@no_aspect("Loud")
+func greetQuiet(): Unit {
+  println("quiet")
+}
+
+func main(): Unit {
+  greet()
+  greetQuiet()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_no_aspect_named" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            // greet() is wrapped
+            Expect.stringContains stdout "before" (sprintf "stdout: '%s'" stdout)
+            Expect.stringContains stdout "hi"     (sprintf "stdout: '%s'" stdout)
+            Expect.stringContains stdout "after"  (sprintf "stdout: '%s'" stdout)
+            // greetQuiet() is NOT wrapped (opted out by name)
+            Expect.stringContains stdout "quiet"  (sprintf "stdout: '%s'" stdout)
+            Expect.equal (stdout.Split("before").Length - 1) 1
+                (sprintf "greetQuiet should not be wrapped, stdout: '%s'" stdout)
     ]
