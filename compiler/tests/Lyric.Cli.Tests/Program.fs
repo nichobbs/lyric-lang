@@ -9,6 +9,7 @@ let main argv =
             ManifestTests.tests
             PackTests.tests
             NugetShimTests.tests
+            MavenTests.tests
             RestoredPackagesTests.tests
             FmtTests.tests
             SelfHostedFmtBridgeTests.tests

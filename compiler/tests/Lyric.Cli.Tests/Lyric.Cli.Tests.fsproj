@@ -9,6 +9,7 @@
     <Compile Include="ManifestTests.fs" />
     <Compile Include="PackTests.fs" />
     <Compile Include="NugetShimTests.fs" />
+    <Compile Include="MavenTests.fs" />
     <Compile Include="RestoredPackagesTests.fs" />
     <Compile Include="FmtTests.fs" />
     <Compile Include="SelfHostedFmtBridgeTests.fs" />

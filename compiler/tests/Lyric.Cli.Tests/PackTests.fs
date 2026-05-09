@@ -20,6 +20,7 @@ let private mkManifest (deps: (string * string) list) : Manifest =
         deps |> List.map (fun (n, v) -> { Name = n; Version = v })
       Project  = None
       Nuget    = None
+      Maven    = None
       Features = None }
 
 let private withTempDir (action: string -> 'a) : 'a =

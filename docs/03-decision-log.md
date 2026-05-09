@@ -2361,7 +2361,7 @@ full semantics in `docs/26-aspects.md` §19. Key points:
 
 ---
 
-<<<<<<< HEAD
+
 ## D051 — Unify `aspect_template` into `aspect` — template = `pub aspect` without `matches:`
 
 **Date:** 2026-05-08

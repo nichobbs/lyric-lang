@@ -117,6 +117,36 @@ type FeaturesSection =
       /// Features enabled by default; subset of `Declared`.
       Default:  string list }
 
+/// One Maven Central dependency entry under `[maven]`:
+///   `"com.fasterxml.jackson.core:jackson-databind" = "2.17.0"`
+/// See `docs/31-maven-linking.md` §2 (D052).
+type MavenEntry =
+    { /// Maven groupId (e.g. `"com.fasterxml.jackson.core"`).
+      Group:    string
+      /// Maven artifactId (e.g. `"jackson-databind"`).
+      Artifact: string
+      /// Resolved version (e.g. `"2.17.0"`).  SNAPSHOT suffixes are
+      /// rejected at parse time with `B0054`.
+      Version:  string }
+
+/// `[maven.options]` — per-project knobs for Maven resolution.
+type MavenOptions =
+    { /// Additional Maven repositories beyond Central.  Each element
+      /// is an HTTPS URL; `"central"` is the shorthand for
+      /// `https://repo1.maven.org/maven2/`.  Defaults to `["central"]`.
+      Repositories: string list
+      /// Target Java release version (e.g. `"21"`); passed to the
+      /// resolver for selecting the correct `Multi-Release` JAR variant.
+      /// `None` defaults to `"21"` in the resolver.
+      JavaVersion:  string option }
+
+/// `[maven]` + `[maven.options]` section (D052).  Optional; absence
+/// means "no Maven dependencies".  Only meaningful when the project
+/// targets the JVM (`[build] target = "jvm"`).
+type MavenSection =
+    { Packages: MavenEntry list
+      Options:  MavenOptions }
+
 /// Whole-manifest record.
 type Manifest =
     { Package:      PackageMetadata
@@ -126,6 +156,8 @@ type Manifest =
       Project:      ProjectSection option
       /// `None` for manifests without `[nuget]` / `[nuget.options]`.
       Nuget:        NugetSection option
+      /// `None` for manifests without `[maven]` / `[maven.options]`.
+      Maven:        MavenSection option
       /// `None` for manifests without `[features]`; this means the
       /// active feature set is empty regardless of CLI flags.
       Features:     FeaturesSection option }
@@ -597,10 +629,81 @@ let private toManifest (entries: Map<string * string, Value>)
         match buildFeatures () with
         | Error e -> Error e
         | Ok features ->
+        // `[maven]` + `[maven.options]` (D052).  Each entry key is a
+        // Maven coordinate `"groupId:artifactId"`; value is the version.
+        // SNAPSHOT versions are rejected (B0054).
+        let mavenEntries =
+            entries
+            |> Map.toList
+            |> List.choose (fun ((sec, key), v) ->
+                if sec = "maven" then
+                    match v with
+                    | VString ver ->
+                        match key.Split(':') with
+                        | [| grp; art |] ->
+                            if ver.EndsWith("-SNAPSHOT", StringComparison.OrdinalIgnoreCase) then
+                                Some (Error (InvalidFieldType (sec, key,
+                                    "release version (SNAPSHOT versions are not supported — B0054)")))
+                            else
+                                Some (Ok { Group = grp; Artifact = art; Version = ver })
+                        | _ ->
+                            Some (Error (InvalidFieldType (sec, key,
+                                "Maven coordinate in \"groupId:artifactId\" format")))
+                    | _ ->
+                        Some (Error (InvalidFieldType (sec, key,
+                                "Maven version string")))
+                else None)
+        let firstMavenErr =
+            mavenEntries |> List.tryPick (function Error e -> Some e | _ -> None)
+        let mavenEntriesResult : Result<MavenEntry list, ManifestError> =
+            match firstMavenErr with
+            | Some e -> Error e
+            | None ->
+                mavenEntries
+                |> List.choose (function Ok e -> Some e | _ -> None)
+                |> List.sortBy (fun e -> e.Group + ":" + e.Artifact)
+                |> Ok
+        let mavenOptionsPresent =
+            entries
+            |> Map.toList
+            |> List.exists (fun ((sec, _), _) -> sec = "maven.options")
+        let mavenReposResult : Result<string list, ManifestError> =
+            match Map.tryFind ("maven.options", "repositories") entries with
+            | Some (VArray arr) ->
+                let mutable err : ManifestError option = None
+                let repos = ResizeArray<string>()
+                for item in arr do
+                    match item with
+                    | VString s -> repos.Add s
+                    | _ ->
+                        err <- Some (InvalidFieldType ("maven.options", "repositories",
+                                        "array of repository URL strings"))
+                match err with
+                | Some e -> Error e
+                | None -> Ok (List.ofSeq repos)
+            | Some _ ->
+                Error (InvalidFieldType ("maven.options", "repositories",
+                           "array of repository URL strings"))
+            | None -> Ok []
+        let mavenJavaVersionResult : Result<string option, ManifestError> =
+            optString entries "maven.options" "java_version"
+        let buildMaven () : Result<MavenSection option, ManifestError> =
+            bind mavenEntriesResult <| fun pkgs ->
+            bind mavenReposResult <| fun repos ->
+            bind mavenJavaVersionResult <| fun javaVersion ->
+            if List.isEmpty pkgs && not mavenOptionsPresent then
+                Ok None
+            else
+                Ok (Some { Packages = pkgs
+                           Options  = { Repositories = repos
+                                        JavaVersion  = javaVersion } })
+        match buildMaven () with
+        | Error e -> Error e
+        | Ok maven ->
         match projName with
         | None ->
             Ok { Package = pkg; Build = build; Dependencies = deps;
-                 Project = None; Nuget = nuget; Features = features }
+                 Project = None; Nuget = nuget; Maven = maven; Features = features }
         | Some pname ->
             bind (optString entries "project" "output") <| fun outOpt ->
             let outputMode =
@@ -642,7 +745,7 @@ let private toManifest (entries: Map<string * string, Value>)
                       OutputAssembly = outAsm
                       Packages       = packages }
                 Ok { Package = pkg; Build = build; Dependencies = deps;
-                     Project = Some proj; Nuget = nuget; Features = features }
+                     Project = Some proj; Nuget = nuget; Maven = maven; Features = features }
 
 /// Parse a `lyric.toml` text into a typed `Manifest` record.
 let parseText (text: string) : Result<Manifest, ManifestError> =

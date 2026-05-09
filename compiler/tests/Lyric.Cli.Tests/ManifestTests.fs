@@ -430,4 +430,125 @@ logging = "yes"
             | Error (InvalidFieldType ("features", "logging", _)) -> ()
             | other ->
                 failwithf "expected InvalidFieldType, got %A" other
+
+        // D053: [maven] + [maven.options] parsing
+        // (docs/31-maven-linking.md §2).
+        testCase "[maven] absent yields Maven = None" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+"""
+            Expect.equal m.Maven None "no [maven] -> Maven = None"
+
+        testCase "[maven] packages parse group + artifact + version" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+
+[maven]
+"com.fasterxml.jackson.core:jackson-databind" = "2.17.0"
+"org.slf4j:slf4j-api" = "2.0.13"
+"com.google.guava:guava" = "33.2.0-jre"
+"""
+            match m.Maven with
+            | None -> failtest "expected Some Maven"
+            | Some n ->
+                let ids = n.Packages |> List.map (fun p -> p.Group + ":" + p.Artifact)
+                Expect.equal ids
+                    ["com.fasterxml.jackson.core:jackson-databind"
+                     "com.google.guava:guava"
+                     "org.slf4j:slf4j-api"]
+                    "maven packages sorted by group:artifact"
+                Expect.equal
+                    (n.Packages |> List.map (fun p -> p.Version))
+                    ["2.17.0"; "33.2.0-jre"; "2.0.13"]
+                    "versions follow sorted order"
+                Expect.equal n.Options.Repositories []
+                    "repositories default to empty (caller fills in [\"central\"])"
+                Expect.equal n.Options.JavaVersion None
+                    "java_version defaults to None"
+
+        testCase "[maven.options] round-trip" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+
+[maven]
+"org.slf4j:slf4j-api" = "2.0.13"
+
+[maven.options]
+repositories = ["central", "https://oss.sonatype.org/content/repositories/snapshots"]
+java_version = "21"
+"""
+            match m.Maven with
+            | None -> failtest "expected Some Maven"
+            | Some n ->
+                Expect.equal n.Options.Repositories
+                    ["central"; "https://oss.sonatype.org/content/repositories/snapshots"]
+                    "repositories round-trip"
+                Expect.equal n.Options.JavaVersion (Some "21") "java_version"
+
+        testCase "[maven.options] without [maven] still surfaces section" <| fun () ->
+            let m = parseOk """
+[package]
+name = "MyApp"
+version = "0.1.0"
+
+[maven.options]
+java_version = "17"
+"""
+            match m.Maven with
+            | None -> failtest "expected Some Maven"
+            | Some n ->
+                Expect.isEmpty n.Packages "no packages yet"
+                Expect.equal n.Options.JavaVersion (Some "17") "java_version applied"
+
+        testCase "[maven] SNAPSHOT version rejected (B0054)" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[maven]
+"com.example:foo" = "1.0-SNAPSHOT"
+"""
+            match r with
+            | Error (InvalidFieldType ("maven", "com.example:foo", msg)) ->
+                Expect.stringContains msg "SNAPSHOT"
+                    "diagnostic mentions SNAPSHOT"
+            | other ->
+                failwithf "expected InvalidFieldType for SNAPSHOT version, got %A" other
+
+        testCase "[maven] coordinate missing colon is an error" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[maven]
+"comexamplefoo" = "1.0.0"
+"""
+            match r with
+            | Error (InvalidFieldType ("maven", "comexamplefoo", msg)) ->
+                Expect.stringContains msg "groupId:artifactId"
+                    "diagnostic explains expected format"
+            | other ->
+                failwithf "expected InvalidFieldType for missing colon, got %A" other
+
+        testCase "[maven] version must be a string" <| fun () ->
+            let r = parseText """
+[package]
+name = "X"
+version = "0.0.1"
+
+[maven]
+"com.example:foo" = 42
+"""
+            match r with
+            | Error (InvalidFieldType ("maven", "com.example:foo", _)) -> ()
+            | other ->
+                failwithf "expected InvalidFieldType for non-string version, got %A" other
     ]
