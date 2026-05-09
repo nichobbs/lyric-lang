@@ -151,6 +151,7 @@ let main argv =
             MsilSelfTestM80.tests
             MsilSelfTestM81.tests
             MsilSelfTestM82.tests
+            MsilSelfTestM83.tests
             JvmLoweringTest.tests
             JvmLoweringB4Test.tests
             JvmLoweringB5Test.tests
@@ -283,5 +284,6 @@ let main argv =
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests
+            AspectWeaverTest.tests
         ]
     runTestsWithCLIArgs [] argv allTests

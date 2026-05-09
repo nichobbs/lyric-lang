@@ -1978,6 +1978,53 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-206: Aspect weaver A1 — bootstrap-grade wrapper synthesis
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+First runtime slice of the aspect system (docs/26-aspects.md):
+
+- **`Weaver.fs`** added to `Lyric.Emitter`: transforms `SourceFile.Items` before IL Pass A.
+  Collects all `IAspect` items with `Around` advice, glob-matches each `IFunc` against the
+  aspect's `matches: name like "<glob>"` clause, renames matched targets to
+  `<name>__aspect_target`, and splices in a wrapper function carrying the `around` body with
+  `proceed(args)` rewritten to `<target>(p1, p2, …)`.  Unmatched functions and `IAspect` items
+  (which carry no IL) pass through unchanged.
+
+- **Glob engine** in `Weaver.fs`: supports `*` (any sequence), `?` (one char), `[abc]`/`[a-z]`
+  (character classes).  Matched against short function name only (package-scoped weaving).
+
+- **`sigs` augmentation** in `emitAssembly`: the type checker runs pre-weave, so renamed target
+  functions are absent from the `ResolvedSignature` map.  Their entries are inferred by copying
+  the original function's signature, keyed on both bare name and arity form.
+
+- **Tests**: `AspectWeaverTest.fs` — three cases: basic before/after advice, no-match bypass,
+  `run*` glob matching two functions out of three.
+
+Bootstrap-grade limitations (deferred to v1.x):
+  - `args.field` record access inside `around` bodies not supported.
+  - `call` ambient value (`call.shortName`, `call.elapsed`, …) not injected.
+  - Multi-aspect ordering and contract augmentation (§5/§6 of docs/26) deferred.
+  - `@no_aspect` opt-out annotations not yet checked.
+
+---
+
+### D-progress-205: MSIL PE emitter Stage M83 — constrained. + ldvirtftn + ldsflda
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+- **M83** (`constrained.`, 0xFE 0x16; `ldvirtftn`, 0xFE 0x07; `ldsflda`, 0x7F): the
+  `constrained.` prefix (ECMA-335 §III.2.1) enables callvirt on value types without boxing.
+  Test calls `Int32.GetHashCode()` via `constrained. System.Int32 / callvirt Object.GetHashCode()`,
+  which returns the value itself (42). `ldvirtftn` and `ldsflda` exercised on a dead code path.
+  One Int32 local, fat header; codeSize=47, BSJB at 0x283.
+  `ldvirtftn` 0xFE 0x07 at file 0x260/0x261; `ldsflda` 0x7F at 0x268;
+  `constrained.` 0xFE 0x16 at 0x272/0x273.
+
+87 MSIL self-tests pass (M1, M2a–M2d, M3–M83).
+
+---
+
 ### D-progress-204: MSIL PE emitter Stages M80–M82 — cgt/clt/conv.r.un + typed stelem/ldelem (i4/i8/r4/r8 and i1/u1/i2/u4 + tok)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

@@ -3061,7 +3061,31 @@ let private emitAssembly
         // it to `Backend.save` as the bundled DLL's entry point.
         // Single-package callers ignore this (they save themselves).
         (mainOut: MethodInfo option ref option) : Diagnostic list =
+    // Weave aspect advice before any pass sees the item list.
+    let sf = { sf with Items = Weaver.weaveItems sf.Items }
     let funcs = functionItems sf
+    // Augment the type-checker's signature map with entries for weaved target
+    // functions (e.g. `greet__aspect_target`).  The type checker ran on the
+    // pre-weave source so these names are absent; without augmentation the
+    // emitter falls back to the zero-param default sig, which drops all
+    // parameters and causes E0004 "unknown name" errors in Pass B.
+    let sigs =
+        funcs |> List.fold (fun acc fn ->
+            let suffix = "__aspect_target"
+            if fn.Name.EndsWith suffix then
+                let origName = fn.Name.[.. fn.Name.Length - suffix.Length - 1]
+                let arityKey = origName + "/" + string fn.Params.Length
+                let sgOpt =
+                    match Map.tryFind arityKey sigs with
+                    | Some s -> Some s
+                    | None   -> Map.tryFind origName sigs
+                match sgOpt with
+                | Some s ->
+                    acc
+                    |> Map.add fn.Name s
+                    |> Map.add (fn.Name + "/" + string fn.Params.Length) s
+                | None -> acc
+            else acc) sigs
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
         if isLibrary then None
