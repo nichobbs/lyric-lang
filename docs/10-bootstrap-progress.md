@@ -1979,51 +1979,40 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
-### D-progress-210: M5.3 stage 12 — `EIf` / `EMatch` width-driven brace-form conversion
+### D-progress-210: M5.3 stage 12 — `EIf`/`EMatch` brace-form conversion + forall double-brace fix
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
-Extends the self-hosted formatter's width-driven multi-line engine
-(`exprAtCol` in `fmt_core.l`) with two new cases that were previously
-falling through to `singleLineDoc(inline)` even when the inline form
-exceeded the 120-char budget.
+Two formatter fixes in one stage.
 
-**`EIf` brace-form expansion** (non-`thenForm` only):
-- When `if cond { thn } else { els }` exceeds the budget, `exprAtCol`
-  now delegates to `ifBlockLines` — the same function `stmtExprLines`
-  uses at statement level.  Output:
-  ```
-  if cond {
-    thn
-  } else {
-    els
-  }
-  ```
-- `thenForm` (`if cond then e`) has no brace layout; it stays inline
-  (which may still overflow — same behaviour as before).
+**`EIf` / `EMatch` width-driven brace-form conversion** in `exprAtCol`
+(`fmt_core.l`): two new cases that were previously falling through to
+`singleLineDoc(inline)` even when the inline form exceeded the 120-char
+budget.
 
-**`EMatch` brace-form expansion**:
-- When `match scrut { case … }` exceeds the budget, `exprAtCol`
-  delegates to `matchLines`.  Output:
-  ```
-  match scrut {
-    case pattern -> body
-  }
-  ```
+- `EIf` (non-`thenForm`): delegates to `ifBlockLines` when over budget.
+- `EMatch`: delegates to `matchLines` when over budget.
+- `thenForm` (`if cond then e`) has no brace layout; stays inline.
+- Both cases only fire when `exprFitsInline` returns `false`.
 
-Both cases only fire when `exprFitsInline` already returned `false`
-(the inline-fit check at the top of `exprAtCol` short-circuits for
-short expressions).
+**Forall/exists double-brace fix** in `quantifierStr` (inline) and
+`exprQuantMulti` (multi-line): when a forall/exists body was parsed as
+`{ … }`, the parser wraps it in `EBlock`.  Both formatters previously
+emitted their own outer `{ … }`, producing `forall (i) { { p(i) } }`.
+
+Fix: match on `body.kind` and use `blockInline(b)` / `blockLines(b, ctx)`
+when the body is an `EBlock`, otherwise fall back to the existing
+`exprInline(0, body)` / `exprAtCol(…, body)` paths.
+
+Same fix applied to the F# legacy formatter `Fmt.fs` so `--legacy` is
+consistent.
 
 **Self-test additions** in `fmt_self_test.l`:
-- `testWidthDrivenLongIfBreaks` — an `if`-expression whose inline form
-  exceeds 120 chars converts to the brace layout; `else` clause is on
-  its own line.
-- `testWidthDrivenLongMatchBreaks` — a `match`-expression whose inline
-  form exceeds 120 chars converts to the brace layout; arm appears in
-  the body.
+- `testWidthDrivenLongIfBreaks` — long `if`-expression converts to brace layout.
+- `testWidthDrivenLongMatchBreaks` — long `match`-expression converts to brace layout.
+- `testForallBodyNoBraces` — `forall (j: Int) { j > 0 }` round-trips without double braces.
 
-Formatter self-test passes (1/1).
+Formatter self-test passes (1/1); 8 aspect-weaver tests pass; parser self-test passes.
 
 ---
 

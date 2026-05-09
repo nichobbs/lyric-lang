@@ -586,6 +586,25 @@ func testFormatSourceFacade(): Unit {
              "formatSource: output is canonical (idempotent)")
 }
 
+func testForallBodyNoBraces(): Unit {
+  // forall with a block body should NOT double-wrap in braces.
+  // The parser wraps `{ p(i) }` in EBlock; the formatter must strip it.
+  // Use a block-body function so the ensures: clause appears in output.
+  val src =
+    "package P\n" +
+    "func q(i: in Int): Bool\n" +
+    "  ensures: forall (j: Int) { j > 0 }\n" +
+    "{\n" +
+    "  return i > 0\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(not Str.contains(acc, "{ { "),
+             "forall: no double braces in output")
+  assertTrue(Str.contains(acc, "forall (j: Int) { j > 0 }"),
+             "forall: single-brace block body round-trips")
+}
+
 func testWidthDrivenLongIfBreaks(): Unit {
   // An if-expression whose inline form exceeds 120 chars converts
   // to the brace layout (M5.3 stage 12).
@@ -663,6 +682,7 @@ func main(): Unit {
   testOutModeRendersCorrectly()
   testCommentInsideLambdaBody()
   testWidthDrivenLongLambdaBody()
+  testForallBodyNoBraces()
   testWidthDrivenLongIfBreaks()
   testWidthDrivenLongMatchBreaks()
   println("fmt self-test: ok")

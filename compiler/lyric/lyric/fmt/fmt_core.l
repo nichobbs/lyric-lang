@@ -1164,7 +1164,12 @@ func exprQuantMulti(col: in Int, ctx: inout FmtCtx, kw: in String, bs: in List[P
   val opener = kw + " (" + joinStrings(parts, ", ") + ")" + whereStr + " {"
   val acc: List[String] = newList()
   acc.add(opener)
-  val bd = indentDoc(2, exprAtCol(col + 2, ctx, body))
+  // When the body was parsed as `{ … }` the parser wraps it in EBlock.
+  // Render the block contents directly to avoid double braces.
+  val bd = match body.kind {
+    case EBlock(b) -> indentDoc(2, blockLines(b, ctx))
+    case _         -> indentDoc(2, exprAtCol(col + 2, ctx, body))
+  }
   var j = 0
   while j < bd.count { acc.add(bd[j]); j = j + 1 }
   acc.add("}")
@@ -1264,7 +1269,13 @@ func quantifierStr(kw: in String, bs: in List[PropertyBinder], w: in Option[Expr
     case Some(we) -> " where " + exprInline(0, we)
     case None     -> ""
   }
-  kw + " (" + joinStrings(parts, ", ") + ")" + whereStr + " { " + exprInline(0, body) + " }"
+  // When the body was parsed as `{ … }` the parser wraps it in EBlock.
+  // Render the block contents directly to avoid double braces.
+  val bodyStr = match body.kind {
+    case EBlock(b) -> blockInline(b)
+    case _         -> exprInline(0, body)
+  }
+  kw + " (" + joinStrings(parts, ", ") + ")" + whereStr + " { " + bodyStr + " }"
 }
 
 func lambdaInlineStr(ps: in List[LambdaParam], body: in Block): String {

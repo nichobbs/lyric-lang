@@ -233,7 +233,13 @@ and private exprInline (minPrec: int) (e: Expr) : string =
             match whereEx with
             | Some w -> sprintf " where %s" (exprInline 0 w)
             | None   -> ""
-        sprintf "forall (%s)%s { %s }" bindsStr whereStr (exprInline 0 body)
+        // When the body was parsed as `{ … }` the parser wraps it in EBlock.
+        // Render the block contents directly to avoid double braces.
+        let bodyStr =
+            match body.Kind with
+            | EBlock b -> blockInline b
+            | _        -> exprInline 0 body
+        sprintf "forall (%s)%s { %s }" bindsStr whereStr bodyStr
     | EExists (binders, whereEx, body) ->
         let bindsStr =
             binders |> List.map (fun b -> sprintf "%s: %s" b.Name (typeStr b.Type))
@@ -242,7 +248,11 @@ and private exprInline (minPrec: int) (e: Expr) : string =
             match whereEx with
             | Some w -> sprintf " where %s" (exprInline 0 w)
             | None   -> ""
-        sprintf "exists (%s)%s { %s }" bindsStr whereStr (exprInline 0 body)
+        let bodyStr =
+            match body.Kind with
+            | EBlock b -> blockInline b
+            | _        -> exprInline 0 body
+        sprintf "exists (%s)%s { %s }" bindsStr whereStr bodyStr
     | ESelf              -> "self"
     | EResult            -> "result"
     | ELambda (ps, body) ->
