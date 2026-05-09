@@ -1979,6 +1979,32 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-211: FBExpr + contracts formatter bug — both formatters
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Pre-existing bug: when a `func` had an expression body (`= expr`) **and** at
+least one contract clause (`requires:` / `ensures:`), the `FBExpr` code path in
+both the self-hosted formatter (`fmt_items.l`) and the F# legacy formatter
+(`Fmt.fs`) would emit only `sig = expr`, silently dropping the contract lines.
+The contract `extras` list was built correctly but never emitted in this branch.
+
+**Fix** (`fmt_items.l`): the `case Some(FBExpr(e))` arm now checks
+`extras.count == 0`.  When there are no extras it uses the compact
+`appendToLastLine(sig, " = " + exprInline(0, e))` form; when extras exist it
+copies `sig` rows, then `extras` rows, then appends `"  = " + exprInline(0, e)`
+as the final line — matching the `FBBlock`-with-extras layout.
+
+**Fix** (`Fmt.fs`): same logic: `if List.isEmpty extraLines then [sig_ + " = " + ...]
+else [sig_] @ extraLines @ ["  = " + ...]`.
+
+**Self-test**: `testFBExprWithContracts` added to `fmt_self_test.l`:
+`func abs(x: in Int): Int ensures: result >= 0 = if x >= 0 { x } else { -x }`
+round-trips with both the `ensures:` clause and the `= if …` body preserved.
+Formatter self-test passes (1/1).
+
+---
+
 ### D-progress-210: M5.3 stage 12 — `EIf`/`EMatch` brace-form conversion + forall double-brace fix
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
