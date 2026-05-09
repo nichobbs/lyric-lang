@@ -107,9 +107,10 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M28 — `ldsfld` + `stsfld` (static fields): `msil_self_test_m28.l` builds a PE whose `Hello` class declares two public static I4 fields `_x` and `_y` (Field[1], Field[2], flags=`FDA_PUBLIC+FDA_STATIC`); `Main` stores 20 via `stsfld` (0x80), stores 22, loads both via `ldsfld` (0x7E), adds (42), and calls `Console.WriteLine(int)`; exercises the `Field` table with `FDA_STATIC`, static-field token encoding (`0x04000001`, `0x04000002`), and field-sig `{0x06, 0x08}`; CLR prints `42` | **Shipped** (this branch) | D-progress-167 |
 | MSIL PE emitter Stage M29 — `castclass` (reference-type cast): `msil_self_test_m29.l` builds a PE whose `Main()` boxes 42, calls `callvirt System.Object::ToString()` to produce `"42"`, casts the result via `castclass System.String` (TypeRef[4], token 0x01000004), then calls `Console.WriteLine(string)`; exercises `castclass` (0x74) with a TypeRef token and verifies that a successful cast leaves the reference intact; CLR prints `42` | **Shipped** (this branch) | D-progress-168 |
 | MSIL PE emitter Stage M30 — `unbox_any` (value-type unboxing): `msil_self_test_m30.l` builds a PE whose `Main()` boxes 42 via `box` (0x8C), then unboxes it back to Int32 via `unbox_any` (0xA5) with TypeRef[3]=System.Int32 (token 0x01000003), and calls `Console.WriteLine(int)`; completes the box / isinst / castclass / unbox_any quartet; CLR prints `42` | **Shipped** (this branch) | D-progress-169 |
+| MSIL PE emitter Stages M31–M83 — 53 additional opcodes: `ldftn` + delegate (M31), `initobj` (M32), `ldtoken` + GetTypeFromHandle (M33), `sizeof` (M34/M50), `tail.` prefix (M35/M52), `ldind.i4`/`stind.i4` (M36), `ldelema` (M37), `add.ovf`/`sub.ovf`/`mul.ovf` (M38), `conv.ovf.i4`/`conv.ovf.i8` (M39), `volatile.` prefix (M40/M51), `conv.ovf.*.un` family (M41), `stind.i1`/`i2`/`ldind.u1`/`i2` (M42), `localloc` (M43), `conv.r.un`/`ckfinite` (M44), `initblk`/`cpblk` (M45), `conv.i1`/`i2` (M46), `conv.i`/`conv.u` (M47), `stind.i`/`ldind.i` (M48), typed `ldelem.i4`/`stelem.i4` (M49), bitwise/unary/shift/remainder/stack misc (M56–M60), overflow arith + int/float conversions + misc loads (M61–M65), checked conversions + float literal loads (M66–M70), `div`/signed branches/unsigned branches/`ldc.i4` variants/`ldloc`/`stloc` forms (M71–M75), `ldloca.s` + selective `ldind` families + `ldarg.2-3/s/a` + `starg.s` (M76–M79), `cgt`/`clt`/`conv.r.un` + typed `stelem`/`ldelem` (M80–M82), `constrained.`/`ldvirtftn`/`ldsflda` (M83) | **Shipped** | D-progress-170..D-progress-205 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -1975,6 +1976,54 @@ TypeRefs: [1]=Console, [2]=Object (Hello extends), [3]=Int32, [4]=String.  Tiny 
 
 **Test wiring**: `MsilSelfTestM29.fs` added to `Lyric.Emitter.Tests`; all 33
 MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → castclass String → print `42`.
+
+---
+
+### D-progress-210: M5.3 stage 12 — `EIf` / `EMatch` width-driven brace-form conversion
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Extends the self-hosted formatter's width-driven multi-line engine
+(`exprAtCol` in `fmt_core.l`) with two new cases that were previously
+falling through to `singleLineDoc(inline)` even when the inline form
+exceeded the 120-char budget.
+
+**`EIf` brace-form expansion** (non-`thenForm` only):
+- When `if cond { thn } else { els }` exceeds the budget, `exprAtCol`
+  now delegates to `ifBlockLines` — the same function `stmtExprLines`
+  uses at statement level.  Output:
+  ```
+  if cond {
+    thn
+  } else {
+    els
+  }
+  ```
+- `thenForm` (`if cond then e`) has no brace layout; it stays inline
+  (which may still overflow — same behaviour as before).
+
+**`EMatch` brace-form expansion**:
+- When `match scrut { case … }` exceeds the budget, `exprAtCol`
+  delegates to `matchLines`.  Output:
+  ```
+  match scrut {
+    case pattern -> body
+  }
+  ```
+
+Both cases only fire when `exprFitsInline` already returned `false`
+(the inline-fit check at the top of `exprAtCol` short-circuits for
+short expressions).
+
+**Self-test additions** in `fmt_self_test.l`:
+- `testWidthDrivenLongIfBreaks` — an `if`-expression whose inline form
+  exceeds 120 chars converts to the brace layout; `else` clause is on
+  its own line.
+- `testWidthDrivenLongMatchBreaks` — a `match`-expression whose inline
+  form exceeds 120 chars converts to the brace layout; arm appears in
+  the body.
+
+Formatter self-test passes (1/1).
 
 ---
 

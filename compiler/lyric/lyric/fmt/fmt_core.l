@@ -895,6 +895,15 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
     case ELambda(ps, body)          -> exprLambdaMulti(col, ctx, ps, body)
     case EForall(bs, w, body)       -> exprQuantMulti(col, ctx, "forall", bs, w, body)
     case EExists(bs, w, body)       -> exprQuantMulti(col, ctx, "exists", bs, w, body)
+    // When an if-expression (brace form) or match-expression is too wide to
+    // fit inline, convert to the brace layout the statement-level formatters
+    // already produce.  The `then` form (`if cond then e`) has no brace
+    // layout, so it falls through to inline (which may overflow).
+    case EIf(cond, thn, els, thenForm) -> {
+      if thenForm { singleLineDoc(inline) }
+      else { ifBlockLines(cond, thn, els, ctx) }
+    }
+    case EMatch(scrut, arms)        -> matchLines(scrut, arms, ctx)
     case _                          -> singleLineDoc(inline)
   }
 }

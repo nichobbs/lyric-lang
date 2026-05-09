@@ -586,6 +586,40 @@ func testFormatSourceFacade(): Unit {
              "formatSource: output is canonical (idempotent)")
 }
 
+func testWidthDrivenLongIfBreaks(): Unit {
+  // An if-expression whose inline form exceeds 120 chars converts
+  // to the brace layout (M5.3 stage 12).
+  val src =
+    "package P\n" +
+    "func go(a: in Bool, b: in Bool): String {\n" +
+    "  val r = if aVeryLongConditionThatExceedsTheBudgetWithArgumentsAndStuff(a, b) { \"first-result\" } else { \"second-result\" }\n" +
+    "  r\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "if aVeryLongConditionThatExceedsTheBudgetWithArgumentsAndStuff(a, b) {\n"),
+             "if-expr: long inline breaks to brace form")
+  assertTrue(Str.contains(acc, "} else {\n"),
+             "if-expr: else clause on its own line")
+}
+
+func testWidthDrivenLongMatchBreaks(): Unit {
+  // A match-expression whose inline form exceeds 120 chars converts
+  // to the brace layout (M5.3 stage 12).
+  val src =
+    "package P\n" +
+    "func go(x: in Int): String {\n" +
+    "  val r = match someVeryLongScrutineeExpressionThatForcesBreaking(x) { case 1 -> \"one\"; case 2 -> \"two\"; case _ -> \"other\" }\n" +
+    "  r\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "match someVeryLongScrutineeExpressionThatForcesBreaking(x) {\n"),
+             "match-expr: long inline breaks to brace form")
+  assertTrue(Str.contains(acc, "case 1 ->"),
+             "match-expr: arm rendered in body")
+}
+
 func main(): Unit {
   testFormatPackageOnly()
   testFormatPackageAndImports()
@@ -629,5 +663,7 @@ func main(): Unit {
   testOutModeRendersCorrectly()
   testCommentInsideLambdaBody()
   testWidthDrivenLongLambdaBody()
+  testWidthDrivenLongIfBreaks()
+  testWidthDrivenLongMatchBreaks()
   println("fmt self-test: ok")
 }
