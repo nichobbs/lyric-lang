@@ -2007,49 +2007,54 @@ Three stages batched:
 
 ---
 
-### D-progress-203: MSIL PE emitter Stages M76–M79 — ldloca.s, typed ldind/stind, newarr/ldlen/ldelema, ldarg variants
+### D-progress-203: MSIL PE emitter Stages M76–M79 — ldloca.s + selective ldind, ldind.r4/r8 + stind float/i8, newarr/ldlen/ldelema, ldarg.2-3/s/a + starg.s
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
 Four stages batched:
 
-- **M76** (`ldloca.s`, 0x12; `initobj`, 0xFE 0x15 — repeat; `ldloc.s`, 0x11; `stloc.s`, 0x13):
-  local-address load + short-form local-variable access above index 3. Fat header.
+- **M76** (`ldloca.s`, 0x12; `ldind.i1`, 0x46; `ldind.u2`, 0x49; `ldind.u4`, 0x4B;
+  `ldind.i8`, 0x4C): local-address load plus sign/zero-extended indirect loads for
+  byte, ushort, uint, and int64 widths. Fat header with 4 locals (I1, U2, U4, I8).
 
-- **M77** (`ldind.u1`/`ldind.i2`/`ldind.u2`/`ldind.i4`/`ldind.u4`/`ldind.i8`/`ldind.r4`/`ldind.r8`;
-  `stind.i1`/`stind.i2`/`stind.i4`/`stind.i8`/`stind.r4`/`stind.r8`): typed indirect
-  loads and stores for all numeric widths via managed pointer. Fat header.
+- **M77** (`ldind.r4`, 0x4E; `ldind.r8`, 0x4F; `stind.i8`, 0x55; `stind.r4`, 0x56;
+  `stind.r8`, 0x57): float and int64 indirect loads and stores via managed pointer.
+  Fat header with 3 locals (I8, R4, R8).
 
 - **M78** (`newarr`, 0x8D; `ldlen`, 0x8E; `ldelema`, 0x8F): array creation, length query,
   and element-address load for managed arrays.
 
-- **M79** (`ldarg.0`–`ldarg.3`, 0x02–0x05; `ldarg.s`, 0x0E; `ldarg`, 0xFE 0x09;
-  `starg.s`, 0x10; `starg`, 0xFE 0x0B): all argument load/store forms.
+- **M79** (`ldarg.2`, 0x04; `ldarg.3`, 0x05; `ldarg.s`, 0x0E; `ldarga.s`, 0x0F;
+  `starg.s`, 0x10): argument loads by index 2/3, short-form argument load/address/store.
+  Two-method PE (Helper + Main); no wide `ldarg`/`starg` forms.
 
 83 MSIL self-tests pass (M1, M2a–M2d, M3–M79).
 
 ---
 
-### D-progress-202: MSIL PE emitter Stages M71–M75 — branch/cmp opcodes, ldc variants, ldloc/stloc wide forms
+### D-progress-202: MSIL PE emitter Stages M71–M75 — div/beq/bgt, signed branches, unsigned branches, ble.un/blt.un/ldc.i4 variants, ldloc/stloc forms
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
 Five stages batched:
 
-- **M71** (`beq`/`bge`/`bgt`/`ble`/`blt`/`bne.un`/`bge.un`/`bgt.un`/`ble.un`/`blt.un`): all
-  conditional branch forms; both long (0x3B–0x44) and short forms (0x2B–0x35, excluding
-  `brtrue.s`/`brfalse.s` covered earlier). Tiny header.
+- **M71** (`div`, 0x5B; `beq`, 0x3B; `bgt`, 0x3D): integer divide plus two conditional
+  branch forms. `84/2=42`; `beq` and `bgt` guard dead fall-through paths. Tiny header.
 
-- **M72** (`ceq`, 0xFE 0x01): compare-equal; complement to earlier `cgt`/`clt`. Tiny header.
+- **M72** (`bge`, 0x3C; `ble`, 0x3F; `blt`, 0x3E): three signed conditional branch forms;
+  also verifies the OP_BLE/OP_BLT constant fix (`blt`=0x3E, `ble`=0x3F per ECMA-335).
+  Tiny header (codeSize=59).
 
-- **M73** (`ldc.i4`/`ldc.i4.s` wide, 0x20/0x1F; `ldc.i4.m1`–`ldc.i4.8`, 0x15–0x1E):
-  all integer constant load forms. Tiny header.
+- **M73** (`bne.un`, 0x40; `bge.un`, 0x41; `bgt.un`, 0x42): three unsigned conditional
+  branch forms. Tiny header (codeSize=59).
 
-- **M74** (`ldloc`/`stloc` wide, 0xFE 0x0C/0xFE 0x0E; `ldloc.0`–`ldloc.3`, 0x06–0x09;
-  `stloc.0`–`stloc.3`, 0x0A–0x0D): all local-variable load/store forms. Fat header.
+- **M74** (`ble.un`, 0x43; `blt.un`, 0x44; `ldc.i4`, 0x20; `ldc.i4.6`, 0x1C;
+  `ldc.i4.7`, 0x1D; `ldc.i4.8`, 0x1E): two unsigned branches plus full-form and
+  high inline-constant loads. `6×7=42; 8-8+42=42`. Tiny header (codeSize=53).
 
-- **M75** (`ldloc.s`/`stloc.s`, 0x11/0x13 — already in M76; `volatile.` prefix, 0xFE 0x13;
-  `localloc`, 0xEF): stack-allocation and volatile prefix. Fat header.
+- **M75** (`stloc.2/3`, 0x0C/0x0D; `ldloc.2/3`, 0x08/0x09; `stloc.s/ldloc.s`, 0x13/0x11;
+  `stloc/ldloc` wide, 0xFE 0x0E/0xFE 0x0C): all remaining local-variable store/load
+  forms above index 1. Fat header with 5 I4 locals (codeSize=24).
 
 79 MSIL self-tests pass (M1, M2a–M2d, M3–M75).
 

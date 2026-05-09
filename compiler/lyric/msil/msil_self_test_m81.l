@@ -22,8 +22,8 @@
 //   offset 10-16: ldc.i4.1 / newarr Int64 / stloc.1
 //   offset 17-23: ldc.i4.1 / newarr Single / stloc.2
 //   offset 24-30: ldc.i4.1 / newarr Double / stloc.3
-//   offset 31-35: ldloc.0 / ldc.i4.0 / ldc.i4.s 42 / stelem.i4  ← 0x9E at 0x278
-//   offset 36-38: ldloc.0 / ldc.i4.0 / ldelem.i4                ← 0x94 at 0x27B
+//   offset 32-36: ldloc.0 / ldc.i4.0 / ldc.i4.s 42 / stelem.i4  ← 0x9E at 0x278
+//   offset 37-39: ldloc.0 / ldc.i4.0 / ldelem.i4                ← 0x94 at 0x27B
 //   offset 39:    pop
 //   offset 40-45: ldloc.1 / ldc.i4.0 / ldc.i4.s 42 / conv.i8 / stelem.i8 ← 0x9F at 0x282
 //   offset 46-48: ldloc.1 / ldc.i4.0 / ldelem.i8                ← 0x96 at 0x285

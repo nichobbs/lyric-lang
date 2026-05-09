@@ -19,9 +19,9 @@
 //   ldc.i4  (0x20) at code offset  0 = file 0x249.
 //   ble.un  (0x43) at code offset  7 = file 0x250.
 //   blt.un  (0x44) at code offset 27 = file 0x264.
-//   ldc.i4.6 (0x12) at code offset 40 = file 0x271.
-//   ldc.i4.7 (0x13) at code offset 41 = file 0x272.
-//   ldc.i4.8 (0x14) at code offset 43 = file 0x274.
+//   ldc.i4.6 (0x1C) at code offset 40 = file 0x271.
+//   ldc.i4.7 (0x1D) at code offset 41 = file 0x272.
+//   ldc.i4.8 (0x1E) at code offset 43 = file 0x274.
 // BSJB at 0x249 + 53 = 0x27E.
 //
 // ble.un branch offset: BLE_OK(20) - next(12) = 8 → LE32: 08 00 00 00
