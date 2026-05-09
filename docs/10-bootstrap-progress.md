@@ -10150,3 +10150,29 @@ six new end-to-end tests covering:
 
 655 emitter tests, 319 parser tests, 143 type-checker tests, 123 lexer
 tests — all passing.
+
+---
+
+### D-progress-142: parser — aspect `from`/`config` (D051 follow-up) + `lyric-otel` library
+
+**What shipped**
+
+**Parser (both F# and self-hosted):**
+- `AspectDecl` gains `From: ModulePath option` and `Config: ConfigField list`
+- `parseAspectBody` handles the instantiation-form `from Pkg.Template` clause
+- Anonymous `config { }` block inside aspect bodies (reuses `parseConfigField`)
+- `parseAspectConfigBlock` helper added to both parsers
+- Duplicate `config` guard: `configSeen` flag + P0308 diagnostic (mirrors P0303 for `around`)
+- New error codes: P0306 (missing `{`), P0307 (missing `}`), P0308 (duplicate config)
+- Parser tests: 4 new aspect cases in `RemainingItemTests.fs`
+
+**`lyric-otel/` library:**
+- `lyric-otel/lyric.toml` — `Lyric.OTel` package with `dotnet` / `jvm` features
+- `src/types.l` — `Span` (opaque), `SpanKind`, `MetricUnit`
+- `src/_kernel/net/otel_kernel.l` — .NET externs (`System.Diagnostics.ActivitySource`, `System.Diagnostics.Metrics`), `@cfg(feature = "dotnet")`
+- `src/_kernel/jvm/otel_kernel.l` — JVM externs (`io.opentelemetry.api`), `@cfg(feature = "jvm")`, Phase 6
+- `src/otel.l` — `@cfg`-gated platform-dispatch wrappers + three `pub aspect` templates (`Tracing`, `Metrics`, `RequestLogging`)
+- `README.md` — installation, instantiation, config-override, runtime env-var, low-level API
+
+**Test counts:** 727 emitter, 323 parser, 143 type-checker, 123 lexer, 28 LSP,
+127 CLI, 266 verifier — all passing.
