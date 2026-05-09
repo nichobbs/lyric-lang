@@ -1978,6 +1978,83 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-204: MSIL PE emitter Stages M80–M82 — cgt/clt/conv.r.un + typed stelem/ldelem (i4/i8/r4/r8 and i1/u1/i2/u4 + tok)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Three stages batched:
+
+- **M80** (`cgt`/`cgt.un`/`clt`/`clt.un`, 0xFE 0x02–0x05; `conv.r.un`, 0x76): signed/unsigned
+  greater-than and less-than comparisons, plus convert-to-float treating value as unsigned.
+  `43>40 / 45>41.un / 41<45 / 43<44.un → 1×1×1×1 × 42 = 42`. Tiny header (codeSize=38 → 0x9A).
+  `cgt` at file 0x24D/0x24E, `cgt.un` at 0x253/0x254, `clt` at 0x259/0x25A,
+  `clt.un` at 0x25F/0x260, `conv.r.un` at 0x266, BSJB at 0x26F.
+
+- **M81** (`stelem.i4`/`stelem.i8`/`stelem.r4`/`stelem.r8`, 0x9E/0x9F/0xA0/0xA1;
+  `ldelem.i4`/`ldelem.i8`/`ldelem.r4`/`ldelem.r8`, 0x94/0x96/0x98/0x99): typed array
+  element stores and loads for all numeric widths. Four locals (Int32[], Int64[], Single[],
+  Double[]); fat header. Stores then loads 42 through each array type; final ldelem.i4 → 42.
+  Code at 0x254, codeSize=88; BSJB at 0x2AC.
+
+- **M82** (`stelem.i1`/`stelem.i2`, 0x9C/0x9D; `ldelem.i1`/`ldelem.u1`/`ldelem.i2`/`ldelem.u4`,
+  0x90/0x91/0x92/0x95; `stelem`/`ldelem` token forms, 0xA4/0xA3): remaining typed and
+  generic element-access opcodes. Three locals (Byte[], Int16[], Int32[]); fat header.
+  Exercises sign-extended and zero-extended byte/short loads, unsigned I4 load, and
+  generic `stelem`/`ldelem` taking a TypeRef token. Code at 0x254, codeSize=86;
+  BSJB at 0x2AA (no padding before metadata).
+
+86 MSIL self-tests pass (M1, M2a–M2d, M3–M82).
+
+---
+
+### D-progress-203: MSIL PE emitter Stages M76–M79 — ldloca.s, typed ldind/stind, newarr/ldlen/ldelema, ldarg variants
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Four stages batched:
+
+- **M76** (`ldloca.s`, 0x12; `initobj`, 0xFE 0x15 — repeat; `ldloc.s`, 0x11; `stloc.s`, 0x13):
+  local-address load + short-form local-variable access above index 3. Fat header.
+
+- **M77** (`ldind.u1`/`ldind.i2`/`ldind.u2`/`ldind.i4`/`ldind.u4`/`ldind.i8`/`ldind.r4`/`ldind.r8`;
+  `stind.i1`/`stind.i2`/`stind.i4`/`stind.i8`/`stind.r4`/`stind.r8`): typed indirect
+  loads and stores for all numeric widths via managed pointer. Fat header.
+
+- **M78** (`newarr`, 0x8D; `ldlen`, 0x8E; `ldelema`, 0x8F): array creation, length query,
+  and element-address load for managed arrays.
+
+- **M79** (`ldarg.0`–`ldarg.3`, 0x02–0x05; `ldarg.s`, 0x0E; `ldarg`, 0xFE 0x09;
+  `starg.s`, 0x10; `starg`, 0xFE 0x0B): all argument load/store forms.
+
+83 MSIL self-tests pass (M1, M2a–M2d, M3–M79).
+
+---
+
+### D-progress-202: MSIL PE emitter Stages M71–M75 — branch/cmp opcodes, ldc variants, ldloc/stloc wide forms
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched:
+
+- **M71** (`beq`/`bge`/`bgt`/`ble`/`blt`/`bne.un`/`bge.un`/`bgt.un`/`ble.un`/`blt.un`): all
+  conditional branch forms; both long (0x3B–0x44) and short forms (0x2B–0x35, excluding
+  `brtrue.s`/`brfalse.s` covered earlier). Tiny header.
+
+- **M72** (`ceq`, 0xFE 0x01): compare-equal; complement to earlier `cgt`/`clt`. Tiny header.
+
+- **M73** (`ldc.i4`/`ldc.i4.s` wide, 0x20/0x1F; `ldc.i4.m1`–`ldc.i4.8`, 0x15–0x1E):
+  all integer constant load forms. Tiny header.
+
+- **M74** (`ldloc`/`stloc` wide, 0xFE 0x0C/0xFE 0x0E; `ldloc.0`–`ldloc.3`, 0x06–0x09;
+  `stloc.0`–`stloc.3`, 0x0A–0x0D): all local-variable load/store forms. Fat header.
+
+- **M75** (`ldloc.s`/`stloc.s`, 0x11/0x13 — already in M76; `volatile.` prefix, 0xFE 0x13;
+  `localloc`, 0xEF): stack-allocation and volatile prefix. Fat header.
+
+79 MSIL self-tests pass (M1, M2a–M2d, M3–M75).
+
+---
+
 ### D-progress-201: MSIL PE emitter Stages M66–M70 — checked conversions and float literal loads
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
