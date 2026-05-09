@@ -724,15 +724,15 @@ and private itemDoc (item: Item) : Doc =
         @ ["}"]
 
     | IAspect ad ->
-        // D047: render `aspect Name { matches: ...; around(args) -> ret { ... } }`.
-        // v1 surface only; later slices add wraps:/inside:, requires:,
-        // ensures:, config { ... }.
+        // D047: render `aspect Name { matches: ...; requires:; ensures:; around(args) -> ret { ... } }`.
         let matchesLines =
             ad.Matches
             |> List.map (fun m ->
                 match m with
                 | AMNameLike (g, _) ->
                     sprintf "  matches: name like \"%s\"" g)
+        let contractLines =
+            ad.Contracts |> List.map (fun c -> "  " + contractStr c)
         let aroundLines =
             match ad.Around with
             | Some ar ->
@@ -748,6 +748,7 @@ and private itemDoc (item: Item) : Doc =
         header
         @ [sprintf "aspect %s {" ad.Name]
         @ matchesLines
+        @ contractLines
         @ aroundLines
         @ ["}"]
 

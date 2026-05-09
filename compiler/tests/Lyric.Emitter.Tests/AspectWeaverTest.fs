@@ -1,4 +1,4 @@
-/// Aspect weaver A1 — bootstrap-grade wrapper synthesis.
+/// Aspect weaver A1/A2/A3 — wrapper synthesis, @no_aspect, contract augmentation.
 module Lyric.Emitter.Tests.AspectWeaverTest
 
 open Expecto
@@ -218,4 +218,70 @@ func main(): Unit {
             Expect.stringContains stdout "quiet"  (sprintf "stdout: '%s'" stdout)
             Expect.equal (stdout.Split("before").Length - 1) 1
                 (sprintf "greetQuiet should not be wrapped, stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_contract_augmentation" <| fun () ->
+            // §5: requires: on the aspect body is parsed and composed into the wrapper.
+            // A trivially-true requires: should not break compilation or runtime.
+            let src = """
+package Test.ContractAugment
+
+import Std.Core
+
+aspect Positive {
+  matches: name like "add*"
+  requires: true
+
+  around(args) -> ret {
+    proceed(args)
+  }
+}
+
+func add(x: in Int, y: in Int): Int {
+  return x + y
+}
+
+func main(): Unit {
+  val r = add(3, 4)
+  println(r)
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_contract_augmentation" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "7"
+                (sprintf "expected '7' in stdout, got: '%s'" stdout)
+
+        testCase "aspect_weaver_contract_on_wrapper" <| fun () ->
+            // The aspect's requires: clause appears on the wrapper and is parsed
+            // without errors. The simplest verification is that the program compiles
+            // and runs correctly — contract parse/compose correctness.
+            let src = """
+package Test.ContractOnWrapper
+
+import Std.Core
+
+aspect Guard {
+  matches: name like "compute*"
+  requires: true
+
+  around(args) -> ret {
+    proceed(args)
+  }
+}
+
+func compute(n: in Int): Int {
+  return n * 2
+}
+
+func main(): Unit {
+  println(compute(5))
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_contract_on_wrapper" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "10"
+                (sprintf "expected '10' in stdout, got: '%s'" stdout)
     ]

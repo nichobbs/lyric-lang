@@ -786,6 +786,14 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
     acc.add("  " + aspectMatcherLine(ad.matches[i]))
     i = i + 1
   }
+  // §5 contract augmentation: emit requires:/ensures: before the around block.
+  var ci = 0
+  while ci < ad.contracts.count {
+    val cd = indentDoc(2, contractDoc(2, ctx, ad.contracts[ci]))
+    var k = 0
+    while k < cd.count { acc.add(cd[k]); k = k + 1 }
+    ci = ci + 1
+  }
   match ad.around {
     case Some(ar) -> {
       val retStr = match ar.retName {

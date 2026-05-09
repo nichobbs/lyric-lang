@@ -1816,9 +1816,10 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
     case None -> { emitErr(st, "P0300", "expected '{' to start aspect body", peekSpan(st)) }
   }
   val _ = skipStmtEnds(st)
-  val matches: List[AspectMatcher] = newList()
-  val config: List[ConfigField] = newList()
+  val matches:   List[AspectMatcher]  = newList()
+  val config:    List[ConfigField]    = newList()
   var configSeen: Bool = false
+  val contracts: List[ContractClause] = newList()
   var around: Option[AspectAround] = None
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = st.pos
@@ -1857,13 +1858,24 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
             }
           }
         } else {
-          emitErr(st, "P0304", "expected 'matches:', 'config', or 'around' in aspect body", peekSpan(st))
-          // Skip the offending token to prevent an infinite loop.
+          emitErr(st, "P0304", "expected 'matches:', 'config', 'around', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
           val _ = advance(st)
         }
       }
+      case TKeyword(k) -> {
+        // §5 contract augmentation: requires:/ensures: on aspect body
+        if isKw(k, KwRequires) or isKw(k, KwEnsures) {
+          match parseContractClauseOpt(st) {
+            case Some(c) -> contracts.add(c)
+            case None -> {}
+          }
+        } else {
+          emitErr(st, "P0304", "expected 'matches:', 'around', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
+          if not isAtEnd(st) { val _ = advance(st) }
+        }
+      }
       case _ -> {
-        emitErr(st, "P0304", "expected 'matches:', 'config', or 'around' in aspect body", peekSpan(st))
+        emitErr(st, "P0304", "expected 'matches:', 'config', 'around', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
         if not isAtEnd(st) { val _ = advance(st) }
       }
     }
@@ -1881,12 +1893,13 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
       }
     }
   AspectDecl(
-    name    = ns.name,
-    from    = fromPath,
-    config  = config,
-    matches = matches,
-    around  = around,
-    span    = joinSpans(startTok.span, endSpan))
+    name      = ns.name,
+    from      = fromPath,
+    config    = config,
+    matches   = matches,
+    around    = around,
+    contracts = contracts,
+    span      = joinSpans(startTok.span, endSpan))
 }
 
 func parseTestBody(st: inout ParseState): TestDecl {

@@ -1978,6 +1978,36 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-208: Aspect weaver A3 — contract augmentation (§5)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Implements §5 of `docs/26-aspects.md`: `requires:` and `ensures:` clauses on
+aspect bodies compose with the target function's own contracts in the synthesised
+wrapper.
+
+- **`Ast.fs`**: `AspectDecl` gains `Contracts: ContractClause list`.
+- **`Parser.fs`**: `parseAspectBody` recognises `TKeyword KwRequires` and
+  `TKeyword KwEnsures` inside the aspect body and collects them via the existing
+  `parseContractClauseOpt` helper.  Error message for unrecognised tokens updated.
+- **`Weaver.fs`**: `buildWrapper` now sets
+  `Contracts = aspect.Contracts @ originalFn.Contracts` (aspect preconditions
+  must hold first; aspect postconditions join the target's guarantees).
+  Module header updated to reflect A3 shipped.
+- **`Fmt.fs`**: Legacy F# formatter emits `requires:`/`ensures:` lines inside
+  the aspect block, before the `around` clause.
+- **Self-hosted files** (`parser_ast.l`, `parser_items.l`, `fmt_items.l`): same
+  changes mirrored — `AspectDecl.contracts` field added; `parseAspectBody` handles
+  `TKeyword(k)` when `isKw(k, KwRequires) or isKw(k, KwEnsures)`;
+  `aspectDoc` emits contract lines before the `around` block.
+- **Tests** in `AspectWeaverTest.fs`: two new cases verify that a
+  `requires: true` clause on an aspect body parses cleanly and the woven program
+  runs to completion with correct output.
+
+All 7 aspect weaver tests pass; self-hosted parser and formatter self-tests pass.
+
+---
+
 ### D-progress-207: Aspect weaver A2 — `@no_aspect` per-target opt-out
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

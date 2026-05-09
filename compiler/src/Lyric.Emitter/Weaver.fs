@@ -19,9 +19,9 @@
 ///     and surface as type-check errors.
 ///   - Multi-aspect composition and ordering (§6 of docs/26-aspects.md)
 ///     is deferred; multiple aspects compose naively in declaration order.
-///   - Contract augmentation (§5) is deferred; aspect requires:/ensures:
-///     clauses on the aspect item are not yet parsed or merged into the
-///     wrapper's contract list (requires parser support for aspect contracts).
+///   - Contract augmentation (§5) is implemented: requires:/ensures: clauses
+///     on an aspect body are parsed and composed with the target's own
+///     contracts in the wrapper (aspect contracts ++ target contracts).
 ///
 /// Glob syntax supported: * (any), ? (one char), [abc]/[a-z] (char set),
 /// all other chars literal.  Glob is matched against the short function name.
@@ -197,9 +197,10 @@ let private buildWrapper
         { b with Statements = b.Statements |> List.map rwStmt }
 
     // Wrapper FunctionDecl: same name/params/return as original; around body.
+    // §5 composition: wrapper contract = aspect contracts ++ target contracts.
     { originalFn with
         Body        = Some (FBBlock rewiredBody)
-        Contracts   = []       // contract composition deferred to v1.x
+        Contracts   = aspect.Contracts @ originalFn.Contracts
         Annotations = []       // strip @no_aspect etc. from wrapper
     }
 
