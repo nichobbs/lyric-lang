@@ -639,6 +639,20 @@ func testWidthDrivenLongMatchBreaks(): Unit {
              "match-expr: arm rendered in body")
 }
 
+func testFBExprWithContracts(): Unit {
+  // A func with an expression body AND contract clauses must preserve
+  // both; the old FBExpr path dropped the contracts entirely.
+  val src =
+    "package P\n" +
+    "func abs(x: in Int): Int\n" +
+    "  ensures: result >= 0\n" +
+    "  = if x >= 0 { x } else { -x }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "ensures: result >= 0"), "FBExpr+contracts: ensures preserved")
+  assertTrue(Str.contains(acc, "= if x >= 0"), "FBExpr+contracts: expr body preserved")
+}
+
 func main(): Unit {
   testFormatPackageOnly()
   testFormatPackageAndImports()
@@ -685,5 +699,6 @@ func main(): Unit {
   testForallBodyNoBraces()
   testWidthDrivenLongIfBreaks()
   testWidthDrivenLongMatchBreaks()
+  testFBExprWithContracts()
   println("fmt self-test: ok")
 }

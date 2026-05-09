@@ -790,7 +790,11 @@ and private funcDoc (visStr: string) (fn: FunctionDecl) : Doc =
     fnDocLines @ annoLines @
     match fn.Body with
     | None             -> [sig_] @ contractLines @ whereLines
-    | Some (FBExpr e)  -> [sig_ + " = " + exprInline 0 e]
+    | Some (FBExpr e)  ->
+        if List.isEmpty extraLines then
+            [sig_ + " = " + exprInline 0 e]
+        else
+            [sig_] @ extraLines @ ["  = " + exprInline 0 e]
     | Some (FBBlock b) ->
         if List.isEmpty extraLines then
             [sig_ + " {"] @ ind 2 (blockLines b) @ ["}"]

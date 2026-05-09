@@ -192,7 +192,19 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
       while j < extras.count { acc.add(extras[j]); j = j + 1 }
       acc
     }
-    case Some(FBExpr(e)) -> appendToLastLine(sig, " = " + exprInline(0, e))
+    case Some(FBExpr(e)) -> {
+      if extras.count == 0 {
+        appendToLastLine(sig, " = " + exprInline(0, e))
+      } else {
+        val acc: List[String] = newList()
+        var j = 0
+        while j < sig.count { acc.add(sig[j]); j = j + 1 }
+        j = 0
+        while j < extras.count { acc.add(extras[j]); j = j + 1 }
+        acc.add("  = " + exprInline(0, e))
+        acc
+      }
+    }
     case Some(FBBlock(b)) -> {
       if extras.count == 0 {
         val head = appendToLastLine(sig, " {")
