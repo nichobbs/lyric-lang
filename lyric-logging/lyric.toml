@@ -1,0 +1,35 @@
+# lyric-logging — structured, named, runtime-configurable logging for Lyric.
+#
+# Ships two packages:
+#   Std.Logging         — core types (Logger, LogLevel, LogField), level filter,
+#                         text/JSON formatting, and env-backed runtime config.
+#   Std.Logging.Aspects — three pub aspect templates consumers bind with a
+#                         matches: selector:
+#
+#     aspect MyLogging from Std.Logging.Aspects.CallLogging {
+#       matches: name like "handle*"
+#     }
+#
+# See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
+
+[package]
+name        = "Std.Logging"
+version     = "0.1.0"
+description = "Structured named logging with runtime config and aspect templates."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Std.Logging"
+output          = "single"
+output_assembly = "Std.Logging.dll"
+
+[project.packages]
+# Core logging types, filter, and formatter.
+"Std.Logging"         = "src/logging.l"
+# Pub aspect templates for automatic call instrumentation.
+"Std.Logging.Aspects" = "src/logging_aspects.l"
+
+[dependencies]
+# Requires Lyric.Stdlib.dll for Std.Core and Std.LogHost.
+"Lyric.Stdlib" = { path = "../stdlib" }

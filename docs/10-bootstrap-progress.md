@@ -10176,3 +10176,49 @@ tests — all passing.
 
 **Test counts:** 727 emitter, 323 parser, 143 type-checker, 123 lexer, 28 LSP,
 127 CLI, 266 verifier — all passing.
+
+---
+
+### D-progress-143: `lyric-logging` library — structured logging with runtime config and aspect templates
+
+**What shipped**
+
+**`lyric-logging/` library (D052):**
+- `lyric-logging/lyric.toml` — `Std.Logging.dll` manifest; two packages
+  (`Std.Logging`, `Std.Logging.Aspects`); depends on `Lyric.Stdlib`.
+- `src/logging.l` — `Std.Logging` package:
+  - `LogLevel` enum: Trace / Debug / Info / Warn / Error / Fatal (six levels;
+    Trace→debug and Fatal→error at the `Std.LogHost` boundary).
+  - `LogField` record (`key`, `value` strings) for structured fields.
+  - `Logger` record (`name` string) — pure value type; `getLogger` is a pure
+    constructor with `requires: name.length > 0`.
+  - `config Defaults { level: LogLevel = LogLevel.Info; format: String = "text" }`
+    env vars `LYRIC_CONFIG_STD_LOGGING_DEFAULTS_LEVEL` and `…_FORMAT`.
+  - Private helpers: `levelOrd`, `levelKey`, `levelLabel`, `appendFields`,
+    `formatText`, `formatJson`, `formatJsonFields`, `formatRecord`.
+  - Public API: `getLogger`, `isEnabled`, `log`, `logMsg`,
+    `trace`/`debug`/`info`/`warn`/`error`/`fatal`, `field`.
+- `src/logging_aspects.l` — `Std.Logging.Aspects` package:
+  - `pub aspect CallLogging` (B-mode) — logs `→ name` / `← name (Nms)`
+    around each matched call; config: `enabled`, `level`, `loggerName`.
+  - `pub aspect SlowCallAlert` (B-mode) — logs a warning when
+    `call.elapsed.unwrapOr(0) > thresholdMs`; carries
+    `ensures: call.elapsed.unwrapOr(0) >= 0`; config: `enabled`,
+    `thresholdMs`, `alertLevel`, `loggerName`.
+  - `@inline_template pub aspect ErrorResultLogging` (C-mode) — logs when
+    `ret.isErr`; re-compiled inside consumer package so it can read the
+    concrete return type; config: `enabled`, `level`, `loggerName`.
+- `lyric-logging/README.md` — installation, runtime env vars, output formats,
+  level table, per-template config reference, full three-aspect composition
+  example, low-level API table.
+- `docs/03-decision-log.md` D052 — design rationale: why not extend `Std.Log`,
+  six vs four levels, pure `Logger` value type, `loggerName` config field,
+  `SlowCallAlert.ensures:` role, `ErrorResultLogging` C-mode justification.
+
+**Implementation gate:** same as `lyric-otel` — config-block emitter and
+aspect weaver must ship before the runtime behaviour takes effect.  The
+library can be imported and `aspect … from` instantiated today.
+
+**Test counts:** no new compiler tests (library is Lyric source only;
+no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
+lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
