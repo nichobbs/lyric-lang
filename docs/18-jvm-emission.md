@@ -2078,7 +2078,6 @@ in D051.  Key decisions: bundled Apache Maven Resolver (no `mvn`
 required); full group ID retained in Lyric package name; checked
 exceptions wrapped as `Result[T, JvmException]`.
 
-
 ## 25. References
 
 - **JVMS**: *The Java Virtual Machine Specification*, Java SE 21

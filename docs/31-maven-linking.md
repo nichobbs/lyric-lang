@@ -95,12 +95,18 @@ Maven support extends the same command for JVM targets:
 
 3. **Materialise JARs.** The resolver writes resolved JARs into
    `target/restore/jars/` and caches them at
-   `~/.lyric/maven-cache/<group>/<artifact>/<version>/`.
-   The cache is write-once; cached JARs are never overwritten, ensuring
-   reproducibility across invocations.
+   `$LYRIC_USER_CACHE/maven/<group>/<artifact>/<version>/`.
+   `LYRIC_USER_CACHE` defaults to the OS user-home cache directory
+   resolved by the runtime's home-directory API (not shell `~` expansion):
+   `~/.lyric` on POSIX, `%APPDATA%\lyric` on Windows. The cache is
+   write-once; cached JARs are never overwritten, ensuring reproducibility
+   across invocations.
 
-4. **Verify checksums.** The resolver checks each downloaded JAR against
-   its Maven Central SHA-256 checksum. A mismatch aborts with `B0050`.
+4. **Verify checksums.** The resolver verifies each downloaded JAR against
+   its Maven Central checksum. SHA-256 (`.sha256`) is used when available
+   (artifacts uploaded after ~2019); SHA-1 (`.sha1`) is the fallback for
+   older artifacts. Artifacts where neither checksum file is present on
+   Maven Central are rejected with `B0050`. MD5 is never accepted.
 
 5. **Generate auto-shims** (§4) — one `_extern/<PascalGroup>_<PascalArtifact>.l`
    per `[maven]` entry — by reflecting on each direct-dependency JAR's
@@ -153,7 +159,10 @@ Important properties:
   in their `throws` clause, or none, return `T` directly.
 - **Files are committed to the source tree.** Auto-generation is idempotent
   and deterministic, so check-in shows up in code review when a dependency
-  is added or upgraded.
+  is added or upgraded. The generator embeds a `# lyric:generated-sha256:<hash>`
+  comment in the first line of each shim. `lyric restore` re-generates the
+  expected content, hashes it, and compares against the stored hash; a
+  mismatch emits `B0053`.
 - **Skipped members** are listed in `_extern/<PascalGroup>_<PascalArtifact>.skip.md`
   with a short reason. Skipped surface includes: `var`-arg-only overloads,
   `Unsafe`-dependent types, non-public types referenced in public signatures,
@@ -180,10 +189,15 @@ pub func message(e: in JvmException): String? = ()
 
 @externTarget("java.lang.Throwable.getCause")
 pub func cause(e: in JvmException): JvmException? = ()
-
-@externTarget("java.lang.Throwable.getClass#getName")
-pub func typeName(e: in JvmException): String = ()
 ```
+
+`JvmException` also exposes `typeName(e) -> String`, which returns the
+runtime class name of the exception (e.g. `"java.io.IOException"`).
+Its `@externTarget` path chains through `getClass().getName()`, which
+is an implementation detail of the kernel; the binding is not
+representable in a single `@externTarget` string and is instead
+provided via a small Java helper method compiled into the JVM stdlib
+kernel JAR.
 
 Shim generator policy:
 
@@ -196,7 +210,7 @@ Shim generator policy:
 Unchecked exceptions (`RuntimeException` and `Error` subclasses) propagate
 as unhandled bugs — the same as a contract violation — and are not wrapped.
 The caller can convert them to `JvmException` via a future `Std.Jvm.catch`
-intrinsic if needed (tracked under Q-J009).
+intrinsic if needed (tracked under Q-J012).
 
 `JvmException` is a single opaque wrapper over `java.lang.Exception`.
 Callers that need to distinguish exception types call `typeName` and match
@@ -209,9 +223,9 @@ A Maven coordinate `groupId:artifactId` maps to a Lyric package path by:
 
 1. **Group ID:** split on `.`, PascalCase each segment, concatenate.
    `com.fasterxml.jackson.core` → `ComFasterxmlJacksonCore`.
-2. **Artifact ID:** split on `-` and `.`, PascalCase each segment,
+2. **Artifact ID:** split on `-`, `.`, and `_`, PascalCase each segment,
    concatenate.
-   `jackson-databind` → `JacksonDatabind`.
+   `jackson-databind` → `JacksonDatabind`; `scala_library` → `ScalaLibrary`.
 3. **Lyric package path:** `{PascalGroup}.{PascalArtifact}`.
 
 | Maven coordinate | Lyric package |
@@ -295,9 +309,9 @@ Mitigations Lyric tooling adds on top:
 - **No transitive `@axiom` re-export.** A Lyric package consuming
   `ComGoogleGuava.Guava` does not transitively vouch for it; trust is
   local.
-- **Checksum verification.** The bundled resolver verifies SHA-256 against
-  Maven Central's checksum service on every download. The local cache is
-  write-once.
+- **Checksum verification.** The bundled resolver verifies SHA-256 (with
+  SHA-1 fallback for pre-2019 artifacts) against Maven Central's checksum
+  service on every download. The local cache is write-once.
 - **GPG signature verification** of downloaded JARs is out of scope for
   stage 1; noted under Q-J011.
 
@@ -323,7 +337,10 @@ dependency is opt-in:
 
 Then `lyric restore` downloads and caches the JAR and writes
 `_extern/ComGoogleGuava_Guava.l`. After that, `import ComGoogleGuava.Guava.{ImmutableList}`
-compiles.
+compiles. Version strings are passed through opaquely to the resolver —
+Maven-style classifiers such as `-jre` and `-android` are not parsed by
+Lyric and do not trigger `B0054`; only strings ending in `-SNAPSHOT` are
+rejected.
 
 Removing a dependency: drop the entry, run `lyric restore`, and delete (or
 let the next restore prune) the auto-shim file.
@@ -372,6 +389,19 @@ enormous and fragile to upstream changes.
 **Recommended default:** keep the single `JvmException` wrapper. If a
 specific library requires precise exception dispatch, the user can write a
 thin hand-crafted `extern package` wrapper alongside the auto-shim.
+
+### Q-J012: `Std.Jvm.catch` intrinsic for unchecked exceptions
+
+Callers occasionally need to recover from unchecked `RuntimeException`
+subclasses thrown by Java code (e.g. `NullPointerException` escaping a
+poorly-written library). Today there is no Lyric-level way to intercept
+unchecked exceptions without crashing the thread.
+
+**Recommended default:** add `Std.Jvm.catch[T](action: func(): T): Result[T, JvmException]`
+as a low-level escape hatch in the JVM stdlib kernel, gated behind a
+`@experimental` annotation. Exact semantics — whether `Error` subclasses
+are caught, how `JvmException` wraps the result — are deferred to the
+Phase 6 stdlib design pass.
 
 ### Q-J011: GPG signature verification
 
