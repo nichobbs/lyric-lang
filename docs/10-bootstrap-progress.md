@@ -2264,7 +2264,10 @@ Four stages batched:
 
 ---
 
-### D-progress-202: MSIL PE emitter Stages M71–M75 — div/beq/bgt, signed branches, unsigned branches, ble.un/blt.un/ldc.i4 variants, ldloc/stloc forms
+### D-progress-202a: MSIL PE emitter Stages M71–M75 — div/beq/bgt, signed branches, unsigned branches, ble.un/blt.un/ldc.i4 variants, ldloc/stloc forms
+
+*(Renumbered from D-progress-202 to avoid collision with D-progress-202 in `main`,
+which covers the lyric-web library addition.)*
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
