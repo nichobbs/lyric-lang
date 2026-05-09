@@ -2543,7 +2543,7 @@ class hierarchies.
 
 ---
 
-## D052 — `lyric-logging` library: structured logging with runtime config and aspect templates
+## D053 — `lyric-logging` library: structured logging with runtime config and aspect templates
 
 **Date:** 2026-05-09
 **Branch:** claude/logging-library-runtime-config-SPkIA
@@ -2651,6 +2651,131 @@ aspects are C-mode.
   concrete implementation via `wire {}`, which adds friction for the
   common case.  A v2 `LogSink` interface can be added without breaking
   the v1 API.
+
+**Revisions:** None.
+
+---
+
+## D054 — lyric-web library design
+
+**Status:** ACCEPTED
+**Date:** 2026-05-09
+**Extends:** D046 (config blocks), D047 (aspects), D050 (aspect libraries)
+
+### Context
+
+Lyric needs an HTTP web-service library that is idiomatic — leveraging
+annotations, config blocks, and aspect templates — while remaining practical
+for everyday API development.  Two development workflows must coexist:
+*code-first* (write handlers, extract the OpenAPI spec from the compiled DLL)
+and *spec-first* (import an OpenAPI spec, generate typed handler stubs).
+
+### Decisions
+
+**Hybrid routing model.**  Route annotations (`@get`, `@post`, `@put`,
+`@delete`, `@patch`) mark individual handlers declaratively; `Router` values
+are built programmatically via `Web.addGet / addPost / …` and composed with
+`Web.prefix` and `Web.merge`.  Consumers choose the style that fits their
+scale; the two approaches are not mutually exclusive.  Pure declarative
+auto-discovery via reflection is deferred to a future milestone.
+
+**Flat typed parameters.**  The kernel extracts path segments, query
+parameters, and request body by matching the Lyric handler's parameter names
+against the URL pattern and query string.  Body deserialization uses the
+`@body`-annotated parameter (or the last non-path, non-query parameter for
+POST/PUT/PATCH when `@body` is absent).  This avoids the `HttpRequest` wrapper
+object that would force every handler to do manual extraction.
+
+**Handler dispatch by qualified name.**  `Route.handlerName` is a `String`
+holding the fully-qualified Lyric function name.  The kernel resolves it via
+DLL reflection at server startup and registers it with ASP.NET Core minimal
+APIs.  Type-safe route registration helpers (`addGet`, etc.) wrap the string
+but callers bear responsibility for correctness today; a typed macro is planned
+for Phase 2.
+
+**Full contract bridge.**  OpenAPI constraints (`minimum`, `maxLength`, etc.)
+are mapped bidirectionally to Lyric `requires:` clauses.  In the code-first
+direction, `requires:` clauses are reflected into the generated spec.  In the
+spec-first direction, the generator emits matching `requires:` clauses in
+stubs, bridging OpenAPI's constraint vocabulary to Lyric's contract system.
+The `pattern:` constraint has no v1 `requires:` equivalent — emitted as a
+`// TODO` comment.  When `minimum` and `maximum` appear together on an integer
+parameter, the generator emits `Int range N..=M` as a subtype instead of two
+separate clauses.
+
+**Both spec generation modes.**  Build-time (`lyric web spec --output
+openapi.yaml`) extracts the spec from the compiled DLL's embedded
+`Lyric.Contract` resource and annotation metadata.  Runtime
+(`Server.swaggerEnabled = true`) serves a live `/openapi.json` and Swagger
+UI at `/swagger`.  The runtime mode is controlled by a `config Server` env var
+(`LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED`) and does not require a separate
+build step.
+
+**`ApiError` as a plain record.**  Status code, message, and optional
+`detail [String]` are three fields on a record.  A union of case classes per
+status code was considered and rejected: it would force consumers to write
+exhaustive pattern matches when they only care about the error value, and it
+would prevent the `apiError(status, msg)` escape hatch for custom codes.  The
+10 named constructor helpers (`badRequest`, `notFound`, etc.) cover the common
+cases without the boilerplate tax of case classes.
+
+**CORS as a config block, not an aspect.**  CORS headers must appear on
+*every* HTTP response — including 404 responses for unmatched routes and
+OPTIONS preflight requests that never reach a Lyric handler.  Aspects operate
+at the Lyric function boundary, which is too late for preflight and 404.
+`config Cors { … }` values are read once at startup and passed to the Kestrel
+middleware layer via `HttpKernel.serve(…)`, which applies them unconditionally
+to all responses.
+
+**Auth and rate-limit as aspect templates.**  Authentication (`RequiresAuth`)
+and rate limiting (`RateLimit`) are cross-cutting and declarative — matching
+the aspect model.  `RequiresAuth` is C-mode (`@inline_template`) because it
+must read `args.authToken` (a named field on the concrete handler parameter
+list).  A compiler shape error (A0042) is emitted if the aspect is applied to
+a handler without an `authToken: String` parameter.  `RateLimit` is B-mode
+because it uses `call.qualifiedName` as the rate-limit key, which requires no
+named field access.
+
+**`jwtSecret` is `@sensitive`.**  The JWT signing secret must not appear in
+`lyric explain` output or Swagger UI metadata.  Marking the config field
+`@sensitive` causes the compiler to redact it in all diagnostic and introspection
+output while still making it available to the aspect body.
+
+**`spec-first` type mapping.**  The code generator maps OpenAPI schema types to
+Lyric types as follows: `integer/int32`→`Int`, `integer/int64`→`Long`,
+`number/float`→`Float`, `number/double`→`Double`, `boolean`→`Bool`,
+`string`→`String`, `string nullable:true`→`Option[String]`,
+`string enum:[…]`→generated `pub enum`, `object properties:{…}`→generated
+`pub record`, `array items:T`→`[T]`, `$ref`→the generated Lyric type name.
+
+### Consequences
+
+- `lyric-web/` directory added at the repo root.
+- `lyric-web/lyric.toml` — `Web.dll`, four packages, `dotnet` feature flag.
+- `lyric-web/src/web.l` — `Web` package: `ApiError`, `Router`, config blocks, `start`.
+- `lyric-web/src/openapi.l` — `Web.OpenApi`: full OpenAPI 3.1 type vocabulary,
+  builder helpers, bidirectional mapping documented in module docstring.
+- `lyric-web/src/aspects.l` — `Web.Aspects`: `RequiresAuth` (C-mode) and
+  `RateLimit` (B-mode) template aspects.
+- `lyric-web/src/_kernel/net/web_kernel.l` — `Web.Kernel.Net`: `@cfg(feature
+  = "dotnet")` extern boundary to Kestrel, JWT, and rate-limit NuGet packages.
+- `lyric-web/README.md` — full workflow documentation.
+- No changes to stdlib or compiler.
+- HTTP serving and aspect weaving take effect once the Kestrel integration
+  milestone and aspect weaver ship.
+
+### Alternatives considered
+
+- **`HttpRequest` / `HttpContext` wrapper objects.**  Rejected in favour of
+  flat typed parameters; see above.
+- **Auto-discovery of routes via reflection.**  Appealing for large services
+  but requires a stable annotation-reflection API that does not exist yet.
+  Deferred to Phase 2.
+- **CORS as an aspect.**  Rejected; see above.
+- **Separate error union per status code.**  Rejected; see above.
+- **`LoggingAspect` bundled in `Web.Aspects`.**  Consumers should bring their
+  own logging library (`lyric-logging`, `lyric-otel`); bundling would create a
+  forced dependency.
 
 **Revisions:** None.
 
