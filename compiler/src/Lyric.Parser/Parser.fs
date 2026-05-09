@@ -3802,6 +3802,41 @@ and private parseAspectMatchesClause
             (Cursor.peekSpan cursor)
         []
 
+/// Parse an anonymous `config { fields... }` block inside an aspect body.
+/// The caller has already consumed the `config` keyword.
+/// `configKwSpan` is the span of the `config` keyword; used in diagnostics so
+/// error locations point at the keyword rather than whatever token follows.
+and private parseAspectConfigBlock
+        (cursor:        Cursor)
+        (diags:         ResizeArray<Diagnostic>)
+        (configKwSpan:  Span)
+        : ConfigField list =
+    match Cursor.tryEatPunct LBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0306"
+            "expected '{' to start aspect config block"
+            configKwSpan
+    Cursor.skipStmtEnds cursor |> ignore
+    let fields = ResizeArray<ConfigField>()
+    while Cursor.peekToken cursor <> TPunct RBrace
+          && not (Cursor.isAtEnd cursor) do
+        let before = Cursor.mark cursor
+        fields.Add(parseConfigField cursor diags)
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+        | _ -> ()
+        forceAdvanceIfStuck cursor before
+    match Cursor.tryEatPunct RBrace cursor with
+    | Some _ -> ()
+    | None ->
+        err diags "P0307"
+            "expected '}' to close aspect config block"
+            (Cursor.peekSpan cursor)
+    List.ofSeq fields
+
 /// Parse the `around(args) -> ret { body }` advice form.
 and private parseAspectAround
         (cursor: Cursor)
@@ -3845,6 +3880,13 @@ and private parseAspectBody
         : AspectDecl =
     let startTok = Cursor.advance cursor   // 'aspect' (TIdent)
     let name, _ = readIdent cursor diags "aspect"
+    // Optional `from Pkg.Template` clause (instantiation form, D051).
+    let fromPath =
+        match Cursor.peekToken cursor with
+        | TIdent "from" ->
+            Cursor.advance cursor |> ignore
+            Some (parseModulePath cursor diags)
+        | _ -> None
     Cursor.skipStmtEnds cursor |> ignore
     match Cursor.tryEatPunct LBrace cursor with
     | Some _ -> ()
@@ -3853,11 +3895,13 @@ and private parseAspectBody
             "expected '{' to start aspect body"
             (Cursor.peekSpan cursor)
     Cursor.skipStmtEnds cursor |> ignore
-    let mutable matches : AspectMatcher list = []
-    let mutable around  : AspectAround option = None
+    let mutable matches    : AspectMatcher list = []
+    let mutable config     : ConfigField list = []
+    let mutable configSeen : bool = false
+    let mutable around     : AspectAround option = None
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
-        let _before = Cursor.mark cursor
+        let before = Cursor.mark cursor
         match Cursor.peekToken cursor with
         | TIdent "matches" ->
             Cursor.advance cursor |> ignore
@@ -3869,22 +3913,36 @@ and private parseAspectBody
                     (Cursor.peekSpan cursor)
             let ms = parseAspectMatchesClause cursor diags
             matches <- matches @ ms
+        | TIdent "config" when not configSeen ->
+            let cfgKwSpan = Cursor.peekSpan cursor
+            Cursor.advance cursor |> ignore
+            config     <- parseAspectConfigBlock cursor diags cfgKwSpan
+            configSeen <- true
+        | TIdent "config" ->
+            // Duplicate config block — emit an error and skip it so
+            // error recovery can continue parsing the rest of the body.
+            err diags "P0308"
+                "duplicate 'config' block in aspect body"
+                (Cursor.peekSpan cursor)
+            let cfgKwSpan = Cursor.peekSpan cursor
+            Cursor.advance cursor |> ignore
+            parseAspectConfigBlock cursor diags cfgKwSpan |> ignore
         | TIdent "around" when around.IsNone ->
             around <- Some (parseAspectAround cursor diags)
         | TIdent "around" ->
             err diags "P0303"
                 "duplicate 'around' clause in aspect block"
                 (Cursor.peekSpan cursor)
-            // Skip the duplicate by parsing it and discarding.
+            // Skip the duplicate by parsing it for error recovery.
             parseAspectAround cursor diags |> ignore
         | _ ->
             err diags "P0304"
-                "expected 'matches:' or 'around' in aspect body"
+                "expected 'matches:', 'config', or 'around' in aspect body"
                 (Cursor.peekSpan cursor)
-            // Skip the offending token to avoid infinite loop.
+            // Skip the offending token to prevent an infinite loop.
             Cursor.advance cursor |> ignore
         Cursor.skipStmtEnds cursor |> ignore
-        forceAdvanceIfStuck cursor _before
+        forceAdvanceIfStuck cursor before
     let endSpan =
         match Cursor.tryEatPunct RBrace cursor with
         | Some t -> t.Span
@@ -3895,6 +3953,8 @@ and private parseAspectBody
                 s
             s
     { Name    = name
+      From    = fromPath
+      Config  = config
       Matches = matches
       Around  = around
       Span    = joinSpans startTok.Span endSpan }

@@ -36,6 +36,12 @@ jobs:
         with:
           global-json-file: compiler/global.json
 
+      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
         run: sudo apt-get update && sudo apt-get install -y z3
 

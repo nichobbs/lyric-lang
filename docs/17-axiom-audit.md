@@ -256,7 +256,31 @@ tracked as a future improvement in `docs/06-open-questions.md`.
 
 ---
 
-## 8. How to add a new axiom
+## 8. `lyric-otel` kernel boundary
+
+These axioms appear in the `lyric-otel` library's kernel files and
+follow the same extern-boundary pattern as `stdlib/std/_kernel/`.
+They assert that the named CLR / JVM namespaces are present in the
+runtime and expose the functions declared in the `extern package` block.
+All are provisional pending weaver integration.
+
+### 8.1. .NET kernel (`OTel.Kernel.Net`, `@cfg(feature = "dotnet")`)
+
+| Claim | `@axiom` argument | Status |
+|---|---|---|
+| `System.Diagnostics.ActivitySource.StartActivity` is callable | `"System.Diagnostics"` | Provisional |
+| `System.Diagnostics.Metrics.Meter` counter/histogram are callable | `"System.Diagnostics.Metrics"` | Provisional |
+
+### 8.2. JVM kernel (`OTel.Kernel.Jvm`, `@cfg(feature = "jvm")`, Phase 6)
+
+| Claim | `@axiom` argument | Status |
+|---|---|---|
+| `io.opentelemetry.api.trace.Tracer` is accessible | `"io.opentelemetry.api.trace"` | Provisional (Phase 6) |
+| `io.opentelemetry.api.metrics.Meter` is accessible | `"io.opentelemetry.api.metrics"` | Provisional (Phase 6) |
+
+---
+
+## 9. How to add a new axiom
 
 1. Write the function or type in the appropriate `std.bcl.*` source
    file.
@@ -272,7 +296,7 @@ tracked as a future improvement in `docs/06-open-questions.md`.
 
 ---
 
-## 9. Axiom count by module (M4.3 baseline)
+## 10. Axiom count by module (M4.3 baseline)
 
 | Module            | Axiom count | Stable | Provisional |
 |-------------------|-------------|--------|-------------|

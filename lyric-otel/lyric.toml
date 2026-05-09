@@ -1,0 +1,43 @@
+# lyric-otel — OpenTelemetry instrumentation for Lyric.
+#
+# Ships three pub aspect templates (Tracing, Metrics, RequestLogging) backed
+# by platform-dispatch wrapper functions gated by @cfg(feature = "dotnet") /
+# @cfg(feature = "jvm").  Consumers import the template and bind a
+# `matches:` selector locally:
+#
+#   aspect MyTracing from OTel.Tracing {
+#     matches: name like "*/service/*"
+#   }
+#
+# See docs/27-aspect-libraries.md and docs/26-aspects.md §18.
+
+[package]
+name        = "Lyric.OTel"
+version     = "0.1.0"
+description = "OpenTelemetry instrumentation aspect templates for Lyric."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# Enable the .NET kernel (System.Diagnostics.ActivitySource / Metrics).
+dotnet = []
+# Enable the JVM kernel (io.opentelemetry.api — Phase 6).
+jvm    = []
+
+[project]
+name   = "Lyric.OTel"
+output = "single"
+output_assembly = "Lyric.OTel.dll"
+
+[project.packages]
+# Shared platform-neutral types.
+"OTel.Types"          = "src/types.l"
+# .NET extern boundary (feature-gated).
+"OTel.Kernel.Net"     = "src/_kernel/net/otel_kernel.l"
+# JVM extern boundary (feature-gated, Phase 6).
+"OTel.Kernel.Jvm"     = "src/_kernel/jvm/otel_kernel.l"
+# Platform-dispatch wrappers + pub aspect templates.
+"OTel"                = "src/otel.l"
+
+[nuget]
+"OpenTelemetry.Api"   = "1.9.0"
