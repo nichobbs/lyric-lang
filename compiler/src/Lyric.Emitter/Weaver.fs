@@ -1,13 +1,14 @@
-/// Aspect weaver — A1/A2 bootstrap-grade implementation.
+/// Aspect weaver — A1/A2/A3/A4 bootstrap-grade implementation.
 ///
 /// Transforms a SourceFile's item list before IL emission:
 ///   1. Collects every IAspect item (those with Around advice).
 ///   2. Matches each IFunc against the aspect's `matches:` glob(s),
 ///      respecting `@no_aspect` and `@no_aspect("Name")` opt-outs.
 ///   3. For each matched function, renames the original to
-///      `<name>__aspect_target` and splices in a wrapper IFunc that
-///      carries the aspect's `around` body, with every call of the form
-///      `proceed(args)` rewritten to `<targetName>(p1, p2, …)`.
+///      `<name>__aspect_target`, sorts the matching aspects by `wraps:`/
+///      `inside:` clauses (lexical order within a file as the tiebreak),
+///      and splices in a chain of wrapper IFuncs — innermost calling the
+///      target, outermost keeping the original name.
 ///   4. IAspect items are dropped from the resulting item list (they
 ///      have no IL representation).
 ///
@@ -17,8 +18,9 @@
 ///   - The `call` ambient value (call.shortName, call.elapsed, …) is not
 ///     injected; references to `call` compile as unresolved identifiers
 ///     and surface as type-check errors.
-///   - Multi-aspect composition and ordering (§6 of docs/26-aspects.md)
-///     is deferred; multiple aspects compose naively in declaration order.
+///   - Cross-file multi-aspect ordering conflict (A0007) and cycle detection
+///     (A0008) are not yet emitted; `wraps:`/`inside:` is recorded in the AST
+///     and drives single-file ordering, but the diagnostic pass is deferred.
 ///   - Contract augmentation (§5) is implemented: requires:/ensures: clauses
 ///     on an aspect body are parsed and composed with the target's own
 ///     contracts in the wrapper (aspect contracts ++ target contracts).
@@ -166,17 +168,22 @@ let private rewriteProceeds (targetName: string) (paramNames: string list) (root
 // Build the wrapper IFunc for one matched function + one aspect
 // ---------------------------------------------------------------------------
 
+/// Build a wrapper FunctionDecl for `originalFn` that carries `aspect`'s
+/// around body, with proceed(args) → callTargetName(p1, p2, …).
+/// The wrapper keeps originalFn's params/return/contracts (composed with
+/// the aspect's contracts).  `callTargetName` is what proceed() forwards to;
+/// the caller is responsible for naming the wrapper itself.
 let private buildWrapper
         (originalFn: FunctionDecl)
         (aspect: AspectDecl)
-        (targetName: string)
+        (callTargetName: string)
         : FunctionDecl =
     let around = aspect.Around.Value
     let paramNames = originalFn.Params |> List.map (fun p -> p.Name)
 
-    // Rewrite every statement in the around body so proceed(args) → targetName(p1, p2, …).
+    // Rewrite every statement in the around body so proceed(args) → callTargetName(p1, p2, …).
     let rwStmt (s: Statement) : Statement =
-        let rwE e = rewriteProceeds targetName paramNames e
+        let rwE e = rewriteProceeds callTargetName paramNames e
         let kind' =
             match s.Kind with
             | SExpr e                            -> SExpr (rwE e)
@@ -196,13 +203,63 @@ let private buildWrapper
         let b = around.Body
         { b with Statements = b.Statements |> List.map rwStmt }
 
-    // Wrapper FunctionDecl: same name/params/return as original; around body.
+    // Wrapper FunctionDecl: same params/return as original; around body.
     // §5 composition: wrapper contract = aspect contracts ++ target contracts.
     { originalFn with
         Body        = Some (FBBlock rewiredBody)
         Contracts   = aspect.Contracts @ originalFn.Contracts
         Annotations = []       // strip @no_aspect etc. from wrapper
     }
+
+// ---------------------------------------------------------------------------
+// §6 ordering: topological sort of aspects by wraps:/inside:
+// ---------------------------------------------------------------------------
+
+/// Sort `aspects` so that "wraps A" appears before A, and "inside B" appears
+/// after B.  Within the same order group, preserve lexical (declaration) order.
+/// Returns aspects sorted outermost → innermost (outermost = first in list).
+/// Bootstrap-grade: no A0007 conflict diagnostic or A0008 cycle detection yet.
+let private sortAspects (aspects: AspectDecl list) : AspectDecl list =
+    if aspects.Length <= 1 then aspects
+    else
+        // Build an adjacency set: outer -> set of inner names.
+        // "A wraps B" means A is outer, B is inner (A before B).
+        // "A inside B" means B is outer, A is inner (B before A = A after B).
+        let edges = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<string>>()
+        for a in aspects do
+            if not (edges.ContainsKey a.Name) then
+                edges[a.Name] <- System.Collections.Generic.HashSet<string>()
+        for a in aspects do
+            for inner in a.Wraps do
+                edges[a.Name].Add inner |> ignore
+            for outer in a.Inside do
+                if edges.ContainsKey outer then
+                    edges[outer].Add a.Name |> ignore
+        // Kahn's algorithm (ignore cycles in bootstrap; fall back to lexical order on cycles).
+        let inDegree = System.Collections.Generic.Dictionary<string, int>()
+        for a in aspects do inDegree[a.Name] <- 0
+        for a in aspects do
+            for inner in edges[a.Name] do
+                if inDegree.ContainsKey inner then
+                    inDegree[inner] <- inDegree[inner] + 1
+        let queue = System.Collections.Generic.Queue<string>()
+        // Start with aspects that have no predecessors, in lexical order.
+        for a in aspects do
+            if inDegree[a.Name] = 0 then queue.Enqueue a.Name
+        let sorted = System.Collections.Generic.List<string>()
+        while queue.Count > 0 do
+            let n = queue.Dequeue()
+            sorted.Add n
+            for inner in edges[n] do
+                if inDegree.ContainsKey inner then
+                    let d = inDegree[inner] - 1
+                    inDegree[inner] <- d
+                    if d = 0 then queue.Enqueue inner
+        // Any remaining (in a cycle) get appended in lexical order.
+        for a in aspects do
+            if not (sorted.Contains a.Name) then sorted.Add a.Name
+        let byName = aspects |> List.map (fun a -> a.Name, a) |> Map.ofList
+        sorted |> Seq.choose (fun n -> Map.tryFind n byName) |> List.ofSeq
 
 // ---------------------------------------------------------------------------
 // @no_aspect opt-out check
@@ -228,7 +285,8 @@ let private isOptedOut (fn: FunctionDecl) (aspectName: string) : bool =
 /// Transform `items` by weaving every matching `IAspect`.
 /// Returns items with:
 ///   - IAspect items removed (no IL generated for them)
-///   - Matched IFunc items replaced with [renamed-target; wrapper]
+///   - Matched IFunc items replaced with [renamed-target; intermediate-wrappers...; outermost-wrapper]
+///     (outermost wrapper keeps the original function name, innermost calls __aspect_target)
 ///   - Unmatched IFunc items unchanged
 let weaveItems (items: Item list) : Item list =
     let aspects =
@@ -249,26 +307,39 @@ let weaveItems (items: Item list) : Item list =
             match item.Kind with
             | IAspect _ -> ()
             | IFunc fn ->
-                let matchedAspect =
+                let matchedAspects =
                     aspects
-                    |> List.tryFind (fun a ->
+                    |> List.filter (fun a ->
                         not (isOptedOut fn a.Name) &&
                         a.Matches
                         |> List.exists (fun m ->
                             match m with
                             | AMNameLike (glob, _) -> globMatch glob fn.Name))
-                match matchedAspect with
-                | None ->
+                match matchedAspects with
+                | [] ->
                     result.Add item
-                | Some aspect ->
+                | _ ->
+                    // Sort outermost→innermost by wraps:/inside: clauses.
+                    let ordered = sortAspects matchedAspects
                     let targetName = fn.Name + "__aspect_target"
-                    let targetFn : FunctionDecl =
-                        { fn with Name = targetName; Visibility = None }
-                    let targetItem : Item = { item with Kind = IFunc targetFn }
-                    let wrapperFn = buildWrapper fn aspect targetName
-                    let wrapperItem : Item = { item with Kind = IFunc wrapperFn }
-                    result.Add targetItem
-                    result.Add wrapperItem
+                    // Rename original function.
+                    let targetFn : FunctionDecl = { fn with Name = targetName; Visibility = None }
+                    result.Add { item with Kind = IFunc targetFn }
+                    // Build wrappers from innermost to outermost.
+                    // reversed = [innermost, ..., outermost]
+                    let reversed = List.rev ordered
+                    let n = reversed.Length
+                    let mutable callTarget = targetName
+                    for i, aspect in reversed |> List.mapi (fun i a -> i, a) do
+                        let isOutermost = (i = n - 1)
+                        // Outermost wrapper keeps the original name (public API).
+                        // Intermediate wrappers get __aspect_<AspectName> names.
+                        let wrapperName =
+                            if isOutermost then fn.Name
+                            else fn.Name + "__aspect_" + aspect.Name
+                        let wrapperFn = { buildWrapper fn aspect callTarget with Name = wrapperName }
+                        result.Add { item with Kind = IFunc wrapperFn }
+                        callTarget <- wrapperName
             | _ ->
                 result.Add item
         result |> Seq.toList

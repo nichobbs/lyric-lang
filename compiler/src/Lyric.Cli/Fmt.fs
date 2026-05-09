@@ -724,7 +724,13 @@ and private itemDoc (item: Item) : Doc =
         @ ["}"]
 
     | IAspect ad ->
-        // D047: render `aspect Name { matches: ...; requires:; ensures:; around(args) -> ret { ... } }`.
+        // D047: render `aspect Name { wraps:; inside:; matches:; requires:; ensures:; around(args) -> ret { ... } }`.
+        let wrapsLines =
+            if ad.Wraps.IsEmpty then []
+            else [sprintf "  wraps: %s" (ad.Wraps |> String.concat ", ")]
+        let insideLines =
+            if ad.Inside.IsEmpty then []
+            else [sprintf "  inside: %s" (ad.Inside |> String.concat ", ")]
         let matchesLines =
             ad.Matches
             |> List.map (fun m ->
@@ -747,6 +753,8 @@ and private itemDoc (item: Item) : Doc =
             | None -> []
         header
         @ [sprintf "aspect %s {" ad.Name]
+        @ wrapsLines
+        @ insideLines
         @ matchesLines
         @ contractLines
         @ aroundLines

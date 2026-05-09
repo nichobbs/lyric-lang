@@ -3064,28 +3064,31 @@ let private emitAssembly
     // Weave aspect advice before any pass sees the item list.
     let sf = { sf with Items = Weaver.weaveItems sf.Items }
     let funcs = functionItems sf
-    // Augment the type-checker's signature map with entries for weaved target
-    // functions (e.g. `greet__aspect_target`).  The type checker ran on the
-    // pre-weave source so these names are absent; without augmentation the
-    // emitter falls back to the zero-param default sig, which drops all
-    // parameters and causes E0004 "unknown name" errors in Pass B.
+    // Augment the type-checker's signature map with entries for weaved functions.
+    // The type checker ran on the pre-weave source, so names introduced by the
+    // weaver are absent from `sigs`.  We copy the original function's signature
+    // to any weaver-generated name by stripping the "__aspect_*" suffix.
     let sigs =
         funcs |> List.fold (fun acc fn ->
-            let suffix = "__aspect_target"
-            if fn.Name.EndsWith suffix then
-                let origName = fn.Name.[.. fn.Name.Length - suffix.Length - 1]
-                let arityKey = origName + "/" + string fn.Params.Length
-                let sgOpt =
-                    match Map.tryFind arityKey sigs with
-                    | Some s -> Some s
-                    | None   -> Map.tryFind origName sigs
-                match sgOpt with
-                | Some s ->
-                    acc
-                    |> Map.add fn.Name s
-                    |> Map.add (fn.Name + "/" + string fn.Params.Length) s
-                | None -> acc
-            else acc) sigs
+            if Map.containsKey fn.Name acc ||
+               Map.containsKey (fn.Name + "/" + string fn.Params.Length) acc
+            then acc
+            else
+                let idx = fn.Name.IndexOf "__aspect_"
+                if idx <= 0 then acc
+                else
+                    let origName = fn.Name.[..idx - 1]
+                    let arityKey = origName + "/" + string fn.Params.Length
+                    let sgOpt =
+                        match Map.tryFind arityKey sigs with
+                        | Some s -> Some s
+                        | None   -> Map.tryFind origName sigs
+                    match sgOpt with
+                    | Some s ->
+                        acc
+                        |> Map.add fn.Name s
+                        |> Map.add (fn.Name + "/" + string fn.Params.Length) s
+                    | None -> acc) sigs
     // Library packages don't need a `main`; executable packages do.
     let mainFn =
         if isLibrary then None

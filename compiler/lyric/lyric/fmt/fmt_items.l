@@ -781,6 +781,15 @@ func aspectMatcherLine(m: in AspectMatcher): String {
 func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   acc.add(visStr + "aspect " + ad.name + " {")
+  // §6 ordering: emit wraps:/inside: before matches:
+  if ad.wraps.count > 0 {
+    val wrapStr: String = joinStrings(ad.wraps, ", ")
+    acc.add("  wraps: " + wrapStr)
+  }
+  if ad.inside.count > 0 {
+    val insideStr: String = joinStrings(ad.inside, ", ")
+    acc.add("  inside: " + insideStr)
+  }
   var i = 0
   while i < ad.matches.count {
     acc.add("  " + aspectMatcherLine(ad.matches[i]))

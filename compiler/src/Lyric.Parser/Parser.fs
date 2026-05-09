@@ -3900,6 +3900,8 @@ and private parseAspectBody
     let mutable configSeen : bool                = false
     let mutable around     : AspectAround option = None
     let mutable contracts  : ContractClause list = []
+    let mutable wraps      : string list         = []
+    let mutable inside     : string list         = []
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
         let before = Cursor.mark cursor
@@ -3936,6 +3938,52 @@ and private parseAspectBody
                 (Cursor.peekSpan cursor)
             // Skip the duplicate by parsing it for error recovery.
             parseAspectAround cursor diags |> ignore
+        | TIdent "wraps" ->
+            // §6 ordering: `wraps: A, B` — this aspect runs outside A and B.
+            Cursor.advance cursor |> ignore
+            match Cursor.tryEatPunct Colon cursor with
+            | Some _ -> ()
+            | None ->
+                err diags "P0306"
+                    "expected ':' after 'wraps'"
+                    (Cursor.peekSpan cursor)
+            let names = ResizeArray<string>()
+            let mutable keepGoing = true
+            while keepGoing do
+                Cursor.skipStmtEnds cursor |> ignore
+                match Cursor.peekToken cursor with
+                | TIdent n ->
+                    Cursor.advance cursor |> ignore
+                    names.Add n
+                    Cursor.skipStmtEnds cursor |> ignore
+                    match Cursor.tryEatPunct Comma cursor with
+                    | Some _ -> ()
+                    | None   -> keepGoing <- false
+                | _ -> keepGoing <- false
+            wraps <- wraps @ List.ofSeq names
+        | TIdent "inside" ->
+            // §6 ordering: `inside: A, B` — this aspect runs inside A and B.
+            Cursor.advance cursor |> ignore
+            match Cursor.tryEatPunct Colon cursor with
+            | Some _ -> ()
+            | None ->
+                err diags "P0307"
+                    "expected ':' after 'inside'"
+                    (Cursor.peekSpan cursor)
+            let names = ResizeArray<string>()
+            let mutable keepGoing = true
+            while keepGoing do
+                Cursor.skipStmtEnds cursor |> ignore
+                match Cursor.peekToken cursor with
+                | TIdent n ->
+                    Cursor.advance cursor |> ignore
+                    names.Add n
+                    Cursor.skipStmtEnds cursor |> ignore
+                    match Cursor.tryEatPunct Comma cursor with
+                    | Some _ -> ()
+                    | None   -> keepGoing <- false
+                | _ -> keepGoing <- false
+            inside <- inside @ List.ofSeq names
         | TKeyword KwRequires | TKeyword KwEnsures ->
             // §5 contract augmentation: requires:/ensures: on aspect body
             // compose with the target's own contracts in the wrapper.
@@ -3944,7 +3992,7 @@ and private parseAspectBody
             | None   -> ()
         | _ ->
             err diags "P0304"
-                "expected 'matches:', 'config', 'around', 'requires:', or 'ensures:' in aspect body"
+                "expected 'matches:', 'config', 'around', 'wraps:', 'inside:', 'requires:', or 'ensures:' in aspect body"
                 (Cursor.peekSpan cursor)
             // Skip the offending token to prevent an infinite loop.
             Cursor.advance cursor |> ignore
@@ -3965,6 +4013,8 @@ and private parseAspectBody
       Matches   = matches
       Around    = around
       Contracts = contracts
+      Wraps     = wraps
+      Inside    = inside
       Span      = joinSpans startTok.Span endSpan }
 
 /// Parse a `config Name { ... }` block per `docs/25-config-blocks.md`.

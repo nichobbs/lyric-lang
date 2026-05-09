@@ -689,6 +689,8 @@ pub record AspectDecl {
   matches:   List[AspectMatcher]
   around:    Option[AspectAround]
   contracts: List[ContractClause]   // §5 composition: requires:/ensures: on aspect body
+  wraps:     List[String]           // §6 ordering: this aspect wraps the named aspects
+  inside:    List[String]           // §6 ordering: this aspect runs inside the named aspects
   span:      Span
 }
 

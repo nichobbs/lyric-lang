@@ -1978,6 +1978,42 @@ MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → ca
 
 ---
 
+### D-progress-209: Aspect weaver A4 — multi-aspect ordering (`wraps:`/`inside:`)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Implements §6 of `docs/26-aspects.md`: when multiple aspects match the same
+function, `wraps:` and `inside:` clauses control the wrapper chain order.
+
+- **`Ast.fs`**: `AspectDecl` gains `Wraps: string list` and `Inside: string list`.
+- **`Parser.fs`**: `parseAspectBody` recognises `TIdent "wraps"` and
+  `TIdent "inside"` inside the aspect body and parses comma-separated identifier
+  lists.  Error codes P0306 (after `wraps:`) and P0307 (after `inside:`).
+- **`Weaver.fs`**: `sortAspects` uses Kahn's algorithm over the ordering graph
+  (edges: `A wraps B` → A before B; `A inside B` → B before A).  Falls back to
+  lexical (declaration) order on cycles (bootstrap-grade; A0008 diagnostic
+  deferred).  `weaveItems` changed from `List.tryFind` to `List.filter` +
+  `sortAspects`: builds a chain `target ← innermost-wrapper ← … ← outermost-wrapper`
+  where outermost keeps the original public name.  Intermediate wrappers are named
+  `fn__aspect_<AspectName>`.
+- **`Emitter.fs`**: sigs augmentation broadened from `EndsWith "__aspect_target"` to
+  `IndexOf "__aspect_"` so intermediate wrappers (`fn__aspect_<X>`) also find their
+  base signature in the type-checker sigs map.
+- **`Fmt.fs`**: Legacy F# formatter emits `wraps:` and `inside:` lines inside the
+  aspect block, before the matcher lines.
+- **Self-hosted files** (`parser_ast.l`, `parser_items.l`, `fmt_items.l`): same
+  changes mirrored — `AspectDecl.wraps` and `AspectDecl.inside` fields added;
+  `parseAspectBody` handles `TIdent "wraps"` / `TIdent "inside"` branches with
+  comma-separated identifier list parsing; `aspectDoc` emits the lines using
+  `joinStrings`.
+- **Tests** in `AspectWeaverTest.fs`: new `aspect_weaver_multi_ordering` case uses
+  `Outer wraps: Inner`; verifies the output line order is
+  `outer-start → inner-start → body → inner-end → outer-end`.
+
+All 8 aspect weaver tests pass; self-hosted parser and formatter self-tests pass.
+
+---
+
 ### D-progress-208: Aspect weaver A3 — contract augmentation (§5)
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*

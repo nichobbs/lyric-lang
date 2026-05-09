@@ -1820,6 +1820,8 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
   val config:    List[ConfigField]    = newList()
   var configSeen: Bool = false
   val contracts: List[ContractClause] = newList()
+  val wraps:     List[String]         = newList()
+  val inside:    List[String]         = newList()
   var around: Option[AspectAround] = None
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = st.pos
@@ -1857,8 +1859,54 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
               around = Some(value = parseAspectAround(st))
             }
           }
+        } else if s == "wraps" {
+          // §6 ordering: `wraps: A, B` — this aspect runs outside A and B.
+          val _ = advance(st)
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0306", "expected ':' after 'wraps'", peekSpan(st)) }
+          }
+          var keepGoing = true
+          while keepGoing {
+            val _ = skipStmtEnds(st)
+            match peekToken(st) {
+              case TIdent(n) -> {
+                val _ = advance(st)
+                wraps.add(n)
+                val _ = skipStmtEnds(st)
+                match tryEatPunct(st, Comma) {
+                  case Some(_) -> {}
+                  case None -> { keepGoing = false }
+                }
+              }
+              case _ -> { keepGoing = false }
+            }
+          }
+        } else if s == "inside" {
+          // §6 ordering: `inside: A, B` — this aspect runs inside A and B.
+          val _ = advance(st)
+          match tryEatPunct(st, Colon) {
+            case Some(_) -> {}
+            case None -> { emitErr(st, "P0307", "expected ':' after 'inside'", peekSpan(st)) }
+          }
+          var keepGoing = true
+          while keepGoing {
+            val _ = skipStmtEnds(st)
+            match peekToken(st) {
+              case TIdent(n) -> {
+                val _ = advance(st)
+                inside.add(n)
+                val _ = skipStmtEnds(st)
+                match tryEatPunct(st, Comma) {
+                  case Some(_) -> {}
+                  case None -> { keepGoing = false }
+                }
+              }
+              case _ -> { keepGoing = false }
+            }
+          }
         } else {
-          emitErr(st, "P0304", "expected 'matches:', 'config', 'around', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
+          emitErr(st, "P0304", "expected 'matches:', 'config', 'around', 'wraps:', 'inside:', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
           val _ = advance(st)
         }
       }
@@ -1870,12 +1918,12 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
             case None -> {}
           }
         } else {
-          emitErr(st, "P0304", "expected 'matches:', 'around', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
+          emitErr(st, "P0304", "expected 'matches:', 'around', 'wraps:', 'inside:', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
           if not isAtEnd(st) { val _ = advance(st) }
         }
       }
       case _ -> {
-        emitErr(st, "P0304", "expected 'matches:', 'config', 'around', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
+        emitErr(st, "P0304", "expected 'matches:', 'config', 'around', 'wraps:', 'inside:', 'requires:', or 'ensures:' in aspect body", peekSpan(st))
         if not isAtEnd(st) { val _ = advance(st) }
       }
     }
@@ -1899,6 +1947,8 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
     matches   = matches,
     around    = around,
     contracts = contracts,
+    wraps     = wraps,
+    inside    = inside,
     span      = joinSpans(startTok.span, endSpan))
 }
 

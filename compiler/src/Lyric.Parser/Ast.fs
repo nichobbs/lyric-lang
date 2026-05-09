@@ -485,6 +485,8 @@ and AspectDecl =
       Matches:   AspectMatcher list
       Around:    AspectAround option
       Contracts: ContractClause list   // §5 composition: requires:/ensures: on aspect body
+      Wraps:     string list           // §6 ordering: this aspect wraps the named aspects
+      Inside:    string list           // §6 ordering: this aspect runs inside the named aspects
       Span:      Span }
 
 and ExternMember =
