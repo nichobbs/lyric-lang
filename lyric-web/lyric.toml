@@ -1,0 +1,53 @@
+# lyric-web — OpenAPI-first web service library for Lyric.
+#
+# Ships four packages:
+#   Web                — core types (ApiError, Router, Header, Route), server
+#                        entry point, and runtime config blocks.
+#   Web.OpenApi        — OpenAPI 3.1 spec type vocabulary and code-first
+#                        spec-builder.
+#   Web.Aspects        — pub aspect templates: RequiresAuth, RateLimit.
+#   Web.Kernel.Net     — ASP.NET Core / Kestrel extern boundary.
+#
+# Both development workflows are supported:
+#   Code-first:  annotate handlers with @get / @post / etc., run
+#                `lyric web spec` to produce openapi.yaml.
+#   Spec-first:  run `lyric generate openapi spec.yaml` to produce
+#                handler stubs + record types, then implement the bodies.
+#
+# See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D053.
+
+[package]
+name        = "Lyric.Web"
+version     = "0.1.0"
+description = "OpenAPI-first web service library with typed routing, runtime config, and aspect templates."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# ASP.NET Core / Kestrel HTTP server backend.
+dotnet = []
+# JVM backend (Phase 6 — not yet implemented).
+jvm    = []
+
+[project]
+name            = "Lyric.Web"
+output          = "single"
+output_assembly = "Web.dll"
+
+[project.packages]
+# Core types, router, config, server entry point.
+"Web"             = "src/web.l"
+# OpenAPI 3.1 spec vocabulary and code-first spec builder.
+"Web.OpenApi"     = "src/openapi.l"
+# Pub aspect templates for cross-cutting handler concerns.
+"Web.Aspects"     = "src/aspects.l"
+# .NET extern boundary — ASP.NET Core minimal APIs + Kestrel.
+"Web.Kernel.Net"  = "src/_kernel/net/web_kernel.l"
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
+
+[nuget]
+# ASP.NET Core is part of the .NET SDK; no extra package needed for Kestrel.
+# Add if using OpenTelemetry integration:
+# "OpenTelemetry.Extensions.Hosting" = "1.9.0"

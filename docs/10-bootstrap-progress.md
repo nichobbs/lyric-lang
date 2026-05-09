@@ -10211,7 +10211,7 @@ tests — all passing.
 - `lyric-logging/README.md` — installation, runtime env vars, output formats,
   level table, per-template config reference, full three-aspect composition
   example, low-level API table.
-- `docs/03-decision-log.md` D052 — design rationale: why not extend `Std.Log`,
+- `docs/03-decision-log.md` D053 — design rationale: why not extend `Std.Log`,
   six vs four levels, pure `Logger` value type, `loggerName` config field,
   `SlowCallAlert.ensures:` role, `ErrorResultLogging` C-mode justification.
 
@@ -10222,3 +10222,83 @@ library can be imported and `aspect … from` instantiated today.
 **Test counts:** no new compiler tests (library is Lyric source only;
 no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
 lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
+
+---
+
+### D-progress-202: lyric-web library (OpenAPI-first web service)
+
+**Date:** 2026-05-09
+**Branch:** `claude/web-library-openapi-SPkIA`
+
+Adds `lyric-web/` — an OpenAPI-first HTTP web service library for Lyric.
+Supports both code-first (write handlers, extract spec) and spec-first
+(import spec, generate stubs) development workflows.
+
+**Files added:**
+
+- `lyric-web/lyric.toml` — package manifest; `Web.dll` as output assembly;
+  four packages (`Web`, `Web.OpenApi`, `Web.Aspects`, `Web.Kernel.Net`);
+  `dotnet` and `jvm` feature flags; depends on `Lyric.Stdlib`.
+- `lyric-web/src/web.l` — `Web` package:
+  - `pub record ApiError { status: Int; message: String; detail: [String] }`
+    with 10 named constructor helpers: `badRequest`, `badRequestWithDetail`,
+    `unauthorized`, `forbidden`, `notFound`, `conflict`, `unprocessable`,
+    `tooManyRequests`, `internalError`, `apiError(status, msg)`.
+  - `pub record Header { name: String; value: String }`.
+  - `pub record Route { method: String; pattern: String; handlerName: String;
+    summary: String; tags: [String]; deprecated: Bool }`.
+  - `pub record Router { routes: [Route]; pathPrefix: String }` with builder
+    API: `create()`, `addGet/Post/Put/Delete/Patch(router, pattern, handlerName)`,
+    `prefix(router, pathPrefix)`, `merge(a, b)`.
+  - `config Server { host: String = "0.0.0.0"; port: Int range 1..=65535 = 8080;
+    swaggerEnabled: Bool = false; specPath: String = "/openapi.json" }`.
+  - `config Cors { enabled: Bool = false; allowedOrigins: String = "*";
+    allowedMethods: String = "GET,POST,PUT,DELETE,OPTIONS,PATCH";
+    allowedHeaders: String = "Content-Type,Authorization,Accept";
+    maxAgeSeconds: Int = 86400 }`.
+  - `pub func start(router: in Router): Unit` — calls `HttpKernel.serve` with
+    all server and CORS config fields.
+- `lyric-web/src/openapi.l` — `Web.OpenApi` package: full OpenAPI 3.1 type
+  vocabulary (`Contact`, `License`, `Info`, `Schema`, `SchemaType`, `Parameter`,
+  `ParameterLocation`, `MediaType`, `RequestBody`, `ApiResponse`, `Operation`,
+  `PathItem`, `Spec`) plus builder helpers (`newSpec`, `addServer`, `addSchema`,
+  `addPath`, `scalarSchema`, `refSchema`).  Module docstring documents the
+  bidirectional OpenAPI→Lyric type mapping and constraints→`requires:` table.
+- `lyric-web/src/aspects.l` — `Web.Aspects` package:
+  - `@inline_template pub aspect RequiresAuth` (C-mode) — validates a Bearer
+    JWT; config: `enabled:Bool=true`, `@sensitive jwtSecret:String` (REQUIRED),
+    `issuer:String=""`, `audience:String=""`.  Reads `args.authToken`; returns
+    `Err(Web.unauthorized(…))` if absent, `Err(Web.forbidden(…))` if invalid.
+    Compiler emits A0042 if applied to a handler without `authToken: String`.
+  - `pub aspect RateLimit` (B-mode) — sliding-window rate limit; config:
+    `enabled:Bool=true`, `requestsPerMinute:Int=60`, `burstSize:Int=10`.
+    Uses `call.qualifiedName` as the bucket key; returns
+    `Err(Web.tooManyRequests(…))` when denied.
+- `lyric-web/src/_kernel/net/web_kernel.l` — `Web.Kernel.Net` package
+  (`@cfg(feature = "dotnet")`); extern boundaries:
+  - `Microsoft.AspNetCore.serve(host, port, swaggerEnabled, specPath,
+    corsEnabled, corsOrigins, corsMethods, corsHeaders, corsMaxAge, router)` —
+    Kestrel HTTP server.
+  - `System.IdentityModel.Tokens.Jwt.verifyJwt(token, secret, issuer,
+    audience): Bool` — JWT validation.
+  - `System.Threading.RateLimiting.checkRateLimit(endpoint,
+    requestsPerMinute, burstSize): Bool` — in-process sliding-window limiter.
+- `lyric-web/README.md` — full documentation: code-first workflow, spec-first
+  workflow, OpenAPI→Lyric type mapping table, constraints→`requires:` table,
+  generated stub example, runtime config env-var tables, aspect template
+  reference with config fields, full composition example.
+- `docs/03-decision-log.md` D054 — design rationale: hybrid routing model,
+  flat typed parameters, handler dispatch by qualified name, full contract
+  bridge, both spec generation modes, `ApiError` as plain record, CORS as
+  config block, auth/rate-limit as aspects, `jwtSecret` as `@sensitive`,
+  spec-first type mapping.
+
+**Implementation gate:** Kestrel integration (`Web.Kernel.Net.serve`) and
+the aspect weaver must ship before HTTP serving and aspect weaving take
+effect.  The library can be imported, routers built, and aspects instantiated
+today.
+
+**Test counts:** no new compiler tests (library is Lyric source only;
+no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
+lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
+
