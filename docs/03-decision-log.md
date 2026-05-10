@@ -3084,6 +3084,47 @@ reproducibility is achieved, then promoted to the standard gate.
 
 ---
 
+## D060 — JVM output extension: plain `.jar`, not `.lyrjar`
+
+**Status:** Decided.
+
+**Context:** `docs/18-jvm-emission.md` §2.1 originally specified that the
+JVM emitter writes `<P>.lyrjar` (a JAR with a non-standard extension) to
+"distinguish Lyric output from Java output" and avoid polluting the `.jar`
+namespace.  On closer examination this was unnecessary and actively harmful.
+
+**Decision:** The JVM emitter produces plain `<P>.jar` files.
+
+**Rationale:**
+
+1. **The metadata is already sufficient.** Every Lyric-emitted JAR carries
+   `Lyric-Lang-Version`, `Lyric-Package-Name`, and `Lyric-Package-SemVer`
+   in `MANIFEST.MF`, plus the embedded `META-INF/lyric/*.lyric-contract`
+   sidecar.  The build driver checks `Lyric-Lang-Version` to identify Lyric
+   JARs; no extension signal is needed.
+
+2. **Ecosystem compatibility.** Maven, Gradle, IDEs, `java --module-path`,
+   and `javac -classpath` understand `.jar`, not `.lyrjar`.  Every other
+   JVM language (Kotlin, Scala, Clojure, Groovy) publishes plain JARs.
+   A `.lyrjar` extension would require custom repository configuration and
+   tooling wrappers for every Java consumer.
+
+3. **Java interoperability.** A Java project wanting to depend on a Lyric
+   library just adds it to its classpath or module path as a `.jar`.  No
+   adapter, no special plugin, no extension rename.
+
+4. **Maven Central.** Publishing to Maven Central requires `.jar` artifacts.
+   A `.lyrjar` would be rejected by the repository's artifact-type
+   validation.
+
+**Consequences:**
+
+- `docs/18-jvm-emission.md` §2.1 and §2.2 updated.
+- `docs/31-maven-linking.md` §7 updated.
+- `book/chapters/14-jvm-target.md` documents `.jar` from day one.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

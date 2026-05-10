@@ -81,9 +81,10 @@ A sixth principle, specific to JVM:
 
 For each package `P`, the JVM emitter produces:
 
-- **`<P>.lyrjar`** — a JAR file (`.jar` is reserved for plain Java
-  output; the `.lyrjar` extension distinguishes Lyric output to the
-  build driver).  Contents:
+- **`<P>.jar`** — a standard JAR file.  Lyric JARs are distinguished
+  from plain Java JARs by the `Lyric-Lang-Version` entry in
+  `MANIFEST.MF`; the build driver checks this header, not the
+  extension (D060).  Contents:
   - `module-info.class` — the JPMS module descriptor (`requires`,
     `exports`, `opens`).
   - One `.class` per emitted top-level type (class, sealed interface,
@@ -105,7 +106,7 @@ JAR metadata (`MANIFEST.MF`) carries:
 
 ### 2.2 Module identity and naming
 
-Each `.lyrjar` is a JPMS module:
+Each Lyric JAR is a JPMS module:
 
 - **Module name:** `lyric.<package-fully-qualified>` (e.g.
   `lyric.money`, `lyric.std.collections`).  Java module names are
@@ -1872,7 +1873,7 @@ pub async func buildPackage(
 The driver:
 1. Resolves the package's import graph (delegating to
    `Lyric.Cli.Manifest`).
-2. Loads or compiles each dependency to its `.lyrjar`.
+2. Loads or compiles each dependency to its `.jar`.
 3. Invokes the `Lowering` package once per source file, in parallel
    via a `scope { ... }` block (showcasing structured concurrency).
 4. Writes the resulting class files into the output JAR using
