@@ -1,20 +1,21 @@
-// msil_self_test_m72.l — Stage M72: bge (0x3C), ble (0x3F), blt (0x3E).
+// msil_self_test_m72.l — Stage M72: bge (0x3C), ble (0x3E), blt (0x3F).
 //
 // Exercises:
 //   bge (0x3C) — branch if greater-than-or-equal
-//   ble (0x3F) — branch if less-than-or-equal
-//   blt (0x3E) — branch if less-than
+//   ble (0x3E) — branch if less-than-or-equal
+//   blt (0x3F) — branch if less-than
 //
 // Code flow (three sequential branch tests, each guarding a "push 0/call/ret" dead path):
 //   ldc.i4.s 42 / ldc.i4.s 42 / bge BGE_OK  (42>=42 → jump; dead: 0/call/ret)
-//   BGE_OK: ldc.i4.s 42 / ldc.i4.s 43 / ble BLE_OK  (42<=43 → jump; dead)
+//   BGE_OK: ldc.i4.s 42 / ldc.i4.s 42 / ble BLE_OK  (42<=42 → jump; dead)
+//     — uses equal operands (42,42) so ble branches but blt would not: discriminating test.
 //   BLE_OK: ldc.i4.s 42 / ldc.i4.s 43 / blt BLT_OK  (42<43 → jump; dead)
 //   BLT_OK: ldc.i4.s 42 / call Console.WriteLine / ret  → prints "42"
 //
 // codeSize = 59.  Tiny header byte = (59 << 2) | 2 = 0xEE.
 //   bge (0x3C) at code offset  4 = file 0x24D.
-//   ble (0x3F) at code offset 21 = file 0x25E.
-//   blt (0x3E) at code offset 38 = file 0x26F.
+//   ble (0x3E) at code offset 21 = file 0x25E.
+//   blt (0x3F) at code offset 38 = file 0x26F.
 // BSJB at 0x249 + 59 = 0x284.
 //
 // bge branch offset: BGE_OK(17) - next(9)  = 8 → LE32: 08 00 00 00
@@ -72,27 +73,33 @@ func main(): Unit {
   val keyToken = internBlob(bh, "ms_key", bufToList(keyW))
 
   val mbMain = newMethodBody()
+  val lblBgeOk = mbNewLabel(mbMain)
+  val lblBleOk = mbNewLabel(mbMain)
+  val lblBltOk = mbNewLabel(mbMain)
   emitLdc_I4_S(mbMain, 42)         // offset  0
   emitLdc_I4_S(mbMain, 42)         // offset  2
-  emitBge(mbMain, 8)               // offset  4: bge +8 → BGE_OK(17); next=9; 42>=42 → jump
+  emitBge(mbMain, lblBgeOk)        // offset  4: bge → BGE_OK(17); next=9; offset=+8; 42>=42 → jump
   emitLdc_I4_S(mbMain, 0)          // offset  9: dead
   emitCall(mbMain, 0x0A000001)      // offset 11: dead
   emitRet(mbMain)                   // offset 16: dead
   // BGE_OK: offset 17
+  mbMarkLabel(mbMain, lblBgeOk)
   emitLdc_I4_S(mbMain, 42)         // offset 17
-  emitLdc_I4_S(mbMain, 43)         // offset 19
-  emitBle(mbMain, 8)               // offset 21: ble +8 → BLE_OK(34); next=26; 42<=43 → jump
+  emitLdc_I4_S(mbMain, 42)         // offset 19  (42,42): ble branches but blt would not
+  emitBle(mbMain, lblBleOk)        // offset 21: ble → BLE_OK(34); next=26; offset=+8; 42<=42 → jump
   emitLdc_I4_S(mbMain, 0)          // offset 26: dead
   emitCall(mbMain, 0x0A000001)      // offset 28: dead
   emitRet(mbMain)                   // offset 33: dead
   // BLE_OK: offset 34
+  mbMarkLabel(mbMain, lblBleOk)
   emitLdc_I4_S(mbMain, 42)         // offset 34
   emitLdc_I4_S(mbMain, 43)         // offset 36
-  emitBlt(mbMain, 8)               // offset 38: blt +8 → BLT_OK(51); next=43; 42<43 → jump
+  emitBlt(mbMain, lblBltOk)        // offset 38: blt → BLT_OK(51); next=43; offset=+8; 42<43 → jump
   emitLdc_I4_S(mbMain, 0)          // offset 43: dead
   emitCall(mbMain, 0x0A000001)      // offset 45: dead
   emitRet(mbMain)                   // offset 50: dead
   // BLT_OK: offset 51
+  mbMarkLabel(mbMain, lblBltOk)
   emitLdc_I4_S(mbMain, 42)         // offset 51
   emitCall(mbMain, 0x0A000001)      // offset 53
   emitRet(mbMain)                   // offset 58
@@ -124,8 +131,8 @@ func main(): Unit {
   check("entry_tok_ok", bs[0x214] == 0x01 and bs[0x215] == 0 and bs[0x216] == 0 and bs[0x217] == 0x06)
   check("tiny_hdr_ok", bs[0x248] == 0xEE)
   check("bge_ok", bs[0x24D] == 0x3C)
-  check("ble_ok", bs[0x25E] == 0x3F)
-  check("blt_ok", bs[0x26F] == 0x3E)
+  check("ble_ok", bs[0x25E] == 0x3E)
+  check("blt_ok", bs[0x26F] == 0x3F)
   check("bsjb_ok",
     bs[0x284] == 0x42 and bs[0x285] == 0x53 and
     bs[0x286] == 0x4A and bs[0x287] == 0x42)

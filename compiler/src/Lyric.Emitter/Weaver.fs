@@ -66,7 +66,7 @@ let private globMatch (glob: string) (name: string) : bool =
                         if ni < name.Length && glob.[j] = name.[ni] then
                             found <- true
                         j <- j + 1
-                found && closed && m j (ni + 1)
+                found && closed && m (j + 1) (ni + 1)
             | c ->
                 ni < name.Length && c = name.[ni] && m (gi + 1) (ni + 1)
     m 0 0
@@ -181,27 +181,17 @@ let private buildWrapper
     let around = aspect.Around.Value
     let paramNames = originalFn.Params |> List.map (fun p -> p.Name)
 
-    // Rewrite every statement in the around body so proceed(args) → callTargetName(p1, p2, …).
-    let rwStmt (s: Statement) : Statement =
-        let rwE e = rewriteProceeds callTargetName paramNames e
-        let kind' =
-            match s.Kind with
-            | SExpr e                            -> SExpr (rwE e)
-            | SReturn (Some e)                   -> SReturn (Some (rwE e))
-            | SReturn None                       -> s.Kind
-            | SLocal (LBVal (p, t, init))        -> SLocal (LBVal (p, t, rwE init))
-            | SLocal (LBVar (n, t, Some init))   -> SLocal (LBVar (n, t, Some (rwE init)))
-            | SLocal (LBVar (n, t, None))        -> s.Kind
-            | SLocal (LBLet (n, t, init))        -> SLocal (LBLet (n, t, rwE init))
-            | SAssign (t, op, v)                 -> SAssign (rwE t, op, rwE v)
-            | SThrow e                           -> SThrow (rwE e)
-            | SFor (lbl, pat, iter, body)        -> SFor (lbl, pat, rwE iter, body)
-            | SWhile (lbl, cond, body)           -> SWhile (lbl, rwE cond, body)
-            | _                                  -> s.Kind
-        { s with Kind = kind' }
+    // Rewrite every occurrence of proceed(args) in the around body, including
+    // inside loops, try blocks, and other nested statement bodies.
+    // Delegate to rewriteProceeds (which is already fully recursive) by wrapping
+    // the block as an EBlock expression, rewriting, and unwrapping.
     let rewiredBody =
         let b = around.Body
-        { b with Statements = b.Statements |> List.map rwStmt }
+        let blockExpr : Expr = { Kind = EBlock b; Span = zeroSpan }
+        let rewritten = rewriteProceeds callTargetName paramNames blockExpr
+        match rewritten.Kind with
+        | EBlock blk -> blk
+        | _          -> b  // cannot happen
 
     // Wrapper FunctionDecl: same params/return as original; around body.
     // §5 composition: wrapper contract = aspect contracts ++ target contracts.

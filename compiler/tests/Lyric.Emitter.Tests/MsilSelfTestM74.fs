@@ -1,4 +1,4 @@
-/// Stage M74: ble.un (0x43), blt.un (0x44), ldc.i4 full (0x20), ldc.i4.6/7/8 (0x12/0x13/0x14).
+/// Stage M74: ble.un (0x43), blt.un (0x44), ldc.i4 full (0x20), ldc.i4.6/7/8 (0x1C/0x1D/0x1E).
 module Lyric.Emitter.Tests.MsilSelfTestM74
 
 open System.IO

@@ -68,27 +68,33 @@ func main(): Unit {
   val keyToken = internBlob(bh, "ms_key", bufToList(keyW))
 
   val mbMain = newMethodBody()
+  val lblBneOk = mbNewLabel(mbMain)
+  val lblBgeOk = mbNewLabel(mbMain)
+  val lblBgtOk = mbNewLabel(mbMain)
   emitLdc_I4_S(mbMain, 42)         // offset  0
   emitLdc_I4_S(mbMain, 41)         // offset  2
-  emitBne_Un(mbMain, 8)            // offset  4: bne.un +8 → BNE_OK(17); next=9; 42!=41 → jump
+  emitBne_Un(mbMain, lblBneOk)     // offset  4: bne.un → BNE_OK(17); next=9; offset=+8; 42!=41 → jump
   emitLdc_I4_S(mbMain, 0)          // offset  9: dead
   emitCall(mbMain, 0x0A000001)      // offset 11: dead
   emitRet(mbMain)                   // offset 16: dead
   // BNE_OK: offset 17
+  mbMarkLabel(mbMain, lblBneOk)
   emitLdc_I4_S(mbMain, 42)         // offset 17
   emitLdc_I4_S(mbMain, 42)         // offset 19
-  emitBge_Un(mbMain, 8)            // offset 21: bge.un +8 → BGE_OK(34); next=26; 42>=42 → jump
+  emitBge_Un(mbMain, lblBgeOk)     // offset 21: bge.un → BGE_OK(34); next=26; offset=+8; 42>=42 → jump
   emitLdc_I4_S(mbMain, 0)          // offset 26: dead
   emitCall(mbMain, 0x0A000001)      // offset 28: dead
   emitRet(mbMain)                   // offset 33: dead
   // BGE_OK: offset 34
+  mbMarkLabel(mbMain, lblBgeOk)
   emitLdc_I4_S(mbMain, 42)         // offset 34
   emitLdc_I4_S(mbMain, 41)         // offset 36
-  emitBgt_Un(mbMain, 8)            // offset 38: bgt.un +8 → BGT_OK(51); next=43; 42>41 → jump
+  emitBgt_Un(mbMain, lblBgtOk)     // offset 38: bgt.un → BGT_OK(51); next=43; offset=+8; 42>41 → jump
   emitLdc_I4_S(mbMain, 0)          // offset 43: dead
   emitCall(mbMain, 0x0A000001)      // offset 45: dead
   emitRet(mbMain)                   // offset 50: dead
   // BGT_OK: offset 51
+  mbMarkLabel(mbMain, lblBgtOk)
   emitLdc_I4_S(mbMain, 42)         // offset 51
   emitCall(mbMain, 0x0A000001)      // offset 53
   emitRet(mbMain)                   // offset 58

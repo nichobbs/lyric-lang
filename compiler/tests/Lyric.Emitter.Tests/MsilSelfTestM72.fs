@@ -1,4 +1,4 @@
-/// Stage M72: bge (0x3C), ble (0x3F), blt (0x3E).
+/// Stage M72: bge (0x3C), ble (0x3E), blt (0x3F).
 module Lyric.Emitter.Tests.MsilSelfTestM72
 
 open System.IO

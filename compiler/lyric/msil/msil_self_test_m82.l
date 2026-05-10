@@ -23,7 +23,7 @@
 //   TypeRef[4]: System.Int16   (AssemblyRef[1]) → token 0x01000004
 //   TypeRef[5]: System.Int32   (AssemblyRef[1]) → token 0x01000005
 //
-// Code layout (fat header at 0x248, code at 0x254, codeSize=84):
+// Code layout (fat header at 0x248, code at 0x254, codeSize=86):
 //   offset  0-5:  nop×6
 //   offset  6-12: ldc.i4.1 / newarr Byte / stloc.0
 //   offset 13-19: ldc.i4.1 / newarr Int16 / stloc.1
@@ -40,9 +40,10 @@
 //   offset 54-56: ldloc.2 / ldc.i4.0 / ldelem.u4                ← 0x95 at 0x28C
 //   offset 57:    pop
 //   offset 58-66: ldloc.2 / ldc.i4.0 / ldc.i4.s 42 / stelem Int32 ← 0xA4 at 0x292
-//   offset 67-75: ldloc.2 / ldc.i4.0 / ldelem Int32             ← 0xA3 at 0x299
-//   offset 76:    pop
-//   offset 77-83: ldloc.2 / ldc.i4.0 / ldelem.i4 → 42 / call / ret
+//   offset 67-73: ldloc.2 / ldc.i4.0 / ldelem Int32             ← 0xA3 at 0x299
+//   offset 74:    pop
+//   offset 75-76: nop×2 (pad so BSJB lands at 0x254+86=0x2AA)
+//   offset 77-85: ldloc.2 / ldc.i4.0 / ldelem.i4 → 42 / call / ret
 //
 // BSJB at 0x248 + 98 = 0x2AA  (fat=12 + code=86; no padding before metadata).
 
@@ -171,15 +172,14 @@ func main(): Unit {
   emitLdc_I4_0(mbMain)                     // offset 68
   emitLdelem(mbMain, tokInt32)             // offset 69-73 ← 0xA3 at 0x254+69=0x299
   emitPop(mbMain)                          // offset 74
-  // extra nop to reach 84 bytes total
-  emitNop(mbMain)                          // offset 75 (extra alignment nop)
+  emitNop(mbMain)                          // offset 75: pad so BSJB reaches 0x2AA
   emitNop(mbMain)                          // offset 76
   // print 42 from int[]
   emitLdloc_2(mbMain)                      // offset 77
   emitLdc_I4_0(mbMain)                     // offset 78
   emitLdelem_I4(mbMain)                    // offset 79 → 42
   emitCall(mbMain, 0x0A000001)            // offset 80-84
-  emitRet(mbMain)                          // offset 85... hmm
+  emitRet(mbMain)                          // offset 85; codeSize=86
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

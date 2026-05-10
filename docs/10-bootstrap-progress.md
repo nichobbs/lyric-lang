@@ -2276,9 +2276,9 @@ Five stages batched:
 - **M71** (`div`, 0x5B; `beq`, 0x3B; `bgt`, 0x3D): integer divide plus two conditional
   branch forms. `84/2=42`; `beq` and `bgt` guard dead fall-through paths. Tiny header.
 
-- **M72** (`bge`, 0x3C; `ble`, 0x3F; `blt`, 0x3E): three signed conditional branch forms;
-  also verifies the OP_BLE/OP_BLT constant fix (`blt`=0x3E, `ble`=0x3F per ECMA-335).
-  Tiny header (codeSize=59).
+- **M72** (`bge`, 0x3C; `ble`, 0x3E; `blt`, 0x3F): three signed conditional branch forms.
+  The `ble` test uses equal operands (42, 42) to discriminate `ble` (branches) from `blt`
+  (would not). Tiny header (codeSize=59).
 
 - **M73** (`bne.un`, 0x40; `bge.un`, 0x41; `bgt.un`, 0x42): three unsigned conditional
   branch forms. Tiny header (codeSize=59).
