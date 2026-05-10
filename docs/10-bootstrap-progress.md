@@ -10671,3 +10671,78 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
 
 **Test counts:** 158 CLI tests — all passing.  No regression in other suites.
 
+---
+
+### D-progress-204: `lyric-cache`, `lyric-db`, `lyric-health` service libraries
+
+**What shipped**
+
+**`lyric-cache/` library (D055):**
+- `lyric-cache/lyric.toml` — `Cache.dll` manifest; two packages
+  (`Cache`, `Cache.Aspects`); depends on `Lyric.Stdlib`.
+- `src/cache.l` — `Cache` package: `CacheStore` interface (`get/set/delete/clear`),
+  `CacheEntry { value: String; expiresAt: Long }`, `InProcessCacheStore`
+  (`var entries: Map[String, CacheEntry]; maxEntries: Int`) implementing
+  `CacheStore`, `config Defaults { ttlSeconds: Int range 0..=86400 = 300;
+  maxEntries: Int range 1..=1000000 = 10000 }`, `inProcess()`,
+  `inProcessWithCapacity(maxEntries)`, and public API `get/set/setWithTtl/delete/clear`.
+- `src/cache_aspects.l` — `Cache.Aspects` package: module-level
+  `var store = Cache.inProcess()`, `pub aspect FunctionCache` (B-mode, caches
+  `Ok` results by `call.qualifiedName`), `@inline_template pub aspect ItemCache`
+  (C-mode, reads `args.cacheKey`, key = `keyPrefix + args.cacheKey`).
+- `lyric-cache/README.md` — interface extension guide, config table, aspect templates.
+
+**`lyric-db/` library (D056):**
+- `lyric-db/lyric.toml` — `Db.dll` manifest; three packages (`Db`,
+  `Db.Aspects`, `Db.Kernel.Net`); `postgres` and `sqlite` feature flags;
+  depends on `Lyric.Stdlib`.
+- `src/db.l` — `Db` package: `DbError { message; code }`, `DbValue` enum
+  (8 variants: `DbNull/DbInt/DbLong/DbFloat/DbDouble/DbBool/DbText/DbBytes`),
+  `DbRow { columns: [(String, DbValue)] }`, `col(row, name)`,
+  `DbTransaction` interface, `DbConnection` interface, `NativeConnection` and
+  `NativeTransaction` wrappers (integer-handle pattern), `config Connection
+  { url; poolSize; connectTimeoutMs; queryTimeoutMs; @sensitive password }`,
+  `@cfg(feature = "postgres") connectPostgres()`,
+  `@cfg(feature = "sqlite") connectSqlite()`, stub `parseRows`.
+- `src/db_aspects.l` — `Db.Aspects` package: `QueryLogging` (B-mode, logs
+  handler entry/exit), `SlowQueryAlert` (B-mode; carries
+  `ensures: call.elapsed.unwrapOr(0) >= 0`).
+- `src/_kernel/net/db_kernel.l` — `Db.Kernel.Net` package: `@axiom`-guarded
+  `@cfg(feature = "postgres") extern package Npgsql`, `pub package Postgres`,
+  `@cfg(feature = "sqlite") extern package MicrosoftDataSqlite`,
+  `pub package Sqlite`, `@axiom extern package Lyric.Db.Native` with
+  `query/execute/beginTransaction/txQuery/txExecute/commitTransaction/rollbackTransaction/close`;
+  all re-exported at package level.
+- `lyric-db/README.md` — feature flags, config table, interface contracts, row
+  access guide, transaction example, aspect templates, kernel boundary notes.
+
+**`lyric-health/` library (D057):**
+- `lyric-health/lyric.toml` — `Health.dll` manifest; depends on `Lyric.Stdlib`
+  and `Lyric.Web`.
+- `src/health.l` — `Health` package: `CheckGroup` enum (`Liveness/Readiness`),
+  `HealthCheck { name; group; handlerName }`, `HealthRegistry { checks: [HealthCheck] }`,
+  `create()`, `addLivenessCheck/addReadinessCheck`, `config Endpoints
+  { livePath = "/health/live"; readyPath = "/health/ready" }`,
+  `registerRoutes(router, registry)`, built-in `__handleLiveness/Readiness`,
+  stubs for `runChecks` and `attachRegistry` (pending router-annotation milestone).
+- `lyric-health/README.md` — check function signature, response JSON shape,
+  check groups, config table, full API reference.
+
+**Book chapters (24–26):**
+- `book/chapters/24-caching.md` — `lyric-cache` API, `CacheStore` extension
+  interface, config, `FunctionCache` and `ItemCache` aspect templates.
+- `book/chapters/25-database-access.md` — `lyric-db` features, connections,
+  queries, DML, transactions, `DbValue` variants, aspects.
+- `book/chapters/26-health-checks.md` — `lyric-health` check function
+  signature, liveness vs readiness, response format, config, API reference.
+- `book/chapters/appendix-b-quick-reference.md` — service libraries table
+  added to §B.9 (six libraries with chapter cross-references).
+
+**Implementation gate:** config-block emitter, aspect weaver, and DLL-reflection
+dispatcher must ship before the runtime behaviour is active.  All three
+libraries can be imported and aspect templates instantiated today.
+
+**Test counts:** no new compiler tests (libraries are Lyric source only;
+no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
+lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
+

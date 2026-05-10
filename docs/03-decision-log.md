@@ -2795,6 +2795,231 @@ Lyric types as follows: `integer/int32`→`Int`, `integer/int64`→`Long`,
 
 ---
 
+## D055 — `lyric-cache` library: typed key-value cache with pluggable store
+
+**Date:** 2026-05-10
+**Branch:** claude/service-libraries-cache-db-health-SPkIA
+**Builds on:** D045 (`@cfg` features), D046 (config blocks), D047 (aspects), D050/D051 (pub aspect templates).
+
+### Context
+
+Many Lyric services need a shared, in-process key-value cache for rate-limiting
+state, session data, computed results, and feature flags.  Consumers also need
+the ability to swap in Redis or another remote store without changing application
+code.
+
+### Decision
+
+A `lyric-cache/` library is added.  It ships two packages:
+
+- `Cache` — `CacheStore` interface, `InProcessCacheStore` (in-memory, LRU
+  eviction), factory functions `inProcess()` / `inProcessWithCapacity(n)`,
+  and the public API (`get`, `set`, `setWithTtl`, `delete`, `clear`).
+- `Cache.Aspects` — two pub aspect templates: `FunctionCache` (B-mode, caches
+  by `call.qualifiedName`) and `ItemCache` (C-mode, `@inline_template`, reads
+  `args.cacheKey: String` from the matched handler).
+
+**`CacheStore` as the extension point.**  The `CacheStore` interface exposes
+`get/set/delete/clear`.  `InProcessCacheStore` is the v1 concrete type.
+Consumers who need Redis or Memcached implement `CacheStore` and use the
+`Cache.get/set` functions directly in a custom aspect body.
+
+**`var entries` field on `InProcessCacheStore`.**  Lyric records are normally
+immutable, but `var` fields allow in-place mutation when the binding is `var`.
+Using a mutable `entries` field on the record lets the store be passed by
+reference through multiple aspect invocations without copying the entire map.
+
+**Aspect templates share a module-level store.**  Both `FunctionCache` and
+`ItemCache` read from `var store = Cache.inProcess()` declared at the
+`Cache.Aspects` module scope.  This is the simplest possible wiring for
+the common case.  Consumers who need per-store isolation implement their
+own aspect body calling `Cache.get/set` with an explicitly-scoped store.
+
+**`FunctionCache` is B-mode; `ItemCache` is C-mode.**  `FunctionCache` only
+needs `call.qualifiedName` (the function's stable identifier), which is
+available in B-mode.  `ItemCache` must read `args.cacheKey` by name, which
+requires C-mode re-compilation in the consumer's package (`@inline_template`).
+Attempting to read named `args.*` in B-mode would be a shape error (A0042).
+
+**TTL 0 means no expiry.**  Avoids a separate `Option[Int]` parameter;
+0 is unambiguous since negative TTLs are nonsensical and excluded by the
+config range constraint.
+
+### Consequences
+
+- `lyric-cache/` directory added at the repo root.
+- `lyric-cache/lyric.toml` — `Cache.dll` manifest.
+- `lyric-cache/src/cache.l` — `Cache` package with `CacheStore` interface
+  and `InProcessCacheStore` implementation.
+- `lyric-cache/src/cache_aspects.l` — `Cache.Aspects` package with
+  `FunctionCache` and `ItemCache` templates.
+- `lyric-cache/README.md` — usage, interface guide, aspect reference.
+
+### Alternatives considered
+
+- **`CacheStore` as a config field on aspect templates.**  Interfaces are not
+  primitive config types; the field would need to be a string handle.  Too
+  complex for the common case.  Rejected in favour of the module-level store.
+- **`Option[Int]` for TTL.**  More explicit, but adds noise at every call site.
+  0-means-no-expiry is a widely-used convention (Redis, Memcached).
+- **Redis implementation in v1.**  Deferred; the extern boundary for Redis
+  requires a new `_kernel` package and NuGet dependency.  `CacheStore` allows
+  it to be added without any API changes.
+
+**Revisions:** None.
+
+---
+
+## D056 — `lyric-db` library: driver-agnostic database access with typed rows
+
+**Date:** 2026-05-10
+**Branch:** claude/service-libraries-cache-db-health-SPkIA
+**Builds on:** D045 (`@cfg` features), D046 (config blocks), D047 (aspects), D050/D051 (pub aspect templates), D053 (logging layer).
+
+### Context
+
+Database access is one of the most common cross-cutting concerns in Lyric
+services.  The design must support multiple drivers (PostgreSQL, SQLite) without
+forcing the consumer to choose at compile time, and must expose a safe, typed
+API that works with the mode checker's `in`-mode parameter rules.
+
+### Decision
+
+A `lyric-db/` library is added.  It ships three packages:
+
+- `Db` — `DbError`, `DbValue` (null / int / long / float / double / bool /
+  text / bytes), `DbRow`, `col(row, name)`, `DbTransaction` interface,
+  `DbConnection` interface, `NativeConnection` and `NativeTransaction` wrappers,
+  `config Connection { url; poolSize; connectTimeoutMs; queryTimeoutMs; password }`,
+  and feature-gated factory functions `connectPostgres()` / `connectSqlite()`.
+- `Db.Aspects` — two pub aspect templates: `QueryLogging` (B-mode, logs
+  handler entry/exit with elapsed time) and `SlowQueryAlert` (B-mode, warns when
+  total elapsed time exceeds `thresholdMs`; carries `ensures: call.elapsed.unwrapOr(0) >= 0`).
+- `Db.Kernel.Net` — extern boundary: `Npgsql` (Postgres, `@cfg feature="postgres"`),
+  `MicrosoftDataSqlite` (SQLite, `@cfg feature="sqlite"`), and the shared
+  `Lyric.Db.Native` package for query/execute/transaction operations.
+
+**Integer handle pattern at the extern boundary.**  The kernel functions return
+`Result[Int, String]` connection and transaction IDs.  `NativeConnection` and
+`NativeTransaction` records in `db.l` wrap these IDs and implement the public
+interfaces.  This avoids crossing the managed boundary with complex Lyric types
+and keeps the kernel contract minimal.
+
+**Two separate factory functions (`connectPostgres` / `connectSqlite`).**  Each
+is gated by its own `@cfg` feature flag.  Both can be active simultaneously;
+the consumer calls the right factory for their use case.  A single
+`connect(url)` that dispatches on the URL scheme was considered but rejected
+because it would require both drivers to be linked even if only one is needed.
+
+**`@sensitive` on `Connection.password`.**  The password override is marked
+`@sensitive` so it is excluded from diagnostic output, config dumps, and logs.
+
+**`parseRows` is a stub.**  The kernel serialises result rows to JSON and
+`parseRows` is responsible for deserialising them to `[DbRow]`.  The function
+returns `Ok([])` today; full implementation is gated on `Std.Json` being
+finalised.
+
+**`SlowQueryAlert` carries `ensures:`.**  Same rationale as
+`Std.Logging.Aspects.SlowCallAlert` (D053): the trivially-true postcondition
+surfaces elapsed-time measurement in the composed contract for `@proof_required`
+consumers.
+
+### Consequences
+
+- `lyric-db/` directory added at the repo root.
+- `lyric-db/lyric.toml` — `Db.dll` manifest with `postgres` and `sqlite` features.
+- `lyric-db/src/db.l` — `Db` package.
+- `lyric-db/src/db_aspects.l` — `Db.Aspects` package.
+- `lyric-db/src/_kernel/net/db_kernel.l` — `Db.Kernel.Net` package.
+- `lyric-db/README.md` — usage, feature flags, config reference, aspect guide.
+
+### Alternatives considered
+
+- **Single `Db.connect(url: String)` dispatching on scheme.**  Simpler call
+  site but requires both drivers to be linked and makes feature-gating
+  impossible.  Rejected.
+- **`DbValue` as a flat tagged union** (e.g. `(tag: Int, value: String)`).
+  Less type-safe; pattern matching on an enum is idiomatic Lyric.
+- **`parseRows` in the kernel.**  The kernel already returns JSON strings.
+  Deserialisation is a Lyric-side concern; keeping it in `db.l` lets the
+  implementation be replaced without touching the extern boundary.
+
+**Revisions:** None.
+
+---
+
+## D057 — `lyric-health` library: liveness and readiness health-check endpoints
+
+**Date:** 2026-05-10
+**Branch:** claude/service-libraries-cache-db-health-SPkIA
+**Builds on:** D046 (config blocks), D054 (`lyric-web` — router and `ApiError`).
+
+### Context
+
+Kubernetes and other orchestrators probe `/health/live` and `/health/ready` to
+determine whether to restart a pod or remove it from the load balancer.  A
+shared library avoids each service reimplementing this boilerplate and ensures
+consistent response shapes across the fleet.
+
+### Decision
+
+A `lyric-health/` library is added with a single `Health` package.  Key design
+choices:
+
+**`HealthRegistry` is immutable.**  Build it with `Health.create()`, extend
+with `addLivenessCheck` / `addReadinessCheck`, then hand it to
+`Health.registerRoutes`.  The same builder-pattern used by `Web.Router`.
+
+**Check functions are referenced by fully-qualified name.**  `handlerName` is
+a `String` resolved by the kernel via DLL reflection at request time — the
+same dispatch model as `Web.Route.handlerName`.  This keeps `HealthCheck`
+a plain value record with no function-type fields, which is important for
+serialisation and config inspection.
+
+**Check function signature is `(): Result[Unit, String]`.**  The return type
+is `String` rather than `DbError` or a domain-specific type so that any
+package can register a health check without taking a dependency on `Db` or
+any other library.
+
+**Two check groups: `Liveness` and `Readiness`.**  Liveness failures signal
+that the process should be restarted; readiness failures signal that the
+instance should be removed from the load balancer.  The distinction is
+well-established in Kubernetes health probe semantics.
+
+**`registerRoutes` attaches the registry to the router.**  The `attachRegistry`
+helper is a stub with a TODO: encoding the registry into router metadata
+requires the router to support arbitrary route annotations, which is a
+follow-up milestone.
+
+**Configurable paths.**  `config Endpoints { livePath; readyPath }` allows
+the standard paths to be overridden via env vars without recompilation.
+
+**Response shape is JSON.**
+`{ "status": "ok"|"degraded", "checks": { "<name>": { "status": "ok"|"fail", "detail": "..." } } }`.
+HTTP 200 for `"ok"`, HTTP 503 for `"degraded"`.
+
+### Consequences
+
+- `lyric-health/` directory added at the repo root.
+- `lyric-health/lyric.toml` — `Health.dll` manifest; depends on `Lyric.Web`.
+- `lyric-health/src/health.l` — `Health` package.
+- `lyric-health/README.md` — usage, check function contract, response format,
+  check groups, config reference, API table.
+
+### Alternatives considered
+
+- **Check functions as `(): Bool`.**  Simpler but loses the detail string.
+  `Result[Unit, String]` is negligibly more complex and far more useful.
+- **`HealthRegistry` as a mutable global.**  Simpler wiring, but breaks
+  composability.  The immutable-registry + `registerRoutes` pattern follows
+  the web router.
+- **Per-check timeout.**  Deferred; requires async support.  Added to the
+  follow-up milestone list.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
