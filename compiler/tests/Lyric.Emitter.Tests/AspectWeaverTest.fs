@@ -330,4 +330,41 @@ func main(): Unit {
             let lines = stdout.Trim().Split('\n') |> Array.map (fun s -> s.Trim()) |> Array.filter (fun s -> s.Length > 0)
             Expect.equal lines [| "outer-start"; "inner-start"; "body"; "inner-end"; "outer-end" |]
                 (sprintf "unexpected output order, stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_proceed_in_loop" <| fun () ->
+            // Regression: proceed(args) inside a while loop in the around body must be rewritten.
+            // buildWrapper.rwStmt previously dropped loop bodies without recursing, leaving proceed
+            // as an unresolved name; the fix delegates to rewriteProceeds which is fully recursive.
+            let src = """
+package Test.ProceedInLoop
+
+import Std.Core
+
+aspect Repeat {
+  matches: name like "greet"
+
+  around(args) -> ret {
+    var i = 0
+    while i < 3 {
+      proceed(args)
+      i = i + 1
+    }
+  }
+}
+
+func greet(): Unit {
+  println("hi")
+}
+
+func main(): Unit {
+  greet()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_proceed_in_loop" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            let lines = stdout.Trim().Split('\n') |> Array.map (fun s -> s.Trim()) |> Array.filter (fun s -> s.Length > 0)
+            Expect.equal lines [| "hi"; "hi"; "hi" |]
+                (sprintf "expected 3x 'hi', got: '%s'" stdout)
     ]
