@@ -2080,6 +2080,14 @@ is a non-trivial add.
 the emitted class shape, discovery / execution protocol, and open questions
 (Q-J007a–e).
 
+**Status (D-progress-206):** Partially implemented in B126.  The
+`@LyricTest` annotation class and test-module class emitter
+(`Jvm.TestEngine`: `lyricTestAnnotationClass`, `lowerTestModuleClass`,
+`LPTestModule`) are shipped and verified by self-test B126.  The CLI
+`lyric test --jvm` flag selects `Emitter.Jvm` and emits a TAP-shaped
+runner stub; the full `LyricTestEngine` JUnit 5 `TestEngine`
+implementation (discovery, execution, reporting) is deferred to B127+.
+
 ### Q-J008: Maven Central dependency linking
 
 JVM-targeted Lyric projects need a mechanism to consume arbitrary
@@ -2175,7 +2183,7 @@ exceptions wrapped as `Result[T, JvmException]`.
 | Q-J004 | ASM dependency drop deadline      | §24: hold; v3 must be ASM-free                   |
 | Q-J005 | Java interop facade               | §24: emit per-opaque facade class                |
 | Q-J006 | Modified UTF-8 vs UTF-8           | §24: Modified UTF-8 in class files; standard UTF-8 elsewhere |
-| Q-J007 | Test-runner integration            | §24: JUnit 5 `LauncherFactory` adapter           |
+| Q-J007 | Test-runner integration            | §24 + D-progress-206: `@LyricTest` + `Jvm.TestEngine` shipped (B126); full `LyricTestEngine` deferred to B127+ |
 | Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D053 |
 
 

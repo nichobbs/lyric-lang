@@ -916,7 +916,7 @@ let private printUsage () : unit =
     printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>] [--target dotnet|jvm]"
     printErr "  lyric build --manifest <lyric.toml>  (project mode: bundles every [project.packages] entry into one DLL)"
     printErr "  lyric run   <source.l> [-- <args>...]"
-    printErr "  lyric test  <source.l> [--filter <substring>] [--list]"
+    printErr "  lyric test  <source.l> [--filter <substring>] [--list] [--jvm]"
     printErr "  lyric fmt   <source.l> [--check] [--write] [--legacy]"
     printErr "  lyric lint  <source.l> [--error-on-warning]"
     printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]"
@@ -1221,7 +1221,7 @@ let main (argv: string array) : int =
                 | _            -> List.toArray more
             run sourcePath userArgs
     | "test" :: rest ->
-        // `lyric test <source.l> [--filter <substring>] [--list]`
+        // `lyric test <source.l> [--filter <substring>] [--list] [--jvm]`
         // — bootstrap-grade test runner.  See
         // `docs/24-test-runner-plan.md` for the design.
         //
@@ -1232,8 +1232,18 @@ let main (argv: string array) : int =
         // a try/catch and prints a TAP-shaped report.  The rewritten
         // source is written to a temp file and handed to the regular
         // `build` + `dotnet exec` pipeline.
+        //
+        // `--jvm`: bootstrap-grade JVM path (B126).  The synthesised
+        // source is compiled with `Emitter.Jvm` so JVM-specific stdlib
+        // is selected, but the runner still uses `dotnet exec` because
+        // the full Lyric→JVM compilation pipeline lands in B127+.  The
+        // `@LyricTest`-annotated class shape is produced by
+        // `lowerTestModuleClass` via `LPTestModule`; `lyric test --jvm`
+        // integration with the JUnit 5 ConsoleLauncher is tracked in
+        // `docs/32-junit-runner-sketch.md` §6 and deferred to B127.
         let mutable filter : string option = None
         let mutable listOnly = false
+        let mutable jvmMode = false
         let mutable positional : string list = []
         let mutable cursor = rest
         let mutable usageError = false
@@ -1248,6 +1258,9 @@ let main (argv: string array) : int =
                 cursor <- []
             | "--list" :: tail ->
                 listOnly <- true
+                cursor <- tail
+            | "--jvm" :: tail ->
+                jvmMode <- true
                 cursor <- tail
             | "-v" :: tail | "--verbose" :: tail ->
                 cursor <- tail   // currently unused; reserved for v2
@@ -1322,8 +1335,16 @@ let main (argv: string array) : int =
                     let synthPath = Path.Combine(tmp, stem + ".l")
                     File.WriteAllText(synthPath, rewritten)
                     let outPath = Path.Combine(tmp, stem + ".dll")
+                    // B126: --jvm selects the JVM-target stdlib kernel.
+                    // Full Lyric→JVM compilation (ConsoleLauncher integration)
+                    // lands in B127+; for now the TAP runner still executes
+                    // via `dotnet exec` using the JVM-compatible stdlib.
+                    let compileTarget =
+                        if jvmMode then Emitter.Jvm else Emitter.Dotnet
+                    if jvmMode then
+                        eprintfn "note: lyric test --jvm uses TAP runner (JUnit 5 integration deferred to B127+)"
                     let buildExit =
-                        build synthPath outPath true [] [] None Emitter.Dotnet
+                        build synthPath outPath true [] [] None compileTarget
                             Set.empty Set.empty
                     if buildExit <> 0 then
                         // Strip the temp-path prefix from any diagnostic
