@@ -179,15 +179,16 @@ type JavaParam =
       /// `"int"`, `"boolean"`, `"com.example.Foo"`.
       TypeName: string }
 
-/// One public method from a Java class surface.  The bootstrap shim
-/// generator only translates static methods; instance methods are
-/// included for completeness but `IsStatic = false` entries are
-/// skipped by `MavenShim`.
+/// One public method from a Java class surface.
 type JavaMethod =
-    { Name:       string
-      Params:     JavaParam list
-      ReturnType: string
-      IsStatic:   bool }
+    { Name:                 string
+      Params:               JavaParam list
+      ReturnType:           string
+      IsStatic:             bool
+      /// True when the method's `throws` clause lists at least one checked
+      /// exception (i.e. not a subclass of RuntimeException or Error).
+      /// When true, MavenShim wraps the return type in Result[T, JvmException].
+      HasCheckedExceptions: bool }
 
 /// Public surface of a single Java class as reported by the resolver.
 type JavaClass =
@@ -317,7 +318,8 @@ let private parseClasses (classesEl: JsonElement) : JavaClass list =
                     match get "name", get "returnType" with
                     | Some mname, Some ret ->
                         yield { Name = mname; Params = ps
-                                ReturnType = ret; IsStatic = getBool "isStatic" }
+                                ReturnType = ret; IsStatic = getBool "isStatic"
+                                HasCheckedExceptions = getBool "hasCheckedExceptions" }
                     | _ -> () ]
             match Option.ofObj (clsName.GetString()) with
             | Some cn -> yield { ClassName = cn; Methods = methods }
