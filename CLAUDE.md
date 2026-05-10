@@ -53,6 +53,7 @@ backing entry's id.
 - `docs/29-config-v2-sketch.md` — file-based source + layered precedence v2 sketch (extends D046). _Specced in D048._
 - `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006). _Specced in D049._
 - `docs/31-maven-linking.md` — Maven Central dependency resolution and `[maven]` table design (JVM target). _Specced in D053._
+- `docs/32-junit-runner-sketch.md` — JUnit 5 `TestEngine` adapter for `lyric test --jvm` (extends Q-J007 from `docs/18-jvm-emission.md`). _Unbacked sketch._
 
 ## Reading order (for Claude)
 

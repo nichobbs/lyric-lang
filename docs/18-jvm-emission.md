@@ -2071,10 +2071,14 @@ strings, and standard UTF-8 for `MANIFEST.MF` / contract JSON.
 Lyric's test-module discovery needs a JVM-side runner.  Building one
 is a non-trivial add.
 
-**Recommended default**: piggy-back on JUnit 5's
-`LauncherFactory` API, with a Lyric-side adapter that translates
-`@LyricTest`-annotated methods into `TestEngine` discoveries.  Do
-not write a runner from scratch.
+**Design sketch:** `docs/32-junit-runner-sketch.md`.
+
+**Recommended default**: piggy-back on JUnit 5's `TestEngine` /
+`LauncherFactory` API, with a `LyricTestEngine` that discovers
+`@LyricTest`-annotated static methods emitted by the compiler for each
+`ITest` item.  Do not write a runner from scratch.  See the sketch for
+the emitted class shape, discovery / execution protocol, and open questions
+(Q-J007a–e).
 
 ### Q-J008: Maven Central dependency linking
 
