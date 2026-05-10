@@ -231,8 +231,9 @@ For users:
   handles single-active-version cleanly; multi-version requires a
   `lyric-toolchain` style pinned-per-project mechanism (rustup-like).
   Tracked as Q-toolchain-multiplexer; not in stage 1 scope.
-- **Distribution channels.** dotnet tool? Homebrew? Standalone
-  zip? OS package managers? Each has its own SDK-root layout
-  conventions. Phase 6 produces a distribution-strategy decision
-  doc; this document just specifies the *layout* the channels
-  must conform to.
+- **Distribution channels.** Resolved in `docs/34-distribution-strategy.md`
+  (D-progress-228 / D059): primary channel is `dotnet tool install lyric`
+  (NuGet global tool); secondary is self-contained ZIP/tarball via GitHub
+  releases; Homebrew/winget/apt deferred until the self-hosted AOT binary
+  ships (Q-dist-001).  This document specifies the *layout* all channels
+  conform to; doc 34 specifies the channels themselves.

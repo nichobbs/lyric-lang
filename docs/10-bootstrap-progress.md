@@ -10951,3 +10951,132 @@ Registered as `JvmLoweringB126Test` in `Lyric.Emitter.Tests`.
 When set, compiles the synthesised source with `Emitter.Jvm` (JVM-compatible stdlib) and warns to stderr that JUnit 5 ConsoleLauncher integration is deferred to B127+. The TAP runner still executes via `dotnet exec` until the full Lyric→JVM pipeline lands.
 
 **Test counts:** 751 emitter tests — all passing (B126 is the new test).
+
+---
+
+### D-progress-227: R6 — self-hosted MSIL compilation pipeline (Msil.Codegen + bridge + SelfHostedMsil.fs + target renaming)
+
+**Date:** 2026-05-10
+**Branch:** `claude/review-docs-platform-parity-UuNIO`
+**Decision:** D056 (platform-parity remediation)
+
+Phase R6 of `docs/33-platform-parity-remediation.md`: completes the
+self-hosted MSIL compilation pipeline so `lyric build --target dotnet`
+routes through the Lyric-written emitter instead of the F# bootstrap emitter.
+
+**`compiler/lyric/msil/codegen.l` — `Msil.Codegen` package (2157 lines)**
+
+AST-to-`MPackage` lowering that mirrors `Jvm.Codegen` for the .NET/MSIL
+target.  Key pieces:
+
+- `CodegenCtx` record — holds a pre-seeded `LoweringCtx` plus intra-package
+  token maps (`recordCtorTokens`, `fieldTokens`, `funcTokens`).
+  `newCodegenCtx(packageName)` seeds the `LoweringCtx` with all stable
+  external MemberRef rows: `Console.Write/WriteLine` (six variants),
+  `String.Concat` (2- and 3-arg), `Object.ToString`, `String.ToString`,
+  `InvalidOperationException..ctor(string)`, `Int32/Int64/Double.Parse`,
+  `Convert.ToInt32/ToInt64/ToDouble`, and the `Object..ctor` base-class
+  constructor.  Token assignments are deterministic across packages.
+
+- `addPackageTokens(cctx, file, pkgName)` — pre-scan pass that traverses
+  the AST in the same order `lowerMPackageWithCtx` processes items (records
+  first, then top-level functions, then unions), assigning intra-package
+  TypeDef/MethodDef/FieldDef tokens up front to break the chicken-and-egg
+  dependency between codegen and lowering.
+
+- `FuncCtx` — per-function lowering context tracking `paramCount` (the
+  parameter/local slot boundary: slots `< paramCount` emit `MLdarg`,
+  slots `>= paramCount` emit `MLdloc(slot - paramCount)`, matching MSIL's
+  separate `ldarg`/`ldloc` instruction families).
+
+- `lowerExprMsil / lowerStmtMsil / lowerBlockMsil` — full expression and
+  statement language: arithmetic/comparison/logical operators, field access
+  (`MLdfld`), function calls, `if`/`match`/`while`, `let`/`val`/`return`,
+  string literals (via `MLdStr(ctxInternUs(ctx, s))` — the token form
+  fixed in `Msil.Lowering` so `emitLdstr` fires correctly), record
+  construction, union construction and deconstruction.
+
+- `codegenMPackage(file, cctx): MPackage` — top-level driver that walks
+  `SourceFile.items` and produces an `MPackage` for `lowerMPackageWithCtx`.
+
+**`compiler/lyric/msil/bridge.l` — real pipeline replacing panic stub**
+
+`compileToMsil(source, outputPath): Bool` chains:
+`parse → diagnostic filter → newCodegenCtx → addPackageTokens
+→ codegenMPackage → resolveEntryToken → lowerMPackageWithCtx → writeBytes`
+
+**`compiler/lyric/msil/lowering.l` — two fixes**
+
+1. `MLdStr(token: Int)` — changed from `MLdStr(s: String)`; `lowerMInsn` now
+   calls `emitLdstr(mb, token)` instead of the prior no-op.
+2. `lowerMPackageWithCtx(pkg, ctx, entryMethodToken): List[Byte]` — new
+   variant that accepts a pre-seeded `LoweringCtx` so the MemberRef tokens
+   registered by `newCodegenCtx` survive into the assembled PE.
+
+**`compiler/src/Lyric.Cli/SelfHostedMsil.fs` — F# reflection bridge**
+
+Mirrors `SelfHostedJvm.fs`.  Bootstraps `Msil.Bridge.dll` into the per-process
+stdlib cache via a throwaway driver compile, preloads all cached stdlib DLLs
+into the AppDomain, then reflects out `Msil.Bridge.Program.compileToMsil` and
+stashes the delegate process-wide.
+
+**`compiler/src/Lyric.Cli/Program.fs` — `--target` renaming**
+
+- `--target dotnet` (default, no flag required) → self-hosted MSIL pipeline
+  via `SelfHostedMsil.compileToDll`.
+- `--target dotnet-legacy` → F# bootstrap emitter (previous `--target dotnet`
+  behaviour); escape hatch during the self-hosted MSIL stabilisation period.
+- `--target jvm` — unchanged.
+
+The F# emitter remains the canonical implementation; the self-hosted path
+must produce a byte-for-byte equivalent PE to be promoted as the default.
+
+**Test counts:** 728 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 127 CLI tests, 266 verifier tests — all passing.
+
+---
+
+### D-progress-228: Distribution strategy — `docs/34-distribution-strategy.md` + D059
+
+**Date:** 2026-05-10
+**Branch:** `claude/review-docs-platform-parity-UuNIO`
+**Decision:** D059
+
+Closes the "Distribution channels" open question deferred in
+`docs/22-distribution-and-tooling.md` §10.
+
+**`docs/34-distribution-strategy.md`** — new Phase 6 decision document:
+
+- **Primary channel:** `dotnet tool install -g lyric` (NuGet global tool).
+  The NuGet package bundles the CLI DLLs, `lib/Lyric.Stdlib.dll`,
+  `lib/Lyric.Stdlib.Jvm.jar`, and the stdlib source fallback.  Works on
+  Windows/macOS/Linux without additional tooling beyond the .NET SDK.
+
+- **Secondary channel:** self-contained ZIP/tarball via GitHub release assets.
+  `dotnet publish --self-contained true --runtime <RID>` for five RIDs
+  (linux-x64/arm64, osx-x64/arm64, win-x64).  No SDK required by end users.
+
+- **Future channel (Q-dist-001):** once the stage-2 bootstrap in
+  `scripts/bootstrap.sh` achieves byte-for-byte reproducibility, promote the
+  self-hosted MSIL emitter to default and AOT-compile a native binary
+  (`dotnet publish --aot`).  At that point Homebrew/winget/apt formulas become
+  trivial; tracked as Q-dist-002/003/004.
+
+- **Bootstrap pipeline (`scripts/bootstrap.sh`):**
+  - Stage 0: `dotnet publish` the F# bootstrap compiler.
+  - Stage 1: compile stdlib + all self-hosted compiler packages with
+    `--target dotnet-legacy` (F# emitter).
+  - Stage 2: recompile with `--target dotnet` (self-hosted MSIL); compare
+    DLLs with `cmp -s`.  `STRICT_VERIFY=1` fails on any diff.
+  - CI runs stage-1 on every push to `main`; stage-2 nightly until
+    reproducibility is achieved, then promoted to standard gate.
+
+`docs/22-distribution-and-tooling.md` §10 "Distribution channels" open question
+updated to reference doc 34.  `docs/03-decision-log.md` D059 entry added.
+`CLAUDE.md` sketch listing updated to include docs 33 and 34.
+`docs/33-platform-parity-remediation.md` status header, §6.4, §7, and §8
+tracking table updated to reflect R6 as shipped.
+
+**Test counts:** no new compiler tests (documentation-only changes).
+728 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 127 CLI tests, 266 verifier tests — all passing.

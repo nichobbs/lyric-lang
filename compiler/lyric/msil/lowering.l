@@ -141,17 +141,17 @@ func writeCompressedInt(w: in ByteWriter, v: in Int): Unit {
 // ── MInsn — high-level MSIL instructions ─────────────────────────────────────
 
 pub union MInsn {
-  // Labels and branching
-  case MLabel(name: String)
-  case MBr(label: String)          // unconditional branch
-  case MBrTrue(label: String)      // branch if top of stack is non-zero/true
-  case MBrFalse(label: String)     // branch if top of stack is zero/false
-  case MBrEq(label: String)        // branch if equal
-  case MBrNe(label: String)        // branch if not equal
-  case MBrLt(label: String)        // branch if less than (signed)
-  case MBrGt(label: String)        // branch if greater than (signed)
-  case MBrLe(label: String)        // branch if less or equal (signed)
-  case MBrGe(label: String)        // branch if greater or equal (signed)
+  // Labels and branching — label IDs are integers allocated by freshLabelMsil in Msil.Codegen
+  case MLabel(id: Int)
+  case MBr(label: Int)          // unconditional branch
+  case MBrTrue(label: Int)      // branch if top of stack is non-zero/true
+  case MBrFalse(label: Int)     // branch if top of stack is zero/false
+  case MBrEq(label: Int)        // branch if equal
+  case MBrNe(label: Int)        // branch if not equal
+  case MBrLt(label: Int)        // branch if less than (signed)
+  case MBrGt(label: Int)        // branch if greater than (signed)
+  case MBrLe(label: Int)        // branch if less or equal (signed)
+  case MBrGe(label: Int)        // branch if greater or equal (signed)
 
   // Stack constants
   case MNop
@@ -160,7 +160,7 @@ pub union MInsn {
   case MLdcI4(v: Int)
   case MLdcI8(v: Long)
   case MLdcR8(v: Double)
-  case MLdStr(s: String)           // ldstr — pushes String from #US heap
+  case MLdStr(token: Int)          // ldstr — token = 0x70000000 | US heap offset
 
   // Argument and local load/store
   case MLdarg(slot: Int)
@@ -439,7 +439,7 @@ pub func ctxAddMemberRef(ctx: in LoweringCtx, parentTypeRefRow: in Int,
 // Lower one MInsn to opcode bytes in `mb`.
 pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
   match insn {
-    case MLabel(name)       -> mbLabel(mb, name)
+    case MLabel(id)         -> mbMarkLabel(mb, id)
     case MBr(lbl)           -> emitBr(mb, lbl)
     case MBrTrue(lbl)       -> emitBrtrue(mb, lbl)
     case MBrFalse(lbl)      -> emitBrfalse(mb, lbl)
@@ -452,12 +452,12 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MNop               -> emitNop(mb)
     case MRet               -> emitRet(mb)
     case MLdNull            -> emitLdnull(mb)
-    case MLdcI4(v)          -> emitLdcI4(mb, v)
-    case MLdcI8(v)          -> emitLdcI8(mb, v)
-    case MLdcR8(v)          -> emitLdcR8(mb, v)
-    case MLdStr(s)          -> () // emitLdstr via US heap token — caller must use MLdStr's token form
+    case MLdcI4(v)          -> emitLdc_I4(mb, v)
+    case MLdcI8(v)          -> emitLdc_I8(mb, v)
+    case MLdcR8(v)          -> emitLdc_R8(mb, v)
+    case MLdStr(token)      -> emitLdstr(mb, token)
     case MLdarg(slot)       -> emitLdarg(mb, slot)
-    case MStarg(slot)       -> emitStarg(mb, slot)
+    case MStarg(slot)       -> emitStarg_S(mb, slot)
     case MLdloc(slot)       -> emitLdloc(mb, slot)
     case MStloc(slot)       -> emitStloc(mb, slot)
     case MLdloca(slot)      -> emitLdloca_S(mb, slot)
@@ -473,7 +473,7 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MNot               -> emitNot(mb)
     case MShl               -> emitShl(mb)
     case MShr               -> emitShr(mb)
-    case MShrUn             -> emitShr_Un(mb)
+    case MShrUn             -> emitShrUn(mb)
     case MCeq               -> emitCeq(mb)
     case MClt               -> emitClt(mb)
     case MCgt               -> emitCgt(mb)
@@ -490,7 +490,7 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MCastclass(tok)    -> emitCastclass(mb, tok)
     case MIsinst(tok)       -> emitIsinst(mb, tok)
     case MBox(tok)          -> emitBox(mb, tok)
-    case MUnboxAny(tok)     -> emitUnboxAny(mb, tok)
+    case MUnboxAny(tok)     -> emitUnbox_Any(mb, tok)
     case MDup               -> emitDup(mb)
     case MPop               -> emitPop(mb)
     case MThrow             -> emitThrow(mb)
@@ -520,7 +520,7 @@ pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
     val lvSig  = buildLocalVarSig(f.locals)
     val lvBlob = ctxInternBlob(ctx, "lv_" + f.name, lvSig)
     val lvRow  = addStandAloneSig(ctx.tables, StandAloneSigRow(signature = lvBlob))
-    mbSetLocals(mb, standaloneToken(lvRow))
+    mbSetLocalSig(mb, standaloneToken(lvRow))
   }
   mb.maxStack = f.maxStack
   var i = 0
@@ -813,6 +813,53 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
   // The <Module> TypeDef has no methods; RVA list aligns with methodDefs.
   // Phase R5: bodies are added exactly once per MethodDef, in order.
   // The first methodDef (index 0) corresponds to bodies[0], etc.
+  while ri < rvas.count {
+    val row = ctx.tables.methodDefs[ri]
+    ctx.tables.methodDefs[ri] = MethodDefRow(
+      rva       = rvas[ri],
+      implFlags = row.implFlags,
+      flags     = row.flags,
+      name      = row.name,
+      signature = row.signature,
+      paramList = row.paramList)
+    ri = ri + 1
+  }
+
+  val inp = AssemblerInput(
+    entryPointToken = entryMethodToken,
+    methodBodies    = ctx.bodies,
+    tables          = ctx.tables,
+    strings         = ctx.strings,
+    us              = ctx.us,
+    blobs           = ctx.blobs,
+    guids           = ctx.guids)
+
+  val peBuf = assemblePe(inp)
+  bufToList(peBuf)
+}
+
+// Lower an MPackage to a complete PE binary using a pre-seeded LoweringCtx.
+// Identical to `lowerMPackage` but skips creating a fresh context, allowing
+// the caller to pre-register AssemblyRef / TypeRef / MemberRef rows (for
+// external method tokens) before any user-defined types are added.
+// Used by `Msil.Codegen` + `Msil.Bridge` so that stdlib call tokens baked
+// into `MInsn` values are stable.
+pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
+                               entryMethodToken: in Int): List[Byte] {
+  var i = 0
+  while i < pkg.items.count {
+    match pkg.items[i] {
+      case MPRecord(rec)         -> { lowerMRecord(rec, ctx) }
+      case MPFuncs(hostClass, funcs) -> { lowerMFuncsToHostClass(hostClass, funcs, ctx) }
+      case MPUnion(u)            -> { lowerMUnion(u, ctx) }
+      case MPDistinctType(d)     -> { lowerMDistinctType(d, ctx) }
+      case MPRangeType(r)        -> { lowerMRangeType(r, ctx) }
+    }
+    i = i + 1
+  }
+
+  val rvas = methodBodyRvas(ctx.bodies)
+  var ri = 0
   while ri < rvas.count {
     val row = ctx.tables.methodDefs[ri]
     ctx.tables.methodDefs[ri] = MethodDefRow(
