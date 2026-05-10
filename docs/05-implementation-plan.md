@@ -287,7 +287,9 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
      `__lyric_result_<n>` and `EResult`-substituted `ensures:` asserts.
      Nested returns, protected-type entries, and loop-invariant runtime
      checks remain in stage 3.
-   - Remaining: monomorphizer, MSIL emitter (`Lyric.Emitter`).
+   - Stage 4 (shipped, D-progress-229): `Lyric.Mono` monomorphizer — call-site
+     specialisation for same-package generic functions; `monoFile(file) → MonoResult`.
+   - Remaining: MSIL emitter (`Lyric.Emitter`).
 3. **M5.3 (month 75-81):** Self-hosted standard library, LSP, formatter, package manager, CLI
    - Stage 1 (shipped, D-progress-129): `Std.ProcessHost` kernel extern, `Std.Process` surface, `Lyric.Manifest`
      TOML parser, `Lyric.Cli` command dispatch (forward-references M5.2 packages).

@@ -339,9 +339,20 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
     (which the F# CLI still calls today; routing `lyric test` through
     this Lyric implementation is a follow-up stage, matching the
     formatter's pattern in D-progress-131).
+  - `mono.l` — `Lyric.Mono` monomorphizer (M5.2 stage 4, D-progress-229).
+    Call-site monomorphizer for generic functions defined in the same
+    compilation unit.  Collects all generic `IFunc` items, walks non-generic
+    bodies to infer concrete type arguments (from literals and explicitly-
+    annotated variables), produces specialised copies (e.g. `mapFoo__Int__String`),
+    and rewrites call sites.  Public entry: `monoFile(file): MonoResult`.
+  - `manifest.l` — `Lyric.Manifest` TOML parser for `lyric.toml`
+    (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
+    Lyric package system (`[package]`, `[project]`, `[dependencies]`,
+    `[nuget]`, `[nuget.options]`, `[features]`).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
-    `contract_elaborator_self_test.l`, `test_synth_self_test.l` —
+    `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
+    `manifest_self_test.l` —
     self-test consumers run by the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The

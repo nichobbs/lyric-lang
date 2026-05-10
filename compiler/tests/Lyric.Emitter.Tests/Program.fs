@@ -283,6 +283,7 @@ let main argv =
             SelfHostedModeCheckerTests.tests
             SelfHostedContractElaboratorTests.tests
             SelfHostedTestSynthTests.tests
+            SelfHostedManifestTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests
