@@ -160,7 +160,7 @@ pub union MInsn {
   case MLdcI4(v: Int)
   case MLdcI8(v: Long)
   case MLdcR8(v: Double)
-  case MLdStr(s: String)           // ldstr — pushes String from #US heap
+  case MLdStr(token: Int)          // ldstr — token = 0x70000000 | US heap offset
 
   // Argument and local load/store
   case MLdarg(slot: Int)
@@ -455,7 +455,7 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MLdcI4(v)          -> emitLdcI4(mb, v)
     case MLdcI8(v)          -> emitLdcI8(mb, v)
     case MLdcR8(v)          -> emitLdcR8(mb, v)
-    case MLdStr(s)          -> () // emitLdstr via US heap token — caller must use MLdStr's token form
+    case MLdStr(token)      -> emitLdstr(mb, token)
     case MLdarg(slot)       -> emitLdarg(mb, slot)
     case MStarg(slot)       -> emitStarg(mb, slot)
     case MLdloc(slot)       -> emitLdloc(mb, slot)
@@ -813,6 +813,53 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
   // The <Module> TypeDef has no methods; RVA list aligns with methodDefs.
   // Phase R5: bodies are added exactly once per MethodDef, in order.
   // The first methodDef (index 0) corresponds to bodies[0], etc.
+  while ri < rvas.count {
+    val row = ctx.tables.methodDefs[ri]
+    ctx.tables.methodDefs[ri] = MethodDefRow(
+      rva       = rvas[ri],
+      implFlags = row.implFlags,
+      flags     = row.flags,
+      name      = row.name,
+      signature = row.signature,
+      paramList = row.paramList)
+    ri = ri + 1
+  }
+
+  val inp = AssemblerInput(
+    entryPointToken = entryMethodToken,
+    methodBodies    = ctx.bodies,
+    tables          = ctx.tables,
+    strings         = ctx.strings,
+    us              = ctx.us,
+    blobs           = ctx.blobs,
+    guids           = ctx.guids)
+
+  val peBuf = assemblePe(inp)
+  bufToList(peBuf)
+}
+
+// Lower an MPackage to a complete PE binary using a pre-seeded LoweringCtx.
+// Identical to `lowerMPackage` but skips creating a fresh context, allowing
+// the caller to pre-register AssemblyRef / TypeRef / MemberRef rows (for
+// external method tokens) before any user-defined types are added.
+// Used by `Msil.Codegen` + `Msil.Bridge` so that stdlib call tokens baked
+// into `MInsn` values are stable.
+pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
+                               entryMethodToken: in Int): List[Byte] {
+  var i = 0
+  while i < pkg.items.count {
+    match pkg.items[i] {
+      case MPRecord(rec)         -> { lowerMRecord(rec, ctx) }
+      case MPFuncs(hostClass, funcs) -> { lowerMFuncsToHostClass(hostClass, funcs, ctx) }
+      case MPUnion(u)            -> { lowerMUnion(u, ctx) }
+      case MPDistinctType(d)     -> { lowerMDistinctType(d, ctx) }
+      case MPRangeType(r)        -> { lowerMRangeType(r, ctx) }
+    }
+    i = i + 1
+  }
+
+  val rvas = methodBodyRvas(ctx.bodies)
+  var ri = 0
   while ri < rvas.count {
     val row = ctx.tables.methodDefs[ri]
     ctx.tables.methodDefs[ri] = MethodDefRow(

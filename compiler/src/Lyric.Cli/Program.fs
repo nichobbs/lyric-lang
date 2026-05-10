@@ -913,7 +913,7 @@ let private run (sourcePath: string) (args: string array) : int =
 
 let private printUsage () : unit =
     printErr "Usage:"
-    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>] [--target dotnet|jvm]"
+    printErr "  lyric build <source.l> [-o <output>] [--force] [--aot] [--rid <RID>] [--manifest <lyric.toml>] [--target dotnet|dotnet-legacy|jvm]"
     printErr "  lyric build --manifest <lyric.toml>  (project mode: bundles every [project.packages] entry into one DLL)"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric test  <source.l> [--filter <substring>] [--list] [--jvm]"
@@ -979,6 +979,7 @@ let main (argv: string array) : int =
         let mutable manifestArg : string option = None
         let mutable positional : string list = []
         let mutable compileTarget = Emitter.Dotnet
+        let mutable selfHostedDotnet = true   // default: self-hosted MSIL pipeline
         let mutable featureSel = emptyFeatureSelection
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
@@ -1011,9 +1012,15 @@ let main (argv: string array) : int =
                 cursor <- tail
             | "--target" :: "jvm" :: tail ->
                 compileTarget <- Emitter.Jvm
+                selfHostedDotnet <- false
                 cursor <- tail
             | "--target" :: "dotnet" :: tail ->
                 compileTarget <- Emitter.Dotnet
+                selfHostedDotnet <- true    // self-hosted MSIL pipeline (default)
+                cursor <- tail
+            | "--target" :: "dotnet-legacy" :: tail ->
+                compileTarget <- Emitter.Dotnet
+                selfHostedDotnet <- false   // F# bootstrap emitter
                 cursor <- tail
             | "-o" :: out :: tail ->
                 explicitOut <- Some out
@@ -1160,13 +1167,30 @@ let main (argv: string array) : int =
                     let name =
                         safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
                     Path.Combine(dir, name + ".dll")
+            if selfHostedDotnet && compileTarget = Emitter.Dotnet then
+                // Self-hosted MSIL pipeline: bypass the F# emitter entirely.
+                // `--target dotnet` (the default) routes here; `--target
+                // dotnet-legacy` routes through the F# emitter below.
+                let source = File.ReadAllText sourcePath
+                try
+                    let ok = SelfHostedMsil.compileToDll source dllOutPath
+                    if ok then
+                        printfn "built %s" dllOutPath
+                        0
+                    else
+                        printErr (sprintf "%s: self-hosted MSIL compilation failed" sourcePath)
+                        1
+                with e ->
+                    printErr (sprintf "%s: MSIL bridge error: %s" sourcePath e.Message)
+                    1
+            else
             let buildExit =
                 build sourcePath dllOutPath force restoredPackageRefs
                     nugetAssemblyPaths externShimRoot compileTarget
                     activeFeatures declaredFeatures
             if buildExit <> 0 then buildExit
             elif compileTarget = Emitter.Jvm then
-                // After the MSIL DLL succeeds, also emit a JAR via the
+                // After the F# MSIL DLL succeeds, also emit a JAR via the
                 // self-hosted JVM pipeline (Phase R4 /
                 // docs/33-platform-parity-remediation.md §5.3–5.5).
                 let source = File.ReadAllText sourcePath
