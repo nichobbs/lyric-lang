@@ -192,7 +192,19 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
       while j < extras.count { acc.add(extras[j]); j = j + 1 }
       acc
     }
-    case Some(FBExpr(e)) -> appendToLastLine(sig, " = " + exprInline(0, e))
+    case Some(FBExpr(e)) -> {
+      if extras.count == 0 {
+        appendToLastLine(sig, " = " + exprInline(0, e))
+      } else {
+        val acc: List[String] = newList()
+        var j = 0
+        while j < sig.count { acc.add(sig[j]); j = j + 1 }
+        j = 0
+        while j < extras.count { acc.add(extras[j]); j = j + 1 }
+        acc.add("  = " + exprInline(0, e))
+        acc
+      }
+    }
     case Some(FBBlock(b)) -> {
       if extras.count == 0 {
         val head = appendToLastLine(sig, " {")
@@ -781,10 +793,27 @@ func aspectMatcherLine(m: in AspectMatcher): String {
 func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   acc.add(visStr + "aspect " + ad.name + " {")
+  // §6 ordering: emit wraps:/inside: before matches:
+  if ad.wraps.count > 0 {
+    val wrapStr: String = joinStrings(ad.wraps, ", ")
+    acc.add("  wraps: " + wrapStr)
+  }
+  if ad.inside.count > 0 {
+    val insideStr: String = joinStrings(ad.inside, ", ")
+    acc.add("  inside: " + insideStr)
+  }
   var i = 0
   while i < ad.matches.count {
     acc.add("  " + aspectMatcherLine(ad.matches[i]))
     i = i + 1
+  }
+  // §5 contract augmentation: emit requires:/ensures: before the around block.
+  var ci = 0
+  while ci < ad.contracts.count {
+    val cd = indentDoc(2, contractDoc(2, ctx, ad.contracts[ci]))
+    var k = 0
+    while k < cd.count { acc.add(cd[k]); k = k + 1 }
+    ci = ci + 1
   }
   match ad.around {
     case Some(ar) -> {

@@ -477,14 +477,17 @@ and AspectAround =
       Span:     Span }
 
 and AspectDecl =
-    { Name:    string
+    { Name:      string
       /// `from Pkg.Template` — present only on instantiation-form aspects.
-      From:    ModulePath option
+      From:      ModulePath option
       /// Anonymous `config { }` block inside the aspect body (D047/D051).
-      Config:  ConfigField list
-      Matches: AspectMatcher list
-      Around:  AspectAround option
-      Span:    Span }
+      Config:    ConfigField list
+      Matches:   AspectMatcher list
+      Around:    AspectAround option
+      Contracts: ContractClause list   // §5 composition: requires:/ensures: on aspect body
+      Wraps:     string list           // §6 ordering: this aspect wraps the named aspects
+      Inside:    string list           // §6 ordering: this aspect runs inside the named aspects
+      Span:      Span }
 
 and ExternMember =
     | EMRecord       of RecordDecl

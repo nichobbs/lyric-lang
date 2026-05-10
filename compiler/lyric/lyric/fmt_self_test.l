@@ -586,6 +586,73 @@ func testFormatSourceFacade(): Unit {
              "formatSource: output is canonical (idempotent)")
 }
 
+func testForallBodyNoBraces(): Unit {
+  // forall with a block body should NOT double-wrap in braces.
+  // The parser wraps `{ p(i) }` in EBlock; the formatter must strip it.
+  // Use a block-body function so the ensures: clause appears in output.
+  val src =
+    "package P\n" +
+    "func q(i: in Int): Bool\n" +
+    "  ensures: forall (j: Int) { j > 0 }\n" +
+    "{\n" +
+    "  return i > 0\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(not Str.contains(acc, "{ { "),
+             "forall: no double braces in output")
+  assertTrue(Str.contains(acc, "forall (j: Int) { j > 0 }"),
+             "forall: single-brace block body round-trips")
+}
+
+func testWidthDrivenLongIfBreaks(): Unit {
+  // An if-expression whose inline form exceeds 120 chars converts
+  // to the brace layout (M5.3 stage 12).
+  val src =
+    "package P\n" +
+    "func go(a: in Bool, b: in Bool): String {\n" +
+    "  val r = if aVeryLongConditionThatExceedsTheBudgetWithArgumentsAndStuff(a, b) { \"first-result\" } else { \"second-result\" }\n" +
+    "  r\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "if aVeryLongConditionThatExceedsTheBudgetWithArgumentsAndStuff(a, b) {\n"),
+             "if-expr: long inline breaks to brace form")
+  assertTrue(Str.contains(acc, "} else {\n"),
+             "if-expr: else clause on its own line")
+}
+
+func testWidthDrivenLongMatchBreaks(): Unit {
+  // A match-expression whose inline form exceeds 120 chars converts
+  // to the brace layout (M5.3 stage 12).
+  val src =
+    "package P\n" +
+    "func go(x: in Int): String {\n" +
+    "  val r = match someVeryLongScrutineeExpressionThatForcesBreaking(x) { case 1 -> \"one\"; case 2 -> \"two\"; case _ -> \"other\" }\n" +
+    "  r\n" +
+    "}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "match someVeryLongScrutineeExpressionThatForcesBreaking(x) {\n"),
+             "match-expr: long inline breaks to brace form")
+  assertTrue(Str.contains(acc, "case 1 ->"),
+             "match-expr: arm rendered in body")
+}
+
+func testFBExprWithContracts(): Unit {
+  // A func with an expression body AND contract clauses must preserve
+  // both; the old FBExpr path dropped the contracts entirely.
+  val src =
+    "package P\n" +
+    "func abs(x: in Int): Int\n" +
+    "  ensures: result >= 0\n" +
+    "  = if x >= 0 { x } else { -x }\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "ensures: result >= 0"), "FBExpr+contracts: ensures preserved")
+  assertTrue(Str.contains(acc, "= if x >= 0"), "FBExpr+contracts: expr body preserved")
+}
+
 func main(): Unit {
   testFormatPackageOnly()
   testFormatPackageAndImports()
@@ -629,5 +696,9 @@ func main(): Unit {
   testOutModeRendersCorrectly()
   testCommentInsideLambdaBody()
   testWidthDrivenLongLambdaBody()
+  testForallBodyNoBraces()
+  testWidthDrivenLongIfBreaks()
+  testWidthDrivenLongMatchBreaks()
+  testFBExprWithContracts()
   println("fmt self-test: ok")
 }

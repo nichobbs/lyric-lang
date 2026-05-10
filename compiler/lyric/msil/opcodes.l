@@ -179,6 +179,7 @@ pub val OP_LDFLD       : Int = 0x7B
 pub val OP_LDFLDA      : Int = 0x7C
 pub val OP_STFLD       : Int = 0x7D
 pub val OP_LDSFLD      : Int = 0x7E
+pub val OP_LDSFLDA     : Int = 0x7F
 pub val OP_STSFLD      : Int = 0x80
 pub val OP_LDTOKEN     : Int = 0xD0
 
@@ -213,9 +214,11 @@ pub val OP2_INITBLK    : Int = 0x18
 pub val OP2_RETHROW    : Int = 0x1A
 
 // 0xFE-prefixed token opcodes (second byte)
-pub val OP2_LDFTN      : Int = 0x06
-pub val OP2_INITOBJ    : Int = 0x15
-pub val OP2_SIZEOF     : Int = 0x1C
+pub val OP2_LDFTN        : Int = 0x06
+pub val OP2_LDVIRTFTN    : Int = 0x07
+pub val OP2_INITOBJ      : Int = 0x15
+pub val OP2_CONSTRAINED  : Int = 0x16
+pub val OP2_SIZEOF       : Int = 0x1C
 
 // 0xFE-prefixed full-form arg/local opcodes (second byte + 2-byte index)
 pub val OP2_LDARG      : Int = 0x09
@@ -311,6 +314,7 @@ pub func iLdfld(tok: in Int):     Insn = Token(op = OP_LDFLD, token = tok)
 pub func iLdflda(tok: in Int):    Insn = Token(op = OP_LDFLDA, token = tok)
 pub func iStfld(tok: in Int):     Insn = Token(op = OP_STFLD, token = tok)
 pub func iLdsfld(tok: in Int):    Insn = Token(op = OP_LDSFLD, token = tok)
+pub func iLdsflda(tok: in Int):   Insn = Token(op = OP_LDSFLDA, token = tok)
 pub func iStsfld(tok: in Int):    Insn = Token(op = OP_STSFLD, token = tok)
 pub func iLdobj(tok: in Int):     Insn = Token(op = OP_LDOBJ, token = tok)
 pub func iStobj(tok: in Int):     Insn = Token(op = OP_STOBJ, token = tok)
@@ -318,8 +322,10 @@ pub func iLdelem(tok: in Int):    Insn = Token(op = OP_LDELEM, token = tok)
 pub func iStelem(tok: in Int):    Insn = Token(op = OP_STELEM, token = tok)
 pub func iLdelema(tok: in Int):   Insn = Token(op = OP_LDELEMA, token = tok)
 pub func iInitobj(tok: in Int):   Insn = Token2(op = OP2_INITOBJ, token = tok)
-pub func iLdftn(tok: in Int):     Insn = Token2(op = OP2_LDFTN, token = tok)
-pub func iSizeof(tok: in Int):    Insn = Token2(op = OP2_SIZEOF, token = tok)
+pub func iLdftn(tok: in Int):        Insn = Token2(op = OP2_LDFTN, token = tok)
+pub func iLdvirtftn(tok: in Int):    Insn = Token2(op = OP2_LDVIRTFTN, token = tok)
+pub func iConstrained(tok: in Int):  Insn = Token2(op = OP2_CONSTRAINED, token = tok)
+pub func iSizeof(tok: in Int):       Insn = Token2(op = OP2_SIZEOF, token = tok)
 pub func iLdtoken(tok: in Int):   Insn = Token(op = OP_LDTOKEN, token = tok)
 
 pub func iAdd():        Insn = Nullary(op = OP_ADD)
@@ -668,6 +674,9 @@ pub func emitStind_I8(b: in MethodBody): Unit   = mbEmit(b, iStind_I8())
 pub func emitStind_R4(b: in MethodBody): Unit   = mbEmit(b, iStind_R4())
 pub func emitStind_R8(b: in MethodBody): Unit   = mbEmit(b, iStind_R8())
 pub func emitStind_Ref(b: in MethodBody): Unit  = mbEmit(b, iStind_Ref())
+pub func emitLdsflda(b: in MethodBody, tok: in Int): Unit     = mbEmit(b, iLdsflda(tok))
+pub func emitLdvirtftn(b: in MethodBody, tok: in Int): Unit   = mbEmit(b, iLdvirtftn(tok))
+pub func emitConstrained(b: in MethodBody, tok: in Int): Unit = mbEmit(b, iConstrained(tok))
 pub func emitCeq(b: in MethodBody): Unit        = mbEmit(b, iCeq())
 pub func emitCgt(b: in MethodBody): Unit        = mbEmit(b, iCgt())
 pub func emitCgt_Un(b: in MethodBody): Unit     = mbEmit(b, iCgt_Un())

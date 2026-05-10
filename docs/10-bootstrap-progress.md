@@ -107,9 +107,10 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M28 — `ldsfld` + `stsfld` (static fields): `msil_self_test_m28.l` builds a PE whose `Hello` class declares two public static I4 fields `_x` and `_y` (Field[1], Field[2], flags=`FDA_PUBLIC+FDA_STATIC`); `Main` stores 20 via `stsfld` (0x80), stores 22, loads both via `ldsfld` (0x7E), adds (42), and calls `Console.WriteLine(int)`; exercises the `Field` table with `FDA_STATIC`, static-field token encoding (`0x04000001`, `0x04000002`), and field-sig `{0x06, 0x08}`; CLR prints `42` | **Shipped** (this branch) | D-progress-167 |
 | MSIL PE emitter Stage M29 — `castclass` (reference-type cast): `msil_self_test_m29.l` builds a PE whose `Main()` boxes 42, calls `callvirt System.Object::ToString()` to produce `"42"`, casts the result via `castclass System.String` (TypeRef[4], token 0x01000004), then calls `Console.WriteLine(string)`; exercises `castclass` (0x74) with a TypeRef token and verifies that a successful cast leaves the reference intact; CLR prints `42` | **Shipped** (this branch) | D-progress-168 |
 | MSIL PE emitter Stage M30 — `unbox_any` (value-type unboxing): `msil_self_test_m30.l` builds a PE whose `Main()` boxes 42 via `box` (0x8C), then unboxes it back to Int32 via `unbox_any` (0xA5) with TypeRef[3]=System.Int32 (token 0x01000003), and calls `Console.WriteLine(int)`; completes the box / isinst / castclass / unbox_any quartet; CLR prints `42` | **Shipped** (this branch) | D-progress-169 |
+| MSIL PE emitter Stages M31–M83 — 53 additional opcodes: `ldftn` + delegate (M31), `initobj` (M32), `ldtoken` + GetTypeFromHandle (M33), `sizeof` (M34/M50), `tail.` prefix (M35/M52), `ldind.i4`/`stind.i4` (M36), `ldelema` (M37), `add.ovf`/`sub.ovf`/`mul.ovf` (M38), `conv.ovf.i4`/`conv.ovf.i8` (M39), `volatile.` prefix (M40/M51), `conv.ovf.*.un` family (M41), `stind.i1`/`i2`/`ldind.u1`/`i2` (M42), `localloc` (M43), `conv.r.un`/`ckfinite` (M44), `initblk`/`cpblk` (M45), `conv.i1`/`i2` (M46), `conv.i`/`conv.u` (M47), `stind.i`/`ldind.i` (M48), typed `ldelem.i4`/`stelem.i4` (M49), bitwise/unary/shift/remainder/stack misc (M56–M60), overflow arith + int/float conversions + misc loads (M61–M65), checked conversions + float literal loads (M66–M70), `div`/signed branches/unsigned branches/`ldc.i4` variants/`ldloc`/`stloc` forms (M71–M75), `ldloca.s` + selective `ldind` families + `ldarg.2-3/s/a` + `starg.s` (M76–M79), `cgt`/`clt`/`conv.r.un` + typed `stelem`/`ldelem` (M80–M82), `constrained.`/`ldvirtftn`/`ldsflda` (M83) | **Shipped** | D-progress-170..D-progress-205 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -1975,6 +1976,322 @@ TypeRefs: [1]=Console, [2]=Object (Hello extends), [3]=Int32, [4]=String.  Tiny 
 
 **Test wiring**: `MsilSelfTestM29.fs` added to `Lyric.Emitter.Tests`; all 33
 MSIL self-tests pass (M1, M2a–M2d, M3–M29).  CLR: box 42 → ToString → castclass String → print `42`.
+
+---
+
+### D-progress-212: Axiom audit — updated to reflect kernel package-level axiom design
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+M4.3 item D12: `docs/17-axiom-audit.md` updated from the old per-function
+`std.bcl.*` format (M4.3 baseline: 11 axioms in 6 modules) to the current
+kernel design where each `stdlib/std/_kernel/*.l` file carries a single
+package-level `@axiom` claim covering its entire BCL extern boundary.
+
+The audit now enumerates all 16 kernel packages, grouped by BCL domain:
+
+- **I/O** — `Std.IO` (Console + I/O static helpers)
+- **Collections** — `Std.CollectionsHost` (List, Map, Set)
+- **Math / Parsing** — `Std.MathHost`, `Std.ParseHost`
+- **Text / Encoding** — `Std.FormatHost`, `Std.EncodingHost`, `Std.CharHost`, `Std.UnicodeHost`
+- **Storage** — `Std.FileHost`
+- **Time** — `Std.TimeHost`
+- **Network** — `Std.HttpHost`
+- **System / Process** — `Std.EnvironmentHost`, `Std.ProcessHost`
+- **Serialization** — `Std.JsonHost`
+- **Identity** — `Std.UuidHost`
+- **Logging** — `Std.LogHost`
+
+Each entry documents: claim string, covered BCL namespaces, decidability gap,
+caller obligations, and review status.  All 16 kernel axioms are marked Stable
+(the `Guid.newGuid` Provisional flag from the old audit carries over to
+`Std.UuidHost`'s `newGuid` entry).
+
+Updated §13 (how to add a new axiom) to refer to the kernel file pattern.
+Updated §14 (count table) — 16 axioms, 0 provisional.
+
+---
+
+### D-progress-211: FBExpr + contracts formatter bug — both formatters
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Pre-existing bug: when a `func` had an expression body (`= expr`) **and** at
+least one contract clause (`requires:` / `ensures:`), the `FBExpr` code path in
+both the self-hosted formatter (`fmt_items.l`) and the F# legacy formatter
+(`Fmt.fs`) would emit only `sig = expr`, silently dropping the contract lines.
+The contract `extras` list was built correctly but never emitted in this branch.
+
+**Fix** (`fmt_items.l`): the `case Some(FBExpr(e))` arm now checks
+`extras.count == 0`.  When there are no extras it uses the compact
+`appendToLastLine(sig, " = " + exprInline(0, e))` form; when extras exist it
+copies `sig` rows, then `extras` rows, then appends `"  = " + exprInline(0, e)`
+as the final line — matching the `FBBlock`-with-extras layout.
+
+**Fix** (`Fmt.fs`): same logic: `if List.isEmpty extraLines then [sig_ + " = " + ...]
+else [sig_] @ extraLines @ ["  = " + ...]`.
+
+**Self-test**: `testFBExprWithContracts` added to `fmt_self_test.l`:
+`func abs(x: in Int): Int ensures: result >= 0 = if x >= 0 { x } else { -x }`
+round-trips with both the `ensures:` clause and the `= if …` body preserved.
+Formatter self-test passes (1/1).
+
+---
+
+### D-progress-210: M5.3 stage 12 — `EIf`/`EMatch` brace-form conversion + forall double-brace fix
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Two formatter fixes in one stage.
+
+**`EIf` / `EMatch` width-driven brace-form conversion** in `exprAtCol`
+(`fmt_core.l`): two new cases that were previously falling through to
+`singleLineDoc(inline)` even when the inline form exceeded the 120-char
+budget.
+
+- `EIf` (non-`thenForm`): delegates to `ifBlockLines` when over budget.
+- `EMatch`: delegates to `matchLines` when over budget.
+- `thenForm` (`if cond then e`) has no brace layout; stays inline.
+- Both cases only fire when `exprFitsInline` returns `false`.
+
+**Forall/exists double-brace fix** in `quantifierStr` (inline) and
+`exprQuantMulti` (multi-line): when a forall/exists body was parsed as
+`{ … }`, the parser wraps it in `EBlock`.  Both formatters previously
+emitted their own outer `{ … }`, producing `forall (i) { { p(i) } }`.
+
+Fix: match on `body.kind` and use `blockInline(b)` / `blockLines(b, ctx)`
+when the body is an `EBlock`, otherwise fall back to the existing
+`exprInline(0, body)` / `exprAtCol(…, body)` paths.
+
+Same fix applied to the F# legacy formatter `Fmt.fs` so `--legacy` is
+consistent.
+
+**Self-test additions** in `fmt_self_test.l`:
+- `testWidthDrivenLongIfBreaks` — long `if`-expression converts to brace layout.
+- `testWidthDrivenLongMatchBreaks` — long `match`-expression converts to brace layout.
+- `testForallBodyNoBraces` — `forall (j: Int) { j > 0 }` round-trips without double braces.
+
+Formatter self-test passes (1/1); 8 aspect-weaver tests pass; parser self-test passes.
+
+---
+
+### D-progress-209: Aspect weaver A4 — multi-aspect ordering (`wraps:`/`inside:`)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Implements §6 of `docs/26-aspects.md`: when multiple aspects match the same
+function, `wraps:` and `inside:` clauses control the wrapper chain order.
+
+- **`Ast.fs`**: `AspectDecl` gains `Wraps: string list` and `Inside: string list`.
+- **`Parser.fs`**: `parseAspectBody` recognises `TIdent "wraps"` and
+  `TIdent "inside"` inside the aspect body and parses comma-separated identifier
+  lists.  Error codes P0306 (after `wraps:`) and P0307 (after `inside:`).
+- **`Weaver.fs`**: `sortAspects` uses Kahn's algorithm over the ordering graph
+  (edges: `A wraps B` → A before B; `A inside B` → B before A).  Falls back to
+  lexical (declaration) order on cycles (bootstrap-grade; A0008 diagnostic
+  deferred).  `weaveItems` changed from `List.tryFind` to `List.filter` +
+  `sortAspects`: builds a chain `target ← innermost-wrapper ← … ← outermost-wrapper`
+  where outermost keeps the original public name.  Intermediate wrappers are named
+  `fn__aspect_<AspectName>`.
+- **`Emitter.fs`**: sigs augmentation broadened from `EndsWith "__aspect_target"` to
+  `IndexOf "__aspect_"` so intermediate wrappers (`fn__aspect_<X>`) also find their
+  base signature in the type-checker sigs map.
+- **`Fmt.fs`**: Legacy F# formatter emits `wraps:` and `inside:` lines inside the
+  aspect block, before the matcher lines.
+- **Self-hosted files** (`parser_ast.l`, `parser_items.l`, `fmt_items.l`): same
+  changes mirrored — `AspectDecl.wraps` and `AspectDecl.inside` fields added;
+  `parseAspectBody` handles `TIdent "wraps"` / `TIdent "inside"` branches with
+  comma-separated identifier list parsing; `aspectDoc` emits the lines using
+  `joinStrings`.
+- **Tests** in `AspectWeaverTest.fs`: new `aspect_weaver_multi_ordering` case uses
+  `Outer wraps: Inner`; verifies the output line order is
+  `outer-start → inner-start → body → inner-end → outer-end`.
+
+All 8 aspect weaver tests pass; self-hosted parser and formatter self-tests pass.
+
+---
+
+### D-progress-208: Aspect weaver A3 — contract augmentation (§5)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Implements §5 of `docs/26-aspects.md`: `requires:` and `ensures:` clauses on
+aspect bodies compose with the target function's own contracts in the synthesised
+wrapper.
+
+- **`Ast.fs`**: `AspectDecl` gains `Contracts: ContractClause list`.
+- **`Parser.fs`**: `parseAspectBody` recognises `TKeyword KwRequires` and
+  `TKeyword KwEnsures` inside the aspect body and collects them via the existing
+  `parseContractClauseOpt` helper.  Error message for unrecognised tokens updated.
+- **`Weaver.fs`**: `buildWrapper` now sets
+  `Contracts = aspect.Contracts @ originalFn.Contracts` (aspect preconditions
+  must hold first; aspect postconditions join the target's guarantees).
+  Module header updated to reflect A3 shipped.
+- **`Fmt.fs`**: Legacy F# formatter emits `requires:`/`ensures:` lines inside
+  the aspect block, before the `around` clause.
+- **Self-hosted files** (`parser_ast.l`, `parser_items.l`, `fmt_items.l`): same
+  changes mirrored — `AspectDecl.contracts` field added; `parseAspectBody` handles
+  `TKeyword(k)` when `isKw(k, KwRequires) or isKw(k, KwEnsures)`;
+  `aspectDoc` emits contract lines before the `around` block.
+- **Tests** in `AspectWeaverTest.fs`: two new cases verify that a
+  `requires: true` clause on an aspect body parses cleanly and the woven program
+  runs to completion with correct output.
+
+All 7 aspect weaver tests pass; self-hosted parser and formatter self-tests pass.
+
+---
+
+### D-progress-207: Aspect weaver A2 — `@no_aspect` per-target opt-out
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Implements §3.3 of `docs/26-aspects.md`: functions annotated with `@no_aspect`
+or `@no_aspect("AspectName")` are skipped by the weaver.
+
+- **`isOptedOut`** in `Weaver.fs`: checks a `FunctionDecl`'s `Annotations`
+  list for an annotation whose `Name.Segments = ["no_aspect"]`.
+  - No args → opts out of all aspects.
+  - `@no_aspect("Name")` → opts out of only the named aspect (checked via
+    `ALiteral(AVString(s, _), _)` matching).
+- **Tests** in `AspectWeaverTest.fs`:
+  - `aspect_weaver_no_aspect_all` — `@no_aspect` on `greetAdmin()` while
+    `greet()` is glob-matched; verifies exactly one "before" in stdout.
+  - `aspect_weaver_no_aspect_named` — `@no_aspect("Loud")` on `greetQuiet()`
+    while `greet()` is still wrapped; verifies "quiet" printed without wrapping.
+
+All 5 aspect weaver tests pass.
+
+---
+
+### D-progress-206: Aspect weaver A1 — bootstrap-grade wrapper synthesis
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+First runtime slice of the aspect system (docs/26-aspects.md):
+
+- **`Weaver.fs`** added to `Lyric.Emitter`: transforms `SourceFile.Items` before IL Pass A.
+  Collects all `IAspect` items with `Around` advice, glob-matches each `IFunc` against the
+  aspect's `matches: name like "<glob>"` clause, renames matched targets to
+  `<name>__aspect_target`, and splices in a wrapper function carrying the `around` body with
+  `proceed(args)` rewritten to `<target>(p1, p2, …)`.  Unmatched functions and `IAspect` items
+  (which carry no IL) pass through unchanged.
+
+- **Glob engine** in `Weaver.fs`: supports `*` (any sequence), `?` (one char), `[abc]`/`[a-z]`
+  (character classes).  Matched against short function name only (package-scoped weaving).
+
+- **`sigs` augmentation** in `emitAssembly`: the type checker runs pre-weave, so renamed target
+  functions are absent from the `ResolvedSignature` map.  Their entries are inferred by copying
+  the original function's signature, keyed on both bare name and arity form.
+
+- **Tests**: `AspectWeaverTest.fs` — three cases: basic before/after advice, no-match bypass,
+  `run*` glob matching two functions out of three.
+
+Bootstrap-grade limitations (deferred to v1.x):
+  - `args.field` record access inside `around` bodies not supported.
+  - `call` ambient value (`call.shortName`, `call.elapsed`, …) not injected.
+  - Multi-aspect ordering and contract augmentation (§5/§6 of docs/26) deferred.
+  - `@no_aspect` opt-out annotations not yet checked.
+
+---
+
+### D-progress-205: MSIL PE emitter Stage M83 — constrained. + ldvirtftn + ldsflda
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+- **M83** (`constrained.`, 0xFE 0x16; `ldvirtftn`, 0xFE 0x07; `ldsflda`, 0x7F): the
+  `constrained.` prefix (ECMA-335 §III.2.1) enables callvirt on value types without boxing.
+  Test calls `Int32.GetHashCode()` via `constrained. System.Int32 / callvirt Object.GetHashCode()`,
+  which returns the value itself (42). `ldvirtftn` and `ldsflda` exercised on a dead code path.
+  One Int32 local, fat header; codeSize=47, BSJB at 0x283.
+  `ldvirtftn` 0xFE 0x07 at file 0x260/0x261; `ldsflda` 0x7F at 0x268;
+  `constrained.` 0xFE 0x16 at 0x272/0x273.
+
+87 MSIL self-tests pass (M1, M2a–M2d, M3–M83).
+
+---
+
+### D-progress-204: MSIL PE emitter Stages M80–M82 — cgt/clt/conv.r.un + typed stelem/ldelem (i4/i8/r4/r8 and i1/u1/i2/u4 + tok)
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Three stages batched:
+
+- **M80** (`cgt`/`cgt.un`/`clt`/`clt.un`, 0xFE 0x02–0x05; `conv.r.un`, 0x76): signed/unsigned
+  greater-than and less-than comparisons, plus convert-to-float treating value as unsigned.
+  `43>40 / 45>41.un / 41<45 / 43<44.un → 1×1×1×1 × 42 = 42`. Tiny header (codeSize=38 → 0x9A).
+  `cgt` at file 0x24D/0x24E, `cgt.un` at 0x253/0x254, `clt` at 0x259/0x25A,
+  `clt.un` at 0x25F/0x260, `conv.r.un` at 0x266, BSJB at 0x26F.
+
+- **M81** (`stelem.i4`/`stelem.i8`/`stelem.r4`/`stelem.r8`, 0x9E/0x9F/0xA0/0xA1;
+  `ldelem.i4`/`ldelem.i8`/`ldelem.r4`/`ldelem.r8`, 0x94/0x96/0x98/0x99): typed array
+  element stores and loads for all numeric widths. Four locals (Int32[], Int64[], Single[],
+  Double[]); fat header. Stores then loads 42 through each array type; final ldelem.i4 → 42.
+  Code at 0x254, codeSize=88; BSJB at 0x2AC.
+
+- **M82** (`stelem.i1`/`stelem.i2`, 0x9C/0x9D; `ldelem.i1`/`ldelem.u1`/`ldelem.i2`/`ldelem.u4`,
+  0x90/0x91/0x92/0x95; `stelem`/`ldelem` token forms, 0xA4/0xA3): remaining typed and
+  generic element-access opcodes. Three locals (Byte[], Int16[], Int32[]); fat header.
+  Exercises sign-extended and zero-extended byte/short loads, unsigned I4 load, and
+  generic `stelem`/`ldelem` taking a TypeRef token. Code at 0x254, codeSize=86;
+  BSJB at 0x2AA (no padding before metadata).
+
+86 MSIL self-tests pass (M1, M2a–M2d, M3–M82).
+
+---
+
+### D-progress-203: MSIL PE emitter Stages M76–M79 — ldloca.s + selective ldind, ldind.r4/r8 + stind float/i8, newarr/ldlen/ldelema, ldarg.2-3/s/a + starg.s
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Four stages batched:
+
+- **M76** (`ldloca.s`, 0x12; `ldind.i1`, 0x46; `ldind.u2`, 0x49; `ldind.u4`, 0x4B;
+  `ldind.i8`, 0x4C): local-address load plus sign/zero-extended indirect loads for
+  byte, ushort, uint, and int64 widths. Fat header with 4 locals (I1, U2, U4, I8).
+
+- **M77** (`ldind.r4`, 0x4E; `ldind.r8`, 0x4F; `stind.i8`, 0x55; `stind.r4`, 0x56;
+  `stind.r8`, 0x57): float and int64 indirect loads and stores via managed pointer.
+  Fat header with 3 locals (I8, R4, R8).
+
+- **M78** (`newarr`, 0x8D; `ldlen`, 0x8E; `ldelema`, 0x8F): array creation, length query,
+  and element-address load for managed arrays.
+
+- **M79** (`ldarg.2`, 0x04; `ldarg.3`, 0x05; `ldarg.s`, 0x0E; `ldarga.s`, 0x0F;
+  `starg.s`, 0x10): argument loads by index 2/3, short-form argument load/address/store.
+  Two-method PE (Helper + Main); no wide `ldarg`/`starg` forms.
+
+83 MSIL self-tests pass (M1, M2a–M2d, M3–M79).
+
+---
+
+### D-progress-202a: MSIL PE emitter Stages M71–M75 — div/beq/bgt, signed branches, unsigned branches, ble.un/blt.un/ldc.i4 variants, ldloc/stloc forms
+
+*(Renumbered from D-progress-202 to avoid collision with D-progress-202 in `main`,
+which covers the lyric-web library addition.)*
+
+*claude/plan-emitter-next-steps-6jGK7 branch.*
+
+Five stages batched:
+
+- **M71** (`div`, 0x5B; `beq`, 0x3B; `bgt`, 0x3D): integer divide plus two conditional
+  branch forms. `84/2=42`; `beq` and `bgt` guard dead fall-through paths. Tiny header.
+
+- **M72** (`bge`, 0x3C; `ble`, 0x3E; `blt`, 0x3F): three signed conditional branch forms.
+  The `ble` test uses equal operands (42, 42) to discriminate `ble` (branches) from `blt`
+  (would not). Tiny header (codeSize=59).
+
+- **M73** (`bne.un`, 0x40; `bge.un`, 0x41; `bgt.un`, 0x42): three unsigned conditional
+  branch forms. Tiny header (codeSize=59).
+
+- **M74** (`ble.un`, 0x43; `blt.un`, 0x44; `ldc.i4`, 0x20; `ldc.i4.6`, 0x1C;
+  `ldc.i4.7`, 0x1D; `ldc.i4.8`, 0x1E): two unsigned branches plus full-form and
+  high inline-constant loads. `6×7=42; 8-8+42=42`. Tiny header (codeSize=53).
+
+- **M75** (`stloc.2/3`, 0x0C/0x0D; `ldloc.2/3`, 0x08/0x09; `stloc.s/ldloc.s`, 0x13/0x11;
+  `stloc/ldloc` wide, 0xFE 0x0E/0xFE 0x0C): all remaining local-variable store/load
+  forms above index 1. Fat header with 5 I4 locals (codeSize=24).
+
+79 MSIL self-tests pass (M1, M2a–M2d, M3–M75).
 
 ---
 

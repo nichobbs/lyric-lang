@@ -233,7 +233,13 @@ and private exprInline (minPrec: int) (e: Expr) : string =
             match whereEx with
             | Some w -> sprintf " where %s" (exprInline 0 w)
             | None   -> ""
-        sprintf "forall (%s)%s { %s }" bindsStr whereStr (exprInline 0 body)
+        // When the body was parsed as `{ … }` the parser wraps it in EBlock.
+        // Render the block contents directly to avoid double braces.
+        let bodyStr =
+            match body.Kind with
+            | EBlock b -> blockInline b
+            | _        -> exprInline 0 body
+        sprintf "forall (%s)%s { %s }" bindsStr whereStr bodyStr
     | EExists (binders, whereEx, body) ->
         let bindsStr =
             binders |> List.map (fun b -> sprintf "%s: %s" b.Name (typeStr b.Type))
@@ -242,7 +248,11 @@ and private exprInline (minPrec: int) (e: Expr) : string =
             match whereEx with
             | Some w -> sprintf " where %s" (exprInline 0 w)
             | None   -> ""
-        sprintf "exists (%s)%s { %s }" bindsStr whereStr (exprInline 0 body)
+        let bodyStr =
+            match body.Kind with
+            | EBlock b -> blockInline b
+            | _        -> exprInline 0 body
+        sprintf "exists (%s)%s { %s }" bindsStr whereStr bodyStr
     | ESelf              -> "self"
     | EResult            -> "result"
     | ELambda (ps, body) ->
@@ -724,15 +734,21 @@ and private itemDoc (item: Item) : Doc =
         @ ["}"]
 
     | IAspect ad ->
-        // D047: render `aspect Name { matches: ...; around(args) -> ret { ... } }`.
-        // v1 surface only; later slices add wraps:/inside:, requires:,
-        // ensures:, config { ... }.
+        // D047: render `aspect Name { wraps:; inside:; matches:; requires:; ensures:; around(args) -> ret { ... } }`.
+        let wrapsLines =
+            if ad.Wraps.IsEmpty then []
+            else [sprintf "  wraps: %s" (ad.Wraps |> String.concat ", ")]
+        let insideLines =
+            if ad.Inside.IsEmpty then []
+            else [sprintf "  inside: %s" (ad.Inside |> String.concat ", ")]
         let matchesLines =
             ad.Matches
             |> List.map (fun m ->
                 match m with
                 | AMNameLike (g, _) ->
                     sprintf "  matches: name like \"%s\"" g)
+        let contractLines =
+            ad.Contracts |> List.map (fun c -> "  " + contractStr c)
         let aroundLines =
             match ad.Around with
             | Some ar ->
@@ -747,7 +763,10 @@ and private itemDoc (item: Item) : Doc =
             | None -> []
         header
         @ [sprintf "aspect %s {" ad.Name]
+        @ wrapsLines
+        @ insideLines
         @ matchesLines
+        @ contractLines
         @ aroundLines
         @ ["}"]
 
@@ -771,7 +790,11 @@ and private funcDoc (visStr: string) (fn: FunctionDecl) : Doc =
     fnDocLines @ annoLines @
     match fn.Body with
     | None             -> [sig_] @ contractLines @ whereLines
-    | Some (FBExpr e)  -> [sig_ + " = " + exprInline 0 e]
+    | Some (FBExpr e)  ->
+        if List.isEmpty extraLines then
+            [sig_ + " = " + exprInline 0 e]
+        else
+            [sig_] @ extraLines @ ["  = " + exprInline 0 e]
     | Some (FBBlock b) ->
         if List.isEmpty extraLines then
             [sig_ + " {"] @ ind 2 (blockLines b) @ ["}"]

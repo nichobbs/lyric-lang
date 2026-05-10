@@ -140,6 +140,19 @@
     <Compile Include="MsilSelfTestM68.fs" />
     <Compile Include="MsilSelfTestM69.fs" />
     <Compile Include="MsilSelfTestM70.fs" />
+    <Compile Include="MsilSelfTestM71.fs" />
+    <Compile Include="MsilSelfTestM72.fs" />
+    <Compile Include="MsilSelfTestM73.fs" />
+    <Compile Include="MsilSelfTestM74.fs" />
+    <Compile Include="MsilSelfTestM75.fs" />
+    <Compile Include="MsilSelfTestM76.fs" />
+    <Compile Include="MsilSelfTestM77.fs" />
+    <Compile Include="MsilSelfTestM78.fs" />
+    <Compile Include="MsilSelfTestM79.fs" />
+    <Compile Include="MsilSelfTestM80.fs" />
+    <Compile Include="MsilSelfTestM81.fs" />
+    <Compile Include="MsilSelfTestM82.fs" />
+    <Compile Include="MsilSelfTestM83.fs" />
     <Compile Include="JvmLoweringTest.fs" />
     <Compile Include="JvmLoweringB4Test.fs" />
     <Compile Include="JvmLoweringB5Test.fs" />
@@ -272,6 +285,7 @@
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="CfgErasureTests.fs" />
+    <Compile Include="AspectWeaverTest.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

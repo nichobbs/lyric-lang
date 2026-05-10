@@ -15,6 +15,7 @@
     <Compile Include="AsyncStateMachine.fs" />
     <Compile Include="Cfg.fs" />
     <Compile Include="Codegen.fs" />
+    <Compile Include="Weaver.fs" />
     <Compile Include="Emitter.fs" />
   </ItemGroup>
 

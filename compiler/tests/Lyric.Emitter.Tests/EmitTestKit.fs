@@ -20,6 +20,9 @@ let private dotnetHost () : string =
 
 /// `dotnet exec` the produced .dll under the same host the test
 /// process is using, capturing stdout / stderr / exit code.
+/// Reads stdout and stderr concurrently (sequential reads deadlock when
+/// both pipes fill their OS buffers).  Kills the process after 60 s to
+/// catch infinite loops in synthesised programs.
 let runDll (dll: string) : string * string * int =
     let psi = ProcessStartInfo()
     psi.FileName <- dotnetHost ()
@@ -34,9 +37,15 @@ let runDll (dll: string) : string * string * int =
         | Some p -> p
         | None   -> failwith "failed to start dotnet process"
     use _ = proc
-    let stdout = proc.StandardOutput.ReadToEnd()
-    let stderr = proc.StandardError.ReadToEnd()
-    proc.WaitForExit()
+    // Read both pipes concurrently so neither side deadlocks.
+    let stdoutTask = System.Threading.Tasks.Task.Run(fun () -> proc.StandardOutput.ReadToEnd())
+    let stderrTask = System.Threading.Tasks.Task.Run(fun () -> proc.StandardError.ReadToEnd())
+    let exited = proc.WaitForExit(60_000)
+    if not exited then
+        try proc.Kill() with _ -> ()
+        proc.WaitForExit()
+    let stdout = stdoutTask.Result
+    let stderr = stderrTask.Result
     stdout, stderr, proc.ExitCode
 
 /// Copy every cached `Lyric.Stdlib.<X>.dll` into `outDir` so user
