@@ -1489,23 +1489,25 @@ compiler/lyric/jvm/
 ├── reader.l         # bytecode reader (round-trip tests)
 ├── fuzzer.l         # bytecode generation fuzzer
 ├── native_image.l   # GraalVM native-image configuration
-└── _kernel/
-    └── kernel.l     # trusted host boundary → Lyric.Jvm.Hosts (BCL handles)
+├── _kernel/
+│   └── kernel.l     # trusted host boundary → Lyric.Jvm.Hosts (BCL handles)
+└── self_test.l      # master test driver; self_test_b[N].l B0–B124 alongside
 ```
 
 The planned multi-package layout (`Lyric.Emitter.Jvm.Classfile/` etc.)
 was simplified to a flat module structure; the dependency discipline
-(no upward dependencies, Driver owns file I/O) is preserved by
-convention rather than separate packages.
+(no upward dependencies, `driver.l` owns file I/O) is preserved by
+convention rather than separate package boundaries.
 
 Dependencies flow downward; no upward dependencies are permitted.
-`Driver` is the only package that talks to the file system; the lower
-packages produce in-memory byte buffers.
+`driver.l` is the only module that talks to the file system; the lower
+layers produce in-memory byte buffers.
 
-### 23.2 Why split into five packages
+### 23.2 Layer boundaries and correctness stories
 
-The split is *not* gratuitous.  Each boundary corresponds to a
-distinct correctness story:
+The split into distinct layers is *not* gratuitous — the rationale
+applies equally whether the boundaries are packages or files within
+a single package.  Each layer has a distinct correctness story:
 
 - **Classfile** owns the binary format.  Its tests are golden-image:
   given an in-memory class file, the bytes match the
@@ -1982,14 +1984,14 @@ Building the emitter in Lyric will exercise:
   for proof-required marking — the proof obligation is roughly "the
   returned index references an entry equal to the input."
 
-### 23.13 Future: Lyric.Emitter.Jvm.Reader
+### 23.13 Class-file reader (`reader.l`)
 
 A class-file *reader* is not strictly needed for emission, but is
 indispensable for tooling: differential-fuzzing, test harnesses,
-linters that consume Lyric-emitted JARs.  The reader is a separate
-sub-package that shares the `Classfile` model with the writer; its
-inverse-of-write structure means most of the test surface comes for
-free (write-then-read-then-compare).
+linters that consume Lyric-emitted JARs.  `reader.l` ships alongside
+the other modules in `compiler/lyric/jvm/`; its inverse-of-write
+structure means most of the test surface comes for free
+(write-then-read-then-compare).
 
 The reader is also the natural foundation for a future "Lyric ←
 Java" interop tool: read a Java class file, infer a Lyric public-
