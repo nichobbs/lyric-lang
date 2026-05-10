@@ -1,8 +1,9 @@
 # 18 — Java Bytecode Emission Strategy
 
-A Phase 6+ deliverable per `docs/05-implementation-plan.md` and decision-log
-entry D023. v1 ships a .NET-only compiler; the JVM backend is a stretch
-goal once the language is self-hosted.
+A Phase 6 deliverable per `docs/05-implementation-plan.md` and decision-log
+entry D023.  The self-hosted JVM emitter shipped in `compiler/lyric/jvm/`
+(D-progress-124 / D-progress-125, PR #183–#186); `--target jvm` is wired
+in the CLI.
 
 This document specifies how Lyric source compiles to Java bytecode (the
 class-file format defined by JVMS, Java 21 SE LTS).  The companion
@@ -10,15 +11,14 @@ document `docs/09-msil-emission.md` plays the same role for the MSIL
 backend; readers are expected to be familiar with it.  Differences from
 the MSIL strategy are flagged inline.
 
-The emitter described here is also intended to be the **first major
-application written in Lyric itself**.  Phase 5 ports the F# bootstrap
-compiler to Lyric; the JVM emitter is greenfield Lyric code that exercises
-every corner of the language under realistic conditions (binary I/O,
-graph data structures, generic containers, contract-heavy data
-modelling, async file emit, FFI to existing JVM tooling).  The
-implementation plan in §23 is therefore as load-bearing as the lowering
-strategy in §§4–22 — it is a stress test for the language, not just a
-back-end project.
+The emitter is the **first major application written in Lyric itself**.
+Phase 5 ported the F# bootstrap compiler to Lyric; the JVM emitter is
+Lyric code that exercises every corner of the language under realistic
+conditions (binary I/O, graph data structures, generic containers,
+contract-heavy data modelling, async file emit, FFI to existing JVM
+tooling).  The implementation plan in §23 is therefore as load-bearing as
+the lowering strategy in §§4–22 — it serves as a self-hosting acceptance
+test for the language, not just a back-end project.
 
 This document settles every Lyric → JVM mapping decision required for
 implementation and flags those that defer (with a recommended default).
@@ -1466,27 +1466,37 @@ model preserves them.
 
 ## 23. Implementing the emitter in Lyric
 
-This is the core implementation specification.  The JVM emitter is
-built as a Lyric package suite — the first non-trivial application
-written in Lyric.  We expect the implementation effort to surface
+This is the core implementation specification.  The JVM emitter shipped
+as a Lyric package suite in `compiler/lyric/jvm/` — the first
+non-trivial application written in Lyric.  The implementation surfaced
 language-design gaps (missing stdlib pieces, awkward APIs, ergonomic
-warts) and we treat that as a feature: every gap closes before v2
-ships.  The emitter is therefore both a deliverable and a
-self-hosting acceptance test.
+warts) that were closed before v2 shipped.  The emitter is therefore
+both a deliverable and a self-hosting acceptance test.
 
 ### 23.1 Package layout
 
-The emitter ships as five Lyric packages, each its own JPMS module
-(in the resulting JAR layout) and Lyric package (in the source tree):
+The emitter shipped as a flat set of Lyric source files under
+`compiler/lyric/jvm/`, each responsible for one logical layer:
 
 ```
-compiler/lyric/Lyric.Emitter.Jvm/
-├── Lyric.Emitter.Jvm.Classfile/   # binary class-file model + writer
-├── Lyric.Emitter.Jvm.Bytecode/    # opcode emitter + frame computation
-├── Lyric.Emitter.Jvm.Lowering/    # AST → class-file IR translation
-├── Lyric.Emitter.Jvm.Manifest/    # module-info, contracts, native-image configs
-└── Lyric.Emitter.Jvm.Driver/      # build orchestration, JAR packaging, FFI
+compiler/lyric/jvm/
+├── classfile.l      # binary class-file model + serializer (§4 JVMS)
+├── bytecode.l       # opcode emitter, two-pass assembler, label resolution
+├── lowering.l       # AST → class-file IR translation (JvmType, LInsn, LFunc …)
+├── manifest.l       # JAR manifest generation
+├── driver.l         # build orchestration, JAR packaging
+├── zip.l            # JAR/ZIP archive writer
+├── reader.l         # bytecode reader (round-trip tests)
+├── fuzzer.l         # bytecode generation fuzzer
+├── native_image.l   # GraalVM native-image configuration
+└── _kernel/
+    └── kernel.l     # trusted host boundary → Lyric.Jvm.Hosts (BCL handles)
 ```
+
+The planned multi-package layout (`Lyric.Emitter.Jvm.Classfile/` etc.)
+was simplified to a flat module structure; the dependency discipline
+(no upward dependencies, Driver owns file I/O) is preserved by
+convention rather than separate packages.
 
 Dependencies flow downward; no upward dependencies are permitted.
 `Driver` is the only package that talks to the file system; the lower
