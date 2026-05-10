@@ -239,6 +239,7 @@ public class MavenResolver {
                         mNode.put("name", mi.name);
                         mNode.put("returnType", mi.returnType);
                         mNode.put("isStatic", mi.isStatic);
+                        mNode.put("hasCheckedExceptions", mi.hasCheckedExceptions);
                         ArrayNode params = JSON.createArrayNode();
                         for (ParamInfo pi : mi.params) {
                             ObjectNode pNode = JSON.createObjectNode();
@@ -288,6 +289,7 @@ public class MavenResolver {
         String name;
         String returnType;
         boolean isStatic;
+        boolean hasCheckedExceptions;
         List<ParamInfo> params = new ArrayList<>();
     }
 

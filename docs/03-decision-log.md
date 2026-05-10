@@ -2539,7 +2539,21 @@ class hierarchies.
   declaring `extern type JvmException`.
 - Diagnostics `B0050`–`B0054` are added to the error catalogue.
 
-**Revisions:** None.
+**Revisions:**
+
+2026-05-10 (branch claude/java-dependency-support-MC6Xz):
+- `ClassScanner.java` extended with `HasCheckedExceptions` detection using a
+  conservative `KNOWN_UNCHECKED` set; `MavenResolver.java` serialises the
+  field into the JSON surface; `Maven.fs` parses it.
+- `MavenShim.fs` extended to generate instance-method stubs (not just static)
+  using the `methodName(recv: in TypeName, args…)` convention per spec §4;
+  checked-exception methods wrap return in `Result[T, JvmException]` or
+  `Result[Unit, JvmException]` per spec §5; `import Std.JvmExceptionHost`
+  emitted only when at least one method has checked exceptions.
+- `stdlib/std/_kernel/jvm.l` added: `Std.Jvm` package with `@experimental`
+  `catch[T](action: func(): T): Result[T, JvmException]` per Q-J012.
+- `docs/31-maven-linking.md` Q-J012 marked resolved; Q-J013 added to track
+  the JVM emitter call-site try-catch generation (Phase 6 deliverable).
 
 ---
 

@@ -10619,3 +10619,55 @@ today.
 no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
 lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
 
+---
+
+### D-progress-203: Maven shim — instance methods, checked-exception wrapping, Std.Jvm.catch
+
+**Date:** 2026-05-10
+**Branch:** `claude/java-dependency-support-MC6Xz`
+**Decision:** D052 (revision)
+
+Three follow-up items to the Maven Central linking feature (D052 / PR #252):
+
+**1. Instance methods and checked exceptions in shim generator**
+
+- `resolver/src/main/java/lyric/resolver/ClassScanner.java`: added
+  `KNOWN_UNCHECKED` set (~18 common unchecked exception FQNs); added
+  `hasCheckedExceptions(String[])` helper that treats any `throws` class not
+  in the set as a checked exception; sets `mi.hasCheckedExceptions` on every
+  `MethodInfo`.  Now processes both static and instance methods (was
+  structurally sound before but lacked checked-exception detection).
+- `resolver/src/main/java/lyric/resolver/MavenResolver.java`: serialises the
+  `hasCheckedExceptions` boolean field to JSON.
+- `compiler/src/Lyric.Cli/Maven.fs`: parses `hasCheckedExceptions` from the
+  resolver JSON into a new `HasCheckedExceptions: bool` field on `JavaMethod`.
+- `compiler/src/Lyric.Cli/MavenShim.fs`:
+  - Pre-scans all classes for checked exceptions; emits
+    `import Std.JvmExceptionHost` only when at least one method has checked
+    exceptions.
+  - Generates instance-method stubs: `methodName(recv: in TypeName, args…):
+    ReturnType = ()` per spec §4.
+  - Wraps checked-exception method returns in `Result[T, JvmException]` (or
+    `Result[Unit, JvmException]` for `void`) per spec §5.
+  - Deduplication key accounts for the implicit receiver argument.
+- `compiler/tests/Lyric.Cli.Tests/MavenTests.fs`: adds instance-method and
+  checked-exception test cases; all 158 CLI tests pass.
+
+**2. `Std.Jvm.catch[T]` escape hatch (Q-J012)**
+
+- `stdlib/std/_kernel/jvm.l` added: `Std.Jvm` package with
+  `@experimental` `pub generic[T] func catch(action: func(): T):
+  Result[T, JvmException] = ()`.  Routes to
+  `lyric.runtime.jvm.ExceptionHelper.catch` (Phase 6 JVM runtime JAR).
+  `Error` subclasses not caught (conservative default).
+
+**3. JVM emitter call-site gap documented (Q-J013)**
+
+- Confirmed that `compiler/lyric/jvm/lowering.l` has no special handling for
+  `@externTarget` functions whose Lyric return type is `Result[T, JvmException]`.
+  The type system is correct (the shim declares the right return type), but
+  the JVM emitter will not emit a try-catch wrapper at call sites until Phase
+  6.  `docs/31-maven-linking.md` Q-J013 tracks this gap.
+
+**Test counts:** 158 CLI tests — all passing.  No regression in other suites.
+
