@@ -30,8 +30,8 @@ pub func compileToMsil(source: in String, outputPath: in String): Bool {
   while i < parseResult.diagnostics.count {
     val diag = parseResult.diagnostics[i]
     match diag.severity {
-      case DiagError   -> hasErrors = true
-      case DiagWarning -> ()
+      case DiagError   -> { hasErrors = true }
+      case DiagWarning -> { () }
     }
     i = i + 1
   }
