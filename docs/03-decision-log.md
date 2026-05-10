@@ -3125,6 +3125,58 @@ namespace.  On closer examination this was unnecessary and actively harmful.
 
 ---
 
+## D061 — Self-hosted monomorphizer design: call-site AST-level specialisation
+
+**Context:** Phase 5 §M5.2 stage 4.  The F# bootstrap emitter uses real CLR
+generic types and methods (reified generics via `DefineGenericParameters`,
+`MakeGenericType`, `MakeGenericMethod`).  The self-hosted MSIL PE emitter
+(`Msil.Codegen`, `Msil.Lowering`) currently erases all generic type
+applications to `MObject` (System.Object), which is sufficient for the M1–M83
+PE-layer self-tests but fails for real programs that use typed generic values.
+
+**Decision:** Implement a call-site monomorphizer at the TypeExpr (AST) level
+rather than at the resolved-Type (checker) level or via PE-level TypeSpec/
+MethodSpec metadata.
+
+**Rationale:**
+
+1. **Simpler PE emitter.** TypeSpec and MethodSpec rows in PE metadata require
+   bespoke signature blob encoding for generic instantiations, extended table
+   coverage, and coordinated row numbering across five metadata tables.
+   Monomorphisation avoids all of this: the output PE contains only concrete
+   (non-generic) types and methods, which the existing self-hosted emitter
+   already handles.
+
+2. **AST-level substitution.** The Lyric type checker records generic parameter
+   names as strings in `ResolvedSignature.generics` and as `TyVar(name)` in
+   resolved types, but does NOT annotate `ECall` nodes with inferred type
+   arguments.  Working at the TypeExpr level (AST before type-checking) means
+   substitution is a straightforward structural transformation (TRef to single-
+   segment paths that match a generic param name → concrete TypeExpr) with no
+   dependency on the checker output.
+
+3. **Scope.** Only same-package generic functions are specialised.  Imported
+   generic functions (from the F# bootstrap standard library) use real CLR
+   generic types at runtime — correct because the bootstrap emitter already
+   emits proper .NET generic metadata for those.
+
+**Tradeoffs:**
+
+- Output size grows with the number of distinct specialisations (no shared
+  generic code).  Acceptable for a bootstrap-grade compiler.
+- Type inference at call sites is limited to literals and explicitly-annotated
+  variables.  Call sites where the argument type is not directly inferrable are
+  left un-specialised (the original generic name is preserved; CLR's native
+  generics handle them at runtime for imported functions).
+- Does not handle value generic parameters (`GPValue`) or constraint
+  propagation.  Tracked as Q-mono-001 for a follow-up.
+
+**Implementation:** `compiler/lyric/lyric/mono.l` — `Lyric.Mono` package.
+Public entry: `monoFile(file: in SourceFile): MonoResult`.  Shipped in
+D-progress-229.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

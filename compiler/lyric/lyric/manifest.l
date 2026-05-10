@@ -17,6 +17,7 @@
 package Lyric.Manifest
 
 import Std.Core
+import Std.Char
 import Std.Collections
 import Std.Errors
 import Std.String as Str
@@ -94,12 +95,12 @@ pub record FeaturesSection {
 }
 
 pub record Manifest {
-  filePath: String
-  package:  PackageSection
-  project:  Option[ProjectSection]
-  deps:     List[DependencyEntry]
-  nuget:    Option[NugetSection]
-  features: Option[FeaturesSection]
+  filePath:       String
+  packageSection: PackageSection
+  project:        Option[ProjectSection]
+  deps:           List[DependencyEntry]
+  nuget:          Option[NugetSection]
+  features:       Option[FeaturesSection]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,13 +122,15 @@ record Entry {
   value:   Value
 }
 
-// Mutable parsing cursor.
+// Parsing cursor; pos/line/col are mutated via inout parameter passing.
 record Cursor {
-  text:          String
-  mutable pos:   Int
-  mutable line:  Int
-  mutable col:   Int
+  text: String
+  pos:  Int
+  line: Int
+  col:  Int
 }
+
+func charToString(c: in Char): String { "" + c }
 
 func makeCursor(text: in String): Cursor {
   Cursor(text = text, pos = 0, line = 1, col = 1)
@@ -143,25 +146,25 @@ func peek(c: in Cursor): Char {
 
 func peekAt(c: in Cursor, offset: in Int): Char {
   val idx = c.pos + offset
-  if idx < c.text.length { c.text[idx] } else { '\x00' }
+  if idx < c.text.length { c.text[idx] } else { '\u{0000}' }
 }
 
 func skipOne(c: inout Cursor): Unit {
   if not isAtEnd(c) {
     val ch = c.text[c.pos]
-    c.pos += 1
-    if ch == '\n' { c.line += 1; c.col = 1 } else { c.col += 1 }
+    c.pos = c.pos + 1
+    if ch == '\n' { c.line = c.line + 1; c.col = 1 } else { c.col = c.col + 1 }
   }
 }
 
 func skipWhitespace(c: inout Cursor): Unit {
-  while not isAtEnd(c) && (peek(c) == ' ' || peek(c) == '\t') {
+  while not isAtEnd(c) and (peek(c) == ' ' or peek(c) == '\t') {
     skipOne(c)
   }
 }
 
 func skipToEndOfLine(c: inout Cursor): Unit {
-  while not isAtEnd(c) && peek(c) != '\n' {
+  while not isAtEnd(c) and peek(c) != '\n' {
     skipOne(c)
   }
   if not isAtEnd(c) { skipOne(c) }
@@ -169,11 +172,11 @@ func skipToEndOfLine(c: inout Cursor): Unit {
 
 func skipBlankAndCommentLines(c: inout Cursor): Unit {
   var keepGoing = true
-  while keepGoing && not isAtEnd(c) {
+  while keepGoing and not isAtEnd(c) {
     skipWhitespace(c)
     if isAtEnd(c) {
       keepGoing = false
-    } else if peek(c) == '#' || peek(c) == '\n' {
+    } else if peek(c) == '#' or peek(c) == '\n' {
       skipToEndOfLine(c)
     } else {
       keepGoing = false
@@ -186,15 +189,15 @@ func skipBlankAndCommentLines(c: inout Cursor): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func isIdentChar(ch: in Char): Bool {
-  (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-  (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'
+  (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or
+  (ch >= '0' and ch <= '9') or ch == '_' or ch == '-' or ch == '.'
 }
 
 // Collect a bare key (alphanumeric, underscores, hyphens).
 func parseBareKey(c: inout Cursor): String {
   var key = ""
-  while not isAtEnd(c) && isIdentChar(peek(c)) {
-    key = key + Str.fromChar(peek(c))
+  while not isAtEnd(c) and isIdentChar(peek(c)) {
+    key = key + charToString(peek(c))
     skipOne(c)
   }
   key
@@ -206,7 +209,7 @@ func parseQuotedString(c: inout Cursor, filePath: in String): Result[String, Man
   // Caller ensures we're positioned at `"`.
   skipOne(c)  // consume opening `"`
   var s = ""
-  while not isAtEnd(c) && peek(c) != '"' && peek(c) != '\n' {
+  while not isAtEnd(c) and peek(c) != '"' and peek(c) != '\n' {
     val ch = peek(c)
     if ch == '\\' {
       skipOne(c)
@@ -220,13 +223,13 @@ func parseQuotedString(c: inout Cursor, filePath: in String): Result[String, Man
       else if esc == 'r'  { s = s + "\r" }
       else if esc == '"'  { s = s + "\"" }
       else if esc == '\\' { s = s + "\\" }
-      else { s = s + "\\" + Str.fromChar(esc) }
+      else { s = s + "\\" + charToString(esc) }
     } else {
-      s = s + Str.fromChar(ch)
+      s = s + charToString(ch)
       skipOne(c)
     }
   }
-  if isAtEnd(c) || peek(c) == '\n' {
+  if isAtEnd(c) or peek(c) == '\n' {
     return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated string"))
   }
   skipOne(c)  // consume closing `"`
@@ -244,16 +247,16 @@ func parseKey(c: inout Cursor, filePath: in String): Result[String, ManifestErro
     Ok(value = parseBareKey(c))
   } else {
     Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                           message = "unexpected character '" + Str.fromChar(peek(c)) + "' in key"))
+                           message = "unexpected character '" + charToString(peek(c)) + "' in key"))
   }
 }
 
 // Parse a TOML array of strings: `["item1", "item2"]`.
 func parseStringArray(c: inout Cursor, filePath: in String): Result[List[String], ManifestError] {
   skipOne(c)  // consume `[`
-  val items = newList[String]()
+  val items: List[String] = newList()
   var keepGoing = true
-  while keepGoing && not isAtEnd(c) {
+  while keepGoing and not isAtEnd(c) {
     skipWhitespace(c)
     if isAtEnd(c) {
       return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated array"))
@@ -265,12 +268,13 @@ func parseStringArray(c: inout Cursor, filePath: in String): Result[List[String]
     } else if ch == '"' {
       match parseQuotedString(c, filePath) {
         case Err(e) -> return Err(error = e)
-        case Ok(s)  ->
+        case Ok(s)  -> {
           items.add(s)
           skipWhitespace(c)
-          if not isAtEnd(c) && peek(c) == ',' { skipOne(c) }
+          if not isAtEnd(c) and peek(c) == ',' { skipOne(c) }
+        }
       }
-    } else if ch == '#' || ch == '\n' {
+    } else if ch == '#' or ch == '\n' {
       skipToEndOfLine(c)
     } else {
       return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
@@ -297,22 +301,22 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
       case Err(e)    -> Err(error = e)
       case Ok(items) -> Ok(value = VStrList(items = items))
     }
-  } else if ch == 't' && peekAt(c, 1) == 'r' && peekAt(c, 2) == 'u' && peekAt(c, 3) == 'e' {
+  } else if ch == 't' and peekAt(c, 1) == 'r' and peekAt(c, 2) == 'u' and peekAt(c, 3) == 'e' {
     skipOne(c); skipOne(c); skipOne(c); skipOne(c)
     Ok(value = VBool(b = true))
-  } else if ch == 'f' && peekAt(c, 1) == 'a' && peekAt(c, 2) == 'l' && peekAt(c, 3) == 's' && peekAt(c, 4) == 'e' {
+  } else if ch == 'f' and peekAt(c, 1) == 'a' and peekAt(c, 2) == 'l' and peekAt(c, 3) == 's' and peekAt(c, 4) == 'e' {
     skipOne(c); skipOne(c); skipOne(c); skipOne(c); skipOne(c)
     Ok(value = VBool(b = false))
-  } else if ch >= '0' && ch <= '9' {
+  } else if ch >= '0' and ch <= '9' {
     var n = 0
-    while not isAtEnd(c) && peek(c) >= '0' && peek(c) <= '9' {
-      n = n * 10 + (Char.toInt(peek(c)) - Char.toInt('0'))
+    while not isAtEnd(c) and peek(c) >= '0' and peek(c) <= '9' {
+      n = n * 10 + (toInt(peek(c)) - toInt('0'))
       skipOne(c)
     }
     Ok(value = VInt(n = n))
   } else {
     Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                           message = "unexpected character '" + Str.fromChar(ch) + "' in value"))
+                           message = "unexpected character '" + charToString(ch) + "' in value"))
   }
 }
 
@@ -322,11 +326,11 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
 func parseSectionHeader(c: inout Cursor, filePath: in String): Result[String, ManifestError] {
   skipOne(c)  // consume `[`
   var section = ""
-  while not isAtEnd(c) && peek(c) != ']' && peek(c) != '\n' {
-    section = section + Str.fromChar(peek(c))
+  while not isAtEnd(c) and peek(c) != ']' and peek(c) != '\n' {
+    section = section + charToString(peek(c))
     skipOne(c)
   }
-  if isAtEnd(c) || peek(c) == '\n' {
+  if isAtEnd(c) or peek(c) == '\n' {
     return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated section header"))
   }
   skipOne(c)  // consume `]`
@@ -341,7 +345,7 @@ func parseSectionHeader(c: inout Cursor, filePath: in String): Result[String, Ma
 // entries.  The list is then assembled into a typed Manifest.
 func collectEntries(text: in String, filePath: in String): Result[List[Entry], ManifestError] {
   var c = makeCursor(text)
-  val entries = newList[Entry]()
+  val entries: List[Entry] = newList()
   var currentSection = ""
 
   while not isAtEnd(c) {
@@ -351,29 +355,31 @@ func collectEntries(text: in String, filePath: in String): Result[List[Entry], M
     } else if peek(c) == '[' {
       match parseSectionHeader(c, filePath) {
         case Err(e)  -> return Err(error = e)
-        case Ok(sec) -> currentSection = sec
+        case Ok(sec) -> { currentSection = sec }
       }
       skipToEndOfLine(c)
-    } else if isIdentChar(peek(c)) || peek(c) == '"' {
+    } else if isIdentChar(peek(c)) or peek(c) == '"' {
       match parseKey(c, filePath) {
         case Err(e)   -> return Err(error = e)
-        case Ok(key)  ->
+        case Ok(key)  -> {
           skipWhitespace(c)
-          if isAtEnd(c) || peek(c) != '=' {
+          if isAtEnd(c) or peek(c) != '=' {
             return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
                                           message = "expected '=' after key '" + key + "'"))
           }
           skipOne(c)  // consume `=`
           match parseValue(c, filePath) {
             case Err(e) -> return Err(error = e)
-            case Ok(v)  ->
+            case Ok(v)  -> {
               entries.add(Entry(section = currentSection, key = key, value = v))
               skipToEndOfLine(c)
+            }
           }
+        }
       }
     } else {
       return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                    message = "unexpected character '" + Str.fromChar(peek(c)) + "'"))
+                                    message = "unexpected character '" + charToString(peek(c)) + "'"))
     }
   }
   Ok(value = entries)
@@ -388,7 +394,7 @@ func findString(entries: in List[Entry], section: in String, key: in String): Op
   var i = 0
   while i < entries.count {
     val e = entries[i]
-    if e.section == section && e.key == key {
+    if e.section == section and e.key == key {
       match e.value {
         case VStr(s) -> return Some(value = s)
         case _       -> return None
@@ -403,7 +409,7 @@ func findStringList(entries: in List[Entry], section: in String, key: in String)
   var i = 0
   while i < entries.count {
     val e = entries[i]
-    if e.section == section && e.key == key {
+    if e.section == section and e.key == key {
       match e.value {
         case VStrList(items) -> return Some(value = items)
         case _               -> return None
@@ -418,7 +424,7 @@ func findBool(entries: in List[Entry], section: in String, key: in String, defau
   var i = 0
   while i < entries.count {
     val e = entries[i]
-    if e.section == section && e.key == key {
+    if e.section == section and e.key == key {
       match e.value {
         case VBool(b) -> return b
         case _        -> return default
@@ -438,19 +444,19 @@ func requireString(entries: in List[Entry], section: in String, key: in String):
 
 // Collect all entries in a given section as (key, string-value) pairs.
 func collectSectionPairs(entries: in List[Entry], section: in String): List[PackageEntry] {
-  val result = newList[PackageEntry]()
+  val pairs: List[PackageEntry] = newList()
   var i = 0
   while i < entries.count {
     val e = entries[i]
     if e.section == section {
       match e.value {
-        case VStr(s) -> result.add(PackageEntry(name = e.key, path = s))
+        case VStr(s) -> pairs.add(PackageEntry(name = e.key, path = s))
         case _       -> ()  // non-string values in pair sections are silently ignored
       }
     }
     i += 1
   }
-  result
+  pairs
 }
 
 func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestError] {
@@ -459,9 +465,9 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
     case Ok(name) ->
       match requireString(entries, "package", "version") {
         case Err(e) -> Err(error = e)
-        case Ok(version) ->
+        case Ok(version) -> {
           val description = unwrapOr(findString(entries, "package", "description"), "")
-          val authors     = unwrapOr(findStringList(entries, "package", "authors"), newList[String]())
+          val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList())
           val license     = unwrapOr(findString(entries, "package", "license"), "")
           Ok(value = PackageSection(
             name        = name,
@@ -469,6 +475,7 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
             description = description,
             authors     = authors,
             license     = license))
+        }
       }
   }
 }
@@ -496,19 +503,19 @@ func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
 }
 
 func assembleDeps(entries: in List[Entry]): List[DependencyEntry] {
-  val result = newList[DependencyEntry]()
+  val depList: List[DependencyEntry] = newList()
   var i = 0
   while i < entries.count {
     val e = entries[i]
     if e.section == "dependencies" {
       match e.value {
-        case VStr(v) -> result.add(DependencyEntry(name = e.key, version = v))
+        case VStr(v) -> depList.add(DependencyEntry(name = e.key, version = v))
         case _       -> ()
       }
     }
     i += 1
   }
-  result
+  depList
 }
 
 // Local helpers used by the [features] assembly below.
@@ -524,21 +531,21 @@ func listContains(xs: in List[String], target: in String): Bool {
 func sortStringList(xs: in List[String]): List[String] {
   // Insertion sort — O(n^2) but list is small (one entry per declared
   // feature) and the sort runs once per build.
-  val out = newList[String]()
+  val sorted: List[String] = newList()
   var i = 0
-  while i < xs.count { out.add(xs[i]); i += 1 }
+  while i < xs.count { sorted.add(xs[i]); i += 1 }
   var k = 1
-  while k < out.count {
-    val cur = out[k]
+  while k < sorted.count {
+    val cur = sorted[k]
     var j = k
-    while j > 0 && out[j - 1] > cur {
-      out[j] = out[j - 1]
+    while j > 0 and sorted[j - 1] > cur {
+      sorted[j] = sorted[j - 1]
       j -= 1
     }
-    out[j] = cur
+    sorted[j] = cur
     k += 1
   }
-  out
+  sorted
 }
 
 /// `[features]` per `docs/24-build-features.md` (D045).  v1 accepts
@@ -547,7 +554,7 @@ func sortStringList(xs: in List[String]): List[String] {
 /// section is absent.
 func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], ManifestError] {
   if not hasSection(entries, "features") { return Ok(value = None) }
-  val declared = newList[String]()
+  val declared: List[String] = newList()
   var defaults: Option[List[String]] = None
   var i = 0
   while i < entries.count {
@@ -575,7 +582,7 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
     i += 1
   }
   // Validate every default names a declared feature.
-  val defaultList = unwrapOr(defaults, newList[String]())
+  val defaultList: List[String] = unwrapOr(defaults, newList())
   var di = 0
   while di < defaultList.count {
     val name = defaultList[di]
@@ -594,7 +601,7 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
 
 func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
   if not hasSection(entries, "nuget") { return None }
-  val nugetEntries = newList[NugetEntry]()
+  val nugetEntries: List[NugetEntry] = newList()
   var i = 0
   while i < entries.count {
     val e = entries[i]
@@ -631,21 +638,22 @@ pub func parse(text: in String, filePath: in String): Result[Manifest, ManifestE
     case Ok(entries) ->
       match assemblePackage(entries) {
         case Err(e)   -> Err(error = e)
-        case Ok(pkg)  ->
+        case Ok(pkg)  -> {
           val project = assembleProject(entries)
           val deps    = assembleDeps(entries)
           val nuget   = assembleNuget(entries)
           match assembleFeatures(entries) {
-            case Err(e)         -> Err(error = e)
+            case Err(e)          -> Err(error = e)
             case Ok(featuresOpt) ->
               Ok(value = Manifest(
-                filePath = filePath,
-                package  = pkg,
-                project  = project,
-                deps     = deps,
-                nuget    = nuget,
-                features = featuresOpt))
+                filePath       = filePath,
+                packageSection = pkg,
+                project        = project,
+                deps           = deps,
+                nuget          = nuget,
+                features       = featuresOpt))
           }
+        }
       }
   }
 }

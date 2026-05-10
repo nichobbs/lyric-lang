@@ -111,6 +111,8 @@ deferred to Phase 3 by design.
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3a — self-hosted MSIL PE / opcode / tables layer (M1–M83) | **Shipped** | D-progress-213..D-progress-219 |
 | M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`) | Not shipped | D-progress-232 (planned) |
+| M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions) | **Shipped** | D-progress-229 |
+| M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 |
 
 ### Phase 2 — type system completion (in progress)
@@ -11080,3 +11082,96 @@ tracking table updated to reflect R6 as shipped.
 **Test counts:** no new compiler tests (documentation-only changes).
 728 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 127 CLI tests, 266 verifier tests — all passing.
+
+---
+
+### D-progress-229: M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono`)
+
+**Date:** 2026-05-10
+**Branch:** `claude/mono-toml-self-host`
+
+Phase 5 §M5.2 stage 4 ships the self-hosted monomorphizer as the Lyric-language
+`Lyric.Mono` package at `compiler/lyric/lyric/mono.l`.
+
+**Algorithm (call-site monomorphization for same-package generics):**
+
+1. Collect all generic `IFunc` items (those with `generics: Some(...)`) from
+   the input `SourceFile` into a name-keyed lookup map.
+2. Walk non-generic function bodies, maintaining a type environment
+   (`Map[String, TypeExpr]`) seeded from parameter type annotations and
+   updated by explicit `val`/`var`/`let` type annotations.
+3. At each `ECall(EPath([name]), args)` where `name` is a known same-package
+   generic function: infer argument types (literals → primitive TypeExpr;
+   variables → env lookup; other expressions → skip), unify against the
+   function's parameter TypeExprs to determine concrete type arguments, and
+   compute a mangled specialised name (e.g. `mapFoo__Int__String`).
+4. If all type parameters are resolved, enqueue a `SpecRequest` and rewrite
+   the call site to use the specialised name.  Queue processing is worklist-
+   based; specialised function bodies are themselves walked, enabling
+   chains of generic calls to be fully expanded.
+5. Return a `MonoResult` carrying the rewritten `SourceFile` (generic items
+   removed, specialised items appended) and a `rewrites` map.
+
+**Public API:**
+
+```lyric
+pub func monoFile(file: in SourceFile): MonoResult
+pub record MonoResult { file: SourceFile; rewrites: Map[String, String] }
+```
+
+**Scope notes:**
+
+- Only same-package generic functions are specialised.  Imported generic
+  functions (e.g. `mapOption` from `Std.Core`) use real CLR generics at
+  runtime — this is correct because the F# bootstrap compiler emits them as
+  proper .NET generic methods/types.
+- Value generic parameters (`GPValue`) are not handled; only type-level
+  `GPType` parameters are specialised.
+- Type inference at call sites covers literals and explicitly annotated
+  variables.  Complex sub-expressions (method calls, field projections, binary
+  ops, etc.) produce `None`; those call sites are left un-specialised.
+
+The monomorphizer integrates with `Msil.Bridge.compileToMsil` by running
+before `codegenMPackage`: a caller that adds `monoFile` between `parse` and
+`codegenMPackage` gets a fully-specialised AST with no same-package generic
+functions.
+
+**Test counts:** 729 emitter tests (+1 `SelfHostedManifestTests`), 323 parser
+tests, 143 type-checker tests, 123 lexer tests, 28 LSP tests, 127 CLI tests,
+266 verifier tests — all passing.
+
+---
+
+### D-progress-230: M5.3 — `Lyric.Manifest` self-test (`manifest_self_test.l`)
+
+**Date:** 2026-05-10
+**Branch:** `claude/mono-toml-self-host`
+
+The `Lyric.Manifest` TOML parser (shipped in D-progress-129 as part of the
+self-hosted CLI migration) lacked a Lyric-level self-test.  This entry
+adds that coverage.
+
+**`compiler/lyric/lyric/manifest_self_test.l`** — `Lyric.Manifest.SelfTest`
+package, compiled and executed by the emitter test suite.  Exercises:
+
+- Minimal `[package]`-only manifest (name, version, defaults).
+- Full `[package]` with description, authors list, license.
+- `[dependencies]` section with two entries.
+- `[nuget]` + `[nuget.options]` with target TFM and `allow_native`.
+- `[project]` + `[project.packages]` with package path map.
+- `[features]` with `default` key and feature declarations.
+- Comment and trailing-whitespace tolerance.
+- Error: `MissingField` for absent required `name` field.
+- Error: `MissingField` for absent required `version` field.
+- `filePath` is stored verbatim in the returned `Manifest`.
+- `ManifestError.message` returns a non-empty string.
+- Unknown sections are silently ignored.
+
+**`compiler/tests/Lyric.Emitter.Tests/SelfHostedManifestTests.fs`** — F#
+runner.  Compiles `manifest_self_test.l` via `compileAndRun`, asserts exit 0
+and `stdout` contains `"ok"`.  Registered in `Program.fs` and
+`Lyric.Emitter.Tests.fsproj` as `SelfHostedManifestTests.tests`.
+
+**Test counts:** 729 emitter tests (+1 this entry), 323 parser tests, 143
+type-checker tests, 123 lexer tests, 28 LSP tests, 127 CLI tests, 266
+verifier tests — all passing.
