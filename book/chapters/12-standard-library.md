@@ -29,6 +29,7 @@ Here is the full module inventory:
 | `Std.Process` | `spawn`, `ProcessResult`, `run` |
 | `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
 | `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |
+| `Std.Logging` *(lyric-logging)* | Named loggers with six levels, structured fields, JSON output, aspect templates — chapter 22 |
 | `Std.Stream` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Collections` | `List[T]`, `Map[K, V]` |
 | `Std.Set` | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setUnion`, `setIntersection` |
@@ -250,7 +251,7 @@ pub interface HttpClient {
 
 The real `HttpClient` implementation wraps `System.Net.Http.HttpClient`. In production you wire it through your `wire` block. In tests you inject a stub that returns canned responses. Chapter 13 covers the FFI aspect of this wrapping; Chapter 15 covers the test stub pattern.
 
-There is also a server-side surface in `Std.Http` for handling inbound requests, but it is `@experimental` and its shape is still being settled. For production HTTP service code, the current recommendation is to use the `Std.Http.HttpClient` interface for outbound calls and handle routing at the framework level.
+There is also a server-side surface in `Std.Http` for handling inbound requests, but it is `@experimental` and its shape is still being settled. For production HTTP service code, the current recommendation is to use the `Std.Http.HttpClient` interface for outbound calls and the `lyric-web` library (`Web` package) for server-side routing and handler dispatch — see chapter 23.
 
 ## Exercises
 

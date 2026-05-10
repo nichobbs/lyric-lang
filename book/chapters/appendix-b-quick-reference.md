@@ -246,6 +246,74 @@ protected type BoundedQueue[T] {
 
 `entry` operations are exclusive and may have a `when:` barrier (caller blocks until condition is true). The invariant is checked after every `entry`/`func` returns.
 
+### Config blocks (runtime env-var-backed config)
+
+```lyric
+// Declared at module scope; package-private; not a type.
+config Server {
+  host:    String                   = "0.0.0.0"
+  port:    Int range 1 ..= 65535   = 8080
+  @sensitive
+  secret:  String                             // required — no default; exits with G0001 if unset
+}
+
+// Access: BlockName.fieldName (static qualifier)
+func main(): Unit {
+  println("binding " + Server.host + ":" + Server.port.toString())
+}
+```
+
+Env var derivation: `LYRIC_CONFIG_<PKG_UPPER>_<BLOCK_UPPER>_<FIELD_UPPER>` (`.` → `_`).  
+Custom name: `port: Int = 8080 via "APP_PORT"`.  
+Field types: `Bool`, `Int`, `Long`, `Float`, `Double`, `String`, range subtypes, simple enums, `[T]` (comma-separated).  
+Exit code 78 (`EX_CONFIG`) on startup failure.  See chapter 20.
+
+### Aspects
+
+```lyric
+// Matching aspect (package-private; weaves over functions in the same package)
+aspect Logging {
+  matches:
+    name like "handle*"
+    except name in { handleHealth }
+
+  config {
+    enabled: Bool     = true
+    level:   LogLevel = LogLevel.Info
+  }
+
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      Std.Log.info("→ " + call.shortName)
+      ret = call.proceed()
+      Std.Log.info("← " + call.shortName + " (" + call.elapsed.unwrapOr(0).toString() + "ms)")
+    }
+  }
+}
+
+// Template (pub aspect without matches: — exported, instantiated in consumer packages)
+pub aspect Tracing {
+  config { enabled: Bool = true }
+  around(call) -> ret {
+    if not enabled { ret = call.proceed() }
+    else { /* ... */ ret = call.proceed() }
+  }
+}
+
+// Instantiation (in a consumer package)
+aspect Tracing from OTel.Tracing {
+  matches: name like "handle*"
+  inside:  Logging           // ordering: Logging wraps Tracing
+  config { enabled: Bool = false }
+}
+```
+
+`call` ambient: `call.qualifiedName`, `call.shortName`, `call.modulePath`, `call.elapsed: Option[Int]`, `call.annotations`.  
+Env var for aspect config: `LYRIC_ASPECT_<INSTANTIATION_UPPER>_<FIELD_UPPER>`.  
+Opt-out: `@no_aspect` / `@no_aspect(Name)`.  See chapter 21.
+
 ### Wire blocks (compile-time DI graph)
 
 ```lyric
@@ -497,8 +565,13 @@ output_assembly = "myapp.dll"
 |---|---|---|
 | `@axiom` | package, `extern func` | Contracts are trusted, not verified; required on `extern package` |
 | `@axiom("description")` | `extern func` | Axiom with audit-visible rationale string |
+| `@body` | handler parameter | Marks the parameter that receives the deserialized HTTP request body |
+| `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 19 §19.7 |
+| `@cfg(any(feature = "X", feature = "Y"))` | any item | Erase unless at least one listed feature is active |
+| `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
 | `@derive(Json\|Sql\|Proto)` | `exposed record` | Emit compile-time serializer for the named target |
 | `@experimental` | `pub` item | May change without SemVer major bump |
+| `@inline_template` | `pub aspect` | C-mode template: body re-compiled in consumer package so it can read named `args` fields |
 | `@global_clock_unsafe` | function | Suppresses the proof-system warning for non-`@stubbable` clock access |
 | `@hidden` | field in `@projectable` opaque type | Excluded from generated view type |
 | `@projectable` | `opaque type` | Generate a sibling `exposed record XView` and projection functions |
@@ -506,11 +579,15 @@ output_assembly = "myapp.dll"
 | `@projectionBoundary(asId)` | field | Break a projection cycle; emit the field as an opaque handle |
 | `@proof_required` | package | All contracts must be SMT-discharged at compile time |
 | `@proof_required(unsafe_blocks_allowed)` | package | As above, with `unsafe { }` permitted |
+| `@no_aspect` | function | Opt out of all aspects in the package |
+| `@no_aspect(Name)` | function | Opt out of a specific named aspect |
 | `@provided` | wire member | Parameter to the generated bootstrap function |
 | `@pure` | function | No side effects; callable from contracts and `@proof_required` code |
 | `@runtime_checked` | package | Contracts are runtime asserts (default) |
+| `@sensitive` | `config` field | Mark field value as secret; redacted in diagnostics and `lyric explain` output |
 | `@stable(since="X.Y")` | `pub` item | API is frozen from version X.Y; SemVer-major to remove |
 | `@stubbable` | interface | Generate a test-stub builder for the interface |
+| `@tag("group")` | handler function | OpenAPI tag for grouping in Swagger UI (lyric-web) |
 | `@test_module` | package | May contain `test`/`property`/`fixture` items; can access package internals |
 | `@valueType` | record or opaque type | Force CLR value-type lowering (struct) |
 
@@ -550,6 +627,17 @@ output_assembly = "myapp.dll"
 | `Std.Environment` | Process environment | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
 | `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |
 | `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
+
+**External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
+
+| Package | Provides | Key names |
+|---|---|---|
+| `Std.Logging` *(lyric-logging)* | Named loggers, six levels, structured fields, JSON/text output | `Logger`, `LogLevel`, `LogField`, `getLogger`, `info`, `warn`, `error`, `field` |
+| `Std.Logging.Aspects` *(lyric-logging)* | Aspect templates for logging | `CallLogging`, `SlowCallAlert`, `ErrorResultLogging` |
+| `OTel` *(lyric-otel)* | OpenTelemetry tracing, metrics, logging | `Tracing`, `Metrics`, `Logging` (pub aspects), `startSpan`, `endSpan` |
+| `Web` *(lyric-web)* | HTTP routing, ApiError, server entry point | `Router`, `ApiError`, `Route`, `create`, `addGet`, `addPost`, `start` |
+| `Web.OpenApi` *(lyric-web)* | OpenAPI 3.1 type vocabulary and builder | `Spec`, `Schema`, `Operation`, `PathItem`, `newSpec`, `addPath` |
+| `Web.Aspects` *(lyric-web)* | Auth and rate-limit aspect templates | `RequiresAuth`, `RateLimit` |
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
@@ -611,6 +699,11 @@ lyric prove --explain --goal N <file.l> # show the VC IR for goal N
 lyric prove --json <file.l>            # machine-readable output
 lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: target/proofs/)
 lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
+
+# Code generation
+lyric generate openapi <spec.yaml>     # generate Lyric stubs from an OpenAPI 3.1 spec
+lyric generate openapi <spec.yaml> --out <dir>  # write generated files to <dir>
+lyric web spec --output openapi.yaml   # extract OpenAPI spec from a compiled DLL
 
 # Package management
 lyric restore                          # download dependencies declared in lyric.toml

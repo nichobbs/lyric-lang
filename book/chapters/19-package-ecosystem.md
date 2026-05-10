@@ -198,7 +198,7 @@ This is the most common confusion. **A consumer cannot toggle features on a publ
 
 Cargo lets consumers enable features on dependencies because Cargo distributes *source* and rebuilds dependencies on the consumer's machine. Lyric's model is different — and intentionally so, because deterministic binary builds and reproducible deployment are core promises.
 
-If you need a behaviour that varies per deployment, **use runtime config (chapter 11 / D046), not features**:
+If you need a behaviour that varies per deployment, **use runtime config (chapter 20 / D046), not features**:
 
 | Need | Use |
 |---|---|
