@@ -1,11 +1,11 @@
 # Chapter 14: The JVM Target
 
-Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` compiles your package to a standard `.jar` file that runs on any Java 21-compatible runtime, publishes to Maven Central, and can be depended on by plain Java, Kotlin, or Scala projects without any adapter. Conversely, Lyric code running on the JVM can depend on Maven packages through the `[maven]` table in `lyric.toml`.
+Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` compiles your package to a standard `.jar` file. When fully shipped, that JAR will run on any Java 21-compatible runtime, publish to Maven Central, and be depended on by plain Java, Kotlin, or Scala projects without any adapter. Conversely, Lyric code running on the JVM will be able to depend on Maven packages through the `[maven]` table in `lyric.toml`.
 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 
 ::: note
-**Bootstrap status.** The self-hosted JVM emitter is in active development (see `docs/18-jvm-emission.md`). `lyric build --target jvm` and `lyric test --jvm` work for the package shapes demonstrated in the emitter test suite. Features being ironed out include: full async lowering (currently blocking shim), GraalVM native-image builds, and Maven publishing tooling. This chapter describes the intended surface; bootstrap limitations are noted where they apply.
+**Bootstrap status.** The self-hosted JVM emitter is in active development (see `docs/18-jvm-emission.md` and `appendix-b-quick-reference.md` §B.10). `lyric build --target jvm` works for the package shapes demonstrated in the emitter test suite. Remaining work includes: Maven publishing tooling, full async lowering (currently a blocking shim), `module-path.txt` generation, GraalVM native-image integration, and the `lyric run --target jvm` convenience wrapper. This chapter describes the intended surface; bootstrap limitations are noted inline.
 :::
 
 ## §14.1 Building for the JVM
@@ -18,7 +18,7 @@ lyric build --target jvm --manifest lyric.toml  # manifest-driven
 The output is a plain `.jar` file. Lyric JARs are standard JARs — they have a `META-INF/MANIFEST.MF`, `.class` files, and can be placed on any Java classpath. The `MANIFEST.MF` carries Lyric-specific headers that the build driver uses to identify them:
 
 ```
-Main-Class: lyric.account.Account          (only on executable packages)
+Main-Class: lyric.account.Account$Funcs    (only on executable packages)
 Lyric-Lang-Version: 0.1.0
 Lyric-Package-Name: Account
 Lyric-Package-SemVer: 1.2.0
@@ -45,10 +45,12 @@ For a package with `func main(): Unit`:
 
 ```sh
 java --module-path "$(cat target/build/module-path.txt):target/build/account.jar" \
-     --module lyric.account/lyric.account.Account
+     --module lyric.account/lyric.account.Account$Funcs
 ```
 
-`lyric build` writes `target/build/module-path.txt` listing all dependency JARs in order, including the Lyric stdlib JARs. `$()` is used because `--module-path` expects a colon-separated list of paths, not a file reference.
+::: note
+**Planned.** `lyric build` will write `target/build/module-path.txt` listing all dependency JARs in order; this ships with the Maven linking milestone. In the interim, list the required JARs on `--module-path` directly. `$()` is used because `--module-path` expects a colon-separated list of paths, not a file reference.
+:::
 
 For a self-contained executable JAR with `Main-Class` set:
 
@@ -102,7 +104,7 @@ An opaque type compiles to a final class with mangled private fields (names pref
 
 ### §14.2.4 Top-level functions
 
-Top-level Lyric functions (not inside a record or interface) become static methods on the package's primary class, named `lyric.<package>.<Package>`:
+Top-level Lyric functions (not inside a record or interface) become `public static` methods on a generated class named `<package>$Funcs` (per `docs/18-jvm-emission.md` §11.1):
 
 ```lyric
 // account.l
@@ -114,14 +116,10 @@ pub func deposit(acc: in Account, amount: in Long): Account { … }
 ```java
 // Java caller
 import lyric.account.Account;
-import lyric.account.Account$Package;     // generated host class
+import lyric.account.Account$Funcs;     // generated host class
 
-Account updated = Account$Package.deposit(original, 100L);
+Account updated = Account$Funcs.deposit(original, 100L);
 ```
-
-::: note
-The host class name (`Account$Package`) is a current bootstrap convention subject to revision. The stable, user-facing name will be documented in `docs/18-jvm-emission.md` when the full naming scheme is finalised.
-:::
 
 ## §14.3 Calling Lyric from Java
 
@@ -168,7 +166,7 @@ Non-modular projects (classpath-based) can use Lyric JARs as automatic modules w
 
 ### §14.3.3 Contracts at the boundary
 
-Lyric contracts (`requires:` / `ensures:`) are enforced at runtime for `@runtime_checked` packages. A Java caller that violates a `requires:` clause will see a `lyric.runtime.ContractViolation` thrown (a subtype of `RuntimeException`). This is intentional: the contract is not just documentation, it is enforced.
+Lyric contracts (`requires:` / `ensures:`) are enforced at runtime for `@runtime_checked` packages. A Java caller that violates a `requires:` clause will see a `lyric.runtime.ContractViolation` thrown (its exact JVM exception hierarchy is finalised in `docs/18-jvm-emission.md`). This is intentional: the contract is not just documentation, it is enforced.
 
 For `@proof_required` packages, contracts are proved at Lyric compile time. Java callers bypass the proof but still see runtime checks in debug builds.
 
