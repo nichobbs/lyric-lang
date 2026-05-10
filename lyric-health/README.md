@@ -39,6 +39,14 @@ This registers two endpoints:
 - `GET /health/live` — runs all liveness checks
 - `GET /health/ready` — runs all readiness checks
 
+## Implementation status
+
+> **Note:** The kernel dispatcher that resolves check functions by name has not
+> yet shipped.  Until it does, registered checks are **never called** — both
+> endpoints unconditionally return `{"status":"ok"}`.  Do not rely on these
+> endpoints for real health signalling until the dispatcher milestone ships
+> (see `docs/14-native-stdlib-plan.md`).
+
 ## Check function signature
 
 Check functions must have the signature:

@@ -188,7 +188,7 @@ func evictOldest(entries: inout Map[String, CacheEntry]): Unit {
   var minExpires = Long.maxValue
   for (k, e) in entries {
     val eff = if e.expiresAt == 0 then Long.maxValue else e.expiresAt
-    if eff < minExpires {
+    if minKey == "" or eff < minExpires {
       minKey     = k
       minExpires = eff
     }

@@ -2897,7 +2897,7 @@ A `lyric-db/` library is added.  It ships three packages:
   total elapsed time exceeds `thresholdMs`; carries `ensures: call.elapsed.unwrapOr(0) >= 0`).
 - `Db.Kernel.Net` — extern boundary: `Npgsql` (Postgres, `@cfg feature="postgres"`),
   `MicrosoftDataSqlite` (SQLite, `@cfg feature="sqlite"`), and the shared
-  `Lyric.Db.Native` package for query/execute/transaction operations.
+  `Db.Kernel.Ado` package for query/execute/transaction operations.
 
 **Integer handle pattern at the extern boundary.**  The kernel functions return
 `Result[Int, String]` connection and transaction IDs.  `NativeConnection` and
@@ -2916,8 +2916,9 @@ because it would require both drivers to be linked even if only one is needed.
 
 **`parseRows` is a stub.**  The kernel serialises result rows to JSON and
 `parseRows` is responsible for deserialising them to `[DbRow]`.  The function
-returns `Ok([])` today; full implementation is gated on `Std.Json` being
-finalised.
+returns `Err(DbError(code = "NOT_IMPLEMENTED"))` today so callers see the gap
+rather than silently receiving empty rows; full implementation is gated on
+`Std.Json` being finalised.
 
 **`SlowQueryAlert` carries `ensures:`.**  Same rationale as
 `Std.Logging.Aspects.SlowCallAlert` (D053): the trivially-true postcondition

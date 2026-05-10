@@ -119,6 +119,23 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | `ttlSeconds` | `Int` | `300` | Both templates |
 | `keyPrefix` | `String` | `""` | `ItemCache` only |
 
+## Shared store across aspect instantiations
+
+All templates in `Cache.Aspects` (`FunctionCache`, `ItemCache`) share a single
+module-level `InProcessCacheStore`.  If you instantiate both templates, or
+instantiate the same template twice with different TTLs, both instantiations
+read from and write to the same store.  Two instantiations with different
+`ttlSeconds` values will both write to the same key if their matched functions
+produce the same cache key; whichever `set` call runs last wins.
+
+If you need per-aspect isolation — for example, a short-TTL store for session
+data and a long-TTL store for config — write a custom aspect body that
+constructs its own `Cache.inProcess()` store rather than using a template.
+
+> **Note:** The in-process store is not thread-safe in v1.  For concurrent
+> access, use a Redis-backed `CacheStore` implementation or wait for the
+> protected-type weaver to ship.
+
 ## Custom store example
 
 ```lyric

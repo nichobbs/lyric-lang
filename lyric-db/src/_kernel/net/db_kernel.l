@@ -77,7 +77,7 @@ pub package Sqlite {
 // ─── Shared connection operations ─────────────────────────────────────────────
 
 @axiom("ADO.NET connection and command execution (driver-independent)")
-extern package Lyric.Db.Native {
+extern package Db.Kernel.Ado {
   /// Execute a parameterised query; returns JSON-serialised row array.
   pub func query(
     connId: Int,
@@ -127,39 +127,39 @@ extern package Lyric.Db.Native {
 pub func query(connId: in Int, sql: in String, params: in [String]): Result[String, String]
   requires: sql.length > 0
 {
-  Lyric.Db.Native.query(connId, sql, params)
+  Db.Kernel.Ado.query(connId, sql, params)
 }
 
 pub func execute(connId: in Int, sql: in String, params: in [String]): Result[Int, String]
   requires: sql.length > 0
 {
-  Lyric.Db.Native.execute(connId, sql, params)
+  Db.Kernel.Ado.execute(connId, sql, params)
 }
 
 pub func beginTransaction(connId: in Int): Result[Int, String] {
-  Lyric.Db.Native.beginTransaction(connId)
+  Db.Kernel.Ado.beginTransaction(connId)
 }
 
 pub func txQuery(txId: in Int, sql: in String, params: in [String]): Result[String, String]
   requires: sql.length > 0
 {
-  Lyric.Db.Native.txQuery(txId, sql, params)
+  Db.Kernel.Ado.txQuery(txId, sql, params)
 }
 
 pub func txExecute(txId: in Int, sql: in String, params: in [String]): Result[Int, String]
   requires: sql.length > 0
 {
-  Lyric.Db.Native.txExecute(txId, sql, params)
+  Db.Kernel.Ado.txExecute(txId, sql, params)
 }
 
 pub func commitTransaction(txId: in Int): Result[Unit, String] {
-  Lyric.Db.Native.commitTransaction(txId)
+  Db.Kernel.Ado.commitTransaction(txId)
 }
 
 pub func rollbackTransaction(txId: in Int): Result[Unit, String] {
-  Lyric.Db.Native.rollbackTransaction(txId)
+  Db.Kernel.Ado.rollbackTransaction(txId)
 }
 
 pub func close(connId: in Int): Unit {
-  Lyric.Db.Native.close(connId)
+  Db.Kernel.Ado.close(connId)
 }
