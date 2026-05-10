@@ -29,7 +29,7 @@ Here is the full module inventory:
 | `Std.Process` | `spawn`, `ProcessResult`, `run` |
 | `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
 | `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |
-| `Std.Logging` *(lyric-logging)* | Named loggers with six levels, structured fields, JSON output, aspect templates — chapter 22 |
+| `Std.Logging` *(service library — not in `stdlib/std/`)* | Named loggers with six levels, structured fields, JSON output, aspect templates — chapter 22; provided by the `lyric-logging` package, not the built-in stdlib |
 | `Std.Stream` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Collections` | `List[T]`, `Map[K, V]` |
 | `Std.Set` | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setUnion`, `setIntersection` |

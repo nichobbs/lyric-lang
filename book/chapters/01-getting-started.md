@@ -170,7 +170,7 @@ The other modes are `out` (the function must assign the parameter exactly once b
 
 ## The toolchain at a glance
 
-You will use four commands constantly:
+Core commands you will use constantly:
 
 | Command | What it does |
 |---------|-------------|
@@ -186,6 +186,9 @@ You will use four commands constantly:
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
+| `lyric publish` | Pack and publish the current package to a NuGet feed |
+| `lyric restore` | Restore declared NuGet/lyric.toml dependencies |
+| `lyric --sdk-info` | Print SDK root, stdlib path, and version information |
 
 `lyric fmt` is opinionated and has no configuration. The format is the format. Run it on save.
 

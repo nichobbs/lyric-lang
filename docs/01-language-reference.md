@@ -204,7 +204,7 @@ record Customer {
 }
 ```
 
-Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — selection rule **[TBD]** based on size heuristics). Records have structural equality by default. Construction:
+Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — see `docs/09-msil-emission.md` §5 for the selection rule). Records have structural equality by default. Construction:
 
 ```
 val p = Point(x = 1.0, y = 2.0)
@@ -283,7 +283,7 @@ An `opaque` declaration in the type's package specifies its existence; the body 
 
 - Clients can declare values of the type, pass them around, store them.
 - Clients cannot read fields, construct values directly, or pattern-match on representation.
-- Reflection cannot inspect the type's fields. The compiler emits the type with sealed metadata: no public properties, no exposed constructor, fields marked invisible to .NET reflection (uses `[CompilerGenerated]` + sealed attribute scheme — exact mechanism **[TBD]**).
+- Reflection cannot inspect the type's fields. The compiler emits the type with sealed metadata: no public properties, no exposed constructor, fields marked invisible to .NET reflection (uses `[CompilerGenerated]` + sealed attribute scheme — see `docs/09-msil-emission.md` §7.2).
 - The proof system can reason about the type's invariants because they're declared in the spec.
 
 Inside the package, the opaque type is an ordinary record. Authoring functions provide controlled construction and access.
@@ -314,7 +314,7 @@ Configurable surfaces:
 @projectable(version = 2)          // versioned views: UserViewV2
 ```
 
-Cycles in the projection graph require explicit `@projectionBoundary` markers — **[TBD]** exact syntax.
+Cycles in the projection graph require explicit `@projectionBoundary` markers — see `docs/03-decision-log.md` D026 for the resolved syntax.
 
 ### 2.10 Exposed records
 
@@ -600,7 +600,7 @@ async func handleTransfer(req: TransferRequest): HttpResponse {
 }
 ```
 
-`?` works on `Result[T, E]` and `T?` (nullable). For `Result`, it returns `Err(e)` from the enclosing function on `Err`. For nullable, it returns `None` (or panics if the enclosing function does not return a nullable — **[TBD]** exact rule). The signature must declare a compatible return type, or the compiler rejects the use.
+`?` works on `Result[T, E]` and `T?` (nullable). For `Result`, it returns `Err(e)` from the enclosing function on `Err`. For nullable, it returns `None` (or panics if the enclosing function does not return a nullable — see `docs/03-decision-log.md` D027 for the resolved rule). The signature must declare a compatible return type, or the compiler rejects the use.
 
 The `??` operator is null-coalescing:
 ```
@@ -649,7 +649,7 @@ func incrementAll(xs: inout slice[Int]) {
 Mode rules:
 - `out` parameters must be definitely assigned on every control-flow path before return.
 - `inout` parameters must be passed mutable bindings; immutable values cannot be passed.
-- Async functions cannot have `out` or `inout` parameters that are non-record value types crossing await points (the value would be aliased across awaits — **[TBD]** exact rule, may need refinement based on implementation).
+- Async functions cannot have `out` or `inout` parameters that are non-record value types crossing await points (the value would be aliased across awaits — see `docs/09-msil-emission.md` §11.4).
 
 ### 5.3 Return values
 
@@ -672,7 +672,7 @@ val numbers = [1, 2, 3]
 val doubled = numbers.map { x -> x * 2 }
 ```
 
-Closures capture values by reference for `var` bindings, by value for `val` bindings (this matters across thread boundaries; capturing `var` across an `async` boundary requires explicit `mut` synchronization — **[TBD]** exact mechanism).
+Closures capture values by reference for `var` bindings, by value for `val` bindings (this matters across thread boundaries; capturing `var` across an `async` boundary requires explicit `mut` synchronization — see `docs/09-msil-emission.md` §11.5).
 
 ## 6. Contracts
 
@@ -774,7 +774,7 @@ async func fetchUser(id: in UserId): User? {
 }
 ```
 
-`async func` returns a value of type `Task[T]` (compiles to .NET `Task<T>` or `ValueTask<T>` per heuristic — **[TBD]**). `await` is a postfix operation in expression position.
+`async func` returns a value of type `Task[T]` (compiles to .NET `Task<T>` or `ValueTask<T>` per heuristic — see `docs/09-msil-emission.md` §14.2). `await` is a postfix operation in expression position.
 
 ### 7.2 Cancellation
 
@@ -842,7 +842,7 @@ Semantics:
 - `entry` operations are exclusive (one at a time), may have a `when:` barrier (caller blocks until barrier is true), and may mutate state.
 - `func` operations are exclusive too — **[OPEN: should we allow concurrent reads? See 06-open-questions.md]**.
 - Barriers are re-evaluated whenever any operation completes.
-- The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (exact lowering **[TBD]**).
+- The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (see `docs/09-msil-emission.md` §17.1–17.3).
 - The invariant is checked after every entry/func returns control to the caller.
 
 ### 7.5 Raw locks
@@ -1105,7 +1105,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 ### 13.9 Package manager
 
-`lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: **[TBD]**.
+`lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
 
 ---
 

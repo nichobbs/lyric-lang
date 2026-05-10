@@ -35,13 +35,13 @@ The package declaration (`package Account`) names which package this module test
 Run the tests for a package with:
 
 ```sh
-lyric test
+lyric test <file.l>
 ```
 
 Run only tests whose names match a substring:
 
 ```sh
-lyric test --filter "debit"
+lyric test <file.l> --filter "debit"
 ```
 
 The filter matches on the full test name, including any grouping prefix you establish by convention. `--filter` accepts a plain substring, not a regex.

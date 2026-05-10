@@ -16,6 +16,7 @@
     <Compile Include="Doc.fs" />
     <Compile Include="Fmt.fs" />
     <Compile Include="SelfHostedFmt.fs" />
+    <Compile Include="SelfHostedJvm.fs" />
     <Compile Include="Lint.fs" />
     <Compile Include="TestSynth.fs" />
     <Compile Include="Program.fs" />

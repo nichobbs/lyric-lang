@@ -656,7 +656,9 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
 lyric build --aot <file.l>             # Native AOT; no .NET runtime at deployment
 lyric build --target dotnet <file.l>   # target .NET (default)
-lyric build --target jvm <file.l>      # target JVM bytecode
+lyric build --target jvm <file.l>      # selects JVM kernel bindings (_kernel_jvm/);
+                                       # full JAR emission via self-hosted JVM emitter
+                                       # (in progress — see docs/33-platform-parity-remediation.md)
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every

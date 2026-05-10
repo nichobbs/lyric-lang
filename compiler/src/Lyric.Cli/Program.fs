@@ -1165,6 +1165,33 @@ let main (argv: string array) : int =
                     nugetAssemblyPaths externShimRoot compileTarget
                     activeFeatures declaredFeatures
             if buildExit <> 0 then buildExit
+            elif compileTarget = Emitter.Jvm then
+                // After the MSIL DLL succeeds, also emit a JAR via the
+                // self-hosted JVM pipeline (Phase R4 /
+                // docs/33-platform-parity-remediation.md §5.3–5.5).
+                let source = File.ReadAllText sourcePath
+                let packageName =
+                    safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
+                let jarPath =
+                    match explicitOut with
+                    | Some o -> safeStr (Path.ChangeExtension(o, ".jar")) (o + ".jar")
+                    | None ->
+                        let dir =
+                            safeStr (Path.GetDirectoryName(Path.GetFullPath sourcePath)) "."
+                        let name =
+                            safeStr (Path.GetFileNameWithoutExtension sourcePath) "out"
+                        Path.Combine(dir, name + ".jar")
+                try
+                    let ok = SelfHostedJvm.compileToJar source jarPath packageName
+                    if ok then
+                        printfn "built %s" jarPath
+                        0
+                    else
+                        printErr (sprintf "%s: JVM self-hosted compilation failed" sourcePath)
+                        1
+                with e ->
+                    printErr (sprintf "%s: JVM bridge error: %s" sourcePath e.Message)
+                    1
             elif not aot then 0
             else
                 let nativePath =

@@ -1545,7 +1545,7 @@ satisfy.
 
 ---
 
-## D044: Self-hosted MSIL PE emitter — Stage M1 approach
+## D058: Self-hosted MSIL PE emitter — Stage M1 approach
 
 **Date:** 2026-05-07
 **Status:** Accepted
