@@ -1181,7 +1181,10 @@ let main (argv: string array) : int =
                         printErr (sprintf "%s: self-hosted MSIL compilation failed" sourcePath)
                         1
                 with e ->
-                    printErr (sprintf "%s: MSIL bridge error: %s" sourcePath e.Message)
+                    let inner = match Option.ofObj e.InnerException with
+                                | Some ie -> sprintf "%s → %s" e.Message ie.Message
+                                | None    -> e.Message
+                    printErr (sprintf "%s: MSIL bridge error: %s" sourcePath inner)
                     1
             else
             let buildExit =

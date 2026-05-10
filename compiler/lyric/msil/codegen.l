@@ -358,11 +358,11 @@ pub record FuncCtx {
   paramCount:  Int                  // number of parameters (fixed at creation)
 }
 
-// Allocate a fresh label like "L0", "L1", …
-pub func freshLabelMsil(fctx: in FuncCtx): String {
+// Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
+pub func freshLabelMsil(fctx: in FuncCtx): Int {
   val n = fctx.labelTicker.count
   fctx.labelTicker.add(0)
-  "L" + toString(n)
+  n
 }
 
 // Assign the next combined slot to `name` with MSIL type `ty`.
@@ -775,9 +775,9 @@ func lowerBinopMsil(
       insns.add(MBrFalse(label = falseL))
       insns.add(MLdcI4(v = 1))
       insns.add(MBr(label = afterL))
-      insns.add(MLabel(name = falseL))
+      insns.add(MLabel(id =falseL))
       insns.add(MLdcI4(v = 0))
-      insns.add(MLabel(name = afterL))
+      insns.add(MLabel(id =afterL))
       MBool
     }
     // Boolean short-circuit OR.
@@ -790,9 +790,9 @@ func lowerBinopMsil(
       insns.add(MBrTrue(label = trueL))
       insns.add(MLdcI4(v = 0))
       insns.add(MBr(label = afterL))
-      insns.add(MLabel(name = trueL))
+      insns.add(MLabel(id =trueL))
       insns.add(MLdcI4(v = 1))
-      insns.add(MLabel(name = afterL))
+      insns.add(MLabel(id =afterL))
       MBool
     }
     // Comparison operators — produce 0 or 1.
@@ -925,10 +925,10 @@ func lowerBinopMsil(
       insns.add(MDup)
       insns.add(MBrFalse(label = nullL))
       insns.add(MBr(label = afterL))
-      insns.add(MLabel(name = nullL))
+      insns.add(MLabel(id =nullL))
       insns.add(MPop)
       lowerExprMsil(cctx, fctx, insns, rhs)
-      insns.add(MLabel(name = afterL))
+      insns.add(MLabel(id =afterL))
       lhsTy
     }
     case BImplies -> {
@@ -939,9 +939,9 @@ func lowerBinopMsil(
       insns.add(MBrFalse(label = trueL))   // if lhs false, result is true
       lowerExprMsil(cctx, fctx, insns, rhs)
       insns.add(MBr(label = afterL))
-      insns.add(MLabel(name = trueL))
+      insns.add(MLabel(id =trueL))
       insns.add(MLdcI4(v = 1))
-      insns.add(MLabel(name = afterL))
+      insns.add(MLabel(id =afterL))
       MBool
     }
   }
@@ -982,13 +982,13 @@ func lowerIfExprMsil(
   match elseBranchOpt {
     case Some(elseBranch) -> {
       insns.add(MBr(label = afterL))
-      insns.add(MLabel(name = elseL))
+      insns.add(MLabel(id =elseL))
       lowerExprOrBlockMsil(cctx, fctx, insns, elseBranch)
-      insns.add(MLabel(name = afterL))
+      insns.add(MLabel(id =afterL))
       thenTy
     }
     case None -> {
-      insns.add(MLabel(name = elseL))
+      insns.add(MLabel(id =elseL))
       thenTy
     }
   }
@@ -1168,7 +1168,7 @@ func lowerMatchExprMsil(
       resultTy = armTy
     }
     insns.add(MBr(label = afterL))
-    insns.add(MLabel(name = nextArmL))
+    insns.add(MLabel(id =nextArmL))
     i = i + 1
   }
 
@@ -1178,7 +1178,7 @@ func lowerMatchExprMsil(
   insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
   insns.add(MThrow)
 
-  insns.add(MLabel(name = afterL))
+  insns.add(MLabel(id =afterL))
   resultTy
 }
 
@@ -1190,7 +1190,7 @@ func lowerPatternTestMsil(
   pat:        in Pattern,
   scrutSlot:  in Int,
   scrutTy:    in MsilType,
-  failLabel:  in String
+  failLabel:  in Int
 ): Unit {
   match pat.kind {
     case PWildcard -> {}
@@ -1254,11 +1254,11 @@ func lowerPatternTestMsil(
         lowerPatternTestMsil(cctx, fctx, insns, patterns[ai],
                              scrutSlot, scrutTy, nextAltL)
         insns.add(MBr(label = succeedL))
-        insns.add(MLabel(name = nextAltL))
+        insns.add(MLabel(id =nextAltL))
         ai = ai + 1
       }
       insns.add(MBr(label = failLabel))
-      insns.add(MLabel(name = succeedL))
+      insns.add(MLabel(id =succeedL))
     }
     case PError -> {}
   }
@@ -1514,7 +1514,7 @@ func lowerBuiltinOrStaticCallMsil(
         insns.add(MLdStr(token = failTok))
       }
       emitMsilPanicFromStack(cctx, insns)
-      insns.add(MLabel(name = skipL))
+      insns.add(MLabel(id =skipL))
     }
     MVoid
   } else if funcName == "toString" {
@@ -1719,7 +1719,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             case None -> {
               val slot = allocSlotMsil(fctx, name, ty)
               match ty {
-                case MLong   -> { insns.add(MLdcI8(v = 0L)); emitStoreSlot(insns, slot, fctx.paramCount) }
+                case MLong   -> { insns.add(MLdcI8(v = intToLong(0))); emitStoreSlot(insns, slot, fctx.paramCount) }
                 case MDouble -> { insns.add(MLdcR8(v = 0.0)); emitStoreSlot(insns, slot, fctx.paramCount) }
                 case MVoid   -> {}
                 case _       -> { insns.add(MLdcI4(v = 0)); emitStoreSlot(insns, slot, fctx.paramCount) }
@@ -1756,12 +1756,12 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     case SWhile(_, cond, body) -> {
       val loopL  = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      insns.add(MLabel(name = loopL))
+      insns.add(MLabel(id =loopL))
       lowerExprMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
       lowerBlockMsil(cctx, fctx, insns, body)
       insns.add(MBr(label = loopL))
-      insns.add(MLabel(name = afterL))
+      insns.add(MLabel(id =afterL))
     }
 
     // ── For loop (bootstrap: stub) ────────────────────────────────────────────
@@ -1772,7 +1772,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     // ── Loop (unconditional) ──────────────────────────────────────────────────
     case SLoop(_, body) -> {
       val loopL2 = freshLabelMsil(fctx)
-      insns.add(MLabel(name = loopL2))
+      insns.add(MLabel(id =loopL2))
       lowerBlockMsil(cctx, fctx, insns, body)
       insns.add(MBr(label = loopL2))
     }
@@ -1874,7 +1874,7 @@ func lowerTryCatchMsil(
   while i < catches.count {
     val c = catches[i]
     val handlerL = freshLabelMsil(fctx)
-    insns.add(MLabel(name = handlerL))
+    insns.add(MLabel(id =handlerL))
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -2092,9 +2092,6 @@ func isMainFuncMsil(decl: in FunctionDecl): Bool {
 pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   val pkgSegs = file.packageDecl.path.segments
   val pkgName = joinSegsMsil(pkgSegs, ".")
-
-  // Pre-scan to populate token maps.
-  addPackageTokens(cctx, file, pkgName)
 
   val fns:   List[MFunc]        = newList()
   val items: List[MPackageItem] = newList()

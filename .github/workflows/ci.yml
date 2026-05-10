@@ -198,6 +198,9 @@ jobs:
               dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex" --allow-unverified
             else
               echo "=== build $ex ==="
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force
+              # Use --target dotnet-legacy (F# bootstrap emitter) for smoke tests.
+              # The self-hosted MSIL path (--target dotnet, the default) is still
+              # experimental; the MSIL self-test suite (M1–M83) validates its PE layer.
+              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force --target dotnet-legacy
             fi
           done
