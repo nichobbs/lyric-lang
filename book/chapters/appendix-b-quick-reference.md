@@ -641,6 +641,17 @@ output_assembly = "myapp.dll"
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
+### Service libraries (separate packages, not in stdlib)
+
+| Library | Package(s) | Purpose | Chapter |
+|---|---|---|---|
+| `lyric-logging` | `Std.Logging`, `Std.Logging.Aspects` | Named loggers, six levels, JSON/text output, aspect templates | 22 |
+| `lyric-web` | `Web`, `Web.OpenApi`, `Web.Aspects` | HTTP server (code-first + spec-first), `ApiError`, aspect templates | 23 |
+| `lyric-cache` | `Cache`, `Cache.Aspects` | In-process TTL cache, `CacheStore` interface, aspect templates | 24 |
+| `lyric-db` | `Db`, `Db.Aspects` | PostgreSQL/SQLite access, `DbConnection` interface, aspect templates | 25 |
+| `lyric-health` | `Health` | Liveness/readiness health-check endpoints for `lyric-web` | 26 |
+| `lyric-otel` | `OTel` | OpenTelemetry tracing, metrics, and request logging | 19 |
+
 ---
 
 ## B.10 CLI commands
