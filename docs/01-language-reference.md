@@ -1115,7 +1115,7 @@ An `aspect` block is a module-scope item that declares cross-cutting behaviour a
 
 ### 14.1 Aspect declaration
 
-```
+```ebnf
 aspect <Name> {
   matches: name like "<glob>"
 
@@ -1135,7 +1135,7 @@ An aspect must define at least one of: an `around` advice body, a `requires:` cl
 
 **`matches:`** selects which functions the aspect applies to. `name like "<glob>"` matches on the function's short (unqualified) name. Glob metacharacters: `*` (any sequence), `?` (any single character), `[abc]` (character set), `[a-z]` (character range).
 
-Matching aspects are package-private: they weave over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template (deferred; see §14.5).
+Matching aspects are package-private: they weave over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template (deferred; see §14.7).
 
 ### 14.2 The `around` advice body
 
@@ -1147,7 +1147,7 @@ around(args) -> ret {
 }
 ```
 
-`args` is a placeholder for the matched function's original arguments, forwarded to `proceed(args)`. `proceed(args)` calls the matched function and returns its return value. `ret` names the target's return type; the body's last expression is the return value (implicit for `Unit`).
+`args` is a placeholder for the matched function's original arguments, forwarded to `proceed(args)`. `proceed(args)` calls the matched function and returns its return value. `ret` is the binding name for the return value; its type equals the matched target's return type. The body's last expression is the return value (implicit for `Unit`).
 
 `proceed(args)` may be called zero times (skip/replace semantics), once (standard wrapper), or multiple times (retry, loop). It may appear anywhere in the body — top-level, inside `if`/`match`, inside `while`/`for` loops, inside `try` blocks.
 
@@ -1160,7 +1160,7 @@ Default order is lexical declaration order (first-declared is outermost). Overri
 - **`wraps: OtherAspect`** — this aspect is placed outside `OtherAspect` (runs first).
 - **`inside: OtherAspect`** — this aspect is placed inside `OtherAspect` (runs after).
 
-Multiple names may appear in a single `wraps:` or `inside:` clause, comma-separated. The compiler resolves ordering at build time; cycles are a compile error (A0007).
+Multiple names may appear in a single `wraps:` or `inside:` clause, comma-separated. The compiler resolves ordering at build time; cycles are a compile error (A0008).
 
 ### 14.4 Contract augmentation
 
@@ -1181,18 +1181,21 @@ The aspect name in `@no_aspect("Name")` is a string literal matching the aspect'
 
 | Code | Meaning |
 |------|---------|
-| A0007 | Cycle in aspect ordering constraints (`wraps:`/`inside:`) |
-| A0008 | Aspect ordering constraint references an unknown aspect name |
+| A0007 | Two aspects' `matches:` overlap on a target with no explicit ordering constraint |
+| A0008 | Cycle in `wraps:`/`inside:` ordering graph |
 | A0009 | Aspect defines neither `around` advice nor any contract clause |
+| A0013 | `wraps:`/`inside:` references an aspect not declared in the package |
+
+A0007 and A0008 are specified but not yet emitted by the current compiler (the weaver records `wraps:`/`inside:` in the AST but does not yet perform conflict or cycle analysis). A0009 is emitted. A0013 is emitted when the named aspect is not found.
 
 ### 14.7 Bootstrap limitations (current milestone)
 
-The following are specified but not yet implemented:
+The following are specified but not yet fully woven:
 
-- The `call` ambient value (`call.shortName`, `call.elapsed`, etc.) inside the around body.
-- `config {}` blocks in aspects.
-- `except name in { ... }` exclusion clause inside `matches:`.
-- `pub aspect` templates and consumer-side instantiation (`aspect X from Pkg.Y`).
+- The `call` ambient value (`call.shortName`, `call.elapsed`, etc.) inside the around body — not yet parsed or woven.
+- `config {}` blocks in aspects — parsed by the compiler but the weaver does not act on them.
+- `except name in { ... }` exclusion clause inside `matches:` — not yet parsed.
+- `pub aspect` templates and consumer-side instantiation (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver does not act on them.
 
 ---
 

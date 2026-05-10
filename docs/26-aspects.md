@@ -184,13 +184,13 @@ A function can opt out of all aspects, or specific ones, via an
 annotation:
 
 ```lyric
-@no_aspect                    // opt out of every aspect in this package
+@no_aspect                      // opt out of every aspect in this package
 func handleSensitive(...)
 
-@no_aspect(Logging)           // opt out of Logging only
+@no_aspect("Logging")           // opt out of Logging only
 func handleHotPath(...)
 
-@no_aspect(Logging, Timing)   // opt out of multiple
+@no_aspect("Logging", "Timing") // opt out of multiple
 func handleFastInner(...)
 ```
 
