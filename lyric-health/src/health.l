@@ -155,12 +155,19 @@ pub func registerRoutes(router: in Web.Router, registry: in HealthRegistry): Web
 
 /// Built-in liveness handler.  Runs all `CheckGroup.Liveness` checks and
 /// returns the aggregated JSON response.
+///
+/// WARNING: `pub` visibility is required so the kernel dispatcher can resolve
+/// this function by name.  Do not call it directly from application code.
+/// Until the kernel dispatcher ships, `runChecks` is a stub that always
+/// returns `{"status":"ok"}` regardless of registered checks — see below.
 pub func __handleLiveness(): Result[String, Web.ApiError] {
   return runChecks(CheckGroup.Liveness)
 }
 
 /// Built-in readiness handler.  Runs all `CheckGroup.Readiness` checks and
 /// returns the aggregated JSON response.
+///
+/// WARNING: same caveats as `__handleLiveness`; stub returns ok unconditionally.
 pub func __handleReadiness(): Result[String, Web.ApiError] {
   return runChecks(CheckGroup.Readiness)
 }
@@ -168,16 +175,20 @@ pub func __handleReadiness(): Result[String, Web.ApiError] {
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 // Run all checks for the given group and build a JSON response string.
+//
+// NOT YET FUNCTIONAL: this is a stub that always returns {"status":"ok"}.
+// Registered checks are NOT executed.  The kernel dispatcher (pending milestone)
+// will resolve each handlerName via DLL reflection and call the actual check
+// functions.  Until that milestone ships, all endpoints unconditionally report
+// healthy regardless of what checks were registered.  See docs/14.
 func runChecks(group: in CheckGroup): Result[String, Web.ApiError] {
-  // The kernel injects the registry at server startup.
-  // Checks are resolved by handlerName via DLL reflection.
-  // This function is a stub; the kernel will call the actual check functions
-  // and populate the response.  See the dispatch model in docs/14.
   return Ok("{\"status\":\"ok\",\"checks\":{}}")
 }
 
 // Attach the registry to the router so the kernel knows which checks to run.
-// This stores the registry as a special route annotation.
+//
+// NOT YET FUNCTIONAL: the registry is silently dropped until the router
+// supports arbitrary route annotations (tracked as a follow-up milestone).
 func attachRegistry(router: in Web.Router, registry: in HealthRegistry): Web.Router {
   // TODO: encode registry into router metadata once the router supports
   //       arbitrary route annotations (tracked as a follow-up milestone).

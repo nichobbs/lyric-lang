@@ -7,12 +7,19 @@ Liveness and readiness health-check endpoints for Lyric web services.
 ```lyric
 import Health
 import Web
+import Db
 
-func checkDb(conn: in DbConnection): Result[Unit, String] {
-  match conn.execute("SELECT 1", []) {
-    case Ok(_) -> Ok(())
+func checkDb(): Result[Unit, String] {
+  val conn = match Db.connectPostgres() {
+    case Ok(c)  -> c
+    case Err(e) -> return Err("connect: " + e.message)
+  }
+  val result = match conn.execute("SELECT 1", []) {
+    case Ok(_)  -> Ok(())
     case Err(e) -> Err("db: " + e.message)
   }
+  conn.close()
+  return result
 }
 
 func main(): Unit {

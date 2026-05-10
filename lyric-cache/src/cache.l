@@ -80,7 +80,7 @@ impl CacheStore for InProcessCacheStore {
         if entry.expiresAt == 0 or entry.expiresAt > nowMs {
           Some(entry.value)
         } else {
-          entries.remove(key)
+          // Do not mutate here; expired entry cleaned up on next set() call.
           None
         }
       case None -> None
@@ -91,7 +91,7 @@ impl CacheStore for InProcessCacheStore {
     val nowMs   = Std.Time.SystemClock.now().toEpochMillis()
     val expires = if ttlSeconds == 0 then 0 else nowMs + (ttlSeconds * 1000)
     if entries.count >= maxEntries {
-      evictOldest()
+      evictOldest(entries)
     }
     entries.set(key, CacheEntry(value = value, expiresAt = expires))
   }
@@ -182,11 +182,11 @@ pub func clear(store: in CacheStore): Unit {
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 // Remove the entry with the lowest expiresAt (or any entry when all are no-expiry).
-func evictOldest(store: inout InProcessCacheStore): Unit {
-  val nowMs = Std.Time.SystemClock.now().toEpochMillis()
+// Takes entries as inout so the caller (set()) can pass the var field directly.
+func evictOldest(entries: inout Map[String, CacheEntry]): Unit {
   var minKey     = ""
   var minExpires = Long.maxValue
-  for (k, e) in store.entries {
+  for (k, e) in entries {
     val eff = if e.expiresAt == 0 then Long.maxValue else e.expiresAt
     if eff < minExpires {
       minKey     = k
@@ -194,6 +194,6 @@ func evictOldest(store: inout InProcessCacheStore): Unit {
     }
   }
   if minKey.length > 0 {
-    store.entries.remove(minKey)
+    entries.remove(minKey)
   }
 }

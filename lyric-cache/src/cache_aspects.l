@@ -48,6 +48,11 @@ var store = Cache.inProcess()
 /// suitable for functions whose return value does not depend on their
 /// arguments (e.g. config loaders, feature-flag fetchers).
 ///
+/// **Type constraint:** apply only to functions returning `Result[String, E]`.
+/// The `Ok` value is stored in the cache directly as a `String`.  For
+/// functions returning other types, use a custom aspect body that serialises
+/// the value before calling `Cache.setWithTtl`.
+///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled    Bool — master switch (default: true)
 ///   ttlSeconds Int  — per-entry TTL in seconds; 0 = no expiry (default: 300)
@@ -87,6 +92,10 @@ pub aspect FunctionCache {
 /// so it can read `args.cacheKey` from the concrete handler parameter list.
 /// Apply only to handlers that declare a `cacheKey: String` parameter;
 /// the compiler reports shape error A0042 otherwise.
+///
+/// **Type constraint:** apply only to handlers returning `Result[String, E]`.
+/// The `Ok` value is stored as a `String` in the cache.  For handlers
+/// returning other types, use a custom aspect body that serialises the value.
 ///
 /// The effective key is `keyPrefix + args.cacheKey`.  Only `Ok` results are
 /// cached; `Err` results pass through without caching.

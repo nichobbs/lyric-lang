@@ -234,9 +234,10 @@ pub func connectSqlite(): Result[DbConnection, DbError] {
 // Format: [{"col1":"val1","col2":"val2",...}, ...]
 // All values arrive as strings; numeric/bool parsing is left to the consumer.
 func parseRows(json: in String): Result[[DbRow], DbError] {
-  // TODO: implement JSON → [DbRow] parsing using Std.Json once
-  //       the kernel serialisation format is finalised (v1 milestone).
-  //       Returns an empty slice in the stub; the kernel will be responsible
-  //       for encoding rows as JSON before this function is called.
-  return Ok([])
+  // NOT YET IMPLEMENTED: returns Err so callers see the gap rather than
+  // silently receiving empty rows.  Full implementation depends on
+  // Std.Json finalisation (v1 milestone).
+  return Err(DbError(
+    message = "parseRows not yet implemented: JSON row parsing pending Std.Json finalisation",
+    code    = "NOT_IMPLEMENTED"))
 }
