@@ -109,7 +109,8 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stage M30 — `unbox_any` (value-type unboxing): `msil_self_test_m30.l` builds a PE whose `Main()` boxes 42 via `box` (0x8C), then unboxes it back to Int32 via `unbox_any` (0xA5) with TypeRef[3]=System.Int32 (token 0x01000003), and calls `Console.WriteLine(int)`; completes the box / isinst / castclass / unbox_any quartet; CLR prints `42` | **Shipped** (this branch) | D-progress-169 |
 | MSIL PE emitter Stages M31–M83 — 53 additional opcodes: `ldftn` + delegate (M31), `initobj` (M32), `ldtoken` + GetTypeFromHandle (M33), `sizeof` (M34/M50), `tail.` prefix (M35/M52), `ldind.i4`/`stind.i4` (M36), `ldelema` (M37), `add.ovf`/`sub.ovf`/`mul.ovf` (M38), `conv.ovf.i4`/`conv.ovf.i8` (M39), `volatile.` prefix (M40/M51), `conv.ovf.*.un` family (M41), `stind.i1`/`i2`/`ldind.u1`/`i2` (M42), `localloc` (M43), `conv.r.un`/`ckfinite` (M44), `initblk`/`cpblk` (M45), `conv.i1`/`i2` (M46), `conv.i`/`conv.u` (M47), `stind.i`/`ldind.i` (M48), typed `ldelem.i4`/`stelem.i4` (M49), bitwise/unary/shift/remainder/stack misc (M56–M60), overflow arith + int/float conversions + misc loads (M61–M65), checked conversions + float literal loads (M66–M70), `div`/signed branches/unsigned branches/`ldc.i4` variants/`ldloc`/`stloc` forms (M71–M75), `ldloca.s` + selective `ldind` families + `ldarg.2-3/s/a` + `starg.s` (M76–M79), `cgt`/`clt`/`conv.r.un` + typed `stelem`/`ldelem` (M80–M82), `constrained.`/`ldvirtftn`/`ldsflda` (M83) | **Shipped** | D-progress-170..D-progress-205 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
-| M5.2 stage 3+ — monomorphizer / MSIL emitter | Not shipped | — |
+| M5.2 stage 3a — self-hosted MSIL PE / opcode / tables layer (M1–M83) | **Shipped** | D-progress-213..D-progress-219 |
+| M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`) | Not shipped | D-progress-232 (planned) |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 |
 
 ### Phase 2 — type system completion (in progress)
@@ -195,7 +196,7 @@ deferred to Phase 3 by design.
 | M4.1 — VC skeleton, arithmetic, range encoding, axiom registration, mode-dispatch, `lyric prove` CLI | **Shipped** | D-progress-085 |
 | M4.2 — loop encoding (establish/preserve/conclude), V0005 invariant gate, var SSA, datatype encoding (record/union/opaque), `EMember` field selectors, `@pure` unfold, persistent z3 + content-hashed goal cache, cross-package contract reading + V0001 level-violation diagnostic | **Shipped** | D-progress-089 (PR #90) |
 | M4.2 — quantifiers (`forall`/`exists`), trigger inference, V0006 decidable-fragment enforcement | **Shipped** | (V0006 in `ModeCheck.fs`; `TForall`/`TExists` in `Vcir.fs`; `EForall`/`EExists` translation in `VCGen.fs`) |
-| M4.2 — `std.core.proof` standard-library subpackage | **Shipped** | D-progress-091 (`compiler/lyric/std/core_proof.l`; 9/9 obligations self-discharge under the trivial checker) |
+| M4.2 — `std.core.proof` standard-library subpackage | **Shipped** | D-progress-091 (`stdlib/std/core_proof.l`; 9/9 obligations self-discharge under the trivial checker) |
 | M4.2 — `--allow-unverified` CLI flag (escape hatch on `unknown`) | **Shipped** | D-progress-091 (`Driver.ProveOptions`; CLI wires `lyric prove --allow-unverified`; V0007 downgraded to warning, V0008 stays an error) |
 | M4.2 — 200-test verification regression suite | **Shipped** | D-progress-091 (216 passing in `Lyric.Verifier.Tests`; the one z3-only failure is environment-gated and predates this milestone) |
 | M4.3 — counterexample reporting + trace reconstruction + suggestion heuristics | **Shipped** | D-progress-114 (M4.1 model bindings + M4.2 falsified-hypothesis / falsified-conclusion lines + M4.3 boundary `requires:` suggestions in `Driver.suggestRequiresClauses`; surfaced in V0008 messages, `--json` `goals[].suggestions`, and LSP proof-failure hovers; six unit tests in DriverTests cover the heuristic) |
@@ -948,7 +949,7 @@ the enclosing statement).  Mechanically additive when needed.
 
 ---
 
-### D-progress-141: MSIL PE emitter Stages M2a–M2d — parameterized heap/opcode/table/layout pipeline
+### D-progress-213: MSIL PE emitter Stages M2a–M2d — parameterized heap/opcode/table/layout pipeline
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -1008,7 +1009,7 @@ token, method tiny header, ldstr opcode + token, BSJB magic, stream count).
 
 ---
 
-### D-progress-142: MSIL PE emitter Stage M3 — end-to-end CLR execution test
+### D-progress-214: MSIL PE emitter Stage M3 — end-to-end CLR execution test
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -1050,7 +1051,7 @@ MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3).
 
 ---
 
-### D-progress-143: MSIL PE emitter Stage M4 — multi-method PE assembler
+### D-progress-215: MSIL PE emitter Stage M4 — multi-method PE assembler
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -1089,7 +1090,7 @@ MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4).
 
 ---
 
-### D-progress-144: MSIL PE emitter Stage M5 — local variables / fat method header
+### D-progress-216: MSIL PE emitter Stage M5 — local variables / fat method header
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -1133,7 +1134,7 @@ MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5).
 
 ---
 
-### D-progress-145: MSIL PE emitter Stage M6 — method arguments and non-void return
+### D-progress-217: MSIL PE emitter Stage M6 — method arguments and non-void return
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -1176,7 +1177,7 @@ MSIL self-tests pass (M1, M2a, M2b, M2c, M2d, M3, M4, M5, M6).
 
 ---
 
-### D-progress-146: MSIL PE emitter Stage M7 — static fields
+### D-progress-218: MSIL PE emitter Stage M7 — static fields
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -1213,7 +1214,7 @@ MSIL self-tests pass (M1, M2a–M2d, M3, M4, M5, M6, M7).
 
 ---
 
-### D-progress-147: MSIL PE emitter Stage M8 — newobj + instance fields
+### D-progress-219: MSIL PE emitter Stage M8 — newobj + instance fields
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -4141,7 +4142,7 @@ fix is reusable: any future direct-extern against a closed generic
 BCL type (e.g. `Task\`1`, `Task\`2.ContinueWith`, `IDictionary\`2`
 overloads) from a non-generic Lyric function now Just Works.
 
-### D-progress-113: Phase 4 — M4.3 deliverables status flip
+### D-progress-236: Phase 4 — M4.3 deliverables status flip
 
 *claude/review-phase-4-5-items-bRPXA branch.*  M4.3 deliverables
 were *largely landed in code* across earlier branches but the
@@ -4630,7 +4631,7 @@ lookups), partially offset by the ~28-line
 * Bucket B follow-ups (`RandomHost` / `CancelHost` direct-extern;
   Bucket D `Jvm*` split-out) ship as subsequent Phase 1 PRs.
 
-### D-progress-105: JVM self-tests B90-B96 — Java 21 StackMapTable, higher-level lowering helpers, float-opcode fix, reader round-trip
+### D-progress-237: JVM self-tests B90-B96 — Java 21 StackMapTable, higher-level lowering helpers, float-opcode fix, reader round-trip
 
 *claude/fix-bytecode-emitter-37pZc branch.*  Seven new JVM self-tests
 exercise the higher-level `Jvm.Lowering` helpers and round out the
@@ -4675,6 +4676,101 @@ All seven F# driver tests follow the standard pattern: locate the
 stdout against expected lines (and for B91-B95 also `runJar` the
 produced JAR under `java -jar`).  Both the `.l` sources and the
 `.fs` drivers are registered in the `.fsproj` / `Program.fs`.
+
+### D-progress-238: Platform-parity remediation — docs audit + JVM kernel shims + Msil.Lowering
+
+*claude/review-docs-platform-parity-UuNIO branch.*  Addresses the
+audit findings in `docs/33-platform-parity-remediation.md` (Phases
+R1–R5):
+
+**R1 — docs/book audit fixes.**  Corrected twelve doc errors and five
+book errors surfaced by the audit: grammar.ebnf `for-in` statement
+syntax; D044 duplicate entry in the decision log; language-reference
+`[TBD]` items for `--features` flags and the `lyric prove` exit codes;
+out-of-scope entry for JVM emission (moved from "out-of-scope" to
+"in-scope"); test-runner-plan Band D2 stale wording; todo-plan stale
+JVM items.  Book fixes: appendix-B `--target jvm` description, aspect
+template invocation, `lyric test` invocation example, toolchain table
+JVM row, `Std.Logging` footnote about JVM support.
+
+**R2 — duplicate D-progress renumbering.**  D-progress entries
+141–147 (originally two unrelated series) were de-duplicated: the
+MSIL phase entries became 213–219; the tier-6 entries 141–143 became
+220–222; the service-library entries 202–205 became 223–226.
+
+**R3 — JVM kernel shim stubs.**  Three new kernel shim files cover
+JVM-specific host access that the `.NET` path delivers via BCL
+externs:
+* `stdlib/std/_kernel_jvm/file_host.l` — `readFileText`,
+  `writeFileText`, `fileExists`, `readFileBytes`, `writeFileBytes`,
+  `dirExists`, `createDirAll`.
+* `stdlib/std/_kernel_jvm/process_host.l` — `processExit`,
+  `processGetEnv`, `processArgs`, `processExecCapture`.
+* `stdlib/std/_kernel_jvm/unicode_host.l` — `unicodeCategory`,
+  `isUppercase`, `toLowercaseChar`, `toUppercaseChar`, `isXidStart`,
+  `isXidContinue`.
+
+**R4/R5 — `Msil.Lowering` self-hosted MSIL lowering.**  New Lyric
+package `compiler/lyric/msil/lowering.l` (`package Msil.Lowering`,
+839 lines) — the high-level AST-to-MSIL-IR lowering stage that mirrors
+`Jvm.Lowering` for the .NET target.  Defines `MsilType` (12 cases),
+`MInsn` (~45 instruction cases), and `MRecord / MFunc / MPackage` IR
+types.  Entry point `lowerMPackage(file, pkgName): MPackage` walks the
+`SourceFile` AST and produces the MSIL package IR ready for PE
+emission.  Phase R6 (`Msil.Codegen` → `Msil.Bridge` → F# bridge) is
+a follow-up; the stub `compiler/lyric/msil/bridge.l` panics with a
+descriptive message directing callers to the Phase R6 plan.
+
+### D-progress-239: Jvm.Codegen + Jvm.Bridge — self-hosted JVM end-to-end pipeline
+
+*claude/review-docs-platform-parity-UuNIO branch.*  Completes the
+JVM self-hosted compilation pipeline (Phase R4 deliverable):
+
+**`compiler/lyric/jvm/codegen.l`** (`package Jvm.Codegen`, ~2230
+lines) — bootstrap-grade AST-to-`LPackage` lowering.  Walks a
+`SourceFile` from `Lyric.Parser` and produces an `LPackage` for
+`Jvm.Lowering.lowerPackage`.  Key sections:
+* `FuncCtx` record + `allocSlot` / `lookupSlot` / `freshLabel` slot /
+  label management.
+* `typeExprToJvm` — maps `Int→JInt`, `Long→JLong`, `Bool→JBoolean`,
+  `String→JRef("java/lang/String")`, user types → `JRef(pkgName+"/"+seg)`.
+* `emitLoad` / `emitStore` / `emitReturn` — type-dispatched helpers.
+* `lowerExpr` — covers all `ExprKind` cases: literals (int, long,
+  double, bool, string, char, unit), path references, binops (arith +
+  comparison + logical), calls (builtins + static), member access,
+  if/else, while, match, record construction, string interpolation.
+* Builtin call handling: `println`, `print`, `panic`, `assert`,
+  `toString`, `newList`, `newMap`, `mapGet`, `format1..4`, `default`,
+  numeric conversion helpers.
+* `lowerStmt` — local bindings, return, while, for-in, assignment,
+  try/catch, scope.
+* `lowerFunc`, `lowerRecord`, `lowerUnion` — top-level item lowering.
+* `codegenPackage(file)` — main entry point; synthesises a JVM-main
+  wrapper (`main(String[])→void`) if the Lyric source has a
+  `main():Unit` function.
+
+**`compiler/lyric/jvm/bridge.l`** (`package Jvm.Bridge`) — public
+entry point `compileToJar(source, outputPath, packageName): Bool`.
+Chains `parse → error-check → codegenPackage → lowerPackage →
+serializeClassWithPool → writeJarFromClasses`.  Imports
+`Lyric.Lexer` for `DiagError`/`DiagWarning` severity matching.
+
+**`compiler/src/Lyric.Cli/SelfHostedJvm.fs`** — F# bridge from the
+`lyric` CLI to `Jvm.Bridge`.  Follows the same reflection pattern as
+`SelfHostedFmt.fs`: compiles a throwaway driver program to trigger the
+emitter's stdlib precompile, loads `Lyric.Jvm.Bridge.dll` from the
+stdlib cache via `Assembly.LoadFrom`, reflects out the static
+`compileToJar(string,string,string):bool` method, and caches the
+resulting delegate process-wide.
+
+**`Program.fs` + `Lyric.Cli.fsproj` wiring** — `lyric build --target
+jvm` now routes through `SelfHostedJvm.compileToJar` after the normal
+MSIL build succeeds.  The JAR path defaults to
+`<source-stem>.jar` beside the source file, or uses `--output` with a
+`.jar` extension.  `Lyric.Cli.fsproj` gains `<Compile
+Include="SelfHostedJvm.fs" />` after `SelfHostedFmt.fs`.
+
+All 750 emitter tests and 158 CLI tests pass with zero failures.
 
 ---
 
@@ -5582,7 +5678,7 @@ M4.2 deliverables flagged "Not shipped" in D-progress-090 so the
 Phase 4 status table can flip them all to **Shipped**.
 
 **1 — `Std.Core.Proof` standard-library subpackage.** New
-`compiler/lyric/std/core_proof.l`, mapped to package `Std.Core.Proof`
+`stdlib/std/core_proof.l`, mapped to package `Std.Core.Proof`
 via the existing `Std.X.Y → x_y.l` resolver convention
 (`Emitter.fs:4258-4315`). Bootstrap-grade scope: identity witnesses
 (`identity`, `pickFirst`/`pickSecond`, generic over T/U), Boolean
@@ -7082,7 +7178,7 @@ array literals `[1, 2, 3]` to functions declared `(xs: in slice[Int])`, and
 **5. LYRIC_STD_PATH environment variable.**  Both the emitter's stdlib
 resolver (`locateStdlibFile`) and the CLI's build-cache fingerprinter
 (`BuildCache.locateStdlibFiles`) now check `LYRIC_STD_PATH` before walking
-up the directory tree.  Setting this variable to the `compiler/lyric/std/`
+up the directory tree.  Setting this variable to the `stdlib/std/`
 directory lets the compiler find stdlib sources in out-of-tree or installed
 setups without requiring the repo layout.
 
@@ -7445,7 +7541,7 @@ mirrors the imported-call shape — `TyFunction`, `TyArray`, `TyNullable`,
 `TyTuple` all bind position-wise like the existing `TyUser` / `TySlice`
 cases.
 
-**Iter additions.**  Five allocating helpers in `compiler/lyric/std/iter.l`
+**Iter additions.**  Five allocating helpers in `stdlib/std/iter.l`
 all built on `List[T]` from `Std.Collections` with `.toArray()` at the
 end:
 
@@ -7930,7 +8026,7 @@ Emitter 313, Lsp 5.
 gaps documented in `docs/10-stdlib-plan.md` Phase 5: calendar
 arithmetic, epoch-to-Instant conversion, and IANA timezone lookup.
 
-**New surface in `compiler/lyric/std/time.l`.**
+**New surface in `stdlib/std/time.l`.**
 
 ```lyric
 addMonths(t: in Instant, n: in Int): Instant      // BCL day-of-month-preserving
@@ -9375,7 +9471,7 @@ no symbol table knows about; `codegenErr` then surfaces a
 fallback `obj` static type, and downstream `EAwait` crashes
 trying to find `Object.GetAwaiter`.
 
-**Fix.**  Refactor `compiler/lyric/std/http_host.l` to declare
+**Fix.**  Refactor `stdlib/std/_kernel/http_host.l` to declare
 each host primitive as a top-level `pub func` with an
 `@externTarget("Lyric.Stdlib.HttpClientHost.<Member>")`
 annotation.  Each one routes to a new
@@ -9854,7 +9950,7 @@ All 351 emitter tests pass (was 350; +1 new).
 ### D-progress-039: Std.Time expansion — comparison + duration arithmetic + ISO-8601 formatting
 *claude/c2-async-implementation-ZGU95 branch.*  Closes a deferred
 follow-up from D-progress-027 (initial Std.Time C5 / Tier 1.3
-work).  New surface in `compiler/lyric/std/time.l`:
+work).  New surface in `stdlib/std/time.l`:
 
 - **Instant comparison.**  `instantBefore` / `instantAfter` /
   `instantEquals` resolve via `System.DateTime` operators
@@ -10312,7 +10408,7 @@ All 636 emitter tests pass.
 
 ---
 
-### D-progress-129: D-D1.3 — pagination + token-bucket end-to-end proofs; float/real verifier fixes
+### D-progress-235: D-D1.3 — pagination + token-bucket end-to-end proofs; float/real verifier fixes
 
 *claude/proof-system-followups-5d9rH branch.*
 
@@ -10388,7 +10484,7 @@ type goals, protected type invariant-as-hypothesis).  Total verifier tests:
 
 ---
 
-### D-progress-141: Tier 6 #16 — generic interface methods + impl-block generics
+### D-progress-220: Tier 6 #16 — generic interface methods + impl-block generics
 
 *claude/impl-block-generics-XM6Mu branch.*
 
@@ -10470,7 +10566,7 @@ tests — all passing.
 
 ---
 
-### D-progress-142: parser — aspect `from`/`config` (D051 follow-up) + `lyric-otel` library
+### D-progress-221: parser — aspect `from`/`config` (D051 follow-up) + `lyric-otel` library
 
 **What shipped**
 
@@ -10496,7 +10592,7 @@ tests — all passing.
 
 ---
 
-### D-progress-143: `lyric-logging` library — structured logging with runtime config and aspect templates
+### D-progress-222: `lyric-logging` library — structured logging with runtime config and aspect templates
 
 **What shipped**
 
@@ -10542,7 +10638,7 @@ lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
 
 ---
 
-### D-progress-202: lyric-web library (OpenAPI-first web service)
+### D-progress-223: lyric-web library (OpenAPI-first web service)
 
 **Date:** 2026-05-09
 **Branch:** `claude/web-library-openapi-SPkIA`
@@ -10621,7 +10717,7 @@ lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
 
 ---
 
-### D-progress-203: Maven shim — instance methods, checked-exception wrapping, Std.Jvm.catch
+### D-progress-224: Maven shim — instance methods, checked-exception wrapping, Std.Jvm.catch
 
 **Date:** 2026-05-10
 **Branch:** `claude/java-dependency-support-MC6Xz`
@@ -10673,7 +10769,7 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
 
 ---
 
-### D-progress-204: `lyric-cache`, `lyric-db`, `lyric-health` service libraries
+### D-progress-225: `lyric-cache`, `lyric-db`, `lyric-health` service libraries
 
 **What shipped**
 
@@ -10748,7 +10844,7 @@ lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
 
 ---
 
-### D-progress-205: Q-J005 opaque-type facade codegen + Q-J007 design sketch
+### D-progress-226: Q-J005 opaque-type facade codegen + Q-J007 design sketch
 
 **Date:** 2026-05-10
 **Branch:** `claude/java-dependency-support-MC6Xz`

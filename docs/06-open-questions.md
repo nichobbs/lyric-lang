@@ -513,3 +513,18 @@ Phase 0 work assigns each question to an owner. Resolution happens in any of:
 - An update to the decision log
 
 Resolved questions move from this document to the decision log. New questions surface during implementation; they go here.
+
+---
+
+## JVM-specific questions
+
+JVM-platform open questions (Q-J001–Q-J008 and later) are maintained in
+`docs/18-jvm-emission.md` §"Open questions".  They live there because they
+require JVM domain context to evaluate.
+
+**Q-J005 — opaque-type Java facade** is now RESOLVED: `lowerOpaqueFacade`
+shipped in `compiler/lyric/jvm/lowering.l` (D-progress-226).  The entry in
+`docs/18-jvm-emission.md` should be updated accordingly.
+
+All other Q-J entries remain open; see `docs/18-jvm-emission.md §"Open
+questions"` for their current status.

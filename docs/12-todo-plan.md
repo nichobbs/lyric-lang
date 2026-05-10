@@ -653,7 +653,7 @@ criteria) and "M4.3" (the v2.0 release scope).
 ### D1. M4.2 close-out
 
 1. **`std.core.proof` subpackage.** **SHIPPED** — D-progress-091
-   landed `compiler/lyric/std/core_proof.l` (package
+   landed `stdlib/std/core_proof.l` (package
    `Std.Core.Proof`). Bootstrap-grade scope: identity witnesses
    (`identity`, `pickFirst`/`pickSecond`), Boolean literal anchors
    (`trueLit`, `falseLit`), let-rebind passthroughs (`tag`,
@@ -717,34 +717,21 @@ criteria) and "M4.3" (the v2.0 release scope).
    counterexample-trace assertions land with M4.3
    (`docs/15-phase-4-proof-plan.md` §9).
 
-### D2. M4.3 — v2.0 release work
+### D2. M4.3 — v2.0 release work (all shipped — D-progress-113..116)
 
-5. **Counterexample reporting + trace reconstruction.** Today only
-   parses `name : sort = value` bindings from `(get-model)`. M4.3
-   wants a step-trace from the failing assertion back to the
-   originating contract clause, plus heuristic suggestions
-   ("strengthen this `requires:`", "add this loop invariant").
-6. **`lyric prove --explain --goal <n>` mode.** Per
-   `15-phase-4-proof-plan.md` §9.4.
-7. **`lyric prove --json` schema.** Frozen public surface; needs a
-   schema doc and a regression test that fails when the schema
-   drifts.
-8. **LSP V0007/V0008 integration.** Hover-rendered counterexamples
-   + code-action fix-its for the suggestion list.
-9. **`@proof_required(checked_arithmetic)` mode** (§5.4).
-10. **`unsafe { ... }` + `assert φ` end-to-end.** V0003 / V0009 in
-    the diagnostic surface; assertion lowering to a side-VC.
-11. **Banking-example proof tutorial chapter** in
-    `docs/13-tutorial.md`.
-12. **`docs/17-axiom-audit.md`** — list every `@axiom` the stdlib
-    ships with its rationale (renumbered from 16; slot 16 went to
-    `docs/16-lsp-vscode-plan.md`).
-13. **Contract-aware `lyric public-api-diff`.** A SemVer minor that
-    *strengthens* a `requires:` (or weakens an `ensures:`) is
-    breaking. Spec already in `01-language-reference.md` §11; M4.3
-    is the first time the tooling can detect it.
-14. **CVC5 solver-swap parity.** Feature-flag build that runs ≥95 %
-    of the M4.2 corpus through CVC5.
+5. ~~**Counterexample reporting + trace reconstruction.**~~ **SHIPPED** (D-progress-113).
+   Step-traces, `suggestRequiresClauses`, and `(get-model)` counterexample
+   rendering all landed.
+6. ~~**`lyric prove --explain --goal <n>` mode.**~~ **SHIPPED** (D-progress-113).
+7. ~~**`lyric prove --json` schema.**~~ **SHIPPED** (D-progress-113).
+8. ~~**LSP V0007/V0008 integration.**~~ **SHIPPED** (D-progress-113).
+   Hover-rendered counterexamples + code-action fix-its landed.
+9. ~~**`@proof_required(checked_arithmetic)` mode.**~~ **SHIPPED** (D-progress-114).
+10. ~~**`unsafe { ... }` + `assert φ` end-to-end.**~~ **SHIPPED** (D-progress-114).
+11. ~~**Banking-example proof tutorial chapter.**~~ **SHIPPED** (D-progress-115).
+12. ~~**`docs/17-axiom-audit.md`**~~ **SHIPPED** (D-progress-115).
+13. ~~**Contract-aware `lyric public-api-diff`.**~~ **SHIPPED** (D-progress-116).
+14. ~~**CVC5 solver-swap parity.**~~ **SHIPPED** (D-progress-116).
 
 ### D3. Q021 follow-ups (audit-surfaced) — all shipped
 

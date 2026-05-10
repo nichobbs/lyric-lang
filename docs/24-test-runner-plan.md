@@ -1,6 +1,6 @@
 ## Native test runner — `lyric test`
 
-Status: in progress (M5.x — bootstrap-grade v1).
+Status: shipped (v1 — D-progress-138).
 
 This document describes the native `lyric test` command and the
 `@test_module` / `test "…" { … }` surface it consumes. v1 is a

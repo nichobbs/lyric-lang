@@ -126,19 +126,30 @@ Trait/interface-based generics ship in v1. Package generics (parameterizing whol
 
 ### JVM backend
 
-**Status:** DEFERRED to post-v1
+**Status:** PHASE 6 IN PROGRESS (self-hosted only — not yet wired to `lyric build`)
 
-Lyric v1 targets .NET only.
+The self-hosted JVM emitter (`compiler/lyric/jvm/`) is in active development.
+`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` are complete and
+pass 125 self-tests (B3–B125).  CLI wiring (`lyric build --target jvm` producing
+a real JAR) is tracked in `docs/33-platform-parity-remediation.md §4–5`.
 
-**Why:** Building two backends in parallel risks shipping neither. JVM's erased generics and reflection-heavy ecosystem make it a worse fit; the AOT-compatible-library migration on JVM is less complete than on .NET. After v1 ships and stabilizes, evaluate JVM based on user demand.
+**Original rationale (v1):** Building two backends in parallel risks shipping
+neither. JVM's erased generics and reflection-heavy ecosystem make it a worse
+fit; the AOT-compatible-library migration on JVM is less complete than on .NET.
+After v1 ships and stabilizes, evaluate JVM based on user demand.
 
 ### Self-hosted compiler
 
-**Status:** DEFERRED to Phase 5 (post-v1)
+**Status:** PHASE 5 IN PROGRESS (substantially shipped)
 
-The compiler is implemented in F# until the language is stable.
+The self-hosted Lyric compiler (`compiler/lyric/lyric/`) has shipped: lexer,
+parser, type checker, mode checker, contract elaborator, formatter, and MSIL
+low-level PE/opcode/tables layer.  Outstanding: high-level MSIL lowering
+(`Msil.Lowering`), monomorphizer, and self-hosted lint/doc/pack (tracked in
+`docs/33-platform-parity-remediation.md §6`).
 
-**Why:** Self-hosting too early forces every language change to be made twice. Wait until the language stabilizes; then port.
+**Original rationale:** Self-hosting too early forces every language change to be
+made twice. Wait until the language stabilizes; then port.
 
 ### Effect system
 

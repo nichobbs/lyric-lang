@@ -158,7 +158,7 @@ The following features are designed and specified in `docs/26-aspects.md` but no
 
 **`except name in { ... }` in `matches:`.** A bulk exclusion clause inside the `matches:` filter is planned but not yet parsed.
 
-**Aspect templates.** `pub aspect Name { around(call) -> ret { ... } }` without a `matches:` clause — an exportable template that consumer packages instantiate with their own filter — is deferred.
+**Aspect templates.** `pub aspect Name { around(call) -> ret { ... } }` without a `matches:` clause — an exportable template that consumer packages instantiate with their own filter — **shipped** (D051 / D-progress-221; used in `lyric-otel`, `lyric-logging`, `lyric-web`, `lyric-cache`, `lyric-db`).
 
 For the current milestone, the aspect system works end-to-end: write an aspect in a package, the compiler weaves it over the matched functions at build time, and the woven code runs with the correct before/after/loop behaviour.
 
