@@ -1186,7 +1186,7 @@ The aspect name in `@no_aspect("Name")` is a string literal matching the aspect'
 | A0009 | Aspect defines neither `around` advice nor any contract clause |
 | A0013 | `wraps:`/`inside:` references an aspect not declared in the package |
 
-A0007 and A0008 are specified but not yet emitted by the current compiler (the weaver records `wraps:`/`inside:` in the AST but does not yet perform conflict or cycle analysis). A0009 is emitted. A0013 is emitted when the named aspect is not found.
+A0007, A0008, A0009, and A0013 are specified but not yet emitted by the current compiler. Aspects without an `around` body are silently skipped by the weaver; unresolved `wraps:`/`inside:` names are silently ignored. These checks are planned for a follow-up milestone.
 
 ### 14.7 Bootstrap limitations (current milestone)
 
