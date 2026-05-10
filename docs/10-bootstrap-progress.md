@@ -10745,4 +10745,3 @@ libraries can be imported and aspect templates instantiated today.
 **Test counts:** no new compiler tests (libraries are Lyric source only;
 no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
 lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
-
