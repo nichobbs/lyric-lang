@@ -28,7 +28,7 @@ compiler is written in F# and lives in `compiler/`. The repository contains:
 - `docs/15-phase-4-proof-plan.md` — Phase 4 verifier design (VC IR, SMT bridge).
 - `docs/16-lsp-vscode-plan.md` — LSP server and VS Code extension plan.
 - `docs/17-axiom-audit.md` — audit checklist for `@axiom` declarations.
-- `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6+; emitter to be written in Lyric itself).
+- `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6; self-hosted Lyric emitter shipped in `compiler/lyric/jvm/`).
 - `docs/19-multi-file-packages.md` — multi-file package linking design.
 - `docs/20-project-as-dll.md` — `lyric.toml`-driven multi-package build and DLL bundling.
 - `docs/21-nuget-linking.md` — NuGet dependency resolution and `[nuget]` table design.
