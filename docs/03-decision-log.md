@@ -3021,6 +3021,69 @@ HTTP 200 for `"ok"`, HTTP 503 for `"degraded"`.
 
 ---
 
+## D059 — Compiler and stdlib distribution strategy
+
+**Date:** 2026-05-10
+**Branch:** claude/review-docs-platform-parity-UuNIO
+**Closes:** open question "Distribution channels" in `docs/22-distribution-and-tooling.md` §10.
+**Spec:** `docs/34-distribution-strategy.md`
+
+### Context
+
+`docs/22-distribution-and-tooling.md` specified the SDK filesystem layout and
+the stdlib pre-compilation approach but deferred the choice of distribution
+channels to a Phase 6 decision doc.  With the self-hosted MSIL pipeline
+(R6 / D-progress-227) now wired, the bootstrap pipeline and distribution story
+need to be concrete enough for CI integration.
+
+### Decision
+
+**Primary channel: `dotnet tool install -g lyric` (NuGet global tool).**
+Lowest-friction cross-platform path; requires the .NET SDK but no additional
+tooling.  The NuGet package bundles the compiled CLI DLLs, `lib/Lyric.Stdlib.dll`,
+`lib/Lyric.Stdlib.Jvm.jar`, and the stdlib source fallback.
+
+**Secondary channel: self-contained ZIP/tarball via GitHub releases.**
+`dotnet publish --self-contained true --runtime <RID>` bundles the .NET runtime;
+no SDK required by the end user.  Published for five RIDs
+(linux-x64, linux-arm64, osx-x64, osx-arm64, win-x64).
+
+**Future: self-hosted AOT binary (Q-dist-001).**  Once the stage-2 bootstrap in
+`scripts/bootstrap.sh` produces byte-for-byte reproducible output, the
+self-hosted MSIL emitter is promoted to default and an AOT compile (`dotnet
+publish --aot`) produces a native binary with no .NET runtime dependency.
+Package manager formulas (Homebrew/winget/apt) are deferred until Q-dist-001
+resolves — a native binary makes the formula trivial.
+
+**Bootstrap pipeline (`scripts/bootstrap.sh`):**
+
+- Stage 0: F# bootstrap compiler via `dotnet publish`.
+- Stage 1: compile all Lyric compiler packages (stdlib + self-hosted lexer /
+  parser / type checker / mode checker / contract elaborator / MSIL backend)
+  with the stage-0 `lyric --target dotnet-legacy`.
+- Stage 2: recompile stage-1 sources with `lyric --target dotnet` (self-hosted
+  MSIL path); compare with `cmp -s` for reproducibility.  `STRICT_VERIFY=1`
+  fails the script on any diff.
+
+CI runs stage-1 on every push to `main`; stage-2 is nightly until
+reproducibility is achieved, then promoted to the standard gate.
+
+### Alternatives considered
+
+- **Ship stdlib source only, no pre-compiled DLL.** Simpler distribution but
+  cold-build time grows with stdlib size.  Rejected: every user project would
+  recompile the stdlib on the first `lyric build`.
+- **Homebrew tap as primary channel.** Requires maintaining an external tap
+  repo and a formula.  Deferred: the NuGet global tool has better CI story and
+  cross-platform uniformity today.
+- **Single `dotnet tool` channel only, no ZIP.** Forces every user to install
+  the .NET SDK.  Rejected: embedded-systems and air-gapped environments need
+  a standalone binary.
+
+**Revisions:** None.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

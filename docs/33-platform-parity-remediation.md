@@ -1,6 +1,6 @@
 # docs/33-platform-parity-remediation.md — Platform parity remediation plan
 
-_Status: in progress (D-progress-227)._
+_Status: R1–R6 shipped (D-progress-227–239). Parity milestone smoke-test suite pending._
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
 
 ## 1. Motivation
@@ -349,11 +349,15 @@ Package: `Msil.Bridge`
 Same pattern as `Jvm.Bridge` but calling `Msil.Lowering.lowerMPackage` and
 writing a `.dll` via the existing `Msil.Pe.buildPe` infrastructure.
 
-### 6.4 F# bridge: `SelfHostedMsil.fs` (future)
+### 6.4 F# bridge: `SelfHostedMsil.fs` (shipped — Phase R6)
 
-Not wired in Phase R5 — the F# MSIL emitter remains authoritative.
-`SelfHostedMsil.fs` is a Phase R6 deliverable once `Msil.Lowering` passes
-the same self-test coverage as `Jvm.Lowering` (125 B-stages).
+`compiler/src/Lyric.Cli/SelfHostedMsil.fs` shipped in D-progress-227.  It
+mirrors `SelfHostedJvm.fs`: bootstraps `Msil.Bridge.dll` via a throwaway
+driver compile, preloads stdlib DLLs into the AppDomain, reflects out
+`compileToMsil(string, string): bool`, and caches the delegate process-wide.
+
+`--target dotnet` (default) now routes through this bridge; `--target dotnet-legacy`
+uses the F# bootstrap emitter as an escape hatch during stabilisation.
 
 ---
 
@@ -362,11 +366,11 @@ the same self-test coverage as `Jvm.Lowering` (125 B-stages).
 Both self-hosted emitters reach **Phase R parity** when all of the following
 are true:
 
-- `lyric build --target dotnet <file.l>` — F# emitter (unchanged; baseline).
+- `lyric build --target dotnet-legacy <file.l>` — F# emitter baseline (escape hatch).
+- `lyric build --target dotnet <file.l>` (default) — produces a `.dll` via
+  `Msil.Bridge` + `SelfHostedMsil.fs`.
 - `lyric build --target jvm <file.l>` — produces a runnable JAR via
   `Jvm.Bridge` + `SelfHostedJvm.fs`.
-- `lyric build --target dotnet-sh <file.l>` — produces a `.dll` via
-  `Msil.Bridge` + `SelfHostedMsil.fs` (new flag, experimental).
 - All three paths pass the same 20-program smoke-test suite covering:
   hello-world, records, unions, arithmetic, control flow, contracts.
 - `lyric test` passes on all three targets.
@@ -375,15 +379,18 @@ are true:
 
 ## 8. Work tracking
 
-New D-progress entries for this remediation:
+D-progress entries for this remediation (planned IDs at time of writing;
+actual shipped IDs may differ due to interleaved unrelated work):
 
-| ID | Deliverable |
-|---|---|
-| D-progress-227 | This doc + R1 documentation fixes + R2 book fixes |
-| D-progress-228 | R1-F D-progress renumbering |
-| D-progress-229 | R3 JVM kernel shims (file_host, process_host, unicode_host) |
-| D-progress-230 | R4 Jvm.Codegen + Jvm.Bridge |
-| D-progress-231 | R4 SelfHostedJvm.fs + CLI wiring |
-| D-progress-232 | R5 Msil.Lowering (high-level lowering) |
-| D-progress-233 | R5 Msil.Bridge |
-| D-progress-234 | Parity milestone smoke-test suite |
+| Planned ID | Actual shipped ID | Deliverable |
+|---|---|---|
+| D-progress-227 | D-progress-238 | R1 documentation fixes + R2 book fixes + R3 JVM kernel shims |
+| D-progress-228 | D-progress-238 | (merged into above) |
+| D-progress-229 | D-progress-238 | (merged into above) |
+| D-progress-230 | D-progress-239 | R4 Jvm.Codegen + Jvm.Bridge |
+| D-progress-231 | D-progress-239 | R4 SelfHostedJvm.fs + CLI wiring (merged into above) |
+| D-progress-232 | D-progress-238 | R5 Msil.Lowering shipped as part of R1–R5 batch |
+| D-progress-233 | D-progress-238 | R5 Msil.Bridge (merged into above) |
+| R6 (not in original plan) | D-progress-227 | R6 Msil.Codegen + SelfHostedMsil.fs + target renaming |
+| — | D-progress-228 | Distribution strategy doc (docs/34) + D059 decision |
+| D-progress-234 | _(pending)_ | Parity milestone smoke-test suite |

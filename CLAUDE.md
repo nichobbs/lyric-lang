@@ -54,6 +54,8 @@ backing entry's id.
 - `docs/30-aspect-contract-inheritance-sketch.md` — aspect-to-aspect contract inheritance v1.x sketch (extends D047, addresses Q-aspects-006). _Specced in D049._
 - `docs/31-maven-linking.md` — Maven Central dependency resolution and `[maven]` table design (JVM target). _Specced in D053._
 - `docs/32-junit-runner-sketch.md` — JUnit 5 `TestEngine` adapter for `lyric test --jvm` (extends Q-J007 from `docs/18-jvm-emission.md`). _Partially implemented in D-progress-206 (B126): `@LyricTest` annotation class + `Jvm.TestEngine` shipped; full `LyricTestEngine` deferred to B127+._
+- `docs/33-platform-parity-remediation.md` — platform-parity remediation plan (docs audit, JVM/MSIL self-hosted pipeline R1–R6). _Backed by D058 (MSIL PE emitter) and D-progress-227–239._
+- `docs/34-distribution-strategy.md` — compiler and stdlib distribution channels (NuGet global tool, standalone ZIP, future AOT binary, bootstrap pipeline). _Specced in D059._
 
 ## Reading order (for Claude)
 
