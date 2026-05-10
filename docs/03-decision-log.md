@@ -1682,7 +1682,7 @@ Full specification in `docs/24-build-features.md`.
   model is fundamentally different).  Library authors who want
   consumer-toggleable behaviour should use D046 runtime config
   instead.  Spec: `docs/24-build-features.md` §1.1 + §7 + §8;
-  user-facing equivalent: book chapter 19 §19.7.1.
+  user-facing equivalent: book chapter 20 §20.7.1.
 
 ---
 

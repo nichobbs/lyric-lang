@@ -71,12 +71,20 @@ book/
     ├── 11-dependency-injection.md
     ├── 12-standard-library.md
     ├── 13-interop-and-ffi.md
-    ├── 14-testing.md
-    ├── 15-mocking-and-test-wires.md
-    ├── 16-runtime-verification.md
-    ├── 17-proofs.md
-    ├── 18-advanced-verification.md
-    ├── 19-package-ecosystem.md
+    ├── 14-jvm-target.md
+    ├── 15-testing.md
+    ├── 16-mocking-and-test-wires.md
+    ├── 17-runtime-verification.md
+    ├── 18-proofs.md
+    ├── 19-advanced-verification.md
+    ├── 20-package-ecosystem.md
+    ├── 21-runtime-config.md
+    ├── 22-aspects.md
+    ├── 23-logging.md
+    ├── 24-web-services.md
+    ├── 25-caching.md
+    ├── 26-database-access.md
+    ├── 27-health-checks.md
     ├── appendix-a-vscode.md
     └── appendix-b-quick-reference.md
 ```

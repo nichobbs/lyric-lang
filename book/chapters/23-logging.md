@@ -1,4 +1,4 @@
-# Chapter 22: Logging
+# Chapter 23: Logging
 
 Lyric services use the `Std.Logging` package (from `lyric-logging`) for
 structured, named, runtime-configurable logging.  `Std.Logging` adds named

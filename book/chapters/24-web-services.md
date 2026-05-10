@@ -1,4 +1,4 @@
-# Chapter 23: Web Services
+# Chapter 24: Web Services
 
 The `lyric-web` library provides a code-first HTTP server that integrates
 naturally with Lyric's immutable-value model.  Handlers are referenced by
@@ -175,4 +175,4 @@ func main(): Unit {
 }
 ```
 
-See Chapter 26 for the full health-check API.
+See Chapter 27 for the full health-check API.

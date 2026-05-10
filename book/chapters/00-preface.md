@@ -65,7 +65,7 @@ Where a feature is not yet shipped, the text says so. Descriptions that say "the
 
 Sequentially, ideally. The examples build on each other. The banking service that appears in Part III shows up again in Parts V and VI, and seeing it evolve is part of the point.
 
-That said, if you are already familiar with the basics and want to get to contracts, jump to Chapter 8. If you want to understand the test infrastructure, jump to Chapter 14. Each chapter starts with a short summary of what it covers and what you should already know.
+That said, if you are already familiar with the basics and want to get to contracts, jump to Chapter 8. If you want to understand the test infrastructure, jump to Chapter 15. Each chapter starts with a short summary of what it covers and what you should already know.
 
 Code examples use Lyric for Lyric source, `sh` for shell commands, `json` for JSON, and `toml` for configuration. Comments in Lyric source use `//`. All examples are written to be runnable with the bootstrap compiler unless explicitly noted.
 

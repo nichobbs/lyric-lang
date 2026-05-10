@@ -152,12 +152,12 @@ the output is still a `.dll`.  Replace with an honest callout:
 
 ### R2-B  aspects chapters — remove "deferred" bullet for aspect templates
 
-`book/chapters/21-aspects.md` §21.6 lists aspect templates as "Planned
+`book/chapters/22-aspects.md` §22.6 lists aspect templates as "Planned
 (deferred)".  They shipped in D051 / D-progress-221.  Remove the bullet.
 
 ### R2-C  testing chapter — use explicit source path in examples
 
-`book/chapters/14-testing.md` examples omit the required positional `<file.l>`
+`book/chapters/15-testing.md` examples omit the required positional `<file.l>`
 argument.  Update all `lyric test` invocations to `lyric test <file.l>`.
 
 ### R2-D  getting-started — add publish/restore/sdk-info to toolchain table

@@ -1,4 +1,4 @@
-# Chapter 26: Health Checks
+# Chapter 27: Health Checks
 
 The `lyric-health` library adds liveness and readiness health-check endpoints
 to a `Web.Router`.  Orchestrators such as Kubernetes probe these endpoints to

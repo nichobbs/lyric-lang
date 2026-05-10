@@ -1,4 +1,4 @@
-# Chapter 20: Runtime Configuration
+# Chapter 21: Runtime Configuration
 
 Lyric services often need to read configuration at startup — database URLs,
 port numbers, feature flags, and timeouts.  The `config` block provides a

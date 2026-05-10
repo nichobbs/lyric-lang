@@ -186,7 +186,7 @@ test "internal helper handles edge case" {
 
 A package annotated `@test_module` can access non-`pub` declarations of the package it tests. It is the only mechanism for crossing the visibility boundary in tests. You cannot bypass it with a `pub` field that is only used in tests, or with a reflection call that the language would reject anyway.
 
-The `@test_module` annotation is a signal to the compiler and to readers: this is test code; it has elevated access; it is not part of the production contract. Chapter 14 covers testing in full.
+The `@test_module` annotation is a signal to the compiler and to readers: this is test code; it has elevated access; it is not part of the production contract. Chapter 15 covers testing in full.
 
 ## Exercises
 

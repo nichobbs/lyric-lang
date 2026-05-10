@@ -20,7 +20,7 @@ What this annotation enables:
 - **`invariant:` clauses** on record and opaque types are checked at every public boundary: when a value of the type is passed as an argument to a `pub` function outside the type's own package, and when such a value is returned from a `pub` function.
 - **`forall` and `exists`** quantifiers iterate at runtime over the collection they range over. A `forall (x: Int) where xs.contains(x) implies result.contains(x)` walks the slice.
 
-The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 17).
+The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 18).
 
 ## §17.2 What a runtime violation looks like
 

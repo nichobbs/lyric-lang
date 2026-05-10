@@ -1,4 +1,4 @@
-# Chapter 24: Caching
+# Chapter 25: Caching
 
 The `lyric-cache` library provides a typed, TTL-aware key-value cache.  The
 v1 implementation is in-process; the `CacheStore` interface lets you swap in

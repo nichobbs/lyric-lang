@@ -132,7 +132,7 @@ sortedSet.l:18:3: warning V0010: ensures (conservation) — unknown
   options: narrow the contract, add a @pure lemma, or shift to @runtime_checked
 ```
 
-The verifier tells you the goal is unresolved and gives you the next steps. The program is not certified as correct for `T: String` — it just has obligations the prover cannot discharge. Chapter 14 (property-based testing) complements the proof here: runtime testing over many generated inputs catches violations the prover cannot rule out statically.
+The verifier tells you the goal is unresolved and gives you the next steps. The program is not certified as correct for `T: String` — it just has obligations the prover cannot discharge. Chapter 15 (property-based testing) complements the proof here: runtime testing over many generated inputs catches violations the prover cannot rule out statically.
 
 ## §19.4 Inductive data structures — the BST
 
