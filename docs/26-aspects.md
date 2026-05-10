@@ -184,13 +184,13 @@ A function can opt out of all aspects, or specific ones, via an
 annotation:
 
 ```lyric
-@no_aspect                    // opt out of every aspect in this package
+@no_aspect                      // opt out of every aspect in this package
 func handleSensitive(...)
 
-@no_aspect(Logging)           // opt out of Logging only
+@no_aspect("Logging")           // opt out of Logging only
 func handleHotPath(...)
 
-@no_aspect(Logging, Timing)   // opt out of multiple
+@no_aspect("Logging", "Timing") // opt out of multiple
 func handleFastInner(...)
 ```
 
@@ -829,7 +829,7 @@ compiler.
 | `A0009` | Aspect defines no `around`, no `requires:`, and no `ensures:`. |
 | `A0010` | Composed precondition is unsatisfiable on a target (`@proof_required`). |
 | `A0011` | Composed precondition is unsatisfiable (`@runtime_checked`, warning). |
-| `A0012` | `@no_aspect(X)` references an aspect not declared in the package. |
+| `A0012` | `@no_aspect("X")` references an aspect not declared in the package. |
 | `A0013` | `wraps:` / `inside:` references an aspect not declared in the package. |
 | `A0014` | Glob in `matches: name like "..."` is malformed. |
 | `A0015` | Rebound `args` cannot be proven to satisfy target `requires:`. |

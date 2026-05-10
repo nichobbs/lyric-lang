@@ -1821,7 +1821,7 @@ key points:
 - **Pattern selector via `matches:`.** v1 supports
   `name like "<glob>"` plus `except name in {...}`. Reserved syntax
   for `signature:`, `annotated:`, `visibility:` predicates in v2.
-- **Per-target opt-out via `@no_aspect` / `@no_aspect(X)`.**
+- **Per-target opt-out via `@no_aspect` / `@no_aspect("X")`.**
 - **Contract augmentation.** Aspects may declare aspect-level
   `requires:` / `ensures:` clauses. The wrapper's effective
   contract is the conjunction of target + every matched aspect.

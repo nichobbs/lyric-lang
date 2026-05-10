@@ -273,46 +273,40 @@ Exit code 78 (`EX_CONFIG`) on startup failure.  See chapter 20.
 ```lyric
 // Matching aspect (package-private; weaves over functions in the same package)
 aspect Logging {
-  matches:
-    name like "handle*"
-    except name in { handleHealth }
-
-  config {
-    enabled: Bool     = true
-    level:   LogLevel = LogLevel.Info
-  }
-
-  around(call) -> ret {
-    if not enabled {
-      ret = call.proceed()
-    } else {
-      Std.Log.info("→ " + call.shortName)
-      ret = call.proceed()
-      Std.Log.info("← " + call.shortName + " (" + call.elapsed.unwrapOr(0).toString() + "ms)")
-    }
-  }
-}
-
-// Template (pub aspect without matches: — exported, instantiated in consumer packages)
-pub aspect Tracing {
-  config { enabled: Bool = true }
-  around(call) -> ret {
-    if not enabled { ret = call.proceed() }
-    else { /* ... */ ret = call.proceed() }
-  }
-}
-
-// Instantiation (in a consumer package)
-aspect Tracing from OTel.Tracing {
   matches: name like "handle*"
-  inside:  Logging           // ordering: Logging wraps Tracing
-  config { enabled: Bool = false }
+
+  around(args) -> ret {
+    Std.Log.info("→ entering")
+    proceed(args)
+    Std.Log.info("← done")
+  }
+}
+
+// With contract augmentation
+aspect Positive {
+  matches: name like "add*"
+  requires: true   // composed additively with the function's own requires:
+
+  around(args) -> ret {
+    proceed(args)
+  }
+}
+
+// Explicit composition order: Auth runs before Logging
+aspect Auth {
+  matches: name like "handle*"
+  wraps: Logging
+
+  around(args) -> ret {
+    if not AuthStore.verify() { return Result.err(AuthError.unauthorized()) }
+    proceed(args)
+  }
 }
 ```
 
-`call` ambient: `call.qualifiedName`, `call.shortName`, `call.modulePath`, `call.elapsed: Option[Int]`, `call.annotations`.  
-Env var for aspect config: `LYRIC_ASPECT_<INSTANTIATION_UPPER>_<FIELD_UPPER>`.  
-Opt-out: `@no_aspect` / `@no_aspect(Name)`.  See chapter 21.
+Glob metacharacters in `matches:`: `*` (any sequence), `?` (one char), `[abc]` (set), `[a-z]` (range).  
+Ordering: `wraps: OtherAspect` (this aspect is outer), `inside: OtherAspect` (this aspect is inner). Default: lexical declaration order.  
+Opt-out: `@no_aspect` (all aspects) / `@no_aspect("Name")` (named aspect, string literal).  See chapter 21.
 
 ### Wire blocks (compile-time DI graph)
 
@@ -571,7 +565,7 @@ output_assembly = "myapp.dll"
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
 | `@derive(Json\|Sql\|Proto)` | `exposed record` | Emit compile-time serializer for the named target |
 | `@experimental` | `pub` item | May change without SemVer major bump |
-| `@inline_template` | `pub aspect` | C-mode template: body re-compiled in consumer package so it can read named `args` fields |
+| `@inline_template` | `pub aspect` | C-mode template: body re-compiled in consumer package so it can read named `args` fields (deferred; not yet implemented) |
 | `@global_clock_unsafe` | function | Suppresses the proof-system warning for non-`@stubbable` clock access |
 | `@hidden` | field in `@projectable` opaque type | Excluded from generated view type |
 | `@projectable` | `opaque type` | Generate a sibling `exposed record XView` and projection functions |
@@ -580,7 +574,7 @@ output_assembly = "myapp.dll"
 | `@proof_required` | package | All contracts must be SMT-discharged at compile time |
 | `@proof_required(unsafe_blocks_allowed)` | package | As above, with `unsafe { }` permitted |
 | `@no_aspect` | function | Opt out of all aspects in the package |
-| `@no_aspect(Name)` | function | Opt out of a specific named aspect |
+| `@no_aspect("Name")` | function | Opt out of a specific named aspect (name is a string literal) |
 | `@provided` | wire member | Parameter to the generated bootstrap function |
 | `@pure` | function | No side effects; callable from contracts and `@proof_required` code |
 | `@runtime_checked` | package | Contracts are runtime asserts (default) |

@@ -1,153 +1,175 @@
-# Chapter 21: Aspects
+# Aspects
 
-Aspects let you apply cross-cutting behaviour — logging, caching, rate-limiting,
-timeouts — to a set of functions without modifying those functions.  Lyric's
-aspect system uses `around` advice and a `call` context object to wrap matched
-functions at compile time.
+Most code has concerns that cut across many functions: logging every request that enters a service, measuring how long each operation takes, enforcing an authentication check before any handler runs. The natural impulse is to write a helper and call it from each function. The problem is that the helper call is now scattered across dozens of functions, and every new function added to the service needs the same boilerplate. When the requirement changes — say, log the elapsed time as well as the entry — you update one function and miss seven others, or you refactor the helper's signature and break every call site at once.
 
-## Defining an aspect
+Lyric addresses this with the `aspect` block. An aspect describes behaviour that should apply to a matched set of functions, written once and maintained in one place. The compiler weaves it in — no call-site boilerplate, no scattered wrapper functions, no synchronization burden when the requirement changes.
+
+## §21.1 The `aspect` block
+
+An aspect is a module-scope item, a peer to `func`, `wire`, and `config`. Here is a complete aspect that logs entry and exit for a family of request-handling functions:
 
 ```lyric
-aspect HttpLogging from Web.Aspects.RequestLogging {
+aspect Logging {
   matches: name like "handle*"
-  config {
-    level: Std.Logging.LogLevel = Std.Logging.LogLevel.Info
+
+  around(args) -> ret {
+    Std.Log.info("→ entering handler")
+    proceed(args)
+    Std.Log.info("← exiting handler")
   }
 }
 ```
 
-An aspect declaration names a *template* (`from`), a *selector* (`matches:`),
-and optional *config overrides*.  The compiler weaves the template body around
-every function in the current package whose name matches the selector.
+Three parts make up this aspect.
 
-## The `matches:` selector
+**`matches:`** is the filter that determines which functions this aspect applies to. `name like "handle*"` selects every function in the current package whose short name starts with `handle`. The glob syntax supports:
 
-`matches:` accepts a Boolean expression over function metadata:
+- `*` — matches any sequence of characters (including none)
+- `?` — matches exactly one character
+- `[abc]` — matches any one character from the set
+- `[a-z]` — matches any one character in the range
 
-| Predicate | Meaning |
-|---|---|
-| `name like "pattern"` | Simple wildcard match on the short function name |
-| `name == "exactName"` | Exact match |
-| `qualified like "Pkg.*"` | Match on the fully-qualified name |
+**`around(args) -> ret`** is the advice body. `args` is a placeholder for the original function's arguments, forwarded unchanged when you call `proceed(args)`. `ret` is the binding name for the return value; its type equals the matched target's return type. The body's last expression is the return value (for `Unit`-returning functions this is implicit).
 
-Multiple predicates can be combined with `&&` and `\|\|`.
+**`proceed(args)`** executes the matched function with the original arguments. Everything before it is pre-advice; everything after is post-advice. You can call it zero times (skip the original function entirely) or more than once (retry, repeat). The most common pattern is a single call.
 
-## The `call` context
+Matching aspects are package-private: an `aspect` block weaves over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template — see §21.6 for current limitations.
 
-Inside an aspect template body, `call` exposes the wrapped invocation:
+## §21.2 Composition order
 
-| Field | Type | Meaning |
-|---|---|---|
-| `call.shortName` | `String` | Short function name |
-| `call.qualifiedName` | `String` | Fully-qualified function name |
-| `call.modulePath` | `String` | Package name |
-| `call.elapsed` | `Option[Int]` | Elapsed milliseconds (populated after `call.proceed()`) |
-| `call.proceed()` | returns `ret` type | Invoke the original function |
+A function can be matched by more than one aspect at the same time. By default, aspects are applied in lexical declaration order: the aspect declared first is outermost (runs first, calls `proceed()` which enters the next aspect, and so on).
 
-## The `around` body
+When you need explicit control, use `wraps:` and `inside:` in the aspect header:
 
 ```lyric
-around(call) -> ret {
-  // code before
-  ret = call.proceed()
-  // code after; ret is now bound
-}
-```
+aspect Auth {
+  matches: name like "handle*"
+  wraps: Logging   // Auth is outside Logging — Auth runs first
 
-- `ret = call.proceed()` invokes the original function and binds the result.
-- Code before `call.proceed()` runs as a pre-condition.
-- Code after `call.proceed()` can inspect or replace `ret`.
-- If `enabled` is `false`, the body should delegate: `ret = call.proceed()`.
-
-## Pub aspect templates (`pub aspect`)
-
-A `pub aspect` without a `matches:` selector is a *reusable template*.
-Libraries publish templates; consumers instantiate them with their own
-`matches:` and config.
-
-```lyric
-// In a library:
-pub aspect QueryLogging {
-  config {
-    enabled: Bool = true
-    level:   Std.Logging.LogLevel = Std.Logging.LogLevel.Debug
-  }
-  around(call) -> ret {
-    // ...
+  around(args) -> ret {
+    if not AuthStore.verify() {
+      return Result.err(AuthError.unauthorized())
+    }
+    proceed(args)
   }
 }
 
-// In a consuming package:
-aspect DbLog from Db.Aspects.QueryLogging {
+aspect Logging {
   matches: name like "handle*"
-  config { level: Std.Logging.LogLevel = Std.Logging.LogLevel.Info }
-}
-```
 
-## Config fields and env vars
-
-Every config field declared in an aspect template is overridable at runtime via
-an env var:
-
-```
-LYRIC_ASPECT_<INSTANTIATION>_<FIELD>
-```
-
-For example, if you instantiate `aspect DbLog from Db.Aspects.QueryLogging`,
-the master switch env var is `LYRIC_ASPECT_DBLOG_ENABLED`.
-
-## B-mode vs C-mode templates
-
-| Mode | How | Use case |
-|---|---|---|
-| B-mode | Template body is compiled once | Observing `call.qualifiedName`, `call.elapsed` |
-| C-mode (`@inline_template`) | Body is re-compiled in the consumer's package | Reading named `args.*` fields on the concrete handler |
-
-C-mode templates declare `@inline_template` and access `args.<fieldName>` by
-name.  The compiler reports shape error A0042 if the matched handler does not
-declare the expected parameter.
-
-## Aspect composition
-
-Multiple aspects can be applied to the same function.  The `inside:` keyword
-controls ordering:
-
-```lyric
-aspect HttpLogging from Web.Aspects.RequestLogging {
-  matches: name like "handle*"
-}
-
-aspect ApiRateLimit from Web.Aspects.RateLimiting {
-  matches: name like "handle*"
-  inside:  HttpLogging          // RateLimiting runs inside HttpLogging
-}
-```
-
-The `inside:` aspect's body wraps the innermost call; the outer aspect wraps
-the inner.
-
-## Contract augmentation
-
-Aspects can contribute `ensures:` clauses that are visible to downstream
-`@proof_required` consumers:
-
-```lyric
-pub aspect Timeout {
-  ensures:
-    call.elapsed.unwrapOr(0) >= 0
-  around(call) -> ret {
-    // ...
+  around(args) -> ret {
+    Std.Log.info("→ handler")
+    proceed(args)
+    Std.Log.info("← handler")
   }
 }
 ```
 
-## Summary
+`wraps: OtherAspect` means this aspect is placed outside the named aspect — it runs before the other aspect and its `proceed(args)` enters the other aspect's advice. `inside: OtherAspect` is the reverse.
 
-| Concept | Syntax |
-|---|---|
-| Instantiate a template | `aspect Name from Pkg.Template { matches: ...; config { ... } }` |
-| Template declaration | `pub aspect Name { config { ... }; around(call) -> ret { ... } }` |
-| Proceed | `ret = call.proceed()` |
-| Composition | `inside: OuterAspect` |
-| Runtime config override | `LYRIC_ASPECT_<NAME>_<FIELD>` |
-| C-mode template | `@inline_template pub aspect Name { ... }` |
+You can name multiple aspects in a single `wraps:` or `inside:` clause, separated by commas. The compiler resolves the ordering at build time; a cycle in the ordering constraints is a compile error.
+
+## §21.3 Contract augmentation
+
+Aspects can add `requires:` and `ensures:` clauses to the functions they match. The aspect clauses are composed additively with the function's own clauses: a function with two `requires:` clauses and an aspect that adds one more ends up with three preconditions, all of which are checked.
+
+```lyric
+aspect Positive {
+  matches: name like "add*"
+  requires: true   // trivially-true; illustrates that the clause is evaluated
+
+  around(args) -> ret {
+    proceed(args)
+  }
+}
+```
+
+The additive composition means aspects cannot remove a function's own contracts. If a function has `requires: amount > 0`, no aspect can weaken or override that precondition — aspects can only add obligations.
+
+In `@proof_required` packages, aspect-added contracts become additional SMT obligations. The verifier checks the full composed contract as a single set of proof goals.
+
+## §21.4 Per-function opt-out
+
+A function can be excluded from all aspects with `@no_aspect`, or excluded from a specific aspect with `@no_aspect("AspectName")` (passing the name as a string literal):
+
+```lyric
+@no_aspect
+pub func handleHealth(): HealthStatus {
+  return HealthStatus.ok()
+}
+
+@no_aspect("Logging")
+pub func handleMetrics(): MetricsPayload {
+  // Logging would be too noisy here; Auth still applies.
+  return Metrics.snapshot()
+}
+```
+
+`@no_aspect` without arguments removes the function from every aspect's match set, regardless of what `matches:` would select. `@no_aspect("Name")` removes it from one named aspect only.
+
+Use `@no_aspect` when the reason is specific to one function and you know the aspect name at the time you write the function.
+
+## §21.5 `proceed(args)` semantics
+
+`proceed(args)` in the around body calls the target function with the original arguments and returns the target's return value. Several common patterns:
+
+**Before/after wrapping:**
+
+```lyric
+around(args) -> ret {
+  println("before")
+  proceed(args)
+  println("after")
+}
+```
+
+**Early return (skip the target):**
+
+```lyric
+around(args) -> ret {
+  if CacheStore.has(cacheKey) {
+    return CacheStore.get(cacheKey)
+  }
+  proceed(args)
+}
+```
+
+**Repeat (retry or loop):**
+
+```lyric
+around(args) -> ret {
+  var i = 0
+  while i < 3 {
+    proceed(args)
+    i = i + 1
+  }
+}
+```
+
+`proceed(args)` may appear anywhere in the around body, including inside loops, if-branches, and try blocks.
+
+## §21.6 Planned features (not yet implemented)
+
+The following features are designed and specified in `docs/26-aspects.md` but not yet implemented in the compiler:
+
+**`call` context.** A future milestone adds an ambient `call` value inside the around body that exposes metadata about the weave site: `call.shortName`, `call.qualifiedName`, `call.modulePath`, `call.elapsed` (elapsed time after `proceed`), `call.annotations`, and `call.sourceLocation`. The syntax will be `around(call) -> ret { ... }`.
+
+**`config {}` in aspects.** Aspect-level config blocks for compile-time-overridable parameters (e.g. `config { enabled: Bool = true }`) are deferred.
+
+**`except name in { ... }` in `matches:`.** A bulk exclusion clause inside the `matches:` filter is planned but not yet parsed.
+
+**Aspect templates.** `pub aspect Name { around(call) -> ret { ... } }` without a `matches:` clause — an exportable template that consumer packages instantiate with their own filter — is deferred.
+
+For the current milestone, the aspect system works end-to-end: write an aspect in a package, the compiler weaves it over the matched functions at build time, and the woven code runs with the correct before/after/loop behaviour.
+
+## Exercises
+
+1. Write an aspect named `Timing` that matches all functions whose names start with `query`. Before `proceed(args)` print `"start"` and after it print `"end"`. Verify that a `queryUser` function prints `start`, then its own output, then `end`.
+
+2. Declare two aspects, `Auth` and `Logging`, both matching `"handle*"` functions. Use `wraps: Logging` on `Auth` to place `Auth` outside `Logging`. Call a matched function and verify that `Auth`'s pre-advice runs before `Logging`'s pre-advice.
+
+3. Add `requires: true` to an aspect that matches `"compute*"` functions. Verify that the program compiles and the matched function returns the correct result. Then change `requires: true` to `requires: false` and observe the runtime contract failure (in a `@runtime_checked` package).
+
+4. Annotate one function with `@no_aspect` and another with `@no_aspect("Logging")`. Confirm that the first function is wrapped by neither aspect, and the second is still wrapped by `Auth` but not `Logging`.
+
+5. Write an aspect whose `around` body calls `proceed(args)` inside a `while` loop three times. Call the matched function once and verify that its body runs three times.

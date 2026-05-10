@@ -1109,6 +1109,96 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 ---
 
+## 14. Aspects
+
+An `aspect` block is a module-scope item that declares cross-cutting behaviour applied to a matched set of functions at compile time. The compiler weaves the advice into the matched functions; no call-site changes are required.
+
+### 14.1 Aspect declaration
+
+```ebnf
+aspect <Name> {
+  matches: name like "<glob>"
+
+  [ wraps: <AspectName> [, ...] ]
+  [ inside: <AspectName> [, ...] ]
+
+  [ requires: <expr> ]
+  [ ensures: <expr> ]
+
+  around(args) -> ret {
+    <body>
+  }
+}
+```
+
+An aspect must define at least one of: an `around` advice body, a `requires:` clause, or an `ensures:` clause. An aspect with none of the above is a compile error (A0009).
+
+**`matches:`** selects which functions the aspect applies to. `name like "<glob>"` matches on the function's short (unqualified) name. Glob metacharacters: `*` (any sequence), `?` (any single character), `[abc]` (character set), `[a-z]` (character range).
+
+Matching aspects are package-private: they weave over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template (deferred; see §14.7).
+
+### 14.2 The `around` advice body
+
+```lyric
+around(args) -> ret {
+  // pre-advice
+  proceed(args)
+  // post-advice
+}
+```
+
+`args` is a placeholder for the matched function's original arguments, forwarded to `proceed(args)`. `proceed(args)` calls the matched function and returns its return value. `ret` is the binding name for the return value; its type equals the matched target's return type. The body's last expression is the return value (implicit for `Unit`).
+
+`proceed(args)` may be called zero times (skip/replace semantics), once (standard wrapper), or multiple times (retry, loop). It may appear anywhere in the body — top-level, inside `if`/`match`, inside `while`/`for` loops, inside `try` blocks.
+
+### 14.3 Composition order
+
+When multiple aspects match the same function, they are composed: each aspect's `proceed(args)` enters the next aspect's advice, and the innermost advice calls the original function.
+
+Default order is lexical declaration order (first-declared is outermost). Override with:
+
+- **`wraps: OtherAspect`** — this aspect is placed outside `OtherAspect` (runs first).
+- **`inside: OtherAspect`** — this aspect is placed inside `OtherAspect` (runs after).
+
+Multiple names may appear in a single `wraps:` or `inside:` clause, comma-separated. The compiler resolves ordering at build time; cycles are a compile error (A0008).
+
+### 14.4 Contract augmentation
+
+Aspects may carry `requires:` and `ensures:` clauses. These are composed additively with the matched function's own contract: all `requires:` clauses (function + every matching aspect) must hold before the call; all `ensures:` clauses must hold after. Aspects cannot weaken or remove a function's own contracts.
+
+In `@runtime_checked` packages, augmented clauses are runtime assertions. In `@proof_required` packages, they are additional SMT obligations.
+
+### 14.5 Per-function opt-out
+
+```lyric
+@no_aspect                   // exclude from every matching aspect
+@no_aspect("AspectName")     // exclude from one named aspect only
+```
+
+The aspect name in `@no_aspect("Name")` is a string literal matching the aspect's declared identifier. Multiple calls with different names exclude from multiple specific aspects.
+
+### 14.6 Compiler errors
+
+| Code | Meaning |
+|------|---------|
+| A0007 | Two aspects' `matches:` overlap on a target with no explicit ordering constraint |
+| A0008 | Cycle in `wraps:`/`inside:` ordering graph |
+| A0009 | Aspect defines neither `around` advice nor any contract clause |
+| A0013 | `wraps:`/`inside:` references an aspect not declared in the package |
+
+A0007, A0008, A0009, and A0013 are specified but not yet emitted by the current compiler. Aspects without an `around` body are silently skipped by the weaver; unresolved `wraps:`/`inside:` names are silently ignored. These checks are planned for a follow-up milestone.
+
+### 14.7 Bootstrap limitations (current milestone)
+
+The following are specified but not yet fully woven:
+
+- The `call` ambient value (`call.shortName`, `call.elapsed`, etc.) inside the around body — not yet parsed or woven.
+- `config {}` blocks in aspects — parsed by the compiler but the weaver does not act on them.
+- `except name in { ... }` exclusion clause inside `matches:` — not yet parsed.
+- `pub aspect` templates and consumer-side instantiation (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver does not act on them.
+
+---
+
 ## Index of TBD items
 
 This document originally marked twelve points as requiring Phase 0
