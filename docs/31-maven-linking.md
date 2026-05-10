@@ -397,11 +397,41 @@ subclasses thrown by Java code (e.g. `NullPointerException` escaping a
 poorly-written library). Today there is no Lyric-level way to intercept
 unchecked exceptions without crashing the thread.
 
-**Recommended default:** add `Std.Jvm.catch[T](action: func(): T): Result[T, JvmException]`
-as a low-level escape hatch in the JVM stdlib kernel, gated behind a
-`@experimental` annotation. Exact semantics — whether `Error` subclasses
-are caught, how `JvmException` wraps the result — are deferred to the
-Phase 6 stdlib design pass.
+**Resolution:** `Std.Jvm.catch[T](action: func(): T): Result[T, JvmException]`
+has been added to `stdlib/std/_kernel/jvm.l`, gated behind `@experimental`.
+The declaration routes to `lyric.runtime.jvm.ExceptionHelper.catch` (a
+static helper in the JVM stdlib kernel JAR that wraps a Callable). `Error`
+subclasses are NOT caught (they propagate as unrecoverable JVM errors) per
+the conservative bootstrap default. The JVM emitter call-site wrapper and
+the `ExceptionHelper.catch` Java implementation are Phase 6 deliverables
+(see Q-J013).
+
+### Q-J013: JVM emitter call-site try-catch for checked-exception methods
+
+When the JVM emitter compiles a call to an `@externTarget` function whose
+declared Lyric return type is `Result[T, JvmException]` (i.e. a Java method
+with checked exceptions in its `throws` clause), it must emit a try-catch
+block rather than a plain `invokestatic` / `invokevirtual`:
+
+1. Begin a protected region.
+2. Emit the Java method call.
+3. Box the return value into `Ok(result)`.
+4. Catch `java.lang.Exception`; box the caught exception into `Err(exception)`.
+
+This wrapping is NOT currently present in `compiler/lyric/jvm/lowering.l`.
+The shim generator (`MavenShim.fs`) correctly declares the Lyric return type
+as `Result[T, JvmException]` so the type checker accepts call sites correctly,
+but the JVM emitter will produce incorrect bytecode (no try-catch) until this
+is implemented.
+
+`Std.Jvm.catch[T]` (Q-J012) similarly needs the JVM emitter to recognise the
+`ExceptionHelper.catch` target and emit an `invokedynamic`/`invokestatic` +
+exception-table entry rather than a direct call.
+
+**Recommended default:** implement as part of the Phase 6 `@externTarget`
+lowering pass in `compiler/lyric/jvm/`. Add an `LExternCall` instruction
+variant (or annotate `LInvokestatic` / `LInvokevirtual` with a `checkedWrap`
+flag) so `lowerFunc` emits the exception table entry automatically.
 
 ### Q-J011: GPG signature verification
 
