@@ -2008,6 +2008,111 @@ pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
   )
 }
 
+// ── Q-J005: opaque-type Java interop facade ───────────────────────────────────
+//
+// For each LOpaqueType we emit a companion `<ClassName>$Facade` class that
+// Java callers can use to construct and inspect Lyric opaque values without
+// accessing the package-private constructor directly:
+//
+//   public static OpaqueClass create(FieldType0 f0, ...)
+//   public static FieldType0   field0(OpaqueClass obj)
+//   ...
+//
+// The facade delegates to the package-private ctor and the `$name()T` accessor
+// methods already emitted by lowerOpaqueType.
+
+func lowerOpaqueFacadeAcc(opaqueName: in String, f: in LOpaqueField, pool: in Pool): MethodInfo {
+  val mangledAcc = "$" + f.name
+  val noPs: List[JvmType] = newList()
+  val accMethodIdx = poolMethodref(pool, opaqueName, mangledAcc, buildDescriptor(noPs, f.fieldType))
+  val asm = newAssembler(pool)
+  emitAload(asm, 0)
+  emitInvokevirtual(asm, accMethodIdx)
+  match f.fieldType {
+    case JLong    -> emitLreturn(asm)
+    case JDouble  -> emitDreturn(asm)
+    case JFloat   -> emitFreturn(asm)
+    case JBoolean -> emitIreturn(asm)
+    case JByte    -> emitIreturn(asm)
+    case JChar    -> emitIreturn(asm)
+    case JShort   -> emitIreturn(asm)
+    case JInt     -> emitIreturn(asm)
+    case JVoid    -> emitReturn(asm)
+    case JRef(_)   -> emitAreturn(asm)
+    case JArray(_) -> emitAreturn(asm)
+  }
+  val code = assembleCode(asm, fieldSlotSize(f.fieldType), 1)
+  val attrs: List[Attribute] = newList()
+  attrs.add(code)
+  val pTypes: List[JvmType] = newList()
+  pTypes.add(JRef(className = opaqueName))
+  makeMethodInfo(ACC_PUBLIC + ACC_STATIC, f.name, buildDescriptor(pTypes, f.fieldType), attrs)
+}
+
+func lowerOpaqueFacadeFactory(o: in LOpaqueType, pool: in Pool): MethodInfo {
+  val classIdx = poolClass(pool, o.className)
+  val ctorPs: List[JvmType] = newList()
+  var ci = 0
+  while ci < o.fields.count {
+    ctorPs.add(o.fields[ci].fieldType)
+    ci = ci + 1
+  }
+  val ctorIdx = poolMethodref(pool, o.className, "<init>", buildDescriptor(ctorPs, JVoid))
+  val asm = newAssembler(pool)
+  emitNew(asm, classIdx)
+  emitDup(asm)
+  var slot = 0
+  var fi = 0
+  while fi < o.fields.count {
+    val f = o.fields[fi]
+    match f.fieldType {
+      case JInt     -> { emitIload(asm, slot); slot = slot + 1 }
+      case JLong    -> { emitLload(asm, slot); slot = slot + 2 }
+      case JFloat   -> { emitFload(asm, slot); slot = slot + 1 }
+      case JDouble  -> { emitDload(asm, slot); slot = slot + 2 }
+      case JBoolean -> { emitIload(asm, slot); slot = slot + 1 }
+      case JByte    -> { emitIload(asm, slot); slot = slot + 1 }
+      case JChar    -> { emitIload(asm, slot); slot = slot + 1 }
+      case JShort   -> { emitIload(asm, slot); slot = slot + 1 }
+      case JVoid    -> ()
+      case JRef(_)   -> { emitAload(asm, slot); slot = slot + 1 }
+      case JArray(_) -> { emitAload(asm, slot); slot = slot + 1 }
+    }
+    fi = fi + 1
+  }
+  emitInvokespecial(asm, ctorIdx)
+  emitAreturn(asm)
+  val maxLocals = slot
+  val maxStack = 2 + maxLocals
+  val codeAttr = assembleCode(asm, maxStack, maxLocals)
+  val attrs: List[Attribute] = newList()
+  attrs.add(codeAttr)
+  val retType: JvmType = JRef(className = o.className)
+  makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "create", buildDescriptor(ctorPs, retType), attrs)
+}
+
+pub func lowerOpaqueFacade(o: in LOpaqueType, pool: in Pool): ClassFile {
+  val facadeName = o.className + "$Facade"
+  val methods: List[MethodInfo] = newList()
+  methods.add(lowerOpaqueFacadeFactory(o, pool))
+  var i = 0
+  while i < o.fields.count {
+    methods.add(lowerOpaqueFacadeAcc(o.className, o.fields[i], pool))
+    i = i + 1
+  }
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass    = facadeName,
+    superClass   = "java/lang/Object",
+    interfaces   = newList(),
+    fields       = newList(),
+    methods      = methods,
+    attrs        = newList()
+  )
+}
+
 // ── B111: lowerSealedUnion (production sealed-interface form) ─────────────────
 
 /// Sealed case (same shape as LUnionCase but targets the sealed-interface form).
@@ -3155,6 +3260,7 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       }
       case LPOpaqueType(ot) -> {
         result.add(lowerOpaqueType(ot, pool))
+        result.add(lowerOpaqueFacade(ot, pool))
       }
       case LPDistinctType(dt) -> {
         result.add(lowerDistinctType(dt, pool))

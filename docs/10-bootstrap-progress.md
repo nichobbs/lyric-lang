@@ -10746,3 +10746,58 @@ libraries can be imported and aspect templates instantiated today.
 no F# emitter changes).  727 emitter, 323 parser, 143 type-checker, 123
 lexer, 28 LSP, 127 CLI, 266 verifier — all passing.
 
+---
+
+### D-progress-205: Q-J005 opaque-type facade codegen + Q-J007 design sketch
+
+**Date:** 2026-05-10
+**Branch:** `claude/java-dependency-support-MC6Xz`
+**Decision:** D052 (follow-up)
+
+Two items from the Maven/JVM design question backlog:
+
+**1. Q-J005: opaque-type Java interop facades (`lowerOpaqueFacade`)**
+
+`compiler/lyric/jvm/lowering.l` — three new functions:
+
+- `lowerOpaqueFacadeAcc(opaqueName, f, pool)` — emits a
+  `public static f.name(OpaqueClass obj): f.fieldType` method that
+  delegates to the existing `$name()T` virtual accessor.
+- `lowerOpaqueFacadeFactory(o, pool)` — emits a
+  `public static create(fields...): OpaqueClass` method that calls the
+  package-private constructor via `new; dup; load params; invokespecial <init>;
+  areturn`.
+- `lowerOpaqueFacade(o, pool): ClassFile` — assembles a
+  `<ClassName>$Facade` class (`ACC_PUBLIC + ACC_SUPER + ACC_FINAL`,
+  no fields) containing `create` and one accessor per field.
+
+The `lowerPackage` driver now emits both the opaque class and its facade for
+every `LPOpaqueType` item.
+
+Self-test `compiler/lyric/jvm/self_test_b125.l` (Stage B125): creates an
+`OpaquePoint(x: JInt, y: JInt)` opaque type, generates the facade, and a
+`Main` class that exercises `OpaquePoint$Facade.create(10, 20)`, `.x(obj)`,
+and `.y(obj)`.  Java output: `x=10 / y=20`.  Registered as
+`JvmLoweringB125Test` in `Lyric.Emitter.Tests`.
+
+**2. Q-J007: JUnit 5 test-runner adapter design sketch**
+
+`docs/32-junit-runner-sketch.md` — new sketch covering:
+
+- `@LyricTest` annotation shape (RUNTIME retention, METHOD target;
+  carries `displayName`, `sourceFile`, `sourceLine`).
+- Emitted class shape: one `public static void __lyric_test_<i>()` per
+  `ITest` item, annotated with `@LyricTest`, throwing `AssertionError` on
+  failure.
+- `LyricTestEngine` implementing `org.junit.platform.engine.TestEngine`:
+  classpath scanning for `@LyricTest` methods, invocation via reflection,
+  result reporting through the JUnit 5 platform protocol.
+- `lyric test --jvm` flow: compile → build classpath (stdlib JVM JAR +
+  toolchain JAR + Maven-restored JARs) → shell to JUnit 5 console launcher.
+- Five open questions (Q-J007a–e): tag support, parameterised tests, timeout,
+  coverage, IDE plugin compatibility.
+
+`docs/18-jvm-emission.md` Q-J007 updated to reference the sketch.
+`CLAUDE.md` sketch listing updated.
+
+**Test counts:** 728 emitter tests — all passing (B125 is the new test).
