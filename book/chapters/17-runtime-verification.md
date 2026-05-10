@@ -4,7 +4,7 @@ Most Lyric programs spend their lives in `@runtime_checked` mode. This is not a 
 
 This chapter covers what `@runtime_checked` mode actually does, what a violation looks like when it fires, the rules around debug and release builds, and how to use contracts as a development tool — writing the contract first, stubbing the body, and letting violations guide you to a correct implementation. It also draws the line between `requires:` and `assert`, which serve different purposes even though they both check Boolean conditions.
 
-## §16.1 `@runtime_checked` — the default
+## §17.1 `@runtime_checked` — the default
 
 Every package is implicitly `@runtime_checked`. You never have to write the annotation; it is there if you do not write anything else. Writing it explicitly makes the choice legible:
 
@@ -20,9 +20,9 @@ What this annotation enables:
 - **`invariant:` clauses** on record and opaque types are checked at every public boundary: when a value of the type is passed as an argument to a `pub` function outside the type's own package, and when such a value is returned from a `pub` function.
 - **`forall` and `exists`** quantifiers iterate at runtime over the collection they range over. A `forall (x: Int) where xs.contains(x) implies result.contains(x)` walks the slice.
 
-The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 17).
+The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 18).
 
-## §16.2 What a runtime violation looks like
+## §17.2 What a runtime violation looks like
 
 Here is a small program with a function whose precondition will fire:
 
@@ -73,7 +73,7 @@ counterexample values at violation:
 
 The counterexample now includes `result` — the value the function actually returned — alongside the arguments. You can see immediately that `2 * 3 + (10 % 3) == 7`, not `10`, so something in the body produced the wrong quotient.
 
-## §16.3 Violation semantics
+## §17.3 Violation semantics
 
 There are three kinds of contract violation, each with its own bug tag:
 
@@ -89,7 +89,7 @@ All three are `Bug` values (Chapter 7). They are not normal errors — do not pu
 **Why are violations `Bug` and not exceptions?** Contract violations signal programming errors, not runtime conditions. An `InsufficientFunds` error is a condition a caller should handle; a `PreconditionViolated` means the caller should never have made that call. Routing violations through the same `Result`/exception channel as domain errors would let callers accidentally swallow them — returning `Err(PreconditionViolated(...))` from a function gives the caller the false impression that this is a handled case. Making violations `Bug` ensures they propagate noisily up the stack until someone with the appropriate context — a top-level handler, a test harness — sees them.
 :::
 
-## §16.4 Debug vs release contract checking
+## §17.4 Debug vs release contract checking
 
 The runtime overhead of contract checking is real: evaluating Boolean expressions on every function entry and return costs time proportional to contract complexity. For tight loops processing millions of items, this overhead can matter. Lyric's build modes give you control.
 
@@ -115,7 +115,7 @@ This is useful for financial packages where the cost of a missed postcondition v
 **Note:** The `--release-contracts` flag and `release_contracts` annotation apply to the package they annotate. Downstream packages that import `Account` do not inherit the setting; each package controls its own release policy.
 :::
 
-## §16.5 Using contracts as development tools
+## §17.5 Using contracts as development tools
 
 The most practical use of `@runtime_checked` mode is as a development workflow tool. Write the contract before writing the implementation. The violation messages guide you to the correct implementation without needing a debugger.
 
@@ -191,7 +191,7 @@ Both postconditions now hold. Both tests pass.
 
 This workflow compresses what would otherwise be a write-run-debug-print cycle into a write-run cycle. The contract doubles as your test oracle.
 
-## §16.6 `assert` vs `requires:`
+## §17.6 `assert` vs `requires:`
 
 Both `assert(cond, msg)` and `requires: cond` check a Boolean condition. They serve different purposes and produce different diagnostic output.
 

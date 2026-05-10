@@ -6,7 +6,7 @@ This chapter walks through the full lifecycle of a Lyric package: writing the ma
 
 By the end you will have a clear picture of how to take a Lyric project from a blank directory to a versioned, published package that other developers can consume.
 
-## §19.1 `lyric.toml` — the project manifest
+## §20.1 `lyric.toml` — the project manifest
 
 Every Lyric project is described by a `lyric.toml` file at its root. Here is a single-package manifest:
 
@@ -32,7 +32,7 @@ The `[package]` fields:
 
 Version constraints are resolved against the NuGet registry (or a compatible private registry).
 
-### §19.1.1 Multi-package projects (`[project]`)
+### §20.1.1 Multi-package projects (`[project]`)
 
 A Lyric *project* may contain more than one package — useful when an application is large enough that splitting into `MyApp.Core`, `MyApp.Db`, `MyApp.Web` is clearer than one monolith. Add a `[project]` section to the manifest to declare the project name and choose between two output modes (Phase 5 §M5.1 stage 2c.2 addition):
 
@@ -62,7 +62,7 @@ Auto-discovery: when `[project.packages]` is empty, `lyric build` walks the sour
 
 The `[project]` section is optional; manifests without it use the legacy single-package compilation flow.
 
-## §19.2 Building with a manifest
+## §20.2 Building with a manifest
 
 The four commands you will run on every project:
 
@@ -86,7 +86,7 @@ lyric build --manifest lyric.toml
 
 `lyric publish` builds a `.nupkg` from your pre-built DLL and uploads it to NuGet. It generates a temporary `.csproj` that attaches the DLL, wires up the manifest metadata (`name`, `version`, `authors`, and so on), and forwards `[dependencies]` as `PackageReference` items so NuGet records the transitive dependency graph correctly.
 
-## §19.3 Contract metadata in packages
+## §20.3 Contract metadata in packages
 
 Every Lyric compilation produces two artifacts:
 
@@ -101,7 +101,7 @@ You can inspect the contract resource of any compiled Lyric package using `dotne
 **Why NuGet?** Lyric packages are .NET assemblies. The NuGet registry already exists, already works, already has tooling (Artifactory, GitHub Packages, Azure Artifacts) that every .NET shop runs. Inventing a parallel registry would mean maintaining two separate distribution systems. The tradeoff is that consuming an arbitrary NuGet package from Lyric code still requires the FFI boundary (Chapter 13) — NuGet doesn't know what a Lyric contract is — but Lyric packages distribute through infrastructure developers already know. The embedded `Lyric.Contract` resource is the Lyric-specific layer on top; it travels inside the `.nupkg` the same way any embedded resource does. See D-progress-030 and D-progress-031 in `docs/10-bootstrap-progress.md` for the full rationale.
 :::
 
-## §19.4 SemVer and `lyric public-api-diff`
+## §20.4 SemVer and `lyric public-api-diff`
 
 `lyric public-api-diff` compares your current public surface against a previous git ref and reports what changed:
 
@@ -119,7 +119,7 @@ If you remove or change a `@stable` declaration without bumping the major versio
 
 The tool reads stability information from the `Lyric.Contract` embedded resource of the previous version's DLL — it doesn't need to check out the old source.
 
-## §19.5 Stability annotations
+## §20.5 Stability annotations
 
 Two annotations govern the SemVer contract of a `pub` declaration:
 
@@ -148,7 +148,7 @@ myPackage.l:42:5: error S0001: stable declaration 'transfer' calls experimental 
   note: either annotate 'transfer' as @experimental or promote 'bulkTransfer' to @stable
 ```
 
-## §19.6 Split-file mode
+## §20.6 Split-file mode
 
 For teams that want Ada-style API-first discipline, `lyric.toml` supports a `file_layout` setting:
 
@@ -168,7 +168,7 @@ The compiler treats the pair identically to a single unified file; the split is 
 
 The compiler enforces that implementation details — private functions, local bindings, unexported types — are absent from `.lspec` files.
 
-## §19.7 Build features and conditional compilation
+## §20.7 Build features and conditional compilation
 
 Lyric supports a Cargo-style `[features]` section in `lyric.toml` plus a `@cfg(feature = "X")` annotation that gates source items at compile time. A typical service might use it to compile out a logging aspect when shipping a release build:
 
@@ -192,13 +192,13 @@ func emitSpan(name: in String): Unit { … }
 
 The CLI flags `--features X,Y`, `--no-default-features`, and `--all-features` on `lyric build` / `run` / `test` / `prove` / `publish` choose the **active feature set** for one build. Items whose `@cfg(...)` predicate is false are physically erased from the output — there is no IL, no metadata, and no runtime branch.
 
-### §19.7.1 Features are publish-time, not consumer-toggleable
+### §20.7.1 Features are publish-time, not consumer-toggleable
 
-This is the most common confusion. **A consumer cannot toggle features on a published dependency.** Lyric distributes packages as binary `.dll` files (§19.4 and the `Lyric.Contract` resource); the library author's `lyric publish` pins the feature set into the DLL once. Consumers see only the items that were active at publish time.
+This is the most common confusion. **A consumer cannot toggle features on a published dependency.** Lyric distributes packages as binary `.dll` files (§20.4 and the `Lyric.Contract` resource); the library author's `lyric publish` pins the feature set into the DLL once. Consumers see only the items that were active at publish time.
 
 Cargo lets consumers enable features on dependencies because Cargo distributes *source* and rebuilds dependencies on the consumer's machine. Lyric's model is different — and intentionally so, because deterministic binary builds and reproducible deployment are core promises.
 
-If you need a behaviour that varies per deployment, **use runtime config (chapter 20 / D046), not features**:
+If you need a behaviour that varies per deployment, **use runtime config (chapter 21 / D046), not features**:
 
 | Need | Use |
 |---|---|
@@ -209,7 +209,7 @@ If you need a behaviour that varies per deployment, **use runtime config (chapte
 
 **Rule of thumb.** `@cfg` answers *"is this code in my binary at all?"* `config { … }` answers *"given that it's in my binary, what behaviour does it exhibit at runtime?"* When in doubt, use `config { … }` — it's strictly more permissive and works across the package boundary.
 
-### §19.7.2 Diagnostics
+### §20.7.2 Diagnostics
 
 | Code | Meaning |
 |---|---|
@@ -223,7 +223,7 @@ If you need a behaviour that varies per deployment, **use runtime config (chapte
 
 The full design is in `docs/24-build-features.md`.
 
-## §19.8 The registry
+## §20.8 The registry
 
 Lyric packages live on NuGet at `nuget.org` under their declared `name`. The NuGet package ID is the `name` field from `lyric.toml` verbatim.
 

@@ -8,7 +8,7 @@ This chapter covers the three test styles (unit tests, property tests, and snaps
 **Bootstrap status (v1).** `lyric test <file.l>` ships single-file mode today — pass a `@test_module` file and it runs the `test` blocks. Property tests, doctests, snapshot updates, and manifest-driven discovery (`lyric test --properties`, `--doctests`, `--update-snapshots`, `--manifest`) are v2 work and are described here for the eventual surface; they will not run yet. Cross-package non-`pub` access (`@test_module package Account` reaching into the `Account` package's internals) also lands in v2; v1 supports only the same-package case where the test items live in the package they exercise. See `docs/24-test-runner-plan.md`.
 :::
 
-## §14.1 `@test_module`
+## §15.1 `@test_module`
 
 Test code lives in packages annotated `@test_module`. The annotation does two things: it marks the package as test-only (excluded from production builds) and it grants access to the package-private declarations of the package being tested.
 
@@ -46,7 +46,7 @@ lyric test <file.l> --filter "debit"
 
 The filter matches on the full test name, including any grouping prefix you establish by convention. `--filter` accepts a plain substring, not a regex.
 
-## §14.2 Assertions
+## §15.2 Assertions
 
 `Std.Testing` ships a small, deliberately thin assertion vocabulary. There is no assertion library to learn; these six functions cover essentially everything:
 
@@ -110,7 +110,7 @@ Account: "debit reduces balance by the amount"
 
 The compiler assigns each test block a name from its string literal. Names must be unique within a test module; duplicate names are a compile error.
 
-## §14.3 Unit tests in practice
+## §15.3 Unit tests in practice
 
 Here is a complete test file for a `divmod` utility — a function that returns the quotient and remainder of integer division:
 
@@ -163,7 +163,7 @@ Each `test "..." { }` block runs independently. A failure in one block does not 
 
 The test runner exits with a non-zero status code when any test fails, making it straightforward to gate CI on `lyric test`.
 
-## §14.4 Snapshot testing
+## §15.4 Snapshot testing
 
 Snapshot tests capture a string output on the first run and compare against it on subsequent runs. They are useful for formatted output, rendered reports, serialized data, or anything where the expected value would be tedious to write by hand.
 
@@ -207,7 +207,7 @@ Snapshot files live in a `snapshots/` directory relative to the test source file
 **Note:** Snapshot tests are included in the default `lyric test` run. They are not a separate mode. The `--update-snapshots` flag is only for regenerating baselines.
 :::
 
-## §14.5 Property-based testing
+## §15.5 Property-based testing
 
 A property test states an invariant that should hold for all inputs of a given type, then lets the runtime search for a counterexample. Where a unit test checks the cases you thought of, a property test searches the space you didn't.
 
@@ -284,7 +284,7 @@ lyric test --properties
 
 In CI, run `lyric test --properties` separately, perhaps on a longer schedule or only on certain branches.
 
-## §14.6 Doctests
+## §15.6 Doctests
 
 Code blocks inside `///` doc comments are extracted and run as tests. This keeps examples in documentation from going stale.
 
@@ -325,7 +325,7 @@ lyric test --doctests
 
 They are not included in the default `lyric test` run, since they require imports and setup that can make them slow or environment-dependent. Including them in CI alongside `lyric test --properties` is a good practice.
 
-## §14.7 Running tests
+## §15.7 Running tests
 
 A summary of the available modes:
 

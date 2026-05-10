@@ -1,4 +1,4 @@
-# Chapter 25: Database Access
+# Chapter 26: Database Access
 
 The `lyric-db` library provides driver-agnostic database access with typed
 rows and transactions.  Two drivers are available: PostgreSQL (via Npgsql)

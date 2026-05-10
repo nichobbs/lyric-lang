@@ -6,7 +6,7 @@ Not every contract in the world is provable. The SMT solver Z3 is fast and power
 
 One theme runs through everything in this chapter: the contracts you write determine what the prover can do. A weak postcondition on a helper function leaves a gap in every proof that calls it. A `forall` over an unbounded domain makes goals undecidable. An `old()` that captures exactly what it needs — and nothing more — gives the prover the right fact at the right cost. The discipline of writing good contracts for verification is the discipline of writing contracts that are precise about what you mean.
 
-## §18.1 `old()` in ensures clauses
+## §19.1 `old()` in ensures clauses
 
 The `old()` form is how postconditions refer to the pre-state of a function call — the values of arguments and fields at the moment the function was invoked, before any mutation occurred. You saw a brief introduction in Chapter 8. This section works through the full Stack example to show the complete picture.
 
@@ -57,7 +57,7 @@ ensures: result.items.length == s.items.length + 1     // incorrect for inout
 
 For an `inout` parameter, `s.items.length` in an `ensures:` clause refers to the post-state. After a push, the post-state length is `old_length + 1`. So this postcondition becomes `old_length + 1 == old_length + 1 + 1`, which is false — the prover reports a counterexample. For `in` parameters the mistake is less harmful because the pre-state and post-state are the same, but the intent is obscured. Use `old` wherever you mean "the value at the start of the call."
 
-## §18.2 Universal and existential quantifiers
+## §19.2 Universal and existential quantifiers
 
 Lyric's contract sublanguage has two quantifiers: `forall` and `exists`. Their behavior differs between `@runtime_checked` and `@proof_required` mode, and the difference matters for both correctness and tractability.
 
@@ -96,9 +96,9 @@ The `forall (y: T)` here is not iterated at runtime — in `@proof_required` mod
 
 `exists` works analogously. It becomes an existential formula for the SMT solver, which can discharge it by finding a witness. `exists (x: T) where xs.contains(x) and x > threshold` translates to "there is an element in `xs` greater than `threshold`," which Z3 can verify or refute for integer-typed collections.
 
-The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string domains — check whether the goals discharge before relying on them. For floating-point (`Float`, `Double`) the prover maps values to mathematical reals, which is sound for inequality and arithmetic reasoning; see §18.8.
+The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string domains — check whether the goals discharge before relying on them. For floating-point (`Float`, `Double`) the prover maps values to mathematical reals, which is sound for inequality and arithmetic reasoning; see §19.8.
 
-## §18.3 The sorted set example
+## §19.3 The sorted set example
 
 Worked example 3 demonstrates the pattern:
 
@@ -132,9 +132,9 @@ sortedSet.l:18:3: warning V0010: ensures (conservation) — unknown
   options: narrow the contract, add a @pure lemma, or shift to @runtime_checked
 ```
 
-The verifier tells you the goal is unresolved and gives you the next steps. The program is not certified as correct for `T: String` — it just has obligations the prover cannot discharge. Chapter 14 (property-based testing) complements the proof here: runtime testing over many generated inputs catches violations the prover cannot rule out statically.
+The verifier tells you the goal is unresolved and gives you the next steps. The program is not certified as correct for `T: String` — it just has obligations the prover cannot discharge. Chapter 15 (property-based testing) complements the proof here: runtime testing over many generated inputs catches violations the prover cannot rule out statically.
 
-## §18.4 Inductive data structures — the BST
+## §19.4 Inductive data structures — the BST
 
 Worked example 10 is the binary search tree. It is a good demonstration of how the prover handles recursive data structures:
 
@@ -183,7 +183,7 @@ For `K: String`, the third postcondition (the `forall` conservation) may push th
 
 When the solver discharges the goals, it typically takes milliseconds for any tree depth the VC generator can represent — the proof does not run on a specific tree, it reasons about all trees abstractly.
 
-## §18.5 The decidable fragment
+## §19.5 The decidable fragment
 
 Knowing what discharges deterministically helps you write contracts that stay within it and recognize when you have stepped outside.
 
@@ -201,7 +201,7 @@ Knowing what discharges deterministically helps you write contracts that stay wi
 - Free quantifiers over `String` — `forall (s: String) implies ...` without the domain being a finite collection. String ordering (lexicographic `<`) is not in Z3's decidable LIA fragment.
 - Non-linear arithmetic where both operands are symbolic — `n * m` where both `n` and `m` are variables, not constants. This is outside LIA and into nonlinear arithmetic, where Z3 may time out or return `unknown`.
 - Recursive functions with complex invariants and deep nesting — `isBst` of depth 10 is fine; a mutually recursive function pair with a shared invariant and non-trivial base cases may exhaust Z3's resources.
-- Floating-point arithmetic with exact rounding semantics — if you need IEEE 754 bit-exact results (`NaN` propagation, subnormals, directed rounding) the prover cannot reason about those. The verifier maps `Float`/`Double` to mathematical reals, which covers the common case of inequality and arithmetic reasoning soundly; see §18.8 for details.
+- Floating-point arithmetic with exact rounding semantics — if you need IEEE 754 bit-exact results (`NaN` propagation, subnormals, directed rounding) the prover cannot reason about those. The verifier maps `Float`/`Double` to mathematical reals, which covers the common case of inequality and arithmetic reasoning soundly; see §19.8 for details.
 
 **When the prover says `unknown`:**
 
@@ -215,7 +215,7 @@ You have four options, roughly in order of preference:
 
 4. **Use `unsafe { assert(...) }`** with an explicit manual justification. Reserve this for cases where you are confident the property holds and have a manual argument for it.
 
-## §18.6 Lemmas and `@pure` helper functions
+## §19.6 Lemmas and `@pure` helper functions
 
 Large proofs often decompose cleanly into smaller, independently verifiable lemmas. Lyric supports this through `@pure` functions with `ensures:` clauses that the prover can use as hypotheses.
 
@@ -264,7 +264,7 @@ At the call site to `balancesConserved` in the postcondition, the prover uses th
 
 Breaking a large proof into named lemmas has two benefits: individual goals are smaller and more tractable for Z3, and the intermediate properties are named and can be understood independently. A failing goal now points to a specific lemma rather than to a large multi-clause postcondition.
 
-## §18.7 Proving `protected type` invariants
+## §19.7 Proving `protected type` invariants
 
 A `protected type` declaration combines mutable shared state with an invariant. In `@proof_required` mode, `lyric prove` checks each `entry` and `func` method: it assumes the invariant holds on entry and asks the prover to confirm it still holds on exit. The token-bucket example demonstrates the pattern:
 
@@ -336,7 +336,7 @@ pub func make(capacity: in Double): Bucket
 
 This generates one goal — the structural postcondition — which Z3 closes trivially from the constructor arguments.
 
-## §18.8 Float and Double as mathematical reals
+## §19.8 Float and Double as mathematical reals
 
 The Lyric verifier maps `Float` and `Double` values to the SMT `Real` sort (mathematical real numbers) rather than to the IEEE 754 bitvector theory. This is a deliberate, sound approximation.
 
@@ -352,7 +352,7 @@ those obligations will not hold in real arithmetic and the prover will correctly
 
 **Guideline.** Use `Float`/`Double` in `@proof_required` contracts for rate limits, ratios, thresholds, and other situations where the values are well-bounded and you need inequality reasoning. Avoid relying on exact decimal representations or rounding properties; if you need those guarantees, use `Int` scaled by a factor (e.g., store amounts in integer cents rather than decimal dollars).
 
-## §18.9 Knowing when to stop
+## §19.9 Knowing when to stop
 
 ::: sidebar
 **Should I use `@proof_required` for everything?** The answer is no, and it is worth being explicit about why. SMT verification is powerful but not free. Every contract obligation becomes an SMT query; a complex package can generate hundreds of goals. Some of those goals may be in the undecidable fragment, requiring manual intervention. Writing `ensures:` clauses precise enough to let the prover succeed takes discipline and iteration — it is more work than writing runtime-only contracts. The compilation time is longer; CI pipelines need to accommodate the solver's budget. The value is highest for money handling, safety-critical invariants, and security properties where the cost of a missed bug in production is large. For glue code, HTTP handlers, and UI-facing logic, `@runtime_checked` with well-written contracts gives most of the safety benefit at a fraction of the effort. Reach for `@proof_required` deliberately, for the packages where the stakes are high enough to justify it.

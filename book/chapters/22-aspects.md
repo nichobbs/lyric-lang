@@ -4,7 +4,7 @@ Most code has concerns that cut across many functions: logging every request tha
 
 Lyric addresses this with the `aspect` block. An aspect describes behaviour that should apply to a matched set of functions, written once and maintained in one place. The compiler weaves it in — no call-site boilerplate, no scattered wrapper functions, no synchronization burden when the requirement changes.
 
-## §21.1 The `aspect` block
+## §22.1 The `aspect` block
 
 An aspect is a module-scope item, a peer to `func`, `wire`, and `config`. Here is a complete aspect that logs entry and exit for a family of request-handling functions:
 
@@ -33,9 +33,9 @@ Three parts make up this aspect.
 
 **`proceed(args)`** executes the matched function with the original arguments. Everything before it is pre-advice; everything after is post-advice. You can call it zero times (skip the original function entirely) or more than once (retry, repeat). The most common pattern is a single call.
 
-Matching aspects are package-private: an `aspect` block weaves over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template — see §21.6 for current limitations.
+Matching aspects are package-private: an `aspect` block weaves over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template — see §22.6 for current limitations.
 
-## §21.2 Composition order
+## §22.2 Composition order
 
 A function can be matched by more than one aspect at the same time. By default, aspects are applied in lexical declaration order: the aspect declared first is outermost (runs first, calls `proceed()` which enters the next aspect, and so on).
 
@@ -69,7 +69,7 @@ aspect Logging {
 
 You can name multiple aspects in a single `wraps:` or `inside:` clause, separated by commas. The compiler resolves the ordering at build time; a cycle in the ordering constraints is a compile error.
 
-## §21.3 Contract augmentation
+## §22.3 Contract augmentation
 
 Aspects can add `requires:` and `ensures:` clauses to the functions they match. The aspect clauses are composed additively with the function's own clauses: a function with two `requires:` clauses and an aspect that adds one more ends up with three preconditions, all of which are checked.
 
@@ -88,7 +88,7 @@ The additive composition means aspects cannot remove a function's own contracts.
 
 In `@proof_required` packages, aspect-added contracts become additional SMT obligations. The verifier checks the full composed contract as a single set of proof goals.
 
-## §21.4 Per-function opt-out
+## §22.4 Per-function opt-out
 
 A function can be excluded from all aspects with `@no_aspect`, or excluded from a specific aspect with `@no_aspect("AspectName")` (passing the name as a string literal):
 
@@ -109,7 +109,7 @@ pub func handleMetrics(): MetricsPayload {
 
 Use `@no_aspect` when the reason is specific to one function and you know the aspect name at the time you write the function.
 
-## §21.5 `proceed(args)` semantics
+## §22.5 `proceed(args)` semantics
 
 `proceed(args)` in the around body calls the target function with the original arguments and returns the target's return value. Several common patterns:
 
@@ -148,7 +148,7 @@ around(args) -> ret {
 
 `proceed(args)` may appear anywhere in the around body, including inside loops, if-branches, and try blocks.
 
-## §21.6 Planned features (not yet implemented)
+## §22.6 Planned features (not yet implemented)
 
 The following features are designed and specified in `docs/26-aspects.md` but not yet implemented in the compiler:
 

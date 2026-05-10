@@ -31,12 +31,20 @@ CHAPTERS := \
 	chapters/11-dependency-injection.md \
 	chapters/12-standard-library.md \
 	chapters/13-interop-and-ffi.md \
-	chapters/14-testing.md \
-	chapters/15-mocking-and-test-wires.md \
-	chapters/16-runtime-verification.md \
-	chapters/17-proofs.md \
-	chapters/18-advanced-verification.md \
-	chapters/19-package-ecosystem.md \
+	chapters/14-jvm-target.md \
+	chapters/15-testing.md \
+	chapters/16-mocking-and-test-wires.md \
+	chapters/17-runtime-verification.md \
+	chapters/18-proofs.md \
+	chapters/19-advanced-verification.md \
+	chapters/20-package-ecosystem.md \
+	chapters/21-runtime-config.md \
+	chapters/22-aspects.md \
+	chapters/23-logging.md \
+	chapters/24-web-services.md \
+	chapters/25-caching.md \
+	chapters/26-database-access.md \
+	chapters/27-health-checks.md \
 	chapters/appendix-a-vscode.md \
 	chapters/appendix-b-quick-reference.md
 

@@ -266,7 +266,7 @@ func main(): Unit {
 Env var derivation: `LYRIC_CONFIG_<PKG_UPPER>_<BLOCK_UPPER>_<FIELD_UPPER>` (`.` → `_`).  
 Custom name: `port: Int = 8080 via "APP_PORT"`.  
 Field types: `Bool`, `Int`, `Long`, `Float`, `Double`, `String`, range subtypes, simple enums, `[T]` (comma-separated).  
-Exit code 78 (`EX_CONFIG`) on startup failure.  See chapter 20.
+Exit code 78 (`EX_CONFIG`) on startup failure.  See chapter 21.
 
 ### Aspects
 
@@ -306,7 +306,7 @@ aspect Auth {
 
 Glob metacharacters in `matches:`: `*` (any sequence), `?` (one char), `[abc]` (set), `[a-z]` (range).  
 Ordering: `wraps: OtherAspect` (this aspect is outer), `inside: OtherAspect` (this aspect is inner). Default: lexical declaration order.  
-Opt-out: `@no_aspect` (all aspects) / `@no_aspect("Name")` (named aspect, string literal).  See chapter 21.
+Opt-out: `@no_aspect` (all aspects) / `@no_aspect("Name")` (named aspect, string literal).  See chapter 22.
 
 ### Wire blocks (compile-time DI graph)
 
@@ -560,7 +560,7 @@ output_assembly = "myapp.dll"
 | `@axiom` | package, `extern func` | Contracts are trusted, not verified; required on `extern package` |
 | `@axiom("description")` | `extern func` | Axiom with audit-visible rationale string |
 | `@body` | handler parameter | Marks the parameter that receives the deserialized HTTP request body |
-| `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 19 §19.7 |
+| `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 20 §20.7 |
 | `@cfg(any(feature = "X", feature = "Y"))` | any item | Erase unless at least one listed feature is active |
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
 | `@derive(Json\|Sql\|Proto)` | `exposed record` | Emit compile-time serializer for the named target |
@@ -665,7 +665,7 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # [project.packages] entry into one DLL with one
                                        # Lyric.Contract.<Pkg> resource per package)
 
-# Build features (compile-time gating; see chapter 19 §19.7)
+# Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
 lyric build --no-default-features      # suppress the default = […] set
 lyric build --all-features             # transitive closure of every declared feature
@@ -681,6 +681,8 @@ lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
 lyric test <file.l> --list             # print test titles only; do not compile or run
+lyric test <file.l> --jvm              # compile with JVM backend; write annotated JAR
+                                       # (JUnit 5 ConsoleLauncher integration in B127+)
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)

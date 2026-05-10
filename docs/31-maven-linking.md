@@ -253,15 +253,15 @@ both reduce to `Guava` without the group, which is rejected.
 
 After `lyric restore`, the JVM emitter's module path includes:
 
-1. The JVM stdlib JARs (`lyric.std.*.lyrjar`).
-2. The project's own `.lyrjar`(s).
+1. The JVM stdlib JARs (`lyric.std.*.jar`).
+2. The project's own `.jar`(s).
 3. Every Maven JAR materialised in `target/restore/jars/`.
 
 `lyric build` writes a `target/build/module-path.txt` listing all JARs in
 order. The generated run-script wrapper invokes:
 
 ```sh
-java --module-path "$(cat target/build/module-path.txt):target/build/<package>.lyrjar" \
+java --module-path "$(cat target/build/module-path.txt):target/build/<package>.jar" \
      --module lyric.<package>/<entry>
 ```
 
@@ -305,7 +305,7 @@ Mitigations Lyric tooling adds on top:
 - **`@axiom("from Maven <groupId>:<artifactId> v<version>")`** appears
   verbatim in every contract resource. `lyric public-api-diff` lists axiom
   changes; a removed axiom is a SemVer-major event. Downstream consumers
-  see exactly which Maven packages a published Lyric `.lyrjar` trusts.
+  see exactly which Maven packages a published Lyric JAR trusts.
 - **No transitive `@axiom` re-export.** A Lyric package consuming
   `ComGoogleGuava.Guava` does not transitively vouch for it; trust is
   local.

@@ -4,7 +4,7 @@
 
 The proof system is not a replacement for runtime checking. It is a different tool for a different class of problem. Most packages should stay `@runtime_checked`. The ones that benefit from `@proof_required` are the ones where you can articulate the correctness properties precisely, where the domain is arithmetic-heavy, and where a bug slipping through testing would be expensive enough to justify the additional discipline. If that sounds like the core of a financial system, that is because it usually is.
 
-## §17.1 When to use `@proof_required`
+## §18.1 When to use `@proof_required`
 
 The proof system discharges contracts by handing them to an SMT solver. That solver is very good at certain things and not at others. Understanding the fit helps you decide where the annotation belongs.
 
@@ -26,7 +26,7 @@ The pattern that works well in practice is the one from the banking example: `@p
 **Why per-module and not per-function?** D013 in the decision log captures this choice. Function-level verification opt-in sounds more flexible, but a verified function calling unverified helpers gives you nothing — the prover has to assume the helpers' postconditions rather than checking them. Per-module boundaries enforce the discipline that makes the proof meaningful. Every function in a `@proof_required` package is verified, and every callee it calls is either also verified or explicitly declared as an axiom.
 :::
 
-## §17.2 Annotating a module
+## §18.2 Annotating a module
 
 Marking a package `@proof_required` is a single-line change:
 
@@ -71,7 +71,7 @@ This restriction is detected at compile time. If you annotate a package `@proof_
 **Note:** A `@runtime_checked` package can call a `@proof_required` package freely. The restriction is one-directional: proof-required code constrains its callees; runtime-checked code does not. Downstream packages benefit from a `@proof_required` domain layer without needing to adopt `@proof_required` themselves.
 :::
 
-## §17.3 Running `lyric prove`
+## §18.3 Running `lyric prove`
 
 Once you have annotated a module, run the verifier:
 
@@ -100,7 +100,7 @@ transfer.l:12:3: error V0008: ensures (conservation) — proof failed
 
 The counterexample is not arbitrary — it is a specific assignment of values to variables that makes the postcondition false. In this case, the solver found that if `amount = 0` and `debit` returns `Err`, the function returns early before binding `newFrom` and `newTo`, so the conservation property cannot hold. The counterexample tells you exactly what inputs expose the gap.
 
-## §17.4 The Hoare call rule (accessible explanation)
+## §18.4 The Hoare call rule (accessible explanation)
 
 The key mechanism that makes module-level proof tractable is the Hoare call rule. When the VC generator encounters a call to `debit(from, amount)` inside `execute`, it does not re-analyse `debit`'s body. It uses `debit`'s contract instead:
 
@@ -141,7 +141,7 @@ newFrom.balance + newTo.balance
 
 Z3 discharges this in milliseconds. The entire proof never opened `debit`'s body or `credit`'s body; it used their contracts as black-box specifications. This is why contracts on callees must be strong enough to let their callers reason about them — a `debit` with no postcondition, or a postcondition that does not mention the balance, would leave the VC generator with no facts to work from, and the conservation goal would remain unproven.
 
-## §17.5 `lyric prove --explain` and `--json`
+## §18.5 `lyric prove --explain` and `--json`
 
 When a proof succeeds or fails, you can inspect the underlying goal in more detail.
 
@@ -198,7 +198,7 @@ Output:
 
 The `outcome` field is `"discharged"`, `"counterexample"`, or `"unknown"`. A CI gate that fails if `counterexamples > 0` or `unknown > 0` ensures that every proof obligation is affirmatively discharged before a merge. The `"model"` field, when present, contains the counterexample bindings in the same format the human-readable output shows.
 
-## §17.6 `@axiom` boundaries in `@proof_required` packages
+## §18.6 `@axiom` boundaries in `@proof_required` packages
 
 Not everything a domain package needs is itself provable. I/O, clocks, database operations, and .NET BCL calls live outside the decidable fragment. The `@axiom` boundary is the mechanism for bringing them in.
 
@@ -219,7 +219,7 @@ This is why axiom boundaries are socially heavyweight in Lyric. Every `@axiom` l
 
 The practical rule: keep axiom blocks small and tied to well-documented external specifications (BCL contracts, RFC-specified network protocols). Do not axiom away your own code.
 
-## §17.7 `@proof_required(unsafe_blocks_allowed)`
+## §18.7 `@proof_required(unsafe_blocks_allowed)`
 
 Occasionally a function inside a `@proof_required` package makes a call the prover cannot reason about, and the `@axiom` pattern is not appropriate because the function is not an extern boundary — it is internal code with complex behavior. The escape hatch is `unsafe { }`:
 
@@ -251,10 +251,10 @@ Inside an `unsafe { }` block, the prover generates no obligations. The `assert(l
 Use `unsafe { }` sparingly and document the manual justification. Every `unsafe` block is a gap in the proof. The `(unsafe_blocks_allowed)` annotation forces you to declare the gap at the package level rather than hiding it inside a function body — anyone reading the package annotation knows to look for the blocks.
 
 ::: sidebar
-**What is Z3?** Z3 is an SMT (Satisfiability Modulo Theories) solver built by Microsoft Research. Given a formula in a supported theory, Z3 can prove it always true, prove it sometimes false (producing a counterexample), or report `unknown` when the formula is outside what it can decide. Lyric feeds it the verification conditions generated from your contracts. You do not need to understand SMT theory to use `lyric prove` — the VC generator handles the translation — but it helps to know that Z3 works with decidable fragments (linear arithmetic, algebraic datatypes, finite quantifiers, bit vectors) and struggles outside those fragments. When Z3 reports `unknown`, it is telling you the formula is in territory it cannot decide, not that the formula is false. Chapter 18 covers the decidable fragment and what to do at its edges.
+**What is Z3?** Z3 is an SMT (Satisfiability Modulo Theories) solver built by Microsoft Research. Given a formula in a supported theory, Z3 can prove it always true, prove it sometimes false (producing a counterexample), or report `unknown` when the formula is outside what it can decide. Lyric feeds it the verification conditions generated from your contracts. You do not need to understand SMT theory to use `lyric prove` — the VC generator handles the translation — but it helps to know that Z3 works with decidable fragments (linear arithmetic, algebraic datatypes, finite quantifiers, bit vectors) and struggles outside those fragments. When Z3 reports `unknown`, it is telling you the formula is in territory it cannot decide, not that the formula is false. Chapter 19 covers the decidable fragment and what to do at its edges.
 :::
 
-## §17.8 `@proof_required(checked_arithmetic)`
+## §18.8 `@proof_required(checked_arithmetic)`
 
 Financial code has a particular concern: arithmetic operations that overflow silently. On 64-bit integers, `Long.max + 1` wraps around and becomes a large negative number, which can corrupt a balance.
 

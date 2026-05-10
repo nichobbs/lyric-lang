@@ -4,7 +4,7 @@ Runtime mocking frameworks work via reflection. They intercept method calls on p
 
 This chapter covers the full stub API, how to assemble a test wire, and how to assert on recorded calls. If you have not read Chapter 11 yet, skim §11.2 through §11.5 first — test wires are just wire blocks, and this chapter assumes you are comfortable with the wire syntax.
 
-## §15.1 The problem with reflection-based mocking
+## §16.1 The problem with reflection-based mocking
 
 In Mockito or Moq you write something like:
 
@@ -17,7 +17,7 @@ This looks typed, but the binding between `findById` and its stub is a string ma
 
 Lyric's `@stubbable` stubs are generated from the interface definition. A stub configuration is ordinary Lyric code that calls the interface's methods through a builder. Changing the interface signature is a compile error in the stub configuration, not a runtime surprise. The stub is as type-safe as the production code that calls the interface.
 
-## §15.2 `@stubbable` interfaces
+## §16.2 `@stubbable` interfaces
 
 Annotate any interface with `@stubbable` to direct the compiler to emit a corresponding stub builder:
 
@@ -53,7 +53,7 @@ The generated stub type implements the interface, so it can be used anywhere the
 **Note:** `@stubbable` is for interfaces only. You cannot apply it to a record, opaque type, or function. If you find yourself wanting a stub for a concrete type, the usual answer is to extract an interface for the behavior you want to isolate.
 :::
 
-## §15.3 Stub builders
+## §16.3 Stub builders
 
 Each generated stub type has three entry points: `.returning { ... }`, `.recording()`, and `.failing { ... }`.
 
@@ -113,7 +113,7 @@ The return type of the failing case must match the method's declared return type
 The perceived limitation — "I need different behavior per test" — is solved by parameterising your `wire` block with `@provided` values. Each test bootstraps the wire with different inputs; the stub behavior follows from those inputs naturally.
 :::
 
-## §15.4 Asserting on recorded calls
+## §16.4 Asserting on recorded calls
 
 After the test has run, query the stub's recording with `.recorded(methodName)`:
 
@@ -145,7 +145,7 @@ The `as` cast is necessary because `.args` is untyped at the `slice[Any]` level.
 **Note:** `.recorded(name)` returns an empty slice if the method was never called. It does not fail. An `assertEqualInt(calls.length, 1, ...)` on an empty slice fails with `actual: 0, expected: 1`, which is the right signal.
 :::
 
-## §15.5 Test wires
+## §16.5 Test wires
 
 For testing a service with multiple dependencies, assemble a `wire` block inside your `@test_module` package. It works exactly like a production wire — the same syntax, the same resolution rules, the same lifetime semantics. The only differences are that it is invisible to production builds and that it uses stubs instead of real implementations.
 
@@ -217,7 +217,7 @@ The `singleton accounts` line uses `AccountRepositoryStub.recording().returning 
 
 If you change `findById`'s signature in `AccountRepository` — say, you add a second parameter `locale: in Locale` — the `.returning` block is a compile error. There is no way to run a test with a misconfigured stub.
 
-## §15.6 Testing async code
+## §16.6 Testing async code
 
 `await` works inside `test` blocks exactly as it does in production code. The test runner handles the `.GetAwaiter().GetResult()` call that bridges the synchronous test frame to the async operation. You do not need any special annotations on a test block to use `await`:
 
@@ -233,7 +233,7 @@ Structured concurrency (`spawn`, `scope`) also works inside test blocks, which m
 
 If a test block contains `await` and you are running `lyric test` without a running async runtime, the test runner initializes one automatically. There is no per-test setup to write.
 
-## §15.7 Comparison with Mockito and Moq
+## §16.7 Comparison with Mockito and Moq
 
 The differences are worth stating plainly, because the implications go beyond syntax:
 
