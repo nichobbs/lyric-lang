@@ -720,3 +720,227 @@ pub func makeCaseClassImplementing(
     attrs        = newList()
   )
 }
+
+// ── B126 annotation attribute helpers (JVMS §4.7.16, §4.7.22) ────────────────
+
+/// An element_value (JVMS §4.7.16.1).  Covers the tags needed for
+/// @LyricTest and the meta-annotations @Retention / @Target.
+/// Extend with more cases as new tags are required.
+pub union AnnotationElementValue {
+  case AEVString(value: String)                                  // tag 's'
+  case AEVInt(value: Int)                                        // tag 'I'
+  case AEVEnum(typeName: String, constName: String)              // tag 'e'
+  // Array of one enum value — covers the @Target({X}) common case without
+  // requiring a self-referential union (which the bootstrap emitter cannot
+  // handle via Reflection.Emit TypeBuilderInstantiation).
+  case AEVSingleEnumArray(typeName: String, constName: String)  // tag '[' num=1 'e' ...
+}
+
+/// A single name=value pair inside a RuntimeVisibleAnnotations entry.
+pub record AnnotationElement {
+  name:  String
+  value: AnnotationElementValue
+}
+
+/// One annotation entry: the field descriptor of the annotation type plus
+/// its element_value_pairs.
+pub record AnnotationEntry {
+  typeDescriptor: String
+  elements:       List[AnnotationElement]
+}
+
+// Emit an element_value to `w` (JVMS §4.7.16.1).
+func emitElementValue(ev: in AnnotationElementValue, pool: in Pool, w: in ByteWriter): Unit {
+  match ev {
+    case AEVString(v) -> {
+      writerByte(w, 115)          // tag 's' = 0x73
+      writerU2(w, poolUtf8(pool, v))
+    }
+    case AEVInt(v) -> {
+      writerByte(w, 73)           // tag 'I' = 0x49
+      writerU2(w, poolInteger(pool, v))
+    }
+    case AEVEnum(typeName, constName) -> {
+      writerByte(w, 101)          // tag 'e' = 0x65
+      writerU2(w, poolUtf8(pool, typeName))
+      writerU2(w, poolUtf8(pool, constName))
+    }
+    case AEVSingleEnumArray(typeName, constName) -> {
+      writerByte(w, 91)           // tag '[' = 0x5B
+      writerU2(w, 1)              // num_values = 1
+      writerByte(w, 101)          // tag 'e' = 0x65
+      writerU2(w, poolUtf8(pool, typeName))
+      writerU2(w, poolUtf8(pool, constName))
+    }
+  }
+}
+
+// Emit one annotation{} struct (JVMS §4.7.16).
+func emitAnnotationEntry(ann: in AnnotationEntry, pool: in Pool, w: in ByteWriter): Unit {
+  writerU2(w, poolUtf8(pool, ann.typeDescriptor))
+  writerU2(w, ann.elements.count)
+  var i = 0
+  while i < ann.elements.count {
+    val elem = ann.elements[i]
+    writerU2(w, poolUtf8(pool, elem.name))
+    emitElementValue(elem.value, pool, w)
+    i = i + 1
+  }
+}
+
+/// Build a `RuntimeVisibleAnnotations` attribute (JVMS §4.7.16).
+/// Place on a method or class to make annotations visible at runtime.
+pub func makeRuntimeVisibleAnnotationsAttr(pool: in Pool, annotations: in List[AnnotationEntry]): Attribute {
+  val w = writerNew()
+  writerU2(w, annotations.count)
+  var i = 0
+  while i < annotations.count {
+    emitAnnotationEntry(annotations[i], pool, w)
+    i = i + 1
+  }
+  attrFromWriter("RuntimeVisibleAnnotations", w)
+}
+
+/// Build an `AnnotationDefault` attribute (JVMS §4.7.22).
+/// Used on annotation-interface method elements to declare their default value.
+pub func makeAnnotationDefaultAttr(pool: in Pool, defaultVal: in AnnotationElementValue): Attribute {
+  val w = writerNew()
+  emitElementValue(defaultVal, pool, w)
+  attrFromWriter("AnnotationDefault", w)
+}
+
+/// Create a Java annotation-interface ClassFile.
+/// Flags: ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT.
+/// Automatically adds `java/lang/annotation/Annotation` to the interfaces list.
+/// Pass `methods` = the annotation element method_infos.
+/// Pass `classAttrs` = class-level annotations (e.g. @Retention, @Target).
+pub func makeAnnotationInterfaceClass(
+  thisClass:  in String,
+  methods:    in List[MethodInfo],
+  classAttrs: in List[Attribute]
+): ClassFile {
+  val ifaces: List[String] = newList()
+  ifaces.add("java/lang/annotation/Annotation")
+  ClassFile(
+    minorVersion = 0,
+    majorVersion = 65,
+    flags        = ACC_PUBLIC + ACC_ANNOTATION + ACC_INTERFACE + ACC_ABSTRACT,
+    thisClass    = thisClass,
+    superClass   = "java/lang/Object",
+    interfaces   = ifaces,
+    fields       = newList(),
+    methods      = methods,
+    attrs        = classAttrs
+  )
+}
+
+// ── B126 high-level annotation attribute factories ────────────────────────────
+//
+// These helpers encapsulate the List[AnnotationElement] / List[AnnotationEntry]
+// manipulation so callers in other packages (e.g. Jvm.TestEngine) need only
+// work with `Attribute`, avoiding cross-package generic instantiation issues in
+// the bootstrap emitter's stdlib-artifact compilation path.
+
+/// Build a `RuntimeVisibleAnnotations` attribute carrying one
+/// `@Retention(RetentionPolicy.RUNTIME)` annotation.
+pub func makeRetentionRVAAttr(pool: in Pool): Attribute {
+  val elems: List[AnnotationElement] = newList()
+  elems.add(AnnotationElement(
+    name  = "value",
+    value = AEVEnum(
+      typeName  = "Ljava/lang/annotation/RetentionPolicy;",
+      constName = "RUNTIME"
+    )
+  ))
+  val anns: List[AnnotationEntry] = newList()
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Retention;",
+    elements       = elems
+  ))
+  makeRuntimeVisibleAnnotationsAttr(pool, anns)
+}
+
+/// Build a `RuntimeVisibleAnnotations` attribute carrying one
+/// `@Target({ElementType.METHOD})` annotation.
+pub func makeTargetRVAAttr(pool: in Pool): Attribute {
+  val elems: List[AnnotationElement] = newList()
+  elems.add(AnnotationElement(
+    name  = "value",
+    value = AEVSingleEnumArray(
+      typeName  = "Ljava/lang/annotation/ElementType;",
+      constName = "METHOD"
+    )
+  ))
+  val anns: List[AnnotationEntry] = newList()
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Target;",
+    elements       = elems
+  ))
+  makeRuntimeVisibleAnnotationsAttr(pool, anns)
+}
+
+/// Build a single `RuntimeVisibleAnnotations` attribute carrying both
+/// `@Retention(RetentionPolicy.RUNTIME)` and `@Target({ElementType.METHOD})`.
+/// The JVM spec requires at most one `RuntimeVisibleAnnotations` attribute per
+/// class file element, so callers must not also add the individual helpers.
+pub func makeRetentionAndTargetRVAAttr(pool: in Pool): Attribute {
+  val retElems: List[AnnotationElement] = newList()
+  retElems.add(AnnotationElement(
+    name  = "value",
+    value = AEVEnum(
+      typeName  = "Ljava/lang/annotation/RetentionPolicy;",
+      constName = "RUNTIME"
+    )
+  ))
+  val tgtElems: List[AnnotationElement] = newList()
+  tgtElems.add(AnnotationElement(
+    name  = "value",
+    value = AEVSingleEnumArray(
+      typeName  = "Ljava/lang/annotation/ElementType;",
+      constName = "METHOD"
+    )
+  ))
+  val anns: List[AnnotationEntry] = newList()
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Retention;",
+    elements       = retElems
+  ))
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Ljava/lang/annotation/Target;",
+    elements       = tgtElems
+  ))
+  makeRuntimeVisibleAnnotationsAttr(pool, anns)
+}
+
+/// Build an `AnnotationDefault` attribute whose default value is `""` (String).
+/// Convenience wrapper for annotation-element methods returning String.
+pub func makeAnnotationDefaultStringAttr(pool: in Pool): Attribute {
+  makeAnnotationDefaultAttr(pool, AEVString(value = ""))
+}
+
+/// Build an `AnnotationDefault` attribute whose default value is `0` (int).
+/// Convenience wrapper for annotation-element methods returning int.
+pub func makeAnnotationDefaultIntAttr(pool: in Pool): Attribute {
+  makeAnnotationDefaultAttr(pool, AEVInt(value = 0))
+}
+
+/// Build a `RuntimeVisibleAnnotations` attribute carrying one
+/// `@LyricTest(displayName=..., sourceFile=..., sourceLine=...)` annotation.
+/// The annotation type descriptor is `Llyric/runtime/jvm/LyricTest;`.
+pub func makeLyricTestRVAAttr(
+  pool:        in Pool,
+  displayName: in String,
+  sourceFile:  in String,
+  sourceLine:  in Int
+): Attribute {
+  val elems: List[AnnotationElement] = newList()
+  elems.add(AnnotationElement(name = "displayName", value = AEVString(value = displayName)))
+  elems.add(AnnotationElement(name = "sourceFile",  value = AEVString(value = sourceFile)))
+  elems.add(AnnotationElement(name = "sourceLine",  value = AEVInt(value = sourceLine)))
+  val anns: List[AnnotationEntry] = newList()
+  anns.add(AnnotationEntry(
+    typeDescriptor = "Llyric/runtime/jvm/LyricTest;",
+    elements       = elems
+  ))
+  makeRuntimeVisibleAnnotationsAttr(pool, anns)
+}

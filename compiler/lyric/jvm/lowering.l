@@ -6,6 +6,7 @@
 //   • `LField` / `LFunc` / `LRecord` — typed class/method/field descriptors.
 //   • `lowerFunc` — lowers an LFunc to a MethodInfo with a Code attribute.
 //   • `lowerRecord` — lowers an LRecord to a ClassFile with a synthesised ctor.
+//   • `LPTestModule` (B126) — test-module package item; see `Jvm.TestEngine`.
 
 package Jvm.Lowering
 
@@ -14,6 +15,7 @@ import Std.Collections
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Bytecode
+import Jvm.TestEngine
 
 // ── JvmType ───────────────────────────────────────────────────────────────────
 
@@ -3224,6 +3226,10 @@ pub union LPackageItem {
   case LPExposedRecord(er: LExposedRecord)
   case LPProtected(pt: LProtected)
   case LPFuncs(funcsClass: String, fns: List[LFunc])
+  // B126: a @test_module file compiled for the JVM target.
+  // `className` is the JVM binary name (e.g. "math_tests").
+  // `slots` carries per-test metadata; method bodies are stubs until B127+.
+  case LPTestModule(className: String, slots: List[TestMethodSlot])
 }
 
 pub record LPackage {
@@ -3276,6 +3282,12 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       }
       case LPFuncs(funcsClass, fns) -> {
         result.add(lowerFuncsToClass(funcsClass, fns, pool))
+      }
+      case LPTestModule(className, slots) -> {
+        // B126: emit the test-module class (annotated stubs) plus the
+        // @LyricTest annotation class so both land in the same JAR.
+        result.add(lowerTestModuleClass(className, slots, pool))
+        result.add(lyricTestAnnotationClass(pool))
       }
     }
   }

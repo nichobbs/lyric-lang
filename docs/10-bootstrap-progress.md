@@ -10897,3 +10897,57 @@ and `.y(obj)`.  Java output: `x=10 / y=20`.  Registered as
 `CLAUDE.md` sketch listing updated.
 
 **Test counts:** 728 emitter tests — all passing (B125 is the new test).
+
+---
+
+### D-progress-206: B126 — JUnit 5 adapter: @LyricTest annotation + lowerTestModuleClass + lyric test --jvm
+
+**Date:** 2026-05-10
+**Branch:** `claude/implement-junit-adapter-PdlJR`
+**Sketch:** `docs/32-junit-runner-sketch.md`
+
+Three deliverables from the JUnit adapter sketch (§3, §4, §6):
+
+**1. `RuntimeVisibleAnnotations` / `AnnotationDefault` attribute builders (`classfile.l`)**
+
+- `AnnotationElementValue` union — covers `AEVString`, `AEVInt`, `AEVEnum`, `AEVArray` (the tags needed for `@LyricTest` plus the `@Retention`/`@Target` meta-annotations).
+- `AnnotationElement` record — name + value pair.
+- `AnnotationEntry` record — type descriptor + element list.
+- `makeRuntimeVisibleAnnotationsAttr(pool, annotations)` — encodes JVMS §4.7.16.
+- `makeAnnotationDefaultAttr(pool, defaultVal)` — encodes JVMS §4.7.22.
+- `makeAnnotationInterfaceClass(thisClass, methods, classAttrs)` — creates a `ClassFile` with `ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT` flags and `java/lang/annotation/Annotation` as the sole implemented interface.
+
+**2. `Jvm.TestEngine` library (`compiler/lyric/jvm/test_engine.l`)**
+
+- `LYRIC_TEST_CLASS` / `LYRIC_TEST_DESC` — canonical binary name and field descriptor for `lyric/runtime/jvm/LyricTest`.
+- `TestMethodSlot` record — carries `funcName`, `displayName`, `sourceFile`, `sourceLine`.
+- `lyricTestAnnotationClass(pool)` — builds the `@LyricTest` annotation-interface `ClassFile` with `@Retention(RUNTIME)` + `@Target(METHOD)` class-level annotations and three annotation-element methods (`displayName`, `sourceFile`, `sourceLine`) each with an `AnnotationDefault` attribute.
+- `lowerTestModuleClass(className, slots, pool)` — builds a `public final` test-host `ClassFile` with one `public static void __lyric_test_<i>()` stub per slot, each annotated with `@LyricTest`. Method bodies are `return` stubs; real bytecode is injected by the full Lyric→JVM pipeline (B127+).
+
+**3. `LPTestModule` in `Jvm.Lowering`**
+
+- Added `case LPTestModule(className: String, slots: List[TestMethodSlot])` to `LPackageItem`.
+- `lowerPackage` dispatch: emits the test-module class (via `lowerTestModuleClass`) and the `@LyricTest` annotation class (via `lyricTestAnnotationClass`) so both land in the same JAR.
+- Added `import Jvm.TestEngine` to `lowering.l`.
+
+**4. Self-test `compiler/lyric/jvm/self_test_b126.l` (Stage B126)**
+
+Generates three JVM class files:
+- `lyric/runtime/jvm/LyricTest.class` — the annotation interface with RUNTIME retention.
+- `math_tests.class` — test-module class with two `@LyricTest`-annotated stub methods.
+- `TestVerifier.class` — Java 5 (major=49) main class that loads `math_tests`, reads `getDeclaredAnnotations()` on `__lyric_test_0`, and prints `annotation_count=1` and `annotation_type=lyric.runtime.jvm.LyricTest`.
+
+Expected Java output via `java -jar /tmp/lyric-jvm-b126/test_engine.jar`:
+```
+annotation_count=1
+annotation_type=lyric.runtime.jvm.LyricTest
+```
+
+Registered as `JvmLoweringB126Test` in `Lyric.Emitter.Tests`.
+
+**5. CLI: `lyric test --jvm` (bootstrap)**
+
+`compiler/src/Lyric.Cli/Program.fs` — `--jvm` flag parsed in the `test` command.
+When set, compiles the synthesised source with `Emitter.Jvm` (JVM-compatible stdlib) and warns to stderr that JUnit 5 ConsoleLauncher integration is deferred to B127+. The TAP runner still executes via `dotnet exec` until the full Lyric→JVM pipeline lands.
+
+**Test counts:** 751 emitter tests — all passing (B126 is the new test).

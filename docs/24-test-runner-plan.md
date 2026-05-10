@@ -203,6 +203,32 @@ Each stage is independently shippable. Stage 1 is the v1 cut; later
 stages can land without breaking the surface or the CLI flag set
 documented here.
 
+### 5a. JVM target (`lyric test --jvm`)
+
+**Status (D-progress-206, B126):** Bootstrap-grade stub shipped.
+
+The `--jvm` flag switches the test compilation from the .NET-hosted
+`Emitter.MSIL` backend to the `Emitter.Jvm` backend. The synthesised
+source (produced by `TestSynth`) is compiled to a JAR via the JVM
+lowering pipeline.
+
+Current behaviour (B126):
+- The synthesised source is compiled with the JVM-compatible stdlib.
+- The resulting JAR is written to the output path.
+- A warning is printed to stderr: *"JUnit 5 ConsoleLauncher integration
+  deferred to B127+"* — the TAP runner still executes via `dotnet exec`
+  until the full `LyricTestEngine` lands.
+
+The `@LyricTest` annotation class and test-module class emitter
+(`Jvm.TestEngine`: `lyricTestAnnotationClass`, `lowerTestModuleClass`,
+`LPTestModule`) are shipped and verified by self-test B126 (see
+`docs/32-junit-runner-sketch.md` and D-progress-206 in
+`docs/10-bootstrap-progress.md`).
+
+The full `LyricTestEngine` JUnit 5 `TestEngine` implementation is
+deferred to B127+ (see `docs/32-junit-runner-sketch.md` §5 and §9
+Q-J007e).
+
 ### 6. Diagnostics
 
 | Code  | Meaning |
