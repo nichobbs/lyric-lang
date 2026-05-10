@@ -126,7 +126,9 @@ let tests =
             // externs temporarily increases the Lyric extern count while
             // shrinking Stdlib.fs.  Will drop back below 250 when the
             // remaining Groups C/D land and Stdlib.fs is deleted.
-            Expect.isLessThanOrEqual total 260
+            // Bumped from 260 → 261: Std.Jvm package added to _kernel/jvm.l
+            // with @externTarget for Std.Jvm.catch[T] (Q-J012 resolution).
+            Expect.isLessThanOrEqual total 261
                 "total extern surface unexpectedly large"
         }
     ]
