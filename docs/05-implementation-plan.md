@@ -119,7 +119,7 @@ Single-pass per file; parallel across files. No optimizations beyond what the .N
 
 ### Phase 1 standard library
 
-Shipped in `stdlib/std/` (30 modules as of M1.4+):
+Shipped in `stdlib/std/` (30 modules as of M1.4+, plus `Std.Random` in `_kernel/`):
 
 Core: `core`, `core_proof`, `errors`, `string`, `parse`, `format`, `char`
 Collections: `collections`, `set`, `sort`, `iter`
@@ -282,14 +282,19 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
    - Stage 1 (shipped): `Lyric.ModeChecker` library + self-test
      (D-progress-133).
    - Stage 2 (shipped): `Lyric.ContractElaborator` library + self-test
-     (D-progress-134) — `requires:` prepended as `assert(...)`, top-level
+     (D-progress-137) — `requires:` prepended as `assert(...)`, top-level
      `SReturn` / trailing `SExpr` rewritten with a synthetic
      `__lyric_result_<n>` and `EResult`-substituted `ensures:` asserts.
      Nested returns, protected-type entries, and loop-invariant runtime
      checks remain in stage 3.
+   - Stage 3a (shipped, D-progress-213..D-progress-219): self-hosted MSIL PE /
+     opcode / tables layer (M1–M83).
+   - Stage 3b (shipped, D-progress-227 / D-progress-238 / D-progress-240):
+     `Msil.Lowering` high-level lowering, `Msil.Codegen`, `Msil.Bridge`, and
+     F# bridge `SelfHostedMsil.fs`; `--target dotnet` default routes through
+     this pipeline.
    - Stage 4 (shipped, D-progress-229): `Lyric.Mono` monomorphizer — call-site
      specialisation for same-package generic functions; `monoFile(file) → MonoResult`.
-   - Remaining: MSIL emitter (`Lyric.Emitter`).
 3. **M5.3 (month 75-81):** Self-hosted standard library, LSP, formatter, package manager, CLI
    - Stage 1 (shipped, D-progress-129): `Std.ProcessHost` kernel extern, `Std.Process` surface, `Lyric.Manifest`
      TOML parser, `Lyric.Cli` command dispatch (forward-references M5.2 packages).
@@ -305,10 +310,15 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
      "max one blank in any spot"), plus documentation of why the self-hosted DLL filename shape
      `Lyric.Lyric.<X>.dll` is load-bearing (CLR namespace collision with the F# bootstrap's
      same-named assemblies but different field casing).
-   - Remaining: per-expression CST granularity (comments inside expression sub-trees still anchor
-     at the enclosing statement); `Lyric.Parser`, `Lyric.TypeChecker`, `Lyric.Emitter` (M5.2);
-     `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta`, `Pack.l`; F# `Fmt.fs`
-     sunset.
+   - Stage 6–13 (shipped, D-progress-142..D-progress-210 / D-progress-231):
+     per-expression / statement / block CST granularity; blank-line + comment
+     preservation for all constructs; width-driven multi-line expression
+     rendering; `ELambda`/`EForall`/`EExists`/`EIf`/`EMatch` layouts;
+     `Lyric.ManifestBridge` + `Lyric.TestSynthBridge` CLI hookup.
+   - Remaining: per-expression sub-tree CST granularity (comments inside
+     expression nodes still anchor at the enclosing statement);
+     `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta`,
+     `Pack.l`; F# `Fmt.fs` sunset.
 
 ### Exit criteria
 

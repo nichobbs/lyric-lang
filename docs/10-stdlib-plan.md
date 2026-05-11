@@ -434,6 +434,15 @@ Every `pub` item in `stdlib/std/` carries either `@stable(since="1.0")` or `@exp
 | `Std.Testing.Property` (`testing_property.l`) | `@experimental` | No shrinking, no `Gen[T]` type-class; bootstrap-grade. Full property-test harness is Phase 3 work. |
 | `Std.Testing.Snapshot` (`testing_snapshot.l`) | `@experimental` | No inline diff, no snapshot update workflow; bootstrap-grade. |
 | `Std.CoreProof` (`core_proof.l`) | `@experimental` | Proof scaffolding helpers (`identity`, `trueLit`, `assertEq`, etc.); internal to the Phase 4 test suite. |
+| `Std.Char` (`char.l`) | `@stable` | Unicode character classification and conversion helpers (`isLetter`, `isDigit`, `isWhitespace`, `toLower`, `toUpper`, `toInt`, `fromInt`). |
+| `Std.Encoding` (`encoding.l`) | `@stable` | UTF-8 encode/decode (`toUtf8Bytes`, `fromUtf8Bytes`, NFC normalization via `_kernel/unicode_host.l`). |
+| `Std.Format` (`format.l`) | `@stable` | `format1`–`format6` string interpolation helpers; backing for the `format` builtin. |
+| `Std.Sort` (`sort.l`) | `@stable` | In-place list sort (`sortBy`, `sortAscBy`, `sortDescBy`) with comparator. |
+| `Std.Set` (`set.l`) | `@stable` | Immutable set backed by `Dictionary<object,object>` (`newSet`, `setAdd`, `setContains`, `setRemove`, `setUnion`, `setIntersect`). |
+| `Std.Uuid` (`uuid.l`) | `@stable` | UUID v4 generation (`newUuid`) and string round-trip. |
+| `Std.Process` (`process.l`) | `@stable` | Subprocess launch and wait (`spawn`, `spawnCaptured`, `runCapture`); backed by `_kernel/process_host.l`. |
+| `Std.Random` (`_kernel/random.l`) | `@stable` | Cryptographically-seeded RNG (`randomInt`, `randomDouble`, `randomBool`); kernel-only — no `stdlib/std/random.l` shim (package opens as `Std.Random` directly from `_kernel/`). |
+| `Std.Testing.Mocking` (`testing_mocking.l`) | `@experimental` | Lightweight mock-object helpers for unit tests; bootstrap-grade. |
 
 ### Enforcement summary
 

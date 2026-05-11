@@ -21,12 +21,16 @@ An audit of the repository on 2026-05-10 identified three classes of problem:
    PE/opcode/tables layer; high-level MSIL lowering in Lyric is missing
    entirely.
 
-This document is the authoritative plan for remediation.  Items are ordered by
-priority and dependency.
+This document was the authoritative plan for remediation.  All phases (R1–R6)
+have now shipped; the only remaining open item is the §7 parity smoke-test
+suite.  Each section below is annotated with its current status.
 
 ---
 
 ## 2. Documentation fixes (Phase R1)
+
+**Status: SHIPPED** (D-progress-238; remaining collision D-progress-206 fixed
+in D-progress-240 follow-up commit).
 
 ### R1-A  grammar.ebnf — add `defer` and `config` to soft-keyword list
 
@@ -135,6 +139,8 @@ shipped in D-progress-226.
 
 ## 3. Book chapter fixes (Phase R2)
 
+**Status: SHIPPED** (D-progress-238).
+
 ### R2-A  appendix-b — correct `--target jvm` claim
 
 `book/chapters/appendix-b-quick-reference.md` line 659 says:
@@ -175,6 +181,10 @@ stdlib inventory.  It lives in the third-party `lyric-logging` library, not
 
 ## 4. JVM kernel parity (Phase R3)
 
+**Status: SHIPPED** — `file_host.l`, `process_host.l`, and `unicode_host.l`
+present under `stdlib/std/_kernel_jvm/`; `jvm.l` / `jvm_exception.l` confirmed
+in `_kernel/` (correct per Decision F single-kernel boundary). (D-progress-238)
+
 Five kernel shims exist in `stdlib/std/_kernel/` but not in
 `stdlib/std/_kernel_jvm/`:
 
@@ -198,7 +208,11 @@ document.
 
 ## 5. Self-hosted JVM emitter — CLI wiring (Phase R4)
 
-### 5.1 What exists
+**Status: SHIPPED** — `Jvm.Codegen` (`compiler/lyric/jvm/codegen.l`),
+`Jvm.Bridge` (`bridge.l`), `SelfHostedJvm.fs`, and `--target jvm` CLI wiring
+all present. (D-progress-239)
+
+### 5.1 What existed (at time of planning)
 
 - `compiler/lyric/jvm/lowering.l` — complete high-level lowering (29 functions)
 - `compiler/lyric/jvm/driver.l` — `writeJarFromClasses` JAR assembler
@@ -301,7 +315,12 @@ primary runnable artefact.
 
 ## 6. Self-hosted MSIL emitter — high-level lowering (Phase R5)
 
-### 6.1 What exists
+**Status: SHIPPED** — `Msil.Lowering` (`compiler/lyric/msil/lowering.l`),
+`Msil.Codegen` (`codegen.l`), `Msil.Bridge` (`bridge.l`), `SelfHostedMsil.fs`,
+`--target dotnet` CLI wiring, and 6 end-to-end bridge tests all present.
+(D-progress-227 / D-progress-238 / D-progress-240)
+
+### 6.1 What existed (at time of planning)
 
 - `compiler/lyric/msil/pe.l` — raw PE binary writer
 - `compiler/lyric/msil/opcodes.l` — IL opcode encoding
@@ -362,6 +381,11 @@ uses the F# bootstrap emitter as an escape hatch during stabilisation.
 ---
 
 ## 7. Parity milestone
+
+**Status: OPEN** — The three execution paths (dotnet-legacy, dotnet,
+jvm) are wired.  The 20-program cross-path smoke-test suite has not been
+written; 6 MSIL-only bridge tests exist (D-progress-240).  No JVM-path
+or equivalence tests exist yet.
 
 Both self-hosted emitters reach **Phase R parity** when all of the following
 are true:

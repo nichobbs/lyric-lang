@@ -1,10 +1,10 @@
 # 22 — Distribution and Tooling
 
-**Status:** Drafted. Approved 2026-05-05 (PR #122 review follow-up).
-**Implementation:** Phase 6 — depends on `docs/20-project-as-dll.md`
-shipping first (stdlib needs single-DLL emit before it can be
-distributed as one binary artifact).
-**Decision-log entry:** to follow on landing.
+**Status:** Shipped (Stage 1 — D-progress-126 / D059; full AOT binary and
+auto-update deferred to Phase 6+). Approved 2026-05-05 (PR #122 review follow-up).
+**Implementation:** Stage 1 shipped: NuGet global tool (`dotnet tool install lyric`)
+and standalone ZIP. AOT binary and channel-based auto-update are Phase 6+ work.
+**Decision-log entry:** D059 (`docs/03-decision-log.md`).
 
 ## 1. Motivation
 
