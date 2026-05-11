@@ -1049,7 +1049,7 @@ let main (argv: string array) : int =
             match manifestPath with
             | None -> None
             | Some p ->
-                match Lyric.Cli.Manifest.parseFile p with
+                match SelfHostedManifest.parseFile p with
                 | Error e ->
                     printErr (Lyric.Cli.Manifest.renderError p e)
                     None
@@ -1314,7 +1314,7 @@ let main (argv: string array) : int =
                 else
                 let source = File.ReadAllText sourcePath
                 if listOnly then
-                    match TestSynth.listEntries source with
+                    match SelfHostedTestSynth.listEntries source with
                     | Error diags ->
                         for d in diags do printDiag d
                         2
@@ -1328,7 +1328,7 @@ let main (argv: string array) : int =
                                 printfn "%s (fixture; not runnable)" n
                         0
                 else
-                match TestSynth.synthesize source filter with
+                match SelfHostedTestSynth.synthesize source filter with
                 | TestSynth.NoTestModule _ ->
                     printErr (sprintf
                         "T0900 %s: lyric test requires '@test_module' at the file head"

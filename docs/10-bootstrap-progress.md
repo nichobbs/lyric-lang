@@ -113,7 +113,7 @@ deferred to Phase 3 by design.
 | M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`) | Not shipped | D-progress-232 (planned) |
 | M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions) | **Shipped** | D-progress-229 |
 | M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
-| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 |
+| M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion; stage 13: `Lyric.ManifestBridge` + `Lyric.TestSynthBridge` CLI hookup) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 / D-progress-231 |
 
 ### Phase 2 — type system completion (in progress)
 
@@ -11175,3 +11175,79 @@ and `stdout` contains `"ok"`.  Registered in `Program.fs` and
 **Test counts:** 729 emitter tests (+1 this entry), 323 parser tests, 143
 type-checker tests, 123 lexer tests, 28 LSP tests, 127 CLI tests, 266
 verifier tests — all passing.
+
+---
+
+### D-progress-231: M5.3 stage 13 — `Lyric.ManifestBridge` + `Lyric.TestSynthBridge` CLI hookup
+
+**Date:** 2026-05-11
+**Branch:** `claude/review-docs-platform-parity-UuNIO`
+
+Routes `lyric build --manifest` and `lyric test` through the self-hosted
+Lyric implementations via the in-process compile + reflection pattern
+established by `SelfHostedFmt.fs`.
+
+**New Lyric bridge files:**
+
+- **`compiler/lyric/lyric/manifest_bridge.l`** — `Lyric.ManifestBridge`
+  package.  `pub func serializeManifest(text, filePath): String` wraps
+  `Lyric.Manifest.parse` and serialises the result to a line-oriented
+  key=value protocol (first line `"ok"` or `"err"`, then `pkg.name=`,
+  `pkg.version=`, `dep=name=version`, `nuget=id=version`,
+  `nuget.target=`, `nuget.allow_native=true`, `project.name=`,
+  `project.output=`, `project.output_assembly=`, `project.pkg=name=path`,
+  `feature=`, `feature.default=`).
+
+- **`compiler/lyric/lyric/test_synth_bridge.l`** — `Lyric.TestSynthBridge`
+  package.  `pub func synthesizeToProtocol(source, filter, hasFilter): String`
+  and `pub func listEntriesToProtocol(source): String` wrap `Lyric.TestSynth`
+  and serialise results as the line-oriented protocol documented in the
+  file header (tag line + fields, diagnostics as `code|sev|line|col|msg`).
+
+**New F# shim files:**
+
+- **`compiler/src/Lyric.Cli/SelfHostedManifest.fs`** — `Lyric.Cli.SelfHostedManifest`
+  module.  Compiles a tiny `Lyric.ManifestBridgeDriver` on first use (same
+  pattern as `SelfHostedFmt.fs`), reflects `serializeManifest(string, string): string`
+  from `Lyric.ManifestBridge.Program`, and parses the protocol back into the
+  F# `Manifest.Manifest` record.  Exposes `parseText` and `parseFile` matching
+  the existing `Manifest.fs` signatures so call sites in `Program.fs` are
+  one-line switches.
+
+- **`compiler/src/Lyric.Cli/SelfHostedTestSynth.fs`** — `Lyric.Cli.SelfHostedTestSynth`
+  module.  Compiles `Lyric.TestSynthBridgeDriver`, reflects
+  `synthesizeToProtocol(string, string, bool): string` and
+  `listEntriesToProtocol(string): string`, and parses results into the F#
+  `TestSynth.Outcome` and `TestSynth.ListEntry` types reused by `Program.fs`.
+
+**`compiler/src/Lyric.Cli/Lyric.Cli.fsproj`** — `SelfHostedManifest.fs`
+and `SelfHostedTestSynth.fs` added after `TestSynth.fs`, before `Program.fs`.
+
+**`compiler/src/Lyric.Cli/Program.fs`** — three call-site changes:
+- `lyric build --manifest` (line 1052): `Lyric.Cli.Manifest.parseFile` →
+  `SelfHostedManifest.parseFile`.
+- `lyric test --list` (line 1317): `TestSynth.listEntries` →
+  `SelfHostedTestSynth.listEntries`.
+- `lyric test` (line 1331): `TestSynth.synthesize` →
+  `SelfHostedTestSynth.synthesize`.
+
+**Key implementation notes:**
+
+- Match arms whose bodies are assignment statements (not expressions) require
+  explicit `{ }` braces in Lyric.  The bridge files use braced arms wherever
+  the arm body contains `s = s + ...` assignments (bare `case P -> s = ...`
+  is a parse error; the parser expects `case` or `}` after the match-arm
+  expression).
+- DLL naming: `Lyric.Lyric.ManifestBridge.dll` and
+  `Lyric.Lyric.TestSynthBridge.dll` follow the double-`Lyric.` convention
+  (head `Lyric` + per-package basename) documented in D-progress-141.
+- The `splitOnFirst '=' s` helper in `SelfHostedManifest.fs` handles the
+  `dep=name=version` and `project.pkg=name=path` wire format where the value
+  contains `=` characters.
+- `Position` and `Span` for diagnostic/span results are synthesised from the
+  line/column fields in the protocol (offset = 0; the F# types are
+  `Lyric.Lexer.Position` and `Lyric.Lexer.Span`).
+
+**Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 158 CLI tests (all passing, +31 vs prior entry
+from the expanded `TestRunnerTests` suite), 266 verifier tests — all passing.
