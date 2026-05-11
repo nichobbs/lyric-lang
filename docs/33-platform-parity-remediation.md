@@ -1,6 +1,6 @@
 # docs/33-platform-parity-remediation.md — Platform parity remediation plan
 
-_Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (D-progress-240). Full parity smoke-test suite (20 programs, all three paths) pending._
+_Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (D-progress-240). Full parity smoke-test suite (20 programs × 3 paths = 60 tests) shipped (D-progress-241). All 60 tests passing._
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
 
 ## 1. Motivation
@@ -382,22 +382,36 @@ uses the F# bootstrap emitter as an escape hatch during stabilisation.
 
 ## 7. Parity milestone
 
-**Status: OPEN** — The three execution paths (dotnet-legacy, dotnet,
-jvm) are wired.  The 20-program cross-path smoke-test suite has not been
-written; 6 MSIL-only bridge tests exist (D-progress-240).  No JVM-path
-or equivalence tests exist yet.
+**Status: SHIPPED (D-progress-241)** — All 60 cross-path parity tests pass:
+20 programs × 3 paths (dotnet-legacy / dotnet / jvm).
 
-Both self-hosted emitters reach **Phase R parity** when all of the following
-are true:
+Both self-hosted emitters have reached **Phase R parity**.  The following are
+all true as of D-progress-241:
 
 - `lyric build --target dotnet-legacy <file.l>` — F# emitter baseline (escape hatch).
 - `lyric build --target dotnet <file.l>` (default) — produces a `.dll` via
   `Msil.Bridge` + `SelfHostedMsil.fs`.
 - `lyric build --target jvm <file.l>` — produces a runnable JAR via
   `Jvm.Bridge` + `SelfHostedJvm.fs`.
-- All three paths pass the same 20-program smoke-test suite covering:
-  hello-world, records, unions, arithmetic, control flow, contracts.
-- `lyric test` passes on all three targets.
+- All three paths pass the 20-program cross-path smoke-test suite
+  (`ParityTests.fs`) covering: hello-world, arithmetic (add/sub/mul/div/mod/neg),
+  boolean logic (and/or/not), comparisons, if/else, while/break/continue,
+  nested loops, val chains, match on literals and bindings, string concatenation.
+- 60 tests total (20 programs × 3 paths); all passing.
+
+JVM-specific fixes applied in D-progress-241:
+
+- **`Jvm.Codegen`**: Added `lowerBoolCond` / `lowerBoolCondTrue` / `lowerCmpFail`
+  functions to compile boolean conditions directly to conditional branches,
+  eliminating merge labels with non-empty operand stacks that caused
+  `VerifyError` (StackMapTable frame stack-size mismatch).  `lowerIfExpr` and
+  `SWhile` now use these instead of `lowerExpr + LIfeq`.  `FuncCtx` gained
+  `loopBreak` and `loopCont` label stacks; `SBreak`/`SContinue` emit
+  `LGoto` to the correct target label (previously emitted `LNop`).
+- **`Jvm.Lowering`**: `lowerFuncImpl` now pre-initialises all non-parameter
+  local slots (0 for integer/long/float/double, `null` for object references)
+  before the function body, ensuring every branch-target StackMapTable frame
+  is valid regardless of where in the method each local is first assigned.
 
 ---
 
@@ -417,4 +431,4 @@ actual shipped IDs may differ due to interleaved unrelated work):
 | D-progress-233 | D-progress-238 | R5 Msil.Bridge (merged into above) |
 | R6 (not in original plan) | D-progress-227 | R6 Msil.Codegen + SelfHostedMsil.fs + target renaming |
 | — | D-progress-228 | Distribution strategy doc (docs/34) + D059 decision |
-| D-progress-234 | _(partial)_ | Parity milestone smoke-test suite — MSIL bridge (6 tests) shipped in D-progress-240; full 20-program cross-path suite pending |
+| D-progress-234 | D-progress-241 | Parity milestone smoke-test suite — full 20-program × 3-path suite; JVM VerifyError fixes + break/continue; all 60 tests passing |

@@ -11415,3 +11415,69 @@ DLL with `dotnet exec`, asserting on stdout:
 **Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 164 CLI tests (+6 MSIL bridge), 266 verifier
 tests — all passing.
+
+### D-progress-241: Platform-parity R7 — full 20-program × 3-path smoke-test suite; JVM VerifyError fixes
+
+**Date:** 2026-05-11
+**Branch:** `claude/review-docs-platform-parity-UuNIO`
+
+Completes the §7 parity milestone from `docs/33-platform-parity-remediation.md`.
+All 60 cross-path parity tests now pass (20 programs × 3 execution paths:
+dotnet-legacy / dotnet / jvm).
+
+**New test file:** `compiler/tests/Lyric.Cli.Tests/ParityTests.fs`
+— 20 parity programs each exercising one feature from the common subset
+(primitive types, arithmetic, boolean logic, comparisons, if/else,
+while/break/continue, nested loops, val chains, match on literals and bindings,
+string concatenation).  Each program is compiled and run through three paths:
+
+| Path | Mechanism |
+|---|---|
+| `dotnet-legacy` | F# `Emitter.emit` (escape-hatch baseline) |
+| `dotnet` | `SelfHostedMsil.compileToDll` (self-hosted MSIL bridge) |
+| `jvm` | `SelfHostedJvm.compileToJar` (self-hosted JVM bridge) |
+
+**JVM fixes in `compiler/lyric/jvm/codegen.l`:**
+
+1. Added `lowerCmpFail`, `lowerBoolCond`, `lowerBoolCondTrue` functions.
+   Conditions in `if`/`while` are now compiled directly to conditional branch
+   instructions (e.g. `if_icmpge failLabel`) rather than leaving an intermediate
+   boolean integer on the operand stack.  The old approach created merge labels
+   with non-empty operand stacks, which caused JVM `VerifyError` (StackMapTable
+   frame declared stack depth 0 but actual depth was 1).
+
+2. Added `loopBreak: List[String]` and `loopCont: List[String]` fields to
+   `FuncCtx`.  `SWhile` now pushes the afterLoop / loopTop labels onto these
+   stacks before lowering the body and pops them after.  `SBreak` emits
+   `LGoto(loopBreak[last])`; `SContinue` emits `LGoto(loopCont[last])`.
+   Previously both emitted `LNop`, so break/continue were silently ignored.
+
+**JVM fix in `compiler/lyric/jvm/lowering.l`:**
+
+3. `lowerFuncImpl` now pre-initialises all non-parameter local slots at method
+   entry (before the function body): integer/long/float/double slots get `0`,
+   object-reference slots get `aconst_null`.  This ensures every branch-target
+   StackMapTable frame is valid: the verifier sees all locals as initialised at
+   every branch target, regardless of where in the method body the variable is
+   first assigned.  Without this, the global `frameLocals` computation included
+   slots that are only assigned late in the method, making early StackMapTable
+   frames invalid (`top` is not a subtype of `int` or `Object`).
+
+**Tests fixed by these changes:**
+
+| Test | Root cause |
+|---|---|
+| `parity08_bool_and` | BAnd merge label with non-empty stack |
+| `parity09_bool_or` | BOr merge label with non-empty stack |
+| `parity11_if_true` | comparison merge label with non-empty stack |
+| `parity12_if_false` | comparison merge label with non-empty stack |
+| `parity13_while_count` | comparison merge label in while condition |
+| `parity14_while_break` | break emitted LNop; comparison merge label |
+| `parity15_while_continue` | continue emitted LNop; comparison merge label |
+| `parity16_while_nested` | inner-loop `var j` in late-allocated slot + comparison |
+| `parity18_match_int` | late-allocated match temporaries in global frameLocals |
+| `parity19_match_bind` | late-allocated binding slot in global frameLocals |
+
+**Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 224 CLI tests (+60 parity + 6 MSIL bridge),
+266 verifier tests — all passing.

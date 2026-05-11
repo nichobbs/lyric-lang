@@ -735,20 +735,6 @@ func inferMaxLocals(f: in LFunc): Int {
 // Use "java/lang/Object" for the default (static or unknown class) and the actual class
 // name for instance methods where the verifier checks field access (B118+).
 func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodInfo {
-  val asm = newAssembler(pool)
-  for insn in f.insns.toArray() {
-    lowerInsn(insn, asm)
-  }
-
-  // Use caller-supplied maxStack/maxLocals when > 0; otherwise infer from the
-  // assembled instruction sequence (B103 feature).
-  val actualMaxStack  = if f.maxStack  > 0 then f.maxStack  else asm.peakStack
-  val actualMaxLocals = if f.maxLocals > 0 then f.maxLocals else inferMaxLocals(f)
-
-  // -- B5: stack-map computation -----------------------------------------
-  // Assemble code bytes and collect label offsets.
-  val ar = assembleRaw(asm)
-
   // Build initial local variable frame from the method's parameter types.
   // ACC_STATIC = 0x0008 = 8; test using (flags / 8) % 2.
   val initialLocals: List[VerifierType] = newList()
@@ -841,6 +827,57 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     }
     ili = ili + 1
   }
+
+  // Compute actualMaxLocals before assembly so we know the pre-init range.
+  val actualMaxLocals = if f.maxLocals > 0 then f.maxLocals else inferMaxLocals(f)
+
+  // Assemble: emit pre-initializations for all non-parameter local slots first,
+  // then emit the function body.  Pre-initializing every local slot guarantees
+  // that every StackMapTable branch-target frame sees all slots as initialized,
+  // preventing VerifyError for locals declared inside loops or late in the body.
+  val asm = newAssembler(pool)
+  var preSlot = paramSlotCount
+  while preSlot < actualMaxLocals {
+    match mapGet(storeTypes, preSlot) {
+      case Some(VInteger) -> {
+        lowerInsn(LIconst(v = 0), asm)
+        lowerInsn(LIstore(slot = preSlot), asm)
+        preSlot = preSlot + 1
+      }
+      case Some(VLong) -> {
+        lowerInsn(LLconst(v = 0i64), asm)
+        lowerInsn(LLstore(slot = preSlot), asm)
+        preSlot = preSlot + 2
+      }
+      case Some(VFloat) -> {
+        lowerInsn(LFconst(v = 0.0), asm)
+        lowerInsn(LFstore(slot = preSlot), asm)
+        preSlot = preSlot + 1
+      }
+      case Some(VDouble) -> {
+        lowerInsn(LDconst(v = 0.0), asm)
+        lowerInsn(LDstore(slot = preSlot), asm)
+        preSlot = preSlot + 2
+      }
+      case Some(VObject(_)) -> {
+        lowerInsn(LAconstNull, asm)
+        lowerInsn(LAstore(slot = preSlot), asm)
+        preSlot = preSlot + 1
+      }
+      case _ -> { preSlot = preSlot + 1 }
+    }
+  }
+  for insn in f.insns.toArray() {
+    lowerInsn(insn, asm)
+  }
+
+  // Use caller-supplied maxStack/maxLocals when > 0; otherwise infer from the
+  // assembled instruction sequence (B103 feature).
+  val actualMaxStack = if f.maxStack > 0 then f.maxStack else asm.peakStack
+
+  // -- B5: stack-map computation -----------------------------------------
+  // Assemble code bytes and collect label offsets.
+  val ar = assembleRaw(asm)
 
   // Build the full frame locals list: params first, then any extra stored slots.
   val frameLocals: List[VerifierType] = newList()
