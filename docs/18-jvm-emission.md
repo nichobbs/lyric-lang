@@ -2049,13 +2049,17 @@ v2.1.  Do not ship v3.0 with an ASM dependency.
 
 ### Q-J005: Java interop type-mapping for opaque-typed parameters
 
+**Status: RESOLVED** — `lowerOpaqueFacade` shipped in
+`compiler/lyric/jvm/lowering.l` (D-progress-226).
+
 Java code that calls into a Lyric module sees opaque-typed
 parameters as `Object` (since the underlying class is non-exported).
 This is awkward for Java callers who *want* to call Lyric APIs.
 
-**Recommended default**: emit a public "facade" class per opaque type
+**Resolution**: emit a public "facade" class per opaque type
 that exposes only the type's `pub func` constructors and accessors,
-and Java callers go through the facade.  This keeps internals sealed
+and Java callers go through the facade.  Implemented as `lowerOpaqueFacade`
+in `Jvm.Lowering` (D-progress-226).  This keeps internals sealed
 without making Lyric APIs unusable from Java.
 
 ### Q-J006: Modified UTF-8 vs UTF-8
@@ -2182,7 +2186,7 @@ exceptions wrapped as `Result[T, JvmException]`.
 | Q-J002 | Coroutines vs virtual threads     | §24: stick with `CompletableFuture`              |
 | Q-J003 | Specialised generic helpers       | §24: `@hot` + prover-discharged sites only       |
 | Q-J004 | ASM dependency drop deadline      | §24: hold; v3 must be ASM-free                   |
-| Q-J005 | Java interop facade               | §24: emit per-opaque facade class                |
+| Q-J005 | Java interop facade               | **RESOLVED** — `lowerOpaqueFacade` in `Jvm.Lowering` (D-progress-226) |
 | Q-J006 | Modified UTF-8 vs UTF-8           | §24: Modified UTF-8 in class files; standard UTF-8 elsewhere |
 | Q-J007 | Test-runner integration            | §24 + D-progress-206: `@LyricTest` + `Jvm.TestEngine` shipped (B126); full `LyricTestEngine` deferred to B127+ |
 | Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D053 |
@@ -2207,3 +2211,45 @@ JVMS §4.7.1; standard Java tools silently ignore them.  The
 `LyricSourceMap` is in addition to (not in place of) the JVM's
 standard `LineNumberTable` attribute, which we also emit for
 `javap`/IDE/debugger consumption.
+
+## Appendix D. Self-hosted JVM emitter (Phase R4)
+
+This document describes the **F# bootstrap** JVM strategy (Phase 0 design,
+Phase 1–6 implementation planning).  The self-hosted JVM compilation pipeline
+shipped in Phase R4 and lives in `compiler/lyric/jvm/`.  Its design follows
+the same strategy but is implemented in Lyric itself.
+
+### Packages
+
+| Package | File | Description |
+|---|---|---|
+| `Jvm.Bytecode` | `bytecode.l` | JVM bytecode instruction encoding helpers |
+| `Jvm.Classfile` | `classfile.l` | `.class` file writer — constant pool, fields, methods, attributes per JVMS §4 |
+| `Jvm.Lowering` | `lowering.l` | High-level JVM IR lowering; opaque-type facade synthesis (`lowerOpaqueFacade`, D-progress-226) |
+| `Jvm.Codegen` | `codegen.l` | Typed AST → JVM IR lowering (`lowerExprJvm`, `lowerFuncJvm`, `typeExprToJvm`) |
+| `Jvm.Zip` | `zip.l` | ZIP/JAR writer — local file headers, central directory, end-of-central-directory |
+| `Jvm.Manifest` | `manifest.l` | JAR manifest generator (`META-INF/MANIFEST.MF`) |
+| `Jvm.TestEngine` | `test_engine.l` | `@LyricTest` annotation class + `Jvm.TestEngine` JUnit 5 `TestEngine` adapter (D-progress-206 / B126) |
+| `Jvm.NativeImage` | `native_image.l` | GraalVM native-image reachability metadata writer |
+| `Jvm.Reader` | `reader.l` | `.class` file reader for contract-resource extraction and reflection-time introspection |
+| `Jvm.Fuzzer` | `fuzzer.l` | Property-based fuzzer for the classfile writer/reader round-trip |
+| `Jvm.Driver` | `driver.l` | Top-level compilation driver; orchestrates lowering → codegen → classfile → JAR |
+| `Jvm.Bridge` | `bridge.l` | Entry point `compileToJar(source, outputPath, classpath): Bool` — chains lexer → parser → type checker → codegen → lowering → JAR |
+
+The `_kernel/` subdirectory holds JVM-specific extern boundary files
+(analogous to `stdlib/std/_kernel/` for the stdlib).
+
+### F# bridge
+
+`compiler/src/Lyric.Cli/SelfHostedJvm.fs` bootstraps `Jvm.Bridge.dll` via a
+throwaway driver compile on first use, preloads all stdlib DLLs into the
+AppDomain, reflects out `Jvm.Bridge.Program.compileToJar`, and caches the
+delegate process-wide.  `--target jvm` routes through this bridge.
+
+### Self-tests
+
+`compiler/lyric/jvm/self_test.l` and the numbered `self_test_b3.l` …
+`self_test_b126.l` files are incremental self-test programs exercising
+individual bytecode and classfile features.  They are discovered and run
+by the F# emitter test suite (`Lyric.Emitter.Tests`) alongside the MSIL
+self-tests.
