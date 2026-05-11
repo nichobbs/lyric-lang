@@ -130,9 +130,32 @@ let private getDelegate () : string -> string -> bool =
             fn
         | Some r -> r)
 
+/// Write a minimal `.runtimeconfig.json` alongside `dllPath` so that
+/// `dotnet exec dllPath` can locate the correct runtime.
+let private writeRuntimeConfig (dllPath: string) : unit =
+    let configPath =
+        let changed = Path.ChangeExtension(dllPath, ".runtimeconfig.json")
+        match Option.ofObj changed with
+        | Some p -> p
+        | None   -> dllPath + ".runtimeconfig.json"
+    let v = System.Environment.Version
+    let json =
+        "{\n" +
+        "  \"runtimeOptions\": {\n" +
+        (sprintf "    \"tfm\": \"net%d.%d\",\n" v.Major v.Minor) +
+        "    \"framework\": {\n" +
+        "      \"name\": \"Microsoft.NETCore.App\",\n" +
+        (sprintf "      \"version\": \"%s\"\n" (v.ToString())) +
+        "    }\n" +
+        "  }\n" +
+        "}\n"
+    File.WriteAllText(configPath, json)
+
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// `Msil.Bridge` pipeline.  Returns true on success, false on parse errors
 /// or write failure.
 let compileToDll (source: string) (outputPath: string) : bool =
     let fn = getDelegate ()
-    fn source outputPath
+    let ok = fn source outputPath
+    if ok then writeRuntimeConfig outputPath
+    ok

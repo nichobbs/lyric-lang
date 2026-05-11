@@ -50,6 +50,9 @@ pub union MsilType {
   case MVoid       // void return    (ELEMENT_TYPE_VOID   = 0x01)
   case MObject     // System.Object  (ELEMENT_TYPE_OBJECT = 0x1C)
   case MClass(className: String)  // reference type by fully-qualified name
+  // Generic type parameter !n (ELEMENT_TYPE_VAR = 0x13 + index byte).
+  // Used in MemberRef signatures on TypeSpecs per ECMA-335 §II.14.4.2.
+  case MTypeVar(index: Int)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -57,15 +60,28 @@ pub union MsilType {
 // with a compressed TypeDefOrRef token; this helper returns the prefix only).
 pub func elementTypeByte(t: in MsilType): Int {
   match t {
-    case MVoid   -> 0x01
-    case MBool   -> 0x02
-    case MChar   -> 0x03
-    case MInt    -> 0x08
-    case MLong   -> 0x0A
-    case MDouble -> 0x0D
-    case MString -> 0x0E
-    case MObject -> 0x1C
-    case MClass(_) -> 0x12
+    case MVoid      -> 0x01
+    case MBool      -> 0x02
+    case MChar      -> 0x03
+    case MInt       -> 0x08
+    case MLong      -> 0x0A
+    case MDouble    -> 0x0D
+    case MString    -> 0x0E
+    case MObject    -> 0x1C
+    case MClass(_)  -> 0x12
+    case MTypeVar(_) -> 0x13  // prefix only; index byte emitted separately by bufMsilType
+  }
+}
+
+// Emit an MsilType encoding into w, handling multi-byte cases.
+// MTypeVar emits 0x13 + index; all other types emit a single element-type byte.
+func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
+  match t {
+    case MTypeVar(idx) -> {
+      bufU1(w, 0x13)
+      bufU1(w, idx)
+    }
+    case other -> bufU1(w, elementTypeByte(other))
   }
 }
 
@@ -97,10 +113,10 @@ pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List
   val w = bufNew()
   bufU1(w, 0x00)                     // DEFAULT call convention (static)
   bufU1(w, params.count)             // param count
-  bufU1(w, elementTypeByte(ret))     // return type
+  bufMsilType(w, ret)                // return type
   var i = 0
   while i < params.count {
-    bufU1(w, elementTypeByte(params[i]))
+    bufMsilType(w, params[i])
     i = i + 1
   }
   bufToList(w)
@@ -113,10 +129,10 @@ pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): Li
   val w = bufNew()
   bufU1(w, 0x20)                     // HASTHIS
   bufU1(w, params.count)             // explicit param count (this excluded)
-  bufU1(w, elementTypeByte(ret))     // return type
+  bufMsilType(w, ret)                // return type
   var i = 0
   while i < params.count {
-    bufU1(w, elementTypeByte(params[i]))
+    bufMsilType(w, params[i])
     i = i + 1
   }
   bufToList(w)
@@ -432,6 +448,46 @@ pub func ctxAddMemberRef(ctx: in LoweringCtx, parentTypeRefRow: in Int,
     class = mrpTypeRef(parentTypeRefRow),
     name  = sName,
     signature = bSig))
+}
+
+// Add a TypeSpec row and return its 1-based row index.
+// sigBytes is a type-signature blob (e.g. GENERICINST encoding).
+pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String,
+                        sigBytes: in List[Byte]): Int {
+  val bSig = ctxInternBlob(ctx, sigKey, sigBytes)
+  addTypeSpec(ctx.tables, TypeSpecRow(signature = bSig))
+}
+
+// Add a MemberRef row whose parent is a TypeSpec row (for generic instantiations).
+// Returns the 1-based row index.
+pub func ctxAddMemberRefForTypeSpec(ctx: in LoweringCtx, typeSpecRow: in Int,
+                                     methodName: in String, sigKey: in String,
+                                     sig: in List[Byte]): Int {
+  val sName = ctxInternStr(ctx, methodName)
+  val bSig  = ctxInternBlob(ctx, sigKey, sig)
+  addMemberRef(ctx.tables, MemberRefRow(
+    class = mrpTypeSpec(typeSpecRow),
+    name  = sName,
+    signature = bSig))
+}
+
+// Build the #Blob encoding for a GENERICINST type (ECMA-335 §II.23.2.14).
+// typeDefOrRef is the compressed TypeDefOrRef coded-index for the open generic.
+// argTypes is the list of concrete type arguments.
+// Returns: 0x15 CLASS typeDefOrRef argCount argType...
+pub func buildGenericInstBlob(typeDefOrRef: in Int,
+                               argTypes: in List[MsilType]): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
+  bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS (reference generic)
+  writeCompressedInt(w, typeDefOrRef)
+  bufU1(w, argTypes.count)
+  var i = 0
+  while i < argTypes.count {
+    bufU1(w, elementTypeByte(argTypes[i]))
+    i = i + 1
+  }
+  bufToList(w)
 }
 
 // ── Method body lowering ──────────────────────────────────────────────────────

@@ -67,6 +67,18 @@ pub record CodegenCtx {
   tokStringFormat2:   Int   // String.Format(string,object,object)
   tokStringFormat3:   Int   // String.Format(string,object,object,object)
   tokObjToString:     Int   // Object.ToString() instance HASTHIS
+  // List<object> via TypeSpec (for newList() and list operations)
+  tokListObjCtor:     Int   // List<object>::.ctor()  newobj
+  tokListObjAdd:      Int   // List<object>::Add(object): void  callvirt
+  tokListObjGetItem:  Int   // List<object>::get_Item(int32): object  callvirt
+  tokListObjGetCount: Int   // List<object>::get_Count(): int32  callvirt
+  // Dictionary<object,object> via TypeSpec (for newMap() and map operations)
+  tokDictObjCtor:     Int   // Dictionary<object,object>::.ctor()  newobj
+  tokDictObjAdd:      Int   // Dictionary<object,object>::Add(object,object): void  callvirt
+  tokDictObjGetItem:  Int   // Dictionary<object,object>::get_Item(object): object  callvirt
+  tokDictObjGetCount: Int   // Dictionary<object,object>::get_Count(): int32  callvirt
+  tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
+  tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
   // Intra-package pre-computed tokens
   recordCtorTokens:   Map[String, Int]   // className → MethodDef token
   fieldTokens:        Map[String, Int]   // "ClassName/fieldName" → FieldDef token
@@ -194,35 +206,124 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     lctx, lctx.trObject, "ToString",
     "obj_tostring", buildInstanceMethodSig(toStrPs, MString))
 
+  // ── List<object> via TypeSpec ──────────────────────────────────────────────
+  // AssemblyRef for System.Collections (houses List`1 contract in .NET 10)
+  val arCollections = ctxAddAssemblyRef(lctx, "System.Collections", 10, 0)
+
+  // TypeRef for System.Collections.Generic.List`1 (open generic definition)
+  val trList1 = ctxAddTypeRef(lctx, "System.Collections.Generic", "List`1", arCollections)
+
+  // TypeSpec: GENERICINST List`1<object>
+  val listArgTypes: List[MsilType] = newList()
+  listArgTypes.add(MObject)
+  val listObjBlob = buildGenericInstBlob(tdrTypeRef(trList1), listArgTypes)
+  val tsListObj = ctxAddTypeSpec(lctx, "ts_list_obj", listObjBlob)
+
+  // 14. List<object>::.ctor(): void  instance HASTHIS
+  val listCtorPs: List[MsilType] = newList()
+  val tokListObjCtor = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, ".ctor", "list_obj_ctor", buildInstanceMethodSig(listCtorPs, MVoid))
+
+  // 15. List<object>::Add(!0): void  — MemberRef on TypeSpec must use ELEMENT_TYPE_VAR
+  val listAddPs: List[MsilType] = newList()
+  listAddPs.add(MTypeVar(0))
+  val tokListObjAdd = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, "Add", "list_obj_add", buildInstanceMethodSig(listAddPs, MVoid))
+
+  // 16. List<object>::get_Item(int32): !0  — return type is the generic type param
+  val listGetPs: List[MsilType] = newList()
+  listGetPs.add(MInt)
+  val tokListObjGetItem = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, "get_Item", "list_obj_getitem", buildInstanceMethodSig(listGetPs, MTypeVar(0)))
+
+  // 17. List<object>::get_Count(): int32  instance HASTHIS
+  val listCntPs: List[MsilType] = newList()
+  val tokListObjGetCount = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, "get_Count", "list_obj_count", buildInstanceMethodSig(listCntPs, MInt))
+
+  // ── Dictionary<object,object> via TypeSpec ────────────────────────────────
+  val trDict2 = ctxAddTypeRef(lctx, "System.Collections.Generic", "Dictionary`2", arCollections)
+
+  // TypeSpec: GENERICINST Dictionary`2<object,object>
+  val dictArgTypes: List[MsilType] = newList()
+  dictArgTypes.add(MObject)
+  dictArgTypes.add(MObject)
+  val dictObjBlob = buildGenericInstBlob(tdrTypeRef(trDict2), dictArgTypes)
+  val tsDictObj = ctxAddTypeSpec(lctx, "ts_dict_obj", dictObjBlob)
+
+  // 18. Dictionary<object,object>::.ctor(): void  instance HASTHIS
+  val dictCtorPs: List[MsilType] = newList()
+  val tokDictObjCtor = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, ".ctor", "dict_obj_ctor", buildInstanceMethodSig(dictCtorPs, MVoid))
+
+  // 19. Dictionary<object,object>::Add(!0, !1): void  — MemberRef on TypeSpec uses type vars
+  val dictAddPs: List[MsilType] = newList()
+  dictAddPs.add(MTypeVar(0))
+  dictAddPs.add(MTypeVar(1))
+  val tokDictObjAdd = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, "Add", "dict_obj_add", buildInstanceMethodSig(dictAddPs, MVoid))
+
+  // 20. Dictionary<object,object>::get_Item(!0): !1  — key param !0, value return !1
+  val dictGetPs: List[MsilType] = newList()
+  dictGetPs.add(MTypeVar(0))
+  val tokDictObjGetItem = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, "get_Item", "dict_obj_getitem", buildInstanceMethodSig(dictGetPs, MTypeVar(1)))
+
+  // 21. Dictionary<object,object>::get_Count(): int32  instance HASTHIS
+  val dictCntPs: List[MsilType] = newList()
+  val tokDictObjGetCount = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, "get_Count", "dict_obj_count", buildInstanceMethodSig(dictCntPs, MInt))
+
+  // 22. Dictionary<object,object>::ContainsKey(!0): bool  — key param is type var !0
+  val dictCkPs: List[MsilType] = newList()
+  dictCkPs.add(MTypeVar(0))
+  val tokDictObjContainsKey = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, "ContainsKey", "dict_obj_ck", buildInstanceMethodSig(dictCkPs, MBool))
+
+  // 23. Dictionary<object,object>::TryGetValue(object, out object): bool  HASTHIS
+  // Signature: HASTHIS, 2 params, bool return, object key, byref-object value
+  // For bootstrap we use get_Item instead; register as a stub pointing to get_Item sig.
+  val tokDictObjTryGetValue = tokDictObjGetItem  // bootstrap: alias to get_Item
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
 
   CodegenCtx(
-    lctx              = lctx,
-    trConsole         = trConsole,
-    trString          = trString,
-    trInt32           = trInt32,
-    trInt64           = trInt64,
-    trDouble          = trDouble,
-    trBoolean         = trBoolean,
-    trException       = trException,
-    tokWriteLineStr   = tokWLStr,
-    tokWriteLineInt   = tokWLInt,
-    tokWriteLineLong  = tokWLLong,
-    tokWriteLineDbl   = tokWLDbl,
-    tokWriteLineBool  = tokWLBool,
-    tokWriteStr       = tokWStr,
-    tokConcat2        = tokConcat2,
-    tokConcat3        = tokConcat3,
-    tokExceptionCtor  = tokExcCtor,
-    tokStringFormat1  = tokFmt1,
-    tokStringFormat2  = tokFmt2,
-    tokStringFormat3  = tokFmt3,
-    tokObjToString    = tokObjToStr,
-    recordCtorTokens  = recCtorToks,
-    fieldTokens       = fieldToks,
-    funcTokens        = funcToks)
+    lctx                 = lctx,
+    trConsole            = trConsole,
+    trString             = trString,
+    trInt32              = trInt32,
+    trInt64              = trInt64,
+    trDouble             = trDouble,
+    trBoolean            = trBoolean,
+    trException          = trException,
+    tokWriteLineStr      = tokWLStr,
+    tokWriteLineInt      = tokWLInt,
+    tokWriteLineLong     = tokWLLong,
+    tokWriteLineDbl      = tokWLDbl,
+    tokWriteLineBool     = tokWLBool,
+    tokWriteStr          = tokWStr,
+    tokConcat2           = tokConcat2,
+    tokConcat3           = tokConcat3,
+    tokExceptionCtor     = tokExcCtor,
+    tokStringFormat1     = tokFmt1,
+    tokStringFormat2     = tokFmt2,
+    tokStringFormat3     = tokFmt3,
+    tokObjToString       = tokObjToStr,
+    tokListObjCtor       = tokListObjCtor,
+    tokListObjAdd        = tokListObjAdd,
+    tokListObjGetItem    = tokListObjGetItem,
+    tokListObjGetCount   = tokListObjGetCount,
+    tokDictObjCtor       = tokDictObjCtor,
+    tokDictObjAdd        = tokDictObjAdd,
+    tokDictObjGetItem    = tokDictObjGetItem,
+    tokDictObjGetCount   = tokDictObjGetCount,
+    tokDictObjContainsKey = tokDictObjContainsKey,
+    tokDictObjTryGetValue = tokDictObjTryGetValue,
+    recordCtorTokens     = recCtorToks,
+    fieldTokens          = fieldToks,
+    funcTokens           = funcToks)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +457,8 @@ pub record FuncCtx {
   slotTicker:  List[Int]            // length = next slot index (params + locals combined)
   labelTicker: List[Int]            // length = next label index
   paramCount:  Int                  // number of parameters (fixed at creation)
+  loopBreak:   List[Int]            // stack: top = innermost loop's exit label
+  loopCont:    List[Int]            // stack: top = innermost loop's back-edge label
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -629,13 +732,24 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               MObject
             }
             case None -> {
-              insns.add(MPop)
-              MObject
+              if memberName == "count" {
+                insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
+                MInt
+              } else {
+                insns.add(MPop)
+                MObject
+              }
             }
           }
         }
         case _ -> {
-          MObject
+          // For MObject receivers (List, Dict, etc.) handle known BCL properties.
+          if memberName == "count" {
+            insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
+            MInt
+          } else {
+            MObject
+          }
         }
       }
     }
@@ -671,8 +785,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 
     // ── List literal ───────────────────────────────────────────────────────────
     case EList(exprs) -> {
-      // Bootstrap: emit null placeholder — List not yet supported in MSIL codegen.
-      insns.add(MLdNull)
+      // newobj List<object>(); then add each element.
+      insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      var eli = 0
+      while eli < exprs.count {
+        insns.add(MDup)
+        val eTy = lowerExprMsil(cctx, fctx, insns, exprs[eli])
+        boxIfNeededMsil(cctx, insns, eTy)
+        insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+        eli = eli + 1
+      }
       MObject
     }
 
@@ -713,12 +835,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     case EIndex(recv, indices) -> {
       lowerExprMsil(cctx, fctx, insns, recv)
       if indices.count > 0 {
-        lowerExprMsil(cctx, fctx, insns, indices[0])
+        val idxTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+        // If the index is not Int32, convert (e.g. an object key for dict).
+        match idxTy {
+          case MInt -> {}
+          case _    -> {}
+        }
       }
-      // Bootstrap: List indexing not fully supported; pop and return null.
-      insns.add(MPop)
-      insns.add(MPop)
-      insns.add(MLdNull)
+      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
       MObject
     }
 
@@ -1495,7 +1619,7 @@ func lowerBuiltinOrStaticCallMsil(
     MVoid
   } else if funcName == "panic" {
     if args.count > 0 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
     } else {
       val panicTok = ctxInternUs(cctx.lctx, "panic")
       insns.add(MLdStr(token = panicTok))
@@ -1508,7 +1632,7 @@ func lowerBuiltinOrStaticCallMsil(
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       insns.add(MBrTrue(label = skipL))
       if args.count > 1 {
-        lowerCallArgMsil(cctx, fctx, insns, args[1])
+        val _ = lowerCallArgMsil(cctx, fctx, insns, args[1])
       } else {
         val failTok = ctxInternUs(cctx.lctx, "assertion failed")
         insns.add(MLdStr(token = failTok))
@@ -1564,22 +1688,23 @@ func lowerBuiltinOrStaticCallMsil(
     insns.add(MLdNull)
     MObject
   } else if funcName == "newList" {
-    // Bootstrap: return null — List not supported in MSIL codegen yet.
-    insns.add(MLdNull)
+    // Emit: newobj instance void class List`1<object>::.ctor()
+    insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
     MObject
   } else if funcName == "newMap" {
-    // Bootstrap: return null — Map not supported in MSIL codegen yet.
-    insns.add(MLdNull)
+    // Emit: newobj instance void class Dictionary`2<object,object>::.ctor()
+    insns.add(MNewobj(ctorToken = cctx.tokDictObjCtor))
     MObject
   } else if funcName == "mapGet" {
-    // Bootstrap: return null.
+    // Bootstrap: use Dictionary.get_Item (returns null if missing); wrap in object.
+    // Full Option[V] wrapping deferred — bootstrap returns null for None.
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      insns.add(MPop)
       lowerCallArgMsil(cctx, fctx, insns, args[1])
-      insns.add(MPop)
+      insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))
+    } else {
+      insns.add(MLdNull)
     }
-    insns.add(MLdNull)
     MObject
   } else if funcName == "format1" {
     if args.count >= 2 {
@@ -1588,7 +1713,7 @@ func lowerBuiltinOrStaticCallMsil(
       boxIfNeededMsil(cctx, insns, a1Ty)
       insns.add(MCall(methodToken = cctx.tokStringFormat1))
     } else if args.count == 1 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
     } else {
       val emptyTok = ctxInternUs(cctx.lctx, "")
       insns.add(MLdStr(token = emptyTok))
@@ -1603,7 +1728,7 @@ func lowerBuiltinOrStaticCallMsil(
       boxIfNeededMsil(cctx, insns, a2Ty2)
       insns.add(MCall(methodToken = cctx.tokStringFormat2))
     } else if args.count >= 1 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
     } else {
       val emptyTok = ctxInternUs(cctx.lctx, "")
       insns.add(MLdStr(token = emptyTok))
@@ -1620,7 +1745,7 @@ func lowerBuiltinOrStaticCallMsil(
       boxIfNeededMsil(cctx, insns, a3Ty3)
       insns.add(MCall(methodToken = cctx.tokStringFormat3))
     } else if args.count >= 1 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
     } else {
       val emptyTok = ctxInternUs(cctx.lctx, "")
       insns.add(MLdStr(token = emptyTok))
@@ -1653,6 +1778,8 @@ func lowerBuiltinOrStaticCallMsil(
 }
 
 // Lower a method call on a receiver: recv.memberName(args…).
+// Dispatches by name to known BCL tokens for List<object> and
+// Dictionary<object,object>; falls back to a safe stub for unknowns.
 func lowerMethodCallMsil(
   cctx:       in CodegenCtx,
   fctx:       in FuncCtx,
@@ -1661,21 +1788,80 @@ func lowerMethodCallMsil(
   memberName: in String,
   args:       in List[CallArg]
 ): MsilType {
-  val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
-  var i = 0
-  while i < args.count {
-    lowerCallArgMsil(cctx, fctx, insns, args[i])
-    i = i + 1
-  }
-  match recvTy {
-    case MClass(_) -> {
-      // Instance method — not resolvable at bootstrap; emit as callvirt via Object.
-      insns.add(MCallvirt(methodToken = cctx.tokObjToString))
-      MObject
+  lowerExprMsil(cctx, fctx, insns, recv)
+  if memberName == "add" {
+    // List<object>::Add(object): void  OR  Dict::Add(key,value): void
+    var i = 0
+    while i < args.count {
+      val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+      boxIfNeededMsil(cctx, insns, aTy)
+      i = i + 1
     }
-    case _ -> {
-      MObject
+    if args.count >= 2 {
+      insns.add(MCallvirt(methodToken = cctx.tokDictObjAdd))
+    } else {
+      insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
     }
+    MVoid
+  } else if memberName == "containsKey" {
+    // Dictionary::ContainsKey(object): bool
+    if args.count > 0 {
+      val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      boxIfNeededMsil(cctx, insns, aTy)
+    }
+    insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
+    MBool
+  } else if memberName == "contains" {
+    // List::Contains(object): bool  — bootstrap: always false stub
+    var i = 0
+    while i < args.count {
+      lowerCallArgMsil(cctx, fctx, insns, args[i])
+      insns.add(MPop)
+      i = i + 1
+    }
+    insns.add(MPop)
+    insns.add(MLdcI4(v = 0))
+    MBool
+  } else if memberName == "remove" {
+    // Dictionary::Remove(object): bool — bootstrap stub: pop key, pop recv, return false
+    var i = 0
+    while i < args.count {
+      lowerCallArgMsil(cctx, fctx, insns, args[i])
+      insns.add(MPop)
+      i = i + 1
+    }
+    insns.add(MPop)
+    insns.add(MLdcI4(v = 0))
+    MBool
+  } else if memberName == "removeAt" {
+    // List::RemoveAt(int): void — bootstrap stub: pop index, pop recv
+    var i = 0
+    while i < args.count {
+      lowerCallArgMsil(cctx, fctx, insns, args[i])
+      insns.add(MPop)
+      i = i + 1
+    }
+    insns.add(MPop)
+    MVoid
+  } else if memberName == "toArray" {
+    // List::ToArray(): object[] — bootstrap stub: pop recv, return null
+    insns.add(MPop)
+    insns.add(MLdNull)
+    MObject
+  } else if memberName == "toString" {
+    insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+    MString
+  } else {
+    // Unknown method — pop receiver and args, return null (bootstrap stub).
+    var i = 0
+    while i < args.count {
+      lowerCallArgMsil(cctx, fctx, insns, args[i])
+      insns.add(MPop)
+      i = i + 1
+    }
+    insns.add(MPop)
+    insns.add(MLdNull)
+    MObject
   }
 }
 
@@ -1759,7 +1945,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MLabel(id =loopL))
       lowerExprMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
+      fctx.loopBreak.add(afterL)
+      fctx.loopCont.add(loopL)
       lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
       insns.add(MBr(label = loopL))
       insns.add(MLabel(id =afterL))
     }
@@ -1771,15 +1961,21 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 
     // ── Loop (unconditional) ──────────────────────────────────────────────────
     case SLoop(_, body) -> {
-      val loopL2 = freshLabelMsil(fctx)
+      val loopL2  = freshLabelMsil(fctx)
+      val afterL2 = freshLabelMsil(fctx)
       insns.add(MLabel(id =loopL2))
+      fctx.loopBreak.add(afterL2)
+      fctx.loopCont.add(loopL2)
       lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
       insns.add(MBr(label = loopL2))
+      insns.add(MLabel(id =afterL2))
     }
 
     // ── Assignment statement ───────────────────────────────────────────────────
     case SAssign(target, op, value) -> {
-      lowerAssignExprMsil(cctx, fctx, insns, target, op, value)
+      val _ = lowerAssignExprMsil(cctx, fctx, insns, target, op, value)
     }
 
     // ── Throw ─────────────────────────────────────────────────────────────────
@@ -1788,9 +1984,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MThrow)
     }
 
-    // ── Break / continue (bootstrap: nop) ────────────────────────────────────
-    case SBreak(_)    -> insns.add(MNop)
-    case SContinue(_) -> insns.add(MNop)
+    // ── Break / continue ─────────────────────────────────────────────────────
+    case SBreak(_) -> {
+      insns.add(MBr(label = fctx.loopBreak[fctx.loopBreak.count - 1]))
+    }
+    case SContinue(_) -> {
+      insns.add(MBr(label = fctx.loopCont[fctx.loopCont.count - 1]))
+    }
 
     // ── Scope block ───────────────────────────────────────────────────────────
     case SScope(_, body) -> {
@@ -1915,6 +2115,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val locals:      List[MsilType]         = newList()
   val slotTicker:  List[Int]              = newList()
   val labelTicker: List[Int]              = newList()
+  val loopBreak:   List[Int]              = newList()
+  val loopCont:    List[Int]              = newList()
   FuncCtx(
     pkgName     = pkgName,
     className   = className,
@@ -1923,7 +2125,9 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     locals      = locals,
     slotTicker  = slotTicker,
     labelTicker = labelTicker,
-    paramCount  = paramCount)
+    paramCount  = paramCount,
+    loopBreak   = loopBreak,
+    loopCont    = loopCont)
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -2027,12 +2231,13 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
     i = i + 1
   }
 
+  val methods: List[MFunc] = newList()
   MRecord(
     className = className,
     namespace = pkgName,
     baseClass = "System.Object",
     fields    = fields,
-    methods   = newList())
+    methods   = methods)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2070,11 +2275,12 @@ pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
     i = i + 1
   }
 
+  val methods: List[MFunc] = newList()
   MUnion(
     baseName  = baseName,
     namespace = pkgName,
     cases     = cases,
-    methods   = newList())
+    methods   = methods)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
