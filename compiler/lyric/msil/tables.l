@@ -259,6 +259,13 @@ pub record StandAloneSigRow {
   signature: Int  // #Blob: LocalVarSig or MethodSig
 }
 
+// TypeSpec (Table 0x1B) — ECMA-335 §II.22.39.
+// Encodes a type that is not directly named by a TypeDef or TypeRef,
+// such as a generic instantiation (e.g. List<object>).
+pub record TypeSpecRow {
+  signature: Int  // #Blob: type signature
+}
+
 // AssemblyRef (Table 0x23) — ECMA-335 §II.22.5.
 pub record AssemblyRefRow {
   majorVersion:   Int
@@ -285,6 +292,7 @@ pub record MetadataTables {
   memberRefs:       List[MemberRefRow]
   customAttrs:      List[CustomAttrRow]
   standAloneSigs:   List[StandAloneSigRow]
+  typeSpecs:        List[TypeSpecRow]
   assemblies:       List[AssemblyRow]
   assemblyRefs:     List[AssemblyRefRow]
 }
@@ -301,6 +309,7 @@ pub func newMetadataTables(): MetadataTables {
     memberRefs     = newList(),
     customAttrs    = newList(),
     standAloneSigs = newList(),
+    typeSpecs      = newList(),
     assemblies     = newList(),
     assemblyRefs   = newList()
   )
@@ -364,6 +373,11 @@ pub func addStandAloneSig(t: in MetadataTables, r: in StandAloneSigRow): Int {
   t.standAloneSigs.count
 }
 
+pub func addTypeSpec(t: in MetadataTables, r: in TypeSpecRow): Int {
+  t.typeSpecs.add(r)
+  t.typeSpecs.count
+}
+
 pub func addAssemblyRef(t: in MetadataTables, r: in AssemblyRefRow): Int {
   t.assemblyRefs.add(r)
   t.assemblyRefs.count
@@ -393,8 +407,8 @@ pub func standaloneToken(row: in Int): Int {
 // Row wire format uses 2-byte heap refs (heapSizes=0) and 2-byte simple
 // table indices.  All multi-byte fields are little-endian.
 //
-// This serializer writes rows for tables 0x00..0x0C and 0x20, 0x23 only.
-// Tables not in that set are omitted from the valid bitmask.
+// This serializer writes rows for tables 0x00..0x0C, 0x11, 0x1B, 0x20, and
+// 0x23.  Tables not in that set are omitted from the valid bitmask.
 
 // Table presence bitmask bits (one bit per table ID 0x00..0x3F).
 val TABLE_BIT_MODULE      : Long = 1i64           // table 0x00, bit 0
@@ -407,6 +421,7 @@ val TABLE_BIT_INTERFACE_IMPL  : Long = 512i64           // table 0x09, bit 9
 val TABLE_BIT_MEMBER_REF      : Long = 1024i64          // table 0x0A, bit 10
 val TABLE_BIT_CUSTOM_ATTR     : Long = 4096i64          // table 0x0C, bit 12
 val TABLE_BIT_STAND_ALONE_SIG : Long = 131072i64        // table 0x11, bit 17 (2^17)
+val TABLE_BIT_TYPE_SPEC       : Long = 134217728i64     // table 0x1B, bit 27 (2^27)
 val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
 val TABLE_BIT_ASSEMBLY_REF    : Long = 34359738368i64   // table 0x23, bit 35 (2^35)
 
@@ -455,6 +470,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.memberRefs.count > 0       { valid = valid + TABLE_BIT_MEMBER_REF }
   if t.customAttrs.count > 0      { valid = valid + TABLE_BIT_CUSTOM_ATTR }
   if t.standAloneSigs.count > 0   { valid = valid + TABLE_BIT_STAND_ALONE_SIG }
+  if t.typeSpecs.count > 0        { valid = valid + TABLE_BIT_TYPE_SPEC }
   if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
   if t.assemblyRefs.count > 0     { valid = valid + TABLE_BIT_ASSEMBLY_REF }
   w8(buf, valid)
@@ -473,6 +489,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.memberRefs.count > 0       { w4(buf, t.memberRefs.count) }
   if t.customAttrs.count > 0      { w4(buf, t.customAttrs.count) }
   if t.standAloneSigs.count > 0   { w4(buf, t.standAloneSigs.count) }
+  if t.typeSpecs.count > 0        { w4(buf, t.typeSpecs.count) }
   if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
   if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
 
@@ -589,6 +606,14 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = t.standAloneSigs[ssi]
     w2(buf, r.signature)
     ssi = ssi + 1
+  }
+
+  // TypeSpec rows (table 0x1B)
+  var tsi = 0
+  while tsi < t.typeSpecs.count {
+    val r = t.typeSpecs[tsi]
+    w2(buf, r.signature)
+    tsi = tsi + 1
   }
 
   // Assembly rows (table 0x20)

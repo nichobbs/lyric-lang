@@ -13,6 +13,7 @@
     <Compile Include="RestoredPackagesTests.fs" />
     <Compile Include="FmtTests.fs" />
     <Compile Include="SelfHostedFmtBridgeTests.fs" />
+    <Compile Include="SelfHostedMsilBridgeTests.fs" />
     <Compile Include="LintTests.fs" />
     <Compile Include="ProjectBuildTests.fs" />
     <Compile Include="ProveTests.fs" />

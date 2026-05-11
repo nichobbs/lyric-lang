@@ -13,6 +13,7 @@ let main argv =
             RestoredPackagesTests.tests
             FmtTests.tests
             SelfHostedFmtBridgeTests.tests
+            SelfHostedMsilBridgeTests.tests
             LintTests.tests
             ProjectBuildTests.tests
             ProveTests.tests
