@@ -11342,3 +11342,74 @@ added before `Program.fs`.
 
 **Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
+
+---
+
+### D-progress-240: R6 codegen — IL validity fixes + MSIL bridge end-to-end tests
+
+Five categories of structural IL errors in `compiler/lyric/msil/codegen.l`
+caused all self-hosted MSIL bridge paths to fail at JIT time with
+`InvalidProgramException` or `MissingMethodException`.  All five are now fixed,
+and six end-to-end tests cover the repaired paths.
+
+**IL validity fixes:**
+
+1. **PathStackDepth in `panic`/`assert`/`format1-3` branches** — `lowerCallArgMsil`
+   as the last expression in the then-branch of an if-else caused
+   `branchLeavesValue` to return `true` (because `peekExprType` falls back to
+   `typeof<obj>` for `EMember` calls, which are actually void at runtime).
+   With both branches appearing to leave values, `discardBoth = false`, and no
+   corrective `pop` was emitted, producing a PathStackDepth error.  Fix:
+   changed to `val _ = lowerCallArgMsil(...)` so the F# emitter sees an
+   `LBVal(PWildcard)` binding and always emits `pop`.
+
+2. **PathStackDepth in `SAssign`** — `lowerAssignExprMsil` returns a non-void
+   `MsilType` as the last expression in the `SAssign` arm of `lowerStmtMsil`,
+   leaving a value on the stack along one path.  Fix: `val _ = lowerAssignExprMsil(...)`.
+
+3. **StackUnexpected in `lowerRecordMsil` / `lowerUnionMsil`** — `methods = newList()`
+   without a type annotation caused the F# bootstrap emitter to infer
+   `List<object>` instead of `List<MFunc>`, producing a wrong-type value where
+   the record constructor expected `List<MFunc>`.  Fix: explicit
+   `val methods: List[MFunc] = newList()`.
+
+4. **Missing `.runtimeconfig.json`** — `SelfHostedMsil.compileToDll` produced the
+   output DLL but no `.runtimeconfig.json`, so `dotnet exec` exited with
+   `A fatal error occurred: The required library libhostpolicy.so could not be found`.
+   Fix: added `writeRuntimeConfig` to `SelfHostedMsil.fs`, called after each
+   successful compile; it writes a minimal `runtimeconfig.json` containing the
+   current process's .NET version.
+
+5. **MissingMethodException on `List<object>::Add`** — MemberRef signatures for
+   methods on a TypeSpec (generic instantiation) must use `ELEMENT_TYPE_VAR`
+   (0x13 + type-parameter index) for positions occupied by the enclosing type's
+   generic parameters, per ECMA-335 §II.14.4.2.  The self-hosted emitter was
+   encoding these positions as `ELEMENT_TYPE_OBJECT` (0x1C — the concrete
+   instantiated type), which the CLR cannot match against `List<T>::Add(!0)`.
+   Fix:
+   - Added `case MTypeVar(index: Int)` to the `MsilType` union in
+     `compiler/lyric/msil/lowering.l`.
+   - Added `func bufMsilType(w: ByteWriter, t: MsilType): Unit` that emits two
+     bytes (`0x13`, `index`) for `MTypeVar` and one byte for all other types.
+   - Updated `buildInstanceMethodSig` and `buildStaticMethodSig` to use
+     `bufMsilType` for both the return type and each parameter type.
+   - Updated all TypeSpec MemberRef setups in `codegen.l`: `List::Add`,
+     `List::get_Item`, `Dict::Add`, `Dict::get_Item`, `Dict::ContainsKey`.
+
+**New test file:** `compiler/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`
+— 6 end-to-end tests that compile Lyric programs through the full
+self-hosted pipeline (`Msil.Bridge.compileToMsil`) and execute the resulting
+DLL with `dotnet exec`, asserting on stdout:
+
+| Label | Program | Expected |
+|---|---|---|
+| `shm_hello` | `println("hello from self-hosted")` | `hello from self-hosted` |
+| `shm_while_basic` | count to 5 with `while` | `5` |
+| `shm_break_early` | break at `i == 5` | `5` |
+| `shm_continue_skip_evens` | sum odd numbers 1–9 with `continue` | `25` |
+| `shm_nested_while_break` | 5×3 inner iterations (break at j==3) | `15` |
+| `shm_newList_add_count` | `newList()`, 3 `add` calls, `xs.count` | `3` |
+
+**Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 164 CLI tests (+6 MSIL bridge), 266 verifier
+tests — all passing.

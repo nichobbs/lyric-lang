@@ -1,6 +1,6 @@
 # docs/33-platform-parity-remediation.md — Platform parity remediation plan
 
-_Status: R1–R6 shipped (D-progress-227–239). Parity milestone smoke-test suite pending._
+_Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (D-progress-240). Full parity smoke-test suite (20 programs, all three paths) pending._
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
 
 ## 1. Motivation
@@ -393,4 +393,4 @@ actual shipped IDs may differ due to interleaved unrelated work):
 | D-progress-233 | D-progress-238 | R5 Msil.Bridge (merged into above) |
 | R6 (not in original plan) | D-progress-227 | R6 Msil.Codegen + SelfHostedMsil.fs + target renaming |
 | — | D-progress-228 | Distribution strategy doc (docs/34) + D059 decision |
-| D-progress-234 | _(pending)_ | Parity milestone smoke-test suite |
+| D-progress-234 | _(partial)_ | Parity milestone smoke-test suite — MSIL bridge (6 tests) shipped in D-progress-240; full 20-program cross-path suite pending |
