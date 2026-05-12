@@ -133,11 +133,11 @@ pub func builtinDisplay(b: in Builtin): String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub union Lit {
-  case LBool(b: Bool)
-  case LInt(n: Long)
-  case LFloat(f: Double)
-  case LString(s: String)
-  case LUnit
+  case VLBool(b: Bool)
+  case VLInt(n: Long)
+  case VLFloat(f: Double)
+  case VLString(s: String)
+  case VLUnit
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ pub record SortBinder {
 
 pub func mkAnd(xs: in List[Term]): Term {
   if xs.count == 0 {
-    TLit(value = LBool(b = true), sort = SBool)
+    TLit(value = VLBool(b = true), sort = SBool)
   } else if xs.count == 1 {
     xs[0]
   } else {
@@ -179,7 +179,7 @@ pub func mkAnd(xs: in List[Term]): Term {
 
 pub func mkOr(xs: in List[Term]): Term {
   if xs.count == 0 {
-    TLit(value = LBool(b = false), sort = SBool)
+    TLit(value = VLBool(b = false), sort = SBool)
   } else if xs.count == 1 {
     xs[0]
   } else {
@@ -195,8 +195,8 @@ pub func mkNot(p: in Term): Term {
   TBuiltin(op = BOpNot, args = termList1(p))
 }
 
-pub func trueT(): Term  { TLit(value = LBool(b = true),  sort = SBool) }
-pub func falseT(): Term { TLit(value = LBool(b = false), sort = SBool) }
+pub func trueT(): Term  { TLit(value = VLBool(b = true),  sort = SBool) }
+pub func falseT(): Term { TLit(value = VLBool(b = false), sort = SBool) }
 
 // Helper to make small term lists without the List[T] mutable syntax noise.
 pub func termList1(a: in Term): List[Term] {
@@ -340,11 +340,11 @@ func sortEq(a: in Sort, b: in Sort): Bool {
 
 func litEq(a: in Lit, b: in Lit): Bool {
   match a {
-    case LBool(x) -> { match b { case LBool(y) -> x == y; case _ -> false } }
-    case LInt(x)  -> { match b { case LInt(y)  -> x == y; case _ -> false } }
-    case LFloat(x) -> { match b { case LFloat(y) -> x == y; case _ -> false } }
-    case LString(x) -> { match b { case LString(y) -> x == y; case _ -> false } }
-    case LUnit -> { match b { case LUnit -> true; case _ -> false } }
+    case VLBool(x) -> { match b { case VLBool(y) -> x == y; case _ -> false } }
+    case VLInt(x)  -> { match b { case VLInt(y)  -> x == y; case _ -> false } }
+    case VLFloat(x) -> { match b { case VLFloat(y) -> x == y; case _ -> false } }
+    case VLString(x) -> { match b { case VLString(y) -> x == y; case _ -> false } }
+    case VLUnit -> { match b { case VLUnit -> true; case _ -> false } }
   }
 }
 
@@ -571,18 +571,18 @@ pub func prettyTerm(t: in Term): String {
 func renderTerm(prec: in Int, t: in Term): String {
   match t {
     case TVar(name, _) -> name
-    case TLit(LBool(true), _)  -> "true"
-    case TLit(LBool(false), _) -> "false"
-    case TLit(LInt(n), _)  -> {
-      if n < 0 {
+    case TLit(VLBool(true), _)  -> "true"
+    case TLit(VLBool(false), _) -> "false"
+    case TLit(VLInt(n), _)  -> {
+      if n < 0i64 {
         "(-" + longToString(-n) + ")"
       } else {
         longToString(n)
       }
     }
-    case TLit(LFloat(f), _)   -> doubleToString(f)
-    case TLit(LString(s), _)  -> "\"" + s + "\""
-    case TLit(LUnit, _)        -> "()"
+    case TLit(VLFloat(f), _)   -> doubleToString(f)
+    case TLit(VLString(s), _)  -> "\"" + s + "\""
+    case TLit(VLUnit, _)        -> "()"
     case TBuiltin(BOpNot, args) -> {
       if args.count == 1 {
         "!" + renderTerm(10, args[0])

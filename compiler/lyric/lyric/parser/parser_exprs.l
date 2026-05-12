@@ -243,7 +243,7 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
   } else if isPunct(peekToken(st), DotDot) or isPunct(peekToken(st), DotDotLt) {
     val opTok = advance(st)
     val hi = parseExpr(st)
-    val lo = mkExpr(ELiteral(lit = LInt(value = 0, suffix = NoIntSuffix)), opTok.span)
+    val lo = mkExpr(ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix)), opTok.span)
     RBHalfOpen(lo = lo, hi = hi)
   } else {
     val lo = parseExpr(st)
@@ -1300,7 +1300,7 @@ pub func parseMatchExpr(st: inout ParseState): Expr {
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = mark(st)
     arms.add(parseMatchArm(st))
-    if isPunct(peekToken(st), TStmtEnd) or isPunct(peekToken(st), Comma) {
+    if peekToken(st) == TStmtEnd or isPunct(peekToken(st), Comma) {
       val _ = advance(st)
       val _ = skipStmtEnds(st)
     } else {

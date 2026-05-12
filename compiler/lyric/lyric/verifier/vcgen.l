@@ -144,17 +144,17 @@ func appendTermList(dst: in List[Term], src: in List[Term]): Unit {
 
 func translateLit(lit: in Literal): Term {
   match lit {
-    case LBool(v)         -> TLit(value = LBool(b = v), sort = SBool)
-    case LInt(v, _)       -> TLit(value = LInt(n = v), sort = SInt)
-    case LFloat(v, _)     -> TLit(value = LFloat(f = v), sort = SFloat64)
-    case LString(s)       -> TLit(value = LString(s = s), sort = SString)
-    case LTripleString(s) -> TLit(value = LString(s = s), sort = SString)
-    case LRawString(s)    -> TLit(value = LString(s = s), sort = SString)
-    case LChar(cp)        -> TLit(value = LInt(n = codepointToLong(cp)), sort = SInt)
+    case LBool(v)         -> TLit(value = VLBool(b = v), sort = SBool)
+    case LInt(v, _)       -> TLit(value = VLInt(n = v), sort = SInt)
+    case LFloat(v, _)     -> TLit(value = VLFloat(f = v), sort = SFloat64)
+    case LString(s)       -> TLit(value = VLString(s = s), sort = SString)
+    case LTripleString(s) -> TLit(value = VLString(s = s), sort = SString)
+    case LRawString(s)    -> TLit(value = VLString(s = s), sort = SString)
+    case LChar(cp)        -> TLit(value = VLInt(n = codepointToLong(cp)), sort = SInt)
     case LUnit            -> {
       val args: List[Sort] = newList()
       val unitDt = SDatatype(name = "Unit", args = args)
-      TLit(value = LUnit, sort = unitDt)
+      TLit(value = VLUnit, sort = unitDt)
     }
   }
 }
@@ -181,7 +181,7 @@ func codepointToLong(n: in Int): Long {
 func unitTerm(): Term {
   val args: List[Sort] = newList()
   val unitDt2 = SDatatype(name = "Unit", args = args)
-  TLit(value = LUnit, sort = unitDt2)
+  TLit(value = VLUnit, sort = unitDt2)
 }
 
 func unitSortInfo(): SortInfo {
@@ -380,10 +380,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               case SInt -> {
                 match b {
                   case BOpAdd | BOpSub | BOpMul -> {
-                    val minI64: Long = -9223372036854775808
-                    val maxI64: Long = 9223372036854775807
-                    sc.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = LInt(n = minI64), sort = SInt), term)))
-                    sc.add(TBuiltin(op = BOpLte, args = termList2(term, TLit(value = LInt(n = maxI64), sort = SInt))))
+                    val minI64: Long = -9223372036854775807i64 - 1i64
+                    val maxI64: Long = 9223372036854775807i64
+                    sc.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = minI64), sort = SInt), term)))
+                    sc.add(TBuiltin(op = BOpLte, args = termList2(term, TLit(value = VLInt(n = maxI64), sort = SInt))))
                   }
                   case _ -> {}
                 }
@@ -912,7 +912,7 @@ func collectBindings(kind: in PatternKind, subject: in Term, output: in List[Pat
 
 func isTrueT(t: in Term): Bool {
   match t {
-    case TLit(LBool(true), _) -> true
+    case TLit(VLBool(true), _) -> true
     case _                    -> false
   }
 }
@@ -1631,12 +1631,12 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
   match resultSort.range {
     case RBKNone -> {}
     case RBKClosed(lo, hi) -> {
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = LInt(n = lo), sort = SInt), resultVar)))
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(resultVar, TLit(value = LInt(n = hi), sort = SInt))))
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
     }
     case RBKHalfOpen(lo, hi) -> {
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = LInt(n = lo), sort = SInt), resultVar)))
-      rangeTerms.add(TBuiltin(op = BOpLt,  args = termList2(resultVar, TLit(value = LInt(n = hi), sort = SInt))))
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
+      rangeTerms.add(TBuiltin(op = BOpLt,  args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
     }
   }
   val allPostParts: List[Term] = newList()

@@ -130,12 +130,12 @@ func testSmtTermVar(): Unit {
 }
 
 func testSmtTermIntLit(): Unit {
-  val t = TLit(value = LInt(n = 42), sort = SInt)
+  val t = TLit(value = VLInt(n = 42i64), sort = SInt)
   assertEqual(smtRenderTerm(t), "42", "term-lit-42")
 }
 
 func testSmtTermNegIntLit(): Unit {
-  val t = TLit(value = LInt(n = -5), sort = SInt)
+  val t = TLit(value = VLInt(n = -5i64), sort = SInt)
   assertEqual(smtRenderTerm(t), "(- 5)", "term-lit-neg5")
 }
 
@@ -154,8 +154,8 @@ func testSmtTermNot(): Unit {
 
 func testSmtTermIte(): Unit {
   val c = TVar(name = "c", sort = SBool)
-  val a = TLit(value = LInt(n = 1), sort = SInt)
-  val b = TLit(value = LInt(n = 0), sort = SInt)
+  val a = TLit(value = VLInt(n = 1i64), sort = SInt)
+  val b = TLit(value = VLInt(n = 0i64), sort = SInt)
   val t = TIte(cond = c, thenT = a, elseT = b)
   assertEqual(smtRenderTerm(t), "(ite c 1 0)", "term-ite")
 }
@@ -308,7 +308,7 @@ func testProveExplicitRuntimeChecked(): Unit {
 
 func testTrivialDischargeGteRefl(): Unit {
   // Test that BOpGte with equal TLit args is tautological.
-  val zero = TLit(value = LInt(n = 0), sort = SInt)
+  val zero = TLit(value = VLInt(n = 0i64), sort = SInt)
   val gteRefl = TBuiltin(op = BOpGte, args = termList2(zero, zero))
   val hyps: List[Term] = newList()
   val syms: List[SymbolDecl] = newList()

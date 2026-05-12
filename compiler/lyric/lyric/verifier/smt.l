@@ -68,18 +68,18 @@ pub func smtSanitize(s: in String): String {
 
 func smtRenderLit(lit: in Lit): String {
   match lit {
-    case LBool(true)  -> "true"
-    case LBool(false) -> "false"
-    case LInt(n)      -> {
-      if n < 0 {
+    case VLBool(true)  -> "true"
+    case VLBool(false) -> "false"
+    case VLInt(n)      -> {
+      if n < 0i64 {
         "(- " + longToString(-n) + ")"
       } else {
         longToString(n)
       }
     }
-    case LFloat(f)    -> doubleToString(f)
-    case LString(s)   -> "\"" + s.replace("\"", "\"\"") + "\""
-    case LUnit        -> "unit"
+    case VLFloat(f)    -> doubleToString(f)
+    case VLString(s)   -> "\"" + s.replace("\"", "\"\"") + "\""
+    case VLUnit        -> "unit"
   }
 }
 
