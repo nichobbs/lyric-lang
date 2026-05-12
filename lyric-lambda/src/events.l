@@ -261,3 +261,47 @@ pub record DynamoDbRecord {
 pub record DynamoDbEvent {
   records: [DynamoDbRecord]
 }
+
+// ─── Kinesis Data Streams ─────────────────────────────────────────────────────
+
+/// A single Kinesis Data Streams record within a Lambda invocation batch.
+///
+/// data is base64-encoded; decode and deserialise based on your stream's
+/// content type (JSON, Avro, Protobuf, raw bytes, etc.).
+/// approximateArrivalTimestamp is a Unix epoch float (seconds with fractional ms).
+@stable(since="0.1")
+pub record KinesisRecord {
+  /// Always "1.0".
+  kinesisSchemaVersion:            String
+  partitionKey:                    String
+  sequenceNumber:                  String
+  /// Base64-encoded record payload.  Decode before use.
+  data:                            String
+  approximateArrivalTimestamp:     Double
+}
+
+/// Kinesis metadata envelope for a single record in the Lambda event batch.
+@stable(since="0.1")
+pub record KinesisStreamRecord {
+  kinesis:        KinesisRecord
+  eventSource:    String   // "aws:kinesis"
+  eventVersion:   String
+  eventId:        String
+  eventName:      String   // "aws:kinesis:record"
+  invokeIdentityArn: String
+  awsRegion:      String
+  eventSourceArn: String
+}
+
+/// Batch of Kinesis Data Streams records delivered to a Lambda invocation.
+///
+/// Handler type:
+///   func h(event: Lambda.Events.KinesisEvent, ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+///
+/// Kinesis does not support partial-batch-failure reporting equivalent to SQS.
+/// On error the entire batch is retried until it succeeds or expires from the
+/// stream.  Design handlers to be idempotent on the partition key.
+@stable(since="0.1")
+pub record KinesisEvent {
+  records: [KinesisStreamRecord]
+}

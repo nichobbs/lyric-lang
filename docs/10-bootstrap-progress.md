@@ -11486,56 +11486,62 @@ string concatenation).  Each program is compiled and run through three paths:
 
 ### D-progress-242: lyric-lambda service library
 
+---
+
+### D-progress-243: lyric-lambda v2 + lyric-aws-secrets
+
 **Branch:** `claude/lyric-lambda-library-L7cgt`
-**Decision log:** D062
+**Decision log:** D063
 
-Initial design and source files for `lyric-lambda`, the AWS Lambda runtime
-adapter for Lyric.
+Extends `lyric-lambda` with authorizer support and Kinesis, and ships the new
+`lyric-aws-secrets` library for config-block secret injection.
 
-**Shipped:**
+**Shipped in lyric-lambda:**
 
-- `lyric-lambda/lyric.toml` — package manifest with `aws` and `local` feature
-  flags and `Amazon.Lambda.RuntimeSupport` / `Amazon.Lambda.Serialization.SystemTextJson`
-  NuGet dependencies.
-- `lyric-lambda/src/lambda.l` — `Lambda` package: `LambdaContext`, `LambdaError`
-  union (with `errorMessage()` helper), `EventHandler`, `LambdaApp` immutable
-  builder (`newApp`, `withRouter`, `onSqs`, `onSns`, `onS3`, `onEventBridge`,
-  `onDynamoDb`, `onRaw`), `Runtime` config block, and `serve()` entry point.
-- `lyric-lambda/src/apigw.l` — `Lambda.ApiGw` package: typed records for
-  API Gateway v1 (`ApiGwV1Event`, `ApiGwV1RequestContext`, `ApiGwV1Identity`),
-  v2 (`ApiGwV2Event`, `ApiGwV2RequestContext`, `ApiGwV2Http`), and ALB
-  (`AlbEvent`, `AlbRequestContext`, `AlbTargetGroup`); `ApiGwResponse` with
-  `jsonResponse()` and `binaryResponse()` constructor helpers.
-- `lyric-lambda/src/events.l` — `Lambda.Events` package: `SqsEvent`/`SqsRecord`/
-  `SqsMessageAttribute`, `SqsBatchResponse`/`SqsBatchItemFailure` for partial-
-  batch-failure mode, `SnsEvent`/`SnsRecord`/`SnsMessage`/`SnsMessageAttribute`,
-  `S3Event`/`S3Record`/`S3Detail`/`S3Bucket`/`S3Object` (+ request/response
-  element records), `EventBridgeEvent`, `DynamoDbEvent`/`DynamoDbRecord`/
-  `DynamoDbStreamRecord`/`DynamoDbAttributeValue`.
-- `lyric-lambda/src/lambda_aspects.l` — `Lambda.Aspects` package:
-  `EventLogging` (B-mode: logs qualified name + outcome + elapsed ms),
-  `DeadlineGuard` (C-mode `@inline_template`: reads `args.ctx.remainingTimeMs`,
-  returns `LambdaError.TimeoutError` when below configured threshold).
-- `lyric-lambda/src/_kernel/lambda_kernel_aws.l` — `Lambda.Kernel.Runtime`
-  `@cfg(feature="aws")`: extern boundary to `Amazon.Lambda.RuntimeSupport`;
-  documents the dispatch protocol (HTTP event detection → router forwarding,
-  non-HTTP → handler reflection, error serialisation).
-- `lyric-lambda/src/_kernel/lambda_kernel_local.l` — `Lambda.Kernel.Runtime`
-  `@cfg(feature="local")`: extern boundary to `Lambda.LocalServer`; documents
-  the local test server interface (POST `/2015-03-31/functions/function/invocations`
-  compatible with `sam local invoke`) and synthetic context construction.
-- `docs/35-lambda-library.md` — full design document: goals, library structure,
-  API Gateway event mapping (detection rules, HTTP→Router dispatch, base64
-  handling), custom event handler model, kernel feature-gate convention,
-  aspects, runtime config, and six open questions (Q-lambda-001–006).
+- `lyric-lambda/src/authorizer.l` — `Lambda.Authorizer` package:
+  - `TokenAuthorizerEvent` — REST API TOKEN authorizer event (authorizationToken + methodArn)
+  - `RequestAuthorizerEvent` / `RequestAuthorizerContext` — REST API REQUEST authorizer event
+  - `HttpAuthorizerEvent` / `HttpAuthorizerRequestContext` / `HttpAuthorizerHttp` — HTTP API v2 authorizer event
+  - `IamEffect` union (Allow/Deny), `IamStatement`, `IamPolicyDocument`, `AuthorizerResponse`
+    for REST API responses; helpers: `allow`, `allowAll`, `deny`, `withContext`, `withUsageKey`
+  - `HttpAuthorizerResponse` for HTTP API v2; helpers: `authorized`, `authorizedWithContext`, `denied`
+- `lyric-lambda/src/lambda.l` — extended:
+  - `AuthorizerHandler` record
+  - `LambdaApp.authorizerHandlers: [AuthorizerHandler]` field (breaking change: `newApp`,
+    `withRouter`, `addHandler` updated to carry the new field)
+  - `onKinesis()`, `onTokenAuthorizer()`, `onRequestAuthorizer()`, `onHttpAuthorizer()` builders
+- `lyric-lambda/src/events.l` — extended:
+  - `KinesisRecord`, `KinesisStreamRecord`, `KinesisEvent` (full payload including
+    base64-encoded data, sequenceNumber, partitionKey, approximateArrivalTimestamp)
+- `lyric-lambda/lyric.toml` — updated: `Lambda.Authorizer` package entry added;
+  comment updated to six packages and three composition modes.
 
-**Key design points:**
-- `Web.Router` reuse with zero handler changes: same handlers work on Kestrel and Lambda.
-- API Gateway v1, v2, and ALB events all normalise to `method + path + headers + body`
-  before router dispatch.
-- SQS partial-batch-failure inferred from handler return type (`SqsBatchResponse` vs `Unit`).
-- DeadlineGuard is an opt-in aspect, not kernel policy, giving handlers control over threshold.
-- Feature-gated kernels keep the production binary free of test-server code.
+**Shipped in lyric-aws-secrets:**
 
-**Test counts:** unchanged (library is source-only; emitter/kernel integration
-tests will be added when the F# kernel shim is wired up in a follow-up).
+- `lyric-aws-secrets/lyric.toml` — manifest with `aws`/`local` feature flags;
+  NuGet deps: `AWSSDK.SecretsManager` 3.7.x, `AWSSDK.SimpleSystemsManagement` 3.7.x.
+- `lyric-aws-secrets/src/secrets.l` — `AwsSecrets` package:
+  - `@secretsManager("name")` / `@secretsManager("name", key: "field")` annotations
+  - `@parameterStore("/path")` annotation
+  - `SecretsError` union (NotFound, AccessDenied, DecryptionError, ParseError, NetworkError)
+  - `SecretCache` config block (ttlSeconds, default 300)
+  - `init(): Result[Unit, SecretsError]` — scans DLL annotations, fetches, populates config cache
+  - `getSecret`, `getSecretField`, `getParameter`, `getParameterRaw` explicit fetch API
+- `lyric-aws-secrets/src/_kernel/secrets_kernel_aws.l` — `AwsSecrets.Kernel.Net`
+  `@cfg(feature="aws")`: externs to `Amazon.SecretsManager.initFromAnnotations` /
+  `fetchSecret` and `Amazon.SimpleSystemsManagement.fetchParameter`; documents
+  in-process cache, thread safety, and IAM requirements.
+- `lyric-aws-secrets/src/_kernel/secrets_kernel_local.l` — `AwsSecrets.Kernel.Net`
+  `@cfg(feature="local")`: no-op backend; `init()` respects env var overrides and
+  skips AWS fetches; explicit fetches return `SecretsError.NotFound`.
+
+**Documentation:**
+
+- `docs/35-lambda-library.md` rewritten as a unified design document covering
+  both libraries: updated library structure tables, Kinesis in event detection
+  table, authorizer detection rules, §6 (Authorizers) with full handler
+  signatures and IAM policy examples, §7 (Secrets) with annotation model /
+  startup wiring / caching / local mode, resolved Q-lambda-002/-005/-006.
+- D063 added to `docs/03-decision-log.md`.
+
+**Test counts:** unchanged (source-only; integration tests follow with F# kernel wiring).

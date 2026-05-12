@@ -3256,6 +3256,82 @@ Library at `lyric-lambda/`.  Design document at `docs/35-lambda-library.md`.
 
 ---
 
+## D063 — lyric-lambda v2: authorizers, secrets integration, and Kinesis
+
+**Date:** 2026-05-12
+**Status:** Decided
+
+### Context
+
+After the initial lyric-lambda library (D062), three feature gaps remained:
+Lambda authorizer functions (Q-lambda-005), Secrets Manager / Parameter Store
+config integration (Q-lambda-002), and Kinesis stream event support (Q-lambda-006).
+
+### Decisions
+
+**D063-1 — Both REST API and HTTP API authorizer types**
+`Lambda.Authorizer` ships three event types and two response types:
+- `TokenAuthorizerEvent` + `RequestAuthorizerEvent` → `AuthorizerResponse`
+  (IAM `PolicyDocument` with `IamStatement` list; `allow`, `allowAll`, `deny`,
+  `withContext`, `withUsageKey` helpers)
+- `HttpAuthorizerEvent` → `HttpAuthorizerResponse`
+  (`{ isAuthorized: Bool, context: Map[String, String] }`; `authorized`,
+  `authorizedWithContext`, `denied` helpers)
+
+REST API authorizers return full IAM policy documents; HTTP API authorizers
+return the simpler payload format 2.0 boolean response.  Both are registered
+via `LambdaApp` builder methods (`onTokenAuthorizer`, `onRequestAuthorizer`,
+`onHttpAuthorizer`); the kernel detects authorizer invocations in the same
+dispatch pass as event source handlers.
+
+**D063-2 — `LambdaApp.authorizerHandlers` as a first-class field**
+Rather than overloading `eventHandlers` with special source keys, authorizer
+handlers are stored in a separate `authorizerHandlers: [AuthorizerHandler]`
+field on `LambdaApp`.  This keeps event routing and authorizer routing
+semantically distinct in the kernel dispatch.
+
+**D063-3 — Config-block annotation model for secrets**
+`lyric-aws-secrets` ships as a separate library with two annotations
+(`@secretsManager`, `@parameterStore`) and an `init()` entry point.
+`init()` scans the compiled DLL's config block metadata, fetches annotated
+field values from AWS, and populates the process-level config cache under
+the env-var key (`LYRIC_CONFIG_<PACKAGE>_<FIELD>`).  The existing config-block
+access mechanism reads from the cache unchanged.  Env var overrides take
+precedence (local dev without credentials).
+
+**D063-4 — Secrets library is separate from lyric-lambda**
+`lyric-aws-secrets` is a standalone library usable by any Lyric service
+(ECS, Kubernetes, Kestrel on EC2) — not just Lambda.  The user calls
+`AwsSecrets.init()` explicitly in `main()` before `Lambda.serve()` or
+`Web.start()`.  No kernel magic required.
+
+**D063-5 — Both Secrets Manager and Parameter Store in one library**
+Both backends ship in `lyric-aws-secrets` under the same `AwsSecrets` package.
+They are conceptually distinct (Secrets Manager for JSON blobs and rotation;
+Parameter Store for simple strings and hierarchical paths) but similar enough
+to ship together.  The `@secretsManager` and `@parameterStore` annotations
+are unambiguous about which backend to call.
+
+**D063-6 — In-process cache with configurable TTL**
+Fetched values are cached for `SecretCache.ttlSeconds` (default 300 s).
+TTL = 0 disables caching.  Chosen TTL should be a fraction of the rotation
+period so stale values are refreshed in time.
+
+**D063-7 — Kinesis via typed event record**
+`KinesisEvent` / `KinesisStreamRecord` / `KinesisRecord` are added to
+`Lambda.Events` and `onKinesis()` is added to the `LambdaApp` builder.
+No partial-batch-failure equivalent; Kinesis retries the full batch on error.
+
+### Implementation
+
+`Lambda.Authorizer` in `lyric-lambda/src/authorizer.l`.
+`lyric-aws-secrets` library at `lyric-aws-secrets/`.
+`KinesisEvent` in `lyric-lambda/src/events.l`.
+`onKinesis`, `onTokenAuthorizer`, `onRequestAuthorizer`, `onHttpAuthorizer` in `lyric-lambda/src/lambda.l`.
+`docs/35-lambda-library.md` updated with §6 (Authorizers), §7 (Secrets), and resolved Q-lambda-002, Q-lambda-005, Q-lambda-006.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -104,6 +104,7 @@ pub func errorMessage(err: in LambdaError): String {
 ///   "aws:sns"      — SNS notification batch    (Lambda.Events.SnsEvent)
 ///   "aws:s3"       — S3 object event batch     (Lambda.Events.S3Event)
 ///   "aws:dynamodb" — DynamoDB stream records   (Lambda.Events.DynamoDbEvent)
+///   "aws:kinesis"  — Kinesis stream records    (Lambda.Events.KinesisEvent)
 ///   "aws.events"   — EventBridge / CW Events   (Lambda.Events.EventBridgeEvent)
 ///   "raw"          — catch-all for unknown events (String payload)
 @stable(since="0.1")
@@ -112,22 +113,39 @@ pub record EventHandler {
   handlerName: String
 }
 
+// ─── AuthorizerHandler ────────────────────────────────────────────────────────
+
+/// Binds an authorizer type to a Lyric handler function by qualified name.
+/// The kernel resolves handlerName via DLL reflection at startup.
+///
+/// authorizerType values:
+///   "token"   — REST API TOKEN authorizer  (Lambda.Authorizer.TokenAuthorizerEvent)
+///   "request" — REST API REQUEST authorizer (Lambda.Authorizer.RequestAuthorizerEvent)
+///   "http"    — HTTP API (v2) authorizer   (Lambda.Authorizer.HttpAuthorizerEvent)
+@stable(since="0.1")
+pub record AuthorizerHandler {
+  authorizerType: String
+  handlerName:    String
+}
+
 // ─── LambdaApp ────────────────────────────────────────────────────────────────
 
 /// Immutable Lambda application definition.
-/// Build one with newApp(), then attach a router and/or event handlers.
-/// Both modes may coexist in the same LambdaApp: the kernel routes
-/// HTTP events to the router and all other events to the registered handlers.
+/// Build one with newApp(), then attach a router, event handlers, and/or
+/// authorizer handlers.  All three modes may coexist in a single LambdaApp:
+/// the kernel routes HTTP events to the router, authorizer invocations to the
+/// authorizer handler, and all other events to the event handler table.
 @stable(since="0.1")
 pub record LambdaApp {
-  httpRouter:    Option[Web.Router]
-  eventHandlers: [EventHandler]
+  httpRouter:         Option[Web.Router]
+  eventHandlers:      [EventHandler]
+  authorizerHandlers: [AuthorizerHandler]
 }
 
-/// Empty application with no router and no custom event handlers.
+/// Empty application with no router, no event handlers, and no authorizer handlers.
 @stable(since="0.1")
 pub func newApp(): LambdaApp {
-  return LambdaApp(httpRouter = None, eventHandlers = [])
+  return LambdaApp(httpRouter = None, eventHandlers = [], authorizerHandlers = [])
 }
 
 /// Attach a lyric-web Router for API Gateway and ALB HTTP events.
@@ -136,7 +154,7 @@ pub func newApp(): LambdaApp {
 /// as Web.start().  CORS config is read from the Web.Cors config block.
 @stable(since="0.1")
 pub func withRouter(app: in LambdaApp, router: in Web.Router): LambdaApp {
-  return LambdaApp(httpRouter = Some(router), eventHandlers = app.eventHandlers)
+  return LambdaApp(httpRouter = Some(router), eventHandlers = app.eventHandlers, authorizerHandlers = app.authorizerHandlers)
 }
 
 // Private helper — adds an EventHandler to the app.
@@ -145,7 +163,16 @@ func addHandler(app: in LambdaApp, src: in String, name: in String): LambdaApp
   requires: name.length > 0
 {
   val h = EventHandler(eventSource = src, handlerName = name)
-  return LambdaApp(httpRouter = app.httpRouter, eventHandlers = app.eventHandlers + [h])
+  return LambdaApp(httpRouter = app.httpRouter, eventHandlers = app.eventHandlers + [h], authorizerHandlers = app.authorizerHandlers)
+}
+
+// Private helper — adds an AuthorizerHandler to the app.
+func addAuthorizerHandler(app: in LambdaApp, authType: in String, name: in String): LambdaApp
+  requires: authType.length > 0
+  requires: name.length > 0
+{
+  val h = AuthorizerHandler(authorizerType = authType, handlerName = name)
+  return LambdaApp(httpRouter = app.httpRouter, eventHandlers = app.eventHandlers, authorizerHandlers = app.authorizerHandlers + [h])
 }
 
 /// Register a handler for SQS events.
@@ -201,6 +228,16 @@ pub func onDynamoDb(app: in LambdaApp, handlerName: in String): LambdaApp
   return addHandler(app, "aws:dynamodb", handlerName)
 }
 
+/// Register a handler for Kinesis Data Streams events.
+/// Handler type:
+///   func h(event: Lambda.Events.KinesisEvent, ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+@stable(since="0.1")
+pub func onKinesis(app: in LambdaApp, handlerName: in String): LambdaApp
+  requires: handlerName.length > 0
+{
+  return addHandler(app, "aws:kinesis", handlerName)
+}
+
 /// Register a catch-all handler for unrecognised event JSON.
 /// Handler type:
 ///   func h(payload: String, ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
@@ -210,6 +247,57 @@ pub func onRaw(app: in LambdaApp, handlerName: in String): LambdaApp
   requires: handlerName.length > 0
 {
   return addHandler(app, "raw", handlerName)
+}
+
+// ─── Authorizer registration ──────────────────────────────────────────────────
+
+/// Register a REST API TOKEN Lambda authorizer handler.
+/// The Lambda function receives a TokenAuthorizerEvent and must return an
+/// IAM policy document.
+///
+/// Handler type:
+///   func h(event: Lambda.Authorizer.TokenAuthorizerEvent, ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.AuthorizerResponse, Lambda.LambdaError]
+///
+/// Configure the authorizer in API Gateway as type TOKEN with the Lambda
+/// function ARN.  The identity source is typically $request.header.Authorization.
+@stable(since="0.1")
+pub func onTokenAuthorizer(app: in LambdaApp, handlerName: in String): LambdaApp
+  requires: handlerName.length > 0
+{
+  return addAuthorizerHandler(app, "token", handlerName)
+}
+
+/// Register a REST API REQUEST Lambda authorizer handler.
+/// The Lambda function receives the full request context and must return an
+/// IAM policy document.
+///
+/// Handler type:
+///   func h(event: Lambda.Authorizer.RequestAuthorizerEvent, ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.AuthorizerResponse, Lambda.LambdaError]
+///
+/// Configure the authorizer in API Gateway as type REQUEST.  The identity
+/// source may reference any combination of headers, query parameters, stage
+/// variables, and context variables.
+@stable(since="0.1")
+pub func onRequestAuthorizer(app: in LambdaApp, handlerName: in String): LambdaApp
+  requires: handlerName.length > 0
+{
+  return addAuthorizerHandler(app, "request", handlerName)
+}
+
+/// Register an HTTP API (v2) Lambda authorizer handler.
+/// The Lambda function receives a lightweight request context and returns
+/// a simple { isAuthorized, context } response — no IAM policy needed.
+///
+/// Handler type:
+///   func h(event: Lambda.Authorizer.HttpAuthorizerEvent, ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.HttpAuthorizerResponse, Lambda.LambdaError]
+///
+/// Configure the authorizer in API Gateway as a Lambda authorizer on an HTTP
+/// API route.  The payload format version must be 2.0.
+@stable(since="0.1")
+pub func onHttpAuthorizer(app: in LambdaApp, handlerName: in String): LambdaApp
+  requires: handlerName.length > 0
+{
+  return addAuthorizerHandler(app, "http", handlerName)
 }
 
 // ─── Runtime config ───────────────────────────────────────────────────────────
