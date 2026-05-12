@@ -1253,3 +1253,45 @@ CLR or AOT linker resolves the actual code.
 | Q011  | Stdlib API surface                 | deferred (Phase 3); §10 discusses derive interaction |
 | Q012  | Package registry                   | deferred (Phase 3); `<assembly-name>` mapping is independent |
 
+---
+
+## Appendix C. Self-hosted MSIL emitter (Phase R5/R6)
+
+This document describes the **F# bootstrap** MSIL strategy (Phase 0 design,
+Phase 1 implementation).  The self-hosted MSIL compilation pipeline shipped
+in Phase R5/R6 and lives in `compiler/lyric/msil/`.  Its design follows the
+same strategy but is implemented in Lyric itself.
+
+### Packages
+
+| Package | File | Description |
+|---|---|---|
+| `Msil.Pe` | `pe.l` | Raw PE binary writer — section headers, directory entries, PE32+ layout |
+| `Msil.Opcodes` | `opcodes.l` | IL opcode encoding helpers (M1–M83) |
+| `Msil.Tables` | `tables.l` | CLI metadata table helpers — TypeDef, MethodDef, Field, MemberRef, TypeSpec rows |
+| `Msil.Heaps` | `heaps.l` | `#Strings`, `#Blob`, `#GUID`, `#US` heap writers |
+| `Msil.Assembler` | `assembler.l` | `assemblePe` top-level assembler |
+| `Msil.Lowering` | `lowering.l` | High-level MSIL IR (`MsilType`, `MInsn`, `MFunc`, `MRecord`, `MUnion`), signature blob builders (`buildInstanceMethodSig`, `buildStaticMethodSig`), TypeSpec/MemberRef helpers, `lowerMFunc`/`lowerMRecord`/`lowerMPackage` |
+| `Msil.Codegen` | `codegen.l` | Typed AST → MSIL IR lowering (`lowerExprMsil`, `lowerStmtMsil`, `lowerFuncMsil`, `typeExprToMsil`) |
+| `Msil.Bridge` | `bridge.l` | Entry point `compileToMsil(source, outputPath): Bool` — chains lexer → parser → type checker → codegen → lowering → PE |
+
+### F# bridge
+
+`compiler/src/Lyric.Cli/SelfHostedMsil.fs` bootstraps `Msil.Bridge.dll` via a
+throwaway driver compile on first use, preloads all stdlib DLLs into the
+AppDomain, reflects out `Msil.Bridge.Program.compileToMsil`, and caches the
+delegate process-wide.  `--target dotnet` (the default) routes through this
+bridge; `--target dotnet-legacy` falls back to the F# bootstrap emitter
+(`Lyric.Emitter`) as an escape hatch.
+
+### Key design note: MemberRef signatures on TypeSpecs
+
+Per ECMA-335 §II.14.4.2, a MemberRef whose parent is a TypeSpec (a generic
+instantiation such as `List<object>`) must encode method parameter and return
+types using `ELEMENT_TYPE_VAR` (0x13 + index) for positions occupied by the
+enclosing type's generic parameters — not the concrete instantiated types.
+`Msil.Lowering` exposes `MTypeVar(index: Int)` in the `MsilType` union and a
+`bufMsilType` helper that emits the two-byte encoding; all TypeSpec MemberRef
+setups in `Msil.Codegen` use `MTypeVar` for `List<T>::Add`, `get_Item`, and the
+equivalent `Dictionary<K,V>` methods. (D-progress-240)
+

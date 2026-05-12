@@ -307,13 +307,19 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
     diagnostics L0001–L0040 (PR #190, D-progress-093–D-progress-121).
   - `ast.l` — self-hosted AST type declarations mirroring `Ast.fs`
     (PR #185).
-  - `parser/` — self-hosted parser as a four-file `Lyric.Parser`
+  - `parser/` — self-hosted parser as a five-file `Lyric.Parser`
     library: `parser_ast.l`, `parser_core.l`, `parser_exprs.l`,
-    `parser_items.l` (PR #190, D-progress-128).
+    `parser_items.l`, `parser_cst.l` (PR #190, D-progress-128;
+    CST layer added in D-progress-130).
   - `type_checker/` — self-hosted type checker `Lyric.TypeChecker`
-    (PR #195, D-progress-132).
+    (PR #195, D-progress-132); nine files: `typechecker_checker.l`,
+    `typechecker_constfold.l`, `typechecker_exprs.l`,
+    `typechecker_resolver.l`, `typechecker_scope.l`,
+    `typechecker_signature.l`, `typechecker_stmts.l`,
+    `typechecker_symbols.l`, `typechecker_types.l`.
   - `mode_checker/` — self-hosted mode checker `Lyric.ModeChecker`
-    (PR #198, D-progress-133); enforces V0001–V0006 / V0009–V0011
+    (PR #198, D-progress-133); two files: `modechecker_mode.l`,
+    `modechecker_check.l`.  Enforces V0001–V0006 / V0009–V0011
     against the parsed AST.
   - `contract_elaborator/elaborator.l` — `Lyric.ContractElaborator`
     (M5.2 stage 2).  Walks each `IFunc` item and produces an AST
@@ -349,10 +355,18 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
     (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
     Lyric package system (`[package]`, `[project]`, `[dependencies]`,
     `[nuget]`, `[nuget.options]`, `[features]`).
+  - `manifest_bridge.l` — `Lyric.ManifestBridge` protocol bridge used by
+    `SelfHostedManifest.fs` (D-progress-231).
+  - `fmt/` — self-hosted formatter `Lyric.Fmt` (M5.3 stages 2–5);
+    three files: `fmt.l`, `fmt_core.l`, `fmt_items.l`.
+  - `test_synth/test_synth.l` — `Lyric.TestSynth` rewriter (see above).
+  - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
+    by `SelfHostedTestSynth.fs` (D-progress-231).
+  - `cli.l` — `Lyric.Cli` command-dispatch stub (M5.3 stage 1).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
-    `manifest_self_test.l` —
+    `manifest_self_test.l`, `fmt_self_test.l` —
     self-test consumers run by the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
@@ -386,7 +400,25 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   member / statement / nested-block boundaries, preserves intentional
   blank lines (max one per spot, Black-style).  `Lint.fs` is the
   linter (`lyric lint`): five AST-only rules (L001–L005), `--error-on-warning`
-  flag, runs on non-compiling code.
+  flag, runs on non-compiling code.  Additional modules in the same project:
+  - `Doc.fs` — `lyric doc` documentation generator.
+  - `Maven.fs` / `MavenShim.fs` — Maven Central dependency resolution and
+    JAR discovery for `--target jvm` builds; backed by the Java-side
+    `resolver/` JAR (D-progress-224 / D-progress-225 / D053).
+  - `NugetAssets.fs` / `NugetShim.fs` — NuGet asset resolution, DLL path
+    extraction from `project.assets.json`, and extern shim generation
+    (D-progress-075 / D-progress-078 / D023).
+  - `TestSynth.fs` — F# implementation of the test-synthesis rewriter
+    (backs `lyric test`; self-hosted mirror is `Lyric.TestSynth`).
+  - `SelfHostedJvm.fs` — in-process JVM bridge; reflects
+    `Jvm.Bridge.Program.compileToJar` for `--target jvm` (D-progress-239).
+  - `SelfHostedManifest.fs` — in-process manifest bridge; reflects
+    `Lyric.ManifestBridge.Program.serializeManifest` (D-progress-231).
+  - `SelfHostedMsil.fs` — in-process MSIL bridge; reflects
+    `Msil.Bridge.Program.compileToMsil` for `--target dotnet` (D-progress-227 /
+    D-progress-240).
+  - `SelfHostedTestSynth.fs` — in-process test-synth bridge; reflects
+    `Lyric.TestSynthBridge.Program.synthesizeToProtocol` (D-progress-231).
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
   see `docs/15-phase-4-proof-plan.md` and the D-progress-084/085
   entries in `docs/10-bootstrap-progress.md`).  `Mode.fs` parses
@@ -408,7 +440,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   optional `z3` shell-out (set `LYRIC_Z3` or put `z3` on `$PATH`);
   `Driver.fs` is the entry point used by `lyric prove`.  Failed
   proofs are rendered as `name : sort = value` counterexample
-  bindings parsed from Z3's `(get-model)` output.
+  bindings parsed from Z3's `(get-model)` output.  Two additional
+  modules: `Imports.fs` reads the embedded `Lyric.Contract` resource
+  from restored-package DLLs to surface their verification contracts
+  (so `lyric prove` can reason across package boundaries); `StabilityCheck.fs`
+  enforces S0001 (`@stable` code may not call `@experimental` in the
+  same file) and S0002 (cross-package stability policy — currently
+  a warning, deferred to Phase 3 hard enforcement).
 - `compiler/tests/Lyric.Lexer.Tests/`, `compiler/tests/Lyric.Parser.Tests/`,
   `compiler/tests/Lyric.TypeChecker.Tests/`,
   `compiler/tests/Lyric.Emitter.Tests/`, `compiler/tests/Lyric.Lsp.Tests/`,
@@ -416,6 +454,33 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   `compiler/tests/Lyric.Verifier.Tests/` — Expecto-based tests (console-app
   projects; F# does not coexist cleanly with the new Microsoft.Testing.Platform
   xunit runner — Expecto is the F#-native alternative).
+
+### Other top-level directories
+
+These directories exist at the repo root alongside `compiler/`, `stdlib/`,
+`book/`, and `docs/`:
+
+- `lyric-cache/` — `lyric-cache` library: in-memory and disk-backed
+  caching utilities (D-progress-225 / D056).
+- `lyric-db/` — `lyric-db` library: typed SQL query helpers over
+  `System.Data` / JDBC (D-progress-225 / D056).
+- `lyric-health/` — `lyric-health` library: health-check endpoint
+  and liveness/readiness probe helpers (D-progress-225 / D056).
+- `lyric-logging/` — `lyric-logging` library: structured logging
+  adapters (`Lyric.Logging`) backed by `Std.Log` (D-progress-222 / D054).
+- `lyric-otel/` — `lyric-otel` library: OpenTelemetry trace and metric
+  exporters (D-progress-221 / D055).
+- `lyric-web/` — `lyric-web` library: HTTP server framework
+  (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
+- `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
+  server (`docs/16-lsp-vscode-plan.md`).
+- `resolver/` — Java-side Maven resolver JAR that the F# `MavenShim.fs`
+  shell-outs to for `--target jvm` dependency resolution (D053).
+- `scripts/` — build and release automation, including
+  `scripts/bootstrap.sh` which implements the three-stage reproducibility
+  bootstrap (F# → self-hosted → self-hosted² binary comparison).
+- `examples/` — standalone Lyric example programs referenced from the
+  book and README.
 
 Build: `cd compiler && dotnet build Lyric.sln`.
 

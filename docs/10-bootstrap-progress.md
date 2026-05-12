@@ -110,7 +110,7 @@ deferred to Phase 3 by design.
 | MSIL PE emitter Stages M31–M83 — 53 additional opcodes: `ldftn` + delegate (M31), `initobj` (M32), `ldtoken` + GetTypeFromHandle (M33), `sizeof` (M34/M50), `tail.` prefix (M35/M52), `ldind.i4`/`stind.i4` (M36), `ldelema` (M37), `add.ovf`/`sub.ovf`/`mul.ovf` (M38), `conv.ovf.i4`/`conv.ovf.i8` (M39), `volatile.` prefix (M40/M51), `conv.ovf.*.un` family (M41), `stind.i1`/`i2`/`ldind.u1`/`i2` (M42), `localloc` (M43), `conv.r.un`/`ckfinite` (M44), `initblk`/`cpblk` (M45), `conv.i1`/`i2` (M46), `conv.i`/`conv.u` (M47), `stind.i`/`ldind.i` (M48), typed `ldelem.i4`/`stelem.i4` (M49), bitwise/unary/shift/remainder/stack misc (M56–M60), overflow arith + int/float conversions + misc loads (M61–M65), checked conversions + float literal loads (M66–M70), `div`/signed branches/unsigned branches/`ldc.i4` variants/`ldloc`/`stloc` forms (M71–M75), `ldloca.s` + selective `ldind` families + `ldarg.2-3/s/a` + `starg.s` (M76–M79), `cgt`/`clt`/`conv.r.un` + typed `stelem`/`ldelem` (M80–M82), `constrained.`/`ldvirtftn`/`ldsflda` (M83) | **Shipped** | D-progress-170..D-progress-205 |
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3a — self-hosted MSIL PE / opcode / tables layer (M1–M83) | **Shipped** | D-progress-213..D-progress-219 |
-| M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`) | Not shipped | D-progress-232 (planned) |
+| M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`), `Msil.Codegen`, `Msil.Bridge`, F# bridge `SelfHostedMsil.fs` | **Shipped** | D-progress-227 / D-progress-238 / D-progress-240 |
 | M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions) | **Shipped** | D-progress-229 |
 | M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion; stage 13: `Lyric.ManifestBridge` + `Lyric.TestSynthBridge` CLI hookup) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 / D-progress-231 |
@@ -2166,7 +2166,9 @@ All 5 aspect weaver tests pass.
 
 ---
 
-### D-progress-206: Aspect weaver A1 — bootstrap-grade wrapper synthesis
+### D-progress-206a: Aspect weaver A1 — bootstrap-grade wrapper synthesis
+
+*(Renumbered from D-progress-206 to avoid collision with D-progress-206 / B126 — JUnit 5 adapter.)*
 
 *claude/plan-emitter-next-steps-6jGK7 branch.*
 
@@ -11342,3 +11344,140 @@ added before `Program.fs`.
 
 **Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
+
+---
+
+### D-progress-240: R6 codegen — IL validity fixes + MSIL bridge end-to-end tests
+
+Five categories of structural IL errors in `compiler/lyric/msil/codegen.l`
+caused all self-hosted MSIL bridge paths to fail at JIT time with
+`InvalidProgramException` or `MissingMethodException`.  All five are now fixed,
+and six end-to-end tests cover the repaired paths.
+
+**IL validity fixes:**
+
+1. **PathStackDepth in `panic`/`assert`/`format1-3` branches** — `lowerCallArgMsil`
+   as the last expression in the then-branch of an if-else caused
+   `branchLeavesValue` to return `true` (because `peekExprType` falls back to
+   `typeof<obj>` for `EMember` calls, which are actually void at runtime).
+   With both branches appearing to leave values, `discardBoth = false`, and no
+   corrective `pop` was emitted, producing a PathStackDepth error.  Fix:
+   changed to `val _ = lowerCallArgMsil(...)` so the F# emitter sees an
+   `LBVal(PWildcard)` binding and always emits `pop`.
+
+2. **PathStackDepth in `SAssign`** — `lowerAssignExprMsil` returns a non-void
+   `MsilType` as the last expression in the `SAssign` arm of `lowerStmtMsil`,
+   leaving a value on the stack along one path.  Fix: `val _ = lowerAssignExprMsil(...)`.
+
+3. **StackUnexpected in `lowerRecordMsil` / `lowerUnionMsil`** — `methods = newList()`
+   without a type annotation caused the F# bootstrap emitter to infer
+   `List<object>` instead of `List<MFunc>`, producing a wrong-type value where
+   the record constructor expected `List<MFunc>`.  Fix: explicit
+   `val methods: List[MFunc] = newList()`.
+
+4. **Missing `.runtimeconfig.json`** — `SelfHostedMsil.compileToDll` produced the
+   output DLL but no `.runtimeconfig.json`, so `dotnet exec` exited with
+   `A fatal error occurred: The required library libhostpolicy.so could not be found`.
+   Fix: added `writeRuntimeConfig` to `SelfHostedMsil.fs`, called after each
+   successful compile; it writes a minimal `runtimeconfig.json` containing the
+   current process's .NET version.
+
+5. **MissingMethodException on `List<object>::Add`** — MemberRef signatures for
+   methods on a TypeSpec (generic instantiation) must use `ELEMENT_TYPE_VAR`
+   (0x13 + type-parameter index) for positions occupied by the enclosing type's
+   generic parameters, per ECMA-335 §II.14.4.2.  The self-hosted emitter was
+   encoding these positions as `ELEMENT_TYPE_OBJECT` (0x1C — the concrete
+   instantiated type), which the CLR cannot match against `List<T>::Add(!0)`.
+   Fix:
+   - Added `case MTypeVar(index: Int)` to the `MsilType` union in
+     `compiler/lyric/msil/lowering.l`.
+   - Added `func bufMsilType(w: ByteWriter, t: MsilType): Unit` that emits two
+     bytes (`0x13`, `index`) for `MTypeVar` and one byte for all other types.
+   - Updated `buildInstanceMethodSig` and `buildStaticMethodSig` to use
+     `bufMsilType` for both the return type and each parameter type.
+   - Updated all TypeSpec MemberRef setups in `codegen.l`: `List::Add`,
+     `List::get_Item`, `Dict::Add`, `Dict::get_Item`, `Dict::ContainsKey`.
+
+**New test file:** `compiler/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`
+— 6 end-to-end tests that compile Lyric programs through the full
+self-hosted pipeline (`Msil.Bridge.compileToMsil`) and execute the resulting
+DLL with `dotnet exec`, asserting on stdout:
+
+| Label | Program | Expected |
+|---|---|---|
+| `shm_hello` | `println("hello from self-hosted")` | `hello from self-hosted` |
+| `shm_while_basic` | count to 5 with `while` | `5` |
+| `shm_break_early` | break at `i == 5` | `5` |
+| `shm_continue_skip_evens` | sum odd numbers 1–9 with `continue` | `25` |
+| `shm_nested_while_break` | 5×3 inner iterations (break at j==3) | `15` |
+| `shm_newList_add_count` | `newList()`, 3 `add` calls, `xs.count` | `3` |
+
+**Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 164 CLI tests (+6 MSIL bridge), 266 verifier
+tests — all passing.
+
+### D-progress-241: Platform-parity R7 — full 20-program × 3-path smoke-test suite; JVM VerifyError fixes
+
+**Date:** 2026-05-11
+**Branch:** `claude/review-docs-platform-parity-UuNIO`
+
+Completes the §7 parity milestone from `docs/33-platform-parity-remediation.md`.
+All 60 cross-path parity tests now pass (20 programs × 3 execution paths:
+dotnet-legacy / dotnet / jvm).
+
+**New test file:** `compiler/tests/Lyric.Cli.Tests/ParityTests.fs`
+— 20 parity programs each exercising one feature from the common subset
+(primitive types, arithmetic, boolean logic, comparisons, if/else,
+while/break/continue, nested loops, val chains, match on literals and bindings,
+string concatenation).  Each program is compiled and run through three paths:
+
+| Path | Mechanism |
+|---|---|
+| `dotnet-legacy` | F# `Emitter.emit` (escape-hatch baseline) |
+| `dotnet` | `SelfHostedMsil.compileToDll` (self-hosted MSIL bridge) |
+| `jvm` | `SelfHostedJvm.compileToJar` (self-hosted JVM bridge) |
+
+**JVM fixes in `compiler/lyric/jvm/codegen.l`:**
+
+1. Added `lowerCmpFail`, `lowerBoolCond`, `lowerBoolCondTrue` functions.
+   Conditions in `if`/`while` are now compiled directly to conditional branch
+   instructions (e.g. `if_icmpge failLabel`) rather than leaving an intermediate
+   boolean integer on the operand stack.  The old approach created merge labels
+   with non-empty operand stacks, which caused JVM `VerifyError` (StackMapTable
+   frame declared stack depth 0 but actual depth was 1).
+
+2. Added `loopBreak: List[String]` and `loopCont: List[String]` fields to
+   `FuncCtx`.  `SWhile` now pushes the afterLoop / loopTop labels onto these
+   stacks before lowering the body and pops them after.  `SBreak` emits
+   `LGoto(loopBreak[last])`; `SContinue` emits `LGoto(loopCont[last])`.
+   Previously both emitted `LNop`, so break/continue were silently ignored.
+
+**JVM fix in `compiler/lyric/jvm/lowering.l`:**
+
+3. `lowerFuncImpl` now pre-initialises all non-parameter local slots at method
+   entry (before the function body): integer/long/float/double slots get `0`,
+   object-reference slots get `aconst_null`.  This ensures every branch-target
+   StackMapTable frame is valid: the verifier sees all locals as initialised at
+   every branch target, regardless of where in the method body the variable is
+   first assigned.  Without this, the global `frameLocals` computation included
+   slots that are only assigned late in the method, making early StackMapTable
+   frames invalid (`top` is not a subtype of `int` or `Object`).
+
+**Tests fixed by these changes:**
+
+| Test | Root cause |
+|---|---|
+| `parity08_bool_and` | BAnd merge label with non-empty stack |
+| `parity09_bool_or` | BOr merge label with non-empty stack |
+| `parity11_if_true` | comparison merge label with non-empty stack |
+| `parity12_if_false` | comparison merge label with non-empty stack |
+| `parity13_while_count` | comparison merge label in while condition |
+| `parity14_while_break` | break emitted LNop; comparison merge label |
+| `parity15_while_continue` | continue emitted LNop; comparison merge label |
+| `parity16_while_nested` | inner-loop `var j` in late-allocated slot + comparison |
+| `parity18_match_int` | late-allocated match temporaries in global frameLocals |
+| `parity19_match_bind` | late-allocated binding slot in global frameLocals |
+
+**Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 224 CLI tests (+60 parity + 6 MSIL bridge),
+266 verifier tests — all passing.

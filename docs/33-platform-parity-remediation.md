@@ -1,6 +1,6 @@
 # docs/33-platform-parity-remediation.md — Platform parity remediation plan
 
-_Status: R1–R6 shipped (D-progress-227–239). Parity milestone smoke-test suite pending._
+_Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (D-progress-240). Full parity smoke-test suite (20 programs × 3 paths = 60 tests) shipped (D-progress-241). All 60 tests passing._
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
 
 ## 1. Motivation
@@ -21,12 +21,16 @@ An audit of the repository on 2026-05-10 identified three classes of problem:
    PE/opcode/tables layer; high-level MSIL lowering in Lyric is missing
    entirely.
 
-This document is the authoritative plan for remediation.  Items are ordered by
-priority and dependency.
+This document was the authoritative plan for remediation.  All phases (R1–R6)
+have now shipped; the only remaining open item is the §7 parity smoke-test
+suite.  Each section below is annotated with its current status.
 
 ---
 
 ## 2. Documentation fixes (Phase R1)
+
+**Status: SHIPPED** (D-progress-238; remaining collision D-progress-206 fixed
+in D-progress-240 follow-up commit).
 
 ### R1-A  grammar.ebnf — add `defer` and `config` to soft-keyword list
 
@@ -135,6 +139,8 @@ shipped in D-progress-226.
 
 ## 3. Book chapter fixes (Phase R2)
 
+**Status: SHIPPED** (D-progress-238).
+
 ### R2-A  appendix-b — correct `--target jvm` claim
 
 `book/chapters/appendix-b-quick-reference.md` line 659 says:
@@ -175,6 +181,10 @@ stdlib inventory.  It lives in the third-party `lyric-logging` library, not
 
 ## 4. JVM kernel parity (Phase R3)
 
+**Status: SHIPPED** — `file_host.l`, `process_host.l`, and `unicode_host.l`
+present under `stdlib/std/_kernel_jvm/`; `jvm.l` / `jvm_exception.l` confirmed
+in `_kernel/` (correct per Decision F single-kernel boundary). (D-progress-238)
+
 Five kernel shims exist in `stdlib/std/_kernel/` but not in
 `stdlib/std/_kernel_jvm/`:
 
@@ -198,7 +208,11 @@ document.
 
 ## 5. Self-hosted JVM emitter — CLI wiring (Phase R4)
 
-### 5.1 What exists
+**Status: SHIPPED** — `Jvm.Codegen` (`compiler/lyric/jvm/codegen.l`),
+`Jvm.Bridge` (`bridge.l`), `SelfHostedJvm.fs`, and `--target jvm` CLI wiring
+all present. (D-progress-239)
+
+### 5.1 What existed (at time of planning)
 
 - `compiler/lyric/jvm/lowering.l` — complete high-level lowering (29 functions)
 - `compiler/lyric/jvm/driver.l` — `writeJarFromClasses` JAR assembler
@@ -301,7 +315,12 @@ primary runnable artefact.
 
 ## 6. Self-hosted MSIL emitter — high-level lowering (Phase R5)
 
-### 6.1 What exists
+**Status: SHIPPED** — `Msil.Lowering` (`compiler/lyric/msil/lowering.l`),
+`Msil.Codegen` (`codegen.l`), `Msil.Bridge` (`bridge.l`), `SelfHostedMsil.fs`,
+`--target dotnet` CLI wiring, and 6 end-to-end bridge tests all present.
+(D-progress-227 / D-progress-238 / D-progress-240)
+
+### 6.1 What existed (at time of planning)
 
 - `compiler/lyric/msil/pe.l` — raw PE binary writer
 - `compiler/lyric/msil/opcodes.l` — IL opcode encoding
@@ -363,17 +382,36 @@ uses the F# bootstrap emitter as an escape hatch during stabilisation.
 
 ## 7. Parity milestone
 
-Both self-hosted emitters reach **Phase R parity** when all of the following
-are true:
+**Status: SHIPPED (D-progress-241)** — All 60 cross-path parity tests pass:
+20 programs × 3 paths (dotnet-legacy / dotnet / jvm).
+
+Both self-hosted emitters have reached **Phase R parity**.  The following are
+all true as of D-progress-241:
 
 - `lyric build --target dotnet-legacy <file.l>` — F# emitter baseline (escape hatch).
 - `lyric build --target dotnet <file.l>` (default) — produces a `.dll` via
   `Msil.Bridge` + `SelfHostedMsil.fs`.
 - `lyric build --target jvm <file.l>` — produces a runnable JAR via
   `Jvm.Bridge` + `SelfHostedJvm.fs`.
-- All three paths pass the same 20-program smoke-test suite covering:
-  hello-world, records, unions, arithmetic, control flow, contracts.
-- `lyric test` passes on all three targets.
+- All three paths pass the 20-program cross-path smoke-test suite
+  (`ParityTests.fs`) covering: hello-world, arithmetic (add/sub/mul/div/mod/neg),
+  boolean logic (and/or/not), comparisons, if/else, while/break/continue,
+  nested loops, val chains, match on literals and bindings, string concatenation.
+- 60 tests total (20 programs × 3 paths); all passing.
+
+JVM-specific fixes applied in D-progress-241:
+
+- **`Jvm.Codegen`**: Added `lowerBoolCond` / `lowerBoolCondTrue` / `lowerCmpFail`
+  functions to compile boolean conditions directly to conditional branches,
+  eliminating merge labels with non-empty operand stacks that caused
+  `VerifyError` (StackMapTable frame stack-size mismatch).  `lowerIfExpr` and
+  `SWhile` now use these instead of `lowerExpr + LIfeq`.  `FuncCtx` gained
+  `loopBreak` and `loopCont` label stacks; `SBreak`/`SContinue` emit
+  `LGoto` to the correct target label (previously emitted `LNop`).
+- **`Jvm.Lowering`**: `lowerFuncImpl` now pre-initialises all non-parameter
+  local slots (0 for integer/long/float/double, `null` for object references)
+  before the function body, ensuring every branch-target StackMapTable frame
+  is valid regardless of where in the method each local is first assigned.
 
 ---
 
@@ -393,4 +431,4 @@ actual shipped IDs may differ due to interleaved unrelated work):
 | D-progress-233 | D-progress-238 | R5 Msil.Bridge (merged into above) |
 | R6 (not in original plan) | D-progress-227 | R6 Msil.Codegen + SelfHostedMsil.fs + target renaming |
 | — | D-progress-228 | Distribution strategy doc (docs/34) + D059 decision |
-| D-progress-234 | _(pending)_ | Parity milestone smoke-test suite |
+| D-progress-234 | D-progress-241 | Parity milestone smoke-test suite — full 20-program × 3-path suite; JVM VerifyError fixes + break/continue; all 60 tests passing |

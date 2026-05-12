@@ -2137,8 +2137,11 @@ func endsWithReturnMsil(insns: in List[MInsn]): Bool {
     match insns[i] {
       case MRet      -> { return true }
       case MThrow    -> { return true }
-      case MLabel(_) -> { i = i - 1 }
       case MNop      -> { i = i - 1 }
+      // A label may be a branch target from code above (e.g. the after-label
+      // of a match expression), so we cannot treat instructions before it as
+      // the effective end of the method.  Stop scanning and report "no terminal".
+      case MLabel(_) -> { return false }
       case _         -> { return false }
     }
   }

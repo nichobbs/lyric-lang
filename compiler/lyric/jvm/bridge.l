@@ -29,8 +29,8 @@ pub func compileToJar(source: in String, outputPath: in String, packageName: in 
   while i < parseResult.diagnostics.count {
     val diag = parseResult.diagnostics[i]
     match diag.severity {
-      case DiagError   -> hasErrors = true
-      case DiagWarning -> ()
+      case DiagError   -> { hasErrors = true }
+      case DiagWarning -> { () }
     }
     i = i + 1
   }

@@ -38,6 +38,8 @@ pub record FuncCtx {
   types:       Map[String, JvmType]  // variable name → JVM type
   slotTicker:  List[Int]         // length = next slot index
   labelTicker: List[Int]         // length = next label index
+  loopBreak:   List[String]      // stack of loop exit labels (innermost last)
+  loopCont:    List[String]      // stack of loop continue labels (innermost last)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,7 +169,7 @@ pub func emitLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
     case JShort   -> insns.add(LIload(slot = slot))
     case JInt     -> insns.add(LIload(slot = slot))
     case JFloat   -> insns.add(LDload(slot = slot))
-    case JVoid    -> {}
+    case JVoid    -> insns.add(LNop)
     case JRef(_)  -> insns.add(LAload(slot = slot))
     case JArray(_) -> insns.add(LAload(slot = slot))
   }
@@ -183,7 +185,7 @@ pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
     case JShort   -> insns.add(LIstore(slot = slot))
     case JInt     -> insns.add(LIstore(slot = slot))
     case JFloat   -> insns.add(LDstore(slot = slot))
-    case JVoid    -> {}
+    case JVoid    -> insns.add(LNop)
     case JRef(_)  -> insns.add(LAstore(slot = slot))
     case JArray(_) -> insns.add(LAstore(slot = slot))
   }
@@ -416,67 +418,43 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val lhsTy = lowerExpr(ctx, insns, lhs)
           match lhsTy {
             case JRef(cls) -> {
-              // String concatenation via StringBuilder.
-              if cls == "java/lang/String" {
-                val sbps1: List[JvmType] = newList()
-                sbps1.add(JRef(className = "java/lang/String"))
-                val sbps2: List[JvmType] = newList()
-                sbps2.add(JRef(className = "java/lang/String"))
-                insns.add(LNew(className = "java/lang/StringBuilder"))
-                insns.add(LDup)
-                val sbctorps: List[JvmType] = newList()
-                insns.add(LInvokespecial(
-                  owner  = "java/lang/StringBuilder",
-                  name   = "<init>",
-                  params = sbctorps,
-                  ret    = JVoid))
-                // Swap: stack is [lhs, sb] — we need [sb, lhs].
-                // We already emitted lhs before the new — let's restart.
-                // Actually the sequence above was wrong. Rewrite:
-                // We'll use a different approach: store lhs, create SB, load lhs, append, load rhs, append, toString.
-                // But we've already emitted lhs above. Store it.
-                val lhsSlot = allocSlot(ctx, "__add_lhs_" + toString(ctx.slotTicker.count), lhsTy)
-                emitStore(insns, lhsSlot, lhsTy)
-                // Now stack is empty. Create StringBuilder.
-                insns.add(LNew(className = "java/lang/StringBuilder"))
-                insns.add(LDup)
-                val sbInitPs: List[JvmType] = newList()
-                insns.add(LInvokespecial(
-                  owner  = "java/lang/StringBuilder",
-                  name   = "<init>",
-                  params = sbInitPs,
-                  ret    = JVoid))
-                // Append lhs.
-                emitLoad(insns, lhsSlot, lhsTy)
-                val appPs1: List[JvmType] = newList()
-                appPs1.add(JRef(className = "java/lang/String"))
-                insns.add(LInvokevirtual(
-                  owner  = "java/lang/StringBuilder",
-                  name   = "append",
-                  params = appPs1,
-                  ret    = JRef(className = "java/lang/StringBuilder")))
-                // Append rhs.
-                lowerExpr(ctx, insns, rhs)
-                val rhsTy = JRef(className = "java/lang/String")
-                val appPs2: List[JvmType] = newList()
-                appPs2.add(JRef(className = "java/lang/String"))
-                insns.add(LInvokevirtual(
-                  owner  = "java/lang/StringBuilder",
-                  name   = "append",
-                  params = appPs2,
-                  ret    = JRef(className = "java/lang/StringBuilder")))
-                // toString.
-                val tsPs: List[JvmType] = newList()
-                insns.add(LInvokevirtual(
-                  owner  = "java/lang/StringBuilder",
-                  name   = "toString",
-                  params = tsPs,
-                  ret    = JRef(className = "java/lang/String")))
-                JRef(className = "java/lang/String")
-              } else {
-                // Generic ref addition not supported; panic.
+              if not (cls == "java/lang/String") {
                 panic("Jvm.Codegen: BAdd on non-String ref type: " + cls)
               }
+              // Store lhs (already on JVM stack) to a slot before building the StringBuilder.
+              val lhsSlot = allocSlot(ctx, "__add_lhs_" + toString(ctx.slotTicker.count), lhsTy)
+              emitStore(insns, lhsSlot, lhsTy)
+              insns.add(LNew(className = "java/lang/StringBuilder"))
+              insns.add(LDup)
+              val sbInitPs: List[JvmType] = newList()
+              insns.add(LInvokespecial(
+                owner  = "java/lang/StringBuilder",
+                name   = "<init>",
+                params = sbInitPs,
+                ret    = JVoid))
+              emitLoad(insns, lhsSlot, lhsTy)
+              val appPs1: List[JvmType] = newList()
+              appPs1.add(JRef(className = "java/lang/String"))
+              insns.add(LInvokevirtual(
+                owner  = "java/lang/StringBuilder",
+                name   = "append",
+                params = appPs1,
+                ret    = JRef(className = "java/lang/StringBuilder")))
+              lowerExpr(ctx, insns, rhs)
+              val appPs2: List[JvmType] = newList()
+              appPs2.add(JRef(className = "java/lang/String"))
+              insns.add(LInvokevirtual(
+                owner  = "java/lang/StringBuilder",
+                name   = "append",
+                params = appPs2,
+                ret    = JRef(className = "java/lang/StringBuilder")))
+              val tsPs: List[JvmType] = newList()
+              insns.add(LInvokevirtual(
+                owner  = "java/lang/StringBuilder",
+                name   = "toString",
+                params = tsPs,
+                ret    = JRef(className = "java/lang/String")))
+              JRef(className = "java/lang/String")
             }
             case JLong -> {
               lowerExpr(ctx, insns, rhs)
@@ -786,7 +764,211 @@ func lowerCmpExpr(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5b. If expression lowering.
+// §5b. Boolean condition lowering (for if/while conditions).
+//
+// These functions compile a boolean condition directly into conditional branch
+// instructions, without pushing an intermediate bool value onto the operand
+// stack.  This avoids StackMapTable stack-depth mismatches at merge labels.
+//
+// lowerBoolCond:      jump to failLabel    if cond is FALSE; fall through if TRUE.
+// lowerBoolCondTrue:  jump to succeedLabel if cond is TRUE;  fall through if FALSE.
+// lowerCmpFail:       emit the branch-on-failure comparison for lowerBoolCond.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Branch to failLabel if the comparison encoded by `op` is NOT satisfied.
+// Both operands must already be on the stack; both are consumed.
+func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String): Unit {
+  match lhsTy {
+    case JLong -> {
+      insns.add(LLcmp)
+      match op {
+        case BEq  -> insns.add(LIfne(label = failLabel))
+        case BNeq -> insns.add(LIfeq(label = failLabel))
+        case BLt  -> insns.add(LIfge(label = failLabel))
+        case BLte -> insns.add(LIfgt(label = failLabel))
+        case BGt  -> insns.add(LIfle(label = failLabel))
+        case BGte -> insns.add(LIflt(label = failLabel))
+        case _    -> insns.add(LNop)
+      }
+    }
+    case JDouble -> {
+      insns.add(LDcmpl)
+      match op {
+        case BEq  -> insns.add(LIfne(label = failLabel))
+        case BNeq -> insns.add(LIfeq(label = failLabel))
+        case BLt  -> insns.add(LIfge(label = failLabel))
+        case BLte -> insns.add(LIfgt(label = failLabel))
+        case BGt  -> insns.add(LIfle(label = failLabel))
+        case BGte -> insns.add(LIflt(label = failLabel))
+        case _    -> insns.add(LNop)
+      }
+    }
+    case JRef(_) -> {
+      match op {
+        case BEq  -> insns.add(LIfAcmpne(label = failLabel))
+        case BNeq -> insns.add(LIfAcmpeq(label = failLabel))
+        case _    -> insns.add(LNop)
+      }
+    }
+    case _ -> {
+      match op {
+        case BEq  -> insns.add(LIfIcmpne(label = failLabel))
+        case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
+        case BLt  -> insns.add(LIfIcmpge(label = failLabel))
+        case BLte -> insns.add(LIfIcmpgt(label = failLabel))
+        case BGt  -> insns.add(LIfIcmple(label = failLabel))
+        case BGte -> insns.add(LIfIcmplt(label = failLabel))
+        case _    -> insns.add(LNop)
+      }
+    }
+  }
+}
+
+// Compile a boolean condition, branching to failLabel if it is false.
+// Leaves the operand stack unchanged (no net stack effect).
+func lowerBoolCond(
+  ctx:       in FuncCtx,
+  insns:     in List[LInsn],
+  cond:      in Expr,
+  failLabel: in String
+): Unit {
+  match cond.kind {
+    case EBinop(op, lhs, rhs) -> {
+      match op {
+        case BAnd -> {
+          lowerBoolCond(ctx, insns, lhs, failLabel)
+          lowerBoolCond(ctx, insns, rhs, failLabel)
+        }
+        case BOr -> {
+          val skipLabel = freshLabel(ctx)
+          lowerBoolCondTrue(ctx, insns, lhs, skipLabel)
+          lowerBoolCond(ctx, insns, rhs, failLabel)
+          insns.add(LLabel(name = skipLabel))
+        }
+        case BEq -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmpFail(insns, BEq, lhsTy, failLabel)
+        }
+        case BNeq -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmpFail(insns, BNeq, lhsTy, failLabel)
+        }
+        case BLt -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmpFail(insns, BLt, lhsTy, failLabel)
+        }
+        case BLte -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmpFail(insns, BLte, lhsTy, failLabel)
+        }
+        case BGt -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmpFail(insns, BGt, lhsTy, failLabel)
+        }
+        case BGte -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmpFail(insns, BGte, lhsTy, failLabel)
+        }
+        case _ -> {
+          lowerExpr(ctx, insns, cond)
+          insns.add(LIfeq(label = failLabel))
+        }
+      }
+    }
+    case EPrefix(op, operand) -> {
+      match op {
+        case PreNot -> lowerBoolCondTrue(ctx, insns, operand, failLabel)
+        case _      -> { lowerExpr(ctx, insns, cond); insns.add(LIfeq(label = failLabel)) }
+      }
+    }
+    case EParen(inner) -> lowerBoolCond(ctx, insns, inner, failLabel)
+    case _ -> {
+      lowerExpr(ctx, insns, cond)
+      insns.add(LIfeq(label = failLabel))
+    }
+  }
+}
+
+// Compile a boolean condition, branching to succeedLabel if it is true.
+// Leaves the operand stack unchanged (no net stack effect).
+func lowerBoolCondTrue(
+  ctx:          in FuncCtx,
+  insns:        in List[LInsn],
+  cond:         in Expr,
+  succeedLabel: in String
+): Unit {
+  match cond.kind {
+    case EBinop(op, lhs, rhs) -> {
+      match op {
+        case BAnd -> {
+          val failLabel = freshLabel(ctx)
+          lowerBoolCond(ctx, insns, lhs, failLabel)
+          lowerBoolCond(ctx, insns, rhs, failLabel)
+          insns.add(LGoto(label = succeedLabel))
+          insns.add(LLabel(name = failLabel))
+        }
+        case BOr -> {
+          lowerBoolCondTrue(ctx, insns, lhs, succeedLabel)
+          lowerBoolCondTrue(ctx, insns, rhs, succeedLabel)
+        }
+        case BEq -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "")
+        }
+        case BNeq -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "")
+        }
+        case BLt -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "")
+        }
+        case BLte -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "")
+        }
+        case BGt -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "")
+        }
+        case BGte -> {
+          val lhsTy = lowerExpr(ctx, insns, lhs)
+          lowerExpr(ctx, insns, rhs)
+          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "")
+        }
+        case _ -> {
+          lowerExpr(ctx, insns, cond)
+          insns.add(LIfne(label = succeedLabel))
+        }
+      }
+    }
+    case EPrefix(op, operand) -> {
+      match op {
+        case PreNot -> lowerBoolCond(ctx, insns, operand, succeedLabel)
+        case _      -> { lowerExpr(ctx, insns, cond); insns.add(LIfne(label = succeedLabel)) }
+      }
+    }
+    case EParen(inner) -> lowerBoolCondTrue(ctx, insns, inner, succeedLabel)
+    case _ -> {
+      lowerExpr(ctx, insns, cond)
+      insns.add(LIfne(label = succeedLabel))
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5c. If expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func lowerExprOrBlock(ctx: in FuncCtx, insns: in List[LInsn], eob: in ExprOrBlock): JvmType {
@@ -806,8 +988,7 @@ func lowerIfExpr(
   val elseL  = freshLabel(ctx)
   val afterL = freshLabel(ctx)
 
-  lowerExpr(ctx, insns, cond)
-  insns.add(LIfeq(label = elseL))
+  lowerBoolCond(ctx, insns, cond, elseL)
 
   val thenTy = lowerExprOrBlock(ctx, insns, thenBranch)
 
@@ -981,7 +1162,9 @@ func lowerMatchExpr(
         lowerExpr(ctx, insns, g)
         insns.add(LIfeq(label = nextArmL))
       }
-      case None -> {}
+      case None -> {
+        insns.add(LNop)
+      }
     }
     // Emit arm body.
     val armTy = lowerExprOrBlock(ctx, insns, arm.body)
@@ -1012,13 +1195,11 @@ func lowerPatternTest(
   failLabel:  in String
 ): Unit {
   match pat.kind {
-    case PWildcard -> {
-      // Always matches.
-    }
+    case PWildcard -> insns.add(LNop)
     case PBinding(_, innerOpt) -> {
       match innerOpt {
         case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
-        case None        -> {}
+        case None        -> insns.add(LNop)
       }
     }
     case PLiteral(lit) -> {
@@ -1090,7 +1271,7 @@ func lowerPatternTest(
       insns.add(LGoto(label = failLabel))
       insns.add(LLabel(name = succeedL))
     }
-    case PError -> {}
+    case PError -> insns.add(LNop)
   }
 }
 
@@ -1103,7 +1284,7 @@ func lowerPatternBind(
   scrutTy:   in JvmType
 ): Unit {
   match pat.kind {
-    case PWildcard -> {}
+    case PWildcard -> insns.add(LNop)
     case PBinding(name, innerOpt) -> {
       // Bind the name to the scrutinee value.
       emitLoad(insns, scrutSlot, scrutTy)
@@ -1111,10 +1292,10 @@ func lowerPatternBind(
       emitStore(insns, bindSlot, scrutTy)
       match innerOpt {
         case Some(inner) -> lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy)
-        case None        -> {}
+        case None        -> insns.add(LNop)
       }
     }
-    case PLiteral(_) -> {}
+    case PLiteral(_) -> insns.add(LNop)
     case PConstructor(head, fields) -> {
       // Downcast and bind each field.
       val caseName = lastSegment(head)
@@ -1140,16 +1321,17 @@ func lowerPatternBind(
                 val fSlot = allocSlot(ctx, fname, JRef(className = "java/lang/Object"))
                 emitStore(insns, fSlot, JRef(className = "java/lang/Object"))
               }
-              case _ -> {}
+              case _ -> insns.add(LNop)
             }
             fi = fi + 1
           }
+          insns.add(LNop)
         }
-        case _ -> {}
+        case _ -> insns.add(LNop)
       }
     }
-    case POr(_) -> {}
-    case PError -> {}
+    case POr(_) -> insns.add(LNop)
+    case PError -> insns.add(LNop)
   }
 }
 
@@ -1201,6 +1383,7 @@ func lowerInterpolated(
                 params = tsPs,
                 ret    = JRef(className = "java/lang/String")))
             }
+            insns.add(LNop)
           }
           case _ -> {
             // Box and toString.
@@ -1247,7 +1430,7 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
     case JByte    -> insns.add(LBoxByte)
     case JChar    -> insns.add(LBoxChar)
     case JShort   -> insns.add(LBoxShort)
-    case _        -> {}
+    case _        -> insns.add(LNop)
   }
 }
 
@@ -1354,6 +1537,7 @@ func lowerBuiltinOrStaticCall(
       lowerCallArg(ctx, insns, args[0])
     } else {
       insns.add(LPushString(s = "panic"))
+      JVoid
     }
     emitPanicFromStack(ctx, insns)
     JVoid
@@ -1393,6 +1577,7 @@ func lowerBuiltinOrStaticCall(
         lowerCallArg(ctx, insns, args[1])
       } else {
         insns.add(LPushString(s = "assertion failed"))
+        JVoid
       }
       emitPanicFromStack(ctx, insns)
       insns.add(LLabel(name = afterAssertL))
@@ -1444,6 +1629,7 @@ func lowerBuiltinOrStaticCall(
       lowerCallArg(ctx, insns, args[0])
     } else {
       insns.add(LPushString(s = ""))
+      JVoid
     }
     JRef(className = "java/lang/String")
   } else if funcName == "format2" {
@@ -1451,6 +1637,7 @@ func lowerBuiltinOrStaticCall(
       lowerCallArg(ctx, insns, args[0])
     } else {
       insns.add(LPushString(s = ""))
+      JVoid
     }
     JRef(className = "java/lang/String")
   } else if funcName == "format3" {
@@ -1458,6 +1645,7 @@ func lowerBuiltinOrStaticCall(
       lowerCallArg(ctx, insns, args[0])
     } else {
       insns.add(LPushString(s = ""))
+      JVoid
     }
     JRef(className = "java/lang/String")
   } else if funcName == "format4" {
@@ -1465,6 +1653,7 @@ func lowerBuiltinOrStaticCall(
       lowerCallArg(ctx, insns, args[0])
     } else {
       insns.add(LPushString(s = ""))
+      JVoid
     }
     JRef(className = "java/lang/String")
   } else if funcName == "longToInt" {
@@ -1647,11 +1836,11 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case None -> {
               val slot = allocSlot(ctx, name, ty)
               match ty {
-                case JLong   -> { insns.add(LLconst(v = 0L)); emitStore(insns, slot, ty) }
+                case JLong   -> { insns.add(LLconst(v = 0i64)); emitStore(insns, slot, ty) }
                 case JDouble -> { insns.add(LDconst(v = 0.0)); emitStore(insns, slot, ty) }
                 case JRef(_)  -> { insns.add(LAconstNull); emitStore(insns, slot, ty) }
                 case JArray(_) -> { insns.add(LAconstNull); emitStore(insns, slot, ty) }
-                case JVoid   -> {}
+                case JVoid   -> insns.add(LNop)
                 case _       -> { insns.add(LIconst(v = 0)); emitStore(insns, slot, ty) }
               }
             }
@@ -1677,7 +1866,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     case SExpr(e) -> {
       val ty = lowerExpr(ctx, insns, e)
       match ty {
-        case JVoid -> {}
+        case JVoid -> insns.add(LNop)
         case _     -> insns.add(LPop)
       }
     }
@@ -1687,9 +1876,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       val loopL  = freshLabel(ctx)
       val afterL = freshLabel(ctx)
       insns.add(LLabel(name = loopL))
-      lowerExpr(ctx, insns, cond)
-      insns.add(LIfeq(label = afterL))
+      lowerBoolCond(ctx, insns, cond, afterL)
+      ctx.loopBreak.add(afterL)
+      ctx.loopCont.add(loopL)
       lowerBlock(ctx, insns, body)
+      ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+      ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       insns.add(LGoto(label = loopL))
       insns.add(LLabel(name = afterL))
     }
@@ -1771,6 +1963,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     // ── Assignment statement ───────────────────────────────────────────────
     case SAssign(target, op, value) -> {
       lowerAssignExpr(ctx, insns, target, op, value)
+      insns.add(LNop)
     }
 
     // ── Throw ──────────────────────────────────────────────────────────────
@@ -1779,14 +1972,21 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       insns.add(LAthrow)
     }
 
-    // ── Break / continue (bootstrap: emit goto to nearest label) ──────────
+    // ── Break / continue ──────────────────────────────────────────────────
     case SBreak(_) -> {
-      // Bootstrap: emit nop; break target tracking not implemented.
-      insns.add(LNop)
+      if ctx.loopBreak.count > 0 {
+        insns.add(LGoto(label = ctx.loopBreak[ctx.loopBreak.count - 1]))
+      } else {
+        insns.add(LNop)
+      }
     }
 
     case SContinue(_) -> {
-      insns.add(LNop)
+      if ctx.loopCont.count > 0 {
+        insns.add(LGoto(label = ctx.loopCont[ctx.loopCont.count - 1]))
+      } else {
+        insns.add(LNop)
+      }
     }
 
     // ── Scope block ────────────────────────────────────────────────────────
@@ -1806,13 +2006,13 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── Invariant annotation (runtime: skip) ──────────────────────────────
-    case SInvariant(_) -> {}
+    case SInvariant(_) -> insns.add(LNop)
 
     // ── Inline item declaration (skip in bootstrap) ───────────────────────
-    case SItem(_) -> {}
+    case SItem(_) -> insns.add(LNop)
 
     // ── Rule statement (skip) ─────────────────────────────────────────────
-    case SRule(_, _) -> {}
+    case SRule(_, _) -> insns.add(LNop)
   }
 }
 
@@ -1840,7 +2040,7 @@ func lowerLocalPatBind(
     case PWildcard -> {
       // Discard the value.
       match initTy {
-        case JVoid -> {}
+        case JVoid -> insns.add(LNop)
         case _     -> insns.add(LPop)
       }
     }
@@ -1926,13 +2126,17 @@ func makeFuncCtx(pkgName: in String, className: in String): FuncCtx {
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
   val labelTicker: List[Int] = newList()
+  val loopBreak: List[String] = newList()
+  val loopCont: List[String] = newList()
   FuncCtx(
     pkgName     = pkgName,
     className   = className,
     slots       = slots,
     types       = types,
     slotTicker  = slotTicker,
-    labelTicker = labelTicker)
+    labelTicker = labelTicker,
+    loopBreak   = loopBreak,
+    loopCont    = loopCont)
 }
 
 pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String): LFunc {
@@ -2007,8 +2211,11 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
       case LDreturn  -> { return true }
       case LAreturn  -> { return true }
       case LAthrow   -> { return true }
-      case LLabel(_) -> { i = i - 1 }
       case LNop      -> { i = i - 1 }
+      // A label may be a branch target from code above (e.g. the after-label
+      // of a match expression), so we cannot treat instructions before it as
+      // the effective end of the method.  Stop scanning and report "no terminal".
+      case LLabel(_) -> { return false }
       case _         -> { return false }
     }
   }
