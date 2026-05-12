@@ -917,6 +917,7 @@ let private printUsage () : unit =
     printErr "  lyric build --manifest <lyric.toml>  (project mode: bundles every [project.packages] entry into one DLL)"
     printErr "  lyric run   <source.l> [-- <args>...]"
     printErr "  lyric test  <source.l> [--filter <substring>] [--list] [--jvm]"
+    printErr "  lyric bench <source.l> [--runs <N>] [--warmup <N>] [--filter <substring>]"
     printErr "  lyric fmt   <source.l> [--check] [--write] [--legacy]"
     printErr "  lyric lint  <source.l> [--error-on-warning]"
     printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]"
@@ -933,6 +934,14 @@ let private printUsage () : unit =
     printErr "  --aot               compile to a native, self-contained binary"
     printErr "                      (passes through dotnet publish)."
     printErr "  --rid <RID>         target RID for AOT (default: host RID)."
+    printErr ""
+    printErr "  bench: measure runtime performance of @bench_module functions."
+    printErr "    --runs <N>     number of timed iterations per benchmark (default: 10)."
+    printErr "    --warmup <N>   un-timed warmup iterations before timing (default: 3)."
+    printErr "    --filter <s>   only run benchmarks whose name contains <s>."
+    printErr "    Each benchmarked function must be annotated @bench and have"
+    printErr "    signature `func name(): Unit`.  The module must carry @bench_module"
+    printErr "    at the file level and `import Std.Time` (auto-injected if absent)."
     printErr ""
     printErr "  fmt: reformat source to canonical Lyric style."
     printErr "    (default) print formatted output to stdout."
@@ -1404,6 +1413,125 @@ let main (argv: string array) : int =
                         use _ = proc
                         proc.WaitForExit()
                         proc.ExitCode
+    | "bench" :: rest ->
+        // `lyric bench <source.l> [--runs <N>] [--warmup <N>] [--filter <s>]`
+        // — benchmark runner.  Synthesises a timing harness around each
+        // function annotated `@bench` in a `@bench_module` file, compiles it,
+        // and runs it once via `dotnet exec`.  The synthesised program owns all
+        // timing and output; the CLI just passes stdout through.
+        let mutable runsArg   = 10
+        let mutable warmupArg = 3
+        let mutable filterArg : string option = None
+        let mutable positional : string list = []
+        let mutable cursor = rest
+        let mutable usageError = false
+        while not (List.isEmpty cursor) && not usageError do
+            match cursor with
+            | "--runs" :: n :: tail ->
+                match System.Int32.TryParse n with
+                | true, v when v > 0 -> runsArg <- v; cursor <- tail
+                | _ ->
+                    printErr (sprintf "bench: --runs expects a positive integer, got '%s'" n)
+                    usageError <- true
+                    cursor <- []
+            | "--runs" :: [] ->
+                printErr "bench: --runs requires an argument"
+                usageError <- true
+                cursor <- []
+            | "--warmup" :: n :: tail ->
+                match System.Int32.TryParse n with
+                | true, v when v >= 0 -> warmupArg <- v; cursor <- tail
+                | _ ->
+                    printErr (sprintf "bench: --warmup expects a non-negative integer, got '%s'" n)
+                    usageError <- true
+                    cursor <- []
+            | "--warmup" :: [] ->
+                printErr "bench: --warmup requires an argument"
+                usageError <- true
+                cursor <- []
+            | "--filter" :: f :: tail ->
+                filterArg <- Some f
+                cursor <- tail
+            | "--filter" :: [] ->
+                printErr "bench: --filter requires an argument"
+                usageError <- true
+                cursor <- []
+            | x :: tail when x.StartsWith "-" ->
+                printErr (sprintf "bench: unknown flag '%s'" x)
+                usageError <- true
+                cursor <- []
+            | x :: tail ->
+                positional <- positional @ [x]
+                cursor <- tail
+            | [] -> ()
+        if usageError then 64
+        else
+        match positional with
+        | [] ->
+            printErr "bench: missing source file"
+            printUsage ()
+            64
+        | sourcePath :: _ ->
+            if not (File.Exists sourcePath) then
+                printErr (sprintf "bench: source file not found: %s" sourcePath)
+                64
+            else
+            let source = File.ReadAllText sourcePath
+            match SelfHostedBench.synthesize source runsArg warmupArg (Option.defaultValue "" filterArg) with
+            | SelfHostedBench.NoBenchModule _ ->
+                printErr (sprintf
+                    "B0900 %s: lyric bench requires '@bench_module' at the file head"
+                    sourcePath)
+                64
+            | SelfHostedBench.UserMainExists sp ->
+                printErr (sprintf
+                    "B0901 %s [%d:%d]: @bench_module package may not declare 'func main()'"
+                    sourcePath sp.Start.Line sp.Start.Column)
+                2
+            | SelfHostedBench.ParseFailures diags ->
+                for d in diags do printDiag d
+                2
+            | SelfHostedBench.Synthesised (rewritten, benchCount) ->
+                if benchCount = 0 then
+                    let msg =
+                        match filterArg with
+                        | None ->
+                            sprintf "B0902 %s: no @bench functions found; annotate functions with @bench"
+                                sourcePath
+                        | Some f ->
+                            sprintf "B0902 %s: no @bench functions match filter '%s'" sourcePath f
+                    printErr msg
+                    64
+                else
+                let rewrittenFinal = rewritten
+                let tmp =
+                    Path.Combine(Path.GetTempPath(),
+                                 "lyric-bench-"
+                                 + Guid.NewGuid().ToString("N"))
+                Directory.CreateDirectory(tmp) |> ignore
+                let stem      = safeStr (Path.GetFileNameWithoutExtension sourcePath) "bench"
+                let synthPath = Path.Combine(tmp, stem + ".l")
+                let outPath   = Path.Combine(tmp, stem + ".dll")
+                File.WriteAllText(synthPath, rewrittenFinal)
+                let buildExit =
+                    build synthPath outPath true [] [] None Emitter.Dotnet
+                        Set.empty Set.empty
+                if buildExit <> 0 then 2
+                else
+                    let psi = Diagnostics.ProcessStartInfo()
+                    psi.FileName <- "dotnet"
+                    psi.ArgumentList.Add "exec"
+                    psi.ArgumentList.Add outPath
+                    psi.UseShellExecute <- false
+                    let proc =
+                        match Option.ofObj (Diagnostics.Process.Start psi) with
+                        | Some p -> p
+                        | None ->
+                            printErr "bench: failed to start dotnet"
+                            exit 1
+                    use _ = proc
+                    proc.WaitForExit()
+                    proc.ExitCode
     | "prove" :: rest ->
         // `lyric prove <source.l> [--proof-dir <dir>] [--verbose]
         //                         [--allow-unverified]
