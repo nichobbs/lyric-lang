@@ -68,7 +68,16 @@ pub func formatFixed(x: in Double, decimals: in Int): String
 @pure
 @stable(since="1.0")
 pub func padLeft(s: in String, width: in Int, ch: in Char): String {
-  Host.hostPadLeft(s, width, ch)
+  val len = s.length
+  if len >= width { return s }
+  var pad = ""
+  var i = 0
+  val n = width - len
+  while i < n {
+    pad = pad + ("" + ch)
+    i += 1
+  }
+  pad + s
 }
 
 /// Pad `s` on the right with `ch` until its length reaches `width`.
@@ -77,7 +86,16 @@ pub func padLeft(s: in String, width: in Int, ch: in Char): String {
 @pure
 @stable(since="1.0")
 pub func padRight(s: in String, width: in Int, ch: in Char): String {
-  Host.hostPadRight(s, width, ch)
+  val len = s.length
+  if len >= width { return s }
+  var pad = ""
+  var i = 0
+  val n = width - len
+  while i < n {
+    pad = pad + ("" + ch)
+    i += 1
+  }
+  s + pad
 }
 
 // =====================================================================

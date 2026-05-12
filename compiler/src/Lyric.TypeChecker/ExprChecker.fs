@@ -593,7 +593,9 @@ let rec inferExpr
             else
                 List.iter2 validateModeArg s.Params args
                 List.iter2 (fun (p: ResolvedParam) a ->
-                    if not (Type.equiv p.Type a) then
+                    // Allow Byte where Int is expected: CLR zero-extends byte to int32.
+                    let byteAsInt = a = TyPrim PtByte && p.Type = TyPrim PtInt
+                    if not (Type.equiv p.Type a) && not byteAsInt then
                         err diags "T0043"
                             (sprintf "argument type %s does not match parameter type %s"
                                 (Type.render a) (Type.render p.Type))
@@ -610,7 +612,8 @@ let rec inferExpr
                     e.Span
             else
                 List.iter2 (fun p a ->
-                    if not (Type.equiv p a) then
+                    let byteAsInt = a = TyPrim PtByte && p = TyPrim PtInt
+                    if not (Type.equiv p a) && not byteAsInt then
                         err diags "T0043"
                             (sprintf "argument type %s does not match parameter type %s"
                                 (Type.render a) (Type.render p))
@@ -729,7 +732,11 @@ let rec inferExpr
         let idxTs = indices |> List.map infer
         let checkIdxsAre (expectedT: Type) =
             List.iter2 (fun (idx: Expr) idxT ->
-                if not (Type.equiv idxT expectedT) then
+                // Allow Byte as an Int index: Byte is always 0-255 and safe for any
+                // reasonable collection.  The CLR zero-extends byte to int32 on the
+                // eval stack, so the emitter needs no special treatment.
+                let byteAsInt = idxT = TyPrim PtByte && expectedT = TyPrim PtInt
+                if not (Type.equiv idxT expectedT) && not byteAsInt then
                     err diags "T0069"
                         (sprintf "index must be %s (got %s)" (Type.render expectedT) (Type.render idxT))
                         idx.Span) indices idxTs

@@ -101,6 +101,52 @@ func testHexDigitValue(): Unit {
   assertTrue(isNone(hexDigitValue(' ')), "hex space is None")
 }
 
+func testAsciiClassification(): Unit {
+  assertTrue(isAsciiUpper('A'),        "A is ASCII upper")
+  assertTrue(isAsciiUpper('Z'),        "Z is ASCII upper")
+  assertTrue(not isAsciiUpper('a'),    "a is not ASCII upper")
+  assertTrue(not isAsciiUpper('0'),    "0 is not ASCII upper")
+
+  assertTrue(isAsciiLower('a'),        "a is ASCII lower")
+  assertTrue(isAsciiLower('z'),        "z is ASCII lower")
+  assertTrue(not isAsciiLower('A'),    "A is not ASCII lower")
+  assertTrue(not isAsciiLower('0'),    "0 is not ASCII lower")
+
+  assertTrue(isAsciiLetter('a'),       "a is ASCII letter")
+  assertTrue(isAsciiLetter('Z'),       "Z is ASCII letter")
+  assertTrue(not isAsciiLetter('0'),   "0 is not ASCII letter")
+  assertTrue(not isAsciiLetter(' '),   "space is not ASCII letter")
+
+  assertTrue(isAsciiDigit('0'),        "0 is ASCII digit")
+  assertTrue(isAsciiDigit('9'),        "9 is ASCII digit")
+  assertTrue(not isAsciiDigit('a'),    "a is not ASCII digit")
+  assertTrue(not isAsciiDigit(' '),    "space is not ASCII digit")
+
+  assertTrue(isAsciiLetterOrDigit('a'), "a is ASCII letter or digit")
+  assertTrue(isAsciiLetterOrDigit('5'), "5 is ASCII letter or digit")
+  assertTrue(not isAsciiLetterOrDigit(' '), "space is not")
+
+  assertTrue(isAsciiWhiteSpace(' '),   "space is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace('\t'),  "tab is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace('\n'),  "LF is ASCII whitespace")
+  assertTrue(isAsciiWhiteSpace('\r'),  "CR is ASCII whitespace")
+  assertTrue(not isAsciiWhiteSpace('a'), "a is not ASCII whitespace")
+  assertTrue(not isAsciiWhiteSpace('0'), "0 is not ASCII whitespace")
+}
+
+func testAsciiCaseConversion(): Unit {
+  assertEqual("" + asciiToUpper('a'), "A", "asciiToUpper a")
+  assertEqual("" + asciiToUpper('z'), "Z", "asciiToUpper z")
+  assertEqual("" + asciiToUpper('A'), "A", "asciiToUpper A unchanged")
+  assertEqual("" + asciiToUpper('0'), "0", "asciiToUpper 0 unchanged")
+  assertEqual("" + asciiToUpper(' '), " ", "asciiToUpper space unchanged")
+
+  assertEqual("" + asciiToLower('A'), "a", "asciiToLower A")
+  assertEqual("" + asciiToLower('Z'), "z", "asciiToLower Z")
+  assertEqual("" + asciiToLower('a'), "a", "asciiToLower a unchanged")
+  assertEqual("" + asciiToLower('0'), "0", "asciiToLower 0 unchanged")
+}
+
 func main(): Unit {
   testIsLetter()
   testIsDigit()
@@ -112,5 +158,7 @@ func main(): Unit {
   testIsAscii()
   testDigitValue()
   testHexDigitValue()
+  testAsciiClassification()
+  testAsciiCaseConversion()
   println("char: ok")
 }

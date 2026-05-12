@@ -7,8 +7,9 @@
 //     callers that want to surface a useful diagnostic.
 //
 //   parseOptXxx(s) : Option[T]
-//     Newer, route through the BCL's `TryParse` family via FFI
-//     out-params for a single-pass `Some(value)` / `None` shape.
+//     Pure-Lyric for Int and Long (decimal, sign-aware, overflow-checked,
+//     leading-whitespace tolerant).  Double and Bool continue to route
+//     through the BCL host for locale-correct and IEEE-754-accurate parsing.
 //
 //   parseXxx(s) : T   (panicking)
 //     Reserved for trusted literals or startup code; calls
@@ -18,24 +19,111 @@ package Std.Parse
 
 import Std.Core
 import Std.Errors
+// Import CharHost directly rather than Std.Char to avoid transitively
+// re-exporting Std.Char's toLower/toUpper into modules that import Std.Parse.
+import Std.CharHost as ParseCharHost
 import Std.ParseHost as Host
 
 // =====================================================================
-// Option-returning parsers — preferred for new code.  Each routes the
-// host's `out`-parameter `TryParse` through `Std.ParseHost` (lives in
-// `_kernel/` per D038) and lifts the (Bool, value) pair into Option.
+// ASCII whitespace check (inline, avoids an extra import).
+// =====================================================================
+
+// True for the six ASCII whitespace characters BCL TryParse skips.
+func isParseWhiteSpace(c: in Char): Bool {
+  val cp = ParseCharHost.hostCharToInt(c)
+  cp == 32 or cp == 9 or cp == 10 or cp == 11 or cp == 12 or cp == 13
+}
+
+// =====================================================================
+// Pure-Lyric decimal integer parsers.
+//
+// Algorithm: accumulate digits as a negative number to cover the full
+// symmetric range (Int32.MinValue = -2147483648 can't be represented
+// as a positive Int32).  Overflow is detected before each multiplication
+// and at the sign-flip for positive results.
+//
+// Accepts the same input shape as BCL TryParse:
+//   [ whitespace ] [ sign ] digits [ whitespace ]
+// where sign is '+' or '-' and digits are ASCII '0'-'9'.
 // =====================================================================
 
 @stable(since="1.0")
 pub func parseOptInt(s: in String): Option[Int] {
-  var v: Int = default()
-  if Host.hostTryParseInt(s, v) { Some(value = v) } else { None }
+  val len = s.length
+  if len == 0 { return None }
+  var i = 0
+  while i < len and isParseWhiteSpace(s[i]) { i += 1 }
+  if i == len { return None }
+  var negative = false
+  if s[i] == '-' { negative = true; i += 1 }
+  else if s[i] == '+' { i += 1 }
+  if i == len { return None }
+  // Accumulate as negative to handle the full Int32 range.
+  var acc = 0
+  var hasDigits = false
+  while i < len {
+    val cp = ParseCharHost.hostCharToInt(s[i])
+    if cp < 48 or cp > 57 {
+      // Non-digit: must be trailing whitespace only, then end of string.
+      while i < len and isParseWhiteSpace(s[i]) { i += 1 }
+      if i != len { return None }
+    } else {
+      val d = cp - 48  // '0' = 48
+      hasDigits = true
+      // Overflow guard: acc * 10 - d must stay >= -2147483648.
+      // Threshold: -214748364 * 10 - 8 = -2147483648 (the minimum).
+      if acc < -214748364 { return None }
+      if acc == -214748364 and d > 8 { return None }
+      acc = acc * 10 - d
+      i += 1
+    }
+  }
+  if not hasDigits { return None }
+  if negative {
+    Some(value = acc)
+  } else {
+    // For positive results, -acc must fit in Int32 (max 2147483647).
+    if acc == -2147483648 { return None }
+    Some(value = -acc)
+  }
 }
 
 @stable(since="1.0")
 pub func parseOptLong(s: in String): Option[Long] {
-  var v: Long = default()
-  if Host.hostTryParseLong(s, v) { Some(value = v) } else { None }
+  val len = s.length
+  if len == 0 { return None }
+  var i = 0
+  while i < len and isParseWhiteSpace(s[i]) { i += 1 }
+  if i == len { return None }
+  var negative = false
+  if s[i] == '-' { negative = true; i += 1 }
+  else if s[i] == '+' { i += 1 }
+  if i == len { return None }
+  // Accumulate as negative Long.
+  // Threshold: -922337203685477580 * 10 - 8 = -9223372036854775808 (Int64.MinValue).
+  var acc = 0i64
+  var hasDigits = false
+  while i < len {
+    val cp = ParseCharHost.hostCharToInt(s[i])
+    if cp < 48 or cp > 57 {
+      while i < len and isParseWhiteSpace(s[i]) { i += 1 }
+      if i != len { return None }
+    } else {
+      val d = cp - 48
+      hasDigits = true
+      if acc < -922337203685477580i64 { return None }
+      if acc == -922337203685477580i64 and d > 8 { return None }
+      acc = acc * 10i64 - d
+      i += 1
+    }
+  }
+  if not hasDigits { return None }
+  if negative {
+    Some(value = acc)
+  } else {
+    if acc == -9223372036854775808i64 { return None }
+    Some(value = -acc)
+  }
 }
 
 @stable(since="1.0")
