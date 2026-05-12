@@ -343,6 +343,7 @@ let rec private bindPattern
         (table: SymbolTable)
         (scope: Scope)
         (diags: ResizeArray<Diagnostic>)
+        (genericNames: string list)
         (pat:   Pattern)
         (ty:    Type)
         : unit =
@@ -365,13 +366,13 @@ let rec private bindPattern
             scope.Add({ Name = name; Type = ty; IsMutable = false })
     | PBinding(name, Some inner) ->
         scope.Add({ Name = name; Type = ty; IsMutable = false })
-        bindPattern table scope diags inner ty
+        bindPattern table scope diags genericNames inner ty
     | PTuple ps ->
         let elemTypes =
             match ty with
             | TyTuple ts when List.length ts = List.length ps -> ts
             | _ -> List.replicate ps.Length TyError
-        List.iter2 (fun sp et -> bindPattern table scope diags sp et) ps elemTypes
+        List.iter2 (fun sp et -> bindPattern table scope diags genericNames sp et) ps elemTypes
     | PConstructor(head, args) ->
         // Resolve the union case's field types from the symbol table.
         let fieldTypes =
@@ -393,7 +394,7 @@ let rec private bindPattern
             if List.length fieldTypes = List.length args
             then List.zip args fieldTypes
             else args |> List.map (fun a -> a, TyError)
-        pairs |> List.iter (fun (sp, ft) -> bindPattern table scope diags sp ft)
+        pairs |> List.iter (fun (sp, ft) -> bindPattern table scope diags genericNames sp ft)
     | POr alts ->
         // Walk the first alternative to put bindings into scope; walk
         // remaining alternatives into a dummy scope (same diagnostics,
@@ -402,10 +403,10 @@ let rec private bindPattern
         match alts with
         | [] -> ()
         | first :: rest ->
-            bindPattern table scope diags first ty
+            bindPattern table scope diags genericNames first ty
             for sp in rest do
                 let dummy = Scope()
-                bindPattern table dummy diags sp ty
+                bindPattern table dummy diags genericNames sp ty
     | PRange _ ->
         // Range pattern: no bindings produced.
         ()
@@ -420,19 +421,20 @@ let rec private bindPattern
                 let ft =
                     recFields |> List.tryFind (fun (n, _) -> n = name)
                     |> Option.map snd |> Option.defaultValue TyError
-                bindPattern table scope diags innerPat ft
+                bindPattern table scope diags genericNames innerPat ft
             | RPFShort(name, _) ->
                 let ft =
                     recFields |> List.tryFind (fun (n, _) -> n = name)
                     |> Option.map snd |> Option.defaultValue TyError
                 scope.Add({ Name = name; Type = ft; IsMutable = false })
     | PParen inner ->
-        bindPattern table scope diags inner ty
+        bindPattern table scope diags genericNames inner ty
     | PTypeTest(inner, te) ->
-        // The pattern narrows the scrutinee to the tested type.
-        let ctx = GenericContext()
+        // Narrows the scrutinee to the tested type, using the enclosing
+        // function's generic context so `val v is T` works inside generic[T] funcs.
+        let ctx = mkGenericCtx genericNames
         let narrowed = Resolver.resolveType table ctx diags te
-        bindPattern table scope diags inner narrowed
+        bindPattern table scope diags genericNames inner narrowed
     | PLiteral _ | PError ->
         ()
 
@@ -676,7 +678,7 @@ let rec inferExpr
             let armTypes =
                 arms |> List.map (fun arm ->
                     scope.Push()
-                    bindPattern table scope diags arm.Pattern scrutT
+                    bindPattern table scope diags genericNames arm.Pattern scrutT
                     arm.Guard |> Option.iter (fun g ->
                         let gT = infer g
                         if not (Type.equiv gT (TyPrim PtBool)) then
@@ -807,7 +809,7 @@ let rec inferExpr
     | EForall(binders, whereExpr, body) | EExists(binders, whereExpr, body) ->
         scope.Push()
         for b in binders do
-            let ctx = GenericContext()
+            let ctx = mkGenericCtx genericNames
             let bt = Resolver.resolveType table ctx diags b.Type
             scope.Add({ Name = b.Name; Type = bt; IsMutable = false })
         whereExpr |> Option.iter (infer >> ignore)
@@ -857,7 +859,7 @@ and checkStatement
                         stmt.Span
                 declT
             | None -> initType
-        bindPattern table scope diags pat bindType
+        bindPattern table scope diags genericNames pat bindType
 
     | SLocal (LBVar(name, declType, init)) ->
         let initType =
@@ -947,7 +949,7 @@ and checkStatement
             | TyRange e   -> e
             | _ -> TyError
         scope.Push()
-        bindPattern table scope diags pat elemType
+        bindPattern table scope diags genericNames pat elemType
         checkBlock scope table sigs genericNames returnType diags body |> ignore
         scope.Pop()
 
@@ -1040,7 +1042,7 @@ let private outArgsAssigned
             | _ -> None
         match sigOpt with
         | None -> Set.empty
-        | Some sg ->
+        | Some sg when List.length sg.Params = List.length args ->
             List.zip sg.Params args
             |> List.choose (fun (p, a) ->
                 if p.Mode = PMOut then
@@ -1053,6 +1055,7 @@ let private outArgsAssigned
                     | _ -> None
                 else None)
             |> Set.ofList
+        | Some _ -> Set.empty  // arity mismatch — T0042 covers this; skip DA
     | _ -> Set.empty
 
 let rec private daBlock
