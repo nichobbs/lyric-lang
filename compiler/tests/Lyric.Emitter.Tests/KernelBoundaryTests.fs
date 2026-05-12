@@ -132,7 +132,11 @@ let tests =
             // JsonObjectEnumerator + JsonProperty extern types and 5 extern
             // functions for object-property enumeration (needed by
             // Lyric.OpenApiParser).
-            Expect.isLessThanOrEqual total 268
+            // Bumped from 268 → 270: Std.VerifierEnvHost (1 extern) and
+            // Std.ProcessCaptureHost (1 extern) added for the self-hosted
+            // verifier's solver-path discovery and subprocess capture
+            // (D-progress-234).
+            Expect.isLessThanOrEqual total 270
                 "total extern surface unexpectedly large"
         }
     ]

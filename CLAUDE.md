@@ -395,10 +395,15 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
     by `SelfHostedTestSynth.fs` (D-progress-231).
   - `cli.l` — `Lyric.Cli` command-dispatch stub (M5.3 stage 1).
+  - `verifier/` — `Lyric.Verifier` package (M5.3, D-progress-234).  Self-hosted
+    port of the Phase 4 proof system: `vcir.l` (VC IR types), `vcgen.l`
+    (WP/SP calculus, loop invariant goals, Hoare call rule), `smt.l`
+    (SMT-LIB v2.6 renderer), `solver.l` (trivial syntactic discharger),
+    `driver.l` (`prove(source): VerifySummary` entry point).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
-    `manifest_self_test.l`, `fmt_self_test.l` —
+    `manifest_self_test.l`, `fmt_self_test.l`, `verifier_self_test.l` —
     self-test consumers run by the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
