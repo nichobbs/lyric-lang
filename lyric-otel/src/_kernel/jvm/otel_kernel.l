@@ -24,6 +24,9 @@ extern package io.opentelemetry.api.trace {
   /// Record an exception attribute on the span and set error status.
   pub func jvmSetSpanError(span: Span, message: String): Unit
 
+  /// Attach a string attribute to the span via Span.setAttribute.
+  pub func jvmSetSpanAttribute(span: Span, key: String, value: String): Unit
+
   /// End the span (records elapsed time via the OTel SDK).
   pub func jvmEndSpan(span: Span): Unit
 }
