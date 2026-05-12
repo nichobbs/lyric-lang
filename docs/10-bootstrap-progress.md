@@ -11926,5 +11926,71 @@ Two new test files added:
 
 Type checker test count: 187 (from 143 before, +44 net new).
 
-**Test counts:** 752 emitter tests, 323 parser tests, 187 type-checker tests,
-123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
+**Test counts:** 756 emitter tests (398 failing due to pre-existing Std.Core
+generic-union T0068 errors; fixed in D-progress-247), 323 parser tests, 187
+type-checker tests, 123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier
+tests.
+
+---
+
+### D-progress-247: T5 follow-up — generic union case type resolution and block terminator types
+
+**Date:** 2026-05-12
+**Branch:** `claude/lyric-closures-functions-XencC`
+
+Follow-up to D-progress-246. Fixes three bugs exposed by the T5 type-checker
+uplift that caused 398 emitter test failures when compiling `Std.Core`'s generic
+`Option[T]` and `Result[T, E]` unions.
+
+**Root causes fixed (all in `compiler/src/Lyric.TypeChecker/ExprChecker.fs`):**
+
+**1. Generic union case field types lost their type parameters (T0010)**
+
+`PConstructor` in `bindPattern` and `DKUnionCase` in `resolvePath` both created
+a bare `GenericContext()` (no type variables) when resolving union-case field
+type expressions.  Resolving `T` from `case Some(value: T)` failed with T0010
+"unknown type name 'T'" because the parent union's generic parameters were never
+pushed onto the context.
+
+Fix: added `unionGenericParamsFor (table: SymbolTable) (parentId: TypeId)` helper
+that walks `table.All()` to find the `DKUnion` entry matching `parentId` and
+returns its declared generic parameter names.  Both call sites now call
+`mkGenericCtx (unionGenericParamsFor table parentId)` so field types like `T`
+and `E` resolve to `TyVar "T"` / `TyVar "E"` as intended.
+
+**2. Union case constructor return type omitted generic arguments (T0068 / T0070)**
+
+`DKUnionCase` in `resolvePath` returned `TyUser(parentId, [])` as the type of
+no-field cases (e.g., `None`) and as the constructor return type for field cases
+(e.g., calling `Some(v)`).  This produced `<#1>` (no args) while parameters
+typed as `Option[T]` resolved to `<#1>[T]`, causing spurious T0068 arm-type
+mismatches and T0070 trailing-expression mismatches in every generic function in
+`Std.Core`.
+
+Fix: the return type is now `TyUser(parentId, returnArgs)` where
+`returnArgs = parentGenerics |> List.map TyVar`.  For `Option[T]` this gives
+`TyUser(optId, [TyVar "T"])` for both `None` (used directly) and `Some(v)`
+(constructor result), matching the type of parameters annotated as `Option[T]`.
+Since `TyVar` matches anything in `equiv`, this is safe for the bootstrap's
+non-unifying type-equality model.
+
+**3. `checkBlock` returned `TyPrim PtUnit` after control-flow terminators**
+
+When a block's last statement was `SReturn`, `SThrow`, `SBreak`, or `SContinue`,
+`checkBlock` returned `TyPrim PtUnit` (the fallthrough catch-all).  The correct
+type for a definitely-terminating block is `TyPrim PtNever`, consistent with
+how `EIf`/`EMatch` treat Never-typed branches.
+
+Fix: the new `SReturn _ | SThrow _ | SBreak _ | SContinue _` arm in `checkBlock`
+calls `checkStatement` (which still validates the returned/thrown value's type)
+and then sets `lastExprType <- TyPrim PtNever`.
+
+**Outcome:**
+
+- 187/187 type-checker tests pass (unchanged).
+- Emitter tests: 398 → 250 failures.  The 148 newly passing tests are those
+  that imported `Std.Core` and failed solely because the type-checker emitted
+  spurious T0010 / T0068 / T0070 on the generic Option / Result functions.
+  The remaining 250 failures are pre-existing issues in the self-hosted Lyric
+  MSIL emitter (`compiler/lyric/lyric/`) — unresolved names in the handwritten
+  PE builder — and are not caused by the T5 type-checker work.

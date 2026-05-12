@@ -298,6 +298,25 @@ let private mkGenericCtx (genericNames: string list) : GenericContext =
     if not genericNames.IsEmpty then ctx.Push genericNames
     ctx
 
+/// Return the generic parameter names declared on the parent union whose
+/// TypeId is `parentId`.  Used to resolve union-case field type expressions
+/// (which reference the union's own type variables, e.g. `T` in
+/// `case Some(value: T)`) and to build the constructor's return type.
+let private unionGenericParamsFor (table: SymbolTable) (parentId: TypeId) : string list =
+    table.All()
+    |> Seq.tryPick (fun sym ->
+        match sym.Kind with
+        | DKUnion(id, u) when id = parentId ->
+            let names =
+                match u.Generics with
+                | Some gs ->
+                    gs.Params |> List.map (function
+                        | GPType(n, _) | GPValue(n, _, _) -> n)
+                | None -> []
+            Some names
+        | _ -> None)
+    |> Option.defaultValue []
+
 // ---------------------------------------------------------------------------
 // Pattern binding.
 // ---------------------------------------------------------------------------
@@ -334,8 +353,8 @@ let rec private bindPattern
                 match table.TryFindOne name with
                 | Some sym ->
                     match sym.Kind with
-                    | DKUnionCase(_, uc) ->
-                        let ctx = GenericContext()
+                    | DKUnionCase(parentId, uc) ->
+                        let ctx = mkGenericCtx (unionGenericParamsFor table parentId)
                         uc.Fields |> List.map (fun f ->
                             match f with
                             | UFNamed(_, te, _) | UFPos(te, _) ->
@@ -447,16 +466,18 @@ let rec inferExpr
                                     // No annotation — infer from the init expression.
                                     infer vd.Init
                             | DKUnionCase(parentId, uc) ->
+                                let parentGenerics = unionGenericParamsFor table parentId
+                                let returnArgs = parentGenerics |> List.map TyVar
                                 if uc.Fields.IsEmpty then
-                                    TyUser(parentId, [])
+                                    TyUser(parentId, returnArgs)
                                 else
-                                    let ctx = GenericContext()
+                                    let ctx = mkGenericCtx parentGenerics
                                     let fieldTypes =
                                         uc.Fields |> List.map (fun f ->
                                             match f with
                                             | UFNamed(_, te, _) | UFPos(te, _) ->
                                                 Resolver.resolveType table ctx diags te)
-                                    TyFunction(fieldTypes, TyUser(parentId, []), false)
+                                    TyFunction(fieldTypes, TyUser(parentId, returnArgs), false)
                             | DKEnumCase(parentId, _) ->
                                 // Enum cases carry no fields; they are plain values.
                                 TyUser(parentId, [])
@@ -917,6 +938,9 @@ and checkBlock
         match stmt.Kind with
         | SExpr e ->
             lastExprType <- inferExpr scope table sigs genericNames returnType diags e
+        | SReturn _ | SThrow _ | SBreak _ | SContinue _ ->
+            checkStatement scope table sigs genericNames returnType diags stmt
+            lastExprType <- TyPrim PtNever
         | _ ->
             checkStatement scope table sigs genericNames returnType diags stmt
             lastExprType <- TyPrim PtUnit
