@@ -417,7 +417,7 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
                 | Some s -> Some s
                 | None   -> Map.tryFind fn.Name signatures
             match sgOpt with
-            | Some s -> StmtChecker.checkFunctionBody table signatures diags fn s
+            | Some s -> ExprChecker.checkFunctionBody table signatures diags fn s
             | None -> ()
         | _ -> ()
 

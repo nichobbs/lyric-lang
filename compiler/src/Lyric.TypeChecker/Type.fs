@@ -40,6 +40,9 @@ type Type =
     | TyFunction of parameters: Type list * result: Type * isAsync: bool
     | TyArray    of size: int option * element: Type
     | TySlice    of Type
+    /// A range expression result — element type is the numeric type of the bounds.
+    /// Produced by `ERange` and consumed by `for` loop element-type extraction.
+    | TyRange    of Type
     | TyUser     of TypeId * args: Type list
     | TySelf
     | TyVar      of name: string
@@ -90,6 +93,7 @@ module Type =
             && equiv r1 r2
         | TyArray(s1, e1), TyArray(s2, e2)              -> s1 = s2 && equiv e1 e2
         | TySlice x, TySlice y                          -> equiv x y
+        | TyRange x, TyRange y                          -> equiv x y
         | TyUser(id1, a1), TyUser(id2, a2) ->
             id1 = id2
             && List.length a1 = List.length a2
@@ -108,6 +112,7 @@ module Type =
         | TyArray(Some n, e) -> sprintf "array[%d, %s]" n (render e)
         | TyArray(None, e)   -> sprintf "array[?, %s]" (render e)
         | TySlice x          -> sprintf "slice[%s]" (render x)
+        | TyRange x          -> sprintf "range[%s]" (render x)
         | TyUser(TypeId id, []) -> sprintf "<#%d>" id
         | TyUser(TypeId id, args) ->
             sprintf "<#%d>[%s]" id (args |> List.map render |> String.concat ", ")

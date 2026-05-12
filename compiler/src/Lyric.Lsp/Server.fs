@@ -206,6 +206,7 @@ let private renderType (typeNames: Map<int, string>) (ty: Type) : string =
         | TyArray(Some n, e) -> sprintf "array[%d, %s]" n (render e)
         | TyArray(None, e)   -> sprintf "array[?, %s]" (render e)
         | TySlice x  -> sprintf "slice[%s]" (render x)
+        | TyRange x  -> sprintf "range[%s]" (render x)
         | TySelf     -> "Self"
         | TyVar n    -> n
         | TyError    -> "<error>"

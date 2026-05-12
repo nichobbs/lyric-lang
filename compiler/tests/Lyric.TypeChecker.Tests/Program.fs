@@ -15,5 +15,7 @@ let main argv =
             StmtCheckerTests.tests
             AdditionalStmtCheckerTests.tests
             ConstFoldTests.tests
+            T5ExprCheckerTests.tests
+            T5PatternTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

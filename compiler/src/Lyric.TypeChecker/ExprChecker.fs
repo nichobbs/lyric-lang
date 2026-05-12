@@ -1,17 +1,28 @@
-/// Bottom-up type inference for expressions.
+/// Bottom-up type inference for expressions and top-down checking for
+/// statements and blocks, united in one mutually recursive module.
 ///
-/// `inferExpr` consumes a parser AST `Expr` and returns the resolved
-/// `Type`. Unsupported or recovery cases return `TyError`, which the
-/// equivalence rules in `Type.equiv` treat as compatible with anything
-/// to suppress cascading diagnostics.
+/// `inferExpr`, `checkStatement`, and `checkBlock` are mutually
+/// recursive — expression-level blocks (EBlock, EIf branches, EMatch
+/// arms, ELambda bodies) call into `checkBlock`; statement-level
+/// constructs call `inferExpr` for sub-expression type inference.
 ///
-/// T4 implements: literals, single-segment paths (scope + global),
-/// parens, tuples, lists, prefix operators, binary operators
-/// (arithmetic + comparison + logical), function calls, member
-/// access, and the contract atoms `self` / `result` / `old(_)`.
-/// Lambdas, full control-flow expressions (`if` / `match`), block
-/// expressions, async / spawn semantics, and `?` propagation are
-/// deferred to T5+.
+/// Implements all T5 constructs:
+///   - EIf / EMatch / EBlock / EUnsafe  (control-flow expressions)
+///   - ELambda                          (anonymous functions → TyFunction)
+///   - EIndex                           (array/slice/string element access)
+///   - ERange                           (range literals → TyRange)
+///   - EInterpolated                    (interpolated strings → String)
+///   - ETypeApp                         (type-argument application, pass-through)
+///   - EForall / EExists                (quantifier atoms → Bool)
+///   - EAssign in expression position   (returns Unit)
+///   - DKConst / DKVal / DKUnionCase / DKEnumCase resolution
+///   - PTuple with element types from TyTuple scrutinee
+///   - PConstructor with field types from union symbol
+///   - POr   (all alternatives walked; first alternative's bindings used)
+///   - PRecord field bindings
+///   - PTypeTest narrows to tested type
+///   - PRange  (no bindings produced)
+///   - for-loop element type for TyRange iterables
 module Lyric.TypeChecker.ExprChecker
 
 open Lyric.Lexer
@@ -30,8 +41,8 @@ let private err
 
 let typeOfLiteral (lit: Literal) : Type =
     match lit with
-    | LInt(_, NoIntSuffix) -> TyPrim PtInt        // default
-    | LInt(_, I8)  -> TyPrim PtByte               // (signed 8-bit; closest in Lyric)
+    | LInt(_, NoIntSuffix) -> TyPrim PtInt
+    | LInt(_, I8)  -> TyPrim PtByte
     | LInt(_, I16) -> TyPrim PtInt
     | LInt(_, I32) -> TyPrim PtInt
     | LInt(_, I64) -> TyPrim PtLong
@@ -48,31 +59,18 @@ let typeOfLiteral (lit: Literal) : Type =
     | LUnit     -> TyPrim PtUnit
 
 // ---------------------------------------------------------------------------
-// Path resolution at expression-level.
+// Codegen builtins.
 // ---------------------------------------------------------------------------
 
 /// Bootstrap-grade closed list of names handled directly by the
 /// codegen as builtins (println, panic, expect, assert, host parse
-/// helpers, …).  Returning a function type from `resolvePath` keeps
-/// the type checker silent on these names; the codegen owns the
-/// dispatch.
+/// helpers, …).
 let private codegenBuiltinType (name: string) : Type option =
     match name with
     | "println" ->
-        // `println` is polymorphic in its argument: codegen routes
-        // string args directly through System.Console.WriteLine(string)
-        // and everything else through Console.PrintlnAny(obj) with
-        // auto-boxing.  The type checker mirrors that by accepting
-        // any single argument.
         Some (TyFunction([TyError], TyPrim PtUnit, false))
     | "toString" ->
-        // Polymorphic in its argument like `println`; codegen routes
-        // through Console.ToStr(obj) with auto-boxing for value types.
         Some (TyFunction([TyError], TyPrim PtString, false))
-    // `format1`/`format2`/`format3`/`format4`/`format5`/`format6`
-    // are arity-specialised String.Format wrappers.  Lyric has no
-    // varargs, so each arity is a separate name; codegen routes to
-    // Format.Of1..Of6.
     | "format1" ->
         Some (TyFunction([TyPrim PtString; TyError], TyPrim PtString, false))
     | "format2" ->
@@ -88,12 +86,6 @@ let private codegenBuiltinType (name: string) : Type option =
     | "panic" ->
         Some (TyFunction([TyPrim PtString], TyPrim PtNever, false))
     | "default" ->
-        // Polymorphic in its return — codegen reads `ctx.ExpectedType`
-        // to pick the actual CLR type and emits the right zero-init
-        // (`Initobj` for value types, `Ldnull` for refs).  The
-        // type checker accepts the call; downstream call sites
-        // (val ascription, byref out-arg pre-fill) push their
-        // expected type into `ExpectedType`.
         Some (TyFunction([], TyError, false))
     | "expect" ->
         Some (TyFunction([TyPrim PtBool; TyPrim PtString], TyPrim PtUnit, false))
@@ -105,8 +97,6 @@ let private codegenBuiltinType (name: string) : Type option =
     | "hostParseLongValue"     -> Some (TyFunction([TyPrim PtString], TyPrim PtLong, false))
     | "hostParseDoubleIsValid" -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
     | "hostParseDoubleValue"   -> Some (TyFunction([TyPrim PtString], TyPrim PtDouble, false))
-
-    // File I/O host helpers.
     | "hostFileExists"          -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
     | "hostReadAllTextIsValid"  -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
     | "hostReadAllTextValue"    -> Some (TyFunction([TyPrim PtString], TyPrim PtString, false))
@@ -118,46 +108,7 @@ let private codegenBuiltinType (name: string) : Type option =
     | "hostDirectoryExists"     -> Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
     | "hostCreateDirectoryIsValid" ->
         Some (TyFunction([TyPrim PtString], TyPrim PtBool, false))
-
     | _ -> None
-
-let private resolvePath
-        (scope: Scope)
-        (table: SymbolTable)
-        (sigs:  Map<string, ResolvedSignature>)
-        (diags: ResizeArray<Diagnostic>)
-        (path:  ModulePath)
-        (span:  Span)
-        : Type =
-    match path.Segments with
-    | [name] ->
-        // 1. Local binding (parameter or val/var/let).
-        match scope.TryFind(name) with
-        | Some b -> b.Type
-        | None ->
-            // 2. Function in the package.
-            match Map.tryFind name sigs with
-            | Some s ->
-                let paramTypes = s.Params |> List.map (fun p -> p.Type)
-                TyFunction(paramTypes, s.Return, s.IsAsync)
-            | None ->
-                // 3. Codegen builtin (println, panic, host-parse, …).
-                match codegenBuiltinType name with
-                | Some t -> t
-                | None ->
-                    // 4. Other named symbol (for now, return TyError;
-                    // T5+ resolves vals / consts / union ctors).
-                    match table.TryFindOne name with
-                    | Some _ -> TyError
-                    | None ->
-                        err diags "T0020"
-                            (sprintf "unknown name '%s'" name)
-                            span
-                        TyError
-    | _ ->
-        // Multi-segment expression path (e.g. `Module.func`). Cross-
-        // package resolution is T7+.
-        TyError
 
 // ---------------------------------------------------------------------------
 // Operator semantics.
@@ -168,7 +119,7 @@ let private isNumeric (t: Type) : bool =
     | TyPrim PtByte | TyPrim PtInt | TyPrim PtLong
     | TyPrim PtUInt | TyPrim PtULong | TyPrim PtNat
     | TyPrim PtFloat | TyPrim PtDouble -> true
-    | TyError -> true   // poisoning
+    | TyError -> true
     | _ -> false
 
 let private isOrdered (t: Type) : bool =
@@ -177,9 +128,6 @@ let private isOrdered (t: Type) : bool =
         | TyPrim PtChar | TyPrim PtString -> true
         | _ -> false)
 
-/// Return true if `t` is a distinct type whose declaration includes
-/// the given `derives` marker (e.g. "Add", "Sub", "Compare").  Returns
-/// false for non-distinct types.
 let private hasDerive (table: SymbolTable) (marker: string) (t: Type) : bool =
     match t with
     | TyUser(id, _) ->
@@ -193,12 +141,8 @@ let private hasDerive (table: SymbolTable) (marker: string) (t: Type) : bool =
 
 let private arithMarker (op: BinOp) : string =
     match op with
-    | BAdd -> "Add"
-    | BSub -> "Sub"
-    | BMul -> "Mul"
-    | BDiv -> "Div"
-    | BMod -> "Mod"
-    | _    -> ""
+    | BAdd -> "Add" | BSub -> "Sub" | BMul -> "Mul"
+    | BDiv -> "Div" | BMod -> "Mod" | _    -> ""
 
 let private inferBinop
         (table: SymbolTable)
@@ -210,10 +154,6 @@ let private inferBinop
         : Type =
     match op with
     | BAdd | BSub | BMul | BDiv | BMod ->
-        // String + anything → String concat (codegen handles the
-        // boxing + ToString conversion via Console.PrintlnAny).
-        // Restricted to BAdd; the other arithmetic operators stay
-        // numeric-only.
         match op, lhs with
         | BAdd, TyPrim PtString -> TyPrim PtString
         | _ ->
@@ -257,7 +197,6 @@ let private inferBinop
                 span
         TyPrim PtBool
     | BCoalesce ->
-        // `a ?? b`: `a` should be a nullable T; result is T.
         match lhs with
         | TyNullable inner ->
             if not (Type.equiv inner rhs) then
@@ -295,11 +234,10 @@ let private inferPrefix
                 span
         TyPrim PtBool
     | PreRef ->
-        // Reserved prefix operator — return the inner type for now.
         inner
 
 // ---------------------------------------------------------------------------
-// Member access.
+// Member access helpers.
 // ---------------------------------------------------------------------------
 
 let private fieldsOfRecord (table: SymbolTable) (id: TypeId) : (string * Type) list =
@@ -321,9 +259,6 @@ let private fieldsOfRecord (table: SymbolTable) (id: TypeId) : (string * Type) l
         | _ -> None)
     |> Option.defaultValue []
 
-/// Built-in member types that the codegen lowers via direct
-/// reflection / opcode (not via a Lyric-defined member).  Each
-/// entry maps `(receiver, member-name) -> result-type`.
 let private builtinMember (receiver: Type) (name: string) : Type option =
     match receiver, name with
     | TySlice _,        "length"   -> Some (TyPrim PtInt)
@@ -345,40 +280,203 @@ let private inferMember
         match List.tryFind (fun (n, _) -> n = name) fs with
         | Some (_, t) -> t
         | None ->
-            // Could still be a method or a union case access — for
-            // now, return TyError without diagnostic to avoid noise.
+            // Could be a method or union case access — return TyError without
+            // diagnostic to avoid noise on valid BCL-method calls.
             TyError
     | TyError -> TyError
     | other ->
         match builtinMember other name with
         | Some t -> t
-        | None ->
-            // Method-style calls on BCL types (`s.trim()`, `s.toUpper()`,
-            // …) are dispatched at codegen via PascalCase reflection.
-            // The type checker can't yet enumerate every BCL method, so
-            // it returns `TyError` *without* a diagnostic — letting
-            // codegen surface a precise error if the call is bogus,
-            // while not blocking valid programs that use BCL methods
-            // we haven't yet enumerated here.
-            TyError
+        | None   -> TyError
 
 // ---------------------------------------------------------------------------
-// Top-level inference.
+// Generic context helper.
+// ---------------------------------------------------------------------------
+
+let private mkGenericCtx (genericNames: string list) : GenericContext =
+    let ctx = GenericContext()
+    if not genericNames.IsEmpty then ctx.Push genericNames
+    ctx
+
+// ---------------------------------------------------------------------------
+// Pattern binding.
+// ---------------------------------------------------------------------------
+
+/// Walk a pattern and add name bindings into the scope with their inferred
+/// types.  `ty` is the type of the scrutinee (or sub-expression) being
+/// matched by `pat`.
+let rec private bindPattern
+        (table: SymbolTable)
+        (scope: Scope)
+        (diags: ResizeArray<Diagnostic>)
+        (pat:   Pattern)
+        (ty:    Type)
+        : unit =
+    match pat.Kind with
+    | PWildcard | PBinding("_", _) ->
+        ()
+    | PBinding(name, None) ->
+        scope.Add({ Name = name; Type = ty; IsMutable = false })
+    | PBinding(name, Some inner) ->
+        scope.Add({ Name = name; Type = ty; IsMutable = false })
+        bindPattern table scope diags inner ty
+    | PTuple ps ->
+        let elemTypes =
+            match ty with
+            | TyTuple ts when List.length ts = List.length ps -> ts
+            | _ -> List.replicate ps.Length TyError
+        List.iter2 (fun sp et -> bindPattern table scope diags sp et) ps elemTypes
+    | PConstructor(head, args) ->
+        // Resolve the union case's field types from the symbol table.
+        let fieldTypes =
+            match head.Segments with
+            | [name] ->
+                match table.TryFindOne name with
+                | Some sym ->
+                    match sym.Kind with
+                    | DKUnionCase(_, uc) ->
+                        let ctx = GenericContext()
+                        uc.Fields |> List.map (fun f ->
+                            match f with
+                            | UFNamed(_, te, _) | UFPos(te, _) ->
+                                Resolver.resolveType table ctx diags te)
+                    | _ -> List.replicate args.Length TyError
+                | None -> List.replicate args.Length TyError
+            | _ -> List.replicate args.Length TyError
+        let pairs =
+            if List.length fieldTypes = List.length args
+            then List.zip args fieldTypes
+            else args |> List.map (fun a -> a, TyError)
+        pairs |> List.iter (fun (sp, ft) -> bindPattern table scope diags sp ft)
+    | POr alts ->
+        // Walk the first alternative to put bindings into scope; walk
+        // remaining alternatives into a dummy scope (same diagnostics,
+        // no duplicate registrations).  T6 will enforce that all
+        // alternatives bind the same names.
+        match alts with
+        | [] -> ()
+        | first :: rest ->
+            bindPattern table scope diags first ty
+            for sp in rest do
+                let dummy = Scope()
+                bindPattern table dummy diags sp ty
+    | PRange _ ->
+        // Range pattern: no bindings produced.
+        ()
+    | PRecord(_, fields, _) ->
+        let recFields =
+            match ty with
+            | TyUser(id, _) -> fieldsOfRecord table id
+            | _ -> []
+        for field in fields do
+            match field with
+            | RPFNamed(name, innerPat, _) ->
+                let ft =
+                    recFields |> List.tryFind (fun (n, _) -> n = name)
+                    |> Option.map snd |> Option.defaultValue TyError
+                bindPattern table scope diags innerPat ft
+            | RPFShort(name, _) ->
+                let ft =
+                    recFields |> List.tryFind (fun (n, _) -> n = name)
+                    |> Option.map snd |> Option.defaultValue TyError
+                scope.Add({ Name = name; Type = ft; IsMutable = false })
+    | PParen inner ->
+        bindPattern table scope diags inner ty
+    | PTypeTest(inner, te) ->
+        // The pattern narrows the scrutinee to the tested type.
+        let ctx = GenericContext()
+        let narrowed = Resolver.resolveType table ctx diags te
+        bindPattern table scope diags inner narrowed
+    | PLiteral _ | PError ->
+        ()
+
+// ---------------------------------------------------------------------------
+// Mutually recursive inference engine.
 // ---------------------------------------------------------------------------
 
 let rec inferExpr
         (scope: Scope)
         (table: SymbolTable)
         (sigs:  Map<string, ResolvedSignature>)
+        (genericNames: string list)
+        (returnType: Type)
         (diags: ResizeArray<Diagnostic>)
         (e:     Expr)
         : Type =
 
-    let infer = inferExpr scope table sigs diags
+    let infer = inferExpr scope table sigs genericNames returnType diags
+
+    /// Infer the type of an expression-or-block branch.
+    let inferBranch (b: ExprOrBlock) : Type =
+        match b with
+        | EOBExpr ex   -> infer ex
+        | EOBBlock blk -> checkBlock scope table sigs genericNames returnType diags blk
+
+    /// Resolve a path in expression position.  Defined as a nested helper
+    /// so it has access to `infer` (needed for DKVal.Init fallback).
+    let resolvePath (path: ModulePath) (span: Span) : Type =
+        match path.Segments with
+        | [name] ->
+            // 1. Local binding (parameter, val/var/let).
+            match scope.TryFind name with
+            | Some b -> b.Type
+            | None ->
+                // 2. Function in the package.
+                match Map.tryFind name sigs with
+                | Some s ->
+                    let paramTypes = s.Params |> List.map (fun p -> p.Type)
+                    TyFunction(paramTypes, s.Return, s.IsAsync)
+                | None ->
+                    // 3. Codegen builtin (println, panic, …).
+                    match codegenBuiltinType name with
+                    | Some t -> t
+                    | None ->
+                        // 4. Named package-level symbol.
+                        match table.TryFindOne name with
+                        | Some sym ->
+                            match sym.Kind with
+                            | DKConst cd ->
+                                let ctx = mkGenericCtx genericNames
+                                Resolver.resolveType table ctx diags cd.Type
+                            | DKVal vd ->
+                                match vd.Type with
+                                | Some te ->
+                                    let ctx = mkGenericCtx genericNames
+                                    Resolver.resolveType table ctx diags te
+                                | None ->
+                                    // No annotation — infer from the init expression.
+                                    infer vd.Init
+                            | DKUnionCase(parentId, uc) ->
+                                if uc.Fields.IsEmpty then
+                                    TyUser(parentId, [])
+                                else
+                                    let ctx = GenericContext()
+                                    let fieldTypes =
+                                        uc.Fields |> List.map (fun f ->
+                                            match f with
+                                            | UFNamed(_, te, _) | UFPos(te, _) ->
+                                                Resolver.resolveType table ctx diags te)
+                                    TyFunction(fieldTypes, TyUser(parentId, []), false)
+                            | DKEnumCase(parentId, _) ->
+                                // Enum cases carry no fields; they are plain values.
+                                TyUser(parentId, [])
+                            | _ ->
+                                // Type-level symbol or other non-value — no error to
+                                // avoid noise on, e.g., a union name used as a
+                                // constructor head (the emitter handles those).
+                                TyError
+                        | None ->
+                            err diags "T0020"
+                                (sprintf "unknown name '%s'" name)
+                                span
+                            TyError
+        | _ ->
+            // Multi-segment expression path. Cross-package resolution is T7+.
+            TyError
 
     match e.Kind with
     | ELiteral lit       -> typeOfLiteral lit
-    | EPath path         -> resolvePath scope table sigs diags path e.Span
+    | EPath path         -> resolvePath path e.Span
     | EParen inner       -> infer inner
     | ETuple xs          -> TyTuple (xs |> List.map infer)
     | EList xs ->
@@ -408,10 +506,6 @@ let rec inferExpr
         let argTypes = args |> List.map (function
                                           | CAPositional e -> infer e
                                           | CANamed(_, e, _) -> infer e)
-        // Direct user calls bypass `TyFunction` so the param-mode info
-        // from the resolved signature flows in (out/inout args have
-        // an l-value rule we want to enforce; `TyFunction` drops mode
-        // information).
         let directSig =
             match fn.Kind with
             | EPath { Segments = [name] } ->
@@ -420,18 +514,10 @@ let rec inferExpr
                 | None ->
                     Map.tryFind (name + "/" + string args.Length) sigs
             | _ -> None
-        // Out / inout args must be addressable l-values — a direct
-        // local / parameter reference.  This guards against passing
-        // expression results, literals, etc. that the codegen can't
-        // address.  Bug if T0085 fires on a syntactically-valid
-        // mutable target the codegen actually accepts (rare).
         let isAddressableLValue (e: Expr) : bool =
             match e.Kind with
-            // Named local / param.
             | EPath { Segments = [_] } -> true
-            // Array element `xs[i]` (single index).
             | EIndex (_, [_]) -> true
-            // Record / distinct-type field `r.f`.
             | EMember (_, _) -> true
             | _ -> false
         let validateModeArg (p: ResolvedParam) (arg: CallArg) =
@@ -493,8 +579,8 @@ let rec inferExpr
         inferMember table diags rT name e.Span
 
     | EPropagate inner ->
-        // `e?` propagates an error/null. The result is the inner
-        // type's "value" projection — for T4 we return TyError.
+        // `e?` — check the inner expression, but the Ok-projection type
+        // is deferred until the Result type model is added to TyResult.
         let _ = infer inner
         TyError
 
@@ -504,13 +590,550 @@ let rec inferExpr
     | ESelf -> TySelf
 
     | EResult ->
-        // Resolved by the contract elaborator; for now, TyError so
-        // surrounding expressions don't cascade.
+        // Resolved by the contract elaborator.
         TyError
 
-    | ELambda _ | EIf _ | EMatch _ | EBlock _ | EUnsafe _
-    | ETry _ | EForall _ | EExists _
-    | EAssign _ | ERange _ | ETypeApp _ | EIndex _
-    | EInterpolated _ -> TyError
+    // ----- control-flow expressions -----
+
+    | EIf(cond, thenBranch, elseOpt, _) ->
+        let condT = infer cond
+        if not (Type.equiv condT (TyPrim PtBool)) then
+            err diags "T0067"
+                (sprintf "if-condition must be Bool (got %s)" (Type.render condT))
+                e.Span
+        let thenT = inferBranch thenBranch
+        match elseOpt with
+        | None -> TyPrim PtUnit
+        | Some elseBranch ->
+            let elseT = inferBranch elseBranch
+            // Never propagates; if both are Never, return Never.
+            if thenT = TyPrim PtNever then elseT
+            elif elseT = TyPrim PtNever then thenT
+            elif Type.equiv thenT elseT then thenT
+            else
+                err diags "T0068"
+                    (sprintf "if-expression branches have incompatible types (%s vs %s)"
+                        (Type.render thenT) (Type.render elseT))
+                    e.Span
+                thenT
+
+    | EMatch(scrutinee, arms) ->
+        let scrutT = infer scrutinee
+        if arms.IsEmpty then TyPrim PtNever
+        else
+            let armTypes =
+                arms |> List.map (fun arm ->
+                    scope.Push()
+                    bindPattern table scope diags arm.Pattern scrutT
+                    arm.Guard |> Option.iter (fun g ->
+                        let gT = infer g
+                        if not (Type.equiv gT (TyPrim PtBool)) then
+                            err diags "T0067"
+                                (sprintf "match guard must be Bool (got %s)" (Type.render gT))
+                                arm.Span)
+                    let bodyT = inferBranch arm.Body
+                    scope.Pop()
+                    bodyT)
+            // The result type is the first non-Never arm type; all non-Never
+            // arm types must agree.
+            let nonNever = armTypes |> List.filter (fun t -> t <> TyPrim PtNever)
+            match nonNever with
+            | [] -> TyPrim PtNever
+            | first :: rest ->
+                rest |> List.iter (fun t ->
+                    if not (Type.equiv t first) then
+                        err diags "T0068"
+                            (sprintf "match arms have incompatible types (%s vs %s)"
+                                (Type.render first) (Type.render t))
+                            e.Span)
+                first
+
+    | EBlock blk | EUnsafe blk ->
+        checkBlock scope table sigs genericNames returnType diags blk
+
+    // ----- lambdas -----
+
+    | ELambda(params', body) ->
+        let ctx = mkGenericCtx genericNames
+        let paramTypes =
+            params' |> List.map (fun p ->
+                match p.Type with
+                | Some te -> Resolver.resolveType table ctx diags te
+                | None    -> TyError)   // unannotated param — codegen infers from context
+        scope.Push()
+        List.iter2 (fun (p: LambdaParam) pt ->
+            scope.Add({ Name = p.Name; Type = pt; IsMutable = false }))
+            params' paramTypes
+        let bodyT = checkBlock scope table sigs genericNames returnType diags body
+        scope.Pop()
+        TyFunction(paramTypes, bodyT, false)
+
+    // ----- indexing -----
+
+    | EIndex(receiver, indices) ->
+        let receiverT = infer receiver
+        for idx in indices do
+            let idxT = infer idx
+            if not (Type.equiv idxT (TyPrim PtInt)) then
+                err diags "T0069"
+                    (sprintf "index must be Int (got %s)" (Type.render idxT))
+                    idx.Span
+        match receiverT with
+        | TyArray(_, elem) | TySlice elem -> elem
+        | TyPrim PtString  -> TyPrim PtChar
+        | TyError          -> TyError
+        | other ->
+            err diags "T0069"
+                (sprintf "cannot index into type %s" (Type.render other))
+                e.Span
+            TyError
+
+    // ----- ranges -----
+
+    | ERange rb ->
+        let elemType =
+            match rb with
+            | RBClosed(lo, hi) | RBHalfOpen(lo, hi) ->
+                let loT = infer lo
+                let hiT = infer hi
+                if Type.equiv loT hiT then loT else TyError
+            | RBLowerOpen hi -> infer hi
+            | RBUpperOpen lo -> infer lo
+        TyRange elemType
+
+    // ----- interpolated strings -----
+
+    | EInterpolated segments ->
+        for seg in segments do
+            match seg with
+            | ISExpr ex -> infer ex |> ignore
+            | ISText _  -> ()
+        TyPrim PtString
+
+    // ----- generic instantiation -----
+
+    | ETypeApp(fn, _typeArgs) ->
+        // Pass through to get the underlying function type; codegen owns
+        // actual monomorphisation.
+        infer fn
+
+    // ----- assignment in expression position -----
+
+    | EAssign(target, _, value) ->
+        let targetType = infer target
+        let valueType  = infer value
+        if not (Type.equiv targetType valueType) then
+            err diags "T0063"
+                (sprintf "assigned value of type %s does not match target of type %s"
+                    (Type.render valueType) (Type.render targetType))
+                e.Span
+        TyPrim PtUnit
+
+    // ----- quantifier atoms (proof sub-language) -----
+
+    | EForall(binders, whereExpr, body) | EExists(binders, whereExpr, body) ->
+        scope.Push()
+        for b in binders do
+            let ctx = GenericContext()
+            let bt = Resolver.resolveType table ctx diags b.Type
+            scope.Add({ Name = b.Name; Type = bt; IsMutable = false })
+        whereExpr |> Option.iter (infer >> ignore)
+        infer body |> ignore
+        scope.Pop()
+        TyPrim PtBool
+
+    // ----- try expression -----
+
+    | ETry inner ->
+        // `try e` wraps the result in a Result-like type. Until the
+        // Result type is modelled in TyResult, return TyError (suppresses
+        // cascading diagnostics) but still check the inner expression.
+        let _ = infer inner
+        TyError
 
     | EError -> TyError
+
+and checkStatement
+        (scope: Scope)
+        (table: SymbolTable)
+        (sigs:  Map<string, ResolvedSignature>)
+        (genericNames: string list)
+        (returnType: Type)
+        (diags: ResizeArray<Diagnostic>)
+        (stmt:  Statement)
+        : unit =
+
+    let inferE = inferExpr scope table sigs genericNames returnType diags
+
+    match stmt.Kind with
+    | SLocal (LBVal(pat, declType, init)) ->
+        let initType = inferE init
+        let bindType =
+            match declType with
+            | Some te ->
+                let ctx = mkGenericCtx genericNames
+                let declT = Resolver.resolveType table ctx diags te
+                if not (Type.equiv declT initType) then
+                    err diags "T0060"
+                        (sprintf "val binding declared as %s but initialiser has type %s"
+                            (Type.render declT) (Type.render initType))
+                        stmt.Span
+                declT
+            | None -> initType
+        bindPattern table scope diags pat bindType
+
+    | SLocal (LBVar(name, declType, init)) ->
+        let initType =
+            match init with
+            | Some e -> inferE e
+            | None -> TyError
+        let bindType =
+            match declType with
+            | Some te ->
+                let ctx = mkGenericCtx genericNames
+                let declT = Resolver.resolveType table ctx diags te
+                if init.IsSome && not (Type.equiv declT initType) then
+                    err diags "T0061"
+                        (sprintf "var binding declared as %s but initialiser has type %s"
+                            (Type.render declT) (Type.render initType))
+                        stmt.Span
+                declT
+            | None -> initType
+        scope.Add({ Name = name; Type = bindType; IsMutable = true })
+
+    | SLocal (LBLet(name, declType, init)) ->
+        let initType = inferE init
+        let bindType =
+            match declType with
+            | Some te ->
+                let ctx = mkGenericCtx genericNames
+                let declT = Resolver.resolveType table ctx diags te
+                if not (Type.equiv declT initType) then
+                    err diags "T0062"
+                        (sprintf "let binding declared as %s but initialiser has type %s"
+                            (Type.render declT) (Type.render initType))
+                        stmt.Span
+                declT
+            | None -> initType
+        scope.Add({ Name = name; Type = bindType; IsMutable = false })
+
+    | SAssign(target, op, value) ->
+        let _ = op
+        let targetType = inferE target
+        let valueType  = inferE value
+        if not (Type.equiv targetType valueType) then
+            err diags "T0063"
+                (sprintf "assigned value of type %s does not match target of type %s"
+                    (Type.render valueType) (Type.render targetType))
+                stmt.Span
+
+    | SReturn None ->
+        if not (Type.equiv returnType (TyPrim PtUnit)) then
+            err diags "T0064"
+                (sprintf "return without value but enclosing function returns %s"
+                    (Type.render returnType))
+                stmt.Span
+
+    | SReturn (Some e) ->
+        let t = inferE e
+        if t <> TyPrim PtNever && not (Type.equiv t returnType) then
+            err diags "T0065"
+                (sprintf "returned value of type %s does not match declared return type %s"
+                    (Type.render t) (Type.render returnType))
+                stmt.Span
+
+    | SThrow e ->
+        let _ = inferE e
+        ()
+
+    | SBreak _ | SContinue _ -> ()
+
+    | SInvariant e ->
+        let _ = inferE e
+        ()
+
+    | SExpr e ->
+        let _ = inferE e
+        ()
+
+    | SDefer blk
+    | SScope(_, blk)
+    | SLoop(_, blk) ->
+        checkBlock scope table sigs genericNames returnType diags blk |> ignore
+
+    | SFor(_, pat, iter, body) ->
+        let iterType = inferE iter
+        let elemType =
+            match iterType with
+            | TySlice e   -> e
+            | TyArray(_, e) -> e
+            | TyRange e   -> e
+            | _ -> TyError
+        scope.Push()
+        bindPattern table scope diags pat elemType
+        checkBlock scope table sigs genericNames returnType diags body |> ignore
+        scope.Pop()
+
+    | SWhile(_, cond, body) ->
+        let condT = inferE cond
+        if not (Type.equiv condT (TyPrim PtBool)) then
+            err diags "T0066"
+                (sprintf "while-condition must be Bool (got %s)"
+                    (Type.render condT))
+                stmt.Span
+        checkBlock scope table sigs genericNames returnType diags body |> ignore
+
+    | STry(body, catches) ->
+        checkBlock scope table sigs genericNames returnType diags body |> ignore
+        for c in catches do
+            scope.Push()
+            match c.Bind with
+            | Some name ->
+                scope.Add({ Name = name; Type = TyError; IsMutable = false })
+            | None -> ()
+            checkBlock scope table sigs genericNames returnType diags c.Body |> ignore
+            scope.Pop()
+
+    | SItem _ ->
+        // Nested item declarations — deferred to T6+.
+        ()
+
+    | SRule (_, _) ->
+        // Stub-builder DSL — deferred to T6+ with @stubbable.
+        ()
+
+and checkBlock
+        (scope: Scope)
+        (table: SymbolTable)
+        (sigs:  Map<string, ResolvedSignature>)
+        (genericNames: string list)
+        (returnType: Type)
+        (diags: ResizeArray<Diagnostic>)
+        (blk:   Block)
+        : Type =
+    scope.Push()
+    let mutable lastExprType : Type = TyPrim PtUnit
+    for stmt in blk.Statements do
+        match stmt.Kind with
+        | SExpr e ->
+            lastExprType <- inferExpr scope table sigs genericNames returnType diags e
+        | _ ->
+            checkStatement scope table sigs genericNames returnType diags stmt
+            lastExprType <- TyPrim PtUnit
+    scope.Pop()
+    lastExprType
+
+// ---------------------------------------------------------------------------
+// Definite-assignment analysis for `out` parameters.
+//
+// Each `out` parameter must be assigned along every normal-completion
+// path through the function body.  Loops are treated weakly (their
+// bodies may not run).
+// ---------------------------------------------------------------------------
+
+type private DASet = Set<string>
+
+let private outParamNames (sg: ResolvedSignature) : Set<string> =
+    sg.Params
+    |> List.choose (fun p ->
+        if p.Mode = PMOut then Some p.Name else None)
+    |> Set.ofList
+
+let private outArgsAssigned
+        (sigs: Map<string, ResolvedSignature>)
+        (call: Expr) : Set<string> =
+    match call.Kind with
+    | ECall (fn, args) ->
+        let sigOpt =
+            match fn.Kind with
+            | EPath { Segments = [name] } ->
+                match Map.tryFind name sigs with
+                | Some s -> Some s
+                | None ->
+                    Map.tryFind (name + "/" + string args.Length) sigs
+            | _ -> None
+        match sigOpt with
+        | None -> Set.empty
+        | Some sg ->
+            List.zip sg.Params args
+            |> List.choose (fun (p, a) ->
+                if p.Mode = PMOut then
+                    let payload =
+                        match a with
+                        | CAPositional e -> e
+                        | CANamed (_, e, _) -> e
+                    match payload.Kind with
+                    | EPath { Segments = [n] } -> Some n
+                    | _ -> None
+                else None)
+            |> Set.ofList
+    | _ -> Set.empty
+
+let rec private daBlock
+        (sigs:    Map<string, ResolvedSignature>)
+        (outs:    Set<string>)
+        (diags:   ResizeArray<Diagnostic>)
+        (initial: DASet)
+        (blk:     Block) : DASet =
+    let mutable cur = initial
+    for s in blk.Statements do
+        cur <- daStatement sigs outs diags cur s
+    cur
+
+and private daStatement
+        (sigs:  Map<string, ResolvedSignature>)
+        (outs:  Set<string>)
+        (diags: ResizeArray<Diagnostic>)
+        (cur:   DASet)
+        (s:     Statement) : DASet =
+    match s.Kind with
+    | SAssign (target, _, value) ->
+        let cur' = daExpr sigs outs diags cur value
+        match target.Kind with
+        | EPath { Segments = [name] } when Set.contains name outs ->
+            Set.add name cur'
+        | _ -> cur'
+    | SLocal (LBVal (_, _, init)) ->
+        daExpr sigs outs diags cur init
+    | SLocal (LBLet (_, _, init)) ->
+        daExpr sigs outs diags cur init
+    | SLocal (LBVar (_, _, Some init)) ->
+        daExpr sigs outs diags cur init
+    | SLocal (LBVar (_, _, None)) ->
+        cur
+    | SExpr e ->
+        daExpr sigs outs diags cur e
+    | SReturn rOpt ->
+        let cur' =
+            match rOpt with
+            | Some e -> daExpr sigs outs diags cur e
+            | None   -> cur
+        let missing = Set.difference outs cur'
+        if not missing.IsEmpty then
+            err diags "T0086"
+                (sprintf "out parameter(s) not assigned before return: %s"
+                    (missing |> Set.toList |> String.concat ", "))
+                s.Span
+        outs  // pretend everything is assigned on dead paths past a return
+    | SWhile (_, cond, body) ->
+        let afterCond = daExpr sigs outs diags cur cond
+        let _ = daBlock sigs outs diags afterCond body
+        afterCond
+    | SLoop (_, body) ->
+        let _ = daBlock sigs outs diags cur body
+        cur
+    | SFor (_, _, iter, body) ->
+        let afterIter = daExpr sigs outs diags cur iter
+        let _ = daBlock sigs outs diags afterIter body
+        afterIter
+    | SBreak _ | SContinue _ -> cur
+    | SDefer body ->
+        daBlock sigs outs diags cur body
+    | _ -> cur
+
+and private daExpr
+        (sigs:  Map<string, ResolvedSignature>)
+        (outs:  Set<string>)
+        (diags: ResizeArray<Diagnostic>)
+        (cur:   DASet)
+        (e:     Expr) : DASet =
+    match e.Kind with
+    | ECall (_, args) ->
+        let cur' =
+            args
+            |> List.fold (fun s a ->
+                match a with
+                | CAPositional ex
+                | CANamed (_, ex, _) -> daExpr sigs outs diags s ex)
+                cur
+        Set.union cur' (Set.intersect outs (outArgsAssigned sigs e))
+    | EBinop (_, l, r) ->
+        let cur' = daExpr sigs outs diags cur l
+        daExpr sigs outs diags cur' r
+    | EPrefix (_, x) -> daExpr sigs outs diags cur x
+    | EParen x -> daExpr sigs outs diags cur x
+    | EIf (cond, thenBranch, elseOpt, _) ->
+        let afterCond = daExpr sigs outs diags cur cond
+        let daBranch (b: ExprOrBlock) =
+            match b with
+            | EOBExpr  e -> daExpr sigs outs diags afterCond e
+            | EOBBlock blk -> daBlock sigs outs diags afterCond blk
+        let afterThen = daBranch thenBranch
+        let afterElse =
+            match elseOpt with
+            | Some b -> daBranch b
+            | None   -> afterCond
+        Set.intersect afterThen afterElse
+    | EMatch (scrutinee, arms) ->
+        let afterScrut = daExpr sigs outs diags cur scrutinee
+        let armEnds =
+            arms |> List.map (fun arm ->
+                match arm.Body with
+                | EOBExpr e   -> daExpr sigs outs diags afterScrut e
+                | EOBBlock b  -> daBlock sigs outs diags afterScrut b)
+        match armEnds with
+        | []           -> afterScrut
+        | first :: rest -> rest |> List.fold Set.intersect first
+    | EBlock blk ->
+        daBlock sigs outs diags cur blk
+    | _ -> cur
+
+// ---------------------------------------------------------------------------
+// Function body entry point.
+// ---------------------------------------------------------------------------
+
+/// Check a function declaration's body against its resolved signature.
+let checkFunctionBody
+        (table: SymbolTable)
+        (sigs:  Map<string, ResolvedSignature>)
+        (diags: ResizeArray<Diagnostic>)
+        (fn:    FunctionDecl)
+        (sig':  ResolvedSignature)
+        : unit =
+
+    // @externTarget functions have a user-supplied placeholder body;
+    // skip return-type checking.
+    let isExternTarget =
+        fn.Annotations
+        |> List.exists (fun a ->
+            match a.Name.Segments with
+            | ["externTarget"] -> true
+            | _ -> false)
+    if isExternTarget then () else
+
+    let scope = Scope()
+    for p in sig'.Params do
+        scope.Add(
+            { Name      = p.Name
+              Type      = p.Type
+              IsMutable = (p.Mode <> PMIn) })
+
+    match fn.Body with
+    | None -> ()
+    | Some (FBExpr e) ->
+        let bodyType = inferExpr scope table sigs sig'.Generics sig'.Return diags e
+        if bodyType <> TyPrim PtNever
+           && not (Type.equiv bodyType sig'.Return) then
+            err diags "T0070"
+                (sprintf "function body has type %s but declared return type is %s"
+                    (Type.render bodyType) (Type.render sig'.Return))
+                fn.Span
+    | Some (FBBlock blk) ->
+        let bodyType =
+            checkBlock scope table sigs sig'.Generics sig'.Return diags blk
+        if bodyType <> TyPrim PtUnit
+           && bodyType <> TyPrim PtNever
+           && not (Type.equiv bodyType sig'.Return) then
+            err diags "T0070"
+                (sprintf "function body trailing expression has type %s but declared return type is %s"
+                    (Type.render bodyType) (Type.render sig'.Return))
+                fn.Span
+        let outs = outParamNames sig'
+        if not outs.IsEmpty then
+            let finalDA = daBlock sigs outs diags Set.empty blk
+            let missing = Set.difference outs finalDA
+            if not missing.IsEmpty then
+                err diags "T0086"
+                    (sprintf "out parameter(s) not assigned along fall-through exit: %s"
+                        (missing |> Set.toList |> String.concat ", "))
+                    fn.Span

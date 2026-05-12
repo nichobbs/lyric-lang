@@ -110,6 +110,7 @@ let rec toClrTypeWithGenerics
         match Map.tryFind name genericSubst with
         | Some t -> t
         | None   -> typeof<obj>      // erasure fallback for unbound vars
+    | TyRange _       -> typeof<obj>  // ranges are consumed by for-loop codegen; never boxed
     | TyError         -> typeof<obj>
 
 /// Back-compat overload that erases every `TyVar` to `obj`.

@@ -16,7 +16,7 @@ let private inferIn (decls: string) (exprSrc: string) : Type * Diagnostic list =
     let e, parseDiags = parseExprFromString exprSrc
     let scope = Scope()
     let diags = ResizeArray<Diagnostic>(parseDiags)
-    let t = inferExpr scope r.Symbols r.Signatures diags e
+    let t = inferExpr scope r.Symbols r.Signatures [] (TyPrim PtUnit) diags e
     t, List.ofSeq diags
 
 /// Infer with no surrounding declarations.

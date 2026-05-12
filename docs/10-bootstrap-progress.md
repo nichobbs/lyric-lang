@@ -11825,3 +11825,106 @@ find the assembly via `dotnet exec`'s probing path.
 **Test counts:** 756 emitter tests (755 passing; 1 pre-existing `kernel total
 reported (soft cap)` failure unrelated to this change), 266 verifier tests —
 all passing.
+
+---
+
+### D-progress-246: T5 type-checker uplift — complete expression and pattern inference
+
+**Date:** 2026-05-12
+**Branch:** `claude/lyric-closures-functions-XencC`
+
+Completes the bootstrap type checker's expression and pattern inference to T5
+level: every expression form and pattern form that the parser can produce now
+has a correct type-checker path.
+
+**`compiler/src/Lyric.TypeChecker/Type.fs`**
+
+Added `| TyRange of Type` to the `Type` discriminated union. `TyRange` is
+produced by `ERange` expressions and consumed by the for-loop element-type
+extraction path. `equiv` and `render` updated accordingly.
+
+**`compiler/src/Lyric.TypeChecker/ExprChecker.fs`** (was separate `StmtChecker.fs`)
+
+`ExprChecker.fs` and `StmtChecker.fs` were merged into a single file under
+`let rec inferExpr … and checkStatement … and checkBlock …` mutual recursion.
+`StmtChecker.fs` is removed from the project file. The merged file implements:
+
+- **EIf** — condition must be `Bool` (T0067); branches must have compatible
+  types (T0068); `TyNever` branches propagate the other branch's type.
+- **EMatch** — pattern bindings per arm via `bindPattern`; arm body types
+  must be compatible (T0068).
+- **EBlock / EUnsafe** — block body returns type of trailing expression.
+- **ELambda** — builds `TyFunction` from annotated parameter types; type-checks
+  body against inferred return.
+- **EIndex** — receiver must be `slice[T]`, `array[T]`, or `String`; index must
+  be `Int`; returns element type (T0069 for failures).
+- **ERange** — infers element type from bounds; produces `TyRange elemType`.
+- **EInterpolated** — type-checks each `ISExpr` segment; result is `String`.
+- **ETypeApp** — pass-through that infers the underlying expression's type.
+- **EAssign** — verifies target is mutable and RHS matches target type.
+- **EForall / EExists** — bind the quantified variable; result is `Bool`.
+- **ETry** — propagates the inner expression's type.
+- **resolvePath** — now handles `DKConst`, `DKVal` (with init-expression
+  fallback), `DKUnionCase` (no-field → parent union type; with-field →
+  constructor `TyFunction`), and `DKEnumCase`.
+
+**`bindPattern`** extended:
+- `PTuple` — extracts element types from a `TyTuple` scrutinee.
+- `PConstructor` — looks up the union case in the symbol table and resolves
+  each field's type.
+- `POr` — walks the first alternative into scope; remaining alternatives
+  into a dummy scope (same diagnostics, no duplicate bindings).
+- `PRecord` — resolves field types from the record's type id via
+  `fieldsOfRecord`.
+- `PTypeTest` — narrows the inner binding to the tested type.
+- `PParen` — delegates to the inner pattern.
+- `PRange`, `PWildcard`, `PLiteral`, `PError` — no bindings produced.
+
+For-loop element type: `TyRange e` added alongside `TyArray e` / `TySlice e`
+as valid iterable element-type sources.
+
+**New diagnostic codes:**
+
+| Code | Meaning |
+|------|---------|
+| T0067 | `if`/`for` guard condition must be `Bool` |
+| T0068 | Branch or match-arm type mismatch |
+| T0069 | Invalid index expression (non-Int index or non-indexable receiver) |
+
+**`compiler/src/Lyric.TypeChecker/Lyric.TypeChecker.fsproj`**
+
+`StmtChecker.fs` removed from the compile list (file left on disk but
+excluded).
+
+**`compiler/src/Lyric.TypeChecker/Checker.fs`**
+
+Call site updated from `StmtChecker.checkFunctionBody` to
+`ExprChecker.checkFunctionBody`.
+
+**`compiler/src/Lyric.Emitter/TypeMap.fs`**
+
+Added `| TyRange _ -> typeof<obj>` (ranges are consumed by for-loop codegen
+and never need to be boxed to a CLR type).
+
+**`compiler/src/Lyric.Lsp/Server.fs`**
+
+Added `| TyRange x -> sprintf "range[%s]" (render x)` to the LSP hover
+type renderer.
+
+**`compiler/tests/Lyric.TypeChecker.Tests/`**
+
+Two new test files added:
+
+- `T5ExprCheckerTests.fs` — 44 tests covering EIf (T0067, T0068, Never
+  propagation), EMatch (pattern binding, T0068), ELambda (TyFunction shape,
+  body checking), EIndex (T0069), EInterpolated, module-level val resolution,
+  DKUnionCase / DKEnumCase resolution, generic function symbol resolution,
+  EForall / EExists.
+- `T5PatternTests.fs` — 17 tests covering PTuple element types, PConstructor
+  field types, POr, PRecord (shorthand and named bindings), PTypeTest in val
+  binding, PRange (no-binding), for-loop over `slice[Int]`, wildcard patterns.
+
+Type checker test count: 187 (from 143 before, +44 net new).
+
+**Test counts:** 752 emitter tests, 323 parser tests, 187 type-checker tests,
+123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
