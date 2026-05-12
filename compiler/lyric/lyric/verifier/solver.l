@@ -162,7 +162,7 @@ pub func trivialDischarge(g: in Goal): Option[SolverOutcome] {
 
 func isTautology(t: in Term): Bool {
   match t {
-    case TLit(LBool(true), _) -> true
+    case TLit(VLBool(true), _) -> true
     case TBuiltin(BOpEq,  args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpIff, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpLte, args) -> args.count == 2 and termEq(args[0], args[1])

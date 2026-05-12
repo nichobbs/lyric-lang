@@ -37,7 +37,7 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
   if name == "Int"    { return Some(value = sortInfoNoRange(SInt)) }
   if name == "Long"   { return Some(value = sortInfoNoRange(SInt)) }
   if name == "Nat"    {
-    val natRange = RBKClosed(lo = 0, hi = 9223372036854775807)
+    val natRange = RBKClosed(lo = 0i64, hi = 9223372036854775807i64)
     val natSortInfo = SortInfo(sort = SInt, range = natRange)
     return Some(value = natSortInfo)
   }
@@ -235,13 +235,13 @@ pub func rangeHypotheses(binder: in String, info: in SortInfo): List[Term] {
     case RBKNone -> {}
     case RBKClosed(lo, hi) -> {
       val v = TVar(name = binder, sort = info.sort)
-      result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = LInt(n = lo), sort = SInt), v)))
-      result.add(TBuiltin(op = BOpLte, args = termList2(v, TLit(value = LInt(n = hi), sort = SInt))))
+      result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
+      result.add(TBuiltin(op = BOpLte, args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
     }
     case RBKHalfOpen(lo, hi) -> {
       val v = TVar(name = binder, sort = info.sort)
-      result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = LInt(n = lo), sort = SInt), v)))
-      result.add(TBuiltin(op = BOpLt,  args = termList2(v, TLit(value = LInt(n = hi), sort = SInt))))
+      result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
+      result.add(TBuiltin(op = BOpLt,  args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
     }
   }
   result

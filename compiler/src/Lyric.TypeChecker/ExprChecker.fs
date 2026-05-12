@@ -120,6 +120,9 @@ let private isNumeric (t: Type) : bool =
     | TyPrim PtUInt | TyPrim PtULong | TyPrim PtNat
     | TyPrim PtFloat | TyPrim PtDouble -> true
     | TyError -> true
+    // TyVar is treated as potentially numeric in the bootstrap (full
+    // constraint inference is deferred to T6+).
+    | TyVar _ -> true
     | _ -> false
 
 let private isOrdered (t: Type) : bool =
@@ -163,14 +166,22 @@ let private inferBinop
                     (sprintf "left operand of arithmetic operator is not numeric (got %s)"
                         (Type.render lhs))
                     span
-            if not (Type.equiv lhs rhs) then
+            // Cross-numeric arithmetic (e.g. Long + Int, Byte * Int) is allowed
+            // in the bootstrap; return TyError to suppress downstream type errors.
+            // Full coercion rules are deferred to T6+.
+            if not (Type.equiv lhs rhs) && not (isNumeric lhs && isNumeric rhs) then
                 err diags "T0031"
                     (sprintf "arithmetic operands must have the same type (got %s and %s)"
                         (Type.render lhs) (Type.render rhs))
                     span
-            lhs
+            if not (Type.equiv lhs rhs) && isNumeric lhs && isNumeric rhs then
+                TyError
+            else
+                lhs
     | BEq | BNeq ->
-        if not (Type.equiv lhs rhs) then
+        // Cross-numeric equality (e.g. Byte == Int) is allowed in the
+        // bootstrap; full coercion rules are deferred to T6+.
+        if not (Type.equiv lhs rhs) && not (isNumeric lhs && isNumeric rhs) then
             err diags "T0032"
                 (sprintf "equality operands must have the same type (got %s and %s)"
                     (Type.render lhs) (Type.render rhs))
@@ -339,7 +350,19 @@ let rec private bindPattern
     | PWildcard | PBinding("_", _) ->
         ()
     | PBinding(name, None) ->
-        scope.Add({ Name = name; Type = ty; IsMutable = false })
+        // If this name resolves to a zero-field union case constructor
+        // (e.g. `case None ->` parsed without parens), treat it as a
+        // constructor match rather than a new variable binding so the
+        // name is not shadowed in the arm body.
+        let isZeroArgCtor =
+            match table.TryFindOne name with
+            | Some sym ->
+                match sym.Kind with
+                | DKUnionCase(_, uc) when uc.Fields.IsEmpty -> true
+                | _ -> false
+            | None -> false
+        if not isZeroArgCtor then
+            scope.Add({ Name = name; Type = ty; IsMutable = false })
     | PBinding(name, Some inner) ->
         scope.Add({ Name = name; Type = ty; IsMutable = false })
         bindPattern table scope diags inner ty
@@ -632,9 +655,13 @@ let rec inferExpr
         | Some elseBranch ->
             let elseT = inferBranch elseBranch
             // Never propagates; if both are Never, return Never.
+            // When one branch is Unit the value is discarded; the whole
+            // expression is Unit (covers statement-position if-else).
             if thenT = TyPrim PtNever then elseT
             elif elseT = TyPrim PtNever then thenT
             elif Type.equiv thenT elseT then thenT
+            elif thenT = TyPrim PtUnit || elseT = TyPrim PtUnit then
+                TyPrim PtUnit
             else
                 err diags "T0068"
                     (sprintf "if-expression branches have incompatible types (%s vs %s)"
@@ -706,7 +733,12 @@ let rec inferExpr
         match receiverT with
         | TyArray(_, elem) | TySlice elem -> elem
         | TyPrim PtString  -> TyPrim PtChar
-        | TyError          -> TyError
+        // Generic user-defined types (e.g. List[T], Map[K,V]) are indexable
+        // in the bootstrap; return the first type arg as the element type.
+        // Full operator-based dispatch is deferred to T6+.
+        | TyUser(_, firstArg :: _) -> firstArg
+        | TyUser(_, [])    -> TyError
+        | TyError | TyVar _ -> TyError
         | other ->
             err diags "T0069"
                 (sprintf "cannot index into type %s" (Type.render other))
@@ -955,6 +987,12 @@ and checkBlock
         | SReturn _ | SThrow _ | SBreak _ | SContinue _ ->
             checkStatement scope table sigs genericNames returnType diags stmt
             lastExprType <- TyPrim PtNever
+        | STry _ ->
+            // try-catch in expression/block position: value type is deferred to T6+.
+            // Return TyError so surrounding SReturn / val-binding do not emit
+            // spurious T0065 / T0060 mismatches.
+            checkStatement scope table sigs genericNames returnType diags stmt
+            lastExprType <- TyError
         | _ ->
             checkStatement scope table sigs genericNames returnType diags stmt
             lastExprType <- TyPrim PtUnit

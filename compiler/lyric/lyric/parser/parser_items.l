@@ -1912,7 +1912,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
       }
       case TKeyword(k) -> {
         // §5 contract augmentation: requires:/ensures: on aspect body
-        if isKw(k, KwRequires) or isKw(k, KwEnsures) {
+        if k == KwRequires or k == KwEnsures {
           match parseContractClauseOpt(st) {
             case Some(c) -> contracts.add(c)
             case None -> {}
@@ -2017,7 +2017,7 @@ func parsePropertyBody(st: inout ParseState): PropertyDecl {
     }
   }
   val _ = skipStmtEnds(st)
-  val whereExpr: Expr? =
+  val whereExpr: Option[Expr] =
     match tryEatKw(st, KwWhere) {
       case Some(_) -> Some(parseExpr(st))
       case None -> None
