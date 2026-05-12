@@ -11545,3 +11545,90 @@ Extends `lyric-lambda` with authorizer support and Kinesis, and ships the new
 - D063 added to `docs/03-decision-log.md`.
 
 **Test counts:** unchanged (source-only; integration tests follow with F# kernel wiring).
+
+---
+
+### D-progress-244: lyric-lambda v3, lyric-aws-secrets JVM, and lyric-aws-xray
+
+**Branch:** `claude/lyric-lambda-library-L7cgt`
+**Decision log:** D064
+
+Extends `lyric-lambda` and `lyric-aws-secrets` with JVM support, AOT-safe
+handler registration, and response streaming; adds the new `lyric-aws-xray`
+library for AWS X-Ray active tracing as a B-mode aspect.
+
+**Shipped in lyric-lambda:**
+
+- `lyric-lambda/src/direct.l` — `Lambda.Direct` package:
+  - `DirectHandler` opaque type (kernel-managed function reference wrapper)
+  - `sqsHandler`, `sqsBatchHandler`, `snsHandler`, `s3Handler`,
+    `eventBridgeHandler`, `dynamoDbHandler`, `kinesisHandler`, `rawHandler` —
+    typed factory functions for event-source handlers
+  - `tokenAuthorizerHandler`, `requestAuthorizerHandler`,
+    `httpAuthorizerHandler` — typed factory functions for authorizer handlers
+  - `streamingHandler` — typed factory for streaming handlers
+    (signature: `func(String, LambdaContext, StreamWriter) -> Result[Unit, LambdaError]`)
+- `lyric-lambda/src/stream.l` — `Lambda.Stream` package:
+  - `StreamWriter` opaque type (kernel-managed write channel)
+  - `setContentType(writer, contentType)` — set Content-Type before first write
+  - `write(writer, chunk)` — deliver UTF-8 string chunk immediately
+  - `writeBytes(writer, base64Chunk)` — deliver raw bytes (base64 decoded by kernel)
+  - `close(writer)` — signal end of response; auto-called on handler return
+- `lyric-lambda/src/_kernel/lambda_kernel_jvm.l` — `Lambda.Kernel.Runtime`
+  `@cfg(feature="jvm")`: extern to the Java managed runtime
+  (`com.amazonaws.lambda.serve(app, localPort)`); documents the
+  `<RootPackage>$LambdaHandler::handleRequest` dispatch protocol.
+- `lyric-lambda/src/lambda.l` — extended:
+  - `LambdaApp` gains two new fields: `streamingHandler: Option[String]`
+    and `directHandlers: [Lambda.Direct.DirectHandler]`
+  - `withStreamingHandler(app, handlerName)` builder
+  - `withDirect(app, handler)` builder
+  - All internal `LambdaApp`-constructing helpers updated to carry all 5 fields
+- `lyric-lambda/lyric.toml` — rewritten: 8 packages (+ `Lambda.Direct`,
+  `Lambda.Stream`); 3 features (`aws`, `local`, `jvm`); kernel list extended
+  with `lambda_kernel_jvm.l`; `[maven]` table added for JVM runtime deps.
+
+**Shipped in lyric-aws-secrets:**
+
+- `lyric-aws-secrets/src/_kernel/secrets_kernel_jvm.l` — `AwsSecrets.Kernel.Net`
+  `@cfg(feature="jvm")`: extern to AWS SDK for Java v2
+  (`software.amazon.awssdk.secrets`); `initFromAnnotations`, `fetchSecret`,
+  `fetchParameter` — mirrors .NET API; documents JVM class metadata scanning,
+  ConcurrentHashMap cache, region resolution.
+- `lyric-aws-secrets/lyric.toml` — extended: `jvm = []` feature added;
+  kernel list extended with `secrets_kernel_jvm.l`; `[maven]` table added
+  (`software.amazon.awssdk:secretsmanager:2.25.x`,
+  `software.amazon.awssdk:ssm:2.25.x`).
+
+**Shipped in lyric-aws-xray (new library):**
+
+- `lyric-aws-xray/lyric.toml` — manifest with `aws`, `jvm`, `local` features;
+  NuGet: `Amazon.XRay.Recorder.Core 2.14.0`; Maven: `aws-xray-recorder-sdk-core 2.15.3`.
+- `lyric-aws-xray/src/xray.l` — `AwsXRay` package:
+  - `SubsegmentHandle` opaque type
+  - `currentSubsegment()` — retrieve active subsegment from within a wrapped handler
+  - `annotate(handle, key, value)` — indexed X-Ray annotation
+  - `metadata(handle, key, value)` — unindexed metadata
+  - `Tracing` B-mode pub aspect: wraps matched calls as X-Ray subsegments;
+    records error annotation on `Err(_)`; no-op pass-through when `enabled = false`
+- `lyric-aws-xray/src/_kernel/xray_kernel_aws.l` — `AwsXRay.Kernel.Net`
+  `@cfg(feature="aws")`: extern to `Amazon.XRay.Recorder`
+  (`beginSubsegment`, `endSubsegment`, `addAnnotation`, `addMetadata`,
+  `currentSubsegment`); documents AsyncLocalSegmentContext thread safety.
+- `lyric-aws-xray/src/_kernel/xray_kernel_jvm.l` — `AwsXRay.Kernel.Net`
+  `@cfg(feature="jvm")`: extern to `com.amazonaws.xray` (AWS SDK for Java v2);
+  documents thread-local TraceContext isolation.
+- `lyric-aws-xray/src/_kernel/xray_kernel_local.l` — `AwsXRay.Kernel.Net`
+  `@cfg(feature="local")`: no-op; all X-Ray calls silently dropped.
+
+**Documentation:**
+
+- `docs/35-lambda-library.md` — status updated to D064; goals extended with
+  items 7–10; library structure tables updated with new packages and xray;
+  §3 `LambdaApp` updated to 5-field record + builder table; §8 kernel table
+  rewritten to include JVM row and xray rows; §10 (AOT Direct), §11 (Streaming),
+  §12 (JVM), §13 (X-Ray), §14 (env vars, was §10), §15 (design notes, was §11),
+  §16 (open questions, was §12) added/renumbered; all open questions resolved.
+- D064 added to `docs/03-decision-log.md`.
+
+**Test counts:** unchanged (source-only; integration tests follow with F# kernel wiring).

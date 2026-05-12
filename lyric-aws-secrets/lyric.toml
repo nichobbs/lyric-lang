@@ -5,6 +5,10 @@
 #                            @parameterStore), the init() entry point, explicit
 #                            get/fetch functions, and SecretCache config.
 #   AwsSecrets.Kernel.Net  — extern boundary to the AWS SDK clients.
+#                            Exactly one file is compiled per build:
+#                              aws   feature → AWS SDK for .NET v3 clients
+#                              local feature → no-op; env vars are the only source
+#                              jvm   feature → AWS SDK for Java v2 clients
 #
 # Config-block integration (primary usage):
 #   Apply @secretsManager or @parameterStore to @sensitive fields in any
@@ -59,10 +63,12 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
-# AWS SDK backend (production).
+# AWS SDK backend (production, .NET).
 aws   = []
 # Local no-op backend: init() is a no-op; env var overrides are the only source.
 local = []
+# JVM: AWS SDK for Java v2 (software.amazon.awssdk).
+jvm   = []
 
 [project]
 name            = "Lyric.AwsSecrets"
@@ -73,11 +79,13 @@ output_assembly = "AwsSecrets.dll"
 # Config annotations, init(), explicit fetch API, error types, cache config.
 "AwsSecrets"            = "src/secrets.l"
 # Extern boundary — exactly one file is compiled per build:
-#   aws   → src/_kernel/secrets_kernel_aws.l
-#   local → src/_kernel/secrets_kernel_local.l
+#   aws   → src/_kernel/secrets_kernel_aws.l   (.NET AWS SDK v3)
+#   local → src/_kernel/secrets_kernel_local.l  (no-op)
+#   jvm   → src/_kernel/secrets_kernel_jvm.l    (JVM AWS SDK v2)
 "AwsSecrets.Kernel.Net" = [
   "src/_kernel/secrets_kernel_aws.l",
   "src/_kernel/secrets_kernel_local.l",
+  "src/_kernel/secrets_kernel_jvm.l",
 ]
 
 [dependencies]
@@ -88,3 +96,9 @@ output_assembly = "AwsSecrets.dll"
 "AWSSDK.SecretsManager" = { version = "3.7.400", features = ["aws"] }
 # AWS Systems Manager (Parameter Store) SDK — included when feature = "aws".
 "AWSSDK.SimpleSystemsManagement" = { version = "3.7.400", features = ["aws"] }
+
+[maven]
+# JVM Secrets Manager client — included when feature = "jvm".
+"software.amazon.awssdk:secretsmanager" = { version = "2.25.x", features = ["jvm"] }
+# JVM Systems Manager (Parameter Store) client — included when feature = "jvm".
+"software.amazon.awssdk:ssm"            = { version = "2.25.x", features = ["jvm"] }

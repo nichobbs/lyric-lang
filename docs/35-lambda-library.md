@@ -1,9 +1,10 @@
 # 35 — lyric-lambda and lyric-aws-secrets library design
 
-**Status:** Specced in D062, D063.
+**Status:** Specced in D062, D063, D064.
 
-This document describes the design of `lyric-lambda` (AWS Lambda runtime adapter)
-and `lyric-aws-secrets` (Secrets Manager / Parameter Store config integration).
+This document describes the design of `lyric-lambda` (AWS Lambda runtime adapter),
+`lyric-aws-secrets` (Secrets Manager / Parameter Store config integration), and
+`lyric-aws-xray` (AWS X-Ray active tracing aspect).
 
 ---
 
@@ -23,6 +24,14 @@ and `lyric-aws-secrets` (Secrets Manager / Parameter Store config integration).
    appears in the cold-start path for non-HTTP workloads.
 6. Provide a local development story (`feature = "local"`) that requires no
    AWS credentials and is compatible with `sam local invoke`.
+7. Support Native AOT (`PublishAot=true`) via function-reference handler
+   registration (`Lambda.Direct`) alongside the existing string-based API.
+8. Support Lambda response streaming for Function URLs and HTTP API streaming
+   via `Lambda.Stream.StreamWriter`.
+9. Target the JVM (`feature = "jvm"`) using the AWS Java managed runtime
+   (`RequestStreamHandler`) so the same source compiles to both .NET and JVM.
+10. Provide AWS X-Ray active tracing as a B-mode pub aspect template via the
+    separate `lyric-aws-xray` library.
 
 ---
 
@@ -38,10 +47,13 @@ lyric-lambda/
     apigw.l               — Lambda.ApiGw, API Gateway v1/v2/ALB event types
     events.l              — Lambda.Events, SQS/SNS/S3/EventBridge/DynamoDB/Kinesis
     authorizer.l          — Lambda.Authorizer, TOKEN/REQUEST/HTTP authorizer types
+    direct.l              — Lambda.Direct, AOT function-reference handler registration
+    stream.l              — Lambda.Stream, StreamWriter + response streaming helpers
     lambda_aspects.l      — Lambda.Aspects, EventLogging + DeadlineGuard
     _kernel/
       lambda_kernel_aws.l   — Lambda.Kernel.Runtime @cfg(feature="aws")
       lambda_kernel_local.l — Lambda.Kernel.Runtime @cfg(feature="local")
+      lambda_kernel_jvm.l   — Lambda.Kernel.Runtime @cfg(feature="jvm")
 ```
 
 | Package | File | Purpose |
@@ -50,6 +62,8 @@ lyric-lambda/
 | `Lambda.ApiGw` | `apigw.l` | API Gateway / ALB event types, `ApiGwResponse` |
 | `Lambda.Events` | `events.l` | SQS, SNS, S3, EventBridge, DynamoDB, Kinesis |
 | `Lambda.Authorizer` | `authorizer.l` | Authorizer event + response types and helpers |
+| `Lambda.Direct` | `direct.l` | AOT-safe handler registration via function references |
+| `Lambda.Stream` | `stream.l` | `StreamWriter`, `write`, `writeBytes`, `close` |
 | `Lambda.Aspects` | `lambda_aspects.l` | `EventLogging`, `DeadlineGuard` templates |
 | `Lambda.Kernel.Runtime` | `_kernel/*.l` | Extern boundary (one per feature) |
 
@@ -63,12 +77,31 @@ lyric-aws-secrets/
     _kernel/
       secrets_kernel_aws.l   — AwsSecrets.Kernel.Net @cfg(feature="aws")
       secrets_kernel_local.l — AwsSecrets.Kernel.Net @cfg(feature="local")
+      secrets_kernel_jvm.l   — AwsSecrets.Kernel.Net @cfg(feature="jvm")
 ```
 
 | Package | File | Purpose |
 |---|---|---|
 | `AwsSecrets` | `secrets.l` | Annotations, `SecretsError`, `init()`, `getSecret*`, `getParameter*` |
 | `AwsSecrets.Kernel.Net` | `_kernel/*.l` | AWS SDK extern boundary (one per feature) |
+
+### lyric-aws-xray
+
+```
+lyric-aws-xray/
+  lyric.toml
+  src/
+    xray.l                — AwsXRay, SubsegmentHandle, annotate(), metadata(), Tracing aspect
+    _kernel/
+      xray_kernel_aws.l   — AwsXRay.Kernel.Net @cfg(feature="aws")
+      xray_kernel_jvm.l   — AwsXRay.Kernel.Net @cfg(feature="jvm")
+      xray_kernel_local.l — AwsXRay.Kernel.Net @cfg(feature="local")
+```
+
+| Package | File | Purpose |
+|---|---|---|
+| `AwsXRay` | `xray.l` | `SubsegmentHandle`, `annotate`, `metadata`, `Tracing` aspect template |
+| `AwsXRay.Kernel.Net` | `_kernel/*.l` | X-Ray SDK extern boundary (one per feature) |
 
 ---
 
@@ -102,17 +135,29 @@ func main(): Int {
 }
 ```
 
-`LambdaApp` has three fields, all optional:
+`LambdaApp` has five fields, all optional:
 
 ```lyric
 pub record LambdaApp {
   httpRouter:         Option[Web.Router]
+  streamingHandler:   Option[String]
   eventHandlers:      [EventHandler]
   authorizerHandlers: [AuthorizerHandler]
+  directHandlers:     [Lambda.Direct.DirectHandler]
 }
 ```
 
 `serve()` reads `Lambda.Runtime.localPort` from env and calls the kernel.
+
+Builder methods:
+
+| Method | Effect |
+|---|---|
+| `withRouter(app, router)` | Attach a `Web.Router`; HTTP events are dispatched through it |
+| `withStreamingHandler(app, name)` | Register a streaming handler by qualified name; all HTTP events go here |
+| `onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onKinesis / onRaw` | Register a string-named event handler |
+| `onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer` | Register a string-named authorizer |
+| `withDirect(app, handler)` | Register an AOT-safe `DirectHandler` (function reference) |
 
 ---
 
@@ -423,15 +468,22 @@ The Lambda execution role must have:
 
 ### 8.1 Feature flag convention
 
-Two files both declare the same package name, each gated on a different feature.
-Exactly one is compiled per build:
+Multiple source files declare the same package name, each gated on a different
+feature.  Exactly one is compiled per build:
 
-- `lambda_kernel_aws.l` — `@cfg(feature = "aws")` — production custom runtime
-- `lambda_kernel_local.l` — `@cfg(feature = "local")` — local test server
-- `secrets_kernel_aws.l` — `@cfg(feature = "aws")` — AWS SDK extern
-- `secrets_kernel_local.l` — `@cfg(feature = "local")` — no-op local backend
+| File | Feature | Description |
+|---|---|---|
+| `lambda_kernel_aws.l` | `aws` | .NET custom runtime (Amazon.Lambda.RuntimeSupport) |
+| `lambda_kernel_local.l` | `local` | Lightweight local test HTTP server |
+| `lambda_kernel_jvm.l` | `jvm` | Java managed runtime (RequestStreamHandler) |
+| `secrets_kernel_aws.l` | `aws` | AWS SDK for .NET v3 |
+| `secrets_kernel_local.l` | `local` | No-op local backend |
+| `secrets_kernel_jvm.l` | `jvm` | AWS SDK for Java v2 |
+| `xray_kernel_aws.l` | `aws` | Amazon.XRay.Recorder.Core (.NET) |
+| `xray_kernel_jvm.l` | `jvm` | aws-xray-recorder-sdk-core (Java) |
+| `xray_kernel_local.l` | `local` | No-op (subsegments silently dropped) |
 
-### 8.2 Production Lambda runtime (feature = "aws")
+### 8.2 Production Lambda runtime — .NET (feature = "aws")
 
 The extern boundary calls `Amazon.Lambda.RuntimeSupport` 1.x, which handles
 the HTTP polling loop, context extraction, and runtime API posting.  Authorizer
@@ -454,6 +506,27 @@ Synthetic `LambdaContext`:
 | `memoryLimitInMb` | `512` |
 | `requestId` | random UUID |
 | `remainingTimeMs` | `30000` (override via `LYRIC_LOCAL_TIMEOUT_MS`) |
+
+### 8.4 JVM managed runtime (feature = "jvm")
+
+On the JVM target, the Lyric JVM emitter generates a class
+`<RootPackage>$LambdaHandler` implementing
+`com.amazonaws.services.lambda.runtime.RequestStreamHandler`.
+
+Set the Lambda function handler in the configuration to:
+```
+<assembly-name>.<RootPackage>$LambdaHandler::handleRequest
+```
+
+Dispatch is identical to the .NET kernel (event-source detection → typed
+dispatch → serialised JSON response) but the OutputStream is used in place of
+the Runtime API response endpoint.  Streaming handlers write directly to the
+OutputStream without buffering; Function URL `InvokeMode` must be set to
+`RESPONSE_STREAM`.
+
+Maven dependencies added automatically when `feature = "jvm"`:
+- `com.amazonaws:aws-lambda-java-core:1.2.3`
+- `com.amazonaws:aws-lambda-java-events:3.11.4`
 
 ---
 
@@ -489,7 +562,227 @@ The matched handler must declare `ctx: Lambda.LambdaContext` (shape error A0042 
 
 ---
 
-## 10. Runtime config env vars
+## 10. AOT-safe handler registration (`Lambda.Direct`)
+
+`Lambda.Direct` provides function-reference factory functions for registering
+handlers without DLL reflection.  Use `withDirect()` in place of (or alongside)
+the string-based `on*()` builders when building with `PublishAot=true`.
+
+### 10.1 Factory functions
+
+```lyric
+import Lambda.Direct
+
+Lambda.newApp()
+  |> Lambda.withDirect(Lambda.Direct.sqsHandler(MyApp.Queue.handle))
+  |> Lambda.withDirect(Lambda.Direct.sqsBatchHandler(MyApp.Queue.handleBatch))
+  |> Lambda.withDirect(Lambda.Direct.tokenAuthorizerHandler(MyApp.Auth.verify))
+  |> Lambda.withDirect(Lambda.Direct.streamingHandler(MyApp.Llm.stream))
+```
+
+| Factory | Handler signature |
+|---|---|
+| `sqsHandler(h)` | `func(SqsEvent, LambdaContext) -> Result[Unit, LambdaError]` |
+| `sqsBatchHandler(h)` | `func(SqsEvent, LambdaContext) -> Result[SqsBatchResponse, LambdaError]` |
+| `snsHandler(h)` | `func(SnsEvent, LambdaContext) -> Result[Unit, LambdaError]` |
+| `s3Handler(h)` | `func(S3Event, LambdaContext) -> Result[Unit, LambdaError]` |
+| `eventBridgeHandler(h)` | `func(EventBridgeEvent, LambdaContext) -> Result[Unit, LambdaError]` |
+| `dynamoDbHandler(h)` | `func(DynamoDbEvent, LambdaContext) -> Result[Unit, LambdaError]` |
+| `kinesisHandler(h)` | `func(KinesisEvent, LambdaContext) -> Result[Unit, LambdaError]` |
+| `rawHandler(h)` | `func(String, LambdaContext) -> Result[Unit, LambdaError]` |
+| `tokenAuthorizerHandler(h)` | `func(TokenAuthorizerEvent, LambdaContext) -> Result[AuthorizerResponse, LambdaError]` |
+| `requestAuthorizerHandler(h)` | `func(RequestAuthorizerEvent, LambdaContext) -> Result[AuthorizerResponse, LambdaError]` |
+| `httpAuthorizerHandler(h)` | `func(HttpAuthorizerEvent, LambdaContext) -> Result[HttpAuthorizerResponse, LambdaError]` |
+| `streamingHandler(h)` | `func(String, LambdaContext, StreamWriter) -> Result[Unit, LambdaError]` |
+
+### 10.2 Mixing string-based and direct handlers
+
+Both registration styles can coexist in the same `LambdaApp`.  The kernel
+resolves `directHandlers` by stored delegate; `eventHandlers` by reflection.
+When `PublishAot=true`, use `withDirect` exclusively — string-named handlers
+will fail at startup because DLL reflection metadata is stripped.
+
+---
+
+## 11. Response streaming (`Lambda.Stream`)
+
+Lambda response streaming delivers output chunks to the caller before the
+handler returns, reducing time-to-first-byte for large or progressive responses.
+
+### 11.1 Enabling streaming
+
+Set `InvokeMode: RESPONSE_STREAM` on the Lambda Function URL, or use an
+HTTP API streaming integration (check current AWS documentation for region
+support).
+
+Register via string name or `Lambda.Direct.streamingHandler`:
+
+```lyric
+Lambda.newApp()
+  |> Lambda.withStreamingHandler("MyApp.Llm.streamTokens")
+// or AOT-safe:
+  |> Lambda.withDirect(Lambda.Direct.streamingHandler(MyApp.Llm.streamTokens))
+```
+
+### 11.2 Handler signature
+
+```lyric
+func streamTokens(rawEvent: String, ctx: Lambda.LambdaContext, writer: Lambda.Stream.StreamWriter)
+    : Result[Unit, Lambda.LambdaError] {
+  Lambda.Stream.setContentType(writer, "text/event-stream")
+  val tokens = MyApp.Llm.generate(rawEvent)
+  for token in tokens {
+    match Lambda.Stream.write(writer, "data: " + token + "\n\n") {
+      Ok(_)    => ()
+      Err(err) => return Err(err)
+    }
+  }
+  Lambda.Stream.close(writer)
+  return Ok(())
+}
+```
+
+`rawEvent` is the raw API Gateway / Function URL event JSON; parse it with
+`Lambda.ApiGw` types if structured access is needed.
+
+### 11.3 StreamWriter API
+
+| Function | Description |
+|---|---|
+| `setContentType(writer, contentType)` | Set `Content-Type` before the first `write()` call; ignored after |
+| `write(writer, chunk)` | Write a UTF-8 string chunk; delivers immediately |
+| `writeBytes(writer, base64Chunk)` | Write raw bytes (base64-encoded input); decoded by the kernel |
+| `close(writer)` | Signal end of response; called automatically on handler return |
+
+After `close()` returns, further `write()` calls return
+`LambdaError.InternalError`.
+
+### 11.4 Constraints
+
+- Do not mix `withStreamingHandler` and `withRouter` in the same `LambdaApp`.
+  The streaming handler receives all HTTP traffic; the router is not consulted.
+- The `Content-Type` header must be set before the first `write()`.
+  If omitted, the kernel defaults to `application/octet-stream`.
+
+---
+
+## 12. JVM target (feature = "jvm")
+
+All three libraries (`lyric-lambda`, `lyric-aws-secrets`, `lyric-aws-xray`)
+support the `jvm` feature.  Build with `lyric build --features jvm` to target
+the AWS Java managed runtime.
+
+### 12.1 Build output
+
+The Lyric JVM emitter (complete at `compiler/lyric/jvm/`, see
+`docs/18-jvm-emission.md`) produces Java 21 class files.  For Lambda, the
+emitter generates a class `<RootPackage>$LambdaHandler` implementing
+`com.amazonaws.services.lambda.runtime.RequestStreamHandler`.
+
+### 12.2 Lambda handler configuration
+
+Set the handler in the Lambda function configuration to:
+```
+<assembly-name>.<RootPackage>$LambdaHandler::handleRequest
+```
+
+For example, if the root package is `MyApp` and the assembly is `MyService`,
+set the handler to `MyService.MyApp$LambdaHandler::handleRequest`.
+
+### 12.3 Dependencies
+
+Dependencies are resolved from the `[maven]` table in `lyric.toml`.
+When `feature = "jvm"`:
+
+**lyric-lambda:**
+- `com.amazonaws:aws-lambda-java-core:1.2.3`
+- `com.amazonaws:aws-lambda-java-events:3.11.4`
+
+**lyric-aws-secrets:**
+- `software.amazon.awssdk:secretsmanager:2.25.x`
+- `software.amazon.awssdk:ssm:2.25.x`
+
+**lyric-aws-xray:**
+- `com.amazonaws:aws-xray-recorder-sdk-core:2.15.3`
+
+### 12.4 Feature parity
+
+The JVM kernel implements the same event-detection and dispatch logic as the
+.NET kernel.  `Lambda.Direct` function-reference registration is supported.
+Streaming writes directly to the Java `OutputStream` passed to `handleRequest`.
+
+---
+
+## 13. X-Ray tracing (`lyric-aws-xray`)
+
+`lyric-aws-xray` provides AWS X-Ray active tracing as a B-mode pub aspect
+template.  It is a separate library from `lyric-lambda` so it can also be
+used with `lyric-web` services running on Fargate or EC2.
+
+### 13.1 Overview
+
+The Lambda runtime opens a top-level X-Ray segment for every invocation when
+active tracing is enabled on the function.  `lyric-aws-xray` wraps individual
+Lyric function calls as subsegments of that segment.
+
+### 13.2 Installation and setup
+
+1. Enable active tracing on the Lambda function (console / CDK / SAM).
+2. Add `lyric-aws-xray` to `[dependencies]` in `lyric.toml`.
+3. Grant the execution role `xray:PutTraceSegments` and
+   `xray:PutTelemetryRecords` on `*`.
+
+### 13.3 Tracing aspect
+
+```lyric
+import AwsXRay
+
+aspect TraceHandlers from AwsXRay.Tracing {
+  matches: name like "handle*"
+  config {
+    enabled: Bool = true   // disable with env LYRIC_ASPECT_TRACEHANDLERS_ENABLED=false
+  }
+}
+```
+
+The aspect wraps each matched call in a subsegment named after the function's
+qualified name (e.g. `"MyApp.Orders.handleCreate"`).  On `Err(_)` the error
+message is added as the `"error"` annotation; on `Ok(_)` or non-Result returns
+the subsegment closes cleanly.
+
+Compose inside `Lambda.Aspects.EventLogging` to measure timing around the full
+subsegment including X-Ray overhead:
+
+```lyric
+aspect LogAll from Lambda.Aspects.EventLogging {
+  matches: name like "handle*"
+}
+
+aspect TraceHandlers from AwsXRay.Tracing {
+  matches: name like "handle*"
+  inside:  LogAll
+}
+```
+
+### 13.4 Annotations and metadata
+
+From within a handler body wrapped by the `Tracing` aspect:
+
+```lyric
+val seg = AwsXRay.currentSubsegment()
+AwsXRay.annotate(seg, "orderId", orderId)   // indexed; searchable in X-Ray filter expressions
+AwsXRay.metadata(seg, "payload", rawJson)  // not indexed; visible in trace view
+```
+
+### 13.5 Local mode (feature = "local")
+
+All X-Ray calls are silently dropped in local mode; no X-Ray daemon or AWS
+credentials are required.  The `AwsXRay.Tracing` aspect is a transparent
+pass-through — handlers run unchanged.
+
+---
+
+## 14. Runtime config env vars
 
 ```
 LYRIC_CONFIG_LAMBDA_RUNTIME_LOCALPORT           — local test server port (default: 9000)
@@ -501,47 +794,34 @@ All `Web.Server.*` and `Web.Cors.*` env vars apply when an `httpRouter` is attac
 
 ---
 
-## 11. Additional design considerations
+## 15. Design notes
 
-### 11.1 Cold start
+### 15.1 Cold start
 
 The custom runtime avoids ASP.NET Core startup cost.  For HTTP workloads the
 kernel drives dispatch directly without Kestrel, which reduces cold start
 compared to `Amazon.Lambda.AspNetCoreServer`.
 
-For workloads where cold start is critical, Native AOT (`PublishAot=true`) can
-be enabled.  This conflicts with handler dispatch by DLL reflection; a future
-`Lambda.onSqsDirect` / `withRouterDirect` API accepting function references
-instead of strings would enable AOT compatibility.  Tracked as Q-lambda-001.
+For Native AOT builds use `Lambda.Direct` (§10) to register handlers via
+function references — DLL reflection is absent in AOT binaries and string-named
+handlers would fail at startup.
 
-### 11.2 Warm invocation state
+### 15.2 Warm invocation state
 
 Lambda reuses the same process across warm invocations.  `lyric-db` connection
 pools and `Std.Http` clients are safe to initialise at module level and reuse
 across invocations.  Avoid capturing mutable state in handler closures.
 
-### 11.3 Observability
-
-`lyric-otel` structured logging writes to stdout, which Lambda forwards to
-CloudWatch Logs.  AWS X-Ray active tracing is a separate concern best handled
-at the infrastructure level (Lambda execution role + X-Ray daemon) rather than
-in the library.  Tracked as Q-lambda-003.
-
-### 11.4 Response streaming
-
-Lambda response streaming reduces TTFB for large HTTP responses.  The current
-kernel buffers the full response.  Streaming would require a `Stream.Writer`
-handle in the handler signature.  Tracked as Q-lambda-004.
-
 ---
 
-## 12. Open questions
+## 16. Open questions
 
 | ID | Status | Question |
 |---|---|---|
-| Q-lambda-001 | Open | AOT-compatible handler registration (function references instead of string names) |
+| Q-lambda-001 | **Resolved** — `Lambda.Direct` shipped (D064) | AOT-compatible handler registration |
 | Q-lambda-002 | **Resolved** — `lyric-aws-secrets` library shipped (D063) | |
-| Q-lambda-003 | Open | AWS X-Ray trace context propagation — defer to infrastructure-level tracing |
-| Q-lambda-004 | Open | Response streaming for large HTTP payloads |
+| Q-lambda-003 | **Resolved** — `lyric-aws-xray` shipped (D064) | AWS X-Ray active tracing as aspect |
+| Q-lambda-004 | **Resolved** — `Lambda.Stream` shipped (D064) | Response streaming |
 | Q-lambda-005 | **Resolved** — `Lambda.Authorizer` shipped (D063) | |
 | Q-lambda-006 | **Resolved** — `KinesisEvent` added to `Lambda.Events` (D063) | |
+| Q-lambda-JVM | **Resolved** — JVM kernels shipped for all three libraries (D064) | JVM target support |

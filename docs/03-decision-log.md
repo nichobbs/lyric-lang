@@ -3332,6 +3332,83 @@ No partial-batch-failure equivalent; Kinesis retries the full batch on error.
 
 ---
 
+---
+
+## D064 — lyric-lambda v3: AOT handlers, response streaming, JVM target, and X-Ray tracing
+
+**Status:** ACCEPTED
+**Date:** 2026-05-12
+
+### Context
+
+After D063, four feature gaps remained:
+- Q-lambda-001: AOT-compatible handler registration (function references)
+- Q-lambda-004: Lambda response streaming for Function URLs / HTTP API
+- Q-lambda-JVM: JVM target support for lyric-lambda and lyric-aws-secrets
+- Q-lambda-003: AWS X-Ray active tracing
+
+The JVM emitter is complete (`compiler/lyric/jvm/`, D-progress-229+).
+
+### Decisions
+
+**D064-1 — Dual registration: string names (default) + function references (opt-in AOT)**
+`Lambda.Direct` ships as a new package exposing typed factory functions that
+accept function references (`func sqsHandler(h: func(...): ...): DirectHandler`).
+`LambdaApp` gains a fifth field `directHandlers: [Lambda.Direct.DirectHandler]`.
+The string-based `on*()` builders remain unchanged.  Both registration styles
+may coexist in the same `LambdaApp`.  When `PublishAot=true`, use `withDirect()`
+exclusively — string-named handlers would fail at startup because DLL reflection
+metadata is stripped in AOT builds.
+
+**D064-2 — Response streaming via `Lambda.Stream.StreamWriter`**
+`Lambda.Stream` ships as a new package with an opaque `StreamWriter` type and
+`setContentType`, `write`, `writeBytes`, `close` functions.
+`LambdaApp` gains a `streamingHandler: Option[String]` field; the string-named
+`withStreamingHandler()` and AOT-safe `Lambda.Direct.streamingHandler()` builders
+register a single streaming handler.  Streaming handlers receive
+`(rawEvent: String, ctx: LambdaContext, writer: StreamWriter)`.  The kernel
+writes chunks directly to the runtime response stream; no buffering occurs.
+`withStreamingHandler` and `withRouter` are mutually exclusive — streaming
+handlers receive all HTTP traffic.
+
+**D064-3 — JVM kernels for lyric-lambda and lyric-aws-secrets**
+Both libraries gain a third kernel file gated on `feature = "jvm"`:
+- `lambda_kernel_jvm.l` — extern to the Java managed runtime
+  (`com.amazonaws.lambda.serve(app, localPort)`).  The Lyric JVM emitter
+  generates `<RootPackage>$LambdaHandler implements RequestStreamHandler`.
+  Handler discovery, dispatch logic, and streaming are identical to the .NET
+  kernel.
+- `secrets_kernel_jvm.l` — extern to AWS SDK for Java v2
+  (`software.amazon.awssdk:secretsmanager` + `ssm`).
+  `initFromAnnotations`, `fetchSecret`, `fetchParameter` mirror the .NET API.
+Maven dependencies added to `[maven]` tables in respective `lyric.toml` files.
+
+**D064-4 — X-Ray tracing as a separate `lyric-aws-xray` library**
+AWS X-Ray active tracing is implemented as a B-mode pub aspect template
+(`AwsXRay.Tracing`) in a standalone `lyric-aws-xray` library.  Rationale for
+separation: X-Ray is useful for any Lyric service (not just Lambda), and the
+library is optional — a service that doesn't need active tracing does not pay
+the dependency cost.  The `lyric-otel` library remains for vendor-neutral
+OpenTelemetry; `lyric-aws-xray` is the AWS-specific complement.
+The aspect wraps matched calls as X-Ray subsegments; `annotate()` and
+`metadata()` helpers allow handlers to attach indexed/non-indexed data.
+Three kernels ship: `aws` (.NET Amazon.XRay.Recorder.Core), `jvm`
+(com.amazonaws:aws-xray-recorder-sdk-core), `local` (no-op).
+
+### Implementation
+
+`Lambda.Direct` in `lyric-lambda/src/direct.l`.
+`Lambda.Stream` in `lyric-lambda/src/stream.l`.
+`lambda_kernel_jvm.l` in `lyric-lambda/src/_kernel/`.
+`secrets_kernel_jvm.l` in `lyric-aws-secrets/src/_kernel/`.
+`lyric-aws-xray/` library at project root.
+`lyric-lambda/lyric.toml` updated: 8 packages, 3 features (aws/local/jvm), `[maven]` table.
+`lyric-aws-secrets/lyric.toml` updated: 3 features (aws/local/jvm), `[maven]` table.
+`docs/35-lambda-library.md` updated with §10 (AOT), §11 (Streaming), §12 (JVM),
+§13 (X-Ray), §14 (runtime config), §15 (design notes), §16 (resolved open questions).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

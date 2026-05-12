@@ -131,30 +131,75 @@ pub record AuthorizerHandler {
 // ─── LambdaApp ────────────────────────────────────────────────────────────────
 
 /// Immutable Lambda application definition.
-/// Build one with newApp(), then attach a router, event handlers, and/or
-/// authorizer handlers.  All three modes may coexist in a single LambdaApp:
-/// the kernel routes HTTP events to the router, authorizer invocations to the
-/// authorizer handler, and all other events to the event handler table.
+/// Build one with newApp(), then attach a router and/or event handlers.
+/// All modes may coexist in a single LambdaApp: the kernel routes HTTP events
+/// to the router (or streaming handler), authorizer invocations to the
+/// authorizer handler table, and all other events to the event handler table.
+/// AOT-safe direct handlers are resolved from directHandlers first; string-
+/// based handlers are the fallback for non-AOT builds.
 @stable(since="0.1")
 pub record LambdaApp {
-  httpRouter:         Option[Web.Router]
-  eventHandlers:      [EventHandler]
-  authorizerHandlers: [AuthorizerHandler]
+  httpRouter:          Option[Web.Router]
+  streamingHandler:    Option[String]           // qualified name of a streaming HTTP handler
+  eventHandlers:       [EventHandler]
+  authorizerHandlers:  [AuthorizerHandler]
+  directHandlers:      [Lambda.Direct.DirectHandler]  // AOT-safe function-reference handlers
 }
 
-/// Empty application with no router, no event handlers, and no authorizer handlers.
+/// Empty application.
 @stable(since="0.1")
 pub func newApp(): LambdaApp {
-  return LambdaApp(httpRouter = None, eventHandlers = [], authorizerHandlers = [])
+  return LambdaApp(
+    httpRouter         = None,
+    streamingHandler   = None,
+    eventHandlers      = [],
+    authorizerHandlers = [],
+    directHandlers     = [])
 }
 
 /// Attach a lyric-web Router for API Gateway and ALB HTTP events.
 /// API Gateway v1 (REST API), v2 (HTTP API), and ALB events are mapped
 /// to the router's method + path and dispatched through the same mechanism
 /// as Web.start().  CORS config is read from the Web.Cors config block.
+/// Cannot be combined with withStreamingHandler in the same LambdaApp.
 @stable(since="0.1")
 pub func withRouter(app: in LambdaApp, router: in Web.Router): LambdaApp {
-  return LambdaApp(httpRouter = Some(router), eventHandlers = app.eventHandlers, authorizerHandlers = app.authorizerHandlers)
+  return LambdaApp(
+    httpRouter         = Some(router),
+    streamingHandler   = app.streamingHandler,
+    eventHandlers      = app.eventHandlers,
+    authorizerHandlers = app.authorizerHandlers,
+    directHandlers     = app.directHandlers)
+}
+
+/// Attach a streaming HTTP handler for Lambda Function URL or HTTP API streaming.
+/// All HTTP traffic is forwarded to this handler; Web.Router is not consulted.
+/// Handler signature:
+///   func h(rawEvent: String, ctx: Lambda.LambdaContext, writer: Lambda.Stream.StreamWriter): Result[Unit, Lambda.LambdaError]
+/// Cannot be combined with withRouter in the same LambdaApp.
+/// For AOT builds use Lambda.Direct.streamingHandler + withDirect instead.
+@stable(since="0.1")
+pub func withStreamingHandler(app: in LambdaApp, handlerName: in String): LambdaApp
+  requires: handlerName.length > 0
+{
+  return LambdaApp(
+    httpRouter         = app.httpRouter,
+    streamingHandler   = Some(handlerName),
+    eventHandlers      = app.eventHandlers,
+    authorizerHandlers = app.authorizerHandlers,
+    directHandlers     = app.directHandlers)
+}
+
+/// Register an AOT-compatible direct handler created with Lambda.Direct.*Handler().
+/// Replaces the string-based on*() registration for Native AOT builds.
+@stable(since="0.1")
+pub func withDirect(app: in LambdaApp, handler: in Lambda.Direct.DirectHandler): LambdaApp {
+  return LambdaApp(
+    httpRouter         = app.httpRouter,
+    streamingHandler   = app.streamingHandler,
+    eventHandlers      = app.eventHandlers,
+    authorizerHandlers = app.authorizerHandlers,
+    directHandlers     = app.directHandlers + [handler])
 }
 
 // Private helper — adds an EventHandler to the app.
@@ -163,7 +208,12 @@ func addHandler(app: in LambdaApp, src: in String, name: in String): LambdaApp
   requires: name.length > 0
 {
   val h = EventHandler(eventSource = src, handlerName = name)
-  return LambdaApp(httpRouter = app.httpRouter, eventHandlers = app.eventHandlers + [h], authorizerHandlers = app.authorizerHandlers)
+  return LambdaApp(
+    httpRouter         = app.httpRouter,
+    streamingHandler   = app.streamingHandler,
+    eventHandlers      = app.eventHandlers + [h],
+    authorizerHandlers = app.authorizerHandlers,
+    directHandlers     = app.directHandlers)
 }
 
 // Private helper — adds an AuthorizerHandler to the app.
@@ -172,7 +222,12 @@ func addAuthorizerHandler(app: in LambdaApp, authType: in String, name: in Strin
   requires: name.length > 0
 {
   val h = AuthorizerHandler(authorizerType = authType, handlerName = name)
-  return LambdaApp(httpRouter = app.httpRouter, eventHandlers = app.eventHandlers, authorizerHandlers = app.authorizerHandlers + [h])
+  return LambdaApp(
+    httpRouter         = app.httpRouter,
+    streamingHandler   = app.streamingHandler,
+    eventHandlers      = app.eventHandlers,
+    authorizerHandlers = app.authorizerHandlers + [h],
+    directHandlers     = app.directHandlers)
 }
 
 /// Register a handler for SQS events.
