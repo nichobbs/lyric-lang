@@ -223,6 +223,32 @@ Timing:
   declare "no review feedback" until every relevant check is
   `completed` and all three comment surfaces are empty.
 
+### F# surface is frozen — new logic goes in Lyric
+
+The F# bootstrap compiler surface is closed to new logic. All new
+functionality must be implemented in Lyric (`.l` files). The only
+acceptable new F# code is thin bridge shims (`SelfHosted*.fs`) and
+infrastructure that has no Lyric equivalent yet (e.g. MSBuild
+integration, NuGet plumbing that talks directly to the host runtime).
+
+Rules:
+
+- **New stdlib modules** → `stdlib/std/<module>.l` (public) and
+  `stdlib/std/_kernel/<module>_host.l` (externs, only when a BCL
+  boundary is unavoidable).
+- **New CLI logic** → implement in `compiler/lyric/lyric/<feature>.l`
+  (as a `Lyric.<Feature>` package), expose a single string-in /
+  string-out bridge function, then wire it up via a thin
+  `compiler/src/Lyric.Cli/SelfHosted<Feature>.fs` shim that compiles
+  the Lyric driver, loads the DLL by reflection, and calls the bridge.
+  Follow the pattern in `SelfHostedFmt.fs`, `SelfHostedManifest.fs`,
+  and `SelfHostedTestSynth.fs`.
+- **New externs** → `stdlib/std/_kernel/` only; no `@externTarget`
+  or `extern type` declarations outside the kernel boundary.
+- **Do not** add new modules, types, or functions to any existing
+  `compiler/src/Lyric.*/` F# project unless they are pure shim
+  infrastructure with no domain logic.
+
 ### Style
 
 - No emojis in any file unless the user asks.

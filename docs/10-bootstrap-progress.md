@@ -11345,6 +11345,69 @@ added before `Program.fs`.
 **Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
 
+### D-progress-233: OpenAPI parser + generator ported to self-hosted Lyric
+
+**Date:** 2026-05-12
+**Branch:** `claude/rest-client-openapi-uH3rE`
+
+Ports the F# `OpenApi.fs` + `OpenApiGen.fs` modules into three Lyric packages
+(`Lyric.OpenApiParser`, `Lyric.OpenApiGen`, `Lyric.OpenApiBridge`) and wires
+them through a thin `SelfHostedOpenApi.fs` bridge shim, following the same
+bridge pattern used by `SelfHostedFmt.fs`, `SelfHostedManifest.fs`, and
+`SelfHostedJvm.fs`.  The old F# files are deleted; all OpenAPI logic now lives
+in Lyric.  Also documents the F# surface freeze policy in `CLAUDE.md`.
+
+**`CLAUDE.md`** — added "F# surface is frozen — new logic goes in Lyric"
+convention section.  Codifies the rule that all new functionality must be
+implemented in Lyric (`.l` files), with F# restricted to thin bridge shims.
+
+**`stdlib/std/_kernel/json_host.l`** — added `JsonObjectEnumerator` and
+`JsonProperty` extern types plus five `@externTarget` functions for
+object-property enumeration (`hostEnumerateObject`, `hostEnumObjectMoveNext`,
+`hostEnumObjectCurrent`, `hostPropertyName`, `hostPropertyValue`).
+
+**`stdlib/std/json.l`** — exposed the new kernel functions as public
+`@stable` wrappers: `enumerateObject`, `objectMoveNext`, `objectCurrent`,
+`propertyName`, `propertyValue`.  Also added `valueKind`, `getRawText`,
+`enumerateArray`, `arrayMoveNext`, `arrayCurrent` wrappers (previously
+missing from the public API).
+
+**`compiler/lyric/lyric/open_api_parser.l`** — `Lyric.OpenApiParser` package.
+Parses the subset of OpenAPI 3.0/3.1 needed for client generation: paths,
+operations (all seven HTTP verbs), path/query parameters, JSON request/response
+bodies, and inline object/scalar schemas.  Produces `ParsedSpec` /
+`ParsedOp` / `ParsedParam` / `ParsedProperty` records.
+Public entry: `parseSpec(json: in String): Result[ParsedSpec, String]`.
+
+**`compiler/lyric/lyric/open_api_gen.l`** — `Lyric.OpenApiGen` package.
+Generates a typed Lyric REST client package from a `ParsedSpec`.  Emits
+records, opaque client type, constructors, per-operation async methods, and
+per-field scalar accessors.
+Public entry: `generate(spec, clientNameOverride, packageNameOverride): String`.
+
+**`compiler/lyric/lyric/open_api_bridge.l`** — `Lyric.OpenApiBridge` package.
+Thin glue between parser and generator; wraps result in the two-line text
+protocol (`ok\n<source>` / `err\n<message>`) consumed by the F# shim.
+Public entry: `generateFromJson(json, clientName, packageName): String`.
+
+**`compiler/src/Lyric.Cli/SelfHostedOpenApi.fs`** — thin F# bridge shim.
+Compiles a driver that imports `Lyric.OpenApiBridge`, loads the resulting DLL
+by reflection, and routes `lyric openapi` calls through `generateFromJson`.
+Follows the identical lazy-initialise + delegate-cache pattern used by
+`SelfHostedFmt.fs`.
+
+**`compiler/src/Lyric.Cli/Program.fs`** — `lyric openapi` dispatch now calls
+`SelfHostedOpenApi.generateToFile` instead of the deleted F# modules.
+
+**`compiler/src/Lyric.Cli/Lyric.Cli.fsproj`** — `OpenApi.fs` and `OpenApiGen.fs`
+removed; `SelfHostedOpenApi.fs` added.
+
+**`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`** — soft-cap
+bumped from 261 → 268 to account for the seven new kernel externs added to
+`json_host.l` (two extern types + five extern functions).
+
+**Test counts:** 752 emitter tests — all passing.
+
 ---
 
 ### D-progress-240: R6 codegen — IL validity fixes + MSIL bridge end-to-end tests

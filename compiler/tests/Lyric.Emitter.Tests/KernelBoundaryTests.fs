@@ -128,7 +128,11 @@ let tests =
             // remaining Groups C/D land and Stdlib.fs is deleted.
             // Bumped from 260 → 261: Std.Jvm package added to _kernel/jvm.l
             // with @externTarget for Std.Jvm.catch[T] (Q-J012 resolution).
-            Expect.isLessThanOrEqual total 261
+            // Bumped from 261 → 268: Std.JsonHost extended with
+            // JsonObjectEnumerator + JsonProperty extern types and 5 extern
+            // functions for object-property enumeration (needed by
+            // Lyric.OpenApiParser).
+            Expect.isLessThanOrEqual total 268
                 "total extern surface unexpectedly large"
         }
     ]

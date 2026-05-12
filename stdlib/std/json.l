@@ -82,6 +82,66 @@ pub func tryGetLong(elem: in JsonElement): Option[Long] {
 @stable(since="1.0")
 pub func encodeString(s: in String): String { hostEncodeString(s) }
 
+/// Return the raw text of a `JsonElement` as produced by
+/// `JsonElement.GetRawText()`.  Useful for capturing sub-objects or
+/// arrays as opaque strings.
+@stable(since="1.0")
+pub func getRawText(elem: in JsonElement): String { hostGetRawText(elem) }
+
+/// Return the `JsonValueKind` ordinal of a `JsonElement`:
+/// 0=Undefined, 1=Object, 2=Array, 3=String, 4=Number, 5=True, 6=False, 7=Null.
+@stable(since="1.0")
+pub func valueKind(elem: in JsonElement): Int { hostValueKind(elem) }
+
+// =====================================================================
+// Array enumeration — lower-level wrappers so callers can iterate
+// `JsonElement` arrays without going through the slice-reader helpers.
+// =====================================================================
+
+@stable(since="1.0")
+pub func enumerateArray(elem: in JsonElement): JsonArrayEnumerator {
+  hostEnumerateArray(elem)
+}
+
+@stable(since="1.0")
+pub func arrayMoveNext(en: inout JsonArrayEnumerator): Bool {
+  hostEnumMoveNext(en)
+}
+
+@stable(since="1.0")
+pub func arrayCurrent(en: inout JsonArrayEnumerator): JsonElement {
+  hostEnumCurrent(en)
+}
+
+// =====================================================================
+// Object enumeration — iterate `JsonElement` object properties.
+// =====================================================================
+
+@stable(since="1.0")
+pub func enumerateObject(elem: in JsonElement): JsonObjectEnumerator {
+  hostEnumerateObject(elem)
+}
+
+@stable(since="1.0")
+pub func objectMoveNext(en: inout JsonObjectEnumerator): Bool {
+  hostEnumObjectMoveNext(en)
+}
+
+@stable(since="1.0")
+pub func objectCurrent(en: inout JsonObjectEnumerator): JsonProperty {
+  hostEnumObjectCurrent(en)
+}
+
+@stable(since="1.0")
+pub func propertyName(prop: in JsonProperty): String {
+  hostPropertyName(prop)
+}
+
+@stable(since="1.0")
+pub func propertyValue(prop: in JsonProperty): JsonElement {
+  hostPropertyValue(prop)
+}
+
 // =====================================================================
 // fromJson scalar field readers — used by @derive(Json) synthesised stubs.
 // Each re-parses the JSON string and walks to the named property.

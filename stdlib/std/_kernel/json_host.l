@@ -20,8 +20,10 @@ extern type JsonElement = "System.Text.Json.JsonElement"
 // Nested CLR type — `+` separates the outer type from the nested
 // `ArrayEnumerator` struct.  Used by the slice-reader helpers to
 // iterate `JsonElement.EnumerateArray()` without an F#-side shim.
-extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"
-extern type JsonEncodedText     = "System.Text.Json.JsonEncodedText"
+extern type JsonArrayEnumerator  = "System.Text.Json.JsonElement+ArrayEnumerator"
+extern type JsonObjectEnumerator = "System.Text.Json.JsonElement+ObjectEnumerator"
+extern type JsonProperty         = "System.Text.Json.JsonProperty"
+extern type JsonEncodedText      = "System.Text.Json.JsonEncodedText"
 
 // =====================================================================
 // Parsing.
@@ -98,6 +100,26 @@ pub func hostEnumMoveNext(en: inout JsonArrayEnumerator): Bool = ()
 
 @externTarget("System.Text.Json.JsonElement+ArrayEnumerator.Current")
 pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
+
+// =====================================================================
+// Object iteration — direct externs over `JsonElement.ObjectEnumerator`
+// (the nested-CLR struct) so object-walking code can stay in pure Lyric.
+// =====================================================================
+
+@externTarget("System.Text.Json.JsonElement.EnumerateObject")
+pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator = ()
+
+@externTarget("System.Text.Json.JsonElement+ObjectEnumerator.MoveNext")
+pub func hostEnumObjectMoveNext(en: inout JsonObjectEnumerator): Bool = ()
+
+@externTarget("System.Text.Json.JsonElement+ObjectEnumerator.Current")
+pub func hostEnumObjectCurrent(en: inout JsonObjectEnumerator): JsonProperty = ()
+
+@externTarget("System.Text.Json.JsonProperty.Name")
+pub func hostPropertyName(prop: in JsonProperty): String = ()
+
+@externTarget("System.Text.Json.JsonProperty.Value")
+pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
 
 // =====================================================================
 // Manual serialization helpers.
