@@ -2060,18 +2060,6 @@ let main (argv: string array) : int =
                 printErr (sprintf "openapi: spec file not found: %s" specPath)
                 1
             else
-            match Lyric.Cli.OpenApi.parseFile specPath with
-            | Error msg ->
-                printErr (sprintf "openapi: %s" msg)
-                1
-            | Ok spec ->
-                // Merge CLI overrides onto spec-derived defaults.
-                let baseOpts = Lyric.Cli.OpenApiGen.defaultOptions spec
-                let opts : Lyric.Cli.OpenApiGen.GenOptions =
-                    { Lyric.Cli.OpenApiGen.ClientName  =
-                          clientName  |> Option.defaultValue baseOpts.ClientName
-                      Lyric.Cli.OpenApiGen.PackageName =
-                          packageName |> Option.defaultValue baseOpts.PackageName }
                 let outPath =
                     match explicitOut with
                     | Some o -> o
@@ -2081,13 +2069,15 @@ let main (argv: string array) : int =
                         let stem =
                             safeStr (Path.GetFileNameWithoutExtension specPath) "api"
                         Path.Combine(dir, stem + "_client.l")
-                match Lyric.Cli.OpenApiGen.generateToFile spec (Some opts) outPath with
+                // Empty string means "derive from spec title" in the Lyric bridge.
+                let cn = clientName  |> Option.defaultValue ""
+                let pn = packageName |> Option.defaultValue ""
+                match Lyric.Cli.SelfHostedOpenApi.generateToFile specPath cn pn outPath with
                 | Error msg ->
                     printErr (sprintf "openapi: %s" msg)
                     1
                 | Ok path ->
-                    printfn "generated %s (%d operations)"
-                        path (List.length spec.Operations)
+                    printfn "generated %s" path
                     0
     | "--sdk-info" :: _ ->
         // Print SDK root discovery results and version info.
