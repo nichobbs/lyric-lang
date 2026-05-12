@@ -710,9 +710,10 @@ lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: targ
 lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
 
 # Code generation
-lyric generate openapi <spec.yaml>     # generate Lyric stubs from an OpenAPI 3.1 spec
-lyric generate openapi <spec.yaml> --out <dir>  # write generated files to <dir>
-lyric web spec --output openapi.yaml   # extract OpenAPI spec from a compiled DLL
+lyric openapi <spec.json>              # generate a typed Std.Rest client from an OpenAPI 3.x JSON spec
+lyric openapi <spec.json> -o <out.l>  # write generated source to a specific path
+lyric openapi <spec.json> --client-name <Name>   # override the generated client type name
+lyric openapi <spec.json> --package <Pkg.Name>   # override the generated package declaration
 
 # Package management
 lyric restore                          # download dependencies declared in lyric.toml
