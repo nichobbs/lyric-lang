@@ -33,8 +33,15 @@ let private dotnetHost () =
         if File.Exists p then p else "dotnet"
 
 let private javaExe () =
-    let p = "/usr/bin/java"
-    if File.Exists p then p else "java"
+    // Prefer JAVA_HOME (set by actions/setup-java in CI) so we use the
+    // configured Java 21, not the pre-installed Java 11 at /usr/bin/java.
+    match Option.ofObj (Environment.GetEnvironmentVariable "JAVA_HOME") with
+    | Some home when home <> "" ->
+        let p = Path.Combine(home, "bin", "java")
+        if File.Exists p then p else "java"
+    | _ ->
+        let p = "/usr/bin/java"
+        if File.Exists p then p else "java"
 
 let private runProcess (exe: string) (args: string list) : string * string * int =
     let psi = ProcessStartInfo()
