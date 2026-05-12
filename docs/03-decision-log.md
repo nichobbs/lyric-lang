@@ -3177,6 +3177,238 @@ D-progress-229.
 
 ---
 
+## D062 — lyric-lambda library: AWS Lambda runtime adapter design
+
+**Date:** 2026-05-12
+**Status:** Decided
+
+### Context
+
+Lyric services built with `lyric-web` run on Kestrel.  Deploying those same
+services to AWS Lambda required either a heavy ASP.NET Core shim
+(`Amazon.Lambda.AspNetCoreServer`) or hand-written glue code for each event
+source.  Neither option was idiomatic Lyric.
+
+### Decisions
+
+**D062-1 — Custom runtime (not AspNetCoreServer)**
+The kernel uses the AWS Lambda custom runtime protocol
+(`Amazon.Lambda.RuntimeSupport`) rather than `AspNetCoreServer`.  This
+eliminates Kestrel from the critical path for non-HTTP workloads and reduces
+cold start.  The `serve()` loop polls the Runtime API directly.
+
+**D062-2 — Zero-change lyric-web router reuse**
+A `Web.Router` attached with `Lambda.withRouter()` is dispatched using the
+same route-match and reflection-based handler-invocation logic as Kestrel.
+API Gateway v1 (REST API), v2 (HTTP API), and ALB events are all normalised
+to `method + path + headers + body` before dispatch.  The same handler
+functions work on both runtimes without modification.
+
+**D062-3 — Custom event handlers registered by qualified name**
+Non-HTTP event sources (SQS, SNS, S3, EventBridge, DynamoDB Streams) are
+registered with `onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onRaw`.
+Handlers are identified by fully-qualified Lyric function name and resolved
+via DLL reflection at startup, consistent with `Web.Route.handlerName`.
+
+**D062-4 — Event source detection by JSON structure inspection**
+The kernel detects the event source from the raw JSON payload before
+deserialising, using the detection rules in `docs/35-lambda-library.md §4.1`.
+This avoids a discriminated union wrapper around every payload and lets the
+typed event records in `Lambda.ApiGw` and `Lambda.Events` be clean records.
+
+**D062-5 — Both modes coexist in one LambdaApp**
+A single `LambdaApp` may have an `httpRouter` and custom event handlers.  The
+kernel routes HTTP events to the router and all other events to the handler
+table.  This lets a single Lambda function handle both API requests and
+background queue processing.
+
+**D062-6 — Feature-gated kernel (aws vs local)**
+Two files both declare `package Lambda.Kernel.Runtime`, gated on `@cfg(feature
+= "aws")` and `@cfg(feature = "local")` respectively.  The production build
+uses `Amazon.Lambda.RuntimeSupport`; the local build starts an HTTP server
+compatible with `sam local invoke` and `aws lambda invoke --endpoint-url`.
+
+**D062-7 — SQS partial-batch-failure via return type**
+SQS handlers may return `Result[SqsBatchResponse, LambdaError]` instead of
+`Result[Unit, LambdaError]` to report per-message failures.  The kernel
+serialises `batchItemFailures` into the Lambda response.  No separate handler
+registration is needed; the kernel infers the intent from the return type.
+
+**D062-8 — DeadlineGuard as a C-mode aspect (not kernel policy)**
+The kernel does not enforce a global deadline margin.  Handlers opt in to the
+`DeadlineGuard` aspect, which checks `ctx.remainingTimeMs` before proceeding.
+This gives handlers control over the threshold and lets them compose logging
+around the guard.
+
+### Tradeoffs
+
+- Custom runtime means the process bootstrap is in Lyric's kernel, not
+  ASP.NET Core.  Kestrel's mature HTTP/2 and connection handling are not
+  available for HTTP events, but API Gateway terminates TLS and HTTP/2 before
+  reaching Lambda, so this is not a limitation in practice.
+- Dispatch by qualified-name string is not AOT-compatible.  Q-lambda-001
+  tracks a future `onSqsDirect` / `withRouterDirect` API accepting function
+  references for AOT builds.
+
+### Implementation
+
+Library at `lyric-lambda/`.  Design document at `docs/35-lambda-library.md`.
+
+---
+
+## D063 — lyric-lambda v2: authorizers, secrets integration, and Kinesis
+
+**Date:** 2026-05-12
+**Status:** Decided
+
+### Context
+
+After the initial lyric-lambda library (D062), three feature gaps remained:
+Lambda authorizer functions (Q-lambda-005), Secrets Manager / Parameter Store
+config integration (Q-lambda-002), and Kinesis stream event support (Q-lambda-006).
+
+### Decisions
+
+**D063-1 — Both REST API and HTTP API authorizer types**
+`Lambda.Authorizer` ships three event types and two response types:
+- `TokenAuthorizerEvent` + `RequestAuthorizerEvent` → `AuthorizerResponse`
+  (IAM `PolicyDocument` with `IamStatement` list; `allow`, `allowAll`, `deny`,
+  `withContext`, `withUsageKey` helpers)
+- `HttpAuthorizerEvent` → `HttpAuthorizerResponse`
+  (`{ isAuthorized: Bool, context: Map[String, String] }`; `authorized`,
+  `authorizedWithContext`, `denied` helpers)
+
+REST API authorizers return full IAM policy documents; HTTP API authorizers
+return the simpler payload format 2.0 boolean response.  Both are registered
+via `LambdaApp` builder methods (`onTokenAuthorizer`, `onRequestAuthorizer`,
+`onHttpAuthorizer`); the kernel detects authorizer invocations in the same
+dispatch pass as event source handlers.
+
+**D063-2 — `LambdaApp.authorizerHandlers` as a first-class field**
+Rather than overloading `eventHandlers` with special source keys, authorizer
+handlers are stored in a separate `authorizerHandlers: [AuthorizerHandler]`
+field on `LambdaApp`.  This keeps event routing and authorizer routing
+semantically distinct in the kernel dispatch.
+
+**D063-3 — Config-block annotation model for secrets**
+`lyric-aws-secrets` ships as a separate library with two annotations
+(`@secretsManager`, `@parameterStore`) and an `init()` entry point.
+`init()` scans the compiled DLL's config block metadata, fetches annotated
+field values from AWS, and populates the process-level config cache under
+the env-var key (`LYRIC_CONFIG_<PACKAGE>_<FIELD>`).  The existing config-block
+access mechanism reads from the cache unchanged.  Env var overrides take
+precedence (local dev without credentials).
+
+**D063-4 — Secrets library is separate from lyric-lambda**
+`lyric-aws-secrets` is a standalone library usable by any Lyric service
+(ECS, Kubernetes, Kestrel on EC2) — not just Lambda.  The user calls
+`AwsSecrets.init()` explicitly in `main()` before `Lambda.serve()` or
+`Web.start()`.  No kernel magic required.
+
+**D063-5 — Both Secrets Manager and Parameter Store in one library**
+Both backends ship in `lyric-aws-secrets` under the same `AwsSecrets` package.
+They are conceptually distinct (Secrets Manager for JSON blobs and rotation;
+Parameter Store for simple strings and hierarchical paths) but similar enough
+to ship together.  The `@secretsManager` and `@parameterStore` annotations
+are unambiguous about which backend to call.
+
+**D063-6 — In-process cache with configurable TTL**
+Fetched values are cached for `SecretCache.ttlSeconds` (default 300 s).
+TTL = 0 disables caching.  Chosen TTL should be a fraction of the rotation
+period so stale values are refreshed in time.
+
+**D063-7 — Kinesis via typed event record**
+`KinesisEvent` / `KinesisStreamRecord` / `KinesisRecord` are added to
+`Lambda.Events` and `onKinesis()` is added to the `LambdaApp` builder.
+No partial-batch-failure equivalent; Kinesis retries the full batch on error.
+
+### Implementation
+
+`Lambda.Authorizer` in `lyric-lambda/src/authorizer.l`.
+`lyric-aws-secrets` library at `lyric-aws-secrets/`.
+`KinesisEvent` in `lyric-lambda/src/events.l`.
+`onKinesis`, `onTokenAuthorizer`, `onRequestAuthorizer`, `onHttpAuthorizer` in `lyric-lambda/src/lambda.l`.
+`docs/35-lambda-library.md` updated with §6 (Authorizers), §7 (Secrets), and resolved Q-lambda-002, Q-lambda-005, Q-lambda-006.
+
+---
+
+---
+
+## D064 — lyric-lambda v3: AOT handlers, response streaming, JVM target, and X-Ray tracing
+
+**Status:** ACCEPTED
+**Date:** 2026-05-12
+
+### Context
+
+After D063, four feature gaps remained:
+- Q-lambda-001: AOT-compatible handler registration (function references)
+- Q-lambda-004: Lambda response streaming for Function URLs / HTTP API
+- Q-lambda-JVM: JVM target support for lyric-lambda and lyric-aws-secrets
+- Q-lambda-003: AWS X-Ray active tracing
+
+The JVM emitter is complete (`compiler/lyric/jvm/`, D-progress-229+).
+
+### Decisions
+
+**D064-1 — Dual registration: string names (default) + function references (opt-in AOT)**
+`Lambda.Direct` ships as a new package exposing typed factory functions that
+accept function references (`func sqsHandler(h: func(...): ...): DirectHandler`).
+`LambdaApp` gains a fifth field `directHandlers: [Lambda.Direct.DirectHandler]`.
+The string-based `on*()` builders remain unchanged.  Both registration styles
+may coexist in the same `LambdaApp`.  When `PublishAot=true`, use `withDirect()`
+exclusively — string-named handlers would fail at startup because DLL reflection
+metadata is stripped in AOT builds.
+
+**D064-2 — Response streaming via `Lambda.Stream.StreamWriter`**
+`Lambda.Stream` ships as a new package with an opaque `StreamWriter` type and
+`setContentType`, `write`, `writeBytes`, `close` functions.
+`LambdaApp` gains a `streamingHandler: Option[String]` field; the string-named
+`withStreamingHandler()` and AOT-safe `Lambda.Direct.streamingHandler()` builders
+register a single streaming handler.  Streaming handlers receive
+`(rawEvent: String, ctx: LambdaContext, writer: StreamWriter)`.  The kernel
+writes chunks directly to the runtime response stream; no buffering occurs.
+`withStreamingHandler` and `withRouter` are mutually exclusive — streaming
+handlers receive all HTTP traffic.
+
+**D064-3 — JVM kernels for lyric-lambda and lyric-aws-secrets**
+Both libraries gain a third kernel file gated on `feature = "jvm"`:
+- `lambda_kernel_jvm.l` — extern to the Java managed runtime
+  (`com.amazonaws.lambda.serve(app, localPort)`).  The Lyric JVM emitter
+  generates `<RootPackage>$LambdaHandler implements RequestStreamHandler`.
+  Handler discovery, dispatch logic, and streaming are identical to the .NET
+  kernel.
+- `secrets_kernel_jvm.l` — extern to AWS SDK for Java v2
+  (`software.amazon.awssdk:secretsmanager` + `ssm`).
+  `initFromAnnotations`, `fetchSecret`, `fetchParameter` mirror the .NET API.
+Maven dependencies added to `[maven]` tables in respective `lyric.toml` files.
+
+**D064-4 — X-Ray tracing as a separate `lyric-aws-xray` library**
+AWS X-Ray active tracing is implemented as a B-mode pub aspect template
+(`AwsXRay.Tracing`) in a standalone `lyric-aws-xray` library.  Rationale for
+separation: X-Ray is useful for any Lyric service (not just Lambda), and the
+library is optional — a service that doesn't need active tracing does not pay
+the dependency cost.  The `lyric-otel` library remains for vendor-neutral
+OpenTelemetry; `lyric-aws-xray` is the AWS-specific complement.
+The aspect wraps matched calls as X-Ray subsegments; `annotate()` and
+`metadata()` helpers allow handlers to attach indexed/non-indexed data.
+Three kernels ship: `aws` (.NET Amazon.XRay.Recorder.Core), `jvm`
+(com.amazonaws:aws-xray-recorder-sdk-core), `local` (no-op).
+
+### Implementation
+
+`Lambda.Direct` in `lyric-lambda/src/direct.l`.
+`Lambda.Stream` in `lyric-lambda/src/stream.l`.
+`lambda_kernel_jvm.l` in `lyric-lambda/src/_kernel/`.
+`secrets_kernel_jvm.l` in `lyric-aws-secrets/src/_kernel/`.
+`lyric-aws-xray/` library at project root.
+`lyric-lambda/lyric.toml` updated: 8 packages, 3 features (aws/local/jvm), `[maven]` table.
+`lyric-aws-secrets/lyric.toml` updated: 3 features (aws/local/jvm), `[maven]` table.
+`docs/35-lambda-library.md` updated with §10 (AOT), §11 (Streaming), §12 (JVM),
+§13 (X-Ray), §14 (runtime config), §15 (design notes), §16 (resolved open questions).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -1,0 +1,92 @@
+# lyric-lambda — AWS Lambda runtime adapter for Lyric.
+#
+# Ships eight packages:
+#   Lambda                 — core types (LambdaContext, LambdaError, LambdaApp
+#                            builder) and the serve() entry point.
+#   Lambda.ApiGw           — API Gateway v1 / v2 / ALB event types; the
+#                            typed bridge from HTTP events to Web.Router dispatch.
+#   Lambda.Events          — non-HTTP event types: SQS, SNS, S3, EventBridge,
+#                            DynamoDB Streams, Kinesis Data Streams.
+#   Lambda.Authorizer      — authorizer event types and response helpers:
+#                            TOKEN / REQUEST (REST API IAM policy) and
+#                            HTTP API (v2) simple isAuthorized response.
+#   Lambda.Direct          — AOT-compatible handler registration via function
+#                            references (for PublishAot=true builds).
+#   Lambda.Stream          — response streaming: StreamWriter type and helpers
+#                            for Lambda Function URL / HTTP API streaming.
+#   Lambda.Aspects         — pub aspect templates: EventLogging, DeadlineGuard.
+#   Lambda.Kernel.Runtime  — extern boundary to the Lambda runtime loop.
+#                            Exactly one file is compiled per build:
+#                              aws   feature → Amazon.Lambda.RuntimeSupport (.NET)
+#                              local feature → lightweight local test HTTP server
+#                              jvm   feature → AWS Java managed runtime handler
+#
+# Composition modes (may be combined in the same LambdaApp):
+#   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter().
+#   2. Streaming HTTP handler — Lambda.withStreamingHandler(handlerName).
+#   3. Custom event handlers — onSqs / onSns / onS3 / onEventBridge /
+#      onDynamoDb / onKinesis / onRaw (string-based, non-AOT).
+#   4. Authorizer handlers — onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer.
+#   5. AOT-safe direct handlers — Lambda.withDirect(Lambda.Direct.*Handler(fn)).
+#
+# See docs/35-lambda-library.md and decision logs D062, D063, D064.
+
+[package]
+name        = "Lyric.Lambda"
+version     = "0.1.0"
+description = "AWS Lambda runtime adapter with API Gateway → lyric-web bridge, typed event sources, authorizers, streaming, and AOT support."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# .NET production: Amazon.Lambda.RuntimeSupport custom runtime loop.
+aws   = []
+# Local development: lightweight HTTP test server (no AWS credentials needed).
+local = []
+# JVM: AWS Java managed runtime (com.amazonaws:aws-lambda-java-core).
+jvm   = []
+
+[project]
+name            = "Lyric.Lambda"
+output          = "single"
+output_assembly = "Lambda.dll"
+
+[project.packages]
+# Core types, LambdaApp builder, and serve() entry point.
+"Lambda"               = "src/lambda.l"
+# API Gateway v1 / v2 / ALB event types and lyric-web bridge.
+"Lambda.ApiGw"         = "src/apigw.l"
+# Non-HTTP event types: SQS, SNS, S3, EventBridge, DynamoDB Streams, Kinesis.
+"Lambda.Events"        = "src/events.l"
+# Authorizer event types and response helpers (TOKEN, REQUEST, HTTP API v2).
+"Lambda.Authorizer"    = "src/authorizer.l"
+# AOT-compatible handler registration via function references.
+"Lambda.Direct"        = "src/direct.l"
+# Response streaming support (StreamWriter, write, close).
+"Lambda.Stream"        = "src/stream.l"
+# Pub aspect templates for cross-cutting Lambda handler concerns.
+"Lambda.Aspects"       = "src/lambda_aspects.l"
+# Extern boundary — exactly one file is compiled per build (selected by feature):
+#   aws   → .NET custom runtime loop (Amazon.Lambda.RuntimeSupport)
+#   local → lightweight local test HTTP server
+#   jvm   → JVM managed runtime handler (aws-lambda-java-core)
+"Lambda.Kernel.Runtime" = [
+  "src/_kernel/lambda_kernel_aws.l",
+  "src/_kernel/lambda_kernel_local.l",
+  "src/_kernel/lambda_kernel_jvm.l",
+]
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Web"    = { path = "../lyric-web" }
+
+[nuget]
+# Production .NET runtime support — included when feature = "aws".
+"Amazon.Lambda.RuntimeSupport" = { version = "1.10.0", features = ["aws"] }
+# JSON serialization for Lambda event payloads (.NET).
+"Amazon.Lambda.Serialization.SystemTextJson" = { version = "2.4.4", features = ["aws"] }
+
+[maven]
+# JVM managed runtime — included when feature = "jvm".
+"com.amazonaws:aws-lambda-java-core"   = { version = "1.2.3", features = ["jvm"] }
+"com.amazonaws:aws-lambda-java-events" = { version = "3.11.4", features = ["jvm"] }

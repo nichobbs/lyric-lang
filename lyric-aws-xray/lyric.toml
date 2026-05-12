@@ -1,0 +1,86 @@
+# lyric-aws-xray — AWS X-Ray active tracing for Lyric Lambda handlers.
+#
+# Ships two packages:
+#   AwsXRay            — subsegment handle type, annotation/metadata helpers,
+#                        and the pub Tracing B-mode aspect template.
+#   AwsXRay.Kernel.Net — extern boundary to the AWS X-Ray SDK.
+#                        Exactly one file is compiled per build:
+#                          aws   feature → Amazon.XRay.Recorder.Core (.NET)
+#                          jvm   feature → com.amazonaws:aws-xray-recorder-sdk-core (Java)
+#                          local feature → no-op (subsegments silently dropped)
+#
+# Usage:
+#   The Lambda runtime automatically opens a top-level X-Ray segment for each
+#   invocation when active tracing is enabled on the Lambda function.  This
+#   library wraps individual Lyric function calls as subsegments of that segment.
+#
+#   1. Enable active tracing on the Lambda function (console, CDK, SAM, etc.).
+#   2. Import AwsXRay and instantiate the Tracing aspect template:
+#
+#        import AwsXRay
+#
+#        aspect TraceHandlers from AwsXRay.Tracing {
+#          matches: name like "handle*"
+#        }
+#
+#   3. The aspect wraps each matched call in an X-Ray subsegment named after
+#      the function's qualified name.  On error the subsegment is annotated
+#      with the error message; on success the subsegment closes cleanly.
+#
+#   4. Optionally add annotations or metadata inside handlers:
+#
+#        AwsXRay.annotate(handle, "userId", userId)
+#        AwsXRay.metadata(handle, "payload", payload)
+#
+#      `handle` is obtained from AwsXRay.currentSubsegment() inside a handler
+#      body wrapped by the Tracing aspect.
+#
+# IAM requirements:
+#   The Lambda execution role must have xray:PutTraceSegments and
+#   xray:PutTelemetryRecords on * (standard X-Ray policy).
+#
+# See docs/35-lambda-library.md §13 and decision log D064.
+
+[package]
+name        = "Lyric.AwsXRay"
+version     = "0.1.0"
+description = "AWS X-Ray active tracing aspect for Lyric Lambda handlers."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# .NET production: Amazon.XRay.Recorder.Core.
+aws   = []
+# JVM production: com.amazonaws:aws-xray-recorder-sdk-core.
+jvm   = []
+# Local development: subsegments are silently dropped (no X-Ray daemon needed).
+local = []
+
+[project]
+name            = "Lyric.AwsXRay"
+output          = "single"
+output_assembly = "AwsXRay.dll"
+
+[project.packages]
+# Subsegment handle, annotation/metadata helpers, Tracing aspect template.
+"AwsXRay"            = "src/xray.l"
+# Extern boundary — exactly one file is compiled per build:
+#   aws   → src/_kernel/xray_kernel_aws.l   (.NET X-Ray SDK)
+#   jvm   → src/_kernel/xray_kernel_jvm.l   (Java X-Ray SDK)
+#   local → src/_kernel/xray_kernel_local.l  (no-op)
+"AwsXRay.Kernel.Net" = [
+  "src/_kernel/xray_kernel_aws.l",
+  "src/_kernel/xray_kernel_jvm.l",
+  "src/_kernel/xray_kernel_local.l",
+]
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
+
+[nuget]
+# X-Ray recorder core — included when feature = "aws".
+"Amazon.XRay.Recorder.Core" = { version = "2.14.0", features = ["aws"] }
+
+[maven]
+# X-Ray recorder SDK core — included when feature = "jvm".
+"com.amazonaws:aws-xray-recorder-sdk-core" = { version = "2.15.3", features = ["jvm"] }

@@ -1,0 +1,104 @@
+# lyric-aws-secrets — AWS Secrets Manager and Parameter Store integration for Lyric.
+#
+# Ships two packages:
+#   AwsSecrets             — config-block annotation support (@secretsManager,
+#                            @parameterStore), the init() entry point, explicit
+#                            get/fetch functions, and SecretCache config.
+#   AwsSecrets.Kernel.Net  — extern boundary to the AWS SDK clients.
+#                            Exactly one file is compiled per build:
+#                              aws   feature → AWS SDK for .NET v3 clients
+#                              local feature → no-op; env vars are the only source
+#                              jvm   feature → AWS SDK for Java v2 clients
+#
+# Config-block integration (primary usage):
+#   Apply @secretsManager or @parameterStore to @sensitive fields in any
+#   config block.  Call AwsSecrets.init() once before Lambda.serve() or
+#   Web.start() to fetch all annotated values.  The fetched value is stored
+#   in the process-level config cache under the same key as the env var
+#   (LYRIC_CONFIG_<PACKAGE>_<FIELD>) so the existing config-block access
+#   mechanism works unchanged.  An env var override always takes precedence,
+#   enabling local development without AWS credentials.
+#
+#   Example:
+#     import AwsSecrets
+#
+#     config Auth {
+#       @sensitive
+#       @secretsManager("my-service/prod", key: "jwtSecret")
+#       jwtSecret: String
+#
+#       @sensitive
+#       @parameterStore("/my-service/db-password")
+#       dbPassword: String
+#     }
+#
+#     func main(): Int {
+#       match AwsSecrets.init() {
+#         Ok(_)    => Lambda.serve(app)
+#         Err(err) => {
+#           Std.Core.log("ERROR", AwsSecrets.errorMessage(err))
+#           return 1
+#         }
+#       }
+#       return 0
+#     }
+#
+# Explicit imperative API (secondary usage):
+#   Use AwsSecrets.getSecret / getSecretField / getParameter / getSecureParameter
+#   for one-off fetches in handler bodies where a config field is not appropriate.
+#
+# Caching:
+#   AwsSecrets caches fetched values for SecretCache.ttlSeconds (default 5 min).
+#   Set to 0 to disable caching (fetches on every init() call or explicit get).
+#   Rotation: set TTL to a fraction of your secret rotation period (e.g. if
+#   rotating every hour, use 300s so stale values are refreshed within 5 min).
+#
+# See docs/35-lambda-library.md §6 (Secrets) and decision log D063.
+
+[package]
+name        = "Lyric.AwsSecrets"
+version     = "0.1.0"
+description = "AWS Secrets Manager and Parameter Store config-block integration for Lyric services."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# AWS SDK backend (production, .NET).
+aws   = []
+# Local no-op backend: init() is a no-op; env var overrides are the only source.
+local = []
+# JVM: AWS SDK for Java v2 (software.amazon.awssdk).
+jvm   = []
+
+[project]
+name            = "Lyric.AwsSecrets"
+output          = "single"
+output_assembly = "AwsSecrets.dll"
+
+[project.packages]
+# Config annotations, init(), explicit fetch API, error types, cache config.
+"AwsSecrets"            = "src/secrets.l"
+# Extern boundary — exactly one file is compiled per build:
+#   aws   → src/_kernel/secrets_kernel_aws.l   (.NET AWS SDK v3)
+#   local → src/_kernel/secrets_kernel_local.l  (no-op)
+#   jvm   → src/_kernel/secrets_kernel_jvm.l    (JVM AWS SDK v2)
+"AwsSecrets.Kernel.Net" = [
+  "src/_kernel/secrets_kernel_aws.l",
+  "src/_kernel/secrets_kernel_local.l",
+  "src/_kernel/secrets_kernel_jvm.l",
+]
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
+
+[nuget]
+# AWS Secrets Manager SDK — included when feature = "aws".
+"AWSSDK.SecretsManager" = { version = "3.7.400", features = ["aws"] }
+# AWS Systems Manager (Parameter Store) SDK — included when feature = "aws".
+"AWSSDK.SimpleSystemsManagement" = { version = "3.7.400", features = ["aws"] }
+
+[maven]
+# JVM Secrets Manager client — included when feature = "jvm".
+"software.amazon.awssdk:secretsmanager" = { version = "2.25.x", features = ["jvm"] }
+# JVM Systems Manager (Parameter Store) client — included when feature = "jvm".
+"software.amazon.awssdk:ssm"            = { version = "2.25.x", features = ["jvm"] }
