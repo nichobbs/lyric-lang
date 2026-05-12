@@ -724,19 +724,29 @@ let rec inferExpr
 
     | EIndex(receiver, indices) ->
         let receiverT = infer receiver
-        for idx in indices do
-            let idxT = infer idx
-            if not (Type.equiv idxT (TyPrim PtInt)) then
-                err diags "T0069"
-                    (sprintf "index must be Int (got %s)" (Type.render idxT))
-                    idx.Span
+        let idxTs = indices |> List.map infer
+        let checkIdxsAre (expectedT: Type) =
+            List.iter2 (fun (idx: Expr) idxT ->
+                if not (Type.equiv idxT expectedT) then
+                    err diags "T0069"
+                        (sprintf "index must be %s (got %s)" (Type.render expectedT) (Type.render idxT))
+                        idx.Span) indices idxTs
         match receiverT with
-        | TyArray(_, elem) | TySlice elem -> elem
-        | TyPrim PtString  -> TyPrim PtChar
-        // Generic user-defined types (e.g. List[T], Map[K,V]) are indexable
-        // in the bootstrap; return the first type arg as the element type.
+        | TyArray(_, elem) | TySlice elem ->
+            checkIdxsAre (TyPrim PtInt)
+            elem
+        | TyPrim PtString ->
+            checkIdxsAre (TyPrim PtInt)
+            TyPrim PtChar
+        // 1-arg generic types (List[T], Set[T], etc.) index by Int.
+        // 2-arg generic types (Map[K,V]) index by K (firstArg) and return V (secondArg).
         // Full operator-based dispatch is deferred to T6+.
-        | TyUser(_, firstArg :: _) -> firstArg
+        | TyUser(_, [elem]) ->
+            checkIdxsAre (TyPrim PtInt)
+            elem
+        | TyUser(_, keyT :: valT :: _) ->
+            checkIdxsAre keyT
+            valT
         | TyUser(_, [])    -> TyError
         | TyError | TyVar _ -> TyError
         | other ->
