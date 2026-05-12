@@ -11695,3 +11695,38 @@ library for AWS X-Ray active tracing as a B-mode aspect.
 - D064 added to `docs/03-decision-log.md`.
 
 **Test counts:** unchanged (source-only; integration tests follow with F# kernel wiring).
+
+---
+
+### D-progress-245: `Std.Xml` and `Std.Yaml` — pure-Lyric parsers (D065)
+
+Shipped two cross-platform stdlib modules with no kernel externs:
+
+**`stdlib/std/xml.l` — `Std.Xml`:**  Pure-Lyric XML 1.0 parser.  Parses
+elements, attributes (single- and double-quoted), text, comments, CDATA,
+entity references (&amp; &lt; &gt; &apos; &quot; &#NNN; &#xNNN;),
+self-closing tags, XML declarations, and DOCTYPE/PI nodes (consumed, not
+retained).  API: `parseXml`, `documentRoot`, `elementTag`, `elementAttrs`,
+`elementChildren`, `getAttribute`, `textContent`, `findFirst`, `findAll`.
+Uses the `inout` mutable-state record pattern established in the self-hosted
+lexer and parser.  18 tests in `stdlib/tests/xml_tests.l`.
+
+**`stdlib/std/yaml.l` — `Std.Yaml`:**  Pure-Lyric YAML 1.2 + JSON parser.
+JSON mode (`parseJson`): full strict JSON.  YAML mode (`parseYaml`): JSON flow
+style + YAML block mappings and sequences, unquoted/single/double-quoted
+scalars, boolean aliases (yes/no/on/off), null alias (~).  Data model:
+`YamlValue` union (YNull, YBool, YInt, YFloat, YString, YSequence, YMapping)
++ `YamlPair` record.  API: `parseJson`, `parseYaml`, `isNull`, `asString`,
+`asBool`, `asInt`, `asSequence`, `asMapping`, `getField`, `getString`,
+`getInt`, `getBool`.  Note: float literals return `YString(raw)` until a
+`toDouble` extern lands (tracked Q-yaml-001).  19 tests in
+`stdlib/tests/yaml_tests.l`.
+
+Also discovered and documented two parser constraints during development:
+- Multi-statement match-arm bodies require explicit `-> { ... }` braces.
+- Chained `else if` must place `} else if` on the same line to avoid
+  statement-end insertion after the closing `}`.
+
+**Test counts:** 755 emitter tests (+3 from xml_tests, yaml_tests,
+xml_viability_tests), 323 parser tests, 143 type-checker tests, 123 lexer
+tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
