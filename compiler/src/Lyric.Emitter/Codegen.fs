@@ -541,7 +541,9 @@ let private resolveBclMethod
             // typeof<obj> from peekExprType means the type is unknown at peek
             // time (e.g. a field-access whose receiver type isn't tracked);
             // skip the check and trust the Lyric type checker's prior work.
-            if ok && a <> typeof<obj> && not (cmp pars.[i].ParameterType a) then
+            // Also allow Int/Long → Byte narrowing (always safe for 0-255 values).
+            let byteNarrow = pars.[i].ParameterType = typeof<byte> && (a = typeof<int> || a = typeof<int64>)
+            if ok && a <> typeof<obj> && not byteNarrow && not (cmp pars.[i].ParameterType a) then
                 ok <- false
         ok
     let tryResolve (candidates: MethodInfo array) =
@@ -1841,6 +1843,8 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     il.Emit(OpCodes.Conv_R4)
                 elif paramTy = typeof<float32> && argTy = typeof<double> then
                     il.Emit(OpCodes.Conv_R4)
+                elif paramTy = typeof<byte> && (argTy = typeof<int> || argTy = typeof<int64>) then
+                    il.Emit(OpCodes.Conv_U1)
                 elif paramTy = typeof<obj> && argTy.IsValueType then
                     il.Emit(OpCodes.Box, argTy)
                 elif paramTy.IsValueType && argTy = typeof<obj> then
@@ -2079,12 +2083,16 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 let recvLoc = FunctionCtx.defineLocal ctx "__recv_val" recvTy
                 il.Emit(OpCodes.Stloc, recvLoc)
                 il.Emit(OpCodes.Ldloca, recvLoc)
-            for a in args do
+            let methodPars = method.GetParameters()
+            args |> List.iteri (fun i a ->
                 let payload =
                     match a with
                     | CAPositional ex | CANamed (_, ex, _) -> ex
-                let _ = emitExpr ctx payload
-                ()
+                let argTy = emitExpr ctx payload
+                if i < methodPars.Length then
+                    let paramTy = methodPars.[i].ParameterType
+                    if paramTy = typeof<byte> && (argTy = typeof<int> || argTy = typeof<int64>) then
+                        il.Emit(OpCodes.Conv_U1))
             // Push CLR default values for any extra parameters not supplied by the caller.
             for p in extraParams do
                 match p.DefaultValue with

@@ -46,16 +46,3 @@ pub func hostIntToString(n: in Int, fmt: in String): String = ()
 @externTarget("System.Double.ToString")
 pub func hostDoubleToString(x: in Double, fmt: in String, culture: in CultureInfo): String = ()
 
-// =====================================================================
-// String padding.
-// =====================================================================
-
-// Left-pad `s` with `ch` to at least `width` characters.
-// System.String.PadLeft(int totalWidth, char paddingChar) — instance method.
-@externTarget("System.String.PadLeft")
-pub func hostPadLeft(s: in String, width: in Int, ch: in Char): String = ()
-
-// Right-pad `s` with `ch` to at least `width` characters.
-// System.String.PadRight(int totalWidth, char paddingChar) — instance method.
-@externTarget("System.String.PadRight")
-pub func hostPadRight(s: in String, width: in Int, ch: in Char): String = ()

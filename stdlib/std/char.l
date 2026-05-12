@@ -148,3 +148,80 @@ pub func hexDigitValue(c: in Char): Option[Int] {
     None
   }
 }
+
+// =====================================================================
+// ASCII fast-path helpers — pure Lyric, no host calls needed.
+// These only cover the ASCII range (0..127); for full Unicode correctness
+// use the BCL-backed isUpper / isLower / toUpper / toLower above.
+// =====================================================================
+
+/// True iff `c` is an ASCII uppercase letter ('A'..'Z').
+@pure
+@stable(since="1.0")
+pub func isAsciiUpper(c: in Char): Bool {
+  val cp = Host.hostCharToInt(c)
+  cp >= 65 and cp <= 90
+}
+
+/// True iff `c` is an ASCII lowercase letter ('a'..'z').
+@pure
+@stable(since="1.0")
+pub func isAsciiLower(c: in Char): Bool {
+  val cp = Host.hostCharToInt(c)
+  cp >= 97 and cp <= 122
+}
+
+/// True iff `c` is an ASCII letter ('A'..'Z' or 'a'..'z').
+@pure
+@stable(since="1.0")
+pub func isAsciiLetter(c: in Char): Bool {
+  isAsciiUpper(c) or isAsciiLower(c)
+}
+
+/// True iff `c` is an ASCII decimal digit ('0'..'9').
+@pure
+@stable(since="1.0")
+pub func isAsciiDigit(c: in Char): Bool {
+  val cp = Host.hostCharToInt(c)
+  cp >= 48 and cp <= 57
+}
+
+/// True iff `c` is an ASCII letter or digit.
+@pure
+@stable(since="1.0")
+pub func isAsciiLetterOrDigit(c: in Char): Bool {
+  isAsciiLetter(c) or isAsciiDigit(c)
+}
+
+/// True iff `c` is an ASCII whitespace character
+/// (space 0x20, tab 0x09, LF 0x0A, VT 0x0B, FF 0x0C, CR 0x0D).
+@pure
+@stable(since="1.0")
+pub func isAsciiWhiteSpace(c: in Char): Bool {
+  val cp = Host.hostCharToInt(c)
+  cp == 32 or cp == 9 or cp == 10 or cp == 11 or cp == 12 or cp == 13
+}
+
+/// Convert an ASCII uppercase letter to lowercase; other characters
+/// are returned unchanged.
+@pure
+@stable(since="1.0")
+pub func asciiToLower(c: in Char): Char {
+  if isAsciiUpper(c) {
+    Host.hostIntToChar(Host.hostCharToInt(c) + 32)
+  } else {
+    c
+  }
+}
+
+/// Convert an ASCII lowercase letter to uppercase; other characters
+/// are returned unchanged.
+@pure
+@stable(since="1.0")
+pub func asciiToUpper(c: in Char): Char {
+  if isAsciiLower(c) {
+    Host.hostIntToChar(Host.hostCharToInt(c) - 32)
+  } else {
+    c
+  }
+}
