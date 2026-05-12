@@ -9,8 +9,21 @@
 /// and serialises query results to JSON for decoding in db.l.
 ///
 /// Result row format (JSON string returned by query / txQuery):
-///   [{"col1":"val1","col2":"val2",...}, ...]
-/// All column values are JSON strings; the Db layer interprets types.
+///   [{"col": <json_value>, ...}, ...]
+///
+/// Column value encoding by SQL type:
+///   NULL             → JSON null
+///   INTEGER / BIGINT → JSON number (integer)
+///   REAL / FLOAT     → JSON number (floating-point)
+///   BOOLEAN          → JSON true / false
+///   TEXT / VARCHAR   → JSON string
+///   NUMERIC/DECIMAL  → JSON object  {"$decimal": "<exact-text>"}
+///   TIMESTAMP / DATE → JSON object  {"$datetime": "<ISO-8601-UTC>"}
+///   BYTEA / BLOB     → JSON object  {"$bytes": "<base64>"}
+///
+/// The tagged-object forms avoid precision loss (DECIMAL) and ambiguity
+/// (timestamps vs. plain strings).  The Db layer decodes all forms into
+/// DbValue variants; see `parseDbValue` in db.l.
 ///
 /// Error strings contain the driver error message and, where available,
 /// the SQLSTATE code.

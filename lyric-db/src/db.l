@@ -36,6 +36,7 @@
 package Db
 
 import Std.Core
+import Std.Json
 import Db.Kernel.Net as DbKernel
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -50,6 +51,10 @@ pub record DbError {
 // ─── Row value type ───────────────────────────────────────────────────────────
 
 /// A column value returned by a query.  Pattern-match to extract a typed value.
+///
+/// `DbDecimal` carries exact decimal text (e.g. `"123.456"`) from the driver;
+/// use `Std.String.parseDouble` or a decimal library for arithmetic.
+/// `DbDateTime` carries an ISO 8601 UTC timestamp string from the driver.
 @stable(since="0.1")
 pub enum DbValue {
   case DbNull
@@ -60,6 +65,8 @@ pub enum DbValue {
   case DbBool(value: Bool)
   case DbText(value: String)
   case DbBytes(value: [Byte])
+  case DbDecimal(value: String)   // exact decimal text; tagged {"$decimal":"..."} on wire
+  case DbDateTime(value: String)  // ISO 8601 UTC; tagged {"$datetime":"..."} on wire
 }
 
 /// A single query result row: an ordered list of (columnName, value) pairs.
@@ -230,14 +237,75 @@ pub func connectSqlite(): Result[DbConnection, DbError] {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Parse a JSON array of objects (kernel-serialised rows) into [DbRow].
-// Format: [{"col1":"val1","col2":"val2",...}, ...]
-// All values arrive as strings; numeric/bool parsing is left to the consumer.
+// Parse the kernel's JSON wire format into a typed row list.
+//
+// Wire format: [{"col": <json_value>, ...}, ...]
+//   JSON null            → DbNull
+//   JSON integer         → DbInt (if fits Int32) else DbLong
+//   JSON float           → DbDouble
+//   JSON bool            → DbBool
+//   JSON string          → DbText
+//   JSON {"$decimal":"…"} → DbDecimal  (exact decimal text, avoids float rounding)
+//   JSON {"$datetime":"…"} → DbDateTime (ISO 8601 UTC string from driver)
+//
+// JsonValueKind ordinals: 0=Undefined 1=Object 2=Array 3=String 4=Number 5=True 6=False 7=Null
 func parseRows(json: in String): Result[[DbRow], DbError] {
-  // NOT YET IMPLEMENTED: returns Err so callers see the gap rather than
-  // silently receiving empty rows.  Full implementation depends on
-  // Std.Json finalisation (v1 milestone).
-  return Err(DbError(
-    message = "parseRows not yet implemented: JSON row parsing pending Std.Json finalisation",
-    code    = "NOT_IMPLEMENTED"))
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  if Std.Json.valueKind(root) != 2 {
+    return Err(DbError(message = "expected JSON array from query", code = "PARSE_ERROR"))
+  }
+  var rows: [DbRow] = []
+  var arrEn = Std.Json.enumerateArray(root)
+  while Std.Json.arrayMoveNext(arrEn) {
+    val rowElem = Std.Json.arrayCurrent(arrEn)
+    if Std.Json.valueKind(rowElem) != 1 {
+      return Err(DbError(message = "expected JSON object for each row", code = "PARSE_ERROR"))
+    }
+    var cols: [(String, DbValue)] = []
+    var objEn = Std.Json.enumerateObject(rowElem)
+    while Std.Json.objectMoveNext(objEn) {
+      val prop    = Std.Json.objectCurrent(objEn)
+      val colName = Std.Json.propertyName(prop)
+      val rawVal  = Std.Json.getRawText(Std.Json.propertyValue(prop))
+      cols = cols + [(colName, parseDbValue(rawVal))]
+    }
+    rows = rows + [DbRow(columns = cols)]
+  }
+  return Ok(rows)
+}
+
+// Decode a single JSON value (as raw text) to a DbValue.
+// Re-parses the raw text so JsonElement does not escape this module.
+func parseDbValue(raw: in String): DbValue {
+  val doc  = Std.Json.parseJson(raw)
+  val elem = Std.Json.rootElement(doc)
+  val kind = Std.Json.valueKind(elem)
+  match kind {
+    case 7 -> DbValue.DbNull
+    case 5 -> DbValue.DbBool(value = true)
+    case 6 -> DbValue.DbBool(value = false)
+    case 3 -> DbValue.DbText(value = Std.Json.getString(elem))
+    case 4 -> {
+      match Std.Json.tryGetInt(elem) {
+        case Some(i) -> DbValue.DbInt(value = i)
+        case None ->
+          match Std.Json.tryGetLong(elem) {
+            case Some(l) -> DbValue.DbLong(value = l)
+            case None    -> DbValue.DbDouble(value = Std.Json.getDouble(elem))
+          }
+      }
+    }
+    case 1 -> {
+      match Std.Json.tryGetProperty(elem, "$decimal") {
+        case Some(v) -> DbValue.DbDecimal(value = Std.Json.getString(v))
+        case None ->
+          match Std.Json.tryGetProperty(elem, "$datetime") {
+            case Some(v) -> DbValue.DbDateTime(value = Std.Json.getString(v))
+            case None    -> DbValue.DbNull
+          }
+      }
+    }
+    case _ -> DbValue.DbNull
+  }
 }

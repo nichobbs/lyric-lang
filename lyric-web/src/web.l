@@ -103,6 +103,12 @@ pub func internalError(message: in String): ApiError {
   return ApiError(status = 500, message = message, detail = [])
 }
 
+/// 503 Service Unavailable — upstream dependency unreachable or degraded.
+@stable(since="0.1")
+pub func serviceUnavailable(message: in String): ApiError {
+  return ApiError(status = 503, message = message, detail = [])
+}
+
 /// Arbitrary status code for cases not covered by the named constructors.
 @stable(since="0.1")
 pub func apiError(status: in Int, message: in String): ApiError

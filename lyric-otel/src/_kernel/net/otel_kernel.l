@@ -25,6 +25,9 @@ extern package System.Diagnostics {
   /// Record an exception on the span and mark it as failed, then stop it.
   pub func netSetSpanError(span: Span, message: String): Unit
 
+  /// Attach a string tag to the span via Activity.SetTag.
+  pub func netSetSpanAttribute(span: Span, key: String, value: String): Unit
+
   /// Stop the span and record elapsed time.
   pub func netEndSpan(span: Span): Unit
 }

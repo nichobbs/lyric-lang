@@ -53,6 +53,17 @@ pub func setSpanError(span: Span, message: String): Unit {
   jvmSetSpanError(span, message)
 }
 
+/// Attach a string attribute to the span.  Call before endSpan.
+@cfg(feature = "dotnet")
+pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
+  netSetSpanAttribute(span, key, value)
+}
+
+@cfg(feature = "jvm")
+pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
+  jvmSetSpanAttribute(span, key, value)
+}
+
 /// End the span.  Must be called even when an error was recorded.
 @cfg(feature = "dotnet")
 pub func endSpan(span: Span): Unit {
