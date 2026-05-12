@@ -308,6 +308,10 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   The `stdlib/std/_kernel/` subdirectory holds the audited extern boundary
   (see `docs/14-native-stdlib-plan.md` Decision F): only kernel files may
   contain `@externTarget` / `extern type` declarations.
+  Key modules: `Std.Core` (Option, Result), `Std.Collections` (List, Map),
+  `Std.String`, `Std.Char`, `Std.Json` (BCL-backed, `.NET`-only),
+  `Std.Xml` (pure-Lyric XML 1.0 parser, cross-platform, D065),
+  `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065).
 - `stdlib/tests/` — Lyric-language test suite for the stdlib. Each
   `*_tests.l` file is a standalone Lyric program that imports the modules
   it covers and asserts correctness via `Std.Testing`. The F# runner

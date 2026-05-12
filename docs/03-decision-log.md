@@ -3409,6 +3409,71 @@ Three kernels ship: `aws` (.NET Amazon.XRay.Recorder.Core), `jvm`
 
 ---
 
+## D065 — Pure-Lyric XML and YAML/JSON parsers in the standard library
+
+**Context:** `Std.Json` (shipped at M1.3) wraps `System.Text.Json` via a
+`_kernel/json_host.l` extern boundary.  That approach works on .NET but
+requires a separate kernel bridge for every target (JVM, native), doubling
+maintenance and diverging the API surface.  An XML library following the same
+pattern would need `System.Xml.Linq` on .NET and `javax.xml` / `org.w3c.dom`
+on JVM — two bridges, two slightly-different APIs, no shared code.
+
+A viability probe (`stdlib/tests/xml_viability_tests.l`, PR #269) confirmed
+that the emitter supports all the primitives a pure-Lyric parser needs:
+self-referential union types (`XmlNode` with `List[XmlNode]` children),
+recursive tree traversal, and character-level string walking (`s[i]`,
+`isWhiteSpace`, `substring`).  Two syntax constraints were discovered during
+the probe: multi-statement match-arm bodies require `-> { }` braces, and
+chained `else if` must keep `} else if` on the same line.
+
+**Decision:** Ship `Std.Xml` and `Std.Yaml` as pure-Lyric libraries with no
+kernel externs.  Both target both MSIL and JVM without any extra plumbing.
+`Std.Yaml` covers YAML 1.2 including the JSON subset (YAML 1.2 §1.2: "JSON
+is YAML"), so `parseJson` and `parseYaml` share the same data model.
+
+**Scope of the initial implementation:**
+
+`Std.Xml` (`stdlib/std/xml.l`):
+- Full XML 1.0 subset: elements, attributes, text, comments, CDATA, entity
+  references (&amp; &lt; &gt; &apos; &quot; &#NNN; &#xNNN;), self-closing
+  tags, XML declarations, DOCTYPE (consumed, not represented), PIs (consumed).
+- No namespace prefix resolution; `ns:name` treated as a plain name.
+- No DTD validation or entity expansion beyond the five built-in entities
+  plus numeric code-point entities.
+- API: `parseXml`, `documentRoot`, `elementTag`, `elementAttrs`,
+  `elementChildren`, `getAttribute`, `textContent`, `findFirst`, `findAll`.
+
+`Std.Yaml` (`stdlib/std/yaml.l`):
+- JSON strict mode (`parseJson`): objects, arrays, strings with escape
+  sequences, numbers (integer and float), booleans, null.
+- YAML mode (`parseYaml`): JSON flow style + YAML block mappings and
+  sequences, unquoted/single-quoted/double-quoted scalars, YAML boolean
+  aliases (yes/no/on/off), null alias (~).  Anchors, aliases, directives,
+  and tags return `UnsupportedFeature`.
+- API: `parseJson`, `parseYaml`, `isNull`, `asString`, `asBool`, `asInt`,
+  `asSequence`, `asMapping`, `getField`, `getString`, `getInt`, `getBool`.
+
+**Type-generation tooling (deferred to a follow-up):** The natural next step
+is `lyric gen-types` — a CLI command that infers Lyric record/union
+declarations from a JSON/YAML sample or JSON Schema / XSD.  The inference
+rules are straightforward: `YMapping` → `record`, `YSequence` → `List[T]`,
+scalar kinds → primitive types, nullable fields (`YNull` in a sample) →
+`Option[T]`.  JSON Schema support would use `$ref` to name nested records.
+This will be implemented as a self-hosted `Lyric.GenTypes` library (following
+the pattern of `Lyric.Fmt` and `Lyric.TestSynth`) with a `lyric gen-types`
+CLI entry point.
+
+**Tradeoffs:**
+- Pure Lyric parsers are slightly slower than BCL-backed ones for large
+  documents, but benchmarks are not a concern at this stage.
+- The existing `Std.Json` (BCL-backed) is retained for backward compatibility;
+  new cross-platform code should prefer `Std.Yaml.parseJson`.
+- Float parsing in `Std.Yaml` returns `YString` for floating-point literals
+  (the raw text) because a `toDouble` BCL bridge is not yet wired.  Tracked
+  as Q-yaml-001; fix will land when the float-conversion extern ships.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
