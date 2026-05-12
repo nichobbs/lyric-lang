@@ -56,6 +56,7 @@ backing entry's id.
 - `docs/32-junit-runner-sketch.md` — JUnit 5 `TestEngine` adapter for `lyric test --jvm` (extends Q-J007 from `docs/18-jvm-emission.md`). _Partially implemented in D-progress-206 (B126): `@LyricTest` annotation class + `Jvm.TestEngine` shipped; full `LyricTestEngine` deferred to B127+._
 - `docs/33-platform-parity-remediation.md` — platform-parity remediation plan (docs audit, JVM/MSIL self-hosted pipeline R1–R6). _Backed by D058 (MSIL PE emitter) and D-progress-227–239._
 - `docs/34-distribution-strategy.md` — compiler and stdlib distribution channels (NuGet global tool, standalone ZIP, future AOT binary, bootstrap pipeline). _Specced in D059._
+- `docs/35-js-wasm-component-sketch.md` — JS ecosystem integration via WASM Component Model: WIT generation from Lyric types, `[npm]` table, NPM extern shims, degraded-semantics policy, async lowering. _Unbacked (Q-JS-001–Q-JS-006 open)._
 
 ## Reading order (for Claude)
 
