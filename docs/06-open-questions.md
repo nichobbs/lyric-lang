@@ -528,3 +528,12 @@ shipped in `compiler/lyric/jvm/lowering.l` (D-progress-226).  The entry in
 
 All other Q-J entries remain open; see `docs/18-jvm-emission.md §"Open
 questions"` for their current status.
+
+---
+
+## JS / WASM Component Model questions
+
+JS-target and WASM Component Model open questions (Q-JS-001–Q-JS-006 and
+later) are maintained in `docs/35-js-wasm-component-sketch.md` §11.  They
+live there because they require WASM Component Model domain context to
+evaluate.  All Q-JS entries are currently open.
