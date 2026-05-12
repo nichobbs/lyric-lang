@@ -11861,7 +11861,7 @@ extraction path. `equiv` and `render` updated accordingly.
 - **ERange** — infers element type from bounds; produces `TyRange elemType`.
 - **EInterpolated** — type-checks each `ISExpr` segment; result is `String`.
 - **ETypeApp** — pass-through that infers the underlying expression's type.
-- **EAssign** — verifies target is mutable and RHS matches target type.
+- **EAssign** — verifies RHS type matches target type (T0063); mutability check deferred to T6+.
 - **EForall / EExists** — bind the quantified variable; result is `Bool`.
 - **ETry** — propagates the inner expression's type.
 - **resolvePath** — now handles `DKConst`, `DKVal` (with init-expression
@@ -11985,9 +11985,26 @@ Fix: the new `SReturn _ | SThrow _ | SBreak _ | SContinue _` arm in `checkBlock`
 calls `checkStatement` (which still validates the returned/thrown value's type)
 and then sets `lastExprType <- TyPrim PtNever`.
 
+**Additional fixes in the same PR** (claude-review follow-up):
+
+- `ERange` mismatched bounds now emits T0068 instead of silently returning
+  `TyError`.  Note: `ERange` is not parser-reachable in expression position
+  in the current bootstrap (only produced as `PRange` in pattern context), so
+  no end-to-end test is added; the branch is correct for when range-expression
+  syntax is added to the parser.
+- `EForall`/`EExists` body now checked for `Bool` (T0067 if not).
+- `SAssign` compound-op deferral documented with `// compound-op semantics
+  deferred to T6+` comment.
+- `EAssign` progress-log description corrected: mutability check is deferred
+  to T6+, not implemented.
+- Restored "why" comments on the `builtinMember` TyError-without-diagnostic
+  path and the `PreRef` pass-through.
+- `StmtChecker.fs` deleted from disk (was already excluded from the project).
+- Two new `EAssign` tests (happy path + T0063 mismatch).
+
 **Outcome:**
 
-- 187/187 type-checker tests pass (unchanged).
+- 189/189 type-checker tests pass (+2 EAssign tests vs D-progress-246's 187).
 - Emitter tests: 398 → 250 failures.  The 148 newly passing tests are those
   that imported `Std.Core` and failed solely because the type-checker emitted
   spurious T0010 / T0068 / T0070 on the generic Option / Result functions.

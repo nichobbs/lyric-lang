@@ -331,4 +331,31 @@ let tests =
             Expect.isEmpty d "no diagnostics"
             Expect.equal t (TyPrim PtBool) "Bool"
         }
+
+        // ERange note: the parser does not produce ERange in expression
+        // position in the current bootstrap (range literals `0..=9` are
+        // only produced in pattern context as PRange). The ERange branch
+        // in inferExpr — including the T0068 mismatched-bounds diagnostic —
+        // is correct and will be exercised once range-expression syntax
+        // lands in the parser. No end-to-end tests are added here.
+
+        // =====================================================================
+        // EAssign in expression position
+        // =====================================================================
+
+        test "assign expression returns Unit" {
+            let r = parseAndCheck
+                        "pub func f(): Unit {\n\
+                         var x: Int = 0\n\
+                         x = 1 }"
+            Expect.isEmpty r.Diagnostics "no diagnostics"
+        }
+
+        test "assign expression type-mismatch reports T0063" {
+            let r = parseAndCheck
+                        "pub func f(): Unit {\n\
+                         var x: Int = 0\n\
+                         x = true }"
+            Expect.contains (codes r) "T0063" "T0063 for assign type mismatch"
+        }
     ]

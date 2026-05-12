@@ -14,7 +14,7 @@
 ///   - EInterpolated                    (interpolated strings → String)
 ///   - ETypeApp                         (type-argument application, pass-through)
 ///   - EForall / EExists                (quantifier atoms → Bool)
-///   - EAssign in expression position   (returns Unit)
+///   - EAssign in expression position   (type-checks RHS; mutability deferred to T6+)
 ///   - DKConst / DKVal / DKUnionCase / DKEnumCase resolution
 ///   - PTuple with element types from TyTuple scrutinee
 ///   - PConstructor with field types from union symbol
@@ -234,6 +234,8 @@ let private inferPrefix
                 span
         TyPrim PtBool
     | PreRef ->
+        // Prefix-ref (`&x`) is a no-op at the type level in the bootstrap;
+        // reference semantics are deferred to T6+ (Phase 2).
         inner
 
 // ---------------------------------------------------------------------------
@@ -280,8 +282,10 @@ let private inferMember
         match List.tryFind (fun (n, _) -> n = name) fs with
         | Some (_, t) -> t
         | None ->
-            // Could be a method or union case access — return TyError without
-            // diagnostic to avoid noise on valid BCL-method calls.
+            // TyError without a diagnostic: the member could be a BCL method
+            // on a CLR type or a union-case accessor, both of which the
+            // bootstrap emitter handles directly without a type-checker symbol.
+            // Emitting T0020 here would produce noise on every valid BCL call.
             TyError
     | TyError -> TyError
     | other ->
@@ -717,7 +721,13 @@ let rec inferExpr
             | RBClosed(lo, hi) | RBHalfOpen(lo, hi) ->
                 let loT = infer lo
                 let hiT = infer hi
-                if Type.equiv loT hiT then loT else TyError
+                if Type.equiv loT hiT then loT
+                else
+                    err diags "T0068"
+                        (sprintf "range bounds have incompatible types (%s vs %s)"
+                            (Type.render loT) (Type.render hiT))
+                        e.Span
+                    TyError
             | RBLowerOpen hi -> infer hi
             | RBUpperOpen lo -> infer lo
         TyRange elemType
@@ -759,7 +769,11 @@ let rec inferExpr
             let bt = Resolver.resolveType table ctx diags b.Type
             scope.Add({ Name = b.Name; Type = bt; IsMutable = false })
         whereExpr |> Option.iter (infer >> ignore)
-        infer body |> ignore
+        let bodyT = infer body
+        if not (Type.equiv bodyT (TyPrim PtBool)) then
+            err diags "T0067"
+                (sprintf "quantifier body must be Bool (got %s)" (Type.render bodyT))
+                e.Span
         scope.Pop()
         TyPrim PtBool
 
@@ -839,7 +853,7 @@ and checkStatement
         scope.Add({ Name = name; Type = bindType; IsMutable = false })
 
     | SAssign(target, op, value) ->
-        let _ = op
+        let _ = op  // compound-op semantics (+=, -=, …) deferred to T6+
         let targetType = inferE target
         let valueType  = inferE value
         if not (Type.equiv targetType valueType) then
