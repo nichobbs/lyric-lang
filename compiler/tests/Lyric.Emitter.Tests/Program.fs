@@ -284,6 +284,7 @@ let main argv =
             SelfHostedContractElaboratorTests.tests
             SelfHostedTestSynthTests.tests
             SelfHostedManifestTests.tests
+            SelfHostedVerifierTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests

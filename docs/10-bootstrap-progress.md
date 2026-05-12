@@ -113,6 +113,7 @@ deferred to Phase 3 by design.
 | M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`), `Msil.Codegen`, `Msil.Bridge`, F# bridge `SelfHostedMsil.fs` | **Shipped** | D-progress-227 / D-progress-238 / D-progress-240 |
 | M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions) | **Shipped** | D-progress-229 |
 | M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
+| M5.3 — self-hosted verifier (`Lyric.Verifier` package: VCGen, SMT emission, trivial discharger, `prove` driver + `verifier_self_test.l`) | **Shipped** | D-progress-234 |
 | M5.3 — self-hosted stdlib / LSP / formatter / package manager | **In progress** (stage 1: `Std.Process`, `Lyric.Manifest`, `Lyric.Cli`; stage 2: `Lyric.Fmt` formatter port; stage 3: F# CLI `lyric fmt` reflection bridge; stage 4: item-internal comment preservation via `FmtCtx` cursor; stage 5: blank-line preservation via `HiBlank` markers; stage 6: per-expression / per-statement / per-block / per-contract-clause CST granularity; stage 7: contract-clause comment + blank-line preservation; stage 8: where-clause comment preservation + clause-order round-trip fix; stage 9: width-driven multi-line expression rendering at 120-char budget; stage 10: binop-operand / list-element / function-param comment preservation + `out`-mode rendering bug fix; stage 11: `ELambda` / `EForall` / `EExists` multi-line layouts; stage 12: `EIf` / `EMatch` width-driven brace-form conversion; stage 13: `Lyric.ManifestBridge` + `Lyric.TestSynthBridge` CLI hookup) | D-progress-129 / D-progress-131 / D-progress-135 / D-progress-136 / D-progress-141 / D-progress-142 / D-progress-143 / D-progress-144 / D-progress-145 / D-progress-146 / D-progress-147 / D-progress-210 / D-progress-231 |
 
 ### Phase 2 — type system completion (in progress)
@@ -11730,3 +11731,97 @@ Also discovered and documented two parser constraints during development:
 **Test counts:** 755 emitter tests (+3 from xml_tests, yaml_tests,
 xml_viability_tests), 323 parser tests, 143 type-checker tests, 123 lexer
 tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
+
+---
+
+### D-progress-234: M5.3 — self-hosted verifier (`Lyric.Verifier`)
+
+**Date:** 2026-05-12
+**Branch:** `claude/convert-verifier-to-lyric-UPzVX`
+
+Ports the Phase 4 proof system to self-hosted Lyric as the `Lyric.Verifier`
+package (`compiler/lyric/lyric/verifier/`).  The Lyric implementation mirrors
+`compiler/src/Lyric.Verifier/` and is exercised by `verifier_self_test.l` via
+the F# harness `SelfHostedVerifierTests.fs`.
+
+**New Lyric files (`compiler/lyric/lyric/verifier/`):**
+
+- **`vcir.l`** — VC IR types: `Sort`, `Term`, `Goal`, `GoalKind`,
+  `Lit`, `BuiltinOp`, `TranslateResult`, `VerifyOutcome`, `VerifyResult`,
+  `VerifySummary`, `SortInfo`, `RangeBoundKind`, `SymbolDecl`.
+- **`vcgen.l`** — WP/SP calculus over the Lyric imperative fragment:
+  `VEnv` environment, `translateLit`/`translateExpr`/`translateContract`,
+  `wpStmt`/`wpBody`/`wpWhile`, `goalsForFile`.  Handles `let`/`val`/`var`,
+  `if`/`else`, `match` (wildcard, literal, bare-binding patterns), `assert φ`,
+  loop invariants (establish + preserve goals), and the Hoare call rule
+  (assert callee `requires:`, assume callee `ensures:`).
+- **`smt.l`** — SMT-LIB v2.6 renderer: `smtRenderSort`, `smtRenderTerm`,
+  `smtRenderGoal` producing `(assert (not φ))` + `(check-sat)` queries.
+- **`solver.l`** — trivial syntactic discharger (`trivialDischarge`):
+  closes `true`, reflexive comparisons, hypothesis matches, `P ⇒ P`,
+  `termEq`-based tautologies, conjunctions thereof.  Exposes `isTautology`
+  and `termEq` for use in the self-test.
+- **`driver.l`** — `prove(source): VerifySummary` entry point; calls
+  `Lyric.Parser.parse`, `Lyric.ModeChecker.checkFile`, `goalsForFile`,
+  and `trivialDischarge` for each goal; assembles `VerifySummary`.
+  Also exports `goalsForFile` directly for the self-test.
+
+**New Lyric file:**
+
+- **`compiler/lyric/lyric/verifier_self_test.l`** — `Lyric.Verifier` self-test
+  program.  Nine sub-tests exercising the VCGen pipeline end-to-end:
+  `testGoalsForFileEmpty`, `testGoalsForFileWithRequires`,
+  `testTranslateExprLiteral`, `testTranslateExprVar`,
+  `testTranslateExprBinop`, `testSmtRenderTerm`, `testTrivialDischargeGteRefl`,
+  `testProveProofRequiredNoContracts`, `testProveParseError`.
+  Exits 0 and prints `"verifier self-test: ok"` on success.
+
+**New F# harness files:**
+
+- **`compiler/src/Lyric.Emitter/VerifierEnv.fs`** — `Lyric.Emitter.VerifierEnv`
+  module.  Exposes `getEnv(): string` returning the `LYRIC_Z3` or `z3` path
+  (or empty string), used via `@externTarget("Lyric.Emitter.VerifierEnv.getEnv")`
+  in `stdlib/std/_kernel/verifier_env_host.l`.
+- **`compiler/src/Lyric.Emitter/ProcessCapture.fs`** — `Lyric.Emitter.ProcessCapture`
+  module.  Exposes `run(exe, args): ProcessResult` for spawning subprocesses
+  with captured stdout/stderr, used via
+  `@externTarget("Lyric.Emitter.ProcessCapture.run")` in
+  `stdlib/std/_kernel/process_capture_host.l`.
+- **`compiler/tests/Lyric.Emitter.Tests/SelfHostedVerifierTests.fs`** —
+  `testCase "[verifier_self_test_passes]"` compiles + executes
+  `verifier_self_test.l`, asserts no compile errors, exit code 0, and
+  stdout contains `"ok"`.
+
+**New stdlib kernel files:**
+
+- **`stdlib/std/_kernel/verifier_env_host.l`** — `Std.VerifierEnvHost` kernel
+  package: `pub extern func hostGetEnv(): String` with
+  `@externTarget("Lyric.Emitter.VerifierEnv.getEnv")`.
+- **`stdlib/std/_kernel/process_capture_host.l`** — `Std.ProcessCaptureHost`
+  kernel package: `pub extern func hostRun(exe: String, args: String): String`
+  with `@externTarget("Lyric.Emitter.ProcessCapture.run")`.
+- **`stdlib/std/process_capture.l`** — `Std.ProcessCapture` public wrapper:
+  `pub func runProcess(exe, args): ProcessResult` wrapping `hostRun`.
+
+**Emitter fix (`Codegen.fs` `resolveUnionCaseInfo`):**
+
+When two unions define a case with the same short name (e.g. `Literal.LInt`
+from `Lyric.Parser` and `Lit.LInt` from `Lyric.Verifier`), the short-name
+table holds whichever was registered last (last-writer-wins).  Added
+`parentMatchesScrutTy` and `qualifiedKey` helpers to check whether the found
+entry's parent union matches `scrutTy`; if not, retries with the qualified
+key `"{typeName}.{case}"` (which is always registered alongside the short
+key) so the correct case type is used for `isinst` checks in pattern matches.
+Both `ctx.UnionCases` and `ctx.ImportedUnionCases` are probed with the
+qualified key.
+
+**`EmitTestKit.fs` — `Lyric.Emitter.dll` staging:**
+
+`prepareOutputDir` now copies `Lyric.Emitter.dll` into the temp output
+directory so programs importing `Std.VerifierEnvHost` (which resolves
+`@externTarget("Lyric.Emitter.VerifierEnv.getEnv")` at runtime) can
+find the assembly via `dotnet exec`'s probing path.
+
+**Test counts:** 756 emitter tests (755 passing; 1 pre-existing `kernel total
+reported (soft cap)` failure unrelated to this change), 266 verifier tests —
+all passing.

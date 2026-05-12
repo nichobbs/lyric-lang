@@ -2255,7 +2255,14 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                             Option.ofObj (p.GetGetMethod())
                             |> Option.map (fun g ->
                                 let closed = closeBclMethod recvTy g
-                                closed, p.PropertyType)
+                                // For TypeBuilderInstantiation receivers, p.PropertyType
+                                // is from the open-generic definition and contains
+                                // unresolved type parameters.  Use the closed method's
+                                // ReturnType which has the generic args substituted.
+                                let retTy =
+                                    if isGenericInstantiationOnGtpb recvTy then closed.ReturnType
+                                    else p.PropertyType
+                                closed, retTy)
                         | _ -> None
                     match getter with
                     | Some (g, ty) ->
@@ -4355,12 +4362,41 @@ and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
 /// Resolve the CLR case type and ordered field list for a union case key,
 /// applying generic substitution from `scrutTy` when the union is generic.
 /// Returns None if `key` is not found in any union table.
+///
+/// When two unions define a case with the same short name (e.g. both
+/// `Literal.LInt` and `Lit.LInt`), the short-name table holds whichever
+/// was registered last (last-writer-wins).  Before using that result we
+/// check whether its parent union matches `scrutTy`; if not we retry with
+/// the qualified key `"{typeName}.{key}"` so the correct case is found.
 and private resolveUnionCaseInfo
         (ctx: FunctionCtx)
         (key: string)
         (scrutTy: ClrType)
         : (ClrType * (string * ClrType * FieldInfo) list) option =
-    match ctx.UnionCases.TryGetValue key with
+    // Does parent union type `parentTy` match the scrutinee?
+    let parentMatchesScrutTy (parentTy: ClrType) =
+        parentTy = scrutTy
+        || (scrutTy.IsGenericType && parentTy = scrutTy.GetGenericTypeDefinition())
+    // Qualified key built from the scrutinee's short type name (strip generic
+    // arity suffix "`N" so that e.g. "Option`1" → "Option.Some").
+    let qualifiedKey () =
+        let baseTy = if scrutTy.IsGenericType then scrutTy.GetGenericTypeDefinition() else scrutTy
+        let n = baseTy.Name
+        let tickIdx = n.IndexOf '`'
+        let baseName = if tickIdx >= 0 then n.[..tickIdx - 1] else n
+        baseName + "." + key
+    // When the short-name lookup finds the wrong union, prefer the qualified
+    // key so the case belonging to the scrutinee's union is used.
+    let effectiveKey =
+        match ctx.UnionCases.TryGetValue key with
+        | true, (info, _) ->
+            if parentMatchesScrutTy (info.Type :> ClrType) then key else qualifiedKey ()
+        | _ ->
+            match ctx.ImportedUnionCases.TryGetValue key with
+            | true, (info, _) ->
+                if parentMatchesScrutTy info.Type then key else qualifiedKey ()
+            | _ -> key
+    match ctx.UnionCases.TryGetValue effectiveKey with
     | true, (info, caseInfo) ->
         if List.isEmpty info.Generics || not scrutTy.IsGenericType then
             Some (caseInfo.Type :> ClrType,
@@ -4380,7 +4416,7 @@ and private resolveUnionCaseInfo
                       let fi = TypeBuilder.GetField(constructed, f.Field)
                       f.Name, substTy, fi))
     | _ ->
-        match ctx.ImportedUnionCases.TryGetValue key with
+        match ctx.ImportedUnionCases.TryGetValue effectiveKey with
         | true, (info, caseInfo) ->
             if List.isEmpty info.Generics || not scrutTy.IsGenericType then
                 Some (caseInfo.Type,

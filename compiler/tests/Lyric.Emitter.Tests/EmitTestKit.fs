@@ -77,6 +77,13 @@ let prepareOutputDir (name: string) : string =
         Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
     if File.Exists fsharpCore then
         File.Copy(fsharpCore, Path.Combine(dir, "FSharp.Core.dll"), overwrite = true)
+    // Lyric.Emitter.dll is needed at runtime by the self-hosted verifier:
+    // Std.VerifierEnvHost's @externTarget("Lyric.Emitter.VerifierEnv.getEnv")
+    // resolves against this assembly.
+    let lyricEmitter =
+        Path.Combine(AppContext.BaseDirectory, "Lyric.Emitter.dll")
+    if File.Exists lyricEmitter then
+        File.Copy(lyricEmitter, Path.Combine(dir, "Lyric.Emitter.dll"), overwrite = true)
     copyAllStdlibDlls dir
     dir
 
