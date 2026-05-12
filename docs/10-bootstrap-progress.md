@@ -11481,3 +11481,61 @@ string concatenation).  Each program is compiled and run through three paths:
 **Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 224 CLI tests (+60 parity + 6 MSIL bridge),
 266 verifier tests — all passing.
+
+---
+
+### D-progress-242: lyric-lambda service library
+
+**Branch:** `claude/lyric-lambda-library-L7cgt`
+**Decision log:** D062
+
+Initial design and source files for `lyric-lambda`, the AWS Lambda runtime
+adapter for Lyric.
+
+**Shipped:**
+
+- `lyric-lambda/lyric.toml` — package manifest with `aws` and `local` feature
+  flags and `Amazon.Lambda.RuntimeSupport` / `Amazon.Lambda.Serialization.SystemTextJson`
+  NuGet dependencies.
+- `lyric-lambda/src/lambda.l` — `Lambda` package: `LambdaContext`, `LambdaError`
+  union (with `errorMessage()` helper), `EventHandler`, `LambdaApp` immutable
+  builder (`newApp`, `withRouter`, `onSqs`, `onSns`, `onS3`, `onEventBridge`,
+  `onDynamoDb`, `onRaw`), `Runtime` config block, and `serve()` entry point.
+- `lyric-lambda/src/apigw.l` — `Lambda.ApiGw` package: typed records for
+  API Gateway v1 (`ApiGwV1Event`, `ApiGwV1RequestContext`, `ApiGwV1Identity`),
+  v2 (`ApiGwV2Event`, `ApiGwV2RequestContext`, `ApiGwV2Http`), and ALB
+  (`AlbEvent`, `AlbRequestContext`, `AlbTargetGroup`); `ApiGwResponse` with
+  `jsonResponse()` and `binaryResponse()` constructor helpers.
+- `lyric-lambda/src/events.l` — `Lambda.Events` package: `SqsEvent`/`SqsRecord`/
+  `SqsMessageAttribute`, `SqsBatchResponse`/`SqsBatchItemFailure` for partial-
+  batch-failure mode, `SnsEvent`/`SnsRecord`/`SnsMessage`/`SnsMessageAttribute`,
+  `S3Event`/`S3Record`/`S3Detail`/`S3Bucket`/`S3Object` (+ request/response
+  element records), `EventBridgeEvent`, `DynamoDbEvent`/`DynamoDbRecord`/
+  `DynamoDbStreamRecord`/`DynamoDbAttributeValue`.
+- `lyric-lambda/src/lambda_aspects.l` — `Lambda.Aspects` package:
+  `EventLogging` (B-mode: logs qualified name + outcome + elapsed ms),
+  `DeadlineGuard` (C-mode `@inline_template`: reads `args.ctx.remainingTimeMs`,
+  returns `LambdaError.TimeoutError` when below configured threshold).
+- `lyric-lambda/src/_kernel/lambda_kernel_aws.l` — `Lambda.Kernel.Runtime`
+  `@cfg(feature="aws")`: extern boundary to `Amazon.Lambda.RuntimeSupport`;
+  documents the dispatch protocol (HTTP event detection → router forwarding,
+  non-HTTP → handler reflection, error serialisation).
+- `lyric-lambda/src/_kernel/lambda_kernel_local.l` — `Lambda.Kernel.Runtime`
+  `@cfg(feature="local")`: extern boundary to `Lambda.LocalServer`; documents
+  the local test server interface (POST `/2015-03-31/functions/function/invocations`
+  compatible with `sam local invoke`) and synthetic context construction.
+- `docs/35-lambda-library.md` — full design document: goals, library structure,
+  API Gateway event mapping (detection rules, HTTP→Router dispatch, base64
+  handling), custom event handler model, kernel feature-gate convention,
+  aspects, runtime config, and six open questions (Q-lambda-001–006).
+
+**Key design points:**
+- `Web.Router` reuse with zero handler changes: same handlers work on Kestrel and Lambda.
+- API Gateway v1, v2, and ALB events all normalise to `method + path + headers + body`
+  before router dispatch.
+- SQS partial-batch-failure inferred from handler return type (`SqsBatchResponse` vs `Unit`).
+- DeadlineGuard is an opt-in aspect, not kernel policy, giving handlers control over threshold.
+- Feature-gated kernels keep the production binary free of test-server code.
+
+**Test counts:** unchanged (library is source-only; emitter/kernel integration
+tests will be added when the F# kernel shim is wired up in a follow-up).

@@ -3177,6 +3177,85 @@ D-progress-229.
 
 ---
 
+## D062 — lyric-lambda library: AWS Lambda runtime adapter design
+
+**Date:** 2026-05-12
+**Status:** Decided
+
+### Context
+
+Lyric services built with `lyric-web` run on Kestrel.  Deploying those same
+services to AWS Lambda required either a heavy ASP.NET Core shim
+(`Amazon.Lambda.AspNetCoreServer`) or hand-written glue code for each event
+source.  Neither option was idiomatic Lyric.
+
+### Decisions
+
+**D062-1 — Custom runtime (not AspNetCoreServer)**
+The kernel uses the AWS Lambda custom runtime protocol
+(`Amazon.Lambda.RuntimeSupport`) rather than `AspNetCoreServer`.  This
+eliminates Kestrel from the critical path for non-HTTP workloads and reduces
+cold start.  The `serve()` loop polls the Runtime API directly.
+
+**D062-2 — Zero-change lyric-web router reuse**
+A `Web.Router` attached with `Lambda.withRouter()` is dispatched using the
+same route-match and reflection-based handler-invocation logic as Kestrel.
+API Gateway v1 (REST API), v2 (HTTP API), and ALB events are all normalised
+to `method + path + headers + body` before dispatch.  The same handler
+functions work on both runtimes without modification.
+
+**D062-3 — Custom event handlers registered by qualified name**
+Non-HTTP event sources (SQS, SNS, S3, EventBridge, DynamoDB Streams) are
+registered with `onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onRaw`.
+Handlers are identified by fully-qualified Lyric function name and resolved
+via DLL reflection at startup, consistent with `Web.Route.handlerName`.
+
+**D062-4 — Event source detection by JSON structure inspection**
+The kernel detects the event source from the raw JSON payload before
+deserialising, using the detection rules in `docs/35-lambda-library.md §4.1`.
+This avoids a discriminated union wrapper around every payload and lets the
+typed event records in `Lambda.ApiGw` and `Lambda.Events` be clean records.
+
+**D062-5 — Both modes coexist in one LambdaApp**
+A single `LambdaApp` may have an `httpRouter` and custom event handlers.  The
+kernel routes HTTP events to the router and all other events to the handler
+table.  This lets a single Lambda function handle both API requests and
+background queue processing.
+
+**D062-6 — Feature-gated kernel (aws vs local)**
+Two files both declare `package Lambda.Kernel.Runtime`, gated on `@cfg(feature
+= "aws")` and `@cfg(feature = "local")` respectively.  The production build
+uses `Amazon.Lambda.RuntimeSupport`; the local build starts an HTTP server
+compatible with `sam local invoke` and `aws lambda invoke --endpoint-url`.
+
+**D062-7 — SQS partial-batch-failure via return type**
+SQS handlers may return `Result[SqsBatchResponse, LambdaError]` instead of
+`Result[Unit, LambdaError]` to report per-message failures.  The kernel
+serialises `batchItemFailures` into the Lambda response.  No separate handler
+registration is needed; the kernel infers the intent from the return type.
+
+**D062-8 — DeadlineGuard as a C-mode aspect (not kernel policy)**
+The kernel does not enforce a global deadline margin.  Handlers opt in to the
+`DeadlineGuard` aspect, which checks `ctx.remainingTimeMs` before proceeding.
+This gives handlers control over the threshold and lets them compose logging
+around the guard.
+
+### Tradeoffs
+
+- Custom runtime means the process bootstrap is in Lyric's kernel, not
+  ASP.NET Core.  Kestrel's mature HTTP/2 and connection handling are not
+  available for HTTP events, but API Gateway terminates TLS and HTTP/2 before
+  reaching Lambda, so this is not a limitation in practice.
+- Dispatch by qualified-name string is not AOT-compatible.  Q-lambda-001
+  tracks a future `onSqsDirect` / `withRouterDirect` API accepting function
+  references for AOT builds.
+
+### Implementation
+
+Library at `lyric-lambda/`.  Design document at `docs/35-lambda-library.md`.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -1,0 +1,68 @@
+# lyric-lambda — AWS Lambda runtime adapter for Lyric.
+#
+# Ships five packages:
+#   Lambda                 — core types (LambdaContext, LambdaError, LambdaApp
+#                            builder) and the serve() entry point.
+#   Lambda.ApiGw           — API Gateway v1 / v2 / ALB event types; the
+#                            typed bridge from HTTP events to Web.Router dispatch.
+#   Lambda.Events          — non-HTTP event types: SQS, SNS, S3, EventBridge,
+#                            DynamoDB Streams.
+#   Lambda.Aspects         — pub aspect templates: EventLogging, DeadlineGuard.
+#   Lambda.Kernel.Runtime  — extern boundary to the Lambda runtime loop.
+#                            Exactly one of the two kernel files is compiled:
+#                              aws   feature → Amazon.Lambda.RuntimeSupport loop
+#                              local feature → lightweight local test HTTP server
+#
+# Two composition modes (may be combined in the same LambdaApp):
+#   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter();
+#      API Gateway v1 / v2 / ALB events are dispatched through it unchanged.
+#   2. Custom event handlers — register handlers by qualified function name
+#      with onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onRaw.
+#
+# See docs/35-lambda-library.md and decision log D062.
+
+[package]
+name        = "Lyric.Lambda"
+version     = "0.1.0"
+description = "AWS Lambda runtime adapter with API Gateway → lyric-web bridge and typed event sources."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# Production: Amazon.Lambda.RuntimeSupport custom runtime loop.
+aws   = []
+# Local development: lightweight HTTP test server (no AWS credentials needed).
+local = []
+
+[project]
+name            = "Lyric.Lambda"
+output          = "single"
+output_assembly = "Lambda.dll"
+
+[project.packages]
+# Core types, LambdaApp builder, and serve() entry point.
+"Lambda"               = "src/lambda.l"
+# API Gateway v1 / v2 / ALB event types and lyric-web bridge.
+"Lambda.ApiGw"         = "src/apigw.l"
+# Non-HTTP event types: SQS, SNS, S3, EventBridge, DynamoDB Streams.
+"Lambda.Events"        = "src/events.l"
+# Pub aspect templates for cross-cutting Lambda handler concerns.
+"Lambda.Aspects"       = "src/lambda_aspects.l"
+# Extern boundary — exactly one file is compiled per build (selected by feature):
+#   aws   → src/_kernel/lambda_kernel_aws.l
+#   local → src/_kernel/lambda_kernel_local.l
+"Lambda.Kernel.Runtime" = [
+  "src/_kernel/lambda_kernel_aws.l",
+  "src/_kernel/lambda_kernel_local.l",
+]
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Web"    = { path = "../lyric-web" }
+
+[nuget]
+# Production runtime support — included when feature = "aws".
+# Provides the custom runtime invocation loop and Lambda context access.
+"Amazon.Lambda.RuntimeSupport" = { version = "1.10.0", features = ["aws"] }
+# JSON serialization for Lambda event payloads.
+"Amazon.Lambda.Serialization.SystemTextJson" = { version = "2.4.4", features = ["aws"] }
