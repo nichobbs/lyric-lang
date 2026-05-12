@@ -42,6 +42,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
      ├── stream.l        (stream interfaces)
      ├── http_host.l     (FFI boundary: System.Net.Http extern declarations)
      ├── http.l          (safe HTTP client/request/response wrappers)
+     ├── rest.l          (typed REST client: RestClient, RestAuth, RestError)
      ├── environment_host.l (FFI boundary: process environment)
      ├── environment.l   (safe env/args/process helpers)
      ├── time_host.l     (FFI boundary: clocks/timers)
@@ -310,7 +311,7 @@ Status: started in `docs/11-stdlib-examples.md`.
    - Console application (args, env, logging) ✅
    - File-processing utility (read, parse, filter, write) ✅ first pass
    - Simple HTTP client (GET/POST, error handling, retry) ✅ first pass
-   - REST handler sketch (with wire DI)
+   - REST handler sketch (with wire DI) — see `Std.Rest` and `lyric openapi` (D-progress-232) ✅
    - Concurrent task executor (async, cancellation)
 
 2. **Stdlib-focused test coverage**
@@ -428,6 +429,7 @@ Every `pub` item in `stdlib/std/` carries either `@stable(since="1.0")` or `@exp
 | `Std.Time` — DTO/TZ helpers (`time.l`) | `@experimental` | `dtoFromEpochMillis`, `dtoFromEpochSeconds`, `dtoUtcDateTime`, `findTimeZone` — bootstrap-grade; full DateTimeOffset/TimeZone API to settle in Phase 2. |
 | `Std.Http` — core (`http.l`) | `@stable` | `HttpMethod`, `Url`/`Uri`, `HttpRequest`, `HttpResponse`, `Headers`, core constructors, `request`, `withHeader`, `withJsonBody`/`withTextBody`, `sendAsync`, `getAsync`, `postAsync`, `HttpResponse.*` status helpers, `bodyText`/`bodyBytes`, `HttpResponse.header`. |
 | `Std.Http` — advanced (`http.l`) | `@experimental` | `retry`, cancel/timeout variants (`sendWithCancelAsync`, `getWithCancelAsync`, `postWithCancelAsync`, `sendWithTimeoutAsync`, `getWithTimeoutAsync`, `postWithTimeoutAsync`, `HttpResponse.bodyTextWithCancel`), `clientWithRedirects`, `clientNoRedirects` — bootstrap-grade; cancellation and retry contracts to be redesigned in Phase 2. |
+| `Std.Rest` (`rest.l`) | `@stable` | `RestError` union, `RestAuth` enum, `RestClient` opaque type; `create`, `withAuth`; `get`, `post`, `put`, `patch`, `delete`; `bodyText`, `jsonBody`, `jsonString`, `jsonInt`, `jsonBool`; `statusCode`, `isSuccess`, `ensureSuccess`. |
 | `Std.Testing` (`testing.l`) | `@stable` | `assertEqual`, `assertEqualInt`, `assertTrue` — the basic assert API. |
 | `Std.Testing.Property` (`testing_property.l`) | `@experimental` | No shrinking, no `Gen[T]` type-class; bootstrap-grade. Full property-test harness is Phase 3 work. |
 | `Std.Testing.Snapshot` (`testing_snapshot.l`) | `@experimental` | No inline diff, no snapshot update workflow; bootstrap-grade. |

@@ -921,6 +921,7 @@ let private printUsage () : unit =
     printErr "  lyric lint  <source.l> [--error-on-warning]"
     printErr "  lyric prove <source.l> [--proof-dir <dir>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]"
     printErr "  lyric doc   <source.l> [-o out.md]"
+    printErr "  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg.Name>]"
     printErr "  lyric public-api-diff <old.dll> <new.dll>"
     printErr "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <pkg-dir>]"
     printErr "  lyric restore [--manifest <lyric.toml>]"
@@ -946,6 +947,12 @@ let private printUsage () : unit =
     printErr "    Codes: L001 (PascalCase types), L002 (camelCase funcs),"
     printErr "           L003 (missing pub doc), L004 (TODO in doc comment),"
     printErr "           L005 (pub func without contracts)."
+    printErr ""
+    printErr "  openapi: generate a typed Lyric REST client from an OpenAPI 3.x JSON spec."
+    printErr "    -o <out.l>               write generated source to this path."
+    printErr "                             default: <spec-stem>_client.l next to the spec."
+    printErr "    --client-name <Name>     base name for the generated client type (default: spec title)."
+    printErr "    --package <Pkg.Name>     Lyric package declaration (default: Gen.<ClientName>)."
     printErr ""
     printErr "  public-api-diff exits 0 (no changes), 0 (additive), or 2"
     printErr "                  (breaking — Removed/Changed); use 2 in CI to gate"
@@ -2016,6 +2023,72 @@ let main (argv: string array) : int =
             | Error msg ->
                 printErr msg
                 1
+    | "openapi" :: rest ->
+        // `lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg.Name>]`
+        // — generate a typed Lyric REST client from an OpenAPI 3.x JSON spec.
+        //
+        // Reads the spec, parses its paths and schemas, then emits a `.l` file
+        // containing record types and async client methods that delegate to
+        // `Std.Rest.RestClient`.
+        let mutable explicitOut : string option = None
+        let mutable clientName  : string option = None
+        let mutable packageName : string option = None
+        let mutable positional  : string list   = []
+        let mutable cursor      = rest
+        while not (List.isEmpty cursor) do
+            match cursor with
+            | "-o" :: out :: tail ->
+                explicitOut <- Some out
+                cursor <- tail
+            | "--client-name" :: n :: tail ->
+                clientName <- Some n
+                cursor <- tail
+            | "--package" :: p :: tail ->
+                packageName <- Some p
+                cursor <- tail
+            | s :: tail ->
+                positional <- positional @ [s]
+                cursor <- tail
+            | [] -> ()
+        match positional with
+        | [] ->
+            printErr "openapi: missing spec file"
+            printUsage ()
+            1
+        | specPath :: _ ->
+            if not (File.Exists specPath) then
+                printErr (sprintf "openapi: spec file not found: %s" specPath)
+                1
+            else
+            match Lyric.Cli.OpenApi.parseFile specPath with
+            | Error msg ->
+                printErr (sprintf "openapi: %s" msg)
+                1
+            | Ok spec ->
+                // Merge CLI overrides onto spec-derived defaults.
+                let baseOpts = Lyric.Cli.OpenApiGen.defaultOptions spec
+                let opts : Lyric.Cli.OpenApiGen.GenOptions =
+                    { Lyric.Cli.OpenApiGen.ClientName  =
+                          clientName  |> Option.defaultValue baseOpts.ClientName
+                      Lyric.Cli.OpenApiGen.PackageName =
+                          packageName |> Option.defaultValue baseOpts.PackageName }
+                let outPath =
+                    match explicitOut with
+                    | Some o -> o
+                    | None ->
+                        let dir =
+                            safeStr (Path.GetDirectoryName(Path.GetFullPath specPath)) "."
+                        let stem =
+                            safeStr (Path.GetFileNameWithoutExtension specPath) "api"
+                        Path.Combine(dir, stem + "_client.l")
+                match Lyric.Cli.OpenApiGen.generateToFile spec (Some opts) outPath with
+                | Error msg ->
+                    printErr (sprintf "openapi: %s" msg)
+                    1
+                | Ok path ->
+                    printfn "generated %s (%d operations)"
+                        path (List.length spec.Operations)
+                    0
     | "--sdk-info" :: _ ->
         // Print SDK root discovery results and version info.
         // Mirrors docs/22 §4 + §5; diagnostics B0040-B0042 surface here.

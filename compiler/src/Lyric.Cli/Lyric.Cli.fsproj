@@ -22,6 +22,8 @@
     <Compile Include="TestSynth.fs" />
     <Compile Include="SelfHostedManifest.fs" />
     <Compile Include="SelfHostedTestSynth.fs" />
+    <Compile Include="OpenApi.fs" />
+    <Compile Include="OpenApiGen.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

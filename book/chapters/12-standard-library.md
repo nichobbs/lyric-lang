@@ -42,6 +42,7 @@ Here is the full module inventory:
 | `Std.Time` | `Instant`, `Duration`, `Clock` interface, ISO 8601 parsing |
 | `Std.Json` | `toJson`, `fromJson` for `@derive(Json)` types |
 | `Std.Http` | HTTP client and server primitives |
+| `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
 | `Std.Testing.Property` | Property-based testing: `forAllIntRange`, `forAllBool`, `forAllDouble` |
 | `Std.Testing.Snapshot` | `snapshot(label, actual)`, `snapshotMatch` |
@@ -252,6 +253,67 @@ pub interface HttpClient {
 The real `HttpClient` implementation wraps `System.Net.Http.HttpClient`. In production you wire it through your `wire` block. In tests you inject a stub that returns canned responses. Chapter 13 covers the FFI aspect of this wrapping; Chapter 15 covers the test stub pattern.
 
 There is also a server-side surface in `Std.Http` for handling inbound requests, but it is `@experimental` and its shape is still being settled. For production HTTP service code, the current recommendation is to use the `Std.Http.HttpClient` interface for outbound calls and the `lyric-web` library (`Web` package) for server-side routing and handler dispatch — see chapter 24.
+
+## §12.9 `Std.Rest`
+
+`Std.Rest` is a typed REST client built on top of `Std.Http`.  Where `Std.Http`
+gives you request/response primitives, `Std.Rest` gives you a stateful
+`RestClient` that holds a base URL and an authentication strategy so you
+don't have to thread them through every call.
+
+```lyric
+import Std.Rest
+
+func main(): Unit {
+  val client = RestClient.create("https://api.example.com")
+  val authed = RestClient.withAuth(client, Bearer(token = "my-token"))
+
+  match await RestClient.get(authed, "/users/1") {
+    case Err(e) -> println("error: " + RestError.message(e))
+    case Ok(response) ->
+      match RestClient.isSuccess(response) {
+        case false -> println("non-2xx: " + RestClient.statusCode(response))
+        case true ->
+          match await RestClient.jsonString(response, "name") {
+            case Err(e) -> println("deserialize error: " + RestError.message(e))
+            case Ok(name) -> println("name: " + name)
+          }
+      }
+  }
+}
+```
+
+`RestAuth` is an enum with four cases:
+
+| Case | Header emitted |
+|---|---|
+| `None_` | (none) |
+| `Bearer(token)` | `Authorization: Bearer <token>` |
+| `Basic(credentials)` | `Authorization: Basic <base64>` |
+| `ApiKey(headerName, headerValue)` | `<headerName>: <headerValue>` |
+
+`RestError` extends `HttpError` with a `Deserialize` case for JSON body
+failures.  All failures are data; no exceptions escape the module boundary.
+
+### Generating clients from OpenAPI specs
+
+`lyric openapi` reads an OpenAPI 3.x JSON spec and writes a typed `.l` file
+whose methods delegate to `Std.Rest`:
+
+```
+lyric openapi petstore.json -o src/petstore_client.l
+```
+
+The generated file contains:
+- One `pub record` per named object schema in the spec.
+- A `<SpecTitle>Client` opaque type with `create`, `default`, and `withAuth`.
+- One `pub async func` per operation, with path parameters interpolated into
+  the URL and query parameters appended.
+- Per-field scalar accessors for flat object response schemas.
+
+Use `--client-name` and `--package` to override the derived names when the
+spec title would produce an unwieldy identifier.  YAML input is not yet
+supported; convert to JSON first.
 
 ## Exercises
 

@@ -11251,3 +11251,94 @@ and `SelfHostedTestSynth.fs` added after `TestSynth.fs`, before `Program.fs`.
 **Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
 123 lexer tests, 28 LSP tests, 158 CLI tests (all passing, +31 vs prior entry
 from the expanded `TestRunnerTests` suite), 266 verifier tests — all passing.
+
+---
+
+### D-progress-232: REST client stdlib + OpenAPI client generator
+
+**Date:** 2026-05-12
+**Branch:** `claude/rest-client-openapi-uH3rE`
+
+Adds a typed REST client library to the stdlib and a `lyric openapi` CLI
+command that generates typed Lyric client packages from OpenAPI 3.x JSON specs.
+
+**`stdlib/std/rest.l`** — `Std.Rest` package.
+
+Builds a higher-level typed REST client on top of `Std.Http`.
+
+- `RestError` union: `Http(error: HttpError)` and `Deserialize(url, reason)` — all failures as data.
+- `RestAuth` enum: `None_`, `Bearer(token)`, `Basic(credentials)`, `ApiKey(headerName, headerValue)`.
+- `RestClient` opaque type: `baseUrl`, `auth`, `defaultHeaders`.
+  - `RestClient.create(baseUrl)` — constructor.
+  - `RestClient.withAuth(client, auth)` — attach auth strategy.
+  - `RestClient.get / post / put / patch / delete` — async per-verb methods; path may be
+    relative to `baseUrl` or absolute.
+  - `RestClient.bodyText / jsonBody / jsonString / jsonInt / jsonBool` — response body
+    readers returning `Result[T, RestError]`.
+  - `RestClient.statusCode / isSuccess / ensureSuccess` — status inspection.
+- Internal `applyAuth` and `fullUrl` helpers (not exported).
+- URL joining: handles trailing-slash / leading-slash combinations cleanly.
+
+**`compiler/src/Lyric.Cli/OpenApi.fs`** — `Lyric.Cli.OpenApi` module.
+
+OpenAPI 3.x spec model and JSON parser (`System.Text.Json`-based, no extra
+dependencies).
+
+- Types: `SchemaKind`, `Property`, `Parameter`, `ParameterIn`, `RequestBody`,
+  `ResponseBody`, `Operation`, `HttpVerb`, `Info`, `Spec`.
+- `parseText : string -> Result<Spec, string>` — parse from JSON string.
+- `parseFile : string -> Result<Spec, string>` — read + parse from file path.
+- Lenient: unknown fields silently ignored; path-level parameters merged into
+  each operation; missing `operationId` synthesised from verb + path.
+- Handles `application/json` request/response bodies, path/query/header/cookie
+  parameters, nested object schemas, and `servers[0].url` as base path.
+
+**`compiler/src/Lyric.Cli/OpenApiGen.fs`** — `Lyric.Cli.OpenApiGen` module.
+
+Lyric source generator from a parsed `OpenApi.Spec`.
+
+- `GenOptions` record: `ClientName`, `PackageName`.
+- `defaultOptions : Spec -> GenOptions` — derives names from spec title.
+- `toPascalPublic : string -> string` — PascalCase converter (used by CLI dispatch).
+- `generate : Spec -> GenOptions option -> string` — emit `.l` source.
+  - Emits one `pub record` per distinct named object schema (keyed by
+    `<operationId>Body`).
+  - Emits `<Name>Client` opaque type wrapping `RestClient`.
+  - Emits `create(baseUrl)`, `default()` (when spec provides a base URL), and
+    `withAuth` constructors.
+  - Emits one `pub async func <Name>Client.<operationId>(...)` per operation;
+    path parameters are interpolated into the URL string; query parameters are
+    appended as `?key=val&…`; body is passed when a `requestBody` is present.
+  - For flat object success responses, emits per-field scalar accessors
+    (`<operationId><FieldPascal>`) that call the base method and extract one
+    leaf value via `Std.Json`.
+- `generateToFile : Spec -> GenOptions option -> string -> Result<string, string>` —
+  write to a file path.
+
+**`compiler/src/Lyric.Cli/Program.fs`** — new `lyric openapi` command.
+
+```
+lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg.Name>]
+```
+
+Parses the spec, merges CLI flags onto `defaultOptions`, and calls
+`generateToFile`.  Default output path: `<spec-stem>_client.l` next to the
+spec file.  Prints `generated <path> (<n> operations)` on success.
+
+**`compiler/src/Lyric.Cli/Lyric.Cli.fsproj`** — `OpenApi.fs` and `OpenApiGen.fs`
+added before `Program.fs`.
+
+**Key design decisions:**
+
+- `Std.Rest` is layered above `Std.Http` (not above the kernel directly),
+  so it pays the same validated-URL / Result-boundary cost as `Std.Http`.
+- `RestAuth` is a plain enum (not a capability); callers thread it explicitly
+  rather than relying on implicit ambient credentials.
+- OpenAPI code generation targets `Std.Rest`, not `Std.Http` directly, so
+  generated clients pick up auth, ensureSuccess, and JSON-body reading for free.
+- Bootstrap limitation: generic body deserialization is `RestClient.jsonBody`
+  (raw JSON string); `derive(Json)` typed deserialization is a follow-up.
+- YAML spec input is not yet supported; pass a pre-converted JSON file.
+
+**Test counts:** 752 emitter tests, 323 parser tests, 143 type-checker tests,
+123 lexer tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
