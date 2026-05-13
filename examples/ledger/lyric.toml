@@ -1,0 +1,47 @@
+# examples/ledger/lyric.toml — Enterprise double-entry ledger service.
+#
+# Demonstrates Lyric's enterprise safety guarantees:
+#   @proof_required  — the accounting identity is machine-checked by Z3 before
+#                      the service compiles. No transfer can be recorded without
+#                      a proof that debits == credits.
+#   Distinct types   — AccountId, TransferId prevent ID mix-ups at compile time.
+#   Range subtype    — Amount = Long range 0..=MAX; negative money is a type error.
+#   Observable stack — lyric-web + lyric-db + lyric-otel + lyric-health wired
+#                      together via config blocks and aspect templates.
+#
+# Build:  lyric build --manifest examples/ledger/lyric.toml
+# Run:    lyric run   --manifest examples/ledger/lyric.toml
+# Prove:  lyric prove examples/ledger/src/accounting.l --verbose
+
+[package]
+name        = "Lyric.Ledger"
+version     = "0.1.0"
+description = "Enterprise double-entry ledger — Lyric safety showcase."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Ledger"
+output          = "single"
+output_assembly = "Ledger.dll"
+
+[project.packages]
+"Ledger.Accounting" = "src/accounting.l"
+"Ledger.Accounts"   = "src/accounts.l"
+"Ledger.Transfers"  = "src/transfers.l"
+"Ledger.Api"        = "src/api.l"
+"Ledger"            = "src/main.l"
+
+[features]
+dotnet   = []    # ASP.NET Core / Kestrel HTTP server
+postgres = []    # Npgsql PostgreSQL driver
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../../stdlib" }
+"Lyric.Web"    = { path = "../../lyric-web" }
+"Lyric.Db"     = { path = "../../lyric-db" }
+"Lyric.Health" = { path = "../../lyric-health" }
+"Lyric.OTel"   = { path = "../../lyric-otel" }
+
+[nuget]
+"Npgsql" = "8.0.3"
