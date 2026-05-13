@@ -320,12 +320,10 @@ pub async func HttpResponse.bodyBytes(response: in HttpResponse): Result[slice[B
 // Higher-level helpers.
 // ---------------------------------------------------------------------------
 
-/// Retry a request up to maxAttempts times.
-///
-/// This first source-level shape retries immediately. Backoff and
-/// cancellation need the Phase 5 time/scheduling APIs before they can be
-/// implemented without smuggling in hidden effects.
-@experimental
+/// Retry a request up to maxAttempts times, with optional delay between
+/// attempts.  Passing `backoffMs = 0` retries immediately.  Returns the
+/// first successful response, or the last error if all attempts fail.
+@stable(since="1.0")
 pub async func retry(
   request: in HttpRequest,
   maxAttempts: in Int,
@@ -361,7 +359,7 @@ pub async func retry(
 /// - `ConnectionFailed`: classified for cancellations as well as
 ///   transport failures (the message includes "cancelled" when
 ///   the token signalled).
-@experimental
+@stable(since="1.0")
 pub async func sendWithCancelAsync(
   request: in HttpRequest,
   token: in CancellationToken
@@ -381,7 +379,7 @@ pub async func sendWithCancelAsync(
 /// `CancellationTokenSource` fires after `timeoutMs`; the request is
 /// cancelled, surfacing as `ConnectionFailed` with a "cancelled"
 /// message.  The source is disposed when the call returns.
-@experimental
+@stable(since="1.0")
 pub async func sendWithTimeoutAsync(
   request: in HttpRequest,
   timeoutMs: in Int
@@ -403,7 +401,7 @@ pub async func sendWithTimeoutAsync(
 }
 
 /// GET a URL with explicit cancellation.
-@experimental
+@stable(since="1.0")
 pub async func getWithCancelAsync(
   url: in String,
   token: in CancellationToken
@@ -424,7 +422,7 @@ pub async func getWithCancelAsync(
 }
 
 /// GET a URL with a timeout.  Same shape as `sendWithTimeoutAsync`.
-@experimental
+@stable(since="1.0")
 pub async func getWithTimeoutAsync(
   url: in String,
   timeoutMs: in Int
@@ -438,7 +436,7 @@ pub async func getWithTimeoutAsync(
 }
 
 /// POST a UTF-8 text body to a URL with explicit cancellation.
-@experimental
+@stable(since="1.0")
 pub async func postWithCancelAsync(
   url: in String,
   body: in String,
@@ -462,7 +460,7 @@ pub async func postWithCancelAsync(
 }
 
 /// POST a UTF-8 text body to a URL with a timeout.
-@experimental
+@stable(since="1.0")
 pub async func postWithTimeoutAsync(
   url: in String,
   body: in String,
@@ -478,7 +476,7 @@ pub async func postWithTimeoutAsync(
 
 /// Read the response body as text, honouring cancellation.  Same
 /// `IoError` discipline as `bodyText`.
-@experimental
+@stable(since="1.0")
 pub async func HttpResponse.bodyTextWithCancel(
   response: in HttpResponse,
   token: in CancellationToken
@@ -510,10 +508,7 @@ pub func HttpResponse.header(
 /// redirects automatically.  Pair with `sendAsync` / `sendWithCancelAsync`
 /// when the caller wants follow-redirect behaviour without
 /// inspecting 3xx responses themselves.
-///
-/// Bootstrap-grade: per-request redirect policy and richer hooks
-/// (e.g. log every hop) are Phase 4 follow-ups.
-@experimental
+@stable(since="1.0")
 pub func clientWithRedirects(maxRedirects: in Int): HostHttp.HttpClient
   requires: maxRedirects >= 0
 {
@@ -524,7 +519,7 @@ pub func clientWithRedirects(maxRedirects: in Int): HostHttp.HttpClient
 /// Useful for callers that want to inspect 3xx responses
 /// themselves (e.g. capturing the `Location` header via
 /// `HttpResponse.header(...)`).
-@experimental
+@stable(since="1.0")
 pub func clientNoRedirects(): HostHttp.HttpClient {
   return HostHttp.hostClientNoRedirects()
 }

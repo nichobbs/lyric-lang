@@ -29,7 +29,7 @@ package Std.Core.Proof
 // =====================================================================
 
 @pure
-@experimental
+@stable(since="1.0")
 pub generic[T] func identity(x: in T): T
   ensures: result == x
   = x
@@ -37,13 +37,13 @@ pub generic[T] func identity(x: in T): T
 // Two-argument projections.  The contract picks out which argument
 // the result equals so callers can name the fact at the proof site.
 @pure
-@experimental
+@stable(since="1.0")
 pub generic[T, U] func pickFirst(a: in T, b: in U): T
   ensures: result == a
   = a
 
 @pure
-@experimental
+@stable(since="1.0")
 pub generic[T, U] func pickSecond(a: in T, b: in U): U
   ensures: result == b
   = b
@@ -57,13 +57,13 @@ pub generic[T, U] func pickSecond(a: in T, b: in U): U
 // =====================================================================
 
 @pure
-@experimental
+@stable(since="1.0")
 pub func trueLit(): Bool
   ensures: result == true
   = true
 
 @pure
-@experimental
+@stable(since="1.0")
 pub func falseLit(): Bool
   ensures: result == false
   = false
@@ -77,7 +77,7 @@ pub func falseLit(): Bool
 // =====================================================================
 
 @pure
-@experimental
+@stable(since="1.0")
 pub generic[T] func tag(x: in T): T
   ensures: result == x
 {
@@ -90,7 +90,7 @@ pub generic[T] func tag(x: in T): T
 // shape (M4.1 §5 — `assert φ` becomes both a side-goal *and* an
 // assumed hypothesis).
 @pure
-@experimental
+@stable(since="1.0")
 pub generic[T] func assertEq(x: in T): T
   ensures: result == x
 {
@@ -108,7 +108,7 @@ pub generic[T] func assertEq(x: in T): T
 // =====================================================================
 
 @pure
-@experimental
+@stable(since="1.0")
 pub generic[T] func wrappedIdentity(x: in T): T
   ensures: result == x
 {

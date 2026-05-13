@@ -1703,6 +1703,29 @@ func lowerBuiltinOrStaticCall(
       params = subPs,
       ret    = JArray(elem = JByte)))
     JArray(elem = JByte)
+  } else if funcName == "catch" {
+    // TODO-JvmCatch: Std.Jvm.catch intrinsic — emit try-catch around the
+    // action callable once two prerequisites are met:
+    //   1. ELambda lowering (lowerExpr ELambda case, currently panics) —
+    //      `func(): T` must lower to a java.util.concurrent.Callable whose
+    //      call() method invokes the lambda body.
+    //   2. This branch replaces the @externTarget stub in _kernel/jvm.l.
+    //      Bytecode shape:
+    //        lowerCallArg(action) → Callable on stack
+    //        LLabel(tryStart)
+    //        LInvokeinterface("java/util/concurrent/Callable","call",[],JRef(Object), 1)
+    //        → store result in temp slot
+    //        LNew("Std/Core/Ok")  LDup  load-result
+    //        LInvokespecial("Std/Core/Ok","<init>",[(Object)]V)
+    //        LGoto(afterL)
+    //        LLabel(catchStart)
+    //        → exception (java/lang/Exception) is already a JvmException value
+    //        LNew("Std/Core/Err")  LDup  load-exception
+    //        LInvokespecial("Std/Core/Err","<init>",[(Object)]V)
+    //        LLabel(afterL)
+    //        LTryCatch(tryStart, tryEnd, catchStart, "java/lang/Exception")
+    //      See stdlib/std/_kernel/jvm.l for the full specification.
+    lowerGeneralStaticCall(ctx, insns, funcName, path, args)
   } else {
     // General static call: resolve against the current package/class.
     lowerGeneralStaticCall(ctx, insns, funcName, path, args)

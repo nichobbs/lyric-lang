@@ -36,7 +36,7 @@ import Std.Random
 import Std.Testing.Property
 func main(): Unit {
   val r = makeRandom(7)
-  forAllIntRange(r, 0, 100, 50, { x: Int -> (x + x) % 2 == 0 })
+  forAllInt(r, 0, 100, 50, { x: Int -> (x + x) % 2 == 0 })
   println("ok")
 }
 """,
