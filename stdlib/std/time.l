@@ -107,17 +107,17 @@ pub func addDays(t: in Instant, n: in Double): Instant {
 // the conversion as a one-call operation.
 // =====================================================================
 
-@experimental
+@stable(since="1.0")
 pub func dtoFromEpochMillis(n: in Long): DateTimeOffset {
   hostDtoFromEpochMillis(n)
 }
 
-@experimental
+@stable(since="1.0")
 pub func dtoFromEpochSeconds(n: in Long): DateTimeOffset {
   hostDtoFromEpochSeconds(n)
 }
 
-@experimental
+@stable(since="1.0")
 pub func dtoUtcDateTime(d: in DateTimeOffset): Instant {
   hostDtoUtcDateTime(d)
 }
@@ -149,7 +149,7 @@ pub func fromEpochSeconds(n: in Long): Instant {
 // (UTC <-> zoned, DST detection) wait until programs need them.
 // =====================================================================
 
-@experimental
+@stable(since="1.0")
 pub func findTimeZone(id: in String): TimeZone {
   hostFindTimeZone(id)
 }
