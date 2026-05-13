@@ -19,8 +19,8 @@
 package Std.Testing.Property
 
 import Std.Core
-import Std.Random
 import Std.Collections
+import Std.Random
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § Shrinking helpers
@@ -85,7 +85,7 @@ generic[T] func shrinkToFixedPoint(
 /// failing input, then panic with `display(smallest)`.
 ///
 /// Parameters:
-///   `rng`     — seeded random source (`Std.Random.newRandom`).
+///   `rng`     — seeded random source (`Std.Random.makeRandom`).
 ///   `n`       — number of random samples to draw (typical: 100–1000).
 ///   `gen`     — generator: produces a `T` from an RNG.
 ///   `shrink`  — shrinker: given a failing `T`, returns simpler candidates.
@@ -115,6 +115,41 @@ pub generic[T] func forAll(
 // § Convenience wrappers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Converge Int shrinking toward a fixed point for a single-Int property.
+// Separated from shrinkToFixedPoint to avoid generic closure capture.
+func shrinkIntToFixedPoint(failing: in Int, min: in Int, prop: in (Int) -> Bool): Int {
+    val candidates = shrinkInt(failing, min)
+    var best = failing
+    var j = 0
+    while j < candidates.count {
+        val c = candidates[j]
+        if not prop(c) {
+            best = shrinkIntToFixedPoint(c, min, prop)
+            j = candidates.count  // first smaller failure wins; skip the rest
+        } else {
+            j = j + 1
+        }
+    }
+    best
+}
+
+// Converge Bool shrinking toward a fixed point for a single-Bool property.
+func shrinkBoolToFixedPoint(failing: in Bool, prop: in (Bool) -> Bool): Bool {
+    val candidates = shrinkBool(failing)
+    var best = failing
+    var j = 0
+    while j < candidates.count {
+        val c = candidates[j]
+        if not prop(c) {
+            best = c  // Bool shrinks to false in one step; no further recursion
+            j = candidates.count  // first smaller failure wins; skip the rest
+        } else {
+            j = j + 1
+        }
+    }
+    best
+}
+
 /// Run `prop` on `n` random `Int` values in `[min, max)`.
 /// Failing inputs are shrunk toward 0 (or `min`) before the panic message.
 @stable(since="1.0")
@@ -124,12 +159,15 @@ pub func forAllInt(
         max:  in Int,
         n:    in Int,
         prop: in (Int) -> Bool): Unit {
-    forAll(
-        rng, n,
-        { r: Random -> nextIntRange(r, min, max) },
-        { x: Int    -> shrinkInt(x, min)         },
-        { x: Int    -> toString(x)               },
-        prop)
+    var i = 0
+    while i < n {
+        val x = nextIntRange(rng, min, max)
+        if not prop(x) {
+            val smallest = shrinkIntToFixedPoint(x, min, prop)
+            panic("property failed: " + toString(smallest))
+        }
+        i = i + 1
+    }
 }
 
 /// Run `prop` on `n` random `Bool` samples.
@@ -139,12 +177,15 @@ pub func forAllBool(
         rng:  in Random,
         n:    in Int,
         prop: in (Bool) -> Bool): Unit {
-    forAll(
-        rng, n,
-        { r: Random -> nextBool(r)   },
-        { b: Bool   -> shrinkBool(b) },
-        { b: Bool   -> toString(b)   },
-        prop)
+    var i = 0
+    while i < n {
+        val b = nextBool(rng)
+        if not prop(b) {
+            val smallest = shrinkBoolToFixedPoint(b, prop)
+            panic("property failed: " + toString(smallest))
+        }
+        i = i + 1
+    }
 }
 
 /// Run `prop` on `n` random `Double` samples in `[0.0, 1.0)`.
@@ -154,13 +195,14 @@ pub func forAllDouble(
         rng:  in Random,
         n:    in Int,
         prop: in (Double) -> Bool): Unit {
-    val noShrink: List[Double] = newList()
-    forAll(
-        rng, n,
-        { r: Random -> nextDouble(r) },
-        { d: Double -> noShrink      },
-        { d: Double -> toString(d)   },
-        prop)
+    var i = 0
+    while i < n {
+        val d = nextDouble(rng)
+        if not prop(d) {
+            panic("property failed: " + toString(d))
+        }
+        i = i + 1
+    }
 }
 
 /// Run `prop` on `n` random `(Int, Int)` pairs in `[min, max)`.
@@ -201,7 +243,7 @@ func shrinkPairLeft(
         val c = candidates[j]
         if not prop(c, y) {
             best = shrinkPairLeft(c, y, min, prop)
-            j = candidates.count
+            j = candidates.count  // first smaller failure wins; skip the rest
         } else {
             j = j + 1
         }
@@ -222,7 +264,7 @@ func shrinkPairRight(
         val c = candidates[j]
         if not prop(x, c) {
             best = shrinkPairRight(x, c, min, prop)
-            j = candidates.count
+            j = candidates.count  // first smaller failure wins; skip the rest
         } else {
             j = j + 1
         }

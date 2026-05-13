@@ -320,11 +320,9 @@ pub async func HttpResponse.bodyBytes(response: in HttpResponse): Result[slice[B
 // Higher-level helpers.
 // ---------------------------------------------------------------------------
 
-/// Retry a request up to maxAttempts times.
-///
-/// This first source-level shape retries immediately. Backoff and
-/// cancellation need the Phase 5 time/scheduling APIs before they can be
-/// implemented without smuggling in hidden effects.
+/// Retry a request up to maxAttempts times, with optional delay between
+/// attempts.  Passing `backoffMs = 0` retries immediately.  Returns the
+/// first successful response, or the last error if all attempts fail.
 @stable(since="1.0")
 pub async func retry(
   request: in HttpRequest,
@@ -510,9 +508,6 @@ pub func HttpResponse.header(
 /// redirects automatically.  Pair with `sendAsync` / `sendWithCancelAsync`
 /// when the caller wants follow-redirect behaviour without
 /// inspecting 3xx responses themselves.
-///
-/// Bootstrap-grade: per-request redirect policy and richer hooks
-/// (e.g. log every hop) are Phase 4 follow-ups.
 @stable(since="1.0")
 pub func clientWithRedirects(maxRedirects: in Int): HostHttp.HttpClient
   requires: maxRedirects >= 0
