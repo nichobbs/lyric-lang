@@ -186,6 +186,9 @@ Core commands you will use constantly:
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
+| `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
+| `lyric bench <file.l> --runs <N> --warmup <N>` | Control timed and warmup iteration counts |
+| `lyric bench <file.l> --filter <substring>` | Run only benchmarks whose name contains the substring |
 | `lyric publish` | Pack and publish the current package to a NuGet feed |
 | `lyric restore` | Restore declared NuGet/lyric.toml dependencies |
 | `lyric --sdk-info` | Print SDK root, stdlib path, and version information |

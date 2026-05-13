@@ -558,6 +558,8 @@ output_assembly = "myapp.dll"
 | Annotation | Placement | Meaning |
 |---|---|---|
 | `@axiom` | package, `extern func` | Contracts are trusted, not verified; required on `extern package` |
+| `@bench` | `pub func` | Marks a zero-argument `Unit`-returning function as a benchmark entry point |
+| `@bench_module` | package | Marks the file as a benchmark suite; required by `lyric bench` |
 | `@axiom("description")` | `extern func` | Axiom with audit-visible rationale string |
 | `@body` | handler parameter | Marks the parameter that receives the deserialized HTTP request body |
 | `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 20 §20.7 |
@@ -709,6 +711,14 @@ lyric prove --json <file.l>            # machine-readable output
 lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: target/proofs/)
 lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
 
+# Benchmarking  (see chapter 28)
+lyric bench <file.l>                   # compile and run @bench_module timing harness
+lyric bench <file.l> --runs <N>        # number of timed iterations (default: 10)
+lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 3)
+lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
+# Output: "name  min=Xms  max=Xms  mean=Xms" per @bench function
+# Requirements: file must carry @bench_module; @bench functions must be pub func f(): Unit
+
 # Code generation
 lyric openapi <spec.json>              # generate a typed Std.Rest client from an OpenAPI 3.x JSON spec
 lyric openapi <spec.json> -o <out.l>  # write generated source to a specific path
@@ -811,3 +821,11 @@ lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compati
 | `V0007` | error (warning with `--allow-unverified`) | Solver returned `unknown` — budget exhausted |
 | `V0008` | error | Proof failed — counterexample available (`name : sort = value` bindings) |
 | `V0009` | error | `assume` used in `@proof_required` code outside `unsafe { }` |
+
+### Bench (B-series)
+
+| Code | Meaning |
+|---|---|
+| `B0900` | File passed to `lyric bench` is missing the `@bench_module` annotation |
+| `B0901` | `@bench_module` package declares a `func main()` — not allowed |
+| `B0902` | No `@bench`-annotated functions found (or `--filter` matched none) |
