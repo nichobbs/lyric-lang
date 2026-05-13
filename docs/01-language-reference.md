@@ -45,9 +45,10 @@ where       while        wire         with         xor
 Annotation-style keywords (always preceded by `@`):
 
 ```
-@axiom         @derive          @experimental          @global_clock_unsafe
-@hidden        @projectable     @proof_required        @provided
-@runtime_checked  @stable       @stubbable             @test_module
+@axiom         @bench           @bench_module          @derive
+@experimental  @global_clock_unsafe  @hidden           @projectable
+@proof_required  @provided      @runtime_checked       @stable
+@stubbable     @test_module
 ```
 
 **Stability annotations** (`@stable` / `@experimental`) mark the API stability of `pub` items (D040):
@@ -1103,7 +1104,44 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 **Output format:** `<code> <severity> [<line>:<col>]: <message>`, matching the compiler's own diagnostic shape.
 
-### 13.9 Package manager
+### 13.9 Benchmark runner
+
+`lyric bench <source.l>` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout.
+
+**Annotations:**
+
+- **`@bench_module`** — file-level; marks the file as a benchmark suite. Required; without it `lyric bench` exits with `B0900`.
+- **`@bench`** — function-level; marks a `func name(): Unit` function (zero parameters, `Unit` return) as a benchmark entry point. The synthesiser calls it un-timed during warmup and timed during the measurement phase. Any function with this annotation is included regardless of visibility.
+
+**Output format:** one header line followed by one result line per benchmark:
+
+```
+benchmark  runs=N  warmup=M
+
+funcName  min=Xms  max=Xms  mean=Xms
+```
+
+**Flags:**
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--runs N` | `10` | Number of timed iterations per benchmark |
+| `--warmup N` | `3` | Un-timed iterations before the timed region (JIT, cache warm-up) |
+| `--filter s` | *(all)* | Only run benchmarks whose function name contains `s` |
+
+**Exit codes:** `0` = benchmark ran and results printed; `2` = compilation error; `64` = usage error or constraint violation.
+
+**Constraint violations (`B`-series):**
+
+| Code | Condition |
+|------|-----------|
+| `B0900` | File is missing `@bench_module` |
+| `B0901` | `@bench_module` file declares `func main()` |
+| `B0902` | No `@bench` functions found (or `--filter` matched none) |
+
+A `@bench` function whose signature does not match `func name(): Unit` passes through the synthesiser as-is; the mismatch is reported by the type checker with a standard `T`-series diagnostic.
+
+### 13.10 Package manager
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
 

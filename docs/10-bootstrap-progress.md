@@ -12011,3 +12011,50 @@ and then sets `lastExprType <- TyPrim PtNever`.
   The remaining 250 failures are pre-existing issues in the self-hosted Lyric
   MSIL emitter (`compiler/lyric/lyric/`) — unresolved names in the handwritten
   PE builder — and are not caused by the T5 type-checker work.
+
+
+### D-progress-248: `lyric bench` — self-hosted benchmark synthesizer + CLI command
+
+Implements the `lyric bench <source.l> [--runs N] [--warmup N] [--filter s]` command.
+
+**Architecture** (follows the `Lyric.TestSynth` / `Lyric.Fmt` self-hosted shim pattern):
+
+- **`compiler/lyric/lyric/bench_synth/bench_synth.l`** — `Lyric.BenchSynth` package.
+  Parses a `@bench_module` file, validates constraints (`@bench_module` present, no user
+  `main`), collects `@bench`-annotated `IFunc` items, and synthesises a `func main(): Int`
+  timing harness using `Std.Time.now()` / `since()` / `totalMillis()`.  The harness runs
+  `--warmup` un-timed iterations then `--runs` timed iterations per benchmark, printing
+  `min / max / mean` milliseconds.  `--filter` (empty = no filter) is applied during the
+  AST walk so only matching functions appear in the synthesised main.
+  Key implementation note: `Item.span.endPos` in the self-hosted parser points at the
+  first token of the *next* item (`peekSpan` captures lookahead post-parse), not the end
+  of the current item.  Source emission is therefore verbatim (the original source is
+  passed through unchanged) with the synthesised main appended at the end, avoiding
+  the double-emission bug that span-based carve-out would cause.
+
+- **`compiler/lyric/lyric/bench_synth_bridge.l`** — `Lyric.BenchSynthBridge` text-protocol
+  bridge.  Line-oriented protocol: `ok\n<count>\n<src>`, `nobench\n<line>\n<col>`,
+  `usermain\n<line>\n<col>`, `parsefail\n<code>|<sev>|<line>|<col>|<msg>…`.
+  Entry point: `pub func synthesizeBenchToProtocol(source, runs, warmup, filter): String`.
+
+- **`compiler/src/Lyric.Cli/SelfHostedBench.fs`** — thin F# shim.  Compiles
+  `Lyric.BenchSynthBridgeDriver` in-process, reflects
+  `Lyric.BenchSynthBridge.Program.synthesizeBenchToProtocol(string, int, int, string)`,
+  parses the protocol into an F# `Outcome` union (`Synthesised | NoBenchModule |
+  UserMainExists | ParseFailures`).
+
+- **`compiler/src/Lyric.Cli/Program.fs`** — `bench` command dispatch.  Parses `--runs`,
+  `--warmup`, `--filter`; calls `SelfHostedBench.synthesize`; writes synthesised source to
+  a temp dir; builds via the existing `build` helper; `dotnet exec`s the result.
+
+**Benchmark files shipped:**
+- `benchmarks/bench_numeric.l` — `Bench.Numeric`: integer sum, multiply-accumulate, GCD, double sum, recursive Fibonacci.
+- `benchmarks/bench_collections.l` — `Bench.Collections`: List build/traversal/sum, Map insert, Map insert+lookup.
+- `benchmarks/bench_contracts.l` — `Bench.Contracts`: plain vs `@runtime_checked` vs `@axiom` clamp function.
+- `benchmarks/bench_string.l` — `Bench.String`: concat, toString, `.length`, `Str.contains`, `Str.replace`.
+
+**B-series diagnostic codes added:** B0900 (missing `@bench_module`), B0901 (user `main` in bench module), B0902 (no matching `@bench` functions).
+
+**Documentation:** book chapter 28 (`book/chapters/28-benchmarking.md`), toolchain table in `book/chapters/01-getting-started.md`, annotations and CLI in `book/chapters/appendix-b-quick-reference.md`, §13.9 in `docs/01-language-reference.md`.
+
+**Test outcome:** 224/224 CLI tests pass.

@@ -45,6 +45,7 @@ CHAPTERS := \
 	chapters/25-caching.md \
 	chapters/26-database-access.md \
 	chapters/27-health-checks.md \
+	chapters/28-benchmarking.md \
 	chapters/appendix-a-vscode.md \
 	chapters/appendix-b-quick-reference.md
 

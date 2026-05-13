@@ -85,6 +85,7 @@ book/
     ├── 25-caching.md
     ├── 26-database-access.md
     ├── 27-health-checks.md
+    ├── 28-benchmarking.md
     ├── appendix-a-vscode.md
     └── appendix-b-quick-reference.md
 ```

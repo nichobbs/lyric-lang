@@ -558,9 +558,9 @@ output_assembly = "myapp.dll"
 | Annotation | Placement | Meaning |
 |---|---|---|
 | `@axiom` | package, `extern func` | Contracts are trusted, not verified; required on `extern package` |
-| `@bench` | `pub func` | Marks a zero-argument `Unit`-returning function as a benchmark entry point |
-| `@bench_module` | package | Marks the file as a benchmark suite; required by `lyric bench` |
 | `@axiom("description")` | `extern func` | Axiom with audit-visible rationale string |
+| `@bench` | `func` | Marks a zero-argument `Unit`-returning function as a benchmark entry point |
+| `@bench_module` | package | Marks the file as a benchmark suite; required by `lyric bench` |
 | `@body` | handler parameter | Marks the parameter that receives the deserialized HTTP request body |
 | `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 20 §20.7 |
 | `@cfg(any(feature = "X", feature = "Y"))` | any item | Erase unless at least one listed feature is active |

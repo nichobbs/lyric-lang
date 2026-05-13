@@ -33,7 +33,7 @@ pub func benchIntSum(): Unit {
 
 **`@bench_module`** at the file level tells `lyric bench` that this file is a benchmark suite. Without it the command refuses to run (exit code B0900). The annotation does not affect `lyric build` or `lyric run` — benchmark files are not included in production packages.
 
-**`@bench`** on a function marks it as a benchmark entry point. Only `pub func name(): Unit` functions are valid targets. The function must return `Unit` and take no parameters. Any helper functions in the file that are not annotated `@bench` run normally as part of the benchmark body but are not timed individually.
+**`@bench`** on a function marks it as a benchmark entry point. The function must have the signature `func name(): Unit` — zero parameters, `Unit` return type. Visibility (`pub` or package-private) does not affect whether the synthesizer includes the function. Any helper functions in the file that are not annotated `@bench` run normally as part of the benchmark body but are not timed individually. If a `@bench` function has the wrong signature (wrong return type or parameters), the synthesizer generates a call site and the mismatch is caught by the type checker with a standard T-series diagnostic.
 
 **`import Std.Time`** is required by the synthesised harness. If you omit it, `lyric bench` injects the import automatically.
 
@@ -117,7 +117,7 @@ Lyric's `Int` is a 32-bit signed integer with overflow-checked arithmetic (`Add_
 | `acc = acc + i * i` (quadratic) | `i <= 1_000` (sum ≈ 333 million) |
 | `acc = acc + f(i)` where `f` is bounded by `B` | `i < 2_000_000_000 / B` |
 
-If you need loops with larger counts, accumulate into a `Double` instead:
+If you need the accumulator to hold larger values, use `Double`:
 
 ```lyric
 @bench
@@ -132,7 +132,7 @@ pub func benchDoubleSum(): Unit {
 }
 ```
 
-`Double` arithmetic uses non-overflow opcodes and can accumulate freely.
+`Double` arithmetic uses non-overflow opcodes and the accumulator can grow freely. Note that the loop *counter* `i` is still `Int` — the `Int`-range limit applies to `i` as well. A loop running `while i < 1_000_000` is safe since `1_000_000` is well within int32 range, but `while i < 5_000_000_000` would overflow the counter itself.
 
 ### Include helpers in the same file
 
@@ -179,7 +179,7 @@ pub func benchListBuild(): Unit {
     lst.add(i)
     i = i + 1
   }
-  if lst.count < 0 { println(toString(lst.count)) }
+  if lst.count < 0 { println(toString(lst.count)) }  // DCE guard: count is always >= 0
 }
 ```
 
@@ -274,11 +274,14 @@ Keep a copy of the numbers before and after your change. The ratio is what matte
 The JVM target (`--target jvm`) is on the roadmap for `lyric bench`. When it lands, the same benchmark file will run on both runtimes:
 
 ```sh
-lyric bench benchmarks/bench_numeric.l --target dotnet
+# today — .NET is the implicit target
+lyric bench benchmarks/bench_numeric.l
+
+# roadmap — explicit target selection
 lyric bench benchmarks/bench_numeric.l --target jvm
 ```
 
-This will surface where .NET and the JVM JIT make different choices (float-point vectorisation, bounds-check elimination, inline depth) and guide decisions about which operations benefit from target-specific stdlib implementations. Today, `.NET`-only numbers are already useful for absolute performance work and for comparing contract strategies.
+Note: today's `lyric bench` does not accept `--target`; `.NET` is always used. The flag arrives alongside full JVM pipeline integration. This will surface where .NET and the JVM JIT make different choices (floating-point vectorisation, bounds-check elimination, inline depth) and guide decisions about which operations benefit from target-specific stdlib implementations. Today, `.NET`-only numbers are already useful for absolute performance work and for comparing contract strategies.
 
 ## Exercises
 
@@ -292,7 +295,7 @@ This will surface where .NET and the JVM JIT make different choices (float-point
 
 3. **Build your own benchmark**
 
-   Write a `@bench_module` file that benchmarks two string-building strategies: (a) repeated `+` concatenation and (b) building a `List[String]` of fragments and joining them with `Str.join`. Measure both for 1 000 fragments of length 10. Which is faster? Is the gap what you expected?
+   Write a `@bench_module` file that benchmarks two string-building strategies: (a) repeated `+` concatenation and (b) building a result by copying characters from a template string in a loop (no join call). Measure both for 1 000 iterations. Which is faster? Is the gap what you expected?
 
 4. **Warmup effect**
 
