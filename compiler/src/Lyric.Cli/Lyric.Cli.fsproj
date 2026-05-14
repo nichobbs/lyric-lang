@@ -24,7 +24,6 @@
     <Compile Include="SelfHostedTestSynth.fs" />
     <Compile Include="SelfHostedOpenApi.fs" />
     <Compile Include="SelfHostedBench.fs" />
-    <Compile Include="SelfHostedVerifier.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
