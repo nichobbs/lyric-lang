@@ -25,7 +25,40 @@ import Ledger.Accounts
 import Ledger.Transfers
 import Db
 import Web
+import Web.Aspects
 import OTel
+
+// ─── Aspects ──────────────────────────────────────────────────────────────────
+//
+// RateLimit wraps all handlers (outermost layer).  RequiresAuth wraps only
+// the mutation handlers and runs inside the rate limiter so that rejected
+// requests still count against the quota.
+//
+// Config (env vars read at startup):
+//   LYRIC_ASPECT_THROTTLE_REQUESTSPERMINUTE  — default 120
+//   LYRIC_ASPECT_THROTTLE_BURSTSIZE          — default 20
+//   LYRIC_ASPECT_AUTH_JWTSECRET              — REQUIRED (no default)
+//   LYRIC_ASPECT_AUTH_ISSUER                 — default "ledger-service"
+//   LYRIC_ASPECT_AUTH_AUDIENCE               — default "ledger-api"
+
+aspect Throttle from Web.Aspects.RateLimit {
+  matches: name like "handle*"
+  config {
+    requestsPerMinute: Int = 120
+    burstSize:         Int = 20
+  }
+}
+
+aspect Auth from Web.Aspects.RequiresAuth {
+  matches: name in { handleCreateAccount, handleCreateTransfer }
+  inside:  Throttle
+  config {
+    @sensitive
+    jwtSecret: String           // LYRIC_ASPECT_AUTH_JWTSECRET — required
+    issuer:    String = "ledger-service"
+    audience:  String = "ledger-api"
+  }
+}
 
 // ─── Request body records ─────────────────────────────────────────────────────
 //
@@ -83,7 +116,7 @@ func jsonArr(items: in [String]): String {
 // ─── Account handlers ─────────────────────────────────────────────────────────
 
 @post("/accounts")
-pub func handleCreateAccount(req: in CreateAccountRequest): Result[String, ApiError] {
+pub func handleCreateAccount(@body req: in CreateAccountRequest, authToken: String): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.account.create", 1)  // SpanKind.Server = 1
   match Ledger.Accounting.accountKindFromString(req.kind) {
     case None -> {
@@ -225,7 +258,7 @@ pub func handleGetAccountEntries(id: Long): Result[String, ApiError] {
 // ─── Transfer handlers ────────────────────────────────────────────────────────
 
 @post("/transfers")
-pub func handleCreateTransfer(req: in CreateTransferRequest): Result[String, ApiError] {
+pub func handleCreateTransfer(@body req: in CreateTransferRequest, authToken: String): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.transfer.create", 1)
 
   // Fast-path validation before touching the database.
