@@ -438,7 +438,6 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   collectDiags(cr.diagnostics,     allDiags)
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
-  val proofOpt: Option[ProofSummary] = None  // will overwrite below
   val proofResult = proveSourceWithOptions(text, true)
   var pi = 0
   while pi < proofResult.diagnostics.count {
@@ -889,7 +888,7 @@ func handleDocChange(state: in LspState, params: in String): List[String] {
       }
     }
   }
-  if uri.length > 0 and newText.length > 0 {
+  if uri.length > 0 {
     collectMsgs(analyzeAndStore(state, uri, newText), acc)
     collectMsgs(reAnalyzeConsumers(state, uri), acc)
   }
