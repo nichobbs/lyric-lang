@@ -105,6 +105,11 @@ let private resolveDelegates () : Delegates =
         | None   ->
             failwithf "self-hosted LSP bridge: 'Lyric.Lsp.Program' type missing from %s" dll
 
+    // We search by name rather than using GetMethod(name, paramTypes) because
+    // the loaded assembly's type objects are identity-distinct from the calling
+    // assembly's types even when structurally identical.  A signature lookup
+    // using typeof<string> from this assembly would never match the string type
+    // from the freshly loaded one, causing GetMethod to return null.
     let pickStatic (name: string) =
         match prog.GetMethods()
               |> Array.tryFind (fun m -> m.Name = name && m.IsStatic) with
