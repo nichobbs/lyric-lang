@@ -36,6 +36,11 @@ let private preloadStdlibAssemblies () =
         try Assembly.LoadFrom p |> ignore
         with _ -> ()
 
+// Emitting the tiny driver package is the cheapest way to warm the emitter's
+// stdlib-assembly cache: the emit call resolves all transitive Lyric.* imports
+// (including Lyric.VerifierBridge) and stores the resulting DLL paths in
+// Emitter.stdlibAssemblyPaths().  The produced driver DLL itself is discarded;
+// we use stdlibAssemblyPaths() afterward to locate Lyric.Lyric.VerifierBridge.
 let private ensureBridgeAssembly () : string =
     let scratch =
         Path.Combine(Path.GetTempPath(),
@@ -162,7 +167,7 @@ let private parseProtocol (protocol: string) : Result<VerifierResult, string> =
                 level <- line.Substring 6
             elif line.StartsWith "diag|" then
                 let parts = line.Split([| '|' |], 6)
-                diags <- diags @ [parseDiag parts]
+                diags <- parseDiag parts :: diags
             elif line.StartsWith "result|" then
                 let parts = line.Split([| '|' |], 6)
                 total <- total + 1
@@ -174,7 +179,7 @@ let private parseProtocol (protocol: string) : Result<VerifierResult, string> =
                     | _ -> ()
         let hasErrDiag = diags |> List.exists (fun d -> d.Severity = DiagError)
         Ok { Level        = level
-             Diagnostics  = diags
+             Diagnostics  = List.rev diags
              Discharged   = discharged
              Total        = total
              Unknowns     = unknowns
