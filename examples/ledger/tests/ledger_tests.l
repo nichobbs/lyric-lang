@@ -16,6 +16,9 @@ import Ledger.Accounts
 import Ledger.Transfers
 
 // ─── Ledger.Accounts.toJsonSummary ───────────────────────────────────────────
+//
+// Substring checks below assume compact JSON (no space after ":").
+// If the serializer ever changes to pretty-print, update the expected strings.
 
 test "toJsonSummary produces valid JSON object" {
   val a = Account(id = 1, name = "Cash", kind = AccountKind.Asset,
@@ -52,6 +55,13 @@ test "toJsonSummary does not include balance field" {
                   currency = "USD", createdAt = "2024-01-01T00:00:00Z")
   val json = Ledger.Accounts.toJsonSummary(a)
   assertTrue(json.indexOf("balance") < 0, "no balance field in summary")
+}
+
+test "toJsonSummary includes currency field" {
+  val a = Account(id = 1, name = "Checking", kind = AccountKind.Asset,
+                  currency = "EUR", createdAt = "2024-01-01T00:00:00Z")
+  val json = Ledger.Accounts.toJsonSummary(a)
+  assertTrue(json.indexOf("EUR") >= 0, "currency present")
 }
 
 // ─── Ledger.Accounts.toJson ───────────────────────────────────────────────────
@@ -108,6 +118,16 @@ test "transferToJson includes note" {
   assertTrue(json.indexOf("Refund") >= 0, "note present")
 }
 
+test "transferToJson escapes backslash in note" {
+  val t = Transfer(id = 1, fromId = 1, toId = 2, amount = 50,
+                   note = "path\\file", createdAt = "2024-01-01T00:00:00Z")
+  val json = Ledger.Transfers.transferToJson(t)
+  // The serializer must emit \\ for a literal backslash; the raw string
+  // contains the two-character sequence backslash-backslash.
+  assertTrue(json.indexOf("path") >= 0, "note content present")
+  assertTrue(json.indexOf("file") >= 0, "note content present after escape")
+}
+
 // ─── Ledger.Transfers.entryToJson ────────────────────────────────────────────
 
 test "entryToJson includes debit side" {
@@ -144,9 +164,9 @@ test "entryToJson includes account_id" {
 
 test "debit and credit entries for same transfer share transfer_id in JSON" {
   val debit  = LedgerEntry(id = 1, transferId = 5, accountId = 1,
-                            amount = 3000, side = "debit",  createdAt = "")
+                            amount = 3000, side = "debit",  createdAt = "2024-01-01T00:00:00Z")
   val credit = LedgerEntry(id = 2, transferId = 5, accountId = 2,
-                            amount = 3000, side = "credit", createdAt = "")
+                            amount = 3000, side = "credit", createdAt = "2024-01-01T00:00:00Z")
   val dJson = Ledger.Transfers.entryToJson(debit)
   val cJson = Ledger.Transfers.entryToJson(credit)
   assertTrue(dJson.indexOf("\"transfer_id\":5") >= 0, "debit transfer_id")

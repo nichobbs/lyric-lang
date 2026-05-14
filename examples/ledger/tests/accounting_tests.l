@@ -67,6 +67,12 @@ test "debit and credit are on different accounts" {
 }
 
 // ─── balancePreservation ─────────────────────────────────────────────────────
+//
+// balancePreservation is a proof oracle: its @proof_required contracts
+// guarantee it returns true for every input that satisfies `requires:`.
+// Inputs that violate `requires:` (e.g. fromBalance < amount) trigger a
+// contract assertion rather than returning false, so negative "should return
+// false" tests are not applicable to this function.
 
 test "balancePreservation returns true" {
   val ok = Ledger.Accounting.balancePreservation(10000, 0, 3000)
@@ -155,14 +161,14 @@ test "errorMessage InsufficientFunds contains balance and needed" {
   assertTrue(msg.indexOf("500") >= 0, "message contains needed")
 }
 
-test "errorMessage SameAccount is non-empty" {
+test "errorMessage SameAccount mentions differ" {
   val msg = Ledger.Accounting.errorMessage(LedgerError.SameAccount)
-  assertTrue(msg != "", "non-empty")
+  assertTrue(msg.indexOf("differ") >= 0, "message mentions 'differ'")
 }
 
-test "errorMessage InvalidAmount is non-empty" {
+test "errorMessage InvalidAmount mentions zero" {
   val msg = Ledger.Accounting.errorMessage(LedgerError.InvalidAmount)
-  assertTrue(msg != "", "non-empty")
+  assertTrue(msg.indexOf("zero") >= 0, "message mentions 'zero'")
 }
 
 test "errorMessage DatabaseError includes the driver message" {
