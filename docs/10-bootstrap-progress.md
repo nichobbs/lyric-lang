@@ -12058,3 +12058,63 @@ Implements the `lyric bench <source.l> [--runs N] [--warmup N] [--filter s]` com
 **Documentation:** book chapter 28 (`book/chapters/28-benchmarking.md`), toolchain table in `book/chapters/01-getting-started.md`, annotations and CLI in `book/chapters/appendix-b-quick-reference.md`, §13.9 in `docs/01-language-reference.md`.
 
 **Test outcome:** 224/224 CLI tests pass.
+
+---
+
+### D-progress-249: Std.Jvm.catch fully implemented as inline try-catch intrinsic (B127)
+
+`Std.Jvm.catch` was previously a stub with `@experimental` + `@externTarget("lyric.runtime.jvm.ExceptionHelper.catch")`.  It is now a fully implemented JVM codegen intrinsic.
+
+**Changes shipped:**
+- `compiler/lyric/jvm/codegen.l` — new `lowerCatchIntrinsic` function (§5h).
+  When `lowerBuiltinOrStaticCall` sees a `catch` call with an `ELambda` argument,
+  it macro-expands it to an inline JVM try-catch: the lambda body is lowered in-place
+  as the try region, success wraps the result in `Result$Ok`, and any
+  `java.lang.Exception` is caught and wrapped in `Result$Err`.  No anonymous inner
+  class generation is required.  Non-literal lambda arguments fall through to the
+  existing general call path (which fails at JVM load time — documented as a limitation).
+- `stdlib/std/_kernel/jvm.l` — `Std.Jvm.catch` promoted from `@experimental` +
+  `@externTarget` to `@stable(since="1.0")` with documentation of the intrinsic's
+  emitted bytecode shape.
+- Stage B127 (`compiler/lyric/jvm/self_test_b127.l` + `JvmLoweringB127Test.fs`) —
+  validates the complete try-catch bytecode pattern via `Wrapper$Ok`/`Wrapper$Err`
+  union classes and a `SafeDiv.safeDivide(a, b)` method that catches
+  `ArithmeticException` on divide-by-zero.
+
+**Test outcome:** 758/758 emitter tests pass.
+
+---
+
+### D-progress-250: Std.Testing.Snapshot graduated to @stable; configurable dir + diff rendering
+
+`Std.Testing.Snapshot` was bootstrap-grade with a hardcoded `snapshots/` directory
+and no diff output on mismatch.
+
+**Changes shipped (`stdlib/std/testing_snapshot.l`):**
+- `snapshotIn(dir, label, actual)` — new 3-argument form taking an explicit snapshot
+  directory.  Creates `<dir>/` on first run if absent.
+- `snapshot(label, actual)` — retained; now delegates to `snapshotIn("snapshots", ...)`.
+- `snapshotMatchIn(dir, label, actual)` — new panicking helper that, on mismatch,
+  re-reads the snapshot file and calls `firstDiff` to show the first differing line
+  (line number, `- expected`, `+ actual` format) in the panic message.
+- `snapshotMatch(label, actual)` — retained; now delegates to `snapshotMatchIn`.
+- Internal `firstDiff(expected, actual)` helper — splits on `"\n"`, finds first
+  differing line or line-count difference.
+- All four `pub` functions promoted from `@experimental` to `@stable(since="1.0")`.
+
+---
+
+### D-progress-251: v1.0 gate decisions G3–G5 resolved (D066)
+
+Gate decisions G3, G4, and G5 from `docs/36-v1-roadmap.md` recorded as D066 in
+the decision log.
+
+- **G3 resolved:** `--legacy` / `LYRIC_FMT_LEGACY=1` survives as deprecated through
+  v1.0; removed in v1.1.  Per-expression CST gap deferred to 1.1.
+- **G4 resolved:** `lyric-*` service libraries version independently of the compiler
+  and core stdlib.  Each declares its stability policy in its own `lyric.toml`.
+- **G5 resolved:** Three-stage reproducibility bootstrap is not a v1.0 gate.
+  F# bootstrap is the primary build path for 1.0; reproducibility is a Phase-7
+  deliverable.
+
+Roadmap table in `docs/36-v1-roadmap.md` updated to reflect resolved status.

@@ -3474,6 +3474,63 @@ CLI entry point.
 
 ---
 
+## D066 — v1.0 gate decisions G3–G5: formatter flag, service library versioning, bootstrap reproducibility
+
+**Context:** `docs/36-v1-roadmap.md` listed five gate decisions (G1–G5) required
+before v1.0 can be tagged.  G1 and G2 were resolved in D058–D065 (JVM channel
+policy and `@experimental`→`@stable` graduation list).  This entry records G3,
+G4, and G5.
+
+### G3 — Legacy formatter flag fate
+
+**Decision:** `--legacy` / `LYRIC_FMT_LEGACY=1` survives as a supported but
+deprecated flag through v1.0 and is removed in v1.1.
+
+**Rationale:** The CST-based self-hosted formatter (`lyric fmt`, backed by
+`Lyric.Fmt`) handles all top-level items and block structures.  The remaining
+per-expression CST gap (complex nested match arms) is real but affects a small
+subset of programs.  Forcing that gap to close before 1.0 would stall the
+release by 2–4 weeks.  Shipping with the escape hatch documented as deprecated
+gives adopters a working formatter path on day one and closes the gap cleanly
+in 1.1 without SemVer pressure.
+
+The flag is documented in the language reference §CLI as:
+> `--legacy` / `LYRIC_FMT_LEGACY=1` — use the AST-based fallback formatter.
+> Deprecated as of v1.0; will be removed in v1.1.
+
+### G4 — Service library versioning policy
+
+**Decision:** The `lyric-*` service libraries (`lyric-web`, `lyric-cache`,
+`lyric-db`, `lyric-health`, `lyric-logging`, `lyric-otel`, `lyric-lambda`,
+`lyric-aws-secrets`, `lyric-aws-xray`) version **independently** of the compiler
+and core stdlib.  Each library's stability policy is declared in its own
+`lyric.toml` under a `[package.stability]` annotation.  `@experimental` surfaces
+in those libraries do not freeze with the Q011 surface freeze.
+
+**Rationale:** These libraries evolve at a different cadence from the language
+itself.  Coupling them to the compiler's SemVer would either freeze their API
+prematurely or delay 1.0 until every service library API is stable — neither is
+acceptable.  The JVM target policy (G1) applies only to the core compiler and
+`Std.*` modules.
+
+### G5 — Bootstrap reproducibility requirement
+
+**Decision:** The three-stage reproducibility bootstrap (`scripts/bootstrap.sh`:
+F# → self-hosted → self-hosted² binary comparison) is **not required** to produce
+a passing diff before v1.0.  The F# bootstrap remains the primary build path
+for the 1.0 release.
+
+**Rationale:** The self-hosted pipeline (M5.1–M5.3) is at stage-5 of 6 (MSIL
+emitter through `SelfHostedMsil.fs`; JVM emitter through `SelfHostedJvm.fs`).
+The codegen stage of the self-hosted compiler is substantially complete, but
+binary-identical output between F#-compiled and self-hosted-compiled compiler
+binaries requires the final codegen parity work that is a Phase-7 deliverable
+(Q-dist-001).  Blocking 1.0 on this would delay the release by months while
+providing no benefit to end users of the language.  The bootstrap script ships
+as a Phase-7 target; the CI pipeline gates on it before any 2.0 tag.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
