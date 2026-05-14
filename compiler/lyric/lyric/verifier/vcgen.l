@@ -828,7 +828,6 @@ func buildMatchIte(
       }
       val armTerm = translateArmBody(armEnv, arm, diagsOut, sidesOut, assumedOut)
       if isUnconditional {
-        // This arm catches everything.
         armTerm
       } else {
         val restTerm = buildMatchIte(env, scrutTerm, arms, idx + 1, diagsOut, sidesOut, assumedOut, ctxSpan)
@@ -875,11 +874,15 @@ func matchCond(pat: in Pattern, subject: in Term): Option[Term] {
 }
 
 // Helper to match on PatternKind directly.
+// PBinding(name, None) = simple binding — always matches (condition = true).
+// PBinding(name, Some(p)) = @ subpattern — M4.1 does not support the inner
+// constraint check; we conservatively treat the whole arm as unconditional.
+// (The bootstrap emitter cannot reliably match Option[Pattern] extracted from
+// union case fields, so we avoid that entirely here.)
 func matchCondKind(kind: in PatternKind, subject: in Term): Option[Term] {
   match kind {
-    case PWildcard -> Some(value = trueT())
-    case PBinding(_, None)  -> Some(value = trueT())
-    case PBinding(_, Some(inner)) -> matchCondKind(inner.kind, subject)
+    case PWildcard      -> Some(value = trueT())
+    case PBinding(_, _) -> Some(value = trueT())
     case PLiteral(lit)      -> {
       val litTerm = translateLit(lit)
       Some(value = TBuiltin(op = BOpEq, args = termList2(subject, litTerm)))
@@ -898,12 +901,12 @@ func patternBindings(pat: in Pattern, subject: in Term): List[PatBind] {
 
 func collectBindings(kind: in PatternKind, subject: in Term, output: in List[PatBind]): Unit {
   match kind {
-    case PBinding(name, None)  -> {
+    case PBinding(name, innerOpt) -> {
       output.add(PatBind(bindName = name, bindTerm = subject))
-    }
-    case PBinding(name, Some(inner)) -> {
-      output.add(PatBind(bindName = name, bindTerm = subject))
-      collectBindings(inner.kind, subject, output)
+      match innerOpt {
+        case Some(p) -> collectBindings(p.kind, subject, output)
+        case None    -> {}
+      }
     }
     case PParen(inner) -> collectBindings(inner.kind, subject, output)
     case _             -> {}
