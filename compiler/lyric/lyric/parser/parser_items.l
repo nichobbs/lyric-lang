@@ -1094,11 +1094,11 @@ func parseProtectedField(st: inout ParseState): ProtectedField {
               case Some(_) -> Some(parseExpr(st))
               case None -> None
             }
-          val endSpan =
-            match init {
-              case Some(e) -> e.span
-              case None -> ty.span
-            }
+          var endSpan = ty.span
+          match init {
+            case Some(e) -> { endSpan = e.span }
+            case None -> {}
+          }
           PFLet(name = ns.name, ty = ty, init = init, span = joinSpans(startSpan, endSpan))
         }
         case _ -> { PFImmutable(field = parseFieldDecl(st)) }

@@ -136,7 +136,11 @@ let tests =
             // Std.ProcessCaptureHost (1 extern) added for the self-hosted
             // verifier's solver-path discovery and subprocess capture
             // (D-progress-234).
-            Expect.isLessThanOrEqual total 270
+            // Bumped from 270 → 274: Std.ConsoleHost (2 externs) and
+            // Std.FileHost (8 externs, but net +4 new vs io.l) added for
+            // the self-hosted LSP server's console I/O and file I/O
+            // host boundaries (migrate-lsp-lyric task).
+            Expect.isLessThanOrEqual total 274
                 "total extern surface unexpectedly large"
         }
     ]

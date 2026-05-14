@@ -54,3 +54,13 @@ pub func hostReadAllBytes(path: in String): slice[Byte] = ()
 
 @externTarget("System.IO.File.WriteAllBytes")
 pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()
+
+// =====================================================================
+// Directory enumeration — used by the LSP workspace index builder.
+// =====================================================================
+
+@externTarget("System.IO.Directory.GetFiles")
+pub func hostEnumerateFiles(path: in String): slice[String] = ()
+
+@externTarget("System.IO.Directory.GetDirectories")
+pub func hostEnumerateDirectories(path: in String): slice[String] = ()
