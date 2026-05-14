@@ -696,7 +696,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       panic("Jvm.Codegen: EResult outside contract context")
     }
     case ELambda(_, _) -> {
-      panic("Jvm.Codegen: ELambda not yet supported in JVM codegen")
+      // General lambda lowering (closure class generation) is deferred.
+      // The only supported lambda use is as a literal argument to Std.Jvm.catch,
+      // which is handled by lowerCatchIntrinsic before lowerExpr is ever called.
+      panic("Jvm.Codegen: ELambda not supported — pass lambdas directly to Std.Jvm.catch")
     }
     case ETypeApp(fn, _) -> {
       // Ignore type args and lower the function expression.
@@ -1435,7 +1438,85 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5h. Builtin and general call lowering.
+// §5h. Std.Jvm.catch intrinsic.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Macroexpand `Std.Jvm.catch({ -> body })` to an inline try-catch.
+// The lambda body is lowered as a block expression; on success the result is
+// wrapped in Result$Ok; on java.lang.Exception the caught reference (which IS
+// the JvmException value — no wrapper needed) is placed in Result$Err.
+//
+// Limitation: the lambda body must not contain an explicit `return` statement.
+// Such a return would exit the enclosing method rather than the try block,
+// breaking the try-catch semantics.  Typical usage is a single call expression
+// and is always safe.
+func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in Block): JvmType {
+  val tryStartL   = freshLabel(ctx)
+  val tryEndL     = freshLabel(ctx)
+  val catchStartL = freshLabel(ctx)
+  val afterL      = freshLabel(ctx)
+
+  val resultSlot = allocSlot(ctx, "__catch_result_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/Object"))
+  val exSlot     = allocSlot(ctx, "__catch_ex_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/Object"))
+
+  // Class names for Result cases as compiled from Std.Core
+  // (pkgName="Std/Core", union="Result", cases "Ok" and "Err").
+  val okClass  = "Std/Core/Result$Ok"
+  val errClass = "Std/Core/Result$Err"
+
+  // ── try body ────────────────────────────────────────────────────────────────
+  insns.add(LLabel(name = tryStartL))
+  val bodyTy = lowerBlockExpr(ctx, insns, lambdaBody)
+  match bodyTy {
+    case JVoid -> insns.add(LAconstNull)  // Unit result: represent as null
+    case _     -> boxIfNeeded(insns, bodyTy)
+  }
+  insns.add(LAstore(slot = resultSlot))
+
+  insns.add(LNew(className = okClass))
+  insns.add(LDup)
+  insns.add(LAload(slot = resultSlot))
+  val okPs: List[JvmType] = newList()
+  okPs.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokespecial(
+    owner  = okClass,
+    name   = "<init>",
+    params = okPs,
+    ret    = JVoid))
+  insns.add(LGoto(label = afterL))
+  insns.add(LLabel(name = tryEndL))
+
+  // ── catch handler ────────────────────────────────────────────────────────────
+  // java/lang/Exception is on the stack; JvmException is a direct alias so the
+  // caught reference is the JvmException value — no wrapping needed.
+  insns.add(LLabel(name = catchStartL))
+  insns.add(LAstore(slot = exSlot))
+  insns.add(LNew(className = errClass))
+  insns.add(LDup)
+  insns.add(LAload(slot = exSlot))
+  val errPs: List[JvmType] = newList()
+  errPs.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokespecial(
+    owner  = errClass,
+    name   = "<init>",
+    params = errPs,
+    ret    = JVoid))
+  insns.add(LGoto(label = afterL))
+
+  // ── exception table entry ────────────────────────────────────────────────────
+  insns.add(LTryCatch(
+    startLabel   = tryStartL,
+    endLabel     = tryEndL,
+    handlerLabel = catchStartL,
+    catchClass   = "java/lang/Exception"))
+
+  insns.add(LLabel(name = afterL))
+
+  JRef(className = "java/lang/Object")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5i. Builtin and general call lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func lowerCall(
@@ -1704,28 +1785,26 @@ func lowerBuiltinOrStaticCall(
       ret    = JArray(elem = JByte)))
     JArray(elem = JByte)
   } else if funcName == "catch" {
-    // TODO-JvmCatch: Std.Jvm.catch intrinsic — emit try-catch around the
-    // action callable once two prerequisites are met:
-    //   1. ELambda lowering (lowerExpr ELambda case, currently panics) —
-    //      `func(): T` must lower to a java.util.concurrent.Callable whose
-    //      call() method invokes the lambda body.
-    //   2. This branch replaces the @externTarget stub in _kernel/jvm.l.
-    //      Bytecode shape:
-    //        lowerCallArg(action) → Callable on stack
-    //        LLabel(tryStart)
-    //        LInvokeinterface("java/util/concurrent/Callable","call",[],JRef(Object), 1)
-    //        → store result in temp slot
-    //        LNew("Std/Core/Ok")  LDup  load-result
-    //        LInvokespecial("Std/Core/Ok","<init>",[(Object)]V)
-    //        LGoto(afterL)
-    //        LLabel(catchStart)
-    //        → exception (java/lang/Exception) is already a JvmException value
-    //        LNew("Std/Core/Err")  LDup  load-exception
-    //        LInvokespecial("Std/Core/Err","<init>",[(Object)]V)
-    //        LLabel(afterL)
-    //        LTryCatch(tryStart, tryEnd, catchStart, "java/lang/Exception")
-    //      See stdlib/std/_kernel/jvm.l for the full specification.
-    lowerGeneralStaticCall(ctx, insns, funcName, path, args)
+    // Std.Jvm.catch intrinsic: macroexpand to inline try-catch when the
+    // argument is a zero-parameter lambda literal.  See lowerCatchIntrinsic.
+    if args.count > 0 {
+      val argExpr: Expr = match args[0] {
+        case CAPositional(e)  -> e
+        case CANamed(_, e, _) -> e
+      }
+      match argExpr.kind {
+        case ELambda(_, lambdaBody) -> {
+          lowerCatchIntrinsic(ctx, insns, lambdaBody)
+        }
+        case _ -> {
+          // Non-literal lambda: fall through to general call which will fail
+          // at JVM load time — same behaviour as the removed @externTarget.
+          lowerGeneralStaticCall(ctx, insns, funcName, path, args)
+        }
+      }
+    } else {
+      lowerGeneralStaticCall(ctx, insns, funcName, path, args)
+    }
   } else {
     // General static call: resolve against the current package/class.
     lowerGeneralStaticCall(ctx, insns, funcName, path, args)
