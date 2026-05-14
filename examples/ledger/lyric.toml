@@ -36,6 +36,10 @@ output_assembly = "Ledger.dll"
 dotnet   = []    # ASP.NET Core / Kestrel HTTP server
 postgres = []    # Npgsql PostgreSQL driver
 
+[project.tests]
+"Ledger.AccountingTests" = "tests/accounting_tests.l"
+"Ledger.LedgerTests"     = "tests/ledger_tests.l"
+
 [dependencies]
 "Lyric.Stdlib" = { path = "../../stdlib" }
 "Lyric.Web"    = { path = "../../lyric-web" }
