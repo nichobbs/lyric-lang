@@ -115,6 +115,10 @@ func jsonArr(items: in [String]): String {
 
 // ─── Account handlers ─────────────────────────────────────────────────────────
 
+// @body disambiguates request-body binding when the handler has multiple
+// parameters.  authToken is injected from the Authorization: Bearer header
+// by the Web dispatcher and validated by the Auth aspect before this body
+// runs; it is intentionally unused inside the handler.
 @post("/accounts")
 pub func handleCreateAccount(@body req: in CreateAccountRequest, authToken: String): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.account.create", 1)  // SpanKind.Server = 1
@@ -257,6 +261,7 @@ pub func handleGetAccountEntries(id: Long): Result[String, ApiError] {
 
 // ─── Transfer handlers ────────────────────────────────────────────────────────
 
+// See handleCreateAccount for @body / authToken rationale.
 @post("/transfers")
 pub func handleCreateTransfer(@body req: in CreateTransferRequest, authToken: String): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.transfer.create", 1)
