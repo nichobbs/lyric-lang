@@ -12118,3 +12118,75 @@ the decision log.
   deliverable.
 
 Roadmap table in `docs/36-v1-roadmap.md` updated to reflect resolved status.
+
+---
+
+### D-progress-250: Self-hosted LSP — all 28 `Lyric.Lsp.Tests` pass
+
+**Date:** 2026-05-14
+**Branch:** `claude/migrate-lsp-lyric-lCkms`
+
+Completed the self-hosted LSP server (`compiler/lyric/lyric/lsp.l`) so that all
+28 `Lyric.Lsp.Tests` protocol tests pass (previously 0 passed; 24 passed after
+fixes in D-progress-247 range; the remaining 4 fixed here).
+
+**Changes shipped in this milestone:**
+
+**`compiler/lyric/lyric/lsp.l`** — four bugs fixed:
+
+1. **Generic `Option[T]` equality**: `foundIt == None` and `foundSpan == None`
+   in `handleHover` / `handleDefinition` always returned `false` because the
+   bootstrap emitter creates a new `None` instance via `Newobj` for each
+   generic `Option[T]` construction (not a singleton), so reference equality
+   (`Ceq`) fails.  Fixed by replacing `== None` guards with `isNone(foundIt)`
+   / boolean `localDone` / `wsDone` / `fileDone` flags that use `isinst`-based
+   pattern matching internally.
+
+2. **`analyzeAndStore` if-branch `Dictionary.Remove` stack imbalance**: the
+   emitter does not emit `pop` for `Dictionary.Remove()` (Bool-returning) inside
+   an `if` branch, causing `InvalidProgramException` at JIT time.  Fixed by
+   calling `state.store.remove(uri)` unconditionally (safe on absent key) as a
+   standalone statement before `state.store.add(uri, doc)`.
+
+3. **Deeply-nested match-as-expression emitter bug**: `handleHover` and
+   `handleDefinition` had three or four levels of nested match expressions, each
+   returning a String via the innermost case's block.  The F# bootstrap emitter
+   produces incorrect MSIL for this pattern — the deeply-nested branch result
+   is not left on the evaluation stack, so the function effectively returns
+   `null` (serialised as `""` in the JSON response, producing
+   `{"result":}` at parse time).  Fixed by converting all "return the result
+   via the last expression of a nested match arm" patterns to explicit `return`
+   statements inside each arm, with a fallback literal after the outermost
+   match.  This avoids relying on the emitter's nested-match return-value
+   propagation entirely.
+
+4. **`SelfHostedLsp.fs` reflection lookup**: `pickStatic` was matching by
+   method name AND parameter types, but reflected methods on the
+   `Lyric.Lsp.Program` type sometimes had mismatched CLR parameter types (e.g.
+   `LspState` from a reloaded assembly vs the current assembly version).
+   Fixed by matching on method name only.
+
+**`stdlib/std/_kernel/console_host.l`** (new) — adds `hostConsoleRead` and
+`hostConsoleWrite` as `@externTarget` wrappers over `System.Console.Read` /
+`System.Console.Write`, used by the LSP frame reader.
+
+**`stdlib/std/_kernel/file_host.l`** (new) — adds `hostFileExists`,
+`hostDirectoryExists`, `hostReadAllText`, `hostWriteAllText`,
+`hostReadAllBytes`, `hostWriteAllBytes`, `hostEnumerateFiles`, and
+`hostEnumerateDirectories` as `@externTarget` wrappers over the BCL
+`System.IO.File` / `System.IO.Directory` APIs, used by the LSP workspace
+indexer and go-to-definition cross-file search.
+
+**`compiler/src/Lyric.Lsp/SelfHostedLsp.fs`** — `pickStatic` now matches by
+method name only (not by parameter types) to tolerate assembly reload scenarios
+during in-process reflection.
+
+**`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`** — kernel extern
+surface hard cap bumped from 270 → 274 to account for the four new kernel
+functions in `console_host.l` (2) and the net-new functions in `file_host.l`
+(2 beyond what was already in `io.l`).
+
+**Outcome:**
+
+- 28/28 `Lyric.Lsp.Tests` pass (was 24/28, with 4 erroring on JsonReaderException).
+- 756/756 emitter tests pass, 224/224 CLI tests pass, all other suites green.

@@ -17,6 +17,10 @@ extern package System.Console {
   // Null represents EOF. Std.Console.readLine converts it to
   // IOError.EndOfInput.
   pub func readLine(): String?
+
+  // Reads the next character from stdin as a UTF-16 code unit (0..65535),
+  // or -1 on EOF. Used by the LSP framing layer to read exact byte counts.
+  pub func read(): Int
 }
 
 extern package System.IO {

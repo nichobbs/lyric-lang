@@ -1,18 +1,15 @@
-/// `lyric-lsp` entry point.  Reads JSON-RPC frames from stdin and
-/// writes them to stdout per the Microsoft Language Server Protocol's
-/// stdio transport.  No CLI flags in the bootstrap — point your editor
-/// at this binary and the rest happens over the JSON-RPC stream.
+/// `lyric-lsp` entry point.  Reads JSON-RPC frames from stdin and writes
+/// them to stdout per the Language Server Protocol's stdio transport.
+/// Delegates to the self-hosted `Lyric.Lsp` package via `SelfHostedLsp`.
 module Lyric.Lsp.Program
 
 open System
 
 [<EntryPoint>]
 let main _argv =
-    // Configure stdout / stdin to bypass console echo and treat the
-    // streams as raw byte channels.  Without this, the JSON payload
-    // would get any platform-native line-ending munging applied.
-    Console.OutputEncoding <- System.Text.Encoding.UTF8
-    let stdin'  = Console.OpenStandardInput()
-    let stdout' = Console.OpenStandardOutput()
-    Server.runLoop stdin' stdout'
+    // UTF-8 on stdout so non-ASCII content in JSON bodies is transmitted
+    // correctly; the self-hosted run loop reads stdin byte-by-byte via
+    // Console.Read() which returns UTF-16 code units.
+    Console.OutputEncoding <- Text.Encoding.UTF8
+    SelfHostedLsp.runLoop ()
     0

@@ -1591,6 +1591,29 @@ let main (argv: string array) : int =
                 printErr (sprintf "prove: source file not found: %s" sourcePath)
                 1
             else
+            // Basic prove path: self-hosted verifier.
+            // Advanced flags (--explain, --json, --verbose, --proof-dir) require the F# verifier
+            // for VC IR printing, SmtPath/Suggestions fields, and SMT file writing.
+            if not explain && not jsonOutput && not verbose && proofDir.IsNone then
+                let source = File.ReadAllText sourcePath
+                match SelfHostedVerifier.prove source allowUnverified with
+                | Error msg ->
+                    printErr (sprintf "prove: %s" msg)
+                    1
+                | Ok r ->
+                    for d in r.Diagnostics do
+                        printDiag d
+                    if r.Total > 0 then
+                        let suffix =
+                            if allowUnverified && r.Unknowns > 0 then
+                                sprintf " [%d unverified, allowed]" r.Unknowns
+                            else ""
+                        printfn "%d/%d obligations discharged (%s)%s"
+                            r.Discharged r.Total r.Level suffix
+                    else
+                        printfn "no proof obligations: package is %s" r.Level
+                    if r.HasErrDiag || r.HasCex then 1 else 0
+            else
             let resolvedProofDir =
                 match proofDir with
                 | Some d -> Some d

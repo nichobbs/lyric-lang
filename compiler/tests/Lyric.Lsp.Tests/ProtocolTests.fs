@@ -1,71 +1,27 @@
-/// End-to-end protocol tests for the bootstrap Lyric LSP.
+/// End-to-end protocol tests for the self-hosted Lyric LSP.
 ///
-/// We drive the server in-process by piping pre-formed JSON-RPC frames
-/// into `Server.runLoop` over a `MemoryStream` pair, then parse the
-/// captured stdout back into individual frames.  No `dotnet exec`,
-/// no real stdio — the streams are just buffers.
+/// We drive the server in-process by passing pre-formed JSON-RPC strings into
+/// `SelfHostedLsp.runWithMessages`, which feeds each message through `lspInit`
+/// + `lspHandle` and returns the list of outbound JSON strings.  No real
+/// stdin/stdout is involved.
 module Lyric.Lsp.Tests.ProtocolTests
 
 open System
 open System.IO
-open System.Text
 open System.Text.Json.Nodes
 open Expecto
 open Lyric.Lsp
-open Lyric.Lsp.Server
-
-let private frame (payload: string) : byte array =
-    let body = Encoding.UTF8.GetBytes payload
-    let header = Encoding.UTF8.GetBytes(sprintf "Content-Length: %d\r\n\r\n" body.Length)
-    Array.append header body
-
-let private encodeAll (payloads: string list) : byte array =
-    payloads |> List.map frame |> Array.concat
-
-let private decodeAll (bytes: byte array) : JsonNode list =
-    let result = ResizeArray<JsonNode>()
-    let mutable i = 0
-    while i < bytes.Length do
-        let mutable contentLen = -1
-        let mutable headerEnd  = -1
-        let mutable j = i
-        while j < bytes.Length - 3 && headerEnd = -1 do
-            if bytes.[j]   = byte '\r' && bytes.[j + 1] = byte '\n'
-               && bytes.[j + 2] = byte '\r' && bytes.[j + 3] = byte '\n'
-            then headerEnd <- j + 4
-            else j <- j + 1
-        if headerEnd = -1 then i <- bytes.Length
-        else
-            let header = Encoding.UTF8.GetString(bytes, i, headerEnd - i)
-            for line in header.Split([| "\r\n" |], System.StringSplitOptions.RemoveEmptyEntries) do
-                let idx = line.IndexOf(':')
-                if idx > 0 then
-                    let k = line.Substring(0, idx).Trim()
-                    let v = line.Substring(idx + 1).Trim()
-                    if System.String.Equals(k, "Content-Length",
-                                             System.StringComparison.OrdinalIgnoreCase)
-                    then contentLen <- System.Int32.Parse v
-            if contentLen <= 0 then i <- bytes.Length
-            else
-                let body = Encoding.UTF8.GetString(bytes, headerEnd, contentLen)
-                match Option.ofObj (JsonNode.Parse body) with
-                | Some n -> result.Add n
-                | None   -> ()
-                i <- headerEnd + contentLen
-    List.ofSeq result
 
 let private runWith (inputs: string list) : JsonNode list =
-    let inBytes = encodeAll inputs
-    use input  = new MemoryStream(inBytes)
-    use output = new MemoryStream()
-    Server.runLoop input output
-    decodeAll (output.ToArray())
+    SelfHostedLsp.runWithMessages inputs
+    |> List.choose (fun s ->
+        match Option.ofObj (JsonNode.Parse s) with
+        | Some n -> Some n
+        | None   -> None)
 
 let private prop (n: JsonNode) (path: string) : JsonNode option =
     match n with
     | :? JsonObject as o ->
-        // Explicit byref disambiguates between the .NET 10 2-arg and
-        // 3-arg `TryGetPropertyValue` overloads.
         let mutable v : JsonNode | null = null
         if o.TryGetPropertyValue(path, &v) then Option.ofObj v else None
     | _ -> None
@@ -276,7 +232,6 @@ let tests =
             td.["uri"] <- JsonValue.Create "file:///t.l"
             rp.["textDocument"] <- td :> JsonNode
             let pos = JsonObject()
-            // Line 2 (0-indexed) col 22 — middle of "greet" call
             pos.["line"]      <- JsonValue.Create 2
             pos.["character"] <- JsonValue.Create 22
             rp.["position"] <- pos :> JsonNode
@@ -345,14 +300,10 @@ let tests =
             | None -> failtest "no capabilities"
 
         testCase "signatureHelp returns signature for a call site (D-lsp-001)" <| fun () ->
-            // Source: func add(a: in Int, b: in Int): Int
-            // Cursor is inside `add(` — should get back the signature with activeParameter=0.
             let source =
                 "package T\n"
                 + "pub func add(a: in Int, b: in Int): Int { a }\n"
                 + "func main(): Unit { let x = add(1, 2) }\n"
-            // Position on line 2 (0-indexed), column 32 — inside `add(1, 2)` at the first arg.
-            // "func main(): Unit { let x = add(" is 33 chars; col 32 = just after '('.
             let req = JsonObject()
             req.["jsonrpc"] <- JsonValue.Create "2.0"
             req.["id"]      <- JsonValue.Create 10
@@ -363,7 +314,7 @@ let tests =
             rp.["textDocument"] <- td :> JsonNode
             let pos = JsonObject()
             pos.["line"]      <- JsonValue.Create 2
-            pos.["character"] <- JsonValue.Create 32   // just after the '('
+            pos.["character"] <- JsonValue.Create 32
             rp.["position"] <- pos :> JsonNode
             req.["params"] <- rp :> JsonNode
             let out =
@@ -393,7 +344,6 @@ let tests =
                 "package T\n"
                 + "pub func add(a: in Int, b: in Int): Int { a }\n"
                 + "func main(): Unit { let x = add(1, 2) }\n"
-            // Column 35 = just after the ',' and space, landing on the `2` (second arg).
             let req = JsonObject()
             req.["jsonrpc"] <- JsonValue.Create "2.0"
             req.["id"]      <- JsonValue.Create 11
@@ -404,7 +354,7 @@ let tests =
             rp.["textDocument"] <- td :> JsonNode
             let pos = JsonObject()
             pos.["line"]      <- JsonValue.Create 2
-            pos.["character"] <- JsonValue.Create 35   // past the comma
+            pos.["character"] <- JsonValue.Create 35
             rp.["position"] <- pos :> JsonNode
             req.["params"] <- rp :> JsonNode
             let out =
@@ -426,7 +376,6 @@ let tests =
                 "package T\n"
                 + "pub func add(a: in Int, b: in Int): Int { a }\n"
                 + "func main(): Unit { add(1, 2) }\n"
-            // Hover on 'add' in the call on line 2.
             let req = JsonObject()
             req.["jsonrpc"] <- JsonValue.Create "2.0"
             req.["id"]      <- JsonValue.Create 12
@@ -437,7 +386,7 @@ let tests =
             rp.["textDocument"] <- td :> JsonNode
             let pos = JsonObject()
             pos.["line"]      <- JsonValue.Create 2
-            pos.["character"] <- JsonValue.Create 21  // on 'add' in the call
+            pos.["character"] <- JsonValue.Create 21
             rp.["position"] <- pos :> JsonNode
             req.["params"] <- rp :> JsonNode
             let out =
@@ -453,7 +402,6 @@ let tests =
                 match prop res "contents" with
                 | Some contents ->
                     let v = propStr contents "value"
-                    // Full signature — contains param names and types, not just `add(...)`.
                     Expect.stringContains v "add"  "hover mentions function name"
                     Expect.stringContains v "Int"  "hover mentions param type"
                     Expect.isFalse (v.Contains "...") "hover shows full params, not '...'"
@@ -465,7 +413,6 @@ let tests =
 // M-L4 — workspace / cross-file tests.
 // ---------------------------------------------------------------------------
 
-/// Write a Lyric source file to a temp path and return the path + URI.
 let private withTempLyricFiles
         (files: (string * string) list)
         (body:  (string -> (string * string) list -> unit)) =
@@ -494,14 +441,11 @@ let workspaceTests =
                     notif
                     """{"jsonrpc":"2.0","method":"exit"}"""
                 ]
-            // The notification has no id, so no reply is expected; the server
-            // must not crash — verify it handled exit cleanly.
             Expect.isNonEmpty out "initialize reply present"
             let initReply = out |> List.tryFind (fun n -> propInt n "id" = 1)
             Expect.isSome initReply "initialize reply is present after didChangeWatchedFiles"
 
         testCase "initialize with rootUri builds workspace index" <| fun () ->
-            // Write two files: a library and a consumer.
             withTempLyricFiles
                 [ "lib.l",
                     "package Greetings\n\npub func hello(name: in String): String { name }\n"
@@ -519,11 +463,8 @@ let workspaceTests =
                             didOpenFor mainUri mainSrc
                             """{"jsonrpc":"2.0","method":"exit"}"""
                         ]
-                    // The server must have initialized without crashing.
                     let initReply = out |> List.tryFind (fun n -> propInt n "id" = 1)
                     Expect.isSome initReply "initialize reply present"
-                    // Diagnostics for main.l: with cross-file resolution `hello` is
-                    // known, so there should be no T0043/undefined-name errors.
                     let pub =
                         out
                         |> List.tryFind (fun n ->
@@ -532,13 +473,10 @@ let workspaceTests =
                                 | Some u -> u.GetValue<string>() = mainUri
                                 | None   -> false))
                     match pub with
-                    | None ->
-                        // No diagnostic event is also fine — means no errors were published.
-                        ()
+                    | None -> ()
                     | Some n ->
                         match prop n "params" |> Option.bind (fun p -> prop p "diagnostics") with
                         | Some (:? JsonArray as a) ->
-                            // If diagnostics were published, check none are T0043 (undefined name).
                             let hasUndefined =
                                 a |> Seq.exists (fun d ->
                                     match Option.ofObj d with
@@ -593,7 +531,6 @@ let workspaceTests =
                                 | Some node -> Some (propStr node "label")
                                 | None -> None)
                             |> Seq.toList
-                        // `square` comes from the imported MathLib package.
                         Expect.contains labels "square"
                             "imported symbol 'square' appears in completion"
                     | _ -> failtest "completion result missing or not an array")
@@ -621,7 +558,6 @@ let workspaceTests =
                     let td = JsonObject()
                     td.["uri"] <- JsonValue.Create drawingUri
                     dp.["textDocument"] <- td :> JsonNode
-                    // Line 2 (0-indexed), "func draw(c: in Circle)" — "Circle" starts at col 17.
                     let pos = JsonObject()
                     pos.["line"]      <- JsonValue.Create 2
                     pos.["character"] <- JsonValue.Create 17
@@ -637,7 +573,6 @@ let workspaceTests =
                     let r = out |> List.tryFind (fun n -> propInt n "id" = 21)
                     match r |> Option.bind (fun n -> prop n "result") with
                     | Some res ->
-                        // The definition should point at shapes.l, not drawing.l.
                         let targetUri = propStr res "uri"
                         Expect.equal targetUri shapesUri
                             "definition of imported type resolves to the declaring file"
@@ -649,12 +584,12 @@ let workspaceTests =
                 [ "alpha.l", "package Alpha\npub func f(): Unit { }\n"
                   "beta.l",  "package Beta.Sub\npub func g(): Unit { }\n" ]
                 (fun dir _ ->
-                    let idx = buildWorkspaceIndex dir
-                    Expect.isTrue  (idx.PackageToFile |> Map.containsKey "Alpha")
+                    let idx = SelfHostedLsp.buildWorkspaceIndex dir
+                    Expect.isTrue  (idx.ContainsKey "Alpha")
                         "Alpha is indexed"
-                    Expect.isTrue  (idx.PackageToFile |> Map.containsKey "Beta.Sub")
+                    Expect.isTrue  (idx.ContainsKey "Beta.Sub")
                         "Beta.Sub is indexed"
-                    Expect.isFalse (idx.PackageToFile |> Map.containsKey "Gamma")
+                    Expect.isFalse (idx.ContainsKey "Gamma")
                         "Gamma is not indexed")
     ]
 
@@ -679,14 +614,11 @@ let newCapabilityTests =
             | None -> failtest "no capabilities"
 
         testCase "codeAction V0009 returns wrap-in-unsafe quickfix" <| fun () ->
-            // Source has an assume(...) call that should produce a V0009 diagnostic.
-            // We inject the diagnostic artificially in the context (the handler reads
-            // codes/spans from context.diagnostics, not from stored diagnostics).
             let source =
                 "@proof_required\n"
                 + "package P\n"
                 + "pub func f(x: Int): Int {\n"
-                + "  assume(x > 0)\n"    // line 3 (0-indexed), chars 2-16
+                + "  assume(x > 0)\n"
                 + "  return x\n"
                 + "}\n"
             let assumeRange = JsonObject()
@@ -735,7 +667,6 @@ let newCapabilityTests =
                     |> Seq.toList
                 Expect.isTrue (titles |> List.exists (fun t -> t.Contains "unsafe"))
                     "action title mentions unsafe"
-                // Verify the edit replaces the span with the wrapped text.
                 let action =
                     arr
                     |> Seq.choose Option.ofObj
@@ -760,14 +691,6 @@ let newCapabilityTests =
                         Expect.stringContains newText "assume" "newText still contains assume"
                     | _ -> failtest "no edits for the file"
             | _ -> failtest "codeAction result missing or not an array"
-
-        // ---------- M4.3: V0007 / V0008 code actions ----------
-        // Per `docs/15-phase-4-proof-plan.md` §M4.3 deliverable 4: LSP
-        // surfaces V0007 (solver returned unknown) and V0008
-        // (counterexample) with a code action to downgrade the package
-        // from `@proof_required` to `@runtime_checked`.  This is the
-        // editor escape hatch for users who want runtime checks while
-        // they iterate on contracts.
 
         testCase "codeAction V0007 returns downgrade-to-runtime-checked" <| fun () ->
             let source =
@@ -850,8 +773,6 @@ let newCapabilityTests =
             | _ -> failtest "codeAction result missing or not an array"
 
         testCase "codeAction V0008 returns downgrade-to-runtime-checked" <| fun () ->
-            // Same source, V0008 (counterexample) — also offers the
-            // downgrade quickfix.
             let source =
                 "@proof_required\n"
                 + "package P\n"
@@ -907,7 +828,6 @@ let newCapabilityTests =
             | _ -> failtest "codeAction result missing or not an array"
 
         testCase "codeAction V0003 offers unsafe_blocks_allowed upgrade" <| fun () ->
-            // V0003: unsafe { } needs @proof_required(unsafe_blocks_allowed).
             let source =
                 "@proof_required\n"
                 + "package P\n"
@@ -996,7 +916,6 @@ let newCapabilityTests =
             | _ -> failtest "codeAction result missing or not an array"
 
         testCase "rename replaces all occurrences of identifier in open file" <| fun () ->
-            // "greet" appears on line 1 (definition) and line 2 (call site).
             let source =
                 "package T\n"
                 + "pub func greet(name: in String): String { name }\n"
@@ -1006,8 +925,8 @@ let newCapabilityTests =
             td.["uri"] <- JsonValue.Create "file:///t.l"
             rp.["textDocument"] <- td :> JsonNode
             let pos = JsonObject()
-            pos.["line"]      <- JsonValue.Create 1   // 0-indexed line with "greet"
-            pos.["character"] <- JsonValue.Create 9   // column 9 = start of "greet"
+            pos.["line"]      <- JsonValue.Create 1
+            pos.["character"] <- JsonValue.Create 9
             rp.["position"] <- pos :> JsonNode
             rp.["newName"]  <- JsonValue.Create "hello"
             let req = JsonObject()
@@ -1028,7 +947,6 @@ let newCapabilityTests =
                 match prop res "changes"
                       |> Option.bind (fun ch -> prop ch "file:///t.l") with
                 | Some (:? JsonArray as edits) ->
-                    // "greet" appears twice in the source.
                     Expect.isGreaterThanOrEqual edits.Count 2
                         "at least 2 edits (definition + call site)"
                     let allNewText =
@@ -1053,8 +971,6 @@ let newCapabilityTests =
             td.["uri"] <- JsonValue.Create "file:///t.l"
             rp.["textDocument"] <- td :> JsonNode
             let pos = JsonObject()
-            // Line 1 (0-indexed), character 18 = the '{' in "func main(): Unit { }"
-            // which is not adjacent to any identifier on either side.
             pos.["line"]      <- JsonValue.Create 1
             pos.["character"] <- JsonValue.Create 18
             rp.["position"] <- pos :> JsonNode
@@ -1074,11 +990,9 @@ let newCapabilityTests =
             let r = out |> List.tryFind (fun n -> propInt n "id" = 41)
             match r |> Option.bind (fun n -> prop n "result") with
             | Some res ->
-                // An empty workspace edit has no changes property, or an empty changes object.
                 match prop res "changes" with
-                | None -> ()  // empty object returned — acceptable
+                | None -> ()
                 | Some ch ->
-                    // If changes exists, it should be empty.
                     match ch with
                     | :? JsonObject as o -> Expect.equal o.Count 0 "no files in workspace edit"
                     | _ -> ()
@@ -1129,8 +1043,6 @@ let newCapabilityTests =
                             didChangeFor libUri 2 libV2
                             """{"jsonrpc":"2.0","method":"exit"}"""
                         ]
-                    // main.l must have received publishDiagnostics at least twice:
-                    // once when opened and once after lib.l changed.
                     let pubsMain =
                         out
                         |> List.filter (fun n ->
