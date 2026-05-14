@@ -81,12 +81,12 @@ pub func proveToProtocol(source: in String, allowUnverified: in Bool): String {
     ri = ri + 1
   }
 
-  var out = ""
+  var buf = ""
   var i = 0
   while i < lines.count {
-    if i > 0 { out = out + "\n" }
-    out = out + lines[i]
+    if i > 0 { buf = buf + "\n" }
+    buf = buf + lines[i]
     i = i + 1
   }
-  out
+  buf
 }
