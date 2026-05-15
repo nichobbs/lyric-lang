@@ -12442,3 +12442,45 @@ R6 from `docs/36-v1-roadmap.md` is now complete.
 placeholder for certificate fingerprints, and resolves Q-dist-005 / Q-dist-006.
 
 **docs/36-v1-roadmap.md** — R6 marked COMPLETE (D-progress-257).
+
+---
+
+### D-progress-258: CI fix — JVM parity tests, emitPatternTest, publish.yml, and SelfHostedDoc
+
+_Branch: claude/identify-v1-blockers-JvIWJ. Fixes to CI gate and code-quality issues
+identified by claude-review on PR #291._
+
+**Root cause of CI failure:** All 20 JVM parity tests (`Lyric.Cli.Tests`) were erroring due to
+three layered bugs in the JVM bridge compilation path:
+
+1. **`Codegen.fs:emitPatternTest`** — `List.zip (sub |> List.truncate fields.Length) fields`
+   crashed when `sub.Length < fields.Length` (truncation only guarded the long-sub case, not
+   the short-sub case). Lyric patterns with fewer sub-patterns than union case fields are valid
+   (implicit wildcard for trailing fields). Fixed by computing `pairCount = min sub.Length
+   fields.Length` and truncating both lists. Same fix applied to `emitPatternBind` at the
+   parallel zip site.
+
+2. **`compiler/lyric/jvm/codegen.l:lowerExternTargetBody`** — `substring(target, dotIdx + 1)` used
+   the 2-arg overload, but the type checker resolves to the 3-arg form `substring(s, start, count)`.
+   Fixed to `substring(target, dotIdx + 1, length(target) - dotIdx - 1)`.
+
+3. **`compiler/lyric/jvm/codegen.l:lowerFunctionDecl`** — match arm `case Some(target) ->
+   lowerExternTargetBody(...)` returned `JvmType` while the sibling arm `case None ->
+   emitReturn(...)` returned `Unit`, causing T0068. Fixed by wrapping the call in `{ ...; () }`
+   to discard the return value.
+
+**Additional fixes from claude-review feedback:**
+
+- **`publish.yml` NuGet signing** — `if: env.NUGET_CERT_PRESENT == 'true'` with step-level
+  `env:` never evaluates (step env not visible to `if:`). Changed to
+  `if: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}` which evaluates at workflow level.
+- **`publish.yml` macOS cert cleanup** — `/tmp/cert.p12` was not removed after signing. Added
+  `rm -f /tmp/cert.p12` immediately after `codesign`.
+- **`SelfHostedDoc.generate`** — bridge response "ok\n<body>" tag was not validated; bad
+  responses were silently swallowed. Now fails with a clear message if tag ≠ "ok".
+- **`scripts/install.sh`** — removed dead `for arg in "$@"; do :; done` loop (from a
+  copy-paste artifact).
+
+**Test results post-fix:** 224/224 Lyric.Cli.Tests passed (was 204/224, 20 errored).
+All other suites unchanged: Emitter 759/759, Verifier 266/266, LSP 28/28,
+Parser 323/323, TypeChecker 189/189, Lexer (unchanged).

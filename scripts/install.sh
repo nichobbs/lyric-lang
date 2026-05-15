@@ -25,8 +25,6 @@ MODIFY_PATH=1
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
-for arg in "$@"; do :; done   # consume trailing args if piped through sh -s
-
 while [ $# -gt 0 ]; do
   case "$1" in
     --version)   VERSION="$2";     shift 2 ;;

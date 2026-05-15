@@ -1617,7 +1617,7 @@ func lowerExternTargetBody(
     }
     case Some(dotIdx) -> {
       val javaClass  = replace(substring(target, 0, dotIdx), ".", "/")
-      val methodName = substring(target, dotIdx + 1)
+      val methodName = substring(target, dotIdx + 1, length(target) - dotIdx - 1)
 
       val isStatic   = isStaticExternByName(decl.name)
       val wrapResult = isResultJvmException(decl.ret)
@@ -2477,7 +2477,7 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
     }
     case None -> {
       match findExternTarget(decl) {
-        case Some(target) -> lowerExternTargetBody(decl, ctx, insns, target)
+        case Some(target) -> { lowerExternTargetBody(decl, ctx, insns, target); () }
         case None         -> emitReturn(insns, retTy)
       }
     }

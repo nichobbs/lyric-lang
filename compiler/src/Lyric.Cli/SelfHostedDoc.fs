@@ -97,7 +97,12 @@ let private getDelegate () : string -> string =
 let generate (source: string) : string =
     let fn       = getDelegate ()
     let protocol = fn source
-    // Protocol: "ok\n<markdown>"
+    // Protocol: "ok\n<markdown>" or "error\n<message>"
     let idx = protocol.IndexOf('\n')
-    if idx >= 0 then protocol.Substring(idx + 1)
-    else ""
+    if idx < 0 then failwithf "self-hosted doc bridge: malformed protocol response"
+    else
+        let tag  = protocol.Substring(0, idx)
+        let body = protocol.Substring(idx + 1)
+        if tag <> "ok" then
+            failwithf "self-hosted doc bridge error: %s" body
+        body

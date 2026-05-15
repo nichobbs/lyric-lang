@@ -133,6 +133,8 @@ jobs:
             --sign "Developer ID Application: ${{ secrets.APPLE_DEVELOPER_ID }}" \
             compiler/publish/osx-arm64/lyric
 
+          rm -f /tmp/cert.p12
+
           # Re-archive after signing (archive is created below and submitted).
 
       # ── Package archive ───────────────────────────────────────────────────
@@ -225,9 +227,7 @@ jobs:
       # repository secrets.  The certificate fingerprint should be recorded in
       # docs/34-distribution-strategy.md §8 (Code-signing).
       - name: Sign NuGet package
-        if: env.NUGET_CERT_PRESENT == 'true'
-        env:
-          NUGET_CERT_PRESENT: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}
+        if: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}
         run: |
           echo "${{ secrets.NUGET_SIGNING_CERT_BASE64 }}" | base64 --decode \
             > /tmp/nuget-signing.pfx

@@ -4559,8 +4559,11 @@ and private emitPatternTest
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
                 // If any sub-pattern is non-trivial, AND in sub-pattern tests.
+                // Truncate both sides to the shorter length so patterns with
+                // fewer sub-patterns than fields (implicit wildcards) compile.
+                let pairCount = min sub.Length fields.Length
                 let nonTrivialPairs =
-                    List.zip (sub |> List.truncate fields.Length) fields
+                    List.zip (List.truncate pairCount sub) (List.truncate pairCount fields)
                     |> List.filter (fun (sp, _) -> not (alwaysMatches ctx sp))
                 if not nonTrivialPairs.IsEmpty then
                     let failLabel = il.DefineLabel()
@@ -4709,9 +4712,9 @@ and private emitPatternBind
             il.Emit(OpCodes.Ldloc, tmp)
             il.Emit(OpCodes.Castclass, caseTy)
             il.Emit(OpCodes.Stloc, castedTmp)
+            let pairCount = min sub.Length (List.length caseFields)
             let pairs =
-                caseFields
-                |> List.zip (sub |> List.truncate (List.length caseFields))
+                List.zip (List.truncate pairCount sub) (List.truncate pairCount caseFields)
             for (sp, (fname, fty, fInfo)) in pairs do
                 match sp.Kind with
                 | PWildcard | PBinding ("_", None) -> ()
