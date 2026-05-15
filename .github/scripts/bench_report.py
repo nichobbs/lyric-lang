@@ -6,7 +6,11 @@ Usage:
 
 Each positional argument is a file containing the stdout of one
 `lyric bench <file.l>` invocation.  The file name (minus extension) is used
-as the suite label.
+as the suite label.  Non-matching lines (e.g. interleaved stderr via tee) are
+silently skipped.
+
+Note: the generated HTML loads Chart.js from the jsdelivr CDN at view-time.
+Rendering the charts requires outbound internet access.
 """
 import argparse
 import json
@@ -14,6 +18,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from html import escape
 
 # ─── Parsing ──────────────────────────────────────────────────────────────────
 
@@ -45,11 +50,17 @@ def parse_result(path):
                         'max':   float(m.group(3)),
                         'mean':  float(m.group(4)),
                     })
-    return label, runs or 10, warmup or 3, benches
+    if runs is None:
+        print(f'warning: {path}: missing "benchmark runs=N" header; run/warmup counts unknown',
+              file=sys.stderr)
+    if warmup is None and runs is not None:
+        print(f'warning: {path}: missing warmup count in header', file=sys.stderr)
+    return label, runs, warmup, benches
 
 # ─── HTML generation ──────────────────────────────────────────────────────────
 
 # Chart.js is fetched from jsdelivr at view-time so the artifact stays small.
+# The rendered HTML requires outbound internet access to display the charts.
 CHARTJS_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'
 
 CSS = """
@@ -83,51 +94,34 @@ td.name { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem; }
 .summary-table th, .summary-table td { padding: 0.4rem 1rem; }
 """
 
-def colour_palette(n):
-    """Return n distinct RGBA colour strings."""
-    base = [
-        ('99,102,241', '0.75'),   # indigo
-        ('236,72,153', '0.75'),   # pink
-        ('34,197,94',  '0.75'),   # green
-        ('251,146,60', '0.75'),   # orange
-        ('14,165,233', '0.75'),   # sky
-        ('168,85,247', '0.75'),   # purple
-        ('20,184,166', '0.75'),   # teal
-        ('239,68,68',  '0.75'),   # red
-    ]
-    fills  = [f'rgba({r},{a})'     for r, a in base]
-    border = [f'rgba({r},1)'       for r, a in base]
-    return [fills[i % len(fills)] for i in range(n)], \
-           [border[i % len(border)] for i in range(n)]
-
 def suite_chart_js(suite_id, benches):
     """Return a <script> block that draws the chart for one suite."""
     names  = [b['name'] for b in benches]
     mins   = [b['min']  for b in benches]
     maxs   = [b['max']  for b in benches]
     means  = [b['mean'] for b in benches]
-    fills, borders = colour_palette(len(benches))
+    n = len(benches)
 
     datasets = json.dumps([
         {
             'label':           'min',
             'data':            mins,
-            'backgroundColor': ['rgba(99,102,241,0.5)'] * len(benches),
-            'borderColor':     ['rgba(99,102,241,1)']   * len(benches),
+            'backgroundColor': ['rgba(99,102,241,0.5)'] * n,
+            'borderColor':     ['rgba(99,102,241,1)']   * n,
             'borderWidth':     1,
         },
         {
             'label':           'mean',
             'data':            means,
-            'backgroundColor': fills,
-            'borderColor':     borders,
+            'backgroundColor': ['rgba(14,165,233,0.75)'] * n,
+            'borderColor':     ['rgba(14,165,233,1)']    * n,
             'borderWidth':     1,
         },
         {
             'label':           'max',
             'data':            maxs,
-            'backgroundColor': ['rgba(239,68,68,0.35)'] * len(benches),
-            'borderColor':     ['rgba(239,68,68,1)']    * len(benches),
+            'backgroundColor': ['rgba(239,68,68,0.35)'] * n,
+            'borderColor':     ['rgba(239,68,68,1)']    * n,
             'borderWidth':     1,
         },
     ])
@@ -174,13 +168,14 @@ def suite_table(benches):
     rows = []
     for b in benches:
         badge = ''
-        if b['mean'] == fastest and len(benches) > 1:
-            badge = ' <span class="badge badge-fast">fastest</span>'
-        if b['mean'] == slowest and len(benches) > 1:
-            badge = ' <span class="badge badge-slow">slowest</span>'
+        if len(benches) > 1 and fastest != slowest:
+            if b['mean'] == fastest:
+                badge = ' <span class="badge badge-fast">fastest</span>'
+            elif b['mean'] == slowest:
+                badge = ' <span class="badge badge-slow">slowest</span>'
         rows.append(
             f'<tr>'
-            f'<td class="name">{b["name"]}{badge}</td>'
+            f'<td class="name">{escape(b["name"])}{badge}</td>'
             f'<td class="num">{b["min"]:.3f}</td>'
             f'<td class="num">{b["mean"]:.3f}</td>'
             f'<td class="num">{b["max"]:.3f}</td>'
@@ -207,11 +202,11 @@ def overall_summary_table(suites):
         total_mean = sum(b['mean'] for b in benches)
         rows.append(
             f'<tr>'
-            f'<td><strong>{label}</strong></td>'
+            f'<td><strong>{escape(label)}</strong></td>'
             f'<td class="num">{len(benches)}</td>'
-            f'<td class="name">{fastest["name"]}<br>'
+            f'<td class="name">{escape(fastest["name"])}<br>'
             f'<small style="color:#666">{fastest["mean"]:.3f} ms</small></td>'
-            f'<td class="name">{slowest["name"]}<br>'
+            f'<td class="name">{escape(slowest["name"])}<br>'
             f'<small style="color:#666">{slowest["mean"]:.3f} ms</small></td>'
             f'<td class="num">{total_mean:.3f}</td>'
             f'</tr>'
@@ -230,20 +225,23 @@ def build_html(title, timestamp, git_sha, suites):
     chart_scripts = []
     suite_sections = []
     for idx, (label, runs, warmup, benches) in enumerate(suites):
+        esc_label = escape(label)
         if not benches:
             suite_sections.append(
-                f'<div class="suite"><h2>{label}</h2><p><em>No results.</em></p></div>'
+                f'<div class="suite"><h2>{esc_label}</h2><p><em>No results.</em></p></div>'
             )
             continue
         sid = f'chart_{idx}'
         n = len(benches)
         # Scale canvas height to the number of bars (each ~38px, minimum 180px)
         ch = max(180, n * 38 + 60)
+        runs_str   = str(runs)   if runs   is not None else '?'
+        warmup_str = str(warmup) if warmup is not None else '?'
         suite_sections.append(
             f'<div class="suite">'
-            f'<h2>{label} '
+            f'<h2>{esc_label} '
             f'<small style="font-weight:400;color:#888;font-size:0.8rem">'
-            f'{runs} runs · {warmup} warmup</small></h2>'
+            f'{runs_str} runs · {warmup_str} warmup</small></h2>'
             f'<div class="suite-body">'
             f'<div class="chart-wrap" style="max-height:{ch}px">'
             f'<canvas id="{sid}"></canvas>'
@@ -253,7 +251,7 @@ def build_html(title, timestamp, git_sha, suites):
         )
         chart_scripts.append(suite_chart_js(sid, benches))
 
-    sha_span = f'<span>commit <code>{git_sha}</code></span>' if git_sha else ''
+    sha_span = f'<span>commit <code>{escape(git_sha)}</code></span>' if git_sha else ''
     total_benches = sum(len(b) for _, _, _, b in suites)
 
     return f"""<!DOCTYPE html>
@@ -261,11 +259,11 @@ def build_html(title, timestamp, git_sha, suites):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
+<title>{escape(title)}</title>
 <style>{CSS}</style>
 </head>
 <body>
-<h1>{title}</h1>
+<h1>{escape(title)}</h1>
 <p class="meta">
   <span>{timestamp}</span>
   {sha_span}
@@ -291,7 +289,9 @@ def github_summary(title, suites):
     for label, runs, warmup, benches in suites:
         if not benches:
             continue
-        lines.append(f'### {label} ({runs} runs, {warmup} warmup)\n')
+        runs_str   = str(runs)   if runs   is not None else '?'
+        warmup_str = str(warmup) if warmup is not None else '?'
+        lines.append(f'### {label} ({runs_str} runs, {warmup_str} warmup)\n')
         lines.append('| Benchmark | min ms | mean ms | max ms |')
         lines.append('|---|---:|---:|---:|')
         for b in benches:

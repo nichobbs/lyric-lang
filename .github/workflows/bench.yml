@@ -16,9 +16,11 @@ on:
     inputs:
       runs:
         description: 'Timed iterations per benchmark'
+        type: string
         default: '15'
       warmup:
         description: 'Warmup iterations per benchmark'
+        type: string
         default: '5'
 
 permissions:
@@ -27,11 +29,10 @@ permissions:
 jobs:
   bench:
     name: Run benchmarks
-    # Pin to a concrete runner label so machine-to-machine comparisons are
-    # meaningful across scheduled runs.  ubuntu-latest resolves to the same
-    # physical machine class within a GitHub-hosted pool; for tighter control,
-    # swap for a self-hosted label.
-    runs-on: ubuntu-latest
+    # Pinned to ubuntu-24.04 so scheduled runs compare against a stable
+    # machine image.  ubuntu-latest silently shifts to newer images on
+    # GitHub's schedule, which breaks historical timing comparisons.
+    runs-on: ubuntu-24.04
 
     env:
       RUNS:   ${{ github.event.inputs.runs   || '15' }}
@@ -60,8 +61,11 @@ jobs:
       # ── Run each benchmark suite ─────────────────────────────────────────────
       # Stdout is captured verbatim; the report generator parses the
       # "name  min=Xms  max=Xms  mean=Xms" lines.
+      # continue-on-error lets a single failing suite produce a partial report
+      # rather than skipping the report step entirely.
 
       - name: bench — numeric kernels
+        continue-on-error: true
         working-directory: compiler
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
@@ -70,6 +74,7 @@ jobs:
             | tee ../bench-results/bench_numeric.txt
 
       - name: bench — collections throughput
+        continue-on-error: true
         working-directory: compiler
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
@@ -78,6 +83,7 @@ jobs:
             | tee ../bench-results/bench_collections.txt
 
       - name: bench — contract overhead
+        continue-on-error: true
         working-directory: compiler
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
@@ -86,6 +92,7 @@ jobs:
             | tee ../bench-results/bench_contracts.txt
 
       - name: bench — string operations
+        continue-on-error: true
         working-directory: compiler
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
