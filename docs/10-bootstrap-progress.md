@@ -12190,3 +12190,53 @@ functions in `console_host.l` (2) and the net-new functions in `file_host.l`
 
 - 28/28 `Lyric.Lsp.Tests` pass (was 24/28, with 4 erroring on JsonReaderException).
 - 756/756 emitter tests pass, 224/224 CLI tests pass, all other suites green.
+
+---
+
+### D-progress-252: lyric-proto, lyric-grpc, and lyric-otel OTLP exporter (D067–D069)
+
+Three new libraries and an exporter package shipped.
+
+**`lyric-proto/`** (new library, D067) — Pure-Lyric Protocol Buffer wire-format
+encoder and decoder.  All varint, fixed-width, and length-delimited encoding
+logic lives in `Proto.Encoding` (pure Lyric arithmetic on `Long`/`Int`).
+Decoding lives in `Proto.Decoding` with safe error returns on truncated or
+malformed input.  The kernel boundary (`Proto.Kernel.Net`) provides only:
+- `ProtoBuffer` — opaque `System.IO.MemoryStream` accumulator with
+  `newProtoBuffer`, `bufWriteByte`, `bufWriteBytes`, `bufToBytes`, `bufLength`.
+- `floatToInt32Bits` / `doubleToInt64Bits` via `System.BitConverter`.
+- `byteAt`, `int32LE`, `int64LE`, `sliceCopy` for the decoder's raw-read needs.
+
+ZigZag helpers (`zigzag32/64`, `unzigzag32/64`) live in `Proto.Types` as pure
+Lyric integer arithmetic.  Convenience constructors (`floatField`, `boolField`,
+`sint32Field`, etc.) are in `Proto.Encoding`.  Typed extraction helpers
+(`findVarint`, `findBytes`, `collectBytes`) are in `Proto.Decoding`.
+
+**`lyric-grpc/`** (new library, D068) — General-purpose gRPC client.  Wraps
+`Grpc.Net.Client` 2.65.0 on .NET using a pass-through `Marshaller<byte[]>` so
+callers supply and receive raw protobuf bytes without generated stub code.
+Supports unary calls (`callUnary`) and server-streaming (`openServerStream` /
+`nextMessage` / `closeStream`).  Call options carry an optional deadline and
+per-call metadata headers.  The JVM kernel (`Grpc.Kernel.Jvm`) is a Phase 6
+stub mirroring the .NET API using `io.grpc.ManagedChannel`.
+
+**`lyric-otel/src/otlp.l`** (new package `OTel.Otlp`, D069) — OTLP exporter
+configuration API.  `configureOtlpTraces`, `configureOtlpMetrics`,
+`configureOtlpLogs`, and the combined `configureOtlp` set up the OTel .NET SDK
+pipeline with an OTLP exporter.  `flushOtlp(timeoutMs)` force-flushes all
+providers before process exit.  `config OtlpDefaults` exposes runtime-
+configurable defaults.  The .NET kernel (`OTel.Kernel.Net.Otlp`) trusts the
+`OpenTelemetry` + `OpenTelemetry.Exporter.OpenTelemetryProtocol` NuGet packages
+(both 1.9.0) to manage batching, retry, and protocol negotiation.  The JVM
+kernel is a Phase 6 stub.
+
+**`lyric-otel/lyric.toml`** — updated: new packages `OTel.Kernel.Net.Otlp`,
+`OTel.Kernel.Jvm.Otlp`, `OTel.Otlp`; new NuGet dependencies
+`OpenTelemetry` 1.9.0 and `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0.
+
+**Outcome:**
+
+- `lyric-proto`, `lyric-grpc` are new top-level libraries with no F# changes.
+- `lyric-otel` gains OTLP export; existing `OTel.*` aspect templates and wrapper
+  functions are unchanged.
+- No compiler tests affected (libraries are pure Lyric source, compiled on demand).

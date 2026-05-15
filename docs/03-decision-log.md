@@ -3531,6 +3531,222 @@ as a Phase-7 target; the CI pipeline gates on it before any 2.0 tag.
 
 ---
 
+## D067 — lyric-proto: pure-Lyric Protocol Buffer wire-format library
+
+**Status:** Accepted.
+**Builds on:** D038 (kernel boundary), D056 (lyric-db byte-slice patterns).
+
+### Context
+
+The OTLP gRPC transport and general-purpose gRPC RPC calls require binary
+protobuf encoding and decoding.  Options considered:
+
+1. **BCL-backed kernel only** — delegate all protobuf work to `Google.Protobuf`
+   NuGet at the kernel boundary.  Simple but opaque; no Lyric-level inspection
+   of message structure.
+2. **Schema-driven codegen** — generate Lyric types from `.proto` files at
+   build time.  Powerful but requires a codegen tool that does not exist yet.
+3. **Pure-Lyric wire-format library** — implement varint, fixed-width, and
+   length-delimited encoding in Lyric arithmetic, with only two kernel helpers:
+   IEEE 754 bit extraction (System.BitConverter) and a ProtoBuffer accumulator
+   (System.IO.MemoryStream).
+
+**Decision: option 3.**
+
+The pure-Lyric approach keeps all encoding logic inspectable and testable in
+Lyric.  The kernel is minimal and audited (D038 Resolution F).  No extra NuGet
+packages are needed.  Schema-driven codegen remains a future option and is not
+blocked by this decision.
+
+### Key decisions
+
+**D067-1 — ProtoBuffer as an opaque accumulator**
+`Proto.Kernel.Net` exposes `newProtoBuffer()`, `bufWriteByte`, `bufWriteBytes`,
+`bufToBytes`, and `bufLength` backed by `System.IO.MemoryStream`.  The pure
+Lyric encoder writes to the buffer without knowing its implementation.
+
+**D067-2 — Float/double as IEEE 754 bits via BitConverter**
+`floatToInt32Bits` and `doubleToInt64Bits` are the only arithmetic operations
+that cannot be implemented in pure Lyric integer arithmetic without a kernel
+helper.  They map to `System.BitConverter.SingleToInt32Bits` /
+`DoubleToInt64Bits` on .NET and `java.lang.Float/Double` on JVM.
+
+**D067-3 — Raw byte indexing in the decoder**
+`byteAt`, `int32LE`, `int64LE`, and `sliceCopy` provide the primitive reads
+the decoder needs from a `slice[Byte]`.  These are kernel-provided to avoid
+exposing a mutable indexer on `slice[T]` in the public stdlib API.
+
+**D067-4 — proto3 subset only; Groups deprecated**
+Wire types 3 (StartGroup) and 4 (EndGroup) are deprecated in proto3 and are
+not supported.  The decoder returns `Err` if it encounters them.  proto2
+extensions and `oneof` are not modelled at the type level; callers inspect
+`DecodedField` directly.
+
+**D067-5 — ZigZag helpers in Proto.Types**
+`zigzag32`, `zigzag64`, `unzigzag32`, `unzigzag64` are pure Lyric integer
+arithmetic provided in `Proto.Types` so callers handle sint32/sint64 without
+needing to know the wire-format detail.
+
+### Files shipped
+
+- `lyric-proto/lyric.toml`
+- `lyric-proto/src/types.l` — `WireType`, `ProtoField`, `DecodedField`, `DecodeStep`
+- `lyric-proto/src/_kernel/net/proto_kernel.l` — .NET extern boundary
+- `lyric-proto/src/_kernel/jvm/proto_kernel.l` — JVM Phase 6 stub
+- `lyric-proto/src/encoding.l` — pure-Lyric encoder
+- `lyric-proto/src/decoding.l` — pure-Lyric decoder
+- `lyric-proto/src/proto.l` — public API re-exports
+
+---
+
+## D068 — lyric-grpc: general-purpose gRPC client library
+
+**Status:** Accepted.
+**Builds on:** D067 (lyric-proto), D038 (kernel boundary), D056 (library structure).
+
+### Context
+
+The OTLP gRPC transport needs a gRPC channel.  More broadly, Lyric services
+increasingly call gRPC backends (internal microservices, Google Cloud APIs,
+etcd, etc.).  A library is needed.
+
+Options:
+
+1. **Embed gRPC logic in lyric-otel** — tight coupling; not reusable.
+2. **Use raw HttpClient with manual HTTP/2 framing** — avoids extra NuGet
+   dependency but requires implementing gRPC message framing, trailer parsing,
+   and flow control in the kernel.
+3. **Wrap Grpc.Net.Client** — the standard .NET gRPC client; handles HTTP/2,
+   TLS, connection pooling, and flow control.  Uses a pass-through
+   `Marshaller<byte[]>` so callers supply and receive raw bytes.
+
+**Decision: option 3** for .NET; `io.grpc.ManagedChannel` for JVM (Phase 6).
+
+The pass-through marshaller pattern (`Marshallers.Create(x => x, x => x)`)
+is well-known in the Grpc.Net.Client ecosystem and requires no generated stub
+code.  All protobuf encoding/decoding remains in the caller (using lyric-proto
+or any other mechanism).
+
+### Key decisions
+
+**D068-1 — Raw slice[Byte] payloads**
+`callUnary` takes `payload: slice[Byte]` and returns `Result[slice[Byte], GrpcStatus]`.
+The library is encoding-agnostic.  The lyric-proto library is the recommended
+encoding layer but is not a hard dependency.
+
+**D068-2 — Metadata as comma-separated key:value string at the kernel boundary**
+The kernel receives metadata as a single `String` in `"k1:v1,k2:v2"` format to
+avoid exposing `List[GrpcMetadataEntry]` across the extern boundary (which
+would require a complex marshalling shim).  The pure Lyric `metadataString`
+helper serialises the `List[GrpcMetadataEntry]` before calling the kernel.
+
+**D068-3 — Server-streaming but no client-streaming or bidi**
+`openServerStream` + `nextMessage` + `closeStream` cover the server-streaming
+pattern needed by the OTel live-tail API and similar.  Client-streaming and
+bidirectional streaming are deferred; they require a mutable send stream that
+does not fit naturally into Lyric's mode system today.
+
+**D068-4 — Blocking unary call at the kernel boundary**
+`netCallUnary` is synchronous (blocking).  Callers who want async behaviour
+should wrap it in a `Task` or use a background thread.  A future `async`
+variant (`netCallUnaryAsync`) is straightforward to add when the emitter's
+`async` support stabilises (M1.4+).
+
+**D068-5 — Separate from lyric-otel OTLP export**
+The OTLP exporter kernel (D069) uses the OTel SDK's built-in transport, not
+lyric-grpc.  lyric-grpc is for application-level gRPC calls.  Applications can
+use both libraries simultaneously without conflict.
+
+### Files shipped
+
+- `lyric-grpc/lyric.toml`
+- `lyric-grpc/src/types.l` — `GrpcChannel`, `GrpcStatus`, `GrpcStatusCode`, `GrpcCallOptions`, `GrpcStream`
+- `lyric-grpc/src/_kernel/net/grpc_kernel.l` — .NET Grpc.Net.Client boundary
+- `lyric-grpc/src/_kernel/jvm/grpc_kernel.l` — JVM Phase 6 stub
+- `lyric-grpc/src/grpc.l` — public API
+
+---
+
+## D069 — lyric-otel: OTLP exporter (OTel.Otlp package)
+
+**Status:** Accepted.
+**Builds on:** D-progress-142 (lyric-otel precedent), D067, D068.
+
+### Context
+
+The existing `lyric-otel` library wraps `System.Diagnostics.ActivitySource`
+(on .NET) for span creation but has no export pipeline: spans are only visible
+to OTel diagnostic listeners attached to the process.  To send telemetry to an
+OTel collector (Collector, Jaeger, Tempo, Honeycomb, Datadog, etc.) an OTLP
+exporter is needed.
+
+OTLP is the standard OTel wire protocol.  It uses protobuf encoding over two
+transports: gRPC (port 4317) and HTTP/1.1 (port 4318).
+
+Options for the .NET implementation:
+
+1. **Manual OTLP protobuf encoding** — use lyric-proto to encode
+   `ExportTraceServiceRequest` and lyric-grpc to send it.  Requires mapping
+   the 100+ OTLP message types and managing batching and retry manually.
+2. **OTel SDK + built-in OTLP exporter** — call
+   `Sdk.CreateTracerProviderBuilder().AddOtlpExporter(…).Build()` at startup.
+   The SDK then automatically picks up all `ActivitySource` activity from the
+   existing `OTel.Kernel.Net` code, batches it, and exports it.
+
+**Decision: option 2 for production .NET export.**
+
+The OTel .NET SDK is the standard implementation.  It already knows how to
+encode spans to OTLP protobuf, manage the batch queue, handle retries with
+exponential backoff, and negotiate transport.  Reimplementing this in Lyric
+would be a substantial effort with no user-visible benefit.  lyric-proto and
+lyric-grpc remain the correct tools for application-level gRPC calls.
+
+### Key decisions
+
+**D069-1 — Provider stored in a .NET static field**
+The `TracerProvider`, `MeterProvider`, and `LoggerProvider` returned by the
+SDK builder calls must be kept alive for the process lifetime.  The kernel
+stores each provider in a static field.  `netFlushOtlp` calls `ForceFlush`
+on all three; they are disposed on process exit.
+
+**D069-2 — Three separate configure functions + a combined convenience**
+`configureOtlpTraces`, `configureOtlpMetrics`, `configureOtlpLogs` each set
+up one signal independently.  `configureOtlp` calls all three and
+short-circuits on the first error.  Applications that only emit traces (common
+in library code) pay no overhead for the metric/log pipelines.
+
+**D069-3 — OtlpHeader list serialised as "key=value" comma-string**
+The OTel SDK's `options.Headers` property is a comma-separated string.  The
+Lyric `headersString` helper converts `List[OtlpHeader]` to this format before
+crossing the kernel boundary.  Header values must not contain commas (a known
+SDK limitation).
+
+**D069-4 — config block OtlpDefaults for environment override**
+Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`) are read by the .NET SDK automatically and
+take precedence.  The `OtlpDefaults` config block provides Lyric-level
+defaults for code that does not set these env vars.
+
+**D069-5 — JVM kernel is a Phase 6 stub**
+The JVM kernel mirrors the .NET API using `io.opentelemetry.exporter.otlp`.
+It is not compiled today.
+
+### NuGet packages added to lyric-otel
+
+- `OpenTelemetry` 1.9.0 — SDK (TracerProvider, MeterProvider, LoggerProvider)
+- `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0 — OTLP exporter
+  (pulls in `Grpc.Net.Client` transitively for the gRPC transport)
+
+### Files shipped
+
+- `lyric-otel/src/otlp.l` — `OtlpProtocol`, `OtlpExporterConfig`, `OtlpHeader`,
+  configure/flush functions, `config OtlpDefaults`
+- `lyric-otel/src/_kernel/net/otlp_kernel.l` — .NET OTel SDK wrapper
+- `lyric-otel/src/_kernel/jvm/otlp_kernel.l` — JVM Phase 6 stub
+- `lyric-otel/lyric.toml` — updated with new packages and NuGet dependencies
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
