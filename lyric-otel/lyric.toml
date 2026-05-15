@@ -31,13 +31,26 @@ output_assembly = "Lyric.OTel.dll"
 
 [project.packages]
 # Shared platform-neutral types.
-"OTel.Types"          = "src/types.l"
-# .NET extern boundary (feature-gated).
-"OTel.Kernel.Net"     = "src/_kernel/net/otel_kernel.l"
-# JVM extern boundary (feature-gated, Phase 6).
-"OTel.Kernel.Jvm"     = "src/_kernel/jvm/otel_kernel.l"
+"OTel.Types"              = "src/types.l"
+# .NET extern boundary for ActivitySource + Metrics (feature-gated).
+"OTel.Kernel.Net"         = "src/_kernel/net/otel_kernel.l"
+# JVM extern boundary for ActivitySource + Metrics (feature-gated, Phase 6).
+"OTel.Kernel.Jvm"         = "src/_kernel/jvm/otel_kernel.l"
+# .NET extern boundary for the OTLP exporter (feature-gated).
+"OTel.Kernel.Net.Otlp"    = "src/_kernel/net/otlp_kernel.l"
+# JVM extern boundary for the OTLP exporter (feature-gated, Phase 6).
+"OTel.Kernel.Jvm.Otlp"    = "src/_kernel/jvm/otlp_kernel.l"
 # Platform-dispatch wrappers + pub aspect templates.
-"OTel"                = "src/otel.l"
+"OTel"                    = "src/otel.l"
+# OTLP exporter configuration and lifecycle API.
+"OTel.Otlp"               = "src/otlp.l"
 
 [nuget]
-"OpenTelemetry.Api"   = "1.9.0"
+# OTel API only — used by OTel.Kernel.Net for ActivitySource / Metrics.
+"OpenTelemetry.Api"                              = "1.9.0"
+# Full OTel SDK — required by the OTLP kernel to create TracerProvider /
+# MeterProvider and wire up the batching exporter pipeline.
+"OpenTelemetry"                                  = "1.9.0"
+# OTLP exporter — adds AddOtlpExporter() to the provider builders and pulls
+# in Grpc.Net.Client transitively for the gRPC transport.
+"OpenTelemetry.Exporter.OpenTelemetryProtocol"   = "1.9.0"

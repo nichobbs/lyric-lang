@@ -1,0 +1,54 @@
+# lyric-grpc — gRPC client library for Lyric.
+#
+# Provides a general-purpose gRPC client that makes unary and server-streaming
+# RPC calls over HTTP/2.  Payloads are raw slice[Byte]; callers are responsible
+# for encoding request messages and decoding response messages (use lyric-proto
+# for protobuf encoding/decoding).
+#
+# On .NET the kernel wraps Grpc.Net.Client (GrpcChannel.ForAddress +
+# CallInvoker with a pass-through marshaller).  On JVM (Phase 6) it wraps
+# io.grpc.ManagedChannelBuilder.
+#
+# Typical usage (unary call):
+#
+#   val ch = Grpc.openChannel("https://collector:4317").unwrap()
+#   val req = Proto.encodeMessage([ ... ])
+#   match Grpc.callUnary(ch, "svc.Name", "Method", req, Grpc.defaultOptions()) {
+#     case Err(st) -> log("rpc failed: " + st.message)
+#     case Ok(resp) -> { val fields = Proto.decodeMessage(resp).unwrap() }
+#   }
+#   Grpc.closeChannel(ch)
+
+[package]
+name        = "Lyric.Grpc"
+version     = "0.1.0"
+description = "General-purpose gRPC client library for Lyric."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+dotnet = []
+jvm    = []
+
+[project]
+name            = "Lyric.Grpc"
+output          = "single"
+output_assembly = "Lyric.Grpc.dll"
+
+[project.packages]
+# Platform-neutral types: GrpcChannel, GrpcStatus, GrpcCallOptions, etc.
+"Grpc.Types"      = "src/types.l"
+# .NET kernel: Grpc.Net.Client + pass-through marshaller.
+"Grpc.Kernel.Net" = "src/_kernel/net/grpc_kernel.l"
+# JVM kernel: io.grpc.ManagedChannel (Phase 6).
+"Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
+# Public API: openChannel, closeChannel, callUnary, callServerStream.
+"Grpc"            = "src/grpc.l"
+
+[dependencies]
+"Lyric.Stdlib" = "*"
+
+[nuget]
+# Grpc.Net.Client ships with .NET 5+ but the NuGet package pins a specific
+# version and pulls in Grpc.Core.Api for the Method / CallInvoker abstractions.
+"Grpc.Net.Client" = "2.65.0"

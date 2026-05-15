@@ -1,0 +1,50 @@
+# lyric-proto — Pure-Lyric Protocol Buffer wire-format encoder and decoder.
+#
+# Implements the proto3 binary encoding subset entirely in Lyric, with only
+# two kernel helpers:
+#   - float/double → IEEE 754 bit pattern (System.BitConverter on .NET,
+#     java.lang.Float/Double on JVM)
+#   - ProtoBuffer: a mutable byte-accumulator (System.IO.MemoryStream on .NET,
+#     java.io.ByteArrayOutputStream on JVM)
+#
+# All encoding and decoding logic lives in pure Lyric (Proto.Encoding /
+# Proto.Decoding).  Consumers build a List[ProtoField] describing the fields
+# of a proto3 message, pass it to encodeMessage, and get back a slice[Byte].
+# Decoding is the reverse: decodeMessage parses a slice[Byte] into a
+# List[DecodedField] that the caller can pattern-match on.
+#
+# This library is used by lyric-grpc for payload framing and by lyric-otel
+# for manual OTLP payload construction.
+
+[package]
+name        = "Lyric.Proto"
+version     = "0.1.0"
+description = "Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+dotnet = []
+jvm    = []
+
+[project]
+name            = "Lyric.Proto"
+output          = "single"
+output_assembly = "Lyric.Proto.dll"
+
+[project.packages]
+# Platform-neutral types: WireType, ProtoField, DecodedField.
+"Proto.Types"      = "src/types.l"
+# .NET kernel: ProtoBuffer (MemoryStream) + IEEE 754 helpers.
+"Proto.Kernel.Net" = "src/_kernel/net/proto_kernel.l"
+# JVM kernel: ProtoBuffer (ByteArrayOutputStream) + IEEE 754 helpers (Phase 6).
+"Proto.Kernel.Jvm" = "src/_kernel/jvm/proto_kernel.l"
+# Pure-Lyric encoder: List[ProtoField] → slice[Byte].
+"Proto.Encoding"   = "src/encoding.l"
+# Pure-Lyric decoder: slice[Byte] → List[DecodedField].
+"Proto.Decoding"   = "src/decoding.l"
+# Public API re-exports and convenience helpers.
+"Proto"            = "src/proto.l"
+
+[dependencies]
+"Lyric.Stdlib" = "*"

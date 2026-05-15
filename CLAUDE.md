@@ -507,7 +507,18 @@ These directories exist at the repo root alongside `compiler/`, `stdlib/`,
 - `lyric-logging/` — `lyric-logging` library: structured logging
   adapters (`Lyric.Logging`) backed by `Std.Log` (D-progress-222 / D054).
 - `lyric-otel/` — `lyric-otel` library: OpenTelemetry trace and metric
-  exporters (D-progress-221 / D055).
+  exporters (D-progress-221 / D055); OTLP exporter (`OTel.Otlp` package) added
+  in D069 — exports traces/metrics/logs to any OTLP collector via gRPC or
+  HTTP/protobuf transport using the OTel .NET SDK pipeline.
+- `lyric-proto/` — `lyric-proto` library: pure-Lyric Protocol Buffer (proto3)
+  wire-format encoder and decoder (D067).  Kernel helpers: ProtoBuffer
+  (MemoryStream accumulator) + IEEE 754 bit extraction (BitConverter).  Used
+  by lyric-grpc for payload framing and available directly for manual OTLP or
+  other protobuf message construction.
+- `lyric-grpc/` — `lyric-grpc` library: general-purpose gRPC client (D068).
+  Wraps `Grpc.Net.Client` on .NET with a pass-through `byte[]` marshaller;
+  `io.grpc.ManagedChannel` on JVM (Phase 6).  Accepts and returns raw
+  `slice[Byte]` payloads — compose with lyric-proto for protobuf encoding.
 - `lyric-web/` — `lyric-web` library: HTTP server framework
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
 - `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
