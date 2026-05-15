@@ -228,15 +228,96 @@ The GitHub Actions workflow (`ci.yml`) runs after every push to `main`:
 
 ---
 
-## 7. Open questions
+## 7. Release workflow
+
+Releases are published by pushing a version tag (e.g. `git tag v0.1.0 && git push
+--tags`).  The `.github/workflows/publish.yml` workflow then:
+
+1. **Builds self-contained binaries** for `linux-x64`, `linux-arm64`, `osx-arm64`,
+   `osx-x64`, and `win-x64` using `dotnet publish --self-contained --runtime <RID>
+   -p:PublishSingleFile=true`.
+2. **Signs the Windows binary** with Authenticode via `AzureSignTool` if the
+   `AZURE_KEY_VAULT_URL`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+   `AZURE_CLIENT_SECRET`, and `AZURE_CERT_NAME` repository secrets are set.
+3. **Codesigns and notarizes the macOS arm64 binary** if `APPLE_TEAM_ID`,
+   `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_DEVELOPER_CERT_BASE64`, and
+   `APPLE_DEVELOPER_CERT_PASSWORD` secrets are set.
+4. **Packages** each binary into a `.tar.gz` (Linux / macOS) or `.zip` (Windows)
+   archive named `lyric-<version>-<rid>.<ext>`.
+5. **Uploads** all archives as GitHub Release assets.
+6. **Packs** the NuGet global-tool package with `dotnet pack -p:PackAsTool=true`.
+7. **Signs** the `.nupkg` with `dotnet nuget sign` if `NUGET_SIGNING_CERT_BASE64`
+   and `NUGET_SIGNING_CERT_PASSWORD` secrets are set.
+8. **Pushes** to NuGet.org using the `NUGET_API_KEY` secret.
+
+### Required repository secrets
+
+| Secret | Purpose |
+|---|---|
+| `NUGET_API_KEY` | NuGet.org API key for `dotnet nuget push` |
+| `NUGET_SIGNING_CERT_BASE64` | Base64-encoded PFX for NuGet package signing |
+| `NUGET_SIGNING_CERT_PASSWORD` | Password for the PFX |
+| `AZURE_KEY_VAULT_URL` | Azure Key Vault URL for Authenticode signing |
+| `AZURE_TENANT_ID` | Azure AD tenant for AzureSignTool |
+| `AZURE_CLIENT_ID` | Service principal client ID |
+| `AZURE_CLIENT_SECRET` | Service principal client secret |
+| `AZURE_CERT_NAME` | Certificate name inside the vault |
+| `APPLE_TEAM_ID` | Apple Developer team ID |
+| `APPLE_ID` | Apple ID email for notarytool |
+| `APPLE_APP_PASSWORD` | App-specific password for notarytool |
+| `APPLE_DEVELOPER_CERT_BASE64` | Base64-encoded Developer ID p12 certificate |
+| `APPLE_DEVELOPER_CERT_PASSWORD` | Password for the p12 |
+| `APPLE_DEVELOPER_ID` | "Developer ID Application: Name (TEAMID)" string |
+
+Signing steps are silently skipped if the corresponding secrets are absent.  A
+release without signing is valid for developer previews; production releases
+targeted at enterprise deployments should have all secrets configured.
+
+### Code-signing certificate fingerprint
+
+_Record the SHA-256 fingerprint of the production signing certificates here once
+they are issued:_
+
+```
+NuGet signing certificate (SHA-256): <pending — update when certificate issued>
+Windows Authenticode (SHA-256):      <pending — update when certificate issued>
+Apple Developer ID (SHA-1):          <pending — update when certificate issued>
+```
+
+---
+
+## 8. Install script
+
+`scripts/install.sh` is a zero-prerequisite POSIX installer (mirrors the
+`rustup-init.sh` pattern).  It:
+
+1. Detects platform and architecture (`uname -s` / `uname -m`).
+2. Resolves the latest release version via the GitHub API (unless `--version`
+   is passed).
+3. Downloads the appropriate `.tar.gz` or `.zip` archive using `curl` or `wget`.
+4. Extracts to `~/.lyric/bin` (or `--dir <path>`).
+5. Adds the directory to the shell profile (`.bashrc`, `.zshrc`, or fish config)
+   unless `--no-path` is passed.
+
+```sh
+# Install latest:
+curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh
+
+# Install specific version:
+curl -fsSL ... | sh -s -- --version 0.1.0
+
+# Install to custom directory:
+curl -fsSL ... | sh -s -- --dir /usr/local/bin
+```
+
+---
+
+## 9. Open questions
 
 - **Q-dist-001** — AOT self-hosted binary path (§2.3): prerequisite is
   reproducible stage-2 bootstrap.  ETA: Phase 7.
 - **Q-dist-002 / Q-dist-003 / Q-dist-004** — package manager formulas
   (Homebrew / winget / apt): deferred until Q-dist-001 resolves.
-- **Q-dist-005** — installer UX: should `dotnet tool install` be the
-  recommended install path, or should a `curl | sh` installer script be
-  provided as the zero-prerequisite path (installs .NET SDK and then lyric)?
-- **Q-dist-006** — signing: NuGet package signing and binary code-signing
-  (Windows Authenticode, macOS notarisation) requirements for enterprise
-  deployments.
+- **Q-dist-006** — Q-dist-005 resolved: `scripts/install.sh` ships as the
+  zero-prerequisite path.  Q-dist-006 (signing) resolved: workflow and docs
+  updated in D-progress-257.

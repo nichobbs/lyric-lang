@@ -1,0 +1,246 @@
+name: Publish
+
+# Triggered when a version tag is pushed (e.g. `git tag v0.1.0 && git push --tags`)
+# or manually via workflow_dispatch for pre-release testing.
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.1.0)'
+        required: true
+
+permissions:
+  contents: write   # upload release assets
+  id-token: write   # OIDC for key-vault signing
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+# ---------------------------------------------------------------------------
+# Build self-contained standalone binaries for all supported platforms.
+# Each matrix leg runs on the native OS, publishes a single-file binary,
+# optionally signs it, packages it into a zip/tar.gz, and uploads the
+# archive as a GitHub Release asset.
+# ---------------------------------------------------------------------------
+jobs:
+  build-standalone:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive_suffix: tar.gz
+          - os: ubuntu-latest
+            rid: linux-arm64
+            archive_suffix: tar.gz
+          - os: macos-latest
+            rid: osx-arm64
+            archive_suffix: tar.gz
+            notarize: true
+          - os: macos-latest
+            rid: osx-x64
+            archive_suffix: tar.gz
+          - os: windows-latest
+            rid: win-x64
+            archive_suffix: zip
+            authenticode: true
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: compiler/global.json
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore
+        working-directory: compiler
+        run: dotnet restore Lyric.sln
+
+      - name: Publish self-contained binary
+        shell: bash
+        working-directory: compiler
+        run: |
+          dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:Version=${{ steps.ver.outputs.VERSION }} \
+            --output publish/${{ matrix.rid }} \
+            --no-restore
+
+      # ── Windows: Authenticode signing via Azure Key Vault ─────────────────
+      - name: Sign Windows binary (Authenticode)
+        if: >
+          matrix.authenticode == true &&
+          secrets.AZURE_KEY_VAULT_URL != ''
+        shell: bash
+        run: |
+          dotnet tool install --global AzureSignTool --version 5.0.0
+          AzureSignTool sign \
+            --azure-key-vault-url "${{ secrets.AZURE_KEY_VAULT_URL }}" \
+            --azure-key-vault-tenant-id "${{ secrets.AZURE_TENANT_ID }}" \
+            --azure-key-vault-client-id "${{ secrets.AZURE_CLIENT_ID }}" \
+            --azure-key-vault-client-secret "${{ secrets.AZURE_CLIENT_SECRET }}" \
+            --azure-key-vault-certificate "${{ secrets.AZURE_CERT_NAME }}" \
+            --timestamp-rfc3161 http://timestamp.digicert.com \
+            --description "Lyric compiler" \
+            --description-url "https://github.com/${{ github.repository }}" \
+            "compiler/publish/win-x64/lyric.exe"
+
+      # ── macOS: codesign + notarize (osx-arm64 only) ─────────────────────
+      - name: Sign and notarize macOS binary
+        if: >
+          matrix.notarize == true &&
+          secrets.APPLE_TEAM_ID != ''
+        shell: bash
+        env:
+          APPLE_CERT_BASE64:    ${{ secrets.APPLE_DEVELOPER_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD:  ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+          APPLE_KEYCHAIN_PASS:  lyric-ci-keychain
+        run: |
+          # Import signing certificate into a temporary keychain.
+          echo "$APPLE_CERT_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$APPLE_KEYCHAIN_PASS" lyric-ci.keychain
+          security default-keychain -s lyric-ci.keychain
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASS" lyric-ci.keychain
+          security import /tmp/cert.p12 -k lyric-ci.keychain -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$APPLE_KEYCHAIN_PASS" lyric-ci.keychain
+
+          # Sign the binary.
+          codesign --force --deep --options runtime \
+            --sign "Developer ID Application: ${{ secrets.APPLE_DEVELOPER_ID }}" \
+            compiler/publish/osx-arm64/lyric
+
+          # Re-archive after signing (archive is created below and submitted).
+
+      # ── Package archive ───────────────────────────────────────────────────
+      - name: Package tar.gz archive (Linux / macOS)
+        if: matrix.archive_suffix == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.VERSION }}"
+          ARCHIVE="lyric-${VERSION}-${{ matrix.rid }}.tar.gz"
+          tar -czf "$ARCHIVE" -C compiler/publish/${{ matrix.rid }} .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Package zip archive (Windows)
+        if: matrix.archive_suffix == 'zip'
+        shell: pwsh
+        run: |
+          $version  = "${{ steps.ver.outputs.VERSION }}"
+          $archive  = "lyric-${version}-${{ matrix.rid }}.zip"
+          Compress-Archive -Path "compiler/publish/${{ matrix.rid }}/*" `
+                           -DestinationPath $archive
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # ── macOS: submit for notarization after archive is ready ─────────────
+      - name: Notarize macOS archive
+        if: >
+          matrix.notarize == true &&
+          secrets.APPLE_TEAM_ID != ''
+        shell: bash
+        run: |
+          xcrun notarytool submit "$ARCHIVE" \
+            --apple-id    "${{ secrets.APPLE_ID }}" \
+            --password    "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --team-id     "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait
+          xcrun stapler staple compiler/publish/osx-arm64/lyric || true
+
+      # ── Upload to GitHub Release ──────────────────────────────────────────
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.VERSION }}
+          fail_on_unmatched_files: true
+          files: ${{ env.ARCHIVE }}
+
+  # ---------------------------------------------------------------------------
+  # Build and publish the NuGet global tool package.
+  # Run after binaries so the release page shows assets before the NuGet
+  # package appears on nuget.org.
+  # ---------------------------------------------------------------------------
+  publish-nuget:
+    runs-on: ubuntu-latest
+    needs: build-standalone
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: compiler/global.json
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore
+        working-directory: compiler
+        run: dotnet restore Lyric.sln
+
+      - name: Pack NuGet global tool
+        working-directory: compiler
+        run: |
+          dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
+            --configuration Release \
+            -p:PackageVersion=${{ steps.ver.outputs.VERSION }} \
+            -p:PackAsTool=true \
+            -p:ToolCommandName=lyric \
+            -p:PackageId=lyric \
+            --output nupkgs \
+            --no-restore
+
+      # Sign the NuGet package if a code-signing certificate is configured.
+      # Set NUGET_SIGNING_CERT_BASE64 and NUGET_SIGNING_CERT_PASSWORD in
+      # repository secrets.  The certificate fingerprint should be recorded in
+      # docs/34-distribution-strategy.md §8 (Code-signing).
+      - name: Sign NuGet package
+        if: env.NUGET_CERT_PRESENT == 'true'
+        env:
+          NUGET_CERT_PRESENT: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.NUGET_SIGNING_CERT_BASE64 }}" | base64 --decode \
+            > /tmp/nuget-signing.pfx
+          dotnet nuget sign compiler/nupkgs/*.nupkg \
+            --certificate-path /tmp/nuget-signing.pfx \
+            --certificate-password "${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}" \
+            --timestamper http://timestamp.digicert.com \
+            --overwrite
+          rm -f /tmp/nuget-signing.pfx
+
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push compiler/nupkgs/*.nupkg \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

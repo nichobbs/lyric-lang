@@ -12403,3 +12403,42 @@ R5 from `docs/36-v1-roadmap.md` is now substantially complete.  Q022-2 is deferr
 **Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
 **Tests:** `Lyric.Emitter.Tests`: 759/759; `Lyric.Verifier.Tests`: 266/266;
 `Lyric.Cli.Tests`: 204/224 (same 20 pre-existing JVM parity failures).
+
+### D-progress-257: R6 — Distribution and signing workflow shipped
+
+R6 from `docs/36-v1-roadmap.md` is now complete.
+
+**`.github/workflows/publish.yml`** — Release workflow triggered on `v*` tag push:
+- **Matrix build**: five platform/RID combinations (`linux-x64`, `linux-arm64`,
+  `osx-arm64`, `osx-x64`, `win-x64`) using `dotnet publish --self-contained
+  --runtime <RID> -p:PublishSingleFile=true`.
+- **Authenticode signing** (Windows): conditional step using `AzureSignTool`
+  when `AZURE_KEY_VAULT_URL` secret is present.  Signs `lyric.exe` before packaging.
+- **macOS signing + notarization** (osx-arm64): conditional codesign +
+  `xcrun notarytool submit --wait` when `APPLE_TEAM_ID` secret is present.
+  Uses a temporary keychain; cleans up after signing.
+- **Archive packaging**: `.tar.gz` for Linux/macOS, `.zip` for Windows;
+  named `lyric-<version>-<rid>.<ext>`.
+- **GitHub Release upload**: `softprops/action-gh-release@v2` uploads all archives.
+- **NuGet package**: `dotnet pack -p:PackAsTool=true -p:ToolCommandName=lyric
+  -p:PackageId=lyric` in a separate `publish-nuget` job that runs after
+  `build-standalone` succeeds.
+- **NuGet signing**: conditional `dotnet nuget sign` step when
+  `NUGET_SIGNING_CERT_BASE64` secret is present.
+- **NuGet push**: `dotnet nuget push --skip-duplicate` to `https://api.nuget.org`.
+
+**`scripts/install.sh`** — Zero-prerequisite POSIX installer:
+- Detects platform (`Linux`/`Darwin`/`MINGW*`) and architecture (`x86_64`,
+  `aarch64`, `arm64`) via `uname`.
+- Resolves latest version from GitHub API if `--version` not specified.
+- Downloads archive with `curl` or `wget`; extracts to `~/.lyric/bin`
+  (or `--dir <path>`).
+- Appends `export PATH=...` to `.bashrc`/`.zshrc`/fish config; skips if
+  already in PATH; skips if `--no-path` is passed.
+- Verifies installation with `lyric --version`.
+
+**`docs/34-distribution-strategy.md`** — Added §7 (Release workflow), §8
+(Install script), and §9 (Open questions).  Documents required repository secrets,
+placeholder for certificate fingerprints, and resolves Q-dist-005 / Q-dist-006.
+
+**docs/36-v1-roadmap.md** — R6 marked COMPLETE (D-progress-257).

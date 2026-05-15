@@ -244,8 +244,10 @@ not only from `ctx.DistinctTypes` (in-compilation).
 
 ### R6 — Distribution and signing
 
-**Status:** Primary channel `dotnet tool install lyric` ships (D059 /
-D-progress-228).  Gaps below gate enterprise adoption.
+**Status:** COMPLETE (D-progress-257).
+
+Primary channel `dotnet tool install lyric` ships (D059 / D-progress-228).
+Gaps below are now closed.
 
 | Item | File / location | What to do |
 |---|---|---|
