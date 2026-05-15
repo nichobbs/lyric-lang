@@ -690,7 +690,7 @@ lyric test <file.l> --jvm              # compile with JVM backend; write annotat
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
 lyric fmt --write <file.l>             # overwrite file in place
 lyric fmt --check <file.l>             # exit 1 if not formatted; print nothing (CI gate)
-lyric fmt --legacy <file.l>            # AST-only fallback (drops `//` comments, soak release)
+lyric fmt --legacy <file.l>            # AST-only fallback (drops `//` comments) — DEPRECATED, removed in v1.1
 # Default: walks the red/green CST and preserves all comments
 # (//, /* */, ///, //!) plus intentional blank lines (max one per spot).
 

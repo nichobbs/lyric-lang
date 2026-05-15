@@ -12104,6 +12104,57 @@ and no diff output on mismatch.
 
 ---
 
+### D-progress-252: R1 stdlib API surface declared; @stable annotations completed
+
+- `stdlib/STABILITY.md` created: full module/tier table covering all 34 top-level stdlib
+  modules and all 25 kernel files.
+- `stdlib/std/core.l`: added `pub` visibility and `@stable(since="1.0")` to all exported
+  items (`Option`, `Result`, `unwrapOr`, `isSome`, `isNone`, `isOk`, `isErr`,
+  `unwrapResultOr`, `unwrapErrOr`, `sumInts`, `maxInt`, `countEq`, `mapOption`,
+  `mapResult`, `filterOption`, `countWhere`, `andThen`, `orElse`, `andThenResult`).
+- `stdlib/std/testing_mocking.l`: added `@stable(since="1.0")` to `StubCounter`,
+  `makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`.
+- All other stdlib modules had already been annotated in prior milestones.
+- R1 acceptance criterion met: every `pub` item in the stdlib is now annotated.
+
+### D-progress-253: R2 formatter deprecation notice shipped
+
+- `docs/01-language-reference.md` §13.7 formatter flags table: added `--legacy` row
+  documenting "**Deprecated — removed in v1.1.**" with the caveat that it drops
+  all non-doc `//` comments.
+- `book/chapters/appendix-b-quick-reference.md` line 693: updated `--legacy` comment
+  to "DEPRECATED, removed in v1.1".
+- No code changes; G3 decision (D066) authorises keeping `--legacy` through 1.0.
+
+### D-progress-254: R3 Q-J013 @externTarget call-site codegen shipped (B128)
+
+Q-J013 — try-catch wrapper for `@externTarget` static/virtual calls.
+
+In `compiler/lyric/jvm/codegen.l`, `lowerFunc`'s `case None` path (body-less functions)
+now detects `@externTarget` annotations and emits the actual JVM invoke instead of a
+stub default return.  New helpers:
+
+- `findExternTarget(decl)` — scans `decl.annotations` for `@externTarget("string")` and
+  returns the target string.
+- `isResultJvmException(ret)` — returns `true` when the declared return type is
+  `Result[T, JvmException]` for any `T`.
+- `extractResultValueType(te, pkgName)` — extracts `T` from `Result[T, JvmException]`
+  and maps it to a `JvmType`.
+- `isStaticExternByName(name)` — returns `true` when the Lyric function name follows
+  the Maven static convention `TypeName_methodName` (PascalCase prefix before `_`).
+- `lowerExternTargetBody(decl, ctx, insns, target)` — emits:
+  - Param loads (all params in slot order; receiver first for instance calls).
+  - `invokestatic` or `invokevirtual` per the static heuristic.
+  - When `isResultJvmException` is true: inline try-catch wrapping the invoke in
+    `Result$Ok` / `Result$Err` (same pattern as `lowerCatchIntrinsic`).
+  - Direct return otherwise.
+
+Stage B128 (`compiler/lyric/jvm/self_test_b128.l`) validates the bytecode shape:
+builds a `ParseWrapper.tryParseInt(String): Object` method that calls
+`Integer.parseInt` with a try-catch, then calls it with `"42"` (→ `ok:42`) and
+`"abc"` (→ `err:NumberFormatException`).  F# test `JvmLoweringB128Test.fs` runs
+the JAR and asserts both output lines.
+
 ### D-progress-251: v1.0 gate decisions G3–G5 resolved (D066)
 
 Gate decisions G3, G4, and G5 from `docs/36-v1-roadmap.md` recorded as D066 in

@@ -38,9 +38,10 @@ are 1.x.  Record the answers as decision-log entries.
 
 ### R1 — Declare the v1.0 stdlib API surface  *(Q011)*
 
-**Status:** D040 establishes the mechanism (`@stable(since="1.0")` /
-`@experimental` + `lyric public-api-diff` SemVer enforcement); nobody has
-executed it.
+**Status:** Done (D-progress-252).  `stdlib/STABILITY.md` lists every module.
+`Std.Core` and `Std.Testing.Mocking` were missing `pub`/`@stable` annotations;
+both are now annotated `@stable(since="1.0")`.  All other modules were already
+annotated.
 
 **What to do:**
 
@@ -70,11 +71,11 @@ lists every `@experimental` item as out-of-scope.
 
 ### R2 — Formatter: per-expression CST granularity + legacy sunset
 
-**Status:** `Lyric.Fmt` (M5.3 stages 1–13) ships as the default.  Comments
-inside expression sub-trees still anchor at the enclosing statement — the
-remaining gap is per `docs/05-implementation-plan.md` §M5.3 "Remaining".
-`--legacy` / `LYRIC_FMT_LEGACY=1` falls back to F# `Fmt.fs` which drops
-all `//` comments entirely.
+**Status:** Deprecation notices shipped (D-progress-253).  `--legacy` is now
+documented as deprecated in §13.7 of the language reference and in
+`appendix-b-quick-reference.md`.  Per-expression CST granularity is deferred to
+v1.1 per G3 (D066).  `Fmt.fs` and the `--legacy` flag remain in the codebase
+through the 1.0 release and will be removed in v1.1.
 
 **What to do:**
 
@@ -106,8 +107,12 @@ run without `--legacy` and accept that comments anchor at the statement level.
 
 ### R3 — JVM channel: Q-J012 + Q-J013 call-site wrappers
 
-**Status:** Depends on G1.  If JVM is a v1.0 channel, both gaps are
-release-blocking.  If JVM is Phase-6 ecosystem, document and defer.
+**Status:** Both shipped (D-progress-249, D-progress-254).  Q-J012 (`Std.Jvm.catch`
+intrinsic) was implemented in a prior milestone.  Q-J013 (`@externTarget` call-site
+try-catch wrapper for `Result[T, JvmException]` returns) shipped in D-progress-254:
+`lowerExternTargetBody` in `codegen.l` emits `invokestatic`/`invokevirtual` plus an
+inline try-catch when the return type is `Result[T, JvmException]`.  Validated by
+stage B128.
 
 **Q-J013 — try-catch wrapper for checked-exception `@externTarget` calls**
 

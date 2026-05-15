@@ -277,6 +277,7 @@ let main argv =
             JvmLoweringB125Test.tests
             JvmLoweringB126Test.tests
             JvmLoweringB127Test.tests
+            JvmLoweringB128Test.tests
             SelfHostedLexerTests.tests
             SelfHostedParserTests.tests
             SelfHostedTypeCheckerTests.tests

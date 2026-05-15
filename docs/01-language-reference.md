@@ -1078,6 +1078,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | _(default)_ | Print formatted source to stdout |
 | `--write` | Overwrite the file in place |
 | `--check` | Exit 1 if the file would change; print nothing (CI use) |
+| `--legacy` | **Deprecated — removed in v1.1.** Falls back to the AST-only formatter (`Fmt.fs`). Drops all non-doc `//` comments. Use only as a temporary workaround if the CST formatter produces unexpected output. |
 
 ### 13.8 Linter
 
