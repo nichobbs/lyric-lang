@@ -9,7 +9,9 @@
 /// dotnet feature is not active (e.g. during JVM builds — Phase 6).
 ///
 /// The dispatch model:
-///   serve() registers each Route in the Router with ASP.NET Core minimal APIs.
+///   serve() registers each Route in the Router with ASP.NET Core minimal APIs,
+///   and for each WorkerRegistration starts a background timer task.
+///
 ///   For each incoming request the kernel:
 ///     1. Matches the request path + method against the route table.
 ///     2. Extracts {name} path segments and query parameters by name.
@@ -22,6 +24,12 @@
 ///          Ok(value)  → 200 + JSON body
 ///          Err(error) → error.status + JSON { "error": msg, "detail": [...] }
 ///     7. Applies CORS headers if Web.Cors.enabled = true.
+///
+///   For each WorkerRegistration the kernel:
+///     1. Resolves the handler by qualified name (signature: () → Result[Unit, String]).
+///     2. Fires it via a System.Threading.Timer on WorkerRegistration.intervalMs cadence.
+///     3. Logs Err(message) results; Ok(()) results are silent.
+///     4. Cancels all timers on graceful shutdown.
 ///
 /// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 

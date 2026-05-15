@@ -1,0 +1,50 @@
+# examples/rbac/lyric.toml — Role-based access control service.
+#
+# Demonstrates Lyric's @proof_required for policy correctness:
+#   @proof_required  — the permission lattice and no-escalation theorem are
+#                      machine-checked by Z3 before the service compiles.
+#   Distinct types   — UserId, RoleId, ResourceId, PermissionId prevent
+#                      ID mix-ups at compile time.
+#   Pure policy core — Rbac.Policy has no I/O; the verifier can reason
+#                      about the full permission model without mocking.
+#
+# Build:  lyric build --manifest examples/rbac/lyric.toml
+# Run:    lyric run   --manifest examples/rbac/lyric.toml
+# Prove:  lyric prove examples/rbac/src/policy.l --verbose
+
+[package]
+name        = "Lyric.Rbac"
+version     = "0.1.0"
+description = "RBAC service — provable no-privilege-escalation."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Rbac"
+output          = "single"
+output_assembly = "Rbac.dll"
+
+[project.packages]
+"Rbac.Policy"      = "src/policy.l"
+"Rbac.Store"       = "src/store.l"
+"Rbac.Enforcement" = "src/enforcement.l"
+"Rbac.Api"         = "src/api.l"
+"Rbac"             = "src/main.l"
+
+[features]
+dotnet   = []
+postgres = []
+
+[project.tests]
+"Rbac.PolicyTests"      = "tests/policy_tests.l"
+"Rbac.EnforcementTests" = "tests/enforcement_tests.l"
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../../stdlib" }
+"Lyric.Web"    = { path = "../../lyric-web" }
+"Lyric.Db"     = { path = "../../lyric-db" }
+"Lyric.Health" = { path = "../../lyric-health" }
+"Lyric.OTel"   = { path = "../../lyric-otel" }
+
+[nuget]
+"Npgsql" = "8.0.3"
