@@ -1,0 +1,117 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'compiler/**'
+      - 'benchmarks/**'
+      - 'stdlib/**'
+      - '.github/workflows/bench.yml'
+      - '.github/scripts/bench_report.py'
+  schedule:
+    # Weekly on Sunday at 02:00 UTC — low-traffic window for consistent timings.
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'Timed iterations per benchmark'
+        default: '15'
+      warmup:
+        description: 'Warmup iterations per benchmark'
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Run benchmarks
+    # Pin to a concrete runner label so machine-to-machine comparisons are
+    # meaningful across scheduled runs.  ubuntu-latest resolves to the same
+    # physical machine class within a GitHub-hosted pool; for tighter control,
+    # swap for a self-hosted label.
+    runs-on: ubuntu-latest
+
+    env:
+      RUNS:   ${{ github.event.inputs.runs   || '15' }}
+      WARMUP: ${{ github.event.inputs.warmup || '5'  }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: compiler/global.json
+
+      - name: Restore
+        working-directory: compiler
+        run: dotnet restore Lyric.sln
+
+      - name: Build (Release)
+        working-directory: compiler
+        run: dotnet build Lyric.sln --configuration Release --no-restore
+
+      - name: Create results directory
+        run: mkdir -p bench-results
+
+      # ── Run each benchmark suite ─────────────────────────────────────────────
+      # Stdout is captured verbatim; the report generator parses the
+      # "name  min=Xms  max=Xms  mean=Xms" lines.
+
+      - name: bench — numeric kernels
+        working-directory: compiler
+        run: |
+          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
+            bench ../benchmarks/bench_numeric.l \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee ../bench-results/bench_numeric.txt
+
+      - name: bench — collections throughput
+        working-directory: compiler
+        run: |
+          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
+            bench ../benchmarks/bench_collections.l \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee ../bench-results/bench_collections.txt
+
+      - name: bench — contract overhead
+        working-directory: compiler
+        run: |
+          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
+            bench ../benchmarks/bench_contracts.l \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee ../bench-results/bench_contracts.txt
+
+      - name: bench — string operations
+        working-directory: compiler
+        run: |
+          dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
+            bench ../benchmarks/bench_string.l \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee ../bench-results/bench_string.txt
+
+      # ── Generate HTML report ─────────────────────────────────────────────────
+
+      - name: Generate HTML report
+        run: |
+          python3 .github/scripts/bench_report.py \
+            bench-results/bench_numeric.txt \
+            bench-results/bench_collections.txt \
+            bench-results/bench_contracts.txt \
+            bench-results/bench_string.txt \
+            --output bench-results/report.html \
+            --title "Lyric Performance Report" \
+            --git-sha "${{ github.sha }}" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report-${{ github.sha }}
+          path: |
+            bench-results/report.html
+            bench-results/*.txt
+          retention-days: 90
