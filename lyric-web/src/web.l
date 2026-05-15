@@ -152,25 +152,41 @@ pub record Route {
   deprecated:  Bool
 }
 
-/// A collection of routes.  Build one with create() then addGet/addPost/etc.
+/// A background worker registered with the server.  The kernel starts one
+/// timer per registration immediately after the HTTP server begins accepting
+/// connections, and fires `handlerName` on the given interval until shutdown.
+///
+/// The handler must have the signature:
+///   func myWorker(): Result[Unit, String]
+/// where `Err(message)` causes the kernel to log the error and continue.
+@stable(since="0.1")
+pub record WorkerRegistration {
+  name:        String   // human-readable label used in logs and health output
+  intervalMs:  Int      // poll interval in milliseconds
+  handlerName: String   // fully-qualified Lyric function name
+}
+
+/// A collection of routes and background workers.
+/// Build one with create() then addGet/addPost/etc. and addWorker().
 /// Compose multiple routers with merge() and scope them with prefix().
 @stable(since="0.1")
 pub record Router {
   routes:    [Route]
+  workers:   [WorkerRegistration]
   pathPrefix: String
 }
 
 /// Empty router.
 @stable(since="0.1")
 pub func create(): Router {
-  return Router(routes = [], pathPrefix = "")
+  return Router(routes = [], workers = [], pathPrefix = "")
 }
 
 // Private route-insertion helper.
 func addRoute(router: in Router, method: in String, pattern: in String, handlerName: in String): Router {
   val full = router.pathPrefix + pattern
   val route = Route(method = method, pattern = full, handlerName = handlerName, summary = "", tags = [], deprecated = false)
-  return Router(routes = router.routes + [route], pathPrefix = router.pathPrefix)
+  return Router(routes = router.routes + [route], workers = router.workers, pathPrefix = router.pathPrefix)
 }
 
 /// Register a GET route.
@@ -218,17 +234,31 @@ pub func addPatch(router: in Router, pattern: in String, handlerName: in String)
   return addRoute(router, "PATCH", pattern, handlerName)
 }
 
+/// Register a background worker that fires every `intervalMs` milliseconds.
+/// `handlerName` must be the fully-qualified name of a function with signature
+///   func(): Result[Unit, String]
+/// The kernel starts the timer after the HTTP server begins accepting connections.
+@stable(since="0.1")
+pub func addWorker(router: in Router, name: in String, intervalMs: in Int, handlerName: in String): Router
+  requires: name.length > 0
+  requires: intervalMs > 0
+  requires: handlerName.length > 0
+{
+  val w = WorkerRegistration(name = name, intervalMs = intervalMs, handlerName = handlerName)
+  return Router(routes = router.routes, workers = router.workers + [w], pathPrefix = router.pathPrefix)
+}
+
 /// Scope all routes in `router` under `pathPrefix`.
 /// Existing routes already have their prefix baked in; only future adds use the new prefix.
 @stable(since="0.1")
 pub func prefix(router: in Router, pathPrefix: in String): Router {
-  return Router(routes = router.routes, pathPrefix = pathPrefix)
+  return Router(routes = router.routes, workers = router.workers, pathPrefix = pathPrefix)
 }
 
-/// Merge two routers into one.  Routes from both are included unchanged.
+/// Merge two routers into one.  Routes and workers from both are included unchanged.
 @stable(since="0.1")
 pub func merge(a: in Router, b: in Router): Router {
-  return Router(routes = a.routes + b.routes, pathPrefix = "")
+  return Router(routes = a.routes + b.routes, workers = a.workers + b.workers, pathPrefix = "")
 }
 
 // ─── Runtime config ───────────────────────────────────────────────────────────

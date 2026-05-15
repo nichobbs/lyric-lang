@@ -1,0 +1,53 @@
+# examples/jobqueue/lyric.toml — Background job queue service.
+#
+# Demonstrates Lyric's provable state-machine invariants and background
+# worker primitives:
+#   @proof_required  — the job-status state machine is machine-checked by Z3.
+#                      Completed is provably terminal; retries are bounded.
+#   Range subtype    — RetryCount = Int range 0..=10; exhausted budget is
+#                      a type error in @proof_required code.
+#   Distinct types   — JobId, WorkerId prevent ID mix-ups at compile time.
+#   Web.addWorker    — background timer-driven poller wired into the HTTP
+#                      server lifecycle.
+#   Db.queryOne      — typed SELECT FOR UPDATE SKIP LOCKED job claim.
+#
+# Build:  lyric build --manifest examples/jobqueue/lyric.toml
+# Run:    lyric run   --manifest examples/jobqueue/lyric.toml
+# Prove:  lyric prove examples/jobqueue/src/domain.l --verbose
+
+[package]
+name        = "Lyric.JobQueue"
+version     = "0.1.0"
+description = "Background job queue — provable state-machine invariants."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.JobQueue"
+output          = "single"
+output_assembly = "JobQueue.dll"
+
+[project.packages]
+"JobQueue.Domain" = "src/domain.l"
+"JobQueue.Jobs"   = "src/jobs.l"
+"JobQueue.Worker" = "src/worker.l"
+"JobQueue.Api"    = "src/api.l"
+"JobQueue"        = "src/main.l"
+
+[features]
+dotnet   = []    # ASP.NET Core / Kestrel HTTP server
+postgres = []    # Npgsql PostgreSQL driver
+
+[project.tests]
+"JobQueue.DomainTests"   = "tests/domain_tests.l"
+"JobQueue.JobQueueTests" = "tests/jobqueue_tests.l"
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../../stdlib" }
+"Lyric.Web"    = { path = "../../lyric-web" }
+"Lyric.Db"     = { path = "../../lyric-db" }
+"Lyric.Health" = { path = "../../lyric-health" }
+"Lyric.OTel"   = { path = "../../lyric-otel" }
+
+[nuget]
+"Npgsql" = "8.0.3"

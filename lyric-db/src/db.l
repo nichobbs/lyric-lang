@@ -87,6 +87,31 @@ pub func col(row: in DbRow, name: in String): DbValue
   return DbValue.DbNull
 }
 
+/// Execute a parameterised SELECT and return the first row, or None if no rows match.
+///
+/// Intended for PostgreSQL `SELECT … FOR UPDATE SKIP LOCKED` job-claim patterns:
+///
+///   match Db.queryOne(conn,
+///     "SELECT id, payload FROM jobs WHERE status = $1
+///      ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
+///     ["pending"]) { ... }
+///
+/// Callers are responsible for including the `LIMIT 1` clause to bound the scan.
+@stable(since="0.1")
+pub func queryOne(conn: in DbConnection, sql: in String, params: in [String]): Result[Option[DbRow], DbError]
+  requires: sql.length > 0
+{
+  match conn.query(sql, params) {
+    case Err(e)   -> Err(e)
+    case Ok(rows) -> {
+      for row in rows {
+        return Ok(Some(value = row))
+      }
+      Ok(None)
+    }
+  }
+}
+
 // ─── Transaction interface ────────────────────────────────────────────────────
 
 /// An in-flight database transaction.  Call `commit()` or `rollback()` to
