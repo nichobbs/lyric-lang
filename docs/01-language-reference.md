@@ -1008,7 +1008,41 @@ Lyric → .NET: opaque types pass as opaque handles (a sealed wrapper type with 
 
 The standard library ships hand-curated wrappers for common .NET surfaces. Direct `extern` declarations are reserved for cases not covered by the standard library.
 
-### 11.3 AOT compatibility
+### 11.3 `@externTarget` — direct BCL method binding
+
+`@externTarget("CLR.Type.Method")` maps a Lyric function declared inside a
+`stdlib/std/_kernel/` file directly to a specific BCL (or JVM) method, bypassing
+the `extern package` wrapper layer.  It is reserved for the standard-library
+kernel boundary; user code must not use it.
+
+```
+// Maps the Lyric function directly to System.Text.Json.JsonDocument.Parse.
+@externTarget("System.Text.Json.JsonDocument.Parse")
+pub func jsonParse(s: in String): JsonDocument
+```
+
+**Generic BCL methods.**  When the target BCL method is generic (e.g.
+`System.Collections.Generic.List`1.Add`), the `@externTarget` string must refer
+to a concrete, closed instantiation of the host type.  A Lyric type parameter in
+the surrounding function declaration cannot be substituted into the
+`@externTarget` string at compile time.  The correct approach is a separate
+monomorphised declaration per concrete type:
+
+```
+// Correct: one binding per concrete type.
+@externTarget("System.Collections.Generic.List`1[System.Int32].Add")
+pub func intListAdd(xs: inout IntList, v: in Int): Unit
+
+// Wrong: Lyric type parameter T cannot parameterise the target string.
+// @externTarget("System.Collections.Generic.List`1.Add")
+// pub func listAdd[T](xs: inout List[T], v: in T): Unit  // Q022-4: not supported
+```
+
+If you need a generic list-add wrapper, implement it in Lyric using a kernel-level
+monomorphised helper and expose a generic Lyric function that delegates to the
+concrete helper.
+
+### 11.4 AOT compatibility
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.
 

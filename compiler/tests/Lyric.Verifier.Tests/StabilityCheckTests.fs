@@ -222,7 +222,7 @@ let tests =
             Expect.isFalse
                 (parsed.Diagnostics |> List.exists (fun d -> d.Severity = DiagError))
                 "clean parse"
-            let contract = Lyric.Emitter.ContractMeta.buildContract parsed.File "0.1.0"
+            let contract = Lyric.Emitter.ContractMeta.buildContract parsed.File Map.empty "0.1.0"
             let betaDecl = contract.Decls |> List.tryFind (fun d -> d.Name = "beta")
             match betaDecl with
             | None -> failtest "beta not in contract"
@@ -241,7 +241,7 @@ let tests =
             Expect.isFalse
                 (parsed.Diagnostics |> List.exists (fun d -> d.Severity = DiagError))
                 "clean parse"
-            let contract = Lyric.Emitter.ContractMeta.buildContract parsed.File "1.0.0"
+            let contract = Lyric.Emitter.ContractMeta.buildContract parsed.File Map.empty "1.0.0"
             let decl = contract.Decls |> List.tryFind (fun d -> d.Name = "production")
             match decl with
             | None -> failtest "production not in contract"

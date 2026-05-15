@@ -12348,3 +12348,58 @@ R4 from `docs/36-v1-roadmap.md` is now complete for the three actionable items.
 **Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
 **Tests:** `Lyric.Cli.Tests`: 204/224 passed; 20 errored (all pre-existing JVM
 parity failures unrelated to R4). `Lyric.Emitter.Tests`: 759/759 passed.
+
+### D-progress-256: R5 — Language gaps Q021-4, Q022-1, Q022-3 closed; Q022-4 documented
+
+R5 from `docs/36-v1-roadmap.md` is now substantially complete.  Q022-2 is deferred.
+
+**Q021-4: Cross-package distinct types in `satisfiesMarker`**
+- `compiler/src/Lyric.Emitter/Records.fs`: Added `Derives: string list` field to
+  `ImportedDistinctTypeInfo`.
+- `compiler/src/Lyric.Emitter/Emitter.fs`: Added a loop after the protected-types loop
+  that populates `importedDistinctTypeTable` from `IDistinctType` items in each loaded
+  artifact's `Source.Items`.  Reflects `Value` field, `From` method, and optional `TryFrom`
+  method; stores `d.Derives` directly from the parsed AST.  Also registers the CLR type in
+  `typeIdToClr` so cross-package type references resolve.
+- `compiler/src/Lyric.Emitter/Codegen.fs`: Added **Path 1.5** to `satisfiesMarker`: checks
+  `ctx.ImportedDistinctTypes.Values` for a matching CLR type, then verifies the marker is in
+  `info.Derives`.  Cross-package `type Age = Int derives Hash` now satisfies `f[T] where T: Hash`.
+
+**Q022-3: UFCS on `OpaqueType[T]` receivers**
+- `compiler/src/Lyric.Emitter/Codegen.fs` `inlineUfcsCall`: Extended the
+  `ctx.Records` lookup to also match generic opaque instantiations.  When
+  `recvTy.IsGenericType` and the TypeBuilder equals `recvTy.GetGenericTypeDefinition()`,
+  the record name is returned so UFCS dispatch proceeds.  Previously silently fell
+  through to "method not found" for closed generic opaques.
+
+**Q022-1: `pub use` symbol-level re-export**
+- `compiler/src/Lyric.Emitter/ContractMeta.fs`: Added private `pubUseDecls`
+  function and changed `buildContract` signature to accept an
+  `importedSources: Map<string, SourceFile>` parameter.  `pubUseDecls` filters
+  `sf.Imports` for `IsPubUse = true`, looks up the package in `importedSources`,
+  and cherry-picks only the named symbols (or all pub items for a bare
+  `pub use Pkg`).  The cherry-picked `ContractDecl` values are appended to the
+  contract after the package's own decls.
+- `compiler/src/Lyric.Emitter/Emitter.fs` (single-file path): Builds `importedSourcesMap`
+  from `stdlibArtifacts` and passes it to `buildContract`.
+- `compiler/src/Lyric.Emitter/Emitter.fs` (project path): Changed
+  `perPackageContracts` tuple to include `Map<string, SourceFile>`; builds and stores
+  the map per package from `mergedArtifacts`; uses it in Phase C (contract embed).
+- `compiler/tests/Lyric.Verifier.Tests/StabilityCheckTests.fs`: Updated two
+  `buildContract` call sites to pass `Map.empty` (no pub-use imports in those tests).
+
+**Q022-4 (fallback): `@externTarget` generic BCL methods documented**
+- `docs/01-language-reference.md` §11.3: Added `@externTarget` section explaining
+  the annotation, its kernel-only scope, and the limitation that generic BCL
+  methods require explicit per-type monomorphised declarations (the Lyric type
+  parameter cannot be substituted into the `@externTarget` string).
+
+**Deferred:**
+- Q022-2: Generic opaque types in `Lyric.Contract` resource — cross-package
+  generic opaque types are partially invisible to the contract reader.  Impact is
+  limited (UFCS now works via Q022-3; the contract gap only affects `pub-api-diff`
+  and verifier cross-package reasoning).  Deferred post-v1.0.
+
+**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Tests:** `Lyric.Emitter.Tests`: 759/759; `Lyric.Verifier.Tests`: 266/266;
+`Lyric.Cli.Tests`: 204/224 (same 20 pre-existing JVM parity failures).

@@ -425,15 +425,51 @@ let private levelOfFile (sf: SourceFile) : string =
             | Some _ -> "runtime_checked"
             | None   -> "runtime_checked"
 
+/// Produce ContractDecls for any `pub use` imports in `sf`.
+/// Each `pub use Pkg.{foo}` cherry-picks only the named pub items
+/// from the matching imported source file; a bare `pub use Pkg`
+/// re-exports all pub items from `Pkg`.
+let private pubUseDecls
+        (sf: SourceFile)
+        (importedSources: Map<string, SourceFile>) : ContractDecl list =
+    sf.Imports
+    |> List.filter (fun imp -> imp.IsPubUse)
+    |> List.collect (fun imp ->
+        let pkgKey = String.concat "." imp.Path.Segments
+        match Map.tryFind pkgKey importedSources with
+        | None -> []
+        | Some src ->
+            let allowedNames : Set<string> option =
+                match imp.Selector with
+                | None -> None
+                | Some (ISSingle item) -> Some (Set.singleton item.Name)
+                | Some (ISGroup items) ->
+                    Some (items |> List.map (fun i -> i.Name) |> Set.ofList)
+            src.Items
+            |> List.choose (fun it ->
+                match declOf it with
+                | None -> None
+                | Some decl ->
+                    match allowedNames with
+                    | None -> Some decl
+                    | Some names when Set.contains decl.Name names -> Some decl
+                    | _ -> None))
+
 /// Walk a `SourceFile` and produce the contract metadata for it.
-let buildContract (sf: SourceFile) (version: string) : Contract =
+/// `importedSources` maps package-name keys (e.g. `"Std.Core"`) to their
+/// parsed source files; it is used to resolve `pub use` re-exports.
+let buildContract
+        (sf: SourceFile)
+        (importedSources: Map<string, SourceFile>)
+        (version: string) : Contract =
     let pkg = String.concat "." sf.Package.Path.Segments
-    let decls = sf.Items |> List.choose declOf
+    let ownDecls = sf.Items |> List.choose declOf
+    let reexportDecls = pubUseDecls sf importedSources
     { PackageName   = pkg
       Version       = version
       Level         = levelOfFile sf
       FormatVersion = FORMAT_VERSION
-      Decls         = decls }
+      Decls         = ownDecls @ reexportDecls }
 
 let private escape (s: string) : string =
     let sb = StringBuilder(s.Length + 2)

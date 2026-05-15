@@ -199,6 +199,8 @@ exercises each new self-test file.
 
 ### R5 — Language gaps: Q022 and Q021 cross-package
 
+**Status:** COMPLETE (D-progress-256). Q022-2 deferred post-v1.0.
+
 These are not complete breakages but will surface as user-visible footguns
 within the first week of adoption.
 

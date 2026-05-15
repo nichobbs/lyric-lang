@@ -685,6 +685,13 @@ let private satisfiesMarker
         |> Option.exists (fun info -> List.contains marker info.Derives)
     if satisfiesViaDistinct then true
     else
+    // Path 1.5 — cross-package distinct type with a matching derives clause.
+    let satisfiesViaImportedDistinct =
+        ctx.ImportedDistinctTypes.Values
+        |> Seq.tryFind (fun info -> info.Type = ty)
+        |> Option.exists (fun info -> List.contains marker info.Derives)
+    if satisfiesViaImportedDistinct then true
+    else
     // Path 2 — CLR primitive table.
     let isNumeric =
         ty = typeof<sbyte>  || ty = typeof<int16>  || ty = typeof<int32>
@@ -1969,7 +1976,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let typeName =
                 ctx.Records
                 |> Seq.tryPick (fun kv ->
-                    if (kv.Value.Type :> System.Type) = recvTy then Some kv.Key
+                    let ty = kv.Value.Type :> System.Type
+                    if ty = recvTy then Some kv.Key
+                    // Generic opaque instantiation: the TypeBuilder is the open
+                    // definition; the receiver is the closed instantiation.
+                    elif recvTy.IsGenericType && ty = recvTy.GetGenericTypeDefinition() then Some kv.Key
                     else None)
             match typeName with
             | Some n ->
