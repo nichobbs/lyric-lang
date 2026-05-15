@@ -1,16 +1,13 @@
 /// `lyric publish` / `lyric restore` commands (C8 part 2 /
 /// D-progress-077).  Both commands lower the user's `lyric.toml`
 /// into a generated, throw-away `.csproj` and shell out to `dotnet
-/// pack` / `dotnet restore` respectively.  The .csproj is the only
-/// surface the bootstrap relies on — Lyric never reads it back; it
-/// exists purely so the NuGet tooling sees a valid project shape.
+/// pack` / `dotnet restore` respectively.
 ///
-/// `publish` also embeds the user's pre-built `<package>.dll` into
-/// the .nupkg under `lib/net10.0/` via a `<None>` packaging item,
-/// so consumers see exactly the assembly the bootstrap emitted
-/// (with the embedded `Lyric.Contract` resource intact, per
-/// D-progress-031).  Building the DLL is the user's responsibility:
-/// run `lyric build src/main.l` (or whatever) before `lyric publish`.
+/// The csproj XML generation has been ported to the self-hosted
+/// `Lyric.Pack` package (`compiler/lyric/lyric/pack/pack.l`);
+/// `SelfHostedPack.publishCsproj` / `SelfHostedPack.restoreCsproj`
+/// are called to produce the XML text.  Process invocation and path
+/// resolution remain here as infrastructure shims.
 module Lyric.Cli.Pack
 
 open System
@@ -71,175 +68,29 @@ let runDotnet (args: string list) (workDir: string) (quiet: bool) : DotnetResult
     { ExitCode = proc.ExitCode; Stdout = stdout; Stderr = stderr }
 
 // ---------------------------------------------------------------------------
-// Generated `.csproj` shape.  Both publish and restore emit a tiny
-// project from a template — publish bundles the pre-built DLL via
-// `<None Include=... Pack="true" PackagePath=... />`, restore just
-// declares `<PackageReference>` items so transitive resolution runs.
+// Path conventions — unchanged from original Pack.fs.
 // ---------------------------------------------------------------------------
 
-/// XML-escape a string for use inside an attribute or element value.
-let private xmlEscape (s: string) : string =
-    s.Replace("&", "&amp;")
-     .Replace("<", "&lt;")
-     .Replace(">", "&gt;")
-     .Replace("\"", "&quot;")
-     .Replace("'", "&apos;")
-
-let private sanitisedPackageName (raw: string) : string =
-    // `dotnet pack` happily accepts arbitrary `<PackageId>` values,
-    // but the underlying build tooling refuses identifiers containing
-    // characters NuGet's own validator rejects (whitespace, control
-    // chars, slashes).  Trim to a sensible subset rather than letting
-    // a bad manifest blow up deep in MSBuild.
+let private sanitisedPackageNameFallback (raw: string) : string =
     let allowed (ch: char) =
         Char.IsLetterOrDigit ch || ch = '.' || ch = '_' || ch = '-'
-    raw
-    |> Seq.filter allowed
-    |> Seq.toArray
-    |> System.String
-
-/// Build the `.csproj` text used by `lyric publish`.  Embeds the
-/// pre-built Lyric DLL under `lib/net10.0/` and forwards every
-/// dependency from `lyric.toml` as a `<PackageReference>`.
-let publishCsproj (manifest: Manifest) (dllPath: string) : string =
-    let pkg = manifest.Package
-    let sanitisedId = sanitisedPackageName pkg.Name
-    let assemblyFile =
-        match Option.ofObj (Path.GetFileName dllPath) with
-        | Some f -> f
-        | None -> sanitisedId + ".dll"
-    let authorsXml =
-        if List.isEmpty pkg.Authors then ""
-        else "    <Authors>"
-             + xmlEscape (String.concat ";" pkg.Authors)
-             + "</Authors>\n"
-    let descriptionXml =
-        match pkg.Description with
-        | Some d -> "    <Description>" + xmlEscape d + "</Description>\n"
-        | None   -> ""
-    let licenseXml =
-        match pkg.License with
-        | Some l -> "    <PackageLicenseExpression>" + xmlEscape l + "</PackageLicenseExpression>\n"
-        | None   -> ""
-    let repoXml =
-        match pkg.Repository with
-        | Some r -> "    <RepositoryUrl>" + xmlEscape r + "</RepositoryUrl>\n"
-        | None   -> ""
-    let depsXml =
-        manifest.Dependencies
-        |> List.map (fun d ->
-            sprintf "    <PackageReference Include=\"%s\" Version=\"%s\" />\n"
-                    (xmlEscape d.Name) (xmlEscape d.Version))
-        |> String.concat ""
-    // Mark every dependency as a `lib`-folder reference so downstream
-    // consumers transitively pick them up.  `IncludeAssets="all"` is
-    // the default for `<PackageReference>`; we don't need to set it.
-    let dllAbsolute = Path.GetFullPath dllPath
-    let lines = ResizeArray<string>()
-    lines.Add "<Project Sdk=\"Microsoft.NET.Sdk\">"
-    lines.Add "  <PropertyGroup>"
-    lines.Add "    <TargetFramework>net10.0</TargetFramework>"
-    lines.Add "    <IncludeBuildOutput>false</IncludeBuildOutput>"
-    lines.Add "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>"
-    lines.Add "    <NoWarn>$(NoWarn);NU5128</NoWarn>"
-    lines.Add (sprintf "    <PackageId>%s</PackageId>" (xmlEscape sanitisedId))
-    lines.Add (sprintf "    <Version>%s</Version>" (xmlEscape pkg.Version))
-    let inlineNonEmpty (s: string) =
-        if not (String.IsNullOrEmpty s) then lines.Add (s.TrimEnd '\n')
-    inlineNonEmpty authorsXml
-    inlineNonEmpty descriptionXml
-    inlineNonEmpty licenseXml
-    inlineNonEmpty repoXml
-    lines.Add "  </PropertyGroup>"
-    lines.Add "  <ItemGroup>"
-    lines.Add (sprintf "    <None Include=\"%s\" Pack=\"true\" PackagePath=\"lib/net10.0/%s\" />"
-                       (xmlEscape dllAbsolute) (xmlEscape assemblyFile))
-    lines.Add "  </ItemGroup>"
-    if not (String.IsNullOrEmpty depsXml) then
-        lines.Add "  <ItemGroup>"
-        lines.Add (depsXml.TrimEnd '\n')
-        lines.Add "  </ItemGroup>"
-    lines.Add "</Project>"
-    String.concat "\n" lines + "\n"
-
-/// Build the `.csproj` text used by `lyric restore`.  Declares the
-/// `<PackageReference>` items from `[dependencies]` (Lyric packages)
-/// and `[nuget]` (arbitrary NuGet packages, Phase 5 §M5.1 stage 2d
-/// per `docs/21-nuget-linking.md`) so `dotnet restore` populates the
-/// NuGet cache with the full transitive closure.  `[nuget.options]
-/// target` (when set) overrides the default `net10.0` TFM.
-let restoreCsproj (manifest: Manifest) : string =
-    let lyricDepsXml =
-        manifest.Dependencies
-        |> List.map (fun d ->
-            sprintf "    <PackageReference Include=\"%s\" Version=\"%s\" />\n"
-                    (xmlEscape d.Name) (xmlEscape d.Version))
-        |> String.concat ""
-    let nugetDepsXml =
-        match manifest.Nuget with
-        | None -> ""
-        | Some n ->
-            n.Packages
-            |> List.map (fun p ->
-                sprintf "    <PackageReference Include=\"%s\" Version=\"%s\" />\n"
-                        (xmlEscape p.Id) (xmlEscape p.Version))
-            |> String.concat ""
-    let target =
-        match manifest.Nuget with
-        | Some { Options = { Target = Some t } } -> t
-        | _ -> "net10.0"
-    let lines = ResizeArray<string>()
-    lines.Add "<Project Sdk=\"Microsoft.NET.Sdk\">"
-    lines.Add "  <PropertyGroup>"
-    lines.Add (sprintf "    <TargetFramework>%s</TargetFramework>"
-                       (xmlEscape target))
-    lines.Add (sprintf "    <PackageId>%s</PackageId>"
-                       (xmlEscape (sanitisedPackageName manifest.Package.Name)))
-    lines.Add (sprintf "    <Version>%s</Version>"
-                       (xmlEscape manifest.Package.Version))
-    lines.Add "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>"
-    lines.Add "    <IncludeBuildOutput>false</IncludeBuildOutput>"
-    lines.Add "  </PropertyGroup>"
-    let combined = lyricDepsXml + nugetDepsXml
-    if not (String.IsNullOrEmpty combined) then
-        lines.Add "  <ItemGroup>"
-        lines.Add (combined.TrimEnd '\n')
-        lines.Add "  </ItemGroup>"
-    else
-        // Preserve the previous shape (empty ItemGroup is harmless and
-        // matches the pre-stage-2d csproj layout `dotnet restore` already
-        // accepts).
-        lines.Add "  <ItemGroup>"
-        lines.Add "  </ItemGroup>"
-    lines.Add "</Project>"
-    String.concat "\n" lines + "\n"
-
-// ---------------------------------------------------------------------------
-// Path conventions.
-// ---------------------------------------------------------------------------
+    raw |> Seq.filter allowed |> Seq.toArray |> System.String
 
 /// Default location of the user's pre-built DLL when the manifest
-/// doesn't override.  Mirrors `lyric build`'s default of writing
-/// `<source>.dll` next to the source: a single-source package keeps
-/// the dll under `bin/<package>.dll` so multiple builds don't
-/// collide on naming.
+/// doesn't override.
 let defaultDllPath (manifest: Manifest) (manifestDir: string) : string =
-    let name = sanitisedPackageName manifest.Package.Name
+    let name = sanitisedPackageNameFallback manifest.Package.Name
     Path.Combine(manifestDir, "bin", name + ".dll")
 
-/// Default `dotnet pack` output directory.  Matches Cargo's `target/
-/// package` convention: under the project, easy to gitignore.
+/// Default `dotnet pack` output directory.
 let defaultPackOutputDir (manifest: Manifest) (manifestDir: string) : string =
     match manifest.Build.OutputDir with
     | Some o -> Path.Combine(manifestDir, o)
     | None   -> Path.Combine(manifestDir, "pkg")
 
-/// Throw-away scratch directory for the generated `.csproj` (and
-/// the `obj/` artefacts the pack/restore tooling drops alongside).
-/// Sits under the repo's `.lyric/` cache so a single-line
-/// `.gitignore` entry hides every per-invocation artefact.
+/// Throw-away scratch directory for the generated `.csproj`.
 let scratchProjectDir (manifest: Manifest) (manifestDir: string) (subdir: string) : string =
-    let sanitised = sanitisedPackageName manifest.Package.Name
+    let sanitised = sanitisedPackageNameFallback manifest.Package.Name
     let suffix = sprintf "%s-%s" sanitised subdir
     Path.Combine(manifestDir, ".lyric", suffix)
 
@@ -247,10 +98,8 @@ let scratchProjectDir (manifest: Manifest) (manifestDir: string) (subdir: string
 // Top-level entry points used by `Program.fs`.
 // ---------------------------------------------------------------------------
 
-/// Run `dotnet pack` against a freshly-generated `.csproj`.
-/// `manifestPath` points at `lyric.toml`; `dllPath` is the pre-built
-/// Lyric DLL; `outputDir` is where the `.nupkg` lands.  Returns the
-/// `.nupkg` path on success, or an error tuple on failure.
+/// Run `dotnet pack` against a freshly-generated `.csproj` produced by
+/// the self-hosted `Lyric.Pack` bridge.
 let runPack (manifest: Manifest)
             (manifestDir: string)
             (dllPath: string)
@@ -260,12 +109,20 @@ let runPack (manifest: Manifest)
         Error (sprintf "publish: pre-built DLL '%s' not found — run `lyric build` first"
                        dllPath)
     else
-    let scratch = scratchProjectDir manifest manifestDir "pack"
+    let tomlPath = Path.Combine(manifestDir, "lyric.toml")
+    let toml     = if File.Exists tomlPath then File.ReadAllText tomlPath else ""
+    let csprojText =
+        match SelfHostedPack.publishCsproj toml dllPath with
+        | Ok xml  -> xml
+        | Error e ->
+            // Manifest parse failed — fall back to no XML so dotnet pack aborts cleanly.
+            failwithf "publish: manifest parse error: %s" e
+    let scratch   = scratchProjectDir manifest manifestDir "pack"
     Directory.CreateDirectory scratch |> ignore
-    let csprojName = sanitisedPackageName manifest.Package.Name + ".csproj"
-    let csprojPath = Path.Combine(scratch, csprojName)
-    let csprojText = publishCsproj manifest dllPath
-    File.WriteAllText(csprojPath, csprojText)
+    let name      = sanitisedPackageNameFallback manifest.Package.Name
+    let csprojPath = Path.Combine(scratch, name + ".csproj")
+    let xmlText : string = csprojText
+    File.WriteAllText(csprojPath, xmlText)
     Directory.CreateDirectory outputDir |> ignore
     let result =
         runDotnet
@@ -282,32 +139,32 @@ let runPack (manifest: Manifest)
         Error (sprintf "publish: dotnet pack exited %d %s" result.ExitCode detail)
     else
         let nupkgName =
-            sprintf "%s.%s.nupkg"
-                    (sanitisedPackageName manifest.Package.Name)
-                    manifest.Package.Version
+            sprintf "%s.%s.nupkg" name manifest.Package.Version
         let nupkgPath = Path.Combine(outputDir, nupkgName)
         if File.Exists nupkgPath then Ok nupkgPath
         else
-            // Fall back to scanning the dir — `dotnet pack` may have
-            // emitted a slightly different name (e.g. when the
-            // version string contains pre-release suffixes).
-            let candidates =
-                Directory.GetFiles(outputDir, "*.nupkg")
+            let candidates = Directory.GetFiles(outputDir, "*.nupkg")
             match Array.tryHead candidates with
             | Some p -> Ok p
             | None -> Error "publish: dotnet pack succeeded but produced no .nupkg"
 
-/// Run `dotnet restore` against a freshly-generated `.csproj`.
-/// `manifestPath` points at `lyric.toml`.  Returns the dotnet exit
-/// code so callers can propagate it up to the shell.
+/// Run `dotnet restore` against a freshly-generated `.csproj` produced by
+/// the self-hosted `Lyric.Pack` bridge.
 let runRestore (manifest: Manifest)
                (manifestDir: string)
                (quiet: bool) : Result<unit, string> =
-    let scratch = scratchProjectDir manifest manifestDir "restore"
+    let tomlPath = Path.Combine(manifestDir, "lyric.toml")
+    let toml     = if File.Exists tomlPath then File.ReadAllText tomlPath else ""
+    let csprojText =
+        match SelfHostedPack.restoreCsproj toml with
+        | Ok xml  -> xml
+        | Error e -> failwithf "restore: manifest parse error: %s" e
+    let scratch   = scratchProjectDir manifest manifestDir "restore"
     Directory.CreateDirectory scratch |> ignore
-    let csprojName = sanitisedPackageName manifest.Package.Name + ".csproj"
-    let csprojPath = Path.Combine(scratch, csprojName)
-    File.WriteAllText(csprojPath, restoreCsproj manifest)
+    let name      = sanitisedPackageNameFallback manifest.Package.Name
+    let csprojPath = Path.Combine(scratch, name + ".csproj")
+    let xmlText : string = csprojText
+    File.WriteAllText(csprojPath, xmlText)
     let result = runDotnet [ "restore"; csprojPath ] scratch quiet
     if result.ExitCode = 0 then Ok ()
     else
@@ -318,15 +175,6 @@ let runRestore (manifest: Manifest)
                        result.ExitCode detail)
 
 /// Run the Maven Central resolver for `[maven]` dependencies.
-///
-/// Locates `lyric-resolver.jar` via `Maven.findResolverJar`, builds a
-/// `MavenResolveRequest` from the manifest's `[maven]` section, and
-/// invokes the resolver.  Returns the resolved JARs (top-level and
-/// transitive) on success.  The caller (`Program.fs`) then drives
-/// shim generation for top-level JARs.
-///
-/// `jarOutputDir` is where the resolver copies downloaded JARs;
-/// defaults to `<manifestDir>/target/restore/jars`.
 let runMavenRestore
         (manifest:    Manifest)
         (manifestDir: string)

@@ -161,9 +161,9 @@ and expose a non-throwing wrapper as a `@externTarget`.
 
 ### R4 — M5.3 stage 6: last F# domain-logic items
 
-**Status:** Per `CLAUDE.md` §"F# surface is frozen — new logic goes in Lyric",
-these are the last F# domain-logic survivors.  They work; they are not
-self-hosted.
+**Status:** COMPLETE (D-progress-255). `Lyric.Doc`, `Lyric.Lint`, and
+`Lyric.Pack` csproj XML generation are now self-hosted in Lyric.
+`ContractMeta` and `Fmt.fs` sunset remain deferred (see notes below).
 
 | Item | F# location | Target Lyric location |
 |---|---|---|

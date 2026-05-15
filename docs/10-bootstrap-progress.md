@@ -12291,3 +12291,60 @@ kernel is a Phase 6 stub.
 - `lyric-otel` gains OTLP export; existing `OTel.*` aspect templates and wrapper
   functions are unchanged.
 - No compiler tests affected (libraries are pure Lyric source, compiled on demand).
+
+---
+
+### D-progress-255: R4 — M5.3 stage 6: Doc, Lint, and Pack csproj ported to self-hosted Lyric
+
+R4 from `docs/36-v1-roadmap.md` is now complete for the three actionable items.
+
+**Lyric.Doc** (`compiler/lyric/lyric/doc/doc.l`):
+- Package `Lyric.Doc`; mirrors `compiler/src/Lyric.Cli/Doc.fs`.
+- Imports `Lyric.Lexer` and `Lyric.Parser`; calls `parse(source)` internally.
+- Generates Markdown for all public items: `IFunc`, `IRecord`, `IExposedRec`,
+  `IUnion`, `IEnum`, `IOpaque`, `IInterface`, `IDistinctType`, `ITypeAlias`,
+  `IConst`.  Renders doc comments and type signatures as fenced code blocks.
+- Bridge: `compiler/lyric/lyric/doc_bridge.l` (`Lyric.DocBridge`);
+  protocol `"ok\n<markdown>"`.
+- F# shim: `compiler/src/Lyric.Cli/SelfHostedDoc.fs` replaces the removed
+  `compiler/src/Lyric.Cli/Doc.fs`.
+- `Program.fs` `lyric doc` command now calls `SelfHostedDoc.generate`.
+
+**Lyric.Lint** (`compiler/lyric/lyric/lint/lint.l`):
+- Package `Lyric.Lint`; mirrors the rule logic previously in `Lyric.Cli.Lint`.
+- Five rules: L001 (PascalCase types), L002 (camelCase funcs), L003 (pub doc),
+  L004 (TODO/FIXME in doc comments), L005 (pub func with block body has contracts).
+- Bridge: `compiler/lyric/lyric/lint_bridge.l` (`Lyric.LintBridge`); pipe-delimited
+  protocol one diagnostic per line: `<code>|<sev>|<line>|<col>|<message>`.
+- F# shim: `compiler/src/Lyric.Cli/SelfHostedLint.fs`.
+- `Lint.fs` gutted to types and `renderDiagnostic` only (domain logic removed).
+- `Program.fs` `lyric lint` command now calls `SelfHostedLint.lint`.
+- `LintTests.fs` updated: `lintSource` now calls `SelfHostedLint.lint source`
+  (integration path through the Lyric bridge).
+
+**Lyric.Pack csproj XML** (`compiler/lyric/lyric/pack/pack.l`):
+- Package `Lyric.Pack`; ports the `publishCsproj`/`restoreCsproj` XML-generation
+  logic from `compiler/src/Lyric.Cli/Pack.fs`.
+- Reads `Lyric.Manifest` types directly (`m.packageSection`, `m.deps`,
+  `m.nuget` → `Option[NugetSection]`).
+- Generates `<Project Sdk="Microsoft.NET.Sdk">` XML for both `dotnet pack` and
+  `dotnet restore` use cases; respects `[nuget]` / `[nuget.options]` sections.
+- Bridge: `compiler/lyric/lyric/pack_bridge.l` (`Lyric.PackBridge`); parses
+  incoming TOML via `Lyric.Manifest.parse`, then calls `publishCsproj`/`restoreCsproj`.
+  Protocol: `"ok\n<csproj>"` or `"parsefail\n<message>"`.
+- F# shim: `compiler/src/Lyric.Cli/SelfHostedPack.fs`.
+- `Pack.fs` `runPack`/`runRestore` updated to read `lyric.toml` text and
+  call `SelfHostedPack.publishCsproj`/`SelfHostedPack.restoreCsproj`.
+- `PackTests.fs` updated: XML-checking tests now pass TOML strings to the
+  bridge rather than constructing F# `Manifest` objects.
+
+**Deferred from R4:**
+- `Lyric.ContractMeta` — the BCL-reflection-backed embedded resource reader
+  (`compiler/src/Lyric.Emitter/ContractMeta.fs`, ~818 lines) is used by
+  `lyric public-api-diff` and the cross-package verifier, not by Doc/Lint/Pack.
+  Porting it requires a Lyric PE-metadata reader; deferred post-v1.0.
+- `Fmt.fs` sunset — gated on R2 (CST formatter parity); not changed here.
+
+**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Tests:** `Lyric.Cli.Tests`: 204/224 passed; 20 errored (all pre-existing JVM
+parity failures unrelated to R4). `Lyric.Emitter.Tests`: 759/759 passed.
