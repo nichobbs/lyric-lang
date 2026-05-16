@@ -55,13 +55,13 @@ pub record ListProductsRequest {
   @proto_field(1) category:    String   // empty = all categories
   @proto_field(2) inStockOnly: Bool
   @proto_field(3) pageSize:    Int      // 0 = server default (20)
-  @proto_field(4) pageToken:   String   // opaque cursor; empty = first page
+  // @proto_field(4) pageToken reserved — keyset pagination deferred (Q-G-003)
 }
 
 pub record ListProductsResponse {
-  @proto_field(1) products:      [Product]
-  @proto_field(2) total:         Int
-  @proto_field(3) nextPageToken: String   // empty = no more pages
+  @proto_field(1) products: [Product]
+  @proto_field(2) total:    Int          // count of returned items
+  // @proto_field(3) nextPageToken reserved — keyset pagination deferred (Q-G-003)
 }
 
 pub record CreateProductRequest {
@@ -70,6 +70,7 @@ pub record CreateProductRequest {
   @proto_field(3) category:    String
   @proto_field(4) priceCents:  Int
   @proto_field(5) stockCount:  Int
+  @proto_field(6) inStock:     Bool
 }
 
 pub record UpdateProductRequest {
@@ -154,7 +155,7 @@ pub func stockValid(stockCount: in Int): Bool
   return true
 }
 
-/// Price edits never silently negate: if old was positive the new must be too.
+/// Both prices in a price-edit transaction are non-negative.
 pub func priceEditNonNegating(oldCents: in Int, newCents: in Int): Bool
   requires: oldCents >= 0
   requires: newCents >= 0

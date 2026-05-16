@@ -89,3 +89,18 @@ pub type GrpcCallOptions = record {
 /// A lazy sequence of server-streaming response messages.
 /// Call nextMessage() repeatedly until it returns None (end of stream) or Err.
 pub opaque type GrpcStream
+
+// ─── Server routing ───────────────────────────────────────────────────────────
+
+/// Single RPC method registration: proto service name, proto method name,
+/// and the qualified Lyric function name the kernel dispatches to.
+pub record GrpcRoute {
+  service:     String
+  method:      String
+  handlerName: String
+}
+
+/// Immutable registry of gRPC routes; built with Grpc.addMethod, passed to Grpc.start.
+pub record ServiceRegistry {
+  routes: [GrpcRoute]
+}

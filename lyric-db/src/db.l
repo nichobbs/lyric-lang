@@ -390,14 +390,14 @@ pub func getString(row: in DbRow, name: in String): String
 }
 
 /// Extract an Int column value.  Returns 0 for NULL or non-integer values.
+/// Use getLong for columns that may hold values outside Int32 range.
 @stable(since="0.1")
 pub func getInt(row: in DbRow, name: in String): Int
   requires: name.length > 0
 {
   match col(row, name) {
-    case DbInt(value = v)  -> return v
-    case DbLong(value = v) -> return v.toInt()
-    case _                 -> return 0
+    case DbInt(value = v) -> return v
+    case _                -> return 0
   }
 }
 
@@ -423,5 +423,61 @@ pub func getBool(row: in DbRow, name: in String): Bool
     case DbText(value = v) -> return v == "true" || v == "t" || v == "1"
     case DbInt(value = v)  -> return v != 0
     case _                 -> return false
+  }
+}
+
+// ─── Option-returning extractors (NULL-safe) ──────────────────────────────────
+// Use these when NULL is a meaningful value distinct from a zero/empty default.
+
+/// Extract a String column value.  Returns None for NULL; Some(v) for any text value.
+@stable(since="0.1")
+pub func getStringOpt(row: in DbRow, name: in String): Option[String]
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbNull            -> return None
+    case DbText(value = v)     -> return Some(value = v)
+    case DbDateTime(value = v) -> return Some(value = v)
+    case DbDecimal(value = v)  -> return Some(value = v)
+    case _                     -> return None
+  }
+}
+
+/// Extract an Int column value.  Returns None for NULL or non-integer values.
+@stable(since="0.1")
+pub func getIntOpt(row: in DbRow, name: in String): Option[Int]
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbNull           -> return None
+    case DbInt(value = v) -> return Some(value = v)
+    case _                -> return None
+  }
+}
+
+/// Extract a Long column value.  Returns None for NULL or non-integer values.
+@stable(since="0.1")
+pub func getLongOpt(row: in DbRow, name: in String): Option[Long]
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbNull            -> return None
+    case DbLong(value = v) -> return Some(value = v)
+    case DbInt(value = v)  -> return Some(value = v.toLong())
+    case _                 -> return None
+  }
+}
+
+/// Extract a Bool column value.  Returns None for NULL; prevents NULL-as-false confusion.
+@stable(since="0.1")
+pub func getBoolOpt(row: in DbRow, name: in String): Option[Bool]
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbNull            -> return None
+    case DbBool(value = v) -> return Some(value = v)
+    case DbText(value = v) -> return Some(value = v == "true" || v == "t" || v == "1")
+    case DbInt(value = v)  -> return Some(value = v != 0)
+    case _                 -> return None
   }
 }

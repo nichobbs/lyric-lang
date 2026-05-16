@@ -51,7 +51,6 @@ pub func withMetadata(opts: in GrpcCallOptions, key: in String, value: in String
   GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = opts.metadata + [entry])
 }
 
-// Internal helpers for kernel calls.
 func metadataString(opts: in GrpcCallOptions): String {
   var result: String = ""
   for entry in opts.metadata {
@@ -184,6 +183,28 @@ pub func closeStream(stream: in GrpcStream): Unit {
   Grpc.Kernel.Jvm.netCloseStream(stream)
 }
 
+// ─── Server: rate-limit wrapper (feature-gated) ───────────────────────────────
+
+/// Per-method in-process rate-limit check.  Feature-gated so aspects compile
+/// on both dotnet and jvm targets without referencing a platform-specific kernel.
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
+  requires: requestsPerMinute > 0
+  requires: burstSize > 0
+{
+  return Grpc.Kernel.Net.checkRateLimit(method, requestsPerMinute, burstSize)
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
+  requires: requestsPerMinute > 0
+  requires: burstSize > 0
+{
+  return Grpc.Kernel.Jvm.checkRateLimit(method, requestsPerMinute, burstSize)
+}
+
 // ─── Server: GrpcMetadata helper ─────────────────────────────────────────────
 
 /// Read a metadata key.  Returns None if the key is absent.
@@ -251,21 +272,10 @@ pub func unauthenticated(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.Unauthenticated, message = message)
 }
 
-// ─── Server: ServiceRegistry ──────────────────────────────────────────────────
-
-/// Single RPC method registration.
-@stable(since="0.1")
-pub record GrpcRoute {
-  service:     String
-  method:      String
-  handlerName: String
-}
-
-/// Immutable registry of gRPC routes.
-@stable(since="0.1")
-pub record ServiceRegistry {
-  routes: [GrpcRoute]
-}
+// ─── Server: ServiceRegistry ─────────────────────────────────────────────────
+// GrpcRoute and ServiceRegistry are declared in Grpc.Types so that both Grpc
+// and the kernel packages (Grpc.Kernel.Net / Grpc.Kernel.Jvm) can reference
+// them without a circular import.
 
 /// Create an empty service registry.
 @stable(since="0.1")

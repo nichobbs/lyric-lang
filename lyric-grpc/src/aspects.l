@@ -187,7 +187,7 @@ pub aspect GrpcRateLimit {
     if not enabled {
       ret = call.proceed()
     } else {
-      val allowed = Grpc.Kernel.Net.checkRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
+      val allowed = Grpc.checkRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {

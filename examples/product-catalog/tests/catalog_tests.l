@@ -110,8 +110,7 @@ test "ListProductsRequest defaults" {
   val req = ListProductsRequest(
     category    = "",
     inStockOnly = false,
-    pageSize    = 0,
-    pageToken   = ""
+    pageSize    = 0
   )
   assert req.pageSize == 0
   assert req.category == ""
@@ -123,11 +122,13 @@ test "CreateProductRequest fields" {
     description = "A fine widget",
     category    = "other",
     priceCents  = 999,
-    stockCount  = 100
+    stockCount  = 100,
+    inStock     = true
   )
   assert req.name == "Widget"
   assert req.priceCents == 999
   assert req.stockCount == 100
+  assert req.inStock == true
 }
 
 test "UpdateProductRequest fields" {
@@ -160,13 +161,8 @@ test "DeleteProductResponse deleted false" {
 // ─── ListProductsResponse ─────────────────────────────────────────────────────
 
 test "ListProductsResponse empty" {
-  val resp = ListProductsResponse(
-    products      = [],
-    total         = 0,
-    nextPageToken = ""
-  )
+  val resp = ListProductsResponse(products = [], total = 0)
   assert resp.total == 0
-  assert resp.nextPageToken == ""
 }
 
 test "ListProductsResponse with products" {
@@ -174,11 +170,7 @@ test "ListProductsResponse with products" {
     id=1L, name="A", description="", category="books",
     priceCents=500, inStock=true, stockCount=3, createdAt="2024-01-01T00:00:00Z"
   )
-  val resp = ListProductsResponse(
-    products      = [p],
-    total         = 1,
-    nextPageToken = ""
-  )
+  val resp = ListProductsResponse(products = [p], total = 1)
   assert resp.total == 1
   assert resp.products.count == 1
 }

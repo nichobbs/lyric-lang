@@ -37,16 +37,16 @@ message GetProductRequest {
 }
 
 message ListProductsRequest {
-  string category     = 1;   // empty = all categories
+  string category      = 1;   // empty = all categories
   bool   in_stock_only = 2;
-  int32  page_size    = 3;   // 0 = server default (20)
-  string page_token   = 4;   // opaque cursor; empty = first page
+  int32  page_size     = 3;   // 0 = server default (20)
+  // field 4 reserved — keyset pagination deferred (Q-G-003)
 }
 
 message ListProductsResponse {
-  repeated Product products       = 1;
-  int32            total          = 2;
-  string           next_page_token = 3;  // empty = no more pages
+  repeated Product products = 1;
+  int32            total    = 2;
+  // field 3 reserved — keyset pagination deferred (Q-G-003)
 }
 
 message CreateProductRequest {
@@ -55,6 +55,7 @@ message CreateProductRequest {
   string category    = 3;
   int32  price_cents = 4;
   int32  stock_count = 5;
+  bool   in_stock    = 6;
 }
 
 message UpdateProductRequest {
