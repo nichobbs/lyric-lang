@@ -1,20 +1,21 @@
 /// Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
 ///
-/// Provides two reusable template aspects:
+/// Provides five reusable template aspects:
 ///
-///   RequiresAuth  — validates a bearer token before proceeding; returns
-///                   401 Unauthorized or 403 Forbidden on failure.
-///                   C-mode (@inline_template): body reads args.authToken,
-///                   so it is re-compiled in the consumer's package.
-///                   Only applicable to handlers with an `authToken: String`
-///                   parameter; the compiler reports a shape error otherwise
-///                   (A0042 per docs/27-aspect-libraries.md §9.1).
+///   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
+///                         C-mode (@inline_template): reads args.authToken.
+///   RequiresRole        — validates token AND checks a role claim; 403 on
+///                         insufficient role.  C-mode: reads args.authToken.
+///   ApiKey              — constant-time API-key check; 401 on mismatch.
+///                         C-mode: reads args.apiKey.
+///   RateLimit           — per-endpoint sliding-window rate limit; 429 on
+///                         excess.  B-mode: uses call.qualifiedName.
+///   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
+///                         B-mode: uses call.qualifiedName.
 ///
-///   RateLimit     — enforces a per-endpoint call rate; returns 429 Too Many
-///                   Requests when the limit is exceeded.
-///                   B-mode: uses call.qualifiedName as the rate-limit key,
-///                   so the endpoint identity is always available without
-///                   accessing named fields on args.
+/// Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
+/// Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
+/// transport-agnostic and can be reused from gRPC or queue aspects.
 ///
 /// Typical consumer instantiation:
 ///
@@ -28,14 +29,15 @@
 ///   aspect Throttle from Web.Aspects.RateLimit {
 ///     matches: name like "handle*"
 ///     inside:  Auth
-///     config {
-///       requestsPerMinute: Int = 30
-///     }
+///     config { requestsPerMinute: Int = 30 }
 ///   }
 ///
-/// CORS is not an aspect — it applies to all responses (including 404 and
-/// OPTIONS preflight) at the HTTP middleware layer, not at the Lyric function
-/// level.  Configure it via Web.Cors config block env vars instead.
+///   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
+///     matches: name like "handle*"
+///     inside:  Throttle
+///   }
+///
+/// CORS is not an aspect — configure it via the Web.Cors config block.
 ///
 /// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
@@ -44,6 +46,8 @@ package Web.Aspects
 
 import Std.Core
 import Web
+import Auth
+import Resilience
 
 // ─── RequiresAuth ─────────────────────────────────────────────────────────────
 
@@ -54,16 +58,16 @@ import Web
 /// When the token is absent or invalid this aspect short-circuits and returns
 /// a 401 or 403 error without calling the handler.
 ///
-/// This is a C-mode template (@inline_template): the body is re-compiled
-/// inside the consumer's package so it can read args.authToken on the
-/// concrete handler parameter list.
+/// Delegates to Auth.verifyJwt (lyric-auth) for transport-agnostic token
+/// verification.  This is a C-mode template (@inline_template): the body is
+/// re-compiled inside the consumer's package so it can read args.authToken.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled     Bool    — master switch; false passes all calls through (default: true)
+///   enabled     Bool   — master switch; false passes all calls through (default: true)
 ///   @sensitive
-///   jwtSecret   String  — REQUIRED (no default): HMAC-SHA256 secret for JWT verification
-///   issuer      String  — expected JWT issuer claim; if empty, issuer is not validated (default: "")
-///   audience    String  — expected JWT audience claim; if empty, audience is not validated (default: "")
+///   jwtSecret   String — REQUIRED (no default): HMAC-SHA256 secret for JWT verification
+///   issuer      String — expected JWT issuer claim; if empty, issuer is not validated (default: "")
+///   audience    String — expected JWT audience claim; if empty, audience is not validated (default: "")
 @stable(since="0.1")
 @inline_template
 pub aspect RequiresAuth {
@@ -85,11 +89,116 @@ pub aspect RequiresAuth {
       if args.authToken == "" {
         ret = Err(Web.unauthorized("Authorization header missing or empty"))
       } else {
-        val ok = Web.Kernel.Net.verifyJwt(args.authToken, jwtSecret, issuer, audience)
+        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience)
         if ok {
           ret = call.proceed()
         } else {
           ret = Err(Web.forbidden("Token is invalid or has expired"))
+        }
+      }
+    }
+  }
+}
+
+// ─── RequiresRole ─────────────────────────────────────────────────────────────
+
+/// Validate a bearer token AND assert the caller holds a required role.
+///
+/// The handler must declare a parameter named `authToken: String`.  The aspect
+/// first verifies the JWT (same rules as RequiresAuth), then extracts the
+/// `role` claim and checks it against `allowedRoles`.
+///
+/// This is a C-mode template (@inline_template): reads args.authToken.
+///
+/// Config fields:
+///   enabled      Bool   — master switch (default: true)
+///   @sensitive
+///   jwtSecret    String — REQUIRED: HMAC-SHA256 or RS256 secret
+///   issuer       String — expected iss claim (default: "")
+///   audience     String — expected aud claim (default: "")
+///   allowedRoles String — comma-separated list of accepted role values (e.g. "admin,manager")
+@stable(since="0.1")
+@inline_template
+pub aspect RequiresRole {
+  config {
+    enabled: Bool   = true
+    @sensitive
+    jwtSecret:    String
+    issuer:       String = ""
+    audience:     String = ""
+    allowedRoles: String        // required — no default
+  }
+
+  requires:
+    args.authToken != ""
+
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      if args.authToken == "" {
+        ret = Err(Web.unauthorized("Authorization header missing or empty"))
+      } else {
+        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience)
+        if not ok {
+          ret = Err(Web.forbidden("Token is invalid or has expired"))
+        } else {
+          val claimOpt = Auth.extractClaim(args.authToken, "role")
+          match claimOpt {
+            case None ->
+              ret = Err(Web.forbidden("Token does not carry a role claim"))
+            case Some(roleValue) -> {
+              if Auth.rolesContain(allowedRoles, roleValue) {
+                ret = call.proceed()
+              } else {
+                ret = Err(Web.forbidden("Insufficient role: " + roleValue))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ─── ApiKey ───────────────────────────────────────────────────────────────────
+
+/// Validate a static API key on every matched handler call.
+///
+/// The handler must declare a parameter named `apiKey: String` (the value
+/// extracted from the X-Api-Key header or query parameter by the dispatcher).
+/// Uses constant-time comparison (Auth.verifyApiKey) to prevent timing attacks.
+///
+/// This is a C-mode template (@inline_template): reads args.apiKey.
+///
+/// Config fields:
+///   enabled     Bool   — master switch (default: true)
+///   @sensitive
+///   expectedKey String — REQUIRED: the accepted API key
+@stable(since="0.1")
+@inline_template
+pub aspect ApiKey {
+  config {
+    enabled: Bool   = true
+    @sensitive
+    expectedKey: String        // required — no default
+  }
+
+  requires:
+    args.apiKey != ""
+
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      if args.apiKey == "" {
+        ret = Err(Web.unauthorized("X-Api-Key header missing"))
+      } else {
+        val ok = Auth.verifyApiKey(args.apiKey, expectedKey)
+        if ok {
+          ret = call.proceed()
+        } else {
+          ret = Err(Web.unauthorized("API key is invalid"))
         }
       }
     }
@@ -130,6 +239,53 @@ pub aspect RateLimit {
         ret = call.proceed()
       } else {
         ret = Err(Web.tooManyRequests("Rate limit exceeded — try again later"))
+      }
+    }
+  }
+}
+
+// ─── HttpCircuitBreaker ───────────────────────────────────────────────────────
+
+/// HTTP-specific circuit breaker: open circuit returns 503 Service Unavailable.
+///
+/// Wraps the transport-agnostic Resilience.CircuitBreaker logic and maps the
+/// open-circuit failure to ApiError (503) instead of Err(String), so it
+/// composes correctly with HTTP handler return types (Result[T, ApiError]).
+///
+/// When the circuit is open, handlers are short-circuited with
+/// 503 Service Unavailable without invoking the underlying function.
+/// After `cooldownMs` the circuit transitions to half-open; one probe call
+/// is allowed through.  A successful probe closes the circuit.
+///
+/// B-mode: uses call.qualifiedName as the circuit name unless `name` is set.
+///
+/// Config fields:
+///   enabled          Bool   — master switch (default: true)
+///   name             String — circuit name; defaults to call.qualifiedName (default: "")
+///   failureThreshold Int    — consecutive failures before opening (default: 5)
+///   cooldownMs       Int    — ms to wait before probing again (default: 30000)
+@stable(since="0.1")
+pub aspect HttpCircuitBreaker {
+  config {
+    enabled:          Bool   = true
+    name:             String = ""
+    failureThreshold: Int    = 5
+    cooldownMs:       Int    = 30000
+  }
+
+  around(call) -> ret {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      val key = if name.length > 0 then name else call.qualifiedName
+      if Resilience.circuitIsOpen(key, cooldownMs) {
+        ret = Err(Web.serviceUnavailable(key + " is temporarily unavailable"))
+      } else {
+        ret = call.proceed()
+        match ret {
+          case Ok(_)  -> Resilience.circuitRecordSuccess(key)
+          case Err(_) -> Resilience.circuitRecordFailure(key, failureThreshold)
+        }
       }
     }
   }

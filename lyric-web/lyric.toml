@@ -5,7 +5,8 @@
 #                        entry point, and runtime config blocks.
 #   Web.OpenApi        — OpenAPI 3.1 spec type vocabulary and code-first
 #                        spec-builder.
-#   Web.Aspects        — pub aspect templates: RequiresAuth, RateLimit.
+#   Web.Aspects        — pub aspect templates: RequiresAuth, RequiresRole,
+#                        ApiKey, RateLimit, HttpCircuitBreaker.
 #   Web.Kernel.Net     — ASP.NET Core / Kestrel extern boundary.
 #
 # Both development workflows are supported:
@@ -45,7 +46,9 @@ output_assembly = "Web.dll"
 "Web.Kernel.Net"  = "src/_kernel/net/web_kernel.l"
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib"       = { path = "../stdlib" }
+"Lyric.Auth"         = { path = "../lyric-auth" }
+"Lyric.Resilience"   = { path = "../lyric-resilience" }
 
 [nuget]
 # ASP.NET Core is part of the .NET SDK; no extra package needed for Kestrel.

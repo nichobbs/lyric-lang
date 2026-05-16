@@ -1,0 +1,143 @@
+/// Auth — transport-agnostic authentication and credential verification.
+///
+/// Provides JWT, API-key, and role-claim primitives that work across HTTP,
+/// gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
+/// aspect *bindings* call these functions; the verification logic itself has
+/// no transport dependency.
+///
+/// Functions:
+///   Auth.verifyJwt      — validates HMAC-SHA256 or RS256 bearer tokens
+///   Auth.extractClaim   — reads a named claim from a pre-verified JWT
+///   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
+///
+/// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
+///
+///   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience)
+///   if not ok { return Err(Web.forbidden("Token is invalid")) }
+///   val role = Auth.extractClaim(token, "role")
+///
+/// See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
+/// RequiresRole, ApiKey).
+
+@runtime_checked
+package Auth
+
+import Std.Core
+import Auth.Kernel.Net
+import Auth.Kernel.Jvm
+
+// ─── JWT verification ─────────────────────────────────────────────────────────
+
+/// Validate a Bearer JWT.
+///
+/// Returns true iff:
+///   - The token is syntactically well-formed.
+///   - The HMAC-SHA256 (HS256) or RS256 signature verifies against `secret`.
+///   - `issuer` matches the `iss` claim (skipped when `issuer` is empty).
+///   - `audience` matches the `aud` claim (skipped when `audience` is empty).
+///
+/// Returns false for any failure — expired, tampered, missing claim, or
+/// malformed header.  False is the safe default; callers must treat it as
+/// "deny" and never special-case error variants.
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func verifyJwt(
+  token:    in String,
+  secret:   in String,
+  issuer:   in String,
+  audience: in String
+): Bool
+  requires: secret.length > 0
+{
+  return Auth.Kernel.Net.verifyJwt(token, secret, issuer, audience)
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func verifyJwt(
+  token:    in String,
+  secret:   in String,
+  issuer:   in String,
+  audience: in String
+): Bool
+  requires: secret.length > 0
+{
+  return Auth.Kernel.Jvm.verifyJwt(token, secret, issuer, audience)
+}
+
+// ─── Claim extraction ─────────────────────────────────────────────────────────
+
+/// Extract a named claim from a JWT payload.
+///
+/// Call this ONLY on tokens already accepted by `verifyJwt`.  The function
+/// does not re-verify the signature; it decodes the payload and returns the
+/// value for `claimKey`, or None if the claim is absent.
+///
+/// Common claim keys: "sub" (subject), "role", "email", "scope".
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func extractClaim(token: in String, claimKey: in String): Option[String]
+  requires: claimKey.length > 0
+{
+  return Auth.Kernel.Net.extractClaim(token, claimKey)
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func extractClaim(token: in String, claimKey: in String): Option[String]
+  requires: claimKey.length > 0
+{
+  return Auth.Kernel.Jvm.extractClaim(token, claimKey)
+}
+
+// ─── API key verification ─────────────────────────────────────────────────────
+
+/// Constant-time comparison of `provided` against `expected`.
+///
+/// Returns true iff the two strings are byte-for-byte identical.
+/// The comparison runs in time proportional to `expected.length` regardless
+/// of where the strings first differ, preventing timing-oracle attacks.
+///
+/// Always supply the expected key as `expected` (not `provided`) to ensure
+/// the timing guarantee holds even when `provided` is shorter.
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func verifyApiKey(provided: in String, expected: in String): Bool
+  requires: expected.length > 0
+{
+  return Auth.Kernel.Net.verifyApiKey(provided, expected)
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func verifyApiKey(provided: in String, expected: in String): Bool
+  requires: expected.length > 0
+{
+  return Auth.Kernel.Jvm.verifyApiKey(provided, expected)
+}
+
+// ─── Role claim helpers ───────────────────────────────────────────────────────
+
+/// Check whether a comma-separated role string contains `role`.
+///
+/// Used by RequiresRole bindings to match the `role` JWT claim against
+/// an allowlist.  For example, `"admin,manager"` contains `"admin"`.
+@stable(since="0.1")
+pub func rolesContain(allowedRoles: in String, role: in String): Bool {
+  if allowedRoles.length == 0 { return false }
+  if role.length == 0         { return false }
+  // Simple linear scan — role lists are short; no allocation needed.
+  var start: Int = 0
+  var i:     Int = 0
+  while i <= allowedRoles.length {
+    val atEnd     = i == allowedRoles.length
+    val atComma   = not atEnd && allowedRoles.charAt(i).toString() == ","
+    if atEnd || atComma {
+      val candidate = allowedRoles.substring(start, i)
+      if candidate == role { return true }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  return false
+}
