@@ -374,10 +374,10 @@ func parseMetadata(json: in String): Result[StorageMetadata, StorageError] {
     return Err(StorageError(message = "unexpected metadata JSON shape", code = "PARSE_ERROR"))
   }
   val ct  = Std.Json.getString(Std.Json.getProperty(root, "contentType"))
-  val cl  = Std.Json.getLong(Std.Json.getProperty(root, "contentLength"))
+  val cl  = Std.Json.getInt64(Std.Json.getProperty(root, "contentLength"))
   val et  = Std.Json.getString(Std.Json.getProperty(root, "etag"))
   val lm  = Std.Json.getString(Std.Json.getProperty(root, "lastModified"))
-  val um  = parseStringMap(Std.Json.getProperty(root, "userMeta"))
+  val um  = parseStringMap(Std.Json.getRawText(Std.Json.getProperty(root, "userMeta")))
   return Ok(StorageMetadata(
     contentType   = ct,
     contentLength = cl,
@@ -415,7 +415,7 @@ func parseListResult(json: in String): Result[ListResult, StorageError] {
   if Std.Json.valueKind(root) != 1 {
     return Err(StorageError(message = "unexpected list JSON shape", code = "PARSE_ERROR"))
   }
-  val truncated = Std.Json.getBool(Std.Json.getProperty(root, "isTruncated"))
+  val truncated = Std.Json.getBoolean(Std.Json.getProperty(root, "isTruncated"))
   val tokenEl   = Std.Json.getProperty(root, "nextContinuationToken")
   val tokenOpt  = if Std.Json.valueKind(tokenEl) == 7 then None
                   else Some(value = Std.Json.getString(tokenEl))
@@ -425,7 +425,7 @@ func parseListResult(json: in String): Result[ListResult, StorageError] {
   while Std.Json.arrayMoveNext(en) {
     val e   = Std.Json.arrayCurrent(en)
     val ek  = Std.Json.getString(Std.Json.getProperty(e, "key"))
-    val ecl = Std.Json.getLong(Std.Json.getProperty(e, "contentLength"))
+    val ecl = Std.Json.getInt64(Std.Json.getProperty(e, "contentLength"))
     val elm = Std.Json.getString(Std.Json.getProperty(e, "lastModified"))
     val eet = Std.Json.getString(Std.Json.getProperty(e, "etag"))
     entries = entries + [ListEntry(key = ek, contentLength = ecl, lastModified = elm, etag = eet)]
@@ -437,8 +437,11 @@ func parseListResult(json: in String): Result[ListResult, StorageError] {
 }
 
 // Deserialise a JSON object of string-string pairs into Map[String, String].
-func parseStringMap(elem: in Std.Json.JsonElement): Map[String, String] {
-  var m  = Map.empty()
+// Accepts raw JSON text so JsonElement does not escape this helper.
+func parseStringMap(rawJson: in String): Map[String, String] {
+  var m    = Map.empty()
+  val doc  = Std.Json.parseJson(rawJson)
+  val elem = Std.Json.rootElement(doc)
   if Std.Json.valueKind(elem) != 1 { return m }
   var en = Std.Json.enumerateObject(elem)
   while Std.Json.objectMoveNext(en) {
