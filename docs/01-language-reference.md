@@ -1190,7 +1190,7 @@ An `aspect` block is a module-scope item that declares cross-cutting behaviour a
 
 ```ebnf
 aspect <Name> {
-  matches: name like "<glob>"
+  matches: <predicate> [ and <predicate> ]* [ except name in { <name> [, ...] } ]
 
   [ wraps: <AspectName> [, ...] ]
   [ inside: <AspectName> [, ...] ]
@@ -1206,7 +1206,16 @@ aspect <Name> {
 
 An aspect must define at least one of: an `around` advice body, a `requires:` clause, or an `ensures:` clause. An aspect with none of the above is a compile error (A0009).
 
-**`matches:`** selects which functions the aspect applies to. `name like "<glob>"` matches on the function's short (unqualified) name. Glob metacharacters: `*` (any sequence), `?` (any single character), `[abc]` (character set), `[a-z]` (character range).
+**`matches:`** selects which functions the aspect applies to. Multiple predicates are joined by `and` (all must hold). The available predicates are:
+
+| Predicate | Selects functions where… |
+|-----------|--------------------------|
+| `name like "<glob>"` | Short name matches the glob (`*`, `?`, `[abc]`, `[a-z]`) |
+| `annotated: @Name` | Carries the named annotation (matched on short name) |
+| `visibility: pub \| priv \| internal` | Has the stated access level |
+| `signature: returns "<glob>"` | Return type string matches the glob |
+
+`except name in { fn1, fn2 }` excludes specific short names after all predicates pass.
 
 Matching aspects are package-private: they weave over functions in the same package only. A `pub aspect` without a `matches:` clause is an exportable template (deferred; see §14.7).
 
@@ -1267,7 +1276,6 @@ The following are specified but not yet fully woven:
 
 - The `call` ambient value (`call.shortName`, `call.elapsed`, etc.) inside the around body — not yet parsed or woven.
 - `config {}` blocks in aspects — parsed by the compiler but the weaver does not act on them.
-- `except name in { ... }` exclusion clause inside `matches:` — not yet parsed.
 - `pub aspect` templates and consumer-side instantiation (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver does not act on them.
 
 ---

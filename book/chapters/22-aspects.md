@@ -22,12 +22,16 @@ aspect Logging {
 
 Three parts make up this aspect.
 
-**`matches:`** is the filter that determines which functions this aspect applies to. `name like "handle*"` selects every function in the current package whose short name starts with `handle`. The glob syntax supports:
+**`matches:`** is the filter that determines which functions this aspect applies to. It accepts one or more predicates joined by `and`; every predicate must hold for a function to be selected:
 
-- `*` — matches any sequence of characters (including none)
-- `?` — matches exactly one character
-- `[abc]` — matches any one character from the set
-- `[a-z]` — matches any one character in the range
+| Predicate | Selects when… |
+|-----------|---------------|
+| `name like "<glob>"` | Short name matches the glob (`*` any sequence, `?` one char, `[abc]`/`[a-z]` sets/ranges) |
+| `annotated: @Name` | Function carries the named annotation |
+| `visibility: pub \| priv \| internal` | Function has the stated access level |
+| `signature: returns "<glob>"` | Return type (e.g. `"Int"`, `"Result[*,*]"`) matches the glob |
+
+An optional `except name in { fn1, fn2 }` suffix excludes specific functions by short name after all predicates pass. For example, `name like "handle*"` selects every function in the current package whose short name starts with `handle`.
 
 **`around(args) -> ret`** is the advice body. `args` is a placeholder for the original function's arguments, forwarded unchanged when you call `proceed(args)`. `ret` is the binding name for the return value; its type equals the matched target's return type. The body's last expression is the return value (for `Unit`-returning functions this is implicit).
 
@@ -155,8 +159,6 @@ The following features are designed and specified in `docs/26-aspects.md` but no
 **`call` context.** A future milestone adds an ambient `call` value inside the around body that exposes metadata about the weave site: `call.shortName`, `call.qualifiedName`, `call.modulePath`, `call.elapsed` (elapsed time after `proceed`), `call.annotations`, and `call.sourceLocation`. The syntax will be `around(call) -> ret { ... }`.
 
 **`config {}` in aspects.** Aspect-level config blocks for compile-time-overridable parameters (e.g. `config { enabled: Bool = true }`) are deferred.
-
-**`except name in { ... }` in `matches:`.** A bulk exclusion clause inside the `matches:` filter is planned but not yet parsed.
 
 **Aspect templates.** `pub aspect Name { around(call) -> ret { ... } }` without a `matches:` clause — an exportable template that consumer packages instantiate with their own filter — **shipped** (D051 / D-progress-221; used in `lyric-otel`, `lyric-logging`, `lyric-web`, `lyric-cache`, `lyric-db`).
 

@@ -304,7 +304,12 @@ aspect Auth {
 }
 ```
 
-Glob metacharacters in `matches:`: `*` (any sequence), `?` (one char), `[abc]` (set), `[a-z]` (range).  
+Predicates in `matches:` are joined by `and` (all must hold):  
+`name like "<glob>"` — short name glob (`*`, `?`, `[abc]`, `[a-z]`).  
+`annotated: @Name` — carries the named annotation.  
+`visibility: pub | priv | internal` — declared access level.  
+`signature: returns "<glob>"` — return type string matches glob (e.g. `"Int"`, `"Result[*,*]"`).  
+`except name in { fn1, fn2 }` — exclude specific names.  
 Ordering: `wraps: OtherAspect` (this aspect is outer), `inside: OtherAspect` (this aspect is inner). Default: lexical declaration order.  
 Opt-out: `@no_aspect` (all aspects) / `@no_aspect("Name")` (named aspect, string literal).  See chapter 22.
 

@@ -1725,36 +1725,6 @@ func parseAspectConfigBlock(st: inout ParseState): List[ConfigField] {
 }
 
 // Build a type-glob string from tokens until a boundary (newline/and/except/}).
-func parseTypeGlobPattern(st: inout ParseState): String {
-  var result = ""
-  var keepGoing = true
-  while keepGoing {
-    match peekToken(st) {
-      case TStmtEnd -> { keepGoing = false }
-      case TPunct(RBrace) -> { keepGoing = false }
-      case TKeyword(k) -> {
-        // `and` (KwAnd) ends the type-glob pattern.
-        keepGoing = false
-      }
-      case TIdent(k) -> {
-        if k == "except" {
-          keepGoing = false
-        } else {
-          val _ = advance(st)
-          result = result + k
-        }
-      }
-      case TPunct(LBracket) -> { val _ = advance(st); result = result + "[" }
-      case TPunct(RBracket) -> { val _ = advance(st); result = result + "]" }
-      case TPunct(Comma)    -> { val _ = advance(st); result = result + ", " }
-      case TPunct(Star)     -> { val _ = advance(st); result = result + "*" }
-      case TPunct(Question) -> { val _ = advance(st); result = result + "?" }
-      case _ -> { keepGoing = false }
-    }
-  }
-  result
-}
-
 // Parse one predicate. Returns None if the current token is not a predicate keyword.
 func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
   match peekToken(st) {

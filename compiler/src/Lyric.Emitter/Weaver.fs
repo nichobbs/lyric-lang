@@ -264,14 +264,14 @@ let rec private typeExprToString (te: TypeExpr) : string =
     | TUnit   -> "Unit"
     | TNever  -> "Never"
     | TSelf   -> "Self"
-    | TError  -> ""
+    | TError  -> "<error>"
     | TGenericApp (head, args) ->
         let h = head.Segments |> String.concat "."
         let argStrs =
-            args |> List.choose (fun a ->
+            args |> List.map (fun a ->
                 match a with
-                | TAType inner -> Some (typeExprToString inner)
-                | _            -> None)
+                | TAType inner -> typeExprToString inner
+                | _            -> "_")
         sprintf "%s[%s]" h (argStrs |> String.concat ", ")
     | TSlice inner      -> sprintf "slice[%s]" (typeExprToString inner)
     | TArray (_, inner) -> sprintf "array[%s]" (typeExprToString inner)
