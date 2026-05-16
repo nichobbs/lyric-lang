@@ -666,11 +666,14 @@ pub record ConfigDecl {
   span:   Span
 }
 
-/// `matches:` predicate for D047 aspect blocks.  v1 ships only
-/// name-glob matching; future predicates (signature, annotation,
-/// visibility) extend this union.
+/// `matches:` predicate for D047 aspect blocks.  All predicates within
+/// a `matches:` clause are AND'd; the `except name in { ... }` exclusion
+/// list lives on AspectDecl.
 pub union AspectMatcher {
   case AMNameLike(glob: String, span: Span)
+  case AMAnnotated(annotName: String, span: Span)
+  case AMVisibility(vis: String, span: Span)
+  case AMSignatureReturns(typeGlob: String, span: Span)
 }
 
 pub record AspectAround {
@@ -681,17 +684,20 @@ pub record AspectAround {
 }
 
 pub record AspectDecl {
-  name:      String
+  name:        String
   /// `from Pkg.Template` — present only on instantiation-form aspects (D051).
-  from:      Option[ModulePath]
+  from:        Option[ModulePath]
   /// Anonymous `config { }` block inside the aspect body (D047/D051).
-  config:    List[ConfigField]
-  matches:   List[AspectMatcher]
-  around:    Option[AspectAround]
-  contracts: List[ContractClause]   // §5 composition: requires:/ensures: on aspect body
-  wraps:     List[String]           // §6 ordering: this aspect wraps the named aspects
-  inside:    List[String]           // §6 ordering: this aspect runs inside the named aspects
-  span:      Span
+  config:      List[ConfigField]
+  /// Predicates that all must hold (AND) for a function to be matched.
+  matches:     List[AspectMatcher]
+  /// Short names excluded from matching even when all predicates hold.
+  exceptNames: List[String]
+  around:      Option[AspectAround]
+  contracts:   List[ContractClause]   // §5 composition: requires:/ensures: on aspect body
+  wraps:       List[String]           // §6 ordering: this aspect wraps the named aspects
+  inside:      List[String]           // §6 ordering: this aspect runs inside the named aspects
+  span:        Span
 }
 
 // D046 / D047 self-hosted parser dispatch + bodies are added in

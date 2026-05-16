@@ -742,11 +742,20 @@ and private itemDoc (item: Item) : Doc =
             if ad.Inside.IsEmpty then []
             else [sprintf "  inside: %s" (ad.Inside |> String.concat ", ")]
         let matchesLines =
-            ad.Matches
-            |> List.map (fun m ->
-                match m with
-                | AMNameLike (g, _) ->
-                    sprintf "  matches: name like \"%s\"" g)
+            if ad.Matches.IsEmpty then []
+            else
+                let preds =
+                    ad.Matches |> List.map (fun m ->
+                        match m with
+                        | AMNameLike         (g, _)  -> sprintf "name like \"%s\"" g
+                        | AMAnnotated        (n, _)  -> sprintf "annotated: @%s" n
+                        | AMVisibility       (v, _)  -> sprintf "visibility: %s" v
+                        | AMSignatureReturns (t, _)  -> sprintf "signature: returns \"%s\"" t)
+                let body = preds |> String.concat " and "
+                let ex =
+                    if ad.ExceptNames.IsEmpty then ""
+                    else sprintf " except name in { %s }" (ad.ExceptNames |> String.concat ", ")
+                [sprintf "  matches: %s%s" body ex]
         let contractLines =
             ad.Contracts |> List.map (fun c -> "  " + contractStr c)
         let aroundLines =

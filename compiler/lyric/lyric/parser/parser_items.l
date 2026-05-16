@@ -1724,28 +1724,53 @@ func parseAspectConfigBlock(st: inout ParseState): List[ConfigField] {
   fields
 }
 
-func parseAspectMatcher(st: inout ParseState): Option[AspectMatcher] {
-  val _ = skipStmtEnds(st)
+// Build a type-glob string from tokens until a boundary (newline/and/except/}).
+func parseTypeGlobPattern(st: inout ParseState): String {
+  var result = ""
+  var keepGoing = true
+  while keepGoing {
+    match peekToken(st) {
+      case TStmtEnd -> { keepGoing = false }
+      case TPunct(RBrace) -> { keepGoing = false }
+      case TKeyword(k) -> {
+        // `and` (KwAnd) ends the type-glob pattern.
+        keepGoing = false
+      }
+      case TIdent(k) -> {
+        if k == "except" {
+          keepGoing = false
+        } else {
+          val _ = advance(st)
+          result = result + k
+        }
+      }
+      case TPunct(LBracket) -> { val _ = advance(st); result = result + "[" }
+      case TPunct(RBracket) -> { val _ = advance(st); result = result + "]" }
+      case TPunct(Comma)    -> { val _ = advance(st); result = result + ", " }
+      case TPunct(Star)     -> { val _ = advance(st); result = result + "*" }
+      case TPunct(Question) -> { val _ = advance(st); result = result + "?" }
+      case _ -> { keepGoing = false }
+    }
+  }
+  result
+}
+
+// Parse one predicate. Returns None if the current token is not a predicate keyword.
+func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
   match peekToken(st) {
     case TIdent(s) -> {
       if s == "name" {
         val _ = advance(st)
         match peekToken(st) {
           case TIdent(s2) -> {
-            if s2 == "like" {
-              val _ = advance(st)
-            } else {
-              emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st))
-            }
+            if s2 == "like" { val _ = advance(st) }
+            else { emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st)) }
           }
-          case _ -> {
-            emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st))
-          }
+          case _ -> { emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st)) }
         }
         match peekToken(st) {
           case TString(g) -> {
-            val sp = peekSpan(st)
-            val _ = advance(st)
+            val sp = peekSpan(st); val _ = advance(st)
             Some(value = AMNameLike(glob = g, span = sp))
           }
           case _ -> {
@@ -1753,15 +1778,183 @@ func parseAspectMatcher(st: inout ParseState): Option[AspectMatcher] {
             None
           }
         }
+      } else if s == "annotated" {
+        val _ = advance(st)
+        match tryEatPunct(st, Colon) {
+          case Some(_) -> {}
+          case None -> { emitErr(st, "P0310", "expected ':' after 'annotated'", peekSpan(st)) }
+        }
+        match peekToken(st) {
+          case TPunct(At) -> {
+            val _ = advance(st)
+            match peekToken(st) {
+              case TIdent(n) -> {
+                val sp = peekSpan(st); val _ = advance(st)
+                Some(value = AMAnnotated(annotName = n, span = sp))
+              }
+              case _ -> {
+                emitErr(st, "P0311", "expected annotation name after '@'", peekSpan(st))
+                None
+              }
+            }
+          }
+          case _ -> {
+            emitErr(st, "P0312", "expected '@AnnotName' in annotated: predicate", peekSpan(st))
+            None
+          }
+        }
+      } else if s == "visibility" {
+        val _ = advance(st)
+        match tryEatPunct(st, Colon) {
+          case Some(_) -> {}
+          case None -> { emitErr(st, "P0313", "expected ':' after 'visibility'", peekSpan(st)) }
+        }
+        val sp = peekSpan(st)
+        match peekToken(st) {
+          case TKeyword(k) -> {
+            if k == KwPub {
+              val _ = advance(st)
+              Some(value = AMVisibility(vis = "pub", span = sp))
+            } else if k == KwInternal {
+              val _ = advance(st)
+              Some(value = AMVisibility(vis = "internal", span = sp))
+            } else {
+              emitErr(st, "P0314", "expected 'pub', 'priv', or 'internal' after 'visibility:'", sp)
+              None
+            }
+          }
+          case TIdent(v) -> {
+            if v == "priv" {
+              val _ = advance(st)
+              Some(value = AMVisibility(vis = "priv", span = sp))
+            } else {
+              emitErr(st, "P0314", "expected 'pub', 'priv', or 'internal' after 'visibility:'", sp)
+              None
+            }
+          }
+          case _ -> {
+            emitErr(st, "P0314", "expected 'pub', 'priv', or 'internal' after 'visibility:'", sp)
+            None
+          }
+        }
+      } else if s == "signature" {
+        val _ = advance(st)
+        match tryEatPunct(st, Colon) {
+          case Some(_) -> {}
+          case None -> { emitErr(st, "P0315", "expected ':' after 'signature'", peekSpan(st)) }
+        }
+        match peekToken(st) {
+          case TIdent(kw) -> {
+            if kw == "returns" {
+              val sp = peekSpan(st)
+              val _ = advance(st)
+              match peekToken(st) {
+                case TString(g) -> {
+                  val sp2 = peekSpan(st)
+                  val _ = advance(st)
+                  Some(value = AMSignatureReturns(typeGlob = g, span = sp2))
+                }
+                case _ -> {
+                  emitErr(st, "P0316", "expected a string-literal type glob after 'signature: returns'", peekSpan(st))
+                  None
+                }
+              }
+            } else {
+              emitErr(st, "P0317", "expected 'returns' after 'signature:'", peekSpan(st))
+              None
+            }
+          }
+          case _ -> {
+            emitErr(st, "P0317", "expected 'returns' after 'signature:'", peekSpan(st))
+            None
+          }
+        }
       } else {
-        emitErr(st, "P0297", "expected 'name like \"...\"' in matches: clause", peekSpan(st))
         None
       }
     }
-    case _ -> {
-      emitErr(st, "P0297", "expected 'name like \"...\"' in matches: clause", peekSpan(st))
-      None
+    case _ -> None
+  }
+}
+
+// Parse a `matches:` clause: predicates joined by `and`, then optional
+// `except name in { ... }`.  Results are appended to the supplied lists.
+func parseAspectMatchesClause(st: inout ParseState, matchers: inout List[AspectMatcher], exceptNames: inout List[String]): Unit {
+  val _ = skipStmtEnds(st)
+  match parseOneMatchPredicate(st) {
+    case Some(m) -> matchers.add(m)
+    case None ->
+      emitErr(st, "P0297", "expected a predicate in matches: clause", peekSpan(st))
+  }
+  var keepGoing = true
+  while keepGoing {
+    val _ = skipStmtEnds(st)
+    match peekToken(st) {
+      case TKeyword(k) -> {
+        if k == KwAnd {
+          val _ = advance(st)
+          val _ = skipStmtEnds(st)
+          match parseOneMatchPredicate(st) {
+            case Some(m) -> matchers.add(m)
+            case None -> {
+              emitErr(st, "P0318", "expected a predicate after 'and'", peekSpan(st))
+              keepGoing = false
+            }
+          }
+        } else {
+          keepGoing = false
+        }
+      }
+      case _ -> { keepGoing = false }
     }
+  }
+  // Optional `except name in { ... }`
+  val _ = skipStmtEnds(st)
+  match peekToken(st) {
+    case TIdent(kw) -> {
+      if kw == "except" {
+        val _ = advance(st)
+        match peekToken(st) {
+          case TIdent(k) -> {
+            if k == "name" { val _ = advance(st) }
+            else { emitErr(st, "P0319", "expected 'name' after 'except'", peekSpan(st)) }
+          }
+          case _ -> { emitErr(st, "P0319", "expected 'name' after 'except'", peekSpan(st)) }
+        }
+        match peekToken(st) {
+          case TKeyword(k) -> {
+            if k == KwIn { val _ = advance(st) }
+            else { emitErr(st, "P0320", "expected 'in' after 'except name'", peekSpan(st)) }
+          }
+          case _ -> { emitErr(st, "P0320", "expected 'in' after 'except name'", peekSpan(st)) }
+        }
+        match tryEatPunct(st, LBrace) {
+          case Some(_) -> {}
+          case None -> { emitErr(st, "P0321", "expected '{' after 'except name in'", peekSpan(st)) }
+        }
+        val _ = skipStmtEnds(st)
+        var moreNames = true
+        while moreNames {
+          match peekToken(st) {
+            case TIdent(n) -> {
+              val _ = advance(st)
+              exceptNames.add(n)
+              val _ = skipStmtEnds(st)
+              match tryEatPunct(st, Comma) {
+                case Some(_) -> { val _ = skipStmtEnds(st) }
+                case None -> { moreNames = false }
+              }
+            }
+            case _ -> { moreNames = false }
+          }
+        }
+        match tryEatPunct(st, RBrace) {
+          case Some(_) -> {}
+          case None -> { emitErr(st, "P0322", "expected '}' to close 'except name in { ... }'", peekSpan(st)) }
+        }
+      }
+    }
+    case _ -> {}
   }
 }
 
@@ -1816,8 +2009,9 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
     case None -> { emitErr(st, "P0300", "expected '{' to start aspect body", peekSpan(st)) }
   }
   val _ = skipStmtEnds(st)
-  val matches:   List[AspectMatcher]  = newList()
-  val config:    List[ConfigField]    = newList()
+  val matches:     List[AspectMatcher]  = newList()
+  val exceptNames: List[String]         = newList()
+  val config:      List[ConfigField]    = newList()
   var configSeen: Bool = false
   val contracts: List[ContractClause] = newList()
   val wraps:     List[String]         = newList()
@@ -1833,10 +2027,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
             case Some(_) -> {}
             case None -> { emitErr(st, "P0296", "expected ':' after 'matches'", peekSpan(st)) }
           }
-          match parseAspectMatcher(st) {
-            case Some(m) -> matches.add(m)
-            case None -> {}
-          }
+          parseAspectMatchesClause(st, matches, exceptNames)
         } else if s == "config" {
           if not configSeen {
             val _ = advance(st)
@@ -1941,15 +2132,16 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
       }
     }
   AspectDecl(
-    name      = ns.name,
-    from      = fromPath,
-    config    = config,
-    matches   = matches,
-    around    = around,
-    contracts = contracts,
-    wraps     = wraps,
-    inside    = inside,
-    span      = joinSpans(startTok.span, endSpan))
+    name        = ns.name,
+    from        = fromPath,
+    config      = config,
+    matches     = matches,
+    exceptNames = exceptNames,
+    around      = around,
+    contracts   = contracts,
+    wraps       = wraps,
+    inside      = inside,
+    span        = joinSpans(startTok.span, endSpan))
 }
 
 func parseTestBody(st: inout ParseState): TestDecl {

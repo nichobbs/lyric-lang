@@ -1178,12 +1178,14 @@ MatchesClause =
         [ NL ExceptClause ] ;
 
 MatchesPredicate =
-    'name' 'like' StringLit ;
+      'name'       'like'    StringLit
+    | 'annotated'  ':'       '@' IDENT
+    | 'visibility' ':'       ( 'pub' | 'priv' | 'internal' )
+    | 'signature'  ':'       'returns' StringLit ;
 
-(* Reserved future forms (not valid in v1):
- *   'signature' ':' ...
- *   'annotated' ':' Annotation
- *   'visibility' ':' 'pub' *)
+(* The StringLit in 'signature: returns' is a glob pattern matched against
+ * the string rendering of the function's declared return type.
+ * Examples: "Int"  "Result[*,*]"  "Option[Int]"  "slice[*]"  "*" *)
 
 ExceptClause =
     'except' 'name' 'in' '{' IDENT { ',' IDENT } [ ',' ] '}' ;

@@ -252,6 +252,65 @@ let private sortAspects (aspects: AspectDecl list) : AspectDecl list =
         sorted |> Seq.choose (fun n -> Map.tryFind n byName) |> List.ofSeq
 
 // ---------------------------------------------------------------------------
+// Return-type string representation for `signature: returns` matching
+// ---------------------------------------------------------------------------
+
+/// Convert a TypeExpr to a glob-matchable string.
+/// Generic applications: "Head[Arg1, Arg2]".  Unit: "Unit".  Wildcards
+/// in the pattern use `*`; no wildcards appear in the target string.
+let rec private typeExprToString (te: TypeExpr) : string =
+    match te.Kind with
+    | TRef mp -> mp.Segments |> String.concat "."
+    | TUnit   -> "Unit"
+    | TNever  -> "Never"
+    | TSelf   -> "Self"
+    | TError  -> ""
+    | TGenericApp (head, args) ->
+        let h = head.Segments |> String.concat "."
+        let argStrs =
+            args |> List.choose (fun a ->
+                match a with
+                | TAType inner -> Some (typeExprToString inner)
+                | _            -> None)
+        sprintf "%s[%s]" h (argStrs |> String.concat ", ")
+    | TSlice inner      -> sprintf "slice[%s]" (typeExprToString inner)
+    | TArray (_, inner) -> sprintf "array[%s]" (typeExprToString inner)
+    | TNullable inner   -> sprintf "%s?" (typeExprToString inner)
+    | TTuple items ->
+        sprintf "(%s)" (items |> List.map typeExprToString |> String.concat ", ")
+    | TFunction (ps, ret) ->
+        let pStr = ps |> List.map typeExprToString |> String.concat ", "
+        sprintf "(%s) -> %s" pStr (typeExprToString ret)
+    | TRefined (mp, _)  -> mp.Segments |> String.concat "."
+    | TParen inner      -> typeExprToString inner
+
+// ---------------------------------------------------------------------------
+// Predicate matching
+// ---------------------------------------------------------------------------
+
+/// Returns true if `fn` satisfies all predicates in `matchers` (AND semantics).
+let private matchesPredicates (matchers: AspectMatcher list) (fn: FunctionDecl) : bool =
+    matchers |> List.forall (fun m ->
+        match m with
+        | AMNameLike (glob, _) ->
+            globMatch glob fn.Name
+        | AMAnnotated (annotName, _) ->
+            fn.Annotations |> List.exists (fun ann ->
+                match ann.Name.Segments with
+                | [] -> false
+                | segs -> segs[segs.Length - 1] = annotName)
+        | AMVisibility (vis, _) ->
+            match vis with
+            | "pub"      -> fn.Visibility |> Option.exists (fun v -> match v with Pub _      -> true | _ -> false)
+            | "internal" -> fn.Visibility |> Option.exists (fun v -> match v with Internal _ -> true | _ -> false)
+            | "priv"     -> fn.Visibility.IsNone
+            | _          -> false
+        | AMSignatureReturns (typeGlob, _) ->
+            match fn.Return with
+            | None    -> globMatch typeGlob "Unit"
+            | Some te -> globMatch typeGlob (typeExprToString te))
+
+// ---------------------------------------------------------------------------
 // @no_aspect opt-out check
 // ---------------------------------------------------------------------------
 
@@ -301,10 +360,8 @@ let weaveItems (items: Item list) : Item list =
                     aspects
                     |> List.filter (fun a ->
                         not (isOptedOut fn a.Name) &&
-                        a.Matches
-                        |> List.exists (fun m ->
-                            match m with
-                            | AMNameLike (glob, _) -> globMatch glob fn.Name))
+                        not (a.ExceptNames |> List.contains fn.Name) &&
+                        matchesPredicates a.Matches fn)
                 match matchedAspects with
                 | [] ->
                     result.Add item

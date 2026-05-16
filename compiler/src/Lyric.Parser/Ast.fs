@@ -463,10 +463,15 @@ and ConfigDecl =
 ///   template    — `Pub` visibility, no `From`, no `Matches`
 ///   instantiation — no `Visibility`, has `From`, has `Matches`
 and AspectMatcher =
-    /// `matches: name like "<glob>"`.  Single positive predicate in
-    /// v1; conjunction (`and signature: …`, `and annotated: …`) is
-    /// reserved for v1.x.
+    /// `matches: name like "<glob>"`.  Matches the function's short name.
     | AMNameLike of glob: string * Span
+    /// `annotated: @AnnotName`.  Matches functions carrying the named annotation.
+    | AMAnnotated of annotName: string * Span
+    /// `visibility: pub` or `visibility: priv`.  Matches by declared visibility.
+    | AMVisibility of vis: string * Span
+    /// `signature: returns <TypeGlob>`.  Matches by return-type string against a
+    /// POSIX-ish glob (same syntax as `name like`). `*` matches any type component.
+    | AMSignatureReturns of typeGlob: string * Span
 
 and AspectAround =
     { /// Single parameter binding the synthesised `args` record.
@@ -477,17 +482,20 @@ and AspectAround =
       Span:     Span }
 
 and AspectDecl =
-    { Name:      string
+    { Name:        string
       /// `from Pkg.Template` — present only on instantiation-form aspects.
-      From:      ModulePath option
+      From:        ModulePath option
       /// Anonymous `config { }` block inside the aspect body (D047/D051).
-      Config:    ConfigField list
-      Matches:   AspectMatcher list
-      Around:    AspectAround option
-      Contracts: ContractClause list   // §5 composition: requires:/ensures: on aspect body
-      Wraps:     string list           // §6 ordering: this aspect wraps the named aspects
-      Inside:    string list           // §6 ordering: this aspect runs inside the named aspects
-      Span:      Span }
+      Config:      ConfigField list
+      /// Predicates that all must hold (AND) for a function to be matched.
+      Matches:     AspectMatcher list
+      /// Short names excluded from matching even when all predicates hold.
+      ExceptNames: string list
+      Around:      AspectAround option
+      Contracts:   ContractClause list   // §5 composition: requires:/ensures: on aspect body
+      Wraps:       string list           // §6 ordering: this aspect wraps the named aspects
+      Inside:      string list           // §6 ordering: this aspect runs inside the named aspects
+      Span:        Span }
 
 and ExternMember =
     | EMRecord       of RecordDecl
