@@ -305,6 +305,7 @@ let tests =
                 match ad.Matches.[0] with
                 | AMNameLike (g, _) ->
                     Expect.equal g "handle*" "glob"
+                | other -> failtestf "expected AMNameLike, got %A" other
                 Expect.isSome ad.Around "around present"
                 let around = ad.Around |> Option.get
                 Expect.equal around.ArgsName "args" "args binder"

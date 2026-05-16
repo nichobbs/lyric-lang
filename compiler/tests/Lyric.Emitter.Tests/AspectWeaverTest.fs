@@ -367,4 +367,230 @@ func main(): Unit {
             let lines = stdout.Trim().Split('\n') |> Array.map (fun s -> s.Trim()) |> Array.filter (fun s -> s.Length > 0)
             Expect.equal lines [| "hi"; "hi"; "hi" |]
                 (sprintf "expected 3x 'hi', got: '%s'" stdout)
+
+        testCase "aspect_weaver_annotated_predicate" <| fun () ->
+            // `annotated: @instrument` matches functions carrying that annotation;
+            // unannotated functions are not wrapped.
+            let src = """
+package Test.AnnotatedPredicate
+
+import Std.Core
+
+aspect Trace {
+  matches: annotated: @instrument
+
+  around(args) -> ret {
+    println("traced")
+    proceed(args)
+  }
+}
+
+@instrument
+func doWork(): Unit {
+  println("work")
+}
+
+func skip(): Unit {
+  println("skip")
+}
+
+func main(): Unit {
+  doWork()
+  skip()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_annotated_predicate" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "traced"
+                (sprintf "expected 'traced' (doWork is annotated), got: '%s'" stdout)
+            Expect.stringContains stdout "work"
+                (sprintf "expected 'work' in stdout, got: '%s'" stdout)
+            Expect.stringContains stdout "skip"
+                (sprintf "expected 'skip' in stdout, got: '%s'" stdout)
+            // skip() is not @instrument, so 'traced' appears only once
+            Expect.equal (stdout.Split("traced").Length - 1) 1
+                (sprintf "expected exactly one 'traced' (skip should not be wrapped), got stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_visibility_predicate" <| fun () ->
+            // `visibility: pub` matches only public functions.
+            let src = """
+package Test.VisibilityPredicate
+
+import Std.Core
+
+aspect PubOnly {
+  matches: visibility: pub
+
+  around(args) -> ret {
+    println("pub-wrap")
+    proceed(args)
+  }
+}
+
+pub func publicFn(): Unit {
+  println("public")
+}
+
+func privateFn(): Unit {
+  println("private")
+}
+
+func main(): Unit {
+  publicFn()
+  privateFn()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_visibility_predicate" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "pub-wrap"
+                (sprintf "expected 'pub-wrap' (publicFn is pub), got: '%s'" stdout)
+            Expect.stringContains stdout "public"
+                (sprintf "expected 'public' in stdout, got: '%s'" stdout)
+            Expect.stringContains stdout "private"
+                (sprintf "expected 'private' in stdout, got: '%s'" stdout)
+            // privateFn is not matched, so 'pub-wrap' appears exactly once
+            Expect.equal (stdout.Split("pub-wrap").Length - 1) 1
+                (sprintf "expected exactly one 'pub-wrap', got stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_signature_returns_predicate" <| fun () ->
+            // `signature: returns Int` matches functions that return Int.
+            let src = """
+package Test.SignatureReturnsPredicate
+
+import Std.Core
+
+aspect IntReturn {
+  matches: signature: returns "Int"
+
+  around(args) -> ret {
+    println("int-wrap")
+    proceed(args)
+  }
+}
+
+func getNumber(): Int {
+  return 42
+}
+
+func getText(): String {
+  return "hello"
+}
+
+func main(): Unit {
+  println(getNumber())
+  println(getText())
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_signature_returns_predicate" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "int-wrap"
+                (sprintf "expected 'int-wrap' (getNumber returns Int), got: '%s'" stdout)
+            Expect.stringContains stdout "42"
+                (sprintf "expected '42' in stdout, got: '%s'" stdout)
+            Expect.stringContains stdout "hello"
+                (sprintf "expected 'hello' in stdout, got: '%s'" stdout)
+            // getText returns String, not Int — should not be wrapped
+            Expect.equal (stdout.Split("int-wrap").Length - 1) 1
+                (sprintf "expected exactly one 'int-wrap', got stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_compound_predicate_and" <| fun () ->
+            // `name like "do*" and visibility: pub` — both must hold.
+            // publicDo is pub + name matches → wrapped.
+            // privateDo is not pub → not wrapped.
+            // publicOther is pub but name doesn't match → not wrapped.
+            let src = """
+package Test.CompoundPredicate
+
+import Std.Core
+
+aspect Selective {
+  matches:
+    name like "do*"
+    and visibility: pub
+
+  around(args) -> ret {
+    println("selected")
+    proceed(args)
+  }
+}
+
+pub func doPublic(): Unit {
+  println("do-public")
+}
+
+func doPrivate(): Unit {
+  println("do-private")
+}
+
+pub func other(): Unit {
+  println("other")
+}
+
+func main(): Unit {
+  doPublic()
+  doPrivate()
+  other()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_compound_predicate_and" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "selected"
+                (sprintf "expected 'selected' (doPublic matches both predicates), got: '%s'" stdout)
+            Expect.stringContains stdout "do-public"  (sprintf "stdout: '%s'" stdout)
+            Expect.stringContains stdout "do-private" (sprintf "stdout: '%s'" stdout)
+            Expect.stringContains stdout "other"      (sprintf "stdout: '%s'" stdout)
+            // Only doPublic satisfies both predicates
+            Expect.equal (stdout.Split("selected").Length - 1) 1
+                (sprintf "expected exactly one 'selected', got stdout: '%s'" stdout)
+
+        testCase "aspect_weaver_except_clause" <| fun () ->
+            // `name like "handle*" except name in { handlePing }` — handlePing is excluded.
+            let src = """
+package Test.ExceptClause
+
+import Std.Core
+
+aspect Log {
+  matches:
+    name like "handle*"
+    except name in { handlePing }
+
+  around(args) -> ret {
+    println("logged")
+    proceed(args)
+  }
+}
+
+func handleRequest(): Unit {
+  println("request")
+}
+
+func handlePing(): Unit {
+  println("ping")
+}
+
+func main(): Unit {
+  handleRequest()
+  handlePing()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_except_clause" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            Expect.stringContains stdout "logged"
+                (sprintf "expected 'logged' (handleRequest is matched), got: '%s'" stdout)
+            Expect.stringContains stdout "request" (sprintf "stdout: '%s'" stdout)
+            Expect.stringContains stdout "ping"    (sprintf "stdout: '%s'" stdout)
+            // handlePing is excluded, so 'logged' appears exactly once
+            Expect.equal (stdout.Split("logged").Length - 1) 1
+                (sprintf "expected exactly one 'logged' (handlePing excluded), got stdout: '%s'" stdout)
     ]

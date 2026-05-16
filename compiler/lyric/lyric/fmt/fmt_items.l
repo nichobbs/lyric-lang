@@ -784,9 +784,12 @@ func configDoc(visStr: in String, cd: in ConfigDecl): List[String] {
 // D047 aspect block render.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func aspectMatcherLine(m: in AspectMatcher): String {
+func aspectMatcherPred(m: in AspectMatcher): String {
   match m {
-    case AMNameLike(g, _) -> "matches: name like \"" + g + "\""
+    case AMNameLike(g, _)         -> "name like \"" + g + "\""
+    case AMAnnotated(n, _)        -> "annotated: @" + n
+    case AMVisibility(v, _)       -> "visibility: " + v
+    case AMSignatureReturns(t, _) -> "signature: returns \"" + t + "\""
   }
 }
 
@@ -802,10 +805,21 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
     val insideStr: String = joinStrings(ad.inside, ", ")
     acc.add("  inside: " + insideStr)
   }
-  var i = 0
-  while i < ad.matches.count {
-    acc.add("  " + aspectMatcherLine(ad.matches[i]))
-    i = i + 1
+  if ad.matches.count > 0 {
+    val preds: List[String] = newList()
+    var i = 0
+    while i < ad.matches.count {
+      preds.add(aspectMatcherPred(ad.matches[i]))
+      i = i + 1
+    }
+    val body = joinStrings(preds, " and ")
+    val ex =
+      if ad.exceptNames.count > 0 {
+        " except name in { " + joinStrings(ad.exceptNames, ", ") + " }"
+      } else {
+        ""
+      }
+    acc.add("  matches: " + body + ex)
   }
   // §5 contract augmentation: emit requires:/ensures: before the around block.
   var ci = 0

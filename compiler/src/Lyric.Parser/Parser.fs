@@ -3767,19 +3767,46 @@ and private parseConfigField
       Default     = dflt
       Span        = joinSpans startSpan endSpan }
 
-/// Parse a `matches: name like "<glob>"` clause inside an aspect.
-/// Returns the parsed predicates (a single `AMNameLike` in v1) plus
-/// any diagnostics; consumes through the trailing newline / `}`.
-and private parseAspectMatchesClause
+/// Convert a sequence of tokens representing a type pattern into a glob string.
+/// Reads until it hits a newline/stmt-end, `and`, `except`, or `}`.
+/// Type pattern tokens: IDENT, `[`, `]`, `,`, `*`, `?`.
+and private parseTypeGlobPattern (cursor: Cursor) : string =
+    let buf = System.Text.StringBuilder()
+    let mutable keepGoing = true
+    while keepGoing do
+        match Cursor.peekToken cursor with
+        | TStmtEnd | TPunct RBrace -> keepGoing <- false
+        | TKeyword KwAnd | TIdent "except" -> keepGoing <- false
+        | TIdent n ->
+            Cursor.advance cursor |> ignore
+            buf.Append n |> ignore
+        | TPunct LBracket ->
+            Cursor.advance cursor |> ignore
+            buf.Append '[' |> ignore
+        | TPunct RBracket ->
+            Cursor.advance cursor |> ignore
+            buf.Append ']' |> ignore
+        | TPunct Comma ->
+            Cursor.advance cursor |> ignore
+            buf.Append ", " |> ignore
+        | TPunct Star ->
+            Cursor.advance cursor |> ignore
+            buf.Append '*' |> ignore
+        | TPunct Question ->
+            Cursor.advance cursor |> ignore
+            buf.Append '?' |> ignore
+        | _ -> keepGoing <- false
+    buf.ToString().Trim()
+
+/// Parse one predicate within a `matches:` clause.
+/// Returns `Some predicate` or `None` if the next token is not a known predicate keyword.
+and private parseOneMatchPredicate
         (cursor: Cursor)
         (diags:  ResizeArray<Diagnostic>)
-        : AspectMatcher list =
-    // Caller has confirmed `matches` and `:` already.
-    Cursor.skipStmtEnds cursor |> ignore
-    // v1: only `name like "<string>"`.  Future predicates land here
-    // joined by `and`.
+        : AspectMatcher option =
     match Cursor.peekToken cursor with
     | TIdent "name" ->
+        let sp0 = Cursor.peekSpan cursor
         Cursor.advance cursor |> ignore
         match Cursor.peekToken cursor with
         | TIdent "like" -> Cursor.advance cursor |> ignore
@@ -3790,17 +3817,170 @@ and private parseAspectMatchesClause
         match Cursor.peek cursor with
         | { Token = TString s; Span = sp } ->
             Cursor.advance cursor |> ignore
-            [ AMNameLike (s, sp) ]
+            Some (AMNameLike (s, sp))
         | t ->
             err diags "P0299"
                 "expected a string literal glob after 'name like'"
                 t.Span
-            []
-    | _ ->
-        err diags "P0297"
-            "expected 'name like \"...\"' in matches: clause"
-            (Cursor.peekSpan cursor)
-        []
+            None
+    | TIdent "annotated" ->
+        let sp0 = Cursor.peekSpan cursor
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0310"
+                "expected ':' after 'annotated' in matches: clause"
+                (Cursor.peekSpan cursor)
+        match Cursor.peekToken cursor with
+        | TPunct At ->
+            Cursor.advance cursor |> ignore
+            match Cursor.peek cursor with
+            | { Token = TIdent n; Span = sp } ->
+                Cursor.advance cursor |> ignore
+                Some (AMAnnotated (n, sp))
+            | t ->
+                err diags "P0311"
+                    "expected an annotation name after '@' in annotated: predicate"
+                    t.Span
+                None
+        | _ ->
+            err diags "P0312"
+                "expected '@AnnotName' in annotated: predicate"
+                (Cursor.peekSpan cursor)
+            None
+    | TIdent "visibility" ->
+        let sp0 = Cursor.peekSpan cursor
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0313"
+                "expected ':' after 'visibility' in matches: clause"
+                (Cursor.peekSpan cursor)
+        let sp = Cursor.peekSpan cursor
+        match Cursor.peekToken cursor with
+        | TKeyword KwPub ->
+            Cursor.advance cursor |> ignore
+            Some (AMVisibility ("pub", sp))
+        | TKeyword KwInternal ->
+            Cursor.advance cursor |> ignore
+            Some (AMVisibility ("internal", sp))
+        | TIdent "priv" ->
+            Cursor.advance cursor |> ignore
+            Some (AMVisibility ("priv", sp))
+        | _ ->
+            err diags "P0314"
+                "expected 'pub', 'priv', or 'internal' after 'visibility:' in matches: clause"
+                sp
+            None
+    | TIdent "signature" ->
+        let sp0 = Cursor.peekSpan cursor
+        Cursor.advance cursor |> ignore
+        match Cursor.tryEatPunct Colon cursor with
+        | Some _ -> ()
+        | None ->
+            err diags "P0315"
+                "expected ':' after 'signature' in matches: clause"
+                (Cursor.peekSpan cursor)
+        match Cursor.peekToken cursor with
+        | TIdent "returns" ->
+            let ksp = Cursor.peekSpan cursor
+            Cursor.advance cursor |> ignore
+            match Cursor.peek cursor with
+            | { Token = TString s; Span = sp } ->
+                Cursor.advance cursor |> ignore
+                Some (AMSignatureReturns (s, sp))
+            | t ->
+                err diags "P0316"
+                    "expected a string-literal type glob after 'signature: returns' (e.g. \"Int\", \"Result[*,*]\")"
+                    t.Span
+                None
+        | _ ->
+            err diags "P0317"
+                "expected 'returns' after 'signature:' in matches: clause (only 'signature: returns' is supported)"
+                (Cursor.peekSpan cursor)
+            None
+    | _ -> None
+
+/// Parse a `matches:` clause (predicates joined by `and`, optional `except` exclusion).
+/// Returns `(matchers, exceptNames)`.  Caller has already consumed `matches` and `:`.
+and private parseAspectMatchesClause
+        (cursor: Cursor)
+        (diags:  ResizeArray<Diagnostic>)
+        : AspectMatcher list * string list =
+    Cursor.skipStmtEnds cursor |> ignore
+    // Read first predicate.
+    let matchers = ResizeArray<AspectMatcher>()
+    match parseOneMatchPredicate cursor diags with
+    | Some m -> matchers.Add m
+    | None ->
+        if matchers.Count = 0 then
+            err diags "P0297"
+                "expected a predicate ('name like', 'annotated:', 'visibility:', 'signature: returns') in matches: clause"
+                (Cursor.peekSpan cursor)
+    // Read additional predicates joined by `and` (TKeyword KwAnd).
+    let mutable keepGoing = true
+    while keepGoing do
+        Cursor.skipStmtEnds cursor |> ignore
+        match Cursor.peekToken cursor with
+        | TKeyword KwAnd ->
+            Cursor.advance cursor |> ignore
+            Cursor.skipStmtEnds cursor |> ignore
+            match parseOneMatchPredicate cursor diags with
+            | Some m -> matchers.Add m
+            | None ->
+                err diags "P0318"
+                    "expected a predicate after 'and' in matches: clause"
+                    (Cursor.peekSpan cursor)
+                keepGoing <- false
+        | _ -> keepGoing <- false
+    // Optional `except name in { ... }` exclusion list.
+    Cursor.skipStmtEnds cursor |> ignore
+    let exceptNames =
+        match Cursor.peekToken cursor with
+        | TIdent "except" ->
+            Cursor.advance cursor |> ignore
+            match Cursor.peekToken cursor with
+            | TIdent "name" -> Cursor.advance cursor |> ignore
+            | _ ->
+                err diags "P0319"
+                    "expected 'name' after 'except' in matches: clause"
+                    (Cursor.peekSpan cursor)
+            match Cursor.peekToken cursor with
+            | TKeyword KwIn -> Cursor.advance cursor |> ignore
+            | _ ->
+                err diags "P0320"
+                    "expected 'in' after 'except name' in matches: clause"
+                    (Cursor.peekSpan cursor)
+            match Cursor.tryEatPunct LBrace cursor with
+            | Some _ -> ()
+            | None ->
+                err diags "P0321"
+                    "expected '{' after 'except name in'"
+                    (Cursor.peekSpan cursor)
+            Cursor.skipStmtEnds cursor |> ignore
+            let names = ResizeArray<string>()
+            let mutable moreNames = true
+            while moreNames do
+                match Cursor.peekToken cursor with
+                | TIdent n ->
+                    Cursor.advance cursor |> ignore
+                    names.Add n
+                    Cursor.skipStmtEnds cursor |> ignore
+                    match Cursor.tryEatPunct Comma cursor with
+                    | Some _ -> Cursor.skipStmtEnds cursor |> ignore
+                    | None   -> moreNames <- false
+                | _ -> moreNames <- false
+            match Cursor.tryEatPunct RBrace cursor with
+            | Some _ -> ()
+            | None ->
+                err diags "P0322"
+                    "expected '}' to close 'except name in { ... }'"
+                    (Cursor.peekSpan cursor)
+            List.ofSeq names
+        | _ -> []
+    List.ofSeq matchers, exceptNames
 
 /// Parse an anonymous `config { fields... }` block inside an aspect body.
 /// The caller has already consumed the `config` keyword.
@@ -3895,13 +4075,14 @@ and private parseAspectBody
             "expected '{' to start aspect body"
             (Cursor.peekSpan cursor)
     Cursor.skipStmtEnds cursor |> ignore
-    let mutable matches    : AspectMatcher list  = []
-    let mutable config     : ConfigField list    = []
-    let mutable configSeen : bool                = false
-    let mutable around     : AspectAround option = None
-    let mutable contracts  : ContractClause list = []
-    let mutable wraps      : string list         = []
-    let mutable inside     : string list         = []
+    let mutable matches     : AspectMatcher list  = []
+    let mutable exceptNames : string list         = []
+    let mutable config      : ConfigField list    = []
+    let mutable configSeen  : bool                = false
+    let mutable around      : AspectAround option = None
+    let mutable contracts   : ContractClause list = []
+    let mutable wraps       : string list         = []
+    let mutable inside      : string list         = []
     while Cursor.peekToken cursor <> TPunct RBrace
           && not (Cursor.isAtEnd cursor) do
         let before = Cursor.mark cursor
@@ -3914,8 +4095,9 @@ and private parseAspectBody
                 err diags "P0296"
                     "expected ':' after 'matches'"
                     (Cursor.peekSpan cursor)
-            let ms = parseAspectMatchesClause cursor diags
-            matches <- matches @ ms
+            let ms, ex = parseAspectMatchesClause cursor diags
+            matches     <- matches     @ ms
+            exceptNames <- exceptNames @ ex
         | TIdent "config" when not configSeen ->
             let cfgKwSpan = Cursor.peekSpan cursor
             Cursor.advance cursor |> ignore
@@ -4007,15 +4189,16 @@ and private parseAspectBody
                 "expected '}' to close aspect body"
                 s
             s
-    { Name      = name
-      From      = fromPath
-      Config    = config
-      Matches   = matches
-      Around    = around
-      Contracts = contracts
-      Wraps     = wraps
-      Inside    = inside
-      Span      = joinSpans startTok.Span endSpan }
+    { Name        = name
+      From        = fromPath
+      Config      = config
+      Matches     = matches
+      ExceptNames = exceptNames
+      Around      = around
+      Contracts   = contracts
+      Wraps       = wraps
+      Inside      = inside
+      Span        = joinSpans startTok.Span endSpan }
 
 /// Parse a `config Name { ... }` block per `docs/25-config-blocks.md`.
 /// Called when the current token is `TIdent "config"` at module scope.
