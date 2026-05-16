@@ -241,7 +241,12 @@ Releases are published by pushing a version tag (e.g. `git tag v0.1.0 && git pus
    `AZURE_CLIENT_SECRET`, and `AZURE_CERT_NAME` repository secrets are set.
 3. **Codesigns and notarizes the macOS arm64 binary** if `APPLE_TEAM_ID`,
    `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_DEVELOPER_CERT_BASE64`, and
-   `APPLE_DEVELOPER_CERT_PASSWORD` secrets are set.
+   `APPLE_DEVELOPER_CERT_PASSWORD` secrets are set.  The `osx-x64` build is
+   **not notarized** in the v1.0 workflow.  Apple Silicon Macs running
+   Rosetta 2 should use the `osx-arm64` binary; Intel Mac users who download
+   `osx-x64` will need to right-click → Open the first time to pass
+   Gatekeeper, or run `xattr -d com.apple.quarantine lyric` after download.
+   Full notarization for `osx-x64` is tracked as a future workflow enhancement.
 4. **Packages** each binary into a `.tar.gz` (Linux / macOS) or `.zip` (Windows)
    archive named `lyric-<version>-<rid>.<ext>`.
 5. **Uploads** all archives as GitHub Release assets.

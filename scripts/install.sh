@@ -27,7 +27,12 @@ MODIFY_PATH=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version)   VERSION="$2";     shift 2 ;;
+    --version)
+      case "$2" in
+        [0-9]*.[0-9]*.[0-9]*) VERSION="$2" ;;
+        *) err "--version must be a semver string (e.g. 1.0.0)" ;;
+      esac
+      shift 2 ;;
     --dir)       INSTALL_DIR="$2"; shift 2 ;;
     --no-path)   MODIFY_PATH=0;    shift ;;
     *)           echo "unknown option: $1" >&2; exit 1 ;;

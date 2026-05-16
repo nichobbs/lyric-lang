@@ -100,49 +100,31 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
   while i < docs.count {
     val d = docs[i]
     val docText = d.text
-    // Simple case-insensitive check using ASCII comparisons
-    val hasT = (docText.length >= 4) and
-      (docText[0] == 'T' or docText[0] == 't') and
-      (docText[1] == 'O' or docText[1] == 'o') and
-      (docText[2] == 'D' or docText[2] == 'd') and
-      (docText[3] == 'O' or docText[3] == 'o')
-    val hasF = (docText.length >= 5) and
-      (docText[0] == 'F' or docText[0] == 'f') and
-      (docText[1] == 'I' or docText[1] == 'i') and
-      (docText[2] == 'X' or docText[2] == 'x') and
-      (docText[3] == 'M' or docText[3] == 'm') and
-      (docText[4] == 'E' or docText[4] == 'e')
-    if hasT or hasF {
+    var found = false
+    var j = 0
+    while j + 3 < docText.length and not found {
+      if (docText[j] == 'T' or docText[j] == 't') and
+         (docText[j+1] == 'O' or docText[j+1] == 'o') and
+         (docText[j+2] == 'D' or docText[j+2] == 'd') and
+         (docText[j+3] == 'O' or docText[j+3] == 'o') {
+        found = true
+      }
+      j = j + 1
+    }
+    var j2 = 0
+    while j2 + 4 < docText.length and not found {
+      if (docText[j2] == 'F' or docText[j2] == 'f') and
+         (docText[j2+1] == 'I' or docText[j2+1] == 'i') and
+         (docText[j2+2] == 'X' or docText[j2+2] == 'x') and
+         (docText[j2+3] == 'M' or docText[j2+3] == 'm') and
+         (docText[j2+4] == 'E' or docText[j2+4] == 'e') {
+        found = true
+      }
+      j2 = j2 + 1
+    }
+    if found {
       acc.add(lintWarning("L004",
         "doc comment contains TODO/FIXME: '" + docText + "'", d.span))
-    } else {
-      // Scan the whole string for substrings
-      var found = false
-      var j = 0
-      while j + 3 < docText.length and not found {
-        if (docText[j] == 'T' or docText[j] == 't') and
-           (docText[j+1] == 'O' or docText[j+1] == 'o') and
-           (docText[j+2] == 'D' or docText[j+2] == 'd') and
-           (docText[j+3] == 'O' or docText[j+3] == 'o') {
-          found = true
-        }
-        j = j + 1
-      }
-      var j2 = 0
-      while j2 + 4 < docText.length and not found {
-        if (docText[j2] == 'F' or docText[j2] == 'f') and
-           (docText[j2+1] == 'I' or docText[j2+1] == 'i') and
-           (docText[j2+2] == 'X' or docText[j2+2] == 'x') and
-           (docText[j2+3] == 'M' or docText[j2+3] == 'm') and
-           (docText[j2+4] == 'E' or docText[j2+4] == 'e') {
-          found = true
-        }
-        j2 = j2 + 1
-      }
-      if found {
-        acc.add(lintWarning("L004",
-          "doc comment contains TODO/FIXME: '" + docText + "'", d.span))
-      }
     }
     i = i + 1
   }

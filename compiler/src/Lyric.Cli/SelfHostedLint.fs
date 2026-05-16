@@ -126,6 +126,12 @@ let lint (source: string) : Lint.LintResult =
     let lines    = protocol.Split([| '\n' |]) |> Array.filter (fun l -> l <> "")
     let diags    =
         lines
-        |> Array.choose parseLine
+        |> Array.choose (fun l ->
+            match parseLine l with
+            | Some d -> Some d
+            | None   ->
+                if l <> "" then
+                    eprintfn "lyric lint bridge: malformed protocol line: %s" l
+                None)
         |> List.ofArray
     { Lint.Diagnostics = diags }

@@ -748,6 +748,156 @@ criteria) and "M4.3" (the v2.0 release scope).
     distinct-type derives, CLR primitive table, user-interface ImplsTable)
     and defers CLR-generic-constraint lowering to Phase 5.
 
+## Band F — post-PR #291 follow-ups (R4–R6 review surfaced)
+
+Deferred items from the three claude-review passes on PR #291.  None are
+blocking for v1.0 merge; all are tracked here so they don't get lost.
+
+### F1. B128 self-test `/tmp` path is non-portable
+
+`compiler/tests/Lyric.Emitter.Tests/JvmLoweringB128Test.fs:55` and
+`compiler/lyric/jvm/self_test_b128.l:216,241` both hardcode
+`/tmp/lyric-jvm-b128/parse.jar`.  This fails on Windows CI runners (no
+`/tmp`) and may collide across parallel test runs.
+
+**Fix:** Use `Path.GetTempPath()` + a per-test unique subdirectory on the
+F# side; update the Lyric self-test to accept the path as a parameter.
+
+### F2. `in List[T]` parameter mutation — spec clarification needed
+
+`appendDiags(target: in List[LintDiag], ...)` in `lint.l` declares
+`target` as `in` (immutable-reference per language spec) but calls
+`target.add(...)` which mutates the list content.  The Lyric spec
+(`docs/01-language-reference.md`) does not yet clarify whether `in` means
+"reference-immutable" (cannot rebind the parameter) or
+"content-immutable" (cannot mutate through it).  The self-hosted compiler
+uses the reference-immutable interpretation throughout.
+
+**Fix:** Add a paragraph to `docs/01-language-reference.md` §4 (modes)
+clarifying that `in` prohibits rebinding the parameter but does not
+prevent mutation through a mutable container type.  Update the mode
+checker's V0001 diagnostic message to match.
+
+### F3. `@externTarget` static-vs-instance naming convention — document in spec
+
+`isStaticExternByName` in `compiler/lyric/jvm/codegen.l:1592-1602`
+detects whether an extern maps to a JVM `invokestatic` vs `invokevirtual`
+call purely by checking whether the Lyric function name starts with a
+PascalCase prefix before `_`.  A hand-written extern that doesn't follow
+this convention will be silently miscompiled.
+
+**Fix:** Document the naming convention (and its limitations) in
+`docs/01-language-reference.md` §11.3 alongside `@externTarget`.  The
+long-term fix is an explicit `kind` parameter on `@externTarget(...)`, but
+that requires a language change.
+
+### F4. Lint bridge protocol breaks on multi-line diagnostic messages
+
+`compiler/lyric/lyric/lint_bridge.l:29-30` serialises one diagnostic per
+line using `'|'` fields and `'\n'` as the row separator.
+`SelfHostedLint.fs:107-118` splits on `'\n'` and drops any line where
+`parts.Length < 5`.  If a future lint rule emits a message containing a
+`'\n'` the spillover line is silently discarded (the eprintfn guard added
+in PR #291 follow-up now at least surfaces the drop, but doesn't preserve
+the data).
+
+**Fix options:** (a) document in `lint_bridge.l` that messages must be
+single-line (cheapest), (b) escape `'\n'` inside the message field as
+`\\n` before serialising (correct), (c) switch to a length-prefixed binary
+protocol (overkill for five rules).  Option (b) is the right fix.
+
+### F5. Scratch directories under `Path.GetTempPath()` are never cleaned up
+
+`SelfHostedDoc.fs`, `SelfHostedLint.fs`, `SelfHostedFmt.fs`,
+`SelfHostedPack.fs`, `SelfHostedManifest.fs`, and `SelfHostedTestSynth.fs`
+each create a `lyric-<feature>-bridge-<pid>` directory under
+`Path.GetTempPath()` but never delete it.  For a long-lived process (e.g.,
+the LSP server) this accumulates stale directories across restarts.
+
+**Fix:** Register a `System.AppDomain.CurrentDomain.ProcessExit` handler
+(or use `IDisposable` on the bridge) to delete the scratch directory on
+normal exit.  Abnormal exits will still leave stale dirs; add the temp
+prefix to a system-wide cleanup policy.
+
+### F6. Pack XML generation — unit test coverage gap
+
+`PackTests.fs` now round-trips raw TOML through `SelfHostedPack`, giving
+integration coverage but making it hard to isolate XML-generation bugs from
+manifest-parsing bugs.  The `Lyric.Doc` bridge also has no F#-side unit
+test.
+
+**Fix:** (a) Add a `pack_self_test.l` or equivalent direct-call test inside
+the Lyric self-test suite that exercises `publishCsproj` with a known
+`Manifest` value and asserts specific XML fragments.  (b) Add a
+`DocTests.fs` stub covering two or three fixture inputs against known
+Markdown output.
+
+### F7. GitHub Actions pinned by tag, not commit SHA (supply-chain hygiene)
+
+`.github/workflows/publish.yml` uses floating tags for third-party actions:
+- `actions/checkout@v4`
+- `actions/setup-dotnet@v4`
+- `softprops/action-gh-release@v2`
+
+The publish workflow has `id-token: write` and access to NuGet/Apple/Azure
+signing secrets; a tag hijack could exfiltrate them.  SHA pinning is the
+SLSA-L3 / OpenSSF recommendation.
+
+**Fix:** Look up the current commit SHAs for each tag and pin them:
+
+```yaml
+uses: actions/checkout@<sha>          # v4.2.2
+uses: actions/setup-dotnet@<sha>      # v4.x.x
+uses: softprops/action-gh-release@<sha>  # v2.x.x
+```
+
+Add a comment with the human-readable tag alongside each SHA so future
+maintainers know what to update.  Consider using Dependabot or Renovate to
+automate SHA updates.
+
+### F8. `lowerExternTargetBody` catches only `java/lang/Exception`, not `Error`
+
+`compiler/lyric/jvm/codegen.l` emits catch blocks that target
+`java/lang/Exception`.  JVM `Error` subclasses (e.g.,
+`OutOfMemoryError`, `StackOverflowError`, `AssertionError`) are not
+subtypes of `Exception` and will not be caught.  This is intentionally
+broad for the bootstrap but differs from the `@externTarget` semantics
+implied by the Lyric spec.
+
+**Fix (v1.x):** Accept an optional exception-class parameter in
+`@externTarget(...)` so callers can widen to `java/lang/Throwable` when
+needed.  Track as a known limitation in `docs/18-jvm-emission.md`.
+
+### F9. `findExternTarget` double-walks the annotation list
+
+`compiler/lyric/jvm/codegen.l:1487-1510` walks `decl.annotations`
+twice: once to find the `@externTarget` annotation and once to check
+`@noJvmBridge`.  Minor; could be merged into a single pass or cached on
+`FunctionDecl` at parse time.  Non-blocking optimisation.
+
+### F10. Hand-rolled `joinStrs` / `typeArgsStr` helpers — stdlib enhancement
+
+`compiler/lyric/lyric/doc/doc.l` and `compiler/lyric/lyric/lint/lint.l`
+each define local list-to-string join helpers.  A `Std.String.join(xs: in
+List[String], sep: in String): String` stdlib function would let all
+self-hosted compiler packages share one implementation.
+
+**Fix:** Add `join` to `stdlib/std/string.l` (kernel: `String.Join` BCL
+extern in `stdlib/std/_kernel/`) and update `doc.l`, `lint.l`, and any
+other callers.  Mark `@stable(since="1.0")`.
+
+### F11. Test coverage gaps — Q021-4 Path 1.5 and Q022-1 pubUseDecls
+
+Two new code paths in PR #291 have no dedicated regression tests:
+- `satisfiesViaImportedDistinct` / Path 1.5 in `Codegen.fs:689-693`: a
+  cross-package `distinct type X = Y derives SomeMarker` used with a
+  marker-constrained generic function.
+- `pubUseDecls` in `ContractMeta.fs:432-456`: a `pub use` re-export in a
+  package that causes specific symbols to appear in the embedded contract.
+
+**Fix:** Add one test each in `Lyric.Emitter.Tests` or `Lyric.Cli.Tests`
+that exercises these paths end-to-end and asserts the expected output.
+
 ## Band E — long-horizon (Phase 5+)
 
 - Self-hosting port (Phase 5)
