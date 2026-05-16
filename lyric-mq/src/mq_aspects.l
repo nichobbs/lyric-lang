@@ -143,7 +143,7 @@ pub aspect DeadLetter {
         case Err(reason) -> {
           // deliveryCount is 0-based; add 1 for the just-completed attempt.
           val attempts = args.message.deliveryCount + 1
-          if attempts >= maxDeliveries {
+          if attempts > maxDeliveries {
             val nowMs = Std.Time.SystemClock.now().toEpochMillis()
             val entry = DeadLetterEntry(
               message  = args.message,

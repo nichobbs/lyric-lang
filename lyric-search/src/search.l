@@ -38,6 +38,7 @@ package Search
 
 import Std.Core
 import Std.Collections
+import Std.Json
 import Search.Kernel.Net
 
 // ─── Error type ───────────────────────────────────────────────────────────────
@@ -458,22 +459,188 @@ func serializeQuery(query: in SearchQuery): String {
        + "\"size\":" + query.size.toString() + "}"
 }
 
-// Parse an IndexResult from the JSON string returned by the kernel.
+// Parse an IndexResult from the JSON object returned by the kernel.
+// Expected fields: id (String), version (Long), result (String).
 func parseIndexResult(json: in String): IndexResult {
-  return IndexResult(id = "", version = 0, result = "created")
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  var id:      String = ""
+  var version: Long   = 0
+  var result:  String = "created"
+  match Std.Json.tryGetProperty(root, "id") {
+    case Some(v) -> id = Std.Json.getString(v)
+    case None    -> ()
+  }
+  match Std.Json.tryGetProperty(root, "version") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> version = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "result") {
+    case Some(v) -> result = Std.Json.getString(v)
+    case None    -> ()
+  }
+  return IndexResult(id = id, version = version, result = result)
 }
 
-// Parse a list of IndexResults from the JSON array returned by the kernel.
+// Parse a JSON array of IndexResult objects returned by the kernel.
 func parseIndexResultList(json: in String): [IndexResult] {
-  return []
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  var results: [IndexResult] = []
+  var en = Std.Json.enumerateArray(root)
+  while Std.Json.arrayMoveNext(en) {
+    val elem   = Std.Json.arrayCurrent(en)
+    val raw    = Std.Json.getRawText(elem)
+    results    = results + [parseIndexResult(raw)]
+  }
+  return results
 }
 
-// Parse a SearchResult from the JSON string returned by the kernel.
+// Parse a SearchResult from the JSON object returned by the kernel.
+// Expected fields: total (Long), tookMs (Int), scrollId (String|null), hits (Array).
 func parseSearchResult(json: in String): SearchResult {
-  return SearchResult(total = 0, hits = [], tookMs = 0, scrollId = None)
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  var total:    Long          = 0
+  var tookMs:   Int           = 0
+  var scrollId: Option[String] = None
+  var hits:     [SearchHit]   = []
+  match Std.Json.tryGetProperty(root, "total") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> total = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "tookMs") {
+    case Some(v) ->
+      match Std.Json.tryGetInt(v) {
+        case Some(n) -> tookMs = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "scrollId") {
+    case Some(v) ->
+      if Std.Json.valueKind(v) == 3 {   // 3 = string
+        scrollId = Some(value = Std.Json.getString(v))
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "hits") {
+    case Some(arr) -> {
+      var en = Std.Json.enumerateArray(arr)
+      while Std.Json.arrayMoveNext(en) {
+        val elem    = Std.Json.arrayCurrent(en)
+        val hitJson = Std.Json.getRawText(elem)
+        hits        = hits + [parseSearchHit(hitJson)]
+      }
+    }
+    case None -> ()
+  }
+  return SearchResult(total = total, hits = hits, tookMs = tookMs, scrollId = scrollId)
 }
 
-// Parse a SuggestResult from the JSON string returned by the kernel.
+// Parse a SuggestResult from the JSON object returned by the kernel.
+// Expected fields: tookMs (Int), suggestions (Array of String).
 func parseSuggestResult(json: in String): SuggestResult {
-  return SuggestResult(suggestions = [], tookMs = 0)
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  var tookMs:      Int      = 0
+  var suggestions: [String] = []
+  match Std.Json.tryGetProperty(root, "tookMs") {
+    case Some(v) ->
+      match Std.Json.tryGetInt(v) {
+        case Some(n) -> tookMs = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "suggestions") {
+    case Some(arr) -> {
+      var en = Std.Json.enumerateArray(arr)
+      while Std.Json.arrayMoveNext(en) {
+        val elem = Std.Json.arrayCurrent(en)
+        if Std.Json.valueKind(elem) == 3 {   // 3 = string
+          suggestions = suggestions + [Std.Json.getString(elem)]
+        }
+      }
+    }
+    case None -> ()
+  }
+  return SuggestResult(suggestions = suggestions, tookMs = tookMs)
+}
+
+// Parse a single SearchHit from a raw JSON string.
+// score is left as 0.0 — Std.Json exposes getDouble (Double) but SearchHit.score is Float.
+func parseSearchHit(json: in String): SearchHit {
+  val doc        = Std.Json.parseJson(json)
+  val root       = Std.Json.rootElement(doc)
+  var id:         String              = ""
+  var index:      String              = ""
+  var source:     Map[String, String] = Map.empty()
+  var highlights: [Highlight]         = []
+  match Std.Json.tryGetProperty(root, "id") {
+    case Some(v) -> id = Std.Json.getString(v)
+    case None    -> ()
+  }
+  match Std.Json.tryGetProperty(root, "index") {
+    case Some(v) -> index = Std.Json.getString(v)
+    case None    -> ()
+  }
+  match Std.Json.tryGetProperty(root, "source") {
+    case Some(obj) -> {
+      var en = Std.Json.enumerateObject(obj)
+      while Std.Json.objectMoveNext(en) {
+        val prop = Std.Json.objectCurrent(en)
+        val k    = Std.Json.propertyName(prop)
+        val v    = Std.Json.getString(Std.Json.propertyValue(prop))
+        source   = source.set(k, v)
+      }
+    }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "highlights") {
+    case Some(arr) -> {
+      var en = Std.Json.enumerateArray(arr)
+      while Std.Json.arrayMoveNext(en) {
+        val hElem    = Std.Json.arrayCurrent(en)
+        val hJson    = Std.Json.getRawText(hElem)
+        highlights   = highlights + [parseHighlight(hJson)]
+      }
+    }
+    case None -> ()
+  }
+  return SearchHit(id = id, index = index, score = 0.0, highlights = highlights, source = source)
+}
+
+// Parse a Highlight from a raw JSON string.
+// Expected fields: field (String), fragments (Array of String).
+func parseHighlight(json: in String): Highlight {
+  val doc        = Std.Json.parseJson(json)
+  val root       = Std.Json.rootElement(doc)
+  var field:     String   = ""
+  var fragments: [String] = []
+  match Std.Json.tryGetProperty(root, "field") {
+    case Some(v) -> field = Std.Json.getString(v)
+    case None    -> ()
+  }
+  match Std.Json.tryGetProperty(root, "fragments") {
+    case Some(arr) -> {
+      var en = Std.Json.enumerateArray(arr)
+      while Std.Json.arrayMoveNext(en) {
+        val fElem = Std.Json.arrayCurrent(en)
+        if Std.Json.valueKind(fElem) == 3 {   // 3 = string
+          fragments = fragments + [Std.Json.getString(fElem)]
+        }
+      }
+    }
+    case None -> ()
+  }
+  return Highlight(field = field, fragments = fragments)
 }

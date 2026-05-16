@@ -39,6 +39,8 @@ package Session
 import Std.Core
 import Std.Collections
 import Std.Time
+import Std.Json
+import Std.Uuid
 import Session.Kernel.Net
 
 // ─── Session identity ─────────────────────────────────────────────────────────
@@ -134,7 +136,7 @@ pub record NativeSessionStore {
 
 impl SessionStore for NativeSessionStore {
   func create(): Result[SessionId, SessionError] {
-    match Session.Kernel.Net.create(storeHandle, Session.ttlSeconds) {
+    match Session.Kernel.Net.create(storeHandle, SessionConfig.ttlSeconds) {
       case Ok(id)   -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
@@ -168,7 +170,7 @@ impl SessionStore for NativeSessionStore {
   }
 
   func touch(sessionId: in SessionId): Result[Unit, SessionError] {
-    match Session.Kernel.Net.touch(storeHandle, sessionId, Session.ttlSeconds) {
+    match Session.Kernel.Net.touch(storeHandle, sessionId, SessionConfig.ttlSeconds) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
@@ -197,7 +199,7 @@ impl SessionStore for NativeSessionStore {
               entries        = Map.empty(),
               createdAt      = ts,
               lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(Session.ttlSeconds))
+              expiresAt      = defaultExpiresAt(SessionConfig.ttlSeconds))
         }
         val updated = SessionData(
           id             = existing.id,
@@ -262,8 +264,7 @@ pub record InProcessSessionStore {
 
 impl SessionStore for InProcessSessionStore {
   func create(): Result[SessionId, SessionError] {
-    val ts = nowMs()
-    val id = "sess-" + ts.toString()
+    val id = Std.Uuid.uuidToString(Std.Uuid.newUuid())
     val data = SessionData(
       id             = id,
       entries        = Map.empty(),
@@ -394,7 +395,7 @@ impl SessionStore for InProcessSessionStore {
 // ─── Runtime config ───────────────────────────────────────────────────────────
 
 /// Session lifetime and cookie settings.
-config Session {
+config SessionConfig {
   ttlSeconds: Int range 60..=86400 = 3600
   cookieName: String               = "LYRIC_SESSION"
   secure:     Bool                 = true
@@ -425,7 +426,7 @@ pub func connectRedis(): Result[SessionStore, SessionError] {
 /// Create an in-process session store using the configured TTL.
 @stable(since="0.1")
 pub func inMemory(): InProcessSessionStore {
-  return InProcessSessionStore(sessions = Map.empty(), ttlSeconds = Session.ttlSeconds)
+  return InProcessSessionStore(sessions = Map.empty(), ttlSeconds = SessionConfig.ttlSeconds)
 }
 
 // ─── Convenience public API ───────────────────────────────────────────────────
@@ -511,12 +512,12 @@ func nowMs(): Long {
 }
 
 // Compute an expiry timestamp: 0 if ttlSeconds == 0 (no expiry),
-// otherwise nowMs() + ttlSeconds * 1000.
+// otherwise nowMs() + ttlSeconds * 1000L (Long multiply avoids Int overflow).
 func defaultExpiresAt(ttlSeconds: in Int): Long {
   if ttlSeconds == 0 {
     return 0
   }
-  return nowMs() + ttlSeconds * 1000
+  return nowMs() + ttlSeconds.toLong() * 1000L
 }
 
 // Minimal JSON serializer for SessionData (produces the protocol format
@@ -539,16 +540,55 @@ func serializeSessionJson(data: in SessionData): String {
        + "\"entries\":" + entriesJson + "}"
 }
 
-// Minimal JSON deserializer for the SessionData protocol format returned by
-// Session.Kernel.Net.load.  Produces a SessionData with the stored timestamps
-// and an empty entries map (full entry parsing is deferred to the kernel,
-// which returns structured data via the handle).  The in-process store does
-// not use this path.
+// Deserialize the SessionData protocol format returned by Session.Kernel.Net.load.
+// Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
 func parseSessionJson(sessionId: in SessionId, json: in String): SessionData {
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  var createdAt:      Long              = 0
+  var lastAccessedAt: Long              = 0
+  var expiresAt:      Long              = 0
+  var entries:        Map[String, String] = Map.empty()
+  match Std.Json.tryGetProperty(root, "createdAt") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> createdAt = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "lastAccessedAt") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> lastAccessedAt = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "expiresAt") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> expiresAt = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "entries") {
+    case Some(obj) -> {
+      var en = Std.Json.enumerateObject(obj)
+      while Std.Json.objectMoveNext(en) {
+        val prop = Std.Json.objectCurrent(en)
+        val k    = Std.Json.propertyName(prop)
+        val v    = Std.Json.getString(Std.Json.propertyValue(prop))
+        entries  = entries.set(k, v)
+      }
+    }
+    case None -> ()
+  }
   return SessionData(
     id             = sessionId,
-    entries        = Map.empty(),
-    createdAt      = 0,
-    lastAccessedAt = 0,
-    expiresAt      = 0)
+    entries        = entries,
+    createdAt      = createdAt,
+    lastAccessedAt = lastAccessedAt,
+    expiresAt      = expiresAt)
 }

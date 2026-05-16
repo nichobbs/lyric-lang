@@ -23,6 +23,7 @@ package Testing
 import Std.Core
 import Std.Collections
 import Std.Time
+import Std.Json
 import Cache
 import Mail
 import Storage
@@ -595,20 +596,100 @@ func doPanic(msg: in String): Unit {
 }
 
 // Produce a minimal SessionData from a stored string.
-// The storage format is the session ID only (a placeholder; full JSON
-// serialisation is out of scope for the mock).
 func parseSession(json: in String): Session.SessionData {
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  var id:             String              = ""
+  var createdAt:      Long               = 0
+  var lastAccessedAt: Long               = 0
+  var expiresAt:      Long               = 0
+  var entries:        Map[String, String] = Map.empty()
+  match Std.Json.tryGetProperty(root, "id") {
+    case Some(v) -> id = Std.Json.getString(v)
+    case None    -> ()
+  }
+  match Std.Json.tryGetProperty(root, "createdAt") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> createdAt = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "lastAccessedAt") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> lastAccessedAt = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "expiresAt") {
+    case Some(v) ->
+      match Std.Json.tryGetLong(v) {
+        case Some(n) -> expiresAt = n
+        case None    -> ()
+      }
+    case None -> ()
+  }
+  match Std.Json.tryGetProperty(root, "entries") {
+    case Some(obj) -> {
+      var en = Std.Json.enumerateObject(obj)
+      while Std.Json.objectMoveNext(en) {
+        val prop = Std.Json.objectCurrent(en)
+        val k    = Std.Json.propertyName(prop)
+        val v    = Std.Json.getString(Std.Json.propertyValue(prop))
+        entries  = entries.set(k, v)
+      }
+    }
+    case None -> ()
+  }
   return Session.SessionData(
-    id             = json,
-    entries        = Map.empty(),
-    createdAt      = 0,
-    lastAccessedAt = 0,
-    expiresAt      = 0)
+    id             = id,
+    entries        = entries,
+    createdAt      = createdAt,
+    lastAccessedAt = lastAccessedAt,
+    expiresAt      = expiresAt)
 }
 
-// Serialise a SessionData to a string for storage in the mock cache.
-// Stores only the session ID as a placeholder; real serialisation is
-// performed by the production Session library.
 func serialiseSession(data: in Session.SessionData): String {
-  return data.id
+  var entriesJson = "{"
+  var first = true
+  for (k, v) in data.entries {
+    if not first { entriesJson = entriesJson + "," }
+    entriesJson = entriesJson + sessionJsonStr(k) + ":" + sessionJsonStr(v)
+    first = false
+  }
+  entriesJson = entriesJson + "}"
+  return "{" +
+    "\"id\":"             + sessionJsonStr(data.id)             + "," +
+    "\"createdAt\":"      + data.createdAt.toString()            + "," +
+    "\"lastAccessedAt\":" + data.lastAccessedAt.toString()       + "," +
+    "\"expiresAt\":"      + data.expiresAt.toString()            + "," +
+    "\"entries\":"        + entriesJson                          +
+    "}"
+}
+
+// Wrap a string in JSON double-quotes with minimal escaping.
+func sessionJsonStr(s: in String): String {
+  var out = "\""
+  var i   = 0
+  while i < s.length {
+    val ch = s.charAt(i).toString()
+    if ch == "\"" {
+      out = out + "\\\""
+    } else if ch == "\\" {
+      out = out + "\\\\"
+    } else if ch == "\n" {
+      out = out + "\\n"
+    } else if ch == "\r" {
+      out = out + "\\r"
+    } else if ch == "\t" {
+      out = out + "\\t"
+    } else {
+      out = out + ch
+    }
+    i = i + 1
+  }
+  return out + "\""
 }

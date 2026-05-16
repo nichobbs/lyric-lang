@@ -321,10 +321,3 @@ pub func makeFlagWithDesc(name: in String, enabled: in Bool, description: in Str
     description = description)
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
-
-// Parse a JSON object representing flag entries into a Map.
-// Real JSON parsing is deferred to Std.Json integration; returns an empty map.
-func loadEntriesFromJson(json: in String): Map[String, FlagEntry] {
-  return Map.empty()
-}

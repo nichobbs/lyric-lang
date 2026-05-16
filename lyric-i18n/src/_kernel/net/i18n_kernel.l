@@ -35,6 +35,24 @@ extern package System.IO.I18n {
   /// [localeKey, translationKey, value] triples.
   /// Returns the JSON array on success, or an error message on failure.
   pub func parseTranslationsJson(json: String): Result[String, String]
+
+  /// Load translations from `path` into the kernel store and return an opaque
+  /// handle.  All subsequent translate/hasKey/availableLocalesJson calls use
+  /// this handle to look up values from the loaded store.
+  pub func loadStore(path: String, fallbackLocale: String): Result[Int, String]
+
+  /// Look up `key` for `localeKey` (e.g. "en-US") in the store identified by
+  /// `storeHandle`.  Falls back to language-only key ("en") and then to
+  /// `fallbackLocale`.  Returns the key itself when no translation is found.
+  pub func translate(storeHandle: Int, key: String, localeKey: String): String
+
+  /// Return a JSON array of locale keys available in the store, e.g.
+  /// `["en","en-US","fr"]`.  Returns `"[]"` for an empty or unknown handle.
+  pub func availableLocalesJson(storeHandle: Int): String
+
+  /// Return true iff the store contains `key` for `localeKey` (or its
+  /// language-only fallback).
+  pub func hasKey(storeHandle: Int, key: String, localeKey: String): Bool
 }
 
 // ─── Re-exports with `in` mode ────────────────────────────────────────────────
@@ -47,4 +65,24 @@ pub func loadFromPath(path: in String): Result[String, String] {
 /// Parse a translations JSON object into a flat array of [localeKey, key, value] triples.
 pub func parseTranslationsJson(json: in String): Result[String, String] {
   return System.IO.I18n.parseTranslationsJson(json)
+}
+
+/// Load translations from a file path into a kernel-managed store.
+pub func loadStore(path: in String, fallbackLocale: in String): Result[Int, String] {
+  return System.IO.I18n.loadStore(path, fallbackLocale)
+}
+
+/// Translate `key` for `localeKey` using the kernel store.
+pub func translate(storeHandle: in Int, key: in String, localeKey: in String): String {
+  return System.IO.I18n.translate(storeHandle, key, localeKey)
+}
+
+/// Return a JSON array of locale keys available in the store.
+pub func availableLocalesJson(storeHandle: in Int): String {
+  return System.IO.I18n.availableLocalesJson(storeHandle)
+}
+
+/// Return true iff `key` exists for `localeKey` (or its language-only fallback).
+pub func hasKey(storeHandle: in Int, key: in String, localeKey: in String): Bool {
+  return System.IO.I18n.hasKey(storeHandle, key, localeKey)
 }

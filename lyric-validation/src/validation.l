@@ -136,7 +136,7 @@ pub func notBlank(value: in String, field: in String): [ValidationError] {
 /// Note: full regular-expression matching is deferred; this rule enforces that
 /// a value is provided when a pattern constraint is declared.  Use `oneOf` or
 /// explicit string checks for structural validation until regex support ships.
-@stable(since="0.1")
+@experimental
 pub func matches(
   value:       in String,
   field:       in String,
@@ -182,7 +182,7 @@ pub func email(value: in String, field: in String): [ValidationError] {
   var atIndex  = -1
   var i        = 0
   while i < value.length {
-    if value.charAt(i) == "@" {
+    if value.charAt(i).toString() == "@" {
       atCount = atCount + 1
       atIndex = i
     }
@@ -195,7 +195,7 @@ pub func email(value: in String, field: in String): [ValidationError] {
   var hasDot = false
   var j      = atIndex + 1
   while j < value.length {
-    if value.charAt(j) == "." { hasDot = true }
+    if value.charAt(j).toString() == "." { hasDot = true }
     j = j + 1
   }
   if not hasDot {
@@ -313,7 +313,7 @@ func err(field: in String, code: in String, message: in String): [ValidationErro
 func containsChar(s: in String, ch: in String): Bool {
   var i = 0
   while i < s.length {
-    if s.charAt(i) == ch { return true }
+    if s.charAt(i).toString() == ch { return true }
     i = i + 1
   }
   return false

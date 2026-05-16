@@ -121,7 +121,7 @@ func containsDotDot(s: in String): Bool {
   val limit = s.length - 1
   var i     = 0
   while i < limit {
-    if s.charAt(i) == "." and s.charAt(i + 1) == "." {
+    if s.charAt(i).toString() == "." and s.charAt(i + 1).toString() == "." {
       return true
     }
     i = i + 1

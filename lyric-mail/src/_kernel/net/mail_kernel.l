@@ -110,14 +110,16 @@ pub func connectSendGrid(apiKey: in String): Result[Int, String] {
 }
 
 /// Send a JSON-encoded message through the provider identified by `senderHandle`.
-/// The handle encodes which provider was used at connect time.
+/// Dispatches to the active provider feature at compile time.
 pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  // The kernel runtime dispatches to the correct provider based on the handle's
-  // internal tag.  Extern implementations are responsible for this routing.
-  MailKit.Net.Smtp.send(senderHandle, messageJson)
+  @cfg(feature = "smtp")     return MailKit.Net.Smtp.send(senderHandle, messageJson)
+  @cfg(feature = "ses")      return AWSSDK.SimpleEmail.send(senderHandle, messageJson)
+  @cfg(feature = "sendgrid") return SendGrid.send(senderHandle, messageJson)
 }
 
 /// Release a provider connection.
 pub func close(senderHandle: in Int): Unit {
-  MailKit.Net.Smtp.close(senderHandle)
+  @cfg(feature = "smtp")     MailKit.Net.Smtp.close(senderHandle)
+  @cfg(feature = "ses")      AWSSDK.SimpleEmail.close(senderHandle)
+  @cfg(feature = "sendgrid") SendGrid.close(senderHandle)
 }

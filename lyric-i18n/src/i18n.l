@@ -28,6 +28,7 @@ package I18n
 
 import Std.Core
 import Std.Collections
+import Std.Json
 import I18n.Kernel.Net
 
 // ─── Locale type ──────────────────────────────────────────────────────────────
@@ -156,8 +157,7 @@ record NativeTranslationStore { storeHandle: Int }
 
 impl TranslationStore for NativeTranslationStore {
   func translate(key: in String, locale: in Locale): String {
-    // Delegates to the kernel; the kernel performs the same fallback logic.
-    return key
+    return I18n.Kernel.Net.translate(storeHandle, key, localeKey(locale))
   }
 
   func translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String {
@@ -166,11 +166,12 @@ impl TranslationStore for NativeTranslationStore {
   }
 
   func availableLocales(): [Locale] {
-    return []
+    val json = I18n.Kernel.Net.availableLocalesJson(storeHandle)
+    return parseLocaleArray(json)
   }
 
   func hasKey(key: in String, locale: in Locale): Bool {
-    return false
+    return I18n.Kernel.Net.hasKey(storeHandle, key, localeKey(locale))
   }
 }
 
@@ -208,6 +209,7 @@ pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError]
 }
 
 /// Load translations from the path configured in `I18nConfig.translationsPath`.
+/// Returns an `InProcessTranslationStore` backed by a parsed in-memory map.
 @stable(since="0.1")
 pub func loadFromPath(): Result[InProcessTranslationStore, I18nError] {
   match I18n.Kernel.Net.loadFromPath(I18nConfig.translationsPath) {
@@ -215,6 +217,17 @@ pub func loadFromPath(): Result[InProcessTranslationStore, I18nError] {
       return Err(I18nError(message = msg, code = "LOAD_ERROR"))
     case Ok(json) ->
       return fromJson(json)
+  }
+}
+
+/// Load translations from the path and return a kernel-backed `NativeTranslationStore`.
+/// Prefer `loadFromPath` for most uses; use `loadNative` when the translation
+/// file is large enough that an in-memory copy is undesirable.
+@stable(since="0.1")
+pub func loadNative(): Result[NativeTranslationStore, I18nError] {
+  match I18n.Kernel.Net.loadStore(I18nConfig.translationsPath, I18nConfig.fallbackLocale) {
+    case Ok(handle) -> Ok(NativeTranslationStore(storeHandle = handle))
+    case Err(msg)   -> Err(I18nError(message = msg, code = "LOAD_ERROR"))
   }
 }
 
@@ -286,11 +299,27 @@ pub func defaultLocale(): Locale {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
+// Parse a JSON array of locale-key strings (from availableLocalesJson) into [Locale].
+func parseLocaleArray(json: in String): [Locale] {
+  var result: [Locale] = []
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  if Std.Json.valueKind(root) != 2 { return result }
+  var en = Std.Json.enumerateArray(root)
+  while Std.Json.arrayMoveNext(en) {
+    val elem = Std.Json.arrayCurrent(en)
+    if Std.Json.valueKind(elem) == 3 {
+      result = result + [parseLocaleKey(Std.Json.getString(elem))]
+    }
+  }
+  return result
+}
+
 // Parse a BCP 47 locale key string into a Locale.
 // "en-US" → Locale(language = "en", region = "US"); "en" → Locale(language = "en", region = "")
 func parseLocaleKey(key: in String): Locale {
   var i: Int = 0
-  while i < key.length and key.charAt(i) != "-" {
+  while i < key.length and key.charAt(i).toString() != "-" {
     i = i + 1
   }
   if i >= key.length {
@@ -308,11 +337,11 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
   var out: String = ""
   var i:   Int    = 0
   while i < template.length {
-    val ch = template.charAt(i)
+    val ch = template.charAt(i).toString()
     if ch == "{" {
       // Scan forward to find the closing '}'.
       var j: Int = i + 1
-      while j < template.length and template.charAt(j) != "}" {
+      while j < template.length and template.charAt(j).toString() != "}" {
         j = j + 1
       }
       if j >= template.length {
@@ -380,10 +409,10 @@ func splitTriple(triple: in String): [String] {
   var result: [String] = []
   var i:      Int      = 0
   while i < triple.length {
-    val ch = triple.charAt(i)
+    val ch = triple.charAt(i).toString()
     if ch == "\"" {
       var j: Int = i + 1
-      while j < triple.length and triple.charAt(j) != "\"" {
+      while j < triple.length and triple.charAt(j).toString() != "\"" {
         j = j + 1
       }
       val s = triple.substring(i + 1, j)

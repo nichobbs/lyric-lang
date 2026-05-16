@@ -278,6 +278,34 @@ Lyric supports three kinds of comments:
 
 Write doc comments on every `pub` declaration. The `lyric doc` command generates Markdown documentation from them, including your `requires` and `ensures` clauses.
 
+## The library ecosystem
+
+The standard library (`Std.*`) covers the basics: collections, strings, JSON, time, UUIDs, HTTP primitives, and testing.  For production service work, Lyric ships a suite of standalone library packages that you add to your `lyric.toml`:
+
+| What you need | Library | Key packages |
+|---|---|---|
+| Structured logging | `lyric-logging` | `Std.Logging`, `Std.Logging.Aspects` |
+| HTTP server | `lyric-web` | `Web`, `Web.OpenApi`, `Web.Aspects` |
+| Caching (in-memory / disk) | `lyric-cache` | `Cache`, `Cache.Aspects` |
+| SQL database access | `lyric-db` | `Db`, `Db.Aspects` |
+| Background jobs | `lyric-jobs` | `Jobs` |
+| Email (SMTP / SES / SendGrid) | `lyric-mail` | `Mail` |
+| Message queues (RabbitMQ / SQS / …) | `lyric-mq` | `Mq`, `Mq.Aspects` |
+| Observability (OpenTelemetry) | `lyric-otel` | `OTel`, `OTel.Otlp` |
+| Full-text search (Elasticsearch / Meilisearch) | `lyric-search` | `Search` |
+| Distributed sessions | `lyric-session` | `Session` |
+| Object storage (S3 / Azure Blob / local) | `lyric-storage` | `Storage`, `Storage.Aspects` |
+| Input validation | `lyric-validation` | `Validation` |
+| WebSockets | `lyric-ws` | `Ws`, `Ws.Aspects` |
+| Feature flags | `lyric-feature-flags` | `Flags`, `Flags.Aspects` |
+| Internationalisation (i18n) | `lyric-i18n` | `I18n` |
+| Protocol Buffers (proto3) | `lyric-proto` | `Proto` |
+| gRPC client | `lyric-grpc` | `Grpc` |
+| Liveness / readiness probes | `lyric-health` | `Health` |
+| Test mocks and assertion helpers | `lyric-testing` | `Testing` |
+
+See Appendix B §B.9 for the full module reference, and each library's `README.md` for usage examples.
+
 ## Exercises
 
 1. **Different entry points**

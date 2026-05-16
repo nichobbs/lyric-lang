@@ -138,6 +138,21 @@ config Sender {
   provider:        String = "smtp"   // smtp | ses | sendgrid
 }
 
+/// Amazon SES connection settings.
+config Ses {
+  region:    String = "us-east-1"
+  @sensitive
+  accessKey: String = ""
+  @sensitive
+  secretKey: String = ""
+}
+
+/// SendGrid connection settings.
+config SendGridMail {
+  @sensitive
+  apiKey: String = ""
+}
+
 // ─── Factory functions ────────────────────────────────────────────────────────
 
 /// Open an SMTP connection using the Smtp config block.
@@ -159,7 +174,7 @@ pub func connectSmtp(): Result[MailSender, MailError] {
 @stable(since="0.1")
 @cfg(feature = "ses")
 pub func connectSes(): Result[MailSender, MailError] {
-  match MailKernel.connectSes("", "", "") {
+  match MailKernel.connectSes(Ses.region, Ses.accessKey, Ses.secretKey) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -171,7 +186,7 @@ pub func connectSes(): Result[MailSender, MailError] {
 @stable(since="0.1")
 @cfg(feature = "sendgrid")
 pub func connectSendGrid(): Result[MailSender, MailError] {
-  match MailKernel.connectSendGrid("") {
+  match MailKernel.connectSendGrid(SendGridMail.apiKey) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -344,7 +359,7 @@ func jsonString(s: in String): String {
   var out = "\""
   var i   = 0
   while i < s.length {
-    val ch = s.charAt(i)
+    val ch = s.charAt(i).toString()
     if ch == "\"" {
       out = out + "\\\""
     } else if ch == "\\" {

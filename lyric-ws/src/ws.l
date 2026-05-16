@@ -200,7 +200,7 @@ config Server {
 }
 
 /// JWT-based authentication applied at upgrade time.
-config Auth {
+config WsAuthConfig {
   enabled:    Bool   = true
   @sensitive
   jwtSecret:  String = ""

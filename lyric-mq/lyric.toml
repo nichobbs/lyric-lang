@@ -25,3 +25,4 @@ kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 [dependencies]
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
+"Lyric.Cache"      = { path = "../lyric-cache" }

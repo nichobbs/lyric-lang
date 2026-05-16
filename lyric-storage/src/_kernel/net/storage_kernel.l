@@ -201,17 +201,23 @@ pub func put(
   contentType:  in String,
   userMetaJson: in String
 ): Result[String, String] {
-  AWSSDK.S3.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+  @cfg(feature = "s3")        return AWSSDK.S3.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+  @cfg(feature = "azureblob") return Azure.Storage.Blobs.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+  @cfg(feature = "local")     return System.IO.Storage.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
 }
 
 /// Download an object.
 pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
-  AWSSDK.S3.get(bucketHandle, key)
+  @cfg(feature = "s3")        return AWSSDK.S3.get(bucketHandle, key)
+  @cfg(feature = "azureblob") return Azure.Storage.Blobs.get(bucketHandle, key)
+  @cfg(feature = "local")     return System.IO.Storage.get(bucketHandle, key)
 }
 
 /// Delete an object.
 pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  AWSSDK.S3.delete(bucketHandle, key)
+  @cfg(feature = "s3")        return AWSSDK.S3.delete(bucketHandle, key)
+  @cfg(feature = "azureblob") return Azure.Storage.Blobs.delete(bucketHandle, key)
+  @cfg(feature = "local")     return System.IO.Storage.delete(bucketHandle, key)
 }
 
 /// List objects.
@@ -221,7 +227,9 @@ pub func list(
   continuationToken: in String,
   maxKeys:           in Int
 ): Result[String, String] {
-  AWSSDK.S3.list(bucketHandle, prefix, continuationToken, maxKeys)
+  @cfg(feature = "s3")        return AWSSDK.S3.list(bucketHandle, prefix, continuationToken, maxKeys)
+  @cfg(feature = "azureblob") return Azure.Storage.Blobs.list(bucketHandle, prefix, continuationToken, maxKeys)
+  @cfg(feature = "local")     return System.IO.Storage.list(bucketHandle, prefix, continuationToken, maxKeys)
 }
 
 /// Generate a pre-signed or SAS URL.
@@ -230,12 +238,16 @@ pub func presignedUrl(
   key:              in String,
   expiresInSeconds: in Int
 ): Result[String, String] {
-  AWSSDK.S3.presignedUrl(bucketHandle, key, expiresInSeconds)
+  @cfg(feature = "s3")        return AWSSDK.S3.presignedUrl(bucketHandle, key, expiresInSeconds)
+  @cfg(feature = "azureblob") return Azure.Storage.Blobs.presignedUrl(bucketHandle, key, expiresInSeconds)
+  @cfg(feature = "local")     return System.IO.Storage.presignedUrl(bucketHandle, key, expiresInSeconds)
 }
 
 /// Check whether an object exists.
 pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  AWSSDK.S3.exists(bucketHandle, key)
+  @cfg(feature = "s3")        return AWSSDK.S3.exists(bucketHandle, key)
+  @cfg(feature = "azureblob") return Azure.Storage.Blobs.exists(bucketHandle, key)
+  @cfg(feature = "local")     return System.IO.Storage.exists(bucketHandle, key)
 }
 
 /// Emit an audit log entry.
