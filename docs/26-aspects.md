@@ -920,6 +920,15 @@ fields naming the aspect that introduced the failing clause (§5.3).
   interaction between template-derived contracts and the composition
   rule (§5.1) across ordering boundaries needs an explicit spec test.
   Defer to the v1 implementation pass.
+- **Q-aspects-008:** `call.context` extension for transport-specific
+  metadata — gRPC aspects need to read `GrpcContext.metadata` (the
+  bearer token lives in metadata, not in a named handler parameter).
+  This requires binding transport context data to `call` at weave
+  time, which is not in the current `call.*` surface (§6).  Extending
+  `call` with an opaque `context: Any` field (type-erased, cast by
+  the aspect) or a typed `call.grpcContext: GrpcContext` surface are
+  the two candidate designs.  Tracked as part of
+  `docs/37-grpc-proto-sketch.md` Q-G-004.
 
 ---
 

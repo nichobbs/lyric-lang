@@ -59,6 +59,7 @@ backing entry's id.
 - `docs/35-js-wasm-component-sketch.md` — JS ecosystem integration via WASM Component Model: WIT generation from Lyric types, `[npm]` table, NPM extern shims, degraded-semantics policy, async lowering. _Unbacked (Q-JS-001–Q-JS-006 open)._
 - `docs/35-lambda-library.md` — `lyric-lambda`, `lyric-aws-secrets`, and `lyric-aws-xray` design: API Gateway v1/v2/ALB → lyric-web Router bridge; SQS, SNS, S3, EventBridge, DynamoDB, Kinesis event handlers; TOKEN/REQUEST/HTTP API authorizers; `@secretsManager`/`@parameterStore` config-block annotations; AOT-safe handler registration (`Lambda.Direct`); response streaming (`Lambda.Stream`); JVM target (`feature = "jvm"`); AWS X-Ray active tracing aspect (`AwsXRay.Tracing`). _Specced in D062, D063, D064._
 - `docs/36-v1-roadmap.md` — v1.0 release roadmap: gate decisions, six critical-path milestones (Q011 surface freeze, CST formatter sunset, JVM channel resolution, M5.3 stage-6 finish, Q022/Q021 language gaps, distribution/signing), and bootstrap-grade gaps with explicit workarounds.
+- `docs/37-grpc-proto-sketch.md` — gRPC and Protobuf binding design: Lyric ↔ proto type mapping, `Result[T,E]` → gRPC Status, enum-with-payload → `oneof`, hybrid field-numbering (declaration-order default + lock file + `@proto_field` override), async streaming model (forward-looking, M1.4+), `lyric-grpc` library structure, `RequiresGrpcAuth` and `GrpcCircuitBreaker` aspect templates, tooling (`lyric grpc spec`, `lyric generate grpc`). _Unbacked (Q-G-001–Q-G-007 open)._
 
 ## Reading order (for Claude)
 
