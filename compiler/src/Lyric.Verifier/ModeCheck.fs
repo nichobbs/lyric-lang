@@ -62,7 +62,7 @@ let private collectCalls
                 match a with
                 | CANamed(_, v, _)   -> visitExpr v
                 | CAPositional v     -> visitExpr v
-        | EParen inner | ETry inner | EOld inner | EPropagate inner -> visitExpr inner
+        | EParen inner | ETry inner | EOld inner | EPropagate inner | EYield inner -> visitExpr inner
         | ETuple xs | EList xs -> xs |> List.iter visitExpr
         | EIf(c, t, eOpt, _) ->
             visitExpr c
@@ -304,7 +304,7 @@ let private checkQuantifierDomains
             (match where with Some w -> walkExpr w | None -> ())
             walkExpr body
         | EParen inner | EOld inner | ETry inner | EAwait inner
-        | ESpawn inner | EPropagate inner -> walkExpr inner
+        | EYield inner | ESpawn inner | EPropagate inner -> walkExpr inner
         | ETuple xs | EList xs -> xs |> List.iter walkExpr
         | EIf(c, t, eOpt, _) ->
             walkExpr c
@@ -390,7 +390,7 @@ let private checkAssumeUsage
         | EUnsafe blk -> walkBlock true blk
         | EBlock blk -> walkBlock inUnsafe blk
         | EParen inner | EOld inner | ETry inner | EAwait inner
-        | ESpawn inner | EPropagate inner -> walkExpr inUnsafe inner
+        | EYield inner | ESpawn inner | EPropagate inner -> walkExpr inUnsafe inner
         | ETuple xs | EList xs -> xs |> List.iter (walkExpr inUnsafe)
         | EIf(c, t, eOpt, _) ->
             walkExpr inUnsafe c

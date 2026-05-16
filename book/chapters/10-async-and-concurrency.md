@@ -173,7 +173,31 @@ The `when:` condition says: block until enough tokens are available, or until en
 
 Multiple callers contend safely. The mutual exclusion is structural — not a lock you remember to acquire, but a property of every operation on the type.
 
-## §10.5 No raw locks
+## §10.5 Async generators
+
+An `async func` whose body contains at least one `yield` expression is an *async generator*. It returns each yielded value to the caller as an element of an async sequence. The caller consumes it with `for x in f(args) { … }`:
+
+```lyric
+async func naturals(limit: in Int): Int {
+  var i = 0
+  while i < limit {
+    yield i
+    i = i + 1
+  }
+}
+
+func main(): Unit {
+  for n in naturals(5) {
+    println(toString(n))  // 0, 1, 2, 3, 4
+  }
+}
+```
+
+The compiler infers the public signature of a generator function as `IAsyncEnumerable[T]`. `for x in seq { … }` lowers to `await foreach` using the `IAsyncEnumerable<T>` / `IAsyncEnumerator<T>` interfaces on .NET, or `Iterable<T>` / `Iterator<T>` on the JVM.
+
+**Current limitation (bootstrap-grade):** The generator body is evaluated eagerly before any element is consumed. A generator whose body contains `await` is not yet supported and produces a compile-time diagnostic. True lazy/interleaved execution is tracked for M2.
+
+## §10.6 No raw locks
 
 There is no `Monitor.Enter`, no `lock` statement, and no `SemaphoreSlim` you can reach for directly in normal Lyric code. If you need them — and this is unusual — you use an `@axiom` boundary to call into .NET primitives:
 
@@ -191,7 +215,7 @@ The friction is intentional. Every use of raw synchronisation is visible in code
 
 In practice, `protected type` covers the vast majority of shared-state patterns. The token bucket, the bounded queue, a shared cache, a rate limiter, a connection pool — all of these fit the model.
 
-## §10.6 `defer`
+## §10.7 `defer`
 
 `defer` runs a block when the enclosing scope exits, regardless of how it exits — normal return, early return, or exception:
 

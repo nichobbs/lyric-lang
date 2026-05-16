@@ -44,7 +44,7 @@ let rec private exprHasAwait (e: Expr) : bool =
         segs |> List.exists (function
             | ISText _ -> false
             | ISExpr e -> exprHasAwait e)
-    | EParen e | ESpawn e | EOld e | EPropagate e | ETry e -> exprHasAwait e
+    | EParen e | EYield e | ESpawn e | EOld e | EPropagate e | ETry e -> exprHasAwait e
     | ETuple es | EList es -> es |> List.exists exprHasAwait
     | EIf (c, t, eOpt, _) ->
         exprHasAwait c
@@ -252,13 +252,18 @@ and private isSafeStmt (s: Statement) : bool =
     | SDefer _ | SScope _ ->
         not (stmtHasAwait s)
 
-/// Like `isSafeStmt` but stricter: rejects STry with await in body.
-/// Used inside expression contexts (try-as-expression / EBlock-in-
-/// expression) where the duplicated-post-await emit isn't wired
-/// through the EBlock codegen path.
+/// Like `isSafeStmt` but for expression-context blocks (EBlock inside
+/// an expression position, e.g. `try { await f() } catch ...` used as
+/// a value).  Allows the Phase B+++ single-trailing-await STry shape so
+/// that `val x = try { await f() } catch ...` lowers cleanly via the
+/// duplicated-post-await emit.  Any other await-containing STry falls
+/// back to the M1.4 blocking shim.
 and private isSafeStmtNested (s: Statement) : bool =
     match s.Kind with
-    | STry _ -> not (stmtHasAwait s)
+    | STry (body, catches) ->
+        if not (stmtHasAwait s) then true
+        elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
+        else isPhaseBPlusPlusPlusTryAwaitBody body
     | _ -> isSafeStmt s
 
 /// Walks a stmt list enforcing the Phase B / B+++ "scope-positional"
@@ -551,6 +556,8 @@ let rec private spillAwaits
         { e with Kind = EInterpolated segs' }
     | EParen inner ->
         { e with Kind = EParen (spillAwaits sigOf sp inner) }
+    | EYield inner ->
+        { e with Kind = EYield (spillAwaits sigOf sp inner) }
     | ESpawn inner ->
         // `spawn { … }` has its own closure; don't descend.
         e
@@ -884,7 +891,7 @@ let collectAwaitInners (fn: FunctionDecl) : Expr list =
                 match s with
                 | ISText _ -> ()
                 | ISExpr e -> walkExpr e
-        | EParen e | ESpawn e | EOld e | EPropagate e | ETry e -> walkExpr e
+        | EParen e | EYield e | ESpawn e | EOld e | EPropagate e | ETry e -> walkExpr e
         | ETuple es | EList es -> for e in es do walkExpr e
         | EIf (c, t, eOpt, _) ->
             walkExpr c
@@ -1022,6 +1029,13 @@ let collectPromotableLocals (fn: FunctionDecl) : CollectedLocal list option =
             // await (each branch runs to completion before next
             // iteration's body re-enters the same SLocal site).
             | SWhile (_, _, body) | SLoop (_, body) -> walkBlock body
+            // Gap-1 fix: recurse into `for` bodies when they contain
+            // an await so that locals declared inside survive the
+            // cross-resume gap.  The `for` loop variable itself is
+            // promoted via an explicit SM field in the SFor codegen
+            // path; here we only pick up extra `val`/`let`/`var`
+            // declarations inside the body.
+            | SFor (_, _, _, body) when hasAwaitInBlock body -> walkBlock body
             | _ -> ()
     match fn.Body with
     | None -> ()
@@ -1075,11 +1089,16 @@ type StateMachineInfo =
       Ctor: ConstructorBuilder
       /// `<>state : int` field.
       State: FieldBuilder
-      /// `<>builder : AsyncTaskMethodBuilder` (or `<R>`).
+      /// `<>builder : AsyncTaskMethodBuilder` (or `<R>`, or ValueTask variant).
       Builder: FieldBuilder
       /// The closed builder type (`AsyncTaskMethodBuilder` for void,
-      /// `AsyncTaskMethodBuilder<R>` for value-returning funcs).
+      /// `AsyncTaskMethodBuilder<R>` for value-returning funcs; or the
+      /// `AsyncValueTask*` variants for `@hot` functions).
       BuilderType: Type
+      /// True when the function carries `@hot` — builder is
+      /// `AsyncValueTaskMethodBuilder[<T>]` and the kickoff returns
+      /// `ValueTask[<T>]` instead of `Task[<T>]`.
+      IsHot: bool
       /// The bare return type (e.g. `int`); `typeof<Void>` for unit.
       BareReturn: Type
       /// True when the function returns `Unit` and the builder is
@@ -1140,9 +1159,13 @@ let defineAwaiterField (sm: StateMachineInfo) (stateIndex: int) (awaiterTy: Type
 
 let private iAsmType : Type = typeof<IAsyncStateMachine>
 
-let private builderTypeFor (bareReturn: Type) (isVoid: bool) : Type =
-    if isVoid then typeof<AsyncTaskMethodBuilder>
-    else typedefof<AsyncTaskMethodBuilder<_>>.MakeGenericType([| bareReturn |])
+let private builderTypeFor (bareReturn: Type) (isVoid: bool) (isHot: bool) : Type =
+    if isHot then
+        if isVoid then typeof<System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder>
+        else typedefof<System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<_>>.MakeGenericType([| bareReturn |])
+    else
+        if isVoid then typeof<AsyncTaskMethodBuilder>
+        else typedefof<AsyncTaskMethodBuilder<_>>.MakeGenericType([| bareReturn |])
 
 /// SM-class header — the bare TypeBuilder plus its (possibly empty)
 /// generic-parameter builders.  Generic async funcs first define
@@ -1204,10 +1227,11 @@ let defineStateMachineBody
         (header: StateMachineHeader)
         (bareReturn: Type)
         (paramSpecs: (string * Type) list)
-        (localSpecs: (string * Type) list) : StateMachineInfo =
+        (localSpecs: (string * Type) list)
+        (isHot: bool) : StateMachineInfo =
     let tb = header.Type
     let isVoid = bareReturn = typeof<Void>
-    let builderTy = builderTypeFor bareReturn isVoid
+    let builderTy = builderTypeFor bareReturn isVoid isHot
     let stateField =
         tb.DefineField("<>1__state", typeof<int>, FieldAttributes.Public)
     let builderField =
@@ -1288,6 +1312,7 @@ let defineStateMachineBody
       BuilderType     = builderTy
       BareReturn      = bareReturn
       IsVoid          = isVoid
+      IsHot           = isHot
       ParamFields     = paramFields
       PromotedLocals  = promotedLocals
       MoveNext        = moveNext
@@ -1304,9 +1329,10 @@ let defineStateMachine
         (uniq: int)
         (bareReturn: Type)
         (paramSpecs: (string * Type) list)
-        (localSpecs: (string * Type) list) : StateMachineInfo =
+        (localSpecs: (string * Type) list)
+        (isHot: bool) : StateMachineInfo =
     let header = defineStateMachineHeader md nsName funcName uniq []
-    defineStateMachineBody header bareReturn paramSpecs localSpecs
+    defineStateMachineBody header bareReturn paramSpecs localSpecs isHot
 
 // ---------------------------------------------------------------------------
 // IL helpers.
@@ -1328,8 +1354,14 @@ let internal builderClosedOverTypeBuilder (sm: StateMachineInfo) : bool =
            isUnbaked a
            || (a.IsGenericType && a.GetGenericArguments() |> Array.exists isUnbaked))
 
-let private builderOpenDef : Type = typedefof<AsyncTaskMethodBuilder<_>>
-let private builderNonGen  : Type = typeof<AsyncTaskMethodBuilder>
+let private builderOpenDef   : Type = typedefof<AsyncTaskMethodBuilder<_>>
+let private builderNonGen    : Type = typeof<AsyncTaskMethodBuilder>
+let private vtBuilderOpenDef : Type = typedefof<System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<_>>
+let private vtBuilderNonGen  : Type = typeof<System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder>
+
+/// True when `t` is the open definition of a known async builder.
+let private isKnownBuilderOpenDef (t: Type) : bool =
+    t = builderOpenDef || t = vtBuilderOpenDef
 
 /// Resolve a BCL method on `BuilderType`.  Falls back to
 /// `TypeBuilder.GetMethod` when `BuilderType` is closed over a
@@ -1340,12 +1372,13 @@ let internal builderMember
         (name: string) : MethodInfo =
     let isGenericClosedOverTb =
         sm.BuilderType.IsGenericType
-        && sm.BuilderType.GetGenericTypeDefinition() = builderOpenDef
+        && isKnownBuilderOpenDef (sm.BuilderType.GetGenericTypeDefinition())
         && builderClosedOverTypeBuilder sm
     if isGenericClosedOverTb then
         // Look up the open generic method on the open builder
         // definition, then specialise via `TypeBuilder.GetMethod`.
-        let candidates = builderOpenDef.GetMethods()
+        let openDef = sm.BuilderType.GetGenericTypeDefinition()
+        let candidates = openDef.GetMethods()
         let openMI =
             candidates
             |> Array.tryFind (fun m -> m.Name = name)
@@ -1363,18 +1396,19 @@ let internal builderMember
             | Some m -> m
             | None -> failwithf "BCL: %s.%s not found" sm.BuilderType.Name name
 
-/// `AsyncTaskMethodBuilder[<T>]::Create()` (static).
+/// `AsyncTask[Value]MethodBuilder[<T>]::Create()` (static).
 let private builderCreate (sm: StateMachineInfo) : MethodInfo =
     let isGenericClosedOverTb =
         sm.BuilderType.IsGenericType
-        && sm.BuilderType.GetGenericTypeDefinition() = builderOpenDef
+        && isKnownBuilderOpenDef (sm.BuilderType.GetGenericTypeDefinition())
         && builderClosedOverTypeBuilder sm
     if isGenericClosedOverTb then
+        let openDef = sm.BuilderType.GetGenericTypeDefinition()
         let openCreate =
-            builderOpenDef.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)
+            openDef.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)
         match Option.ofObj openCreate with
         | Some m -> TypeBuilder.GetMethod(sm.BuilderType, m)
-        | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Create not found"
+        | None   -> failwithf "BCL: %s.Create not found" sm.BuilderType.Name
     else
         match Option.ofObj (sm.BuilderType.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
         | Some m -> m
@@ -1384,15 +1418,16 @@ let private builderCreate (sm: StateMachineInfo) : MethodInfo =
 let private builderStart (sm: StateMachineInfo) : MethodInfo =
     let isGenericClosedOverTb =
         sm.BuilderType.IsGenericType
-        && sm.BuilderType.GetGenericTypeDefinition() = builderOpenDef
+        && isKnownBuilderOpenDef (sm.BuilderType.GetGenericTypeDefinition())
         && builderClosedOverTypeBuilder sm
     let openStart =
         if isGenericClosedOverTb then
+            let openDef = sm.BuilderType.GetGenericTypeDefinition()
             let openOnDef =
                 match Option.ofObj
-                          (builderOpenDef.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
+                          (openDef.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
                 | Some m -> m
-                | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Start not found"
+                | None   -> failwithf "BCL: %s.Start not found" sm.BuilderType.Name
             TypeBuilder.GetMethod(sm.BuilderType, openOnDef)
         else
             match Option.ofObj
@@ -1410,14 +1445,18 @@ let isGenericSm (sm: StateMachineInfo) : bool =
     sm.GenericParams.Length > 0
 
 /// Closed builder type at a kickoff site.  For non-generic SMs the
-/// SM's stored `BuilderType` is already fully closed; for generic
-/// SMs the stored type is `AsyncTaskMethodBuilder<R>` where `R` is
-/// open over the SM's generic parameters and we close it again
-/// against the user-method-context return type.
+/// SM's stored `BuilderType` is already fully closed; for generic SMs
+/// the stored type is open over the SM's generic params so we re-close
+/// it against the user-method-context return type.  Respects `@hot` by
+/// using the same open definition as the SM's stored `BuilderType`.
 let private closedKickoffBuilderType (sm: StateMachineInfo) (kickoffBareReturn: Type) : Type =
     if not (isGenericSm sm) then sm.BuilderType
     elif sm.IsVoid then sm.BuilderType
-    else typedefof<AsyncTaskMethodBuilder<_>>.MakeGenericType([| kickoffBareReturn |])
+    else
+        let openDef =
+            if sm.BuilderType.IsGenericType then sm.BuilderType.GetGenericTypeDefinition()
+            else builderOpenDef
+        openDef.MakeGenericType([| kickoffBareReturn |])
 
 /// True when `kickoffBuilderTy` is `AsyncTaskMethodBuilder<R>`
 /// closed over a TypeBuilder / GenericTypeParameterBuilder, in
@@ -1428,7 +1467,7 @@ let private closedKickoffBuilderType (sm: StateMachineInfo) (kickoffBareReturn: 
 /// path works.
 let private kickoffBuilderClosedOverTb (kickoffBuilderTy: Type) : bool =
     kickoffBuilderTy.IsGenericType
-    && kickoffBuilderTy.GetGenericTypeDefinition() = builderOpenDef
+    && isKnownBuilderOpenDef (kickoffBuilderTy.GetGenericTypeDefinition())
     && (kickoffBuilderTy.GetGenericArguments()
         |> Array.exists (fun a ->
             a :? TypeBuilder
@@ -1439,24 +1478,26 @@ let private kickoffBuilderClosedOverTb (kickoffBuilderTy: Type) : bool =
                        b :? TypeBuilder
                        || b :? GenericTypeParameterBuilder))))
 
-/// `AsyncTaskMethodBuilder[<R>]::Create` resolved against the
+/// `AsyncTask[Value]MethodBuilder[<R>]::Create` resolved against the
 /// kickoff-context closed builder type.  Mirrors `builderCreate`
 /// but without an `sm` dependency.
 let private kickoffBuilderCreate (kickoffBuilderTy: Type) : MethodInfo =
     if kickoffBuilderClosedOverTb kickoffBuilderTy then
-        match Option.ofObj (builderOpenDef.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
+        let openDef = kickoffBuilderTy.GetGenericTypeDefinition()
+        match Option.ofObj (openDef.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
         | Some m -> TypeBuilder.GetMethod(kickoffBuilderTy, m)
-        | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Create not found"
+        | None   -> failwithf "BCL: %s.Create not found" kickoffBuilderTy.Name
     else
         match Option.ofObj (kickoffBuilderTy.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static)) with
         | Some m -> m
         | None   -> failwithf "BCL: %s.Create not found" kickoffBuilderTy.Name
 
-/// `AsyncTaskMethodBuilder[<R>]::<member>` lookup against the
+/// `AsyncTask[Value]MethodBuilder[<R>]::<member>` lookup against the
 /// kickoff-context closed builder type.  Mirrors `builderMember`.
 let private kickoffBuilderMember (kickoffBuilderTy: Type) (name: string) : MethodInfo =
     if kickoffBuilderClosedOverTb kickoffBuilderTy then
-        let candidates = builderOpenDef.GetMethods()
+        let openDef = kickoffBuilderTy.GetGenericTypeDefinition()
+        let candidates = openDef.GetMethods()
         let openMI =
             candidates
             |> Array.tryFind (fun m -> m.Name = name)
@@ -1474,16 +1515,17 @@ let private kickoffBuilderMember (kickoffBuilderTy: Type) (name: string) : Metho
             | Some m -> m
             | None -> failwithf "BCL: %s.%s not found" kickoffBuilderTy.Name name
 
-/// `AsyncTaskMethodBuilder[<R>]::Start<TSm>(ref TSm)` closed over
-/// the kickoff-side SM type.  Mirrors `builderStart`.
+/// `AsyncTask[Value]MethodBuilder[<R>]::Start<TSm>(ref TSm)` closed
+/// over the kickoff-side SM type.  Mirrors `builderStart`.
 let private kickoffBuilderStart (kickoffBuilderTy: Type) (closedSmTy: Type) : MethodInfo =
     let openStart =
         if kickoffBuilderClosedOverTb kickoffBuilderTy then
+            let openDef = kickoffBuilderTy.GetGenericTypeDefinition()
             let openOnDef =
                 match Option.ofObj
-                          (builderOpenDef.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
+                          (openDef.GetMethod("Start", BindingFlags.Public ||| BindingFlags.Instance)) with
                 | Some m -> m
-                | None   -> failwith "BCL: AsyncTaskMethodBuilder<>.Start not found"
+                | None   -> failwithf "BCL: %s.Start not found" kickoffBuilderTy.Name
             TypeBuilder.GetMethod(kickoffBuilderTy, openOnDef)
         else
             match Option.ofObj

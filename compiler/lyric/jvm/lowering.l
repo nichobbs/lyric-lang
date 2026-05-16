@@ -239,6 +239,11 @@ pub union LInsn {
   case LBastore
   case LCastore
   case LSastore
+
+  // Generator yield meta-insn: the preceding instructions must have left
+  // one value on the stack.  `lowerInsn` panics on this; use only inside
+  // `lowerAsyncGenerator`'s `runBody` emission (handled specially there).
+  case LYield
 }
 
 // ── Type helpers (no OR patterns) ────────────────────────────────────────────
@@ -544,6 +549,11 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       val ps: List[JvmType] = newList()
       lowerInsn(LInvokevirtual(owner = "java/lang/Short", name = "shortValue", params = ps, ret = JShort), asm)
     }
+    case LYield ->
+      // LYield is a meta-insn for async generators; it must not appear in
+      // general-purpose lowering.  Callers should use lowerAsyncGenerator
+      // which handles LYield inside RunBody bodies.
+      panic("LYield used outside an async-generator body")
   }
 }
 
@@ -2851,6 +2861,286 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   val hostMethods: List[MethodInfo] = newList()
   hostMethods.add(hostMethod)
   result.add(makeClassWithMethods(h.className, hostMethods))
+  result
+}
+
+// ── B129: lowerAsyncGenerator (Iterable<Object>+Iterator<Object> collect-all) ─
+
+pub record LGenParam {
+  paramName: String
+  paramType: JvmType
+}
+
+/// Descriptor for a Lyric async-generator function.
+pub record LGenFunc {
+  /// Binary name of the synthesised generator class, e.g. "com/example/Doubles$Gen".
+  generatorClass: String
+  /// Binary name of the host class that receives the static kickoff method.
+  hostClass: String
+  /// Name of the static kickoff method on `hostClass`.
+  methodName: String
+  /// JVM type of each yielded element (used to decide whether to box).
+  elemType: JvmType
+  /// Parameters captured from the callsite into generator fields.
+  params: List[LGenParam]
+  /// Body instructions for RunBody.
+  /// `LYield` is a meta-insn: the preceding instructions must have left one
+  /// value on the stack; lowerAsyncGenerator replaces it with ArrayList.add.
+  bodyInsns: List[LInsn]
+}
+
+/// Bootstrap lowering of a Lyric `async func` with `yield`.
+///
+/// Emits a generator class implementing `java.lang.Iterable<Object>` and
+/// `java.util.Iterator<Object>` with an eager `runBody()` that populates a
+/// `java.util.ArrayList<Object>` on the first `iterator()` call.
+///
+/// Also emits a static kickoff method on `hostClass` that instantiates the
+/// generator with the given parameters and returns it as `Object`.
+///
+/// Bootstrap semantics match the MSIL bootstrap (D-progress-259, Gap-4):
+/// all `yield` expressions execute eagerly before the first `hasNext()`.
+pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+  val genClass  = g.generatorClass
+  val objClass  = "java/lang/Object"
+  val listClass = "java/util/ArrayList"
+  val iterClass = "java/util/Iterator"
+  val iterableClass = "java/lang/Iterable"
+  val listType  = JRef(className = listClass)
+  val objType   = JRef(className = objClass)
+
+  // ── 1. Field declarations ───────────────────────────────────────────────────
+  val emptyAttrs: List[Attribute] = newList()
+  val valuesDesc = typeDescriptor(listType)
+  val posDesc    = typeDescriptor(JInt)
+
+  val fieldsOut: List[FieldInfo] = newList()
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_values", valuesDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pos",    posDesc,    emptyAttrs))
+  var pi = 0
+  while pi < g.params.count {
+    val p = g.params[pi]
+    val pAttrs: List[Attribute] = newList()
+    fieldsOut.add(makeFieldInfo(ACC_PUBLIC, p.paramName, typeDescriptor(p.paramType), pAttrs))
+    pi = pi + 1
+  }
+
+  // ── 2. Constructor <init>(params...)V ───────────────────────────────────────
+  val ctorAsm = newAssembler(pool)
+  val objCtorIdx = poolMethodref(pool, objClass, "<init>", "()V")
+  emitAload(ctorAsm, 0)
+  emitInvokespecial(ctorAsm, objCtorIdx)
+  // store params into fields
+  var slot = 1
+  var qi = 0
+  while qi < g.params.count {
+    val p = g.params[qi]
+    val fIdx = poolFieldref(pool, genClass, p.paramName, typeDescriptor(p.paramType))
+    emitAload(ctorAsm, 0)
+    emitFieldLoad(p.paramType, slot, ctorAsm)
+    emitPutfield(ctorAsm, fIdx)
+    match p.paramType {
+      case JLong   -> { slot = slot + 2 }
+      case JDouble -> { slot = slot + 2 }
+      case _       -> { slot = slot + 1 }
+    }
+    qi = qi + 1
+  }
+  // initialize _values = new ArrayList()
+  val listCtorIdx = poolMethodref(pool, listClass, "<init>", "()V")
+  val valuesIdx   = poolFieldref(pool, genClass, "_values", valuesDesc)
+  emitAload(ctorAsm, 0)
+  emitNew(ctorAsm, poolClass(pool, listClass))
+  emitDup(ctorAsm)
+  emitInvokespecial(ctorAsm, listCtorIdx)
+  emitPutfield(ctorAsm, valuesIdx)
+  emitReturn(ctorAsm)
+  val ctorMaxLocals = slot
+  val ctorCode = assembleCode(ctorAsm, 4, ctorMaxLocals)
+  val ctorAttrs: List[Attribute] = newList()
+  ctorAttrs.add(ctorCode)
+  val ctorParamTypes: List[JvmType] = newList()
+  var ri = 0
+  while ri < g.params.count {
+    ctorParamTypes.add(g.params[ri].paramType)
+    ri = ri + 1
+  }
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParamTypes, JVoid), ctorAttrs)
+
+  // ── 3. runBody()V ───────────────────────────────────────────────────────────
+  // Body instructions with LYield replaced by ArrayList.add(Object).
+  // Slot 0 = this; slot 1 = yield-temp (allocated for each yield).
+  val bodyAsm  = newAssembler(pool)
+  val addPs: List[JvmType] = newList()
+  addPs.add(objType)
+  val addBoolType = JBoolean
+  val listAddIdx = poolMethodref(pool, listClass, "add", "(Ljava/lang/Object;)Z")
+  var bi = 0
+  while bi < g.bodyInsns.count {
+    val insn = g.bodyInsns[bi]
+    match insn {
+      case LYield -> {
+        // Stack top = yielded value (already evaluated by preceding insns).
+        // Box primitive types to Object before storing in ArrayList.
+        match g.elemType {
+          case JInt     -> lowerInsn(LBoxInt,    bodyAsm)
+          case JLong    -> lowerInsn(LBoxLong,   bodyAsm)
+          case JFloat   -> lowerInsn(LBoxFloat,  bodyAsm)
+          case JDouble  -> lowerInsn(LBoxDouble, bodyAsm)
+          case JBoolean -> lowerInsn(LBoxBool,   bodyAsm)
+          case JByte    -> lowerInsn(LBoxByte,   bodyAsm)
+          case JChar    -> lowerInsn(LBoxChar,   bodyAsm)
+          case JShort   -> lowerInsn(LBoxShort,  bodyAsm)
+          case _        -> ()   // reference types need no boxing
+        }
+        // Stack: [..., Object(value)]
+        // Emit: this._values.add(value)
+        emitAstore(bodyAsm, 1)           // temp = value; stack: [...]
+        emitAload(bodyAsm, 0)             // stack: [this]
+        emitGetfield(bodyAsm, valuesIdx)  // stack: [ArrayList]
+        emitAload(bodyAsm, 1)             // stack: [ArrayList, value]
+        emitInvokevirtual(bodyAsm, listAddIdx)  // stack: [boolean]
+        emitPop(bodyAsm)                  // stack: []
+      }
+      case _ -> lowerInsn(insn, bodyAsm)
+    }
+    bi = bi + 1
+  }
+  emitReturn(bodyAsm)
+  val bodyCode = assembleCode(bodyAsm, 6, 2)
+  val bodyAttrs: List[Attribute] = newList()
+  bodyAttrs.add(bodyCode)
+  val bodyPs: List[JvmType] = newList()
+  val runBodyMethod = makeMethodInfo(ACC_PUBLIC, "runBody", buildDescriptor(bodyPs, JVoid), bodyAttrs)
+
+  // ── 4. iterator(): Iterator ─────────────────────────────────────────────────
+  // Calls runBody(), resets _pos to 0, returns this.
+  val iterAsm   = newAssembler(pool)
+  val posIdx    = poolFieldref(pool, genClass, "_pos", posDesc)
+  val runBodyIdx = poolMethodref(pool, genClass, "runBody", "()V")
+  emitAload(iterAsm, 0)
+  emitInvokevirtual(iterAsm, runBodyIdx)
+  emitAload(iterAsm, 0)
+  emitPushInt(iterAsm, 0)
+  emitPutfield(iterAsm, posIdx)
+  emitAload(iterAsm, 0)
+  emitAreturn(iterAsm)
+  val iterPs: List[JvmType] = newList()
+  val iterRetType = JRef(className = iterClass)
+  val iterCode = assembleCode(iterAsm, 2, 1)
+  val iterAttrs: List[Attribute] = newList()
+  iterAttrs.add(iterCode)
+  val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator",
+    buildDescriptor(iterPs, iterRetType), iterAttrs)
+
+  // ── 5. hasNext(): boolean ───────────────────────────────────────────────────
+  val hnAsm = newAssembler(pool)
+  val sizePs: List[JvmType] = newList()
+  val listSizeIdx = poolMethodref(pool, listClass, "size", "()I")
+  emitAload(hnAsm, 0)
+  emitGetfield(hnAsm, posIdx)
+  emitAload(hnAsm, 0)
+  emitGetfield(hnAsm, valuesIdx)
+  emitInvokevirtual(hnAsm, listSizeIdx)
+  emitIfIcmpge(hnAsm, "hn_false")
+  emitIconst(hnAsm, 1)
+  emitIreturn(hnAsm)
+  emitLabel(hnAsm, "hn_false")
+  emitIconst(hnAsm, 0)
+  emitIreturn(hnAsm)
+  val hnPs: List[JvmType] = newList()
+  val hnCode = assembleCode(hnAsm, 2, 1)
+  val hnAttrs: List[Attribute] = newList()
+  hnAttrs.add(hnCode)
+  val hasNextMethod = makeMethodInfo(ACC_PUBLIC, "hasNext",
+    buildDescriptor(hnPs, JBoolean), hnAttrs)
+
+  // ── 6. next(): Object ───────────────────────────────────────────────────────
+  // Returns _values.get(_pos), then increments _pos.
+  val nextAsm = newAssembler(pool)
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  val listGetIdx = poolMethodref(pool, listClass, "get", "(I)Ljava/lang/Object;")
+  emitAload(nextAsm, 0)
+  emitGetfield(nextAsm, valuesIdx)
+  emitAload(nextAsm, 0)
+  emitGetfield(nextAsm, posIdx)
+  emitInvokevirtual(nextAsm, listGetIdx)
+  emitAstore(nextAsm, 1)   // store result in temp
+  // Increment _pos via getfield + iadd + putfield (_pos is a field, not a local).
+  emitAload(nextAsm, 0)
+  emitAload(nextAsm, 0)
+  emitGetfield(nextAsm, posIdx)
+  emitIconst(nextAsm, 1)
+  emitIadd(nextAsm)
+  emitPutfield(nextAsm, posIdx)
+  emitAload(nextAsm, 1)
+  emitAreturn(nextAsm)
+  val nextPs: List[JvmType] = newList()
+  val nextCode = assembleCode(nextAsm, 3, 2)
+  val nextAttrs: List[Attribute] = newList()
+  nextAttrs.add(nextCode)
+  val nextMethod = makeMethodInfo(ACC_PUBLIC, "next",
+    buildDescriptor(nextPs, objType), nextAttrs)
+
+  // ── 7. Assemble generator class ────────────────────────────────────────────
+  val genMethods: List[MethodInfo] = newList()
+  genMethods.add(ctorMethod)
+  genMethods.add(runBodyMethod)
+  genMethods.add(iterMethod)
+  genMethods.add(hasNextMethod)
+  genMethods.add(nextMethod)
+  val genIfaces: List[String] = newList()
+  genIfaces.add(iterableClass)
+  genIfaces.add(iterClass)
+  // Use Java 5 (version 49) so the verifier does not require StackMapTable
+  // for hasNext()'s branch — bootstrap quality, matching lowerRangeType.
+  result.add(ClassFile(
+    minorVersion = 0,
+    majorVersion = 49,
+    flags        = ACC_PUBLIC + ACC_SUPER,
+    thisClass    = genClass,
+    superClass   = "java/lang/Object",
+    interfaces   = genIfaces,
+    fields       = fieldsOut,
+    methods      = genMethods,
+    attrs        = newList()
+  ))
+
+  // ── 8. Kickoff method on host class ────────────────────────────────────────
+  val kickAsm = newAssembler(pool)
+  val genCtorIdx = poolMethodref(pool, genClass, "<init>", buildDescriptor(ctorParamTypes, JVoid))
+  val genClassIdx = poolClass(pool, genClass)
+  emitNew(kickAsm, genClassIdx)
+  emitDup(kickAsm)
+  var ki = 0
+  var kslot = 0   // static method: params start at slot 0 (no `this`)
+  while ki < g.params.count {
+    emitFieldLoad(g.params[ki].paramType, kslot, kickAsm)
+    match g.params[ki].paramType {
+      case JLong   -> { kslot = kslot + 2 }
+      case JDouble -> { kslot = kslot + 2 }
+      case _       -> { kslot = kslot + 1 }
+    }
+    ki = ki + 1
+  }
+  emitInvokespecial(kickAsm, genCtorIdx)
+  emitAreturn(kickAsm)
+  val kickPs: List[JvmType] = newList()
+  var kpi = 0
+  while kpi < g.params.count {
+    kickPs.add(g.params[kpi].paramType)
+    kpi = kpi + 1
+  }
+  val kickCode = assembleCode(kickAsm, 4, kslot)
+  val kickAttrs: List[Attribute] = newList()
+  kickAttrs.add(kickCode)
+  val kickMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, g.methodName,
+    buildDescriptor(kickPs, objType), kickAttrs)
+  val kickMethods: List[MethodInfo] = newList()
+  kickMethods.add(kickMethod)
+  result.add(makeClassWithMethods(g.hostClass, kickMethods))
   result
 }
 

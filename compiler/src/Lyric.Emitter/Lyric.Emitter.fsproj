@@ -16,6 +16,7 @@
     <Compile Include="RestoredPackages.fs" />
     <Compile Include="SdkRoot.fs" />
     <Compile Include="AsyncStateMachine.fs" />
+    <Compile Include="AsyncGenerator.fs" />
     <Compile Include="Cfg.fs" />
     <Compile Include="Codegen.fs" />
     <Compile Include="Weaver.fs" />

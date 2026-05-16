@@ -219,6 +219,7 @@ let renderExpr (e: Expr) : string =
         | EResult               -> "result"
         | ESelf                 -> "self"
         | EOld inner            -> "old(" + go inner + ")"
+        | EYield inner          -> "yield(" + go inner + ")"
         | EBinop(op, l, r)      -> sprintf "(%s %s %s)" (go l) (binopStr op) (go r)
         | EPrefix(op, x)        -> prefixStr op + go x
         | EMember(r, n)         -> go r + "." + n

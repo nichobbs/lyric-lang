@@ -169,7 +169,10 @@ type FunctionCtx =
       /// the real `AwaitUnsafeOnCompleted` suspend/resume protocol
       /// instead of the M1.4 `GetAwaiter().GetResult()` blocking
       /// shim.
-      mutable SmAwaitInfo: Lyric.Emitter.AsyncStateMachine.SmAwaitInfo option }
+      mutable SmAwaitInfo: Lyric.Emitter.AsyncStateMachine.SmAwaitInfo option
+      /// Async generator context.  When set, `EYield inner` emits
+      /// `this._values.Add(inner_result)` instead of returning.
+      mutable GenCtxInfo: Lyric.Emitter.AsyncGenerator.GenCtxInfo option }
 
 module FunctionCtx =
 
@@ -246,7 +249,8 @@ module FunctionCtx =
           Diags        = diags
           SmFields     = Dictionary()
           PreAllocatedLocals = Dictionary()
-          SmAwaitInfo  = None }
+          SmAwaitInfo  = None
+          GenCtxInfo   = None }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -1437,7 +1441,18 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | Some m -> m
                     | None -> failwithf "E14 codegen: %s.GetResult not found" aw.Name
                 ga, aw, gr, gr.ReturnType
-        il.Emit(OpCodes.Callvirt, getAwaiter)
+        // ValueTask<T> (and similar awaitable structs) are value types.
+        // Calling an instance method on a struct value sitting on the IL
+        // evaluation stack requires: store to a local, take its address,
+        // then use `call` (not `callvirt`).  For reference-type awaitables
+        // (Task<T>) the usual `callvirt` is correct.
+        if taskTy.IsValueType then
+            let taskLoc = FunctionCtx.defineLocal ctx "__vt_task" taskTy
+            il.Emit(OpCodes.Stloc, taskLoc)
+            il.Emit(OpCodes.Ldloca, taskLoc)
+            il.Emit(OpCodes.Call, getAwaiter)
+        else
+            il.Emit(OpCodes.Callvirt, getAwaiter)
         let awLoc = FunctionCtx.defineLocal ctx "__awaiter" awaiterTy
         il.Emit(OpCodes.Stloc, awLoc)
 
@@ -1621,6 +1636,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
 
     | EOld _ ->
         failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
+
+    // ---- yield expr — async generator body ----------------------------
+    // Valid only inside a `RunBody` method of a synthesised generator
+    // class.  Emits `this._values.Add(inner_result)` and pushes Unit.
+    | EYield inner ->
+        match ctx.GenCtxInfo with
+        | Some gi ->
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, gi.ValuesField)
+            let innerTy = emitExpr ctx inner
+            if gi.ElemType.IsValueType && not innerTy.IsValueType then
+                il.Emit(OpCodes.Unbox_Any, gi.ElemType)
+            elif not gi.ElemType.IsValueType && innerTy.IsValueType then
+                il.Emit(OpCodes.Box, innerTy)
+            il.Emit(OpCodes.Callvirt, gi.AddMethod)
+            typeof<Void>
+        | None ->
+            failwith "E15 codegen: 'yield' used outside an async generator function"
 
     // ---- projectable opaque: u.toView() -------------------------------
 
@@ -4062,6 +4095,32 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         let stmts = blk.Statements
         match stmts with
         | [{ Kind = STry (body, catches) }] ->
+            let il = ctx.IL
+            // Gap-2 fix: when in Phase B SM mode and the try body fits
+            // the B+++ single-trailing-await shape, use the duplicated-
+            // post-await emit so `val x = try { await f() } catch ...`
+            // lowers with a real suspend/resume.
+            let isPhaseBPlusPlusPlusTryAwait =
+                ctx.SmAwaitInfo.IsSome
+                && Lyric.Emitter.AsyncStateMachine.isTryAwaitBodyShape body catches
+            if isPhaseBPlusPlusPlusTryAwait then
+                // Infer the result type from the inner await.
+                let awaitInner =
+                    match List.tryLast body.Statements with
+                    | Some { Kind = SExpr { Kind = EAwait inner } } -> Some inner
+                    | Some { Kind = SLocal (LBVal (_, _, { Kind = EAwait inner })) } -> Some inner
+                    | Some { Kind = SLocal (LBLet (_, _, { Kind = EAwait inner })) } -> Some inner
+                    | Some { Kind = SLocal (LBVar (_, _, Some { Kind = EAwait inner })) } -> Some inner
+                    | _ -> None
+                let resultTy =
+                    match awaitInner with
+                    | Some inner -> peekExprType ctx inner
+                    | None -> typeof<obj>
+                let resultLoc = FunctionCtx.defineLocal ctx "__try_expr_result" resultTy
+                emitTryAwaitDuplicated ctx body catches resolveCatchTypeName (Some resultLoc)
+                il.Emit(OpCodes.Ldloc, resultLoc)
+                resultTy
+            else
             // Emit a try-as-expression: stash the body's tail value
             // (and each catch's tail value) into a single result
             // local; load it after the protected region closes.
@@ -4072,7 +4131,6 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 | _ -> typeof<obj>
             let resultLoc =
                 FunctionCtx.defineLocal ctx "__try_expr_result" resultTy
-            let il = ctx.IL
             let endLabel = il.BeginExceptionBlock()
             ctx.TryDepth <- ctx.TryDepth + 1
             FunctionCtx.pushScope ctx
@@ -5371,7 +5429,128 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // Field-backed access via `SmFields[name]` lets the body
         // emit naturally use `name` without seeing the field shape.
         let iterTy = emitExpr ctx iter
-        if not iterTy.IsArray then
+        // IAsyncEnumerable<T> path — bootstrap: blocking GetAwaiter().GetResult()
+        // on MoveNextAsync so the consumer works in any context (D-progress-259).
+        let isIAsyncEnumerable =
+            iterTy.IsGenericType
+            && (iterTy.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>>
+                || iterTy.GetInterfaces()
+                   |> Array.exists (fun i ->
+                       i.IsGenericType
+                       && i.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>>))
+        if isIAsyncEnumerable then
+            let iaeT =
+                if iterTy.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>> then iterTy
+                else
+                    iterTy.GetInterfaces()
+                    |> Array.find (fun i ->
+                        i.IsGenericType && i.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>>)
+            let iaetT =
+                let elemArg = iaeT.GetGenericArguments().[0]
+                typedefof<IAsyncEnumerator<_>>.MakeGenericType([| elemArg |])
+            let elemTy = iaeT.GetGenericArguments().[0]
+            let ctTy = typeof<System.Threading.CancellationToken>
+            let vtBoolTy = typeof<System.Threading.Tasks.ValueTask<bool>>
+            let getEnumMi =
+                match iaeT.GetMethod("GetAsyncEnumerator") |> Option.ofObj with
+                | Some m -> m | None -> failwith "IAsyncEnumerable<T>.GetAsyncEnumerator not found"
+            let moveNextMi =
+                match iaetT.GetMethod("MoveNextAsync") |> Option.ofObj with
+                | Some m -> m | None -> failwith "IAsyncEnumerator<T>.MoveNextAsync not found"
+            let currProp =
+                match iaetT.GetProperty("Current") |> Option.ofObj with
+                | Some p -> p | None -> failwith "IAsyncEnumerator<T>.Current not found"
+            let currGetter =
+                match currProp.GetGetMethod() |> Option.ofObj with
+                | Some g -> g | None -> failwith "IAsyncEnumerator<T>.Current getter not found"
+            let dispMi =
+                match typeof<IAsyncDisposable>.GetMethod("DisposeAsync") |> Option.ofObj with
+                | Some m -> m | None -> failwith "IAsyncDisposable.DisposeAsync not found"
+            // GetAwaiter/GetResult for ValueTask<bool>
+            let vtBoolGetAwaiter =
+                match vtBoolTy.GetMethod("GetAwaiter") |> Option.ofObj with
+                | Some m -> m | None -> failwith "ValueTask<bool>.GetAwaiter not found"
+            let vtBoolAwaiterTy = vtBoolGetAwaiter.ReturnType
+            let vtBoolGetResult =
+                match vtBoolAwaiterTy.GetMethod("GetResult") |> Option.ofObj with
+                | Some m -> m | None -> failwith "ValueTask<bool> awaiter.GetResult not found"
+            // Allocate the enumerator local.
+            let enumLoc  = FunctionCtx.defineLocal ctx ("__aen_" + name) iaetT
+            let ctLoc    = il.DeclareLocal(ctTy)
+            il.Emit(OpCodes.Ldloca, ctLoc)
+            il.Emit(OpCodes.Initobj, ctTy)
+            il.Emit(OpCodes.Ldloc, ctLoc)
+            il.Emit(OpCodes.Callvirt, getEnumMi)
+            il.Emit(OpCodes.Stloc, enumLoc)
+            let lblHead  = il.DefineLabel()
+            let lblEnd   = il.DefineLabel()
+            let outerTryDepth = ctx.TryDepth
+            let afterAll = il.BeginExceptionBlock()
+            ctx.TryDepth <- ctx.TryDepth + 1
+            FunctionCtx.pushLoop ctx
+                { BreakLabel       = afterAll
+                  ContinueLabel    = lblHead
+                  TryDepthAtFrame  = outerTryDepth
+                  ContinueTryDepth = ctx.TryDepth }
+            il.MarkLabel(lblHead)
+            // MoveNextAsync() returns ValueTask<bool> (a struct).
+            // Must store to a ValueTask<bool> local, take its address,
+            // call GetAwaiter() via `call` (not callvirt), store the
+            // ValueTaskAwaiter<bool> struct, then call GetResult().
+            let vtBoolLoc   = il.DeclareLocal(vtBoolTy)
+            let awaiterLoc  = il.DeclareLocal(vtBoolAwaiterTy)
+            il.Emit(OpCodes.Ldloc, enumLoc)
+            il.Emit(OpCodes.Callvirt, moveNextMi)
+            il.Emit(OpCodes.Stloc, vtBoolLoc)
+            il.Emit(OpCodes.Ldloca, vtBoolLoc)
+            il.Emit(OpCodes.Call, vtBoolGetAwaiter)
+            il.Emit(OpCodes.Stloc, awaiterLoc)
+            il.Emit(OpCodes.Ldloca, awaiterLoc)
+            il.Emit(OpCodes.Call, vtBoolGetResult)
+            il.Emit(OpCodes.Brfalse, lblEnd)
+            FunctionCtx.pushScope ctx
+            let elemLoc = FunctionCtx.defineLocal ctx name elemTy
+            il.Emit(OpCodes.Ldloc, enumLoc)
+            il.Emit(OpCodes.Callvirt, currGetter)
+            il.Emit(OpCodes.Stloc, elemLoc)
+            emitBlock ctx body
+            FunctionCtx.popScope ctx
+            il.Emit(OpCodes.Br, lblHead)
+            il.MarkLabel(lblEnd)
+            il.Emit(OpCodes.Leave, afterAll)
+            ctx.TryDepth <- ctx.TryDepth - 1
+            FunctionCtx.popLoop ctx
+            // Finally: DisposeAsync (blocking).
+            let vtVoidTy = typeof<System.Threading.Tasks.ValueTask>
+            let vtVoidGetAwaiter =
+                match vtVoidTy.GetMethod("GetAwaiter") |> Option.ofObj with
+                | Some m -> m | None -> failwith "ValueTask.GetAwaiter not found"
+            let vtVoidAwaiterTy = vtVoidGetAwaiter.ReturnType
+            let vtVoidGetResult =
+                match vtVoidAwaiterTy.GetMethod("GetResult") |> Option.ofObj with
+                | Some m -> m | None -> failwith "ValueTask awaiter.GetResult not found"
+            il.BeginFinallyBlock()
+            let dispLoc    = il.DeclareLocal(typeof<IAsyncDisposable>)
+            let vtDispLoc  = il.DeclareLocal(vtVoidTy)
+            let awaiterDisp = il.DeclareLocal(vtVoidAwaiterTy)
+            il.Emit(OpCodes.Ldloc, enumLoc)
+            il.Emit(OpCodes.Isinst, typeof<IAsyncDisposable>)
+            il.Emit(OpCodes.Stloc, dispLoc)
+            il.Emit(OpCodes.Ldloc, dispLoc)
+            let lblNoDisp = il.DefineLabel()
+            il.Emit(OpCodes.Brfalse, lblNoDisp)
+            il.Emit(OpCodes.Ldloc, dispLoc)
+            il.Emit(OpCodes.Callvirt, dispMi)
+            il.Emit(OpCodes.Stloc, vtDispLoc)
+            il.Emit(OpCodes.Ldloca, vtDispLoc)
+            il.Emit(OpCodes.Call, vtVoidGetAwaiter)
+            il.Emit(OpCodes.Stloc, awaiterDisp)
+            il.Emit(OpCodes.Ldloca, awaiterDisp)
+            il.Emit(OpCodes.Call, vtVoidGetResult)
+            il.MarkLabel(lblNoDisp)
+            il.EndExceptionBlock()
+            ignore afterAll
+        elif not iterTy.IsArray then
             // IEnumerable<T> path — `for x in IEnumerable<T>` lowers to a
             // GetEnumerator/MoveNext/Current loop wrapped in try/finally for Dispose.
             // The non-generic IEnumerable interface is used for universal compatibility;
@@ -5604,7 +5783,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             ctx.SmAwaitInfo.IsSome
             && Lyric.Emitter.AsyncStateMachine.isTryAwaitBodyShape body catches
         if isPhaseBPlusPlusPlusTryAwait then
-            emitTryAwaitDuplicated ctx body catches resolveCatchType
+            emitTryAwaitDuplicated ctx body catches resolveCatchType None
         else
             let endLabel = il.BeginExceptionBlock()
             ctx.TryDepth <- ctx.TryDepth + 1
@@ -5720,11 +5899,39 @@ and emitStatementsWithDeferTail
 ///     }
 ///   AfterSecondUserTry:
 ///   AfterUserTry:
+
+/// Emit a catch body where the tail SExpr value should be stored into
+/// `resultLoc` (expression-form try-as-expression path).  Emits all
+/// statements except the last; the last SExpr is emitted and its value
+/// stored to `resultLoc`.  Non-SExpr last statements fall back to
+/// `emitBlock` (the result stays whatever the normal path leaves).
+and private emitCatchBodyWithResult
+        (ctx: FunctionCtx)
+        (body: Block)
+        (resultLoc: LocalBuilder) : unit =
+    let il = ctx.IL
+    match List.rev body.Statements with
+    | [] -> ()
+    | ({ Kind = SExpr tailExpr } :: preRev) ->
+        FunctionCtx.pushScope ctx
+        for s in List.rev preRev do
+            emitStatement ctx s
+        let _ = emitExpr ctx tailExpr
+        il.Emit(OpCodes.Stloc, resultLoc)
+        FunctionCtx.popScope ctx
+    | _ ->
+        emitBlock ctx body
+
 and private emitTryAwaitDuplicated
         (ctx: FunctionCtx)
         (body: Block)
         (catches: CatchClause list)
-        (resolveCatchType: string -> System.Type) : unit =
+        (resolveCatchType: string -> System.Type)
+        /// When Some, the await result and each catch-arm result are
+        /// stored here instead of to a named binding or popped.  Load
+        /// the local after calling this function to consume the value.
+        /// Pass None for statement-form (current behaviour).
+        (resultLocalOpt: LocalBuilder option) : unit =
     let il = ctx.IL
     let smAwait =
         match ctx.SmAwaitInfo with
@@ -5959,18 +6166,20 @@ and private emitTryAwaitDuplicated
     il.MarkLabel(inlineAfterAwait)
     il.Emit(OpCodes.Ldloca, awaiterLocal)
     il.Emit(OpCodes.Call, getResult)
-    // Bind into the local (or pop for bare-await).
-    match bindName, returnedTy = typeof<System.Void> with
-    | Some name, false ->
-        let lb = FunctionCtx.defineLocal ctx name returnedTy
-        il.Emit(OpCodes.Stloc, lb)
-    | None, true -> ()         // bare await on a Task (Unit)
-    | None, false ->
-        il.Emit(OpCodes.Pop)   // bare await of Task<T>: discard
-    | Some _, true ->
-        // val r = await sayHi() — Lyric type-checker disallows
-        // this normally, but be defensive.
-        ()
+    // Expression form: always store to resultLoc.
+    // Statement form: bind to named local or pop.
+    match resultLocalOpt with
+    | Some resultLoc ->
+        if returnedTy <> typeof<System.Void> then
+            il.Emit(OpCodes.Stloc, resultLoc)
+    | None ->
+        match bindName, returnedTy = typeof<System.Void> with
+        | Some name, false ->
+            let lb = FunctionCtx.defineLocal ctx name returnedTy
+            il.Emit(OpCodes.Stloc, lb)
+        | None, true -> ()
+        | None, false -> il.Emit(OpCodes.Pop)
+        | Some _, true -> ()
     il.Emit(OpCodes.Leave, afterFirstUserTry)
 
     FunctionCtx.popScope ctx
@@ -5986,7 +6195,10 @@ and private emitTryAwaitDuplicated
             let lb = FunctionCtx.defineLocal ctx name exTy
             il.Emit(OpCodes.Stloc, lb)
         | None -> il.Emit(OpCodes.Pop)
-        emitBlock ctx c.Body
+        match resultLocalOpt with
+        | None -> emitBlock ctx c.Body
+        | Some resultLoc ->
+            emitCatchBodyWithResult ctx c.Body resultLoc
         FunctionCtx.popScope ctx
         il.Emit(OpCodes.Leave, afterFirstUserTry)
     il.EndExceptionBlock()
@@ -6013,13 +6225,18 @@ and private emitTryAwaitDuplicated
 
     il.Emit(OpCodes.Ldloca, awaiterLocal)
     il.Emit(OpCodes.Call, getResult)
-    match bindName, returnedTy = typeof<System.Void> with
-    | Some name, false ->
-        let lb = FunctionCtx.defineLocal ctx name returnedTy
-        il.Emit(OpCodes.Stloc, lb)
-    | None, true -> ()
-    | None, false -> il.Emit(OpCodes.Pop)
-    | Some _, true -> ()
+    match resultLocalOpt with
+    | Some resultLoc ->
+        if returnedTy <> typeof<System.Void> then
+            il.Emit(OpCodes.Stloc, resultLoc)
+    | None ->
+        match bindName, returnedTy = typeof<System.Void> with
+        | Some name, false ->
+            let lb = FunctionCtx.defineLocal ctx name returnedTy
+            il.Emit(OpCodes.Stloc, lb)
+        | None, true -> ()
+        | None, false -> il.Emit(OpCodes.Pop)
+        | Some _, true -> ()
     il.Emit(OpCodes.Leave, afterSecondUserTry)
 
     FunctionCtx.popScope ctx
@@ -6035,7 +6252,10 @@ and private emitTryAwaitDuplicated
             let lb = FunctionCtx.defineLocal ctx name exTy
             il.Emit(OpCodes.Stloc, lb)
         | None -> il.Emit(OpCodes.Pop)
-        emitBlock ctx c.Body
+        match resultLocalOpt with
+        | None -> emitBlock ctx c.Body
+        | Some resultLoc ->
+            emitCatchBodyWithResult ctx c.Body resultLoc
         FunctionCtx.popScope ctx
         il.Emit(OpCodes.Leave, afterSecondUserTry)
     il.EndExceptionBlock()

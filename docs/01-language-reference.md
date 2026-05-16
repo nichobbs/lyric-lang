@@ -778,11 +778,35 @@ async func fetchUser(id: in UserId): User? {
 
 `async func` returns a value of type `Task[T]` (compiles to .NET `Task<T>` or `ValueTask<T>` per heuristic — see `docs/09-msil-emission.md` §14.2). `await` is a postfix operation in expression position.
 
-### 7.2 Cancellation
+### 7.2 Async generators
+
+An `async func` whose body contains at least one `yield` expression is an *async generator*. Its return type must be a scalar element type `T`; the compiler infers the public signature as `IAsyncEnumerable[T]` (.NET) or `Iterable<T>` (JVM). The caller iterates with `for x in f(args) { … }`.
+
+```
+async func naturals(limit: in Int): Int {
+  var i = 0
+  while i < limit {
+    yield i
+    i = i + 1
+  }
+}
+
+func main(): Unit {
+  for n in naturals(5) {
+    println(toString(n))  // prints 0 1 2 3 4
+  }
+}
+```
+
+`yield expr` is a statement-expression: it evaluates `expr`, queues the value, and continues. A `yield` inside a non-generator function or outside an `async func` is a compile error.
+
+**Bootstrap semantics (bootstrap-grade):** The current implementation eagerly evaluates the entire body before the first element is consumed, so generators with `await` inside their body are not yet supported (a diagnostic is emitted for that case). A true lazy/interleaved lowering is tracked for M2.
+
+### 7.3 Cancellation
 
 Every `async func` has an implicit `CancellationToken` parameter threaded by the compiler. It is accessible as `cancellation` inside the function and propagated to all child async calls automatically. Cancellation is cooperative: the function periodically checks the token at await points and on explicit `cancellation.checkOrThrow()` calls.
 
-### 7.3 Structured scopes
+### 7.4 Structured scopes
 
 ```
 async func loadDashboard(userId: in UserId): Dashboard {
@@ -808,7 +832,7 @@ async func loadDashboard(userId: in UserId): Dashboard {
 
 This is the structured concurrency pattern; raw "fire and forget" is not available.
 
-### 7.4 Protected types
+### 7.5 Protected types
 
 ```
 protected type BoundedQueue[T] {
@@ -847,7 +871,7 @@ Semantics:
 - The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (see `docs/09-msil-emission.md` §17.1–17.3).
 - The invariant is checked after every entry/func returns control to the caller.
 
-### 7.5 Raw locks
+### 7.6 Raw locks
 
 There are no raw locks, no `Monitor.Enter`, no `lock` statement. Code that genuinely needs them must use a `@axiom` boundary to call into .NET primitives. This is intentional friction.
 

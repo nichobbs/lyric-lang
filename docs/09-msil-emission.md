@@ -791,6 +791,54 @@ synchronous-completion path.
 custom awaiters from FFI), the same pattern applies, dispatching via
 the awaiter's interface.
 
+### 14.6 Async generators (`yield` in `async func`)
+
+An `async func f(...): T` whose body contains at least one `yield`
+expression is an *async generator*. The compiler synthesises a
+sibling class implementing `IAsyncEnumerable<T>`, `IAsyncEnumerator<T>`,
+and `IAsyncDisposable`, and rewrites the user's function into a
+kickoff stub:
+
+```
+// Synthesised:
+sealed class <f>__Gen_N :
+    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
+  // parameter fields (public, populated by kickoff)
+  // List<T> _values; int _pos; T _current;
+  void RunBody() { /* user body; yield e → _values.Add(e) */ }
+  IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
+    _values = new List<T>(); _pos = -1; RunBody(); return this; }
+  ValueTask<bool> MoveNextAsync() { … }
+  T Current { get { return _current; } }
+  ValueTask DisposeAsync() { return default; }
+}
+// User's function becomes:
+static IAsyncEnumerable<T> f(...) {
+  var gen = new <f>__Gen_N();
+  gen.p0 = arg0; …;
+  return gen;
+}
+```
+
+**Bootstrap semantics** (Gap-4, D-progress-260): `RunBody` is called
+synchronously by `GetAsyncEnumerator`, so all `yield` expressions
+execute eagerly before the first `MoveNextAsync` returns. This matches
+the "eager producer" model and is sufficient for generator
+comprehensions and async-producer scenarios where the body has no
+internal `await`.
+
+Generators whose body contains `await` require a channel-backed or
+true `AsyncIteratorMethodBuilder` approach; the bootstrap emitter
+issues a diagnostic for that case (Gap-4a, deferred).
+
+`for x in gen() { … }` lowers to a standard `await foreach` —
+`GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
+`DisposeAsync` in a `finally` block.
+
+The implementation lives in `compiler/src/Lyric.Emitter/AsyncGenerator.fs`.
+The JVM-target equivalent uses `java.lang.Iterable` + `java.util.Iterator`
+with the same eager `runBody()` pattern (B129, `compiler/lyric/jvm/lowering.l`).
+
 
 ## 15. Structured concurrency scopes
 

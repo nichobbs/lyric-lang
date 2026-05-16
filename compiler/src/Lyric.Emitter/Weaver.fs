@@ -103,6 +103,7 @@ let private rewriteProceeds (targetName: string) (paramNames: string list) (root
         | ETuple xs             -> { x with Kind = ETuple (xs |> List.map rwExpr) }
         | EList xs              -> { x with Kind = EList (xs |> List.map rwExpr) }
         | EAwait inner          -> { x with Kind = EAwait (rwExpr inner) }
+        | EYield inner          -> { x with Kind = EYield (rwExpr inner) }
         | ESpawn inner          -> { x with Kind = ESpawn (rwExpr inner) }
         | ETry inner            -> { x with Kind = ETry (rwExpr inner) }
         | EOld inner            -> { x with Kind = EOld (rwExpr inner) }

@@ -640,6 +640,10 @@ let rec inferExpr
     | EAwait inner | ESpawn inner | EOld inner ->
         infer inner
 
+    | EYield inner ->
+        let _ = infer inner
+        TyPrim PtUnit
+
     | ESelf -> TySelf
 
     | EResult ->

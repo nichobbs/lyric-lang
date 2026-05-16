@@ -60,7 +60,7 @@ let private referencedNames (e: Expr) : Set<string> =
         | EMatch (sc, arms) ->
             walk sc
             for arm in arms do walkExprOrBlock arm.Body
-        | EAwait inner | ESpawn inner | ETry inner | EOld inner -> walk inner
+        | EAwait inner | EYield inner | ESpawn inner | ETry inner | EOld inner -> walk inner
         | EForall (_, w, body) | EExists (_, w, body) ->
             w |> Option.iter walk
             walk body

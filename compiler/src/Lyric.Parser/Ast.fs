@@ -597,6 +597,12 @@ and ExprKind =
     /// `await e`.
     | EAwait of Expr
 
+    /// `yield e` — produce a value from an async generator function.
+    /// Valid only inside an `async func` body that contains at least one
+    /// `yield`; the enclosing function's return type becomes
+    /// `IAsyncEnumerable[T]` where `T` is the yielded element type.
+    | EYield of Expr
+
     /// `spawn e`.
     | ESpawn of Expr
 

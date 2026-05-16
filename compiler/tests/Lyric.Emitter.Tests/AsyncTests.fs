@@ -708,6 +708,205 @@ func main(): Unit {
 }
 """,
     "123"
+
+    "gap1_for_body_local_across_await",
+    // Gap-1 fix (D-progress-259): `val r` declared inside a `for` body
+    // is used after an `await` in the same iteration.
+    // `collectPromotableLocals` now recurses into `SFor` bodies so `r`
+    // gets promoted to an SM field alongside `sum`, surviving the
+    // cross-resume gap on each iteration.
+    """
+package E14
+async func fetch(x: in Int): Int = x * 2
+async func sumFetched(): Int {
+  var sum: Int = 0
+  val items: slice[Int] = [1, 2, 3]
+  for x in items {
+    val r: Int = await fetch(x)
+    sum = sum + r
+  }
+  sum
+}
+func main(): Unit {
+  println(toString(await sumFetched()))
+}
+""",
+    "12"
+
+    "gap2_try_as_expr_with_await_no_throw",
+    // Gap-2 fix (D-progress-260): `val x = try { await f() } catch ...`
+    // — the try-catch block in expression position with an await in the
+    // body.  The EBlock wrapper is detected in `isSafeExprPosition` via
+    // `isSafeStmtNested`, enabling the Phase B+++ duplicated-post-await
+    // emit rather than falling back to the M1.4 blocking shim.
+    // The awaitable completes synchronously so the fast path runs.
+    """
+package E14
+async func answer(): Int = 42
+async func safeGet(): Int {
+  val x: Int = try {
+    await answer()
+  } catch Bug as b {
+    0
+  }
+  x
+}
+func main(): Unit {
+  println(toString(await safeGet()))
+}
+""",
+    "42"
+
+    "gap2_try_as_expr_with_await_catch_path",
+    // Gap-2 variant: the awaitable panics inside the try body; the
+    // catch handler produces the fallback value.
+    """
+package E14
+async func boom(): Int { panic("oops") ; return 0 }
+async func safeFallback(): Int {
+  val x: Int = try {
+    await boom()
+  } catch Bug as b {
+    99
+  }
+  x
+}
+func main(): Unit {
+  println(toString(await safeFallback()))
+}
+""",
+    "99"
+
+    "gap3_hot_async_returns_value",
+    // Gap-3 fix (D-progress-261): `@hot async func` emits an
+    // `AsyncValueTaskMethodBuilder<T>` kickoff stub and returns
+    // `ValueTask<T>` instead of `Task<T>`.  The await at the call site
+    // still uses `GetAwaiter().GetResult()` (bootstrap shim) so the
+    // observed result is unchanged; the difference is structural.
+    """
+package E14
+@hot async func double(n: in Int): Int = n + n
+func main(): Unit {
+  println(toString(await double(21)))
+}
+""",
+    "42"
+
+    "gap3_hot_async_void",
+    // @hot with Unit return — builder is non-generic
+    // `AsyncValueTaskMethodBuilder`; kickoff returns plain `ValueTask`.
+    """
+package E14
+@hot async func greet(): Unit { println("hot hello") }
+func main(): Unit {
+  await greet()
+}
+""",
+    "hot hello"
+
+    "generator_basic_yield",
+    // D-progress-259 async generator bootstrap: `yield` in an `async
+    // func` body synthesises a sibling `IAsyncEnumerable<T>` class.
+    // The kickoff stub instantiates the generator and returns it; the
+    // for-loop calls `GetAsyncEnumerator` + `MoveNextAsync` (via the
+    // bootstrap blocking shim) to drain the yielded values.
+    """
+package E14
+async func countdown(): Int {
+  yield 3
+  yield 2
+  yield 1
+}
+func main(): Unit {
+  for x in countdown() {
+    println(toString(x))
+  }
+}
+""",
+    "3\n2\n1"
+
+    "generator_yield_in_while_loop",
+    // yield inside a while loop — the generator body runs eagerly
+    // (synchronously in `RunBody`) and collects all yielded values
+    // into a `List<Int>` before `MoveNextAsync` serves them.
+    """
+package E14
+async func range(n: in Int): Int {
+  var i: Int = 0
+  while i < n {
+    yield i
+    i = i + 1
+  }
+}
+func main(): Unit {
+  for x in range(4) {
+    println(toString(x))
+  }
+}
+""",
+    "0\n1\n2\n3"
+
+    "generator_yield_with_params",
+    // Generator with parameters: values passed to the kickoff stub are
+    // stored to fields on the generator class and loaded inside RunBody.
+    """
+package E14
+async func doubles(a: in Int, b: in Int): Int {
+  yield a * 2
+  yield b * 2
+}
+func main(): Unit {
+  for x in doubles(10, 21) {
+    println(toString(x))
+  }
+}
+""",
+    "20\n42"
+
+    "generator_empty_yield",
+    // A generator whose yield is guarded by a never-true condition
+    // produces an empty sequence; the for-loop body never executes.
+    // A bare `{}` body has no yield so it would not be recognised as a
+    // generator; the `while 1 < 0` guard makes it a generator while
+    // keeping the yield count at zero at runtime.
+    """
+package E14
+async func nothing(): Int {
+  while 1 < 0 {
+    yield 0
+  }
+}
+func main(): Unit {
+  var saw: Int = 0
+  for x in nothing() {
+    saw = saw + 1
+  }
+  println(toString(saw))
+}
+""",
+    "0"
+
+    "generator_for_loop_sum",
+    // Generator-produced values consumed by a for loop with
+    // accumulation — exercises multiple MoveNextAsync iterations.
+    """
+package E14
+async func naturals(limit: in Int): Int {
+  var i: Int = 1
+  while i <= limit {
+    yield i
+    i = i + 1
+  }
+}
+func main(): Unit {
+  var total: Int = 0
+  for n in naturals(5) {
+    total = total + n
+  }
+  println(toString(total))
+}
+""",
+    "15"
 ]
 
 let private behavioral =
@@ -852,10 +1051,120 @@ func main(): Unit {
             Expect.equal (sm.GetGenericArguments().Length) 1
                 "id's SM should have one generic parameter"
 
+/// D-progress-261: `@hot async func` emits an
+/// `AsyncValueTaskMethodBuilder<T>` rather than `AsyncTaskMethodBuilder<T>`.
+/// Reflects on the emitted assembly to confirm the `<>t__builder` field on
+/// the SM class has a `ValueTask`-family type, catching regressions where the
+/// `@hot` routing flag is ignored.
+let private hotSmShape : Test =
+    testCase "[hot_sm_shape] @hot async func emits ValueTask builder" <| fun () ->
+        let label = "AsyncHotSmShape"
+        let source = """
+package E14
+@hot async func double(n: in Int): Int = n + n
+func main(): Unit {
+  println(toString(await double(21)))
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Lyric.Emitter.Emitter.Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let smTypes =
+            asm.GetTypes()
+            |> Array.filter (fun t ->
+                typeof<System.Runtime.CompilerServices.IAsyncStateMachine>.IsAssignableFrom(t))
+        let doubleSm =
+            smTypes |> Array.tryFind (fun t -> t.Name.Contains "double")
+        match doubleSm with
+        | None -> failwith "expected an SM type for `double`"
+        | Some sm ->
+            let builderField = sm.GetField "<>t__builder"
+            Expect.isNotNull builderField "builder field present"
+            let builderTypeName =
+                match Option.ofObj builderField with
+                | Some f -> Option.ofObj f.FieldType.FullName |> Option.defaultValue ""
+                | None   -> ""
+            Expect.isTrue
+                (builderTypeName.Contains "AsyncValueTaskMethodBuilder")
+                (sprintf "builder should be AsyncValueTaskMethodBuilder, got %s" builderTypeName)
+
+/// D-progress-259: async generator synthesis emits a sibling class
+/// implementing `IAsyncEnumerable<T>`, `IAsyncEnumerator<T>`, and
+/// `IAsyncDisposable`.  Reflects on the emitted assembly to confirm the
+/// generator class exists and has the right interface set, catching
+/// regressions where `yield` stops synthesising the generator class.
+let private generatorShape : Test =
+    testCase "[generator_shape] async generator emits IAsyncEnumerable class" <| fun () ->
+        let label = "AsyncGeneratorShape"
+        let source = """
+package E14
+async func countdown(): Int {
+  yield 3
+  yield 2
+  yield 1
+}
+func main(): Unit {
+  for x in countdown() {
+    println(toString(x))
+  }
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Lyric.Emitter.Emitter.Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let iaeOpenDef = typedefof<System.Collections.Generic.IAsyncEnumerable<_>>
+        let genTypes =
+            asm.GetTypes()
+            |> Array.filter (fun t ->
+                t.GetInterfaces()
+                |> Array.exists (fun iface ->
+                    iface.IsGenericType
+                    && iface.GetGenericTypeDefinition() = iaeOpenDef))
+        Expect.isGreaterThanOrEqual genTypes.Length 1
+            "expected at least one IAsyncEnumerable<T> implementation"
+        let gen = genTypes.[0]
+        let iaeT = iaeOpenDef.MakeGenericType([| typeof<int> |])
+        let iaetOpenDef = typedefof<System.Collections.Generic.IAsyncEnumerator<_>>
+        let iaetT = iaetOpenDef.MakeGenericType([| typeof<int> |])
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i -> i = iaeT))
+            "generator implements IAsyncEnumerable<Int>"
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i -> i = iaetT))
+            "generator implements IAsyncEnumerator<Int>"
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i ->
+                i = typeof<System.IAsyncDisposable>))
+            "generator implements IAsyncDisposable"
+
 let tests =
     testList "async tests" [
         behavioral
         smShape
         stackSpillSmShape
         genericSmShape
+        hotSmShape
+        generatorShape
     ]

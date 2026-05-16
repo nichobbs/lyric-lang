@@ -418,6 +418,7 @@ x?                     // error propagation: return Err(e) / None on failure
 x ?? fallback          // nil-coalescing: fallback if x is None
 { x: Int -> x * 2 }   // closure / lambda
 await expr             // suspend until task completes (inside async func)
+yield expr             // emit element from async generator (turns async func into IAsyncEnumerable<T>)
 spawn expr             // launch task within enclosing scope
 scope { ... }          // structured-concurrency boundary (see §B.3)
 defer { ... }          // run on scope exit regardless of success/failure
