@@ -1,0 +1,96 @@
+// product_catalog.proto
+//
+// Reference proto schema for the ProductCatalog service.
+// This file shows what `lyric grpc spec` (planned tooling) would generate
+// from the @proto_field annotations and @grpc_service / @rpc annotations
+// in src/domain.l and src/catalog.l.
+//
+// Field numbers match the @proto_field annotations in domain.l.
+// lyric-grpc.lock (not yet generated) would persist these assignments.
+//
+// Usage with grpcurl:
+//   grpcurl -plaintext -d '{"id": 1}' localhost:50051 \
+//     ProductCatalog.ProductService/GetProduct
+
+syntax = "proto3";
+
+package ProductCatalog;
+
+option csharp_namespace = "ProductCatalog";
+option java_package = "com.example.productcatalog";
+
+// ─── Messages ─────────────────────────────────────────────────────────────────
+
+message Product {
+  int64  id          = 1;
+  string name        = 2;
+  string description = 3;
+  string category    = 4;   // one of: electronics, clothing, books, food, home, sports, other
+  int32  price_cents = 5;
+  bool   in_stock    = 6;
+  int32  stock_count = 7;
+  string created_at  = 8;   // ISO-8601 UTC timestamp
+}
+
+message GetProductRequest {
+  int64 id = 1;
+}
+
+message ListProductsRequest {
+  string category      = 1;   // empty = all categories
+  bool   in_stock_only = 2;
+  int32  page_size     = 3;   // 0 = server default (20)
+  // field 4 reserved — keyset pagination deferred (Q-G-003)
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  int32            total    = 2;
+  // field 3 reserved — keyset pagination deferred (Q-G-003)
+}
+
+message CreateProductRequest {
+  string name        = 1;
+  string description = 2;
+  string category    = 3;
+  int32  price_cents = 4;
+  int32  stock_count = 5;
+  bool   in_stock    = 6;
+}
+
+message UpdateProductRequest {
+  int64 id          = 1;
+  int32 price_cents = 2;
+  bool  in_stock    = 3;
+  int32 stock_count = 4;
+}
+
+message DeleteProductRequest {
+  int64 id = 1;
+}
+
+message DeleteProductResponse {
+  bool deleted = 1;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+service ProductService {
+  // Retrieve a single product by ID.
+  rpc GetProduct    (GetProductRequest)    returns (Product);
+
+  // List products, optionally filtered by category and stock status.
+  rpc ListProducts  (ListProductsRequest)  returns (ListProductsResponse);
+
+  // Create a new product.  Requires admin or catalog_manager role.
+  rpc CreateProduct (CreateProductRequest) returns (Product);
+
+  // Update price and stock status.  Requires admin or catalog_manager role.
+  rpc UpdateProduct (UpdateProductRequest) returns (Product);
+
+  // Delete a product.  Requires admin role.
+  rpc DeleteProduct (DeleteProductRequest) returns (DeleteProductResponse);
+
+  // Future: server-streaming search (requires M1.4 async + Stream[T])
+  // rpc SearchProducts (SearchProductsRequest) returns (stream Product);
+}

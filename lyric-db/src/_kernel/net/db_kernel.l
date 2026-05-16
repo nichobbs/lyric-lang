@@ -134,6 +134,10 @@ extern package Db.Kernel.Ado {
 
   /// Return a connection to the pool.
   pub func close(connId: Int): Unit
+
+  /// Open a connection from an explicit DSN; returns a connection handle.
+  pub func connectDsn(connStr: String): Result[Int, String]
+    requires: connStr.length > 0
 }
 
 // Re-export shared operations at the package level for db.l to call.
@@ -175,4 +179,14 @@ pub func rollbackTransaction(txId: in Int): Result[Unit, String] {
 
 pub func close(connId: in Int): Unit {
   Db.Kernel.Ado.close(connId)
+}
+
+/// Open a connection from an explicit DSN string.  The kernel inspects the
+/// scheme prefix to select the driver: postgres:// → Npgsql; sqlite:// →
+/// Microsoft.Data.Sqlite.  All other schemes fall back to the configured
+/// Connection.url driver.
+pub func connectDsn(connStr: in String): Result[Int, String]
+  requires: connStr.length > 0
+{
+  Db.Kernel.Ado.connectDsn(connStr)
 }

@@ -1,89 +1,103 @@
-/// .NET kernel boundary for lyric-grpc.
+/// Grpc.Kernel.Net — .NET extern boundary for gRPC client and server.
 ///
-/// Wraps Grpc.Net.Client (GrpcChannel, CallInvoker) using a pass-through byte[]
-/// marshaller so that the Lyric caller supplies and receives raw protobuf bytes
-/// without any generated stub code.
+/// Client side (Grpc.Net.Client):
+///   netOpenChannel / netCloseChannel — channel lifecycle
+///   netCallUnary                     — blocking unary RPC
+///   netOpenServerStream / netNextStreamMessage / netCloseStream — server streaming
 ///
-/// Pass-through marshaller: a Grpc.Core.Marshaller<byte[]> whose serialiser is
-/// the identity function and whose deserialiser is likewise identity.  This is
-/// the standard Grpc.Net.Client pattern for untyped / reflection-based calls.
+/// Server side (Grpc.AspNetCore):
+///   serve()          — start the gRPC server host
+///   checkRateLimit() — in-process sliding-window rate limiter
 ///
-/// The GrpcChannel object is held as an opaque Lyric type; the F# emitter
-/// generates the IL to hold it in a .NET object field.  closeChannel disposes
-/// the channel and releases HTTP/2 connections.
+/// Pass-through marshaller: the client uses a Grpc.Core.Marshaller<byte[]>
+/// whose serialiser and deserialiser are identity functions, so Lyric callers
+/// supply and receive raw protobuf bytes without generated stub code.
 ///
+/// For each incoming server RPC the kernel:
+///   1. Matches the request against the GrpcRoute table.
+///   2. Deserializes the protobuf request message to the handler's first param.
+///   3. Extracts "authorization" metadata and passes it as `authToken: String`.
+///   4. Resolves the handler by qualified name and invokes it.
+///   5. Maps Result[T, GrpcStatus] → gRPC response:
+///        Ok(value)   → Status.OK + serialized response
+///        Err(status) → status.code + status.message in trailing metadata
+///
+/// JWT verification lives in Auth.Kernel.Net (lyric-auth).
+///
+/// Only active when compiled with feature = "dotnet".
 /// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+
 @cfg(feature = "dotnet")
 package Grpc.Kernel.Net
 
 import Grpc.Types
-import Std.Core
 
-// ─── Opaque .NET types ───────────────────────────────────────────────────────
-
-// GrpcChannel and GrpcStream are declared in Grpc.Types as opaque Lyric types;
-// the kernel maps them to the underlying .NET types at the extern boundary.
+// ─── Opaque .NET types ────────────────────────────────────────────────────────
 
 extern type NetGrpcChannel = "Grpc.Net.Client.GrpcChannel"
 extern type NetGrpcStream  = "System.Collections.Generic.IAsyncEnumerator`1[System.Byte[]]"
 
-// ─── Channel lifecycle ────────────────────────────────────────────────────────
+// ─── Client: channel lifecycle ────────────────────────────────────────────────
 
 @axiom("Grpc.Net.Client.GrpcChannel conforms to its NuGet contract")
 extern package Grpc.Net.Client.Api {
-  /// Open a gRPC channel to `address` (e.g. "https://host:4317").
-  /// Returns Err if the address is malformed or the channel cannot be created.
   pub func netOpenChannel(address: in String): Result[GrpcChannel, String]
-
-  /// Dispose the channel and release HTTP/2 connections.
   pub func netCloseChannel(channel: GrpcChannel): Unit
 }
 
-// ─── Unary calls ─────────────────────────────────────────────────────────────
+// ─── Client: unary calls ──────────────────────────────────────────────────────
 
 @axiom("Grpc.Net.Client CallInvoker with pass-through marshaller conforms to its NuGet contract")
 extern package Grpc.Net.Client.Unary {
-  /// Make a blocking unary RPC call.
-  ///
-  /// `service` — fully-qualified service name, e.g.
-  ///   "opentelemetry.proto.collector.trace.v1.TraceService"
-  /// `method`  — unqualified method name, e.g. "Export"
-  /// `payload` — protobuf-encoded request body
-  /// `timeoutMs` — call deadline; 0 means no timeout
-  /// `metadata`  — comma-separated "key:value" pairs for gRPC metadata headers
-  ///
-  /// Returns the protobuf-encoded response body on success, or a GrpcStatus on
-  /// RPC error (non-OK gRPC status or transport failure).
   pub func netCallUnary(
-    channel:    GrpcChannel,
-    service:    in String,
-    method:     in String,
-    payload:    in slice[Byte],
-    timeoutMs:  in Int,
-    metadata:   in String
-  ): Result[slice[Byte], GrpcStatus]
+    channel:   GrpcChannel,
+    service:   in String,
+    method:    in String,
+    payload:   in [Byte],
+    timeoutMs: in Int,
+    metadata:  in String
+  ): Result[[Byte], GrpcStatus]
 }
 
-// ─── Server-streaming calls ───────────────────────────────────────────────────
+// ─── Client: server-streaming calls ──────────────────────────────────────────
 
 @axiom("Grpc.Net.Client server-streaming CallInvoker conforms to its NuGet contract")
 extern package Grpc.Net.Client.Stream {
-  /// Start a server-streaming RPC.  Returns a GrpcStream handle that yields
-  /// successive response messages.  Call nextStreamMessage to advance.
   pub func netOpenServerStream(
     channel:   GrpcChannel,
     service:   in String,
     method:    in String,
-    payload:   in slice[Byte],
+    payload:   in [Byte],
     timeoutMs: in Int,
     metadata:  in String
   ): Result[GrpcStream, GrpcStatus]
 
-  /// Read the next message from a server-streaming response.
-  /// Returns Some(bytes) while messages remain; None at end of stream.
-  /// Returns Err on transport or RPC error.
-  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[slice[Byte]], GrpcStatus]
-
-  /// Close and release a GrpcStream.
+  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[[Byte]], GrpcStatus]
   pub func netCloseStream(stream: GrpcStream): Unit
+}
+
+// ─── Server: hosting ─────────────────────────────────────────────────────────
+
+@axiom("Grpc.AspNetCore / grpc-dotnet server host")
+extern package Grpc.AspNetCore {
+  pub func serve(
+    host:               String,
+    port:               Int,
+    reflectionEnabled:  Bool,
+    maxConnectionIdleMs: Int,
+    registry:           Grpc.ServiceRegistry
+  ): Unit
+}
+
+// ─── Server: rate limiting ────────────────────────────────────────────────────
+
+@axiom("In-process sliding-window rate limiter (System.Threading.RateLimiting)")
+extern package System.Threading.RateLimiting {
+  pub func checkRateLimit(
+    method:            String,
+    requestsPerMinute: Int,
+    burstSize:         Int
+  ): Bool
+    requires: requestsPerMinute > 0
+    requires: burstSize > 0
 }
