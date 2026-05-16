@@ -22,3 +22,10 @@ quartz   = []   # Quartz.NET scheduler
 [dependencies]
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
+
+[nuget]
+# feature = "hangfire" — Hangfire job scheduler for .NET
+"Hangfire.Core"      = "1.8.14"
+"Hangfire.SqlServer" = "1.8.14"
+# feature = "quartz" — Quartz.NET scheduler
+"Quartz"             = "3.9.0"

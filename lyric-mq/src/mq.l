@@ -42,6 +42,7 @@ package Mq
 import Std.Core
 import Std.Collections
 import Mq.Kernel.Net
+@cfg(feature = "jvm")
 import Mq.Kernel.Jvm
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
@@ -469,6 +470,12 @@ func parseHeadersJson(json: in String): [MessageHeader] {
 
 // Extract a string field value from a JSON object literal.
 // Handles simple escaped strings only; sufficient for broker metadata.
+// Extract a string field value from a JSON object literal.
+// Limitation: stops at the first unescaped quote after the opening quote;
+// values containing \" (escaped quotes) will be truncated at the first \".
+// All field values passed through here must be pre-escaped before embedding
+// (see jsonEscape); on the decode path, body content is not round-tripped
+// through this function — caller must be aware of this constraint.
 func jsonExtractString(json: in String, field: in String): String {
   val needle = "\"" + field + "\":"
   val start  = json.indexOf(needle)

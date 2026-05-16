@@ -26,3 +26,13 @@ kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
 "Lyric.Cache"      = { path = "../lyric-cache" }
+
+[nuget]
+# feature = "rabbitmq" — AMQP 0-9-1 client for .NET
+"RabbitMQ.Client"            = "6.8.1"
+# feature = "azureservicebus" — Azure Service Bus SDK for .NET
+"Azure.Messaging.ServiceBus" = "7.18.0"
+# feature = "sqs" — AWS SDK SQS module for .NET
+"AWSSDK.SQS"                 = "3.7.300"
+# feature = "kafka" — Confluent Kafka .NET client
+"Confluent.Kafka"             = "2.4.0"

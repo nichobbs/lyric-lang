@@ -108,11 +108,19 @@ var idempotentStore = Cache.inProcess()
 
 /// Route messages that exceed their delivery limit to a dead-letter store.
 ///
-/// B-mode: wraps a consume handler.  After the handler returns Err, checks
-/// `args.message.deliveryCount + 1` against `maxDeliveries`.  When the limit
-/// is reached, appends a `DeadLetterEntry` to `Mq.Aspects.deadLetterStore`
-/// and calls `nack(messageId, requeue = false)` on the queue consumer so the
-/// broker also removes the message from the live queue.
+/// C-mode (@inline_template): reads `args.message` and `args.consumer` from the
+/// concrete handler's parameter list.  Apply only to handlers whose signature
+/// includes both:
+///   - `message:  in Message`       — provides id and deliveryCount
+///   - `consumer: in QueueConsumer` — called to nack the message after dead-lettering
+///
+/// The compiler reports shape error A0042 if either parameter is absent.
+///
+/// After the handler returns Err, checks `args.message.deliveryCount + 1`
+/// against `maxDeliveries`.  When the limit is reached, appends a
+/// `DeadLetterEntry` to `Mq.Aspects.deadLetterStore` and calls
+/// `nack(messageId, requeue = false)` on the consumer so the broker also
+/// removes the message from the live queue.
 ///
 /// Because aspect config fields must be scalar values (Bool, Int, String),
 /// the dead-letter store cannot be passed as a config field.  Consumers must
@@ -120,18 +128,20 @@ var idempotentStore = Cache.inProcess()
 /// a custom `DeadLetterStore` implementation) before the aspect fires.  The
 /// default value is an in-process store sized to `DeadLetter.maxEntries`.
 ///
-/// **Type constraint:** apply only to handlers returning `Result[Unit, String]`
-/// whose argument list includes `message: in Message`.
-///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled       Bool — master switch (default: true)
 ///   maxDeliveries Int  — delivery attempts before dead-lettering (default: 3)
 @stable(since="0.1")
+@inline_template
 pub aspect DeadLetter {
   config {
     enabled:       Bool = true
     maxDeliveries: Int  = 3
   }
+
+  requires:
+    args.message.id != ""    // handler must declare a message: Message parameter
+    // handler must declare a consumer: QueueConsumer parameter (shape checked by A0042)
 
   around(call) -> ret {
     if not enabled {

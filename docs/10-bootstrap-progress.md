@@ -12683,3 +12683,28 @@ relative to Spring / ASP.NET ecosystems. Each library follows the established pa
   `connectSes()` and `connectSendGrid()` now read from config instead of passing empty strings.
 - **`lyric-mq/lyric.toml`** — added `Lyric.Cache` dependency (required by `mq_aspects.l`
   for the `Idempotent` aspect's deduplication cache).
+
+**Second-round fixes (follow-up to further review):**
+
+- **`[nuget]` tables** — added `[nuget]` sections to all seven libraries that wrap external NuGet
+  packages: `lyric-mq` (RabbitMQ.Client, Azure.Messaging.ServiceBus, AWSSDK.SQS, Confluent.Kafka),
+  `lyric-mail` (MailKit, AWSSDK.SimpleEmail, SendGrid), `lyric-storage` (AWSSDK.S3,
+  Azure.Storage.Blobs), `lyric-search` (Elastic.Clients.Elasticsearch, Meilisearch),
+  `lyric-session` (StackExchange.Redis), `lyric-jobs` (Hangfire.Core, Hangfire.SqlServer, Quartz),
+  `lyric-ws` (Microsoft.AspNetCore.WebSockets, System.Threading.RateLimiting).  Per
+  `docs/21-nuget-linking.md`, `lyric restore` uses these to generate a transient csproj and
+  invoke `dotnet restore`.
+- **`@cfg(feature = "jvm") import Mq.Kernel.Jvm`** — the unconditional `import Mq.Kernel.Jvm` in
+  `mq.l` would fail at compile time when the `jvm` feature is not enabled (the `Mq.Kernel.Jvm`
+  package is `@cfg(feature = "jvm")` at the package level).  Added the corresponding `@cfg` gate
+  to the import statement.
+- **`jsonExtractString` doc comment** — added an explicit note that values containing `\"`
+  (escaped quotes) are truncated at the first backslash-quote; callers must pre-escape body
+  content via `jsonEscape` before embedding (which the write path already does).
+- **`DeadLetter` aspect shape constraint** — added `@inline_template` annotation (aspect reads
+  `args.message` and `args.consumer`); added `requires: args.message.id != ""` shape constraint;
+  updated doc comment to explicitly state that the handler must declare both
+  `message: in Message` and `consumer: in QueueConsumer` parameters (A0042 catches missing shapes).
+- **CLAUDE.md key modules** — added `Std.Time` and `Std.Uuid` to the key modules list in the
+  `stdlib/std/` section (both are confirmed present in `stdlib/std/time.l` and `stdlib/std/uuid.l`
+  and are used by the new library packages).

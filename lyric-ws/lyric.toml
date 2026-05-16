@@ -22,3 +22,9 @@ jvm    = []   # Undertow WebSockets (Phase 6)
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
 "Lyric.Auth"   = { path = "../lyric-auth" }
+
+[nuget]
+# feature = "dotnet" — ASP.NET Core WebSocket middleware
+"Microsoft.AspNetCore.WebSockets"  = "10.0.0"
+# System.Threading.RateLimiting ships in .NET 7+ BCL; listed for pre-.NET 7 compat
+"System.Threading.RateLimiting"    = "9.0.0"

@@ -21,3 +21,9 @@ meilisearch   = []   # Meilisearch (Meilisearch .NET client)
 [dependencies]
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
+
+[nuget]
+# feature = "elasticsearch" — Elasticsearch .NET client
+"Elastic.Clients.Elasticsearch" = "8.14.0"
+# feature = "meilisearch" — Meilisearch .NET client
+"Meilisearch"                   = "0.21.0"

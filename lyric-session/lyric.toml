@@ -21,3 +21,8 @@ inmemory = []   # In-process sessions (suitable for single-instance deployments)
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
 "Lyric.Cache"  = { path = "../lyric-cache" }
+
+[nuget]
+# feature = "redis" — Redis client for .NET session backing store
+"StackExchange.Redis" = "2.7.33"
+# feature = "inmemory" — no extra NuGet deps

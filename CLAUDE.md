@@ -312,6 +312,8 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   contain `@externTarget` / `extern type` declarations.
   Key modules: `Std.Core` (Option, Result), `Std.Collections` (List, Map),
   `Std.String`, `Std.Char`, `Std.Json` (BCL-backed, `.NET`-only),
+  `Std.Time` (Instant, Duration, Clock, SystemClock, toEpochMillis),
+  `Std.Uuid` (newUuid, uuidToString, parseUuidOpt),
   `Std.Xml` (pure-Lyric XML 1.0 parser, cross-platform, D065),
   `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065).
 - `stdlib/tests/` — Lyric-language test suite for the stdlib. Each

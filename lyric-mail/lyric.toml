@@ -21,3 +21,11 @@ sendgrid = []   # SendGrid (SendGrid .NET library)
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
+
+[nuget]
+# feature = "smtp" — SMTP client for .NET
+"MailKit"              = "4.7.0"
+# feature = "ses" — AWS SDK SES module for .NET
+"AWSSDK.SimpleEmail"   = "3.7.300"
+# feature = "sendgrid" — SendGrid .NET client
+"SendGrid"             = "9.29.3"
