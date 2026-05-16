@@ -1,0 +1,24 @@
+[package]
+name        = "Lyric.Jobs"
+version     = "0.1.0"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "Background job scheduling and execution library for Lyric."
+
+[project]
+name            = "Lyric.Jobs"
+output          = "single"
+output_assembly = "Jobs.dll"
+
+[project.packages]
+"Jobs"            = "src"
+"Jobs.Aspects"    = "src"
+"Jobs.Kernel.Net" = "src/_kernel/net"
+
+[features]
+hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
+quartz   = []   # Quartz.NET scheduler
+
+[dependencies]
+"Lyric.Stdlib"     = { path = "../stdlib" }
+"Lyric.Resilience" = { path = "../lyric-resilience" }

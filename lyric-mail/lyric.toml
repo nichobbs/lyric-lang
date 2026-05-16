@@ -1,0 +1,23 @@
+[package]
+name        = "Lyric.Mail"
+version     = "0.1.0"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "Email sending library for Lyric: SMTP, Amazon SES, and SendGrid providers."
+
+[project]
+name            = "Lyric.Mail"
+output          = "single"
+output_assembly = "Mail.dll"
+
+[project.packages]
+"Mail"            = "src"
+"Mail.Kernel.Net" = "src/_kernel/net"
+
+[features]
+smtp     = []   # SMTP via System.Net.Mail (MailKit on .NET)
+ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET)
+sendgrid = []   # SendGrid (SendGrid .NET library)
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
