@@ -143,7 +143,6 @@ pub record NativeFlagStore {
   storeHandle: Int
 }
 
-@cfg(feature = "remote")
 impl FlagStore for NativeFlagStore {
   func isEnabled(name: in String): Bool {
     return Flags.Kernel.Net.isEnabled(storeHandle, name)

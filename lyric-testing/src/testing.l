@@ -97,7 +97,7 @@ impl Mail.MailSender for MockMailSender {
     val toAddr = if msg.to.length == 0 {
       ""
     } else {
-      msg.to.head().address
+      msg.to[0].address
     }
     val captured = SentEmail(
       to       = toAddr,
@@ -120,7 +120,7 @@ pub func lastSent(sender: in MockMailSender): Option[SentEmail] {
   if sender.count == 0 {
     return None
   }
-  return Some(value = sender.sentEmails.last())
+  return Some(value = sender.sentEmails[sender.count - 1])
 }
 
 /// Return the number of emails sent through this mock sender.
@@ -286,7 +286,7 @@ pub func lastPublished(queue: in MockMessageQueue): Option[PublishedMessage] {
   if queue.msgCount == 0 {
     return None
   }
-  return Some(value = queue.published.last())
+  return Some(value = queue.published[queue.msgCount - 1])
 }
 
 /// Return the number of messages published through this mock queue.
@@ -537,10 +537,8 @@ pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
 pub func assertErr[T](result: in Result[T, String], msg: in String): String {
   match result {
     case Err(err) -> return err
-    case Ok(_)    -> {
-      doPanic(msg + " (expected Err, got Ok)")
-      return ""
-    }
+    case Ok(_)    ->
+      panic(msg + " (expected Err, got Ok)")
   }
 }
 
@@ -550,11 +548,8 @@ pub func assertErr[T](result: in Result[T, String], msg: in String): String {
 pub func assertSome[T](opt: in Option[T], msg: in String): T {
   match opt {
     case Some(v) -> return v
-    case None    -> {
-      doPanic(msg + " (expected Some, got None)")
-      // Unreachable; doPanic does not return.
-      return opt.get()
-    }
+    case None    ->
+      panic(msg + " (expected Some, got None)")
   }
 }
 
@@ -596,7 +591,7 @@ pub func assertFalse(cond: in Bool, msg: in String): Unit {
 
 // Abort the process with `msg`.
 func doPanic(msg: in String): Unit {
-  Std.Core.panic(msg)
+  panic(msg)
 }
 
 // Produce a minimal SessionData from a stored string.

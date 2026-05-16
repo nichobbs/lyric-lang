@@ -353,9 +353,9 @@ func buildStoreFromTriples(triplesJson: in String): InProcessTranslationStore {
         val triple = triplesJson.substring(start, end + 1)
         val parts  = splitTriple(triple)
         if parts.length == 3 {
-          val lk  = parts.get(0)
-          val key = parts.get(1)
-          val val_ = parts.get(2)
+          val lk  = parts[0]
+          val key = parts[1]
+          val val_ = parts[2]
           match m.get(lk) {
             case Some(inner) -> {
               val updated = inner.set(key, val_)
