@@ -52,6 +52,7 @@ pub record PackageSection {
   description: String
   authors:     List[String]
   license:     String
+  repository:  Option[String]
 }
 
 pub record PackageEntry {
@@ -469,12 +470,14 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
           val description = unwrapOr(findString(entries, "package", "description"), "")
           val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList())
           val license     = unwrapOr(findString(entries, "package", "license"), "")
+          val repository  = findString(entries, "package", "repository")
           Ok(value = PackageSection(
             name        = name,
             version     = version,
             description = description,
             authors     = authors,
-            license     = license))
+            license     = license,
+            repository  = repository))
         }
       }
   }

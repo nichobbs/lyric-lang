@@ -341,6 +341,7 @@ type ImportedDistinctTypeInfo =
       Type:          ClrType
       ValueField:    FieldInfo
       FromMethod:    MethodInfo
-      TryFromMethod: MethodInfo option }
+      TryFromMethod: MethodInfo option
+      Derives:       string list }
 
 type ImportedDistinctTypeTable = Dictionary<string, ImportedDistinctTypeInfo>

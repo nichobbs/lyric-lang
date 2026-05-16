@@ -1,12 +1,11 @@
 module Lyric.Cli.Tests.LintTests
 
 open Expecto
-open Lyric.Parser.Parser
+open Lyric.Cli
 open Lyric.Cli.Lint
 
 let private lintSource (source: string) : LintDiagnostic list =
-    let r = parse source
-    (lint r.File).Diagnostics
+    (SelfHostedLint.lint source).Diagnostics
 
 let private codes (diags: LintDiagnostic list) : string list =
     diags |> List.map (fun d -> d.Code)

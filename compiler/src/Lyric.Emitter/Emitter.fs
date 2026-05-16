@@ -3463,6 +3463,48 @@ let private emitAssembly
                             if not (typeIdToClr.ContainsKey tid) then
                                 typeIdToClr.[tid] <- ty)
                 | _ -> ()
+            // Distinct types — populate importedDistinctTypeTable so
+            // satisfiesMarker can check cross-package `derives` clauses
+            // (Q021-4: `type Age = Int derives Hash` in a dependency).
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IDistinctType dt ->
+                    match getType (qualify dt.Name) with
+                    | None -> ()
+                    | Some ty ->
+                        let bf =
+                            BindingFlags.Public
+                            ||| BindingFlags.Static
+                            ||| BindingFlags.DeclaredOnly
+                        let valueFieldOpt =
+                            ty.GetFields(
+                                BindingFlags.Public
+                                ||| BindingFlags.Instance
+                                ||| BindingFlags.DeclaredOnly)
+                            |> Array.tryFind (fun f -> f.Name = "Value")
+                        let fromMethodOpt =
+                            ty.GetMethods(bf)
+                            |> Array.tryFind (fun m -> m.Name = "From")
+                        match valueFieldOpt, fromMethodOpt with
+                        | Some vf, Some fm ->
+                            let tryFromOpt =
+                                ty.GetMethods(bf)
+                                |> Array.tryFind (fun m -> m.Name = "TryFrom")
+                            importedDistinctTypeTable.[dt.Name] <-
+                                { Records.ImportedDistinctTypeInfo.Name          = dt.Name
+                                  Records.ImportedDistinctTypeInfo.Type          = ty
+                                  Records.ImportedDistinctTypeInfo.ValueField    = vf
+                                  Records.ImportedDistinctTypeInfo.FromMethod    = fm
+                                  Records.ImportedDistinctTypeInfo.TryFromMethod = tryFromOpt
+                                  Records.ImportedDistinctTypeInfo.Derives       = dt.Derives }
+                            symbols.TryFind dt.Name
+                            |> Seq.tryHead
+                            |> Option.bind Symbol.typeIdOpt
+                            |> Option.iter (fun tid ->
+                                if not (typeIdToClr.ContainsKey tid) then
+                                    typeIdToClr.[tid] <- ty)
+                        | _ -> ()
+                | _ -> ()
             // Functions — every IFunc lives as a static method on the
             // stdlib's `<Pkg>.Program` type.  We pair the MethodInfo
             // with the artifact's resolved signature so call-site
@@ -5060,7 +5102,12 @@ let private emitAssembly
             // already on disk); surface as a non-fatal warning if it
             // happens.
             try
-                let contract = ContractMeta.buildContract sf "0.1.0"
+                let importedSourcesMap =
+                    stdlibArtifacts
+                    |> List.map (fun art ->
+                        String.concat "." art.Source.Package.Path.Segments, art.Source)
+                    |> Map.ofList
+                let contract = ContractMeta.buildContract sf importedSourcesMap "0.1.0"
                 ContractMeta.embedIntoAssembly req.OutputPath (ContractMeta.toJson contract)
             with e ->
                 codegenDiags.Add
@@ -6204,7 +6251,7 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
               Backend.OutputPath  = req.OutputPath }
         let ctx = Backend.create desc
         let allDiags = ResizeArray<Diagnostic>()
-        let perPackageContracts = ResizeArray<string * SourceFile * Map<string, Lyric.TypeChecker.ResolvedSignature>>()
+        let perPackageContracts = ResizeArray<string * SourceFile * Map<string, Lyric.TypeChecker.ResolvedSignature> * Map<string, SourceFile>>()
         let mutable mainCount = 0
 
         // ---- Phase A0: parse every package once so we can topo-sort
@@ -6444,7 +6491,12 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     (Some typesByName)
                     mainOutForCall
             allDiags.AddRange pkgEmitDiags
-            perPackageContracts.Add(pkgName, resolved, checked'.Signatures)
+            let importedSourcesMap =
+                mergedArtifacts
+                |> List.map (fun art ->
+                    String.concat "." art.Source.Package.Path.Segments, art.Source)
+                |> Map.ofList
+            perPackageContracts.Add(pkgName, resolved, checked'.Signatures, importedSourcesMap)
             // Capture this package as an in-project artifact for
             // downstream packages.  Skip on emit failure — the
             // backend's reflection state for this package may be
@@ -6495,9 +6547,9 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                         sprintf "Backend.save failed: %s" e.Message
                       Span     = Span.make Position.initial Position.initial }
             // Phase C — embed one `Lyric.Contract.<Pkg>` per package.
-            for (pkgName, resolved, _sigs) in perPackageContracts do
+            for (pkgName, resolved, _sigs, importedSourcesMap) in perPackageContracts do
                 try
-                    let contract = ContractMeta.buildContract resolved "0.1.0"
+                    let contract = ContractMeta.buildContract resolved importedSourcesMap "0.1.0"
                     let json = ContractMeta.toJson contract
                     ContractMeta.embedIntoAssemblyAs
                         req.OutputPath

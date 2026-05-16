@@ -1516,7 +1516,205 @@ func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5i. Builtin and general call lowering.
+// §5i. @externTarget call-site lowering (Q-J013).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Extract the target string from `@externTarget("java.Class.method")`.
+func findExternTarget(decl: in FunctionDecl): Option[String] {
+  var i = 0
+  while i < decl.annotations.count {
+    val ann = decl.annotations[i]
+    val n = ann.name.segments.count
+    if n > 0 {
+      val seg = ann.name.segments[n - 1]
+      if seg == "externTarget" and ann.args.count > 0 {
+        match ann.args[0] {
+          case ALiteral(av) -> {
+            match av {
+              case AVString(s, _) -> return Some(value = s)
+              case _ -> {}
+            }
+          }
+          case _ -> {}
+        }
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+// True when the declared return type is `Result[T, JvmException]` for any T.
+func isResultJvmException(ret: in Option[TypeExpr]): Bool {
+  match ret {
+    case None -> false
+    case Some(te) -> {
+      match te.kind {
+        case TGenericApp(head, args) -> {
+          val headSeg = lastSegment(head)
+          if headSeg == "Result" and args.count >= 2 {
+            match args[1] {
+              case TAType(inner) -> {
+                match inner.kind {
+                  case TRef(path) -> lastSegment(path) == "JvmException"
+                  case _ -> false
+                }
+              }
+              case _ -> false
+            }
+          } else { false }
+        }
+        case _ -> false
+      }
+    }
+  }
+}
+
+// Extract the first type argument T from `Result[T, JvmException]`.
+func extractResultValueType(te: in TypeExpr, pkgName: in String): JvmType {
+  match te.kind {
+    case TGenericApp(_, args) -> {
+      if args.count >= 1 {
+        match args[0] {
+          case TAType(inner) -> typeExprToJvm(inner, pkgName)
+          case _ -> JRef(className = "java/lang/Object")
+        }
+      } else {
+        JRef(className = "java/lang/Object")
+      }
+    }
+    case _ -> JRef(className = "java/lang/Object")
+  }
+}
+
+// Maven-generated static externs follow the `TypeName_methodName` convention
+// (PascalCase prefix before the first underscore).  Returns true for those.
+func isStaticExternByName(name: in String): Bool {
+  match indexOf(name, "_") {
+    case None -> false
+    case Some(i) -> {
+      if i > 0 {
+        val firstChar = substring(name, 0, 1)
+        firstChar >= "A" and firstChar <= "Z"
+      } else { false }
+    }
+  }
+}
+
+// Emit the body of a body-less function that has `@externTarget("java.Class.method")`.
+// Loads all params, emits invokestatic or invokevirtual, and wraps the result in
+// Result$Ok / Result$Err when the declared return type is Result[T, JvmException].
+func lowerExternTargetBody(
+  decl:   in FunctionDecl,
+  ctx:    in FuncCtx,
+  insns:  in List[LInsn],
+  target: in String
+): JvmType {
+  match lastIndexOf(target, ".") {
+    case None -> {
+      emitReturn(insns, JVoid)
+      JVoid
+    }
+    case Some(dotIdx) -> {
+      val javaClass  = replace(substring(target, 0, dotIdx), ".", "/")
+      val methodName = substring(target, dotIdx + 1, length(target) - dotIdx - 1)
+
+      val isStatic   = isStaticExternByName(decl.name)
+      val wrapResult = isResultJvmException(decl.ret)
+      val startParam = if isStatic { 0 } else { 1 }
+
+      // Java arg types: for instance calls, skip the first param (receiver).
+      val javaArgTypes: List[JvmType] = newList()
+      var ai = startParam
+      while ai < decl.params.count {
+        javaArgTypes.add(typeExprToJvm(decl.params[ai].ty, ctx.pkgName))
+        ai = ai + 1
+      }
+
+      // Actual Java return type (unwrapped from Result for the invoke descriptor).
+      val javaRet = match decl.ret {
+        case None -> JVoid
+        case Some(te) ->
+          if wrapResult { extractResultValueType(te, ctx.pkgName) }
+          else          { typeExprToJvm(te, ctx.pkgName) }
+      }
+
+      // Load all params in order: receiver first for instance calls.
+      var li = 0
+      while li < decl.params.count {
+        val p = decl.params[li]
+        val paramTy = typeExprToJvm(p.ty, ctx.pkgName)
+        match lookupSlot(ctx, p.name) {
+          case Some(s) -> emitLoad(insns, s, paramTy)
+          case None    -> insns.add(LAconstNull)
+        }
+        li = li + 1
+      }
+
+      if wrapResult {
+        val okClass  = "Std/Core/Result$Ok"
+        val errClass = "Std/Core/Result$Err"
+        val tryStartL   = freshLabel(ctx)
+        val tryEndL     = freshLabel(ctx)
+        val catchStartL = freshLabel(ctx)
+        val afterL      = freshLabel(ctx)
+        val resultSlot  = allocSlot(ctx, "__ext_result", JRef(className = "java/lang/Object"))
+        val exSlot      = allocSlot(ctx, "__ext_ex",     JRef(className = "java/lang/Object"))
+
+        insns.add(LLabel(name = tryStartL))
+        if isStatic {
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+        } else {
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+        }
+        match javaRet {
+          case JVoid -> insns.add(LAconstNull)
+          case _     -> boxIfNeeded(insns, javaRet)
+        }
+        insns.add(LAstore(slot = resultSlot))
+        insns.add(LNew(className = okClass))
+        insns.add(LDup)
+        insns.add(LAload(slot = resultSlot))
+        val okPs: List[JvmType] = newList()
+        okPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokespecial(owner = okClass, name = "<init>", params = okPs, ret = JVoid))
+        insns.add(LGoto(label = afterL))
+        insns.add(LLabel(name = tryEndL))
+
+        insns.add(LLabel(name = catchStartL))
+        insns.add(LAstore(slot = exSlot))
+        insns.add(LNew(className = errClass))
+        insns.add(LDup)
+        insns.add(LAload(slot = exSlot))
+        val errPs: List[JvmType] = newList()
+        errPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokespecial(owner = errClass, name = "<init>", params = errPs, ret = JVoid))
+        insns.add(LGoto(label = afterL))
+
+        insns.add(LTryCatch(
+          startLabel   = tryStartL,
+          endLabel     = tryEndL,
+          handlerLabel = catchStartL,
+          catchClass   = "java/lang/Exception"))
+        insns.add(LLabel(name = afterL))
+
+        emitReturn(insns, JRef(className = "java/lang/Object"))
+        JRef(className = "java/lang/Object")
+      } else {
+        if isStatic {
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+        } else {
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+        }
+        emitReturn(insns, javaRet)
+        javaRet
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5j. Builtin and general call lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func lowerCall(
@@ -2278,8 +2476,10 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
       }
     }
     case None -> {
-      // Abstract / extern function: emit default return.
-      emitReturn(insns, retTy)
+      match findExternTarget(decl) {
+        case Some(target) -> { lowerExternTargetBody(decl, ctx, insns, target); () }
+        case None         -> emitReturn(insns, retTy)
+      }
     }
   }
 

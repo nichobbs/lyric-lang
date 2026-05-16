@@ -1886,7 +1886,7 @@ let main (argv: string array) : int =
             // spurious lint hits.
             for d in parsed.Diagnostics do
                 if d.Severity = DiagError then printDiag d
-            let result = Lyric.Cli.Lint.lint parsed.File
+            let result = SelfHostedLint.lint source
             for d in result.Diagnostics do
                 printErr (Lyric.Cli.Lint.renderDiagnostic d)
             let hasError   = result.Diagnostics |> List.exists (fun d -> d.Severity = Lyric.Cli.Lint.LintError)
@@ -1920,7 +1920,7 @@ let main (argv: string array) : int =
             // even on partial recovery.
             for d in parsed.Diagnostics do
                 if d.Severity = DiagError then printDiag d
-            let md = Lyric.Cli.Doc.generate parsed.File
+            let md = SelfHostedDoc.generate source
             match explicitOut with
             | Some path ->
                 let dir = safeStr (Path.GetDirectoryName(Path.GetFullPath path)) "."

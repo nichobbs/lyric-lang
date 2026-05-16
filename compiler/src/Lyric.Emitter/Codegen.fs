@@ -685,6 +685,13 @@ let private satisfiesMarker
         |> Option.exists (fun info -> List.contains marker info.Derives)
     if satisfiesViaDistinct then true
     else
+    // Path 1.5 — cross-package distinct type with a matching derives clause.
+    let satisfiesViaImportedDistinct =
+        ctx.ImportedDistinctTypes.Values
+        |> Seq.tryFind (fun info -> info.Type = ty)
+        |> Option.exists (fun info -> List.contains marker info.Derives)
+    if satisfiesViaImportedDistinct then true
+    else
     // Path 2 — CLR primitive table.
     let isNumeric =
         ty = typeof<sbyte>  || ty = typeof<int16>  || ty = typeof<int32>
@@ -1969,7 +1976,11 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let typeName =
                 ctx.Records
                 |> Seq.tryPick (fun kv ->
-                    if (kv.Value.Type :> System.Type) = recvTy then Some kv.Key
+                    let ty = kv.Value.Type :> System.Type
+                    if ty = recvTy then Some kv.Key
+                    // Generic opaque instantiation: the TypeBuilder is the open
+                    // definition; the receiver is the closed instantiation.
+                    elif recvTy.IsGenericType && ty = recvTy.GetGenericTypeDefinition() then Some kv.Key
                     else None)
             match typeName with
             | Some n ->
@@ -4548,8 +4559,11 @@ and private emitPatternTest
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Cgt_Un)
                 // If any sub-pattern is non-trivial, AND in sub-pattern tests.
+                // Truncate both sides to the shorter length so patterns with
+                // fewer sub-patterns than fields (implicit wildcards) compile.
+                let pairCount = min sub.Length fields.Length
                 let nonTrivialPairs =
-                    List.zip (sub |> List.truncate fields.Length) fields
+                    List.zip (List.truncate pairCount sub) (List.truncate pairCount fields)
                     |> List.filter (fun (sp, _) -> not (alwaysMatches ctx sp))
                 if not nonTrivialPairs.IsEmpty then
                     let failLabel = il.DefineLabel()
@@ -4698,9 +4712,9 @@ and private emitPatternBind
             il.Emit(OpCodes.Ldloc, tmp)
             il.Emit(OpCodes.Castclass, caseTy)
             il.Emit(OpCodes.Stloc, castedTmp)
+            let pairCount = min sub.Length (List.length caseFields)
             let pairs =
-                caseFields
-                |> List.zip (sub |> List.truncate (List.length caseFields))
+                List.zip (List.truncate pairCount sub) (List.truncate pairCount caseFields)
             for (sp, (fname, fty, fInfo)) in pairs do
                 match sp.Kind with
                 | PWildcard | PBinding ("_", None) -> ()

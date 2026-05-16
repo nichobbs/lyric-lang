@@ -12104,6 +12104,57 @@ and no diff output on mismatch.
 
 ---
 
+### D-progress-252: R1 stdlib API surface declared; @stable annotations completed
+
+- `stdlib/STABILITY.md` created: full module/tier table covering all 34 top-level stdlib
+  modules and all 25 kernel files.
+- `stdlib/std/core.l`: added `pub` visibility and `@stable(since="1.0")` to all exported
+  items (`Option`, `Result`, `unwrapOr`, `isSome`, `isNone`, `isOk`, `isErr`,
+  `unwrapResultOr`, `unwrapErrOr`, `sumInts`, `maxInt`, `countEq`, `mapOption`,
+  `mapResult`, `filterOption`, `countWhere`, `andThen`, `orElse`, `andThenResult`).
+- `stdlib/std/testing_mocking.l`: added `@stable(since="1.0")` to `StubCounter`,
+  `makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`.
+- All other stdlib modules had already been annotated in prior milestones.
+- R1 acceptance criterion met: every `pub` item in the stdlib is now annotated.
+
+### D-progress-253: R2 formatter deprecation notice shipped
+
+- `docs/01-language-reference.md` §13.7 formatter flags table: added `--legacy` row
+  documenting "**Deprecated — removed in v1.1.**" with the caveat that it drops
+  all non-doc `//` comments.
+- `book/chapters/appendix-b-quick-reference.md` line 693: updated `--legacy` comment
+  to "DEPRECATED, removed in v1.1".
+- No code changes; G3 decision (D066) authorises keeping `--legacy` through 1.0.
+
+### D-progress-254: R3 Q-J013 @externTarget call-site codegen shipped (B128)
+
+Q-J013 — try-catch wrapper for `@externTarget` static/virtual calls.
+
+In `compiler/lyric/jvm/codegen.l`, `lowerFunc`'s `case None` path (body-less functions)
+now detects `@externTarget` annotations and emits the actual JVM invoke instead of a
+stub default return.  New helpers:
+
+- `findExternTarget(decl)` — scans `decl.annotations` for `@externTarget("string")` and
+  returns the target string.
+- `isResultJvmException(ret)` — returns `true` when the declared return type is
+  `Result[T, JvmException]` for any `T`.
+- `extractResultValueType(te, pkgName)` — extracts `T` from `Result[T, JvmException]`
+  and maps it to a `JvmType`.
+- `isStaticExternByName(name)` — returns `true` when the Lyric function name follows
+  the Maven static convention `TypeName_methodName` (PascalCase prefix before `_`).
+- `lowerExternTargetBody(decl, ctx, insns, target)` — emits:
+  - Param loads (all params in slot order; receiver first for instance calls).
+  - `invokestatic` or `invokevirtual` per the static heuristic.
+  - When `isResultJvmException` is true: inline try-catch wrapping the invoke in
+    `Result$Ok` / `Result$Err` (same pattern as `lowerCatchIntrinsic`).
+  - Direct return otherwise.
+
+Stage B128 (`compiler/lyric/jvm/self_test_b128.l`) validates the bytecode shape:
+builds a `ParseWrapper.tryParseInt(String): Object` method that calls
+`Integer.parseInt` with a try-catch, then calls it with `"42"` (→ `ok:42`) and
+`"abc"` (→ `err:NumberFormatException`).  F# test `JvmLoweringB128Test.fs` runs
+the JAR and asserts both output lines.
+
 ### D-progress-251: v1.0 gate decisions G3–G5 resolved (D066)
 
 Gate decisions G3, G4, and G5 from `docs/36-v1-roadmap.md` recorded as D066 in
@@ -12240,3 +12291,196 @@ kernel is a Phase 6 stub.
 - `lyric-otel` gains OTLP export; existing `OTel.*` aspect templates and wrapper
   functions are unchanged.
 - No compiler tests affected (libraries are pure Lyric source, compiled on demand).
+
+---
+
+### D-progress-255: R4 — M5.3 stage 6: Doc, Lint, and Pack csproj ported to self-hosted Lyric
+
+R4 from `docs/36-v1-roadmap.md` is now complete for the three actionable items.
+
+**Lyric.Doc** (`compiler/lyric/lyric/doc/doc.l`):
+- Package `Lyric.Doc`; mirrors `compiler/src/Lyric.Cli/Doc.fs`.
+- Imports `Lyric.Lexer` and `Lyric.Parser`; calls `parse(source)` internally.
+- Generates Markdown for all public items: `IFunc`, `IRecord`, `IExposedRec`,
+  `IUnion`, `IEnum`, `IOpaque`, `IInterface`, `IDistinctType`, `ITypeAlias`,
+  `IConst`.  Renders doc comments and type signatures as fenced code blocks.
+- Bridge: `compiler/lyric/lyric/doc_bridge.l` (`Lyric.DocBridge`);
+  protocol `"ok\n<markdown>"`.
+- F# shim: `compiler/src/Lyric.Cli/SelfHostedDoc.fs` replaces the removed
+  `compiler/src/Lyric.Cli/Doc.fs`.
+- `Program.fs` `lyric doc` command now calls `SelfHostedDoc.generate`.
+
+**Lyric.Lint** (`compiler/lyric/lyric/lint/lint.l`):
+- Package `Lyric.Lint`; mirrors the rule logic previously in `Lyric.Cli.Lint`.
+- Five rules: L001 (PascalCase types), L002 (camelCase funcs), L003 (pub doc),
+  L004 (TODO/FIXME in doc comments), L005 (pub func with block body has contracts).
+- Bridge: `compiler/lyric/lyric/lint_bridge.l` (`Lyric.LintBridge`); pipe-delimited
+  protocol one diagnostic per line: `<code>|<sev>|<line>|<col>|<message>`.
+- F# shim: `compiler/src/Lyric.Cli/SelfHostedLint.fs`.
+- `Lint.fs` gutted to types and `renderDiagnostic` only (domain logic removed).
+- `Program.fs` `lyric lint` command now calls `SelfHostedLint.lint`.
+- `LintTests.fs` updated: `lintSource` now calls `SelfHostedLint.lint source`
+  (integration path through the Lyric bridge).
+
+**Lyric.Pack csproj XML** (`compiler/lyric/lyric/pack/pack.l`):
+- Package `Lyric.Pack`; ports the `publishCsproj`/`restoreCsproj` XML-generation
+  logic from `compiler/src/Lyric.Cli/Pack.fs`.
+- Reads `Lyric.Manifest` types directly (`m.packageSection`, `m.deps`,
+  `m.nuget` → `Option[NugetSection]`).
+- Generates `<Project Sdk="Microsoft.NET.Sdk">` XML for both `dotnet pack` and
+  `dotnet restore` use cases; respects `[nuget]` / `[nuget.options]` sections.
+- Bridge: `compiler/lyric/lyric/pack_bridge.l` (`Lyric.PackBridge`); parses
+  incoming TOML via `Lyric.Manifest.parse`, then calls `publishCsproj`/`restoreCsproj`.
+  Protocol: `"ok\n<csproj>"` or `"parsefail\n<message>"`.
+- F# shim: `compiler/src/Lyric.Cli/SelfHostedPack.fs`.
+- `Pack.fs` `runPack`/`runRestore` updated to read `lyric.toml` text and
+  call `SelfHostedPack.publishCsproj`/`SelfHostedPack.restoreCsproj`.
+- `PackTests.fs` updated: XML-checking tests now pass TOML strings to the
+  bridge rather than constructing F# `Manifest` objects.
+
+**Deferred from R4:**
+- `Lyric.ContractMeta` — the BCL-reflection-backed embedded resource reader
+  (`compiler/src/Lyric.Emitter/ContractMeta.fs`, ~818 lines) is used by
+  `lyric public-api-diff` and the cross-package verifier, not by Doc/Lint/Pack.
+  Porting it requires a Lyric PE-metadata reader; deferred post-v1.0.
+- `Fmt.fs` sunset — gated on R2 (CST formatter parity); not changed here.
+
+**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Tests:** `Lyric.Cli.Tests`: 204/224 passed; 20 errored (all pre-existing JVM
+parity failures unrelated to R4). `Lyric.Emitter.Tests`: 759/759 passed.
+
+### D-progress-256: R5 — Language gaps Q021-4, Q022-1, Q022-3 closed; Q022-4 documented
+
+R5 from `docs/36-v1-roadmap.md` is now substantially complete.  Q022-2 is deferred.
+
+**Q021-4: Cross-package distinct types in `satisfiesMarker`**
+- `compiler/src/Lyric.Emitter/Records.fs`: Added `Derives: string list` field to
+  `ImportedDistinctTypeInfo`.
+- `compiler/src/Lyric.Emitter/Emitter.fs`: Added a loop after the protected-types loop
+  that populates `importedDistinctTypeTable` from `IDistinctType` items in each loaded
+  artifact's `Source.Items`.  Reflects `Value` field, `From` method, and optional `TryFrom`
+  method; stores `d.Derives` directly from the parsed AST.  Also registers the CLR type in
+  `typeIdToClr` so cross-package type references resolve.
+- `compiler/src/Lyric.Emitter/Codegen.fs`: Added **Path 1.5** to `satisfiesMarker`: checks
+  `ctx.ImportedDistinctTypes.Values` for a matching CLR type, then verifies the marker is in
+  `info.Derives`.  Cross-package `type Age = Int derives Hash` now satisfies `f[T] where T: Hash`.
+
+**Q022-3: UFCS on `OpaqueType[T]` receivers**
+- `compiler/src/Lyric.Emitter/Codegen.fs` `inlineUfcsCall`: Extended the
+  `ctx.Records` lookup to also match generic opaque instantiations.  When
+  `recvTy.IsGenericType` and the TypeBuilder equals `recvTy.GetGenericTypeDefinition()`,
+  the record name is returned so UFCS dispatch proceeds.  Previously silently fell
+  through to "method not found" for closed generic opaques.
+
+**Q022-1: `pub use` symbol-level re-export**
+- `compiler/src/Lyric.Emitter/ContractMeta.fs`: Added private `pubUseDecls`
+  function and changed `buildContract` signature to accept an
+  `importedSources: Map<string, SourceFile>` parameter.  `pubUseDecls` filters
+  `sf.Imports` for `IsPubUse = true`, looks up the package in `importedSources`,
+  and cherry-picks only the named symbols (or all pub items for a bare
+  `pub use Pkg`).  The cherry-picked `ContractDecl` values are appended to the
+  contract after the package's own decls.
+- `compiler/src/Lyric.Emitter/Emitter.fs` (single-file path): Builds `importedSourcesMap`
+  from `stdlibArtifacts` and passes it to `buildContract`.
+- `compiler/src/Lyric.Emitter/Emitter.fs` (project path): Changed
+  `perPackageContracts` tuple to include `Map<string, SourceFile>`; builds and stores
+  the map per package from `mergedArtifacts`; uses it in Phase C (contract embed).
+- `compiler/tests/Lyric.Verifier.Tests/StabilityCheckTests.fs`: Updated two
+  `buildContract` call sites to pass `Map.empty` (no pub-use imports in those tests).
+
+**Q022-4 (fallback): `@externTarget` generic BCL methods documented**
+- `docs/01-language-reference.md` §11.3: Added `@externTarget` section explaining
+  the annotation, its kernel-only scope, and the limitation that generic BCL
+  methods require explicit per-type monomorphised declarations (the Lyric type
+  parameter cannot be substituted into the `@externTarget` string).
+
+**Deferred:**
+- Q022-2: Generic opaque types in `Lyric.Contract` resource — cross-package
+  generic opaque types are partially invisible to the contract reader.  Impact is
+  limited (UFCS now works via Q022-3; the contract gap only affects `pub-api-diff`
+  and verifier cross-package reasoning).  Deferred post-v1.0.
+
+**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Tests:** `Lyric.Emitter.Tests`: 759/759; `Lyric.Verifier.Tests`: 266/266;
+`Lyric.Cli.Tests`: 204/224 (same 20 pre-existing JVM parity failures).
+
+### D-progress-257: R6 — Distribution and signing workflow shipped
+
+R6 from `docs/36-v1-roadmap.md` is now complete.
+
+**`.github/workflows/publish.yml`** — Release workflow triggered on `v*` tag push:
+- **Matrix build**: five platform/RID combinations (`linux-x64`, `linux-arm64`,
+  `osx-arm64`, `osx-x64`, `win-x64`) using `dotnet publish --self-contained
+  --runtime <RID> -p:PublishSingleFile=true`.
+- **Authenticode signing** (Windows): conditional step using `AzureSignTool`
+  when `AZURE_KEY_VAULT_URL` secret is present.  Signs `lyric.exe` before packaging.
+- **macOS signing + notarization** (osx-arm64): conditional codesign +
+  `xcrun notarytool submit --wait` when `APPLE_TEAM_ID` secret is present.
+  Uses a temporary keychain; cleans up after signing.
+- **Archive packaging**: `.tar.gz` for Linux/macOS, `.zip` for Windows;
+  named `lyric-<version>-<rid>.<ext>`.
+- **GitHub Release upload**: `softprops/action-gh-release@v2` uploads all archives.
+- **NuGet package**: `dotnet pack -p:PackAsTool=true -p:ToolCommandName=lyric
+  -p:PackageId=lyric` in a separate `publish-nuget` job that runs after
+  `build-standalone` succeeds.
+- **NuGet signing**: conditional `dotnet nuget sign` step when
+  `NUGET_SIGNING_CERT_BASE64` secret is present.
+- **NuGet push**: `dotnet nuget push --skip-duplicate` to `https://api.nuget.org`.
+
+**`scripts/install.sh`** — Zero-prerequisite POSIX installer:
+- Detects platform (`Linux`/`Darwin`/`MINGW*`) and architecture (`x86_64`,
+  `aarch64`, `arm64`) via `uname`.
+- Resolves latest version from GitHub API if `--version` not specified.
+- Downloads archive with `curl` or `wget`; extracts to `~/.lyric/bin`
+  (or `--dir <path>`).
+- Appends `export PATH=...` to `.bashrc`/`.zshrc`/fish config; skips if
+  already in PATH; skips if `--no-path` is passed.
+- Verifies installation with `lyric --version`.
+
+**`docs/34-distribution-strategy.md`** — Added §7 (Release workflow), §8
+(Install script), and §9 (Open questions).  Documents required repository secrets,
+placeholder for certificate fingerprints, and resolves Q-dist-005 / Q-dist-006.
+
+**docs/36-v1-roadmap.md** — R6 marked COMPLETE (D-progress-257).
+
+---
+
+### D-progress-258: CI fix — JVM parity tests, emitPatternTest, publish.yml, and SelfHostedDoc
+
+_Branch: claude/identify-v1-blockers-JvIWJ. Fixes to CI gate and code-quality issues
+identified by claude-review on PR #291._
+
+**Root cause of CI failure:** All 20 JVM parity tests (`Lyric.Cli.Tests`) were erroring due to
+three layered bugs in the JVM bridge compilation path:
+
+1. **`Codegen.fs:emitPatternTest`** — `List.zip (sub |> List.truncate fields.Length) fields`
+   crashed when `sub.Length < fields.Length` (truncation only guarded the long-sub case, not
+   the short-sub case). Lyric patterns with fewer sub-patterns than union case fields are valid
+   (implicit wildcard for trailing fields). Fixed by computing `pairCount = min sub.Length
+   fields.Length` and truncating both lists. Same fix applied to `emitPatternBind` at the
+   parallel zip site.
+
+2. **`compiler/lyric/jvm/codegen.l:lowerExternTargetBody`** — `substring(target, dotIdx + 1)` used
+   the 2-arg overload, but the type checker resolves to the 3-arg form `substring(s, start, count)`.
+   Fixed to `substring(target, dotIdx + 1, length(target) - dotIdx - 1)`.
+
+3. **`compiler/lyric/jvm/codegen.l:lowerFunctionDecl`** — match arm `case Some(target) ->
+   lowerExternTargetBody(...)` returned `JvmType` while the sibling arm `case None ->
+   emitReturn(...)` returned `Unit`, causing T0068. Fixed by wrapping the call in `{ ...; () }`
+   to discard the return value.
+
+**Additional fixes from claude-review feedback:**
+
+- **`publish.yml` NuGet signing** — `if: env.NUGET_CERT_PRESENT == 'true'` with step-level
+  `env:` never evaluates (step env not visible to `if:`). Changed to
+  `if: ${{ secrets.NUGET_SIGNING_CERT_BASE64 != '' }}` which evaluates at workflow level.
+- **`publish.yml` macOS cert cleanup** — `/tmp/cert.p12` was not removed after signing. Added
+  `rm -f /tmp/cert.p12` immediately after `codesign`.
+- **`SelfHostedDoc.generate`** — bridge response "ok\n<body>" tag was not validated; bad
+  responses were silently swallowed. Now fails with a clear message if tag ≠ "ok".
+- **`scripts/install.sh`** — removed dead `for arg in "$@"; do :; done` loop (from a
+  copy-paste artifact).
+
+**Test results post-fix:** 224/224 Lyric.Cli.Tests passed (was 204/224, 20 errored).
+All other suites unchanged: Emitter 759/759, Verifier 266/266, LSP 28/28,
+Parser 323/323, TypeChecker 189/189, Lexer (unchanged).

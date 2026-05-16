@@ -2,6 +2,7 @@ module Lyric.Cli.Tests.PackTests
 
 open System.IO
 open Expecto
+open Lyric.Cli
 open Lyric.Cli.Manifest
 open Lyric.Cli.Pack
 
@@ -31,70 +32,93 @@ let private withTempDir (action: string -> 'a) : 'a =
     finally
         try Directory.Delete(dir, true) with _ -> ()
 
+let private getXml (r: Result<string, string>) =
+    match r with
+    | Ok xml  -> xml
+    | Error e -> failwithf "Expected Ok but got Error: %s" e
+
+let private baseToml = """
+[package]
+name = "Lyric.SmokeTest"
+version = "0.1.0"
+description = "smoke"
+authors = ["alice"]
+license = "MIT"
+"""
+
 let tests =
     testList "Lyric.Cli.Pack" [
 
         testCase "publishCsproj declares TargetFramework net10.0" <| fun () ->
-            let m = mkManifest []
-            let xml = publishCsproj m "/tmp/fake.dll"
+            let xml = getXml (SelfHostedPack.publishCsproj baseToml "/tmp/fake.dll")
             Expect.stringContains xml "<TargetFramework>net10.0</TargetFramework>"
                 "publish csproj targets net10.0"
 
         testCase "publishCsproj embeds dll under lib/net10.0/" <| fun () ->
-            let m = mkManifest []
-            let xml = publishCsproj m "/tmp/foo/bar.dll"
+            let xml = getXml (SelfHostedPack.publishCsproj baseToml "/tmp/foo/bar.dll")
             Expect.stringContains xml "PackagePath=\"lib/net10.0/bar.dll\""
                 "package path inside lib/net10.0/"
             Expect.stringContains xml "Pack=\"true\""
                 "marked as packable item"
 
         testCase "publishCsproj forwards dependencies" <| fun () ->
-            let m = mkManifest [ "Lyric.Json", "1.0.0"; "Lyric.Time", "2.3.4" ]
-            let xml = publishCsproj m "/tmp/fake.dll"
+            let toml = """
+[package]
+name = "Lyric.SmokeTest"
+version = "0.1.0"
+
+[dependencies]
+"Lyric.Json" = "1.0.0"
+"Lyric.Time" = "2.3.4"
+"""
+            let xml = getXml (SelfHostedPack.publishCsproj toml "/tmp/fake.dll")
             Expect.stringContains xml "Include=\"Lyric.Json\""
                 "first dep"
             Expect.stringContains xml "Version=\"2.3.4\""
                 "second dep version"
 
         testCase "publishCsproj sets PackageId / Version" <| fun () ->
-            let m = mkManifest []
-            let xml = publishCsproj m "/tmp/fake.dll"
+            let xml = getXml (SelfHostedPack.publishCsproj baseToml "/tmp/fake.dll")
             Expect.stringContains xml "<PackageId>Lyric.SmokeTest</PackageId>" "id"
             Expect.stringContains xml "<Version>0.1.0</Version>" "version"
 
         testCase "publishCsproj omits empty optional metadata" <| fun () ->
-            let m =
-                { mkManifest [] with
-                    Package =
-                        { Name        = "X"
-                          Version     = "0.0.1"
-                          Description = None
-                          Authors     = []
-                          License     = None
-                          Repository  = None } }
-            let xml = publishCsproj m "/tmp/fake.dll"
+            let toml = """
+[package]
+name = "X"
+version = "0.0.1"
+"""
+            let xml = getXml (SelfHostedPack.publishCsproj toml "/tmp/fake.dll")
             Expect.isFalse (xml.Contains "<Authors>") "no authors element"
             Expect.isFalse (xml.Contains "<Description>") "no description"
 
         testCase "restoreCsproj omits dll embedding" <| fun () ->
-            let m = mkManifest [ "Lyric.Foo", "1.0.0" ]
-            let xml = restoreCsproj m
+            let toml = """
+[package]
+name = "Lyric.SmokeTest"
+version = "0.1.0"
+
+[dependencies]
+"Lyric.Foo" = "1.0.0"
+"""
+            let xml = getXml (SelfHostedPack.restoreCsproj toml)
             Expect.isFalse (xml.Contains "PackagePath") "no PackagePath"
             Expect.stringContains xml "Include=\"Lyric.Foo\"" "deps included"
 
-        // Phase 5 §M5.1 stage 2d: NuGet packages flow through the
-        // same `<PackageReference>` mechanism as Lyric deps.
         testCase "restoreCsproj forwards [nuget] entries" <| fun () ->
-            let m =
-                { mkManifest [ "Lyric.Foo", "1.0.0" ] with
-                    Nuget =
-                        Some { Packages =
-                                 [ { Id = "Newtonsoft.Json"; Version = "13.0.3" }
-                                   { Id = "Polly";           Version = "8.0.0"  } ]
-                               Options =
-                                 { AllowNative = false
-                                   Target      = None } } }
-            let xml = restoreCsproj m
+            let toml = """
+[package]
+name = "Lyric.SmokeTest"
+version = "0.1.0"
+
+[dependencies]
+"Lyric.Foo" = "1.0.0"
+
+[nuget]
+"Newtonsoft.Json" = "13.0.3"
+Polly = "8.0.0"
+"""
+            let xml = getXml (SelfHostedPack.restoreCsproj toml)
             Expect.stringContains xml "Include=\"Newtonsoft.Json\""
                 "first NuGet ref present"
             Expect.stringContains xml "Version=\"13.0.3\""
@@ -105,21 +129,23 @@ let tests =
                 "Lyric deps still flow through"
 
         testCase "restoreCsproj uses [nuget.options] target when set" <| fun () ->
-            let m =
-                { mkManifest [] with
-                    Nuget =
-                        Some { Packages =
-                                 [ { Id = "Polly"; Version = "8.0.0" } ]
-                               Options =
-                                 { AllowNative = false
-                                   Target      = Some "net9.0" } } }
-            let xml = restoreCsproj m
+            let toml = """
+[package]
+name = "X"
+version = "0.0.1"
+
+[nuget]
+Polly = "8.0.0"
+
+[nuget.options]
+target = "net9.0"
+"""
+            let xml = getXml (SelfHostedPack.restoreCsproj toml)
             Expect.stringContains xml "<TargetFramework>net9.0</TargetFramework>"
                 "target overridden to net9.0"
 
         testCase "restoreCsproj defaults TFM to net10.0 without [nuget]" <| fun () ->
-            let m = mkManifest []
-            let xml = restoreCsproj m
+            let xml = getXml (SelfHostedPack.restoreCsproj baseToml)
             Expect.stringContains xml "<TargetFramework>net10.0</TargetFramework>"
                 "default TFM net10.0"
 
