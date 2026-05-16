@@ -60,12 +60,12 @@ func lintWarning(code: in String, msg: in String, sp: in Span): LintDiag {
   LintDiag(code = code, severity = LintWarning, message = msg, span = sp)
 }
 
-// L001 — type name must start with an uppercase letter.
+// L001 — type name must start with an docTextcase letter.
 func checkTypeName(name: in String, sp: in Span): List[LintDiag] {
   if startsUpper(name) { return newList() }
   val acc: List[LintDiag] = newList()
   acc.add(lintError("L001",
-    "type name '" + name + "' should be PascalCase (start with an uppercase letter)", sp))
+    "type name '" + name + "' should be PascalCase (start with an docTextcase letter)", sp))
   acc
 }
 
@@ -99,49 +99,49 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
   var i = 0
   while i < docs.count {
     val d = docs[i]
-    val upper = d.text
-    // Simple case-insensitive check using uppercase ASCII subset
-    val hasT = (upper.length >= 4) and
-      (upper[0] == 'T' or upper[0] == 't') and
-      (upper[1] == 'O' or upper[1] == 'o') and
-      (upper[2] == 'D' or upper[2] == 'd') and
-      (upper[3] == 'O' or upper[3] == 'o')
-    val hasF = (upper.length >= 5) and
-      (upper[0] == 'F' or upper[0] == 'f') and
-      (upper[1] == 'I' or upper[1] == 'i') and
-      (upper[2] == 'X' or upper[2] == 'x') and
-      (upper[3] == 'M' or upper[3] == 'm') and
-      (upper[4] == 'E' or upper[4] == 'e')
+    val docText = d.text
+    // Simple case-insensitive check using docTextcase ASCII subset
+    val hasT = (docText.length >= 4) and
+      (docText[0] == 'T' or docText[0] == 't') and
+      (docText[1] == 'O' or docText[1] == 'o') and
+      (docText[2] == 'D' or docText[2] == 'd') and
+      (docText[3] == 'O' or docText[3] == 'o')
+    val hasF = (docText.length >= 5) and
+      (docText[0] == 'F' or docText[0] == 'f') and
+      (docText[1] == 'I' or docText[1] == 'i') and
+      (docText[2] == 'X' or docText[2] == 'x') and
+      (docText[3] == 'M' or docText[3] == 'm') and
+      (docText[4] == 'E' or docText[4] == 'e')
     if hasT or hasF {
       acc.add(lintWarning("L004",
-        "doc comment contains TODO/FIXME: '" + upper + "'", d.span))
+        "doc comment contains TODO/FIXME: '" + docText + "'", d.span))
     } else {
       // Scan the whole string for substrings
       var found = false
       var j = 0
-      while j + 3 < upper.length and not found {
-        if (upper[j] == 'T' or upper[j] == 't') and
-           (upper[j+1] == 'O' or upper[j+1] == 'o') and
-           (upper[j+2] == 'D' or upper[j+2] == 'd') and
-           (upper[j+3] == 'O' or upper[j+3] == 'o') {
+      while j + 3 < docText.length and not found {
+        if (docText[j] == 'T' or docText[j] == 't') and
+           (docText[j+1] == 'O' or docText[j+1] == 'o') and
+           (docText[j+2] == 'D' or docText[j+2] == 'd') and
+           (docText[j+3] == 'O' or docText[j+3] == 'o') {
           found = true
         }
         j = j + 1
       }
       var j2 = 0
-      while j2 + 4 < upper.length and not found {
-        if (upper[j2] == 'F' or upper[j2] == 'f') and
-           (upper[j2+1] == 'I' or upper[j2+1] == 'i') and
-           (upper[j2+2] == 'X' or upper[j2+2] == 'x') and
-           (upper[j2+3] == 'M' or upper[j2+3] == 'm') and
-           (upper[j2+4] == 'E' or upper[j2+4] == 'e') {
+      while j2 + 4 < docText.length and not found {
+        if (docText[j2] == 'F' or docText[j2] == 'f') and
+           (docText[j2+1] == 'I' or docText[j2+1] == 'i') and
+           (docText[j2+2] == 'X' or docText[j2+2] == 'x') and
+           (docText[j2+3] == 'M' or docText[j2+3] == 'm') and
+           (docText[j2+4] == 'E' or docText[j2+4] == 'e') {
           found = true
         }
         j2 = j2 + 1
       }
       if found {
         acc.add(lintWarning("L004",
-          "doc comment contains TODO/FIXME: '" + upper + "'", d.span))
+          "doc comment contains TODO/FIXME: '" + docText + "'", d.span))
       }
     }
     i = i + 1

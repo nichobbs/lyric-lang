@@ -28,7 +28,7 @@ All items in these modules are annotated `@stable(since="1.0")` unless noted.
 | `Std.Char` | `std/char.l` | Character classification and conversion |
 | `Std.Collections` | `std/collections.l` | List, Map (generic containers) |
 | `Std.Console` | `std/console.l` | `println`, `print`, `readLine` |
-| `Std.Core` | `std/core.l` | `Option`, `Result`, and combinators — **gap: missing `pub`/`@stable` annotations; add before 1.0 tag** |
+| `Std.Core` | `std/core.l` | `Option`, `Result`, and combinators |
 | `Std.Core.Proof` | `std/core_proof.l` | Structural-induction axioms for the verifier |
 | `Std.Directory` | `std/directory.l` | Directory listing and creation |
 | `Std.Encoding` | `std/encoding.l` | UTF-8 encode/decode |
@@ -51,7 +51,7 @@ All items in these modules are annotated `@stable(since="1.0")` unless noted.
 | `Std.Stream` | `std/stream.l` | Lazy `Stream[T]` |
 | `Std.String` | `std/string.l` | All string utilities |
 | `Std.Testing` | `std/testing.l` | `assert*` helpers and `@test_module` |
-| `Std.Testing.Mocking` | `std/testing_mocking.l` | `StubCounter`, `@stubbable` helpers — **gap: missing `@stable` annotations; add before 1.0 tag** |
+| `Std.Testing.Mocking` | `std/testing_mocking.l` | `StubCounter`, `@stubbable` helpers |
 | `Std.Testing.Property` | `std/testing_property.l` | Property-based testing (generators, shrinking) |
 | `Std.Testing.Snapshot` | `std/testing_snapshot.l` | Snapshot testing with configurable directory |
 | `Std.Time` | `std/time.l` | `Instant`, `Duration`, `now` |
@@ -95,16 +95,3 @@ kernel files.  Kernel symbols carry no stability guarantee.
 | `_kernel/uuid_host.l` | .NET | `System.Guid` externs |
 | `_kernel/verifier_env_host.l` | .NET | Verifier environment externs |
 
----
-
-## Known gaps (pre-1.0 tag action items)
-
-1. **`Std.Core` (`std/core.l`)** — `Option`, `Result`, and all combinators lack
-   `pub` visibility modifiers and `@stable(since="1.0")` annotations.  These
-   are v1.0 blockers.  Fix: add `pub @stable(since="1.0")` before each exported
-   item (`union Option`, `union Result`, `func unwrapOr`, etc.).
-
-2. **`Std.Testing.Mocking` (`std/testing_mocking.l`)** — `StubCounter`,
-   `makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`,
-   `stubCounterReset` have `pub` but no `@stable`.  Fix: add
-   `@stable(since="1.0")` before each `pub` item.

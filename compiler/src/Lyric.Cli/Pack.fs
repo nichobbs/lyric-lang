@@ -121,8 +121,7 @@ let runPack (manifest: Manifest)
     Directory.CreateDirectory scratch |> ignore
     let name      = sanitisedPackageNameFallback manifest.Package.Name
     let csprojPath = Path.Combine(scratch, name + ".csproj")
-    let xmlText : string = csprojText
-    File.WriteAllText(csprojPath, xmlText)
+    File.WriteAllText(csprojPath, csprojText)
     Directory.CreateDirectory outputDir |> ignore
     let result =
         runDotnet
@@ -163,8 +162,7 @@ let runRestore (manifest: Manifest)
     Directory.CreateDirectory scratch |> ignore
     let name      = sanitisedPackageNameFallback manifest.Package.Name
     let csprojPath = Path.Combine(scratch, name + ".csproj")
-    let xmlText : string = csprojText
-    File.WriteAllText(csprojPath, xmlText)
+    File.WriteAllText(csprojPath, csprojText)
     let result = runDotnet [ "restore"; csprojPath ] scratch quiet
     if result.ExitCode = 0 then Ok ()
     else
