@@ -1,0 +1,44 @@
+# lyric-resilience — Transport-agnostic resiliency aspect templates.
+#
+# Ships two pub aspect templates and the public helper functions that
+# protocol-specific bindings (lyric-web, lyric-grpc) call from their own
+# aspect bodies:
+#
+#   Resilience.Retry           — retry-with-backoff for Result[T, String]
+#   Resilience.CircuitBreaker  — circuit breaker for Result[T, String]
+#
+# HTTP-specific variants (returning Web.ApiError) live in lyric-web:
+#   Web.Aspects.HttpCircuitBreaker
+#
+# Circuit-breaker state is process-global, keyed by circuit name.  The
+# kernel manages a thread-safe store (ConcurrentDictionary on .NET;
+# ConcurrentHashMap on JVM); the protected type below models the state
+# machine for documentation and future wire-singleton support:
+#
+#   protected type CircuitBreakerState { ... }
+#
+# See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+
+[package]
+name        = "Lyric.Resilience"
+version     = "0.1.0"
+description = "Retry and circuit-breaker aspect templates for Lyric services."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+dotnet = []
+jvm    = []
+
+[project]
+name            = "Lyric.Resilience"
+output          = "single"
+output_assembly = "Lyric.Resilience.dll"
+
+[project.packages]
+"Resilience"             = "src/resilience.l"
+"Resilience.Kernel.Net"  = "src/_kernel/net/resilience_kernel.l"
+"Resilience.Kernel.Jvm"  = "src/_kernel/jvm/resilience_kernel.l"
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }

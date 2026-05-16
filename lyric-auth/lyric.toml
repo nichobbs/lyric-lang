@@ -1,0 +1,39 @@
+# lyric-auth — Transport-agnostic authentication primitives.
+#
+# Ships one public package:
+#   Auth  — JWT verification (HMAC-SHA256 / RS256), claim extraction,
+#            API key comparison.  No transport dependency — works for
+#            HTTP, gRPC, WebSockets, message queues, CLI tools.
+#
+# Protocol-specific aspect *bindings* live in the consuming library:
+#   lyric-web  → Web.Aspects.RequiresAuth, RequiresRole, ApiKey
+#   lyric-grpc → (future) Grpc.Aspects.RequiresAuth, RequiresRole
+#
+# See docs/27-aspect-libraries.md for the split between verification
+# (this library) and extraction / binding (protocol libraries).
+
+[package]
+name        = "Lyric.Auth"
+version     = "0.1.0"
+description = "Transport-agnostic JWT, claim, and API-key verification."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+# ASP.NET Core backend — System.IdentityModel.Tokens.Jwt.
+dotnet = []
+# JVM backend — io.jsonwebtoken (Phase 6).
+jvm    = []
+
+[project]
+name            = "Lyric.Auth"
+output          = "single"
+output_assembly = "Lyric.Auth.dll"
+
+[project.packages]
+"Auth"             = "src/auth.l"
+"Auth.Kernel.Net"  = "src/_kernel/net/auth_kernel.l"
+"Auth.Kernel.Jvm"  = "src/_kernel/jvm/auth_kernel.l"
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }

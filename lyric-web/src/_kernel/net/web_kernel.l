@@ -2,8 +2,10 @@
 ///
 /// Bridges Lyric's Web package to the .NET HTTP stack:
 ///   - serve()           — starts the Kestrel server with the given router
-///   - verifyJwt()       — validates a Bearer token (HMAC-SHA256 or RS256)
 ///   - checkRateLimit()  — sliding-window rate limiter (in-process)
+///
+/// JWT verification lives in Auth.Kernel.Net (lyric-auth); call Auth.verifyJwt
+/// rather than accessing the extern directly.
 ///
 /// All functions are @cfg(feature = "dotnet") so they are erased when the
 /// dotnet feature is not active (e.g. during JVM builds — Phase 6).
@@ -55,23 +57,6 @@ extern package Microsoft.AspNetCore {
     corsMaxAge:        Int,
     router:            Web.Router
   ): Unit
-}
-
-// ─── JWT verification ─────────────────────────────────────────────────────────
-
-@axiom("System.IdentityModel.Tokens.Jwt for token validation")
-extern package System.IdentityModel.Tokens.Jwt {
-  /// Validate a Bearer token.
-  /// Returns true if the token is well-formed, the signature verifies
-  /// against `secret`, and the `issuer` / `audience` claims match when
-  /// non-empty.  Returns false for any validation failure.
-  pub func verifyJwt(
-    token:    String,
-    secret:   String,
-    issuer:   String,
-    audience: String
-  ): Bool
-    requires: secret.length > 0
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
