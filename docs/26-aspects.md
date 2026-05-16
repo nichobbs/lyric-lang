@@ -143,40 +143,55 @@ intentionally exportable. Cross-package weaving is still out of scope
 The selector. Determines which functions in the same package the
 aspect weaves over.
 
-### 3.1 v1 grammar
+### 3.1 Grammar
 
 ```ebnf
 matches-clause = "matches:" predicate ("and" predicate)* except-clause?
-predicate      = "name like" string-literal
+predicate      = name-predicate
+               | annotated-predicate
+               | visibility-predicate
+               | signature-predicate
+name-predicate       = "name" "like" string-literal
+annotated-predicate  = "annotated" ":" "@" identifier
+visibility-predicate = "visibility" ":" ("pub" | "priv" | "internal")
+signature-predicate  = "signature" ":" "returns" string-literal
 except-clause  = "except name in" "{" identifier-list "}"
 ```
 
-The `name like "<glob>"` predicate matches the function's short name
-(not the qualified module path) against a POSIX-ish glob:
+Predicates joined by `and` are evaluated with **AND semantics**: every
+predicate in the clause must hold for the function to be selected.
+
+### 3.2 Predicate reference
+
+**`name like "<glob>"`** — matches the function's short name (not the
+qualified module path) against a POSIX-ish glob:
 
 - `*` — match any sequence of characters (including empty)
 - `?` — match exactly one character
 - `[abc]`, `[a-z]` — match one character from a set or range
 - All other characters match literally
 
-`except name in { ... }` excludes a list of literal short names from
-the match.
+**`annotated: @AnnotName`** — matches functions carrying the named
+annotation anywhere in their annotation list. The match is on the short
+(unqualified) annotation name. `annotated: @instrument` matches both
+`@instrument` and `@Pkg.instrument`.
 
-### 3.2 Reserved future predicates
+**`visibility: pub | priv | internal`** — matches functions by declared
+access level. `pub` matches functions declared with the `pub` keyword;
+`priv` matches functions with no visibility keyword (package-private);
+`internal` matches functions declared with the `internal` keyword.
 
-The grammar reserves shape for v2 predicates without breaking v1
-source:
+**`signature: returns "<glob>"`** — matches functions whose declared
+return type, rendered to a dotted string, satisfies the glob. The
+string form is `Module.Name` for named types, `slice[T]`, `array[T]`,
+`(A, B)` for tuples, `(A, B) -> R` for function types, `Unit`, `Never`,
+`Self`, and `T?` for nullable types. Generic arguments are rendered
+recursively; unknown argument kinds render as `_`.
 
-```
-matches:
-  name like "handle*"
-  and signature: returns Result[*, *]   # v2
-  and annotated: @public_api            # v2
-  and visibility: pub                   # v2
-```
+Examples: `"Int"`, `"Unit"`, `"Result[*,*]"`, `"Option[Int]"`, `"slice[*]"`.
 
-Each predicate clause begins with a keyword ending in `:` so the
-parser can extend without ambiguity. v1 only implements `name like`.
+**`except name in { fn1, fn2 }`** — excludes a list of literal short
+names from the match, applied after all predicates pass.
 
 ### 3.3 Per-target opt-out
 
@@ -205,9 +220,10 @@ function calls, and interface-method implementations are all
 candidates. Type constructors and operator overloads are **not**
 candidates in v1 (tracked as Q-aspects-001).
 
-A function is a candidate when its short name satisfies `matches:`
-**and** its containing package is the same as the aspect's package
-**and** no `@no_aspect` directive excludes it.
+A function is a candidate when all predicates in its `matches:` clause
+hold **and** it is not listed in the `except` clause **and** its
+containing package is the same as the aspect's package **and** no
+`@no_aspect` directive excludes it.
 
 ---
 

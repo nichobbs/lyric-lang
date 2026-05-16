@@ -12484,3 +12484,47 @@ three layered bugs in the JVM bridge compilation path:
 **Test results post-fix:** 224/224 Lyric.Cli.Tests passed (was 204/224, 20 errored).
 All other suites unchanged: Emitter 759/759, Verifier 266/266, LSP 28/28,
 Parser 323/323, TypeChecker 189/189, Lexer (unchanged).
+
+---
+
+### D-progress-259: Enhanced aspect pointcut predicates
+
+_Branch: claude/enhance-aspect-pointcuts-3DqXL / follow-up claude/aspect-pointcut-followup.
+Shipped in PR #296 + follow-up._
+
+Extends the aspect `matches:` clause from name-glob-only to four composable predicates with AND
+semantics (all must hold). The `except name in { … }` exclusion clause is also now fully parsed
+and enforced by the weaver.
+
+**New predicate forms:**
+
+| Predicate | Selects when… |
+|-----------|---------------|
+| `name like "<glob>"` | Short name matches the POSIX-ish glob (existing) |
+| `annotated: @Name` | Function carries the annotation (short-name match) |
+| `visibility: pub \| priv \| internal` | Access level matches |
+| `signature: returns "<glob>"` | Return-type string matches the glob |
+
+`signature: returns` takes a **string literal** glob (consistent with `name like`) to avoid
+a TStmtEnd-inside-braces ambiguity in the lexer: TStmtEnd is not inserted between lines
+when inside a `{ }` block, so a bare-identifier type-glob parser consumed the next keyword.
+
+**Weaver changes (`Weaver.fs`):**
+
+- `typeExprToString` — renders a `TypeExpr` to a dotted string for glob matching.
+  `TError` maps to `"<error>"` (prevents wildcard `"*"` from silently matching ill-typed
+  functions); non-`TAType` generic args render as `"_"` rather than being silently dropped.
+- `matchesPredicates` — evaluates all matchers with `List.forall` (AND semantics).
+- `weaveItems` — checks `a.ExceptNames` before calling `matchesPredicates`.
+
+**Parser changes (`Ast.fs`, `Parser.fs`):**
+
+- `AspectMatcher` union: three new cases `AMAnnotated`, `AMVisibility`, `AMSignatureReturns`.
+- `AspectDecl` record: new `ExceptNames: string list` field.
+- `parseOneMatchPredicate` dispatches on `annotated:`, `visibility:`, and `signature: returns`.
+- `parseAspectMatchesClause` reads `and`-joined predicates then the optional `except name in { … }` list.
+- Dead `parseTypeGlobPattern` removed; unused span captures removed.
+
+**Self-hosted mirrors:** `parser_ast.l`, `parser_items.l`, `fmt_items.l` updated in parallel.
+
+**Test results:** Emitter 764/764 (5 new aspect weaver tests), Parser 323/323, Cli 224/224.

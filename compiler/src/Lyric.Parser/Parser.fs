@@ -3767,37 +3767,6 @@ and private parseConfigField
       Default     = dflt
       Span        = joinSpans startSpan endSpan }
 
-/// Convert a sequence of tokens representing a type pattern into a glob string.
-/// Reads until it hits a newline/stmt-end, `and`, `except`, or `}`.
-/// Type pattern tokens: IDENT, `[`, `]`, `,`, `*`, `?`.
-and private parseTypeGlobPattern (cursor: Cursor) : string =
-    let buf = System.Text.StringBuilder()
-    let mutable keepGoing = true
-    while keepGoing do
-        match Cursor.peekToken cursor with
-        | TStmtEnd | TPunct RBrace -> keepGoing <- false
-        | TKeyword KwAnd | TIdent "except" -> keepGoing <- false
-        | TIdent n ->
-            Cursor.advance cursor |> ignore
-            buf.Append n |> ignore
-        | TPunct LBracket ->
-            Cursor.advance cursor |> ignore
-            buf.Append '[' |> ignore
-        | TPunct RBracket ->
-            Cursor.advance cursor |> ignore
-            buf.Append ']' |> ignore
-        | TPunct Comma ->
-            Cursor.advance cursor |> ignore
-            buf.Append ", " |> ignore
-        | TPunct Star ->
-            Cursor.advance cursor |> ignore
-            buf.Append '*' |> ignore
-        | TPunct Question ->
-            Cursor.advance cursor |> ignore
-            buf.Append '?' |> ignore
-        | _ -> keepGoing <- false
-    buf.ToString().Trim()
-
 /// Parse one predicate within a `matches:` clause.
 /// Returns `Some predicate` or `None` if the next token is not a known predicate keyword.
 and private parseOneMatchPredicate
@@ -3806,7 +3775,6 @@ and private parseOneMatchPredicate
         : AspectMatcher option =
     match Cursor.peekToken cursor with
     | TIdent "name" ->
-        let sp0 = Cursor.peekSpan cursor
         Cursor.advance cursor |> ignore
         match Cursor.peekToken cursor with
         | TIdent "like" -> Cursor.advance cursor |> ignore
@@ -3824,7 +3792,6 @@ and private parseOneMatchPredicate
                 t.Span
             None
     | TIdent "annotated" ->
-        let sp0 = Cursor.peekSpan cursor
         Cursor.advance cursor |> ignore
         match Cursor.tryEatPunct Colon cursor with
         | Some _ -> ()
@@ -3850,7 +3817,6 @@ and private parseOneMatchPredicate
                 (Cursor.peekSpan cursor)
             None
     | TIdent "visibility" ->
-        let sp0 = Cursor.peekSpan cursor
         Cursor.advance cursor |> ignore
         match Cursor.tryEatPunct Colon cursor with
         | Some _ -> ()
@@ -3875,7 +3841,6 @@ and private parseOneMatchPredicate
                 sp
             None
     | TIdent "signature" ->
-        let sp0 = Cursor.peekSpan cursor
         Cursor.advance cursor |> ignore
         match Cursor.tryEatPunct Colon cursor with
         | Some _ -> ()
@@ -3885,7 +3850,6 @@ and private parseOneMatchPredicate
                 (Cursor.peekSpan cursor)
         match Cursor.peekToken cursor with
         | TIdent "returns" ->
-            let ksp = Cursor.peekSpan cursor
             Cursor.advance cursor |> ignore
             match Cursor.peek cursor with
             | { Token = TString s; Span = sp } ->
@@ -3915,10 +3879,9 @@ and private parseAspectMatchesClause
     match parseOneMatchPredicate cursor diags with
     | Some m -> matchers.Add m
     | None ->
-        if matchers.Count = 0 then
-            err diags "P0297"
-                "expected a predicate ('name like', 'annotated:', 'visibility:', 'signature: returns') in matches: clause"
-                (Cursor.peekSpan cursor)
+        err diags "P0297"
+            "expected a predicate ('name like', 'annotated:', 'visibility:', 'signature: returns') in matches: clause"
+            (Cursor.peekSpan cursor)
     // Read additional predicates joined by `and` (TKeyword KwAnd).
     let mutable keepGoing = true
     while keepGoing do
