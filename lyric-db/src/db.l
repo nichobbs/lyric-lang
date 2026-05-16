@@ -3,6 +3,12 @@
 /// `DbConnection` is the public interface; implement it to add a new driver.
 /// Two built-in drivers are provided via feature-gated kernel packages:
 ///
+/// Convenience wrappers (added for gRPC / non-web consumers):
+///   Db.connect(connStr)      — open a connection from an explicit DSN
+///   Db.query(conn, sql, p)   — call conn.query; top-level wrapper
+///   Db.execute(conn, sql, p) — call conn.execute; top-level wrapper
+///   Db.getString/getInt/getLong/getBool — typed column extractors
+///
 ///   Db.connectPostgres()  (@cfg feature = "postgres")  — Npgsql / PostgreSQL
 ///   Db.connectSqlite()    (@cfg feature = "sqlite")    — Microsoft.Data.Sqlite
 ///
@@ -332,5 +338,90 @@ func parseDbValue(raw: in String): DbValue {
       }
     }
     case _ -> DbValue.DbNull
+  }
+}
+
+// ─── Convenience wrappers ─────────────────────────────────────────────────────
+
+/// Open a connection from an explicit connection-string DSN.
+/// Detects the driver from the DSN scheme: `postgres://` / `postgresql://`
+/// uses the Postgres driver; `sqlite://` uses SQLite.  Falls back to the
+/// configured Connection.url driver when scheme is unrecognised.
+@stable(since="0.1")
+pub func connect(connStr: in String): Result[DbConnection, DbError]
+  requires: connStr.length > 0
+{
+  match DbKernel.connectDsn(connStr) {
+    case Ok(connId) -> Ok(NativeConnection(connId = connId))
+    case Err(msg)   -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
+  }
+}
+
+/// Top-level wrapper for conn.query — avoids UFCS syntax in callers that
+/// hold a DbConnection value (not a concrete NativeConnection).
+@stable(since="0.1")
+pub func query(conn: in DbConnection, sql: in String, params: in [String]): Result[[DbRow], DbError]
+  requires: sql.length > 0
+{
+  return conn.query(sql, params)
+}
+
+/// Top-level wrapper for conn.execute.
+@stable(since="0.1")
+pub func execute(conn: in DbConnection, sql: in String, params: in [String]): Result[Int, DbError]
+  requires: sql.length > 0
+{
+  return conn.execute(sql, params)
+}
+
+// ─── Typed column extractors ──────────────────────────────────────────────────
+
+/// Extract a String column value.  Returns "" for NULL or non-text values.
+@stable(since="0.1")
+pub func getString(row: in DbRow, name: in String): String
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbText(value = v)     -> return v
+    case DbDateTime(value = v) -> return v
+    case DbDecimal(value = v)  -> return v
+    case _                     -> return ""
+  }
+}
+
+/// Extract an Int column value.  Returns 0 for NULL or non-integer values.
+@stable(since="0.1")
+pub func getInt(row: in DbRow, name: in String): Int
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbInt(value = v)  -> return v
+    case DbLong(value = v) -> return v.toInt()
+    case _                 -> return 0
+  }
+}
+
+/// Extract a Long column value.  Returns 0L for NULL or non-integer values.
+@stable(since="0.1")
+pub func getLong(row: in DbRow, name: in String): Long
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbLong(value = v) -> return v
+    case DbInt(value = v)  -> return v.toLong()
+    case _                 -> return 0L
+  }
+}
+
+/// Extract a Bool column value.  Returns false for NULL or non-boolean values.
+@stable(since="0.1")
+pub func getBool(row: in DbRow, name: in String): Bool
+  requires: name.length > 0
+{
+  match col(row, name) {
+    case DbBool(value = v) -> return v
+    case DbText(value = v) -> return v == "true" || v == "t" || v == "1"
+    case DbInt(value = v)  -> return v != 0
+    case _                 -> return false
   }
 }

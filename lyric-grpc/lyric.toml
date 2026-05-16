@@ -1,33 +1,42 @@
-# lyric-grpc — gRPC client library for Lyric.
+# lyric-grpc — gRPC client and server library for Lyric.
 #
-# Provides a general-purpose gRPC client that makes unary and server-streaming
-# RPC calls over HTTP/2.  Payloads are raw slice[Byte]; callers are responsible
-# for encoding request messages and decoding response messages (use lyric-proto
-# for protobuf encoding/decoding).
+# Ships five packages:
+#   Grpc.Types         — platform-neutral types: GrpcChannel, GrpcStatus,
+#                        GrpcStatusCode, GrpcCallOptions, GrpcStream.
+#   Grpc               — client API (openChannel, callUnary, openServerStream)
+#                        and server API (ServiceRegistry, addMethod, start).
+#   Grpc.Aspects       — pub aspect templates: RequiresGrpcAuth,
+#                        RequiresGrpcRole, GrpcRateLimit, GrpcCircuitBreaker.
+#   Grpc.Kernel.Net    — Grpc.Net.Client (client) + Grpc.AspNetCore (server).
+#   Grpc.Kernel.Jvm    — io.grpc client + server (Phase 6).
 #
-# On .NET the kernel wraps Grpc.Net.Client (GrpcChannel.ForAddress +
-# CallInvoker with a pass-through marshaller).  On JVM (Phase 6) it wraps
-# io.grpc.ManagedChannelBuilder.
-#
-# Typical usage (unary call):
-#
+# Client usage (unary call):
 #   val ch = Grpc.openChannel("https://collector:4317").unwrap()
-#   val req = Proto.encodeMessage([ ... ])
 #   match Grpc.callUnary(ch, "svc.Name", "Method", req, Grpc.defaultOptions()) {
 #     case Err(st) -> log("rpc failed: " + st.message)
-#     case Ok(resp) -> { val fields = Proto.decodeMessage(resp).unwrap() }
+#     case Ok(resp) -> { ... }
 #   }
 #   Grpc.closeChannel(ch)
+#
+# Server usage (service hosting):
+#   val registry = Grpc.create()
+#   val registry = Grpc.addMethod(registry, "Svc", "Method", "Pkg.handler")
+#   Grpc.start(registry)
+#
+# Auth aspects delegate to lyric-auth; circuit-breaker to lyric-resilience.
+# Field numbering: declaration-order default + lyric-grpc.lock + @proto_field.
+# See docs/37-grpc-proto-sketch.md.
 
 [package]
 name        = "Lyric.Grpc"
 version     = "0.1.0"
-description = "General-purpose gRPC client library for Lyric."
+description = "gRPC client and server library for Lyric — unary, streaming, service hosting, and aspect templates."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
 dotnet = []
+# io.grpc (grpc-java) backend (Phase 6).
 jvm    = []
 
 [project]
@@ -36,19 +45,30 @@ output          = "single"
 output_assembly = "Lyric.Grpc.dll"
 
 [project.packages]
-# Platform-neutral types: GrpcChannel, GrpcStatus, GrpcCallOptions, etc.
+# Platform-neutral types: GrpcChannel, GrpcStatus, GrpcStatusCode, etc.
 "Grpc.Types"      = "src/types.l"
-# .NET kernel: Grpc.Net.Client + pass-through marshaller.
-"Grpc.Kernel.Net" = "src/_kernel/net/grpc_kernel.l"
-# JVM kernel: io.grpc.ManagedChannel (Phase 6).
-"Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
-# Public API: openChannel, closeChannel, callUnary, callServerStream.
+# Client + server public API.
 "Grpc"            = "src/grpc.l"
+# Pub aspect templates for cross-cutting gRPC handler concerns.
+"Grpc.Aspects"    = "src/aspects.l"
+# .NET kernel: Grpc.Net.Client (client) + Grpc.AspNetCore (server).
+"Grpc.Kernel.Net" = "src/_kernel/net/grpc_kernel.l"
+# JVM kernel: io.grpc client + server (Phase 6).
+"Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
 
 [dependencies]
-"Lyric.Stdlib" = "*"
+"Lyric.Stdlib"     = { path = "../stdlib" }
+"Lyric.Auth"       = { path = "../lyric-auth" }
+"Lyric.Resilience" = { path = "../lyric-resilience" }
 
 [nuget]
-# Grpc.Net.Client ships with .NET 5+ but the NuGet package pins a specific
-# version and pulls in Grpc.Core.Api for the Method / CallInvoker abstractions.
+# Client: Grpc.Net.Client ships with .NET 5+ but the NuGet package pins a
+# specific version and pulls in Grpc.Core.Api for CallInvoker abstractions.
 "Grpc.Net.Client" = "2.65.0"
+# Server: grpc-dotnet is part of the ASP.NET Core SDK from .NET 6+.
+"Grpc.AspNetCore" = "2.65.0"
+
+[maven]
+"io.grpc:grpc-netty-shaded" = "1.65.0"
+"io.grpc:grpc-protobuf"     = "1.65.0"
+"io.grpc:grpc-stub"         = "1.65.0"

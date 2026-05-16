@@ -1,0 +1,45 @@
+# product-catalog — gRPC product catalog service demo.
+#
+# Demonstrates:
+#   - Lyric → proto type mapping with @proto_field annotations
+#   - @proof_required domain invariants (price, name, stock)
+#   - RequiresGrpcAuth + GrpcCircuitBreaker aspects
+#   - SQL-backed catalog storage via lyric-db
+#   - Code-first: src/ is the source of truth; proto/ shows target schema
+#
+# See docs/37-grpc-proto-sketch.md.
+
+[package]
+name        = "ProductCatalog"
+version     = "0.1.0"
+description = "Product catalog gRPC service — lyric-grpc demonstration."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+dotnet = []
+
+[project]
+name            = "ProductCatalog"
+output          = "single"
+output_assembly = "ProductCatalog.dll"
+
+[project.packages]
+"ProductCatalog.Domain"  = "src/domain.l"
+"ProductCatalog.Catalog" = "src/catalog.l"
+"ProductCatalog.Aspects" = "src/aspects.l"
+"ProductCatalog.Main"    = "src/main.l"
+
+[project.test_packages]
+"ProductCatalog.Tests.Domain"   = "tests/domain_tests.l"
+"ProductCatalog.Tests.Catalog"  = "tests/catalog_tests.l"
+
+[dependencies]
+"Lyric.Stdlib"     = { path = "../../stdlib" }
+"Lyric.Grpc"       = { path = "../../lyric-grpc" }
+"Lyric.Db"         = { path = "../../lyric-db" }
+"Lyric.Auth"       = { path = "../../lyric-auth" }
+"Lyric.Resilience" = { path = "../../lyric-resilience" }
+
+[nuget]
+"Npgsql" = "8.0.3"
