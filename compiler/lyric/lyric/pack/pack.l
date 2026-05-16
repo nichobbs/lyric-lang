@@ -78,6 +78,11 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
     if Str.isEmpty(pkg.license) { "" }
     else { "    <PackageLicenseExpression>" + xmlEscape(pkg.license) + "</PackageLicenseExpression>" }
 
+  val repoXml = match pkg.repository {
+    case None    -> ""
+    case Some(r) -> "    <RepositoryUrl>" + xmlEscape(r) + "</RepositoryUrl>"
+  }
+
   var depsXml = ""
   var di = 0
   while di < m.deps.count {
@@ -99,6 +104,7 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
   if not Str.isEmpty(authorsXml) { xml = xml + authorsXml + "\n" }
   if not Str.isEmpty(descXml)    { xml = xml + descXml    + "\n" }
   if not Str.isEmpty(licXml)     { xml = xml + licXml     + "\n" }
+  if not Str.isEmpty(repoXml)    { xml = xml + repoXml    + "\n" }
   xml = xml + "  </PropertyGroup>\n"
   xml = xml + "  <ItemGroup>\n"
   xml = xml +

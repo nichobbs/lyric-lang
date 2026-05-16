@@ -60,12 +60,12 @@ func lintWarning(code: in String, msg: in String, sp: in Span): LintDiag {
   LintDiag(code = code, severity = LintWarning, message = msg, span = sp)
 }
 
-// L001 — type name must start with an docTextcase letter.
+// L001 — type name must start with an uppercase letter.
 func checkTypeName(name: in String, sp: in Span): List[LintDiag] {
   if startsUpper(name) { return newList() }
   val acc: List[LintDiag] = newList()
   acc.add(lintError("L001",
-    "type name '" + name + "' should be PascalCase (start with an docTextcase letter)", sp))
+    "type name '" + name + "' should be PascalCase (start with an uppercase letter)", sp))
   acc
 }
 
@@ -100,7 +100,7 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
   while i < docs.count {
     val d = docs[i]
     val docText = d.text
-    // Simple case-insensitive check using docTextcase ASCII subset
+    // Simple case-insensitive check using ASCII comparisons
     val hasT = (docText.length >= 4) and
       (docText[0] == 'T' or docText[0] == 't') and
       (docText[1] == 'O' or docText[1] == 'o') and
