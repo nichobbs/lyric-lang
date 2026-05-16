@@ -540,6 +540,52 @@ These directories exist at the repo root alongside `compiler/`, `stdlib/`,
   `slice[Byte]` payloads — compose with lyric-proto for protobuf encoding.
 - `lyric-web/` — `lyric-web` library: HTTP server framework
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
+- `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue
+  (`Lyric.Mq`). RabbitMQ, Azure Service Bus, SQS, and Kafka via feature
+  flags; `MessageQueue`/`QueueConsumer`/`DeadLetterStore` interfaces;
+  `Idempotent` and `DeadLetter` aspect templates; .NET and JVM kernel
+  boundaries.
+- `lyric-jobs/` — `lyric-jobs` library: background job scheduling
+  (`Lyric.Jobs`). Hangfire and Quartz.NET backends; `JobHandler`/
+  `JobScheduler` interfaces; `InProcessJobScheduler` for tests;
+  `Retryable` and `Timed` aspects.
+- `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
+  SMTP (MailKit), Amazon SES, and SendGrid providers; typed
+  `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
+  helpers.
+- `lyric-storage/` — `lyric-storage` library: object storage
+  (`Lyric.Storage`). S3, Azure Blob, and local filesystem backends;
+  `StorageBucket` interface with put/get/delete/list/presignedUrl/exists;
+  `AuditAccess` and `ValidateKey` aspects.
+- `lyric-validation/` — `lyric-validation` library: declarative input
+  validation (`Lyric.Validation`). String and numeric combinators;
+  `combine`/`all`/`toResult` helpers; `ValidateInput` and `ValidateEmail`
+  aspects. Distinct from contract `requires:` — produces user-facing
+  error messages.
+- `lyric-ws/` — `lyric-ws` library: WebSocket server (`Lyric.Ws`).
+  ASP.NET Core WebSockets on .NET, Undertow on JVM (Phase 6);
+  `WsHandler`/`WsRegistry` interfaces; `WsAuth` and `WsRateLimit`
+  aspects.
+- `lyric-session/` — `lyric-session` library: distributed session
+  management (`Lyric.Session`). Redis-backed (StackExchange.Redis) and
+  in-process stores; `SessionStore` interface; session config (TTL,
+  cookie name, SameSite, Secure, HttpOnly).
+- `lyric-search/` — `lyric-search` library: search engine integration
+  (`Lyric.Search`). Elasticsearch (Elastic.Clients.Elasticsearch) and
+  Meilisearch backends; `SearchClient` interface with index/search/
+  suggest/delete/createIndex.
+- `lyric-feature-flags/` — `lyric-feature-flags` library: runtime feature
+  toggles (`Lyric.Flags`). In-process and remote (HTTP polling) stores;
+  `FlagGated` aspect; `getBool`/`getString`/`getInt` typed accessors.
+- `lyric-i18n/` — `lyric-i18n` library: internationalization (`Lyric.I18n`).
+  `TranslationStore` interface; `{placeholder}` variable substitution;
+  locale fallback chain; JSON-based translation loading; BCP 47 locale
+  parsing.
+- `lyric-testing/` — `lyric-testing` library: test helpers and mocks
+  (`Lyric.Testing`). `MockMailSender`, `MockStorageBucket`,
+  `MockMessageQueue`, `MockSessionStore`, `MockFlagStore`, `TestClock`;
+  `TestContext` factory; `assertOk`/`assertErr`/`assertSome`/`assertEq`/
+  `assertTrue`/`assertFalse` assertion helpers.
 - `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
   server (`docs/16-lsp-vscode-plan.md`).
 - `resolver/` — Java-side Maven resolver JAR that the F# `MavenShim.fs`
