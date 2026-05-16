@@ -40,6 +40,7 @@ scoped      self         singleton    spawn        test
 then        throw        true         try          type
 union       use          val          var          when
 where       while        wire         with         xor
+yield
 ```
 
 Annotation-style keywords (always preceded by `@`):

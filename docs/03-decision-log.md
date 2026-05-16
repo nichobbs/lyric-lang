@@ -3812,6 +3812,61 @@ private `joinStrs` helper removed and all call sites updated to `Str.join`.
 
 ---
 
+## D070 — Gap-4a: async generators with internal `await` deferred to M2
+
+**Status:** Deferred (Gap-4a).  **Date:** 2026-05-16.
+
+**Builds on:** D035 (bootstrap-grade async), D-progress-260 (Gap-1..4 closure).
+
+### Context
+
+The bootstrap async-generator emitter (`AsyncGenerator.fs`, `lowerAsyncGenerator`
+in `compiler/lyric/jvm/lowering.l`) uses an "eager producer" model: `RunBody()`
+(MSIL) or `runBody()` (JVM) is called synchronously inside `GetAsyncEnumerator`
+/ `iterator()`, so all `yield` expressions execute before the first
+`MoveNextAsync` / `hasNext` call returns.  This is correct and sufficient for
+generator comprehensions and async-producer scenarios where the body contains
+no `await`.
+
+A generator body that contains an `await` expression requires a true coroutine
+suspension point between successive `yield`s.  The eager model produces
+incorrect sequencing in that case: the `await` would complete (via the existing
+Gap-1 `.GetAwaiter().GetResult()` shim) but the entire body would run to
+completion before any consumer sees the first element.
+
+### Decision
+
+Gap-4a (generators with internal `await`) is deferred to M2.  The bootstrap
+emitter issues a diagnostic (`Gap-4a` tag) when it encounters `await` inside a
+generator body, and the language reference §7.2 documents the bootstrap
+single-use `GetAsyncEnumerator` constraint.
+
+The full lowering requires one of:
+1. A channel-backed model: the generator body runs on a background task and
+   posts values to a `Channel<T>`; `MoveNextAsync` awaits the next item.
+2. A true `AsyncIteratorMethodBuilder` state-machine synthesis, matching what
+   the C# compiler emits for `IAsyncEnumerable<T>` methods.
+
+Either approach is non-trivial and out of scope for Phase 1.
+
+### Single-use `GetAsyncEnumerator` constraint
+
+The bootstrap generator class stores all yielded values in a `List<T>` (`_values`
+field).  `GetAsyncEnumerator` resets `_values` to a new list and re-runs the
+body on every call.  This means:
+
+- Each call to `GetAsyncEnumerator` produces a fresh, independent enumeration.
+- Calling `GetAsyncEnumerator` twice concurrently (sharing the same generator
+  instance) is not supported and will clobber the shared `_values` list.
+
+The `for x in f(args)` desugaring creates a new generator instance per loop,
+so well-formed Lyric code is unaffected.  Code that captures the
+`IAsyncEnumerable<T>` value and passes it to two concurrent consumers at once
+violates the bootstrap constraint; a diagnostic or guard will be added in M2
+when the channel-backed model ships.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

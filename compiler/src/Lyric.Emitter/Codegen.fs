@@ -5430,11 +5430,16 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // emit naturally use `name` without seeing the field shape.
         let iterTy = emitExpr ctx iter
         // IAsyncEnumerable<T> path — bootstrap: blocking GetAwaiter().GetResult()
-        // on MoveNextAsync so the consumer works in any context (D-progress-259).
+        // on MoveNextAsync so the consumer works in any context (D-progress-260).
+        // Guard GetInterfaces() against TypeBuilderInstantiation which throws
+        // NotSupportedException before the type is baked (user-defined generic types
+        // inside the same compilation unit).
+        let tryGetInterfaces (ty: Type) =
+            try ty.GetInterfaces() with :? NotSupportedException -> [||]
         let isIAsyncEnumerable =
             iterTy.IsGenericType
             && (iterTy.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>>
-                || iterTy.GetInterfaces()
+                || tryGetInterfaces iterTy
                    |> Array.exists (fun i ->
                        i.IsGenericType
                        && i.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>>))
@@ -5442,7 +5447,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             let iaeT =
                 if iterTy.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>> then iterTy
                 else
-                    iterTy.GetInterfaces()
+                    tryGetInterfaces iterTy
                     |> Array.find (fun i ->
                         i.IsGenericType && i.GetGenericTypeDefinition() = typedefof<IAsyncEnumerable<_>>)
             let iaetT =

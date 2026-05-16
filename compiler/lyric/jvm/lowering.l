@@ -2972,9 +2972,6 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   // Body instructions with LYield replaced by ArrayList.add(Object).
   // Slot 0 = this; slot 1 = yield-temp (allocated for each yield).
   val bodyAsm  = newAssembler(pool)
-  val addPs: List[JvmType] = newList()
-  addPs.add(objType)
-  val addBoolType = JBoolean
   val listAddIdx = poolMethodref(pool, listClass, "add", "(Ljava/lang/Object;)Z")
   var bi = 0
   while bi < g.bodyInsns.count {
@@ -3008,7 +3005,9 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     bi = bi + 1
   }
   emitReturn(bodyAsm)
-  val bodyCode = assembleCode(bodyAsm, 6, 2)
+  // Use assembleCodeInferred so maxStack is derived from peakStack rather than
+  // a fixed constant — caller-supplied bodyInsns can be arbitrarily deep.
+  val bodyCode = assembleCodeInferred(bodyAsm, 2)
   val bodyAttrs: List[Attribute] = newList()
   bodyAttrs.add(bodyCode)
   val bodyPs: List[JvmType] = newList()
@@ -3133,6 +3132,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     kickPs.add(g.params[kpi].paramType)
     kpi = kpi + 1
   }
+  // maxLocals = kslot = number of param slots (0 when no params; static, no `this`).
   val kickCode = assembleCode(kickAsm, 4, kslot)
   val kickAttrs: List[Attribute] = newList()
   kickAttrs.add(kickCode)
