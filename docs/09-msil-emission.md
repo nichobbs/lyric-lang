@@ -918,7 +918,7 @@ Both strategies are implemented in
 `DisposeAsync` in a `finally` block.
 
 The JVM-target equivalent uses `java.lang.Iterable` + `java.util.Iterator`
-with the same eager `runBody()` pattern (B129, `lyric/jvm/lowering.l`).
+with the same eager `runBody()` pattern (B129, `lyric-compiler/jvm/lowering.l`).
 
 
 ## 15. Structured concurrency scopes
@@ -1388,7 +1388,7 @@ CLR or AOT linker resolves the actual code.
 
 This document describes the **F# bootstrap** MSIL strategy (Phase 0 design,
 Phase 1 implementation).  The self-hosted MSIL compilation pipeline shipped
-in Phase R5/R6 and lives in `lyric/msil/`.  Its design follows the
+in Phase R5/R6 and lives in `lyric-compiler/msil/`.  Its design follows the
 same strategy but is implemented in Lyric itself.
 
 ### Packages

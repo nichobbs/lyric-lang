@@ -1,6 +1,6 @@
 /// Stage M36 ldind.i4 + stind.i4 test.
 ///
-/// Compiles lyric/msil/msil_self_test_m36.l, runs it (PE stores 42
+/// Compiles lyric-compiler/msil/msil_self_test_m36.l, runs it (PE stores 42
 /// into a local via ldloca_S + stind.i4, then reads it back via ldind.i4 and
 /// prints), then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM36
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m36.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m36.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m36.l"
 
             let dllPath = "/tmp/lyric_msil_m36_ldind.dll"
             let cfgPath = "/tmp/lyric_msil_m36_ldind.runtimeconfig.json"

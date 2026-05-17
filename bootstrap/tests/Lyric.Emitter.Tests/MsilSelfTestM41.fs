@@ -1,6 +1,6 @@
 /// Stage M41 conv.ovf.*.un (unsigned-input overflow conversion) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m41.l, runs it (PE exercises
+/// Compiles lyric-compiler/msil/msil_self_test_m41.l, runs it (PE exercises
 /// conv.ovf.i8.un, conv.ovf.i4.un, and conv.ovf.u4.un, all producing 42),
 /// then executes the PE verifying two lines of "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM41
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m41.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m41.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m41.l"
 
             let dllPath = "/tmp/lyric_msil_m41_convovfun.dll"
             let cfgPath = "/tmp/lyric_msil_m41_convovfun.runtimeconfig.json"

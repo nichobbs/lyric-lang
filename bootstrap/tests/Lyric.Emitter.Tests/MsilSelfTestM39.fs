@@ -1,6 +1,6 @@
 /// Stage M39 conv.ovf.i4 / conv.ovf.i8 test.
 ///
-/// Compiles lyric/msil/msil_self_test_m39.l, runs it (PE converts
+/// Compiles lyric-compiler/msil/msil_self_test_m39.l, runs it (PE converts
 /// int64→int32 via conv.ovf.i4 and int32→int64→int32 via conv.ovf.i8+conv.ovf.i4,
 /// both yielding 42 and printing), then executes the PE verifying two lines of "42".
 module Lyric.Emitter.Tests.MsilSelfTestM39
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m39.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m39.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m39.l"
 
             let dllPath = "/tmp/lyric_msil_m39_conv_ovf.dll"
             let cfgPath = "/tmp/lyric_msil_m39_conv_ovf.runtimeconfig.json"

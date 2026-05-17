@@ -1,12 +1,12 @@
 /// Phase 5 §M5.2 stage 2 — exercises the self-hosted
 /// `Lyric.ContractElaborator` library through a tiny consumer.
 ///
-/// Compiles `lyric/lyric/contract_elaborator_self_test.l` via
+/// Compiles `lyric-compiler/lyric/contract_elaborator_self_test.l` via
 /// the bootstrap emitter, runs the resulting program, and asserts that
 /// every in-program assertion held (exit code 0 + an "ok" line in
 /// stdout).  The self-test imports `Lyric.Parser` and
 /// `Lyric.ContractElaborator`; the emitter's auto-resolver pulls all
-/// multi-file libraries from `lyric/lyric/` transparently.
+/// multi-file libraries from `lyric-compiler/lyric/` transparently.
 module Lyric.Emitter.Tests.SelfHostedContractElaboratorTests
 
 open System
@@ -20,7 +20,7 @@ let private findSelfTestSource () : string option =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let candidate =
-            Path.Combine(dir.Value.FullName, "lyric", "lyric", "contract_elaborator_self_test.l")
+            Path.Combine(dir.Value.FullName, "lyric-compiler", "lyric", "contract_elaborator_self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -34,7 +34,7 @@ let tests =
                 | Some path -> File.ReadAllText path
                 | None ->
                     failwith
-                        "cannot locate lyric/lyric/contract_elaborator_self_test.l — run from the source tree"
+                        "cannot locate lyric-compiler/lyric/contract_elaborator_self_test.l — run from the source tree"
 
             let result, stdout, stderr, exitCode =
                 compileAndRun "self_hosted_contract_elaborator" src

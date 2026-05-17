@@ -15,7 +15,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m58.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m58.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m58.l"
 
             let dllPath = "/tmp/lyric_msil_m58_shifts.dll"
             let cfgPath = "/tmp/lyric_msil_m58_shifts.runtimeconfig.json"

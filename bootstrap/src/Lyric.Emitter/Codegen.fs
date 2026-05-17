@@ -411,8 +411,8 @@ let private stringFormatParams : Lazy<MethodInfo> =
 // retired with G10 (2/2).  The text / dir surfaces went direct via
 // G10 (1/2) (D-progress-109); the bytes surfaces follow now via
 // `System.IO.File.{ReadAllBytes, WriteAllBytes}` externs in
-// `stdlib/std/_kernel/file_host.l` plus a pure-Lyric
-// `slice[Byte]`/`List[Byte]` shuttle in `stdlib/std/file.l`.
+// `lyric-stdlib/std/_kernel/file_host.l` plus a pure-Lyric
+// `slice[Byte]`/`List[Byte]` shuttle in `lyric-stdlib/std/file.l`.
 
 /// G9 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-110): the
 /// previous `Lyric.Stdlib.Contracts.{Panic, Expect, Assert}` helpers

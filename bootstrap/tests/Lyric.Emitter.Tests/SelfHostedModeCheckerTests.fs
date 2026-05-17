@@ -1,12 +1,12 @@
 /// Phase 5 §M5.2 — exercises the self-hosted `Lyric.ModeChecker`
 /// library through a tiny Lyric.ModeCheckerSelfTest consumer.
 ///
-/// Compiles `lyric/lyric/modechecker_self_test.l` via the
+/// Compiles `lyric-compiler/lyric/modechecker_self_test.l` via the
 /// bootstrap emitter, runs the resulting program, and asserts that
 /// every in-program assertion held (exit code 0 + an "ok" line in
 /// stdout). The self-test imports both `Lyric.Parser` and
 /// `Lyric.ModeChecker`; the emitter's auto-resolver pulls all
-/// multi-file libraries from `lyric/lyric/` transparently.
+/// multi-file libraries from `lyric-compiler/lyric/` transparently.
 module Lyric.Emitter.Tests.SelfHostedModeCheckerTests
 
 open System
@@ -20,7 +20,7 @@ let private findSelfTestSource () : string option =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let candidate =
-            Path.Combine(dir.Value.FullName, "lyric", "lyric", "modechecker_self_test.l")
+            Path.Combine(dir.Value.FullName, "lyric-compiler", "lyric", "modechecker_self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -34,7 +34,7 @@ let tests =
                 | Some path -> File.ReadAllText path
                 | None ->
                     failwith
-                        "cannot locate lyric/lyric/modechecker_self_test.l — run from the source tree"
+                        "cannot locate lyric-compiler/lyric/modechecker_self_test.l — run from the source tree"
 
             let result, stdout, stderr, exitCode =
                 compileAndRun "self_hosted_modechecker" src

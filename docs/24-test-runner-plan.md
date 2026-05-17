@@ -5,7 +5,7 @@ Status: shipped (v1 — D-progress-138).
 This document describes the native `lyric test` command and the
 `@test_module` / `test "…" { … }` surface it consumes. v1 is a
 *bootstrap-grade* runner: enough to retire the F# Expecto bridge for
-`stdlib/tests/*_tests.l` and let the language reference's promised
+`lyric-stdlib/tests/*_tests.l` and let the language reference's promised
 surface (§3.2, §13.2) compile end-to-end. Property-based testing,
 fixtures, snapshot infrastructure beyond `Std.Testing.snapshot`,
 parallelism, JUnit XML output, doctests, and contract-based property
@@ -173,7 +173,7 @@ keeps the emitter self-contained.
 to non-`pub` declarations of the package they test. v1 does **not**
 implement the cross-package access rule — for now, `@test_module`
 behaves like an ordinary single package whose test items get
-compiled. Files in `stdlib/tests/` already work this way (each is
+compiled. Files in `lyric-stdlib/tests/` already work this way (each is
 its own package), and the worked-example bank tests put the
 `@test_module` package in the *same* package as the code under test,
 which v1 supports natively (one file = one package = test items
@@ -188,7 +188,7 @@ driven discovery story.
 * **Stage 1** (this PR) — emitter shim, synthetic `main`, `lyric
   test <source.l>` CLI, `expect(...)` macro lowering, single-file
   TAP-style output, exit codes, `--list`, `--filter`, two-character
-  CLI tests, port a representative `stdlib/tests/*_tests.l` to use
+  CLI tests, port a representative `lyric-stdlib/tests/*_tests.l` to use
   `expect` so we exercise the new path.
 * **Stage 2** — `--manifest` discovery, multi-file test runs,
   cross-package non-pub access (§3.2), retire the F# Expecto bridge

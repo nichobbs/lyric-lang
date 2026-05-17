@@ -1,6 +1,6 @@
 /// Stage M21 finally block test.
 ///
-/// Compiles lyric/msil/msil_self_test_m21.l, runs it (PE sets
+/// Compiles lyric-compiler/msil/msil_self_test_m21.l, runs it (PE sets
 /// local=10 in try, adds 32 in finally, prints 42), then executes the PE
 /// verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM21
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m21.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m21.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m21.l"
 
             let dllPath = "/tmp/lyric_msil_m21_finally.dll"
             let cfgPath = "/tmp/lyric_msil_m21_finally.runtimeconfig.json"

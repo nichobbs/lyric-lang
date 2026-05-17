@@ -4,7 +4,7 @@
 /// pack` / `dotnet restore` respectively.
 ///
 /// The csproj XML generation has been ported to the self-hosted
-/// `Lyric.Pack` package (`compiler/lyric/lyric/pack/pack.l`);
+/// `Lyric.Pack` package (`lyric-compiler/lyric/pack/pack.l`);
 /// `SelfHostedPack.publishCsproj` / `SelfHostedPack.restoreCsproj`
 /// are called to produce the XML text.  Process invocation and path
 /// resolution remain here as infrastructure shims.

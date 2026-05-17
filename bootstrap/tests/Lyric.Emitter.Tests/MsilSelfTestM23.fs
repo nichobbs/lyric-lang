@@ -1,6 +1,6 @@
 /// Stage M23 multiple static methods test.
 ///
-/// Compiles lyric/msil/msil_self_test_m23.l, runs it (PE defines
+/// Compiles lyric-compiler/msil/msil_self_test_m23.l, runs it (PE defines
 /// Add(int, int): int as MethodDef[2] and Main calls it with 20+22=42),
 /// then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM23
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m23.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m23.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m23.l"
 
             let dllPath = "/tmp/lyric_msil_m23_multimeth.dll"
             let cfgPath = "/tmp/lyric_msil_m23_multimeth.runtimeconfig.json"

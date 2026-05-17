@@ -1,6 +1,6 @@
 /// Stage B6 smoke test for Jvm.Lowering — protected types and wire blocks.
 ///
-/// Compiles lyric/jvm/self_test_b6.l, runs it (which writes
+/// Compiles lyric-compiler/jvm/self_test_b6.l, runs it (which writes
 /// B6Counter.class, B6Services.class, and B6Driver.class to /tmp/lyric-jvm-b6/),
 /// then verifies all three classes are accepted by the JVM verifier by
 /// executing `java -cp /tmp/lyric-jvm-b6 B6Driver`.
@@ -22,7 +22,7 @@ let private findSelfTestB6Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b6.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b6.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -54,7 +54,7 @@ let tests =
             let src =
                 match findSelfTestB6Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b6.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b6.l"
 
             // 1. Compile and run the Lyric program (writes three .class files).
             let result, stdout, stderr, exitCode = compileAndRun "jvm_lowering_b6" src

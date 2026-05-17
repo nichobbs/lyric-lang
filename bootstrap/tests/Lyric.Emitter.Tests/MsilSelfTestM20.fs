@@ -1,6 +1,6 @@
 /// Stage M20 exception handling (try/catch) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m20.l, runs it (PE builds a
+/// Compiles lyric-compiler/msil/msil_self_test_m20.l, runs it (PE builds a
 /// try block that throws System.Exception caught by a handler that prints 42),
 /// then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM20
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m20.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m20.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m20.l"
 
             let dllPath = "/tmp/lyric_msil_m20_trycatch.dll"
             let cfgPath = "/tmp/lyric_msil_m20_trycatch.runtimeconfig.json"

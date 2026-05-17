@@ -1,12 +1,12 @@
 /// Phase 5 §M5.3 — exercises the self-hosted `Lyric.Verifier` library
 /// through a tiny Lyric.VerifierSelfTest consumer.
 ///
-/// Compiles `lyric/lyric/verifier_self_test.l` via the
+/// Compiles `lyric-compiler/lyric/verifier_self_test.l` via the
 /// bootstrap emitter, runs the resulting program, and asserts that
 /// every in-program assertion held (exit code 0 + an "ok" line in
 /// stdout). The self-test imports `Lyric.Verifier` (vcir, smt, solver,
 /// stability, vcgen, driver); the emitter's auto-resolver pulls all
-/// multi-file libraries from `lyric/lyric/` transparently.
+/// multi-file libraries from `lyric-compiler/lyric/` transparently.
 module Lyric.Emitter.Tests.SelfHostedVerifierTests
 
 open System
@@ -20,7 +20,7 @@ let private findSelfTestSource () : string option =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let candidate =
-            Path.Combine(dir.Value.FullName, "lyric", "lyric", "verifier_self_test.l")
+            Path.Combine(dir.Value.FullName, "lyric-compiler", "lyric", "verifier_self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -34,7 +34,7 @@ let tests =
                 | Some path -> File.ReadAllText path
                 | None ->
                     failwith
-                        "cannot locate lyric/lyric/verifier_self_test.l — run from the source tree"
+                        "cannot locate lyric-compiler/lyric/verifier_self_test.l — run from the source tree"
 
             let result, stdout, stderr, exitCode =
                 compileAndRun "self_hosted_verifier" src

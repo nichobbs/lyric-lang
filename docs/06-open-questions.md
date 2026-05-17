@@ -248,7 +248,7 @@ This isn't perfect but it's the best `.NET` lets us do without a runtime modific
 - Must be implementable without language features beyond what v1 ships.
 - Must be SemVer-stable from v1.0.
 
-**Resolution:** `@stable(since="1.0")` / `@experimental` annotation system (D040). Every `pub` item in `stdlib/std/` is now annotated. Bootstrap-grade items (`Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`, plus HTTP retry/cancel/timeout variants and time DTO helpers) are `@experimental`. Core modules (errors, parse, collections, string, console, file, iter, math, stream, log, path, environment, app, directory, JSON, and the stable HTTP/time surface) are `@stable(since="1.0")`. The compiler enforces that stable pub functions do not call experimental ones (S0001). `lyric public-api-diff` treats experimental removals as non-breaking. See `docs/10-stdlib-plan.md` §"Stability cut" for the full cut list.
+**Resolution:** `@stable(since="1.0")` / `@experimental` annotation system (D040). Every `pub` item in `lyric-stdlib/std/` is now annotated. Bootstrap-grade items (`Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`, plus HTTP retry/cancel/timeout variants and time DTO helpers) are `@experimental`. Core modules (errors, parse, collections, string, console, file, iter, math, stream, log, path, environment, app, directory, JSON, and the stable HTTP/time surface) are `@stable(since="1.0")`. The compiler enforces that stable pub functions do not call experimental ones (S0001). `lyric public-api-diff` treats experimental removals as non-breaking. See `docs/10-stdlib-plan.md` §"Stability cut" for the full cut list.
 
 ---
 
@@ -523,7 +523,7 @@ JVM-platform open questions (Q-J001–Q-J008 and later) are maintained in
 require JVM domain context to evaluate.
 
 **Q-J005 — opaque-type Java facade** is now RESOLVED: `lowerOpaqueFacade`
-shipped in `lyric/jvm/lowering.l` (D-progress-226).  The entry in
+shipped in `lyric-compiler/jvm/lowering.l` (D-progress-226).  The entry in
 `docs/18-jvm-emission.md` Appendix B is updated accordingly.
 
 All other Q-J entries remain open; see `docs/18-jvm-emission.md §"Open

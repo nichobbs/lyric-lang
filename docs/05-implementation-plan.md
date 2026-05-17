@@ -119,7 +119,7 @@ Single-pass per file; parallel across files. No optimizations beyond what the .N
 
 ### Phase 1 standard library
 
-Shipped in `stdlib/std/` (30 modules as of M1.4+, plus `Std.Random` in `_kernel/`):
+Shipped in `lyric-stdlib/std/` (30 modules as of M1.4+, plus `Std.Random` in `_kernel/`):
 
 Core: `core`, `core_proof`, `errors`, `string`, `parse`, `format`, `char`
 Collections: `collections`, `set`, `sort`, `iter`
@@ -130,7 +130,7 @@ Math: `math`
 Testing: `testing`, `testing_property`, `testing_snapshot`, `testing_mocking`
 
 Each module maps to an `import Std.X` declaration in source. The stdlib
-source lives in `stdlib/std/`; `stdlib/std/_kernel/` holds the audited
+source lives in `lyric-stdlib/std/`; `lyric-stdlib/std/_kernel/` holds the audited
 extern boundary (only kernel files may contain `@externTarget` / `extern type`
 declarations).
 
@@ -332,11 +332,11 @@ Open-ended. Successful languages spend most of their lifetime here.
 
 ### Shipped (Phase 6 early work)
 
-- **JVM emitter** — self-hosted Lyric emitter in `lyric/jvm/`
+- **JVM emitter** — self-hosted Lyric emitter in `lyric-compiler/jvm/`
   (`classfile.l`, `bytecode.l`, `lowering.l`, `driver.l`, …);
   `--target jvm` is wired in the CLI via `Lyric.Jvm.Hosts` F# host shim
   (D-progress-124 / D-progress-125, PR #183–#186).
-  The JVM kernel (`lyric/jvm/_kernel/kernel.l`) provides
+  The JVM kernel (`lyric-compiler/jvm/_kernel/kernel.l`) provides
   the trusted host boundary over `Lyric.Jvm.Hosts`.
   The JVM emitter strategy is documented in `docs/18-jvm-emission.md`.
 - **VS Code extension** — `lyric-vscode/` ships a full LSP-backed extension with

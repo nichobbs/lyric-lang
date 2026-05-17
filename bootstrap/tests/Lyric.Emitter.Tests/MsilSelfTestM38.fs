@@ -1,6 +1,6 @@
 /// Stage M38 overflow-checked arithmetic test.
 ///
-/// Compiles lyric/msil/msil_self_test_m38.l, runs it (PE exercises
+/// Compiles lyric-compiler/msil/msil_self_test_m38.l, runs it (PE exercises
 /// add.ovf / sub.ovf / mul.ovf to produce 42 three ways and prints each),
 /// then executes the PE verifying three lines of "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM38
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m38.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m38.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m38.l"
 
             let dllPath = "/tmp/lyric_msil_m38_ovf.dll"
             let cfgPath = "/tmp/lyric_msil_m38_ovf.runtimeconfig.json"

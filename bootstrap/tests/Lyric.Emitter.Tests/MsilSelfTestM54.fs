@@ -1,6 +1,6 @@
 /// Stage M54 cgt.un (0xFE 0x03) + clt.un (0xFE 0x05) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m54.l, runs it (PE computes
+/// Compiles lyric-compiler/msil/msil_self_test_m54.l, runs it (PE computes
 /// (10>9 unsigned)=1 * (3<7 unsigned)=1 + 41 = 42, prints "42"), then
 /// executes the PE verifying "42" output.
 module Lyric.Emitter.Tests.MsilSelfTestM54
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m54.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m54.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m54.l"
 
             let dllPath = "/tmp/lyric_msil_m54_ucmp.dll"
             let cfgPath = "/tmp/lyric_msil_m54_ucmp.runtimeconfig.json"

@@ -1,6 +1,6 @@
 /// Stage M27 callvirt test.
 ///
-/// Compiles lyric/msil/msil_self_test_m27.l, runs it (PE boxes 42
+/// Compiles lyric-compiler/msil/msil_self_test_m27.l, runs it (PE boxes 42
 /// as System.Object, calls callvirt System.Object::ToString() to get "42",
 /// then Console.WriteLine(string) to print it), then executes the PE
 /// verifying "42" in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m27.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m27.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m27.l"
 
             let dllPath = "/tmp/lyric_msil_m27_callvirt.dll"
             let cfgPath = "/tmp/lyric_msil_m27_callvirt.runtimeconfig.json"

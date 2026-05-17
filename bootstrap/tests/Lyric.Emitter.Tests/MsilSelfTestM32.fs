@@ -1,6 +1,6 @@
 /// Stage M32 initobj test.
 ///
-/// Compiles lyric/msil/msil_self_test_m32.l, runs it (PE zero-
+/// Compiles lyric-compiler/msil/msil_self_test_m32.l, runs it (PE zero-
 /// initialises an I4 local via ldloca_S + initobj, then adds 42 and prints),
 /// then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM32
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m32.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m32.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m32.l"
 
             let dllPath = "/tmp/lyric_msil_m32_initobj.dll"
             let cfgPath = "/tmp/lyric_msil_m32_initobj.runtimeconfig.json"

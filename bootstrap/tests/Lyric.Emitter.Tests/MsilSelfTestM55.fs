@@ -1,6 +1,6 @@
 /// Stage M55 initobj (0xFE 0x15 — zero-initialise value type) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m55.l, runs it (PE zeroes a local
+/// Compiles lyric-compiler/msil/msil_self_test_m55.l, runs it (PE zeroes a local
 /// I4 via initobj System.Int32, then adds 42 and prints "42"), then executes
 /// the PE verifying "42" output.
 module Lyric.Emitter.Tests.MsilSelfTestM55
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m55.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m55.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m55.l"
 
             let dllPath = "/tmp/lyric_msil_m55_initobj.dll"
             let cfgPath = "/tmp/lyric_msil_m55_initobj.runtimeconfig.json"

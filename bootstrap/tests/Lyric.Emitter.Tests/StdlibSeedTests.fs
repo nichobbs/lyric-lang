@@ -1,5 +1,5 @@
 /// Tests for the Lyric-side standard library at
-/// `stdlib/std/core.l`, exercised via `import Std.Core`.
+/// `lyric-stdlib/std/core.l`, exercised via `import Std.Core`.
 ///
 /// Each test program uses `import Std.Core` and the emitter resolves
 /// that import by locating `core.l`, parsing it, and merging its items
@@ -11,7 +11,7 @@ open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
 
-/// Locate `stdlib/std/` from the test binary. We walk
+/// Locate `lyric-stdlib/std/` from the test binary. We walk
 /// up parent directories until the directory is found (typical
 /// structure is `compiler/tests/Lyric.Emitter.Tests/bin/Debug/net9.0/`).
 let private locateStdlibDir () : string =
@@ -19,16 +19,16 @@ let private locateStdlibDir () : string =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let d = dir.Value
-        let candidate = Path.Combine(d.FullName, "stdlib", "std")
+        let candidate = Path.Combine(d.FullName, "lyric-stdlib", "std")
         if Directory.Exists candidate then found <- Some candidate
         dir <- d.Parent |> Option.ofObj
     match found with
     | Some p -> p
     | None ->
-        failwithf "could not locate stdlib/std directory from %s"
+        failwithf "could not locate lyric-stdlib/std directory from %s"
             System.AppContext.BaseDirectory
 
-/// Load every `.l` file under `stdlib/std/` (recursively, so
+/// Load every `.l` file under `lyric-stdlib/std/` (recursively, so
 /// `_kernel/` is included — see `docs/14-native-stdlib-plan.md` §6 P0/4)
 /// and strip each file's `package` declaration. This lets the tests
 /// inline the stdlib seed into the user's package while preserving

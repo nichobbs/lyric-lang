@@ -1,6 +1,6 @@
 /// Stage B11 smoke test — ZIP/JAR assembler.
 ///
-/// Compiles lyric/jvm/self_test_b11.l, runs it (which generates
+/// Compiles lyric-compiler/jvm/self_test_b11.l, runs it (which generates
 /// /tmp/lyric-jvm-b11/hello.jar containing MANIFEST.MF + Hello.class),
 /// verifies the ZIP magic bytes and written-flag, then runs
 /// `unzip -l` to confirm both entries appear in the listing.
@@ -15,7 +15,7 @@ let private findSelfTestB11Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b11.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b11.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -41,7 +41,7 @@ let tests =
             let src =
                 match findSelfTestB11Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b11.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b11.l"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_zip_b11" src
 

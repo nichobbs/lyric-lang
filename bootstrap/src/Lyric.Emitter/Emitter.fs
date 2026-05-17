@@ -2047,7 +2047,7 @@ let private findClrType (qualifiedName: string) : System.Type option =
     // common stdlib modules (`Std.Json`, `Std.Regex`, `Std.Time`,
     // `Std.Http`) aren't auto-loaded on demand and need a touch.
     // Pin `JvmByteHost` to force-load `Lyric.Jvm.Hosts` — the JVM emitter's
-    // `compiler/lyric/jvm/_kernel/kernel.l` `@externTarget`s these.
+    // `lyric-compiler/jvm/_kernel/kernel.l` `@externTarget`s these.
     let _ = typeof<Lyric.Jvm.Hosts.JvmByteHost>
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
@@ -5447,7 +5447,7 @@ let private isBuiltinHead (head: string) : bool =
 ///   1. Package-specific env-var override: `LYRIC_STD_PATH` for `Std`,
 ///      `LYRIC_JVM_PATH` for `Jvm`, `LYRIC_<HEAD>_PATH` for others.
 ///   2. Walk up the directory tree from `startDir` (the CLI binary's
-///      base directory).  For `Std.*` look for `stdlib/std/`; for
+///      base directory).  For `Std.*` look for `lyric-stdlib/std/`; for
 ///      other builtins look for `lyric/<head.lower>/`.
 ///
 /// Variant of `locateBuiltinFiles` that also reports a layout-conflict
@@ -5560,9 +5560,9 @@ let private locateBuiltinFilesWithLayout
                 let d = dir.Value
                 let pkgRoot =
                     if head = "Std" then
-                        Path.Combine(d.FullName, "stdlib", "std")
+                        Path.Combine(d.FullName, "lyric-stdlib", "std")
                     else
-                        Path.Combine(d.FullName, "lyric", dirName)
+                        Path.Combine(d.FullName, "lyric-compiler", dirName)
                 if Directory.Exists pkgRoot then
                     found <- firstHit (probesIn pkgRoot)
                     if not (List.isEmpty found) then

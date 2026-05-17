@@ -1,6 +1,6 @@
 /// Stage M7 static fields test.
 ///
-/// Compiles lyric/msil/msil_self_test_m7.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m7.l, runs it (producing a
 /// PE with a static int32 field and a Main() that stores 42 then reads it
 /// back), then executes the PE with `dotnet exec` verifying that "42" appears
 /// in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m7.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m7.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m7.l"
 
             let dllPath = "/tmp/lyric_msil_m7_fields.dll"
             let cfgPath = "/tmp/lyric_msil_m7_fields.runtimeconfig.json"

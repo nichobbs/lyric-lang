@@ -1,6 +1,6 @@
 /// Stage M8 newobj + instance fields test.
 ///
-/// Compiles lyric/msil/msil_self_test_m8.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m8.l, runs it (producing a
 /// PE with an instance constructor and ldfld/stfld), then executes the PE
 /// with `dotnet exec` verifying that "99" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM8
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m8.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m8.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m8.l"
 
             let dllPath = "/tmp/lyric_msil_m8_newobj.dll"
             let cfgPath = "/tmp/lyric_msil_m8_newobj.runtimeconfig.json"

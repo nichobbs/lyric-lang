@@ -14,8 +14,8 @@ An audit of the repository on 2026-05-10 identified three classes of problem:
    absent from `_kernel_jvm/`, preventing `Std.File` and `Std.Process` from
    linking on the JVM target.
 3. **Self-hosted emitter disconnect** — neither the self-hosted JVM emitter
-   (`lyric/jvm/`) nor the self-hosted MSIL emitter
-   (`lyric/msil/`) is reachable from `lyric build`.  The JVM emitter
+   (`lyric-compiler/jvm/`) nor the self-hosted MSIL emitter
+   (`lyric-compiler/msil/`) is reachable from `lyric build`.  The JVM emitter
    has a full high-level lowering layer (`Jvm.Lowering`, 29 `lowerXxx`
    functions) but no F# bridge.  The MSIL emitter has only the binary
    PE/opcode/tables layer; high-level MSIL lowering in Lyric is missing
@@ -59,8 +59,8 @@ short inline answer pointing to the resolution doc or decision-log entry.
 
 ### R1-D  Bootstrap progress — fix stale paths
 
-Multiple entries reference `stdlib/std/core_proof.l`.  The correct path
-is `stdlib/std/core_proof.l`.  Affected entries: D-progress-198, D-progress-5585,
+Multiple entries reference `lyric-stdlib/std/core_proof.l`.  The correct path
+is `lyric-stdlib/std/core_proof.l`.  Affected entries: D-progress-198, D-progress-5585,
 and every other line citing that path.  Also fix the same stale path in
 `docs/12-todo-plan.md`.
 
@@ -175,18 +175,18 @@ argument.  Update all `lyric test` invocations to `lyric test <file.l>`.
 
 `book/chapters/12-standard-library.md` §12.1 lists `Std.Logging` in the
 stdlib inventory.  It lives in the third-party `lyric-logging` library, not
-`stdlib/std/*.l`.  Add a footnote and move it out of the table or annotate.
+`lyric-stdlib/std/*.l`.  Add a footnote and move it out of the table or annotate.
 
 ---
 
 ## 4. JVM kernel parity (Phase R3)
 
 **Status: SHIPPED** — `file_host.l`, `process_host.l`, and `unicode_host.l`
-present under `stdlib/std/_kernel_jvm/`; `jvm.l` / `jvm_exception.l` confirmed
+present under `lyric-stdlib/std/_kernel_jvm/`; `jvm.l` / `jvm_exception.l` confirmed
 in `_kernel/` (correct per Decision F single-kernel boundary). (D-progress-238)
 
-Five kernel shims exist in `stdlib/std/_kernel/` but not in
-`stdlib/std/_kernel_jvm/`:
+Five kernel shims exist in `lyric-stdlib/std/_kernel/` but not in
+`lyric-stdlib/std/_kernel_jvm/`:
 
 | Missing file | Provides |
 |---|---|
@@ -197,7 +197,7 @@ Five kernel shims exist in `stdlib/std/_kernel/` but not in
 | `jvm_exception.l` | `Std.Jvm.Exception` wrappers |
 
 Action: write JVM-target implementations of `file_host.l`, `process_host.l`,
-and `unicode_host.l` under `stdlib/std/_kernel_jvm/`.  Each file must export
+and `unicode_host.l` under `lyric-stdlib/std/_kernel_jvm/`.  Each file must export
 the same surface as its `_kernel/` counterpart, implemented using Java stdlib
 externs (`java.nio.file.Files`, `java.lang.ProcessBuilder`,
 `java.text.Normalizer`).  `jvm.l` and `jvm_exception.l` are already present
@@ -208,18 +208,18 @@ document.
 
 ## 5. Self-hosted JVM emitter — CLI wiring (Phase R4)
 
-**Status: SHIPPED** — `Jvm.Codegen` (`lyric/jvm/codegen.l`),
+**Status: SHIPPED** — `Jvm.Codegen` (`lyric-compiler/jvm/codegen.l`),
 `Jvm.Bridge` (`bridge.l`), `SelfHostedJvm.fs`, and `--target jvm` CLI wiring
 all present. (D-progress-239)
 
 ### 5.1 What existed (at time of planning)
 
-- `lyric/jvm/lowering.l` — complete high-level lowering (29 functions)
-- `lyric/jvm/driver.l` — `writeJarFromClasses` JAR assembler
-- `lyric/jvm/bytecode.l`, `classfile.l` — binary class-file emission
-- `lyric/jvm/self_test_b*.l` — 125 self-tests (B3–B125)
-- `lyric/lyric/parser/` — self-hosted parser (`Lyric.Parser`)
-- `lyric/lyric/type_checker/` — self-hosted type checker
+- `lyric-compiler/jvm/lowering.l` — complete high-level lowering (29 functions)
+- `lyric-compiler/jvm/driver.l` — `writeJarFromClasses` JAR assembler
+- `lyric-compiler/jvm/bytecode.l`, `classfile.l` — binary class-file emission
+- `lyric-compiler/jvm/self_test_b*.l` — 125 self-tests (B3–B125)
+- `lyric-compiler/lyric/parser/` — self-hosted parser (`Lyric.Parser`)
+- `lyric-compiler/lyric/type_checker/` — self-hosted type checker
   (`Lyric.TypeChecker`)
 
 ### 5.2 What is missing
@@ -237,7 +237,7 @@ the JVM target.
 
 ### 5.3 New package: `Jvm.Codegen`
 
-Location: `lyric/jvm/codegen.l`
+Location: `lyric-compiler/jvm/codegen.l`
 Package: `Jvm.Codegen`
 Public entry point:
 
@@ -261,7 +261,7 @@ Unsupported in Phase R4 (deferred to follow-up):
 
 ### 5.4 New package: `Jvm.Bridge`
 
-Location: `lyric/jvm/bridge.l`
+Location: `lyric-compiler/jvm/bridge.l`
 Package: `Jvm.Bridge`
 Public entry point:
 
@@ -315,23 +315,23 @@ primary runnable artefact.
 
 ## 6. Self-hosted MSIL emitter — high-level lowering (Phase R5)
 
-**Status: SHIPPED** — `Msil.Lowering` (`lyric/msil/lowering.l`),
+**Status: SHIPPED** — `Msil.Lowering` (`lyric-compiler/msil/lowering.l`),
 `Msil.Codegen` (`codegen.l`), `Msil.Bridge` (`bridge.l`), `SelfHostedMsil.fs`,
 `--target dotnet` CLI wiring, and 6 end-to-end bridge tests all present.
 (D-progress-227 / D-progress-238 / D-progress-240)
 
 ### 6.1 What existed (at time of planning)
 
-- `lyric/msil/pe.l` — raw PE binary writer
-- `lyric/msil/opcodes.l` — IL opcode encoding
-- `lyric/msil/tables.l` — CLI metadata table helpers
-- `lyric/msil/heaps.l` — `#Strings`, `#Blob`, `#GUID`, `#US` heap writers
-- `lyric/msil/assembler.l` — `assemblePe` — top-level assembler taking
+- `lyric-compiler/msil/pe.l` — raw PE binary writer
+- `lyric-compiler/msil/opcodes.l` — IL opcode encoding
+- `lyric-compiler/msil/tables.l` — CLI metadata table helpers
+- `lyric-compiler/msil/heaps.l` — `#Strings`, `#Blob`, `#GUID`, `#US` heap writers
+- `lyric-compiler/msil/assembler.l` — `assemblePe` — top-level assembler taking
   pre-built bodies and metadata rows
 
 ### 6.2 What is needed: `Msil.Lowering`
 
-Location: `lyric/msil/lowering.l`
+Location: `lyric-compiler/msil/lowering.l`
 Package: `Msil.Lowering`
 
 Mirrors `Jvm.Lowering` but targets the CLI/MSIL binary format.  The MSIL
@@ -362,7 +362,7 @@ types, records, unions, top-level functions, arithmetic, control flow.
 
 ### 6.3 New package: `Msil.Bridge`
 
-Location: `lyric/msil/bridge.l`
+Location: `lyric-compiler/msil/bridge.l`
 Package: `Msil.Bridge`
 
 Same pattern as `Jvm.Bridge` but calling `Msil.Lowering.lowerMPackage` and

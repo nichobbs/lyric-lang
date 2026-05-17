@@ -1,6 +1,6 @@
 /// Stage M6 method-arguments / non-void-return test.
 ///
-/// Compiles lyric/msil/msil_self_test_m6.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m6.l, runs it (producing a
 /// PE with Add(int,int):int and Main()), then executes the PE with `dotnet exec`
 /// verifying that "7" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM6
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m6.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m6.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m6.l"
 
             let dllPath = "/tmp/lyric_msil_m6_add.dll"
             let cfgPath = "/tmp/lyric_msil_m6_add.runtimeconfig.json"

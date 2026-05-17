@@ -1,6 +1,6 @@
 /// Stage M43 localloc (stack allocation) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m43.l, runs it (PE uses
+/// Compiles lyric-compiler/msil/msil_self_test_m43.l, runs it (PE uses
 /// localloc to allocate 4 bytes of stack memory, writes 42, reads it back,
 /// and prints "42"), then executes the PE verifying one line of "42".
 module Lyric.Emitter.Tests.MsilSelfTestM43
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m43.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m43.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m43.l"
 
             let dllPath = "/tmp/lyric_msil_m43_localloc.dll"
             let cfgPath = "/tmp/lyric_msil_m43_localloc.runtimeconfig.json"

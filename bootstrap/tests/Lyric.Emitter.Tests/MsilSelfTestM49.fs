@@ -1,6 +1,6 @@
 /// Stage M49 ldelem.i4 + stelem.i4 (typed int32 array element load/store) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m49.l, runs it (PE creates a
+/// Compiles lyric-compiler/msil/msil_self_test_m49.l, runs it (PE creates a
 /// 1-element int32 array, stores 42 via stelem.i4, reads it back via ldelem.i4,
 /// and prints "42"), then executes the PE verifying "42" output.
 module Lyric.Emitter.Tests.MsilSelfTestM49
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m49.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m49.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m49.l"
 
             let dllPath = "/tmp/lyric_msil_m49_arr_i4.dll"
             let cfgPath = "/tmp/lyric_msil_m49_arr_i4.runtimeconfig.json"

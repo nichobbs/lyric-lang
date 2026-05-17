@@ -1,6 +1,6 @@
 /// Stage M24 instance methods + instance fields test.
 ///
-/// Compiles lyric/msil/msil_self_test_m24.l, runs it (PE builds a
+/// Compiles lyric-compiler/msil/msil_self_test_m24.l, runs it (PE builds a
 /// Counter class with a _value field, .ctor, Increment, GetValue; Main calls
 /// Increment 3 times via dup+call and prints GetValue result), then executes
 /// the PE verifying "3" in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m24.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m24.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m24.l"
 
             let dllPath = "/tmp/lyric_msil_m24_instance.dll"
             let cfgPath = "/tmp/lyric_msil_m24_instance.runtimeconfig.json"

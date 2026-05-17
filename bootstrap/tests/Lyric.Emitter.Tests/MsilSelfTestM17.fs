@@ -1,6 +1,6 @@
 /// Stage M17 bitwise operations test.
 ///
-/// Compiles lyric/msil/msil_self_test_m17.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m17.l, runs it (producing a
 /// PE that computes (60 & 13) + (60 | 13) = 12 + 61 = 73), then executes
 /// the PE verifying "73" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM17
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m17.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m17.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m17.l"
 
             let dllPath = "/tmp/lyric_msil_m17_bitwise.dll"
             let cfgPath = "/tmp/lyric_msil_m17_bitwise.runtimeconfig.json"

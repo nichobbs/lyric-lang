@@ -1,6 +1,6 @@
 /// Stage M10 virtual method dispatch test.
 ///
-/// Compiles lyric/msil/msil_self_test_m10.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m10.l, runs it (producing a
 /// PE with abstract Base, concrete Impl, and Hello classes), then executes
 /// the PE with `dotnet exec` verifying that "77" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM10
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m10.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m10.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m10.l"
 
             let dllPath = "/tmp/lyric_msil_m10_callvirt.dll"
             let cfgPath = "/tmp/lyric_msil_m10_callvirt.runtimeconfig.json"

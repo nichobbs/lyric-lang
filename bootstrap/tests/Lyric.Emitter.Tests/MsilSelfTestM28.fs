@@ -1,6 +1,6 @@
 /// Stage M28 ldsfld + stsfld test.
 ///
-/// Compiles lyric/msil/msil_self_test_m28.l, runs it (PE stores 20
+/// Compiles lyric-compiler/msil/msil_self_test_m28.l, runs it (PE stores 20
 /// in static field _x and 22 in _y, loads both and adds them to print "42"),
 /// then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM28
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m28.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m28.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m28.l"
 
             let dllPath = "/tmp/lyric_msil_m28_stsfld.dll"
             let cfgPath = "/tmp/lyric_msil_m28_stsfld.runtimeconfig.json"

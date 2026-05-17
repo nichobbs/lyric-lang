@@ -1,6 +1,6 @@
 /// Stage B7 smoke test — native-image config file generation.
 ///
-/// Compiles lyric/jvm/self_test_b7.l, runs it (which writes
+/// Compiles lyric-compiler/jvm/self_test_b7.l, runs it (which writes
 /// 4 JSON config files to /tmp/lyric-jvm-b7/), then verifies each file
 /// exists and contains the expected JSON structure.
 /// No GraalVM installation is required.
@@ -19,7 +19,7 @@ let private findSelfTestB7Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b7.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b7.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -35,7 +35,7 @@ let tests =
             let src =
                 match findSelfTestB7Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b7.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b7.l"
 
             // 1. Compile and run the Lyric program (writes four JSON files).
             let result, stdout, stderr, exitCode = compileAndRun "jvm_nativeimage_b7" src

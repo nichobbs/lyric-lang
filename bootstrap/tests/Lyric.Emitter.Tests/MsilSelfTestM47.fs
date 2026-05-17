@@ -1,6 +1,6 @@
 /// Stage M47 conv.i + conv.u (native int conversions) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m47.l, runs it (PE converts
+/// Compiles lyric-compiler/msil/msil_self_test_m47.l, runs it (PE converts
 /// 42 to native int via conv.i then back via conv.i4, and 42 to native uint
 /// via conv.u then back via conv.i4, printing "42" twice), then executes
 /// the PE verifying two lines of "42".
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m47.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m47.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m47.l"
 
             let dllPath = "/tmp/lyric_msil_m47_conv_native.dll"
             let cfgPath = "/tmp/lyric_msil_m47_conv_native.runtimeconfig.json"

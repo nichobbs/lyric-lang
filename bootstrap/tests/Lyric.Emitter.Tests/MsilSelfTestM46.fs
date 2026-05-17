@@ -1,6 +1,6 @@
 /// Stage M46 conv.i1 + conv.i2 (narrow signed conversions) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m46.l, runs it (PE pushes 42,
+/// Compiles lyric-compiler/msil/msil_self_test_m46.l, runs it (PE pushes 42,
 /// converts via conv.i1 then conv.i2, printing "42" twice), then executes
 /// the PE verifying two lines of "42".
 module Lyric.Emitter.Tests.MsilSelfTestM46
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m46.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m46.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m46.l"
 
             let dllPath = "/tmp/lyric_msil_m46_conv_narrow.dll"
             let cfgPath = "/tmp/lyric_msil_m46_conv_narrow.runtimeconfig.json"

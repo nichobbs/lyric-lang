@@ -1,6 +1,6 @@
 /// Stage M52 tail. (0xFE 0x14 — tail call prefix) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m52.l, runs it (PE pushes 42,
+/// Compiles lyric-compiler/msil/msil_self_test_m52.l, runs it (PE pushes 42,
 /// uses tail./call to print "42"), then executes the PE verifying "42" output.
 module Lyric.Emitter.Tests.MsilSelfTestM52
 
@@ -15,7 +15,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m52.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m52.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m52.l"
 
             let dllPath = "/tmp/lyric_msil_m52_tail.dll"
             let cfgPath = "/tmp/lyric_msil_m52_tail.runtimeconfig.json"

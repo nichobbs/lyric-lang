@@ -1,6 +1,6 @@
 /// Stage M18 ldc.r8 (64-bit float literal) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m18.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m18.l, runs it (producing a
 /// PE that computes 3.0 * 2.0 = 6.0 and calls Console.WriteLine(double)),
 /// then executes the PE verifying "6" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM18
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m18.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m18.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m18.l"
 
             let dllPath = "/tmp/lyric_msil_m18_float.dll"
             let cfgPath = "/tmp/lyric_msil_m18_float.runtimeconfig.json"

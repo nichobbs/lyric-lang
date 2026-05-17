@@ -45,7 +45,7 @@ annotated.
 
 **What to do:**
 
-1. Walk every `pub` item in `stdlib/std/*.l` and `stdlib/std/_kernel/*.l`.
+1. Walk every `pub` item in `lyric-stdlib/std/*.l` and `lyric-stdlib/std/_kernel/*.l`.
    For each item decide stable or experimental.  The current `@experimental`
    markers from D040 are a starting point; they are not comprehensive.
 2. Produce a `stdlib/STABILITY.md` table (or equivalent decision-log entry)
@@ -79,8 +79,8 @@ through the 1.0 release and will be removed in v1.1.
 
 **What to do:**
 
-1. **Per-expression CST granularity** in `lyric/lyric/fmt/fmt.l` and
-   `lyric/lyric/fmt/fmt_core.l`: extend the `FmtCtx` cursor so that
+1. **Per-expression CST granularity** in `lyric-compiler/lyric/fmt/fmt.l` and
+   `lyric-compiler/lyric/fmt/fmt_core.l`: extend the `FmtCtx` cursor so that
    leading trivia on tokens inside `EBinop`, `ECall`, `EIndex`, `EPrefix`,
    `EField`, and `EAs` nodes is reproduced at the token boundary rather than
    hoisted to the enclosing statement.  The CST infrastructure already carries
@@ -118,29 +118,29 @@ stage B128.
 
 The gap: `MavenShim.fs` correctly declares `Result[T, JvmException]` as the
 return type for Maven methods with checked exceptions, but
-`lyric/jvm/lowering.l` never wraps the call site in a JVM
+`lyric-compiler/jvm/lowering.l` never wraps the call site in a JVM
 `try-catch` block.  Without the wrapper, the JVM verifier rejects the
 classfile or the exception propagates unhandled.
 
-What to do in `lyric/jvm/lowering.l`:
+What to do in `lyric-compiler/jvm/lowering.l`:
 
 - In the `ECall` lowering path, detect when the callee's resolved method
   descriptor has a non-empty `throws` list (obtained from the Maven JAR's
   constant pool via the `MavenResolver` type info surface).
 - Emit: `try { <call> } catch (Throwable e) { <construct JvmException(e)>; <wrap in Err> }`.
 - The catch block must call the Lyric-side `JvmException` constructor (in
-  `lyric/jvm/_kernel/kernel.l`) and wrap the result in the `Err`
+  `lyric-compiler/jvm/_kernel/kernel.l`) and wrap the result in the `Err`
   variant of the declared `Result` type.
 - Add tests to `bootstrap/tests/Lyric.Emitter.Tests/` exercising a Maven
   method with a declared checked exception (e.g. `java.io.IOException`).
 
 **Q-J012 — `Std.Jvm.catch[T]` emitter recognition**
 
-`Std.Jvm.catch[T]` is declared `@experimental` in `stdlib/std/jvm.l` but the
+`Std.Jvm.catch[T]` is declared `@experimental` in `lyric-stdlib/std/jvm.l` but the
 JVM emitter does not yet recognise the call as an intrinsic.  The intrinsic
 must lower to a JVM `try-catch` block wrapping the lambda body.
 
-What to do in `lyric/jvm/lowering.l`:
+What to do in `lyric-compiler/jvm/lowering.l`:
 
 - Add `Std.Jvm.catch` to the known-intrinsic table (alongside the existing
   `Std.Jvm.*` intrinsics).
@@ -167,10 +167,10 @@ and expose a non-throwing wrapper as a `@externTarget`.
 
 | Item | F# location | Target Lyric location |
 |---|---|---|
-| `Lyric.Lint` | `bootstrap/src/Lyric.Cli/Lint.fs` | `lyric/lyric/lint/lint.l` |
-| `Lyric.Doc` | `bootstrap/src/Lyric.Cli/Doc.fs` | `lyric/lyric/doc/doc.l` |
-| `Lyric.ContractMeta` | embedded resource reader in `bootstrap/src/Lyric.Cli/` (multiple sites) | `lyric/lyric/contract_meta/contract_meta.l` |
-| `Pack.l` | `bootstrap/src/Lyric.Cli/Pack.fs` | `lyric/lyric/pack/pack.l` |
+| `Lyric.Lint` | `bootstrap/src/Lyric.Cli/Lint.fs` | `lyric-compiler/lyric/lint/lint.l` |
+| `Lyric.Doc` | `bootstrap/src/Lyric.Cli/Doc.fs` | `lyric-compiler/lyric/doc/doc.l` |
+| `Lyric.ContractMeta` | embedded resource reader in `bootstrap/src/Lyric.Cli/` (multiple sites) | `lyric-compiler/lyric/contract_meta/contract_meta.l` |
+| `Pack.l` | `bootstrap/src/Lyric.Cli/Pack.fs` | `lyric-compiler/lyric/pack/pack.l` |
 | F# `Fmt.fs` sunset | `bootstrap/src/Lyric.Cli/Fmt.fs` | gated on R2 |
 
 **Sequencing:** `Lyric.Doc` depends on nothing external; do it first.
@@ -181,7 +181,7 @@ of `Pack.l`; port in order.
 **Bridge pattern** (follow `SelfHostedFmt.fs` / `SelfHostedManifest.fs`):
 
 For each item:
-1. Implement the Lyric package under `lyric/lyric/<item>/`.
+1. Implement the Lyric package under `lyric-compiler/lyric/<item>/`.
 2. Write a `<item>_bridge.l` protocol file (string-in / JSON-out or string-in /
    string-out as appropriate).
 3. Write a thin `bootstrap/src/Lyric.Cli/SelfHosted<Item>.fs` shim that
@@ -295,7 +295,7 @@ func stubCall(s: inout MyServiceStub, arg: in String): String {
 For multi-call scenarios, use a `slice[String]` to accumulate arguments.
 
 **Fix target:** 1.1.  Port the DSL from the design in D-progress-016 to
-`lyric/lyric/stubbuilder/stub_derive.l`.
+`lyric-compiler/lyric/stubbuilder/stub_derive.l`.
 
 ---
 
@@ -473,8 +473,8 @@ match node {
 ```
 
 **Fix target:** 1.1.  Add `toDouble` BCL extern to
-`stdlib/std/_kernel/string_host.l` and wire it into the YAML parser at
-`stdlib/std/yaml.l::parseScalar`.
+`lyric-stdlib/std/_kernel/string_host.l` and wire it into the YAML parser at
+`lyric-stdlib/std/yaml.l::parseScalar`.
 
 ---
 

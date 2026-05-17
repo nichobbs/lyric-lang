@@ -1,6 +1,6 @@
 /// Stage B10 smoke test — manifest and lyric-contract metadata emission.
 ///
-/// Compiles lyric/jvm/self_test_b10.l, runs it (which generates
+/// Compiles lyric-compiler/jvm/self_test_b10.l, runs it (which generates
 /// a MANIFEST.MF string and a lyric-contract JSON stub and prints both),
 /// then verifies the expected content in each output section.
 module Lyric.Emitter.Tests.JvmLoweringB10Test
@@ -14,7 +14,7 @@ let private findSelfTestB10Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b10.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b10.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -26,7 +26,7 @@ let tests =
             let src =
                 match findSelfTestB10Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b10.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b10.l"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_manifest_b10" src
 

@@ -1,6 +1,6 @@
 /// Stage M5 local-variable / fat-method-header test.
 ///
-/// Compiles lyric/msil/msil_self_test_m5.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m5.l, runs it (producing a
 /// PE whose Main() uses a fat method header and a StandAloneSig local-var
 /// signature), then executes the PE with `dotnet exec` verifying that
 /// "Hello from locals!" appears twice in stdout.
@@ -18,7 +18,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m5.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m5.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m5.l"
 
             let dllPath = "/tmp/lyric_msil_m5_hello.dll"
             let cfgPath = "/tmp/lyric_msil_m5_hello.runtimeconfig.json"

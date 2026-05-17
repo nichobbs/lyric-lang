@@ -1,12 +1,12 @@
 /// Phase 5 — exercises the self-hosted `Lyric.TestSynth` library
 /// through a tiny `Lyric.TestSynthSelfTest` consumer.
 ///
-/// Compiles `lyric/lyric/test_synth_self_test.l` via the
+/// Compiles `lyric-compiler/lyric/test_synth_self_test.l` via the
 /// bootstrap emitter, runs the resulting program, and asserts that
 /// every in-program assertion held (exit code 0 + an "ok" line in
 /// stdout).  The self-test imports `Lyric.TestSynth`; the emitter's
 /// auto-resolver (`Emitter.fs:isBuiltinHead`) pulls the multi-file
-/// library from `lyric/lyric/test_synth/*.l` transparently.
+/// library from `lyric-compiler/lyric/test_synth/*.l` transparently.
 ///
 /// Mirrors `SelfHostedFmtTests.fs` (D-progress-131).
 module Lyric.Emitter.Tests.SelfHostedTestSynthTests
@@ -22,7 +22,7 @@ let private findSelfTestSource () : string option =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let candidate =
-            Path.Combine(dir.Value.FullName, "lyric", "lyric", "test_synth_self_test.l")
+            Path.Combine(dir.Value.FullName, "lyric-compiler", "lyric", "test_synth_self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -36,7 +36,7 @@ let tests =
                 | Some path -> File.ReadAllText path
                 | None ->
                     failwith
-                        "cannot locate lyric/lyric/test_synth_self_test.l — run from the source tree"
+                        "cannot locate lyric-compiler/lyric/test_synth_self_test.l — run from the source tree"
 
             let result, stdout, stderr, exitCode =
                 compileAndRun "self_hosted_test_synth" src

@@ -132,7 +132,7 @@ project shipping one `Lyric.Stdlib.dll` carrying every `Std.X`'s
 contract resource side-by-side. Cold-build time drops by the cost of
 ~25 separate emit passes; `lyric` distributions ship a single
 artifact. See `docs/22-distribution-and-tooling.md` §2 for the
-concrete `stdlib/lyric.toml` and §3 for the SDK install layout the
+concrete `lyric-stdlib/lyric.toml` and §3 for the SDK install layout the
 bundled stdlib lives in.
 
 ## 6. Migration path
@@ -153,7 +153,7 @@ multiple internal packages — adopts `single`.
 
 When `output = "single"` and `output_assembly` is unset, the assembly
 name is the project's `name` field (PascalCase) plus `.dll`.
-`lyric/lyric/` would become `Lyric.dll` containing
+`lyric-compiler/lyric/` would become `Lyric.dll` containing
 `Lyric.Lexer` (and eventually `Lyric.Parser`, `Lyric.TypeChecker`,
 …) all in one DLL.
 

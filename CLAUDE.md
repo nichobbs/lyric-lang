@@ -24,11 +24,11 @@ compiler is written in F# and lives in `bootstrap/`. The repository contains:
 - `docs/11-stdlib-examples.md` — worked examples that exercise the standard library.
 - `docs/12-todo-plan.md` — running task list for in-flight and upcoming work.
 - `docs/13-tutorial.md` — narrative tutorial walking from hello-world to contracts.
-- `docs/14-native-stdlib-plan.md` — `stdlib/std/_kernel/` extern-boundary design.
+- `docs/14-native-stdlib-plan.md` — `lyric-stdlib/std/_kernel/` extern-boundary design.
 - `docs/15-phase-4-proof-plan.md` — Phase 4 verifier design (VC IR, SMT bridge).
 - `docs/16-lsp-vscode-plan.md` — LSP server and VS Code extension plan.
 - `docs/17-axiom-audit.md` — audit checklist for `@axiom` declarations.
-- `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6; self-hosted Lyric emitter shipped in `lyric/jvm/`).
+- `docs/18-jvm-emission.md` — JVM bytecode emission strategy (Phase 6; self-hosted Lyric emitter shipped in `lyric-compiler/jvm/`).
 - `docs/19-multi-file-packages.md` — multi-file package linking design.
 - `docs/20-project-as-dll.md` — `lyric.toml`-driven multi-package build and DLL bundling.
 - `docs/21-nuget-linking.md` — NuGet dependency resolution and `[nuget]` table design.
@@ -282,17 +282,17 @@ integration, NuGet plumbing that talks directly to the host runtime).
 
 Rules:
 
-- **New stdlib modules** → `stdlib/std/<module>.l` (public) and
-  `stdlib/std/_kernel/<module>_host.l` (externs, only when a BCL
+- **New stdlib modules** → `lyric-stdlib/std/<module>.l` (public) and
+  `lyric-stdlib/std/_kernel/<module>_host.l` (externs, only when a BCL
   boundary is unavoidable).
-- **New CLI logic** → implement in `lyric/lyric/<feature>.l`
+- **New CLI logic** → implement in `lyric-compiler/lyric/<feature>.l`
   (as a `Lyric.<Feature>` package), expose a single string-in /
   string-out bridge function, then wire it up via a thin
   `bootstrap/src/Lyric.Cli/SelfHosted<Feature>.fs` shim that compiles
   the Lyric driver, loads the DLL by reflection, and calls the bridge.
   Follow the pattern in `SelfHostedFmt.fs`, `SelfHostedManifest.fs`,
   and `SelfHostedTestSynth.fs`.
-- **New externs** → `stdlib/std/_kernel/` only; no `@externTarget`
+- **New externs** → `lyric-stdlib/std/_kernel/` only; no `@externTarget`
   or `extern type` declarations outside the kernel boundary.
 - **Do not** add new modules, types, or functions to any existing
   `bootstrap/src/Lyric.*/` F# project unless they are pure shim
@@ -356,10 +356,10 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
 - `bootstrap/src/Lyric.Lexer/` — the lexer (Phase 1, milestone M1.1, complete).
 - `bootstrap/src/Lyric.Parser/` — the parser (Phase 1, milestone M1.1, complete).
 - `bootstrap/src/Lyric.TypeChecker/` — the type checker (Phase 1, milestone M1.2, complete).
-- `stdlib/std/` — Lyric-language standard library source (`.l` files).
-  The emitter resolves `import Std.X` by locating `stdlib/std/<x>.l` here,
+- `lyric-stdlib/std/` — Lyric-language standard library source (`.l` files).
+  The emitter resolves `import Std.X` by locating `lyric-stdlib/std/<x>.l` here,
   walking up from the binary's base directory or honoring `LYRIC_STD_PATH`.
-  The `stdlib/std/_kernel/` subdirectory holds the audited extern boundary
+  The `lyric-stdlib/std/_kernel/` subdirectory holds the audited extern boundary
   (see `docs/14-native-stdlib-plan.md` Decision F): only kernel files may
   contain `@externTarget` / `extern type` declarations.
   Key modules: `Std.Core` (Option, Result), `Std.Collections` (List, Map),
@@ -368,23 +368,23 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   `Std.Uuid` (newUuid, uuidToString, parseUuidOpt),
   `Std.Xml` (pure-Lyric XML 1.0 parser, cross-platform, D065),
   `Std.Yaml` (pure-Lyric YAML 1.2 + JSON parser, cross-platform, D065).
-- `stdlib/tests/` — Lyric-language test suite for the stdlib. Each
+- `lyric-stdlib/tests/` — Lyric-language test suite for the stdlib. Each
   `*_tests.l` file is a standalone Lyric program that imports the modules
   it covers and asserts correctness via `Std.Testing`. The F# runner
   `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs` discovers and
   executes these files automatically as part of the emitter test suite.
 - The F# `bootstrap/src/Lyric.Stdlib/` project was deleted entirely
   (D-progress-140).  Every former `Lyric.Stdlib.*` host target has
-  migrated to direct BCL externs in `stdlib/std/_kernel/*.l` or
+  migrated to direct BCL externs in `lyric-stdlib/std/_kernel/*.l` or
   inline codegen, so the assembly was empty of types and adding nothing.
-  The Lyric-compiled stdlib bundle (per `stdlib/lyric.toml`) now ships
+  The Lyric-compiled stdlib bundle (per `lyric-stdlib/lyric.toml`) now ships
   as `Lyric.Stdlib.dll` directly — the SDK's `lib/Lyric.Stdlib.dll` is
   this bundle, not the retired F# shim.
 - `bootstrap/src/Lyric.Emitter/` — the MSIL emitter (Phase 1, milestone M1.3,
   complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
   runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
   `ManagedPEBuilder`.
-- `lyric/lyric/` — the **self-hosted Lyric compiler** sources.
+- `lyric-compiler/lyric/` — the **self-hosted Lyric compiler** sources.
   M5.1 (lexer / parser / type checker / CST) and M5.2 stages 1–2
   (mode checker, contract elaborator) have shipped:
   - `lexer.l` — full self-hosted lexer: identifiers (NFC-normalised,
@@ -486,7 +486,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   `ParseResult.cst` (with `ParseResult.source` for byte-faithful
   reconstruction via `nodeSourceText`).  CST types and the
   event-based builder live in
-  `lyric/lyric/parser/parser_cst.l`.  The F# bootstrap
+  `lyric-compiler/lyric/parser/parser_cst.l`.  The F# bootstrap
   parser/lexer are deliberately untouched.
 - `bootstrap/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`
   parses `lyric.toml`; `Pack.fs` lowers it to a generated `.csproj` for
@@ -529,7 +529,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     Falls back to the F# bootstrap dispatcher only on bridge failure
     (compile or reflection error).
 - The Phase 4 proof system (`Lyric.Verifier`) is fully self-hosted in
-  `lyric/lyric/verifier/` (see entry above).  The F# `Lyric.Verifier`
+  `lyric-compiler/lyric/verifier/` (see entry above).  The F# `Lyric.Verifier`
   project and its test project have been deleted; `lyric prove` routes
   through the self-hosted verifier via `SelfHostedCli.fs`.
 - `bootstrap/tests/Lyric.Lexer.Tests/`, `bootstrap/tests/Lyric.Parser.Tests/`,
@@ -542,7 +542,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
 ### Other top-level directories
 
 These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
-`stdlib/`, `book/`, and `docs/`:
+`lyric-stdlib/`, `book/`, and `docs/`:
 
 - `lyric-cache/` — `lyric-cache` library: in-memory and disk-backed
   caching utilities (D-progress-225 / D056).

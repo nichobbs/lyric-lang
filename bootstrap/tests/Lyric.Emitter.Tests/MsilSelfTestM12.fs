@@ -1,6 +1,6 @@
 /// Stage M12 conditional branch test.
 ///
-/// Compiles lyric/msil/msil_self_test_m12.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m12.l, runs it (producing a
 /// PE with Main() using cgt + brfalse + br to implement if/else), then
 /// executes the PE with `dotnet exec` verifying that "1" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM12
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m12.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m12.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m12.l"
 
             let dllPath = "/tmp/lyric_msil_m12_branch.dll"
             let cfgPath = "/tmp/lyric_msil_m12_branch.runtimeconfig.json"

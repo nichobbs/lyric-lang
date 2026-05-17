@@ -22,7 +22,7 @@ let private locateStdlibTestsDir () : string option =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let d = dir.Value
-        let candidate = Path.Combine(d.FullName, "stdlib", "tests")
+        let candidate = Path.Combine(d.FullName, "lyric-stdlib", "tests")
         if Directory.Exists candidate then found <- Some candidate
         dir <- d.Parent |> Option.ofObj
     found

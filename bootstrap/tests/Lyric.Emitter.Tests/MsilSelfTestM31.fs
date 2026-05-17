@@ -1,6 +1,6 @@
 /// Stage M31 ldftn + delegate test.
 ///
-/// Compiles lyric/msil/msil_self_test_m31.l, runs it (PE loads a
+/// Compiles lyric-compiler/msil/msil_self_test_m31.l, runs it (PE loads a
 /// function pointer for PrintFortyTwo via ldftn, wraps it in System.Action,
 /// then invokes it via callvirt Action::Invoke, which prints 42), then
 /// executes the PE verifying "42" in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m31.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m31.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m31.l"
 
             let dllPath = "/tmp/lyric_msil_m31_ldftn.dll"
             let cfgPath = "/tmp/lyric_msil_m31_ldftn.runtimeconfig.json"

@@ -1,6 +1,6 @@
 /// Stage M37 ldelema test.
 ///
-/// Compiles lyric/msil/msil_self_test_m37.l, runs it (PE allocates
+/// Compiles lyric-compiler/msil/msil_self_test_m37.l, runs it (PE allocates
 /// int32[1], takes address of element[0] via ldelema, stores 42 via stind.i4,
 /// reads it back via ldelem, and prints), then executes the PE verifying "42"
 /// in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m37.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m37.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m37.l"
 
             let dllPath = "/tmp/lyric_msil_m37_ldelema.dll"
             let cfgPath = "/tmp/lyric_msil_m37_ldelema.runtimeconfig.json"

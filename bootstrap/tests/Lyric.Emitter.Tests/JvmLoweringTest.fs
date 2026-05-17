@@ -1,6 +1,6 @@
 /// Stage B3 smoke test for Jvm.Lowering (LInsn / LRecord API).
 ///
-/// Compiles lyric/jvm/self_test_b3.l via the Lyric emitter,
+/// Compiles lyric-compiler/jvm/self_test_b3.l via the Lyric emitter,
 /// runs it (which writes Adder.class and Point.class to a temp dir),
 /// then hands each class file to `javap -c` to verify structural validity.
 module Lyric.Emitter.Tests.JvmLoweringTest
@@ -15,12 +15,12 @@ open Lyric.Emitter.Tests.EmitTestKit
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Walk up from `start` looking for `lyric/jvm/self_test_b3.l`.
+/// Walk up from `start` looking for `lyric-compiler/jvm/self_test_b3.l`.
 let private findSelfTestB3Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b3.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b3.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -52,7 +52,7 @@ let tests =
             let src =
                 match findSelfTestB3Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b3.l — run from the source tree"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b3.l — run from the source tree"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_lowering_b3" src
 

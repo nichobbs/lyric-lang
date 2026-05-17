@@ -1,7 +1,7 @@
 /// JVM class-file emission helpers — moved out of `Lyric.Stdlib`
 /// per `docs/23-fsharp-shim-elimination.md` Phase 1 Bucket D
 /// (D-progress-107).  These types are consumed only by the
-/// JVM emitter's Lyric source under `compiler/lyric/jvm/`; they
+/// JVM emitter's Lyric source under `lyric-compiler/jvm/`; they
 /// don't belong in the stdlib bundle that ordinary user programs
 /// depend on.
 ///

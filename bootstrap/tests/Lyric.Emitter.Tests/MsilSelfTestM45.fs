@@ -1,6 +1,6 @@
 /// Stage M45 initblk + cpblk (memory block operations) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m45.l, runs it (PE uses
+/// Compiles lyric-compiler/msil/msil_self_test_m45.l, runs it (PE uses
 /// initblk to fill 1 byte with 42 and reads it back as u1, then uses
 /// cpblk to copy 4 bytes from one local to another and reads back 42),
 /// then executes the PE verifying two lines of "42".
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m45.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m45.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m45.l"
 
             let dllPath = "/tmp/lyric_msil_m45_blk.dll"
             let cfgPath = "/tmp/lyric_msil_m45_blk.runtimeconfig.json"

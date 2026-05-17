@@ -9,7 +9,7 @@ and standalone ZIP. AOT binary and channel-based auto-update are Phase 6+ work.
 ## 1. Motivation
 
 Today the bootstrap stdlib is consumed *from source*: the compiler
-walks up from its binary directory looking for `stdlib/std/` and reads
+walks up from its binary directory looking for `lyric-stdlib/std/` and reads
 the `.l` files at compile time. This works during compiler
 development — every checkout has the source — but breaks the
 "download a Lyric SDK and use it" story:
@@ -100,7 +100,7 @@ its search order:
 2. **NEW:** Walk the directory tree from `startDir` looking for
    `lib/Lyric.Stdlib.dll` — accept the binary artifact if found,
    skipping source compilation entirely.
-3. Walk the directory tree looking for `stdlib/std/` source (today's
+3. Walk the directory tree looking for `lyric-stdlib/std/` source (today's
    path; remains the bootstrap-development fallback).
 
 The binary path is preferred for installed builds; the source path is
@@ -193,7 +193,7 @@ Pre-defined launch configurations in `.vscode/launch.json`:
 
 ## 7. Migration
 
-The bootstrap continues to walk for `stdlib/std/` as it does today —
+The bootstrap continues to walk for `lyric-stdlib/std/` as it does today —
 no breaking change. An installed build prefers the binary stdlib but
 retains source-tree fallback.
 

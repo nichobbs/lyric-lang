@@ -31,7 +31,7 @@
          emitter doesn't call into them at compile time, but having the
          assembly in the AppDomain means `findClrType` resolves the
          `@externTarget("Lyric.Jvm.Hosts.…")` declarations in
-         `compiler/lyric/jvm/_kernel/kernel.l` at user-program emit. -->
+         `lyric-compiler/jvm/_kernel/kernel.l` at user-program emit. -->
     <ProjectReference Include="..\Lyric.Jvm.Hosts\Lyric.Jvm.Hosts.fsproj" />
   </ItemGroup>
 

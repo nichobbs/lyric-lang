@@ -41,7 +41,7 @@ state is the cleanest:
 - Every public stdlib surface is Lyric source — verifiable, contract-
   enforceable, self-hosting-friendly.
 - A small irreducible BCL kernel (`@externTarget` declarations only)
-  remains in `stdlib/std/_kernel/`.
+  remains in `lyric-stdlib/std/_kernel/`.
 
 ---
 
@@ -60,7 +60,7 @@ state is the cleanest:
 
 These F#-or-BCL surfaces stay extern forever per `docs/14` §3.
 Their `@externTarget` declarations live in
-`stdlib/std/_kernel/*.l` and target BCL types directly — no F#
+`lyric-stdlib/std/_kernel/*.l` and target BCL types directly — no F#
 intermediate.
 
 | Surface | Why irreducible | Approx. extern count |
@@ -77,7 +77,7 @@ intermediate.
 | `System.Globalization.NumberStyles` for `Double.ToString("R", InvariantCulture)` | Round-trip float rendering edge case. | ~1 |
 
 **Hard cap (Decision F):** ≤150 extern declarations across
-`stdlib/std/_kernel/`. The `RenderDoubleSlice` carve-out from P3
+`lyric-stdlib/std/_kernel/`. The `RenderDoubleSlice` carve-out from P3
 counts; everything else here is already in `_kernel/`.
 
 ---
@@ -118,13 +118,13 @@ targeting.
 
 **Bucket C subtotal:** ~691 LoC eliminated (or migrated to direct
 `@externTarget` declarations, which moves them out of `Stdlib.fs`
-into `stdlib/std/_kernel/*.l`).
+into `lyric-stdlib/std/_kernel/*.l`).
 
 ### 4.3 Bucket D — JVM emit helpers (move out of stdlib)
 
 | F# type | LoC | Action |
 |---|---|---|
-| `JvmInternals` | 44 | Move to `lyric/jvm/` source tree (currently F#; eventually Lyric). |
+| `JvmInternals` | 44 | Move to `lyric-compiler/jvm/` source tree (currently F#; eventually Lyric). |
 | `JvmByteBuilder`, `JvmByteHost` | 127 | Same. |
 | `JvmZipHost` | 25 | Same. |
 | `JvmConstantPool`, `JvmPoolHost` | 234 | Same. |
@@ -181,7 +181,7 @@ type checker / emitter all support `protected type` already
 has 14 test cases covering fields, invariants, barriers, generics,
 and the tri-modal lock-flavour split).
 
-**StubCounter — shipped (D-progress-123).**  `stdlib/std/testing_mocking.l`
+**StubCounter — shipped (D-progress-123).**  `lyric-stdlib/std/testing_mocking.l`
 (new top-level file, shadows `_kernel/testing_mocking.l` on .NET)
 defines `pub protected type StubCounter { var count: Int = 0; … }`
 and thin wrapper functions.  `Emitter.fs` gained `IProtected`
@@ -329,7 +329,7 @@ gated on Phase 3.
    matching `_kernel/*.l` file. Mostly mechanical.
 3. **Bucket D split** — move `Jvm*` types out of
    `bootstrap/src/Lyric.Stdlib/Stdlib.fs` into
-   `lyric/jvm/Jvm.Hosts.fs` (new F# project under the
+   `lyric-compiler/jvm/Jvm.Hosts.fs` (new F# project under the
    JVM tree) and update the JVM emitter's `@externTarget`
    declarations to point there. **Frees the stdlib bundle from
    ~430 LoC of JVM-specific code that doesn't belong.**
@@ -395,7 +395,7 @@ runtime resolution required.  D-progress-140 ships:
 - CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`,
   `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their
   `Lyric.Stdlib.dll` copy / probe paths.
-- `stdlib/lyric.toml` reverts `output_assembly` to the canonical
+- `lyric-stdlib/lyric.toml` reverts `output_assembly` to the canonical
   `Lyric.Stdlib.dll`; the Lyric-compiled stdlib bundle now ships
   under that name with no F# shim to clobber.
 
@@ -465,7 +465,7 @@ native stdlib applies here:
 
 - **Q-shim-E: Should the JVM helper split-out (Bucket D) move to
   Lyric source eventually?** Yes — once the JVM emitter itself
-  ports to Lyric (`lyric/jvm/`), the helpers ride
+  ports to Lyric (`lyric-compiler/jvm/`), the helpers ride
   along. Until then they stay as F#.
 
 ---
@@ -486,5 +486,5 @@ native stdlib applies here:
   the "single DLL" target.
 - `bootstrap/src/Lyric.Stdlib/Stdlib.fs` — the F# shim being
   eliminated.
-- `stdlib/std/_kernel/` — the audited extern boundary that this
+- `lyric-stdlib/std/_kernel/` — the audited extern boundary that this
   plan grows incrementally.

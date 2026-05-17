@@ -135,7 +135,7 @@ and `df` doesn't, deleted-open files are definitively the cause.
 
 ## Out of scope
 
-- **Don't touch `stdlib/std/*.l`** — those are the in-tree
+- **Don't touch `lyric-stdlib/std/*.l`** — those are the in-tree
   stdlib *sources*, not generated artefacts.  Truncating them
   destroys real work.
 - **Don't truncate live JSONL session logs**.  The active session

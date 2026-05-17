@@ -1,6 +1,6 @@
 /// Stage M44 conv.r.un + ckfinite test.
 ///
-/// Compiles lyric/msil/msil_self_test_m44.l, runs it (PE uses
+/// Compiles lyric-compiler/msil/msil_self_test_m44.l, runs it (PE uses
 /// conv.r.un to treat 42 as an unsigned int and convert to R8, then ckfinite
 /// to verify the value is finite, then conv.i4 back to int, printing "42"),
 /// then executes the PE verifying "42" output.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m44.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m44.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m44.l"
 
             let dllPath = "/tmp/lyric_msil_m44_ckfinite.dll"
             let cfgPath = "/tmp/lyric_msil_m44_ckfinite.runtimeconfig.json"

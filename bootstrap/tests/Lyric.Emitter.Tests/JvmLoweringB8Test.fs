@@ -1,6 +1,6 @@
 /// Stage B8 smoke test — differential fuzzing corpus.
 ///
-/// Compiles lyric/jvm/self_test_b8.l, runs it (which writes
+/// Compiles lyric-compiler/jvm/self_test_b8.l, runs it (which writes
 /// B8Corpus.class containing 13 corpus methods + main() to /tmp/lyric-jvm-b8/),
 /// verifies the class file exists, then executes
 /// `java -Xverify:all -cp /tmp/lyric-jvm-b8 B8Corpus` and checks exit 0.
@@ -25,7 +25,7 @@ let private findSelfTestB8Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b8.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b8.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -57,7 +57,7 @@ let tests =
             let src =
                 match findSelfTestB8Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b8.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b8.l"
 
             // 1. Compile and run the Lyric program (writes B8Corpus.class).
             let result, stdout, stderr, exitCode = compileAndRun "jvm_fuzzer_b8" src

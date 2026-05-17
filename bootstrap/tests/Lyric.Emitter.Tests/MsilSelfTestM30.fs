@@ -1,6 +1,6 @@
 /// Stage M30 unbox_any test.
 ///
-/// Compiles lyric/msil/msil_self_test_m30.l, runs it (PE boxes 42
+/// Compiles lyric-compiler/msil/msil_self_test_m30.l, runs it (PE boxes 42
 /// as System.Object then unboxes it back to Int32 via unbox_any and prints),
 /// then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM30
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m30.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m30.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m30.l"
 
             let dllPath = "/tmp/lyric_msil_m30_unbox.dll"
             let cfgPath = "/tmp/lyric_msil_m30_unbox.runtimeconfig.json"

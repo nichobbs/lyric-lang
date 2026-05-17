@@ -1,6 +1,6 @@
 /// Stage M51 volatile. (0xFE 0x13 — volatile prefix for next load/store) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m51.l, runs it (PE locallocs 4
+/// Compiles lyric-compiler/msil/msil_self_test_m51.l, runs it (PE locallocs 4
 /// bytes, stores 42 via stind.i4, volatile-loads via volatile. ldind.i4, prints
 /// "42"), then executes the PE verifying "42" output.
 module Lyric.Emitter.Tests.MsilSelfTestM51
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m51.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m51.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m51.l"
 
             let dllPath = "/tmp/lyric_msil_m51_volatile.dll"
             let cfgPath = "/tmp/lyric_msil_m51_volatile.runtimeconfig.json"

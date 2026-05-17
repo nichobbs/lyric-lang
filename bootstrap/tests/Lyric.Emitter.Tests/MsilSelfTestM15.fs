@@ -1,6 +1,6 @@
 /// Stage M15 ldc.i8 / conv.i4 test.
 ///
-/// Compiles lyric/msil/msil_self_test_m15.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m15.l, runs it (producing a
 /// PE that pushes 1000000000L and 2L, multiplies to 2000000000L, narrows via
 /// conv.i4, and prints it), then executes the PE verifying "2000000000" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM15
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m15.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m15.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m15.l"
 
             let dllPath = "/tmp/lyric_msil_m15_i64.dll"
             let cfgPath = "/tmp/lyric_msil_m15_i64.runtimeconfig.json"

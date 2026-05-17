@@ -167,7 +167,7 @@ let compileAndRun (label: string) (source: string) : EmitResult * string * strin
     compileAndRunWith label source id
 
 /// Walk up the directory tree from the test binary's base directory
-/// looking for `lyric/msil/<filename>`.  Returns the full path when
+/// looking for `lyric-compiler/msil/<filename>`.  Returns the full path when
 /// found, or None.  Used by every MSIL self-test to locate its
 /// `msil_self_test_<stage>.l` source file regardless of working
 /// directory.
@@ -175,7 +175,7 @@ let findMsilSource (filename: string) : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "msil", filename)
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "msil", filename)
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found

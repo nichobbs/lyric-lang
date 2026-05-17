@@ -1,6 +1,6 @@
 /// Stage B9 smoke test — class-file reader round-trip verification.
 ///
-/// Compiles lyric/jvm/self_test_b9.l, runs it (which generates
+/// Compiles lyric-compiler/jvm/self_test_b9.l, runs it (which generates
 /// Hello.class bytes in memory, reads them back with Jvm.Reader, and prints
 /// the parsed header fields), then verifies the expected values:
 ///   magic_valid=true  (0xCAFEBABE confirmed)
@@ -17,7 +17,7 @@ let private findSelfTestB9Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b9.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b9.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -29,7 +29,7 @@ let tests =
             let src =
                 match findSelfTestB9Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b9.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b9.l"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_reader_b9" src
 

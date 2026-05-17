@@ -1,6 +1,6 @@
 /// Stage M2b smoke test for the self-hosted MSIL typed instruction IR.
 ///
-/// Compiles lyric/msil/msil_self_test_m2b.l via the Lyric emitter,
+/// Compiles lyric-compiler/msil/msil_self_test_m2b.l via the Lyric emitter,
 /// runs it, and verifies the structural invariants it prints.
 module Lyric.Emitter.Tests.MsilSelfTestM2b
 
@@ -13,7 +13,7 @@ let private findSource () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "msil", "msil_self_test_m2b.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "msil", "msil_self_test_m2b.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -25,7 +25,7 @@ let tests =
             let src =
                 match findSource () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m2b.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m2b.l"
 
             let result, stdout, stderr, exitCode = compileAndRun "msil_self_test_m2b" src
 

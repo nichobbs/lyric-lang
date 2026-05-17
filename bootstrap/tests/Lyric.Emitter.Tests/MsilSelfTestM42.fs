@@ -1,6 +1,6 @@
 /// Stage M42 stind.i1/i2 + ldind.u1/i2 (narrow indirect access) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m42.l, runs it (PE uses
+/// Compiles lyric-compiler/msil/msil_self_test_m42.l, runs it (PE uses
 /// stind.i1/ldind.u1 and stind.i2/ldind.i2 to store and load 42 via managed
 /// pointer, printing each result), then executes the PE verifying two lines of "42".
 module Lyric.Emitter.Tests.MsilSelfTestM42
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m42.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m42.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m42.l"
 
             let dllPath = "/tmp/lyric_msil_m42_narrow_ind.dll"
             let cfgPath = "/tmp/lyric_msil_m42_narrow_ind.runtimeconfig.json"

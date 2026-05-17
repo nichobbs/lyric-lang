@@ -1,6 +1,6 @@
 /// Stage M22 ldstr + #US heap test.
 ///
-/// Compiles lyric/msil/msil_self_test_m22.l, runs it (PE loads
+/// Compiles lyric-compiler/msil/msil_self_test_m22.l, runs it (PE loads
 /// "Hello, World!" via ldstr and calls Console.WriteLine(string)), then
 /// executes the PE verifying "Hello, World!" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM22
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m22.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m22.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m22.l"
 
             let dllPath = "/tmp/lyric_msil_m22_ldstr.dll"
             let cfgPath = "/tmp/lyric_msil_m22_ldstr.runtimeconfig.json"

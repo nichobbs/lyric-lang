@@ -1,6 +1,6 @@
 /// Stage M25 isinst + box test.
 ///
-/// Compiles lyric/msil/msil_self_test_m25.l, runs it (PE boxes 42 as
+/// Compiles lyric-compiler/msil/msil_self_test_m25.l, runs it (PE boxes 42 as
 /// System.Object, tests isinst System.Object, then boxes 42 and calls
 /// Console.WriteLine(object) to print "42"), then executes the PE verifying
 /// "42" in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m25.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m25.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m25.l"
 
             let dllPath = "/tmp/lyric_msil_m25_isinst.dll"
             let cfgPath = "/tmp/lyric_msil_m25_isinst.runtimeconfig.json"

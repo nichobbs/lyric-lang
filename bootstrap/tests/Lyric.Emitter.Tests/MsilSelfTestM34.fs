@@ -1,6 +1,6 @@
 /// Stage M34 sizeof test.
 ///
-/// Compiles lyric/msil/msil_self_test_m34.l, runs it (PE pushes the
+/// Compiles lyric-compiler/msil/msil_self_test_m34.l, runs it (PE pushes the
 /// byte size of System.Int32 via sizeof, then prints it via
 /// Console.WriteLine(int)), then executes the PE verifying "4" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM34
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m34.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m34.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m34.l"
 
             let dllPath = "/tmp/lyric_msil_m34_sizeof.dll"
             let cfgPath = "/tmp/lyric_msil_m34_sizeof.runtimeconfig.json"

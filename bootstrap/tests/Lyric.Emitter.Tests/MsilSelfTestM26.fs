@@ -1,6 +1,6 @@
 /// Stage M26 newarr + ldelem + stelem test.
 ///
-/// Compiles lyric/msil/msil_self_test_m26.l, runs it (PE creates a
+/// Compiles lyric-compiler/msil/msil_self_test_m26.l, runs it (PE creates a
 /// 2-element int32 array, stores 21 at [0] and 21 at [1], loads and adds them
 /// to print "42"), then executes the PE verifying "42" in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM26
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m26.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m26.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m26.l"
 
             let dllPath = "/tmp/lyric_msil_m26_newarr.dll"
             let cfgPath = "/tmp/lyric_msil_m26_newarr.runtimeconfig.json"

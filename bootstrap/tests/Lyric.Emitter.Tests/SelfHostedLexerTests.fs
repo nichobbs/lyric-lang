@@ -1,7 +1,7 @@
 /// Phase 5 §M5.1 stage 2b — exercises the self-hosted `Lyric.Lexer`
 /// library through a tiny Lyric.LexerSelfTest consumer.
 ///
-/// Compiles `lyric/lyric/lexer_self_test.l` via the bootstrap
+/// Compiles `lyric-compiler/lyric/lexer_self_test.l` via the bootstrap
 /// emitter, runs the resulting program, and asserts that every
 /// in-program assertion held (exit code 0 + an "ok" line in stdout).
 /// The self-test `import Lyric.Lexer`; the emitter's auto-resolver
@@ -20,7 +20,7 @@ let private findSelfTestSource () : string option =
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
         let candidate =
-            Path.Combine(dir.Value.FullName, "lyric", "lyric", "lexer_self_test.l")
+            Path.Combine(dir.Value.FullName, "lyric-compiler", "lyric", "lexer_self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -34,7 +34,7 @@ let tests =
                 | Some path -> File.ReadAllText path
                 | None ->
                     failwith
-                        "cannot locate lyric/lyric/lexer_self_test.l — run from the source tree"
+                        "cannot locate lyric-compiler/lyric/lexer_self_test.l — run from the source tree"
 
             let result, stdout, stderr, exitCode =
                 compileAndRun "self_hosted_lexer" src

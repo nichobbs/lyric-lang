@@ -1,6 +1,6 @@
 /// Stage M4 multi-method PE assembler test.
 ///
-/// Compiles lyric/msil/msil_self_test_m4.l via the Lyric emitter,
+/// Compiles lyric-compiler/msil/msil_self_test_m4.l via the Lyric emitter,
 /// runs it (which writes a two-method PE to /tmp), checks the structural
 /// layout assertions, then executes the produced PE with `dotnet exec` and
 /// verifies the CLR calls both Greet() invocations correctly.
@@ -18,7 +18,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m4.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m4.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m4.l"
 
             let dllPath = "/tmp/lyric_msil_m4_hello.dll"
             let cfgPath = "/tmp/lyric_msil_m4_hello.runtimeconfig.json"

@@ -1,6 +1,6 @@
 /// Stage B4 smoke test for Jvm.Lowering — union-type lowering.
 ///
-/// Compiles lyric/jvm/self_test_b4.l, runs it (which writes
+/// Compiles lyric-compiler/jvm/self_test_b4.l, runs it (which writes
 /// Option.class, Option$Some.class, Option$None.class, and OptionHelper.class
 /// to /tmp/lyric-jvm-b4/), then verifies each class via `javap -c`.
 module Lyric.Emitter.Tests.JvmLoweringB4Test
@@ -19,7 +19,7 @@ let private findSelfTestB4Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b4.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b4.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -50,7 +50,7 @@ let tests =
             let src =
                 match findSelfTestB4Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b4.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b4.l"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_lowering_b4" src
 

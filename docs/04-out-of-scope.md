@@ -128,7 +128,7 @@ Trait/interface-based generics ship in v1. Package generics (parameterizing whol
 
 **Status:** PHASE 6 IN PROGRESS (self-hosted only — not yet wired to `lyric build`)
 
-The self-hosted JVM emitter (`lyric/jvm/`) is in active development.
+The self-hosted JVM emitter (`lyric-compiler/jvm/`) is in active development.
 `Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` are complete and
 pass 125 self-tests (B3–B125).  CLI wiring (`lyric build --target jvm` producing
 a real JAR) is tracked in `docs/33-platform-parity-remediation.md §4–5`.
@@ -142,7 +142,7 @@ After v1 ships and stabilizes, evaluate JVM based on user demand.
 
 **Status:** PHASE 5 IN PROGRESS (substantially shipped)
 
-The self-hosted Lyric compiler (`lyric/lyric/`) has shipped: lexer,
+The self-hosted Lyric compiler (`lyric-compiler/lyric/`) has shipped: lexer,
 parser, type checker, mode checker, contract elaborator, formatter, and MSIL
 low-level PE/opcode/tables layer.  Outstanding: high-level MSIL lowering
 (`Msil.Lowering`), monomorphizer, and self-hosted lint/doc/pack (tracked in

@@ -1,6 +1,6 @@
 /// Stage M50 sizeof (0xFE 0x1C — get value-type byte size) test.
 ///
-/// Compiles lyric/msil/msil_self_test_m50.l, runs it (PE pushes
+/// Compiles lyric-compiler/msil/msil_self_test_m50.l, runs it (PE pushes
 /// sizeof(System.Int32) = 4, adds 38, prints "42"), then executes the PE
 /// verifying "42" output.
 module Lyric.Emitter.Tests.MsilSelfTestM50
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m50.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m50.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m50.l"
 
             let dllPath = "/tmp/lyric_msil_m50_sizeof.dll"
             let cfgPath = "/tmp/lyric_msil_m50_sizeof.runtimeconfig.json"

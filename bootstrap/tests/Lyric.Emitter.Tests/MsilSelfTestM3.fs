@@ -1,6 +1,6 @@
 /// Stage M3 end-to-end PE execution test.
 ///
-/// Compiles lyric/msil/msil_self_test_m3.l via the Lyric emitter,
+/// Compiles lyric-compiler/msil/msil_self_test_m3.l via the Lyric emitter,
 /// runs it (which writes a raw MSIL PE to /tmp via Std.File.writeBytes),
 /// then executes the produced PE with `dotnet exec` and verifies the CLR
 /// output contains "Hello, World!".
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m3.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m3.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m3.l"
 
             let dllPath = "/tmp/lyric_msil_m3_hello.dll"
             let cfgPath = "/tmp/lyric_msil_m3_hello.runtimeconfig.json"

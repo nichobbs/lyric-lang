@@ -1,6 +1,6 @@
 /// Stage B2 smoke test for the JVM classfile + bytecode packages.
 ///
-/// Compiles lyric/jvm/self_test.l via the Lyric emitter, runs it
+/// Compiles lyric-compiler/jvm/self_test.l via the Lyric emitter, runs it
 /// (which writes Hello.class to a temp dir), then hands the class file to
 /// `javap -c` to verify it is a structurally valid JVM class file.
 module Lyric.Emitter.Tests.JvmSelfTest
@@ -15,12 +15,12 @@ open Lyric.Emitter.Tests.EmitTestKit
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Walk up from `start` looking for `lyric/jvm/self_test.l`.
+/// Walk up from `start` looking for `lyric-compiler/jvm/self_test.l`.
 let private findSelfTestSource () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -52,7 +52,7 @@ let tests =
             let src =
                 match findSelfTestSource () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test.l — run from the source tree"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test.l — run from the source tree"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_self_test" src
 

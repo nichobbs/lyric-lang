@@ -16,7 +16,7 @@ let private findSelfTestB15Source () : string option =
     let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
     let mutable found : string option = None
     while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric", "jvm", "self_test_b15.l")
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b15.l")
         if File.Exists candidate then found <- Some candidate
         dir <- dir.Value.Parent |> Option.ofObj
     found
@@ -42,7 +42,7 @@ let tests =
             let src =
                 match findSelfTestB15Source () with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/jvm/self_test_b15.l"
+                | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b15.l"
 
             let result, stdout, stderr, exitCode = compileAndRun "jvm_driver_b15" src
 

@@ -1,6 +1,6 @@
 /// Stage M33 ldtoken test.
 ///
-/// Compiles lyric/msil/msil_self_test_m33.l, runs it (PE uses ldtoken
+/// Compiles lyric-compiler/msil/msil_self_test_m33.l, runs it (PE uses ldtoken
 /// to push a RuntimeTypeHandle for System.Int32, calls Type.GetTypeFromHandle
 /// to get a Type, calls get_Name() to get "Int32", and prints it), then
 /// executes the PE verifying "Int32" in stdout.
@@ -17,7 +17,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m33.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m33.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m33.l"
 
             let dllPath = "/tmp/lyric_msil_m33_ldtoken.dll"
             let cfgPath = "/tmp/lyric_msil_m33_ldtoken.runtimeconfig.json"

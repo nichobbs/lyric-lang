@@ -1,6 +1,6 @@
 /// Stage M11 InterfaceImpl table test.
 ///
-/// Compiles lyric/msil/msil_self_test_m11.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m11.l, runs it (producing a
 /// PE with an interface IGetter, implementing class Impl, and Hello), then
 /// executes the PE with `dotnet exec` verifying that "42" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM11
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m11.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m11.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m11.l"
 
             let dllPath = "/tmp/lyric_msil_m11_ifaceimpl.dll"
             let cfgPath = "/tmp/lyric_msil_m11_ifaceimpl.runtimeconfig.json"

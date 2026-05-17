@@ -1,6 +1,6 @@
 /// Stage M9 multiple TypeDefs test.
 ///
-/// Compiles lyric/msil/msil_self_test_m9.l, runs it (producing a
+/// Compiles lyric-compiler/msil/msil_self_test_m9.l, runs it (producing a
 /// PE with three classes Foo, Bar, Hello each owning one static method), then
 /// executes the PE with `dotnet exec` verifying that "30" appears in stdout.
 module Lyric.Emitter.Tests.MsilSelfTestM9
@@ -16,7 +16,7 @@ let tests =
             let src =
                 match findMsilSource "msil_self_test_m9.l" with
                 | Some path -> File.ReadAllText path
-                | None      -> failwith "cannot locate lyric/msil/msil_self_test_m9.l"
+                | None      -> failwith "cannot locate lyric-compiler/msil/msil_self_test_m9.l"
 
             let dllPath = "/tmp/lyric_msil_m9_multitypedef.dll"
             let cfgPath = "/tmp/lyric_msil_m9_multitypedef.runtimeconfig.json"

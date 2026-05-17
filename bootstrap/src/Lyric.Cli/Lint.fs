@@ -1,7 +1,7 @@
 /// `lyric lint` — style and quality checks for Lyric source files.
 ///
 /// Domain logic has been ported to the self-hosted `Lyric.Lint` package
-/// (`compiler/lyric/lyric/lint/lint.l`).  This file retains only the
+/// (`lyric-compiler/lyric/lint/lint.l`).  This file retains only the
 /// F#-side types and the diagnostic renderer so `Program.fs` and
 /// `SelfHostedLint.fs` share a common result shape without depending on
 /// reflection on Lyric union types.

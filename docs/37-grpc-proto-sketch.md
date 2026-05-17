@@ -268,7 +268,7 @@ forward-looking; bootstrap-grade gRPC ships unary-only and emits
 ### 5.1 `Stream[T]`
 
 ```lyric
-// stdlib/std/stream.l (M1.4+)
+// lyric-stdlib/std/stream.l (M1.4+)
 pub opaque type Stream[T] { ... }
 
 pub func Stream.fromList[T](xs: [T]): Stream[T]
