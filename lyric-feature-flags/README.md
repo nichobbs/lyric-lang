@@ -7,23 +7,22 @@ Runtime feature flag toggles for safe rollouts, A/B testing, and kill switches.
 | Package | Purpose |
 |---|---|
 | `Flags` | Core types, `FlagStore` interface, in-process implementation, and public API |
+| `Flags.Aspects` | `FlagGated` and `FlagVariant` aspect templates |
 
 ## Quick start
 
 ```lyric
 import Flags
 
-val store = Flags.inProcess()
+val store = Flags.fromEntries([
+  Flags.makeFlag("new-checkout", true),
+  Flags.makeFlagWithDesc("dark-mode", false, "Enable dark mode UI"),
+])
 
-Flags.makeFlag(store, "newCheckout", Flags.FlagValue.FlagBool(true))
-
-match Flags.getBool(store, "newCheckout") {
-  case Some(true)  -> println("Using new checkout flow")
-  case Some(false) -> println("Using legacy checkout flow")
-  case None        -> println("Flag not found")
+if Flags.isEnabled(store, "new-checkout") {
+  // run new checkout flow
 }
-
-Flags.listFlags(store)  // Returns all defined flags
+val colour = Flags.getString(store, "theme-colour", "blue")
 ```
 
 ## FlagStore interface
@@ -32,54 +31,61 @@ Flags.listFlags(store)  // Returns all defined flags
 
 ```lyric
 pub interface FlagStore {
-  func getFlag(key: in String): Option[FlagEntry]
-  func setFlag(key: in String, entry: in FlagEntry): Unit
-  func listAll(): slice[FlagEntry]
-  func deleteFlag(key: in String): Unit
+  func isEnabled(name: in String): Bool
+  func getValue(name: in String): Option[FlagValue]
+  func listFlags(): [FlagEntry]
+  func refresh(): Result[Unit, FlagError]
 }
 ```
 
-The v1 implementation is `InProcessFlagStore` (in-memory, single-process).
-Implement `FlagStore` for a remote flag service and pass the implementation
-to your own aspect body or helper functions.
+The v1 implementation is `InProcessFlagStore` (in-memory, single-process, not thread-safe).
+With the `remote` feature active, `Flags.connectRemote()` returns a `NativeFlagStore`
+that polls an HTTP endpoint. Implement `FlagStore` for a custom backing store.
 
 ## In-process store
 
-`Flags.inProcess()` creates an in-process store from `fromEntries()`:
-
 ```lyric
-val entries = [
-  Flags.FlagEntry { key: "feature1", value: Flags.FlagValue.FlagBool(true), description: "Rollout A" },
-  Flags.FlagEntry { key: "feature2", value: Flags.FlagValue.FlagInt(50), description: "A/B split %" }
-]
+val store = Flags.fromEntries([
+  Flags.makeFlag("my-flag", true),
+  Flags.makeFlagWithDesc("dark-mode", false, "Enable dark mode UI"),
+])
 
-val store = Flags.fromEntries(entries)
+// or start empty
+val store = Flags.inProcess()
 ```
 
 ## API reference
 
 ```lyric
-Flags.getBool(store, key)      // Option[Bool]
-Flags.getString(store, key)    // Option[String]
-Flags.getInt(store, key)       // Option[Int]
-Flags.getFloat(store, key)     // Option[Float]
-Flags.getValue(store, key)     // Option[FlagValue]
-Flags.isEnabled(store, key)    // Bool — true if flag key exists and is truthy
-Flags.listFlags(store)         // slice[FlagEntry]
-Flags.makeFlag(store, key, value)
-Flags.makeFlagWithDesc(store, key, value, description)
+// Factory
+Flags.inProcess(): InProcessFlagStore
+Flags.fromEntries(entries: [FlagEntry]): InProcessFlagStore
+Flags.connectRemote(): Result[FlagStore, FlagError]   // requires feature = "remote"
+
+// FlagEntry construction
+Flags.makeFlag(name: String, enabled: Bool): FlagEntry
+Flags.makeFlagWithDesc(name: String, enabled: Bool, description: String): FlagEntry
+
+// Typed accessors (return defaultValue when flag absent or wrong type)
+Flags.isEnabled(store, name): Bool
+Flags.getValue(store, name): Option[FlagValue]
+Flags.getBool(store, name, defaultValue: Bool): Bool
+Flags.getString(store, name, defaultValue: String): String
+Flags.getInt(store, name, defaultValue: Int): Int
+Flags.refresh(store): Result[Unit, FlagError]
+Flags.listFlags(): [FlagEntry]   // via store.listFlags()
 ```
 
-## Configuration
+## Types
 
-`FlagValue` enum defines supported types:
+`FlagValue` enum:
 
 ```lyric
 pub enum FlagValue {
-  case FlagBool(Bool)
-  case FlagString(String)
-  case FlagInt(Int)
-  case FlagFloat(Float)
+  case FlagBool(value: Bool)
+  case FlagString(value: String)
+  case FlagInt(value: Int)
+  case FlagFloat(value: Float)
 }
 ```
 
@@ -87,9 +93,18 @@ pub enum FlagValue {
 
 ```lyric
 pub record FlagEntry {
-  key: String
-  value: FlagValue
-  description: Option[String]
+  name:        String
+  value:       FlagValue
+  description: String
+}
+```
+
+`FlagError` record:
+
+```lyric
+pub record FlagError {
+  message: String
+  code:    String
 }
 ```
 
@@ -99,21 +114,16 @@ Feature-gate the remote flag backend in `lyric.toml`:
 
 ```toml
 [features]
-flags = ["remote"]
+remote = []
 ```
 
-Then use the remote config block:
+Then use `Flags.connectRemote()` after setting the config block:
 
-```lyric
-import Flags
-
-val store = Flags.connectRemote({
-  url: "https://flag-service.example.com",
-  apiKey: env("FLAG_API_KEY"),
-  pollIntervalMs: 30000,
-  connectTimeoutMs: 5000,
-  appKey: "my-app"
-})
+```toml
+[LYRIC_CONFIG_REMOTE]
+URL = "https://flag-service.example.com"
+APIKEY = "..."
+POLLINTERVALMS = "30000"
 ```
 
 Runtime config (env prefix `LYRIC_CONFIG_REMOTE_`):
@@ -121,24 +131,27 @@ Runtime config (env prefix `LYRIC_CONFIG_REMOTE_`):
 | Env var | Default | Meaning |
 |---|---|---|
 | `URL` | *(required)* | Flag service endpoint |
-| `APIKEY` | `""` | API key for authentication |
-| `POLLINTERVALMS` | `30000` | Poll interval in ms |
-| `CONNECTTIMEOUTMS` | `5000` | Connect timeout in ms |
+| `APIKEY` | `""` | API key for authentication (`@sensitive`) |
+| `POLLINTERVALMS` | `30000` | Poll interval in ms (5000–3600000) |
+| `CONNECTTIMEOUTMS` | `5000` | Connect timeout in ms (1000–30000) |
 | `APPKEY` | `""` | Application identifier |
 
 ## Aspect templates
 
 ### FlagGated
 
-Aspect template for conditional execution based on a feature flag.
-Skips the matched function body if the flag is disabled.
+Short-circuits execution of the matched function when a named flag is disabled.
+Returns `Err("feature disabled: " + flagName)` without invoking the handler.
 
 ```lyric
 import Flags.Aspects
 
 aspect NewCheckoutGate from Flags.Aspects.FlagGated {
   matches: name == "handleCheckout"
-  config { flagKey: String = "newCheckout" }
+  config {
+    flagName:         String = "new-checkout"
+    defaultOnMissing: Bool   = false
+  }
 }
 ```
 
@@ -147,8 +160,15 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `flagKey` | `String` | `""` | Feature flag key to check |
+| `flagName` | `String` | *(required)* | Feature flag name to check |
+| `defaultOnMissing` | `Bool` | `false` | Value to use when flag is absent |
+
+### FlagVariant
+
+**Experimental stub.** Always proceeds unconditionally. Full A/B variant routing
+(read flagName, compare to variant, short-circuit on mismatch) is deferred to a
+follow-up stage.
 
 ## Decision log
 
-See `docs/03-decision-log.md` D-progress-XXX.
+See `docs/03-decision-log.md` D-progress-261.

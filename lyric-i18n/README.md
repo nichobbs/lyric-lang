@@ -170,4 +170,4 @@ Each file is a flat JSON object: `{ "key1": "value1", "key2": "value2" }`
 
 ## Decision log
 
-See `docs/03-decision-log.md` D-progress-XXX.
+See `docs/03-decision-log.md` D-progress-261.

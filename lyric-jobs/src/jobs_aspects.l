@@ -54,6 +54,7 @@ import Jobs
 ///   maxAttempts    Int  — total attempts including the first (default: 3)
 ///   initialDelayMs Int  — base delay in ms before the second attempt (default: 500)
 ///   backoffFactor  Int  — delay multiplier per retry (default: 2 — exponential)
+///   maxDelayMs     Int  — upper bound on any single delay to prevent Int overflow (default: 30000)
 @stable(since="0.1")
 pub aspect Retryable {
   config {
@@ -61,6 +62,7 @@ pub aspect Retryable {
     maxAttempts:    Int  = 3
     initialDelayMs: Int  = 500
     backoffFactor:  Int  = 2
+    maxDelayMs:     Int  = 30000
   }
 
   around(call) -> ret {
@@ -73,7 +75,7 @@ pub aspect Retryable {
         match ret {
           case Ok(_)  -> attempt = maxAttempts    // exit loop on success
           case Err(_) -> {
-            val delay = retryBackoffDelay(initialDelayMs, backoffFactor, attempt - 1)
+            val delay = retryBackoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs)
             Resilience.sleepMs(delay)
             ret     = call.proceed()
             attempt = attempt + 1
@@ -124,13 +126,16 @@ pub aspect Timed {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Compute the exponential backoff delay for a given attempt index (0-based).
-func retryBackoffDelay(initialDelayMs: in Int, backoffFactor: in Int, attempt: in Int): Int {
+// Compute exponential backoff delay for attempt index (0-based), clamped to maxDelayMs.
+// Clamping inside the loop prevents Int overflow on large attempt counts or large factors.
+func retryBackoffDelay(initialDelayMs: in Int, backoffFactor: in Int, attempt: in Int, maxDelayMs: in Int): Int {
   var delay: Int = initialDelayMs
   var i:     Int = 0
   while i < attempt {
+    if delay >= maxDelayMs { return maxDelayMs }
     delay = delay * backoffFactor
-    i     = i + 1
+    if delay > maxDelayMs { delay = maxDelayMs }
+    i = i + 1
   }
   return delay
 }

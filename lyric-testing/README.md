@@ -174,4 +174,4 @@ Testing.clearQueue(queue: inout MockMessageQueue)
 
 ## Decision log
 
-See `docs/03-decision-log.md` D-progress-XXX.
+See `docs/03-decision-log.md` D-progress-261.

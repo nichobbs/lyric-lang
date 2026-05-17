@@ -23,9 +23,8 @@ sqs             = []   # Amazon SQS (AWSSDK.SQS on .NET)
 kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../stdlib" }
-"Lyric.Resilience" = { path = "../lyric-resilience" }
-"Lyric.Cache"      = { path = "../lyric-cache" }
+"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Cache"  = { path = "../lyric-cache" }
 
 [nuget]
 # feature = "rabbitmq" — AMQP 0-9-1 client for .NET
