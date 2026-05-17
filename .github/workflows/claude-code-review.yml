@@ -19,18 +19,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Fail early with a clear message rather than letting the action
-      # crash silently if the required secret is absent.
-      - name: Preflight — validate CLAUDE_CODE_OAUTH_TOKEN
-        run: |
-          if [ -z "$CLAUDE_TOKEN" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured. Set it at repo Settings → Secrets and variables → Actions."
-            exit 1
-          fi
-          echo "CLAUDE_CODE_OAUTH_TOKEN is present."
-        env:
-          CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
       # Create well-known labels up front so Claude never races against missing labels.
       - name: Ensure base review labels exist
         run: |
@@ -48,9 +36,6 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
-        # continue-on-error so the next step can emit a useful diagnostic
-        # if the action crashes, rather than just showing a red step.
-        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -78,123 +63,57 @@ jobs:
 
             ## Step 3: Create the per-PR label
             Run (ignore errors if it already exists):
-            ```
-            gh label create "pr-${{ github.event.pull_request.number }}" \
-              --color "0075ca" \
-              --description "Review findings for PR #${{ github.event.pull_request.number }}" \
-              --repo ${{ github.repository }} 2>/dev/null || true
-            ```
+            gh label create "pr-${{ github.event.pull_request.number }}" --color "0075ca" --description "Review findings for PR #${{ github.event.pull_request.number }}" --repo ${{ github.repository }} 2>/dev/null || true
 
             ## Step 4: For each REQUIRED or SUGGESTION finding, create a tracking issue (dedup first)
             Repeat for every finding:
 
             a) List all open issues already carrying this PR's label to detect duplicates:
-               ```
-               gh issue list \
-                 --repo ${{ github.repository }} \
-                 --label "pr-${{ github.event.pull_request.number }}" \
-                 --state open \
-                 --json number,title \
-                 --limit 100
-               ```
+               gh issue list --repo ${{ github.repository }} --label "pr-${{ github.event.pull_request.number }}" --state open --json number,title --limit 100
 
             b) If an issue with the same or substantially similar title already exists,
-               **do not create a duplicate** — record the existing issue number instead.
+               do not create a duplicate — record the existing issue number instead.
 
-            c) Otherwise create a new issue:
-               ```
-               gh issue create \
-                 --repo ${{ github.repository }} \
-                 --title "[Review] <concise one-line title>" \
-                 --body "**PR:** #${{ github.event.pull_request.number }}
-               **Severity:** REQUIRED | SUGGESTION
-               **File/location:** <file path and line range if applicable>
+            c) Otherwise create a new issue and record the returned number:
+               gh issue create --repo ${{ github.repository }} --title "[Review] <concise title>" --body "<body with PR number, severity, file location, description>" --label "review-finding" --label "pr-${{ github.event.pull_request.number }}"
 
-               <detailed description of the problem and suggested fix>
-
-               ---
-               *Auto-created by code review workflow on PR #${{ github.event.pull_request.number }}. Close once the finding is addressed.*" \
-                 --label "review-finding" \
-                 --label "pr-${{ github.event.pull_request.number }}"
-               ```
-               Record the issue number printed by this command.
+               The body must contain: "**PR:** #${{ github.event.pull_request.number }}", "**Severity:** REQUIRED" or "**Severity:** SUGGESTION", the file/line if applicable, and a clear description.
 
             ## Step 5: Auto-close issues whose findings are now resolved
-            For all currently open issues labeled `pr-${{ github.event.pull_request.number }}`:
-            - Read each issue body to understand what it was flagging.
-            - Cross-reference with the current diff.
-            - If the finding is no longer present in the code, close it:
-              ```
-              gh issue close <number> \
-                --repo ${{ github.repository }} \
-                --comment "Finding resolved in the latest commit on PR #${{ github.event.pull_request.number }}."
-              ```
+            For each open issue labeled pr-${{ github.event.pull_request.number }}, if its finding is no longer present in the current diff, close it:
+            gh issue close <number> --repo ${{ github.repository }} --comment "Finding resolved in the latest commit on PR #${{ github.event.pull_request.number }}."
 
             ## Step 6: Set or clear the blocking PR label
-            After closing resolved issues, determine whether any REQUIRED findings remain open.
-
-            If ANY open issues labeled `pr-${{ github.event.pull_request.number }}` have
-            "**Severity:** REQUIRED" in their body:
-            ```
-            gh pr edit ${{ github.event.pull_request.number }} \
-              --repo ${{ github.repository }} \
-              --add-label "review:changes-required"
-            ```
-
-            Otherwise (all REQUIRED findings resolved or none existed):
-            ```
-            gh pr edit ${{ github.event.pull_request.number }} \
-              --repo ${{ github.repository }} \
-              --remove-label "review:changes-required" 2>/dev/null || true
-            ```
+            If ANY open issues labeled pr-${{ github.event.pull_request.number }} contain "**Severity:** REQUIRED" in their body:
+              gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --add-label "review:changes-required"
+            Otherwise:
+              gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --remove-label "review:changes-required" 2>/dev/null || true
 
             ## Step 7: Post a summary comment on the PR
-            Post ONE summary comment via:
-            ```
-            gh pr comment ${{ github.event.pull_request.number }} \
-              --repo ${{ github.repository }} \
-              --body "<summary>"
-            ```
+            Post one summary comment: gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "<summary>"
 
             The summary must include:
-            - **Verdict line** at the top: "CHANGES REQUIRED" or "APPROVED"
-            - REQUIRED findings with issue links, e.g.:
-              `- REQUIRED: <title> — #<issue-number>`
-            - SUGGESTION findings with issue links, e.g.:
-              `- SUGGESTION: <title> — #<issue-number>`
-            - PRAISE items (no issue links)
-            - If any previously open issues were closed this run:
-              `Previously resolved and closed: #<n>, #<m>`
-            - If no findings at all: a brief positive summary.
+            - Verdict at the top: CHANGES REQUIRED or APPROVED
+            - REQUIRED findings with issue links, e.g.: "- REQUIRED: <title> — #<n>"
+            - SUGGESTION findings with issue links, e.g.: "- SUGGESTION: <title> — #<n>"
+            - PRAISE items (no issue links needed)
+            - Any previously open issues that were closed this run
 
-          # Explicit per-subcommand allowlist — avoids relying on broad glob support.
-          claude_args: >-
-            --allowed-tools
-            "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh pr list:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh issue view:*),Bash(gh label create:*),Bash(gh search:*),Read"
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh label create:*),Bash(gh search:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*),Read"'
 
-      # Distinguish "Claude crashed" from "Claude found REQUIRED issues".
-      # Both block the merge, but produce different error messages.
-      - name: Fail if review errored or changes are required
+      # Read the PR label state set by Claude and fail the job if changes are required.
+      # This makes "Claude Code Review / claude-review" a blockable required status check.
+      - name: Fail if changes are required
         run: |
-          CLAUDE_OUTCOME="${{ steps.claude-review.outcome }}"
-          echo "Claude review step outcome: $CLAUDE_OUTCOME"
-
-          if [ "$CLAUDE_OUTCOME" = "failure" ]; then
-            echo "::error::The Claude Code Review action failed to run. Check the step logs above for details (authentication, configuration, or tool errors)."
-            exit 1
-          fi
-
           LABELS=$(gh pr view "$PR_NUMBER" \
             --repo "$REPO" \
             --json labels \
             --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
           echo "PR labels: $LABELS"
-
           if echo "$LABELS" | grep -q "review:changes-required"; then
             echo "::error::Code review requires changes before merge. Resolve the linked GitHub issues, push a new commit, and the review will re-run automatically."
             exit 1
           fi
-
           echo "Code review passed — no required changes."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
