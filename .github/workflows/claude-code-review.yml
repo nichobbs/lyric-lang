@@ -19,6 +19,18 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Fail early with a clear message rather than letting the action
+      # crash silently if the required secret is absent.
+      - name: Preflight — validate CLAUDE_CODE_OAUTH_TOKEN
+        run: |
+          if [ -z "$CLAUDE_TOKEN" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured. Set it at repo Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "CLAUDE_CODE_OAUTH_TOKEN is present."
+        env:
+          CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
       # Create well-known labels up front so Claude never races against missing labels.
       - name: Ensure base review labels exist
         run: |
@@ -36,6 +48,9 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
+        # continue-on-error so the next step can emit a useful diagnostic
+        # if the action crashes, rather than just showing a red step.
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -152,21 +167,34 @@ jobs:
               `Previously resolved and closed: #<n>, #<m>`
             - If no findings at all: a brief positive summary.
 
-          claude_args: '--allowed-tools "Bash(gh:*),Read"'
+          # Explicit per-subcommand allowlist — avoids relying on broad glob support.
+          claude_args: >-
+            --allowed-tools
+            "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh pr list:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh issue view:*),Bash(gh label create:*),Bash(gh search:*),Read"
 
-      # Read the PR label state set by Claude and fail the job if changes are required.
-      # This makes "Claude Code Review / claude-review" a blockable required status check.
-      - name: Fail if changes are required
+      # Distinguish "Claude crashed" from "Claude found REQUIRED issues".
+      # Both block the merge, but produce different error messages.
+      - name: Fail if review errored or changes are required
         run: |
+          CLAUDE_OUTCOME="${{ steps.claude-review.outcome }}"
+          echo "Claude review step outcome: $CLAUDE_OUTCOME"
+
+          if [ "$CLAUDE_OUTCOME" = "failure" ]; then
+            echo "::error::The Claude Code Review action failed to run. Check the step logs above for details (authentication, configuration, or tool errors)."
+            exit 1
+          fi
+
           LABELS=$(gh pr view "$PR_NUMBER" \
             --repo "$REPO" \
             --json labels \
             --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
           echo "PR labels: $LABELS"
+
           if echo "$LABELS" | grep -q "review:changes-required"; then
             echo "::error::Code review requires changes before merge. Resolve the linked GitHub issues, push a new commit, and the review will re-run automatically."
             exit 1
           fi
+
           echo "Code review passed — no required changes."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
