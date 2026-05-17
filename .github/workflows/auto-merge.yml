@@ -18,6 +18,15 @@ jobs:
       # condition, not a PR defect, so we tolerate it instead of
       # failing the workflow (which would otherwise mark every PR
       # red and block the rest of the CI signal).
+      #
+      # IMPORTANT: For the code-review gate to hold, the
+      # "Claude Code Review / claude-review" check must be registered
+      # as a required status check on the protected branch (repo
+      # Settings → Branches → Branch protection rules → Require status
+      # checks to pass).  When that check fails (because the reviewer
+      # found REQUIRED issues) GitHub will not honour the auto-merge,
+      # regardless of what this step does.  This workflow only enables
+      # the *setting*; the actual merge is gated by required checks.
       - name: Enable auto-merge for this PR
         run: |
           set +e

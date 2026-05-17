@@ -167,6 +167,10 @@ the open PR:
 - A `<github-webhook-activity>` event arrives mentioning the PR (in
   particular: a new push or a CI failure on a PR that previously
   passed).
+- A `<github-webhook-activity>` event shows the `claude-review`
+  check completing — whether it passed or failed.  A failure means
+  REQUIRED findings were raised; see "Handling failed review checks"
+  below.
 - The user pings the session about an open PR.
 - A `git status` / `git fetch` shows new commits on `origin/main`
   while you have an open PR on the current branch.
@@ -203,8 +207,7 @@ on `mcp__github__pull_request_read`, and they don't overlap:
 - `get_reviews` — formal review submissions (Approve / Request
   Changes / Comment with body).
 - `get_comments` — **issue-level comments on the PR body**.
-  This is where the `claude-review` GitHub App posts its
-  findings.
+  This is where the `claude-review` workflow posts its summary.
 
 Treat them as three independent buckets — one being empty does
 **not** mean there's no feedback.  In particular,
@@ -225,6 +228,49 @@ Timing:
   poll again at least once more after CI completes.  Don't
   declare "no review feedback" until every relevant check is
   `completed` and all three comment surfaces are empty.
+
+#### Handling failed review checks (review:changes-required)
+
+The `Claude Code Review / claude-review` workflow is a required
+status check.  When it finds **REQUIRED** findings it:
+
+1. Creates a GitHub issue per finding, labeled `pr-N` and
+   `review-finding`, so findings are never lost across commits.
+2. Posts a summary comment on the PR linking every issue number.
+3. Applies the `review:changes-required` label to the PR.
+4. **Fails the workflow**, blocking auto-merge.
+
+When you are subscribed to a PR (`subscribe_pr_activity`) and the
+`claude-review` check fails, treat it as a full work item, not a
+notification to skip:
+
+1. **Read the summary comment** (`get_comments` on the PR) and
+   the linked issues (`gh issue view <n>`) to understand each
+   finding.
+2. **Fix every REQUIRED finding** in code.  Do not close issues
+   manually — the review workflow auto-closes them when the finding
+   is gone from the next diff.
+3. **Commit and push** the fixes.  The push triggers a new
+   `claude-review` run automatically (the workflow fires on
+   `pull_request: synchronize`).
+4. **Wait for the new run** (1-3 min).  A
+   `<github-webhook-activity>` check-run event signals completion.
+   If it passes (no `review:changes-required` label), auto-merge
+   resumes.  If it fails again, repeat from step 1.
+5. **SUGGESTION findings** are tracked as issues too but do not
+   block merge.  Address them if they are low-effort or if the
+   user asks; otherwise note them for follow-up.
+
+Do **not** push empty commits or trivial no-op changes to get the
+check to pass — fix the actual underlying issues.  If a REQUIRED
+finding is incorrect or based on a misunderstanding of the
+codebase, comment on the GitHub issue explaining why, then ask the
+user whether to override it.
+
+Re-poll `get_comments` after each new push to confirm the review
+verdict changed.  Declare the review loop done only when:
+- The `review:changes-required` label is absent from the PR, AND
+- The `Claude Code Review / claude-review` check shows green.
 
 ### F# surface is frozen — new logic goes in Lyric
 
@@ -278,6 +324,12 @@ need direction and have nothing else productive to do**.  Specifically:
   into a single PR when they belong together (e.g. one PR per
   milestone-stage), and open a fresh PR when the next chunk is
   scoped differently.
+- **After opening a PR**, immediately call `subscribe_pr_activity` so
+  that check-run completions, review comments, and CI events wake this
+  session.  The subscription must cover the `claude-review` check: if
+  it fails (REQUIRED findings), action the feedback and push fixes
+  (potentially several times) until the check goes green.  See
+  "Handling failed review checks" above for the full loop.
 - If a stage hits a real blocker (missing decision, ambiguous spec,
   external dependency), park it with a clear note and move on to the
   next independent stage rather than stopping the session.
