@@ -99,7 +99,7 @@ jobs:
             - PRAISE items (no issue links needed)
             - Any previously open issues that were closed this run
 
-          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh label create:*),Bash(gh search:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*),Read"'
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh label create:*),Bash(gh search:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*),Bash(cat:*)"'
 
       # Read the PR label state set by Claude and fail the job if changes are required.
       # This makes "Claude Code Review / claude-review" a blockable required status check.
