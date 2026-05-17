@@ -15,16 +15,27 @@ import Std.Core
 
 @axiom("System.IdentityModel.Tokens.Jwt for token validation")
 extern package System.IdentityModel.Tokens.Jwt {
-  /// Validate a Bearer JWT (HMAC-SHA256 or RS256).
-  /// Returns true iff the token is well-formed, the signature verifies against
-  /// `secret`, and — when non-empty — the `issuer` and `audience` claims match.
+  /// Validate a Bearer JWT against an explicit allow-list of algorithms.
+  ///
+  /// `allowedAlgorithms` is a comma-separated string of JWT `alg` values
+  /// (e.g. "HS256" or "HS256,RS256").  The kernel pipes this list to
+  /// `TokenValidationParameters.ValidAlgorithms` and sets
+  /// `RequireSignedTokens = true` and `ValidateIssuerSigningKey = true`,
+  /// so tokens whose header `alg` is "none" or any algorithm not in the
+  /// list fail verification regardless of signature content.
+  ///
+  /// Returns true iff the token is well-formed, its `alg` header is in
+  /// `allowedAlgorithms`, the signature verifies against `secret`, and —
+  /// when non-empty — the `issuer` and `audience` claims match.
   pub func verifyJwt(
-    token:    String,
-    secret:   String,
-    issuer:   String,
-    audience: String
+    token:             String,
+    secret:            String,
+    issuer:            String,
+    audience:          String,
+    allowedAlgorithms: String
   ): Bool
     requires: secret.length > 0
+    requires: allowedAlgorithms.length > 0
 
   /// Extract a named claim from a JWT without re-verifying the signature.
   /// Call only on tokens already accepted by verifyJwt.

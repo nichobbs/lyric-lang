@@ -13,13 +13,20 @@ import Std.Core
 
 @axiom("io.jsonwebtoken:jjwt-api for JWT verification")
 extern package io.jsonwebtoken {
+  /// Validate a Bearer JWT against an explicit allow-list of algorithms.
+  /// `allowedAlgorithms` is a comma-separated string of JWT `alg` values
+  /// (e.g. "HS256" or "HS256,RS256").  JJWT's parser is configured with
+  /// the matching `SignatureAlgorithm` whitelist, so tokens whose header
+  /// `alg` is "none" or any algorithm not in the list fail verification.
   pub func verifyJwt(
-    token:    String,
-    secret:   String,
-    issuer:   String,
-    audience: String
+    token:             String,
+    secret:            String,
+    issuer:            String,
+    audience:          String,
+    allowedAlgorithms: String
   ): Bool
     requires: secret.length > 0
+    requires: allowedAlgorithms.length > 0
 
   pub func extractClaim(token: String, claimKey: String): Option[String]
     requires: claimKey.length > 0

@@ -63,11 +63,15 @@ import Resilience
 /// re-compiled inside the consumer's package so it can read args.authToken.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled     Bool   — master switch; false passes all calls through (default: true)
+///   enabled            Bool   — master switch; false passes all calls through (default: true)
 ///   @sensitive
-///   jwtSecret   String — REQUIRED (no default): HMAC-SHA256 secret for JWT verification
-///   issuer      String — expected JWT issuer claim; if empty, issuer is not validated (default: "")
-///   audience    String — expected JWT audience claim; if empty, audience is not validated (default: "")
+///   jwtSecret          String — REQUIRED: HMAC-SHA256 secret for JWT verification
+///   issuer             String — expected JWT issuer claim; if empty, issuer is not validated (default: "")
+///   audience           String — expected JWT audience claim; if empty, audience is not validated (default: "")
+///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
+///                               (default: "HS256").  Tokens whose `alg` header is
+///                               not in this list — including `alg=none` — are
+///                               rejected.  See RFC 8725 §3.1.
 @stable(since="0.1")
 @inline_template
 pub aspect RequiresAuth {
@@ -77,6 +81,7 @@ pub aspect RequiresAuth {
     jwtSecret: String          // required — no default
     issuer:   String = ""
     audience: String = ""
+    allowedAlgorithms: String = "HS256"
   }
 
   requires:
@@ -89,7 +94,7 @@ pub aspect RequiresAuth {
       if args.authToken == "" {
         ret = Err(Web.unauthorized("Authorization header missing or empty"))
       } else {
-        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience)
+        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
         if ok {
           ret = call.proceed()
         } else {
@@ -111,12 +116,13 @@ pub aspect RequiresAuth {
 /// This is a C-mode template (@inline_template): reads args.authToken.
 ///
 /// Config fields:
-///   enabled      Bool   — master switch (default: true)
+///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
-///   jwtSecret    String — REQUIRED: HMAC-SHA256 or RS256 secret
-///   issuer       String — expected iss claim (default: "")
-///   audience     String — expected aud claim (default: "")
-///   allowedRoles String — comma-separated list of accepted role values (e.g. "admin,manager")
+///   jwtSecret          String — REQUIRED: HMAC-SHA256 or RS256 secret
+///   issuer             String — expected iss claim (default: "")
+///   audience           String — expected aud claim (default: "")
+///   allowedRoles       String — comma-separated list of accepted role values (e.g. "admin,manager")
+///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since="0.1")
 @inline_template
 pub aspect RequiresRole {
@@ -127,6 +133,7 @@ pub aspect RequiresRole {
     issuer:       String = ""
     audience:     String = ""
     allowedRoles: String        // required — no default
+    allowedAlgorithms: String = "HS256"
   }
 
   requires:
@@ -139,7 +146,7 @@ pub aspect RequiresRole {
       if args.authToken == "" {
         ret = Err(Web.unauthorized("Authorization header missing or empty"))
       } else {
-        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience)
+        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
         if not ok {
           ret = Err(Web.forbidden("Token is invalid or has expired"))
         } else {
