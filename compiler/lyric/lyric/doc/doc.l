@@ -9,19 +9,6 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 
-// ─── String helpers ───────────────────────────────────────────────────────────
-
-func joinStrs(xs: in List[String], sep: in String): String {
-  if xs.count == 0 { return "" }
-  var s = xs[0]
-  var i = 1
-  while i < xs.count {
-    s = s + sep + xs[i]
-    i = i + 1
-  }
-  s
-}
-
 func pathStr(mp: in ModulePath): String {
   if mp.segments.count == 0 { return "" }
   var s = mp.segments[0]
@@ -101,7 +88,7 @@ func genericsStr(g: in Option[GenericParams]): String {
         parts.add(genParamName(gp.params[i]))
         i = i + 1
       }
-      "[" + joinStrs(parts, ", ") + "]"
+      "[" + Str.join(parts, ", ") + "]"
     }
   }
 }
@@ -126,7 +113,7 @@ func paramsStr(ps: in List[Param]): String {
     parts.add(paramStr(ps[i]))
     i = i + 1
   }
-  joinStrs(parts, ", ")
+  Str.join(parts, ", ")
 }
 
 // ─── Signature builders ───────────────────────────────────────────────────────
@@ -159,7 +146,7 @@ func recordSignature(kind: in String, rd: in RecordDecl): String {
   if fields.count == 0 {
     header + " }"
   } else {
-    header + "\n" + joinStrs(fields, "\n") + "\n}"
+    header + "\n" + Str.join(fields, "\n") + "\n}"
   }
 }
 
@@ -177,7 +164,7 @@ func caseStr(c: in UnionCase): String {
       parts.add(fs)
       i = i + 1
     }
-    "  case " + c.name + "(" + joinStrs(parts, ", ") + ")"
+    "  case " + c.name + "(" + Str.join(parts, ", ") + ")"
   }
 }
 
@@ -188,7 +175,7 @@ func unionSignature(ud: in UnionDecl): String {
     cases.add(caseStr(ud.cases[i]))
     i = i + 1
   }
-  "pub union " + ud.name + genericsStr(ud.generics) + " {\n" + joinStrs(cases, "\n") + "\n}"
+  "pub union " + ud.name + genericsStr(ud.generics) + " {\n" + Str.join(cases, "\n") + "\n}"
 }
 
 func enumSignature(ed: in EnumDecl): String {
@@ -198,7 +185,7 @@ func enumSignature(ed: in EnumDecl): String {
     cases.add("  case " + ed.cases[i].name)
     i = i + 1
   }
-  "pub enum " + ed.name + " {\n" + joinStrs(cases, "\n") + "\n}"
+  "pub enum " + ed.name + " {\n" + Str.join(cases, "\n") + "\n}"
 }
 
 func opaqueSignature(od: in OpaqueTypeDecl): String {
@@ -208,7 +195,7 @@ func opaqueSignature(od: in OpaqueTypeDecl): String {
     parts.add("@" + pathStr(od.annotations[ai].name))
     ai = ai + 1
   }
-  val prefix = if parts.count == 0 { "" } else { joinStrs(parts, " ") + "\n" }
+  val prefix = if parts.count == 0 { "" } else { Str.join(parts, " ") + "\n" }
   prefix + "pub opaque type " + od.name + genericsStr(od.generics)
 }
 
@@ -232,12 +219,12 @@ func interfaceSignature(id: in InterfaceDecl): String {
     methods.add(interfaceMethodStr(id.members[i]))
     i = i + 1
   }
-  "pub interface " + id.name + genericsStr(id.generics) + " {\n" + joinStrs(methods, "\n") + "\n}"
+  "pub interface " + id.name + genericsStr(id.generics) + " {\n" + Str.join(methods, "\n") + "\n}"
 }
 
 func distinctSignature(dt: in DistinctTypeDecl): String {
   val derives = if dt.derives.count == 0 { "" } else {
-    " derives " + joinStrs(dt.derives, ", ")
+    " derives " + Str.join(dt.derives, ", ")
   }
   "pub distinct type " + dt.name + genericsStr(dt.generics) + " = " + typeStr(dt.underlying) + derives
 }

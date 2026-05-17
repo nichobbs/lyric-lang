@@ -7,10 +7,13 @@
 //   One diag per line (empty string if no diagnostics):
 //     <code>|<sev>|<line>|<col>|<message>
 //   where <sev> is "error" or "warning".
+//   Newlines inside <message> are escaped as the two-character sequence \n
+//   so the line-oriented framing is not broken by multi-line messages.
 package Lyric.LintBridge
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Lyric.Lint
 
 pub func lintToProtocol(source: in String): String {
@@ -26,8 +29,9 @@ pub func lintToProtocol(source: in String): String {
     }
     val line = toString(d.span.startPos.line)
     val col  = toString(d.span.startPos.column)
+    val msg  = replace(d.message, "\n", "\\n")
     if i > 0 { s = s + "\n" }
-    s = s + d.code + "|" + sev + "|" + line + "|" + col + "|" + d.message
+    s = s + d.code + "|" + sev + "|" + line + "|" + col + "|" + msg
     i = i + 1
   }
   s

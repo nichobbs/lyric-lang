@@ -182,6 +182,20 @@ pub func join(separator: in String, parts: in slice[String]): String {
   return result
 }
 
+// Join a list of strings with a separator.
+@pure
+@stable(since="1.0")
+pub func join(xs: in List[String], sep: in String): String {
+  if xs.count == 0 { return "" }
+  var result = xs[0]
+  var i = 1
+  while i < xs.count {
+    result = result + sep + xs[i]
+    i += 1
+  }
+  return result
+}
+
 // ---------------------------------------------------------------------------
 // String comparison.
 // ---------------------------------------------------------------------------

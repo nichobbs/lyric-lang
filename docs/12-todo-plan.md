@@ -8,9 +8,9 @@ this doc is the *next-sessions* tactical view.
 
 ---
 
-## Band F — post-review follow-ups
+## Band F — post-review follow-ups (resolved in D-progress-261)
 
-Deferred items surfaced in code review.  None block v1.0 merge.
+All tractable items below have shipped.  None were blocking v1.0.
 
 ### F1. B128 self-test `/tmp` path is non-portable
 

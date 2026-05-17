@@ -651,6 +651,7 @@ Mode rules:
 - `out` parameters must be definitely assigned on every control-flow path before return.
 - `inout` parameters must be passed mutable bindings; immutable values cannot be passed.
 - Async functions cannot have `out` or `inout` parameters that are non-record value types crossing await points (the value would be aliased across awaits — see `docs/09-msil-emission.md` §11.4).
+- `in` prohibits **rebinding** the parameter (the name cannot be assigned a new value inside the function body) but does not prevent mutation through a mutable container type. A parameter declared `in` may call mutating methods such as `list.add(x)` on a `List[T]` value — the reference itself is immutable, not the heap object it points to. The mode-checker diagnostic V0001 ("cannot assign to `in` parameter") fires only on direct assignment (`param = ...`), not on method calls on `in` parameters.
 
 ### 5.3 Return values
 
@@ -1041,6 +1042,28 @@ pub func intListAdd(xs: inout IntList, v: in Int): Unit
 If you need a generic list-add wrapper, implement it in Lyric using a kernel-level
 monomorphised helper and expose a generic Lyric function that delegates to the
 concrete helper.
+
+**Static vs. instance call detection (JVM target).**  On the JVM backend the
+emitter determines whether a `@externTarget` binding is a static or instance
+call by inspecting the Lyric function name: if the name begins with a
+PascalCase prefix followed by an underscore (e.g. `Integer_parseInt`,
+`Math_abs`) the emitter emits `invokestatic`; otherwise it emits
+`invokevirtual` with the first parameter treated as the receiver.  A
+hand-written kernel extern that does not follow this convention will be
+silently misrouted.  The long-term fix is an explicit `kind = "static"` /
+`kind = "instance"` parameter on `@externTarget(...)` (tracked as a future
+enhancement); until then, all JVM kernel externs must obey the naming
+convention:
+
+```
+// Static call — PascalCase prefix + underscore.
+@externTarget("java.lang.Integer.parseInt")
+pub func Integer_parseInt(s: in String): Int
+
+// Instance call — no PascalCase prefix (first param is the receiver).
+@externTarget("java.lang.String.length")
+pub func stringLength(s: in String): Int
+```
 
 ### 11.4 AOT compatibility
 

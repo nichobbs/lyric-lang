@@ -212,8 +212,8 @@ func makeMainBytes(): List[Byte] {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-func main(): Unit {
-  val outDir = "/tmp/lyric-jvm-b128"
+func main(args: in slice[String]): Int {
+  val outDir = if args.length > 0 { args[0] } else { "/tmp/lyric-jvm-b128" }
   match createDir(outDir) {
     case Ok(_)  -> ()
     case Err(_) -> ()
@@ -246,4 +246,5 @@ func main(): Unit {
   } else {
     println("jar_written=false")
   }
+  0
 }

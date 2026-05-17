@@ -3747,6 +3747,71 @@ It is not compiled today.
 
 ---
 
+## D-progress-261 — Band F post-review follow-ups (F1–F11)
+
+Addresses all tractable items from `docs/12-todo-plan.md` Band F.
+
+**F1 — B128 `/tmp` path portability.**  `JvmLoweringB128Test.fs` now
+generates a unique per-run temp dir via `Guid.NewGuid()` and passes it as
+`argv[0]` to the compiled Lyric program via the new `runDllWithArgs` helper
+in `EmitTestKit.fs`.  `compiler/lyric/jvm/self_test_b128.l` `main()` changed
+from `(): Unit` to `(args: in slice[String]): Int`; it reads `args[0]` if
+present, falling back to the original path.
+
+**F2 — `in` mode spec clarification.**  Added a paragraph to
+`docs/01-language-reference.md` §5.2 (Parameter modes) clarifying that `in`
+prohibits rebinding the parameter but does not prevent mutation through a
+mutable container type (e.g., `list.add(x)` on an `in List[T]` is allowed).
+The V0001 diagnostic note is updated to match.
+
+**F3 — `@externTarget` static-vs-instance naming convention.**  Added
+documentation to `docs/01-language-reference.md` §11.3 describing the JVM
+PascalCase-prefix-before-underscore convention used by `isStaticExternByName`
+in `codegen.l`, with examples.
+
+**F4 — Lint bridge multi-line message escaping.**  `lint_bridge.l` now calls
+`replace(d.message, "\n", "\\n")` before serialising.  `SelfHostedLint.fs`
+`parseLine` unescapes with `.Replace("\\n", "\n")`.
+
+**F5 — ProcessExit cleanup for all bridges.**  Added
+`AppDomain.CurrentDomain.ProcessExit.Add` handlers (same pattern as
+`SelfHostedCli.fs`) to `SelfHostedDoc.fs`, `SelfHostedFmt.fs`,
+`SelfHostedPack.fs`, `SelfHostedManifest.fs`, `SelfHostedTestSynth.fs`, and
+`SelfHostedLint.fs`.
+
+**F6 — Test coverage.**  Added `DocTests.fs` (three fixture cases) to
+`Lyric.Cli.Tests`.  Pack XML coverage was already substantial via
+`PackTests.fs`.
+
+**F7 — GitHub Actions SHA pinning.**  Pinned `actions/checkout`,
+`actions/setup-dotnet`, and `softprops/action-gh-release` to commit SHAs in
+`.github/workflows/publish.yml`.  Added `.github/dependabot.yml` (weekly
+`github-actions` ecosystem scan) to automate future SHA updates.
+
+**F8 — JVM `Error` vs `Exception` limitation documented.**  Added Q-J009 to
+`docs/18-jvm-emission.md` §24 and Appendix B describing the known limitation
+that `@externTarget` catch handlers target `java/lang/Exception`, not
+`java/lang/Throwable`, so JVM `Error` subclasses escape.
+
+**F9 — `findExternTarget` double-walk.**  Already resolved in a previous
+refactor; only one walk of `decl.annotations` exists in `codegen.l`.  No
+code change needed.
+
+**F10 — `Std.String.join` for `List[String]`.**  Added
+`pub func join(xs: in List[String], sep: in String): String` to
+`stdlib/std/string.l` (marked `@stable(since="1.0")`).  `doc/doc.l`'s
+private `joinStrs` helper removed and all call sites updated to `Str.join`.
+
+**F11 — Regression tests.**  Added two cases to `RestoredPackageE2ETests.fs`:
+- `Q021-4 Path 1.5`: cross-package distinct type with `derives Compare`
+  satisfies `where T: Compare` in the importing package (exercises
+  `satisfiesViaImportedDistinct` in `Codegen.fs`).
+- `Q022-1 pubUseDecls`: a `pub use Pkg.{name}` re-export appears in the
+  emitted `Lyric.Contract` resource of the re-exporting package (exercises
+  `pubUseDecls` in `ContractMeta.fs`).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
