@@ -74,19 +74,17 @@ pub aspect FlagGated {
 
 // ─── FlagVariant ──────────────────────────────────────────────────────────────
 
-/// Proceed normally; after the call, optionally tag the result when the flag
-/// matches the configured variant.
+/// Stub aspect template for A/B variant routing.
 ///
-/// B-mode: reads the current String value of `flagName` from the process-global
-/// registry and compares it to `variant`.  In this initial version the aspect
-/// always proceeds without modification — the comparison is available to
-/// consumers who subclass or extend this template for real A/B routing.
-/// Full variant-result wrapping is a follow-up stage.
+/// B-mode: always proceeds unconditionally.  Full variant-specific routing
+/// (read `flagName` from the registry, compare to `variant`, short-circuit
+/// when the variant does not match) is deferred to a follow-up stage.
+/// Marked `@experimental`; do not depend on the current stub behaviour.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled   Bool   — master switch; when false the handler always runs (default: true)
-///   flagName  String — name of the String flag to read (required; no default)
-///   variant   String — expected flag value that identifies the active variant (required; no default)
+///   enabled   Bool   — master switch (default: true)
+///   flagName  String — name of the String flag (required; no default)
+///   variant   String — expected variant value (required; no default)
 @experimental
 pub aspect FlagVariant {
   config {
@@ -96,13 +94,7 @@ pub aspect FlagVariant {
   }
 
   around(call) -> ret {
-    // Always proceed; the variant comparison is available for future routing.
+    // Stub: always proceeds. Variant-specific routing is deferred to a follow-up stage.
     ret = call.proceed()
-    if enabled {
-      val currentVariant = Flags.Kernel.Net.getStringFlag(flagName, "")
-      // When currentVariant == variant, the caller is in the treatment group.
-      // Variant-specific result wrapping is deferred to a follow-up stage.
-      val _ = currentVariant == variant
-    }
   }
 }

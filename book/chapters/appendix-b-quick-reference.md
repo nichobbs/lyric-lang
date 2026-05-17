@@ -657,27 +657,27 @@ Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `to
 
 ### Service libraries (separate packages, not in stdlib)
 
-| Library | Package(s) | Purpose |
-|---|---|---|
-| `lyric-logging` | `Std.Logging`, `Std.Logging.Aspects` | Named loggers, six levels, JSON/text output, aspect templates |
-| `lyric-web` | `Web`, `Web.OpenApi`, `Web.Aspects` | HTTP server (code-first + spec-first), `ApiError`, aspect templates |
-| `lyric-cache` | `Cache`, `Cache.Aspects` | In-memory/disk TTL cache, `CacheBucket` interface, `CachedResult`/`RateLimited` aspect templates |
-| `lyric-db` | `Db`, `Db.Aspects` | Typed SQL over `System.Data`/JDBC, `DbConnection`, parameterised queries, transactions, aspect templates |
-| `lyric-health` | `Health` | Liveness/readiness health-check endpoints; composite `HealthRegistry` |
-| `lyric-jobs` | `Jobs` | Background job scheduling; Hangfire/Quartz.NET backends; `JobHandler`/`JobScheduler`; `Retryable`/`Timed` aspects |
-| `lyric-mail` | `Mail`, `Mail.Aspects` | Email sending over SMTP/SES/SendGrid; `MailSender` interface; `EmailMessage`/`Attachment` types |
-| `lyric-mq` | `Mq`, `Mq.Aspects` | Message queuing over RabbitMQ/ASB/SQS/Kafka; `Idempotent`/`DeadLetter` aspect templates |
-| `lyric-otel` | `OTel`, `OTel.Otlp` | OpenTelemetry tracing, metrics, and OTLP export |
-| `lyric-search` | `Search` | Elasticsearch/Meilisearch integration; `SearchClient`; typed result model |
-| `lyric-session` | `Session` | Distributed session management; Redis-backed and in-process stores; UUID session IDs |
-| `lyric-storage` | `Storage`, `Storage.Aspects` | Object storage (S3/Azure Blob/local); `StorageBucket`; `AuditAccess`/`ValidateKey` aspects |
-| `lyric-testing` | `Testing` | Mock implementations (`MockMailSender`, `MockStorageBucket`, `MockSessionStore`, `MockFlagStore`, …); `TestContext`; assertion helpers |
-| `lyric-validation` | `Validation` | Composable input validators returning `[ValidationError]`; string/numeric combinators; `toResult` helper |
-| `lyric-ws` | `Ws`, `Ws.Aspects` | WebSocket server (ASP.NET Core/.NET, Undertow/JVM); `WsHandler`/`WsRegistry`; `WsAuth`/`WsRateLimit` aspects |
-| `lyric-feature-flags` | `Flags`, `Flags.Aspects` | Runtime feature toggles; in-process/remote stores; `FlagGated` aspect |
-| `lyric-i18n` | `I18n` | BCP 47 locale parsing; `TranslationStore`; `{placeholder}` substitution; JSON/file-backed loading |
-| `lyric-proto` | `Proto` | Pure-Lyric Protocol Buffer (proto3) wire-format encoder/decoder |
-| `lyric-grpc` | `Grpc` | General-purpose gRPC client; raw `slice[Byte]` payloads; compose with lyric-proto |
+| Library | Package(s) | Purpose | Chapter |
+|---|---|---|---|
+| `lyric-logging` | `Std.Logging`, `Std.Logging.Aspects` | Named loggers, six levels, JSON/text output, aspect templates | 22 |
+| `lyric-web` | `Web`, `Web.OpenApi`, `Web.Aspects` | HTTP server (code-first + spec-first), `ApiError`, aspect templates | 23 |
+| `lyric-cache` | `Cache`, `Cache.Aspects` | In-memory/disk TTL cache, `CacheBucket` interface, `CachedResult`/`RateLimited` aspect templates | 24 |
+| `lyric-db` | `Db`, `Db.Aspects` | Typed SQL over `System.Data`/JDBC, `DbConnection`, parameterised queries, transactions, aspect templates | 25 |
+| `lyric-health` | `Health` | Liveness/readiness health-check endpoints; composite `HealthRegistry` | 26 |
+| `lyric-jobs` | `Jobs` | Background job scheduling; Hangfire/Quartz.NET backends; `JobHandler`/`JobScheduler`; `Retryable`/`Timed` aspects | — |
+| `lyric-mail` | `Mail`, `Mail.Aspects` | Email sending over SMTP/SES/SendGrid; `MailSender` interface; `EmailMessage`/`Attachment` types | — |
+| `lyric-mq` | `Mq`, `Mq.Aspects` | Message queuing over RabbitMQ/ASB/SQS/Kafka; `Idempotent`/`DeadLetter` aspect templates | — |
+| `lyric-otel` | `OTel`, `OTel.Otlp` | OpenTelemetry tracing, metrics, and OTLP export | 19 |
+| `lyric-search` | `Search` | Elasticsearch/Meilisearch integration; `SearchClient`; typed result model | — |
+| `lyric-session` | `Session` | Distributed session management; Redis-backed and in-process stores; UUID session IDs | — |
+| `lyric-storage` | `Storage`, `Storage.Aspects` | Object storage (S3/Azure Blob/local); `StorageBucket`; `AuditAccess`/`ValidateKey` aspects | — |
+| `lyric-testing` | `Testing` | Mock implementations (`MockMailSender`, `MockStorageBucket`, `MockSessionStore`, `MockFlagStore`, …); `TestContext`; assertion helpers | — |
+| `lyric-validation` | `Validation` | Composable input validators returning `[ValidationError]`; string/numeric combinators; `toResult` helper | — |
+| `lyric-ws` | `Ws`, `Ws.Aspects` | WebSocket server (ASP.NET Core/.NET, Undertow/JVM); `WsHandler`/`WsRegistry`; `WsAuth`/`WsRateLimit` aspects | — |
+| `lyric-feature-flags` | `Flags`, `Flags.Aspects` | Runtime feature toggles; in-process/remote stores; `FlagGated` aspect | — |
+| `lyric-i18n` | `I18n` | BCP 47 locale parsing; `TranslationStore`; `{placeholder}` substitution; JSON/file-backed loading | — |
+| `lyric-proto` | `Proto` | Pure-Lyric Protocol Buffer (proto3) wire-format encoder/decoder | — |
+| `lyric-grpc` | `Grpc` | General-purpose gRPC client; raw `slice[Byte]` payloads; compose with lyric-proto | — |
 
 ---
 

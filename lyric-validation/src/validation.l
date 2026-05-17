@@ -307,14 +307,3 @@ pub func toResult[T](value: in T, errors: in [ValidationError]): Result[T, [Vali
 func err(field: in String, code: in String, message: in String): [ValidationError] {
   return [ValidationError(field = field, message = message, code = code)]
 }
-
-// Return true if the single-character string `ch` appears anywhere in `s`.
-// `ch` must be a one-character string; behaviour is undefined for longer strings.
-func containsChar(s: in String, ch: in String): Bool {
-  var i = 0
-  while i < s.length {
-    if s.charAt(i).toString() == ch { return true }
-    i = i + 1
-  }
-  return false
-}

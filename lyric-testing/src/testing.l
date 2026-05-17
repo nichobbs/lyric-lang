@@ -538,8 +538,10 @@ pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
 pub func assertErr[T](result: in Result[T, String], msg: in String): String {
   match result {
     case Err(err) -> return err
-    case Ok(_)    ->
+    case Ok(_)    -> {
       panic(msg + " (expected Err, got Ok)")
+      return ""  // unreachable; panic diverges
+    }
   }
 }
 
@@ -549,8 +551,10 @@ pub func assertErr[T](result: in Result[T, String], msg: in String): String {
 pub func assertSome[T](opt: in Option[T], msg: in String): T {
   match opt {
     case Some(v) -> return v
-    case None    ->
+    case None    -> {
       panic(msg + " (expected Some, got None)")
+      return default()  // unreachable; panic diverges
+    }
   }
 }
 
