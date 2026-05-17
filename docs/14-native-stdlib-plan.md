@@ -374,7 +374,7 @@ the prover's) expectations. Three layers of validation:
    replaces a BCL surface (`List[T]`, `HashMap[K, V]`, `Sort`),
    run the same operation sequence on the native impl and the BCL
    impl, assert equivalent results. Property tests live in
-   `compiler/tests/Lyric.StdlibParity.Tests/` (new project).
+   `bootstrap/tests/Lyric.StdlibParity.Tests/` (new project).
 2. **Contract assertions.** Every native data structure declares its
    invariants and runtime-checks them in `@runtime_checked` mode.
    Contract failures during parity testing are a parity bug.

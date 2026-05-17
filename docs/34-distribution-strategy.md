@@ -137,7 +137,7 @@ Using the stage-0 `lyric` binary with `--target dotnet-legacy` (F# emitter),
 compile in dependency order:
 
 1. `stdlib/` — `lyric build --manifest stdlib/lyric.toml` → `Lyric.Stdlib.dll`
-2. Self-hosted lexer / AST / parser (`compiler/lyric/lyric/`)
+2. Self-hosted lexer / AST / parser (`lyric/lyric/`)
 3. Self-hosted type checker, mode checker, contract elaborator
 4. Self-hosted test synth
 5. MSIL binary layer: heaps → tables → opcodes → PE → assembler

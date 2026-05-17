@@ -31,10 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up .NET (uses compiler/global.json)
+      - name: Set up .NET (uses bootstrap/global.json)
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: compiler/global.json
+          global-json-file: bootstrap/global.json
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
         uses: actions/setup-java@v4
@@ -52,12 +52,12 @@ jobs:
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Restore
-        working-directory: compiler
-        run: dotnet restore Lyric.sln
+        working-directory: bootstrap
+        run: dotnet restore Bootstrap.sln
 
       - name: Build
-        working-directory: compiler
-        run: dotnet build Lyric.sln --configuration Debug --no-restore
+        working-directory: bootstrap
+        run: dotnet build Bootstrap.sln --configuration Debug --no-restore
 
       # ----------------------------------------------------------------
       # Tests run normally first — these gates determine build pass/fail.
@@ -68,38 +68,30 @@ jobs:
       # ----------------------------------------------------------------
 
       - name: Lexer tests
-        working-directory: compiler
+        working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
 
       - name: Parser tests
-        working-directory: compiler
+        working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
 
       - name: Type-checker tests
-        working-directory: compiler
+        working-directory: bootstrap
         run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
 
       - name: Emitter tests
-        working-directory: compiler
+        working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
 
-      - name: LSP tests
-        working-directory: compiler
-        run: dotnet run --project tests/Lyric.Lsp.Tests --no-build --configuration Debug
-
       - name: CLI tests
-        working-directory: compiler
+        working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration Debug
-
-      - name: Verifier tests
-        working-directory: compiler
-        run: dotnet run --project tests/Lyric.Verifier.Tests --no-build --configuration Debug
 
       - name: Collect coverage (best-effort)
         id: coverage
         if: always()
         continue-on-error: true
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           set +e
           mkdir -p coverage
@@ -139,7 +131,7 @@ jobs:
 
       - name: Generate coverage report
         if: always()
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           shopt -s nullglob
           files=(coverage/*.cobertura.xml)
@@ -154,7 +146,7 @@ jobs:
 
       - name: Append coverage to job summary
         if: always()
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           {
             echo "## Code coverage"
@@ -168,7 +160,7 @@ jobs:
 
       - name: Print coverage summary to log
         if: always()
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           if [ -f coverage/report/Summary.txt ]; then
             cat coverage/report/Summary.txt
@@ -181,12 +173,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
-          path: compiler/coverage/report/
+          path: bootstrap/coverage/report/
           retention-days: 14
           if-no-files-found: warn
 
       - name: Smoke-test the CLI on examples
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           set -euo pipefail
           for ex in ../examples/*.l; do

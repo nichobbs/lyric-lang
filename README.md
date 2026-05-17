@@ -35,13 +35,13 @@ dotnet build Lyric.sln
 
 ```sh
 # Build: writes hello.dll + hello.runtimeconfig.json alongside hello.l
-dotnet run --project compiler/src/Lyric.Cli -- build hello.l
+dotnet run --project bootstrap/src/Lyric.Cli -- build hello.l
 
 # Build + run in one step
-dotnet run --project compiler/src/Lyric.Cli -- run hello.l
+dotnet run --project bootstrap/src/Lyric.Cli -- run hello.l
 
 # Pass args to the program
-dotnet run --project compiler/src/Lyric.Cli -- run hello.l -- arg1 arg2
+dotnet run --project bootstrap/src/Lyric.Cli -- run hello.l -- arg1 arg2
 ```
 
 `build` is incremental — re-running with the same source and stdlib files is

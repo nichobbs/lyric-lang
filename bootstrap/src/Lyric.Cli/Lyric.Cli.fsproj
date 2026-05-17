@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Lyric.Cli</RootNamespace>
+    <AssemblyName>lyric</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Manifest.fs" />
+    <Compile Include="Maven.fs" />
+    <Compile Include="MavenShim.fs" />
+    <Compile Include="SelfHostedPack.fs" />
+    <Compile Include="Pack.fs" />
+    <Compile Include="NugetShim.fs" />
+    <Compile Include="NugetAssets.fs" />
+    <Compile Include="SelfHostedFmt.fs" />
+    <Compile Include="SelfHostedJvm.fs" />
+    <Compile Include="SelfHostedMsil.fs" />
+    <Compile Include="Lint.fs" />
+    <Compile Include="SelfHostedDoc.fs" />
+    <Compile Include="SelfHostedLint.fs" />
+    <Compile Include="TestSynth.fs" />
+    <Compile Include="SelfHostedManifest.fs" />
+    <Compile Include="SelfHostedTestSynth.fs" />
+    <Compile Include="SelfHostedOpenApi.fs" />
+    <Compile Include="SelfHostedBench.fs" />
+    <Compile Include="SelfHostedVerifier.fs" />
+    <Compile Include="SelfHostedCli.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lyric.Lexer\Lyric.Lexer.fsproj" />
+    <ProjectReference Include="..\Lyric.Parser\Lyric.Parser.fsproj" />
+    <ProjectReference Include="..\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+    <ProjectReference Include="..\Lyric.Emitter\Lyric.Emitter.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Used by `lyric build` AOT path to rewrite the user-emitted
+         PE's AssemblyRef table: swap System.Private.CoreLib for
+         System.Runtime (the publishable contract assembly with the
+         right PublicKeyToken).  Byte-level rewrite can't fix up the
+         PKT blob heap; Cecil handles it cleanly. -->
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

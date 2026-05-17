@@ -332,11 +332,11 @@ Open-ended. Successful languages spend most of their lifetime here.
 
 ### Shipped (Phase 6 early work)
 
-- **JVM emitter** — self-hosted Lyric emitter in `compiler/lyric/jvm/`
+- **JVM emitter** — self-hosted Lyric emitter in `lyric/jvm/`
   (`classfile.l`, `bytecode.l`, `lowering.l`, `driver.l`, …);
   `--target jvm` is wired in the CLI via `Lyric.Jvm.Hosts` F# host shim
   (D-progress-124 / D-progress-125, PR #183–#186).
-  The JVM kernel (`compiler/lyric/jvm/_kernel/kernel.l`) provides
+  The JVM kernel (`lyric/jvm/_kernel/kernel.l`) provides
   the trusted host boundary over `Lyric.Jvm.Hosts`.
   The JVM emitter strategy is documented in `docs/18-jvm-emission.md`.
 - **VS Code extension** — `lyric-vscode/` ships a full LSP-backed extension with

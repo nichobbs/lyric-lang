@@ -8,7 +8,7 @@ the editor experience genuinely useful.
 
 ## What already exists
 
-`compiler/src/Lyric.Lsp/` implements:
+`bootstrap/src/Lyric.Lsp/` implements:
 
 - JSON-RPC 2.0 stdio framing (`JsonRpc.fs`)
 - Push diagnostics on every keystroke (lex → parse → type-check)

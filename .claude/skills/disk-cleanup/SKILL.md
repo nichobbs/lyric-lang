@@ -7,7 +7,7 @@ level: 2
 # Disk Cleanup (ENOSPC recovery)
 
 The lyric-lang bootstrap compiler accumulates large `bin/` and `obj/`
-directories under `compiler/` (each emitter test materialises a
+directories under `bootstrap/` (each emitter test materialises a
 fresh assembly cache).  Combined with `~/.claude/projects/`'s JSONL
 session logs, the root filesystem can fill up mid-session.  When
 that happens `Bash` itself fails to start because the harness can't
@@ -28,7 +28,7 @@ Use this skill when one of these appears:
   command runs.
 - `df -h /` shows the root filesystem at 100% use.
 
-If only `compiler/**/{bin,obj}` looks bloated and Bash still works,
+If only `bootstrap/**/{bin,obj}` looks bloated and Bash still works,
 skip this skill and just run the compiler-cleanup `find` directly.
 
 ## Recovery sequence
@@ -42,7 +42,7 @@ freeing space without needing a shell.  Pick targets in this
 order; you only need to truncate enough to let the next phase's
 Bash commands initialise (a few MB is plenty):
 
-1. **Build artefacts under `compiler/`** — large but non-essential
+1. **Build artefacts under `bootstrap/`** — large but non-essential
    text files:
    - `compiler/src/Lyric.<X>/obj/Debug/net9.0/project.assets.json`
    - `compiler/src/Lyric.<X>/obj/Debug/net9.0/Lyric.<X>.deps.json`
@@ -135,7 +135,7 @@ and `df` doesn't, deleted-open files are definitively the cause.
 
 ## Out of scope
 
-- **Don't touch `compiler/lyric/std/*.l`** — those are the in-tree
+- **Don't touch `stdlib/std/*.l`** — those are the in-tree
   stdlib *sources*, not generated artefacts.  Truncating them
   destroys real work.
 - **Don't truncate live JSONL session logs**.  The active session

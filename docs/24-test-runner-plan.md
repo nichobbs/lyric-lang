@@ -14,7 +14,7 @@ auto-derivation are all explicitly Phase 3+ work.
 The motivation for finishing v1 now: the panic-on-failure idiom we
 ship today (`assertEqual` panics → exit 0 = pass) couples the stdlib
 test suite to the F# Expecto runner in
-`compiler/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`. Once the
+`bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`. Once the
 self-hosted compiler retires the F# host (Phase 5 §M5.4), there is
 no host left to discover the tests. Shipping a native runner now is
 both a Phase 5 deliverable and an immediate quality-of-life win for

@@ -153,7 +153,7 @@ multiple internal packages — adopts `single`.
 
 When `output = "single"` and `output_assembly` is unset, the assembly
 name is the project's `name` field (PascalCase) plus `.dll`.
-`compiler/lyric/lyric/` would become `Lyric.dll` containing
+`lyric/lyric/` would become `Lyric.dll` containing
 `Lyric.Lexer` (and eventually `Lyric.Parser`, `Lyric.TypeChecker`,
 …) all in one DLL.
 

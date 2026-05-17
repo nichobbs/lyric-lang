@@ -418,7 +418,7 @@ block rather than a plain `invokestatic` / `invokevirtual`:
 3. Box the return value into `Ok(result)`.
 4. Catch `java.lang.Exception`; box the caught exception into `Err(exception)`.
 
-This wrapping is NOT currently present in `compiler/lyric/jvm/lowering.l`.
+This wrapping is NOT currently present in `lyric/jvm/lowering.l`.
 The shim generator (`MavenShim.fs`) correctly declares the Lyric return type
 as `Result[T, JvmException]` so the type checker accepts call sites correctly,
 but the JVM emitter will produce incorrect bytecode (no try-catch) until this
@@ -429,7 +429,7 @@ is implemented.
 exception-table entry rather than a direct call.
 
 **Recommended default:** implement as part of the Phase 6 `@externTarget`
-lowering pass in `compiler/lyric/jvm/`. Add an `LExternCall` instruction
+lowering pass in `lyric/jvm/`. Add an `LExternCall` instruction
 variant (or annotate `LInvokestatic` / `LInvokevirtual` with a `checkedWrap`
 flag) so `lowerFunc` emits the exception table entry automatically.
 

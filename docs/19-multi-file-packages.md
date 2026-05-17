@@ -8,7 +8,7 @@
 
 Today every Lyric `.l` file declares one `package` and produces one
 DLL. A multi-thousand-line package — like the self-hosted lexer
-shipped in `compiler/lyric/lyric/lexer.l` — must be a single source
+shipped in `lyric/lyric/lexer.l` — must be a single source
 file. There is no way to split a package across files even when the
 split would be obvious (token types in one file, the lex driver in
 another, keyword tables in a third).
@@ -29,7 +29,7 @@ directory. Each file:
   to the merged package symbol table.
 
 Subdirectories continue to be sub-packages, as they are today.
-`compiler/lyric/lyric/lexer/` would still be the package
+`lyric/lyric/lexer/` would still be the package
 `Lyric.Lexer`; the **files** inside it are merged.
 
 ## 3. Resolver changes

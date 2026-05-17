@@ -57,7 +57,7 @@ deferred to Phase 3 by design.
 | `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (PR #179) | D-progress-120 |
 | `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (PR #182) | D-progress-123 |
 | `docs/23` JsonHost retirement — final eight live methods retired from `Lyric.Stdlib.JsonHost` (`Parse`, `EncodeString`, `RenderDoubleSlice`, `Get{Int,Long,Double,Bool,String}Slice`).  Compiler fixes unblock the migration: (1) FFI default-arg overload selection now filters by leading-param exact type so `JsonDocument.Parse(string, JsonDocumentOptions = default)` resolves correctly when other 2-arg `Parse` overloads exist; (2) `emitExternCall` honours `inout`-mode value-type receivers (load arg pointer directly instead of `Ldarga`-ing the parameter slot) so mutating instance methods like `JsonElement+ArrayEnumerator.MoveNext` work; (3) `toString(Double)` / `toString(Float)` codegen calls `Double.ToString(InvariantCulture)` for round-trip-safe locale-stable formatting.  `_kernel/json_host.l` declares `extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"` and `extern type JsonEncodedText` and implements `hostEncodeString` and `lyricJsonGet*Slice` in pure Lyric on top of direct externs (`EnumerateArray` / `MoveNext` / `Current` / `JsonEncodedText.{Encode, ToString}`).  `JsonDerive.fs` synthesiser routes `__lyricJsonEscape` and slice readers through the new pure-Lyric kernel functions; `mkSliceHelperExtern` deleted (Double now uses inline `toString`-based rendering like Int/Long).  `Lyric.Stdlib.JsonHost` class removed; the `Lyric.Stdlib` F# shim is now empty of types | **Shipped** | D-progress-139 |
-| `docs/23` F# shim project deleted — with `Lyric.Stdlib.dll` empty of host types after D-progress-139, the `compiler/src/Lyric.Stdlib/` project is deleted outright: `.fsproj` / `Stdlib.fs` removed, `<ProjectReference>` lines pulled from `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Emitter.Tests`, and the project entry / configuration / nesting tag scrubbed from `Lyric.sln`.  CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`, `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their `Lyric.Stdlib.dll` copy / probe paths.  `stdlib/lyric.toml` reverts `output_assembly` from `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll` — the SDK's `lib/Lyric.Stdlib.dll` is now the Lyric-compiled bundle (no F# / FSharp.Core dep) | **Shipped** | D-progress-140 |
+| `docs/23` F# shim project deleted — with `Lyric.Stdlib.dll` empty of host types after D-progress-139, the `bootstrap/src/Lyric.Stdlib/` project is deleted outright: `.fsproj` / `Stdlib.fs` removed, `<ProjectReference>` lines pulled from `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Emitter.Tests`, and the project entry / configuration / nesting tag scrubbed from `Lyric.sln`.  CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`, `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their `Lyric.Stdlib.dll` copy / probe paths.  `stdlib/lyric.toml` reverts `output_assembly` from `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll` — the SDK's `lib/Lyric.Stdlib.dll` is now the Lyric-compiled bundle (no F# / FSharp.Core dep) | **Shipped** | D-progress-140 |
 | M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
@@ -277,7 +277,7 @@ pair, producing `forall (i) { { p(i) } }`.  The F# legacy
 the formatter's outer braces when body is `EBlock`, or change the
 parser to not wrap a single-stmt block.  Out of scope here.
 
-Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+Self-test additions in `lyric/lyric/fmt_self_test.l`:
 
 - `testCommentInsideLambdaBody` — `// process input` inside a lambda
   body anchors via `blockLines`.
@@ -407,7 +407,7 @@ expression's current column.  Comments inside an expression's source
 span also force a multi-line layout so they can be woven in at sub-
 expression boundaries (e.g. between call args).
 
-Architecture (`compiler/lyric/lyric/fmt/fmt_core.l`):
+Architecture (`lyric/lyric/fmt/fmt_core.l`):
 
 - `maxWidth() = 120` — process-wide constant.
 - `exprFitsInline(col, ctx, e, inline) -> Bool` — true when
@@ -465,7 +465,7 @@ to catch real overruns without threading `col` through every
 signature in the multi-line printer family.  Threading `col` end-to-
 end is a follow-up improvement.
 
-Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+Self-test additions in `lyric/lyric/fmt_self_test.l`:
 
 - `testWidthDrivenLongCallBreaks` — a 32-arg call to a
   long-named function breaks into one-arg-per-line layout.
@@ -525,7 +525,7 @@ expected an item declaration`.  Reordered the formatter to emit
 the trivia pops to stay in source order so the `FmtCtx` cursor
 advances monotonically.
 
-Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+Self-test additions in `lyric/lyric/fmt_self_test.l`:
 
 - `testCommentBeforeWhereClause` — `// T must be ordered` survives.
 - `testCommentBetweenWhereAndContract` — comment between `where` and
@@ -584,7 +584,7 @@ func divide(x: in Int, y: in Int): Int
 }
 ```
 
-Mechanism (`compiler/lyric/lyric/fmt/fmt_items.l`):
+Mechanism (`lyric/lyric/fmt/fmt_items.l`):
 
 - New `contractClauseStartOffset(cc)` helper extracts the source
   offset of any `ContractClause` variant.
@@ -595,7 +595,7 @@ Mechanism (`compiler/lyric/lyric/fmt/fmt_items.l`):
   matching the indent of the clause line itself.  Blank lines stay
   literally `""` so `joinLines` doesn't strip indented whitespace.
 
-Self-test additions in `compiler/lyric/lyric/fmt_self_test.l`:
+Self-test additions in `lyric/lyric/fmt_self_test.l`:
 
 - `testCommentBeforeContractClause` — `// y must not be zero` and
   `// result times y reconstitutes x` both survive.
@@ -651,7 +651,7 @@ Mechanism:
   keyword is `requires`, `ensures`, or `when`.  Avoids spurious
   empty nodes on items that have no contracts.
 
-Self-test additions in `compiler/lyric/lyric/parser_self_test.l`:
+Self-test additions in `lyric/lyric/parser_self_test.l`:
 
 - `testCstHasSkBlockInsideFunc` — at least one `SkBlock` per
   function body.
@@ -756,7 +756,7 @@ including `T0901` fixture and `T0902` user-main rejections), `64`
 (usage error / missing `@test_module`).
 
 Implementation is a 200-line source-text rewriter
-(`compiler/src/Lyric.Cli/TestSynth.fs`): parse, walk items, replace
+(`bootstrap/src/Lyric.Cli/TestSynth.fs`): parse, walk items, replace
 each `ITest` with a synthesised `func __lyric_test_<i>(): Unit
 <body-slice>`, and append a synthesised `func main(): Int` that
 runs each in order and `return`s `1` on failure / `0` on
@@ -771,7 +771,7 @@ pattern that uses `wire` blocks for test fixtures works as-is.
 (`--manifest` discovery, `--properties`, `--doctests`,
 `--update-snapshots`, cross-package non-`pub` access) is staged
 in `docs/24-test-runner-plan.md` §5.  CLI integration tests live
-at `compiler/tests/Lyric.Cli.Tests/TestRunnerTests.fs` (8 cases
+at `bootstrap/tests/Lyric.Cli.Tests/TestRunnerTests.fs` (8 cases
 covering pass / fail / no-`@test_module` / user-main / fixture /
 `--list` / `--filter` / property-skip).
 
@@ -781,9 +781,9 @@ away with the F# host, so a native runner is a Phase 5
 prerequisite that we paid down early.
 
 **Self-hosted port (follow-up commit).**  The same rewriter is
-also implemented in Lyric at `compiler/lyric/lyric/test_synth/test_synth.l`
+also implemented in Lyric at `lyric/lyric/test_synth/test_synth.l`
 (`Lyric.TestSynth`), with a self-test consumer at
-`compiler/lyric/lyric/test_synth_self_test.l` driven by the F#
+`lyric/lyric/test_synth_self_test.l` driven by the F#
 Expecto runner `tests/Lyric.Emitter.Tests/SelfHostedTestSynthTests.fs`.
 Seven in-program assertions cover passing/parsing-error/no-`@test_module`/
 user-main/fixture/property-skip/filter/`listEntries` paths and pass
@@ -799,7 +799,7 @@ library via in-process compile + reflection.
 
 Phase 5 §M5.2 stage 2 ships the self-hosted contract elaborator as a
 single-file `Lyric.ContractElaborator` library under
-`compiler/lyric/lyric/contract_elaborator/`:
+`lyric/lyric/contract_elaborator/`:
 
 - `elaborator.l` — public entry points `elaborateFile(file)` and
   `elaborateFunction(fn)`; helpers for synthetic-name generation
@@ -867,7 +867,7 @@ and the contract-meta consumers still see the source-level clauses.
 
 **Consumer and harness:**
 
-- `compiler/lyric/lyric/contract_elaborator_self_test.l` — 14
+- `lyric/lyric/contract_elaborator_self_test.l` — 14
   in-process tests covering: empty-contracts identity, single /
   multiple `requires:`, single / multiple `ensures:` (trailing
   fall-off and explicit return paths), bare `return`, combined
@@ -876,7 +876,7 @@ and the contract-meta consumers still see the source-level clauses.
   uniqueness across multiple returns, file-level identity
   (package decl + imports + items), and non-function items
   pass-through.
-- `compiler/tests/Lyric.Emitter.Tests/SelfHostedContractElaboratorTests.fs`
+- `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedContractElaboratorTests.fs`
   — F# Expecto wrapper (`[contract_elaborator_self_test_passes]`)
   added under the
   `Lyric.ContractElaborator self-host (Phase 5 §M5.2)` test list and
@@ -926,7 +926,7 @@ Mechanism:
   unconsumed in-item comments — e.g. those that fall inside an
   expression sub-tree which is not yet ctx-aware).
 
-Self-test additions (`compiler/lyric/lyric/fmt_self_test.l`):
+Self-test additions (`lyric/lyric/fmt_self_test.l`):
 
 - `testCommentInsideFunctionBody` — `// setup` / `// process` between
   statements survive.
@@ -1017,7 +1017,7 @@ Stage M3 closes the loop on the M2a–M2d pipeline by verifying that
 `Msil.Assembler.assemblePe` produces a PE image that the CLR can actually
 load and execute, not just one that passes byte-layout checks.
 
-**`msil_self_test_m3.l`** (`compiler/lyric/msil/msil_self_test_m3.l`)
+**`msil_self_test_m3.l`** (`lyric/msil/msil_self_test_m3.l`)
 
 The self-test program:
 1. Builds a Hello-World PE using the full M2a–M2d stack (`Msil.Heaps`,
@@ -2958,29 +2958,29 @@ project outright.
 
 Files removed:
 
-- `compiler/src/Lyric.Stdlib/Lyric.Stdlib.fsproj`
-- `compiler/src/Lyric.Stdlib/Stdlib.fs`
+- `bootstrap/src/Lyric.Stdlib/Lyric.Stdlib.fsproj`
+- `bootstrap/src/Lyric.Stdlib/Stdlib.fs`
 
 Files updated:
 
-- `compiler/Lyric.sln` — removes the `Lyric.Stdlib` project entry,
+- `bootstrap/Bootstrap.sln` — removes the `Lyric.Stdlib` project entry,
   configuration block, and nesting tag.
-- `compiler/src/Lyric.Cli/Lyric.Cli.fsproj`,
-  `compiler/src/Lyric.Emitter/Lyric.Emitter.fsproj`,
-  `compiler/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj` —
+- `bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj`,
+  `bootstrap/src/Lyric.Emitter/Lyric.Emitter.fsproj`,
+  `bootstrap/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj` —
   drop the `<ProjectReference Include="...Lyric.Stdlib.fsproj" />`
   line.
-- `compiler/src/Lyric.Cli/Program.fs` — `locateStdlibDll` and the
+- `bootstrap/src/Lyric.Cli/Program.fs` — `locateStdlibDll` and the
   F# shim copy in `copyStdlibArtifacts` deleted; the second copy in
   the AOT path also drops the `Lyric.Stdlib.dll` line.  Comments
   rewritten to reflect that the only `Lyric.Stdlib.<X>.dll` files
   staged are the precompiled Lyric-compiled package DLLs.
-- `compiler/tests/Lyric.Emitter.Tests/EmitTestKit.fs` — `stdlibDll ()`
+- `bootstrap/tests/Lyric.Emitter.Tests/EmitTestKit.fs` — `stdlibDll ()`
   helper and the corresponding `File.Copy` call deleted from
   `prepareOutputDir`.
-- `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` — drops
+- `bootstrap/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` — drops
   the `Lyric.Stdlib.dll` copy in the test scratch dir helper.
-- `compiler/tests/Lyric.Cli.Tests/NugetShimTests.fs` — replaces the
+- `bootstrap/tests/Lyric.Cli.Tests/NugetShimTests.fs` — replaces the
   `Lyric.Stdlib.dll` probe-DLL fallback with `Lyric.Parser.dll`.
 - `stdlib/lyric.toml` — `output_assembly` reverts from
   `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll`
@@ -3005,7 +3005,7 @@ All 638 emitter tests pass; full sweep across Lexer (123), Parser
 
 *claude/remove-stdlib-live-methods-wZ199 branch.*
 
-The last live F# methods in `compiler/src/Lyric.Stdlib/Stdlib.fs` were
+The last live F# methods in `bootstrap/src/Lyric.Stdlib/Stdlib.fs` were
 all on `Lyric.Stdlib.JsonHost` and split into three buckets, each
 gated on a different compiler limitation:
 
@@ -3018,7 +3018,7 @@ gated on a different compiler limitation:
 
 Files touched:
 
-- `compiler/src/Lyric.Emitter/Emitter.fs` — three edits.  (1)
+- `bootstrap/src/Lyric.Emitter/Emitter.fs` — three edits.  (1)
   `staticArityWithDefaults` / `instanceArityWithDefaults` get a
   two-pass match: leading-param exact-type first, then count-only as
   fallback — fixes the `Parse(ReadOnlyMemory<char>, opts=default)`
@@ -3027,7 +3027,7 @@ Files touched:
   `Ldarga 0` so the loaded pointer matches the BCL receiver shape.
   (3) `findClrType` no longer pins `typeof<Lyric.Stdlib.JsonHost>` —
   the type doesn't exist anymore.
-- `compiler/src/Lyric.Emitter/Codegen.fs` — `toString` builtin gains a
+- `bootstrap/src/Lyric.Emitter/Codegen.fs` — `toString` builtin gains a
   branch for `argTy = typeof<double>` / `typeof<single>` that emits
   `Stloc + Ldloca + Call CultureInfo.get_InvariantCulture + Call
   Double.ToString(IFormatProvider)`.
@@ -3043,7 +3043,7 @@ Files touched:
   `System.Text.Json.JsonDocument.Parse` directly (the default-arg
   fix lets it resolve to the `(string, JsonDocumentOptions=default)`
   overload).
-- `compiler/src/Lyric.Parser/JsonDerive.fs` — synthesiser updates.
+- `bootstrap/src/Lyric.Parser/JsonDerive.fs` — synthesiser updates.
   `__lyricJsonEscape` becomes a Lyric body (`hostEncodeString(s)`)
   instead of `@externTarget`-ing the F# shim; the five
   `__lyricJsonGet*Slice` helpers route through `mkGetShimBody` to
@@ -3052,7 +3052,7 @@ Files touched:
   (now culture-invariant).  `mkSliceHelperExtern` and the legacy
   count-only `mkGetShim` builders deleted — both unused after
   migration.
-- `compiler/src/Lyric.Stdlib/Stdlib.fs` — the `JsonHost` class is
+- `bootstrap/src/Lyric.Stdlib/Stdlib.fs` — the `JsonHost` class is
   deleted; the file is now entirely retirement-log comments.
 
 The `Lyric.Stdlib` F# project still ships (the assembly is referenced
@@ -3086,7 +3086,7 @@ How it works:
   `pub func isFormattedSource(source: in String): Bool`
   The bodies just thread through the existing `format` /
   `isFormatted` and parse the source first.
-- `compiler/src/Lyric.Cli/SelfHostedFmt.fs` (new F# module)
+- `bootstrap/src/Lyric.Cli/SelfHostedFmt.fs` (new F# module)
   implements the bridge.  On first call it compiles a tiny driver
   Lyric program (`package Lyric.FmtBridge / import Lyric.Fmt /
   func main(): Unit { }`) via `Emitter.emit`, which has the side-
@@ -3109,7 +3109,7 @@ How it works:
   and the comment-preservation note is corrected — the default
   backend now keeps both `///` and `//` comments.
 
-Tests at `compiler/tests/Lyric.Cli.Tests/SelfHostedFmtBridgeTests.fs`
+Tests at `bootstrap/tests/Lyric.Cli.Tests/SelfHostedFmtBridgeTests.fs`
 exercise the bridge directly (round-trip, idempotence, leading +
 between + trailing line/block comment preservation, `isFormatted`
 discrimination).  All seven F# Expecto suites continue to pass.
@@ -3128,18 +3128,18 @@ DLL naming is its own concern; for now the bridge looks up
 
 *claude/lyric-self-hosted-formatter branch.*
 
-The F# `lyric fmt` (compiler/src/Lyric.Cli/Fmt.fs) drops `//` comments
+The F# `lyric fmt` (bootstrap/src/Lyric.Cli/Fmt.fs) drops `//` comments
 because it walks the AST exclusively.  D-progress-130's red/green CST
 gave the parser a lossless source view; this stage ports the formatter
 to Lyric so it can consume that CST and preserve comments.
 
 Scope:
 
-- New `Lyric.Fmt` package at `compiler/lyric/lyric/fmt/{fmt_core,fmt_items,fmt}.l`
+- New `Lyric.Fmt` package at `lyric/lyric/fmt/{fmt_core,fmt_items,fmt}.l`
   mirroring the F# Fmt.fs structure (helpers + line model + type /
   pattern / literal / expression / statement printers in `fmt_core`,
   item printers in `fmt_items`, top-level entry points in `fmt`).
-- Public API matching the contract advertised in `compiler/lyric/lyric/cli.l`:
+- Public API matching the contract advertised in `lyric/lyric/cli.l`:
   `pub func format(parsed: in ParseResult): String`
   `pub func isFormatted(source: in String, parsed: in ParseResult): Bool`
 - Comment preservation at item granularity: line and block comments
@@ -3183,7 +3183,7 @@ view to preserve comments and whitespace.  This stage lays the
 Roslyn-style red/green CST foundation entirely on the self-hosted
 side; the F# bootstrap is not touched.
 
-**Lexer changes (`compiler/lyric/lyric/lexer.l`):**
+**Lexer changes (`lyric/lyric/lexer.l`):**
 
 - New `TriviaKind` (`TKWhitespace`, `TKNewline`, `TKLineComment`,
   `TKBlockComment`) and `Trivia { kind, text, span }` records.
@@ -3198,7 +3198,7 @@ side; the F# bootstrap is not touched.
 - `makeSpannedToken(tok, sp)` is a public helper for synthetic
   out-of-bounds tokens (used by parser sentinels).
 
-**CST data model (`compiler/lyric/lyric/parser/parser_cst.l`):**
+**CST data model (`lyric/lyric/parser/parser_cst.l`):**
 
 - `SyntaxKind` enumerates structural CST node kinds (`SkSourceFile`,
   `SkModuleDocSection`, `SkFileAnnotationsSection`, `SkPackageDecl`,
@@ -3226,7 +3226,7 @@ side; the F# bootstrap is not touched.
   the next unclaimed token; when a child opens at `tokenStart >
   cursor`, the gap belongs to the parent as direct token children.
 
-**Parser wrapping (`compiler/lyric/lyric/parser/parser_*.l`):**
+**Parser wrapping (`lyric/lyric/parser/parser_*.l`):**
 
 The parser now opens / closes nodes at the file / package / import /
 item / annotation granularity:
@@ -3278,7 +3278,7 @@ verifier 256, LSP 28, emitter 634).
 *claude/lyric-parser-selfhosted-AvCuy branch.*
 
 The self-hosted Lyric parser ships as a four-file `Lyric.Parser` library
-under `compiler/lyric/lyric/parser/`:
+under `lyric/lyric/parser/`:
 
 - `parser_ast.l` — AST variant types (`Expr`, `Stmt`, `Item`, `Pattern`,
   `TypeRef`, `ContractClause`, …) that mirror the F# `Ast.fs` definition.
@@ -3291,13 +3291,13 @@ under `compiler/lyric/lyric/parser/`:
   `impl`, `import`, `module`, `val`, contract clauses, and the top-level
   `parseFile` entry point.
 
-`compiler/lyric/lyric/parser_self_test.l` is the self-test consumer.  It
+`lyric/lyric/parser_self_test.l` is the self-test consumer.  It
 imports `Lyric.Lexer` and `Lyric.Parser`, exercises the full parse path
 (imports, function decls with contracts, expression types, match, loops,
 closures, …) through assertions, and writes `"ok"` on success.
 
 The F# test
-`compiler/tests/Lyric.Emitter.Tests/SelfHostedParserTests.fs`
+`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedParserTests.fs`
 (`[parser_self_test_passes]`) compiles `parser_self_test.l` via the
 bootstrap emitter, runs the resulting PE, and asserts exit 0 + `"ok"` in
 stdout.  All 613 emitter tests pass with 0 failures.
@@ -3341,7 +3341,7 @@ stdout.  All 613 emitter tests pass with 0 failures.
 ### D-progress-125: JVM stage B2 smoke test unskipped; B111–B124 doc status update
 
 *claude/continue-jvm-emitter-T9Gdj branch.*  The `[hello_class_bytes_are_jvm_loadable]`
-test in `compiler/tests/Lyric.Emitter.Tests/JvmSelfTest.fs` was marked `ptestCase`
+test in `bootstrap/tests/Lyric.Emitter.Tests/JvmSelfTest.fs` was marked `ptestCase`
 (pending) since the stage-B2 PR with the note that `buildLabelMap` / `emitAllInsns`
 in `bytecode.l` failed JIT-time verification with `BadImageFormatException` when the
 compiled .NET program was executed.  The root cause was a codegen bug with `match`
@@ -3373,8 +3373,8 @@ compiler in place for compilation.
 |---|---|
 | `stdlib/std/_kernel/process_host.l` | Trusted BCL extern boundary for `System.Diagnostics.Process` |
 | `stdlib/std/process.l` | `Std.Process` — `run` / `runChecked` wrapping the process kernel |
-| `compiler/lyric/lyric/manifest.l` | `Lyric.Manifest` — pure-Lyric TOML parser for `lyric.toml` (mirrors `Manifest.fs`) |
-| `compiler/lyric/lyric/cli.l` | `Lyric.Cli` — self-hosted command dispatch (mirrors `Program.fs`) |
+| `lyric/lyric/manifest.l` | `Lyric.Manifest` — pure-Lyric TOML parser for `lyric.toml` (mirrors `Manifest.fs`) |
+| `lyric/lyric/cli.l` | `Lyric.Cli` — self-hosted command dispatch (mirrors `Program.fs`) |
 | `stdlib/std/string.l` | Added `pub func fromInt(n: in Int): String` convenience wrapper over `toString` |
 
 **Architecture decisions:**
@@ -3392,7 +3392,7 @@ compiler in place for compilation.
   `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, and `Lyric.ContractMeta`.
   These packages do not exist yet; they will ship in M5.2 (parser/emitter)
   and the remainder of M5.3.  The CLI source documents their expected API
-  surface in header comments.  The file lives in `compiler/lyric/lyric/`
+  surface in header comments.  The file lives in `lyric/lyric/`
   and is only compiled by the self-hosted compiler, so forward references
   are safe.
 - `stdlib/lyric.toml` gains `Std.ProcessHost` in Tier 0 (only depends on
@@ -3410,8 +3410,8 @@ extern count: ~217, well under the 250 hard limit.
 *claude/jvm-scope-b111-XNq6s branch.*  Completes the JVM lowering
 self-test series B111–B124 exercising the full range of Lyric-level
 lowering functions.  Each stage has a self-test Lyric source in
-`compiler/lyric/jvm/` and an F# Expecto test in
-`compiler/tests/Lyric.Emitter.Tests/`.
+`lyric/jvm/` and an F# Expecto test in
+`bootstrap/tests/Lyric.Emitter.Tests/`.
 
 **Stages shipped:**
 
@@ -3455,32 +3455,32 @@ host code.  The implementation reuses the `Lyric.Jvm.Hosts.JvmByteBuilder` /
 
 **New files:**
 
-- `compiler/lyric/msil/_kernel/kernel.l` — `Msil.Kernel` package; declares
+- `lyric/msil/_kernel/kernel.l` — `Msil.Kernel` package; declares
   `extern type ByteWriter = "Lyric.Jvm.Hosts.JvmByteBuilder"` and re-exports
   the JVM LE byte-write helpers (`bufU1`, `bufU2`, `bufU4`, `bufAppend`,
   `bufLen`, `bufToList`) under PE-centric names, plus `bufZero` and `bufPadTo`
   in native Lyric.
 
-- `compiler/lyric/msil/pe.l` — `Msil.Pe` package; full fixed-layout serializer.
+- `lyric/msil/pe.l` — `Msil.Pe` package; full fixed-layout serializer.
   Sections: DOS stub (128 B), PE/COFF headers (384 B, padded), CLR header
   IMAGE_COR20_HEADER (72 B), MSIL method body in tiny format (12 B, ldstr +
   call + ret), and ECMA-335 metadata (408 B: BSJB root + #~ tables stream +
   #Strings + #US + #Blob + #GUID).  Entry points: `buildHelloAssemblyBuf()`,
   `buildHelloAssembly(): List[Byte]`, `buildHelloAssemblySize(): Int`.
 
-- `compiler/lyric/msil/msil_self_test_m1.l` — `Msil.SelfTestM1` package;
+- `lyric/msil/msil_self_test_m1.l` — `Msil.SelfTestM1` package;
   calls `buildHelloAssemblySize()` + `buildHelloAssembly()` and prints five
   structural invariants: `pe_size_ok=true`, `mz_ok=true`, `pe_sig_ok=true`,
   `clr_header_ok=true`, `bsjb_ok=true`.
 
 **Emitter change:**
 
-- `compiler/src/Lyric.Emitter/Emitter.fs` — `isBuiltinHead` extended to
-  include `"Msil"`, mapping `import Msil.X` to `compiler/lyric/msil/`.
+- `bootstrap/src/Lyric.Emitter/Emitter.fs` — `isBuiltinHead` extended to
+  include `"Msil"`, mapping `import Msil.X` to `lyric/msil/`.
 
 **F# test:**
 
-- `compiler/tests/Lyric.Emitter.Tests/MsilSelfTestM1.fs` — `Msil.SelfTest M1`
+- `bootstrap/tests/Lyric.Emitter.Tests/MsilSelfTestM1.fs` — `Msil.SelfTest M1`
   Expecto test: compiles `msil_self_test_m1.l` via the bootstrap emitter, runs
   it, asserts all five `*=true` lines are present in stdout.  Wired into
   `Lyric.Emitter.Tests.fsproj` and `Program.fs`.
@@ -3502,7 +3502,7 @@ SDK root discovery, `Lyric.SdkVersion` resource embedding, the
 `lyric --sdk-info` command, B0040/B0042 diagnostics, stdlib bundle
 expansion, and a dedup fix for in-project `mergedImportedItems`.
 
-**New module: `compiler/src/Lyric.Emitter/SdkRoot.fs`**
+**New module: `bootstrap/src/Lyric.Emitter/SdkRoot.fs`**
 
 `Lyric.Emitter.SdkRoot` implements `docs/22` §4:
 
@@ -3591,7 +3591,7 @@ PE that loads + runs against the NuGet runtime DLL.
 **Architecture decisions (taken in-session)**:
 
 1. **`_extern/` discovery via implicit-import fallback (option b).**
-   `compiler/src/Lyric.Emitter/Emitter.fs` gains
+   `bootstrap/src/Lyric.Emitter/Emitter.fs` gains
    `resolveExternShimImports` running between `resolveRestoredImports`
    and `resolveStdlibImports`.  For every `import <Head>` whose first
    path segment isn't a builtin head (`Std`, `Lyric`, `Jvm`,
@@ -3633,7 +3633,7 @@ to pass `[]` / `None`.  The CLI's `build` and `buildProject` add
 the same parameters and thread them in from the manifest's
 `[nuget]` block via `NugetAssets.readForManifest`.
 
-**Emitter changes (`compiler/src/Lyric.Emitter/Emitter.fs`)**:
+**Emitter changes (`bootstrap/src/Lyric.Emitter/Emitter.fs`)**:
 * `preloadNugetAssemblies` runs at the top of `emit` to
   `Assembly.LoadFrom` every NuGet DLL the request carries.  Already
   loaded paths are skipped via the AppDomain's existing
@@ -3704,11 +3704,11 @@ self-hosted lexer.
   (5), `SpacingCombiningMark` (6), `DecimalDigitNumber` (8),
   `LetterNumber` (9), `ConnectorPunctuation` (18).  One new
   `@externTarget`; `_kernel/` count now 147/150.
-* `compiler/lyric/lyric/lexer.l` `isIdStart` / `isIdContinue` keep
+* `lyric/lyric/lexer.l` `isIdStart` / `isIdContinue` keep
   the ASCII fast path (`[A-Za-z_]` / `[A-Za-z0-9_]`) and gain a
   non-ASCII branch that calls `hostUnicodeCategory(c)` and
   matches the same category set the F# bootstrap does
-  (compiler/src/Lyric.Lexer/Lexer.fs lines 92-119).
+  (bootstrap/src/Lyric.Lexer/Lexer.fs lines 92-119).
 * New helper `isAscii(c) = c <= '\u{007F}'` keeps the dispatch
   branch readable.
 * Self-test grows by 3 cases — Greek-letter ident, Cyrillic
@@ -3721,7 +3721,7 @@ without re-architecting the kernel.
 ### D-progress-120: M5.1 stage 4 (partial) — NFC + L0040 in self-hosted lexer
 
 *claude/m5.1-stages-2d-3-4-8hL4O branch.*  Adds the F# bootstrap's
-existing identifier hardening to `compiler/lyric/lyric/lexer.l`:
+existing identifier hardening to `lyric/lyric/lexer.l`:
 
 * `lexIdentOrKeyword` NFC-normalises every lexed identifier via
   `buf.normalize()` (calls `System.String.Normalize` through the BCL
@@ -3747,8 +3747,8 @@ follow-up review.
 ### D-progress-119: M5.1 stage 3 — interpolated / triple / raw strings in self-hosted lexer
 
 *claude/m5.1-stages-2d-3-4-8hL4O branch.*  Ports
-`compiler/src/Lyric.Lexer/Lexer.fs`'s string-shape coverage into
-`compiler/lyric/lyric/lexer.l` 1:1.  Adds the `TStringStart` /
+`bootstrap/src/Lyric.Lexer/Lexer.fs`'s string-shape coverage into
+`lyric/lyric/lexer.l` 1:1.  Adds the `TStringStart` /
 `TStringPart` / `TStringHoleStart` / `TStringEnd` quartet for
 interpolated literals, plus `TTripleString` / `TRawString` for the
 multiline + literal-byte-buffer shapes.  Introduces a `Mode` union
@@ -3970,13 +3970,13 @@ ported the text/dir surfaces; this PR finishes the migration for
   gymnastics.  The public surface (`Result[List[Byte], IOError]`)
   stays unchanged so callers (incl. JVM self-tests) need no edits.
 
-**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**F# shim** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 
 * `type FileHost private () = …` (~70 LoC after G10 1/2 had pruned
   text/dir; 5 remaining `ReadBytes*`/`WriteBytes*` members) deleted.
 * Replaced by a short doc comment.
 
-**Codegen trim** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+**Codegen trim** (`bootstrap/src/Lyric.Emitter/Codegen.fs`).
 
 * `hostFileBuiltins` map (5 entries) deleted along with the
   `fileHostMethod` helper.
@@ -4087,7 +4087,7 @@ codegen blocker that previously stopped non-generic Lyric functions
 from declaring externs against generic BCL types like
 `System.Threading.AsyncLocal\`1`.
 
-**Codegen fix** (`compiler/src/Lyric.Emitter/Emitter.fs`).
+**Codegen fix** (`bootstrap/src/Lyric.Emitter/Emitter.fs`).
 
 `emitExternCall` previously closed open generic declaring types via
 the static `TypeBuilder.GetMethod` / `TypeBuilder.GetConstructor`,
@@ -4123,7 +4123,7 @@ generic externs are unchanged.
 * `currentToken` / `installToken` / `restoreToken` / `hasAmbient`
   are now native Lyric, four short bodies on top of the helpers.
 
-**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**F# shim** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 
 `type AmbientHost private () = …` (~30 LoC, four members) collapses
 to `type AmbientSlot private () = …` (~4 LoC, just holds the
@@ -4158,7 +4158,7 @@ tests / docs / cross-references, then flips the rows to
 test fixtures and docs):**
 
 * **Tests for the frozen `lyric prove --json` schema.**
-  `compiler/tests/Lyric.Cli.Tests/ProveTests.fs` (new) covers the
+  `bootstrap/tests/Lyric.Cli.Tests/ProveTests.fs` (new) covers the
   top-level `file`/`level`/`goals`/`diagnostics`/`summary` shape,
   `goals[].outcome == "discharged"` with `model: null`,
   `goals.length == 0` for `@runtime_checked` files, and the
@@ -4168,19 +4168,19 @@ test fixtures and docs):**
   missing-flag case (exit 1 + "specify a goal index" stderr), and
   out-of-range case (exit 1 + "out of range" stderr).
 * **Tests for `lyric public-api-diff` contract clauses.**
-  `compiler/tests/Lyric.Emitter.Tests/ContractMetaTests.fs` adds
+  `bootstrap/tests/Lyric.Emitter.Tests/ContractMetaTests.fs` adds
   five cases covering strengthened-requires (breaking),
   weakened-ensures (breaking), relaxed-requires (non-breaking),
   added-ensures (non-breaking), and the `[breaking] strengthened
   requires:` rendering format that downstream tooling can grep.
 * **Tests for `@proof_required(checked_arithmetic)`.**
-  `compiler/tests/Lyric.Verifier.Tests/DriverTests.fs` adds three
+  `bootstrap/tests/Lyric.Verifier.Tests/DriverTests.fs` adds three
   cases pinning the overflow VCs:
   bounded-input addition discharges, unbounded `x*x` produces a
   non-discharged VC over and above plain `@proof_required`, and the
   level surfaces in the `ProofSummary`.
 * **Tests for LSP V0007 / V0008 / V0003 quickfixes.**
-  `compiler/tests/Lyric.Lsp.Tests/ProtocolTests.fs` adds three
+  `bootstrap/tests/Lyric.Lsp.Tests/ProtocolTests.fs` adds three
   `textDocument/codeAction` cases verifying the existing
   `Server.fs` handlers offer "Downgrade to @runtime_checked" on
   V0007 and V0008, and "Allow unsafe blocks" on V0003.
@@ -4261,7 +4261,7 @@ declarations in the existing kernel boundary files.
 * `isCancelled(token)` → `System.Threading.CancellationToken.IsCancellationRequested`.
 * `throwIfCancelled(token)` → `System.Threading.CancellationToken.ThrowIfCancellationRequested`.
 
-**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**F# shim** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 
 * `type CancelHost private () = …` deleted (52 LoC).
 * `type RandomHost private () = …` deleted (14 LoC).
@@ -4283,7 +4283,7 @@ the migrations are inside `_kernel/` already.  Cancellation tests
 exercise every retired CancelHost / RandomHost method.
 
 **Remaining Phase 1 (per docs/23 §6).** Bucket D split-out — move
-`Jvm*` helpers (~430 LoC) to `compiler/lyric/jvm/`, freeing the
+`Jvm*` helpers (~430 LoC) to `lyric/jvm/`, freeing the
 stdlib bundle from JVM-specific code.
 
 ### D-progress-107: Phase 1 (3/3) — Bucket D `Jvm*` split-out
@@ -4293,22 +4293,22 @@ stdlib bundle from JVM-specific code.
 JVM-emit-only F# helpers from the stdlib bundle's host shim by
 moving them to a dedicated project.
 
-**New project: `compiler/src/Lyric.Jvm.Hosts/`.**
+**New project: `bootstrap/src/Lyric.Jvm.Hosts/`.**
 
 * `Lyric.Jvm.Hosts.fsproj` (default F# library shape, doc-file
   generation enabled to match `Lyric.Stdlib`).
 * `JvmHosts.fs` (~454 LoC) — verbatim move of the previous
   `JvmInternals` / `JvmByteBuilder` / `JvmByteHost` / `JvmZipHost` /
   `JvmConstantPool` / `JvmPoolHost` types from
-  `compiler/src/Lyric.Stdlib/Stdlib.fs` lines 1008–1452, repackaged
+  `bootstrap/src/Lyric.Stdlib/Stdlib.fs` lines 1008–1452, repackaged
   under `namespace Lyric.Jvm.Hosts`.
 
-**`Lyric.Stdlib`** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**`Lyric.Stdlib`** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 
 * Lines 1008–1452 deleted (the entire JVM block).  Replaced by
   a short doc comment pointing at the new home.
 
-**`Lyric.Emitter`** (`compiler/src/Lyric.Emitter/`).
+**`Lyric.Emitter`** (`bootstrap/src/Lyric.Emitter/`).
 
 * `Lyric.Emitter.fsproj` adds a `<ProjectReference>` to
   `Lyric.Jvm.Hosts` so the assembly is in the test/CLI runtime
@@ -4321,7 +4321,7 @@ moving them to a dedicated project.
 
 **Lyric source updates** (`@externTarget` repointing).
 
-* `compiler/lyric/jvm/_kernel/kernel.l` — 38 occurrences of
+* `lyric/jvm/_kernel/kernel.l` — 38 occurrences of
   `Lyric.Stdlib.Jvm…` rewritten to `Lyric.Jvm.Hosts.Jvm…`.
   `extern type ByteWriter = "Lyric.Stdlib.JvmByteBuilder"` and
   `extern type Pool = "Lyric.Stdlib.JvmConstantPool"` updated to
@@ -4429,13 +4429,13 @@ within the audited `_kernel/` boundary.  `Std.File` `import`s the new
 * Bytes paths (`readBytes` / `writeBytes`) unchanged — gated on a
   `slice[Byte] → List[Byte]` conversion that's a follow-up to G10.
 
-**Codegen trim** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+**Codegen trim** (`bootstrap/src/Lyric.Emitter/Codegen.fs`).
 The `hostFileBuiltins` map shrinks from 13 entries to 5 (only the
 bytes-flavoured ones remain).  No more F# `FileHost.Exists` /
 `ReadIsValid` / `WriteIsValid` / `DirectoryExists` /
 `CreateDirectoryIsValid` / `Read*Error` route.
 
-**F# shim trim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**F# shim trim** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 Eight `FileHost` static members deleted (~96 LoC); five
 `ReadBytes*`/`WriteBytes*` survive until the bytes follow-up.
 
@@ -4465,7 +4465,7 @@ pattern that the F# `Contracts` helpers used to do.  Drops both the
 `Contracts` static class (~20 LoC) and the `LyricAssertionException`
 custom subclass (~3 LoC) without losing any user-visible behaviour.
 
-**Codegen** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+**Codegen** (`bootstrap/src/Lyric.Emitter/Codegen.fs`).
 
 * Two new lazy lookups:
   * `systemExceptionStringCtor` → `System.Exception(string)` ctor.
@@ -4491,7 +4491,7 @@ custom subclass (~3 LoC) without losing any user-visible behaviour.
   okLbl:
   ```
 
-**Emitter** (`compiler/src/Lyric.Emitter/Emitter.fs`).
+**Emitter** (`bootstrap/src/Lyric.Emitter/Emitter.fs`).
 
 * `lyricAssertCtor` (resolving `Lyric.Stdlib.LyricAssertionException`)
   renamed to `contractExceptionCtor` and points at
@@ -4500,7 +4500,7 @@ custom subclass (~3 LoC) without losing any user-visible behaviour.
   runtime checks) now uses the BCL exception ctor — matching the
   builtin sites above.
 
-**F# shim** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**F# shim** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 
 * `type LyricAssertionException(message: string) = …` deleted (3 LoC).
 * `[<Sealed; AbstractClass>] type Contracts private () = …` deleted
@@ -4543,7 +4543,7 @@ Both are pure pass-throughs to `System.Threading.Tasks.Task.Delay`.
 arity-based overload resolution selects the right one at each call
 site (1-arg → `Task.Delay(int)`, 2-arg → `Task.Delay(int, CancellationToken)`).
 
-**`compiler/src/Lyric.Stdlib/Stdlib.fs`.**  `type TaskHost` deleted
+**`bootstrap/src/Lyric.Stdlib/Stdlib.fs`.**  `type TaskHost` deleted
 along with its 2 static members.  Replaced by a doc comment.
 
 **G12 status.** This PR closes the simplest part of G12 — direct-
@@ -4578,7 +4578,7 @@ delayWithCancel inside `withTimeout`) confirm both
 `Lyric.Stdlib.Console` type by inlining the `null -> "()" else
 value.ToString()` lowering at the codegen call sites.
 
-**Codegen change** (`compiler/src/Lyric.Emitter/Codegen.fs`).
+**Codegen change** (`bootstrap/src/Lyric.Emitter/Codegen.fs`).
 
 * New helper `emitNullableToStringInline (il)` consumes a boxed
   `obj | null` from the stack and pushes a non-null `string`.  IL
@@ -4600,7 +4600,7 @@ value.ToString()` lowering at the codegen call sites.
   at the surviving `Lyric.Stdlib.JsonHost` so the assembly still
   loads on demand.
 
-**F# shim change** (`compiler/src/Lyric.Stdlib/Stdlib.fs`).
+**F# shim change** (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`).
 
 * `type Console private () = …` deleted along with its two static
   members.  Replaced by a one-paragraph doc comment pointing at
@@ -4713,14 +4713,14 @@ externs:
   `isXidContinue`.
 
 **R4/R5 — `Msil.Lowering` self-hosted MSIL lowering.**  New Lyric
-package `compiler/lyric/msil/lowering.l` (`package Msil.Lowering`,
+package `lyric/msil/lowering.l` (`package Msil.Lowering`,
 839 lines) — the high-level AST-to-MSIL-IR lowering stage that mirrors
 `Jvm.Lowering` for the .NET target.  Defines `MsilType` (12 cases),
 `MInsn` (~45 instruction cases), and `MRecord / MFunc / MPackage` IR
 types.  Entry point `lowerMPackage(file, pkgName): MPackage` walks the
 `SourceFile` AST and produces the MSIL package IR ready for PE
 emission.  Phase R6 (`Msil.Codegen` → `Msil.Bridge` → F# bridge) is
-a follow-up; the stub `compiler/lyric/msil/bridge.l` panics with a
+a follow-up; the stub `lyric/msil/bridge.l` panics with a
 descriptive message directing callers to the Phase R6 plan.
 
 ### D-progress-239: Jvm.Codegen + Jvm.Bridge — self-hosted JVM end-to-end pipeline
@@ -4728,7 +4728,7 @@ descriptive message directing callers to the Phase R6 plan.
 *claude/review-docs-platform-parity-UuNIO branch.*  Completes the
 JVM self-hosted compilation pipeline (Phase R4 deliverable):
 
-**`compiler/lyric/jvm/codegen.l`** (`package Jvm.Codegen`, ~2230
+**`lyric/jvm/codegen.l`** (`package Jvm.Codegen`, ~2230
 lines) — bootstrap-grade AST-to-`LPackage` lowering.  Walks a
 `SourceFile` from `Lyric.Parser` and produces an `LPackage` for
 `Jvm.Lowering.lowerPackage`.  Key sections:
@@ -4751,13 +4751,13 @@ lines) — bootstrap-grade AST-to-`LPackage` lowering.  Walks a
   wrapper (`main(String[])→void`) if the Lyric source has a
   `main():Unit` function.
 
-**`compiler/lyric/jvm/bridge.l`** (`package Jvm.Bridge`) — public
+**`lyric/jvm/bridge.l`** (`package Jvm.Bridge`) — public
 entry point `compileToJar(source, outputPath, packageName): Bool`.
 Chains `parse → error-check → codegenPackage → lowerPackage →
 serializeClassWithPool → writeJarFromClasses`.  Imports
 `Lyric.Lexer` for `DiagError`/`DiagWarning` severity matching.
 
-**`compiler/src/Lyric.Cli/SelfHostedJvm.fs`** — F# bridge from the
+**`bootstrap/src/Lyric.Cli/SelfHostedJvm.fs`** — F# bridge from the
 `lyric` CLI to `Jvm.Bridge`.  Follows the same reflection pattern as
 `SelfHostedFmt.fs`: compiles a throwaway driver program to trigger the
 emitter's stdlib precompile, loads `Lyric.Jvm.Bridge.dll` from the
@@ -4786,7 +4786,7 @@ in `docs/14-native-stdlib-plan.md` §6 as one atomic slice:
   routed straight at `System.Int32.TryParse` etc.) but the F# type
   and the codegen `hostParseBuiltins` map / `hostParse*` builtin
   wiring were never deleted.  Both sides removed; the dead-code
-  `compiler/tests/Lyric.Emitter.Tests/ParseTests.fs` (which
+  `bootstrap/tests/Lyric.Emitter.Tests/ParseTests.fs` (which
   exercised those builtins) deleted.
 * **P3-2 (`format1..6` → `String.Format(string, object[])`).**  The
   arity-specialised `Lyric.Stdlib.Format.OfN` wrappers retired.
@@ -4876,7 +4876,7 @@ behaviour for dir entries.
 
 **Tests.**
 
-* `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs`
+* `bootstrap/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs`
   `[stdlib_smoke_bundle_compiles]` mimics the working subset of the
   bundle: a generic `Option[T]` union in `Std.Smoke.Core`, a plain
   `HostError` enum-shaped union in `Std.Smoke.Errors`, and a
@@ -5157,7 +5157,7 @@ slice closes the gap so the stdlib can compile as one bundled DLL
 
 **Tests.**
 
-* `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` gains:
+* `bootstrap/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` gains:
   * `[cross_package_bundle]` — `CrossPkg.Util` declared first
     in `req.Packages` but importing `CrossPkg.Core` (declared
     second).  Must topo-sort to emit Core first; Util's
@@ -5252,7 +5252,7 @@ cross-package symbol resolution within the project lands in stage
 
 **Tests.**
 
-* `compiler/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` adds
+* `bootstrap/tests/Lyric.Emitter.Tests/ProjectAsDllTests.fs` adds
   two new tests:
   * `[two_packages_bundle_into_one_dll]` — two independent
     packages (`MyApp.Core`, `MyApp.Util`) compile into one DLL with
@@ -5309,7 +5309,7 @@ materialised into a typed `ProjectSection` record on `Manifest`.
   directory, sorted by name on load.
 
 **Tests.**  Five new cases in
-`compiler/tests/Lyric.Cli.Tests/ManifestTests.fs`:
+`bootstrap/tests/Lyric.Cli.Tests/ManifestTests.fs`:
 
 * `[project section absent by default]` — legacy back-compat.
 * `[project section parses with defaults]` — minimal `[project]`.
@@ -5383,7 +5383,7 @@ current per-package-DLL world.  Once `output = "single"` ships
 
 **Tests.**
 
-* `compiler/tests/Lyric.Lexer.Tests/KeywordTests.fs` automatically
+* `bootstrap/tests/Lyric.Lexer.Tests/KeywordTests.fs` automatically
   covers the new keyword via `Keywords.all` round-trip.
 * New parser test `[internal visibility parses on funcs, records,
   and fields]` asserts the AST shape across all three positions
@@ -5487,7 +5487,7 @@ three design documents covering the next stages of self-hosting.
   next stage.  Per `docs/19-multi-file-packages.md` §4.
 * `Testpkg` added to `isBuiltinHead` for emitter test fixtures.
   Two new tests in
-  `compiler/tests/Lyric.Emitter.Tests/MultiFilePackageTests.fs`
+  `bootstrap/tests/Lyric.Emitter.Tests/MultiFilePackageTests.fs`
   exercise (a) two-file merge and (b) two-file with distinct
   imports.  Both pass.
 
@@ -5514,7 +5514,7 @@ three design documents covering the next stages of self-hosting.
 **Future work.**
 
 * Stage 2b: split the self-hosted lexer at
-  `compiler/lyric/lyric/lexer.l` into a reusable `Lyric.Lexer` library
+  `lyric/lyric/lexer.l` into a reusable `Lyric.Lexer` library
   + a tiny consumer.  The cross-package field access fix lands the
   blockers; remaining work is moving the test harness out and adding
   `pub` re-exports.
@@ -5531,7 +5531,7 @@ Delivers a Lyric-language lexer that tokenises a substantial subset
 of the bootstrap lexer's scope and self-tests via the bootstrap
 emitter on every `dotnet test` run.
 
-**New source.** `compiler/lyric/lyric/lexer.l` (~2 000 lines):
+**New source.** `lyric/lyric/lexer.l` (~2 000 lines):
 identifiers + the full keyword table, decimal/hex/octal/binary integer
 literals (with `_` separators and the i8/i16/i32/i64/u8/u16/u32/u64
 suffixes), float literals (with optional exponent and `f32`/`f64`
@@ -5558,16 +5558,16 @@ falls through to a BCL property lookup); stage 2 of M5.1 will split
 the harness out as a `Lyric.Lexer` consumer once that lookup lands.
 
 **New test runner.**
-`compiler/tests/Lyric.Emitter.Tests/SelfHostedLexerTests.fs` walks
+`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedLexerTests.fs` walks
 up from the test binary's base directory to locate
-`compiler/lyric/lyric/lexer.l`, compiles it via `compileAndRun`,
+`lyric/lyric/lexer.l`, compiles it via `compileAndRun`,
 and asserts (a) zero error-class diagnostics, (b) exit code 0,
 (c) `"ok"` in stdout.  Discoverable as `[lexer_self_test_passes]`
 in the Expecto run.  Wired into `Program.fs` after `JvmSelfTest`.
 
 **`Lyric` head added to `isBuiltinHead`.**  `Emitter.fs:4298` now
 includes `"Lyric"` so `import Lyric.<X>` resolves under
-`compiler/lyric/lyric/<x>.l` via the existing built-in resolver.
+`lyric/lyric/<x>.l` via the existing built-in resolver.
 Reserved for the self-hosted compiler's own packages; future M5.1
 stages (parser, type-checker) live in the same head.
 
@@ -5590,7 +5590,7 @@ written the bootstrap parser/codegen did not yet handle or-patterns
 in `match` arms, nested constructor patterns, or tuple destructuring
 in `val` / match patterns, and the lexer was hand-shaped around those
 gaps.  All three have since landed (E20: see
-`compiler/tests/Lyric.Emitter.Tests/PatternMatchingTests.fs` —
+`bootstrap/tests/Lyric.Emitter.Tests/PatternMatchingTests.fs` —
 `tuple_nested_in_function`, `nested_two_levels`, and
 `nested_constructor_in_or` exercise tuple destructuring in `val`,
 `case Wrap(A(x))`-style nested constructor patterns recursing via
@@ -5711,7 +5711,7 @@ forward to `proveSourceWithOptions` / `proveFileWithOptions` with
 `ProveOptions.defaults`.
 
 **3 — Verification regression suite to ≥ 200.** New
-`compiler/tests/Lyric.Verifier.Tests/RegressionTests.fs` adds 142
+`bootstrap/tests/Lyric.Verifier.Tests/RegressionTests.fs` adds 142
 tests across seven sub-suites:
 
 | Sub-suite | Count | Coverage |
@@ -5789,7 +5789,7 @@ Added one above with M4.1 / M4.2 / M4.3 broken out per
   note in any prior planning doc is obsolete.
 - **M4.2 not shipped:** `std.core.proof` subpackage (no
   `lyric/std/proof.l` exists), `--allow-unverified` CLI flag (no
-  match for the string in `compiler/src/Lyric.Cli/`), and the
+  match for the string in `bootstrap/src/Lyric.Cli/`), and the
   200-test verification regression target (83 verifier tests today
   across `Lyric.Verifier.Tests/`'s 8 files: ModeTests 8, ModeCheck
   11, Imports 6, Vcir 7, Smt 8, Solver 14, Driver 29).
@@ -6245,7 +6245,7 @@ verifier is wired end-to-end (parse → mode-check → VC-gen → SMT-LIB
 emission → discharge → CLI summary) at bootstrap-grade fidelity.
 A new `lyric prove <source.l>` subcommand exposes it.
 
-**New project** — `compiler/src/Lyric.Verifier/`:
+**New project** — `bootstrap/src/Lyric.Verifier/`:
 
 - `Mode.fs` — parses `@runtime_checked` / `@proof_required[(modifier)]`
   / `@axiom` file-level annotations into `VerificationLevel`.
@@ -6302,7 +6302,7 @@ A new `lyric prove <source.l>` subcommand exposes it.
   (with up to six lines of counterexample preamble) and V0007 for
   `unknown`.
 
-**CLI** — `compiler/src/Lyric.Cli/Program.fs` gains a `prove`
+**CLI** — `bootstrap/src/Lyric.Cli/Program.fs` gains a `prove`
 subcommand:
 
 ```
@@ -6313,7 +6313,7 @@ lyric prove <source.l> [--proof-dir <dir>] [--verbose]
 prints the per-goal outcome and the SMT path.  Exit code is 0 on
 all-discharged-no-errors, 1 otherwise.  `lyric build` is unchanged.
 
-**Tests** — `compiler/tests/Lyric.Verifier.Tests/` (28 Expecto
+**Tests** — `bootstrap/tests/Lyric.Verifier.Tests/` (28 Expecto
 tests across `ModeTests`, `ModeCheckTests`, `VcirTests`, `SmtTests`,
 `DriverTests`).  Coverage:
 
@@ -6348,10 +6348,10 @@ These are tracked into M4.2/M4.3 per the plan and intentionally
 ship as is so the architecture is exercised end-to-end at the
 bootstrap milestone.
 
-**Files touched:** `compiler/Lyric.sln` (added two projects),
-`compiler/src/Lyric.Cli/Lyric.Cli.fsproj` (verifier ProjectReference),
-`compiler/src/Lyric.Cli/Program.fs` (`prove` subcommand + usage),
-`compiler/src/Lyric.Verifier/*` (new), `compiler/tests/Lyric.Verifier.Tests/*`
+**Files touched:** `bootstrap/Bootstrap.sln` (added two projects),
+`bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj` (verifier ProjectReference),
+`bootstrap/src/Lyric.Cli/Program.fs` (`prove` subcommand + usage),
+`bootstrap/src/Lyric.Verifier/*` (new), `bootstrap/tests/Lyric.Verifier.Tests/*`
 (new), `CLAUDE.md` (verifier description in the project layout
 section), `docs/15-phase-4-proof-plan.md` (already shipped in
 PR #75 — referenced from this entry).
@@ -6551,7 +6551,7 @@ fields, invariants, entry / func members }` now lowers to a
 sealed CLR class with structurally-enforced mutual exclusion,
 matching the language reference §7.4 contract.
 
-**Lowering** (`compiler/src/Lyric.Emitter/Emitter.fs`
+**Lowering** (`bootstrap/src/Lyric.Emitter/Emitter.fs`
 `defineProtectedTypeOnto`):
 
 - One sealed CLR class per `protected type T`.
@@ -6656,7 +6656,7 @@ manifest's `[dependencies]`, locates each restored DLL via the
 NuGet cache convention, and feeds the contract surface into the
 import resolver.
 
-**New module** `compiler/src/Lyric.Emitter/RestoredPackages.fs`:
+**New module** `bootstrap/src/Lyric.Emitter/RestoredPackages.fs`:
 - `RestoredPackageRef` — name + version + absolute DLL path; the
   CLI fills it from `lyric.toml` after running `lyric restore`.
 - `tryLocateRestoredDll` — resolves
@@ -6675,7 +6675,7 @@ import resolver.
   `NoContractResource`, `MalformedContract`,
   `SynthesisDiagnostics`) rendered as a single `E901` diagnostic.
 
-**Emitter integration** (`compiler/src/Lyric.Emitter/Emitter.fs`):
+**Emitter integration** (`bootstrap/src/Lyric.Emitter/Emitter.fs`):
 - `EmitRequest` gains an optional `RestoredPackages:
   RestoredPackageRef list` field (defaults to `[]` so existing
   callers keep compiling; `mkEmitRequest` is the convenience
@@ -6689,7 +6689,7 @@ import resolver.
 - `emit` merges the restored + stdlib artifact lists and threads
   them through the existing pipeline unchanged.
 
-**CLI integration** (`compiler/src/Lyric.Cli/Program.fs`):
+**CLI integration** (`bootstrap/src/Lyric.Cli/Program.fs`):
 - `lyric build` accepts `--manifest <lyric.toml>` and auto-
   discovers `lyric.toml` next to the source when the flag is
   absent.  For each `[dependencies]` entry it calls
@@ -6730,7 +6730,7 @@ import resolver.
 a `lyric.toml` manifest and ship through NuGet via two thin
 wrappers around `dotnet pack` / `dotnet restore`.
 
-**Manifest schema** (`compiler/src/Lyric.Cli/Manifest.fs`):
+**Manifest schema** (`bootstrap/src/Lyric.Cli/Manifest.fs`):
 
 ```toml
 [package]
@@ -6757,7 +6757,7 @@ A structured `ManifestError` (`MissingFile`, `ParseError`,
 `MissingField`, `InvalidFieldType`) feeds friendly diagnostics
 through `renderError`.
 
-**`lyric publish` flow** (`compiler/src/Lyric.Cli/Pack.fs`):
+**`lyric publish` flow** (`bootstrap/src/Lyric.Cli/Pack.fs`):
 
 1. Read `lyric.toml` (or `--manifest <path>`).
 2. Locate the user's pre-built DLL — `bin/<sanitised-name>.dll` by
@@ -6792,7 +6792,7 @@ the same `<PackageReference>` shape the restore step uses, then
 read each restored DLL's `Lyric.Contract` resource (already
 shipped) for cross-package import resolution.
 
-**New test project**: `compiler/tests/Lyric.Cli.Tests/` — first
+**New test project**: `bootstrap/tests/Lyric.Cli.Tests/` — first
 test suite specifically for the CLI.  21 tests across
 `ManifestTests.fs` (round-trip parse, error shapes, string
 escapes, dependency sort, comments, duplicate-key rejection) and
@@ -6944,7 +6944,7 @@ shapes, the function fell back to the M1.4 blocking shim, and a
 real `Task.Delay`-bearing inner await blocked the calling thread
 instead of suspending.
 
-Implementation lives in `compiler/src/Lyric.Emitter/AsyncStateMachine.fs`
+Implementation lives in `bootstrap/src/Lyric.Emitter/AsyncStateMachine.fs`
 as a new pre-emit AST rewrite.  Walking the function body, every
 `EAwait` encountered in a sub-expression position is hoisted to a
 preceding `val __spill_<n> = await innerExpr` binding and replaced
@@ -6991,7 +6991,7 @@ Bootstrap-grade scope (still falls back to M1.4):
   patterns; pathological reordering edge cases need explicit
   intermediate `val` bindings.
 
-Five new test cases in `compiler/tests/Lyric.Emitter.Tests/AsyncTests.fs`:
+Five new test cases in `bootstrap/tests/Lyric.Emitter.Tests/AsyncTests.fs`:
 
 - `stack_spill_await_in_call_arg` — `println(toString(await produce() + 1))`.
 - `stack_spill_two_await_args` — `await a() + await b()`, exercises
@@ -7098,7 +7098,7 @@ hit `E4 codegen: unknown name 'panic'`.
 
 ### D-progress-009: bootstrap CLI + first real-world program
 *Lyric CLI branch.*  The `lyric` CLI (lives in
-`compiler/src/Lyric.Cli/`) wraps `Emitter.emit` for direct
+`bootstrap/src/Lyric.Cli/`) wraps `Emitter.emit` for direct
 command-line use:
 
 ```
@@ -7589,7 +7589,7 @@ parsed as `TUnit`) and `Unit` (the bare-name form, parsed as
 `TRef ["Unit"]`) are recognised so the user's preferred spelling works.
 
 **Implementation.**  New file
-`compiler/src/Lyric.Parser/Stubbable.fs` exposes
+`bootstrap/src/Lyric.Parser/Stubbable.fs` exposes
 `synthesizeItems : Item list -> Item list`.  `Parser.fs:parse` invokes
 it after the existing `hoistInlineMethods` pass so the fully-cooked
 item list reaches the type checker.  No emitter changes — the
@@ -7617,7 +7617,7 @@ synthesised AST is indistinguishable from a user-authored
 
 ### D-progress-017: bootstrap LSP server (`lyric-lsp`)
 *stdlib-ergonomics branch.*  Phase 3 M3.3 first pass.  Adds
-`compiler/src/Lyric.Lsp/` — a console-app that speaks the Microsoft
+`bootstrap/src/Lyric.Lsp/` — a console-app that speaks the Microsoft
 Language Server Protocol's stdio JSON-RPC transport.  Editors point
 at the `lyric-lsp` binary and get push diagnostics on every save +
 keystroke.
@@ -7656,7 +7656,7 @@ Diagnostics are cleared explicitly on `didClose`.
   `propInt`) handle the F# 9 strict-nullness shape without leaking
   the `JsonNode | null` annotations into Server.fs.
 
-**Tests.**  New project `compiler/tests/Lyric.Lsp.Tests/` with five
+**Tests.**  New project `bootstrap/tests/Lyric.Lsp.Tests/` with five
 end-to-end tests in `ProtocolTests.fs`:
 - initialize advertises the bootstrap capabilities
 - didOpen with broken source publishes diagnostics
@@ -7894,7 +7894,7 @@ pub func add(a: in Int, b: in Int): Int
 Compute the sum of two integers.
 ```
 
-**Implementation.**  New `compiler/src/Lyric.Cli/Doc.fs` exposes
+**Implementation.**  New `bootstrap/src/Lyric.Cli/Doc.fs` exposes
 `generate : SourceFile -> string`.  Per-item signature printers cover
 `pub func`, `pub record`, `pub exposed record`, `pub union`,
 `pub enum`, `pub opaque type`, `pub interface`, `pub distinct type`,
@@ -7925,7 +7925,7 @@ decision tree (D-progress-025) — a constant folder over literals,
 named-const refs, and integer arithmetic.
 
 **Folder.**  New module
-`compiler/src/Lyric.TypeChecker/ConstFold.fs`:
+`bootstrap/src/Lyric.TypeChecker/ConstFold.fs`:
 
 ```fsharp
 type FoldError = NotConstant | Cycle of string | Overflow | DivByZero
@@ -7954,7 +7954,7 @@ symbols — `pub val MIN_AGE: Int = 0` is treated as a compile-time
 constant when used in a range bound.
 
 **Tests.**  10 new tests in
-`compiler/tests/Lyric.TypeChecker.Tests/ConstFoldTests.fs` covering
+`bootstrap/tests/Lyric.TypeChecker.Tests/ConstFoldTests.fs` covering
 literal-only, named-const, transitive const, arithmetic-in-bounds,
 inverted-after-fold (T0090), cycle detection (T0093), and non-numeric
 underlying (T0091).  2 new e2e tests in `DistinctTypeTests.fs`
@@ -8003,7 +8003,7 @@ stdlib artifacts.  The dispatch branch sits after the imported-funcs
 UFCS path so explicit `@externTarget` declarations still take
 precedence — backward-compat preserved.
 
-4 new tests in `compiler/tests/Lyric.Emitter.Tests/AutoFfiTests.fs`:
+4 new tests in `bootstrap/tests/Lyric.Emitter.Tests/AutoFfiTests.fs`:
 - `auto_ffi_path_combine` — `Path.Combine(string, string)`
 - `auto_ffi_math_max_pascalcase` — lowercase resolves via PascalCase
 - `auto_ffi_path_combine_three_args` — separate overload by arity
@@ -8047,7 +8047,7 @@ hostFindTimeZone(id: in String): TimeZone         // IANA / Windows tz lookup
 The epoch helpers compose two BCL calls (`DateTimeOffset.From*` then
 `.UtcDateTime`) so callers see a single one-shot helper.
 
-6 new tests in `compiler/tests/Lyric.Emitter.Tests/StdTimeTests.fs`
+6 new tests in `bootstrap/tests/Lyric.Emitter.Tests/StdTimeTests.fs`
 covering each of the new helpers plus a UTC-tz lookup smoke.
 
 All 676 tests pass: Lexer 70, Parser 182, TypeChecker 100,
@@ -8120,7 +8120,7 @@ detected (otherwise the recursive `toView` lowering diverges).
 
 **Tests.**
 
-- 4 new tests in `compiler/tests/Lyric.Emitter.Tests/WireTests.fs`:
+- 4 new tests in `bootstrap/tests/Lyric.Emitter.Tests/WireTests.fs`:
   minimal singleton, two-singletons-with-dependency-order,
   multi-`@provided`, two-wires-in-one-program.
 - Two parser tests updated to reflect the post-synthesis shape:
@@ -8282,7 +8282,7 @@ for diff display.
 
 **Implementation.**
 
-- New module `compiler/src/Lyric.Emitter/ContractMeta.fs` with:
+- New module `bootstrap/src/Lyric.Emitter/ContractMeta.fs` with:
   - `buildContract : SourceFile -> string -> Contract` walks the
     parsed AST and emits one `ContractDecl` per `pub` item.
   - `toJson : Contract -> string` hand-rolled JSON serialiser.
@@ -8395,7 +8395,7 @@ then sets state to -2 and calls `builder.SetResult(value)` (or
 `builder.SetResult()` for `Unit`).
 
 **Implementation outline.**
-- New module: `compiler/src/Lyric.Emitter/AsyncStateMachine.fs`
+- New module: `bootstrap/src/Lyric.Emitter/AsyncStateMachine.fs`
   exposes `bodyContainsAwait`, `isPhaseAEligible`,
   `defineStateMachine`, `emitKickoff`, `emitMoveNextEpilogue`,
   `emitSetStateMachine`.
@@ -10317,7 +10317,7 @@ any `System.Guid.TryParse`-recognised format; returns `Option[Uuid]`.
 *PR #195.*
 
 The self-hosted Lyric type checker ships as a nine-file `Lyric.TypeChecker`
-library under `compiler/lyric/lyric/type_checker/`:
+library under `lyric/lyric/type_checker/`:
 
 - `typechecker_types.l` — `PrimType` / `Type` union and helpers
   (`typeEquiv`, `renderType`).
@@ -10338,14 +10338,14 @@ library under `compiler/lyric/lyric/type_checker/`:
   CheckResult`; orchestrates symbol registration, signature resolution,
   and expression/statement checking over all items.
 
-`compiler/lyric/lyric/typechecker_self_test.l` is the self-test consumer.
+`lyric/lyric/typechecker_self_test.l` is the self-test consumer.
 It imports both `Lyric.Parser` and `Lyric.TypeChecker`, exercises 15
 in-process assertions (empty source, function/record/union registration,
 duplicate-name T0001, return-type T0070, val-type T0060, return-without-
 value T0064, range-subtype T0090/T0093, `where`-clause T0050, arithmetic
 mismatch T0031, unknown-name T0020), and writes `"ok"` on success.
 
-`compiler/tests/Lyric.Emitter.Tests/SelfHostedTypeCheckerTests.fs`
+`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedTypeCheckerTests.fs`
 (`[typechecker_self_test_passes]`) compiles `typechecker_self_test.l` via
 the bootstrap emitter, runs the resulting PE, and asserts exit 0 + `"ok"`
 in stdout.  All 635 emitter tests pass.
@@ -10375,14 +10375,14 @@ in stdout.  All 635 emitter tests pass.
 *claude/continue-jvm-emitter-T9Gdj branch.*
 
 The self-hosted Lyric mode checker ships as a two-file `Lyric.ModeChecker`
-library under `compiler/lyric/lyric/mode_checker/`:
+library under `lyric/lyric/mode_checker/`:
 
 - `modechecker_mode.l` — `VerificationLevel` union (VLRuntimeChecked,
   VLProofRequired, VLProofRequiredUnsafe, VLProofRequiredChecked, VLAxiom)
   plus helpers `vlIsProofRequired`, `vlDominates`, `vlDisplay`, `vlRank`;
   file-level and function-level level computation (`levelOfFile`,
   `levelOfFunction`, `isFuncPure`); annotation helpers (`findAnnotation`,
-  `proofRequiredModifier`).  Mirrors `compiler/src/Lyric.Verifier/Mode.fs`.
+  `proofRequiredModifier`).  Mirrors `bootstrap/src/Lyric.Verifier/Mode.fs`.
 
 - `modechecker_check.l` — public entry points (`checkFile`,
   `checkFileWithImports`), callee-table construction (`calleeTableOfFile`),
@@ -10393,17 +10393,17 @@ library under `compiler/lyric/lyric/mode_checker/`:
   without `invariant:` clause), V0006 (unbounded quantifier domain in
   contract clause), V0009 (`assume` outside `unsafe {}`), V0010 (conflicting
   level annotations), V0011 (unknown `@proof_required` modifier).  Mirrors
-  `compiler/src/Lyric.Verifier/ModeCheck.fs`.  Cross-package import
+  `bootstrap/src/Lyric.Verifier/ModeCheck.fs`.  Cross-package import
   metadata uses a simplified `ImportedMeta` record (name + level string)
   rather than the full F#-side `Imports.ImportedPackage` type.
 
 Consumer and harness:
 
-- `compiler/lyric/lyric/modechecker_self_test.l` — 17 in-process tests
+- `lyric/lyric/modechecker_self_test.l` — 17 in-process tests
   covering level detection, conflict/unknown-modifier errors, V0001–V0006
   and V0009–V0011 diagnostics, pure-callee pass, and no-check for
   `@runtime_checked` packages.
-- `compiler/tests/Lyric.Emitter.Tests/SelfHostedModeCheckerTests.fs` —
+- `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedModeCheckerTests.fs` —
   F# Expecto wrapper (`[modechecker_self_test_passes]`).
 
 All 636 emitter tests pass.
@@ -10554,7 +10554,7 @@ Async SM wiring for generic impl methods is a follow-up.
 
 **Test coverage**
 
-`compiler/tests/Lyric.Emitter.Tests/ImplBlockGenericsTests.fs` —
+`bootstrap/tests/Lyric.Emitter.Tests/ImplBlockGenericsTests.fs` —
 six new end-to-end tests covering:
 - Method-level generic identity (`func wrap[U](x: in U): U`)
 - Method-level generic with multiple type params (`func pair[A, B](…)`)
@@ -10737,9 +10737,9 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
   structurally sound before but lacked checked-exception detection).
 - `resolver/src/main/java/lyric/resolver/MavenResolver.java`: serialises the
   `hasCheckedExceptions` boolean field to JSON.
-- `compiler/src/Lyric.Cli/Maven.fs`: parses `hasCheckedExceptions` from the
+- `bootstrap/src/Lyric.Cli/Maven.fs`: parses `hasCheckedExceptions` from the
   resolver JSON into a new `HasCheckedExceptions: bool` field on `JavaMethod`.
-- `compiler/src/Lyric.Cli/MavenShim.fs`:
+- `bootstrap/src/Lyric.Cli/MavenShim.fs`:
   - Pre-scans all classes for checked exceptions; emits
     `import Std.JvmExceptionHost` only when at least one method has checked
     exceptions.
@@ -10748,7 +10748,7 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
   - Wraps checked-exception method returns in `Result[T, JvmException]` (or
     `Result[Unit, JvmException]` for `void`) per spec §5.
   - Deduplication key accounts for the implicit receiver argument.
-- `compiler/tests/Lyric.Cli.Tests/MavenTests.fs`: adds instance-method and
+- `bootstrap/tests/Lyric.Cli.Tests/MavenTests.fs`: adds instance-method and
   checked-exception test cases; all 158 CLI tests pass.
 
 **2. `Std.Jvm.catch[T]` escape hatch (Q-J012)**
@@ -10761,7 +10761,7 @@ Three follow-up items to the Maven Central linking feature (D052 / PR #252):
 
 **3. JVM emitter call-site gap documented (Q-J013)**
 
-- Confirmed that `compiler/lyric/jvm/lowering.l` has no special handling for
+- Confirmed that `lyric/jvm/lowering.l` has no special handling for
   `@externTarget` functions whose Lyric return type is `Result[T, JvmException]`.
   The type system is correct (the shim declares the right return type), but
   the JVM emitter will not emit a try-catch wrapper at call sites until Phase
@@ -10856,7 +10856,7 @@ Two items from the Maven/JVM design question backlog:
 
 **1. Q-J005: opaque-type Java interop facades (`lowerOpaqueFacade`)**
 
-`compiler/lyric/jvm/lowering.l` — three new functions:
+`lyric/jvm/lowering.l` — three new functions:
 
 - `lowerOpaqueFacadeAcc(opaqueName, f, pool)` — emits a
   `public static f.name(OpaqueClass obj): f.fieldType` method that
@@ -10872,7 +10872,7 @@ Two items from the Maven/JVM design question backlog:
 The `lowerPackage` driver now emits both the opaque class and its facade for
 every `LPOpaqueType` item.
 
-Self-test `compiler/lyric/jvm/self_test_b125.l` (Stage B125): creates an
+Self-test `lyric/jvm/self_test_b125.l` (Stage B125): creates an
 `OpaquePoint(x: JInt, y: JInt)` opaque type, generates the facade, and a
 `Main` class that exercises `OpaquePoint$Facade.create(10, 20)`, `.x(obj)`,
 and `.y(obj)`.  Java output: `x=10 / y=20`.  Registered as
@@ -10919,7 +10919,7 @@ Three deliverables from the JUnit adapter sketch (§3, §4, §6):
 - `makeAnnotationDefaultAttr(pool, defaultVal)` — encodes JVMS §4.7.22.
 - `makeAnnotationInterfaceClass(thisClass, methods, classAttrs)` — creates a `ClassFile` with `ACC_PUBLIC | ACC_ANNOTATION | ACC_INTERFACE | ACC_ABSTRACT` flags and `java/lang/annotation/Annotation` as the sole implemented interface.
 
-**2. `Jvm.TestEngine` library (`compiler/lyric/jvm/test_engine.l`)**
+**2. `Jvm.TestEngine` library (`lyric/jvm/test_engine.l`)**
 
 - `LYRIC_TEST_CLASS` / `LYRIC_TEST_DESC` — canonical binary name and field descriptor for `lyric/runtime/jvm/LyricTest`.
 - `TestMethodSlot` record — carries `funcName`, `displayName`, `sourceFile`, `sourceLine`.
@@ -10932,7 +10932,7 @@ Three deliverables from the JUnit adapter sketch (§3, §4, §6):
 - `lowerPackage` dispatch: emits the test-module class (via `lowerTestModuleClass`) and the `@LyricTest` annotation class (via `lyricTestAnnotationClass`) so both land in the same JAR.
 - Added `import Jvm.TestEngine` to `lowering.l`.
 
-**4. Self-test `compiler/lyric/jvm/self_test_b126.l` (Stage B126)**
+**4. Self-test `lyric/jvm/self_test_b126.l` (Stage B126)**
 
 Generates three JVM class files:
 - `lyric/runtime/jvm/LyricTest.class` — the annotation interface with RUNTIME retention.
@@ -10949,7 +10949,7 @@ Registered as `JvmLoweringB126Test` in `Lyric.Emitter.Tests`.
 
 **5. CLI: `lyric test --jvm` (bootstrap)**
 
-`compiler/src/Lyric.Cli/Program.fs` — `--jvm` flag parsed in the `test` command.
+`bootstrap/src/Lyric.Cli/Program.fs` — `--jvm` flag parsed in the `test` command.
 When set, compiles the synthesised source with `Emitter.Jvm` (JVM-compatible stdlib) and warns to stderr that JUnit 5 ConsoleLauncher integration is deferred to B127+. The TAP runner still executes via `dotnet exec` until the full Lyric→JVM pipeline lands.
 
 **Test counts:** 751 emitter tests — all passing (B126 is the new test).
@@ -10966,7 +10966,7 @@ Phase R6 of `docs/33-platform-parity-remediation.md`: completes the
 self-hosted MSIL compilation pipeline so `lyric build --target dotnet`
 routes through the Lyric-written emitter instead of the F# bootstrap emitter.
 
-**`compiler/lyric/msil/codegen.l` — `Msil.Codegen` package (2157 lines)**
+**`lyric/msil/codegen.l` — `Msil.Codegen` package (2157 lines)**
 
 AST-to-`MPackage` lowering that mirrors `Jvm.Codegen` for the .NET/MSIL
 target.  Key pieces:
@@ -11001,13 +11001,13 @@ target.  Key pieces:
 - `codegenMPackage(file, cctx): MPackage` — top-level driver that walks
   `SourceFile.items` and produces an `MPackage` for `lowerMPackageWithCtx`.
 
-**`compiler/lyric/msil/bridge.l` — real pipeline replacing panic stub**
+**`lyric/msil/bridge.l` — real pipeline replacing panic stub**
 
 `compileToMsil(source, outputPath): Bool` chains:
 `parse → diagnostic filter → newCodegenCtx → addPackageTokens
 → codegenMPackage → resolveEntryToken → lowerMPackageWithCtx → writeBytes`
 
-**`compiler/lyric/msil/lowering.l` — two fixes**
+**`lyric/msil/lowering.l` — two fixes**
 
 1. `MLdStr(token: Int)` — changed from `MLdStr(s: String)`; `lowerMInsn` now
    calls `emitLdstr(mb, token)` instead of the prior no-op.
@@ -11015,14 +11015,14 @@ target.  Key pieces:
    variant that accepts a pre-seeded `LoweringCtx` so the MemberRef tokens
    registered by `newCodegenCtx` survive into the assembled PE.
 
-**`compiler/src/Lyric.Cli/SelfHostedMsil.fs` — F# reflection bridge**
+**`bootstrap/src/Lyric.Cli/SelfHostedMsil.fs` — F# reflection bridge**
 
 Mirrors `SelfHostedJvm.fs`.  Bootstraps `Msil.Bridge.dll` into the per-process
 stdlib cache via a throwaway driver compile, preloads all cached stdlib DLLs
 into the AppDomain, then reflects out `Msil.Bridge.Program.compileToMsil` and
 stashes the delegate process-wide.
 
-**`compiler/src/Lyric.Cli/Program.fs` — `--target` renaming**
+**`bootstrap/src/Lyric.Cli/Program.fs` — `--target` renaming**
 
 - `--target dotnet` (default, no flag required) → self-hosted MSIL pipeline
   via `SelfHostedMsil.compileToDll`.
@@ -11091,7 +11091,7 @@ tracking table updated to reflect R6 as shipped.
 **Branch:** `claude/mono-toml-self-host`
 
 Phase 5 §M5.2 stage 4 ships the self-hosted monomorphizer as the Lyric-language
-`Lyric.Mono` package at `compiler/lyric/lyric/mono.l`.
+`Lyric.Mono` package at `lyric/lyric/mono.l`.
 
 **Algorithm (call-site monomorphization for same-package generics):**
 
@@ -11151,7 +11151,7 @@ The `Lyric.Manifest` TOML parser (shipped in D-progress-129 as part of the
 self-hosted CLI migration) lacked a Lyric-level self-test.  This entry
 adds that coverage.
 
-**`compiler/lyric/lyric/manifest_self_test.l`** — `Lyric.Manifest.SelfTest`
+**`lyric/lyric/manifest_self_test.l`** — `Lyric.Manifest.SelfTest`
 package, compiled and executed by the emitter test suite.  Exercises:
 
 - Minimal `[package]`-only manifest (name, version, defaults).
@@ -11167,7 +11167,7 @@ package, compiled and executed by the emitter test suite.  Exercises:
 - `ManifestError.message` returns a non-empty string.
 - Unknown sections are silently ignored.
 
-**`compiler/tests/Lyric.Emitter.Tests/SelfHostedManifestTests.fs`** — F#
+**`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedManifestTests.fs`** — F#
 runner.  Compiles `manifest_self_test.l` via `compileAndRun`, asserts exit 0
 and `stdout` contains `"ok"`.  Registered in `Program.fs` and
 `Lyric.Emitter.Tests.fsproj` as `SelfHostedManifestTests.tests`.
@@ -11189,7 +11189,7 @@ established by `SelfHostedFmt.fs`.
 
 **New Lyric bridge files:**
 
-- **`compiler/lyric/lyric/manifest_bridge.l`** — `Lyric.ManifestBridge`
+- **`lyric/lyric/manifest_bridge.l`** — `Lyric.ManifestBridge`
   package.  `pub func serializeManifest(text, filePath): String` wraps
   `Lyric.Manifest.parse` and serialises the result to a line-oriented
   key=value protocol (first line `"ok"` or `"err"`, then `pkg.name=`,
@@ -11198,7 +11198,7 @@ established by `SelfHostedFmt.fs`.
   `project.output=`, `project.output_assembly=`, `project.pkg=name=path`,
   `feature=`, `feature.default=`).
 
-- **`compiler/lyric/lyric/test_synth_bridge.l`** — `Lyric.TestSynthBridge`
+- **`lyric/lyric/test_synth_bridge.l`** — `Lyric.TestSynthBridge`
   package.  `pub func synthesizeToProtocol(source, filter, hasFilter): String`
   and `pub func listEntriesToProtocol(source): String` wrap `Lyric.TestSynth`
   and serialise results as the line-oriented protocol documented in the
@@ -11206,7 +11206,7 @@ established by `SelfHostedFmt.fs`.
 
 **New F# shim files:**
 
-- **`compiler/src/Lyric.Cli/SelfHostedManifest.fs`** — `Lyric.Cli.SelfHostedManifest`
+- **`bootstrap/src/Lyric.Cli/SelfHostedManifest.fs`** — `Lyric.Cli.SelfHostedManifest`
   module.  Compiles a tiny `Lyric.ManifestBridgeDriver` on first use (same
   pattern as `SelfHostedFmt.fs`), reflects `serializeManifest(string, string): string`
   from `Lyric.ManifestBridge.Program`, and parses the protocol back into the
@@ -11214,16 +11214,16 @@ established by `SelfHostedFmt.fs`.
   the existing `Manifest.fs` signatures so call sites in `Program.fs` are
   one-line switches.
 
-- **`compiler/src/Lyric.Cli/SelfHostedTestSynth.fs`** — `Lyric.Cli.SelfHostedTestSynth`
+- **`bootstrap/src/Lyric.Cli/SelfHostedTestSynth.fs`** — `Lyric.Cli.SelfHostedTestSynth`
   module.  Compiles `Lyric.TestSynthBridgeDriver`, reflects
   `synthesizeToProtocol(string, string, bool): string` and
   `listEntriesToProtocol(string): string`, and parses results into the F#
   `TestSynth.Outcome` and `TestSynth.ListEntry` types reused by `Program.fs`.
 
-**`compiler/src/Lyric.Cli/Lyric.Cli.fsproj`** — `SelfHostedManifest.fs`
+**`bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj`** — `SelfHostedManifest.fs`
 and `SelfHostedTestSynth.fs` added after `TestSynth.fs`, before `Program.fs`.
 
-**`compiler/src/Lyric.Cli/Program.fs`** — three call-site changes:
+**`bootstrap/src/Lyric.Cli/Program.fs`** — three call-site changes:
 - `lyric build --manifest` (line 1052): `Lyric.Cli.Manifest.parseFile` →
   `SelfHostedManifest.parseFile`.
 - `lyric test --list` (line 1317): `TestSynth.listEntries` →
@@ -11279,7 +11279,7 @@ Builds a higher-level typed REST client on top of `Std.Http`.
 - Internal `applyAuth` and `fullUrl` helpers (not exported).
 - URL joining: handles trailing-slash / leading-slash combinations cleanly.
 
-**`compiler/src/Lyric.Cli/OpenApi.fs`** — `Lyric.Cli.OpenApi` module.
+**`bootstrap/src/Lyric.Cli/OpenApi.fs`** — `Lyric.Cli.OpenApi` module.
 
 OpenAPI 3.x spec model and JSON parser (`System.Text.Json`-based, no extra
 dependencies).
@@ -11293,7 +11293,7 @@ dependencies).
 - Handles `application/json` request/response bodies, path/query/header/cookie
   parameters, nested object schemas, and `servers[0].url` as base path.
 
-**`compiler/src/Lyric.Cli/OpenApiGen.fs`** — `Lyric.Cli.OpenApiGen` module.
+**`bootstrap/src/Lyric.Cli/OpenApiGen.fs`** — `Lyric.Cli.OpenApiGen` module.
 
 Lyric source generator from a parsed `OpenApi.Spec`.
 
@@ -11315,7 +11315,7 @@ Lyric source generator from a parsed `OpenApi.Spec`.
 - `generateToFile : Spec -> GenOptions option -> string -> Result<string, string>` —
   write to a file path.
 
-**`compiler/src/Lyric.Cli/Program.fs`** — new `lyric openapi` command.
+**`bootstrap/src/Lyric.Cli/Program.fs`** — new `lyric openapi` command.
 
 ```
 lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg.Name>]
@@ -11325,7 +11325,7 @@ Parses the spec, merges CLI flags onto `defaultOptions`, and calls
 `generateToFile`.  Default output path: `<spec-stem>_client.l` next to the
 spec file.  Prints `generated <path> (<n> operations)` on success.
 
-**`compiler/src/Lyric.Cli/Lyric.Cli.fsproj`** — `OpenApi.fs` and `OpenApiGen.fs`
+**`bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj`** — `OpenApi.fs` and `OpenApiGen.fs`
 added before `Program.fs`.
 
 **Key design decisions:**
@@ -11370,37 +11370,37 @@ object-property enumeration (`hostEnumerateObject`, `hostEnumObjectMoveNext`,
 `enumerateArray`, `arrayMoveNext`, `arrayCurrent` wrappers (previously
 missing from the public API).
 
-**`compiler/lyric/lyric/open_api_parser.l`** — `Lyric.OpenApiParser` package.
+**`lyric/lyric/open_api_parser.l`** — `Lyric.OpenApiParser` package.
 Parses the subset of OpenAPI 3.0/3.1 needed for client generation: paths,
 operations (all seven HTTP verbs), path/query parameters, JSON request/response
 bodies, and inline object/scalar schemas.  Produces `ParsedSpec` /
 `ParsedOp` / `ParsedParam` / `ParsedProperty` records.
 Public entry: `parseSpec(json: in String): Result[ParsedSpec, String]`.
 
-**`compiler/lyric/lyric/open_api_gen.l`** — `Lyric.OpenApiGen` package.
+**`lyric/lyric/open_api_gen.l`** — `Lyric.OpenApiGen` package.
 Generates a typed Lyric REST client package from a `ParsedSpec`.  Emits
 records, opaque client type, constructors, per-operation async methods, and
 per-field scalar accessors.
 Public entry: `generate(spec, clientNameOverride, packageNameOverride): String`.
 
-**`compiler/lyric/lyric/open_api_bridge.l`** — `Lyric.OpenApiBridge` package.
+**`lyric/lyric/open_api_bridge.l`** — `Lyric.OpenApiBridge` package.
 Thin glue between parser and generator; wraps result in the two-line text
 protocol (`ok\n<source>` / `err\n<message>`) consumed by the F# shim.
 Public entry: `generateFromJson(json, clientName, packageName): String`.
 
-**`compiler/src/Lyric.Cli/SelfHostedOpenApi.fs`** — thin F# bridge shim.
+**`bootstrap/src/Lyric.Cli/SelfHostedOpenApi.fs`** — thin F# bridge shim.
 Compiles a driver that imports `Lyric.OpenApiBridge`, loads the resulting DLL
 by reflection, and routes `lyric openapi` calls through `generateFromJson`.
 Follows the identical lazy-initialise + delegate-cache pattern used by
 `SelfHostedFmt.fs`.
 
-**`compiler/src/Lyric.Cli/Program.fs`** — `lyric openapi` dispatch now calls
+**`bootstrap/src/Lyric.Cli/Program.fs`** — `lyric openapi` dispatch now calls
 `SelfHostedOpenApi.generateToFile` instead of the deleted F# modules.
 
-**`compiler/src/Lyric.Cli/Lyric.Cli.fsproj`** — `OpenApi.fs` and `OpenApiGen.fs`
+**`bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj`** — `OpenApi.fs` and `OpenApiGen.fs`
 removed; `SelfHostedOpenApi.fs` added.
 
-**`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`** — soft-cap
+**`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`** — soft-cap
 bumped from 261 → 268 to account for the seven new kernel externs added to
 `json_host.l` (two extern types + five extern functions).
 
@@ -11410,7 +11410,7 @@ bumped from 261 → 268 to account for the seven new kernel externs added to
 
 ### D-progress-240: R6 codegen — IL validity fixes + MSIL bridge end-to-end tests
 
-Five categories of structural IL errors in `compiler/lyric/msil/codegen.l`
+Five categories of structural IL errors in `lyric/msil/codegen.l`
 caused all self-hosted MSIL bridge paths to fail at JIT time with
 `InvalidProgramException` or `MissingMethodException`.  All five are now fixed,
 and six end-to-end tests cover the repaired paths.
@@ -11451,7 +11451,7 @@ and six end-to-end tests cover the repaired paths.
    instantiated type), which the CLR cannot match against `List<T>::Add(!0)`.
    Fix:
    - Added `case MTypeVar(index: Int)` to the `MsilType` union in
-     `compiler/lyric/msil/lowering.l`.
+     `lyric/msil/lowering.l`.
    - Added `func bufMsilType(w: ByteWriter, t: MsilType): Unit` that emits two
      bytes (`0x13`, `index`) for `MTypeVar` and one byte for all other types.
    - Updated `buildInstanceMethodSig` and `buildStaticMethodSig` to use
@@ -11459,7 +11459,7 @@ and six end-to-end tests cover the repaired paths.
    - Updated all TypeSpec MemberRef setups in `codegen.l`: `List::Add`,
      `List::get_Item`, `Dict::Add`, `Dict::get_Item`, `Dict::ContainsKey`.
 
-**New test file:** `compiler/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`
+**New test file:** `bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`
 — 6 end-to-end tests that compile Lyric programs through the full
 self-hosted pipeline (`Msil.Bridge.compileToMsil`) and execute the resulting
 DLL with `dotnet exec`, asserting on stdout:
@@ -11486,7 +11486,7 @@ Completes the §7 parity milestone from `docs/33-platform-parity-remediation.md`
 All 60 cross-path parity tests now pass (20 programs × 3 execution paths:
 dotnet-legacy / dotnet / jvm).
 
-**New test file:** `compiler/tests/Lyric.Cli.Tests/ParityTests.fs`
+**New test file:** `bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs`
 — 20 parity programs each exercising one feature from the common subset
 (primitive types, arithmetic, boolean logic, comparisons, if/else,
 while/break/continue, nested loops, val chains, match on literals and bindings,
@@ -11498,7 +11498,7 @@ string concatenation).  Each program is compiled and run through three paths:
 | `dotnet` | `SelfHostedMsil.compileToDll` (self-hosted MSIL bridge) |
 | `jvm` | `SelfHostedJvm.compileToJar` (self-hosted JVM bridge) |
 
-**JVM fixes in `compiler/lyric/jvm/codegen.l`:**
+**JVM fixes in `lyric/jvm/codegen.l`:**
 
 1. Added `lowerCmpFail`, `lowerBoolCond`, `lowerBoolCondTrue` functions.
    Conditions in `if`/`while` are now compiled directly to conditional branch
@@ -11513,7 +11513,7 @@ string concatenation).  Each program is compiled and run through three paths:
    `LGoto(loopBreak[last])`; `SContinue` emits `LGoto(loopCont[last])`.
    Previously both emitted `LNop`, so break/continue were silently ignored.
 
-**JVM fix in `compiler/lyric/jvm/lowering.l`:**
+**JVM fix in `lyric/jvm/lowering.l`:**
 
 3. `lowerFuncImpl` now pre-initialises all non-parameter local slots at method
    entry (before the function body): integer/long/float/double slots get `0`,
@@ -11737,11 +11737,11 @@ tests, 28 LSP tests, 158 CLI tests, 266 verifier tests — all passing.
 **Branch:** `claude/convert-verifier-to-lyric-UPzVX`
 
 Ports the Phase 4 proof system to self-hosted Lyric as the `Lyric.Verifier`
-package (`compiler/lyric/lyric/verifier/`).  The Lyric implementation mirrors
-`compiler/src/Lyric.Verifier/` and is exercised by `verifier_self_test.l` via
+package (`lyric/lyric/verifier/`).  The Lyric implementation mirrors
+`bootstrap/src/Lyric.Verifier/` and is exercised by `verifier_self_test.l` via
 the F# harness `SelfHostedVerifierTests.fs`.
 
-**New Lyric files (`compiler/lyric/lyric/verifier/`):**
+**New Lyric files (`lyric/lyric/verifier/`):**
 
 - **`vcir.l`** — VC IR types: `Sort`, `Term`, `Goal`, `GoalKind`,
   `Lit`, `BuiltinOp`, `TranslateResult`, `VerifyOutcome`, `VerifyResult`,
@@ -11765,7 +11765,7 @@ the F# harness `SelfHostedVerifierTests.fs`.
 
 **New Lyric file:**
 
-- **`compiler/lyric/lyric/verifier_self_test.l`** — `Lyric.Verifier` self-test
+- **`lyric/lyric/verifier_self_test.l`** — `Lyric.Verifier` self-test
   program.  Nine sub-tests exercising the VCGen pipeline end-to-end:
   `testGoalsForFileEmpty`, `testGoalsForFileWithRequires`,
   `testTranslateExprLiteral`, `testTranslateExprVar`,
@@ -11775,16 +11775,16 @@ the F# harness `SelfHostedVerifierTests.fs`.
 
 **New F# harness files:**
 
-- **`compiler/src/Lyric.Emitter/VerifierEnv.fs`** — `Lyric.Emitter.VerifierEnv`
+- **`bootstrap/src/Lyric.Emitter/VerifierEnv.fs`** — `Lyric.Emitter.VerifierEnv`
   module.  Exposes `getEnv(): string` returning the `LYRIC_Z3` or `z3` path
   (or empty string), used via `@externTarget("Lyric.Emitter.VerifierEnv.getEnv")`
   in `stdlib/std/_kernel/verifier_env_host.l`.
-- **`compiler/src/Lyric.Emitter/ProcessCapture.fs`** — `Lyric.Emitter.ProcessCapture`
+- **`bootstrap/src/Lyric.Emitter/ProcessCapture.fs`** — `Lyric.Emitter.ProcessCapture`
   module.  Exposes `run(exe, args): ProcessResult` for spawning subprocesses
   with captured stdout/stderr, used via
   `@externTarget("Lyric.Emitter.ProcessCapture.run")` in
   `stdlib/std/_kernel/process_capture_host.l`.
-- **`compiler/tests/Lyric.Emitter.Tests/SelfHostedVerifierTests.fs`** —
+- **`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedVerifierTests.fs`** —
   `testCase "[verifier_self_test_passes]"` compiles + executes
   `verifier_self_test.l`, asserts no compile errors, exit code 0, and
   stdout contains `"ok"`.
@@ -11834,13 +11834,13 @@ Completes the bootstrap type checker's expression and pattern inference to T5
 level: every expression form and pattern form that the parser can produce now
 has a correct type-checker path.
 
-**`compiler/src/Lyric.TypeChecker/Type.fs`**
+**`bootstrap/src/Lyric.TypeChecker/Type.fs`**
 
 Added `| TyRange of Type` to the `Type` discriminated union. `TyRange` is
 produced by `ERange` expressions and consumed by the for-loop element-type
 extraction path. `equiv` and `render` updated accordingly.
 
-**`compiler/src/Lyric.TypeChecker/ExprChecker.fs`** (was separate `StmtChecker.fs`)
+**`bootstrap/src/Lyric.TypeChecker/ExprChecker.fs`** (was separate `StmtChecker.fs`)
 
 `ExprChecker.fs` and `StmtChecker.fs` were merged into a single file under
 `let rec inferExpr … and checkStatement … and checkBlock …` mutual recursion.
@@ -11888,27 +11888,27 @@ as valid iterable element-type sources.
 | T0068 | Branch or match-arm type mismatch |
 | T0069 | Invalid index expression (non-Int index or non-indexable receiver) |
 
-**`compiler/src/Lyric.TypeChecker/Lyric.TypeChecker.fsproj`**
+**`bootstrap/src/Lyric.TypeChecker/Lyric.TypeChecker.fsproj`**
 
 `StmtChecker.fs` removed from the compile list (file left on disk but
 excluded).
 
-**`compiler/src/Lyric.TypeChecker/Checker.fs`**
+**`bootstrap/src/Lyric.TypeChecker/Checker.fs`**
 
 Call site updated from `StmtChecker.checkFunctionBody` to
 `ExprChecker.checkFunctionBody`.
 
-**`compiler/src/Lyric.Emitter/TypeMap.fs`**
+**`bootstrap/src/Lyric.Emitter/TypeMap.fs`**
 
 Added `| TyRange _ -> typeof<obj>` (ranges are consumed by for-loop codegen
 and never need to be boxed to a CLR type).
 
-**`compiler/src/Lyric.Lsp/Server.fs`**
+**`bootstrap/src/Lyric.Lsp/Server.fs`**
 
 Added `| TyRange x -> sprintf "range[%s]" (render x)` to the LSP hover
 type renderer.
 
-**`compiler/tests/Lyric.TypeChecker.Tests/`**
+**`bootstrap/tests/Lyric.TypeChecker.Tests/`**
 
 Two new test files added:
 
@@ -11939,7 +11939,7 @@ Follow-up to D-progress-246. Fixes three bugs exposed by the T5 type-checker
 uplift that caused 398 emitter test failures when compiling `Std.Core`'s generic
 `Option[T]` and `Result[T, E]` unions.
 
-**Root causes fixed (all in `compiler/src/Lyric.TypeChecker/ExprChecker.fs`):**
+**Root causes fixed (all in `bootstrap/src/Lyric.TypeChecker/ExprChecker.fs`):**
 
 **1. Generic union case field types lost their type parameters (T0010)**
 
@@ -12006,7 +12006,7 @@ and then sets `lastExprType <- TyPrim PtNever`.
   that imported `Std.Core` and failed solely because the type-checker emitted
   spurious T0010 / T0068 / T0070 on the generic Option / Result functions.
   The remaining 250 failures are pre-existing issues in the self-hosted Lyric
-  MSIL emitter (`compiler/lyric/lyric/`) — unresolved names in the handwritten
+  MSIL emitter (`lyric/lyric/`) — unresolved names in the handwritten
   PE builder — and are not caused by the T5 type-checker work.
 
 
@@ -12016,7 +12016,7 @@ Implements the `lyric bench <source.l> [--runs N] [--warmup N] [--filter s]` com
 
 **Architecture** (follows the `Lyric.TestSynth` / `Lyric.Fmt` self-hosted shim pattern):
 
-- **`compiler/lyric/lyric/bench_synth/bench_synth.l`** — `Lyric.BenchSynth` package.
+- **`lyric/lyric/bench_synth/bench_synth.l`** — `Lyric.BenchSynth` package.
   Parses a `@bench_module` file, validates constraints (`@bench_module` present, no user
   `main`), collects `@bench`-annotated `IFunc` items, and synthesises a `func main(): Int`
   timing harness using `Std.Time.now()` / `since()` / `totalMillis()`.  The harness runs
@@ -12029,18 +12029,18 @@ Implements the `lyric bench <source.l> [--runs N] [--warmup N] [--filter s]` com
   passed through unchanged) with the synthesised main appended at the end, avoiding
   the double-emission bug that span-based carve-out would cause.
 
-- **`compiler/lyric/lyric/bench_synth_bridge.l`** — `Lyric.BenchSynthBridge` text-protocol
+- **`lyric/lyric/bench_synth_bridge.l`** — `Lyric.BenchSynthBridge` text-protocol
   bridge.  Line-oriented protocol: `ok\n<count>\n<src>`, `nobench\n<line>\n<col>`,
   `usermain\n<line>\n<col>`, `parsefail\n<code>|<sev>|<line>|<col>|<msg>…`.
   Entry point: `pub func synthesizeBenchToProtocol(source, runs, warmup, filter): String`.
 
-- **`compiler/src/Lyric.Cli/SelfHostedBench.fs`** — thin F# shim.  Compiles
+- **`bootstrap/src/Lyric.Cli/SelfHostedBench.fs`** — thin F# shim.  Compiles
   `Lyric.BenchSynthBridgeDriver` in-process, reflects
   `Lyric.BenchSynthBridge.Program.synthesizeBenchToProtocol(string, int, int, string)`,
   parses the protocol into an F# `Outcome` union (`Synthesised | NoBenchModule |
   UserMainExists | ParseFailures`).
 
-- **`compiler/src/Lyric.Cli/Program.fs`** — `bench` command dispatch.  Parses `--runs`,
+- **`bootstrap/src/Lyric.Cli/Program.fs`** — `bench` command dispatch.  Parses `--runs`,
   `--warmup`, `--filter`; calls `SelfHostedBench.synthesize`; writes synthesised source to
   a temp dir; builds via the existing `build` helper; `dotnet exec`s the result.
 
@@ -12063,7 +12063,7 @@ Implements the `lyric bench <source.l> [--runs N] [--warmup N] [--filter s]` com
 `Std.Jvm.catch` was previously a stub with `@experimental` + `@externTarget("lyric.runtime.jvm.ExceptionHelper.catch")`.  It is now a fully implemented JVM codegen intrinsic.
 
 **Changes shipped:**
-- `compiler/lyric/jvm/codegen.l` — new `lowerCatchIntrinsic` function (§5h).
+- `lyric/jvm/codegen.l` — new `lowerCatchIntrinsic` function (§5h).
   When `lowerBuiltinOrStaticCall` sees a `catch` call with an `ELambda` argument,
   it macro-expands it to an inline JVM try-catch: the lambda body is lowered in-place
   as the try region, success wraps the result in `Result$Ok`, and any
@@ -12073,7 +12073,7 @@ Implements the `lyric bench <source.l> [--runs N] [--warmup N] [--filter s]` com
 - `stdlib/std/_kernel/jvm.l` — `Std.Jvm.catch` promoted from `@experimental` +
   `@externTarget` to `@stable(since="1.0")` with documentation of the intrinsic's
   emitted bytecode shape.
-- Stage B127 (`compiler/lyric/jvm/self_test_b127.l` + `JvmLoweringB127Test.fs`) —
+- Stage B127 (`lyric/jvm/self_test_b127.l` + `JvmLoweringB127Test.fs`) —
   validates the complete try-catch bytecode pattern via `Wrapper$Ok`/`Wrapper$Err`
   union classes and a `SafeDiv.safeDivide(a, b)` method that catches
   `ArithmeticException` on divide-by-zero.
@@ -12127,7 +12127,7 @@ and no diff output on mismatch.
 
 Q-J013 — try-catch wrapper for `@externTarget` static/virtual calls.
 
-In `compiler/lyric/jvm/codegen.l`, `lowerFunc`'s `case None` path (body-less functions)
+In `lyric/jvm/codegen.l`, `lowerFunc`'s `case None` path (body-less functions)
 now detects `@externTarget` annotations and emits the actual JVM invoke instead of a
 stub default return.  New helpers:
 
@@ -12146,7 +12146,7 @@ stub default return.  New helpers:
     `Result$Ok` / `Result$Err` (same pattern as `lowerCatchIntrinsic`).
   - Direct return otherwise.
 
-Stage B128 (`compiler/lyric/jvm/self_test_b128.l`) validates the bytecode shape:
+Stage B128 (`lyric/jvm/self_test_b128.l`) validates the bytecode shape:
 builds a `ParseWrapper.tryParseInt(String): Object` method that calls
 `Integer.parseInt` with a try-catch, then calls it with `"42"` (→ `ok:42`) and
 `"abc"` (→ `err:NumberFormatException`).  F# test `JvmLoweringB128Test.fs` runs
@@ -12174,13 +12174,13 @@ Roadmap table in `docs/36-v1-roadmap.md` updated to reflect resolved status.
 **Date:** 2026-05-14
 **Branch:** `claude/migrate-lsp-lyric-lCkms`
 
-Completed the self-hosted LSP server (`compiler/lyric/lyric/lsp.l`) so that all
+Completed the self-hosted LSP server (`lyric/lyric/lsp.l`) so that all
 28 `Lyric.Lsp.Tests` protocol tests pass (previously 0 passed; 24 passed after
 fixes in D-progress-247 range; the remaining 4 fixed here).
 
 **Changes shipped in this milestone:**
 
-**`compiler/lyric/lyric/lsp.l`** — four bugs fixed:
+**`lyric/lyric/lsp.l`** — four bugs fixed:
 
 1. **Generic `Option[T]` equality**: `foundIt == None` and `foundSpan == None`
    in `handleHover` / `handleDefinition` always returned `false` because the
@@ -12225,11 +12225,11 @@ fixes in D-progress-247 range; the remaining 4 fixed here).
 `System.IO.File` / `System.IO.Directory` APIs, used by the LSP workspace
 indexer and go-to-definition cross-file search.
 
-**`compiler/src/Lyric.Lsp/SelfHostedLsp.fs`** — `pickStatic` now matches by
+**`bootstrap/src/Lyric.Lsp/SelfHostedLsp.fs`** — `pickStatic` now matches by
 method name only (not by parameter types) to tolerate assembly reload scenarios
 during in-process reflection.
 
-**`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`** — kernel extern
+**`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`** — kernel extern
 surface hard cap bumped from 270 → 274 to account for the four new kernel
 functions in `console_host.l` (2) and the net-new functions in `file_host.l`
 (2 beyond what was already in `io.l`).
@@ -12295,41 +12295,41 @@ kernel is a Phase 6 stub.
 
 R4 from `docs/36-v1-roadmap.md` is now complete for the three actionable items.
 
-**Lyric.Doc** (`compiler/lyric/lyric/doc/doc.l`):
-- Package `Lyric.Doc`; mirrors `compiler/src/Lyric.Cli/Doc.fs`.
+**Lyric.Doc** (`lyric/lyric/doc/doc.l`):
+- Package `Lyric.Doc`; mirrors `bootstrap/src/Lyric.Cli/Doc.fs`.
 - Imports `Lyric.Lexer` and `Lyric.Parser`; calls `parse(source)` internally.
 - Generates Markdown for all public items: `IFunc`, `IRecord`, `IExposedRec`,
   `IUnion`, `IEnum`, `IOpaque`, `IInterface`, `IDistinctType`, `ITypeAlias`,
   `IConst`.  Renders doc comments and type signatures as fenced code blocks.
-- Bridge: `compiler/lyric/lyric/doc_bridge.l` (`Lyric.DocBridge`);
+- Bridge: `lyric/lyric/doc_bridge.l` (`Lyric.DocBridge`);
   protocol `"ok\n<markdown>"`.
-- F# shim: `compiler/src/Lyric.Cli/SelfHostedDoc.fs` replaces the removed
-  `compiler/src/Lyric.Cli/Doc.fs`.
+- F# shim: `bootstrap/src/Lyric.Cli/SelfHostedDoc.fs` replaces the removed
+  `bootstrap/src/Lyric.Cli/Doc.fs`.
 - `Program.fs` `lyric doc` command now calls `SelfHostedDoc.generate`.
 
-**Lyric.Lint** (`compiler/lyric/lyric/lint/lint.l`):
+**Lyric.Lint** (`lyric/lyric/lint/lint.l`):
 - Package `Lyric.Lint`; mirrors the rule logic previously in `Lyric.Cli.Lint`.
 - Five rules: L001 (PascalCase types), L002 (camelCase funcs), L003 (pub doc),
   L004 (TODO/FIXME in doc comments), L005 (pub func with block body has contracts).
-- Bridge: `compiler/lyric/lyric/lint_bridge.l` (`Lyric.LintBridge`); pipe-delimited
+- Bridge: `lyric/lyric/lint_bridge.l` (`Lyric.LintBridge`); pipe-delimited
   protocol one diagnostic per line: `<code>|<sev>|<line>|<col>|<message>`.
-- F# shim: `compiler/src/Lyric.Cli/SelfHostedLint.fs`.
+- F# shim: `bootstrap/src/Lyric.Cli/SelfHostedLint.fs`.
 - `Lint.fs` gutted to types and `renderDiagnostic` only (domain logic removed).
 - `Program.fs` `lyric lint` command now calls `SelfHostedLint.lint`.
 - `LintTests.fs` updated: `lintSource` now calls `SelfHostedLint.lint source`
   (integration path through the Lyric bridge).
 
-**Lyric.Pack csproj XML** (`compiler/lyric/lyric/pack/pack.l`):
+**Lyric.Pack csproj XML** (`lyric/lyric/pack/pack.l`):
 - Package `Lyric.Pack`; ports the `publishCsproj`/`restoreCsproj` XML-generation
-  logic from `compiler/src/Lyric.Cli/Pack.fs`.
+  logic from `bootstrap/src/Lyric.Cli/Pack.fs`.
 - Reads `Lyric.Manifest` types directly (`m.packageSection`, `m.deps`,
   `m.nuget` → `Option[NugetSection]`).
 - Generates `<Project Sdk="Microsoft.NET.Sdk">` XML for both `dotnet pack` and
   `dotnet restore` use cases; respects `[nuget]` / `[nuget.options]` sections.
-- Bridge: `compiler/lyric/lyric/pack_bridge.l` (`Lyric.PackBridge`); parses
+- Bridge: `lyric/lyric/pack_bridge.l` (`Lyric.PackBridge`); parses
   incoming TOML via `Lyric.Manifest.parse`, then calls `publishCsproj`/`restoreCsproj`.
   Protocol: `"ok\n<csproj>"` or `"parsefail\n<message>"`.
-- F# shim: `compiler/src/Lyric.Cli/SelfHostedPack.fs`.
+- F# shim: `bootstrap/src/Lyric.Cli/SelfHostedPack.fs`.
 - `Pack.fs` `runPack`/`runRestore` updated to read `lyric.toml` text and
   call `SelfHostedPack.publishCsproj`/`SelfHostedPack.restoreCsproj`.
 - `PackTests.fs` updated: XML-checking tests now pass TOML strings to the
@@ -12337,7 +12337,7 @@ R4 from `docs/36-v1-roadmap.md` is now complete for the three actionable items.
 
 **Deferred from R4:**
 - `Lyric.ContractMeta` — the BCL-reflection-backed embedded resource reader
-  (`compiler/src/Lyric.Emitter/ContractMeta.fs`, ~818 lines) is used by
+  (`bootstrap/src/Lyric.Emitter/ContractMeta.fs`, ~818 lines) is used by
   `lyric public-api-diff` and the cross-package verifier, not by Doc/Lint/Pack.
   Porting it requires a Lyric PE-metadata reader; deferred post-v1.0.
 - `Fmt.fs` sunset — gated on R2 (CST formatter parity); not changed here.
@@ -12351,38 +12351,38 @@ parity failures unrelated to R4). `Lyric.Emitter.Tests`: 759/759 passed.
 R5 from `docs/36-v1-roadmap.md` is now substantially complete.  Q022-2 is deferred.
 
 **Q021-4: Cross-package distinct types in `satisfiesMarker`**
-- `compiler/src/Lyric.Emitter/Records.fs`: Added `Derives: string list` field to
+- `bootstrap/src/Lyric.Emitter/Records.fs`: Added `Derives: string list` field to
   `ImportedDistinctTypeInfo`.
-- `compiler/src/Lyric.Emitter/Emitter.fs`: Added a loop after the protected-types loop
+- `bootstrap/src/Lyric.Emitter/Emitter.fs`: Added a loop after the protected-types loop
   that populates `importedDistinctTypeTable` from `IDistinctType` items in each loaded
   artifact's `Source.Items`.  Reflects `Value` field, `From` method, and optional `TryFrom`
   method; stores `d.Derives` directly from the parsed AST.  Also registers the CLR type in
   `typeIdToClr` so cross-package type references resolve.
-- `compiler/src/Lyric.Emitter/Codegen.fs`: Added **Path 1.5** to `satisfiesMarker`: checks
+- `bootstrap/src/Lyric.Emitter/Codegen.fs`: Added **Path 1.5** to `satisfiesMarker`: checks
   `ctx.ImportedDistinctTypes.Values` for a matching CLR type, then verifies the marker is in
   `info.Derives`.  Cross-package `type Age = Int derives Hash` now satisfies `f[T] where T: Hash`.
 
 **Q022-3: UFCS on `OpaqueType[T]` receivers**
-- `compiler/src/Lyric.Emitter/Codegen.fs` `inlineUfcsCall`: Extended the
+- `bootstrap/src/Lyric.Emitter/Codegen.fs` `inlineUfcsCall`: Extended the
   `ctx.Records` lookup to also match generic opaque instantiations.  When
   `recvTy.IsGenericType` and the TypeBuilder equals `recvTy.GetGenericTypeDefinition()`,
   the record name is returned so UFCS dispatch proceeds.  Previously silently fell
   through to "method not found" for closed generic opaques.
 
 **Q022-1: `pub use` symbol-level re-export**
-- `compiler/src/Lyric.Emitter/ContractMeta.fs`: Added private `pubUseDecls`
+- `bootstrap/src/Lyric.Emitter/ContractMeta.fs`: Added private `pubUseDecls`
   function and changed `buildContract` signature to accept an
   `importedSources: Map<string, SourceFile>` parameter.  `pubUseDecls` filters
   `sf.Imports` for `IsPubUse = true`, looks up the package in `importedSources`,
   and cherry-picks only the named symbols (or all pub items for a bare
   `pub use Pkg`).  The cherry-picked `ContractDecl` values are appended to the
   contract after the package's own decls.
-- `compiler/src/Lyric.Emitter/Emitter.fs` (single-file path): Builds `importedSourcesMap`
+- `bootstrap/src/Lyric.Emitter/Emitter.fs` (single-file path): Builds `importedSourcesMap`
   from `stdlibArtifacts` and passes it to `buildContract`.
-- `compiler/src/Lyric.Emitter/Emitter.fs` (project path): Changed
+- `bootstrap/src/Lyric.Emitter/Emitter.fs` (project path): Changed
   `perPackageContracts` tuple to include `Map<string, SourceFile>`; builds and stores
   the map per package from `mergedArtifacts`; uses it in Phase C (contract embed).
-- `compiler/tests/Lyric.Verifier.Tests/StabilityCheckTests.fs`: Updated two
+- `bootstrap/tests/Lyric.Verifier.Tests/StabilityCheckTests.fs`: Updated two
   `buildContract` call sites to pass `Map.empty` (no pub-use imports in those tests).
 
 **Q022-4 (fallback): `@externTarget` generic BCL methods documented**
@@ -12457,11 +12457,11 @@ three layered bugs in the JVM bridge compilation path:
    fields.Length` and truncating both lists. Same fix applied to `emitPatternBind` at the
    parallel zip site.
 
-2. **`compiler/lyric/jvm/codegen.l:lowerExternTargetBody`** — `substring(target, dotIdx + 1)` used
+2. **`lyric/jvm/codegen.l:lowerExternTargetBody`** — `substring(target, dotIdx + 1)` used
    the 2-arg overload, but the type checker resolves to the 3-arg form `substring(s, start, count)`.
    Fixed to `substring(target, dotIdx + 1, length(target) - dotIdx - 1)`.
 
-3. **`compiler/lyric/jvm/codegen.l:lowerFunctionDecl`** — match arm `case Some(target) ->
+3. **`lyric/jvm/codegen.l:lowerFunctionDecl`** — match arm `case Some(target) ->
    lowerExternTargetBody(...)` returned `JvmType` while the sibling arm `case None ->
    emitReturn(...)` returned `Unit`, causing T0068. Fixed by wrapping the call in `{ ...; () }`
    to discard the return value.
@@ -12580,7 +12580,7 @@ calling `parsePostfixExpr` for its operand, so `yield a * 2` parsed as
 means `(await foo()) + 1`.)
 
 **JVM parity (B129).** `lowerAsyncGenerator` added to
-`compiler/lyric/jvm/lowering.l`. Emits a generator class implementing
+`lyric/jvm/lowering.l`. Emits a generator class implementing
 `java.lang.Iterable` + `java.util.Iterator` with the same eager `runBody()`
 pattern. Uses class-file version 49 (Java 5) to avoid requiring
 StackMapTable attributes for `hasNext()`'s branch. Kickoff method corrected
@@ -12630,20 +12630,20 @@ yield-resume boundaries.
 
 **Implementation files changed:**
 
-- `compiler/src/Lyric.Emitter/AsyncStateMachine.fs` — added `collectYieldInners`
+- `bootstrap/src/Lyric.Emitter/AsyncStateMachine.fs` — added `collectYieldInners`
   (parallel to `collectAwaitInners`) to count yield points for state layout.
-- `compiler/src/Lyric.Emitter/AsyncGenerator.fs` — added `AsyncIterYieldCtx`,
+- `bootstrap/src/Lyric.Emitter/AsyncGenerator.fs` — added `AsyncIterYieldCtx`,
   `AsyncIterPromotedLocal`, `AsyncIteratorGeneratorInfo` types;
   `defineAsyncIteratorGeneratorClass` synthesises the combined class;
   `emitAsyncIteratorKickoff` emits the static kickoff method.
-- `compiler/src/Lyric.Emitter/Codegen.fs` — `FunctionCtx` gains
+- `bootstrap/src/Lyric.Emitter/Codegen.fs` — `FunctionCtx` gains
   `AsyncIterYieldCtx` field; `EYield` handler checks it before the existing
   eager-producer path.
-- `compiler/src/Lyric.Emitter/Emitter.fs` — routing inside
+- `bootstrap/src/Lyric.Emitter/Emitter.fs` — routing inside
   `if sg.IsGenerator then` block: if body contains `await`, selects the
   async-iterator path; builds a fake `StateMachineInfo` from
   `AsyncIteratorGeneratorInfo` so the unchanged `EAwait` handler applies.
-- `compiler/tests/Lyric.Emitter.Tests/AsyncTests.fs` — four new behavioral
+- `bootstrap/tests/Lyric.Emitter.Tests/AsyncTests.fs` — four new behavioral
   tests: `async_iter_basic`, `async_iter_multi_yield_await`,
   `async_iter_await_before_yield`, plus a structural shape test
   `async_iter_shape` verifying `IAsyncStateMachine + IAsyncEnumerable<T>`
@@ -12672,41 +12672,41 @@ monomorphizer, formatter, verifier, JVM codegen / lowering, and MSIL codegen.
 The F# bootstrap emitter already had full support (D-progress-260/261); this
 entry covers the self-hosted Lyric pipeline.
 
-**Lexer (`compiler/lyric/lyric/lexer.l`).**  Added `KwYield` keyword case,
+**Lexer (`lyric/lyric/lexer.l`).**  Added `KwYield` keyword case,
 `kwToStr` arm `"yield"`, and `lookupKeyword` match arm so `yield` is tokenised
 as a keyword rather than an identifier.
 
-**AST (`compiler/lyric/lyric/ast.l` and `parser/parser_ast.l`).**  Added
+**AST (`lyric/lyric/ast.l` and `parser/parser_ast.l`).**  Added
 `case EYield(inner: Expr)` after `EAwait` in the `ExprKind` union in both the
 canonical AST and the parser-local copy.
 
-**Parser (`compiler/lyric/lyric/parser/parser_exprs.l`).**  Added `case
+**Parser (`lyric/lyric/parser/parser_exprs.l`).**  Added `case
 KwYield` arm in the prefix-expression dispatcher: advances the token, parses
 the inner expression with `parseExpr`, and wraps in `EYield`.
 
-**Type checker (`compiler/lyric/lyric/type_checker/typechecker_exprs.l`).**
+**Type checker (`lyric/lyric/type_checker/typechecker_exprs.l`).**
 `EYield(inner)` infers the inner expression and returns `TyPrim(PtUnit)` (yield
 is a statement-expression in the type system; its produced type is the generator
 element type, but the bootstrap type checker does not yet thread that
 constraint).
 
-**Mode checker (`compiler/lyric/lyric/mode_checker/modechecker_check.l`).**
+**Mode checker (`lyric/lyric/mode_checker/modechecker_check.l`).**
 Added `EYield(inner)` arms in `walkExprCalls`, `walkExprQuantifiers`, and
 `walkExprAssume`.
 
-**Monomorphizer (`compiler/lyric/lyric/mono.l`).**  Added `EYield(inner)`
+**Monomorphizer (`lyric/lyric/mono.l`).**  Added `EYield(inner)`
 rewrite arm.
 
-**Formatter (`compiler/lyric/lyric/fmt/fmt_core.l`).**  Added `EYield(inner)`
+**Formatter (`lyric/lyric/fmt/fmt_core.l`).**  Added `EYield(inner)`
 arm that renders `"yield " + exprInline(0, inner)`.
 
-**Verifier / stability check (`compiler/lyric/lyric/verifier/stability.l`).**
+**Verifier / stability check (`lyric/lyric/verifier/stability.l`).**
 Added `EYield(inner)` arm.
 
-**Contract elaborator (`compiler/lyric/lyric/contract_elaborator/elaborator.l`).**
+**Contract elaborator (`lyric/lyric/contract_elaborator/elaborator.l`).**
 Added `EYield(inner)` arm in `substResult`.
 
-**JVM codegen (`compiler/lyric/jvm/codegen.l`).**
+**JVM codegen (`lyric/jvm/codegen.l`).**
 
 - `FuncCtx` record gained `genClass: Option[String]`; `makeFuncCtx` sets it
   to `None`; new `makeFuncCtxForGenerator(pkgName, genClass)` creates a
@@ -12731,7 +12731,7 @@ Added `EYield(inner)` arm in `substResult`.
   via `LInvokeinterface`, so generator-produced `Iterable<Object>` values are
   correctly consumed.
 
-**JVM lowering (`compiler/lyric/jvm/lowering.l`).**
+**JVM lowering (`lyric/jvm/lowering.l`).**
 
 - `LPackageItem` gained `case LPAsyncGenerator(g: LGenFunc)`.
 - `lowerPackage` routes `LPAsyncGenerator` to `lowerAsyncGenerator`.
@@ -12741,17 +12741,17 @@ Added `EYield(inner)` arm in `substResult`.
   clobbering param-local slots allocated by the preamble); (c) `maxLocals` for
   `runBody` is inferred from the body insns scan rather than hardcoded to `2`.
 
-**MSIL codegen (`compiler/lyric/msil/codegen.l`).**  `EYield(_)` panics with a
+**MSIL codegen (`lyric/msil/codegen.l`).**  `EYield(_)` panics with a
 clear message pointing to the F# bootstrap path (generic interface instantiation
 required for `IAsyncEnumerable<T>` is Phase R6 work).
 
-**Self-test (`compiler/lyric/jvm/self_test_b130.l`).**  Full-pipeline
+**Self-test (`lyric/jvm/self_test_b130.l`).**  Full-pipeline
 integration test: calls `Jvm.Bridge.compileToJar` on a Lyric source string
 containing `async func evens(n: Int): Int { ... yield ... }` and a `for v in
 evens(4)` consumer; verifies the JAR is produced and, when executed with `java
 -jar`, prints lines `0`, `2`, `4`, `6`.
 
-**F# test harness (`compiler/tests/Lyric.Emitter.Tests/JvmLoweringB130Test.fs`).**
+**F# test harness (`bootstrap/tests/Lyric.Emitter.Tests/JvmLoweringB130Test.fs`).**
 Follows the B129 pattern: `findSource()` locates `self_test_b130.l`, compiles
 via `compileAndRun`, checks `jar_written=true` in stdout, verifies the JAR
 exists, runs it, and asserts four output lines.  Added to `Program.fs` and

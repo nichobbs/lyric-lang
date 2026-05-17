@@ -14,8 +14,8 @@ An audit of the repository on 2026-05-10 identified three classes of problem:
    absent from `_kernel_jvm/`, preventing `Std.File` and `Std.Process` from
    linking on the JVM target.
 3. **Self-hosted emitter disconnect** — neither the self-hosted JVM emitter
-   (`compiler/lyric/jvm/`) nor the self-hosted MSIL emitter
-   (`compiler/lyric/msil/`) is reachable from `lyric build`.  The JVM emitter
+   (`lyric/jvm/`) nor the self-hosted MSIL emitter
+   (`lyric/msil/`) is reachable from `lyric build`.  The JVM emitter
    has a full high-level lowering layer (`Jvm.Lowering`, 29 `lowerXxx`
    functions) but no F# bridge.  The MSIL emitter has only the binary
    PE/opcode/tables layer; high-level MSIL lowering in Lyric is missing
@@ -41,7 +41,7 @@ in D-progress-240 follow-up commit).
 ```
 
 `defer` and `config` are parsed as `TIdent` with contextual meaning in
-`compiler/src/Lyric.Parser/Parser.fs` and must appear in the list.
+`bootstrap/src/Lyric.Parser/Parser.fs` and must appear in the list.
 
 Fix: append `| 'defer' | 'config'` to the soft-keyword production.
 
@@ -59,7 +59,7 @@ short inline answer pointing to the resolution doc or decision-log entry.
 
 ### R1-D  Bootstrap progress — fix stale paths
 
-Multiple entries reference `compiler/lyric/std/core_proof.l`.  The correct path
+Multiple entries reference `stdlib/std/core_proof.l`.  The correct path
 is `stdlib/std/core_proof.l`.  Affected entries: D-progress-198, D-progress-5585,
 and every other line citing that path.  Also fix the same stale path in
 `docs/12-todo-plan.md`.
@@ -208,18 +208,18 @@ document.
 
 ## 5. Self-hosted JVM emitter — CLI wiring (Phase R4)
 
-**Status: SHIPPED** — `Jvm.Codegen` (`compiler/lyric/jvm/codegen.l`),
+**Status: SHIPPED** — `Jvm.Codegen` (`lyric/jvm/codegen.l`),
 `Jvm.Bridge` (`bridge.l`), `SelfHostedJvm.fs`, and `--target jvm` CLI wiring
 all present. (D-progress-239)
 
 ### 5.1 What existed (at time of planning)
 
-- `compiler/lyric/jvm/lowering.l` — complete high-level lowering (29 functions)
-- `compiler/lyric/jvm/driver.l` — `writeJarFromClasses` JAR assembler
-- `compiler/lyric/jvm/bytecode.l`, `classfile.l` — binary class-file emission
-- `compiler/lyric/jvm/self_test_b*.l` — 125 self-tests (B3–B125)
-- `compiler/lyric/lyric/parser/` — self-hosted parser (`Lyric.Parser`)
-- `compiler/lyric/lyric/type_checker/` — self-hosted type checker
+- `lyric/jvm/lowering.l` — complete high-level lowering (29 functions)
+- `lyric/jvm/driver.l` — `writeJarFromClasses` JAR assembler
+- `lyric/jvm/bytecode.l`, `classfile.l` — binary class-file emission
+- `lyric/jvm/self_test_b*.l` — 125 self-tests (B3–B125)
+- `lyric/lyric/parser/` — self-hosted parser (`Lyric.Parser`)
+- `lyric/lyric/type_checker/` — self-hosted type checker
   (`Lyric.TypeChecker`)
 
 ### 5.2 What is missing
@@ -237,7 +237,7 @@ the JVM target.
 
 ### 5.3 New package: `Jvm.Codegen`
 
-Location: `compiler/lyric/jvm/codegen.l`
+Location: `lyric/jvm/codegen.l`
 Package: `Jvm.Codegen`
 Public entry point:
 
@@ -261,7 +261,7 @@ Unsupported in Phase R4 (deferred to follow-up):
 
 ### 5.4 New package: `Jvm.Bridge`
 
-Location: `compiler/lyric/jvm/bridge.l`
+Location: `lyric/jvm/bridge.l`
 Package: `Jvm.Bridge`
 Public entry point:
 
@@ -281,7 +281,7 @@ This function:
 
 ### 5.5 F# bridge: `SelfHostedJvm.fs`
 
-Location: `compiler/src/Lyric.Cli/SelfHostedJvm.fs`
+Location: `bootstrap/src/Lyric.Cli/SelfHostedJvm.fs`
 
 Mirrors `SelfHostedFmt.fs`:
 
@@ -315,23 +315,23 @@ primary runnable artefact.
 
 ## 6. Self-hosted MSIL emitter — high-level lowering (Phase R5)
 
-**Status: SHIPPED** — `Msil.Lowering` (`compiler/lyric/msil/lowering.l`),
+**Status: SHIPPED** — `Msil.Lowering` (`lyric/msil/lowering.l`),
 `Msil.Codegen` (`codegen.l`), `Msil.Bridge` (`bridge.l`), `SelfHostedMsil.fs`,
 `--target dotnet` CLI wiring, and 6 end-to-end bridge tests all present.
 (D-progress-227 / D-progress-238 / D-progress-240)
 
 ### 6.1 What existed (at time of planning)
 
-- `compiler/lyric/msil/pe.l` — raw PE binary writer
-- `compiler/lyric/msil/opcodes.l` — IL opcode encoding
-- `compiler/lyric/msil/tables.l` — CLI metadata table helpers
-- `compiler/lyric/msil/heaps.l` — `#Strings`, `#Blob`, `#GUID`, `#US` heap writers
-- `compiler/lyric/msil/assembler.l` — `assemblePe` — top-level assembler taking
+- `lyric/msil/pe.l` — raw PE binary writer
+- `lyric/msil/opcodes.l` — IL opcode encoding
+- `lyric/msil/tables.l` — CLI metadata table helpers
+- `lyric/msil/heaps.l` — `#Strings`, `#Blob`, `#GUID`, `#US` heap writers
+- `lyric/msil/assembler.l` — `assemblePe` — top-level assembler taking
   pre-built bodies and metadata rows
 
 ### 6.2 What is needed: `Msil.Lowering`
 
-Location: `compiler/lyric/msil/lowering.l`
+Location: `lyric/msil/lowering.l`
 Package: `Msil.Lowering`
 
 Mirrors `Jvm.Lowering` but targets the CLI/MSIL binary format.  The MSIL
@@ -362,7 +362,7 @@ types, records, unions, top-level functions, arithmetic, control flow.
 
 ### 6.3 New package: `Msil.Bridge`
 
-Location: `compiler/lyric/msil/bridge.l`
+Location: `lyric/msil/bridge.l`
 Package: `Msil.Bridge`
 
 Same pattern as `Jvm.Bridge` but calling `Msil.Lowering.lowerMPackage` and
@@ -370,7 +370,7 @@ writing a `.dll` via the existing `Msil.Pe.buildPe` infrastructure.
 
 ### 6.4 F# bridge: `SelfHostedMsil.fs` (shipped — Phase R6)
 
-`compiler/src/Lyric.Cli/SelfHostedMsil.fs` shipped in D-progress-227.  It
+`bootstrap/src/Lyric.Cli/SelfHostedMsil.fs` shipped in D-progress-227.  It
 mirrors `SelfHostedJvm.fs`: bootstraps `Msil.Bridge.dll` via a throwaway
 driver compile, preloads stdlib DLLs into the AppDomain, reflects out
 `compileToMsil(string, string): bool`, and caches the delegate process-wide.

@@ -237,7 +237,7 @@ timeout speed.
 ## 5. The VC generator
 
 The VC generator is the single new module
-`compiler/src/Lyric.Verifier/VCGen.fs`. It implements the wp/sp
+`bootstrap/src/Lyric.Verifier/VCGen.fs`. It implements the wp/sp
 calculus tabulated in `08-contract-semantics.md` §10.2 *literally*:
 the table there is the implementation specification.
 
@@ -739,8 +739,8 @@ against "the verifier is hiding a `true` assertion behind a quirk
 of how axioms compose." For each test we know the proof should
 *not* go through; failing to fail is a critical regression.
 
-Tests live under `compiler/tests/Lyric.Verifier.Tests/` (Expecto,
-per the project convention in `compiler/Directory.Build.props`).
+Tests live under `bootstrap/tests/Lyric.Verifier.Tests/` (Expecto,
+per the project convention in `bootstrap/Directory.Build.props`).
 
 ---
 

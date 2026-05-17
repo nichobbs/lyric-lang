@@ -58,7 +58,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4
         with:
-          global-json-file: compiler/global.json
+          global-json-file: bootstrap/global.json
 
       - name: Resolve version
         id: ver
@@ -71,12 +71,12 @@ jobs:
           fi
 
       - name: Restore
-        working-directory: compiler
-        run: dotnet restore Lyric.sln --runtime ${{ matrix.rid }}
+        working-directory: bootstrap
+        run: dotnet restore Bootstrap.sln --runtime ${{ matrix.rid }}
 
       - name: Publish self-contained binary
         shell: bash
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           dotnet publish src/Lyric.Cli/Lyric.Cli.fsproj \
             --configuration Release \
@@ -105,7 +105,7 @@ jobs:
             --timestamp-rfc3161 http://timestamp.digicert.com \
             --description "Lyric compiler" \
             --description-url "https://github.com/${{ github.repository }}" \
-            "compiler/publish/win-x64/lyric.exe"
+            "bootstrap/publish/win-x64/lyric.exe"
 
       # ── macOS: codesign + notarize (osx-arm64 only) ─────────────────────
       - name: Sign and notarize macOS binary
@@ -131,7 +131,7 @@ jobs:
           # Sign the binary.
           codesign --force --deep --options runtime \
             --sign "Developer ID Application: ${{ secrets.APPLE_DEVELOPER_ID }}" \
-            compiler/publish/osx-arm64/lyric
+            bootstrap/publish/osx-arm64/lyric
 
           rm -f /tmp/cert.p12
 
@@ -144,7 +144,7 @@ jobs:
         run: |
           VERSION="${{ steps.ver.outputs.VERSION }}"
           ARCHIVE="lyric-${VERSION}-${{ matrix.rid }}.tar.gz"
-          tar -czf "$ARCHIVE" -C compiler/publish/${{ matrix.rid }} .
+          tar -czf "$ARCHIVE" -C bootstrap/publish/${{ matrix.rid }} .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Package zip archive (Windows)
@@ -153,7 +153,7 @@ jobs:
         run: |
           $version  = "${{ steps.ver.outputs.VERSION }}"
           $archive  = "lyric-${version}-${{ matrix.rid }}.zip"
-          Compress-Archive -Path "compiler/publish/${{ matrix.rid }}/*" `
+          Compress-Archive -Path "bootstrap/publish/${{ matrix.rid }}/*" `
                            -DestinationPath $archive
           "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -169,7 +169,7 @@ jobs:
             --password    "${{ secrets.APPLE_APP_PASSWORD }}" \
             --team-id     "${{ secrets.APPLE_TEAM_ID }}" \
             --wait
-          xcrun stapler staple compiler/publish/${{ matrix.rid }}/lyric \
+          xcrun stapler staple bootstrap/publish/${{ matrix.rid }}/lyric \
             || echo "::warning::stapler staple failed — notarization ticket not embedded; binary requires internet access at first launch"
 
       # ── Upload to GitHub Release ──────────────────────────────────────────
@@ -196,7 +196,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4
         with:
-          global-json-file: compiler/global.json
+          global-json-file: bootstrap/global.json
 
       - name: Resolve version
         id: ver
@@ -209,11 +209,11 @@ jobs:
           fi
 
       - name: Restore
-        working-directory: compiler
-        run: dotnet restore Lyric.sln
+        working-directory: bootstrap
+        run: dotnet restore Bootstrap.sln
 
       - name: Pack NuGet global tool
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           dotnet pack src/Lyric.Cli/Lyric.Cli.fsproj \
             --configuration Release \
@@ -233,7 +233,7 @@ jobs:
         run: |
           echo "${{ secrets.NUGET_SIGNING_CERT_BASE64 }}" | base64 --decode \
             > /tmp/nuget-signing.pfx
-          dotnet nuget sign compiler/nupkgs/*.nupkg \
+          dotnet nuget sign bootstrap/nupkgs/*.nupkg \
             --certificate-path /tmp/nuget-signing.pfx \
             --certificate-password "${{ secrets.NUGET_SIGNING_CERT_PASSWORD }}" \
             --timestamper http://timestamp.digicert.com \
@@ -242,7 +242,7 @@ jobs:
 
       - name: Push to NuGet.org
         run: |
-          dotnet nuget push compiler/nupkgs/*.nupkg \
+          dotnet nuget push bootstrap/nupkgs/*.nupkg \
             --api-key "${{ secrets.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate

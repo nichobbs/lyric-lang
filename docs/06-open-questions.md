@@ -523,7 +523,7 @@ JVM-platform open questions (Q-J001–Q-J008 and later) are maintained in
 require JVM domain context to evaluate.
 
 **Q-J005 — opaque-type Java facade** is now RESOLVED: `lowerOpaqueFacade`
-shipped in `compiler/lyric/jvm/lowering.l` (D-progress-226).  The entry in
+shipped in `lyric/jvm/lowering.l` (D-progress-226).  The entry in
 `docs/18-jvm-emission.md` Appendix B is updated accordingly.
 
 All other Q-J entries remain open; see `docs/18-jvm-emission.md §"Open
