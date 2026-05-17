@@ -41,6 +41,7 @@ import Std.Collections
 import Std.Time
 import Std.Json
 import Std.Uuid
+@cfg(feature = "redis")
 import Session.Kernel.Net
 
 // ─── Session identity ─────────────────────────────────────────────────────────
@@ -130,10 +131,12 @@ pub interface SessionStore {
 
 /// Redis-backed session store.  Obtain via `Session.connectRedis()`.
 @stable(since="0.1")
+@cfg(feature = "redis")
 pub record NativeSessionStore {
   storeHandle: Int
 }
 
+@cfg(feature = "redis")
 impl SessionStore for NativeSessionStore {
   func create(): Result[SessionId, SessionError] {
     match Session.Kernel.Net.create(storeHandle, SessionConfig.ttlSeconds) {
@@ -265,6 +268,7 @@ pub record InProcessSessionStore {
 impl SessionStore for InProcessSessionStore {
   func create(): Result[SessionId, SessionError] {
     val id = Std.Uuid.uuidToString(Std.Uuid.newUuid())
+    val ts = nowMs()
     val data = SessionData(
       id             = id,
       entries        = Map.empty(),
@@ -520,20 +524,42 @@ func defaultExpiresAt(ttlSeconds: in Int): Long {
   return nowMs() + ttlSeconds.toLong() * 1000L
 }
 
-// Minimal JSON serializer for SessionData (produces the protocol format
-// consumed by Session.Kernel.Net.save / load when using the Redis store).
-// Encodes id, createdAt, lastAccessedAt, expiresAt, and entries as a flat
-// JSON object.  Only handles string values without special characters.
+// Escape a string for JSON serialization (handles \, ", and control chars).
+func jsonEscapeStr(s: in String): String {
+  var result = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.charAt(i).toString()
+    if ch == "\\" {
+      result = result + "\\\\"
+    } else if ch == "\"" {
+      result = result + "\\\""
+    } else if ch == "\n" {
+      result = result + "\\n"
+    } else if ch == "\r" {
+      result = result + "\\r"
+    } else if ch == "\t" {
+      result = result + "\\t"
+    } else {
+      result = result + ch
+    }
+    i = i + 1
+  }
+  return result
+}
+
+// Serialize SessionData to the protocol JSON format consumed by
+// Session.Kernel.Net.save / load when using the Redis store.
 func serializeSessionJson(data: in SessionData): String {
   var entriesJson = "{"
   var first = true
   for (k, v) in data.entries {
     if not first { entriesJson = entriesJson + "," }
-    entriesJson = entriesJson + "\"" + k + "\":\"" + v + "\""
+    entriesJson = entriesJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
     first = false
   }
   entriesJson = entriesJson + "}"
-  return "{\"id\":\"" + data.id + "\","
+  return "{\"id\":\"" + jsonEscapeStr(data.id) + "\","
        + "\"createdAt\":" + data.createdAt.toString() + ","
        + "\"lastAccessedAt\":" + data.lastAccessedAt.toString() + ","
        + "\"expiresAt\":" + data.expiresAt.toString() + ","

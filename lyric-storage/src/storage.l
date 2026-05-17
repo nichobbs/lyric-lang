@@ -274,7 +274,14 @@ pub func connectLocal(): Result[StorageBucket, StorageError] {
 
 /// Dispatch `connect` by provider name: "s3", "azure", or "local".
 /// Falls back to `Err` for unrecognised provider strings.
-@stable(since="0.1")
+///
+/// **Note:** this function calls the `@cfg`-gated `connectS3()`, `connectAzureBlob()`,
+/// and `connectLocal()` helpers.  The caller must ensure that the matching
+/// feature is active in the compiled binary; calling `connect("s3")` without
+/// the `s3` feature will produce a link error.  For compile-time safety,
+/// prefer calling the typed `connectS3()` / `connectAzureBlob()` / `connectLocal()`
+/// directly.
+@experimental
 pub func connect(provider: in String): Result[StorageBucket, StorageError]
   requires: provider.length > 0
 {

@@ -344,53 +344,73 @@ pub func nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool
 
 // ─── Platform dispatch helpers (private) ─────────────────────────────────────
 
-// Connect via the appropriate platform kernel.
+@cfg(feature = "dotnet")
 func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
-  @cfg(feature = "dotnet")
   return Mq.Kernel.Net.connect(url, queueName)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
   return Mq.Kernel.Jvm.connect(url, queueName)
 }
 
+@cfg(feature = "dotnet")
 func mqKernelPublish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String] {
-  @cfg(feature = "dotnet")
   return Mq.Kernel.Net.publish(queueId, messageId, body, headersJson)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelPublish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String] {
   return Mq.Kernel.Jvm.publish(queueId, messageId, body, headersJson)
 }
 
+@cfg(feature = "dotnet")
 func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String] {
-  @cfg(feature = "dotnet")
   return Mq.Kernel.Net.publishBatch(queueId, messagesJson)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String] {
   return Mq.Kernel.Jvm.publishBatch(queueId, messagesJson)
 }
 
+@cfg(feature = "dotnet")
 func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
-  @cfg(feature = "dotnet")
   return Mq.Kernel.Net.consume(queueId, timeoutMs)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
   return Mq.Kernel.Jvm.consume(queueId, timeoutMs)
 }
 
+@cfg(feature = "dotnet")
 func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
-  @cfg(feature = "dotnet")
   return Mq.Kernel.Net.ack(queueId, deliveryTag)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
   return Mq.Kernel.Jvm.ack(queueId, deliveryTag)
 }
 
+@cfg(feature = "dotnet")
 func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
-  @cfg(feature = "dotnet")
   return Mq.Kernel.Net.nack(queueId, deliveryTag, requeue)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
   return Mq.Kernel.Jvm.nack(queueId, deliveryTag, requeue)
 }
 
+@cfg(feature = "dotnet")
 func mqKernelClose(queueId: in Int): Unit {
-  @cfg(feature = "dotnet")
   Mq.Kernel.Net.close(queueId)
-  @cfg(feature = "jvm")
+}
+
+@cfg(feature = "jvm")
+func mqKernelClose(queueId: in Int): Unit {
   Mq.Kernel.Jvm.close(queueId)
 }
 

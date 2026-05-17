@@ -122,7 +122,7 @@ pub func notBlank(value: in String, field: in String): [ValidationError] {
   }
   var i = 0
   while i < value.length {
-    val ch = value.charAt(i)
+    val ch = value.charAt(i).toString()
     if ch != " " and ch != "\t" and ch != "\r" and ch != "\n" {
       return []
     }

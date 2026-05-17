@@ -109,17 +109,38 @@ pub func connectSendGrid(apiKey: in String): Result[Int, String] {
   SendGrid.connect(apiKey)
 }
 
-/// Send a JSON-encoded message through the provider identified by `senderHandle`.
-/// Dispatches to the active provider feature at compile time.
+/// Send a JSON-encoded message via the SMTP provider.
+@cfg(feature = "smtp")
 pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  @cfg(feature = "smtp")     return MailKit.Net.Smtp.send(senderHandle, messageJson)
-  @cfg(feature = "ses")      return AWSSDK.SimpleEmail.send(senderHandle, messageJson)
-  @cfg(feature = "sendgrid") return SendGrid.send(senderHandle, messageJson)
+  return MailKit.Net.Smtp.send(senderHandle, messageJson)
 }
 
-/// Release a provider connection.
+/// Send a JSON-encoded message via Amazon SES.
+@cfg(feature = "ses")
+pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
+  return AWSSDK.SimpleEmail.send(senderHandle, messageJson)
+}
+
+/// Send a JSON-encoded message via SendGrid.
+@cfg(feature = "sendgrid")
+pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
+  return SendGrid.send(senderHandle, messageJson)
+}
+
+/// Release the SMTP provider connection.
+@cfg(feature = "smtp")
 pub func close(senderHandle: in Int): Unit {
-  @cfg(feature = "smtp")     MailKit.Net.Smtp.close(senderHandle)
-  @cfg(feature = "ses")      AWSSDK.SimpleEmail.close(senderHandle)
-  @cfg(feature = "sendgrid") SendGrid.close(senderHandle)
+  MailKit.Net.Smtp.close(senderHandle)
+}
+
+/// Release the SES provider connection.
+@cfg(feature = "ses")
+pub func close(senderHandle: in Int): Unit {
+  AWSSDK.SimpleEmail.close(senderHandle)
+}
+
+/// Release the SendGrid provider connection.
+@cfg(feature = "sendgrid")
+pub func close(senderHandle: in Int): Unit {
+  SendGrid.close(senderHandle)
 }

@@ -193,7 +193,8 @@ pub func connectLocal(basePath: in String, bucketName: in String): Result[Int, S
   System.IO.Storage.connect(basePath, bucketName)
 }
 
-/// Upload an object to the provider identified by `bucketHandle`.
+/// Upload an object to the S3 bucket identified by `bucketHandle`.
+@cfg(feature = "s3")
 pub func put(
   bucketHandle: in Int,
   key:          in String,
@@ -201,53 +202,148 @@ pub func put(
   contentType:  in String,
   userMetaJson: in String
 ): Result[String, String] {
-  @cfg(feature = "s3")        return AWSSDK.S3.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-  @cfg(feature = "azureblob") return Azure.Storage.Blobs.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-  @cfg(feature = "local")     return System.IO.Storage.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+  return AWSSDK.S3.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
 }
 
-/// Download an object.
+/// Upload an object to the Azure Blob container identified by `bucketHandle`.
+@cfg(feature = "azureblob")
+pub func put(
+  bucketHandle: in Int,
+  key:          in String,
+  dataBase64:   in String,
+  contentType:  in String,
+  userMetaJson: in String
+): Result[String, String] {
+  return Azure.Storage.Blobs.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+}
+
+/// Upload an object to the local filesystem store identified by `bucketHandle`.
+@cfg(feature = "local")
+pub func put(
+  bucketHandle: in Int,
+  key:          in String,
+  dataBase64:   in String,
+  contentType:  in String,
+  userMetaJson: in String
+): Result[String, String] {
+  return System.IO.Storage.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+}
+
+/// Download an object from the S3 bucket.
+@cfg(feature = "s3")
 pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
-  @cfg(feature = "s3")        return AWSSDK.S3.get(bucketHandle, key)
-  @cfg(feature = "azureblob") return Azure.Storage.Blobs.get(bucketHandle, key)
-  @cfg(feature = "local")     return System.IO.Storage.get(bucketHandle, key)
+  return AWSSDK.S3.get(bucketHandle, key)
 }
 
-/// Delete an object.
+/// Download an object from the Azure Blob container.
+@cfg(feature = "azureblob")
+pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
+  return Azure.Storage.Blobs.get(bucketHandle, key)
+}
+
+/// Download an object from the local filesystem store.
+@cfg(feature = "local")
+pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
+  return System.IO.Storage.get(bucketHandle, key)
+}
+
+/// Delete an object from the S3 bucket.
+@cfg(feature = "s3")
 pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  @cfg(feature = "s3")        return AWSSDK.S3.delete(bucketHandle, key)
-  @cfg(feature = "azureblob") return Azure.Storage.Blobs.delete(bucketHandle, key)
-  @cfg(feature = "local")     return System.IO.Storage.delete(bucketHandle, key)
+  return AWSSDK.S3.delete(bucketHandle, key)
 }
 
-/// List objects.
+/// Delete an object from the Azure Blob container.
+@cfg(feature = "azureblob")
+pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
+  return Azure.Storage.Blobs.delete(bucketHandle, key)
+}
+
+/// Delete an object from the local filesystem store.
+@cfg(feature = "local")
+pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
+  return System.IO.Storage.delete(bucketHandle, key)
+}
+
+/// List objects in the S3 bucket.
+@cfg(feature = "s3")
 pub func list(
   bucketHandle:      in Int,
   prefix:            in String,
   continuationToken: in String,
   maxKeys:           in Int
 ): Result[String, String] {
-  @cfg(feature = "s3")        return AWSSDK.S3.list(bucketHandle, prefix, continuationToken, maxKeys)
-  @cfg(feature = "azureblob") return Azure.Storage.Blobs.list(bucketHandle, prefix, continuationToken, maxKeys)
-  @cfg(feature = "local")     return System.IO.Storage.list(bucketHandle, prefix, continuationToken, maxKeys)
+  return AWSSDK.S3.list(bucketHandle, prefix, continuationToken, maxKeys)
 }
 
-/// Generate a pre-signed or SAS URL.
+/// List objects in the Azure Blob container.
+@cfg(feature = "azureblob")
+pub func list(
+  bucketHandle:      in Int,
+  prefix:            in String,
+  continuationToken: in String,
+  maxKeys:           in Int
+): Result[String, String] {
+  return Azure.Storage.Blobs.list(bucketHandle, prefix, continuationToken, maxKeys)
+}
+
+/// List objects in the local filesystem store.
+@cfg(feature = "local")
+pub func list(
+  bucketHandle:      in Int,
+  prefix:            in String,
+  continuationToken: in String,
+  maxKeys:           in Int
+): Result[String, String] {
+  return System.IO.Storage.list(bucketHandle, prefix, continuationToken, maxKeys)
+}
+
+/// Generate a pre-signed URL for the S3 bucket.
+@cfg(feature = "s3")
 pub func presignedUrl(
   bucketHandle:     in Int,
   key:              in String,
   expiresInSeconds: in Int
 ): Result[String, String] {
-  @cfg(feature = "s3")        return AWSSDK.S3.presignedUrl(bucketHandle, key, expiresInSeconds)
-  @cfg(feature = "azureblob") return Azure.Storage.Blobs.presignedUrl(bucketHandle, key, expiresInSeconds)
-  @cfg(feature = "local")     return System.IO.Storage.presignedUrl(bucketHandle, key, expiresInSeconds)
+  return AWSSDK.S3.presignedUrl(bucketHandle, key, expiresInSeconds)
 }
 
-/// Check whether an object exists.
+/// Generate a SAS URL for the Azure Blob container.
+@cfg(feature = "azureblob")
+pub func presignedUrl(
+  bucketHandle:     in Int,
+  key:              in String,
+  expiresInSeconds: in Int
+): Result[String, String] {
+  return Azure.Storage.Blobs.presignedUrl(bucketHandle, key, expiresInSeconds)
+}
+
+/// Return a file:// URL for the local filesystem object.
+@cfg(feature = "local")
+pub func presignedUrl(
+  bucketHandle:     in Int,
+  key:              in String,
+  expiresInSeconds: in Int
+): Result[String, String] {
+  return System.IO.Storage.presignedUrl(bucketHandle, key, expiresInSeconds)
+}
+
+/// Check whether an object exists in the S3 bucket.
+@cfg(feature = "s3")
 pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  @cfg(feature = "s3")        return AWSSDK.S3.exists(bucketHandle, key)
-  @cfg(feature = "azureblob") return Azure.Storage.Blobs.exists(bucketHandle, key)
-  @cfg(feature = "local")     return System.IO.Storage.exists(bucketHandle, key)
+  return AWSSDK.S3.exists(bucketHandle, key)
+}
+
+/// Check whether an object exists in the Azure Blob container.
+@cfg(feature = "azureblob")
+pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
+  return Azure.Storage.Blobs.exists(bucketHandle, key)
+}
+
+/// Check whether an object exists in the local filesystem store.
+@cfg(feature = "local")
+pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
+  return System.IO.Storage.exists(bucketHandle, key)
 }
 
 /// Emit an audit log entry.

@@ -568,7 +568,7 @@ pub func assertNone[T](opt: in Option[T], msg: in String): Unit {
 @stable(since="0.1")
 pub func assertEq(a: in String, b: in String, msg: in String): Unit {
   if a != b {
-    doPanic(msg + " (expected \"" + b + "\", got \"" + a + "\")")
+    doPanic(msg + " (expected \"" + a + "\", got \"" + b + "\")")
   }
 }
 

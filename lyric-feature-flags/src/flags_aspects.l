@@ -87,7 +87,7 @@ pub aspect FlagGated {
 ///   enabled   Bool   — master switch; when false the handler always runs (default: true)
 ///   flagName  String — name of the String flag to read (required; no default)
 ///   variant   String — expected flag value that identifies the active variant (required; no default)
-@stable(since="0.1")
+@experimental
 pub aspect FlagVariant {
   config {
     enabled:  Bool   = true

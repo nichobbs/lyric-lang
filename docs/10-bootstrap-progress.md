@@ -12708,3 +12708,39 @@ relative to Spring / ASP.NET ecosystems. Each library follows the established pa
 - **CLAUDE.md key modules** — added `Std.Time` and `Std.Uuid` to the key modules list in the
   `stdlib/std/` section (both are confirmed present in `stdlib/std/time.l` and `stdlib/std/uuid.l`
   and are used by the new library packages).
+
+**Third-round review fixes (PR #295):**
+
+- **`@cfg` on `impl` block** — `NativeFlagStore` record was gated `@cfg(feature = "remote")` but
+  its `impl FlagStore for NativeFlagStore` block was not.  Added the matching `@cfg` gate on the
+  impl block.
+- **`@cfg` on import** — `import Session.Kernel.Net` in `session.l` was unconditional; added
+  `@cfg(feature = "redis")` gate so the package is not resolved when the Redis feature is absent.
+- **`NativeSessionStore` @cfg** — `NativeSessionStore` record and its `impl SessionStore` block
+  were not gated; added `@cfg(feature = "redis")` to both.
+- **`InProcessSessionStore.create()` undefined `ts`** — `createdAt` and `lastAccessedAt` were set
+  to a variable `ts` that was never defined.  Added `val ts = nowMs()` before the
+  `SessionData(...)` construction.
+- **`serializeSessionJson` unsafe JSON** — session entries (keys and values) were concatenated
+  raw without escaping.  Added `jsonEscapeStr()` helper that escapes `\`, `"`, `\n`, `\r`, `\t`;
+  all string fields in the produced JSON now go through the helper.
+- **`notBlank` Char/String mismatch** — `value.charAt(i)` returns `Char` but was compared
+  directly to string literals `" "`, `"\t"`, `"\r"`, `"\n"`.  Fixed to `value.charAt(i).toString()`.
+- **`FlagVariant` stability** — `FlagVariant` was marked `@stable(since="0.1")` but the body
+  always proceeds without modification (variant result-wrapping is deferred).  Changed to
+  `@experimental`.
+- **`lyric-feature-flags/lyric.toml` unused dep** — `"Lyric.Resilience"` listed as a dependency
+  but no `.l` file in the package imports it.  Removed.
+- **`assertEq` message direction** — failure message read `"expected b, got a"` (reversed).
+  Changed to `"expected a, got b"` (first argument is the expected value per xUnit convention).
+- **`Storage.connect()` safety note** — `connect(provider)` calls `@cfg`-gated helpers
+  (`connectS3()` etc.) and will produce a link error if the matching feature is absent.
+  Marked `@experimental` and added a doc comment directing callers to use the typed
+  `connectS3()` / `connectAzureBlob()` / `connectLocal()` functions directly.
+- **`mq.l` statement-level @cfg** — `mqKernelConnect`, `mqKernelPublish`, etc. used
+  statement-level `@cfg` inside function bodies (spec violation per §4.2 of D045).  Replaced
+  with item-level `@cfg`-gated pairs of same-named functions (dotnet/jvm) per §4.4.
+- **`mail_kernel.l` single-provider dispatch** — `send()` and `close()` bridged always to MailKit
+  regardless of active feature.  Replaced with three item-level `@cfg`-gated overloads per provider.
+- **`storage_kernel.l` single-provider dispatch** — all six operation wrappers dispatched only to
+  S3.  Replaced with three item-level `@cfg`-gated overloads per provider (s3 / azureblob / local).
