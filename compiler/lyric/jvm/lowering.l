@@ -2970,7 +2970,32 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 
   // ── 3. runBody()V ───────────────────────────────────────────────────────────
   // Body instructions with LYield replaced by ArrayList.add(Object).
-  // Slot 0 = this; slot 1 = yield-temp (allocated for each yield).
+  // Slot 0 = `this`; slots 1..paramSlots hold params (preamble loads from fields);
+  // yieldTempSlot (one past the highest body slot) holds the boxed yield value transiently.
+  //
+  // Scan body insns first to find the max slot so yieldTempSlot doesn't collide.
+  var bodyMaxSlot = 0
+  var bsi = 0
+  while bsi < g.bodyInsns.count {
+    match g.bodyInsns[bsi] {
+      case LIload(s)  -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
+      case LLload(s)  -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
+      case LFload(s)  -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
+      case LDload(s)  -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
+      case LAload(s)  -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
+      case LIstore(s) -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
+      case LLstore(s) -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
+      case LFstore(s) -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
+      case LDstore(s) -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
+      case LAstore(s) -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
+      case _          -> ()
+    }
+    bsi = bsi + 1
+  }
+  // yieldTempSlot must not overlap any slot already used by the body preamble or locals.
+  val yieldTempSlot = bodyMaxSlot
+  val bodyMaxLocals = yieldTempSlot + 1
+
   val bodyAsm  = newAssembler(pool)
   val listAddIdx = poolMethodref(pool, listClass, "add", "(Ljava/lang/Object;)Z")
   var bi = 0
@@ -2993,12 +3018,12 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
         }
         // Stack: [..., Object(value)]
         // Emit: this._values.add(value)
-        emitAstore(bodyAsm, 1)           // temp = value; stack: [...]
-        emitAload(bodyAsm, 0)             // stack: [this]
-        emitGetfield(bodyAsm, valuesIdx)  // stack: [ArrayList]
-        emitAload(bodyAsm, 1)             // stack: [ArrayList, value]
+        emitAstore(bodyAsm, yieldTempSlot)      // temp = value; stack: [...]
+        emitAload(bodyAsm, 0)                   // stack: [this]
+        emitGetfield(bodyAsm, valuesIdx)        // stack: [ArrayList]
+        emitAload(bodyAsm, yieldTempSlot)       // stack: [ArrayList, value]
         emitInvokevirtual(bodyAsm, listAddIdx)  // stack: [boolean]
-        emitPop(bodyAsm)                  // stack: []
+        emitPop(bodyAsm)                        // stack: []
       }
       case _ -> lowerInsn(insn, bodyAsm)
     }
@@ -3007,7 +3032,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitReturn(bodyAsm)
   // Use assembleCodeInferred so maxStack is derived from peakStack rather than
   // a fixed constant — caller-supplied bodyInsns can be arbitrarily deep.
-  val bodyCode = assembleCodeInferred(bodyAsm, 2)
+  val bodyCode = assembleCodeInferred(bodyAsm, bodyMaxLocals)
   val bodyAttrs: List[Attribute] = newList()
   bodyAttrs.add(bodyCode)
   val bodyPs: List[JvmType] = newList()
@@ -3108,39 +3133,43 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   ))
 
   // ── 8. Kickoff method on host class ────────────────────────────────────────
-  val kickAsm = newAssembler(pool)
-  val genCtorIdx = poolMethodref(pool, genClass, "<init>", buildDescriptor(ctorParamTypes, JVoid))
-  val genClassIdx = poolClass(pool, genClass)
-  emitNew(kickAsm, genClassIdx)
-  emitDup(kickAsm)
-  var ki = 0
-  var kslot = 0   // static method: params start at slot 0 (no `this`)
-  while ki < g.params.count {
-    emitFieldLoad(g.params[ki].paramType, kslot, kickAsm)
-    match g.params[ki].paramType {
-      case JLong   -> { kslot = kslot + 2 }
-      case JDouble -> { kslot = kslot + 2 }
-      case _       -> { kslot = kslot + 1 }
+  // When hostClass is empty the caller (codegenPackage full pipeline) has
+  // arranged for a factory LFunc in LPFuncs; skip the separate host class.
+  if g.hostClass != "" {
+    val kickAsm = newAssembler(pool)
+    val genCtorIdx = poolMethodref(pool, genClass, "<init>", buildDescriptor(ctorParamTypes, JVoid))
+    val genClassIdx = poolClass(pool, genClass)
+    emitNew(kickAsm, genClassIdx)
+    emitDup(kickAsm)
+    var ki = 0
+    var kslot = 0   // static method: params start at slot 0 (no `this`)
+    while ki < g.params.count {
+      emitFieldLoad(g.params[ki].paramType, kslot, kickAsm)
+      match g.params[ki].paramType {
+        case JLong   -> { kslot = kslot + 2 }
+        case JDouble -> { kslot = kslot + 2 }
+        case _       -> { kslot = kslot + 1 }
+      }
+      ki = ki + 1
     }
-    ki = ki + 1
+    emitInvokespecial(kickAsm, genCtorIdx)
+    emitAreturn(kickAsm)
+    val kickPs: List[JvmType] = newList()
+    var kpi = 0
+    while kpi < g.params.count {
+      kickPs.add(g.params[kpi].paramType)
+      kpi = kpi + 1
+    }
+    // maxLocals = kslot = number of param slots (0 when no params; static, no `this`).
+    val kickCode = assembleCode(kickAsm, 4, kslot)
+    val kickAttrs: List[Attribute] = newList()
+    kickAttrs.add(kickCode)
+    val kickMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, g.methodName,
+      buildDescriptor(kickPs, objType), kickAttrs)
+    val kickMethods: List[MethodInfo] = newList()
+    kickMethods.add(kickMethod)
+    result.add(makeClassWithMethods(g.hostClass, kickMethods))
   }
-  emitInvokespecial(kickAsm, genCtorIdx)
-  emitAreturn(kickAsm)
-  val kickPs: List[JvmType] = newList()
-  var kpi = 0
-  while kpi < g.params.count {
-    kickPs.add(g.params[kpi].paramType)
-    kpi = kpi + 1
-  }
-  // maxLocals = kslot = number of param slots (0 when no params; static, no `this`).
-  val kickCode = assembleCode(kickAsm, 4, kslot)
-  val kickAttrs: List[Attribute] = newList()
-  kickAttrs.add(kickCode)
-  val kickMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, g.methodName,
-    buildDescriptor(kickPs, objType), kickAttrs)
-  val kickMethods: List[MethodInfo] = newList()
-  kickMethods.add(kickMethod)
-  result.add(makeClassWithMethods(g.hostClass, kickMethods))
   result
 }
 
@@ -3553,6 +3582,9 @@ pub union LPackageItem {
   case LPExposedRecord(er: LExposedRecord)
   case LPProtected(pt: LProtected)
   case LPFuncs(funcsClass: String, fns: List[LFunc])
+  // B129/B130: async generator function (yield in async func body).
+  // Covers Gap-4 (yield only) and Gap-4a (yield + await, bootstrap-synchronous).
+  case LPAsyncGenerator(g: LGenFunc)
   // B126: a @test_module file compiled for the JVM target.
   // `className` is the JVM binary name (e.g. "math_tests").
   // `slots` carries per-test metadata; method bodies are stubs until B127+.
@@ -3609,6 +3641,12 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       }
       case LPFuncs(funcsClass, fns) -> {
         result.add(lowerFuncsToClass(funcsClass, fns, pool))
+      }
+      case LPAsyncGenerator(g) -> {
+        val cfs = lowerAsyncGenerator(g, pool)
+        for cf in cfs.toArray() {
+          result.add(cf)
+        }
       }
       case LPTestModule(className, slots) -> {
         // B126: emit the test-module class (annotated stubs) plus the

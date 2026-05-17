@@ -1008,6 +1008,11 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
           val inner = parsePostfixExpr(st)
           mkExpr(EAwait(inner = inner), joinSpans(opTok.span, inner.span))
         }
+        case KwYield -> {
+          val opTok = advance(st)
+          val inner = parseExpr(st)
+          mkExpr(EYield(inner = inner), joinSpans(opTok.span, inner.span))
+        }
         case KwSpawn -> {
           val opTok = advance(st)
           val inner = parsePostfixExpr(st)

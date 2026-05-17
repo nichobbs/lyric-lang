@@ -233,6 +233,7 @@ pub union Keyword {
   case KwWire
   case KwWith
   case KwXor
+  case KwYield
 }
 
 /// Multi- and single-character punctuation/operator tokens (§1.9).
@@ -416,6 +417,7 @@ pub func keywordSpelling(kw: in Keyword): String {
     case KwWhile     -> "while"
     case KwWire      -> "wire"
     case KwWith      -> "with"
+    case KwYield     -> "yield"
     case KwXor       -> "xor"
   }
 }
@@ -496,6 +498,7 @@ pub func tryKeywordFromString(s: in String): Option[Keyword] {
   else if s == "while"     { Some(value = KwWhile) }
   else if s == "wire"      { Some(value = KwWire) }
   else if s == "with"      { Some(value = KwWith) }
+  else if s == "yield"     { Some(value = KwYield) }
   else if s == "xor"       { Some(value = KwXor) }
   else                     { None }
 }

@@ -280,6 +280,7 @@
     <Compile Include="JvmLoweringB127Test.fs" />
     <Compile Include="JvmLoweringB128Test.fs" />
     <Compile Include="JvmLoweringB129Test.fs" />
+    <Compile Include="JvmLoweringB130Test.fs" />
     <Compile Include="SelfHostedLexerTests.fs" />
     <Compile Include="SelfHostedParserTests.fs" />
     <Compile Include="SelfHostedTypeCheckerTests.fs" />

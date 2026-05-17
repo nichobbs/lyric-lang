@@ -275,6 +275,7 @@ pub union ExprKind {
   case EIf(cond: Expr, thenBranch: ExprOrBlock, elseBranch: Option[ExprOrBlock], thenForm: Bool)
   case EMatch(scrutinee: Expr, arms: List[MatchArm])
   case EAwait(inner: Expr)
+  case EYield(inner: Expr)
   case ESpawn(inner: Expr)
   case ETry(inner: Expr)
   case EOld(inner: Expr)

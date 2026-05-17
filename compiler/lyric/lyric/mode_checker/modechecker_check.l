@@ -102,6 +102,9 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
         e.span))
       walkExprCalls(ctx, inner)
     }
+    case EYield(inner) -> {
+      walkExprCalls(ctx, inner)
+    }
     case ESpawn(inner) -> {
       ctx.diag.add(errorDiagnostic("V0002",
         "spawn not admitted in proof-required function '" + ctx.fnName + "'",
@@ -526,6 +529,7 @@ func walkExprQuantifiers(
     case EOld(inner)       -> walkExprQuantifiers(fileLevel, diag, inner)
     case ETry(inner)       -> walkExprQuantifiers(fileLevel, diag, inner)
     case EAwait(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
+    case EYield(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
     case ESpawn(inner)     -> walkExprQuantifiers(fileLevel, diag, inner)
     case EPropagate(inner) -> walkExprQuantifiers(fileLevel, diag, inner)
     case ETuple(exprs)     -> walkExprQList(fileLevel, diag, exprs)
@@ -710,6 +714,7 @@ func walkExprAssume(
     case EOld(inner)       -> walkExprAssume(diag, inUnsafe, inner)
     case ETry(inner)       -> walkExprAssume(diag, inUnsafe, inner)
     case EAwait(inner)     -> walkExprAssume(diag, inUnsafe, inner)
+    case EYield(inner)     -> walkExprAssume(diag, inUnsafe, inner)
     case ESpawn(inner)     -> walkExprAssume(diag, inUnsafe, inner)
     case EPropagate(inner) -> walkExprAssume(diag, inUnsafe, inner)
     case ETuple(exprs) -> {

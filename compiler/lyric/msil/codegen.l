@@ -803,6 +803,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       lowerExprMsil(cctx, fctx, insns, inner)
     }
 
+    // ── Yield: async generators deferred to self-hosted MSIL R6 ──────────────
+    case EYield(_) -> {
+      panic("Msil.Codegen: async generators (yield) not supported in self-hosted MSIL R5 — use F# bootstrap (--target dotnet)")
+    }
+
     case ESpawn(inner) -> {
       lowerExprMsil(cctx, fctx, insns, inner)
     }

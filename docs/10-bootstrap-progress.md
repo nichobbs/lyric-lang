@@ -12663,3 +12663,98 @@ yield-resume boundaries.
 **Test results:** 781/781 emitter tests pass, 0 failed. Four new Gap-4a tests
 added (`async_iter_basic`, `async_iter_multi_yield_await`,
 `async_iter_await_before_yield`, `async_iter_shape`).
+
+### D-progress-262 — Self-hosted pipeline: `yield` / async generator in Lyric compiler (B130)
+
+**Goal.** Wire async generators (Gap-4 / Gap-4a) into every stage of the
+self-hosted Lyric compiler: lexer, AST, parser, type checker, mode checker,
+monomorphizer, formatter, verifier, JVM codegen / lowering, and MSIL codegen.
+The F# bootstrap emitter already had full support (D-progress-260/261); this
+entry covers the self-hosted Lyric pipeline.
+
+**Lexer (`compiler/lyric/lyric/lexer.l`).**  Added `KwYield` keyword case,
+`kwToStr` arm `"yield"`, and `lookupKeyword` match arm so `yield` is tokenised
+as a keyword rather than an identifier.
+
+**AST (`compiler/lyric/lyric/ast.l` and `parser/parser_ast.l`).**  Added
+`case EYield(inner: Expr)` after `EAwait` in the `ExprKind` union in both the
+canonical AST and the parser-local copy.
+
+**Parser (`compiler/lyric/lyric/parser/parser_exprs.l`).**  Added `case
+KwYield` arm in the prefix-expression dispatcher: advances the token, parses
+the inner expression with `parseExpr`, and wraps in `EYield`.
+
+**Type checker (`compiler/lyric/lyric/type_checker/typechecker_exprs.l`).**
+`EYield(inner)` infers the inner expression and returns `TyPrim(PtUnit)` (yield
+is a statement-expression in the type system; its produced type is the generator
+element type, but the bootstrap type checker does not yet thread that
+constraint).
+
+**Mode checker (`compiler/lyric/lyric/mode_checker/modechecker_check.l`).**
+Added `EYield(inner)` arms in `walkExprCalls`, `walkExprQuantifiers`, and
+`walkExprAssume`.
+
+**Monomorphizer (`compiler/lyric/lyric/mono.l`).**  Added `EYield(inner)`
+rewrite arm.
+
+**Formatter (`compiler/lyric/lyric/fmt/fmt_core.l`).**  Added `EYield(inner)`
+arm that renders `"yield " + exprInline(0, inner)`.
+
+**Verifier / stability check (`compiler/lyric/lyric/verifier/stability.l`).**
+Added `EYield(inner)` arm.
+
+**Contract elaborator (`compiler/lyric/lyric/contract_elaborator/elaborator.l`).**
+Added `EYield(inner)` arm in `substResult`.
+
+**JVM codegen (`compiler/lyric/jvm/codegen.l`).**
+
+- `FuncCtx` record gained `genClass: Option[String]`; `makeFuncCtx` sets it
+  to `None`; new `makeFuncCtxForGenerator(pkgName, genClass)` creates a
+  context with slot 0 reserved for `this` and `genClass = Some(genClass)`.
+- `EYield(inner)` in `lowerExpr`: emits body then `LYield` when inside a
+  generator context; panics otherwise.
+- `exprContainsYield` / `listContainsYield` / `eobContainsYield` /
+  `blockContainsYield` / `stmtContainsYield` — recursive walkers over the AST
+  to detect `yield` in any sub-expression.
+- `funcBodyContainsYield(decl)` — detects generator functions.
+- `lowerGeneratorBody(decl, pkgName, genClass)` — lowers the generator body
+  with a preamble that loads each param from `this.<field>` into a local slot.
+- `makeGeneratorFactory(decl, genClass, pkgName)` — synthesises a static
+  factory `LFunc` (`new GenClass(params...)`) for inclusion in `LPFuncs`,
+  avoiding a duplicate class-file name.
+- `codegenPackage` `IFunc` routing: when `decl.isAsync and
+  funcBodyContainsYield(decl)`, routes to `LPAsyncGenerator` (with `hostClass
+  = ""` to suppress a conflicting kickoff class) and adds the factory `LFunc`
+  to `fns`.
+- `SFor` lowering for non-array types: switched from ArrayList index-based
+  iteration to `Iterable.iterator()` / `Iterator.hasNext()` / `Iterator.next()`
+  via `LInvokeinterface`, so generator-produced `Iterable<Object>` values are
+  correctly consumed.
+
+**JVM lowering (`compiler/lyric/jvm/lowering.l`).**
+
+- `LPackageItem` gained `case LPAsyncGenerator(g: LGenFunc)`.
+- `lowerPackage` routes `LPAsyncGenerator` to `lowerAsyncGenerator`.
+- `lowerAsyncGenerator` updated: (a) when `g.hostClass == ""`, skips the
+  kickoff class to avoid a duplicate-class conflict; (b) the yield-temp slot
+  is now computed as one past the highest slot used in `g.bodyInsns` (prevents
+  clobbering param-local slots allocated by the preamble); (c) `maxLocals` for
+  `runBody` is inferred from the body insns scan rather than hardcoded to `2`.
+
+**MSIL codegen (`compiler/lyric/msil/codegen.l`).**  `EYield(_)` panics with a
+clear message pointing to the F# bootstrap path (generic interface instantiation
+required for `IAsyncEnumerable<T>` is Phase R6 work).
+
+**Self-test (`compiler/lyric/jvm/self_test_b130.l`).**  Full-pipeline
+integration test: calls `Jvm.Bridge.compileToJar` on a Lyric source string
+containing `async func evens(n: Int): Int { ... yield ... }` and a `for v in
+evens(4)` consumer; verifies the JAR is produced and, when executed with `java
+-jar`, prints lines `0`, `2`, `4`, `6`.
+
+**F# test harness (`compiler/tests/Lyric.Emitter.Tests/JvmLoweringB130Test.fs`).**
+Follows the B129 pattern: `findSource()` locates `self_test_b130.l`, compiles
+via `compileAndRun`, checks `jar_written=true` in stdout, verifies the JAR
+exists, runs it, and asserts four output lines.  Added to `Program.fs` and
+`.fsproj`.
+
+**Test results:** 782/782 emitter tests pass, 0 failed. B130 is the new test.
