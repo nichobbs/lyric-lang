@@ -1,20 +1,17 @@
 module Lyric.Cli.Tests.FmtTests
 
 open Expecto
-open Lyric.Parser.Parser
-open Lyric.Cli.Fmt
+open Lyric.Cli.SelfHostedFmt
 
-/// Round-trip helper: parse `source`, format, parse again, format again.
-/// The second format must equal the first (idempotent).
+/// Round-trip helper: format `source` twice; the second result must equal
+/// the first (idempotent).
 let private roundtrip (source: string) : string =
-    let r1 = parse source
-    let f1 = format r1.File
-    let r2 = parse f1
-    let f2 = format r2.File
+    let f1 = format source
+    let f2 = format f1
     Expect.equal f2 f1 "format is idempotent (format ∘ format = format)"
     f1
 
-/// Parse `source`, format, and assert the output matches `expected` exactly
+/// Format `source` and assert the output matches `expected` exactly
 /// (modulo trailing whitespace on each line, normalised to LF).
 let private fmtEquals (source: string) (expected: string) =
     let result = roundtrip source
@@ -129,7 +126,6 @@ let tests =
                 "package P\nfunc a(): Unit {\n}\nfunc b(): Unit {\n}"
             let result = roundtrip src
             let lines = result.Replace("\r\n", "\n").Split('\n')
-            // There must be a blank line between the two functions
             let hasBlank =
                 lines
                 |> Array.pairwise
@@ -139,13 +135,11 @@ let tests =
 
         testCase "isFormatted returns true for canonical source" <| fun () ->
             let src = "package P\n\nfunc f(): Unit {\n  return ()\n}\n"
-            let r = parse src
-            Expect.isTrue (isFormatted src r.File) "canonical source is already formatted"
+            Expect.isTrue (isFormatted src) "canonical source is already formatted"
 
         testCase "isFormatted returns false for non-canonical source" <| fun () ->
             let src = "package P\nfunc f(): Unit {\n  return ()\n}\n"
-            let r = parse src
-            Expect.isFalse (isFormatted src r.File) "missing blank line before item"
+            Expect.isFalse (isFormatted src) "missing blank line before item"
 
         testCase "for loop expanded" <| fun () ->
             fmtEquals
@@ -163,18 +157,15 @@ let tests =
                 "package P\n\nfunc describe(n: in Int): String {\n  match n {\n    case 0 -> \"zero\"\n    case _ -> \"other\"\n  }\n}"
 
         testCase "binary operator precedence: no spurious parens" <| fun () ->
-            let r = parse "package P\nfunc f(a: in Int, b: in Int, c: in Int): Int = a + b * c"
-            let out = format r.File
+            let out = format "package P\nfunc f(a: in Int, b: in Int, c: in Int): Int = a + b * c"
             Expect.isTrue (out.Contains "a + b * c") "no parens needed for a + b * c"
 
         testCase "binary operator precedence: parens when needed" <| fun () ->
-            let r = parse "package P\nfunc f(a: in Int, b: in Int, c: in Int): Int = (a + b) * c"
-            let out = format r.File
+            let out = format "package P\nfunc f(a: in Int, b: in Int, c: in Int): Int = (a + b) * c"
             Expect.isTrue (out.Contains "(a + b) * c") "parens preserved for (a+b)*c"
 
         testCase "module doc comment preserved at top" <| fun () ->
             let src = "//! This is the module.\npackage P\n"
-            let r = parse src
-            let out = format r.File
+            let out = format src
             Expect.isTrue (out.StartsWith "//! This is the module.") "module doc at top"
     ]
