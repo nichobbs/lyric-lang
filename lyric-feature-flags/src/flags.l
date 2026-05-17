@@ -137,7 +137,7 @@ impl FlagStore for InProcessFlagStore {
 
 /// Remote flag store backed by an HTTP polling client.
 /// Obtain one with `connectRemote()` (requires the `remote` feature).
-@stable(since="0.1")
+@experimental
 @cfg(feature = "remote")
 pub record NativeFlagStore {
   storeHandle: Int

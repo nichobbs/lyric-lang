@@ -130,12 +130,18 @@ pub interface SessionStore {
 // ─── Native (Redis) store ─────────────────────────────────────────────────────
 
 /// Redis-backed session store.  Obtain via `Session.connectRedis()`.
-@stable(since="0.1")
+///
+/// **NOTE:** `set`, `delete`, `clear`, and `touch` perform load-modify-save
+/// round-trips without atomic Redis transactions.  Concurrent mutations to
+/// the same session may result in lost updates.  This is an `@experimental`
+/// limitation; atomic Redis Lua-script operations are tracked as a follow-up.
+@experimental
 @cfg(feature = "redis")
 pub record NativeSessionStore {
   storeHandle: Int
 }
 
+@experimental
 @cfg(feature = "redis")
 impl SessionStore for NativeSessionStore {
   func create(): Result[SessionId, SessionError] {

@@ -76,7 +76,7 @@ pub record Highlight {
 pub record SearchHit {
   id:         String
   index:      String
-  score:      Float
+  score:      Double
   highlights: [Highlight]
   source:     Map[String, String]
 }
@@ -296,7 +296,11 @@ pub func connectMeilisearch(): Result[SearchClient, SearchError] {
 
 /// Dispatch to Elasticsearch or Meilisearch based on the `provider` string.
 /// `provider` must be "elasticsearch" or "meilisearch".
-@stable(since="0.1")
+///
+/// **Note:** calls `@cfg`-gated helpers; the matching feature must be active
+/// at compile time.  Prefer the typed `connectElasticsearch()` or
+/// `connectMeilisearch()` for compile-time safety.
+@experimental
 pub func connect(provider: in String): Result[SearchClient, SearchError]
   requires: provider.length > 0
 {
@@ -475,12 +479,55 @@ func serializeDocList(docs: in [SearchDocument]): String {
   return json + "]"
 }
 
+// Serialize a list of SearchFilter to a JSON array.
+func serializeFilters(filters: in [SearchFilter]): String {
+  var json = "["
+  var first = true
+  for f in filters {
+    if not first { json = json + "," }
+    json = json + "{\"field\":\"" + jsonEscapeStr(f.field) + "\","
+                + "\"value\":\"" + jsonEscapeStr(f.value) + "\","
+                + "\"operator\":\"" + jsonEscapeStr(f.operator) + "\"}"
+    first = false
+  }
+  return json + "]"
+}
+
+// Serialize a list of SortField to a JSON array.
+func serializeSortFields(sorts: in [SortField]): String {
+  var json = "["
+  var first = true
+  for s in sorts {
+    if not first { json = json + "," }
+    val descVal = if s.descending { "true" } else { "false" }
+    json = json + "{\"field\":\"" + jsonEscapeStr(s.field) + "\","
+                + "\"descending\":" + descVal + "}"
+    first = false
+  }
+  return json + "]"
+}
+
+// Serialize a list of highlight field names to a JSON array.
+func serializeHighlightFields(fields: in [String]): String {
+  var json = "["
+  var first = true
+  for f in fields {
+    if not first { json = json + "," }
+    json = json + "\"" + jsonEscapeStr(f) + "\""
+    first = false
+  }
+  return json + "]"
+}
+
 // Serialize a SearchQuery to JSON for the kernel.
 func serializeQuery(query: in SearchQuery): String {
   return "{\"index\":\"" + jsonEscapeStr(query.index) + "\","
        + "\"query\":\"" + jsonEscapeStr(query.query) + "\","
        + "\"from\":" + query.from.toString() + ","
-       + "\"size\":" + query.size.toString() + "}"
+       + "\"size\":" + query.size.toString() + ","
+       + "\"filters\":" + serializeFilters(query.filters) + ","
+       + "\"sort\":" + serializeSortFields(query.sort) + ","
+       + "\"highlightFields\":" + serializeHighlightFields(query.highlightFields) + "}"
 }
 
 // Parse an IndexResult from the JSON object returned by the kernel.
@@ -601,14 +648,18 @@ func parseSuggestResult(json: in String): SuggestResult {
 }
 
 // Parse a single SearchHit from a raw JSON string.
-// score is left as 0.0 — Std.Json exposes getDouble (Double) but SearchHit.score is Float.
 func parseSearchHit(json: in String): SearchHit {
   val doc        = Std.Json.parseJson(json)
   val root       = Std.Json.rootElement(doc)
   var id:         String              = ""
   var index:      String              = ""
+  var score:      Double              = 0.0
   var source:     Map[String, String] = Map.empty()
   var highlights: [Highlight]         = []
+  match Std.Json.tryGetProperty(root, "score") {
+    case Some(v) -> score = Std.Json.getDouble(v)
+    case None    -> ()
+  }
   match Std.Json.tryGetProperty(root, "id") {
     case Some(v) -> id = Std.Json.getString(v)
     case None    -> ()
@@ -640,7 +691,7 @@ func parseSearchHit(json: in String): SearchHit {
     }
     case None -> ()
   }
-  return SearchHit(id = id, index = index, score = 0.0, highlights = highlights, source = source)
+  return SearchHit(id = id, index = index, score = score, highlights = highlights, source = source)
 }
 
 // Parse a Highlight from a raw JSON string.

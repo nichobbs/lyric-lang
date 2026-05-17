@@ -473,18 +473,18 @@ impl Flags.FlagStore for MockFlagStore {
 
 /// Enable the named flag in the mock store.
 @stable(since="0.1")
-pub func enable(store: in MockFlagStore, name: in String): Unit
+pub func enable(store: inout MockFlagStore, name: in String): Unit
   requires: name.length > 0
 {
-  store.flags.set(name, true)
+  store.flags = store.flags.set(name, true)
 }
 
 /// Disable the named flag in the mock store.
 @stable(since="0.1")
-pub func disable(store: in MockFlagStore, name: in String): Unit
+pub func disable(store: inout MockFlagStore, name: in String): Unit
   requires: name.length > 0
 {
-  store.flags.set(name, false)
+  store.flags = store.flags.set(name, false)
 }
 
 // ─── TestContext ──────────────────────────────────────────────────────────────
@@ -528,7 +528,7 @@ pub func newTestContext(): TestContext {
 pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
   match result {
     case Ok(_)    -> ()
-    case Err(err) -> doPanic(msg + " (got Err: " + err + ")")
+    case Err(err) -> panic(msg + " (got Err: " + err + ")")
   }
 }
 
@@ -559,7 +559,7 @@ pub func assertSome[T](opt: in Option[T], msg: in String): T {
 pub func assertNone[T](opt: in Option[T], msg: in String): Unit {
   match opt {
     case None    -> ()
-    case Some(_) -> doPanic(msg + " (expected None, got Some)")
+    case Some(_) -> panic(msg + " (expected None, got Some)")
   }
 }
 
@@ -568,7 +568,7 @@ pub func assertNone[T](opt: in Option[T], msg: in String): Unit {
 @stable(since="0.1")
 pub func assertEq(a: in String, b: in String, msg: in String): Unit {
   if a != b {
-    doPanic(msg + " (expected \"" + a + "\", got \"" + b + "\")")
+    panic(msg + " (expected \"" + a + "\", got \"" + b + "\")")
   }
 }
 
@@ -576,7 +576,7 @@ pub func assertEq(a: in String, b: in String, msg: in String): Unit {
 @stable(since="0.1")
 pub func assertTrue(cond: in Bool, msg: in String): Unit {
   if not cond {
-    doPanic(msg + " (expected true)")
+    panic(msg + " (expected true)")
   }
 }
 
@@ -584,16 +584,11 @@ pub func assertTrue(cond: in Bool, msg: in String): Unit {
 @stable(since="0.1")
 pub func assertFalse(cond: in Bool, msg: in String): Unit {
   if cond {
-    doPanic(msg + " (expected false)")
+    panic(msg + " (expected false)")
   }
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-
-// Abort the process with `msg`.
-func doPanic(msg: in String): Unit {
-  panic(msg)
-}
 
 // Produce a minimal SessionData from a stored string.
 func parseSession(json: in String): Session.SessionData {

@@ -92,17 +92,15 @@ pub aspect Retryable {
 /// the start time via `Jobs.Kernel.Net.nowMs()` before calling the handler,
 /// then computes elapsed time after `call.proceed()` returns.
 ///
-/// When elapsed > `warnThresholdMs` and `enabled` is true:
-///   - If the handler returned `Ok(output)`, the string " [warn: took Nms]"
-///     is appended to the output so the scheduler's result log captures it.
-///   - If the handler returned `Err(jobErr)`, the warning is appended to
-///     `jobErr.message` so the error context is preserved.
+/// When elapsed > `warnThresholdMs` and `enabled` is true, a warning line is
+/// printed to stdout via `println`.  The return value from `call.proceed()` is
+/// always passed through unchanged.
 ///
 /// When `enabled` is false the call passes through without any timing.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled         Bool — master switch (default: true)
-///   warnThresholdMs Int  — elapsed ms above which a warning is appended (default: 5000)
+///   warnThresholdMs Int  — elapsed ms above which a warning is printed (default: 5000)
 @stable(since="0.1")
 pub aspect Timed {
   config {
@@ -118,15 +116,7 @@ pub aspect Timed {
       ret = call.proceed()
       val elapsedMs = Jobs.Kernel.Net.nowMs() - startMs
       if elapsedMs > warnThresholdMs {
-        val warnSuffix = " [warn: took " + elapsedMs.toString() + "ms, threshold " + warnThresholdMs.toString() + "ms]"
-        match ret {
-          case Ok(output)  ->
-            ret = Ok(output + warnSuffix)
-          case Err(jobErr) ->
-            ret = Err(JobError(
-              message = jobErr.message + warnSuffix,
-              code    = jobErr.code))
-        }
+        println("[warn] " + call.qualifiedName + " took " + elapsedMs.toString() + "ms (threshold: " + warnThresholdMs.toString() + "ms)")
       }
     }
   }

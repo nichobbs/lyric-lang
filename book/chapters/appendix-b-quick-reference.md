@@ -642,7 +642,7 @@ output_assembly = "myapp.dll"
 | `Cache` *(lyric-cache)* | In-memory/disk TTL cache | `CacheBucket`, `inProcess`, `get`, `set`, `delete` |
 | `Db` *(lyric-db)* | Typed SQL query helpers | `DbConnection`, `DbParam`, `execute`, `query`, `queryOne`, `withTransaction` |
 | `Health` *(lyric-health)* | Health-check endpoints | `HealthRegistry`, `HealthResult`, `ok`, `degraded`, `unhealthy` |
-| `Jobs` *(lyric-jobs)* | Background job scheduling | `JobHandler`, `JobScheduler`, `InProcessJobScheduler`, `schedule`, `scheduleIn` |
+| `Jobs` *(lyric-jobs)* | Background job scheduling | `JobHandler`, `JobScheduler`, `InProcessJobScheduler`, `enqueue`, `schedule`, `cancel`, `status`, `results` |
 | `Mail` *(lyric-mail)* | Email sending | `MailSender`, `EmailMessage`, `sendSimple`, `sendHtml`, `connectSmtp` |
 | `Mq` *(lyric-mq)* | Message queuing | `MessageQueue`, `QueueConsumer`, `publish`, `publishBatch`, `subscribe` |
 | `Search` *(lyric-search)* | Search engine client | `SearchClient`, `SearchResult`, `IndexResult`, `search`, `index` |

@@ -259,7 +259,7 @@ impl JobScheduler for InProcessJobScheduler {
       error      = "",
       startedAt  = 0L,
       finishedAt = 0L)
-    jobs.set(id, pending)
+    jobs = jobs.set(id, pending)
     return Ok(id)
   }
 
@@ -294,7 +294,7 @@ impl JobScheduler for InProcessJobScheduler {
       error      = "",
       startedAt  = 0L,
       finishedAt = 0L)
-    jobs.set(id, pending)
+    jobs = jobs.set(id, pending)
     return Ok(id)
   }
 
@@ -316,7 +316,7 @@ impl JobScheduler for InProcessJobScheduler {
               error      = "cancelled",
               startedAt  = result.startedAt,
               finishedAt = Jobs.Kernel.Net.nowMs())
-            jobs.set(jobId, cancelled)
+            jobs = jobs.set(jobId, cancelled)
             // Remove from the pending queue.
             queue = queue.filter(func(s: in JobSpec): Bool { s.id != jobId })
             Ok(())
@@ -362,7 +362,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
     error      = "",
     startedAt  = startMs,
     finishedAt = 0L)
-  scheduler.jobs.set(spec.id, running)
+  scheduler.jobs = scheduler.jobs.set(spec.id, running)
   match handler.handle(spec) {
     case Ok(output) -> {
       val result = JobResult(
@@ -372,7 +372,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         error      = "",
         startedAt  = startMs,
         finishedAt = Jobs.Kernel.Net.nowMs())
-      scheduler.jobs.set(spec.id, result)
+      scheduler.jobs = scheduler.jobs.set(spec.id, result)
       return Ok(result)
     }
     case Err(jobErr) -> {
@@ -383,7 +383,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         error      = jobErr.message,
         startedAt  = startMs,
         finishedAt = Jobs.Kernel.Net.nowMs())
-      scheduler.jobs.set(spec.id, result)
+      scheduler.jobs = scheduler.jobs.set(spec.id, result)
       return Ok(result)
     }
   }

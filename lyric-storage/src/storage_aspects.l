@@ -116,7 +116,10 @@ pub aspect ValidateKey {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Return true if `s` contains the substring "..".
+// Checks for path-traversal via literal ".." segments.
+// Assumption: the kernel pre-decodes percent-encoded paths and normalises
+// path separators before the key reaches this aspect.  URL-encoded variants
+// (%2e%2e, ..%2f) and Windows backslash separators are not caught here.
 func containsDotDot(s: in String): Bool {
   val limit = s.length - 1
   var i     = 0

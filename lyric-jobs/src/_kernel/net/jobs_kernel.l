@@ -161,20 +161,25 @@ pub func generateId(): String {
   System.Threading.generateId()
 }
 
-/// Open a backend scheduler.  Dispatches to Hangfire or Quartz depending
-/// on the active feature.  For Hangfire, reads the connection string from
-/// the `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` env var automatically;
-/// for Quartz the scheduler is memory-backed by default.
+/// Open a backend scheduler.  For Hangfire, reads the connection string from
+/// the `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` env var automatically.
+@cfg(feature = "hangfire")
 pub func connect(workerCount: in Int): Result[Int, String]
   requires: workerCount >= 1
 {
-  @cfg(feature = "hangfire")
   return Hangfire.Core.connect(hangfireConnectionString(), workerCount)
-  @cfg(feature = "quartz")
+}
+
+/// Open a backend scheduler.  For Quartz the scheduler is memory-backed by default.
+@cfg(feature = "quartz")
+pub func connect(workerCount: in Int): Result[Int, String]
+  requires: workerCount >= 1
+{
   return Quartz.Impl.connect(workerCount)
 }
 
 /// Enqueue a job for immediate execution.
+@cfg(feature = "hangfire")
 pub func enqueue(
   schedulerId: in Int,
   name:        in String,
@@ -186,13 +191,27 @@ pub func enqueue(
   requires: maxAttempts >= 1
   requires: timeoutMs >= 1
 {
-  @cfg(feature = "hangfire")
   return Hangfire.Core.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
-  @cfg(feature = "quartz")
+}
+
+/// Enqueue a job for immediate execution.
+@cfg(feature = "quartz")
+pub func enqueue(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String]
+  requires: name.length > 0
+  requires: maxAttempts >= 1
+  requires: timeoutMs >= 1
+{
   return Quartz.Impl.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
 }
 
 /// Schedule a recurring job with a cron expression.
+@cfg(feature = "hangfire")
 pub func schedule(
   schedulerId: in Int,
   name:        in String,
@@ -206,39 +225,72 @@ pub func schedule(
   requires: maxAttempts >= 1
   requires: timeoutMs >= 1
 {
-  @cfg(feature = "hangfire")
   return Hangfire.Core.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
-  @cfg(feature = "quartz")
+}
+
+/// Schedule a recurring job with a cron expression.
+@cfg(feature = "quartz")
+pub func schedule(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  cronExpr:    in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String]
+  requires: name.length > 0
+  requires: cronExpr.length > 0
+  requires: maxAttempts >= 1
+  requires: timeoutMs >= 1
+{
   return Quartz.Impl.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
 }
 
 /// Cancel a job.
+@cfg(feature = "hangfire")
 pub func cancel(schedulerId: in Int, jobId: in String): Result[Unit, String]
   requires: jobId.length > 0
 {
-  @cfg(feature = "hangfire")
   return Hangfire.Core.cancel(schedulerId, jobId)
-  @cfg(feature = "quartz")
+}
+
+/// Cancel a job.
+@cfg(feature = "quartz")
+pub func cancel(schedulerId: in Int, jobId: in String): Result[Unit, String]
+  requires: jobId.length > 0
+{
   return Quartz.Impl.cancel(schedulerId, jobId)
 }
 
 /// Return the current status string for a job.
+@cfg(feature = "hangfire")
 pub func status(schedulerId: in Int, jobId: in String): Result[String, String]
   requires: jobId.length > 0
 {
-  @cfg(feature = "hangfire")
   return Hangfire.Core.status(schedulerId, jobId)
-  @cfg(feature = "quartz")
+}
+
+/// Return the current status string for a job.
+@cfg(feature = "quartz")
+pub func status(schedulerId: in Int, jobId: in String): Result[String, String]
+  requires: jobId.length > 0
+{
   return Quartz.Impl.status(schedulerId, jobId)
 }
 
 /// Return the JSON execution history for a job.
+@cfg(feature = "hangfire")
 pub func results(schedulerId: in Int, jobId: in String): Result[String, String]
   requires: jobId.length > 0
 {
-  @cfg(feature = "hangfire")
   return Hangfire.Core.results(schedulerId, jobId)
-  @cfg(feature = "quartz")
+}
+
+/// Return the JSON execution history for a job.
+@cfg(feature = "quartz")
+pub func results(schedulerId: in Int, jobId: in String): Result[String, String]
+  requires: jobId.length > 0
+{
   return Quartz.Impl.results(schedulerId, jobId)
 }
 

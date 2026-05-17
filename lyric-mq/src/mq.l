@@ -41,6 +41,7 @@ package Mq
 
 import Std.Core
 import Std.Collections
+import Std.Json
 import Mq.Kernel.Net
 @cfg(feature = "jvm")
 import Mq.Kernel.Jvm
@@ -163,8 +164,10 @@ pub record InProcessDeadLetterStore {
 
 impl DeadLetterStore for InProcessDeadLetterStore {
   func append(entry: in DeadLetterEntry): Unit {
+    // O(n) per append due to immutable list operations; acceptable for the
+    // default bounded capacity (maxEntries typically ≤ 10000).  Replace with
+    // a ring-buffer or persistent store for high-throughput dead-letter paths.
     if entries.length >= maxEntries {
-      // Discard oldest entry to stay within capacity.
       entries = entries.tail()
     }
     entries = entries + [entry]
@@ -465,25 +468,23 @@ func parseHeadersJson(json: in String): [MessageHeader] {
   if json == "[]" or json == "" {
     return []
   }
-  // Simple linear scan: find each {"key":"...","value":"..."} object.
   var result: [MessageHeader] = []
-  var pos: Int = 0
-  while pos < json.length {
-    val objStart = json.indexOf("{", pos)
-    if objStart < 0 { pos = json.length }
-    else {
-      val objEnd = json.indexOf("}", objStart)
-      if objEnd < 0 { pos = json.length }
-      else {
-        val obj = json.substring(objStart, objEnd + 1)
-        val k   = jsonExtractString(obj, "key")
-        val v   = jsonExtractString(obj, "value")
-        if k.length > 0 or v.length > 0 {
-          result = result + [MessageHeader(key = k, value = v)]
-        }
-        pos = objEnd + 1
-      }
+  val doc    = Std.Json.parseJson(json)
+  val root   = Std.Json.rootElement(doc)
+  var en     = Std.Json.enumerateArray(root)
+  while Std.Json.arrayMoveNext(en) {
+    val obj = Std.Json.arrayCurrent(en)
+    var key   = ""
+    var value = ""
+    match Std.Json.tryGetProperty(obj, "key") {
+      case Some(v) -> key = Std.Json.getString(v)
+      case None    -> ()
     }
+    match Std.Json.tryGetProperty(obj, "value") {
+      case Some(v) -> value = Std.Json.getString(v)
+      case None    -> ()
+    }
+    result = result + [MessageHeader(key = key, value = value)]
   }
   return result
 }

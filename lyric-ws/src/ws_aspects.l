@@ -89,10 +89,14 @@ pub aspect WsAuth {
           connectionId = connId))
       } else {
         val prefix = "Bearer "
-        val token  = if authVal.length > prefix.length then authVal.substring(prefix.length, authVal.length) else ""
+        val token = if authVal.length > prefix.length and authVal.substring(0, prefix.length) == prefix {
+          authVal.substring(prefix.length, authVal.length)
+        } else {
+          ""
+        }
         if token == "" {
           ret = Err(WsError(
-            message      = "Bearer token is empty",
+            message      = "unauthorized: invalid token format",
             code         = "UNAUTHORIZED",
             connectionId = connId))
         } else {
