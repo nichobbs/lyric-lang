@@ -169,7 +169,7 @@ jobs:
             --password    "${{ secrets.APPLE_APP_PASSWORD }}" \
             --team-id     "${{ secrets.APPLE_TEAM_ID }}" \
             --wait
-          xcrun stapler staple compiler/publish/osx-arm64/lyric \
+          xcrun stapler staple compiler/publish/${{ matrix.rid }}/lyric \
             || echo "::warning::stapler staple failed — notarization ticket not embedded; binary requires internet access at first launch"
 
       # ── Upload to GitHub Release ──────────────────────────────────────────
