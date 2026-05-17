@@ -65,11 +65,13 @@ import Resilience
 /// This is a C-mode template (@inline_template): reads args.authToken.
 ///
 /// Config fields:
-///   enabled   Bool   — master switch (default: true)
+///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
-///   jwtSecret String — REQUIRED: HMAC-SHA256 or RS256 signing secret
-///   issuer    String — expected iss claim; empty = skip check (default: "")
-///   audience  String — expected aud claim; empty = skip check (default: "")
+///   jwtSecret          String — REQUIRED: HMAC-SHA256 or RS256 signing secret
+///   issuer             String — expected iss claim; empty = skip check (default: "")
+///   audience           String — expected aud claim; empty = skip check (default: "")
+///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
+///                               (default: "HS256").  See RFC 8725 §3.1.
 @stable(since="0.1")
 @inline_template
 pub aspect RequiresGrpcAuth {
@@ -79,6 +81,7 @@ pub aspect RequiresGrpcAuth {
     jwtSecret: String
     issuer:    String = ""
     audience:  String = ""
+    allowedAlgorithms: String = "HS256"
   }
 
   requires:
@@ -91,7 +94,7 @@ pub aspect RequiresGrpcAuth {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
       } else {
-        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience)
+        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
         if ok {
           ret = call.proceed()
         } else {
@@ -112,12 +115,13 @@ pub aspect RequiresGrpcAuth {
 /// C-mode template (@inline_template): reads args.authToken.
 ///
 /// Config fields:
-///   enabled      Bool   — master switch (default: true)
+///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
-///   jwtSecret    String — REQUIRED: signing secret
-///   issuer       String — expected iss claim (default: "")
-///   audience     String — expected aud claim (default: "")
-///   allowedRoles String — comma-separated accepted role values (e.g. "admin,editor")
+///   jwtSecret          String — REQUIRED: signing secret
+///   issuer             String — expected iss claim (default: "")
+///   audience           String — expected aud claim (default: "")
+///   allowedRoles       String — comma-separated accepted role values (e.g. "admin,editor")
+///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since="0.1")
 @inline_template
 pub aspect RequiresGrpcRole {
@@ -128,6 +132,7 @@ pub aspect RequiresGrpcRole {
     issuer:       String = ""
     audience:     String = ""
     allowedRoles: String
+    allowedAlgorithms: String = "HS256"
   }
 
   requires:
@@ -140,7 +145,7 @@ pub aspect RequiresGrpcRole {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
       } else {
-        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience)
+        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
         if not ok {
           ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
         } else {

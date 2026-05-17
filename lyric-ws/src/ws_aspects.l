@@ -52,11 +52,13 @@ import Ws.Kernel.Net
 /// the consumer's package so it can read args.ctx.headers.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled     Bool   — master switch; false passes all upgrades through (default: true)
+///   enabled            Bool   — master switch; false passes all upgrades through (default: true)
 ///   @sensitive
-///   jwtSecret   String — REQUIRED: HMAC-SHA256 secret for JWT verification
-///   issuer      String — expected iss claim; empty skips issuer check (default: "")
-///   audience    String — expected aud claim; empty skips audience check (default: "")
+///   jwtSecret          String — REQUIRED: HMAC-SHA256 secret for JWT verification
+///   issuer             String — expected iss claim; empty skips issuer check (default: "")
+///   audience           String — expected aud claim; empty skips audience check (default: "")
+///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
+///                               (default: "HS256").  See RFC 8725 §3.1.
 @stable(since="0.1")
 @inline_template
 pub aspect WsAuth {
@@ -66,6 +68,7 @@ pub aspect WsAuth {
     jwtSecret: String          // required — no default
     issuer:    String = ""
     audience:  String = ""
+    allowedAlgorithms: String = "HS256"
   }
 
   around(call) -> ret {
@@ -100,7 +103,7 @@ pub aspect WsAuth {
             code         = "UNAUTHORIZED",
             connectionId = connId))
         } else {
-          val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience)
+          val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, allowedAlgorithms)
           if ok {
             ret = call.proceed()
           } else {

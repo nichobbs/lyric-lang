@@ -3902,6 +3902,68 @@ statement-level construct with expression-scope binding is the correct design.
 
 ---
 
+## D072 — `Auth.verifyJwt` requires explicit `allowedAlgorithms`
+
+**Status:** Accepted.  **Date:** 2026-05-17.
+
+**Builds on:** D056 (lyric-auth shipped), lyric-lang #315.
+
+### Decision
+
+`Auth.verifyJwt` (and the matching `Auth.Kernel.Net` / `Auth.Kernel.Jvm`
+externs) gains a fifth parameter, `allowedAlgorithms: in String`, with
+contract `requires: allowedAlgorithms.length > 0`.  The string is a
+comma-separated allow-list of JWT `alg` values (e.g. `"HS256"` or
+`"HS256,RS256"`) that the caller is prepared to honour.
+
+The pre-#315 surface accepted only a `secret`; the algorithm was read
+from the token header.  That surface admitted three classic JWT attack
+classes — `alg=none` forgery, HS256/RS256 confusion (signing with a
+known public key as the HMAC secret), and `kid` injection — across
+every endpoint protected by `RequiresAuth`, `RequiresRole`, `WsAuth`,
+`RequiresGrpcAuth`, and `RequiresGrpcRole`.
+
+### Security rationale
+
+RFC 8725 (JWT Best Current Practices) §3.1 mandates an explicit
+allow-list of algorithms — naming "alg=none" specifically as a
+disallowed default.  Without an allow-list parameter at the API
+boundary, even a correctly-implemented host shim cannot enforce the
+restriction; callers have no way to express which algorithms they
+deployed against.  The contract precondition at the Lyric boundary
+makes "no algorithm specified" a contract violation rather than a
+silent allow-all path.
+
+### Migration
+
+`Auth.verifyJwt` carried `@stable(since="0.1")` and the new positional
+parameter is a breaking change for any direct caller.  Across the
+in-tree ecosystem the only callers are the five aspect templates in
+`lyric-web`, `lyric-grpc`, and `lyric-ws`; each grows a
+`allowedAlgorithms: String = "HS256"` config field with a safe default
+that matches existing HMAC-SHA256 deployments.  External callers must
+pass an explicit allow-list — for HS256-only deployments that's
+`"HS256"`; for RS256-only, `"RS256"`; for transitional setups,
+`"HS256,RS256"`.
+
+`@stable(since="0.1")` remains intact: the 0.1 stability band has
+historically permitted breaking changes for credibility-critical
+security fixes (cf. D-progress-126 SDK-version embedding).  The shim
+ecosystem is still pre-1.0; the v1.0 surface freeze (Q011) is the
+forward stability boundary, and the new signature lands inside that
+window.
+
+### Outstanding work
+
+The kernel-side `.NET` and `JVM` host shim implementations still need
+to pipe `allowedAlgorithms` through to
+`TokenValidationParameters.ValidAlgorithms` (.NET) and the JJWT
+`SignatureAlgorithm` whitelist (JVM).  The Lyric-level contract
+barrier closes the user-facing API gap immediately; the host wiring
+follows in a separate PR.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

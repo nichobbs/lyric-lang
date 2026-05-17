@@ -15,16 +15,34 @@ import Std.Core
 
 @axiom("System.IdentityModel.Tokens.Jwt for token validation")
 extern package System.IdentityModel.Tokens.Jwt {
-  /// Validate a Bearer JWT (HMAC-SHA256 or RS256).
-  /// Returns true iff the token is well-formed, the signature verifies against
-  /// `secret`, and — when non-empty — the `issuer` and `audience` claims match.
+  /// Validate a Bearer JWT against an explicit allow-list of algorithms.
+  ///
+  /// `allowedAlgorithms` is a comma-separated string of JWT `alg` values
+  /// (e.g. "HS256" or "HS256,RS256") that the caller is prepared to
+  /// honour.  The Lyric-level contract
+  /// `requires: allowedAlgorithms.length > 0` enforces the explicit
+  /// allow-list at the boundary.
+  ///
+  /// INTERFACE-ONLY: the signature reserves the algorithm-pinning
+  /// argument; the .NET host shim still needs to route the value into
+  /// `TokenValidationParameters.ValidAlgorithms` and set
+  /// `RequireSignedTokens = true` / `ValidateIssuerSigningKey = true`
+  /// so the underlying validator rejects `alg=none` and mismatched
+  /// algorithms at the JWT layer.  See lyric-lang issue #315 follow-up.
+  ///
+  /// Once the host shim is wired, this function returns true iff the
+  /// token is well-formed, its `alg` header is in `allowedAlgorithms`,
+  /// the signature verifies against `secret`, and — when non-empty —
+  /// the `issuer` and `audience` claims match.
   pub func verifyJwt(
-    token:    String,
-    secret:   String,
-    issuer:   String,
-    audience: String
+    token:             String,
+    secret:            String,
+    issuer:            String,
+    audience:          String,
+    allowedAlgorithms: String
   ): Bool
     requires: secret.length > 0
+    requires: allowedAlgorithms.length > 0
 
   /// Extract a named claim from a JWT without re-verifying the signature.
   /// Call only on tokens already accepted by verifyJwt.

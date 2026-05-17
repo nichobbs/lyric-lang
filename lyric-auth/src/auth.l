@@ -6,13 +6,16 @@
 /// no transport dependency.
 ///
 /// Functions:
-///   Auth.verifyJwt      — validates HMAC-SHA256 or RS256 bearer tokens
+///   Auth.verifyJwt      — validates a Bearer token against an explicit
+///                         allow-list of `alg` values (HS256, RS256, etc.).
+///                         Algorithm pinning prevents alg=none forgery and
+///                         HS256/RS256 confusion (RFC 8725 §3.1).
 ///   Auth.extractClaim   — reads a named claim from a pre-verified JWT
 ///   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
 ///
 /// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
 ///
-///   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience)
+///   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256")
 ///   if not ok { return Err(Web.forbidden("Token is invalid")) }
 ///   val role = Auth.extractClaim(token, "role")
 ///
@@ -30,39 +33,58 @@ import Auth.Kernel.Jvm
 
 /// Validate a Bearer JWT.
 ///
+/// SECURITY: `allowedAlgorithms` MUST be a non-empty, comma-separated
+/// allow-list of JWT `alg` values that the caller is prepared to honour
+/// (e.g. `"HS256"` or `"HS256,RS256"`).  The kernel binds this list to
+/// the underlying validator's algorithm restriction, so tokens whose
+/// `alg` header is `"none"` or any algorithm not in the list fail
+/// verification regardless of signature content.  Without this
+/// allow-list a malicious client can forge an unsigned `alg=none` token
+/// or pull off a classic HS256/RS256 confusion attack (signing with a
+/// known public key as the HMAC secret).
+///
 /// Returns true iff:
 ///   - The token is syntactically well-formed.
-///   - The HMAC-SHA256 (HS256) or RS256 signature verifies against `secret`.
+///   - The `alg` header is contained in `allowedAlgorithms`.
+///   - The signature verifies against `secret` under the declared `alg`.
 ///   - `issuer` matches the `iss` claim (skipped when `issuer` is empty).
 ///   - `audience` matches the `aud` claim (skipped when `audience` is empty).
 ///
-/// Returns false for any failure — expired, tampered, missing claim, or
-/// malformed header.  False is the safe default; callers must treat it as
-/// "deny" and never special-case error variants.
+/// Returns false for any failure — expired, tampered, missing claim,
+/// `alg` not in allow-list, or malformed header.  False is the safe
+/// default; callers must treat it as "deny" and never special-case
+/// error variants.
+///
+/// Reference: RFC 8725 §3.1 (JWT Best Current Practices — algorithm
+/// pinning).  See lyric-lang #315.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyJwt(
-  token:    in String,
-  secret:   in String,
-  issuer:   in String,
-  audience: in String
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
+  allowedAlgorithms: in String
 ): Bool
   requires: secret.length > 0
+  requires: allowedAlgorithms.length > 0
 {
-  return Auth.Kernel.Net.verifyJwt(token, secret, issuer, audience)
+  return Auth.Kernel.Net.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func verifyJwt(
-  token:    in String,
-  secret:   in String,
-  issuer:   in String,
-  audience: in String
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
+  allowedAlgorithms: in String
 ): Bool
   requires: secret.length > 0
+  requires: allowedAlgorithms.length > 0
 {
-  return Auth.Kernel.Jvm.verifyJwt(token, secret, issuer, audience)
+  return Auth.Kernel.Jvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
 // ─── Claim extraction ─────────────────────────────────────────────────────────
