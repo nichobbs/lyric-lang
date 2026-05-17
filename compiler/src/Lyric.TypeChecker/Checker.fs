@@ -413,6 +413,10 @@ let private resolveFunctionSig
         diags.Add(Diagnostic.error "T0094"
             "yield is only valid inside an async function"
             fn.Span)
+    if isHot && fn.IsAsync && isGen then
+        diags.Add(Diagnostic.warning "T0096"
+            "@hot on an async generator has no effect: the synthesised generator class uses AsyncTaskMethodBuilder, not AsyncValueTaskMethodBuilder; @hot is ignored"
+            fn.Span)
     { Generics     = genericNames
       Bounds       = bounds
       Params       = parameters

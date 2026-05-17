@@ -2928,6 +2928,8 @@ func makeGeneratorFactory(
       case JDouble -> { insns.add(LDload(slot = slot)); slot = slot + 2 }
       case JFloat  -> { insns.add(LFload(slot = slot)); slot = slot + 1 }
       case JRef(_) -> { insns.add(LAload(slot = slot)); slot = slot + 1 }
+      // JBoolean, JByte, JChar, JShort are all JVM category-1 int types;
+      // iload/istore works for all of them.
       case _       -> { insns.add(LIload(slot = slot)); slot = slot + 1 }
     }
     pi = pi + 1

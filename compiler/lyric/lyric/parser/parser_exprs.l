@@ -1010,6 +1010,9 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
         }
         case KwYield -> {
           val opTok = advance(st)
+          // `yield` uses expression (assignment) precedence so `yield a * 2`
+          // parses as `yield (a * 2)`, matching the spec §7.2 and D071.
+          // `await` and `spawn` use postfix precedence (parsePostfixExpr).
           val inner = parseExpr(st)
           mkExpr(EYield(inner = inner), joinSpans(opTok.span, inner.span))
         }

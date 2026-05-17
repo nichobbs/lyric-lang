@@ -103,6 +103,9 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
       walkExprCalls(ctx, inner)
     }
     case EYield(inner) -> {
+      ctx.diag.add(errorDiagnostic("V0002",
+        "yield not admitted in proof-required function '" + ctx.fnName + "': async generators are not in the VC fragment",
+        e.span))
       walkExprCalls(ctx, inner)
     }
     case ESpawn(inner) -> {

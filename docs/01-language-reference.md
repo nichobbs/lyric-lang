@@ -811,7 +811,7 @@ The compiler selects one of two lowering strategies based on the body's content:
 
 **Async-iterator** (body has both `yield` and `await`): the compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. Each `MoveNextAsync` call creates a `TaskCompletionSource<bool>`, drives the state machine one step, and returns a `ValueTask<bool>` backed by the TCS. A `yield` stores the value, signals the TCS with `true`, and suspends; an `await` uses the standard Phase-B `AwaitUnsafeOnCompleted` protocol; end-of-body signals the TCS with `false` (exhausted). Any local variable live across a yield or await boundary is promoted to a field on the class so its value survives cross-`MoveNextAsync` gaps. (D-progress-261, §14.6.2 of `docs/09-msil-emission.md`.)
 
-*Note on `@hot` interaction:* if a generator function is also annotated `@hot`, `IsGenerator` takes priority and `@hot` is silently ignored — the synthesised class uses `AsyncTaskMethodBuilder`, not `AsyncValueTaskMethodBuilder`. Combining `@hot` with `yield` is unsupported; a diagnostic for this combination is planned for M2.
+*Note on `@hot` interaction:* if a generator function is also annotated `@hot`, `IsGenerator` takes priority and `@hot` is silently ignored — the synthesised class uses `AsyncTaskMethodBuilder`, not `AsyncValueTaskMethodBuilder`. Combining `@hot` with `yield` produces a `T0096` warning at compile time.
 
 ### 7.3 Cancellation
 

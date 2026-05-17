@@ -3039,10 +3039,17 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val runBodyMethod = makeMethodInfo(ACC_PUBLIC, "runBody", buildDescriptor(bodyPs, JVoid), bodyAttrs)
 
   // ── 4. iterator(): Iterator ─────────────────────────────────────────────────
-  // Calls runBody(), resets _pos to 0, returns this.
+  // Reinitialise _values = new ArrayList() and reset _pos before running body,
+  // matching the MSIL GetAsyncEnumerator path so a second iterator() call
+  // produces a fresh sequence instead of appending to the old one.
   val iterAsm   = newAssembler(pool)
   val posIdx    = poolFieldref(pool, genClass, "_pos", posDesc)
   val runBodyIdx = poolMethodref(pool, genClass, "runBody", "()V")
+  emitAload(iterAsm, 0)
+  emitNew(iterAsm, poolClass(pool, listClass))
+  emitDup(iterAsm)
+  emitInvokespecial(iterAsm, listCtorIdx)
+  emitPutfield(iterAsm, valuesIdx)
   emitAload(iterAsm, 0)
   emitInvokevirtual(iterAsm, runBodyIdx)
   emitAload(iterAsm, 0)
@@ -3052,7 +3059,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitAreturn(iterAsm)
   val iterPs: List[JvmType] = newList()
   val iterRetType = JRef(className = iterClass)
-  val iterCode = assembleCode(iterAsm, 2, 1)
+  val iterCode = assembleCode(iterAsm, 3, 1)   // maxStack=3: new+dup before invokespecial
   val iterAttrs: List[Attribute] = newList()
   iterAttrs.add(iterCode)
   val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator",
