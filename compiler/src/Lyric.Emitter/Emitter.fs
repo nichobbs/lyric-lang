@@ -2984,6 +2984,10 @@ let private defineHostEntryPoint
             typeof<int>,
             [| typeof<string[]> |])
     let il = mb.GetILGenerator()
+    // If lyricMain takes a string[] (i.e. main(args: in slice[String])),
+    // forward the host entry-point's argv before the call.
+    if lyricMain.GetParameters().Length > 0 then
+        il.Emit(OpCodes.Ldarg_0)
     il.Emit(OpCodes.Call, lyricMain)
     if lyricMain.ReturnType = typeof<System.Void> then
         il.Emit(OpCodes.Ldc_I4_0)

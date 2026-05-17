@@ -10,6 +10,8 @@
 ///
 /// Protocol format (from lint_bridge.l):
 ///   One diagnostic per line: "<code>|<sev>|<line>|<col>|<message>"
+///   Newlines inside <message> are escaped as the literal two-character
+///   sequence \n by the Lyric bridge; this module unescapes them.
 ///   Empty string → no diagnostics.
 module Lyric.Cli.SelfHostedLint
 
@@ -39,6 +41,8 @@ let private ensureBridgeAssembly () : string =
                      sprintf "lyric-lint-bridge-%d"
                          (System.Diagnostics.Process.GetCurrentProcess().Id))
     Directory.CreateDirectory scratch |> ignore
+    AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
+        try Directory.Delete(scratch, recursive = true) with _ -> ())
     let dllPath = Path.Combine(scratch, "Lyric.LintBridgeDriver.dll")
     let req : Emitter.EmitRequest =
         { Source             = driverSource
@@ -113,7 +117,7 @@ let private parseLine (line: string) : Lint.LintDiagnostic option =
             else Lint.LintError
         let ln  = try int parts.[2] with _ -> 0
         let col = try int parts.[3] with _ -> 0
-        let msg = parts.[4]
+        let msg = parts.[4].Replace("\\n", "\n")
         Some { Lint.Code = code; Lint.Severity = sev
                Lint.Message = msg; Lint.Span = makeSpan ln col }
 

@@ -383,9 +383,12 @@ let private declOf (it: Item) : ContractDecl option =
             Some (mkDefault "interface" id.Name
                     (sprintf "pub interface %s%s" id.Name (genericsRepr id.Generics)))
         | IDistinctType d ->
+            let derives =
+                if List.isEmpty d.Derives then ""
+                else " derives " + String.concat ", " d.Derives
             Some (mkDefault "distinct" d.Name
-                    (sprintf "pub distinct type %s = %s"
-                        d.Name (renderTypeExpr d.Underlying)))
+                    (sprintf "pub type %s = %s%s"
+                        d.Name (renderTypeExpr d.Underlying) derives))
         | ITypeAlias ta ->
             Some (mkDefault "alias" ta.Name
                     (sprintf "pub type %s = %s"

@@ -48,6 +48,34 @@ let runDll (dll: string) : string * string * int =
     let stderr = stderrTask.Result
     stdout, stderr, proc.ExitCode
 
+/// `dotnet exec` the produced .dll, passing extra positional arguments after
+/// the DLL path so that `func main(args: in slice[String])` programs can
+/// receive them.
+let runDllWithArgs (dll: string) (extraArgs: string list) : string * string * int =
+    let psi = ProcessStartInfo()
+    psi.FileName <- dotnetHost ()
+    psi.ArgumentList.Add "exec"
+    psi.ArgumentList.Add dll
+    for a in extraArgs do psi.ArgumentList.Add a
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError  <- true
+    psi.UseShellExecute         <- false
+    psi.CreateNoWindow          <- true
+    let proc =
+        match Option.ofObj (Process.Start(psi)) with
+        | Some p -> p
+        | None   -> failwith "failed to start dotnet process"
+    use _ = proc
+    let stdoutTask = System.Threading.Tasks.Task.Run(fun () -> proc.StandardOutput.ReadToEnd())
+    let stderrTask = System.Threading.Tasks.Task.Run(fun () -> proc.StandardError.ReadToEnd())
+    let exited = proc.WaitForExit(60_000)
+    if not exited then
+        try proc.Kill() with _ -> ()
+        proc.WaitForExit()
+    let stdout = stdoutTask.Result
+    let stderr = stderrTask.Result
+    stdout, stderr, proc.ExitCode
+
 /// Copy every cached `Lyric.Stdlib.<X>.dll` into `outDir` so user
 /// programs that import multiple `Std.X` modules can resolve every
 /// cross-assembly reference at runtime.

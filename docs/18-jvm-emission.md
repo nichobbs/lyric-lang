@@ -2107,6 +2107,27 @@ in D053.  Key decisions: bundled Apache Maven Resolver (no `mvn`
 required); full group ID retained in Lyric package name; checked
 exceptions wrapped as `Result[T, JvmException]`.
 
+### Q-J009: `@externTarget` catch scope — `Exception` vs `Throwable`
+
+`lowerExternTargetBody` in `compiler/lyric/jvm/codegen.l` emits a
+`catch java/lang/Exception` handler around `@externTarget` calls whose
+return type is `Result[T, JvmException]`.  JVM `Error` subclasses
+(`OutOfMemoryError`, `StackOverflowError`, `AssertionError`) are not
+subtypes of `java.lang.Exception` — they descend from `java.lang.Error`
+directly — and therefore escape the catch block.
+
+**Known limitation (v1.x):** `@externTarget` can only catch
+`java.lang.Exception` and its subtypes.  JVM `Error` subclasses that
+propagate through a `@externTarget` call site are not caught and will
+terminate the process.  This matches the usual JVM convention (catching
+`Error` is generally wrong) but differs from the `JvmException` type's
+stated intent of representing any host throwable.
+
+**Recommended fix (v1.x):** Accept an optional `catch = "java/lang/Throwable"`
+parameter on `@externTarget(...)` so kernel authors can widen the catch
+scope on a per-binding basis.  Until then, document each kernel extern
+whose wrapped method may throw `Error` subclasses as an unsafe boundary.
+
 ## 25. References
 
 - **JVMS**: *The Java Virtual Machine Specification*, Java SE 21
@@ -2190,6 +2211,7 @@ exceptions wrapped as `Result[T, JvmException]`.
 | Q-J006 | Modified UTF-8 vs UTF-8           | §24: Modified UTF-8 in class files; standard UTF-8 elsewhere |
 | Q-J007 | Test-runner integration            | §24 + D-progress-206: `@LyricTest` + `Jvm.TestEngine` shipped (B126); full `LyricTestEngine` deferred to B127+ |
 | Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D053 |
+| Q-J009 | `@externTarget` catch scope        | §24: known limitation; `Exception` only; `Throwable` opt-in deferred |
 
 
 ## Appendix C. JVM-specific class-file attributes emitted by Lyric
