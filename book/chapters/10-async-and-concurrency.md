@@ -173,7 +173,62 @@ The `when:` condition says: block until enough tokens are available, or until en
 
 Multiple callers contend safely. The mutual exclusion is structural — not a lock you remember to acquire, but a property of every operation on the type.
 
-## §10.5 No raw locks
+## §10.5 Async generators
+
+An `async func` whose body contains at least one `yield` expression is an *async generator*. It returns each yielded value to the caller as an element of an async sequence. The caller consumes it with `for x in f(args) { … }`:
+
+```lyric
+async func naturals(limit: in Int): Int {
+  var i = 0
+  while i < limit {
+    yield i
+    i = i + 1
+  }
+}
+
+func main(): Unit {
+  for n in naturals(5) {
+    println(toString(n))  // 0, 1, 2, 3, 4
+  }
+}
+```
+
+The compiler infers the public signature of a generator function as `IAsyncEnumerable[T]`. `for x in seq { … }` lowers to `await foreach` using the `IAsyncEnumerable<T>` / `IAsyncEnumerator<T>` interfaces on .NET, or `Iterable<T>` / `Iterator<T>` on the JVM.
+
+**Generators with `await`.** An async generator may also use `await` inside its body. The two operations compose naturally — `yield` suspends and hands a value to the consumer; `await` suspends and waits for a task to complete. You can freely mix them:
+
+```lyric
+async func pagedItems(baseUrl: in String): Item {
+  var page = 0
+  loop {
+    val result = await fetchPage(baseUrl, page)
+    for item in result.items {
+      yield item
+    }
+    if not result.hasMore { return }
+    page = page + 1
+  }
+}
+
+async func main(): Unit {
+  for item in pagedItems("https://api.example.com/items") {
+    println(item.name)
+  }
+}
+```
+
+Here `fetchPage` is awaited inside the generator — the generator suspends while the HTTP request is in flight, then resumes to yield the items one by one to the consumer.
+
+**Implementation.** The compiler detects whether a generator body contains any `await` expression and selects one of two lowering strategies:
+
+- *Eager-producer* (no `await` in body): `RunBody()` is called synchronously by `GetAsyncEnumerator`, buffers all yielded values in a list, and returns. Subsequent `MoveNextAsync()` calls step through the list. Simple and zero-overhead for pure-computation generators.
+  - *Bootstrap limitation*: the eager-producer strategy runs the entire body before returning the first element, so a generator with an unbounded yield sequence (e.g. `while true { yield ... }`) will hang and exhaust memory. Add `await` anywhere in the body to switch to the async-iterator strategy, which suspends between elements.
+  - *Single-use per instance*: the `for x in f(args)` desugaring calls `f(args)` fresh on each loop, producing a new generator instance. Capturing the same `IAsyncEnumerable<T>` value and iterating it concurrently from two consumers is unsupported in the eager-producer bootstrap.
+- *Async-iterator* (`await` present in body): A combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class is synthesised. `MoveNextAsync()` creates a fresh `TaskCompletionSource<bool>`, kicks the state machine, and returns `ValueTask<bool>(tcs.Task)`. When the body yields, it stores the value in `<>2__current`, signals `tcs.SetResult(true)`, and suspends. When the body awaits a task, it hooks the continuation via `AwaitUnsafeOnCompleted` and suspends. Local variables that live across either a `yield` or an `await` boundary are promoted to fields on the class.
+
+Both strategies satisfy `IAsyncEnumerable<T>`, so the consumer (`for x in gen() { … }`) is identical regardless of which strategy was used.
+
+## §10.6 No raw locks
 
 There is no `Monitor.Enter`, no `lock` statement, and no `SemaphoreSlim` you can reach for directly in normal Lyric code. If you need them — and this is unusual — you use an `@axiom` boundary to call into .NET primitives:
 
@@ -191,7 +246,7 @@ The friction is intentional. Every use of raw synchronisation is visible in code
 
 In practice, `protected type` covers the vast majority of shared-state patterns. The token bucket, the bounded queue, a shared cache, a rate limiter, a connection pool — all of these fit the model.
 
-## §10.6 `defer`
+## §10.7 `defer`
 
 `defer` runs a block when the enclosing scope exits, regardless of how it exits — normal return, early return, or exception:
 

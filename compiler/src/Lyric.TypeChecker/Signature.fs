@@ -34,4 +34,10 @@ type ResolvedSignature =
       Params:   ResolvedParam list
       Return:   Type
       IsAsync:  bool
+      /// True when the function carries `@hot` — return type becomes
+      /// `ValueTask<T>` instead of `Task<T>` at the CLR level (Gap-3).
+      IsHot:    bool
+      /// True when the function body contains `yield` expressions —
+      /// return type becomes `IAsyncEnumerable<T>` at the CLR level.
+      IsGenerator: bool
       Span:     Span }

@@ -178,7 +178,21 @@ pub func checkStatement(
     }
 
     case SExpr(e) -> {
-      val _ = inferExpr(sc, tbl, sigs, diag, e)
+      match e.kind {
+        case EYield(inner) -> {
+          // T0095: yield value must match the generator's declared element type.
+          val innerTy = inferExpr(sc, tbl, sigs, diag, inner)
+          val isNever = match innerTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+          val isErr   = match innerTy { case TyError -> true; case _ -> false }
+          if not isNever and not isErr and not typeEquiv(innerTy, returnTy) {
+            diag.add(errorDiagnostic("T0095",
+              "yield value has type " + renderType(innerTy) +
+              " but the generator's declared element type is " + renderType(returnTy),
+              e.span))
+          }
+        }
+        case _ -> { val _ = inferExpr(sc, tbl, sigs, diag, e) }
+      }
     }
 
     case SDefer(body) -> {

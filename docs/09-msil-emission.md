@@ -785,11 +785,140 @@ synchronous-completion path.
 
 ### 14.5 `await` lowering
 
-`await e` lowers to the standard `GetAwaiter().GetResult()` /
-`UnsafeOnCompleted` pattern when `e` produces a `Task<T>` or
-`ValueTask<T>`. For non-task awaitables (rare in Lyric — primarily
-custom awaiters from FFI), the same pattern applies, dispatching via
+`await e` inside an `async func` body is lowered by the Phase B
+state-machine emitter (`AsyncStateMachine.fs`).  The generated `MoveNext`
+method contains a state-dispatch switch on `<>1__state` at its entry
+point; each `await` site is one state index.  The protocol for each
+await site is:
+
+```
+// --- fast path (awaiter already complete) ---
+var awaiter = e.GetAwaiter();
+if (!awaiter.IsCompleted) {
+    // --- slow path: suspend ---
+    <>1__state = N;
+    <>u__N  = awaiter;           // stash typed awaiter field
+    builder.AwaitUnsafeOnCompleted(ref awaiter, ref this);
+    return;                      // exit MoveNext; scheduler resumes later
+    // --- resume label (state dispatch jumps here on re-entry) ---
+    awaiter  = <>u__N;
+    <>u__N   = default;
+    <>1__state = -1;
+}
+result = awaiter.GetResult();    // only reached when complete
+```
+
+Locals whose lifetimes span a suspend point are promoted to fields on
+the state-machine struct (Phase B+ and later).  Awaits in `while`/`loop`
+bodies, `defer` blocks, `try`/`catch` arms, and `for` loop bodies are
+each handled by the Phase B+/B++/B+++ extensions in `AsyncStateMachine.fs`.
+
+The M1.4 blocking shim (`.GetAwaiter().GetResult()` synchronously) is
+retained as a fallback for ineligible shapes — awaits in expression
+positions where stack-spilling has not been applied, or inside lambda
+bodies that form a separate async context.  Ineligible functions are
+diagnosed at compile time.
+
+For non-task awaitables (rare in Lyric — primarily custom awaiters
+from FFI) the same state-machine pattern applies, dispatching through
 the awaiter's interface.
+
+### 14.6 Async generators (`yield` in `async func`)
+
+An `async func f(...): T` whose body contains at least one `yield`
+expression is an *async generator*. The compiler selects one of two
+synthesis strategies based on whether the body also contains `await`.
+
+#### 14.6.1 Eager-producer (no `await` in body)
+
+Synthesises a sibling class `<f>__Gen_N`:
+
+```
+sealed class <f>__Gen_N :
+    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
+  // parameter fields (public, populated by kickoff)
+  List<T> _values; int _pos; T _current;
+  void RunBody() { /* user body; yield e → _values.Add(e) */ }
+  IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
+    _values = new List<T>(); _pos = -1; RunBody(); return this; }
+  ValueTask<bool> MoveNextAsync() { /* serves from _values[_pos] */ }
+  T Current { get { return _current; } }
+  ValueTask DisposeAsync() { return default; }
+}
+static IAsyncEnumerable<T> f(...) {
+  var gen = new <f>__Gen_N(); gen.p0 = arg0; …; return gen;
+}
+```
+
+`RunBody` is called synchronously by `GetAsyncEnumerator`; all `yield`
+expressions execute eagerly before the first `MoveNextAsync` returns.
+Correct for generator comprehensions and producer pipelines whose body
+has no internal `await` (D-progress-260).
+
+#### 14.6.2 Async-iterator (body has both `yield` and `await`)
+
+Gap-4a (D-progress-261): synthesises a combined class `<f>__AsyncIter_N`
+that is simultaneously an `IAsyncStateMachine` and the enumerable:
+
+```
+sealed class <f>__AsyncIter_N :
+    IAsyncStateMachine,
+    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
+  // Fields
+  int <>1__state;                       // -2=done, -1=running, 0..A-1=await, A..A+Y-1=yield
+  AsyncTaskMethodBuilder <>t__builder;  // used only for AwaitUnsafeOnCompleted
+  T <>2__current;                       // value of the latest yield
+  TaskCompletionSource<bool> _tcs;      // signal for the pending MoveNextAsync
+  // parameter and promoted-local fields (one per user local straddling an await/yield)
+  // awaiter fields (one per await site, lazily allocated)
+
+  void MoveNext() { /* Phase-B state machine: awaits + yields */ }
+  void SetStateMachine(IAsyncStateMachine sm) { <>t__builder.SetStateMachine(sm); }
+
+  IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
+    <>1__state = -1;
+    <>t__builder = AsyncTaskMethodBuilder.Create();
+    return this;
+  }
+  ValueTask<bool> MoveNextAsync() {
+    _tcs = new TaskCompletionSource<bool>();
+    this.MoveNext();           // drive one step synchronously
+    return new ValueTask<bool>(_tcs.Task);
+  }
+  T Current { get { return <>2__current; } }
+  ValueTask DisposeAsync() { return default; }
+}
+```
+
+**State layout**: states `0..A-1` are await-resume states (Phase B
+protocol: `AwaitUnsafeOnCompleted` stores the awaiter, sets state N,
+`Leave` past try/catch, `Ret`; resume label reloads awaiter, `GetResult`).
+States `A..A+Y-1` are yield-resume states: each `yield e` stores `e`
+into `<>2__current`, sets state `A+i`, calls `_tcs.SetResult(true)`,
+flushes promoted locals to their fields, then `Leave`s past the try/catch
+and returns.  When `MoveNextAsync` calls `MoveNext` again the dispatch
+switch jumps to resume label `A+i`, resets state to -1, and continues
+the body.
+
+**Promoted locals**: any local variable whose lifetime spans an `await`
+or a `yield` boundary is promoted to a field (`<l>__name`) and shadowed
+by an IL local.  At every `MoveNext` entry the fields are loaded into the
+IL locals; at every suspend point (await or yield) the IL locals are
+flushed back to the fields.
+
+The kickoff stub is identical to the eager-producer: create instance,
+copy params to fields, return as `IAsyncEnumerable<T>`.
+
+Both strategies are implemented in
+`compiler/src/Lyric.Emitter/AsyncGenerator.fs`; the routing is in
+`compiler/src/Lyric.Emitter/Emitter.fs`.
+
+`for x in gen() { … }` lowers to a standard `await foreach` —
+`GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
+`DisposeAsync` in a `finally` block.
+
+The JVM-target equivalent uses `java.lang.Iterable` + `java.util.Iterator`
+with the same eager `runBody()` pattern (B129, `compiler/lyric/jvm/lowering.l`).
 
 
 ## 15. Structured concurrency scopes

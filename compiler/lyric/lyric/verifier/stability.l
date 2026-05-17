@@ -142,6 +142,7 @@ func visitExpr(e: in Expr, output: in List[CallRef]): Unit {
     case EOld(inner)     -> visitExpr(inner, output)
     case EPropagate(inner) -> visitExpr(inner, output)
     case EAwait(inner)   -> visitExpr(inner, output)
+    case EYield(inner)   -> visitExpr(inner, output)
     case ESpawn(inner)   -> visitExpr(inner, output)
     case ETuple(exprs)   -> visitExprs(exprs, output)
     case EList(exprs)    -> visitExprs(exprs, output)

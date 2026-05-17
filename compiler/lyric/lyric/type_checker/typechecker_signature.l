@@ -36,10 +36,12 @@ pub record ResolvedBound {
 
 @stable(since="0.1")
 pub record ResolvedSignature {
-  generics: List[String]
-  bounds:   List[ResolvedBound]
-  params:   List[ResolvedParam]
-  returnTy: Type
-  isAsync:  Bool
-  span:     Span
+  generics:    List[String]
+  bounds:      List[ResolvedBound]
+  params:      List[ResolvedParam]
+  returnTy:    Type
+  isAsync:     Bool
+  isHot:       Bool
+  isGenerator: Bool
+  span:        Span
 }

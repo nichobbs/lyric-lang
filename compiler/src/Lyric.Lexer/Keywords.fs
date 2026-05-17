@@ -38,7 +38,7 @@ let spelling (kw: Keyword) : string =
     | KwVar -> "var"            | KwWhen -> "when"
     | KwWhere -> "where"        | KwWhile -> "while"
     | KwWire -> "wire"          | KwWith -> "with"
-    | KwXor -> "xor"
+    | KwXor -> "xor"            | KwYield -> "yield"
 
 /// Every keyword in declaration order.
 let all : Keyword list =
@@ -54,7 +54,7 @@ let all : Keyword list =
       KwScoped; KwSelf; KwSingleton; KwSpawn; KwTest
       KwThen; KwThrow; KwTrue; KwTry; KwType
       KwUnion; KwUse; KwVal; KwVar; KwWhen
-      KwWhere; KwWhile; KwWire; KwWith; KwXor ]
+      KwWhere; KwWhile; KwWire; KwWith; KwXor; KwYield ]
 
 let private byString : IReadOnlyDictionary<string, Keyword> =
     let d = Dictionary<string, Keyword>()

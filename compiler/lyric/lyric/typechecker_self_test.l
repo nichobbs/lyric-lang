@@ -139,6 +139,41 @@ func testMultipleItemsNoError(): Unit {
   assertTrue(symCount(cr) >= 3, "multi: A, B, f all registered")
 }
 
+func testYieldOutsideAsync(): Unit {
+  // T0094: yield inside a non-async function body.
+  val src = "package P\nfunc f(): Int {\n  yield 1\n  return 0\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0094"), "T0094: yield outside async emits diagnostic")
+}
+
+func testAsyncGeneratorFlags(): Unit {
+  // An async func with yield: isAsync=true, isGenerator=true, no T0094.
+  val src = "package P\nasync func g(): Int {\n  yield 1\n  yield 2\n}\n"
+  val cr = parseCheck(src)
+  val noT0094 = not hasDiagCode(cr, "T0094")
+  assertTrue(noT0094, "async-gen: no T0094 for valid async generator")
+  match mapGet(cr.sigs, "g") {
+    case None      -> assertTrue(false, "async-gen: sig 'g' not found")
+    case Some(sig) -> {
+      assertTrue(sig.isAsync,     "async-gen: isAsync=true")
+      assertTrue(sig.isGenerator, "async-gen: isGenerator=true")
+    }
+  }
+}
+
+func testHotAnnotationFlag(): Unit {
+  // @hot on a regular async func: isHot=true, isGenerator=false.
+  val src = "package P\n@hot\nasync func h(): Int { return 42 }\n"
+  val cr = parseCheck(src)
+  match mapGet(cr.sigs, "h") {
+    case None      -> assertTrue(false, "hot: sig 'h' not found")
+    case Some(sig) -> {
+      assertTrue(sig.isHot,          "hot: isHot=true")
+      assertTrue(not sig.isGenerator, "hot: isGenerator=false")
+    }
+  }
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -155,5 +190,8 @@ func main(): Unit {
   testArithmeticTypeMismatch()
   testUnknownName()
   testMultipleItemsNoError()
+  testYieldOutsideAsync()
+  testAsyncGeneratorFlags()
+  testHotAnnotationFlag()
   println("typechecker self-test: ok")
 }

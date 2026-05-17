@@ -119,6 +119,7 @@ and private rewriteExpr (aliases: Set<string>) (e: Expr) : Expr =
         | EMatch (sc, arms) ->
             EMatch (r sc, arms |> List.map (rewriteMatchArm aliases))
         | EAwait inner   -> EAwait (r inner)
+        | EYield inner   -> EYield (r inner)
         | ESpawn inner   -> ESpawn (r inner)
         | ETry inner     -> ETry (r inner)
         | EOld inner     -> EOld (r inner)

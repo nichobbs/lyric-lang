@@ -124,7 +124,7 @@ let private collectCallNames (body: FunctionBody) : (string * Span) list =
                 match a with
                 | CANamed(_, v, _) | CAPositional v -> visitExpr v
         | EParen x | ETry x | EOld x | EPropagate x
-        | EAwait x | ESpawn x                       -> visitExpr x
+        | EAwait x | EYield x | ESpawn x            -> visitExpr x
         | ETuple xs | EList xs                      -> xs |> List.iter visitExpr
         | EIf(c, t, eOpt, _) ->
             visitExpr c

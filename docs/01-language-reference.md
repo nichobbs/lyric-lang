@@ -40,6 +40,7 @@ scoped      self         singleton    spawn        test
 then        throw        true         try          type
 union       use          val          var          when
 where       while        wire         with         xor
+yield
 ```
 
 Annotation-style keywords (always preceded by `@`):
@@ -778,11 +779,45 @@ async func fetchUser(id: in UserId): User? {
 
 `async func` returns a value of type `Task[T]` (compiles to .NET `Task<T>` or `ValueTask<T>` per heuristic — see `docs/09-msil-emission.md` §14.2). `await` is a postfix operation in expression position.
 
-### 7.2 Cancellation
+### 7.2 Async generators
+
+An `async func` whose body contains at least one `yield` expression is an *async generator*. Its return type must be a scalar element type `T`; the compiler infers the public signature as `IAsyncEnumerable[T]` (.NET) or `Iterable<T>` (JVM). The caller iterates with `for x in f(args) { … }`.
+
+```
+async func naturals(limit: in Int): Int {
+  var i = 0
+  while i < limit {
+    yield i
+    i = i + 1
+  }
+}
+
+func main(): Unit {
+  for n in naturals(5) {
+    println(toString(n))  // prints 0 1 2 3 4
+  }
+}
+```
+
+`yield expr` is a statement-expression: it evaluates `expr`, queues the value, and continues. A `yield` inside a non-generator function or outside an `async func` is a compile error (T0094). The type of `expr` must match the function's declared element type (T0095); every `yield` in the same generator must produce a value of the same type.
+
+`yield` binds its argument tightly — `yield a * 2` means `yield (a * 2)`, not `(yield a) * 2`. Note that `await` uses postfix precedence — `await a * 2` means `(await a) * 2`. The asymmetry is deliberate; `yield` is a statement-level construct and binds with expression precedence, while `await` acts on a single postfix operand.
+
+The compiler selects one of two lowering strategies based on the body's content:
+
+**Eager-producer** (body has `yield` but no `await`): the generator body runs to completion synchronously when the caller first calls `GetAsyncEnumerator`, buffering all yielded values in a `List<T>` that `MoveNextAsync` serves one at a time. Correct for generator comprehensions and producer pipelines.
+
+*Bootstrap constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
+
+**Async-iterator** (body has both `yield` and `await`): the compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. Each `MoveNextAsync` call creates a `TaskCompletionSource<bool>`, drives the state machine one step, and returns a `ValueTask<bool>` backed by the TCS. A `yield` stores the value, signals the TCS with `true`, and suspends; an `await` uses the standard Phase-B `AwaitUnsafeOnCompleted` protocol; end-of-body signals the TCS with `false` (exhausted). Any local variable live across a yield or await boundary is promoted to a field on the class so its value survives cross-`MoveNextAsync` gaps. (D-progress-261, §14.6.2 of `docs/09-msil-emission.md`.)
+
+*Note on `@hot` interaction:* if a generator function is also annotated `@hot`, `IsGenerator` takes priority and `@hot` is silently ignored — the synthesised class uses `AsyncTaskMethodBuilder`, not `AsyncValueTaskMethodBuilder`. Combining `@hot` with `yield` produces a `T0096` warning at compile time.
+
+### 7.3 Cancellation
 
 Every `async func` has an implicit `CancellationToken` parameter threaded by the compiler. It is accessible as `cancellation` inside the function and propagated to all child async calls automatically. Cancellation is cooperative: the function periodically checks the token at await points and on explicit `cancellation.checkOrThrow()` calls.
 
-### 7.3 Structured scopes
+### 7.4 Structured scopes
 
 ```
 async func loadDashboard(userId: in UserId): Dashboard {
@@ -808,7 +843,7 @@ async func loadDashboard(userId: in UserId): Dashboard {
 
 This is the structured concurrency pattern; raw "fire and forget" is not available.
 
-### 7.4 Protected types
+### 7.5 Protected types
 
 ```
 protected type BoundedQueue[T] {
@@ -847,7 +882,7 @@ Semantics:
 - The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (see `docs/09-msil-emission.md` §17.1–17.3).
 - The invariant is checked after every entry/func returns control to the caller.
 
-### 7.5 Raw locks
+### 7.6 Raw locks
 
 There are no raw locks, no `Monitor.Enter`, no `lock` statement. Code that genuinely needs them must use a `@axiom` boundary to call into .NET primitives. This is intentional friction.
 

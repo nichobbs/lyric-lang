@@ -824,7 +824,7 @@ interface, write an `impl` block.
 
 ## D035: M1.4 scope cuts — bootstrap-grade lowering for generics, async, and FFI
 
-**Status:** ACCEPTED
+**Status:** ACCEPTED — async row SUPERSEDED (see Revisions).
 
 **Decision:** The bootstrap compiler's M1.4 milestone (per
 `docs/05-implementation-plan.md`) ships *bootstrap-grade* lowerings for
@@ -836,7 +836,7 @@ shape of v0.1 end-to-end; the full lowerings land in Phase 2 polish.
 | Construct | M1.4 lowering | v0.1-target lowering | Where the gap lives |
 |---|---|---|---|
 | Generics | **Monomorphisation per call site** — the type checker rewrites each generic call into a synthesised concrete instantiation; the emitter sees only monomorphic methods. | Reified generics with `DefineGenericParameters`, JIT specialisation as the strategy doc §9.1 calls for. | `Lyric.Emitter.Codegen.emitCall` has no `ldtoken`/generic-arg handling. |
-| `async` / `await` | **Blocking shim** — `async func` lowers to a `Task<T>`-returning method that calls the body synchronously; `await e` calls `e.GetAwaiter().GetResult()`. Sequential under the hood. | A C#-style state machine per the strategy doc §13. | `Lyric.Emitter.Codegen.emitAsyncBody` documents the simplification. |
+| `async` / `await` | ~~**Blocking shim**~~ **SUPERSEDED** — real `IAsyncStateMachine` state machines ship for await-free bodies (Phase A, D-progress-033) and bodies with awaits at safe positions (Phase B through B+++, D-progress-034..076). The M1.4 blocking `.GetAwaiter().GetResult()` fallback is retained only for ineligible await shapes (awaits in expression positions where stack-spilling fails). Generators with `await` in the body remain deferred (Gap-4a, D070). | A C#-style state machine per the strategy doc §13. | Fully implemented in `Lyric.Emitter.AsyncStateMachine`. |
 | `extern package` (FFI) | **Hand-extended `Lyric.Stdlib`** — every BCL surface the banking example needs (`std.io.File`, `std.collections.List`, …) is added to the F#-side stdlib shim and the emitter resolves `extern package` references against that table. | Reflection-driven binding to arbitrary BCL types named in `extern package` blocks. | `Lyric.Stdlib.Interop` carries the curated list; out-of-table externs surface as `E0030`. |
 
 Two further M1.4 simplifications are documented but smaller in
@@ -883,13 +883,19 @@ mechanism:
 **Tracked follow-ups:**
 
 - Phase 2 work plan (per `docs/05-implementation-plan.md` §"Phase 2")
-  picks up reified generics and full async state machines.
+  picks up reified generics.
 - Phase 4 work plan picks up `@proof_required` proof-obligation
   generation and `old(_)` snapshotting.
 - The Stdlib shim's contents become the seed of `std.core` /
   `std.io` once the package manager lands (Phase 3).
-
-**Revisions:** None.
+**Revisions:** The `async` / `await` row is SUPERSEDED. Real
+`IAsyncStateMachine` state machines landed across D-progress-033
+(Phase A, await-free), D-progress-034..040 (Phase B, suspend/resume),
+D-progress-041..043 (Phase B+, loop-with-await + promoted locals),
+D-progress-054..058 (Phase B++, defer+await; B+++ try/catch+await;
+for-with-await), D-progress-074..076 (stack-spilling, generic async),
+and D-progress-261 (Gap-4a: async generators with internal `await`).
+The blocking shim now applies only to ineligible fall-through shapes.
 
 ---
 
@@ -3809,6 +3815,90 @@ private `joinStrs` helper removed and all call sites updated to `Str.join`.
 - `Q022-1 pubUseDecls`: a `pub use Pkg.{name}` re-export appears in the
   emitted `Lyric.Contract` resource of the re-exporting package (exercises
   `pubUseDecls` in `ContractMeta.fs`).
+
+---
+
+## D070 — Gap-4a: async generators with internal `await`
+
+**Status:** ACCEPTED — shipped (D-progress-261).  **Date:** 2026-05-16 (deferred); 2026-05-17 (resolved).
+
+**Builds on:** D035 (async row now superseded — real SM shipped), D-progress-260 (Gap-1..4 closure), D-progress-261 (Gap-4a implementation).
+
+### Context
+
+The async-generator emitter (`AsyncGenerator.fs`, `lowerAsyncGenerator`
+in `compiler/lyric/jvm/lowering.l`) uses an "eager producer" model: `RunBody()`
+(MSIL) or `runBody()` (JVM) is called synchronously inside `GetAsyncEnumerator`
+/ `iterator()`, so all `yield` expressions execute before the first
+`MoveNextAsync` / `hasNext` call returns.  This is correct and sufficient for
+generator comprehensions and async-producer scenarios where the body contains
+no `await`.
+
+A generator body that contains an `await` expression requires a true coroutine
+suspension point between successive `yield`s.  The eager model produces
+incorrect sequencing in that case: the body runs to completion before any
+consumer sees the first element, and any intermediate `await` suspensions
+occur inside `RunBody()` rather than interleaved with consumer `MoveNextAsync`
+calls.
+
+### Decision
+
+Gap-4a is **resolved** (D-progress-261).  The emitter now synthesises a combined
+`IAsyncStateMachine` + `IAsyncEnumerable<T>` class (`<f>__AsyncIter_N`) for
+generators whose body contains `await`.  The concrete implementation:
+
+- **Builder**: `AsyncTaskMethodBuilder` (void) — used only for
+  `AwaitUnsafeOnCompleted`; `SetResult`/`SetException` are never called on it.
+- **Signaling**: `TaskCompletionSource<bool>` field `_tcs`.  `MoveNextAsync`
+  creates a fresh TCS, calls `this.MoveNext()`, returns `ValueTask<bool>(_tcs.Task)`.
+- **State layout**: states 0..A-1 are await-resume states (Phase-B protocol);
+  states A..A+Y-1 are yield-resume states.
+- **`yield e`** stores `e` to `<>2__current`, sets state to `A+i`,
+  flushes promoted locals to their fields, calls `_tcs.SetResult(true)`,
+  then `Leave`s past the try/catch and returns.
+- **End-of-body** calls `_tcs.SetResult(false)` (generator exhausted).
+- **Exception** calls `_tcs.SetException(ex)`.
+- **Promoted locals**: any local live across an await *or* a yield boundary is
+  promoted to a field on the class.  Fields are loaded at MoveNext entry and
+  flushed at every suspend point.
+
+See `docs/09-msil-emission.md` §14.6.2 for the full structure.
+
+### Single-use `GetAsyncEnumerator` constraint
+
+Both the eager-producer and the async-iterator strategies produce a class where
+`GetAsyncEnumerator` returns `this`.  Calling `GetAsyncEnumerator` twice
+concurrently (sharing the same generator instance) is not supported.
+
+The `for x in f(args)` desugaring creates a new generator instance per loop
+(the kickoff stub runs on each call to `f`), so well-formed Lyric code is
+unaffected.  Code that captures the `IAsyncEnumerable<T>` value and passes it
+to two concurrent consumers at once is an unsupported pattern; it violates the
+single-enumerator contract of the interface.
+
+---
+
+## D071 — `yield` uses expression precedence; `await` uses postfix precedence
+
+**Status:** Accepted.  **Date:** 2026-05-17.
+
+**Builds on:** D-progress-260 (yield keyword added), grammar.ebnf.
+
+### Decision
+
+`yield` binds its argument with full expression (assignment) precedence:
+`yield a * 2` is `yield (a * 2)`.  This matches Rust, Python, and C# iterator
+behaviour and is the natural reading for a statement-level keyword.
+
+`await` uses postfix (primary) precedence: `await a * 2` is `(await a) * 2`.
+This is consistent with the existing Lyric grammar where `await` is a
+postfix-only operator applied to a single expression, matching the "await this
+task, then do arithmetic on the result" reading.
+
+The asymmetry is intentional and documented in §7.2 of the language reference.
+Users coming from C# may find `await` surprising (C# `await` also has low
+precedence, matching Lyric's `yield`).  No change planned: `yield` as a
+statement-level construct with expression-scope binding is the correct design.
 
 ---
 

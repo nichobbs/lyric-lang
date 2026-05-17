@@ -29,6 +29,7 @@ type Keyword =
     | KwThen | KwThrow | KwTrue | KwTry | KwType
     | KwUnion | KwUse | KwVal | KwVar | KwWhen
     | KwWhere | KwWhile | KwWire | KwWith | KwXor
+    | KwYield
 
 /// A multi-char punctuation/operator token (per docs/grammar.ebnf §1.9).
 type Punct =

@@ -89,6 +89,27 @@ let private toTaskType (t: System.Type) : System.Type =
     else
         typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| t |])
 
+/// Wrap `t` in `IAsyncEnumerable<t>` for async generator functions.
+let private toAsyncEnumerableType (t: System.Type) : System.Type =
+    typedefof<System.Collections.Generic.IAsyncEnumerable<_>>.MakeGenericType([| t |])
+
+/// Wrap `t` in `ValueTask<t>` (or `ValueTask` for void) for `@hot`
+/// async functions (Q010, Gap-3).
+let private toValueTaskType (t: System.Type) : System.Type =
+    if t = typeof<System.Void> then
+        typeof<System.Threading.Tasks.ValueTask>
+    else
+        typedefof<System.Threading.Tasks.ValueTask<_>>.MakeGenericType([| t |])
+
+/// True when the function carries an `@hot` annotation — opt-in to
+/// `ValueTask<T>` return and `AsyncValueTaskMethodBuilder<T>`.
+let private isHotAnnotated (fn: FunctionDecl) : bool =
+    fn.Annotations
+    |> List.exists (fun a ->
+        match a.Name.Segments with
+        | ["hot"] -> true
+        | _ -> false)
+
 /// Pull every top-level `IFunc` out of a parsed source file.
 let private functionItems (sf: SourceFile) : FunctionDecl list =
     sf.Items
@@ -1023,6 +1044,7 @@ let rec private desugarSelfFields
                 | ISExpr e -> ISExpr (recur e))
         { e with Kind = EInterpolated segs' }
     | EParen inner -> { e with Kind = EParen (recur inner) }
+    | EYield inner -> { e with Kind = EYield (recur inner) }
     | ESpawn inner -> { e with Kind = ESpawn (recur inner) }
     | EOld inner -> { e with Kind = EOld (recur inner) }
     | EAwait inner -> { e with Kind = EAwait (recur inner) }
@@ -1564,8 +1586,10 @@ let private defineProtectedTypeOnto
                 Resolver.resolveType
                     symbols resolveCtx scratchDiags t
             | None -> Lyric.TypeChecker.TyPrim Lyric.TypeChecker.PtUnit
-          IsAsync = isAsync
-          Span    = span }
+          IsAsync      = isAsync
+          IsHot        = false
+          IsGenerator  = false
+          Span         = span }
 
     let paramNamesOf (ps: Param list) : Set<string> =
         ps |> List.map (fun p -> p.Name) |> Set.ofList
@@ -1923,7 +1947,10 @@ let private defineMethodHeader
             |> List.toArray
         let bareReturn = TypeMap.toClrReturnTypeWith lookup sg.Return
         let returnType =
-            if sg.IsAsync then toTaskType bareReturn else bareReturn
+            if sg.IsGenerator then toAsyncEnumerableType bareReturn
+            elif sg.IsAsync then
+                (if sg.IsHot then toValueTaskType bareReturn else toTaskType bareReturn)
+            else bareReturn
         let mb =
             programTy.DefineMethod(
                 fn.Name,
@@ -1956,7 +1983,10 @@ let private defineMethodHeader
         let bareReturn =
             TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
         let returnType =
-            if sg.IsAsync then toTaskType bareReturn else bareReturn
+            if sg.IsGenerator then toAsyncEnumerableType bareReturn
+            elif sg.IsAsync then
+                (if sg.IsHot then toValueTaskType bareReturn else toTaskType bareReturn)
+            else bareReturn
         mb.SetParameters paramTypes
         mb.SetReturnType returnType
         sg.Params
@@ -2620,7 +2650,9 @@ let private emitFunctionBody
         (symbols: SymbolTable)
         (consts: Dictionary<string, int64>)
         (asyncLocals: Dictionary<string, System.Reflection.FieldInfo>)
-        (diags: ResizeArray<Diagnostic>) : unit =
+        (diags: ResizeArray<Diagnostic>)
+        (genInfo: AsyncGenerator.GeneratorInfo option)
+        (asyncIterYieldCtx: AsyncGenerator.AsyncIterYieldCtx option) : unit =
     let il = mb.GetILGenerator()
     // For an async function the *body* still computes a value of
     // the bare return type; the wrapping into `Task<T>` only kicks
@@ -2677,14 +2709,20 @@ let private emitFunctionBody
     let bareReturnTy =
         TypeMap.toClrReturnTypeWithGenerics lookup genericSubst sg.Return
     let methodReturnTy =
-        if sg.IsAsync && smInfo.IsNone then toTaskType bareReturnTy else bareReturnTy
-    let returnTy = bareReturnTy
-    // In SM mode `MoveNext` has no params (only `this`); the user
-    // params live on the SM as fields and resolve via SmFields below.
+        if genInfo.IsSome then typeof<System.Void>  // RunBody is void
+        elif sg.IsGenerator then toAsyncEnumerableType bareReturnTy
+        elif sg.IsAsync && smInfo.IsNone then
+            (if sg.IsHot then toValueTaskType bareReturnTy else toTaskType bareReturnTy)
+        else bareReturnTy
+    // Generator RunBody is void; the function's declared T is the element type,
+    // not the method's return type.
+    let returnTy =
+        if genInfo.IsSome then typeof<System.Void> else bareReturnTy
+    // In SM / generator mode params live as fields; use empty paramList.
     let paramList =
-        match smInfo with
-        | Some _ -> []
-        | None ->
+        match smInfo, genInfo with
+        | Some _, _ | _, Some _ -> []
+        | None, None ->
             sg.Params
             |> List.map (fun p ->
                 // Stored type matches the CLR slot (byref for out/inout).
@@ -2702,12 +2740,12 @@ let private emitFunctionBody
     let resolveTypeForCtx (te: TypeExpr) : System.Type =
         let lty = Resolver.resolveType symbols resolveCtxInner scratchDiagsInner te
         TypeMap.toClrTypeWithGenerics lookup genericSubst lty
-    // In SM mode, MoveNext is an instance method whose `this` is the
-    // SM instance; selfType becomes the SM type, isInstance is true.
+    // In SM / generator mode, `this` is the SM / generator class.
     let effectiveIsInstance, effectiveSelfType =
-        match smInfo with
-        | Some sm -> true, Some (sm.Type :> System.Type)
-        | None    -> isInstance, selfType
+        match smInfo, genInfo with
+        | Some sm, _ -> true, Some (sm.Type :> System.Type)
+        | _, Some gi -> true, Some (gi.Type :> System.Type)
+        | None, None -> isInstance, selfType
     let ctx =
         Codegen.FunctionCtx.make
             il returnTy paramList
@@ -2724,6 +2762,16 @@ let private emitFunctionBody
         for pf in sm.ParamFields do
             ctx.SmFields.[pf.Name] <- (pf.Field :> System.Reflection.FieldInfo)
     | None -> ()
+    // Generator body: populate SmFields from parameter fields + set GenCtxInfo.
+    match genInfo with
+    | Some gi ->
+        for (name, f) in gi.ParamFields do
+            ctx.SmFields.[name] <- (f :> System.Reflection.FieldInfo)
+        ctx.GenCtxInfo <- Some
+            { Lyric.Emitter.AsyncGenerator.ValuesField = gi.Values
+              Lyric.Emitter.AsyncGenerator.AddMethod   = gi.AddMethod
+              Lyric.Emitter.AsyncGenerator.ElemType    = gi.ElemType }
+    | None -> ()
     // Phase B: thread the suspend/resume context + pre-allocated
     // local shadow IL slots so the body's `EAwait` handlers and
     // `defineLocal` calls hit the right code paths.
@@ -2733,6 +2781,8 @@ let private emitFunctionBody
         for KeyValue(name, lb) in pb.PreLocals do
             ctx.PreAllocatedLocals.[name] <- lb
     | None -> ()
+    // Async-iterator yield context (Gap-4a).
+    ctx.AsyncIterYieldCtx <- asyncIterYieldCtx
     ignore methodReturnTy
 
     // Single exit point: every return path stores the value (if any)
@@ -2927,6 +2977,13 @@ let private emitFunctionBody
         // value (kept by the body emit pipeline via ctx.ResultLocal).
         // No ret here — the caller ends MoveNext with `Ret`.
         il.Emit(OpCodes.Leave, pb.NormalDone)
+    | None ->
+    match genInfo with
+    | Some _ ->
+        // Generator body (RunBody): declared void, no async wrapping.
+        // The yields have already been emitted as _values.Add(…) calls.
+        // Just return from the void method.
+        il.Emit(OpCodes.Ret)
     | None ->
     match smInfo with
     | Some sm ->
@@ -3979,7 +4036,7 @@ let private emitAssembly
                     | Some s -> s
                     | None ->
                         { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
-                          IsAsync = false; Span = fn.Span }
+                          IsAsync = false; IsHot = false; IsGenerator = false; Span = fn.Span }
             let mb = defineMethodHeader programTy lookup fn sg
             methodTable.[fn.Name]  <- mb
             methodTable.[arityKey] <- mb
@@ -4209,7 +4266,9 @@ let private emitAssembly
                                 TypeMap.toClrReturnTypeWithGenerics lookup genericSubst lty
                             | None -> typeof<System.Void>
                         let rTy =
-                            if fd.IsAsync then toTaskType bareRet else bareRet
+                            if fd.IsAsync then
+                                (if isHotAnnotated fd then toValueTaskType bareRet else toTaskType bareRet)
+                            else bareRet
                         let mb =
                             match mbAndMethGtpbs with
                             | Some (m, _) ->
@@ -4256,8 +4315,10 @@ let private emitAssembly
                                     Resolver.resolveType
                                         symbols resolveCtx scratchDiags t
                                 | None -> TyPrim PtUnit
-                              IsAsync = fd.IsAsync
-                              Span    = fd.Span }
+                              IsAsync      = fd.IsAsync
+                              IsHot        = isHotAnnotated fd
+                              IsGenerator  = fd.IsAsync && AsyncStateMachine.bodyContainsYield fd
+                              Span         = fd.Span }
                         implMethods.Add(fd, mb, synthSig)
                         if not methodGenericNames.IsEmpty then resolveCtx.Pop()
                     | IMplAssoc _ -> ()
@@ -4289,7 +4350,7 @@ let private emitAssembly
                     | Some s -> s
                     | None ->
                         { Generics = []; Bounds = []; Params = []; Return = TyPrim PtUnit
-                          IsAsync = false; Span = fn.Span }
+                          IsAsync = false; IsHot = false; IsGenerator = false; Span = fn.Span }
             let mb =
                 match methodTable.TryGetValue arityKey with
                 | true, m -> m
@@ -4392,7 +4453,188 @@ let private emitAssembly
                         name, userTypeParamArgs.[i])
                     |> Map.ofList
                 else Map.empty
-            if usePhaseA then
+            if sg.IsGenerator then
+                // @hot + IsGenerator: IsGenerator branch takes priority; IsHot is
+                // ignored (the synthesised generator class uses AsyncTaskMethodBuilder,
+                // not AsyncValueTaskMethodBuilder).  Combining @hot with yield is
+                // unsupported at bootstrap grade; a diagnostic is deferred to M2.
+                if AsyncStateMachine.bodyContainsAwait fn then
+                    // Gap-4a: async generator with both `yield` and `await`.
+                    // Synthesise a combined IAsyncStateMachine + IAsyncEnumerable<T>
+                    // class; wire a Phase-B state machine for the await protocol and
+                    // the async-iterator yield protocol for each `yield`.
+                    smCounter <- smCounter + 1
+                    let bareElemTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+                    let genParamSpecs =
+                        sg.Params
+                        |> List.map (fun p -> p.Name, paramClrType lookup Map.empty p)
+                    // Promoted locals (locals straddling an await in the generator body).
+                    let localSpecs =
+                        match AsyncStateMachine.collectPromotableLocals fn with
+                        | None -> []
+                        | Some locals ->
+                            let resolveCtx = GenericContext()
+                            let scratchDiags = ResizeArray<Diagnostic>()
+                            locals
+                            |> List.choose (fun l ->
+                                match l.Annotation with
+                                | Some te ->
+                                    let lty = Resolver.resolveType symbols resolveCtx scratchDiags te
+                                    Some (l.Name, TypeMap.toClrTypeWith lookup lty)
+                                | None -> None)
+                    let aig =
+                        AsyncGenerator.defineAsyncIteratorGeneratorClass
+                            ctx.Module nsName fn.Name smCounter bareElemTy genParamSpecs localSpecs
+                    let argIndices = sg.Params |> List.mapi (fun i _ -> i)
+                    AsyncGenerator.emitAsyncIteratorKickoff mb aig argIndices
+                    // Build the MoveNext body.
+                    let il = aig.MoveNext.GetILGenerator()
+                    // Pre-allocate IL locals for promoted locals and track
+                    // field↔local pairs for promote-save at every suspend.
+                    let promotedShadows = ResizeArray<LocalBuilder * FieldBuilder>()
+                    let preLocals = Dictionary<string, LocalBuilder>()
+                    for pl in aig.PromotedLocals do
+                        let lb = il.DeclareLocal(pl.LocalType)
+                        promotedShadows.Add(lb, pl.LocalField)
+                        preLocals.[pl.LocalName] <- lb
+                    // State layout: 0..awaitCount-1 = await resume states,
+                    //               awaitCount..awaitCount+yieldCount-1 = yield resume states.
+                    let awaitCount = AsyncStateMachine.collectAwaitInners fn |> List.length
+                    let yieldCount = AsyncStateMachine.collectYieldInners fn |> List.length
+                    let totalResumeCount = awaitCount + yieldCount
+                    let resumeLabels = Array.init totalResumeCount (fun _ -> il.DefineLabel())
+                    let awaitResumeLabels = if awaitCount > 0 then resumeLabels.[0..awaitCount-1] else [||]
+                    let yieldResumeLabels =
+                        if yieldCount > 0 then resumeLabels.[awaitCount..awaitCount+yieldCount-1] else [||]
+                    let bodyStartLabel  = il.DefineLabel()
+                    let dispatchLabel   = il.DefineLabel()
+                    let normalDoneLabel = il.DefineLabel()
+                    let afterTryLabel   = il.DefineLabel()
+                    // Promote-load: SM fields → IL locals at MoveNext entry.
+                    for (lb, fld) in promotedShadows do
+                        il.Emit(OpCodes.Ldarg_0)
+                        il.Emit(OpCodes.Ldfld, fld)
+                        il.Emit(OpCodes.Stloc, lb)
+                    // Open try block.
+                    il.BeginExceptionBlock() |> ignore
+                    il.Emit(OpCodes.Br, dispatchLabel)
+                    il.MarkLabel(bodyStartLabel)
+                    // Build a `StateMachineInfo`-shaped wrapper so `SmAwaitInfo`
+                    // and the existing `EAwait` handler work unchanged.
+                    let aigParamFields : AsyncStateMachine.SmParamField list =
+                        aig.ParamFields
+                        |> List.map (fun (name, fld) ->
+                            { AsyncStateMachine.SmParamField.Name  = name
+                              AsyncStateMachine.SmParamField.Field = fld
+                              AsyncStateMachine.SmParamField.Type  = fld.FieldType })
+                    let fakeSmInfo : AsyncStateMachine.StateMachineInfo =
+                        { Type          = aig.Type
+                          GenericParams = [||]
+                          Ctor          = aig.Ctor
+                          State         = aig.State
+                          Builder       = aig.Builder
+                          BuilderType   = typeof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder>
+                          IsHot         = false
+                          BareReturn    = typeof<Void>
+                          IsVoid        = true
+                          ParamFields   = aigParamFields
+                          PromotedLocals = []
+                          MoveNext      = aig.MoveNext
+                          SetStateMachine = aig.SetSM }
+                    let smAwaitInfo : AsyncStateMachine.SmAwaitInfo =
+                        { Sm                = fakeSmInfo
+                          NextAwaitIndex    = 0
+                          AwaiterFields     = Dictionary()
+                          ResumeLabels      = awaitResumeLabels
+                          SuspendLeaveLabel = afterTryLabel
+                          PromotedShadows   = promotedShadows }
+                    let asyncIterYieldCtx : AsyncGenerator.AsyncIterYieldCtx =
+                        { CurrentField      = aig.Current
+                          StateField        = aig.State
+                          TcsField          = aig.TcsField
+                          TcsSetResult      = aig.TcsSetResult
+                          ElemType          = aig.ElemType
+                          NextYieldIndex    = 0
+                          YieldResumeLabels = yieldResumeLabels
+                          YieldStateBase    = awaitCount
+                          SuspendLeaveLabel = afterTryLabel
+                          PromotedShadows   = promotedShadows }
+                    // Use a void-return-typed signature so the MoveNext body
+                    // treats end-of-body as `Leave normalDoneLabel` rather than
+                    // trying to wrap a value.
+                    let asyncIterSg =
+                        { sg with IsGenerator = false
+                                  Return      = Lyric.TypeChecker.Type.TyPrim Lyric.TypeChecker.PrimType.PtUnit }
+                    let phaseBExit : PhaseBExit =
+                        { NormalDone  = normalDoneLabel
+                          AwaitInfo   = smAwaitInfo
+                          PreLocals   = preLocals
+                          ResultLocal = None }
+                    emitFunctionBody
+                        aig.MoveNext (Some fakeSmInfo) (Some phaseBExit) fn asyncIterSg lookup
+                        methodTable funcSigsTable recordTable enumTable enumCases
+                        unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
+                        importedRecordTable importedUnionTable importedUnionCaseLookup
+                        importedFuncTable importedDistinctTypeTable externTypeNames
+                        false None
+                        programTy symbols constsTable asyncLocalTable codegenDiags None
+                        (Some asyncIterYieldCtx)
+                    // Dispatch switch over all resume labels (both await and yield).
+                    il.MarkLabel(dispatchLabel)
+                    il.Emit(OpCodes.Ldarg_0)
+                    il.Emit(OpCodes.Ldfld, aig.State)
+                    il.Emit(OpCodes.Switch, resumeLabels)
+                    il.Emit(OpCodes.Br, bodyStartLabel)
+                    // Catch: set state=-2, signal exception on TCS.
+                    il.BeginCatchBlock(typeof<System.Exception>)
+                    let exLocal = il.DeclareLocal(typeof<System.Exception>)
+                    il.Emit(OpCodes.Stloc, exLocal)
+                    il.Emit(OpCodes.Ldarg_0)
+                    il.Emit(OpCodes.Ldc_I4, -2)
+                    il.Emit(OpCodes.Stfld, aig.State)
+                    il.Emit(OpCodes.Ldarg_0)
+                    il.Emit(OpCodes.Ldfld, aig.TcsField)
+                    il.Emit(OpCodes.Ldloc, exLocal)
+                    il.Emit(OpCodes.Callvirt, aig.TcsSetException)
+                    il.Emit(OpCodes.Leave, afterTryLabel)
+                    il.EndExceptionBlock()
+                    // Normal done: set state=-2, signal false on TCS (exhausted).
+                    il.MarkLabel(normalDoneLabel)
+                    il.Emit(OpCodes.Ldarg_0)
+                    il.Emit(OpCodes.Ldc_I4, -2)
+                    il.Emit(OpCodes.Stfld, aig.State)
+                    il.Emit(OpCodes.Ldarg_0)
+                    il.Emit(OpCodes.Ldfld, aig.TcsField)
+                    il.Emit(OpCodes.Ldc_I4_0)
+                    il.Emit(OpCodes.Callvirt, aig.TcsSetResult)
+                    il.Emit(OpCodes.Br, afterTryLabel)
+                    // After try.
+                    il.MarkLabel(afterTryLabel)
+                    il.Emit(OpCodes.Ret)
+                    smTypesToFinalize.Add aig.Type
+                else
+                // Eager-producer: body has yield but no await.  `RunBody` is
+                // called synchronously and buffers all values into `List<T>`.
+                let bareElemTy = TypeMap.toClrReturnTypeWith lookup sg.Return
+                let genParamSpecs =
+                    sg.Params
+                    |> List.map (fun p -> p.Name, paramClrType lookup Map.empty p)
+                smCounter <- smCounter + 1
+                let gi =
+                    AsyncGenerator.defineGeneratorClass
+                        ctx.Module nsName fn.Name smCounter bareElemTy genParamSpecs
+                let argIndices = sg.Params |> List.mapi (fun i _ -> i)
+                AsyncGenerator.emitGeneratorKickoff mb gi argIndices
+                emitFunctionBody
+                    gi.RunBody None None fn sg lookup
+                    methodTable funcSigsTable recordTable enumTable enumCases
+                    unionTable unionCaseLookup interfaceTable implsTable distinctTable protectedTable projectableTable
+                    importedRecordTable importedUnionTable importedUnionCaseLookup
+                    importedFuncTable importedDistinctTypeTable externTypeNames
+                    false None
+                    programTy symbols constsTable asyncLocalTable codegenDiags (Some gi) None
+                smTypesToFinalize.Add gi.Type
+            elif usePhaseA then
                 smCounter <- smCounter + 1
                 let header =
                     AsyncStateMachine.defineStateMachineHeader
@@ -4415,7 +4657,7 @@ let private emitAssembly
                         p.Name, paramClrType lookup smGenericSubst p)
                 let sm =
                     AsyncStateMachine.defineStateMachineBody
-                        header smBareReturn smParamSpecs []
+                        header smBareReturn smParamSpecs [] sg.IsHot
                 // Kickoff-side bare return: substitutes against
                 // `userGenericSubst` so the closed builder type's R
                 // matches the user method's own GTPB.
@@ -4432,7 +4674,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable asyncLocalTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags None None
                 smTypesToFinalize.Add sm.Type
             elif phaseBSpecOpt.IsSome then
                 // Phase B: real `AwaitUnsafeOnCompleted` suspend/resume
@@ -4459,7 +4701,7 @@ let private emitAssembly
                         p.Name, paramClrType lookup smGenericSubst p)
                 let sm =
                     AsyncStateMachine.defineStateMachineBody
-                        header smBareReturn smParamSpecs localSpecs
+                        header smBareReturn smParamSpecs localSpecs sg.IsHot
                 let kickoffBareReturn =
                     TypeMap.toClrReturnTypeWithGenerics lookup userGenericSubst sg.Return
                 let argIndices =
@@ -4525,7 +4767,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable asyncLocalTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags None None
                 // Dispatch.
                 il.MarkLabel(dispatchLabel)
                 il.Emit(OpCodes.Ldarg_0)
@@ -4571,7 +4813,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable asyncLocalTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags None None
 
         // Pass B.5 — emit impl-method bodies as instance methods.
         // Async impl methods route through the SM path the same way
@@ -4654,7 +4896,7 @@ let private emitAssembly
                 let sm =
                     AsyncStateMachine.defineStateMachine
                         ctx.Module nsName ("self_" + fd.Name) smCounter
-                        bareReturn paramSpecs []
+                        bareReturn paramSpecs [] sg.IsHot
                 let argIndices = paramSpecs |> List.mapi (fun i _ -> i)
                 AsyncStateMachine.emitKickoff mb sm [||] sm.BareReturn argIndices
                 AsyncStateMachine.emitSetStateMachine sm
@@ -4665,7 +4907,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable asyncLocalTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags None None
                 smTypesToFinalize.Add sm.Type
             elif phaseBSpecOpt.IsSome then
                 // Phase B for impl methods — same shape as the
@@ -4679,7 +4921,7 @@ let private emitAssembly
                 let sm =
                     AsyncStateMachine.defineStateMachine
                         ctx.Module nsName ("self_" + fd.Name) smCounter
-                        bareReturn paramSpecs localSpecs
+                        bareReturn paramSpecs localSpecs sg.IsHot
                 let argIndices = paramSpecs |> List.mapi (fun i _ -> i)
                 AsyncStateMachine.emitKickoff mb sm [||] sm.BareReturn argIndices
                 AsyncStateMachine.emitSetStateMachine sm
@@ -4727,7 +4969,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     false None
-                    programTy symbols constsTable asyncLocalTable codegenDiags
+                    programTy symbols constsTable asyncLocalTable codegenDiags None None
                 il.MarkLabel(dispatchLabel)
                 il.Emit(OpCodes.Ldarg_0)
                 il.Emit(OpCodes.Ldfld, sm.State)
@@ -4769,7 +5011,7 @@ let private emitAssembly
                     importedRecordTable importedUnionTable importedUnionCaseLookup
                     importedFuncTable importedDistinctTypeTable externTypeNames
                     true
-                    (Option.ofObj selfTy) programTy symbols constsTable asyncLocalTable codegenDiags
+                    (Option.ofObj selfTy) programTy symbols constsTable asyncLocalTable codegenDiags None None
 
         // Pass B.6 — emit protected-type method bodies (D-progress-079).
         //
@@ -4797,7 +5039,7 @@ let private emitAssembly
                 importedRecordTable importedUnionTable importedUnionCaseLookup
                 importedFuncTable importedDistinctTypeTable externTypeNames
                 true
-                (Some (p.Owner.Type :> System.Type)) programTy symbols constsTable asyncLocalTable codegenDiags
+                (Some (p.Owner.Type :> System.Type)) programTy symbols constsTable asyncLocalTable codegenDiags None None
 
             // Emit the public wrapper.  Pattern (with barriers +
             // invariants from D-progress-079 follow-ups):

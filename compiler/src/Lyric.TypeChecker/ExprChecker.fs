@@ -640,6 +640,15 @@ let rec inferExpr
     | EAwait inner | ESpawn inner | EOld inner ->
         infer inner
 
+    | EYield inner ->
+        let innerTy = infer inner
+        if not (Type.equiv innerTy returnType || innerTy = TyPrim PtNever || innerTy = TyError) then
+            err diags "T0095"
+                (sprintf "yield value has type '%s' but the generator's declared element type is '%s'"
+                    (Type.render innerTy) (Type.render returnType))
+                e.Span
+        TyPrim PtUnit
+
     | ESelf -> TySelf
 
     | EResult ->

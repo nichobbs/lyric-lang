@@ -200,6 +200,8 @@ func substResult(e: in Expr, name: in String): Expr {
     }
     case EAwait(inner) ->
       mkExpr(EAwait(inner = substResult(inner, name)), e.span)
+    case EYield(inner) ->
+      mkExpr(EYield(inner = substResult(inner, name)), e.span)
     case ESpawn(inner) ->
       mkExpr(ESpawn(inner = substResult(inner, name)), e.span)
     case ETry(inner) ->

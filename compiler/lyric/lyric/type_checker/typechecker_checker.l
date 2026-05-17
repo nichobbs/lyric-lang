@@ -427,6 +427,191 @@ func resolveBounds(wc: in Option[WhereClause]): List[ResolvedBound] {
   result
 }
 
+// Return true if any annotation on the function has the single-segment name `name`.
+func fnHasAnnotation(fn: in FunctionDecl, name: in String): Bool {
+  var i = 0
+  while i < fn.annotations.count {
+    val ann = fn.annotations[i]
+    if ann.name.segments.count == 1 and ann.name.segments[0] == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Return true if any expression in the block/statement/expr tree is EYield,
+// without descending into nested ELambda bodies.
+// Mirror of AsyncStateMachine.bodyContainsYield; kept here because
+// Lyric.TypeChecker cannot depend on Lyric.Emitter.  Keep both in sync.
+func exprContainsYield(e: in Expr): Bool {
+  match e.kind {
+    case EYield(_)              -> true
+    case ELambda(_, _)          -> false   // yield inside a lambda is not a generator yield
+    case ELiteral(_)            -> false
+    case EPath(_)               -> false
+    case ESelf                  -> false
+    case EResult                -> false
+    case EError                 -> false
+    case EParen(inner)          -> exprContainsYield(inner)
+    case EAwait(inner)          -> exprContainsYield(inner)
+    case ESpawn(inner)          -> exprContainsYield(inner)
+    case EOld(inner)            -> exprContainsYield(inner)
+    case EPropagate(inner)      -> exprContainsYield(inner)
+    case ETry(inner)            -> exprContainsYield(inner)
+    case EPrefix(_, inner)      -> exprContainsYield(inner)
+    case ETuple(elems)          -> listAnyExprContainsYield(elems)
+    case EList(elems)           -> listAnyExprContainsYield(elems)
+    case EInterpolated(segs) -> {
+      var found = false
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(se) -> { if exprContainsYield(se) { found = true } }
+          case ISText(_)  -> {}
+        }
+        i = i + 1
+      }
+      found
+    }
+    case EBinop(_, l, r)        -> exprContainsYield(l) or exprContainsYield(r)
+    case EAssign(t, _, v)       -> exprContainsYield(t) or exprContainsYield(v)
+    case EMember(recv, _)       -> exprContainsYield(recv)
+    case ETypeApp(f, _)         -> exprContainsYield(f)
+    case EIndex(recv, idxs)     -> exprContainsYield(recv) or listAnyExprContainsYield(idxs)
+    case ECall(f, args) -> {
+      if exprContainsYield(f) { return true }
+      var i = 0
+      while i < args.count {
+        val found = match args[i] {
+          case CAPositional(v)   -> exprContainsYield(v)
+          case CANamed(_, v, _)  -> exprContainsYield(v)
+        }
+        if found { return true }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(rb) ->
+      match rb {
+        case RBClosed(a, b)   -> exprContainsYield(a) or exprContainsYield(b)
+        case RBHalfOpen(a, b) -> exprContainsYield(a) or exprContainsYield(b)
+        case RBLowerOpen(a)   -> exprContainsYield(a)
+        case RBUpperOpen(a)   -> exprContainsYield(a)
+      }
+    case EIf(c, t, eOpt, _) -> {
+      if exprContainsYield(c) { return true }
+      val inT = match t {
+        case EOBExpr(te)  -> exprContainsYield(te)
+        case EOBBlock(tb) -> blockContainsYield(tb)
+      }
+      if inT { return true }
+      match eOpt {
+        case None    -> false
+        case Some(b) ->
+          match b {
+            case EOBExpr(ee)  -> exprContainsYield(ee)
+            case EOBBlock(eb) -> blockContainsYield(eb)
+          }
+      }
+    }
+    case EMatch(subj, arms) -> {
+      if exprContainsYield(subj) { return true }
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val inGuard = match arm.guard {
+          case None    -> false
+          case Some(g) -> exprContainsYield(g)
+        }
+        if inGuard { return true }
+        val inBody = match arm.body {
+          case EOBExpr(ae)  -> exprContainsYield(ae)
+          case EOBBlock(ab) -> blockContainsYield(ab)
+        }
+        if inBody { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EBlock(blk)   -> blockContainsYield(blk)
+    case EUnsafe(blk)  -> blockContainsYield(blk)
+    case EForall(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprContainsYield(we) }
+      inW or exprContainsYield(body)
+    }
+    case EExists(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprContainsYield(we) }
+      inW or exprContainsYield(body)
+    }
+  }
+}
+
+func listAnyExprContainsYield(es: in List[Expr]): Bool {
+  var i = 0
+  while i < es.count {
+    if exprContainsYield(es[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func blockContainsYield(blk: in Block): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtContainsYield(blk.statements[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func stmtContainsYield(stmt: in Statement): Bool {
+  match stmt.kind {
+    case SExpr(e)             -> exprContainsYield(e)
+    case SThrow(e)            -> exprContainsYield(e)
+    case SReturn(Some(e))     -> exprContainsYield(e)
+    case SReturn(None)        -> false
+    case SBreak(_)            -> false
+    case SContinue(_)         -> false
+    case SInvariant(_)        -> false
+    case SItem(_)             -> false
+    case SAssign(t, _, v)     -> exprContainsYield(t) or exprContainsYield(v)
+    case SLocal(binding) ->
+      match binding {
+        case LBVal(_, _, e)     -> exprContainsYield(e)
+        case LBLet(_, _, e)     -> exprContainsYield(e)
+        case LBVar(_, _, Some(e)) -> exprContainsYield(e)
+        case LBVar(_, _, None)  -> false
+      }
+    case STry(body, catches) -> {
+      if blockContainsYield(body) { return true }
+      var i = 0
+      while i < catches.count {
+        if blockContainsYield(catches[i].body) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case SDefer(b)         -> blockContainsYield(b)
+    case SScope(_, b)      -> blockContainsYield(b)
+    case SLoop(_, b)       -> blockContainsYield(b)
+    case SFor(_, _, iter, body) -> exprContainsYield(iter) or blockContainsYield(body)
+    case SWhile(_, cond, body)  -> exprContainsYield(cond) or blockContainsYield(body)
+    case SRule(l, r)       -> exprContainsYield(l) or exprContainsYield(r)
+  }
+}
+
+func funcBodyContainsYield(fn: in FunctionDecl): Bool {
+  match fn.body {
+    case None -> false
+    case Some(body) ->
+      match body {
+        case FBExpr(e)  -> exprContainsYield(e)
+        case FBBlock(b) -> blockContainsYield(b)
+      }
+  }
+}
+
 func resolveFunctionSig(
   tbl:  in SymbolTable,
   diag: in List[Diagnostic],
@@ -460,13 +645,29 @@ func resolveFunctionSig(
       case Some(te) -> resolveType(tbl, ctx, diag, te)
     }
 
+  val isHot  = fnHasAnnotation(fn, "hot")
+  val isGen  = funcBodyContainsYield(fn)
+
+  if isGen and not fn.isAsync {
+    diag.add(errorDiagnostic("T0094",
+      "yield is only valid inside an async function",
+      fn.span))
+  }
+  if isHot and fn.isAsync and isGen {
+    diag.add(warningDiagnostic("T0096",
+      "@hot on an async generator has no effect: the synthesised generator class uses AsyncTaskMethodBuilder, not AsyncValueTaskMethodBuilder; @hot is ignored",
+      fn.span))
+  }
+
   ResolvedSignature(
-    generics = genericNames,
-    bounds   = bounds,
-    params   = params,
-    returnTy = returnTy,
-    isAsync  = fn.isAsync,
-    span     = fn.span)
+    generics    = genericNames,
+    bounds      = bounds,
+    params      = params,
+    returnTy    = returnTy,
+    isAsync     = fn.isAsync,
+    isHot       = isHot,
+    isGenerator = fn.isAsync and isGen,
+    span        = fn.span)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

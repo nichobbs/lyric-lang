@@ -664,6 +664,7 @@ pub func inferExpr(
     }
 
     case EAwait(inner)  -> inferExpr(sc, tbl, sigs, diag, inner)
+    case EYield(inner)  -> { inferExpr(sc, tbl, sigs, diag, inner); TyPrim(PtUnit) }
     case ESpawn(inner)  -> inferExpr(sc, tbl, sigs, diag, inner)
     case EOld(inner)    -> inferExpr(sc, tbl, sigs, diag, inner)
 

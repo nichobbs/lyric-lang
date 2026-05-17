@@ -646,6 +646,13 @@ let rec private parsePrimaryExpr
         let inner = parsePostfixExpr cursor diags
         mkExpr (EAwait inner) (joinSpans opTok.Span inner.Span)
 
+    | TKeyword KwYield ->
+        let opTok = Cursor.advance cursor
+        // `yield expr` should consume the full expression so that
+        // `yield a * 2` means `yield (a * 2)`, not `(yield a) * 2`.
+        let inner = parseExpr cursor diags
+        mkExpr (EYield inner) (joinSpans opTok.Span inner.Span)
+
     | TKeyword KwSpawn ->
         let opTok = Cursor.advance cursor
         let inner = parsePostfixExpr cursor diags

@@ -647,6 +647,9 @@ func rewriteExpr(
     case EAwait(inner)     ->
       Expr(kind = EAwait(inner = rewriteExpr(state, env, inner)), span = s)
 
+    case EYield(inner)     ->
+      Expr(kind = EYield(inner = rewriteExpr(state, env, inner)), span = s)
+
     case ESpawn(inner)     ->
       Expr(kind = ESpawn(inner = rewriteExpr(state, env, inner)), span = s)
 

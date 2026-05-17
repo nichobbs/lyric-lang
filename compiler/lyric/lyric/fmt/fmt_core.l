@@ -1193,6 +1193,7 @@ pub func exprInline(minPrec: in Int, e: in Expr): String {
                             -> ifInlineStr(cond, thn, els, thenForm)
     case EMatch(scrut, arms)-> matchInlineStr(scrut, arms)
     case EAwait(inner)      -> "await " + exprInline(0, inner)
+    case EYield(inner)      -> "yield " + exprInline(0, inner)
     case ESpawn(inner)      -> "spawn " + exprInline(0, inner)
     case ETry(inner)        -> "try " + exprInline(0, inner)
     case EOld(inner)        -> "old(" + exprInline(0, inner) + ")"

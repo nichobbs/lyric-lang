@@ -40,6 +40,8 @@ pub record FuncCtx {
   labelTicker: List[Int]         // length = next label index
   loopBreak:   List[String]      // stack of loop exit labels (innermost last)
   loopCont:    List[String]      // stack of loop continue labels (innermost last)
+  // Generator body context: when Some, EYield emits LYield; when None, EYield panics.
+  genClass:    Option[String]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -653,6 +655,20 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // ── Await / spawn (bootstrap: synchronous lowering) ───────────────────
     case EAwait(inner) -> {
       lowerExpr(ctx, insns, inner)
+    }
+
+    // ── Yield: meta-insn for async generators ─────────────────────────────
+    case EYield(inner) -> {
+      match ctx.genClass {
+        case Some(_) -> {
+          lowerExpr(ctx, insns, inner)
+          insns.add(LYield)
+          JVoid
+        }
+        case None -> {
+          panic("Jvm.Codegen: 'yield' used outside an async generator body")
+        }
+      }
     }
 
     case ESpawn(inner) -> {
@@ -2189,67 +2205,89 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     // ── For loop (over array) ──────────────────────────────────────────────
     case SFor(_, pat, iter, body) -> {
       val iterTy = lowerExpr(ctx, insns, iter)
-      val iterSlot = allocSlot(ctx, "__iter_" + toString(ctx.slotTicker.count), iterTy)
-      emitStore(insns, iterSlot, iterTy)
-      val iSlot = allocSlot(ctx, "__for_i_" + toString(ctx.slotTicker.count), JInt)
-      insns.add(LIconst(v = 0))
-      emitStore(insns, iSlot, JInt)
-      // Get length.
-      val lenSlot = allocSlot(ctx, "__for_len_" + toString(ctx.slotTicker.count), JInt)
       match iterTy {
-        case JArray(_) -> {
-          emitLoad(insns, iterSlot, iterTy)
+        case JArray(elemArr) -> {
+          // Array: index-based loop.
+          val arrSlot = allocSlot(ctx, "__arr_" + toString(ctx.slotTicker.count), iterTy)
+          emitStore(insns, arrSlot, iterTy)
+          val iSlot = allocSlot(ctx, "__for_i_" + toString(ctx.slotTicker.count), JInt)
+          insns.add(LIconst(v = 0))
+          emitStore(insns, iSlot, JInt)
+          val lenSlot = allocSlot(ctx, "__for_len_" + toString(ctx.slotTicker.count), JInt)
+          emitLoad(insns, arrSlot, iterTy)
           insns.add(LArraylength)
-        }
-        case _ -> {
-          emitLoad(insns, iterSlot, iterTy)
-          val sizePs: List[JvmType] = newList()
-          insns.add(LInvokevirtual(
-            owner  = "java/util/ArrayList",
-            name   = "size",
-            params = sizePs,
-            ret    = JInt))
-        }
-      }
-      emitStore(insns, lenSlot, JInt)
-      val loopL2 = freshLabel(ctx)
-      val endL   = freshLabel(ctx)
-      insns.add(LLabel(name = loopL2))
-      emitLoad(insns, iSlot, JInt)
-      emitLoad(insns, lenSlot, JInt)
-      insns.add(LIfIcmpge(label = endL))
-      // Load element and bind to pattern.
-      match iterTy {
-        case JArray(elem) -> {
-          emitLoad(insns, iterSlot, iterTy)
+          emitStore(insns, lenSlot, JInt)
+          val loopLA = freshLabel(ctx)
+          val endLA  = freshLabel(ctx)
+          insns.add(LLabel(name = loopLA))
+          emitLoad(insns, iSlot, JInt)
+          emitLoad(insns, lenSlot, JInt)
+          insns.add(LIfIcmpge(label = endLA))
+          emitLoad(insns, arrSlot, iterTy)
           emitLoad(insns, iSlot, JInt)
           insns.add(LAaload)
+          val elemTyA = JRef(className = "java/lang/Object")
+          val elemSlotA = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyA)
+          emitStore(insns, elemSlotA, elemTyA)
+          lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA)
+          lowerBlock(ctx, insns, body)
+          emitLoad(insns, iSlot, JInt)
+          insns.add(LIconst(v = 1))
+          insns.add(LIadd)
+          emitStore(insns, iSlot, JInt)
+          insns.add(LGoto(label = loopLA))
+          insns.add(LLabel(name = endLA))
         }
         case _ -> {
-          emitLoad(insns, iterSlot, iterTy)
-          emitLoad(insns, iSlot, JInt)
-          val getPs2: List[JvmType] = newList()
-          getPs2.add(JInt)
-          insns.add(LInvokevirtual(
-            owner  = "java/util/ArrayList",
-            name   = "get",
-            params = getPs2,
-            ret    = JRef(className = "java/lang/Object")))
+          // Iterable<Object>: use iterator()/hasNext()/next().
+          // Works for both ArrayList and async-generator Iterable classes.
+          val iterableClass  = "java/lang/Iterable"
+          val iteratorClass  = "java/util/Iterator"
+          val objTy = JRef(className = "java/lang/Object")
+          val iterableSlot = allocSlot(ctx, "__iterable_" + toString(ctx.slotTicker.count), objTy)
+          emitStore(insns, iterableSlot, objTy)
+          // Call .iterator() to get an Iterator.
+          emitLoad(insns, iterableSlot, objTy)
+          val iterPs: List[JvmType] = newList()
+          insns.add(LInvokeinterface(
+            owner    = iterableClass,
+            name     = "iterator",
+            params   = iterPs,
+            ret      = JRef(className = iteratorClass),
+            argCount = 1))
+          val itorSlot = allocSlot(ctx, "__itor_" + toString(ctx.slotTicker.count), objTy)
+          emitStore(insns, itorSlot, objTy)
+          val loopLB = freshLabel(ctx)
+          val endLB  = freshLabel(ctx)
+          insns.add(LLabel(name = loopLB))
+          // hasNext()
+          emitLoad(insns, itorSlot, objTy)
+          val hnPs: List[JvmType] = newList()
+          insns.add(LInvokeinterface(
+            owner    = iteratorClass,
+            name     = "hasNext",
+            params   = hnPs,
+            ret      = JBoolean,
+            argCount = 1))
+          insns.add(LIfeq(label = endLB))
+          // next()
+          emitLoad(insns, itorSlot, objTy)
+          val nextPs: List[JvmType] = newList()
+          insns.add(LInvokeinterface(
+            owner    = iteratorClass,
+            name     = "next",
+            params   = nextPs,
+            ret      = JRef(className = "java/lang/Object"),
+            argCount = 1))
+          val elemTyB = JRef(className = "java/lang/Object")
+          val elemSlotB = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyB)
+          emitStore(insns, elemSlotB, elemTyB)
+          lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
+          lowerBlock(ctx, insns, body)
+          insns.add(LGoto(label = loopLB))
+          insns.add(LLabel(name = endLB))
         }
       }
-      // Bind element to pattern variable.
-      val elemTy = JRef(className = "java/lang/Object")
-      val elemSlot = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTy)
-      emitStore(insns, elemSlot, elemTy)
-      lowerPatternBind(ctx, insns, pat, elemSlot, elemTy)
-      lowerBlock(ctx, insns, body)
-      // Increment i.
-      emitLoad(insns, iSlot, JInt)
-      insns.add(LIconst(v = 1))
-      insns.add(LIadd)
-      emitStore(insns, iSlot, JInt)
-      insns.add(LGoto(label = loopL2))
-      insns.add(LLabel(name = endL))
     }
 
     // ── Loop (unconditional) ───────────────────────────────────────────────
@@ -2436,7 +2474,30 @@ func makeFuncCtx(pkgName: in String, className: in String): FuncCtx {
     slotTicker  = slotTicker,
     labelTicker = labelTicker,
     loopBreak   = loopBreak,
-    loopCont    = loopCont)
+    loopCont    = loopCont,
+    genClass    = None)
+}
+
+// Create a FuncCtx for lowering a generator body (runBody instance method).
+// Slot 0 = `this` (reserved); params start at slot 1.
+func makeFuncCtxForGenerator(pkgName: in String, genClass: in String): FuncCtx {
+  val slots: Map[String, Int] = newMap()
+  val types: Map[String, JvmType] = newMap()
+  val slotTicker: List[Int] = newList()
+  slotTicker.add(0)  // reserve slot 0 for `this`
+  val labelTicker: List[Int] = newList()
+  val loopBreak: List[String] = newList()
+  val loopCont: List[String] = newList()
+  FuncCtx(
+    pkgName     = pkgName,
+    className   = genClass,
+    slots       = slots,
+    types       = types,
+    slotTicker  = slotTicker,
+    labelTicker = labelTicker,
+    loopBreak   = loopBreak,
+    loopCont    = loopCont,
+    genClass    = Some(value = genClass))
 }
 
 pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String): LFunc {
@@ -2661,6 +2722,236 @@ func isMainFunc(decl: in FunctionDecl): Bool {
   decl.name == "main" and decl.params.count == 0
 }
 
+// ── Async generator detection ─────────────────────────────────────────────────
+
+func exprContainsYield(e: in Expr): Bool {
+  match e.kind {
+    case EYield(_)         -> true
+    case EAwait(inner)     -> exprContainsYield(inner)
+    case ESpawn(inner)     -> exprContainsYield(inner)
+    case EParen(inner)     -> exprContainsYield(inner)
+    case ETry(inner)       -> exprContainsYield(inner)
+    case EPropagate(inner) -> exprContainsYield(inner)
+    case EOld(inner)       -> exprContainsYield(inner)
+    case EPrefix(_, inner) -> exprContainsYield(inner)
+    case EBinop(_, l, r)   -> exprContainsYield(l) or exprContainsYield(r)
+    case EAssign(t, _, v)  -> exprContainsYield(t) or exprContainsYield(v)
+    case EBlock(blk)       -> blockContainsYield(blk)
+    case EUnsafe(blk)      -> blockContainsYield(blk)
+    case EIf(cond, thn, els, _) -> {
+      if exprContainsYield(cond) { return true }
+      if eobContainsYield(thn)   { return true }
+      match els {
+        case Some(e2) -> eobContainsYield(e2)
+        case None     -> false
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      if exprContainsYield(scrut) { return true }
+      var i = 0
+      while i < arms.count {
+        if eobContainsYield(arms[i].body) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case ECall(fn, args) -> {
+      if exprContainsYield(fn) { return true }
+      var i = 0
+      while i < args.count {
+        val argContains = match args[i] {
+          case CAPositional(e)   -> exprContainsYield(e)
+          case CANamed(_, e, _)  -> exprContainsYield(e)
+        }
+        if argContains { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EIndex(recv, idxs) -> {
+      if exprContainsYield(recv) { return true }
+      var i = 0
+      while i < idxs.count {
+        if exprContainsYield(idxs[i]) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EMember(recv, _)  -> exprContainsYield(recv)
+    case ETuple(exprs)     -> listContainsYield(exprs)
+    case EList(exprs)      -> listContainsYield(exprs)
+    case ETypeApp(fn, _)   -> exprContainsYield(fn)
+    case _                 -> false
+  }
+}
+
+func listContainsYield(exprs: in List[Expr]): Bool {
+  var i = 0
+  while i < exprs.count {
+    if exprContainsYield(exprs[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func eobContainsYield(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(e)   -> exprContainsYield(e)
+    case EOBBlock(blk) -> blockContainsYield(blk)
+  }
+}
+
+func blockContainsYield(blk: in Block): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtContainsYield(blk.statements[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func stmtContainsYield(stmt: in Statement): Bool {
+  match stmt.kind {
+    case SExpr(e)  -> exprContainsYield(e)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> exprContainsYield(init)
+        case LBLet(_, _, init) -> exprContainsYield(init)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> exprContainsYield(init)
+            case None       -> false
+          }
+        }
+      }
+    }
+    case SReturn(eOpt) -> {
+      match eOpt {
+        case Some(e) -> exprContainsYield(e)
+        case None    -> false
+      }
+    }
+    case SAssign(t, _, v)  -> exprContainsYield(t) or exprContainsYield(v)
+    case SThrow(e)         -> exprContainsYield(e)
+    case SWhile(_, cond, body) -> exprContainsYield(cond) or blockContainsYield(body)
+    case SLoop(_, body)        -> blockContainsYield(body)
+    case SFor(_, _, iter, body) -> exprContainsYield(iter) or blockContainsYield(body)
+    case SBreak(_)             -> false
+    case SContinue(_)          -> false
+    case STry(body, catches)   -> {
+      if blockContainsYield(body) { return true }
+      var i = 0
+      while i < catches.count {
+        if blockContainsYield(catches[i].body) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case SDefer(body)    -> blockContainsYield(body)
+    case SScope(_, body) -> blockContainsYield(body)
+    case SInvariant(e)   -> exprContainsYield(e)
+    case SRule(l, r)     -> exprContainsYield(l) or exprContainsYield(r)
+    case SItem(_)        -> false
+  }
+}
+
+func funcBodyContainsYield(decl: in FunctionDecl): Bool {
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> blockContainsYield(blk)
+        case FBExpr(e)    -> exprContainsYield(e)
+      }
+    }
+    case None -> false
+  }
+}
+
+// Lower a generator function body to a flat list of LInsn.
+// Params are accessed as fields on `this` (slot 0); the preamble loads
+// each param field into a local slot so the body can use them normally.
+func lowerGeneratorBody(
+  decl:     in FunctionDecl,
+  pkgName:  in String,
+  genClass: in String
+): List[LInsn] {
+  val insns: List[LInsn] = newList()
+  val ctx = makeFuncCtxForGenerator(pkgName, genClass)
+
+  // Preamble: load each param from this.<field> into a local slot.
+  var pi = 0
+  while pi < decl.params.count {
+    val p = decl.params[pi]
+    val paramTy = typeExprToJvm(p.ty, pkgName)
+    val slot = allocSlot(ctx, p.name, paramTy)
+    // load this (slot 0), then getfield, then store into slot
+    insns.add(LAload(slot = 0))
+    insns.add(LGetfield(owner = genClass, name = p.name, t = paramTy))
+    emitStore(insns, slot, paramTy)
+    pi = pi + 1
+  }
+
+  // Lower the body.
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> lowerBlock(ctx, insns, block)
+        case FBExpr(e)      -> { lowerExpr(ctx, insns, e); () }
+      }
+    }
+    case None -> {}
+  }
+
+  insns
+}
+
+// Synthesise the static factory LFunc that constructs a generator instance.
+// `public static Object name(params...) { return new GenClass(params...); }`
+// This is added to LPFuncs so it lands in the same class file as main().
+func makeGeneratorFactory(
+  decl:     in FunctionDecl,
+  genClass: in String,
+  pkgName:  in String
+): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LNew(className = genClass))
+  insns.add(LDup)
+
+  val ctorParams: List[JvmType] = newList()
+  var slot = 0
+  var pi = 0
+  while pi < decl.params.count {
+    val pty = typeExprToJvm(decl.params[pi].ty, pkgName)
+    ctorParams.add(pty)
+    match pty {
+      case JLong   -> { insns.add(LLload(slot = slot)); slot = slot + 2 }
+      case JDouble -> { insns.add(LDload(slot = slot)); slot = slot + 2 }
+      case JFloat  -> { insns.add(LFload(slot = slot)); slot = slot + 1 }
+      case JRef(_) -> { insns.add(LAload(slot = slot)); slot = slot + 1 }
+      // JBoolean, JByte, JChar, JShort are all JVM category-1 int types;
+      // iload/istore works for all of them.
+      case _       -> { insns.add(LIload(slot = slot)); slot = slot + 1 }
+    }
+    pi = pi + 1
+  }
+
+  insns.add(LInvokespecial(
+    owner  = genClass,
+    name   = "<init>",
+    params = ctorParams,
+    ret    = JVoid))
+  insns.add(LAreturn)
+
+  LFunc(
+    flags     = 0x0009,   // ACC_PUBLIC | ACC_STATIC
+    name      = decl.name,
+    params    = ctorParams,
+    ret       = JRef(className = "java/lang/Object"),
+    insns     = insns,
+    maxStack  = 0,        // inferred from peak-stack tracking
+    maxLocals = 0)        // inferred from slot scan
+}
+
 pub func codegenPackage(file: in SourceFile): LPackage {
   val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
@@ -2674,9 +2965,37 @@ pub func codegenPackage(file: in SourceFile): LPackage {
     val item = file.items[i]
     match item.kind {
       case IFunc(decl) -> {
-        fns.add(lowerFunc(decl, pkgName, funcsClass))
-        if isMainFunc(decl) {
-          hasMain = true
+        if decl.isAsync and funcBodyContainsYield(decl) {
+          // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
+          val genClass  = pkgName + "$" + decl.name + "$Gen"
+          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass)
+          val genParams: List[LGenParam] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            val p = decl.params[pi]
+            genParams.add(LGenParam(paramName = p.name, paramType = typeExprToJvm(p.ty, pkgName)))
+            pi = pi + 1
+          }
+          val elemTy =
+            match decl.ret {
+              case Some(te) -> typeExprToJvm(te, pkgName)
+              case None     -> JRef(className = "java/lang/Object")
+            }
+          val genFunc = LGenFunc(
+            generatorClass = genClass,
+            hostClass      = "",     // pipeline adds factory to LPFuncs instead
+            methodName     = decl.name,
+            elemType       = elemTy,
+            params         = genParams,
+            bodyInsns      = bodyInsns)
+          items.add(LPAsyncGenerator(g = genFunc))
+          // Factory method lives alongside main() in the functions class.
+          fns.add(makeGeneratorFactory(decl, genClass, pkgName))
+        } else {
+          fns.add(lowerFunc(decl, pkgName, funcsClass))
+          if isMainFunc(decl) {
+            hasMain = true
+          }
         }
       }
       case IRecord(decl) -> {

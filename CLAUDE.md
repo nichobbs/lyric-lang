@@ -610,13 +610,15 @@ dotnet run --project tests/Lyric.Cli.Tests
 dotnet run --project tests/Lyric.Verifier.Tests
 ```
 
-M1.4 (in progress) layers contract elaboration, async, FFI, variant-bearing
-unions, interfaces, and monomorphised generics onto the M1.3 emitter. Three
-constructs ship in *bootstrap-grade* form per `docs/03-decision-log.md` D035:
-generics are monomorphised at call sites instead of reified in metadata; async
-is lowered to a blocking `.GetAwaiter().GetResult()` shim instead of a real
-state machine; FFI is hand-routed through `Lyric.Stdlib` instead of
-reflection-driven. The full lowerings are tracked into Phase 2 / Phase 4 work.
+M1.4 shipped contract elaboration, async, FFI, variant-bearing unions,
+interfaces, and monomorphised generics in the F# bootstrap emitter.
+One construct remains bootstrap-grade per `docs/03-decision-log.md` D035:
+FFI is hand-routed through BCL externs instead of reflection-driven.
+Async ships with real `IAsyncStateMachine` state machines (Phase A–B+++,
+D-progress-033..260), including `IAsyncEnumerable<T>` generator synthesis.
+All new language features beyond this point are implemented in the
+self-hosted Lyric compiler under `compiler/lyric/` — the F# surface is
+frozen to bootstrap shims only.
 
 ## Glossary (project-specific terms)
 

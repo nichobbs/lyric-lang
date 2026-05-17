@@ -349,12 +349,82 @@ let private resolveFunctionSig
         | Some t -> Resolver.resolveType table ctx diags t
         | None   -> TyPrim PtUnit
 
-    { Generics = genericNames
-      Bounds   = bounds
-      Params   = parameters
-      Return   = returnType
-      IsAsync  = fn.IsAsync
-      Span     = fn.Span }
+    let isHot =
+        fn.Annotations
+        |> List.exists (fun a ->
+            match a.Name.Segments with ["hot"] -> true | _ -> false)
+    // Mirror of AsyncStateMachine.bodyContainsYield; kept here because
+    // Lyric.TypeChecker cannot depend on Lyric.Emitter.  Keep both in sync.
+    let isGen =
+        let rec exprHasYield (e: Expr) =
+            match e.Kind with
+            | EYield _ -> true
+            | ELambda _ -> false
+            | ELiteral _ | EPath _ | ESelf | EResult | EError -> false
+            | EInterpolated segs ->
+                segs |> List.exists (function ISText _ -> false | ISExpr e -> exprHasYield e)
+            | EParen e | EAwait e | ESpawn e | EOld e | EPropagate e | ETry e -> exprHasYield e
+            | ETuple es | EList es -> es |> List.exists exprHasYield
+            | EIf (c, t, eOpt, _) ->
+                exprHasYield c
+                || (match t with EOBExpr e -> exprHasYield e | EOBBlock b -> blockHasYield b)
+                || (match eOpt with Some b -> (match b with EOBExpr e -> exprHasYield e | EOBBlock b -> blockHasYield b) | None -> false)
+            | EMatch (s, arms) ->
+                exprHasYield s
+                || arms |> List.exists (fun a ->
+                    (match a.Guard with Some g -> exprHasYield g | None -> false)
+                    || (match a.Body with EOBExpr e -> exprHasYield e | EOBBlock b -> blockHasYield b))
+            | EForall (_, w, body) | EExists (_, w, body) ->
+                (match w with Some ww -> exprHasYield ww | None -> false) || exprHasYield body
+            | ECall (f, args) ->
+                exprHasYield f || args |> List.exists (function CAPositional v | CANamed (_, v, _) -> exprHasYield v)
+            | ETypeApp (f, _) -> exprHasYield f
+            | EIndex (r, idxs) -> exprHasYield r || idxs |> List.exists exprHasYield
+            | EMember (r, _) -> exprHasYield r
+            | EPrefix (_, op) -> exprHasYield op
+            | EBinop (_, l, r) -> exprHasYield l || exprHasYield r
+            | ERange rb ->
+                match rb with
+                | RBClosed (a, b) | RBHalfOpen (a, b) -> exprHasYield a || exprHasYield b
+                | RBLowerOpen a | RBUpperOpen a -> exprHasYield a
+            | EAssign (t, _, v) -> exprHasYield t || exprHasYield v
+            | EBlock b | EUnsafe b -> blockHasYield b
+        and blockHasYield (b: Block) = b.Statements |> List.exists stmtHasYield
+        and stmtHasYield (s: Statement) =
+            match s.Kind with
+            | SExpr e | SThrow e -> exprHasYield e
+            | SReturn (Some e) -> exprHasYield e
+            | SReturn None | SBreak _ | SContinue _ | SInvariant _ | SItem _ -> false
+            | SAssign (t, _, v) -> exprHasYield t || exprHasYield v
+            | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> exprHasYield e
+            | SLocal (LBVar (_, _, Some e)) -> exprHasYield e
+            | SLocal (LBVar (_, _, None)) -> false
+            | STry (body, catches) ->
+                blockHasYield body || catches |> List.exists (fun c -> blockHasYield c.Body)
+            | SDefer b | SScope (_, b) | SLoop (_, b) -> blockHasYield b
+            | SFor (_, _, iter, body) -> exprHasYield iter || blockHasYield body
+            | SWhile (_, cond, body) -> exprHasYield cond || blockHasYield body
+            | SRule (lhs, rhs) -> exprHasYield lhs || exprHasYield rhs
+        match fn.Body with
+        | None -> false
+        | Some (FBExpr e) -> exprHasYield e
+        | Some (FBBlock b) -> blockHasYield b
+    if isGen && not fn.IsAsync then
+        diags.Add(Diagnostic.error "T0094"
+            "yield is only valid inside an async function"
+            fn.Span)
+    if isHot && fn.IsAsync && isGen then
+        diags.Add(Diagnostic.warning "T0096"
+            "@hot on an async generator has no effect: the synthesised generator class uses AsyncTaskMethodBuilder, not AsyncValueTaskMethodBuilder; @hot is ignored"
+            fn.Span)
+    { Generics     = genericNames
+      Bounds       = bounds
+      Params       = parameters
+      Return       = returnType
+      IsAsync      = fn.IsAsync
+      IsHot        = isHot
+      IsGenerator  = fn.IsAsync && isGen
+      Span         = fn.Span }
 
 /// Type-check a parser-produced source file with optional pre-
 /// registered "imported" items (e.g. those pulled in via `import
