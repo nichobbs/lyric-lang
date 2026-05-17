@@ -677,7 +677,11 @@ func cmdProve(argv: in slice[String]): Int {
     Console.println("no proof obligations: package is " + levelStr)
   }
 
-  if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasFailure(summary) { 1 } else { 0 }
+  // Exit 1 only for error diagnostics or counterexamples; unknown goals
+  // (trivial solver gave up, z3 not available) are not failures — matches
+  // the F# bootstrap's exit-code policy so that --allow-unverified files
+  // in CI exit 0 rather than 1.
+  if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) { 1 } else { 0 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

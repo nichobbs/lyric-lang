@@ -23,25 +23,25 @@ import Std.Errors
 import Std.File
 import Std.Process
 import Std.ProcessCapture
-import Std.Environment
+import Std.Environment as Environment
 import Std.String as Str
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1. Subprocess helpers  (mirrors emitter.l)
+// §1. Subprocess helpers  (mirrors emitter.l §2 — keep in sync)
 // ─────────────────────────────────────────────────────────────────────────────
 
 func lyrExe(): String {
-  val cliDll = getVarOrDefault("LYRIC_CLI_DLL", "")
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
   if Str.isNotEmpty(cliDll) {
-    getVarOrDefault("LYRIC_BIN", "dotnet")
+    Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
   } else {
-    getVarOrDefault("LYRIC_BIN", "lyric")
+    Environment.getVarOrDefault("LYRIC_BIN", "lyric")
   }
 }
 
 func lyrPrefixArgs(): List[String] {
   val prefix: List[String] = newList()
-  val cliDll = getVarOrDefault("LYRIC_CLI_DLL", "")
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
   if Str.isNotEmpty(cliDll) {
     prefix.add("exec")
     prefix.add(cliDll)

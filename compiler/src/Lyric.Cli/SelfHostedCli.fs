@@ -39,6 +39,10 @@ let private ensureCliAssembly () : string =
                      sprintf "lyric-cli-bridge-%d"
                          (Diagnostics.Process.GetCurrentProcess().Id))
     Directory.CreateDirectory scratch |> ignore
+    // Register a best-effort cleanup so the per-process scratch directory
+    // does not accumulate across CI runs.
+    AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
+        try Directory.Delete(scratch, recursive = true) with _ -> ())
     let dllPath = Path.Combine(scratch, "Lyric.CliBridge.dll")
     let req : Emitter.EmitRequest =
         { Source             = driverSource

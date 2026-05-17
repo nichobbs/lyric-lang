@@ -23,10 +23,10 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.File as File
+import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
-import Std.String as Str
 
 import Lyric.Lexer
 
@@ -54,7 +54,12 @@ pub record EmitResult {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Subprocess helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
+//
+// NOTE: lyrExe / lyrPrefixArgs / lyrArgs are duplicated verbatim in
+// contract_meta.l.  If you change one, change both.  A shared
+// `Lyric.CliShell` package would eliminate the duplication once the import
+// graph permits it.
+//
 // The executable to invoke.  When LYRIC_CLI_DLL is set this is "dotnet";
 // when only LYRIC_BIN is set (native binary or wrapper script) this is
 // that value; otherwise fall back to "lyric" on PATH.
@@ -101,12 +106,12 @@ func tempBase(): String {
 // Write `source` to a temp file so `--internal-build` can read it.
 // Returns the file path, or an IOError if the write fails.
 func writeTempSource(source: in String, assemblyName: in String): Result[String, IOError] {
-  val dir = tempBase() + "/lyric-emit"
+  val dir = Path.join(tempBase(), "lyric-emit")
   match File.createDir(dir) {
     case Ok(_)  -> ()
     case Err(_) -> ()   // ignore; dir may already exist
   }
-  val path = dir + "/" + assemblyName + "__src.l"
+  val path = Path.join(dir, assemblyName + "__src.l")
   match File.writeText(path, source) {
     case Ok(_)  -> Ok(value = path)
     case Err(e) -> Err(error = e)

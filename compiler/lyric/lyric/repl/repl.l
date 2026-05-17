@@ -25,10 +25,10 @@ import Std.Collections
 import Std.Console as Console
 import Std.Errors
 import Std.File as File
+import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
-import Std.String as Str
 
 import Lyric.Emitter as Emitter
 
@@ -59,8 +59,10 @@ func tempBase(): String {
       Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
+// Remove all elements from `lst`.
+// Removes from the tail to stay O(n) (removeAt(0) on a list is O(n) per call).
 func clearList(lst: in List[String]): Unit {
-  while lst.count > 0 { lst.removeAt(0) }
+  while lst.count > 0 { lst.removeAt(lst.count - 1) }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,9 +99,15 @@ func buildScript(topLevel: in List[String], body: in List[String]): String {
 
 func runScript(
     script:  in String,
-    srcFile: in String,
-    dllFile: in String
+    dllFile: in String,
+    verbose: in Bool
 ): Unit {
+  if verbose {
+    Console.println("--- script ---")
+    Console.println(script)
+    Console.println("--- end ---")
+  }
+
   val req = Emitter.EmitRequest(
     source       = script,
     assemblyName = "lyric_repl_session",
@@ -135,16 +143,30 @@ func runScript(
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func runRepl(argv: in slice[String]): Int {
+  // Parse flags.
+  var verbose = false
+  var i = 0
+  while i < argv.length {
+    if argv[i] == "--verbose" or argv[i] == "-v" { verbose = true }
+    i += 1
+  }
+
   Console.println(BANNER())
   Console.println("")
 
-  val replDir = tempBase() + "/lyric-repl"
+  // Temp directory.  Each concurrent REPL session should use a distinct
+  // directory to avoid file collisions; callers can set LYRIC_REPL_DIR.
+  // NOTE: two simultaneous `lyric repl` invocations sharing the same
+  // LYRIC_REPL_DIR will race on session.l / session.dll.  A future
+  // stdlib Process.pid() binding would let us append the PID suffix.
+  val replDir = Environment.getVarOrDefault("LYRIC_REPL_DIR",
+    Path.join(tempBase(), "lyric-repl"))
   match File.createDir(replDir) {
     case Ok(_)  -> ()
     case Err(_) -> ()
   }
-  val srcFile = replDir + "/session.l"
-  val dllFile = replDir + "/session.dll"
+  val srcFile = Path.join(replDir, "session.l")
+  val dllFile = Path.join(replDir, "session.dll")
 
   val topLevel: List[String] = newList()
   val body: List[String]     = newList()
@@ -207,7 +229,7 @@ pub func runRepl(argv: in slice[String]): Int {
               clearList(fnBuf)
               Console.println("Definition added.")
               if body.count > 0 {
-                runScript(buildScript(topLevel, body), srcFile, dllFile)
+                runScript(buildScript(topLevel, body), dllFile, verbose)
               }
             } else {
               Console.println("(empty definition — nothing added)")
@@ -217,7 +239,7 @@ pub func runRepl(argv: in slice[String]): Int {
           if body.count == 0 and topLevel.count == 0 {
             Console.println("(nothing to run)")
           } else {
-            runScript(buildScript(topLevel, body), srcFile, dllFile)
+            runScript(buildScript(topLevel, body), dllFile, verbose)
           }
         } else if Str.isEmpty(t) {
           if fnMode { fnBuf.add(line) }
@@ -226,7 +248,7 @@ pub func runRepl(argv: in slice[String]): Int {
           fnBuf.add(line)
         } else {
           body.add(line)
-          runScript(buildScript(topLevel, body), srcFile, dllFile)
+          runScript(buildScript(topLevel, body), dllFile, verbose)
         }
       }
     }
