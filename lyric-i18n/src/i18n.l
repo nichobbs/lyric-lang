@@ -365,62 +365,29 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
 }
 
 // Build an InProcessTranslationStore from a JSON array of [localeKey, key, value] triples.
-// The kernel produces a JSON array of 3-element arrays; we do a simple scan here.
+// The kernel produces a JSON array of 3-element arrays; parsed via Std.Json.
 func buildStoreFromTriples(triplesJson: in String): InProcessTranslationStore {
   var m: Map[String, Map[String, String]] = Map.empty()
-  // Simple scan: find each inner array ["localeKey","key","value"].
-  var pos: Int = 0
-  while pos < triplesJson.length {
-    val start = triplesJson.indexOf("[\"", pos)
-    if start < 0 {
-      pos = triplesJson.length
-    } else {
-      val end = triplesJson.indexOf("]", start)
-      if end < 0 {
-        pos = triplesJson.length
-      } else {
-        val triple = triplesJson.substring(start, end + 1)
-        val parts  = splitTriple(triple)
-        if parts.length == 3 {
-          val lk  = parts[0]
-          val key = parts[1]
-          val val_ = parts[2]
-          match m.get(lk) {
-            case Some(inner) -> {
-              val updated = inner.set(key, val_)
-              m = m.set(lk, updated)
-            }
-            case None -> {
-              val fresh: Map[String, String] = Map.empty().set(key, val_)
-              m = m.set(lk, fresh)
-            }
-          }
-        }
-        pos = end + 1
+  val doc    = Std.Json.parseJson(triplesJson)
+  val root   = Std.Json.rootElement(doc)
+  var outerEn = Std.Json.enumerateArray(root)
+  while Std.Json.arrayMoveNext(outerEn) {
+    val triple  = Std.Json.arrayCurrent(outerEn)
+    var innerEn = Std.Json.enumerateArray(triple)
+    var parts: [String] = []
+    while Std.Json.arrayMoveNext(innerEn) {
+      val elem = Std.Json.arrayCurrent(innerEn)
+      parts = parts + [Std.Json.getString(elem)]
+    }
+    if parts.length == 3 {
+      val lk  = parts[0]
+      val key = parts[1]
+      val value = parts[2]
+      match m.get(lk) {
+        case Some(inner) -> m = m.set(lk, inner.set(key, value))
+        case None        -> m = m.set(lk, Map.empty().set(key, value))
       }
     }
   }
   return InProcessTranslationStore(translations = m)
-}
-
-// Split a triple JSON array ["a","b","c"] into a list of three strings.
-// Handles simple string values; does not unescape embedded backslash sequences.
-func splitTriple(triple: in String): [String] {
-  var result: [String] = []
-  var i:      Int      = 0
-  while i < triple.length {
-    val ch = triple.charAt(i).toString()
-    if ch == "\"" {
-      var j: Int = i + 1
-      while j < triple.length and triple.charAt(j).toString() != "\"" {
-        j = j + 1
-      }
-      val s = triple.substring(i + 1, j)
-      result = result + [s]
-      i = j + 1
-    } else {
-      i = i + 1
-    }
-  }
-  return result
 }

@@ -465,7 +465,7 @@ func jsonString(s: in String): String {
   var out = "\""
   var i   = 0
   while i < s.length {
-    val ch = s.charAt(i)
+    val ch = s.charAt(i).toString()
     if ch == "\"" {
       out = out + "\\\""
     } else if ch == "\\" {

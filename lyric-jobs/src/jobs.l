@@ -282,7 +282,7 @@ impl JobScheduler for InProcessJobScheduler {
     val spec = JobSpec(
       id          = id,
       name        = name,
-      payload     = "{\"cron\":\"" + cronExpr + "\",\"payload\":" + payload + "}",
+      payload     = "{\"cron\":\"" + jsonEscapeStr(cronExpr) + "\",\"payload\":" + payload + "}",
       maxAttempts = maxAttempts,
       timeoutMs   = timeoutMs,
       scheduledAt = 0L)
@@ -577,6 +577,30 @@ func findObjectEnd(json: in String, start: in Int): Int {
     i = i + 1
   }
   return -1
+}
+
+// Escape a string for JSON serialization (handles \, ", and common control chars).
+func jsonEscapeStr(s: in String): String {
+  var result = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.charAt(i).toString()
+    if ch == "\\" {
+      result = result + "\\\\"
+    } else if ch == "\"" {
+      result = result + "\\\""
+    } else if ch == "\n" {
+      result = result + "\\n"
+    } else if ch == "\r" {
+      result = result + "\\r"
+    } else if ch == "\t" {
+      result = result + "\\t"
+    } else {
+      result = result + ch
+    }
+    i = i + 1
+  }
+  return result
 }
 
 // Extract a string field from a JSON object literal (simple, no nesting).

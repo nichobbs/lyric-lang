@@ -489,8 +489,6 @@ func parseHeadersJson(json: in String): [MessageHeader] {
 }
 
 // Extract a string field value from a JSON object literal.
-// Handles simple escaped strings only; sufficient for broker metadata.
-// Extract a string field value from a JSON object literal.
 // Limitation: stops at the first unescaped quote after the opening quote;
 // values containing \" (escaped quotes) will be truncated at the first \".
 // All field values passed through here must be pre-escaped before embedding

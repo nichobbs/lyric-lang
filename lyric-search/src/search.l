@@ -424,18 +424,42 @@ pub func makeDoc(index: in String, id: in String, fields: in Map[String, String]
 
 // ─── Private serialization helpers ───────────────────────────────────────────
 
+// Escape a string for JSON serialization (handles \, ", and common control chars).
+func jsonEscapeStr(s: in String): String {
+  var result = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.charAt(i).toString()
+    if ch == "\\" {
+      result = result + "\\\\"
+    } else if ch == "\"" {
+      result = result + "\\\""
+    } else if ch == "\n" {
+      result = result + "\\n"
+    } else if ch == "\r" {
+      result = result + "\\r"
+    } else if ch == "\t" {
+      result = result + "\\t"
+    } else {
+      result = result + ch
+    }
+    i = i + 1
+  }
+  return result
+}
+
 // Serialize a SearchDocument to a minimal JSON object for the kernel.
 func serializeDoc(doc: in SearchDocument): String {
   var fieldsJson = "{"
   var first = true
   for (k, v) in doc.fields {
     if not first { fieldsJson = fieldsJson + "," }
-    fieldsJson = fieldsJson + "\"" + k + "\":\"" + v + "\""
+    fieldsJson = fieldsJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
     first = false
   }
   fieldsJson = fieldsJson + "}"
-  return "{\"id\":\"" + doc.id + "\","
-       + "\"index\":\"" + doc.index + "\","
+  return "{\"id\":\"" + jsonEscapeStr(doc.id) + "\","
+       + "\"index\":\"" + jsonEscapeStr(doc.index) + "\","
        + "\"fields\":" + fieldsJson + "}"
 }
 
@@ -453,8 +477,8 @@ func serializeDocList(docs: in [SearchDocument]): String {
 
 // Serialize a SearchQuery to JSON for the kernel.
 func serializeQuery(query: in SearchQuery): String {
-  return "{\"index\":\"" + query.index + "\","
-       + "\"query\":\"" + query.query + "\","
+  return "{\"index\":\"" + jsonEscapeStr(query.index) + "\","
+       + "\"query\":\"" + jsonEscapeStr(query.query) + "\","
        + "\"from\":" + query.from.toString() + ","
        + "\"size\":" + query.size.toString() + "}"
 }
