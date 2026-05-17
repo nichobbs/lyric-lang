@@ -34,14 +34,21 @@ match Mq.receive(consumer) {
 }
 ```
 
-## Supported brokers
+## Supported platforms and brokers
 
-Feature-gate the broker you need in `lyric.toml`:
+`Lyric.Mq` is multi-platform; activate the target platform feature and
+one broker feature when you build (per `docs/24-build-features.md`):
 
-```toml
-[features]
-mq = ["rabbitmq"]  # or "azureservicebus", "sqs", "kafka"
+```sh
+lyric build --features dotnet,rabbitmq
 ```
+
+Platform features:
+
+- `dotnet` — Target the .NET kernel (`Mq.Kernel.Net`)
+- `jvm` — Target the JVM kernel (`Mq.Kernel.Jvm`)
+
+Broker features:
 
 - `rabbitmq` — AMQP 0.9.1 via RabbitMQ
 - `azureservicebus` — Azure Service Bus queues

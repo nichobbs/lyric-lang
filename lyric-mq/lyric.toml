@@ -17,6 +17,8 @@ output_assembly = "Mq.dll"
 "Mq.Kernel.Jvm"   = "src/_kernel/jvm"
 
 [features]
+dotnet          = []   # Target the .NET kernel (`Mq.Kernel.Net`)
+jvm             = []   # Target the JVM kernel (`Mq.Kernel.Jvm`)
 rabbitmq        = []   # RabbitMQ via AMQP 0-9-1 (RabbitMQ.Client on .NET)
 azureservicebus = []   # Azure Service Bus (Azure.Messaging.ServiceBus on .NET)
 sqs             = []   # Amazon SQS (AWSSDK.SQS on .NET)
