@@ -16,7 +16,7 @@ let private hasDiag (code: string) (diags: Diagnostic list) =
     diags |> List.exists (fun d -> d.Code = code)
 
 let tests =
-    testList "Verifier — ModeCheck (V0001/V0002/V0004/V0005)" [
+    testList "Verifier — ModeCheck (V0001/V0002/V0004/V0005/V0012 async-and-yield)" [
 
         test "@runtime_checked package emits no mode diagnostics" {
             let src = """
@@ -230,5 +230,48 @@ let tests =
             let parsed = parse src
             let _, diags = checkFile parsed.File
             Expect.isFalse (hasDiag "V0009" diags) "no V0009 inside unsafe block"
+        }
+
+        test "[V0012] async function in proof-required code is rejected" {
+            // Before #311 the verifier hard-coded IsAsync = false and
+            // produced vacuously-discharged proofs on async bodies. The
+            // V0012 diagnostic surfaces the limitation explicitly so a
+            // user has to refactor or downgrade to @runtime_checked.
+            let src = """
+                @proof_required
+                package P
+
+                pub async func work(x: Int): Int = x + 1
+                """
+            let _, diags = parseAndCheck src
+            Expect.isTrue (hasDiag "V0012" diags)
+                "expected V0012 for async @proof_required function"
+        }
+
+        test "[V0012] async function in @runtime_checked code is fine" {
+            let src = """
+                @runtime_checked
+                package P
+
+                pub async func work(x: Int): Int = x + 1
+                """
+            let _, diags = parseAndCheck src
+            Expect.isFalse (hasDiag "V0012" diags)
+                "async is fine outside proof-required code"
+        }
+
+        test "[V0012] yield in proof-required generator is rejected" {
+            let src = """
+                @proof_required
+                package P
+
+                pub func source(): Int {
+                  yield 1
+                  return 0
+                }
+                """
+            let _, diags = parseAndCheck src
+            Expect.isTrue (hasDiag "V0012" diags)
+                "expected V0012 for yield in proof-required function"
         }
     ]

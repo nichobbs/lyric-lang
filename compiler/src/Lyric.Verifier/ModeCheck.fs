@@ -43,6 +43,7 @@ let private collectCalls
         (onCall: string -> Span -> unit)
         (onAwait: Span -> unit)
         (onSpawn: Span -> unit)
+        (onYield: Span -> unit)
         (onUnsafe: Span -> unit)
         (e: Expr) : unit =
 
@@ -50,6 +51,7 @@ let private collectCalls
         match e.Kind with
         | EAwait inner -> onAwait e.Span; visitExpr inner
         | ESpawn inner -> onSpawn e.Span; visitExpr inner
+        | EYield inner -> onYield e.Span; visitExpr inner
         | ECall(fn, args) ->
             (match fn.Kind with
              | EPath p ->
@@ -62,7 +64,7 @@ let private collectCalls
                 match a with
                 | CANamed(_, v, _)   -> visitExpr v
                 | CAPositional v     -> visitExpr v
-        | EParen inner | ETry inner | EOld inner | EPropagate inner | EYield inner -> visitExpr inner
+        | EParen inner | ETry inner | EOld inner | EPropagate inner -> visitExpr inner
         | ETuple xs | EList xs -> xs |> List.iter visitExpr
         | EIf(c, t, eOpt, _) ->
             visitExpr c
@@ -187,6 +189,22 @@ let private checkFunction
     if not (VerificationLevel.isProofRequired fnLevel) then ()
     else
 
+    // V0012: the v1 verifier does not model the async / generator
+    // suspension semantics.  Quietly producing "discharged" on a
+    // function the wp/sp calculus cannot soundly reason about is
+    // worse than a feature gap — surface it as a hard error so the
+    // user can refactor or downgrade to @runtime_checked.
+    //
+    // `async` is detected on the FunctionDecl itself.  `yield` can
+    // appear anywhere in the body so the collectCalls walker reports
+    // each occurrence with its own span.
+    if fn.IsAsync then
+        diags.Add(
+            Diagnostic.error "V0012"
+                (sprintf "async function '%s' is not admitted in proof-required code; the v1 verifier does not model async suspension. Refactor into a sync core or mark the package @runtime_checked"
+                    fn.Name)
+                fn.Span)
+
     let onCall (name: string) (span: Span) =
         match Map.tryFind name callees with
         | None ->
@@ -218,6 +236,13 @@ let private checkFunction
                 (sprintf "`spawn` not admitted in proof-required function '%s'" fn.Name)
                 span)
 
+    let onYield (span: Span) =
+        diags.Add(
+            Diagnostic.error "V0012"
+                (sprintf "`yield` not admitted in proof-required function '%s'; the v1 verifier does not model generator suspension"
+                    fn.Name)
+                span)
+
     let onUnsafe (span: Span) =
         match fnLevel with
         | ProofRequiredUnsafe -> ()
@@ -229,18 +254,18 @@ let private checkFunction
 
     match fn.Body with
     | None -> ()
-    | Some(FBExpr e) -> collectCalls onCall onAwait onSpawn onUnsafe e
+    | Some(FBExpr e) -> collectCalls onCall onAwait onSpawn onYield onUnsafe e
     | Some(FBBlock blk) ->
         for st in blk.Statements do
             match st.Kind with
             | SExpr e | SAssign(_, _, e) | SReturn(Some e) | SThrow e ->
-                collectCalls onCall onAwait onSpawn onUnsafe e
+                collectCalls onCall onAwait onSpawn onYield onUnsafe e
             | SLocal lb ->
                 match lb with
                 | LBVal(_, _, init) | LBLet(_, _, init) ->
-                    collectCalls onCall onAwait onSpawn onUnsafe init
+                    collectCalls onCall onAwait onSpawn onYield onUnsafe init
                 | LBVar(_, _, Some init) ->
-                    collectCalls onCall onAwait onSpawn onUnsafe init
+                    collectCalls onCall onAwait onSpawn onYield onUnsafe init
                 | LBVar(_, _, None) -> ()
             | _ -> ()
 
