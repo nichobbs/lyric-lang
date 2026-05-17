@@ -55,6 +55,30 @@ let tests =
             Expect.contains codes "L0022" "too-large codepoint"
         }
 
+        test "unicode escape in surrogate range emits L0022 without crashing" {
+            // Surrogate codepoints U+D800..U+DFFF are not valid scalar
+            // values. Before the fix for #313 these escaped scalars were
+            // accepted by the validator and then crashed
+            // Char.ConvertFromUtf32 inside lexStringLiteral with an
+            // unhandled ArgumentOutOfRangeException.
+            let bounds : string list =
+                [ "\"\\u{D800}\""    // low surrogate range start
+                  "\"\\u{DBFF}\""    // high lead surrogate end
+                  "\"\\u{DC00}\""    // low trail surrogate start
+                  "\"\\u{DFFF}\"" ]  // surrogate range end
+            for src in bounds do
+                let toks, diags = lexBoth src
+                let codes = diags |> List.map (fun d -> d.Code)
+                Expect.contains codes "L0022" (sprintf "surrogate diag for %s" src)
+                // Lexing continues; a TString is still produced (with the
+                // U+FFFD replacement character substituted for the bad
+                // escape). The point of this assertion is that we reach it
+                // at all — i.e. no exception was raised.
+                match toks with
+                | [TString _] -> ()
+                | other -> failtestf "expected one TString from %s, got %A" src other
+        }
+
         test "escape sequences inside triple-quoted string" {
             let src = "\"\"\"a\\nb\"\"\""
             Expect.equal (tokensClean src) [TTripleString "a\nb"]
