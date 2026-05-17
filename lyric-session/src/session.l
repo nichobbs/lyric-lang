@@ -197,26 +197,28 @@ impl SessionStore for NativeSessionStore {
   }
 
   func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError] {
+    // SECURITY: do NOT auto-create a session here.  Allowing `set()`
+    // to materialise a session for a caller-supplied id is a classic
+    // session-fixation vector — an attacker who plants a known cookie
+    // value can have it elevated when the legitimate user signs in.
+    // The caller must obtain a fresh id from `create()` first.  See
+    // RFC 6265 §8.4 and lyric-lang #316.
     match load(sessionId) {
       case Ok(opt) ->
-        val existing = match opt {
-          case Some(d) -> d
-          case None    ->
-            val ts = nowMs()
-            SessionData(
-              id             = sessionId,
-              entries        = Map.empty(),
-              createdAt      = ts,
-              lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(SessionConfig.ttlSeconds))
+        match opt {
+          case None ->
+            Err(SessionError(
+              message = "session not found; call create() to obtain a fresh id before set()",
+              code    = "SESSION_NOT_FOUND"))
+          case Some(existing) ->
+            val updated = SessionData(
+              id             = existing.id,
+              entries        = existing.entries.set(key, value),
+              createdAt      = existing.createdAt,
+              lastAccessedAt = nowMs(),
+              expiresAt      = existing.expiresAt)
+            save(updated)
         }
-        val updated = SessionData(
-          id             = existing.id,
-          entries        = existing.entries.set(key, value),
-          createdAt      = existing.createdAt,
-          lastAccessedAt = nowMs(),
-          expiresAt      = existing.expiresAt)
-        save(updated)
       case Err(e) -> Err(e)
     }
   }
@@ -340,27 +342,26 @@ impl SessionStore for InProcessSessionStore {
   }
 
   func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError] {
+    // SECURITY: do NOT auto-create a session here — see #316 and the
+    // matching NativeSessionStore.set() comment.  Callers must obtain
+    // a fresh id from create() before invoking set().
     match load(sessionId) {
       case Ok(opt) ->
-        val existing = match opt {
-          case Some(d) -> d
-          case None    ->
+        match opt {
+          case None ->
+            Err(SessionError(
+              message = "session not found; call create() to obtain a fresh id before set()",
+              code    = "SESSION_NOT_FOUND"))
+          case Some(existing) ->
             val ts = nowMs()
-            SessionData(
-              id             = sessionId,
-              entries        = Map.empty(),
-              createdAt      = ts,
+            val updated = SessionData(
+              id             = existing.id,
+              entries        = existing.entries.set(key, value),
+              createdAt      = existing.createdAt,
               lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(ttlSeconds))
+              expiresAt      = existing.expiresAt)
+            save(updated)
         }
-        val ts = nowMs()
-        val updated = SessionData(
-          id             = existing.id,
-          entries        = existing.entries.set(key, value),
-          createdAt      = existing.createdAt,
-          lastAccessedAt = ts,
-          expiresAt      = existing.expiresAt)
-        save(updated)
       case Err(e) -> Err(e)
     }
   }
@@ -489,6 +490,11 @@ pub func get(store: in SessionStore, sessionId: in SessionId, key: in String): R
 }
 
 /// Set a key-value pair in the session.
+///
+/// Returns `Err(SessionError { code = "SESSION_NOT_FOUND", ... })`
+/// when `sessionId` does not name an existing session — `set()` does
+/// not auto-create.  This is intentional: see #316 (session
+/// fixation).  Callers must obtain a fresh id from `create()` first.
 @stable(since="0.1")
 pub func set(store: in SessionStore, sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError]
   requires: sessionId.length > 0
@@ -498,6 +504,12 @@ pub func set(store: in SessionStore, sessionId: in SessionId, key: in String, va
 }
 
 /// Remove a key from the session.
+///
+/// Returns `Ok(())` when `sessionId` does not name an existing
+/// session: removal is idempotent in the absence of state.  This is
+/// the standard "delete-of-nothing-is-a-no-op" convention.  Contrast
+/// with `set()`, which surfaces `SESSION_NOT_FOUND` so a fixation
+/// attempt cannot create the missing session as a side-effect.
 @stable(since="0.1")
 pub func delete(store: in SessionStore, sessionId: in SessionId, key: in String): Result[Unit, SessionError]
   requires: sessionId.length > 0
@@ -507,6 +519,9 @@ pub func delete(store: in SessionStore, sessionId: in SessionId, key: in String)
 }
 
 /// Remove all keys from a session without destroying it.
+///
+/// Like `delete()`, returns `Ok(())` when `sessionId` does not name
+/// an existing session.
 @stable(since="0.1")
 pub func clear(store: in SessionStore, sessionId: in SessionId): Result[Unit, SessionError]
   requires: sessionId.length > 0

@@ -17,7 +17,10 @@ import Session
 // In-memory sessions for development
 val store = Session.inMemory()
 
-// Create a new session
+// Always obtain a fresh session id from `create()` before calling
+// `set()`. Calling `set()` on a caller-supplied id that the store has
+// not previously issued will return `SESSION_NOT_FOUND`; this is the
+// session-fixation guard described in the Security section below.
 val sessionId = Session.create(store)
 
 // Store session data
@@ -112,6 +115,30 @@ Session.set(store, sessionId, key, value)          // Unit
 Session.delete(store, sessionId, key)              // Unit
 Session.clear(store, sessionId)                    // Unit
 ```
+
+## Security
+
+### Session fixation
+
+`Session.set()`, `Session.delete()`, and `Session.clear()` all refuse
+to operate on a `sessionId` the store has not previously issued.
+Specifically, `set()` returns
+`Err(SessionError { code = "SESSION_NOT_FOUND", ... })` rather than
+creating a new session for the supplied id.
+
+This is deliberate: allowing `set()` to materialise a session for a
+caller-supplied id is a classic session-fixation vector — an attacker
+who plants a known cookie value (via XSS, subdomain cookie taint, or
+a phishing link) can have it elevated when the legitimate user signs
+in.  Always obtain a fresh id from `create()` first, and call
+`destroy(oldId)` followed by `create()` on every authentication or
+privilege-elevation event to rotate the id.
+
+### Secure cookie defaults
+
+`SessionConfig` defaults `secure = true`, `httpOnly = true`,
+`sameSite = "Lax"`.  These protect the session cookie against XSS
+theft and CSRF by default without operator action.
 
 ## Decision log
 
