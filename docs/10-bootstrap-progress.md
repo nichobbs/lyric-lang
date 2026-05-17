@@ -12528,3 +12528,66 @@ when inside a `{ }` block, so a bare-identifier type-glob parser consumed the ne
 **Self-hosted mirrors:** `parser_ast.l`, `parser_items.l`, `fmt_items.l` updated in parallel.
 
 **Test results:** Emitter 764/764 (5 new aspect weaver tests), Parser 323/323, Cli 224/224.
+
+---
+
+### D-progress-260: Lyric.Repl + self-hosted CLI dispatcher wired
+
+_Branch: claude/lyric-repl-ylflV._
+
+**`Lyric.Repl` package** (`compiler/lyric/lyric/repl/repl.l`):
+- Self-hosted REPL implementing a script-accumulation read-eval-print loop.
+- Entry point: `pub func runRepl(argv: in slice[String]): Int`.
+- Accepts `--verbose` flag; session ends on `:quit` or `:exit`; incomplete
+  input (detected by a `{` without matching `}`) is accumulated across prompts.
+- `lyric repl` in the F# CLI now routes through the self-hosted `Repl.runRepl`
+  via the `SelfHostedCli` bridge once the CLI DLL is compiled.
+
+**`SelfHostedCli.fs`** (F# bridge in `compiler/src/Lyric.Cli/`):
+- Compiles a tiny `Lyric.CliBridge` driver (importing `Lyric.Cli`) to trigger
+  the stdlib cache to precompile all transitive `Lyric.*` packages.
+- Reflects out `Lyric.Cli.Program.main(string[])` from the cached
+  `Lyric.Lyric.Cli.dll` and caches the delegate.
+- `tryRun(argv)` dispatches `argv` through the self-hosted CLI, returning
+  `Some exitCode` on success or `None` to fall back to the F# bootstrap.
+- Falls back for commands not yet fully ported: `test`, `prove --json`,
+  `prove --explain` (handled by F# bootstrap until the self-hosted versions
+  are complete).
+
+**`compiler/src/Lyric.Cli/Program.fs`** — Updated dispatch chain: attempts
+`SelfHostedCli.tryRun` first; falls back to the F# bootstrap dispatcher only
+when `tryRun` returns `None`.
+
+**`cli.l`** bug fixes during self-hosted compilation:
+- Import order: `Std.String as Str` placed before `Std.Path as Path` so
+  `Path.join/2` wins over the alias-stripped `Str.join/2` in the imported
+  function table (last registration wins; ordering controls which wins).
+- Removed `import Lyric.Parser`: `Lyric.Parser.parse/1` was transitively
+  imported via `Lyric.Fmt` and overwrote `Lyric.Manifest.parseManifest/2`
+  in the function table after alias stripping.
+- `cmdFmt`, `cmdLint`, `cmdDoc`: updated to call the actual API — `Fmt.formatSource`,
+  `Fmt.isFormattedSource`, `Lint.lint(source)` (returns `List[LintDiag]` directly),
+  `Doc.generate(source)` — none take a `ParseResult` intermediate.
+- `cmdProve`: updated to call `Verifier.proveSourceWithOptions(source, allowUnverified)`
+  and the `Verifier.summary*` helper functions; `VerificationLevel` display via
+  `MC.vlDisplay`/`MC.vlIsProofRequired` from `Lyric.ModeChecker`.
+- `not pastSep && arg == "--"` → `not pastSep and arg == "--"` (Lyric uses `and`).
+- Removed `ignore(force)` (Lyric has no `ignore` builtin).
+
+**`Lyric.Manifest.parse` → `parseManifest` rename**:
+- Renamed in `manifest.l` (the declaration) and updated all call sites:
+  `manifest_bridge.l`, `manifest_self_test.l`, `pack_bridge.l`, and `cli.l`.
+- Avoids the transitive-import name collision: `Lyric.Parser.parse/1` is
+  imported transitively through any package that depends on `Lyric.Fmt` or
+  `Lyric.Parser`, and was overwriting `Manifest.parse/2` in the function table.
+
+**Stdlib additions** (supporting `repl.l` and `emitter.l`):
+- `stdlib/std/path.l`: `Path.dirname`, `Path.basename` added.
+- `stdlib/std/process.l`: `Process.run` added.
+- `stdlib/std/console.l`: `Console.readLine` added.
+- `stdlib/std/environment.l`: `Environment.getVarOrDefault` added.
+- Corresponding `_kernel` host implementations.
+
+**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Tests:** `Lyric.Cli.Tests`: 224/224; `Lyric.Emitter.Tests`: 759/759;
+`Lyric.Verifier.Tests`: 266/266; `Lyric.TypeChecker.Tests`: 189/189.

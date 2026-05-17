@@ -14,14 +14,14 @@ import Lyric.Manifest
 import Lyric.Pack
 
 pub func publishCsprojToProtocol(toml: in String, dllAbsPath: in String): String {
-  match parse(toml, "<bridge>") {
+  match parseManifest(toml, "<bridge>") {
     case Err(e) -> "parsefail\n" + ManifestError.message(e)
     case Ok(m)  -> "ok\n" + publishCsproj(m, dllAbsPath)
   }
 }
 
 pub func restoreCsprojToProtocol(toml: in String): String {
-  match parse(toml, "<bridge>") {
+  match parseManifest(toml, "<bridge>") {
     case Err(e) -> "parsefail\n" + ManifestError.message(e)
     case Ok(m)  -> "ok\n" + restoreCsproj(m)
   }

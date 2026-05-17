@@ -635,7 +635,7 @@ func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
 /// Returns `Ok(manifest)` on success or `Err(ManifestError)` on the first
 /// fatal parse or validation error.  Unknown keys in recognised sections are
 /// silently ignored in this bootstrap-grade parser.
-pub func parse(text: in String, filePath: in String): Result[Manifest, ManifestError] {
+pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e)      -> Err(error = e)
     case Ok(entries) ->

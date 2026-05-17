@@ -30,7 +30,7 @@ import Std.Collections
 import Lyric.Manifest
 
 pub func serializeManifest(text: in String, filePath: in String): String {
-  match parse(text, filePath) {
+  match parseManifest(text, filePath) {
     case Err(e) -> "err\n" + ManifestError.message(e)
     case Ok(m)  -> {
       var s = "ok\n"

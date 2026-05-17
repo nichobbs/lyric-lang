@@ -734,6 +734,10 @@ lyric openapi <spec.json> --package <Pkg.Name>   # override the generated packag
 lyric restore                          # download dependencies declared in lyric.toml
 lyric publish                          # publish package to registry (NuGet piggyback)
 
+# Interactive REPL
+lyric repl                             # start interactive read-eval-print loop
+lyric repl --verbose                   # REPL with diagnostic output on each evaluation
+
 # Tooling
 lyric --sdk-info                       # print SDK root, stdlib DLL path, and version information
 lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compatible) or 2 (breaking)

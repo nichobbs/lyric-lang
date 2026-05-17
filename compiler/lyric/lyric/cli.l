@@ -68,22 +68,22 @@ import Std.Core
 import Std.Collections
 import Std.Console as Console
 import Std.File as File
+import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
-import Std.String as Str
 
-import Lyric.Manifest as Mf   // parse(text, filePath) -> Result[Manifest, ManifestError]
+import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
 
 // Phase 5 M5.2+ packages — present when the self-hosted compiler compiles this file.
-import Lyric.Parser as Parser          // parse(source) -> ParseResult
 import Lyric.Emitter as Emitter        // emit(req) -> EmitResult; CompileTarget, Dotnet, Jvm
-import Lyric.Fmt as Fmt                // format(parsed) -> String; isFormatted(src, parsed) -> Bool
-import Lyric.Lint as Lint              // lint(parsed) -> LintResult; renderDiagnostic(d) -> String
-import Lyric.Verifier as Verifier      // prove(source, opts) -> ProofSummary
-import Lyric.Doc as Doc                // generate(parsed) -> String
+import Lyric.Fmt as Fmt                // formatSource(src) -> String; isFormattedSource(src) -> Bool
+import Lyric.Lint as Lint              // lint(source) -> List[LintDiag]
+import Lyric.ModeChecker as MC         // vlIsProofRequired, vlDisplay
+import Lyric.Verifier as Verifier      // proveSource/proveSourceWithOptions -> ProofSummary; summary* helpers
+import Lyric.Doc as Doc                // generate(source) -> String
 import Lyric.ContractMeta as Meta      // readFromFile, diffContracts, hasBreakingChanges
 import Lyric.Repl as Repl              // run(argv) -> Int
 
@@ -333,9 +333,6 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
-  // `force` is noted but the self-hosted emitter's cache is managed
-  // by Lyric.Emitter itself; we pass the flag through if supported.
-  ignore(force)
   buildOne(sourcePath, outPath, target)
 }
 
@@ -344,32 +341,36 @@ func cmdBuild(argv: in slice[String]): Int {
 func buildProject(mfPath: in String, explicitOut: in Option[String], target: in CompileTarget): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("build: " + IOError.message(e))
       return 1
+    }
   }
-  val manifest: Manifest = match Mf.parse(mfText, mfPath) {
+  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m)  -> m
-    case Err(e) ->
+    case Err(e) -> {
       printErr("build: " + ManifestError.message(e))
       return 1
+    }
   }
   val proj: ProjectSection = match manifest.project {
     case Some(p) -> p
-    case None    ->
+    case None    -> {
       printErr("build: " + mfPath + " has no [project] section")
       return 1
+    }
   }
 
   val mfDir   = Path.dirname(mfPath)
   val outPath = match explicitOut {
     case Some(o) -> o
-    case None    ->
+    case None    -> {
       val stem = match proj.outputAssembly {
         case Some(s) -> s
         case None    -> proj.name + ".dll"
       }
       Path.join(Path.join(mfDir, "bin"), stem)
+    }
   }
 
   val outDir = Path.dirname(outPath)
@@ -383,15 +384,16 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
-    val entry = proj.packages[pi]
-    val abs = if Path.isAbsolute(entry.path) { entry.path }
-              else { Path.join(mfDir, entry.path) }
+    val pkgEntry = proj.packages[pi]
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
+              else { Path.join(mfDir, pkgEntry.path) }
     val text = match File.readText(abs) {
       case Ok(t)  -> t
-      case Err(e) ->
-        printErr("build: package '" + entry.name + "': " + IOError.message(e))
+      case Err(e) -> {
+        printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
         hadFatal = true
         ""
+      }
     }
     if not hadFatal {
       sources.add(text)
@@ -426,7 +428,7 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
-      case DiagError   -> hadError = true
+      case DiagError   -> { hadError = true }
       case DiagWarning -> ()
     }
     printDiag(d)
@@ -465,7 +467,7 @@ func cmdRun(argv: in slice[String]): Int {
   var pastSep = false
   while i < argv.length {
     val arg = argv[i]
-    if not pastSep && arg == "--" {
+    if not pastSep and arg == "--" {
       pastSep = true
     } else {
       userArgs.add(arg)
@@ -493,9 +495,10 @@ func cmdRun(argv: in slice[String]): Int {
 
   match Process.run("dotnet", execArgs) {
     case Ok(code) -> code
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("run: failed to start dotnet: " + IOError.message(e))
       1
+    }
   }
 }
 
@@ -532,21 +535,14 @@ func cmdFmt(argv: in slice[String]): Int {
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("fmt: " + IOError.message(e))
       return 1
-  }
-
-  val parsed = Parser.parse(source)
-  for d in parsed.diagnostics.toArray() {
-    match d.severity {
-      case DiagError   -> printDiag(d)
-      case DiagWarning -> ()
     }
   }
 
   if checkMode {
-    if Fmt.isFormatted(source, parsed) {
+    if Fmt.isFormattedSource(source) {
       return 0
     } else {
       printErr(sourcePath + ": not formatted — run `lyric fmt --write`")
@@ -554,15 +550,17 @@ func cmdFmt(argv: in slice[String]): Int {
     }
   }
 
-  val formatted = Fmt.format(parsed)
+  val formatted = Fmt.formatSource(source)
   if writeMode {
     match File.writeText(sourcePath, formatted) {
-      case Ok(_)  ->
+      case Ok(_)  -> {
         Console.println("formatted " + sourcePath)
         return 0
-      case Err(e) ->
+      }
+      case Err(e) -> {
         printErr("fmt: " + IOError.message(e))
         return 1
+      }
     }
   }
 
@@ -599,27 +597,23 @@ func cmdLint(argv: in slice[String]): Int {
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("lint: " + IOError.message(e))
       return 2
-  }
-
-  val parsed = Parser.parse(source)
-  for d in parsed.diagnostics.toArray() {
-    match d.severity {
-      case DiagError   -> printDiag(d)
-      case DiagWarning -> ()
     }
   }
 
-  val lintResult = Lint.lint(parsed)
-  var hasError   = false
+  val lintDiags = Lint.lint(source)
+  var hasError  = false
   var hasWarning = false
-  for d in lintResult.diagnostics.toArray() {
-    printErr(Lint.renderDiagnostic(d))
+  for d in lintDiags.toArray() {
+    val sev = match d.severity { case LintError -> "error" case LintWarning -> "warning" }
+    printErr(d.code + " " + sev + " [" +
+      toString(d.span.startPos.line) + ":" +
+      toString(d.span.startPos.column) + "]: " + d.message)
     match d.severity {
-      case LintError   -> hasError = true
-      case LintWarning -> hasWarning = true
+      case LintError   -> { hasError = true }
+      case LintWarning -> { hasWarning = true }
     }
   }
 
@@ -658,28 +652,32 @@ func cmdProve(argv: in slice[String]): Int {
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("prove: " + IOError.message(e))
       return 1
+    }
   }
 
-  val opts    = ProveOptions(allowUnverified = allowUnverified, verbose = verbose)
-  val summary = Verifier.prove(source, opts)
+  val summary = Verifier.proveSourceWithOptions(source, allowUnverified)
 
   for d in summary.diagnostics.toArray() {
     printDiag(d)
   }
 
-  if summary.isProofRequired {
+  val total      = Verifier.summaryTotalCount(summary)
+  val discharged = Verifier.summaryDischargedCount(summary)
+  val levelStr   = MC.vlDisplay(summary.level)
+
+  if MC.vlIsProofRequired(summary.level) {
     Console.println(
-      toString(summary.dischargedCount) + "/" +
-      toString(summary.totalCount) + " obligations discharged (" +
-      summary.level + ")")
+      toString(discharged) + "/" +
+      toString(total) + " obligations discharged (" +
+      levelStr + ")")
   } else {
-    Console.println("no proof obligations: package is " + summary.level)
+    Console.println("no proof obligations: package is " + levelStr)
   }
 
-  if summary.hadError { 1 } else { 0 }
+  if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasFailure(summary) { 1 } else { 0 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -715,38 +713,35 @@ func cmdDoc(argv: in slice[String]): Int {
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("doc: " + IOError.message(e))
       return 1
-  }
-
-  val parsed = Parser.parse(source)
-  for d in parsed.diagnostics.toArray() {
-    match d.severity {
-      case DiagError   -> printDiag(d)
-      case DiagWarning -> ()
     }
   }
 
-  val md = Doc.generate(parsed)
+  val md = Doc.generate(source)
   match explicitOut {
-    case None ->
+    case None -> {
       Console.print(md)
       return 0
-    case Some(outPath) ->
+    }
+    case Some(outPath) -> {
       val outDir = Path.dirname(outPath)
       match File.createDir(outDir) {
         case Ok(_)  -> ()
         case Err(e) -> printErr("doc: warning: " + IOError.message(e))
       }
       match File.writeText(outPath, md) {
-        case Ok(_)  ->
+        case Ok(_)  -> {
           Console.println("wrote " + outPath)
           return 0
-        case Err(e) ->
+        }
+        case Err(e) -> {
           printErr("doc: " + IOError.message(e))
           return 1
+        }
       }
+    }
   }
 }
 
@@ -782,15 +777,17 @@ func cmdPublicApiDiff(argv: in slice[String]): Int {
 
   val oldJson = match Meta.readFromFile(oldDll) {
     case Some(j) -> j
-    case None    ->
+    case None    -> {
       printErr("public-api-diff: '" + oldDll + "' has no Lyric.Contract resource")
       return 1
+    }
   }
   val newJson = match Meta.readFromFile(newDll) {
     case Some(j) -> j
-    case None    ->
+    case None    -> {
       printErr("public-api-diff: '" + newDll + "' has no Lyric.Contract resource")
       return 1
+    }
   }
 
   val entries = Meta.diffContracts(oldJson, newJson)
@@ -846,16 +843,18 @@ func cmdRestore(argv: in slice[String]): Int {
 
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("restore: " + IOError.message(e))
       return 1
+    }
   }
 
-  val manifest: Manifest = match Mf.parse(mfText, mfPath) {
+  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m)  -> m
-    case Err(e) ->
+    case Err(e) -> {
       printErr("restore: " + ManifestError.message(e))
       return 1
+    }
   }
 
   val lyricCount = manifest.deps.count
@@ -929,16 +928,18 @@ func cmdPublish(argv: in slice[String]): Int {
 
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("publish: " + IOError.message(e))
       return 1
+    }
   }
 
-  val manifest: Manifest = match Mf.parse(mfText, mfPath) {
+  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m)  -> m
-    case Err(e) ->
+    case Err(e) -> {
       printErr("publish: " + ManifestError.message(e))
       return 1
+    }
   }
 
   val pkg: PackageSection = manifest.packageSection

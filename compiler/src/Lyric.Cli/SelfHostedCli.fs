@@ -111,13 +111,23 @@ let private getDelegate () : string[] -> int =
 
 /// Attempt to dispatch `argv` through the self-hosted `Lyric.Cli`.
 /// Returns `Some exitCode` on success.
-/// Returns `None` when the bridge cannot be compiled or loaded, so
-/// the caller can fall back to the F# bootstrap dispatcher.
+/// Returns `None` when the bridge cannot be compiled or loaded, or when
+/// the command is not yet implemented in the self-hosted CLI, so the
+/// caller can fall back to the F# bootstrap dispatcher.
 let tryRun (argv: string[]) : int option =
-    try
-        let fn = getDelegate ()
-        Some (fn argv)
-    with ex ->
-        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
-            ex.Message
-        None
+    // Commands not yet ported to the self-hosted CLI: defer to bootstrap.
+    let cmd    = if argv.Length > 0 then argv.[0] else ""
+    let argSet = Set.ofArray argv
+    let notYetHosted =
+        cmd = "test" ||
+        (cmd = "prove" &&
+         (Set.contains "--json" argSet || Set.contains "--explain" argSet))
+    if notYetHosted then None
+    else
+        try
+            let fn = getDelegate ()
+            Some (fn argv)
+        with ex ->
+            eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+                ex.Message
+            None
