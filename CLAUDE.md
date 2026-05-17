@@ -396,7 +396,20 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   - `test_synth/test_synth.l` — `Lyric.TestSynth` rewriter (see above).
   - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
     by `SelfHostedTestSynth.fs` (D-progress-231).
-  - `cli.l` — `Lyric.Cli` command-dispatch stub (M5.3 stage 1).
+  - `cli.l` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260).
+    Handles `build`, `run`, `fmt`, `lint`, `prove`, `doc`, `public-api-diff`,
+    `restore`, `publish`, `repl`, and `--version`.  Wired as the primary
+    dispatcher via `SelfHostedCli.fs`; falls back to the F# bootstrap for
+    `test`, `prove --json`, and `prove --explain` (not yet ported).
+  - `repl/repl.l` — `Lyric.Repl` interactive REPL (D-progress-260).
+    Script-accumulation loop; entry point `pub func runRepl(argv)`.
+    `lyric repl` routes through this package via `SelfHostedCli`.
+  - `emitter.l` — `Lyric.Emitter` self-hosted emitter shim (D-progress-260).
+    Shells out to `--internal-build` to compile Lyric source from within
+    the self-hosted CLI.
+  - `contract_meta.l` — `Lyric.ContractMeta` package (D-progress-260).
+    Reads embedded `Lyric.Contract` metadata from compiled DLLs and diffs
+    public API surfaces for `public-api-diff`.
   - `verifier/` — `Lyric.Verifier` package (M5.3, D-progress-234).  Self-hosted
     port of the Phase 4 proof system: `vcir.l` (VC IR types), `vcgen.l`
     (WP/SP calculus, loop invariant goals, Hoare call rule), `smt.l`
@@ -458,6 +471,11 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
     D-progress-240).
   - `SelfHostedTestSynth.fs` — in-process test-synth bridge; reflects
     `Lyric.TestSynthBridge.Program.synthesizeToProtocol` (D-progress-231).
+  - `SelfHostedCli.fs` — primary CLI dispatcher bridge; compiles a tiny
+    `Lyric.CliBridge` driver, loads `Lyric.Lyric.Cli.dll` by reflection,
+    and dispatches all CLI commands through `Lyric.Cli.Program.main`.
+    Falls back to the F# bootstrap for `test`, `prove --json`, and
+    `prove --explain` (D-progress-260).
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
   see `docs/15-phase-4-proof-plan.md` and the D-progress-084/085
   entries in `docs/10-bootstrap-progress.md`).  `Mode.fs` parses

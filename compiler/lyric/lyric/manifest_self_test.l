@@ -14,14 +14,14 @@ import Lyric.Manifest
 // ─────────────────────────────────────────────────────────────────────────────
 
 func parseOk(toml: in String): Manifest {
-  match parse(toml, "<test>") {
+  match parseManifest(toml, "<test>") {
     case Ok(m)  -> m
     case Err(e) -> panic("parseOk: unexpected error: " + ManifestError.message(e))
   }
 }
 
 func parseErr(toml: in String): ManifestError {
-  match parse(toml, "<test>") {
+  match parseManifest(toml, "<test>") {
     case Ok(_)  -> panic("parseErr: expected error but got Ok")
     case Err(e) -> e
   }

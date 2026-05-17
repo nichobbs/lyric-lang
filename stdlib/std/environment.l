@@ -8,7 +8,7 @@
 package Std.Environment
 
 import Std.Errors
-import Std.EnvironmentHost as HostEnvironment
+import Std.EnvironmentHost
 
 /// Read one environment variable.
 ///
@@ -26,7 +26,7 @@ pub func getVar(key: in String): Result[String, IOError] {
   }
 
   return try {
-    match HostEnvironment.getEnvironmentVariable(key) {
+    match hostGetEnvironmentVariable(key) {
       case null -> Err(error = KeyNotFound(key = key))
       case value -> Ok(value = value)
     }
@@ -53,7 +53,7 @@ pub func getVarOrDefault(key: in String, default: in String): String {
 /// appears as the first entry.
 @stable(since="1.0")
 pub func args(): slice[String] {
-  return HostEnvironment.getCommandLineArgs()
+  return hostGetCommandLineArgs()
 }
 
 /// Terminate the current process with an exit code.
@@ -63,5 +63,5 @@ pub func args(): slice[String] {
 /// boundaries.
 @stable(since="1.0")
 pub func exitCode(code: in Int): Never {
-  HostEnvironment.exit(code)
+  hostExit(code)
 }
