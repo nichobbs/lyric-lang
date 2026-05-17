@@ -197,26 +197,28 @@ impl SessionStore for NativeSessionStore {
   }
 
   func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError] {
+    // SECURITY: do NOT auto-create a session here.  Allowing `set()`
+    // to materialise a session for a caller-supplied id is a classic
+    // session-fixation vector — an attacker who plants a known cookie
+    // value can have it elevated when the legitimate user signs in.
+    // The caller must obtain a fresh id from `create()` first.  See
+    // RFC 6265 §8.4 and lyric-lang #316.
     match load(sessionId) {
       case Ok(opt) ->
-        val existing = match opt {
-          case Some(d) -> d
-          case None    ->
-            val ts = nowMs()
-            SessionData(
-              id             = sessionId,
-              entries        = Map.empty(),
-              createdAt      = ts,
-              lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(SessionConfig.ttlSeconds))
+        match opt {
+          case None ->
+            Err(SessionError(
+              message = "session not found; call create() to obtain a fresh id before set()",
+              code    = "SESSION_NOT_FOUND"))
+          case Some(existing) ->
+            val updated = SessionData(
+              id             = existing.id,
+              entries        = existing.entries.set(key, value),
+              createdAt      = existing.createdAt,
+              lastAccessedAt = nowMs(),
+              expiresAt      = existing.expiresAt)
+            save(updated)
         }
-        val updated = SessionData(
-          id             = existing.id,
-          entries        = existing.entries.set(key, value),
-          createdAt      = existing.createdAt,
-          lastAccessedAt = nowMs(),
-          expiresAt      = existing.expiresAt)
-        save(updated)
       case Err(e) -> Err(e)
     }
   }
@@ -340,27 +342,26 @@ impl SessionStore for InProcessSessionStore {
   }
 
   func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError] {
+    // SECURITY: do NOT auto-create a session here — see #316 and the
+    // matching NativeSessionStore.set() comment.  Callers must obtain
+    // a fresh id from create() before invoking set().
     match load(sessionId) {
       case Ok(opt) ->
-        val existing = match opt {
-          case Some(d) -> d
-          case None    ->
+        match opt {
+          case None ->
+            Err(SessionError(
+              message = "session not found; call create() to obtain a fresh id before set()",
+              code    = "SESSION_NOT_FOUND"))
+          case Some(existing) ->
             val ts = nowMs()
-            SessionData(
-              id             = sessionId,
-              entries        = Map.empty(),
-              createdAt      = ts,
+            val updated = SessionData(
+              id             = existing.id,
+              entries        = existing.entries.set(key, value),
+              createdAt      = existing.createdAt,
               lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(ttlSeconds))
+              expiresAt      = existing.expiresAt)
+            save(updated)
         }
-        val ts = nowMs()
-        val updated = SessionData(
-          id             = existing.id,
-          entries        = existing.entries.set(key, value),
-          createdAt      = existing.createdAt,
-          lastAccessedAt = ts,
-          expiresAt      = existing.expiresAt)
-        save(updated)
       case Err(e) -> Err(e)
     }
   }
