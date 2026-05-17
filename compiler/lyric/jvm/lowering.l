@@ -3091,8 +3091,8 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitAload(nextAsm, 0)
   emitGetfield(nextAsm, posIdx)
   emitInvokevirtual(nextAsm, listGetIdx)
-  emitAstore(nextAsm, 1)   // store result in temp
-  // Increment _pos via getfield + iadd + putfield (_pos is a field, not a local).
+  emitAstore(nextAsm, 1)   // stash result before incrementing _pos (field, not local)
+  // Increment _pos via getfield + iadd + putfield.
   emitAload(nextAsm, 0)
   emitAload(nextAsm, 0)
   emitGetfield(nextAsm, posIdx)

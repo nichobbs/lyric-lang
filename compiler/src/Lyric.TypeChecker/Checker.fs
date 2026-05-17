@@ -407,13 +407,17 @@ let private resolveFunctionSig
         | None -> false
         | Some (FBExpr e) -> exprHasYield e
         | Some (FBBlock b) -> blockHasYield b
+    if isGen && not fn.IsAsync then
+        diags.Add(Diagnostic.error "T0094"
+            "yield is only valid inside an async function"
+            fn.Span)
     { Generics     = genericNames
       Bounds       = bounds
       Params       = parameters
       Return       = returnType
       IsAsync      = fn.IsAsync
       IsHot        = isHot
-      IsGenerator  = isGen
+      IsGenerator  = fn.IsAsync && isGen
       Span         = fn.Span }
 
 /// Type-check a parser-produced source file with optional pre-

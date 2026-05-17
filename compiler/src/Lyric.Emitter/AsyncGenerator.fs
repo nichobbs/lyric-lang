@@ -175,6 +175,10 @@ let defineGeneratorClass
 
     // -----------------------------------------------------------------------
     // `GetAsyncEnumerator(CancellationToken) : IAsyncEnumerator<T>`
+    // Bootstrap: single-use only — a second call reinitialises _values and
+    // re-runs RunBody, clobbering any in-progress first enumeration.  This
+    // matches the eager-producer semantics documented in §14.6; a proper
+    // multi-enumeration guard is deferred to the full async-iterator path.
     // -----------------------------------------------------------------------
     let getAsyncEnumMb =
         tb.DefineMethod(

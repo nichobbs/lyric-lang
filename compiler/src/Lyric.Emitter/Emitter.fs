@@ -4376,7 +4376,7 @@ let private emitAssembly
                                 | None -> TyPrim PtUnit
                               IsAsync      = fd.IsAsync
                               IsHot        = isHotAnnotated fd
-                              IsGenerator  = bodyContainsYield fd
+                              IsGenerator  = fd.IsAsync && bodyContainsYield fd
                               Span         = fd.Span }
                         implMethods.Add(fd, mb, synthSig)
                         if not methodGenericNames.IsEmpty then resolveCtx.Pop()
@@ -4513,6 +4513,10 @@ let private emitAssembly
                     |> Map.ofList
                 else Map.empty
             if sg.IsGenerator then
+                // @hot + IsGenerator: IsGenerator branch takes priority; IsHot is
+                // ignored (the synthesised generator class uses AsyncTaskMethodBuilder,
+                // not AsyncValueTaskMethodBuilder).  Combining @hot with yield is
+                // unsupported at bootstrap grade; a diagnostic is deferred to M2.
                 if AsyncStateMachine.bodyContainsAwait fn then
                     // Gap-4a: async generator with both `yield` and `await`.
                     // Synthesise a combined IAsyncStateMachine + IAsyncEnumerable<T>
