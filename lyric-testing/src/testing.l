@@ -364,25 +364,27 @@ impl Session.SessionStore for MockSessionStore {
   }
 
   func set(sessionId: in Session.SessionId, key: in String, value: in String): Result[Unit, Session.SessionError] {
+    // SECURITY: mirror NativeSessionStore / InProcessSessionStore —
+    // refuse to auto-create a session for a caller-supplied id.  See
+    // lyric-lang #316 / #436.  Diverging here means tests written
+    // against this mock would silently miss a regression of the
+    // session-fixation fix.
     match load(sessionId) {
       case Ok(opt) -> {
-        val existing = match opt {
-          case Some(d) -> d
-          case None    ->
-            Session.SessionData(
-              id             = sessionId,
-              entries        = Map.empty(),
-              createdAt      = 0,
-              lastAccessedAt = 0,
-              expiresAt      = 0)
+        match opt {
+          case None ->
+            return Err(Session.SessionError(
+              message = "session not found; call create() to obtain a fresh id before set()",
+              code    = "SESSION_NOT_FOUND"))
+          case Some(existing) ->
+            val updated = Session.SessionData(
+              id             = existing.id,
+              entries        = existing.entries.set(key, value),
+              createdAt      = existing.createdAt,
+              lastAccessedAt = existing.lastAccessedAt,
+              expiresAt      = existing.expiresAt)
+            return save(updated)
         }
-        val updated = Session.SessionData(
-          id             = existing.id,
-          entries        = existing.entries.set(key, value),
-          createdAt      = existing.createdAt,
-          lastAccessedAt = existing.lastAccessedAt,
-          expiresAt      = existing.expiresAt)
-        return save(updated)
       }
       case Err(e) -> return Err(e)
     }

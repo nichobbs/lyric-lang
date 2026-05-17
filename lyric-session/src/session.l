@@ -490,6 +490,11 @@ pub func get(store: in SessionStore, sessionId: in SessionId, key: in String): R
 }
 
 /// Set a key-value pair in the session.
+///
+/// Returns `Err(SessionError { code = "SESSION_NOT_FOUND", ... })`
+/// when `sessionId` does not name an existing session — `set()` does
+/// not auto-create.  This is intentional: see #316 (session
+/// fixation).  Callers must obtain a fresh id from `create()` first.
 @stable(since="0.1")
 pub func set(store: in SessionStore, sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError]
   requires: sessionId.length > 0
@@ -499,6 +504,12 @@ pub func set(store: in SessionStore, sessionId: in SessionId, key: in String, va
 }
 
 /// Remove a key from the session.
+///
+/// Returns `Ok(())` when `sessionId` does not name an existing
+/// session: removal is idempotent in the absence of state.  This is
+/// the standard "delete-of-nothing-is-a-no-op" convention.  Contrast
+/// with `set()`, which surfaces `SESSION_NOT_FOUND` so a fixation
+/// attempt cannot create the missing session as a side-effect.
 @stable(since="0.1")
 pub func delete(store: in SessionStore, sessionId: in SessionId, key: in String): Result[Unit, SessionError]
   requires: sessionId.length > 0
@@ -508,6 +519,9 @@ pub func delete(store: in SessionStore, sessionId: in SessionId, key: in String)
 }
 
 /// Remove all keys from a session without destroying it.
+///
+/// Like `delete()`, returns `Ok(())` when `sessionId` does not name
+/// an existing session.
 @stable(since="0.1")
 pub func clear(store: in SessionStore, sessionId: in SessionId): Result[Unit, SessionError]
   requires: sessionId.length > 0
