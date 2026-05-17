@@ -36,12 +36,11 @@ match Mq.receive(consumer) {
 
 ## Supported platforms and brokers
 
-`Lyric.Mq` is multi-platform; enable the target platform and the broker
-you need in your consumer `lyric.toml`:
+`Lyric.Mq` is multi-platform; activate the target platform feature and
+one broker feature when you build (per `docs/24-build-features.md`):
 
-```toml
-[features]
-mq = ["dotnet", "rabbitmq"]  # platform feature plus one broker
+```sh
+lyric build --features dotnet,rabbitmq
 ```
 
 Platform features:
