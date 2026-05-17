@@ -15,9 +15,16 @@ import Std.Core
 extern package io.jsonwebtoken {
   /// Validate a Bearer JWT against an explicit allow-list of algorithms.
   /// `allowedAlgorithms` is a comma-separated string of JWT `alg` values
-  /// (e.g. "HS256" or "HS256,RS256").  JJWT's parser is configured with
-  /// the matching `SignatureAlgorithm` whitelist, so tokens whose header
-  /// `alg` is "none" or any algorithm not in the list fail verification.
+  /// (e.g. "HS256" or "HS256,RS256") that the caller is prepared to
+  /// honour.  The Lyric-level contract
+  /// `requires: allowedAlgorithms.length > 0` enforces the explicit
+  /// allow-list at the boundary.
+  ///
+  /// INTERFACE-ONLY: the signature reserves the algorithm-pinning
+  /// argument; the JVM host shim still needs to configure JJWT's
+  /// parser with the matching `SignatureAlgorithm` whitelist so the
+  /// underlying validator rejects `alg=none` and mismatched algorithms.
+  /// See lyric-lang issue #315 follow-up.
   pub func verifyJwt(
     token:             String,
     secret:            String,
