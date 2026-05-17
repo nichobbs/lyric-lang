@@ -126,30 +126,37 @@ let private parseProtocol (filePath: string) (protocol: string) : Result<Manifes
         let mutable featDeclared   : string list = []
         let mutable featDefault    : string list = []
 
+        // All key checks use StringComparison.Ordinal: the protocol is
+        // an ASCII line-oriented format produced by the self-hosted side,
+        // so a Turkish-locale CI runner (`StringComparison.CurrentCulture`,
+        // the default for the curried-call form) must not be allowed to
+        // fold `i`/`I` and parse the wrong field.  See #345.
+        let inline starts (s: string) (prefix: string) =
+            s.StartsWith(prefix, StringComparison.Ordinal)
         for line in lines.[1..] do
-            if   line.StartsWith "pkg.name="              then pkgName        <- line.Substring 9
-            elif line.StartsWith "pkg.version="           then pkgVersion     <- line.Substring 12
-            elif line.StartsWith "pkg.description="       then pkgDescription <- line.Substring 16
-            elif line.StartsWith "pkg.license="           then pkgLicense     <- line.Substring 12
-            elif line.StartsWith "pkg.author="            then
+            if   starts line "pkg.name="              then pkgName        <- line.Substring 9
+            elif starts line "pkg.version="           then pkgVersion     <- line.Substring 12
+            elif starts line "pkg.description="       then pkgDescription <- line.Substring 16
+            elif starts line "pkg.license="           then pkgLicense     <- line.Substring 12
+            elif starts line "pkg.author="            then
                 pkgAuthors <- pkgAuthors @ [line.Substring 11]
-            elif line.StartsWith "dep=" then
+            elif starts line "dep=" then
                 let name, ver = splitOnFirst '=' (line.Substring 4)
                 deps <- deps @ [{ Manifest.Dependency.Name = name; Version = ver }]
-            elif line.StartsWith "nuget=" then
+            elif starts line "nuget=" then
                 let id_, ver = splitOnFirst '=' (line.Substring 6)
                 nugetEs <- nugetEs @ [{ Manifest.NugetEntry.Id = id_; Version = ver }]
-            elif line.StartsWith "nuget.target="          then nugetTarget  <- Some (line.Substring 13)
-            elif line = "nuget.allow_native=true"         then nugetNative  <- true
-            elif line.StartsWith "project.name="          then projName     <- Some (line.Substring 13)
-            elif line.StartsWith "project.output_assembly=" then projOutAsm <- Some (line.Substring 24)
-            elif line.StartsWith "project.output="        then projOutput   <- Some (line.Substring 15)
-            elif line.StartsWith "project.pkg=" then
+            elif starts line "nuget.target="          then nugetTarget  <- Some (line.Substring 13)
+            elif line = "nuget.allow_native=true"     then nugetNative  <- true
+            elif starts line "project.name="          then projName     <- Some (line.Substring 13)
+            elif starts line "project.output_assembly=" then projOutAsm <- Some (line.Substring 24)
+            elif starts line "project.output="        then projOutput   <- Some (line.Substring 15)
+            elif starts line "project.pkg=" then
                 let name, path = splitOnFirst '=' (line.Substring 12)
                 projPkgs <- projPkgs @ [(name, path)]
-            elif line.StartsWith "feature.default="       then
+            elif starts line "feature.default="       then
                 featDefault <- featDefault @ [line.Substring 16]
-            elif line.StartsWith "feature="               then
+            elif starts line "feature="               then
                 featDeclared <- featDeclared @ [line.Substring 8]
 
         let pkg : Manifest.PackageMetadata =
