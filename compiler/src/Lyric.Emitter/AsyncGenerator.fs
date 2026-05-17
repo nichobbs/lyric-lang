@@ -1,27 +1,30 @@
-/// Bootstrap async-generator synthesis (D-progress-260, Gap-4).
+/// Async generator synthesis for Lyric `async func` bodies that contain
+/// `yield` (D-progress-260, Gap-4 / Gap-4a).
 ///
-/// For each `async func` whose body contains at least one `yield`
-/// expression, the emitter synthesises a sibling class implementing
-/// `IAsyncEnumerable<T>`, `IAsyncEnumerator<T>`, and
-/// `IAsyncDisposable`, and rewrites the user's function into a kickoff
-/// stub that creates the generator instance, copies parameters in, and
-/// returns it.
+/// Two synthesis strategies:
 ///
-/// Bootstrap semantics: `RunBody` is called synchronously by
-/// `GetAsyncEnumerator`, so all `yield` expressions execute before the
-/// first `MoveNextAsync` returns.  This matches the "eager producer"
-/// model and is sufficient for generator comprehensions and async-
-/// producer scenarios where the body has no internal `await`.
-/// Generators with `await` inside their body will require a
-/// channel-backed or true `AsyncIteratorMethodBuilder` approach in a
-/// future pass; the bootstrap emitter issues a diagnostic for that
-/// case (Gap-4a, deferred).
+/// **Eager-producer** (Gap-4 / `defineGeneratorClass`): the body has
+/// `yield` but no `await`.  `RunBody()` is called synchronously by
+/// `GetAsyncEnumerator`; all yielded values land in `_values : List<T>`
+/// and are served one-at-a-time by `MoveNextAsync`.
+///
+/// **Async iterator** (Gap-4a / `defineAsyncIteratorGeneratorClass`):
+/// the body has both `yield` and `await`.  The synthesised class
+/// implements `IAsyncStateMachine` alongside `IAsyncEnumerable<T>`,
+/// `IAsyncEnumerator<T>`, and `IAsyncDisposable`.  `MoveNextAsync`
+/// creates a fresh `TaskCompletionSource<bool>`, drives the state
+/// machine one step, and returns `ValueTask<bool>(_tcs.Task)`.  Each
+/// `yield x` stores `x` in `<>2__current`, sets the resume state,
+/// calls `_tcs.SetResult(true)`, and leaves; `await` points use the
+/// standard `AsyncTaskMethodBuilder.AwaitUnsafeOnCompleted` protocol
+/// so the machine suspends until the awaited task completes.
 module Lyric.Emitter.AsyncGenerator
 
 open System
 open System.Collections.Generic
 open System.Reflection
 open System.Reflection.Emit
+open System.Runtime.CompilerServices
 
 /// Generator-body context threaded into `Codegen.FunctionCtx` so the
 /// `EYield` handler can emit `_values.Add(inner)` instead of returning.
@@ -329,6 +332,348 @@ let emitGeneratorKickoff
     il.Emit(OpCodes.Newobj, gi.Ctor :> ConstructorInfo)
     il.Emit(OpCodes.Stloc, genLocal)
     List.zip gi.ParamFields paramArgIndices
+    |> List.iter (fun ((_, f), argIdx) ->
+        il.Emit(OpCodes.Ldloc, genLocal)
+        il.Emit(OpCodes.Ldarg, argIdx)
+        il.Emit(OpCodes.Stfld, f :> FieldInfo))
+    il.Emit(OpCodes.Ldloc, genLocal)
+    il.Emit(OpCodes.Ret)
+
+// ============================================================================
+// Gap-4a: Async generators with internal `await`.
+// ============================================================================
+
+/// Context threaded into `Codegen.FunctionCtx` so `EYield` emits the
+/// async-iterator suspend protocol instead of `_values.Add(...)`.
+///
+/// Each `yield x` in the body:
+///   1. Stores `x` to `<>2__current`.
+///   2. Sets `<>1__state = yieldStateBase + N`.
+///   3. Calls `_tcs.SetResult(true)` to resolve the pending MoveNextAsync.
+///   4. `Leave`s to the suspend point (past try/catch + ret).
+/// The matching resume label (after the Leave) resets state to -1 and
+/// continues the body.
+type AsyncIterYieldCtx =
+    { /// `<>2__current` field — stores the value passed to `yield`.
+      CurrentField:      FieldBuilder
+      /// `<>1__state` field — shared with the await state machine.
+      StateField:        FieldBuilder
+      /// `_tcs : TaskCompletionSource<bool>` field.
+      TcsField:          FieldBuilder
+      /// `TaskCompletionSource<bool>.SetResult(bool)`.
+      TcsSetResult:      MethodInfo
+      /// Element CLR type (T in `IAsyncEnumerable<T>`).
+      ElemType:          Type
+      /// Counter incremented as each yield is emitted (source order).
+      mutable NextYieldIndex: int
+      /// Per-yield resume labels.  Label `i` is marked immediately
+      /// after the yield's Leave; it resets state to -1 and continues.
+      YieldResumeLabels: Label[]
+      /// State index of the first yield resume.  = number of awaits.
+      YieldStateBase:    int
+      /// The leave target past the try/catch block.
+      SuspendLeaveLabel: Label
+      /// Promoted IL-local ↔ SM-field pairs.  Before every `Leave`
+      /// (both yield and await suspend points), each IL local is
+      /// flushed back to its field so the value survives the cross-
+      /// resume gap.  Shared with `SmAwaitInfo.PromotedShadows`.
+      PromotedShadows:   ResizeArray<LocalBuilder * FieldBuilder> }
+
+/// A local whose lifetime straddles an `await` in an async-iterator
+/// body.  Parallel to `AsyncStateMachine.SmPromotedLocal`; duplicated
+/// here to avoid a forward reference (AsyncGenerator.fs is compiled
+/// before AsyncStateMachine.fs is visible to callers of this module).
+type AsyncIterPromotedLocal =
+    { LocalName:  string
+      LocalField: FieldBuilder
+      LocalType:  Type }
+
+/// Everything `Emitter.fs` needs to wire the async-iterator MoveNext body.
+type AsyncIteratorGeneratorInfo =
+    { /// The synthesised class (implements IAsyncStateMachine +
+      /// IAsyncEnumerable<T> + IAsyncEnumerator<T> + IAsyncDisposable).
+      Type:          TypeBuilder
+      /// Default ctor captured before CreateType().
+      Ctor:          ConstructorBuilder
+      /// `<>1__state : int` field.
+      State:         FieldBuilder
+      /// `<>t__builder : AsyncTaskMethodBuilder` field (used only for
+      /// `AwaitUnsafeOnCompleted` — never for SetResult/SetException).
+      Builder:       FieldBuilder
+      /// `<>2__current : T` field.
+      Current:       FieldBuilder
+      /// `_tcs : TaskCompletionSource<bool>` field.
+      TcsField:      FieldBuilder
+      /// `TaskCompletionSource<bool>.SetResult(bool)`.
+      TcsSetResult:  MethodInfo
+      /// `TaskCompletionSource<bool>.SetException(Exception)`.
+      TcsSetException: MethodInfo
+      /// `IAsyncStateMachine.MoveNext()` — body filled by Emitter.fs.
+      MoveNext:      MethodBuilder
+      /// `IAsyncStateMachine.SetStateMachine(IAsyncStateMachine)`.
+      SetSM:         MethodBuilder
+      /// One entry per user parameter, in order.
+      ParamFields:   (string * FieldBuilder) list
+      /// Locals whose lifetimes straddle an `await`.
+      PromotedLocals: AsyncIterPromotedLocal list
+      /// Element CLR type.
+      ElemType:      Type }
+
+/// Synthesise the combined IAsyncStateMachine + IAsyncEnumerable<T>
+/// class for an `async func` whose body contains both `yield` and `await`.
+///
+///   sealed class <funcName>__AsyncIter_<uniq>
+///       : IAsyncStateMachine, IAsyncEnumerable<T>, IAsyncEnumerator<T>,
+///         IAsyncDisposable
+///
+/// Fields defined here:
+///   <>1__state, <>t__builder, <>2__current, _tcs, <param fields>,
+///   <promoted-local fields>.
+///
+/// Methods with complete bodies defined here:
+///   SetStateMachine, GetAsyncEnumerator, MoveNextAsync, get_Current,
+///   DisposeAsync.
+///
+/// `MoveNext` is left empty — Emitter.fs fills it with the state-
+/// machine body (Phase B + yield protocol).
+let defineAsyncIteratorGeneratorClass
+        (md:          ModuleBuilder)
+        (nsName:      string)
+        (funcName:    string)
+        (uniq:        int)
+        (elemType:    Type)
+        (paramSpecs:  (string * Type) list)
+        (localSpecs:  (string * Type) list) : AsyncIteratorGeneratorInfo =
+
+    let iaeT   = iaeOpenDef.MakeGenericType([| elemType |])
+    let iaetT  = iaetOpenDef.MakeGenericType([| elemType |])
+    let vtBool = typeof<System.Threading.Tasks.ValueTask<bool>>
+    let vtVoid = typeof<System.Threading.Tasks.ValueTask>
+    let ctTy   = typeof<System.Threading.CancellationToken>
+    let iAsmTy = typeof<IAsyncStateMachine>
+    let builderTy = typeof<System.Runtime.CompilerServices.AsyncTaskMethodBuilder>
+    let tcsBoolTy = typedefof<System.Threading.Tasks.TaskCompletionSource<_>>.MakeGenericType([| typeof<bool> |])
+    let taskBoolTy = typedefof<System.Threading.Tasks.Task<_>>.MakeGenericType([| typeof<bool> |])
+
+    // Resolve TaskCompletionSource<bool> members.
+    let tcsCtor =
+        match tcsBoolTy.GetConstructor([||]) |> Option.ofObj with
+        | Some c -> c | None -> failwith "TaskCompletionSource<bool>() ctor not found"
+    let tcsSetResult =
+        match tcsBoolTy.GetMethod("SetResult") |> Option.ofObj with
+        | Some m -> m | None -> failwith "TaskCompletionSource<bool>.SetResult not found"
+    let tcsSetException =
+        match tcsBoolTy.GetMethod("SetException", [| typeof<System.Exception> |]) |> Option.ofObj with
+        | Some m -> m | None -> failwith "TaskCompletionSource<bool>.SetException not found"
+    let tcsTaskGetter =
+        match tcsBoolTy.GetProperty("Task") |> Option.ofObj with
+        | Some p ->
+            match p.GetGetMethod() |> Option.ofObj with
+            | Some g -> g | None -> failwith "TaskCompletionSource<bool>.Task getter not found"
+        | None -> failwith "TaskCompletionSource<bool>.Task not found"
+
+    // Resolve ValueTask<bool>(Task<bool>) ctor.
+    let vtBoolFromTaskCtor =
+        match vtBool.GetConstructor([| taskBoolTy |]) |> Option.ofObj with
+        | Some c -> c | None -> failwith "ValueTask<bool>(Task<bool>) ctor not found"
+
+    // Resolve ValueTask (default) for DisposeAsync.
+    let vtVoidLocaCtor =
+        match vtVoid.GetConstructor([||]) |> Option.ofObj with
+        | Some _ -> None  // no no-arg ctor; use Initobj
+        | None   -> None  // Initobj path below
+
+    // AsyncTaskMethodBuilder.Create() (static).
+    let builderCreate =
+        match builderTy.GetMethod("Create", BindingFlags.Public ||| BindingFlags.Static) |> Option.ofObj with
+        | Some m -> m | None -> failwith "AsyncTaskMethodBuilder.Create not found"
+
+    // AsyncTaskMethodBuilder.SetStateMachine(IAsyncStateMachine).
+    let builderSetSm =
+        match builderTy.GetMethod("SetStateMachine") |> Option.ofObj with
+        | Some m -> m | None -> failwith "AsyncTaskMethodBuilder.SetStateMachine not found"
+
+    // Define the class.
+    let typeName =
+        let base' = sprintf "<%s>__AsyncIter_%d" funcName uniq
+        if String.IsNullOrEmpty nsName then base' else nsName + "." + base'
+    let tb =
+        md.DefineType(
+            typeName,
+            TypeAttributes.Public ||| TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit,
+            typeof<obj>,
+            [| iAsmTy; iaeT; iaetT; iAsyncDisposable |])
+
+    // ---- Fields ----
+    let stateField   = tb.DefineField("<>1__state",   typeof<int>,    FieldAttributes.Public)
+    let builderField = tb.DefineField("<>t__builder", builderTy,      FieldAttributes.Public)
+    let currentField = tb.DefineField("<>2__current", elemType,       FieldAttributes.Public)
+    let tcsField     = tb.DefineField("_tcs",         tcsBoolTy,      FieldAttributes.Private)
+
+    let paramFields =
+        paramSpecs
+        |> List.map (fun (name, ty) ->
+            let storeTy = if ty.IsByRef then (ty.GetElementType() |> Option.ofObj |> Option.defaultValue ty) else ty
+            name, tb.DefineField(name, storeTy, FieldAttributes.Public))
+
+    let promotedLocals =
+        localSpecs
+        |> List.map (fun (name, ty) ->
+            let storeTy = if ty.IsByRef then (ty.GetElementType() |> Option.ofObj |> Option.defaultValue ty) else ty
+            { LocalName  = name
+              LocalField = tb.DefineField("<l>__" + name, storeTy, FieldAttributes.Public)
+              LocalType  = storeTy })
+
+    // Default ctor.
+    let defaultCtor = tb.DefineDefaultConstructor(MethodAttributes.Public)
+
+    // ---- MoveNext() — body filled by Emitter.fs ----
+    let iasMove =
+        match iAsmTy.GetMethod("MoveNext") |> Option.ofObj with
+        | Some m -> m | None -> failwith "IAsyncStateMachine.MoveNext not found"
+    let iasSet =
+        match iAsmTy.GetMethod("SetStateMachine") |> Option.ofObj with
+        | Some m -> m | None -> failwith "IAsyncStateMachine.SetStateMachine not found"
+    let moveNext =
+        tb.DefineMethod(
+            "MoveNext",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig
+            ||| MethodAttributes.Virtual ||| MethodAttributes.Final ||| MethodAttributes.NewSlot,
+            typeof<Void>, [||])
+    tb.DefineMethodOverride(moveNext, iasMove)
+
+    // ---- SetStateMachine — forwards to builder ----
+    let setSm =
+        tb.DefineMethod(
+            "SetStateMachine",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig
+            ||| MethodAttributes.Virtual ||| MethodAttributes.Final ||| MethodAttributes.NewSlot,
+            typeof<Void>, [| iAsmTy |])
+    setSm.DefineParameter(1, ParameterAttributes.None, "stateMachine") |> ignore
+    tb.DefineMethodOverride(setSm, iasSet)
+    let smIl = setSm.GetILGenerator()
+    smIl.Emit(OpCodes.Ldarg_0)
+    smIl.Emit(OpCodes.Ldflda, builderField)
+    smIl.Emit(OpCodes.Ldarg_1)
+    smIl.Emit(OpCodes.Call, builderSetSm)
+    smIl.Emit(OpCodes.Ret)
+
+    // ---- GetAsyncEnumerator(CancellationToken) ----
+    let getAsyncEnumMb =
+        tb.DefineMethod(
+            "GetAsyncEnumerator",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig ||| MethodAttributes.Virtual,
+            iaetT, [| ctTy |])
+    getAsyncEnumMb.DefineParameter(1, ParameterAttributes.None, "cancellationToken") |> ignore
+    let iaeGetEnum =
+        match iaeT.GetMethod("GetAsyncEnumerator") |> Option.ofObj with
+        | Some m -> m | None -> failwith "IAsyncEnumerable<T>.GetAsyncEnumerator not found"
+    tb.DefineMethodOverride(getAsyncEnumMb, iaeGetEnum)
+    let gaeIl = getAsyncEnumMb.GetILGenerator()
+    // <>1__state = -1
+    gaeIl.Emit(OpCodes.Ldarg_0)
+    gaeIl.Emit(OpCodes.Ldc_I4_M1)
+    gaeIl.Emit(OpCodes.Stfld, stateField)
+    // <>t__builder = AsyncTaskMethodBuilder.Create()
+    gaeIl.Emit(OpCodes.Ldarg_0)
+    gaeIl.Emit(OpCodes.Call, builderCreate)
+    gaeIl.Emit(OpCodes.Stfld, builderField)
+    // return this (as IAsyncEnumerator<T>)
+    gaeIl.Emit(OpCodes.Ldarg_0)
+    gaeIl.Emit(OpCodes.Ret)
+
+    // ---- MoveNextAsync() : ValueTask<bool> ----
+    let moveNextMb =
+        tb.DefineMethod(
+            "MoveNextAsync",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig ||| MethodAttributes.Virtual,
+            vtBool, [||])
+    let iaetMoveNext =
+        match iaetT.GetMethod("MoveNextAsync") |> Option.ofObj with
+        | Some m -> m | None -> failwith "IAsyncEnumerator<T>.MoveNextAsync not found"
+    tb.DefineMethodOverride(moveNextMb, iaetMoveNext)
+    let mnIl = moveNextMb.GetILGenerator()
+    // _tcs = new TaskCompletionSource<bool>()
+    mnIl.Emit(OpCodes.Ldarg_0)
+    mnIl.Emit(OpCodes.Newobj, tcsCtor)
+    mnIl.Emit(OpCodes.Stfld, tcsField)
+    // this.MoveNext()  — drive the state machine one step
+    mnIl.Emit(OpCodes.Ldarg_0)
+    mnIl.Emit(OpCodes.Call, moveNext)    // non-virtual: we know the concrete type
+    // return new ValueTask<bool>(_tcs.Task)
+    mnIl.Emit(OpCodes.Ldarg_0)
+    mnIl.Emit(OpCodes.Ldfld, tcsField)
+    mnIl.Emit(OpCodes.Callvirt, tcsTaskGetter)
+    mnIl.Emit(OpCodes.Newobj, vtBoolFromTaskCtor)
+    mnIl.Emit(OpCodes.Ret)
+
+    // ---- get_Current : T ----
+    let currProp   = tb.DefineProperty("Current", PropertyAttributes.None, elemType, [||])
+    let currGetter =
+        tb.DefineMethod(
+            "get_Current",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig ||| MethodAttributes.SpecialName
+            ||| MethodAttributes.Virtual,
+            elemType, [||])
+    let iaetCurrentProp =
+        match iaetT.GetProperty("Current") |> Option.ofObj with
+        | Some p -> p | None -> failwith "IAsyncEnumerator<T>.Current not found"
+    let iaetCurrentGetter =
+        match iaetCurrentProp.GetGetMethod() |> Option.ofObj with
+        | Some m -> m | None -> failwith "IAsyncEnumerator<T>.Current getter not found"
+    tb.DefineMethodOverride(currGetter, iaetCurrentGetter)
+    currProp.SetGetMethod(currGetter)
+    let cgIl = currGetter.GetILGenerator()
+    cgIl.Emit(OpCodes.Ldarg_0)
+    cgIl.Emit(OpCodes.Ldfld, currentField)
+    cgIl.Emit(OpCodes.Ret)
+
+    // ---- DisposeAsync() : ValueTask ----
+    let dispMb =
+        tb.DefineMethod(
+            "DisposeAsync",
+            MethodAttributes.Public ||| MethodAttributes.HideBySig ||| MethodAttributes.Virtual,
+            vtVoid, [||])
+    let iDisposeAsyncM =
+        match iAsyncDisposable.GetMethod("DisposeAsync") |> Option.ofObj with
+        | Some m -> m | None -> failwith "IAsyncDisposable.DisposeAsync not found"
+    tb.DefineMethodOverride(dispMb, iDisposeAsyncM)
+    let daIl = dispMb.GetILGenerator()
+    let vtLoc = daIl.DeclareLocal(vtVoid)
+    daIl.Emit(OpCodes.Ldloca, vtLoc)
+    daIl.Emit(OpCodes.Initobj, vtVoid)
+    daIl.Emit(OpCodes.Ldloc, vtLoc)
+    daIl.Emit(OpCodes.Ret)
+
+    ignore vtVoidLocaCtor
+
+    { Type          = tb
+      Ctor          = defaultCtor
+      State         = stateField
+      Builder       = builderField
+      Current       = currentField
+      TcsField      = tcsField
+      TcsSetResult  = tcsSetResult
+      TcsSetException = tcsSetException
+      MoveNext      = moveNext
+      SetSM         = setSm
+      ParamFields   = paramFields
+      PromotedLocals = promotedLocals
+      ElemType      = elemType }
+
+/// Emit the kickoff stub for an async-iterator generator:
+///     var aig = new <AsyncIter>()
+///     aig.p0 = arg0; aig.p1 = arg1; ...
+///     return aig   ← IAsyncEnumerable<T> via interface
+let emitAsyncIteratorKickoff
+        (kickoffMb:       MethodBuilder)
+        (aig:             AsyncIteratorGeneratorInfo)
+        (paramArgIndices: int list) : unit =
+    let il = kickoffMb.GetILGenerator()
+    let genLocal = il.DeclareLocal(aig.Type :> Type)
+    il.Emit(OpCodes.Newobj, aig.Ctor :> ConstructorInfo)
+    il.Emit(OpCodes.Stloc, genLocal)
+    List.zip aig.ParamFields paramArgIndices
     |> List.iter (fun ((_, f), argIdx) ->
         il.Emit(OpCodes.Ldloc, genLocal)
         il.Emit(OpCodes.Ldarg, argIdx)

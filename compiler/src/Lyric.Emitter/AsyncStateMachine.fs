@@ -957,6 +957,87 @@ let collectAwaitInners (fn: FunctionDecl) : Expr list =
     | Some (FBBlock b) -> walkBlock b
     List.ofSeq acc
 
+/// Collect every `EYield` inner expression from the function body,
+/// in source order.  Used to count yield points for async-iterator
+/// state numbering (Gap-4a).
+let collectYieldInners (fn: FunctionDecl) : Expr list =
+    let acc = ResizeArray<Expr>()
+    let rec walkExpr (e: Expr) : unit =
+        match e.Kind with
+        | EYield inner ->
+            acc.Add inner
+            walkExpr inner
+        | EAwait inner -> walkExpr inner
+        | ELiteral _ | EPath _ | ESelf | EResult | EError -> ()
+        | EInterpolated segs ->
+            for s in segs do
+                match s with
+                | ISText _ -> ()
+                | ISExpr e -> walkExpr e
+        | EParen e | ESpawn e | EOld e | EPropagate e | ETry e -> walkExpr e
+        | ETuple es | EList es -> for e in es do walkExpr e
+        | EIf (c, t, eOpt, _) ->
+            walkExpr c
+            walkBranch t
+            match eOpt with Some b -> walkBranch b | None -> ()
+        | EMatch (s, arms) ->
+            walkExpr s
+            for a in arms do
+                match a.Guard with Some g -> walkExpr g | None -> ()
+                walkBranch a.Body
+        | EForall (_, where, body) | EExists (_, where, body) ->
+            match where with Some w -> walkExpr w | None -> ()
+            walkExpr body
+        | ELambda (_, blk) -> walkBlock blk
+        | ECall (f, args) ->
+            walkExpr f
+            for a in args do
+                match a with
+                | CANamed (_, v, _) -> walkExpr v
+                | CAPositional v    -> walkExpr v
+        | ETypeApp (f, _) -> walkExpr f
+        | EIndex (r, idxs) ->
+            walkExpr r
+            for i in idxs do walkExpr i
+        | EMember (r, _) -> walkExpr r
+        | EPrefix (_, op) -> walkExpr op
+        | EBinop (_, l, r) -> walkExpr l; walkExpr r
+        | ERange rb ->
+            match rb with
+            | RBClosed (a, b) | RBHalfOpen (a, b) -> walkExpr a; walkExpr b
+            | RBLowerOpen a | RBUpperOpen a       -> walkExpr a
+        | EAssign (t, _, v) -> walkExpr t; walkExpr v
+        | EBlock b | EUnsafe b -> walkBlock b
+    and walkBranch (eob: ExprOrBlock) =
+        match eob with
+        | EOBExpr e  -> walkExpr e
+        | EOBBlock b -> walkBlock b
+    and walkBlock (b: Block) =
+        for s in b.Statements do walkStmt s
+    and walkStmt (s: Statement) =
+        match s.Kind with
+        | SExpr e | SThrow e -> walkExpr e
+        | SReturn (Some e) -> walkExpr e
+        | SReturn None | SBreak _ | SContinue _ -> ()
+        | SAssign (t, _, v) -> walkExpr t; walkExpr v
+        | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> walkExpr e
+        | SLocal (LBVar (_, _, Some e)) -> walkExpr e
+        | SLocal (LBVar (_, _, None)) -> ()
+        | STry (body, catches) ->
+            walkBlock body
+            for c in catches do walkBlock c.Body
+        | SDefer b | SScope (_, b) | SLoop (_, b) -> walkBlock b
+        | SFor (_, _, iter, body) -> walkExpr iter; walkBlock body
+        | SWhile (_, cond, body) -> walkExpr cond; walkBlock body
+        | SRule (lhs, rhs) -> walkExpr lhs; walkExpr rhs
+        | SInvariant _ -> ()
+        | SItem _ -> ()
+    match fn.Body with
+    | None -> ()
+    | Some (FBExpr e) -> walkExpr e
+    | Some (FBBlock b) -> walkBlock b
+    List.ofSeq acc
+
 /// Collect top-level locals (`val`/`let`/`var name [: T] = …`) from
 /// the function body.  Phase B promotes every top-level local to
 /// an SM field.  Returns each local as `(name, typeAnnotationOpt)`

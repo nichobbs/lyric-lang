@@ -1159,6 +1159,147 @@ func main(): Unit {
                 i = typeof<System.IAsyncDisposable>))
             "generator implements IAsyncDisposable"
 
+/// Gap-4a: async generators that combine `yield` with `await` inside the
+/// body.  These use the combined IAsyncStateMachine + IAsyncEnumerable<T>
+/// class with a TaskCompletionSource<bool> signaling mechanism.
+let private asyncIterCases : (string * string * string) list = [
+
+    "async_iter_basic",
+    // Simplest case: one await then one yield.  The await suspends the
+    // state machine; the yield resumes the caller's MoveNextAsync.
+    """
+package E14
+import Std.Core
+
+async func task_val(n: in Int): Int = n * 2
+
+async func gen(): Int {
+  val x: Int = await task_val(21)
+  yield x
+}
+func main(): Unit {
+  for v in gen() {
+    println(toString(v))
+  }
+}
+""",
+    "42"
+
+    "async_iter_multi_yield_await",
+    // Multiple awaits interleaved with multiple yields.
+    """
+package E14
+import Std.Core
+
+async func double(n: in Int): Int = n + n
+
+async func gen(limit: in Int): Int {
+  var i: Int = 0
+  while i < limit {
+    val doubled: Int = await double(i)
+    yield doubled
+    i = i + 1
+  }
+}
+func main(): Unit {
+  for v in gen(3) {
+    println(toString(v))
+  }
+}
+""",
+    "0\n2\n4"
+
+    "async_iter_await_before_yield",
+    // One await to compute a seed, then multiple yields from a loop.
+    """
+package E14
+import Std.Core
+
+async func seed(): Int = 10
+
+async func gen(): Int {
+  val base: Int = await seed()
+  yield base
+  yield base + 1
+  yield base + 2
+}
+func main(): Unit {
+  for v in gen() {
+    println(toString(v))
+  }
+}
+""",
+    "10\n11\n12"
+]
+
+let private asyncIterBehavioral =
+    testSequenced
+    <| testList "async iterator — Gap-4a (yield + await)"
+        (asyncIterCases |> List.map mk)
+
+/// Structural test: async-iterator generator class implements both
+/// IAsyncStateMachine and IAsyncEnumerable<T>.
+let private asyncIterShape : Test =
+    testCase "[async_iter_shape] async generator with await emits IAsyncStateMachine + IAsyncEnumerable class" <| fun () ->
+        let label = "AsyncIterShape"
+        let source = """
+package E14
+import Std.Core
+
+async func task_val(n: in Int): Int = n
+
+async func gen(): Int {
+  val x: Int = await task_val(1)
+  yield x
+}
+func main(): Unit {
+  for v in gen() {
+    println(toString(v))
+  }
+}
+"""
+        let outDir = prepareOutputDir label
+        let dll    = Path.Combine(outDir, label + ".dll")
+        let req : Lyric.Emitter.Emitter.EmitRequest =
+            { Source             = source
+              AssemblyName       = label
+              OutputPath         = dll
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = Lyric.Emitter.Emitter.Dotnet
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
+        let _ = Lyric.Emitter.Emitter.emit req
+        let asm = Assembly.LoadFrom dll
+        let iaeOpenDef  = typedefof<System.Collections.Generic.IAsyncEnumerable<_>>
+        let iAsmTy      = typeof<System.Runtime.CompilerServices.IAsyncStateMachine>
+        let asyncIterTypes =
+            asm.GetTypes()
+            |> Array.filter (fun t ->
+                t.GetInterfaces() |> Array.exists (fun i -> i = iAsmTy)
+                && t.GetInterfaces() |> Array.exists (fun i ->
+                    i.IsGenericType && i.GetGenericTypeDefinition() = iaeOpenDef))
+        Expect.isGreaterThanOrEqual asyncIterTypes.Length 1
+            "expected at least one IAsyncStateMachine + IAsyncEnumerable<T> implementation"
+        let gen = asyncIterTypes.[0]
+        let iaeT    = iaeOpenDef.MakeGenericType([| typeof<int> |])
+        let iaetOpenDef = typedefof<System.Collections.Generic.IAsyncEnumerator<_>>
+        let iaetT   = iaetOpenDef.MakeGenericType([| typeof<int> |])
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i -> i = iAsmTy))
+            "async-iter class implements IAsyncStateMachine"
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i -> i = iaeT))
+            "async-iter class implements IAsyncEnumerable<Int>"
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i -> i = iaetT))
+            "async-iter class implements IAsyncEnumerator<Int>"
+        Expect.isTrue
+            (gen.GetInterfaces() |> Array.exists (fun i ->
+                i = typeof<System.IAsyncDisposable>))
+            "async-iter class implements IAsyncDisposable"
+
 let tests =
     testList "async tests" [
         behavioral
@@ -1167,4 +1308,6 @@ let tests =
         genericSmShape
         hotSmShape
         generatorShape
+        asyncIterBehavioral
+        asyncIterShape
     ]

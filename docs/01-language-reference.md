@@ -801,7 +801,11 @@ func main(): Unit {
 
 `yield expr` is a statement-expression: it evaluates `expr`, queues the value, and continues. A `yield` inside a non-generator function or outside an `async func` is a compile error.
 
-**Eager-producer semantics:** The generator body runs to completion when the caller first calls `GetAsyncEnumerator`, buffering all yielded values. This is correct for generators whose body contains no `await`. Generators with `await` inside the body require a combined generator/state-machine lowering (Gap-4a, tracked in D070); the compiler emits a diagnostic for that case.
+The compiler selects one of two lowering strategies based on the body's content:
+
+**Eager-producer** (body has `yield` but no `await`): the generator body runs to completion synchronously when the caller first calls `GetAsyncEnumerator`, buffering all yielded values in a `List<T>` that `MoveNextAsync` serves one at a time. Correct for generator comprehensions and producer pipelines.
+
+**Async-iterator** (body has both `yield` and `await`): the compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. Each `MoveNextAsync` call creates a `TaskCompletionSource<bool>`, drives the state machine one step, and returns a `ValueTask<bool>` backed by the TCS. A `yield` stores the value, signals the TCS with `true`, and suspends; an `await` uses the standard Phase-B `AwaitUnsafeOnCompleted` protocol; end-of-body signals the TCS with `false` (exhausted). Any local variable live across a yield or await boundary is promoted to a field on the class so its value survives cross-`MoveNextAsync` gaps. (D-progress-261, §14.6.2 of `docs/09-msil-emission.md`.)
 
 ### 7.3 Cancellation
 

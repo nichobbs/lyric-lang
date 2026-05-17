@@ -826,48 +826,97 @@ the awaiter's interface.
 ### 14.6 Async generators (`yield` in `async func`)
 
 An `async func f(...): T` whose body contains at least one `yield`
-expression is an *async generator*. The compiler synthesises a
-sibling class implementing `IAsyncEnumerable<T>`, `IAsyncEnumerator<T>`,
-and `IAsyncDisposable`, and rewrites the user's function into a
-kickoff stub:
+expression is an *async generator*. The compiler selects one of two
+synthesis strategies based on whether the body also contains `await`.
+
+#### 14.6.1 Eager-producer (no `await` in body)
+
+Synthesises a sibling class `<f>__Gen_N`:
 
 ```
-// Synthesised:
 sealed class <f>__Gen_N :
     IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
   // parameter fields (public, populated by kickoff)
-  // List<T> _values; int _pos; T _current;
+  List<T> _values; int _pos; T _current;
   void RunBody() { /* user body; yield e → _values.Add(e) */ }
   IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
     _values = new List<T>(); _pos = -1; RunBody(); return this; }
-  ValueTask<bool> MoveNextAsync() { … }
+  ValueTask<bool> MoveNextAsync() { /* serves from _values[_pos] */ }
   T Current { get { return _current; } }
   ValueTask DisposeAsync() { return default; }
 }
-// User's function becomes:
 static IAsyncEnumerable<T> f(...) {
-  var gen = new <f>__Gen_N();
-  gen.p0 = arg0; …;
-  return gen;
+  var gen = new <f>__Gen_N(); gen.p0 = arg0; …; return gen;
 }
 ```
 
-**Eager-producer semantics** (D-progress-260): `RunBody` is called
-synchronously by `GetAsyncEnumerator`, so all `yield` expressions
-execute eagerly before the first `MoveNextAsync` returns. This is the
-correct and intended design for generator comprehensions and
-async-producer scenarios where the body has no internal `await`.
+`RunBody` is called synchronously by `GetAsyncEnumerator`; all `yield`
+expressions execute eagerly before the first `MoveNextAsync` returns.
+Correct for generator comprehensions and producer pipelines whose body
+has no internal `await` (D-progress-260).
 
-Generators whose body contains `await` require a combined
-generator/state-machine class using `AsyncIteratorMethodBuilder<T>`
-(the shape C# emits for `async IAsyncEnumerable<T>` methods); the
-emitter issues a Gap-4a diagnostic for that case (deferred, see D070).
+#### 14.6.2 Async-iterator (body has both `yield` and `await`)
+
+Gap-4a (D-progress-261): synthesises a combined class `<f>__AsyncIter_N`
+that is simultaneously an `IAsyncStateMachine` and the enumerable:
+
+```
+sealed class <f>__AsyncIter_N :
+    IAsyncStateMachine,
+    IAsyncEnumerable<T>, IAsyncEnumerator<T>, IAsyncDisposable {
+  // Fields
+  int <>1__state;                       // -2=done, -1=running, 0..A-1=await, A..A+Y-1=yield
+  AsyncTaskMethodBuilder <>t__builder;  // used only for AwaitUnsafeOnCompleted
+  T <>2__current;                       // value of the latest yield
+  TaskCompletionSource<bool> _tcs;      // signal for the pending MoveNextAsync
+  // parameter and promoted-local fields (one per user local straddling an await/yield)
+  // awaiter fields (one per await site, lazily allocated)
+
+  void MoveNext() { /* Phase-B state machine: awaits + yields */ }
+  void SetStateMachine(IAsyncStateMachine sm) { <>t__builder.SetStateMachine(sm); }
+
+  IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken) {
+    <>1__state = -1;
+    <>t__builder = AsyncTaskMethodBuilder.Create();
+    return this;
+  }
+  ValueTask<bool> MoveNextAsync() {
+    _tcs = new TaskCompletionSource<bool>();
+    this.MoveNext();           // drive one step synchronously
+    return new ValueTask<bool>(_tcs.Task);
+  }
+  T Current { get { return <>2__current; } }
+  ValueTask DisposeAsync() { return default; }
+}
+```
+
+**State layout**: states `0..A-1` are await-resume states (Phase B
+protocol: `AwaitUnsafeOnCompleted` stores the awaiter, sets state N,
+`Leave` past try/catch, `Ret`; resume label reloads awaiter, `GetResult`).
+States `A..A+Y-1` are yield-resume states: each `yield e` stores `e`
+into `<>2__current`, sets state `A+i`, calls `_tcs.SetResult(true)`,
+flushes promoted locals to their fields, then `Leave`s past the try/catch
+and returns.  When `MoveNextAsync` calls `MoveNext` again the dispatch
+switch jumps to resume label `A+i`, resets state to -1, and continues
+the body.
+
+**Promoted locals**: any local variable whose lifetime spans an `await`
+or a `yield` boundary is promoted to a field (`<l>__name`) and shadowed
+by an IL local.  At every `MoveNext` entry the fields are loaded into the
+IL locals; at every suspend point (await or yield) the IL locals are
+flushed back to the fields.
+
+The kickoff stub is identical to the eager-producer: create instance,
+copy params to fields, return as `IAsyncEnumerable<T>`.
+
+Both strategies are implemented in
+`compiler/src/Lyric.Emitter/AsyncGenerator.fs`; the routing is in
+`compiler/src/Lyric.Emitter/Emitter.fs`.
 
 `for x in gen() { … }` lowers to a standard `await foreach` —
 `GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
 `DisposeAsync` in a `finally` block.
 
-The implementation lives in `compiler/src/Lyric.Emitter/AsyncGenerator.fs`.
 The JVM-target equivalent uses `java.lang.Iterable` + `java.util.Iterator`
 with the same eager `runBody()` pattern (B129, `compiler/lyric/jvm/lowering.l`).
 

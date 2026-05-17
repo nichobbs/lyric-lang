@@ -195,7 +195,36 @@ func main(): Unit {
 
 The compiler infers the public signature of a generator function as `IAsyncEnumerable[T]`. `for x in seq { … }` lowers to `await foreach` using the `IAsyncEnumerable<T>` / `IAsyncEnumerator<T>` interfaces on .NET, or `Iterable<T>` / `Iterator<T>` on the JVM.
 
-**Current limitation (bootstrap-grade):** The generator body is evaluated eagerly before any element is consumed. A generator whose body contains `await` is not yet supported and produces a compile-time diagnostic. True lazy/interleaved execution is tracked for M2.
+**Generators with `await`.** An async generator may also use `await` inside its body. The two operations compose naturally — `yield` suspends and hands a value to the consumer; `await` suspends and waits for a task to complete. You can freely mix them:
+
+```lyric
+async func pagedItems(baseUrl: in String): Item {
+  var page = 0
+  loop {
+    val result = await fetchPage(baseUrl, page)
+    for item in result.items {
+      yield item
+    }
+    if not result.hasMore { return }
+    page = page + 1
+  }
+}
+
+async func main(): Unit {
+  for item in pagedItems("https://api.example.com/items") {
+    println(item.name)
+  }
+}
+```
+
+Here `fetchPage` is awaited inside the generator — the generator suspends while the HTTP request is in flight, then resumes to yield the items one by one to the consumer.
+
+**Implementation.** The compiler detects whether a generator body contains any `await` expression and selects one of two lowering strategies:
+
+- *Eager-producer* (no `await` in body): `RunBody()` is called synchronously by `GetAsyncEnumerator`, buffers all yielded values in a list, and returns. Subsequent `MoveNextAsync()` calls step through the list. Simple and zero-overhead for pure-computation generators.
+- *Async-iterator* (`await` present in body): A combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class is synthesised. `MoveNextAsync()` creates a fresh `TaskCompletionSource<bool>`, kicks the state machine, and returns `ValueTask<bool>(tcs.Task)`. When the body yields, it stores the value in `<>2__current`, signals `tcs.SetResult(true)`, and suspends. When the body awaits a task, it hooks the continuation via `AwaitUnsafeOnCompleted` and suspends. Local variables that live across either a `yield` or an `await` boundary are promoted to fields on the class.
+
+Both strategies satisfy `IAsyncEnumerable<T>`, so the consumer (`for x in gen() { … }`) is identical regardless of which strategy was used.
 
 ## §10.6 No raw locks
 

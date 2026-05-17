@@ -172,7 +172,12 @@ type FunctionCtx =
       mutable SmAwaitInfo: Lyric.Emitter.AsyncStateMachine.SmAwaitInfo option
       /// Async generator context.  When set, `EYield inner` emits
       /// `this._values.Add(inner_result)` instead of returning.
-      mutable GenCtxInfo: Lyric.Emitter.AsyncGenerator.GenCtxInfo option }
+      mutable GenCtxInfo: Lyric.Emitter.AsyncGenerator.GenCtxInfo option
+      /// Async-iterator yield context (Gap-4a).  When set, `EYield inner`
+      /// emits the suspend protocol: stores to `<>2__current`, sets state,
+      /// calls `_tcs.SetResult(true)`, and leaves to the suspend point.
+      /// Checked before `GenCtxInfo` so the two contexts don't conflict.
+      mutable AsyncIterYieldCtx: Lyric.Emitter.AsyncGenerator.AsyncIterYieldCtx option }
 
 module FunctionCtx =
 
@@ -250,7 +255,8 @@ module FunctionCtx =
           SmFields     = Dictionary()
           PreAllocatedLocals = Dictionary()
           SmAwaitInfo  = None
-          GenCtxInfo   = None }
+          GenCtxInfo   = None
+          AsyncIterYieldCtx = None }
 
     let pushScope (ctx: FunctionCtx) : unit =
         ctx.Scopes.Push(Dictionary())
@@ -1638,11 +1644,49 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         failwith "E15 codegen: 'old(_)' is a Phase 4 feature (T0080)"
 
     // ---- yield expr — async generator body ----------------------------
-    // Valid only inside a `RunBody` method of a synthesised generator
-    // class.  Emits `this._values.Add(inner_result)` and pushes Unit.
     | EYield inner ->
+        match ctx.AsyncIterYieldCtx with
+        | Some aiyCtx ->
+            // Async-iterator yield protocol (Gap-4a): stores current value,
+            // signals the pending TCS, and leaves to the suspend point.
+            let yieldIdx = aiyCtx.NextYieldIndex
+            aiyCtx.NextYieldIndex <- yieldIdx + 1
+            let resumeLabel = aiyCtx.YieldResumeLabels.[yieldIdx]
+            // <>2__current = inner
+            il.Emit(OpCodes.Ldarg_0)
+            let innerTy = emitExpr ctx inner
+            if aiyCtx.ElemType.IsValueType && not innerTy.IsValueType then
+                il.Emit(OpCodes.Unbox_Any, aiyCtx.ElemType)
+            elif not aiyCtx.ElemType.IsValueType && innerTy.IsValueType then
+                il.Emit(OpCodes.Box, innerTy)
+            il.Emit(OpCodes.Stfld, aiyCtx.CurrentField)
+            // <>1__state = yieldStateBase + yieldIdx
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldc_I4, aiyCtx.YieldStateBase + yieldIdx)
+            il.Emit(OpCodes.Stfld, aiyCtx.StateField)
+            // _tcs.SetResult(true)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldfld, aiyCtx.TcsField)
+            il.Emit(OpCodes.Ldc_I4_1)
+            il.Emit(OpCodes.Callvirt, aiyCtx.TcsSetResult)
+            // Flush promoted IL locals → SM fields so values survive the
+            // cross-resume gap (same protocol as EAwait's flush).
+            for (lb, fld) in aiyCtx.PromotedShadows do
+                il.Emit(OpCodes.Ldarg_0)
+                il.Emit(OpCodes.Ldloc, lb)
+                il.Emit(OpCodes.Stfld, fld)
+            // Leave to suspend point (past try/catch + ret)
+            il.Emit(OpCodes.Leave, aiyCtx.SuspendLeaveLabel)
+            // Resume label: state = -1 (running) and continue body
+            il.MarkLabel(resumeLabel)
+            il.Emit(OpCodes.Ldarg_0)
+            il.Emit(OpCodes.Ldc_I4_M1)
+            il.Emit(OpCodes.Stfld, aiyCtx.StateField)
+            typeof<Void>
+        | None ->
         match ctx.GenCtxInfo with
         | Some gi ->
+            // Eager-producer yield: appends to _values list.
             il.Emit(OpCodes.Ldarg_0)
             il.Emit(OpCodes.Ldfld, gi.ValuesField)
             let innerTy = emitExpr ctx inner

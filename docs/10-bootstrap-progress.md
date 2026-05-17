@@ -12592,3 +12592,74 @@ errors (TypeBuilderInstantiation.GetInterfaces() issues, unrelated to this
 work). New async generator tests: `generator_basic`, `generator_yield_with_params`,
 `generator_empty_yield`, `generator_multiple_yields`, `generator_for_loop_consumer`,
 `generator_with_computation` in `AsyncTests.fs`.
+
+---
+
+### D-progress-261 — Gap-4a: async generators with internal `await` (M1.4)
+
+**Gap closed.** Async generators whose bodies contain both `yield` and `await`
+expressions are now fully supported. Previously the emitter rejected any
+`yield`-in-`async func` body that also contained an `await`, deferring to a
+future milestone.
+
+**Design.** Two distinct lowering strategies are now selected at compile time:
+
+- *Eager-producer* (no `await` in body, unchanged): `RunBody()` fills a
+  `List<T>` synchronously; `MoveNextAsync()` steps through it.
+- *Async-iterator* (`await` present in body, new): A combined class implementing
+  `IAsyncStateMachine`, `IAsyncEnumerable<T>`, and `IAsyncEnumerator<T>` is
+  synthesised. `MoveNextAsync()` allocates a fresh `TaskCompletionSource<bool>`,
+  invokes `MoveNext()` (the state machine body), and returns
+  `ValueTask<bool>(tcs.Task)`.  A `yield` stores its value in `<>2__current`,
+  calls `tcs.SetResult(true)`, and issues a `Leave` to the suspend point.  An
+  `await` hooks `AwaitUnsafeOnCompleted` and issues a `Leave` to the same
+  suspend point.  The body's final exit calls `tcs.SetResult(false)`.
+  `AsyncTaskMethodBuilder` (void) is used solely for its
+  `AwaitUnsafeOnCompleted` method; `SetResult`/`SetException` on the builder
+  are never called.
+
+**State numbering.** States `0 .. A-1` are await-resume states (as in a plain
+async function); states `A .. A+Y-1` are yield-resume states.  Both share the
+same `<>1__state` field and the same dispatch switch at the top of `MoveNext`.
+
+**Promoted locals.** `collectPromotableLocals` already collects all top-level
+let/var bindings.  Those that straddle an `await` boundary were already flushed
+by the `EAwait` handler.  The `EYield` handler now also flushes them (all
+`PromotedShadows` pairs) before the `Leave`, ensuring variables survive across
+yield-resume boundaries.
+
+**Implementation files changed:**
+
+- `compiler/src/Lyric.Emitter/AsyncStateMachine.fs` — added `collectYieldInners`
+  (parallel to `collectAwaitInners`) to count yield points for state layout.
+- `compiler/src/Lyric.Emitter/AsyncGenerator.fs` — added `AsyncIterYieldCtx`,
+  `AsyncIterPromotedLocal`, `AsyncIteratorGeneratorInfo` types;
+  `defineAsyncIteratorGeneratorClass` synthesises the combined class;
+  `emitAsyncIteratorKickoff` emits the static kickoff method.
+- `compiler/src/Lyric.Emitter/Codegen.fs` — `FunctionCtx` gains
+  `AsyncIterYieldCtx` field; `EYield` handler checks it before the existing
+  eager-producer path.
+- `compiler/src/Lyric.Emitter/Emitter.fs` — routing inside
+  `if sg.IsGenerator then` block: if body contains `await`, selects the
+  async-iterator path; builds a fake `StateMachineInfo` from
+  `AsyncIteratorGeneratorInfo` so the unchanged `EAwait` handler applies.
+- `compiler/tests/Lyric.Emitter.Tests/AsyncTests.fs` — four new behavioral
+  tests: `async_iter_basic`, `async_iter_multi_yield_await`,
+  `async_iter_await_before_yield`, plus a structural shape test
+  `async_iter_shape` verifying `IAsyncStateMachine + IAsyncEnumerable<T>`
+  interface implementation.
+
+**Docs updated:**
+
+- `docs/09-msil-emission.md` §14.6 split into §14.6.1 (eager-producer) and
+  §14.6.2 (async-iterator) with full class layout, state diagram, and signaling
+  mechanism.
+- `docs/01-language-reference.md` §7.2 updated to describe both strategies.
+- `docs/03-decision-log.md` D070 updated to ACCEPTED; D035 tracked follow-ups
+  updated to remove Gap-4a deferred reference.
+- `book/chapters/10-async-and-concurrency.md` §10.5 expanded with
+  `await`-in-generator example and implementation strategy description.
+
+**Test results:** 781/781 emitter tests pass, 0 failed. Four new Gap-4a tests
+added (`async_iter_basic`, `async_iter_multi_yield_await`,
+`async_iter_await_before_yield`, `async_iter_shape`).

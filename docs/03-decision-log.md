@@ -888,16 +888,14 @@ mechanism:
   generation and `old(_)` snapshotting.
 - The Stdlib shim's contents become the seed of `std.core` /
   `std.io` once the package manager lands (Phase 3).
-- Gap-4a (async generators with internal `await`) — see D070.
-
 **Revisions:** The `async` / `await` row is SUPERSEDED. Real
 `IAsyncStateMachine` state machines landed across D-progress-033
 (Phase A, await-free), D-progress-034..040 (Phase B, suspend/resume),
 D-progress-041..043 (Phase B+, loop-with-await + promoted locals),
 D-progress-054..058 (Phase B++, defer+await; B+++ try/catch+await;
-for-with-await), and D-progress-074..076 (stack-spilling, generic
-async). The blocking shim now applies only to ineligible fall-through
-shapes and to async generators with `await` in their body (D070).
+for-with-await), D-progress-074..076 (stack-spilling, generic async),
+and D-progress-261 (Gap-4a: async generators with internal `await`).
+The blocking shim now applies only to ineligible fall-through shapes.
 
 ---
 
@@ -3820,11 +3818,11 @@ private `joinStrs` helper removed and all call sites updated to `Str.join`.
 
 ---
 
-## D070 — Gap-4a: async generators with internal `await` deferred to M2
+## D070 — Gap-4a: async generators with internal `await`
 
-**Status:** Deferred (Gap-4a).  **Date:** 2026-05-16.
+**Status:** ACCEPTED — shipped (D-progress-261).  **Date:** 2026-05-16 (deferred); 2026-05-17 (resolved).
 
-**Builds on:** D035 (async row now superseded — real SM shipped), D-progress-260 (Gap-1..4 closure).
+**Builds on:** D035 (async row now superseded — real SM shipped), D-progress-260 (Gap-1..4 closure), D-progress-261 (Gap-4a implementation).
 
 ### Context
 
@@ -3845,35 +3843,38 @@ calls.
 
 ### Decision
 
-Gap-4a (generators with internal `await`) is deferred.  The emitter issues a
-diagnostic (`Gap-4a` tag) when it encounters `await` inside a generator body.
-The language reference §7.2 documents the eager-producer semantics and the
-concurrent-consumer constraint.
+Gap-4a is **resolved** (D-progress-261).  The emitter now synthesises a combined
+`IAsyncStateMachine` + `IAsyncEnumerable<T>` class (`<f>__AsyncIter_N`) for
+generators whose body contains `await`.  The concrete implementation:
 
-The correct lowering requires synthesising a combined generator/state-machine
-class — one that implements both `IAsyncEnumerable<T>` / `IAsyncEnumerator<T>`
-and `IAsyncStateMachine`, using `AsyncIteratorMethodBuilder<T>` as the driver.
-This is the shape the C# compiler emits for `async IAsyncEnumerable<T>` iterator
-methods.  The building blocks are already present in `AsyncStateMachine.fs`
-(Phase B suspend/resume protocol, promoted-locals, state dispatch) and
-`AsyncGenerator.fs` (generator class synthesis); the work is to merge them into
-a combined `MoveNextAsync`-driven state machine rather than a separate `RunBody`.
+- **Builder**: `AsyncTaskMethodBuilder` (void) — used only for
+  `AwaitUnsafeOnCompleted`; `SetResult`/`SetException` are never called on it.
+- **Signaling**: `TaskCompletionSource<bool>` field `_tcs`.  `MoveNextAsync`
+  creates a fresh TCS, calls `this.MoveNext()`, returns `ValueTask<bool>(_tcs.Task)`.
+- **State layout**: states 0..A-1 are await-resume states (Phase-B protocol);
+  states A..A+Y-1 are yield-resume states.
+- **`yield e`** stores `e` to `<>2__current`, sets state to `A+i`,
+  flushes promoted locals to their fields, calls `_tcs.SetResult(true)`,
+  then `Leave`s past the try/catch and returns.
+- **End-of-body** calls `_tcs.SetResult(false)` (generator exhausted).
+- **Exception** calls `_tcs.SetException(ex)`.
+- **Promoted locals**: any local live across an await *or* a yield boundary is
+  promoted to a field on the class.  Fields are loaded at MoveNext entry and
+  flushed at every suspend point.
+
+See `docs/09-msil-emission.md` §14.6.2 for the full structure.
 
 ### Single-use `GetAsyncEnumerator` constraint
 
-The bootstrap generator class stores all yielded values in a `List<T>` (`_values`
-field).  `GetAsyncEnumerator` resets `_values` to a new list and re-runs the
-body on every call.  This means:
+Both the eager-producer and the async-iterator strategies produce a class where
+`GetAsyncEnumerator` returns `this`.  Calling `GetAsyncEnumerator` twice
+concurrently (sharing the same generator instance) is not supported.
 
-- Each call to `GetAsyncEnumerator` produces a fresh, independent enumeration.
-- Calling `GetAsyncEnumerator` twice concurrently (sharing the same generator
-  instance) is not supported and will clobber the shared `_values` list.
-
-The `for x in f(args)` desugaring creates a new generator instance per loop,
-so well-formed Lyric code is unaffected.  Code that captures the
-`IAsyncEnumerable<T>` value and passes it to two concurrent consumers at once
-violates the bootstrap constraint; a diagnostic or guard will be added in M2
-when the channel-backed model ships.
+The `for x in f(args)` desugaring creates a new generator instance per loop
+(the kickoff stub runs on each call to `f`), so well-formed Lyric code is
+unaffected.  Code that captures the `IAsyncEnumerable<T>` value and passes it
+to two concurrent consumers at once is an unsupported pattern; it violates the
+single-enumerator contract of the interface.
 
 ---
 
