@@ -3,8 +3,8 @@
 /// Bridges Lyric's Storage package to .NET storage libraries:
 ///   AWSSDK.S3              — Amazon S3               (@cfg feature = "s3")
 ///   Azure.Storage.Blobs    — Azure Blob Storage       (@cfg feature = "azureblob")
-///   System.IO.Storage      — Local filesystem         (@cfg feature = "local")
-///   System.Diagnostics.Audit — Audit logging          (always available)
+///   Lyric.Storage.Local      — Local filesystem         (@cfg feature = "local")
+///   Lyric.Storage.Audit — Audit logging          (always available)
 ///
 /// All storage operations use opaque Int handles returned by `connect*`.
 ///
@@ -118,7 +118,7 @@ extern package Azure.Storage.Blobs {
 
 @axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
-extern package System.IO.Storage {
+extern package Lyric.Storage.Local {
   /// Open a local filesystem store rooted at basePath/bucketName.
   pub func connect(basePath: String, bucketName: String): Result[Int, String]
 
@@ -159,7 +159,7 @@ extern package System.IO.Storage {
 // ─── Audit logging ────────────────────────────────────────────────────────────
 
 @axiom("Audit logging via System.Diagnostics")
-extern package System.Diagnostics.Audit {
+extern package Lyric.Storage.Audit {
   /// Emit a structured audit log entry for a storage operation.
   pub func auditLog(operation: String, level: String, detail: String): Unit
 }
@@ -190,7 +190,7 @@ pub func connectAzure(
 /// Connect to a local filesystem storage store.
 @cfg(feature = "local")
 pub func connectLocal(basePath: in String, bucketName: in String): Result[Int, String] {
-  System.IO.Storage.connect(basePath, bucketName)
+  Lyric.Storage.Local.connect(basePath, bucketName)
 }
 
 /// Upload an object to the S3 bucket identified by `bucketHandle`.
@@ -226,7 +226,7 @@ pub func put(
   contentType:  in String,
   userMetaJson: in String
 ): Result[String, String] {
-  return System.IO.Storage.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+  return Lyric.Storage.Local.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
 }
 
 /// Download an object from the S3 bucket.
@@ -244,7 +244,7 @@ pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
 /// Download an object from the local filesystem store.
 @cfg(feature = "local")
 pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
-  return System.IO.Storage.get(bucketHandle, key)
+  return Lyric.Storage.Local.get(bucketHandle, key)
 }
 
 /// Delete an object from the S3 bucket.
@@ -262,7 +262,7 @@ pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
 /// Delete an object from the local filesystem store.
 @cfg(feature = "local")
 pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  return System.IO.Storage.delete(bucketHandle, key)
+  return Lyric.Storage.Local.delete(bucketHandle, key)
 }
 
 /// List objects in the S3 bucket.
@@ -295,7 +295,7 @@ pub func list(
   continuationToken: in String,
   maxKeys:           in Int
 ): Result[String, String] {
-  return System.IO.Storage.list(bucketHandle, prefix, continuationToken, maxKeys)
+  return Lyric.Storage.Local.list(bucketHandle, prefix, continuationToken, maxKeys)
 }
 
 /// Generate a pre-signed URL for the S3 bucket.
@@ -325,7 +325,7 @@ pub func presignedUrl(
   key:              in String,
   expiresInSeconds: in Int
 ): Result[String, String] {
-  return System.IO.Storage.presignedUrl(bucketHandle, key, expiresInSeconds)
+  return Lyric.Storage.Local.presignedUrl(bucketHandle, key, expiresInSeconds)
 }
 
 /// Check whether an object exists in the S3 bucket.
@@ -343,10 +343,10 @@ pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
 /// Check whether an object exists in the local filesystem store.
 @cfg(feature = "local")
 pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  return System.IO.Storage.exists(bucketHandle, key)
+  return Lyric.Storage.Local.exists(bucketHandle, key)
 }
 
 /// Emit an audit log entry.
 pub func auditLog(operation: in String, level: in String, detail: in String): Unit {
-  System.Diagnostics.Audit.auditLog(operation, level, detail)
+  Lyric.Storage.Audit.auditLog(operation, level, detail)
 }
