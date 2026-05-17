@@ -162,13 +162,19 @@ let private parseProtocol (protocol: string) : Result<VerifierResult, string> =
         let mutable unknowns    = 0
         let mutable hasCex      = false
         let mutable hasFailure  = false
+        // StringComparison.Ordinal: the protocol is ASCII; the default
+        // CurrentCulture comparison would fold characters on non-en-US
+        // locales (Turkish i/I, Azerbaijani) and silently misparse the
+        // header. See #345.
+        let inline starts (s: string) (prefix: string) =
+            s.StartsWith(prefix, StringComparison.Ordinal)
         for line in lines.[1..] do
-            if line.StartsWith "level=" then
+            if starts line "level=" then
                 level <- line.Substring 6
-            elif line.StartsWith "diag|" then
+            elif starts line "diag|" then
                 let parts = line.Split([| '|' |], 6)
                 diags <- parseDiag parts :: diags
-            elif line.StartsWith "result|" then
+            elif starts line "result|" then
                 let parts = line.Split([| '|' |], 6)
                 total <- total + 1
                 if parts.Length > 1 then
