@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="ProcessCapture.fs" />
+    <Compile Include="ConsoleHelper.fs" />
     <Compile Include="VerifierEnv.fs" />
     <Compile Include="Backend.fs" />
     <Compile Include="TypeMap.fs" />

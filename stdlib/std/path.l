@@ -7,7 +7,7 @@
 @runtime_checked
 package Std.Path
 
-import System.IO as HostIO
+import Std.PathHost
 
 /// Join two path components into a normalized host path.
 ///
@@ -28,7 +28,7 @@ pub func join(base: in String, relative: in String): String {
   if relative.length == 0 {
     return base
   }
-  return HostIO.combine(base, relative)
+  return hostPathCombine(base, relative)
 }
 
 /// Extract the final extension, including the leading dot when present.
@@ -41,7 +41,7 @@ pub func join(base: in String, relative: in String): String {
 /// ```
 @stable(since="1.0")
 pub func extension(path: in String): String {
-  return HostIO.getExtension(path)
+  return hostPathGetExtension(path)
 }
 
 /// Extract the final path component.
@@ -56,7 +56,7 @@ pub func extension(path: in String): String {
 /// this is empty or normalized first.
 @stable(since="1.0")
 pub func basename(path: in String): String {
-  return HostIO.getFileName(path)
+  return hostPathGetFileName(path)
 }
 
 /// Extract the containing directory.
@@ -71,11 +71,8 @@ pub func basename(path: in String): String {
 /// with relative paths without handling null.
 @stable(since="1.0")
 pub func dirname(path: in String): String {
-  match HostIO.getDirectoryName(path) {
-    case null -> "."
-    case dir when dir.length == 0 -> "."
-    case dir -> dir
-  }
+  val dir = hostPathGetDirectoryName(path) ?? ""
+  if dir == "" { "." } else { dir }
 }
 
 /// Check whether a path is absolute under the host platform's path
@@ -87,7 +84,7 @@ pub func isAbsolute(path: in String): Bool {
   if path.length == 0 {
     return false
   }
-  return HostIO.isPathRooted(path)
+  return hostPathIsRooted(path)
 }
 
 /// Check whether a path is relative under the host platform's path

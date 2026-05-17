@@ -66,11 +66,11 @@ package Lyric.Cli
 
 import Std.Core
 import Std.Collections
-import Std.Console
-import Std.File
-import Std.Path
-import Std.Process
-import Std.Environment
+import Std.Console as Console
+import Std.File as File
+import Std.Path as Path
+import Std.Process as Process
+import Std.Environment as Environment
 import Std.Errors
 import Std.String as Str
 
@@ -85,8 +85,9 @@ import Lyric.Lint as Lint              // lint(parsed) -> LintResult; renderDiag
 import Lyric.Verifier as Verifier      // prove(source, opts) -> ProofSummary
 import Lyric.Doc as Doc                // generate(parsed) -> String
 import Lyric.ContractMeta as Meta      // readFromFile, diffContracts, hasBreakingChanges
+import Lyric.Repl as Repl              // run(argv) -> Int
 
-val VERSION: String = "0.1.0"
+func VERSION(): String { "0.1.0" }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
@@ -102,8 +103,8 @@ func printDiag(d: in Diagnostic): Unit {
     case DiagWarning -> "warning"
   }
   printErr(d.code + " " + sev + " [" +
-    toString(d.span.start.line) + ":" +
-    toString(d.span.start.column) + "]: " + d.message)
+    toString(d.span.startPos.line) + ":" +
+    toString(d.span.startPos.column) + "]: " + d.message)
 }
 
 func printUsage(): Unit {
@@ -118,6 +119,7 @@ func printUsage(): Unit {
   printErr("  lyric public-api-diff <old.dll> <new.dll>")
   printErr("  lyric restore [--manifest <lyric.toml>]")
   printErr("  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]")
+  printErr("  lyric repl")
   printErr("  lyric --version")
   printErr("")
   printErr("  build is incremental — same source + stdlib skips emit; --force rebuilds.")
@@ -165,9 +167,10 @@ func writeRuntimeConfig(dllPath: in String): Unit {
 func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget): Int {
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
-    case Err(e)   ->
+    case Err(e)   -> {
       printErr("build: " + IOError.message(e))
       return 1
+    }
   }
 
   val outDir = Path.dirname(outPath)
@@ -190,7 +193,7 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
-      case DiagError   -> hadError = true
+      case DiagError   -> { hadError = true }
       case DiagWarning -> ()
     }
     printDiag(d)
@@ -199,6 +202,17 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
   if hadError {
     printErr(sourcePath + ": build failed")
     return 1
+  }
+
+  // Also check the output path: if the emitter reported no diagnostics but
+  // still failed (e.g. the --internal-build subprocess exited non-zero with
+  // errors already printed to stderr), outputPath will be None.
+  match result.outputPath {
+    case None -> {
+      printErr(sourcePath + ": build failed")
+      return 1
+    }
+    case Some(_) -> ()
   }
 
   writeRuntimeConfig(outPath)
@@ -295,10 +309,11 @@ func cmdBuild(argv: in slice[String]): Int {
   if positional.count == 0 {
     val mfPath = match manifestArg {
       case Some(p) -> p
-      case None    ->
+      case None    -> {
         printErr("build: missing source file or --manifest")
         printUsage()
         return 1
+      }
     }
     return buildProject(mfPath, explicitOut, target)
   }
@@ -311,10 +326,11 @@ func cmdBuild(argv: in slice[String]): Int {
 
   val outPath = match explicitOut {
     case Some(o) -> o
-    case None    ->
+    case None    -> {
       val dir  = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
       Path.join(dir, stem + ".dll")
+    }
   }
 
   // `force` is noted but the self-hosted emitter's cache is managed
@@ -332,13 +348,13 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
       printErr("build: " + IOError.message(e))
       return 1
   }
-  val manifest = match Mf.parse(mfText, mfPath) {
+  val manifest: Manifest = match Mf.parse(mfText, mfPath) {
     case Ok(m)  -> m
     case Err(e) ->
       printErr("build: " + ManifestError.message(e))
       return 1
   }
-  val proj = match manifest.project {
+  val proj: ProjectSection = match manifest.project {
     case Some(p) -> p
     case None    ->
       printErr("build: " + mfPath + " has no [project] section")
@@ -353,7 +369,7 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
         case Some(s) -> s
         case None    -> proj.name + ".dll"
       }
-      Path.join(mfDir, "bin", stem)
+      Path.join(Path.join(mfDir, "bin"), stem)
   }
 
   val outDir = Path.dirname(outPath)
@@ -607,7 +623,7 @@ func cmdLint(argv: in slice[String]): Int {
     }
   }
 
-  if hasError || (errorOnWarning && hasWarning) { 1 } else { 0 }
+  if hasError or (errorOnWarning and hasWarning) { 1 } else { 0 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -622,7 +638,7 @@ func cmdProve(argv: in slice[String]): Int {
   var i = 1
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--verbose" || arg == "-v" {
+    if arg == "--verbose" or arg == "-v" {
       verbose = true
       i += 1
     } else if arg == "--allow-unverified" {
@@ -835,7 +851,7 @@ func cmdRestore(argv: in slice[String]): Int {
       return 1
   }
 
-  val manifest = match Mf.parse(mfText, mfPath) {
+  val manifest: Manifest = match Mf.parse(mfText, mfPath) {
     case Ok(m)  -> m
     case Err(e) ->
       printErr("restore: " + ManifestError.message(e))
@@ -918,14 +934,14 @@ func cmdPublish(argv: in slice[String]): Int {
       return 1
   }
 
-  val manifest = match Mf.parse(mfText, mfPath) {
+  val manifest: Manifest = match Mf.parse(mfText, mfPath) {
     case Ok(m)  -> m
     case Err(e) ->
       printErr("publish: " + ManifestError.message(e))
       return 1
   }
 
-  val pkg    = manifest.package
+  val pkg: PackageSection = manifest.packageSection
   val mfDir  = Path.dirname(mfPath)
   val dllPath = match dllOverride {
     case Some(d) -> d
@@ -949,6 +965,14 @@ func cmdPublish(argv: in slice[String]): Int {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §11b. Repl command
+// ─────────────────────────────────────────────────────────────────────────────
+
+func cmdRepl(argv: in slice[String]): Int {
+  Repl.runRepl(argv)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §12. Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -960,8 +984,8 @@ pub func main(argv: in slice[String]): Int {
 
   val cmd = argv[0]
 
-  if cmd == "--version" || cmd == "-v" {
-    Console.println("lyric " + VERSION)
+  if cmd == "--version" or cmd == "-v" {
+    Console.println("lyric " + VERSION())
     return 0
   }
 
@@ -995,6 +1019,10 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "restore" {
     return cmdRestore(argv)
+  }
+
+  if cmd == "repl" {
+    return cmdRepl(argv)
   }
 
   if cmd == "publish" {

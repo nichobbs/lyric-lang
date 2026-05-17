@@ -1,4 +1,4 @@
-// std/environment_host.l - trusted host boundary for process state.
+// std/_kernel/environment_host.l - trusted host boundary for process state.
 //
 // Environment variables, command-line arguments, and process exit are
 // host-global effects. Public wrappers in Std.Environment keep the
@@ -7,13 +7,13 @@
 @axiom("System.Environment operations conform to their documented .NET contracts")
 package Std.EnvironmentHost
 
-extern package System.Environment {
-  pub func getEnvironmentVariable(key: in String): String?
-    requires: key.length > 0
+@externTarget("System.Environment.GetEnvironmentVariable")
+pub func hostGetEnvironmentVariable(key: in String): String? = ()
 
-  pub func getCommandLineArgs(): slice[String]
+@externTarget("System.Environment.GetCommandLineArgs")
+pub func hostGetCommandLineArgs(): slice[String] = ()
 
-  // Terminates the current process. Public wrappers expose this as
-  // Never/does-not-return even if the host method has a void signature.
-  pub func exit(code: in Int): Never
-}
+// Terminates the current process. The BCL method is void; Lyric callers
+// see Never because Environment.Exit does not return in practice.
+@externTarget("System.Environment.Exit")
+pub func hostExit(code: in Int): Never = ()

@@ -9,7 +9,7 @@
 package Std.Console
 
 import Std.Errors
-import System.Console as HostConsole
+import Std.ConsoleHost
 
 /// Write a string to stdout without appending a newline.
 ///
@@ -18,7 +18,7 @@ import System.Console as HostConsole
 /// logging/file APIs, which expose write failures as Result values.
 @stable(since="1.0")
 pub func print(s: in String): Unit {
-  HostConsole.write(s)
+  hostConsoleWrite(s)
 }
 
 /// Write a string to stdout followed by the platform newline.
@@ -26,7 +26,7 @@ pub func print(s: in String): Unit {
 /// See `print` for the output-failure policy.
 @stable(since="1.0")
 pub func println(s: in String): Unit {
-  HostConsole.writeLine(s)
+  hostConsoleWriteLine(s)
 }
 
 /// Write a string to stderr followed by the platform newline.
@@ -35,7 +35,7 @@ pub func println(s: in String): Unit {
 /// logging belongs in the Phase 5 logging package.
 @stable(since="1.0")
 pub func error(s: in String): Unit {
-  HostConsole.errorWriteLine(s)
+  hostConsoleErrorWriteLine(s)
 }
 
 /// Read one line from stdin, excluding the trailing newline.
@@ -49,7 +49,7 @@ pub func error(s: in String): Unit {
 @stable(since="1.0")
 pub func readLine(): Result[String, IOError] {
   return try {
-    match HostConsole.readLine() {
+    match hostConsoleReadLine() {
       case null -> Err(error = EndOfInput(source = "stdin"))
       case line -> Ok(value = line)
     }

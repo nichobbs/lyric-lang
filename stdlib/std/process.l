@@ -26,7 +26,7 @@ func buildArgString(args: in List[String]): String {
   while i < count {
     val arg = args[i]
     if i > 0 { result = result + " " }
-    if arg.contains(" ") || arg.contains("\"") {
+    if arg.contains(" ") or arg.contains("\"") {
       result = result + "\"" + arg.replace("\"", "\\\"") + "\""
     } else {
       result = result + arg

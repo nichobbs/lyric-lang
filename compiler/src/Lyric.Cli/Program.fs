@@ -977,8 +977,7 @@ let private printUsage () : unit =
     printErr "              embedded version info; useful for diagnosing install"
     printErr "              layout issues (B0040-B0042)."
 
-[<EntryPoint>]
-let main (argv: string array) : int =
+let bootstrapDispatch (argv: string array) : int =
     let args = List.ofArray argv
     match args with
     | [] ->
@@ -2267,3 +2266,160 @@ let main (argv: string array) : int =
         printErr (sprintf "unknown command: %s" unknown)
         printUsage ()
         1
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hidden commands used by the self-hosted Lyric.Emitter / Lyric.ContractMeta
+// packages to shell back to the F# bootstrap compiler.
+// These are handled BEFORE the self-hosted CLI is consulted to avoid
+// circularity (the self-hosted CLI calls Lyric.Emitter which calls back here).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `lyric --internal-build <srcFile> -o <outFile> [--target dotnet|jvm]`
+/// Single-file compile with the F# emitter.  Minimal flag set; no manifest,
+/// no NuGet, no AOT.  Errors are printed to stderr and the process exits
+/// non-zero.  Used by the Lyric `Lyric.Emitter` package.
+let private internalBuild (rest: string list) : int =
+    let mutable srcPath = ""
+    let mutable outPath = ""
+    let mutable target  = Emitter.Dotnet
+    let mutable cursor  = rest
+    while not (List.isEmpty cursor) do
+        match cursor with
+        | "-o" :: out :: tail ->
+            outPath <- out
+            cursor  <- tail
+        | "--target" :: "jvm" :: tail ->
+            target <- Emitter.Jvm
+            cursor <- tail
+        | "--target" :: _ :: tail ->
+            target <- Emitter.Dotnet
+            cursor <- tail
+        | arg :: tail ->
+            if not (arg.StartsWith("-", StringComparison.Ordinal)) then
+                srcPath <- arg
+            cursor <- tail
+        | [] -> cursor <- []
+
+    if String.IsNullOrEmpty srcPath || not (File.Exists srcPath) then
+        printErr (sprintf "internal-build: source file not found: %s" srcPath)
+        1
+    elif String.IsNullOrEmpty outPath then
+        printErr "internal-build: missing -o <outputPath>"
+        1
+    else
+        let source = File.ReadAllText srcPath
+        match Option.ofObj (Path.GetDirectoryName outPath) with
+        | Some dir when not (String.IsNullOrEmpty dir) ->
+            Directory.CreateDirectory dir |> ignore
+        | _ -> ()
+        let asmName =
+            match Option.ofObj (Path.GetFileNameWithoutExtension outPath) with
+            | Some n -> n
+            | None   -> "lyric_build_out"
+        let req : Emitter.EmitRequest =
+            { Source             = source
+              AssemblyName       = asmName
+              OutputPath         = outPath
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Target             = target
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
+        let result = Emitter.emit req
+        let errs   = result.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
+        for d in result.Diagnostics do
+            printErr (sprintf "%s %s [%d:%d]: %s"
+                d.Code
+                (if d.Severity = DiagError then "error" else "warning")
+                d.Span.Start.Line d.Span.Start.Column d.Message)
+        if not (List.isEmpty errs) then
+            printErr (sprintf "%s: build failed" srcPath)
+            1
+        else
+            writeRuntimeConfig outPath
+            0
+
+/// `lyric --internal-contract-meta read <dll>`
+/// Outputs the embedded Lyric.Contract JSON to stdout, or nothing if absent.
+///
+/// `lyric --internal-contract-meta diff`
+/// Reads old and new JSON from stdin (separated by `\n---\n`), diffs them,
+/// and prints each rendered entry followed by a blank line.
+/// Used by the Lyric `Lyric.ContractMeta` package.
+let private internalContractMeta (rest: string list) : int =
+    match rest with
+    | "read" :: dllPath :: _ ->
+        if not (File.Exists dllPath) then
+            printErr (sprintf "internal-contract-meta read: file not found: %s" dllPath)
+            1
+        else
+            match Lyric.Emitter.ContractMeta.readFromAssembly dllPath with
+            | None      -> ()   // empty stdout = no contract
+            | Some json -> printfn "%s" json
+            0
+    | "diff" :: _ ->
+        let stdin  = Console.In.ReadToEnd()
+        let parts  = stdin.Split([| "\n---\n" |], StringSplitOptions.None)
+        if parts.Length < 2 then
+            printErr "internal-contract-meta diff: expected old and new JSON in stdin, separated by \\n---\\n"
+            1
+        else
+            let oldJson = parts.[0]
+            let newJson = parts.[1]
+            match Lyric.Emitter.ContractMeta.parseFromJson oldJson,
+                  Lyric.Emitter.ContractMeta.parseFromJson newJson with
+            | Some oldC, Some newC ->
+                let entries = Lyric.Emitter.ContractMeta.diffContracts oldC newC
+                for entry in entries do
+                    printfn "%s\n" (Lyric.Emitter.ContractMeta.renderDiffEntry entry)
+                0
+            | None, _ ->
+                printErr "internal-contract-meta diff: could not parse old contract JSON"
+                1
+            | _, None ->
+                printErr "internal-contract-meta diff: could not parse new contract JSON"
+                1
+    | _ ->
+        printErr "internal-contract-meta: unknown subcommand (expected 'read' or 'diff')"
+        1
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+[<EntryPoint>]
+let main (argv: string array) : int =
+    // Ensure LYRIC_BIN and LYRIC_CLI_DLL are available so that the
+    // Lyric.Emitter bootstrap Lyric package (emitter.l) can shell back to
+    // this process for --internal-build operations without needing `lyric`
+    // on PATH.
+    if isNull (Environment.GetEnvironmentVariable "LYRIC_BIN") then
+        try
+            match Option.ofObj (Diagnostics.Process.GetCurrentProcess().MainModule) with
+            | Some m when not (String.IsNullOrEmpty m.FileName) ->
+                Environment.SetEnvironmentVariable("LYRIC_BIN", m.FileName)
+            | _ -> ()
+        with _ -> ()
+    if isNull (Environment.GetEnvironmentVariable "LYRIC_CLI_DLL") then
+        try
+            match Option.ofObj (Reflection.Assembly.GetEntryAssembly()) with
+            | Some entry when not (String.IsNullOrEmpty entry.Location)
+                           && File.Exists entry.Location ->
+                Environment.SetEnvironmentVariable("LYRIC_CLI_DLL", entry.Location)
+            | _ -> ()
+        with _ -> ()
+
+    let args = List.ofArray argv
+    match args with
+    | "--internal-build" :: rest ->
+        internalBuild rest
+    | "--internal-contract-meta" :: rest ->
+        internalContractMeta rest
+    | _ ->
+        // Attempt to dispatch through the self-hosted Lyric.Cli.
+        // Falls back to the F# bootstrap dispatcher when the self-hosted
+        // package cannot be compiled or loaded.
+        match SelfHostedCli.tryRun argv with
+        | Some code -> code
+        | None      -> bootstrapDispatch argv
