@@ -6,6 +6,7 @@
 package Std.String
 
 import Std.Core
+import Std.Collections
 
 // ---------------------------------------------------------------------------
 // String inspection and basic operations.
@@ -185,7 +186,7 @@ pub func join(separator: in String, parts: in slice[String]): String {
 // Join a list of strings with a separator.
 @pure
 @stable(since="1.0")
-pub func join(xs: in List[String], sep: in String): String {
+pub func joinList(sep: in String, xs: in List[String]): String {
   if xs.count == 0 { return "" }
   var result = xs[0]
   var i = 1
