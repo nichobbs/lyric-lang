@@ -19,7 +19,7 @@ compiler is written in F# and lives in `compiler/`. The repository contains:
 - `docs/grammar.ebnf` — formal grammar (Phase 0 deliverable #4).
 - `docs/08-contract-semantics.md` — operational semantics for contracts (Phase 0 deliverable #5).
 - `docs/09-msil-emission.md` — MSIL emission strategy (Phase 0 deliverable #7).
-- `docs/10-bootstrap-progress.md` — append-only log of shipped milestones.
+- `docs/10-bootstrap-progress.md` — shipped-milestone status against the phased plan.
 - `docs/10-stdlib-plan.md` — standard library module design and stability cut plan.
 - `docs/11-stdlib-examples.md` — worked examples that exercise the standard library.
 - `docs/12-todo-plan.md` — running task list for in-flight and upcoming work.
@@ -399,10 +399,10 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
     by `SelfHostedTestSynth.fs` (D-progress-231).
   - `cli.l` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260).
-    Handles `build`, `run`, `fmt`, `lint`, `prove`, `doc`, `public-api-diff`,
-    `restore`, `publish`, `repl`, and `--version`.  Wired as the primary
-    dispatcher via `SelfHostedCli.fs`; falls back to the F# bootstrap for
-    `test`, `prove --json`, and `prove --explain` (not yet ported).
+    Handles all CLI commands: `build`, `run`, `fmt`, `lint`, `prove`
+    (including `--json`, `--explain`, `--goal`), `doc`, `public-api-diff`,
+    `restore`, `publish`, `repl`, `test`, `bench`, `openapi`, and
+    `--version`.  Wired as the primary dispatcher via `SelfHostedCli.fs`.
   - `repl/repl.l` — `Lyric.Repl` interactive REPL (D-progress-260).
     Script-accumulation loop; entry point `pub func runRepl(argv)`.
     `lyric repl` routes through this package via `SelfHostedCli`.
@@ -444,16 +444,14 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
   embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
   into the existing import pipeline.  `lyric prove <source.l>` runs the
-  Phase 4 verifier (M4.1 fragment).  `Fmt.fs` is the legacy AST-based
-  formatter (`lyric fmt --legacy` or `LYRIC_FMT_LEGACY=1`): canonical
-  style rules, `--write`/`--check` flags; non-doc `//` comments are
-  not preserved.  The default `lyric fmt` path (M5.3 stages 2–5)
-  routes through the self-hosted `Lyric.Fmt` package via
-  `SelfHostedFmt.fs` (in-process compile + reflection): walks the
-  red/green CST, preserves `//` and `/* */` comments at item /
-  member / statement / nested-block boundaries, preserves intentional
-  blank lines (max one per spot, Black-style).  `Lint.fs` is the
-  linter (`lyric lint`): five AST-only rules (L001–L005), `--error-on-warning`
+  Phase 4 verifier (M4.1 fragment).  `lyric fmt` routes through the
+  self-hosted `Lyric.Fmt` package via `SelfHostedFmt.fs` (in-process
+  compile + reflection): walks the red/green CST, preserves `//` and
+  `/* */` comments at item / member / statement / nested-block
+  boundaries, preserves intentional blank lines (max one per spot,
+  Black-style), width-driven multi-line expression layout at 120-char
+  budget.  `--write` and `--check` flags.  `Lint.fs` is the linter
+  (`lyric lint`): five AST-only rules (L001–L005), `--error-on-warning`
   flag, runs on non-compiling code.  Additional modules in the same project:
   - `Doc.fs` — `lyric doc` documentation generator.
   - `Maven.fs` / `MavenShim.fs` — Maven Central dependency resolution and
@@ -476,8 +474,8 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `compiler/`:
   - `SelfHostedCli.fs` — primary CLI dispatcher bridge; compiles a tiny
     `Lyric.CliBridge` driver, loads `Lyric.Lyric.Cli.dll` by reflection,
     and dispatches all CLI commands through `Lyric.Cli.Program.main`.
-    Falls back to the F# bootstrap for `test`, `prove --json`, and
-    `prove --explain` (D-progress-260).
+    Falls back to the F# bootstrap dispatcher only on bridge failure
+    (compile or reflection error).
 - `compiler/src/Lyric.Verifier/` — the Phase 4 proof system (M4.1+;
   see `docs/15-phase-4-proof-plan.md` and the D-progress-084/085
   entries in `docs/10-bootstrap-progress.md`).  `Mode.fs` parses

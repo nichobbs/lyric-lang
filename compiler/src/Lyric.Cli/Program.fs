@@ -1765,23 +1765,14 @@ let bootstrapDispatch (argv: string array) : int =
             elif Lyric.Verifier.Driver.ProofSummary.hasCounterexample summary then 1
             else 0
     | "fmt" :: rest ->
-        // `lyric fmt <source.l> [--check] [--write] [--legacy]`
+        // `lyric fmt <source.l> [--check] [--write]`
         // Default: print formatted output to stdout.
         // --write: overwrite the file in place.
         // --check: exit 1 if formatting would change the file; print nothing.
-        // --legacy: route through the F# `Lyric.Cli.Fmt` formatter, which
-        //   walks the AST exclusively and therefore drops `//` comments.
-        //   Default is the self-hosted `Lyric.Fmt` (M5.3 stage 2,
-        //   D-progress-131) which preserves them via the red/green CST.
-        //   Doc comments (`///`, `//!`) survive both paths.  Override
-        //   the default with the `LYRIC_FMT_LEGACY=1` env var when an
-        //   automation harness can't pass extra flags.
+        // Routes through the self-hosted `Lyric.Fmt` (M5.3) which preserves
+        // `//` comments via the red/green CST.
         let mutable checkMode = false
         let mutable writeMode = false
-        let mutable legacyMode =
-            match Environment.GetEnvironmentVariable "LYRIC_FMT_LEGACY" with
-            | s when not (String.IsNullOrEmpty s) && s <> "0" -> true
-            | _ -> false
         let mutable positional : string list = []
         let mutable cursor = rest
         while not (List.isEmpty cursor) do
@@ -1791,9 +1782,6 @@ let bootstrapDispatch (argv: string array) : int =
                 cursor <- tail
             | "--write" :: tail ->
                 writeMode <- true
-                cursor <- tail
-            | "--legacy" :: tail ->
-                legacyMode <- true
                 cursor <- tail
             | s :: tail ->
                 positional <- positional @ [s]
@@ -1810,33 +1798,8 @@ let bootstrapDispatch (argv: string array) : int =
                 1
             else
             let source = File.ReadAllText sourcePath
-            // Surface parse errors regardless of which backend we use; the
-            // self-hosted formatter re-parses internally but the user
-            // already loses information by the time we report from there.
-            let parsed = Lyric.Parser.Parser.parse source
-            for d in parsed.Diagnostics do
-                if d.Severity = DiagError then printDiag d
-
-            // Format via either backend; the self-hosted path is the
-            // default since it preserves comments.  Errors from the
-            // bridge (compile failures, missing reflected entry
-            // points) are not silently swallowed — they fall back to
-            // the legacy F# formatter so `lyric fmt` keeps working
-            // even if the bridge is broken in some pathological env.
-            let formatted, isFmt =
-                if legacyMode then
-                    Lyric.Cli.Fmt.format parsed.File,
-                    fun () -> Lyric.Cli.Fmt.isFormatted source parsed.File
-                else
-                    try
-                        SelfHostedFmt.format source,
-                        fun () -> SelfHostedFmt.isFormatted source
-                    with ex ->
-                        printErr (sprintf "fmt: self-hosted formatter unavailable (%s); falling back to --legacy"
-                                       ex.Message)
-                        Lyric.Cli.Fmt.format parsed.File,
-                        fun () -> Lyric.Cli.Fmt.isFormatted source parsed.File
-
+            let formatted = SelfHostedFmt.format source
+            let isFmt ()  = SelfHostedFmt.isFormatted source
             if checkMode then
                 if isFmt () then
                     0

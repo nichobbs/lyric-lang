@@ -12,11 +12,14 @@
 //   run     <source.l> [-- <args>...]
 //   fmt     <source.l> [--check] [--write]
 //   lint    <source.l> [--error-on-warning]
-//   prove   <source.l> [--verbose] [--allow-unverified]
+//   prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
 //   doc     <source.l> [-o <out.md>]
 //   public-api-diff <old.dll> <new.dll>
 //   restore [--manifest <lyric.toml>]
 //   publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]
+//   test    <source.l> [--filter <prefix>] [--list]
+//   bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]
+//   openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]
 //   --version / -v
 //
 // Future-package API contracts (packages not yet shipped; will exist
@@ -73,6 +76,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
+import Std.Parse
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
@@ -86,6 +90,10 @@ import Lyric.Verifier as Verifier      // proveSource/proveSourceWithOptions -> 
 import Lyric.Doc as Doc                // generate(source) -> String
 import Lyric.ContractMeta as Meta      // readFromFile, diffContracts, hasBreakingChanges
 import Lyric.Repl as Repl              // run(argv) -> Int
+import Lyric.TestSynth as TestSynth    // synthesize, listEntries
+import Lyric.BenchSynth as BenchSynth  // synthesize
+import Lyric.OpenApiParser as OAParser // parseSpec(json) -> Result[ParsedSpec, String]
+import Lyric.OpenApiGen as OAGen       // generate(spec, clientName, packageName) -> String
 
 func VERSION(): String { "0.1.0" }
 
@@ -109,13 +117,16 @@ func printDiag(d: in Diagnostic): Unit {
 
 func printUsage(): Unit {
   printErr("Usage:")
-  printErr("  lyric build <source.l> [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]")
-  printErr("  lyric build --manifest <lyric.toml>  (project mode: bundles [project.packages] into one DLL)")
-  printErr("  lyric run   <source.l> [-- <args>...]")
-  printErr("  lyric fmt   <source.l> [--check] [--write]")
-  printErr("  lyric lint  <source.l> [--error-on-warning]")
-  printErr("  lyric prove <source.l> [--verbose] [--allow-unverified]")
-  printErr("  lyric doc   <source.l> [-o out.md]")
+  printErr("  lyric build   <source.l> [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]")
+  printErr("  lyric build   --manifest <lyric.toml>  (project mode: bundles [project.packages] into one DLL)")
+  printErr("  lyric run     <source.l> [-- <args>...]")
+  printErr("  lyric fmt     <source.l> [--check] [--write]")
+  printErr("  lyric lint    <source.l> [--error-on-warning]")
+  printErr("  lyric prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]")
+  printErr("  lyric doc     <source.l> [-o out.md]")
+  printErr("  lyric test    <source.l> [--filter <prefix>] [--list]")
+  printErr("  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]")
+  printErr("  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]")
   printErr("  lyric public-api-diff <old.dll> <new.dll>")
   printErr("  lyric restore [--manifest <lyric.toml>]")
   printErr("  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]")
@@ -624,9 +635,31 @@ func cmdLint(argv: in slice[String]): Int {
 // §7. Prove command
 // ─────────────────────────────────────────────────────────────────────────────
 
+// JSON-escape a string value (no surrounding quotes).
+func jsonEsc(s: in String): String {
+  var r = ""
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    if c == '"'  { r = r + "\\\"" }
+    else if c == '\\' { r = r + "\\\\" }
+    else if c == '\n' { r = r + "\\n" }
+    else if c == '\r' { r = r + "\\r" }
+    else if c == '\t' { r = r + "\\t" }
+    else { r = r + ("" + c) }
+    i = i + 1
+  }
+  r
+}
+
+func jsonStr(s: in String): String { "\"" + jsonEsc(s) + "\"" }
+
 func cmdProve(argv: in slice[String]): Int {
   var verbose         = false
   var allowUnverified = false
+  var jsonOutput      = false
+  var explain         = false
+  var explainGoal: Option[Int] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -638,6 +671,22 @@ func cmdProve(argv: in slice[String]): Int {
     } else if arg == "--allow-unverified" {
       allowUnverified = true
       i += 1
+    } else if arg == "--json" {
+      jsonOutput = true
+      i += 1
+    } else if arg == "--explain" {
+      explain = true
+      i += 1
+    } else if arg == "--goal" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> { explainGoal = Some(value = n); i += 2 }
+          case None    -> { printErr("prove: --goal requires an integer"); return 1 }
+        }
+      } else {
+        printErr("prove: --goal requires a value")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
@@ -660,6 +709,93 @@ func cmdProve(argv: in slice[String]): Int {
 
   val summary = Verifier.proveSourceWithOptions(source, allowUnverified)
 
+  if explain {
+    val total = Verifier.summaryTotalCount(summary)
+    match explainGoal {
+      case None -> {
+        printErr("prove --explain: specify a goal index with --goal <n>")
+        printErr("  (this file has " + toString(total) + " goal(s))")
+        var gi = 0
+        while gi < summary.results.count {
+          val r = summary.results[gi]
+          printErr("  " + toString(gi) + ": " + r.goal.label +
+            "  [" + Verifier.goalKindDisplay(r.goal.kind) + "]")
+          gi = gi + 1
+        }
+        return 1
+      }
+      case Some(idx) -> {
+        if idx < 0 or idx >= total {
+          printErr("prove --explain: goal " + toString(idx) + " out of range (0.." + toString(total - 1) + ")")
+          return 1
+        }
+        val r = summary.results[idx]
+        Console.print(Verifier.prettyGoal(idx, r.goal))
+        return 0
+      }
+    }
+  }
+
+  if jsonOutput {
+    var out = "{\n"
+    out = out + "  \"file\": " + jsonStr(sourcePath) + ",\n"
+    out = out + "  \"level\": " + jsonStr(MC.vlDisplay(summary.level)) + ",\n"
+    out = out + "  \"goals\": [\n"
+    var gi = 0
+    while gi < summary.results.count {
+      val r      = summary.results[gi]
+      val gl     = r.goal
+      val comma  = if gi + 1 < summary.results.count { "," } else { "" }
+      val outcomeStr = match r.outcome {
+        case Discharged        -> "discharged"
+        case Counterexample(_) -> "counterexample"
+        case Unknown(_)        -> "unknown"
+      }
+      val modelStr = match r.outcome {
+        case Counterexample(m) -> jsonStr(m)
+        case _                 -> "null"
+      }
+      out = out + "    {\n"
+      out = out + "      \"index\": " + toString(gi) + ",\n"
+      out = out + "      \"label\": " + jsonStr(gl.label) + ",\n"
+      out = out + "      \"kind\": " + jsonStr(Verifier.goalKindDisplay(gl.kind)) + ",\n"
+      out = out + "      \"line\": " + toString(gl.origin.startPos.line) + ",\n"
+      out = out + "      \"col\": " + toString(gl.origin.startPos.column) + ",\n"
+      out = out + "      \"outcome\": " + jsonStr(outcomeStr) + ",\n"
+      out = out + "      \"model\": " + modelStr + ",\n"
+      out = out + "      \"smtPath\": null,\n"
+      out = out + "      \"suggestions\": []\n"
+      out = out + "    }" + comma + "\n"
+      gi = gi + 1
+    }
+    out = out + "  ],\n"
+    out = out + "  \"diagnostics\": [\n"
+    var di = 0
+    while di < summary.diagnostics.count {
+      val d = summary.diagnostics[di]
+      val comma = if di + 1 < summary.diagnostics.count { "," } else { "" }
+      val sevStr = match d.severity { case DiagError -> "error" case DiagWarning -> "warning" }
+      out = out + "    {\"code\":" + jsonStr(d.code) + ",\"severity\":" + jsonStr(sevStr) +
+            ",\"message\":" + jsonStr(d.message) + ",\"line\":" +
+            toString(d.span.startPos.line) + ",\"col\":" +
+            toString(d.span.startPos.column) + "}" + comma + "\n"
+      di = di + 1
+    }
+    out = out + "  ],\n"
+    out = out + "  \"summary\": {\n"
+    out = out + "    \"total\": " + toString(Verifier.summaryTotalCount(summary)) + ",\n"
+    out = out + "    \"discharged\": " + toString(Verifier.summaryDischargedCount(summary)) + ",\n"
+    out = out + "    \"unknown\": 0,\n"
+    out = out + "    \"counterexamples\": 0\n"
+    out = out + "  }\n"
+    out = out + "}\n"
+    Console.print(out)
+    if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) {
+      return 1
+    }
+    return 0
+  }
+
   for d in summary.diagnostics.toArray() {
     printDiag(d)
   }
@@ -678,9 +814,7 @@ func cmdProve(argv: in slice[String]): Int {
   }
 
   // Exit 1 only for error diagnostics or counterexamples; unknown goals
-  // (trivial solver gave up, z3 not available) are not failures — matches
-  // the F# bootstrap's exit-code policy so that --allow-unverified files
-  // in CI exit 0 rather than 1.
+  // (trivial solver gave up, z3 not available) are not failures.
   if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) { 1 } else { 0 }
 }
 
@@ -978,6 +1112,298 @@ func cmdRepl(argv: in slice[String]): Int {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §11c. Test command
+// ─────────────────────────────────────────────────────────────────────────────
+
+func cmdTest(argv: in slice[String]): Int {
+  var filterArg: Option[String] = None
+  var listMode = false
+  val positional: List[String] = newList()
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--filter" {
+      if i + 1 < argv.length {
+        filterArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("test: --filter requires a value")
+        return 1
+      }
+    } else if arg == "--list" {
+      listMode = true
+      i += 1
+    } else {
+      positional.add(arg)
+      i += 1
+    }
+  }
+
+  if positional.count == 0 {
+    printErr("test: missing source file")
+    return 1
+  }
+
+  val sourcePath = positional[0]
+  val source = match File.readText(sourcePath) {
+    case Ok(text) -> text
+    case Err(e)   -> { printErr("test: " + IOError.message(e)); return 1 }
+  }
+
+  if listMode {
+    match TestSynth.listEntries(source) {
+      case Err(diags) -> {
+        for d in diags.toArray() { printDiag(d) }
+        return 1
+      }
+      case Ok(entries) -> {
+        for e in entries.toArray() {
+          match e {
+            case TestEntry(title)             -> Console.println("test: " + title)
+            case PropertyEntry(title, reason) -> Console.println("prop: " + title + " (" + reason + ")")
+            case FixtureEntry(name)           -> Console.println("fixture: " + name)
+          }
+        }
+        return 0
+      }
+    }
+  }
+
+  val stem    = stemOf(Path.basename(sourcePath), 2)
+  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-test"), stem + ".dll")
+
+  match TestSynth.synthesize(source, filterArg) {
+    case NoTestModule(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) +
+        ": not a @test_module — add @test_module annotation")
+      return 1
+    }
+    case UserMainExists(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) +
+        ": @test_module cannot define func main()")
+      return 1
+    }
+    case FixtureUnsupported(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) +
+        ": fixture types are not yet supported by `lyric test`")
+      return 1
+    }
+    case ParseFailures(diags) -> {
+      for d in diags.toArray() { printDiag(d) }
+      return 1
+    }
+    case Synthesised(rewritten, testCount, skipCount) -> {
+      Console.println(toString(testCount) + " test(s), " + toString(skipCount) + " skipped")
+
+      match File.createDir(Path.dirname(outPath)) {
+        case Ok(_)  -> ()
+        case Err(_) -> ()
+      }
+
+      val req = EmitRequest(
+        source       = rewritten,
+        assemblyName = stem,
+        outputPath   = outPath,
+        target       = Dotnet
+      )
+      val result = Emitter.emit(req)
+      var hadError = false
+      for d in result.diagnostics.toArray() {
+        match d.severity { case DiagError -> { hadError = true } case DiagWarning -> () }
+        printDiag(d)
+      }
+      if hadError { return 1 }
+      match result.outputPath {
+        case None    -> { printErr("test: build failed"); return 1 }
+        case Some(_) -> ()
+      }
+      writeRuntimeConfig(outPath)
+
+      val execArgs: List[String] = newList()
+      execArgs.add("exec")
+      execArgs.add(outPath)
+      match Process.run("dotnet", execArgs) {
+        case Ok(code) -> code
+        case Err(e)   -> { printErr("test: failed to start dotnet: " + IOError.message(e)); 1 }
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §11d. Bench command
+// ─────────────────────────────────────────────────────────────────────────────
+
+func cmdBench(argv: in slice[String]): Int {
+  var runsArg   = 100
+  var warmupArg = 5
+  var filterArg = ""
+  val positional: List[String] = newList()
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--runs" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> { runsArg = n; i += 2 }
+          case None    -> { printErr("bench: --runs requires an integer"); return 1 }
+        }
+      } else { printErr("bench: --runs requires a value"); return 1 }
+    } else if arg == "--warmup" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> { warmupArg = n; i += 2 }
+          case None    -> { printErr("bench: --warmup requires an integer"); return 1 }
+        }
+      } else { printErr("bench: --warmup requires a value"); return 1 }
+    } else if arg == "--filter" {
+      if i + 1 < argv.length {
+        filterArg = argv[i + 1]
+        i += 2
+      } else { printErr("bench: --filter requires a value"); return 1 }
+    } else {
+      positional.add(arg)
+      i += 1
+    }
+  }
+
+  if positional.count == 0 {
+    printErr("bench: missing source file")
+    return 1
+  }
+
+  val sourcePath = positional[0]
+  val source = match File.readText(sourcePath) {
+    case Ok(text) -> text
+    case Err(e)   -> { printErr("bench: " + IOError.message(e)); return 1 }
+  }
+
+  val stem    = stemOf(Path.basename(sourcePath), 2)
+  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + ".dll")
+
+  match BenchSynth.synthesize(source, runsArg, warmupArg, filterArg) {
+    case NoBenchModule(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) +
+        ": not a @bench_module — add @bench_module annotation")
+      return 1
+    }
+    case UserMainExists(span) -> {
+      printErr(sourcePath + ":" + toString(span.startPos.line) +
+        ": @bench_module cannot define func main()")
+      return 1
+    }
+    case ParseFailures(diags) -> {
+      for d in diags.toArray() { printDiag(d) }
+      return 1
+    }
+    case Synthesised(rewritten, benchCount) -> {
+      Console.println(toString(benchCount) + " benchmark(s)")
+
+      match File.createDir(Path.dirname(outPath)) {
+        case Ok(_)  -> ()
+        case Err(_) -> ()
+      }
+
+      val req = EmitRequest(
+        source       = rewritten,
+        assemblyName = stem,
+        outputPath   = outPath,
+        target       = Dotnet
+      )
+      val result = Emitter.emit(req)
+      var hadError = false
+      for d in result.diagnostics.toArray() {
+        match d.severity { case DiagError -> { hadError = true } case DiagWarning -> () }
+        printDiag(d)
+      }
+      if hadError { return 1 }
+      match result.outputPath {
+        case None    -> { printErr("bench: build failed"); return 1 }
+        case Some(_) -> ()
+      }
+      writeRuntimeConfig(outPath)
+
+      val execArgs: List[String] = newList()
+      execArgs.add("exec")
+      execArgs.add(outPath)
+      match Process.run("dotnet", execArgs) {
+        case Ok(code) -> code
+        case Err(e)   -> { printErr("bench: failed to start dotnet: " + IOError.message(e)); 1 }
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §11e. OpenAPI command
+// ─────────────────────────────────────────────────────────────────────────────
+
+func cmdOpenApi(argv: in slice[String]): Int {
+  var explicitOut: Option[String] = None
+  var clientName = "ApiClient"
+  var packageName = "Api.Client"
+  val positional: List[String] = newList()
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "-o" {
+      if i + 1 < argv.length {
+        explicitOut = Some(value = argv[i + 1])
+        i += 2
+      } else { printErr("openapi: -o requires a value"); return 1 }
+    } else if arg == "--client-name" {
+      if i + 1 < argv.length {
+        clientName = argv[i + 1]
+        i += 2
+      } else { printErr("openapi: --client-name requires a value"); return 1 }
+    } else if arg == "--package" {
+      if i + 1 < argv.length {
+        packageName = argv[i + 1]
+        i += 2
+      } else { printErr("openapi: --package requires a value"); return 1 }
+    } else {
+      positional.add(arg)
+      i += 1
+    }
+  }
+
+  if positional.count == 0 {
+    printErr("openapi: missing spec file")
+    return 1
+  }
+
+  val specPath = positional[0]
+  val json = match File.readText(specPath) {
+    case Ok(text) -> text
+    case Err(e)   -> { printErr("openapi: " + IOError.message(e)); return 1 }
+  }
+
+  match OAParser.parseSpec(json) {
+    case Err(msg) -> {
+      printErr("openapi: " + msg)
+      return 1
+    }
+    case Ok(spec) -> {
+      val generated = OAGen.generate(spec, clientName, packageName)
+      val outPath = match explicitOut {
+        case Some(p) -> p
+        case None    -> {
+          val stem = stemOf(Path.basename(specPath), 5)  // strip ".json"
+          stem + "_client.l"
+        }
+      }
+      match File.writeText(outPath, generated) {
+        case Ok(_)  -> { Console.println("generated " + outPath); 0 }
+        case Err(e) -> { printErr("openapi: " + IOError.message(e)); 1 }
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §12. Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1032,6 +1458,18 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "publish" {
     return cmdPublish(argv)
+  }
+
+  if cmd == "test" {
+    return cmdTest(argv)
+  }
+
+  if cmd == "bench" {
+    return cmdBench(argv)
+  }
+
+  if cmd == "openapi" {
+    return cmdOpenApi(argv)
   }
 
   printErr("unknown command: " + cmd)
