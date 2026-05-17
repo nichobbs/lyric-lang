@@ -25,7 +25,7 @@ func diagLine(d: in Diagnostic): String {
 }
 
 pub func synthesizeBenchToProtocol(source: in String, runs: in Int, warmup: in Int, filter: in String): String {
-  match synthesize(source, runs, warmup, filter) {
+  match synthesizeBench(source, runs, warmup, filter) {
     case NoBenchModule(span) ->
       "nobench\n" + toString(span.startPos.line) + "\n" + toString(span.startPos.column)
     case UserMainExists(span) ->
@@ -39,7 +39,7 @@ pub func synthesizeBenchToProtocol(source: in String, runs: in Int, warmup: in I
       }
       s
     }
-    case Synthesised(src, benchCount) ->
+    case BenchSynthesised(src, benchCount) ->
       "ok\n" + toString(benchCount) + "\n" + src
   }
 }

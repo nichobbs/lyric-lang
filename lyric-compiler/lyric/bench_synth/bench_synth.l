@@ -36,7 +36,7 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub union Outcome {
-  case Synthesised(source: String, benchCount: Int)
+  case BenchSynthesised(source: String, benchCount: Int)
   case NoBenchModule(span: Span)
   case UserMainExists(span: Span)
   case ParseFailures(diagnostics: List[Diagnostic])
@@ -221,7 +221,7 @@ func synthesizeMain(benches: in List[BenchSlot], runs: in Int, warmup: in Int): 
 // ─────────────────────────────────────────────────────────────────────────────
 
 @stable(since="0.1")
-pub func synthesize(source: in String, runs: in Int, warmup: in Int, filter: in String): Outcome {
+pub func synthesizeBench(source: in String, runs: in Int, warmup: in Int, filter: in String): Outcome {
   val pf   = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
@@ -274,5 +274,5 @@ pub func synthesize(source: in String, runs: in Int, warmup: in Int, filter: in 
   }
   sb = sb + "\n\n"
   sb = sb + synthesizeMain(benches, runs, warmup)
-  Synthesised(source = sb, benchCount = benches.count)
+  BenchSynthesised(source = sb, benchCount = benches.count)
 }

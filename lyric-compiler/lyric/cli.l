@@ -737,10 +737,10 @@ func cmdProve(argv: in slice[String]): Int {
   }
 
   if jsonOutput {
-    var out = "{\n"
-    out = out + "  \"file\": " + jsonStr(sourcePath) + ",\n"
-    out = out + "  \"level\": " + jsonStr(MC.vlDisplay(summary.level)) + ",\n"
-    out = out + "  \"goals\": [\n"
+    var jsonBuf = "{\n"
+    jsonBuf = jsonBuf + "  \"file\": " + jsonStr(sourcePath) + ",\n"
+    jsonBuf = jsonBuf + "  \"level\": " + jsonStr(MC.vlDisplay(summary.level)) + ",\n"
+    jsonBuf = jsonBuf + "  \"goals\": [\n"
     var gi = 0
     while gi < summary.results.count {
       val r      = summary.results[gi]
@@ -755,41 +755,41 @@ func cmdProve(argv: in slice[String]): Int {
         case Counterexample(m) -> jsonStr(m)
         case _                 -> "null"
       }
-      out = out + "    {\n"
-      out = out + "      \"index\": " + toString(gi) + ",\n"
-      out = out + "      \"label\": " + jsonStr(gl.label) + ",\n"
-      out = out + "      \"kind\": " + jsonStr(Verifier.goalKindDisplay(gl.kind)) + ",\n"
-      out = out + "      \"line\": " + toString(gl.origin.startPos.line) + ",\n"
-      out = out + "      \"col\": " + toString(gl.origin.startPos.column) + ",\n"
-      out = out + "      \"outcome\": " + jsonStr(outcomeStr) + ",\n"
-      out = out + "      \"model\": " + modelStr + ",\n"
-      out = out + "      \"smtPath\": null,\n"
-      out = out + "      \"suggestions\": []\n"
-      out = out + "    }" + comma + "\n"
+      jsonBuf = jsonBuf + "    {\n"
+      jsonBuf = jsonBuf + "      \"index\": " + toString(gi) + ",\n"
+      jsonBuf = jsonBuf + "      \"label\": " + jsonStr(gl.label) + ",\n"
+      jsonBuf = jsonBuf + "      \"kind\": " + jsonStr(Verifier.goalKindDisplay(gl.kind)) + ",\n"
+      jsonBuf = jsonBuf + "      \"line\": " + toString(gl.origin.startPos.line) + ",\n"
+      jsonBuf = jsonBuf + "      \"col\": " + toString(gl.origin.startPos.column) + ",\n"
+      jsonBuf = jsonBuf + "      \"outcome\": " + jsonStr(outcomeStr) + ",\n"
+      jsonBuf = jsonBuf + "      \"model\": " + modelStr + ",\n"
+      jsonBuf = jsonBuf + "      \"smtPath\": null,\n"
+      jsonBuf = jsonBuf + "      \"suggestions\": []\n"
+      jsonBuf = jsonBuf + "    }" + comma + "\n"
       gi = gi + 1
     }
-    out = out + "  ],\n"
-    out = out + "  \"diagnostics\": [\n"
+    jsonBuf = jsonBuf + "  ],\n"
+    jsonBuf = jsonBuf + "  \"diagnostics\": [\n"
     var di = 0
     while di < summary.diagnostics.count {
       val d = summary.diagnostics[di]
       val comma = if di + 1 < summary.diagnostics.count { "," } else { "" }
       val sevStr = match d.severity { case DiagError -> "error" case DiagWarning -> "warning" }
-      out = out + "    {\"code\":" + jsonStr(d.code) + ",\"severity\":" + jsonStr(sevStr) +
+      jsonBuf = jsonBuf + "    {\"code\":" + jsonStr(d.code) + ",\"severity\":" + jsonStr(sevStr) +
             ",\"message\":" + jsonStr(d.message) + ",\"line\":" +
             toString(d.span.startPos.line) + ",\"col\":" +
             toString(d.span.startPos.column) + "}" + comma + "\n"
       di = di + 1
     }
-    out = out + "  ],\n"
-    out = out + "  \"summary\": {\n"
-    out = out + "    \"total\": " + toString(Verifier.summaryTotalCount(summary)) + ",\n"
-    out = out + "    \"discharged\": " + toString(Verifier.summaryDischargedCount(summary)) + ",\n"
-    out = out + "    \"unknown\": 0,\n"
-    out = out + "    \"counterexamples\": 0\n"
-    out = out + "  }\n"
-    out = out + "}\n"
-    Console.print(out)
+    jsonBuf = jsonBuf + "  ],\n"
+    jsonBuf = jsonBuf + "  \"summary\": {\n"
+    jsonBuf = jsonBuf + "    \"total\": " + toString(Verifier.summaryTotalCount(summary)) + ",\n"
+    jsonBuf = jsonBuf + "    \"discharged\": " + toString(Verifier.summaryDischargedCount(summary)) + ",\n"
+    jsonBuf = jsonBuf + "    \"unknown\": 0,\n"
+    jsonBuf = jsonBuf + "    \"counterexamples\": 0\n"
+    jsonBuf = jsonBuf + "  }\n"
+    jsonBuf = jsonBuf + "}\n"
+    Console.print(jsonBuf)
     if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) {
       return 1
     }
@@ -1193,8 +1193,8 @@ func cmdTest(argv: in slice[String]): Int {
       for d in diags.toArray() { printDiag(d) }
       return 1
     }
-    case Synthesised(rewritten, testCount, skipCount) -> {
-      Console.println(toString(testCount) + " test(s), " + toString(skipCount) + " skipped")
+    case Synthesised(rewritten, testCnt, skipCnt) -> {
+      Console.println(toString(testCnt) + " test(s), " + toString(skipCnt) + " skipped")
 
       match File.createDir(Path.dirname(outPath)) {
         case Ok(_)  -> ()
@@ -1283,7 +1283,7 @@ func cmdBench(argv: in slice[String]): Int {
   val stem    = stemOf(Path.basename(sourcePath), 2)
   val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + ".dll")
 
-  match BenchSynth.synthesize(source, runsArg, warmupArg, filterArg) {
+  match BenchSynth.synthesizeBench(source, runsArg, warmupArg, filterArg) {
     case NoBenchModule(span) -> {
       printErr(sourcePath + ":" + toString(span.startPos.line) +
         ": not a @bench_module — add @bench_module annotation")
@@ -1298,7 +1298,7 @@ func cmdBench(argv: in slice[String]): Int {
       for d in diags.toArray() { printDiag(d) }
       return 1
     }
-    case Synthesised(rewritten, benchCount) -> {
+    case BenchSynthesised(rewritten, benchCount) -> {
       Console.println(toString(benchCount) + " benchmark(s)")
 
       match File.createDir(Path.dirname(outPath)) {
@@ -1387,7 +1387,7 @@ func cmdOpenApi(argv: in slice[String]): Int {
       return 1
     }
     case Ok(spec) -> {
-      val generated = OAGen.generate(spec, clientName, packageName)
+      val generated = OAGen.generateOpenApi(spec, clientName, packageName)
       val outPath = match explicitOut {
         case Some(p) -> p
         case None    -> {

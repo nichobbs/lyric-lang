@@ -22,6 +22,6 @@ pub func generateFromJson(
 ): String {
   match parseSpec(json) {
     case Err(msg)  -> "err\n" + msg
-    case Ok(spec)  -> "ok\n"  + generate(spec, clientName, packageName)
+    case Ok(spec)  -> "ok\n"  + generateOpenApi(spec, clientName, packageName)
   }
 }

@@ -116,7 +116,7 @@ func ln(s: in String): String { s + "\n" }
 /// Generate the full .l source for a typed REST client from a ParsedSpec.
 /// `clientNameOverride` and `packageNameOverride` may be empty (defaults
 /// derived from spec.title in that case).
-pub func generate(
+pub func generateOpenApi(
   spec:                in ParsedSpec,
   clientNameOverride:  in String,
   packageNameOverride: in String
