@@ -154,7 +154,9 @@ impl FlagStore for NativeFlagStore {
     if raw == "" {
       return None
     }
-    // Raw is a JSON-encoded FlagValue; parse the bool case for now.
+    // Parses only Bool flags from the raw kernel value.
+    // Int and Float flags are returned as FlagString — a known gap.
+    // Full type-discriminated JSON parsing is deferred to a follow-up stage.
     if raw == "true" {
       return Some(value = FlagValue.FlagBool(value = true))
     } else if raw == "false" {

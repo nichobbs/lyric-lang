@@ -26,6 +26,8 @@ kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 "Lyric.Stdlib" = { path = "../stdlib" }
 "Lyric.Cache"  = { path = "../lyric-cache" }
 
+# NOTE: The [nuget] table does not yet support per-feature gating (see docs/21-nuget-linking.md).
+# All four broker packages are restored unconditionally; only the active feature's code compiles.
 [nuget]
 # feature = "rabbitmq" — AMQP 0-9-1 client for .NET
 "RabbitMQ.Client"            = "6.8.1"
