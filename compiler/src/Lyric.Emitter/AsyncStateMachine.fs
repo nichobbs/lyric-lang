@@ -18,11 +18,13 @@
 ///     Phase B and replaces the M1.4 `Task.FromResult` shim with
 ///     spec-correct codegen.
 ///
-/// Phase B (follow-up): `await` inside an async body — real
+/// Phase B (shipped): `await` inside an async body — real
 /// `AwaitUnsafeOnCompleted` suspend/resume protocol with state
-/// dispatch, locals promoted to fields.  Async funcs whose bodies
-/// contain `await` keep the M1.4 `Task.FromResult` path until Phase
-/// B lands.
+/// dispatch, locals promoted to fields.  Covers while/loop bodies
+/// (Phase B+), defer+await (Phase B++), try/catch+await and
+/// for-with-await (Phase B+++), and stack-spilling for nested awaits.
+/// The M1.4 blocking shim is retained as a fallback only for ineligible
+/// shapes that stack-spilling cannot reach.
 module Lyric.Emitter.AsyncStateMachine
 
 open System

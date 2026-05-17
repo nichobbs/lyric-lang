@@ -824,7 +824,7 @@ interface, write an `impl` block.
 
 ## D035: M1.4 scope cuts — bootstrap-grade lowering for generics, async, and FFI
 
-**Status:** ACCEPTED
+**Status:** ACCEPTED — async row SUPERSEDED (see Revisions).
 
 **Decision:** The bootstrap compiler's M1.4 milestone (per
 `docs/05-implementation-plan.md`) ships *bootstrap-grade* lowerings for
@@ -836,7 +836,7 @@ shape of v0.1 end-to-end; the full lowerings land in Phase 2 polish.
 | Construct | M1.4 lowering | v0.1-target lowering | Where the gap lives |
 |---|---|---|---|
 | Generics | **Monomorphisation per call site** — the type checker rewrites each generic call into a synthesised concrete instantiation; the emitter sees only monomorphic methods. | Reified generics with `DefineGenericParameters`, JIT specialisation as the strategy doc §9.1 calls for. | `Lyric.Emitter.Codegen.emitCall` has no `ldtoken`/generic-arg handling. |
-| `async` / `await` | **Blocking shim** — `async func` lowers to a `Task<T>`-returning method that calls the body synchronously; `await e` calls `e.GetAwaiter().GetResult()`. Sequential under the hood. | A C#-style state machine per the strategy doc §13. | `Lyric.Emitter.Codegen.emitAsyncBody` documents the simplification. |
+| `async` / `await` | ~~**Blocking shim**~~ **SUPERSEDED** — real `IAsyncStateMachine` state machines ship for await-free bodies (Phase A, D-progress-033) and bodies with awaits at safe positions (Phase B through B+++, D-progress-034..076). The M1.4 blocking `.GetAwaiter().GetResult()` fallback is retained only for ineligible await shapes (awaits in expression positions where stack-spilling fails). Generators with `await` in the body remain deferred (Gap-4a, D070). | A C#-style state machine per the strategy doc §13. | Fully implemented in `Lyric.Emitter.AsyncStateMachine`. |
 | `extern package` (FFI) | **Hand-extended `Lyric.Stdlib`** — every BCL surface the banking example needs (`std.io.File`, `std.collections.List`, …) is added to the F#-side stdlib shim and the emitter resolves `extern package` references against that table. | Reflection-driven binding to arbitrary BCL types named in `extern package` blocks. | `Lyric.Stdlib.Interop` carries the curated list; out-of-table externs surface as `E0030`. |
 
 Two further M1.4 simplifications are documented but smaller in
@@ -883,13 +883,21 @@ mechanism:
 **Tracked follow-ups:**
 
 - Phase 2 work plan (per `docs/05-implementation-plan.md` §"Phase 2")
-  picks up reified generics and full async state machines.
+  picks up reified generics.
 - Phase 4 work plan picks up `@proof_required` proof-obligation
   generation and `old(_)` snapshotting.
 - The Stdlib shim's contents become the seed of `std.core` /
   `std.io` once the package manager lands (Phase 3).
+- Gap-4a (async generators with internal `await`) — see D070.
 
-**Revisions:** None.
+**Revisions:** The `async` / `await` row is SUPERSEDED. Real
+`IAsyncStateMachine` state machines landed across D-progress-033
+(Phase A, await-free), D-progress-034..040 (Phase B, suspend/resume),
+D-progress-041..043 (Phase B+, loop-with-await + promoted locals),
+D-progress-054..058 (Phase B++, defer+await; B+++ try/catch+await;
+for-with-await), and D-progress-074..076 (stack-spilling, generic
+async). The blocking shim now applies only to ineligible fall-through
+shapes and to async generators with `await` in their body (D070).
 
 ---
 
@@ -3816,11 +3824,11 @@ private `joinStrs` helper removed and all call sites updated to `Str.join`.
 
 **Status:** Deferred (Gap-4a).  **Date:** 2026-05-16.
 
-**Builds on:** D035 (bootstrap-grade async), D-progress-260 (Gap-1..4 closure).
+**Builds on:** D035 (async row now superseded — real SM shipped), D-progress-260 (Gap-1..4 closure).
 
 ### Context
 
-The bootstrap async-generator emitter (`AsyncGenerator.fs`, `lowerAsyncGenerator`
+The async-generator emitter (`AsyncGenerator.fs`, `lowerAsyncGenerator`
 in `compiler/lyric/jvm/lowering.l`) uses an "eager producer" model: `RunBody()`
 (MSIL) or `runBody()` (JVM) is called synchronously inside `GetAsyncEnumerator`
 / `iterator()`, so all `yield` expressions execute before the first
@@ -3830,24 +3838,26 @@ no `await`.
 
 A generator body that contains an `await` expression requires a true coroutine
 suspension point between successive `yield`s.  The eager model produces
-incorrect sequencing in that case: the `await` would complete (via the existing
-Gap-1 `.GetAwaiter().GetResult()` shim) but the entire body would run to
-completion before any consumer sees the first element.
+incorrect sequencing in that case: the body runs to completion before any
+consumer sees the first element, and any intermediate `await` suspensions
+occur inside `RunBody()` rather than interleaved with consumer `MoveNextAsync`
+calls.
 
 ### Decision
 
-Gap-4a (generators with internal `await`) is deferred to M2.  The bootstrap
-emitter issues a diagnostic (`Gap-4a` tag) when it encounters `await` inside a
-generator body, and the language reference §7.2 documents the bootstrap
-single-use `GetAsyncEnumerator` constraint.
+Gap-4a (generators with internal `await`) is deferred.  The emitter issues a
+diagnostic (`Gap-4a` tag) when it encounters `await` inside a generator body.
+The language reference §7.2 documents the eager-producer semantics and the
+concurrent-consumer constraint.
 
-The full lowering requires one of:
-1. A channel-backed model: the generator body runs on a background task and
-   posts values to a `Channel<T>`; `MoveNextAsync` awaits the next item.
-2. A true `AsyncIteratorMethodBuilder` state-machine synthesis, matching what
-   the C# compiler emits for `IAsyncEnumerable<T>` methods.
-
-Either approach is non-trivial and out of scope for Phase 1.
+The correct lowering requires synthesising a combined generator/state-machine
+class — one that implements both `IAsyncEnumerable<T>` / `IAsyncEnumerator<T>`
+and `IAsyncStateMachine`, using `AsyncIteratorMethodBuilder<T>` as the driver.
+This is the shape the C# compiler emits for `async IAsyncEnumerable<T>` iterator
+methods.  The building blocks are already present in `AsyncStateMachine.fs`
+(Phase B suspend/resume protocol, promoted-locals, state dispatch) and
+`AsyncGenerator.fs` (generator class synthesis); the work is to merge them into
+a combined `MoveNextAsync`-driven state machine rather than a separate `RunBody`.
 
 ### Single-use `GetAsyncEnumerator` constraint
 

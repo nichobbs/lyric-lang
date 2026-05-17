@@ -785,10 +785,42 @@ synchronous-completion path.
 
 ### 14.5 `await` lowering
 
-`await e` lowers to the standard `GetAwaiter().GetResult()` /
-`UnsafeOnCompleted` pattern when `e` produces a `Task<T>` or
-`ValueTask<T>`. For non-task awaitables (rare in Lyric — primarily
-custom awaiters from FFI), the same pattern applies, dispatching via
+`await e` inside an `async func` body is lowered by the Phase B
+state-machine emitter (`AsyncStateMachine.fs`).  The generated `MoveNext`
+method contains a state-dispatch switch on `<>1__state` at its entry
+point; each `await` site is one state index.  The protocol for each
+await site is:
+
+```
+// --- fast path (awaiter already complete) ---
+var awaiter = e.GetAwaiter();
+if (!awaiter.IsCompleted) {
+    // --- slow path: suspend ---
+    <>1__state = N;
+    <>u__N  = awaiter;           // stash typed awaiter field
+    builder.AwaitUnsafeOnCompleted(ref awaiter, ref this);
+    return;                      // exit MoveNext; scheduler resumes later
+    // --- resume label (state dispatch jumps here on re-entry) ---
+    awaiter  = <>u__N;
+    <>u__N   = default;
+    <>1__state = -1;
+}
+result = awaiter.GetResult();    // only reached when complete
+```
+
+Locals whose lifetimes span a suspend point are promoted to fields on
+the state-machine struct (Phase B+ and later).  Awaits in `while`/`loop`
+bodies, `defer` blocks, `try`/`catch` arms, and `for` loop bodies are
+each handled by the Phase B+/B++/B+++ extensions in `AsyncStateMachine.fs`.
+
+The M1.4 blocking shim (`.GetAwaiter().GetResult()` synchronously) is
+retained as a fallback for ineligible shapes — awaits in expression
+positions where stack-spilling has not been applied, or inside lambda
+bodies that form a separate async context.  Ineligible functions are
+diagnosed at compile time.
+
+For non-task awaitables (rare in Lyric — primarily custom awaiters
+from FFI) the same state-machine pattern applies, dispatching through
 the awaiter's interface.
 
 ### 14.6 Async generators (`yield` in `async func`)
@@ -820,16 +852,16 @@ static IAsyncEnumerable<T> f(...) {
 }
 ```
 
-**Bootstrap semantics** (Gap-4, D-progress-260): `RunBody` is called
+**Eager-producer semantics** (D-progress-260): `RunBody` is called
 synchronously by `GetAsyncEnumerator`, so all `yield` expressions
-execute eagerly before the first `MoveNextAsync` returns. This matches
-the "eager producer" model and is sufficient for generator
-comprehensions and async-producer scenarios where the body has no
-internal `await`.
+execute eagerly before the first `MoveNextAsync` returns. This is the
+correct and intended design for generator comprehensions and
+async-producer scenarios where the body has no internal `await`.
 
-Generators whose body contains `await` require a channel-backed or
-true `AsyncIteratorMethodBuilder` approach; the bootstrap emitter
-issues a diagnostic for that case (Gap-4a, deferred).
+Generators whose body contains `await` require a combined
+generator/state-machine class using `AsyncIteratorMethodBuilder<T>`
+(the shape C# emits for `async IAsyncEnumerable<T>` methods); the
+emitter issues a Gap-4a diagnostic for that case (deferred, see D070).
 
 `for x in gen() { … }` lowers to a standard `await foreach` —
 `GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,

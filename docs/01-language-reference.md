@@ -801,7 +801,7 @@ func main(): Unit {
 
 `yield expr` is a statement-expression: it evaluates `expr`, queues the value, and continues. A `yield` inside a non-generator function or outside an `async func` is a compile error.
 
-**Bootstrap semantics (bootstrap-grade):** The current implementation eagerly evaluates the entire body before the first element is consumed, so generators with `await` inside their body are not yet supported (a diagnostic is emitted for that case). A true lazy/interleaved lowering is tracked for M2.
+**Eager-producer semantics:** The generator body runs to completion when the caller first calls `GetAsyncEnumerator`, buffering all yielded values. This is correct for generators whose body contains no `await`. Generators with `await` inside the body require a combined generator/state-machine lowering (Gap-4a, tracked in D070); the compiler emits a diagnostic for that case.
 
 ### 7.3 Cancellation
 
