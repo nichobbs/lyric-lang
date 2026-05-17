@@ -110,65 +110,6 @@ let private isHotAnnotated (fn: FunctionDecl) : bool =
         | ["hot"] -> true
         | _ -> false)
 
-/// True when the function body contains at least one `yield` expression —
-/// the function is an async generator and returns `IAsyncEnumerable<T>`.
-let rec private bodyContainsYield (fn: FunctionDecl) : bool =
-    let rec exprHasYield (e: Expr) : bool =
-        match e.Kind with
-        | EYield _ -> true
-        | ELiteral _ | EPath _ | ESelf | EResult | EError -> false
-        | EInterpolated segs ->
-            segs |> List.exists (function ISText _ -> false | ISExpr e -> exprHasYield e)
-        | EParen e | EAwait e | ESpawn e | EOld e | EPropagate e | ETry e -> exprHasYield e
-        | ETuple es | EList es -> es |> List.exists exprHasYield
-        | EIf (c, t, eOpt, _) ->
-            exprHasYield c
-            || (match t with EOBExpr e -> exprHasYield e | EOBBlock b -> blockHasYield b)
-            || (match eOpt with Some b -> (match b with EOBExpr e -> exprHasYield e | EOBBlock b -> blockHasYield b) | None -> false)
-        | EMatch (s, arms) ->
-            exprHasYield s
-            || arms |> List.exists (fun a ->
-                (match a.Guard with Some g -> exprHasYield g | None -> false)
-                || (match a.Body with EOBExpr e -> exprHasYield e | EOBBlock b -> blockHasYield b))
-        | EForall (_, where, body) | EExists (_, where, body) ->
-            (match where with Some w -> exprHasYield w | None -> false) || exprHasYield body
-        | ELambda _ -> false   // lambda is a separate function scope
-        | ECall (f, args) ->
-            exprHasYield f
-            || args |> List.exists (function CAPositional v | CANamed (_, v, _) -> exprHasYield v)
-        | ETypeApp (f, _) -> exprHasYield f
-        | EIndex (r, idxs) -> exprHasYield r || idxs |> List.exists exprHasYield
-        | EMember (r, _) -> exprHasYield r
-        | EPrefix (_, op) -> exprHasYield op
-        | EBinop (_, l, r) -> exprHasYield l || exprHasYield r
-        | ERange rb ->
-            match rb with
-            | RBClosed (a, b) | RBHalfOpen (a, b) -> exprHasYield a || exprHasYield b
-            | RBLowerOpen a | RBUpperOpen a -> exprHasYield a
-        | EAssign (t, _, v) -> exprHasYield t || exprHasYield v
-        | EBlock b | EUnsafe b -> blockHasYield b
-    and blockHasYield (b: Block) : bool =
-        b.Statements |> List.exists stmtHasYield
-    and stmtHasYield (s: Statement) : bool =
-        match s.Kind with
-        | SExpr e | SThrow e -> exprHasYield e
-        | SReturn (Some e) -> exprHasYield e
-        | SReturn None | SBreak _ | SContinue _ | SInvariant _ | SItem _ -> false
-        | SAssign (t, _, v) -> exprHasYield t || exprHasYield v
-        | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> exprHasYield e
-        | SLocal (LBVar (_, _, Some e)) -> exprHasYield e
-        | SLocal (LBVar (_, _, None)) -> false
-        | STry (body, catches) ->
-            blockHasYield body || catches |> List.exists (fun c -> blockHasYield c.Body)
-        | SDefer b | SScope (_, b) | SLoop (_, b) -> blockHasYield b
-        | SFor (_, _, iter, body) -> exprHasYield iter || blockHasYield body
-        | SWhile (_, cond, body) -> exprHasYield cond || blockHasYield body
-        | SRule (lhs, rhs) -> exprHasYield lhs || exprHasYield rhs
-    match fn.Body with
-    | None -> false
-    | Some (FBExpr e) -> exprHasYield e
-    | Some (FBBlock b) -> blockHasYield b
-
 /// Pull every top-level `IFunc` out of a parsed source file.
 let private functionItems (sf: SourceFile) : FunctionDecl list =
     sf.Items
@@ -4376,7 +4317,7 @@ let private emitAssembly
                                 | None -> TyPrim PtUnit
                               IsAsync      = fd.IsAsync
                               IsHot        = isHotAnnotated fd
-                              IsGenerator  = fd.IsAsync && bodyContainsYield fd
+                              IsGenerator  = fd.IsAsync && AsyncStateMachine.bodyContainsYield fd
                               Span         = fd.Span }
                         implMethods.Add(fd, mb, synthSig)
                         if not methodGenericNames.IsEmpty then resolveCtx.Pop()

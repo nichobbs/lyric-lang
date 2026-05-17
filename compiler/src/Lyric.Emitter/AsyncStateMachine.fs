@@ -976,6 +976,11 @@ let collectYieldInners (fn: FunctionDecl) : Expr list =
         (function EYield inner -> Some inner | _ -> None)
         fn
 
+/// True when the function body contains at least one `EYield` expression.
+/// Shared with `Emitter.fs` so the two don't maintain separate walks.
+let bodyContainsYield (fn: FunctionDecl) : bool =
+    collectYieldInners fn |> List.isEmpty |> not
+
 /// Collect top-level locals (`val`/`let`/`var name [: T] = …`) from
 /// the function body.  Phase B promotes every top-level local to
 /// an SM field.  Returns each local as `(name, typeAnnotationOpt)`

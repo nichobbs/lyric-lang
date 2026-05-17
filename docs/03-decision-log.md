@@ -3878,6 +3878,30 @@ single-enumerator contract of the interface.
 
 ---
 
+## D071 — `yield` uses expression precedence; `await` uses postfix precedence
+
+**Status:** Accepted.  **Date:** 2026-05-17.
+
+**Builds on:** D-progress-260 (yield keyword added), grammar.ebnf.
+
+### Decision
+
+`yield` binds its argument with full expression (assignment) precedence:
+`yield a * 2` is `yield (a * 2)`.  This matches Rust, Python, and C# iterator
+behaviour and is the natural reading for a statement-level keyword.
+
+`await` uses postfix (primary) precedence: `await a * 2` is `(await a) * 2`.
+This is consistent with the existing Lyric grammar where `await` is a
+postfix-only operator applied to a single expression, matching the "await this
+task, then do arithmetic on the result" reading.
+
+The asymmetry is intentional and documented in §7.2 of the language reference.
+Users coming from C# may find `await` surprising (C# `await` also has low
+precedence, matching Lyric's `yield`).  No change planned: `yield` as a
+statement-level construct with expression-scope binding is the correct design.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

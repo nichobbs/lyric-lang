@@ -3102,7 +3102,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitAload(nextAsm, 1)
   emitAreturn(nextAsm)
   val nextPs: List[JvmType] = newList()
-  val nextCode = assembleCode(nextAsm, 3, 2)
+  val nextCode = assembleCode(nextAsm, 3, 2)   // maxStack=3: peak during _pos increment (aload,aload,getfield,iconst+iadd,putfield)
   val nextAttrs: List[Attribute] = newList()
   nextAttrs.add(nextCode)
   val nextMethod = makeMethodInfo(ACC_PUBLIC, "next",

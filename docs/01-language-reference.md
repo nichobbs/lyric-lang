@@ -799,13 +799,19 @@ func main(): Unit {
 }
 ```
 
-`yield expr` is a statement-expression: it evaluates `expr`, queues the value, and continues. A `yield` inside a non-generator function or outside an `async func` is a compile error.
+`yield expr` is a statement-expression: it evaluates `expr`, queues the value, and continues. A `yield` inside a non-generator function or outside an `async func` is a compile error (T0094). The type of `expr` must match the function's declared element type (T0095); every `yield` in the same generator must produce a value of the same type.
+
+`yield` binds its argument tightly — `yield a * 2` means `yield (a * 2)`, not `(yield a) * 2`. Note that `await` uses postfix precedence — `await a * 2` means `(await a) * 2`. The asymmetry is deliberate; `yield` is a statement-level construct and binds with expression precedence, while `await` acts on a single postfix operand.
 
 The compiler selects one of two lowering strategies based on the body's content:
 
 **Eager-producer** (body has `yield` but no `await`): the generator body runs to completion synchronously when the caller first calls `GetAsyncEnumerator`, buffering all yielded values in a `List<T>` that `MoveNextAsync` serves one at a time. Correct for generator comprehensions and producer pipelines.
 
+*Bootstrap constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
+
 **Async-iterator** (body has both `yield` and `await`): the compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. Each `MoveNextAsync` call creates a `TaskCompletionSource<bool>`, drives the state machine one step, and returns a `ValueTask<bool>` backed by the TCS. A `yield` stores the value, signals the TCS with `true`, and suspends; an `await` uses the standard Phase-B `AwaitUnsafeOnCompleted` protocol; end-of-body signals the TCS with `false` (exhausted). Any local variable live across a yield or await boundary is promoted to a field on the class so its value survives cross-`MoveNextAsync` gaps. (D-progress-261, §14.6.2 of `docs/09-msil-emission.md`.)
+
+*Note on `@hot` interaction:* if a generator function is also annotated `@hot`, `IsGenerator` takes priority and `@hot` is silently ignored — the synthesised class uses `AsyncTaskMethodBuilder`, not `AsyncValueTaskMethodBuilder`. Combining `@hot` with `yield` is unsupported; a diagnostic for this combination is planned for M2.
 
 ### 7.3 Cancellation
 

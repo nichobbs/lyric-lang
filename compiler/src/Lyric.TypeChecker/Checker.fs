@@ -353,6 +353,8 @@ let private resolveFunctionSig
         fn.Annotations
         |> List.exists (fun a ->
             match a.Name.Segments with ["hot"] -> true | _ -> false)
+    // Mirror of AsyncStateMachine.bodyContainsYield; kept here because
+    // Lyric.TypeChecker cannot depend on Lyric.Emitter.  Keep both in sync.
     let isGen =
         let rec exprHasYield (e: Expr) =
             match e.Kind with
