@@ -152,7 +152,7 @@ jobs:
               `Previously resolved and closed: #<n>, #<m>`
             - If no findings at all: a brief positive summary.
 
-          claude_args: '--allowed-tools "Bash(gh:*),Read(CLAUDE.md)"'
+          claude_args: '--allowed-tools "Bash(gh:*),Read"'
 
       # Read the PR label state set by Claude and fail the job if changes are required.
       # This makes "Claude Code Review / claude-review" a blockable required status check.
