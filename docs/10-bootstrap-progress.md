@@ -12591,3 +12591,156 @@ when `tryRun` returns `None`.
 **Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
 **Tests:** `Lyric.Cli.Tests`: 224/224; `Lyric.Emitter.Tests`: 759/759;
 `Lyric.Verifier.Tests`: 266/266; `Lyric.TypeChecker.Tests`: 189/189.
+
+---
+
+### D-progress-261: Library ecosystem gap-fill — 11 new lyric-* libraries
+
+_Branch: claude/library-gaps-analysis-NXlWA. Implements all major library gaps identified
+relative to Spring / ASP.NET ecosystems. Each library follows the established pattern:
+`@runtime_checked` package with `@stable(since="0.1")` public API, kernel boundary in
+`src/_kernel/net/`, feature-flagged provider dispatch, config blocks, and aspect templates._
+
+**Libraries shipped:**
+
+- **`lyric-cache/`** — `Lyric.Cache`. In-memory and disk-backed caching with TTL; `CacheBucket`
+  interface; `InProcessCacheBucket` backed by `Map`; native disk-backed implementation via
+  `Cache.Kernel.Net`; `CachedResult` and `RateLimited` aspect templates (D056).
+
+- **`lyric-db/`** — `Lyric.Db`. Typed SQL query helpers over `System.Data` / JDBC; `DbConnection`
+  interface; parameterised queries via `DbParam`; `execute`, `query`, `queryOne`, `scalar`;
+  transaction support (`withTransaction`); `LoggedQueries` and `TimedQueries` aspects (D056).
+
+- **`lyric-health/`** — `Lyric.Health`. Health-check endpoint and liveness/readiness probe
+  helpers; `HealthCheck` interface; `HealthRegistry` with composite status aggregation;
+  `HealthResult` record; convenience `ok`/`degraded`/`unhealthy` constructors (D056).
+
+- **`lyric-jobs/`** — `Lyric.Jobs`. Background job scheduling; `JobHandler` / `JobScheduler`
+  interfaces; `InProcessJobScheduler` for tests; Hangfire and Quartz.NET backends (feature-
+  gated); `Retryable` and `Timed` aspect templates.
+
+- **`lyric-mail/`** — `Lyric.Mail`. Email sending over SMTP (MailKit), Amazon SES, and SendGrid;
+  `MailSender` / `NativeSender` pattern; `EmailMessage` / `EmailAddress` / `Attachment` types;
+  `sendSimple` / `sendHtml` convenience helpers; `Smtp`, `Ses`, `SendGridMail` config blocks;
+  manual JSON serialisation for the kernel boundary (D062).
+
+- **`lyric-mq/`** — `Lyric.Mq`. Transport-agnostic message queue; `MessageQueue` / `QueueConsumer`
+  / `DeadLetterStore` interfaces; RabbitMQ, Azure Service Bus, SQS, Kafka backends (feature-gated
+  via `@cfg`); `Idempotent` and `DeadLetter` aspect templates.
+
+- **`lyric-search/`** — `Lyric.Search`. Elasticsearch and Meilisearch backends; `SearchClient`
+  interface with `index` / `indexBatch` / `search` / `suggest` / `delete` / `createIndex`;
+  `SearchResult` / `SearchHit` / `IndexResult` / `SuggestResult` types; full JSON parse
+  implementations for all result types using `Std.Json`.
+
+- **`lyric-session/`** — `Lyric.Session`. Distributed session management; Redis-backed and in-
+  process stores; `SessionStore` interface; `SessionData` with TTL and typed `get`/`set`/`delete`
+  helpers; `SessionConfig` block; UUID-based session IDs (`Std.Uuid`); Long TTL arithmetic; full
+  `Std.Json`-based serialisation of session entries.
+
+- **`lyric-testing/`** — `Lyric.Testing`. Mock implementations: `MockMailSender`,
+  `MockStorageBucket`, `MockMessageQueue`, `MockSessionStore`, `MockFlagStore`, `TestClock`;
+  `TestContext` factory; `assertOk` / `assertErr` / `assertSome` / `assertEq` / `assertTrue` /
+  `assertFalse` assertion helpers; full `Std.Json`-based serialisation for `MockSessionStore`.
+
+- **`lyric-validation/`** — `Lyric.Validation`. Composable validator combinators returning
+  `[ValidationError]`; string validators (`required`, `minLength`, `maxLength`, `exactLength`,
+  `notBlank`, `email`, `url`, `oneOf`); `matches` marked `@experimental` (regex deferred);
+  numeric validators (`minValue`, `maxValue`, `rangeValue`); `combine` / `all` / `toResult`
+  combinators; `Validator[T]` interface (D056).
+
+- **`lyric-ws/`** — `Lyric.Ws`. WebSocket server; `WsHandler` / `WsRegistry` interfaces;
+  ASP.NET Core backend (.NET) and Undertow (JVM, Phase 6); `WsAuth` and `WsRateLimit` aspect
+  templates; `WsAuthConfig` config block (renamed to avoid namespace collision with `Auth` import).
+
+**Bug fixes applied during review:**
+
+- **Char/String type confusion** — `String.charAt(i)` returns `Char`; all comparison sites
+  (`== "."`, `== "@"`, `== "{"`, etc.) and concatenation sites updated to call `.toString()`
+  first. Affected files: `validation.l`, `storage_aspects.l`, `i18n.l`, `mail.l`, `testing.l`.
+- **Provider dispatch** — `mail_kernel.l` and `storage_kernel.l` were hardcoded to a single
+  provider. Added `@cfg(feature = "X")` dispatch blocks to all six storage wrappers and all
+  three mail wrappers.
+- **Config name collisions** — `config Session` inside `package Session` → `SessionConfig`;
+  `config Auth` in ws.l (which imports `Auth`) → `WsAuthConfig`.
+- **Session ID predictability** — timestamp-based session ID replaced with
+  `Std.Uuid.uuidToString(Std.Uuid.newUuid())`.
+- **TTL overflow** — `ttlSeconds * 1000` (Int overflow) → `ttlSeconds.toLong() * 1000L`.
+- **`parseSessionJson` stub** — replaced placeholder returning empty `SessionData` with a full
+  `Std.Json` implementation that restores all entries and timestamps.
+- **`MockSessionStore` serialisation** — replaced placeholder `serialiseSession`/`parseSession`
+  pair with full JSON round-trip using `sessionJsonStr` helper and `Std.Json`.
+- **Search parse stubs** — `parseIndexResult`, `parseIndexResultList`, `parseSearchResult`,
+  `parseSuggestResult` all previously returned zeros/empty; replaced with `Std.Json`
+  implementations. `parseSearchHit` and `parseHighlight` added as private helpers.
+- **DeadLetter off-by-one** — `attempts >= maxDeliveries` → `attempts > maxDeliveries`
+  (dead-letter fires after `maxDeliveries` attempts, not at the Nth).
+- **`NativeTranslationStore` stubs** — delegated `translate`, `availableLocales`, `hasKey` to
+  kernel functions; added `loadNative()` factory; extended `i18n_kernel.l` with
+  `loadStore`/`translate`/`availableLocalesJson`/`hasKey` externs and wrappers.
+- **Dead code removal** — `loadEntriesFromJson` stub in `flags.l` removed (never called).
+- **Missing SES/SendGrid config** — `Ses` and `SendGridMail` config blocks added to `mail.l`;
+  `connectSes()` and `connectSendGrid()` now read from config instead of passing empty strings.
+- **`lyric-mq/lyric.toml`** — added `Lyric.Cache` dependency (required by `mq_aspects.l`
+  for the `Idempotent` aspect's deduplication cache).
+
+**Second-round fixes (follow-up to further review):**
+
+- **`[nuget]` tables** — added `[nuget]` sections to all seven libraries that wrap external NuGet
+  packages: `lyric-mq` (RabbitMQ.Client, Azure.Messaging.ServiceBus, AWSSDK.SQS, Confluent.Kafka),
+  `lyric-mail` (MailKit, AWSSDK.SimpleEmail, SendGrid), `lyric-storage` (AWSSDK.S3,
+  Azure.Storage.Blobs), `lyric-search` (Elastic.Clients.Elasticsearch, Meilisearch),
+  `lyric-session` (StackExchange.Redis), `lyric-jobs` (Hangfire.Core, Hangfire.SqlServer, Quartz),
+  `lyric-ws` (Microsoft.AspNetCore.WebSockets, System.Threading.RateLimiting).  Per
+  `docs/21-nuget-linking.md`, `lyric restore` uses these to generate a transient csproj and
+  invoke `dotnet restore`.
+- **`@cfg(feature = "jvm") import Mq.Kernel.Jvm`** — the unconditional `import Mq.Kernel.Jvm` in
+  `mq.l` would fail at compile time when the `jvm` feature is not enabled (the `Mq.Kernel.Jvm`
+  package is `@cfg(feature = "jvm")` at the package level).  Added the corresponding `@cfg` gate
+  to the import statement.
+- **`jsonExtractString` doc comment** — added an explicit note that values containing `\"`
+  (escaped quotes) are truncated at the first backslash-quote; callers must pre-escape body
+  content via `jsonEscape` before embedding (which the write path already does).
+- **`DeadLetter` aspect shape constraint** — added `@inline_template` annotation (aspect reads
+  `args.message` and `args.consumer`); added `requires: args.message.id != ""` shape constraint;
+  updated doc comment to explicitly state that the handler must declare both
+  `message: in Message` and `consumer: in QueueConsumer` parameters (A0042 catches missing shapes).
+- **CLAUDE.md key modules** — added `Std.Time` and `Std.Uuid` to the key modules list in the
+  `stdlib/std/` section (both are confirmed present in `stdlib/std/time.l` and `stdlib/std/uuid.l`
+  and are used by the new library packages).
+
+**Third-round review fixes (PR #295):**
+
+- **`@cfg` on `impl` block** — `NativeFlagStore` record was gated `@cfg(feature = "remote")` but
+  its `impl FlagStore for NativeFlagStore` block was not.  Added the matching `@cfg` gate on the
+  impl block.
+- **`@cfg` on import** — `import Session.Kernel.Net` in `session.l` was unconditional; added
+  `@cfg(feature = "redis")` gate so the package is not resolved when the Redis feature is absent.
+- **`NativeSessionStore` @cfg** — `NativeSessionStore` record and its `impl SessionStore` block
+  were not gated; added `@cfg(feature = "redis")` to both.
+- **`InProcessSessionStore.create()` undefined `ts`** — `createdAt` and `lastAccessedAt` were set
+  to a variable `ts` that was never defined.  Added `val ts = nowMs()` before the
+  `SessionData(...)` construction.
+- **`serializeSessionJson` unsafe JSON** — session entries (keys and values) were concatenated
+  raw without escaping.  Added `jsonEscapeStr()` helper that escapes `\`, `"`, `\n`, `\r`, `\t`;
+  all string fields in the produced JSON now go through the helper.
+- **`notBlank` Char/String mismatch** — `value.charAt(i)` returns `Char` but was compared
+  directly to string literals `" "`, `"\t"`, `"\r"`, `"\n"`.  Fixed to `value.charAt(i).toString()`.
+- **`FlagVariant` stability** — `FlagVariant` was marked `@stable(since="0.1")` but the body
+  always proceeds without modification (variant result-wrapping is deferred).  Changed to
+  `@experimental`.
+- **`lyric-feature-flags/lyric.toml` unused dep** — `"Lyric.Resilience"` listed as a dependency
+  but no `.l` file in the package imports it.  Removed.
+- **`assertEq` message direction** — failure message read `"expected b, got a"` (reversed).
+  Changed to `"expected a, got b"` (first argument is the expected value per xUnit convention).
+- **`Storage.connect()` safety note** — `connect(provider)` calls `@cfg`-gated helpers
+  (`connectS3()` etc.) and will produce a link error if the matching feature is absent.
+  Marked `@experimental` and added a doc comment directing callers to use the typed
+  `connectS3()` / `connectAzureBlob()` / `connectLocal()` functions directly.
+- **`mq.l` statement-level @cfg** — `mqKernelConnect`, `mqKernelPublish`, etc. used
+  statement-level `@cfg` inside function bodies (spec violation per §4.2 of D045).  Replaced
+  with item-level `@cfg`-gated pairs of same-named functions (dotnet/jvm) per §4.4.
+- **`mail_kernel.l` single-provider dispatch** — `send()` and `close()` bridged always to MailKit
+  regardless of active feature.  Replaced with three item-level `@cfg`-gated overloads per provider.
+- **`storage_kernel.l` single-provider dispatch** — all six operation wrappers dispatched only to
+  S3.  Replaced with three item-level `@cfg`-gated overloads per provider (s3 / azureblob / local).

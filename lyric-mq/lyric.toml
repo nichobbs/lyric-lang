@@ -1,0 +1,39 @@
+[package]
+name        = "Lyric.Mq"
+version     = "0.1.0"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "Transport-agnostic message queue library for Lyric: publish, consume, dead-letter, and idempotency aspects."
+
+[project]
+name            = "Lyric.Mq"
+output          = "single"
+output_assembly = "Mq.dll"
+
+[project.packages]
+"Mq"              = "src"
+"Mq.Aspects"      = "src"
+"Mq.Kernel.Net"   = "src/_kernel/net"
+"Mq.Kernel.Jvm"   = "src/_kernel/jvm"
+
+[features]
+rabbitmq        = []   # RabbitMQ via AMQP 0-9-1 (RabbitMQ.Client on .NET)
+azureservicebus = []   # Azure Service Bus (Azure.Messaging.ServiceBus on .NET)
+sqs             = []   # Amazon SQS (AWSSDK.SQS on .NET)
+kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Cache"  = { path = "../lyric-cache" }
+
+# NOTE: The [nuget] table does not yet support per-feature gating (see docs/21-nuget-linking.md).
+# All four broker packages are restored unconditionally; only the active feature's code compiles.
+[nuget]
+# feature = "rabbitmq" — AMQP 0-9-1 client for .NET
+"RabbitMQ.Client"            = "6.8.1"
+# feature = "azureservicebus" — Azure Service Bus SDK for .NET
+"Azure.Messaging.ServiceBus" = "7.18.0"
+# feature = "sqs" — AWS SDK SQS module for .NET
+"AWSSDK.SQS"                 = "3.7.300"
+# feature = "kafka" — Confluent Kafka .NET client
+"Confluent.Kafka"             = "2.4.0"
