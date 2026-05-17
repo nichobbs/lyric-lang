@@ -152,6 +152,9 @@ does not check the call-graph rule.
 | `V0007` | VC unsolved within solver budget (`unknown`) | error (default) / warning (with `--allow-unverified`) | refactor or add `assume` |
 | `V0008` | VC `sat` — proof failed | error | inspect counterexample (§9) |
 | `V0009` | `assume` used in proof-required code without `unsafe { … }` | error | wrap or remove |
+| `V0010` | Package declares conflicting verification annotations (`@proof_required` and `@runtime_checked`, etc.) | error | pick one |
+| `V0011` | Unknown `@proof_required` modifier (only `unsafe_blocks_allowed` and `checked_arithmetic` are recognised) | error | drop or correct the modifier |
+| `V0012` | `async func` or `yield`-bearing function appears in proof-required code | error | refactor into a sync core, or mark `@runtime_checked` |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
 how every academic verifier's user community ends up tolerating
