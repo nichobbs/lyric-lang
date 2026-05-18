@@ -26,7 +26,7 @@
 ///   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED  — serve Swagger UI at /swagger (default: false)
 ///   LYRIC_CONFIG_WEB_SERVER_SPECPATH        — OpenAPI spec URL path (default: /openapi.json)
 ///   LYRIC_CONFIG_WEB_CORS_ENABLED           — enable CORS middleware (default: false)
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins or * (default: *)
+///   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins (no default; required when Cors.enabled = true)
 ///   LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS    — comma-separated HTTP methods
 ///   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
 ///   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
@@ -35,6 +35,7 @@
 package Web
 
 import Std.Core
+import Std.Log
 import Web.Kernel.Net as HttpKernel
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
@@ -273,9 +274,14 @@ config Server {
 
 /// CORS policy applied by the kernel HTTP middleware layer.
 /// Applies to every response including 404 and OPTIONS preflight.
+///
+/// `allowedOrigins` defaults to the empty string — turning CORS on
+/// without explicitly listing origins is rejected at startup (see
+/// `start`).  `"*"` must never be paired with authenticated APIs
+/// (it interacts badly with credentialed requests under CORS spec).
 config Cors {
   enabled:        Bool   = false
-  allowedOrigins: String = "*"
+  allowedOrigins: String = ""
   allowedMethods: String = "GET,POST,PUT,DELETE,OPTIONS,PATCH"
   allowedHeaders: String = "Content-Type,Authorization,Accept"
   maxAgeSeconds:  Int    = 86400
@@ -290,6 +296,26 @@ config Cors {
 /// (the live OpenAPI JSON spec) and GET /swagger (Swagger UI).
 @stable(since="0.1")
 pub func start(router: in Router): Unit {
+  // Enabling CORS without an explicit origin list is a configuration
+  // mistake — under the previous default of `"*"` this silently opened
+  // a cross-origin backdoor (#353).  Fail closed at startup.
+  if Cors.enabled and Cors.allowedOrigins.length == 0 {
+    panic("Cors.enabled = true requires Cors.allowedOrigins to be a non-empty " +
+          "comma-separated list of allowed origins. Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
+          "or the equivalent config source. Using \"*\" is not allowed with " +
+          "authenticated APIs (see RFC 6454 §3 and the CORS spec on credentialed requests).")
+  }
+  // Explicit wildcard is permitted (some public, unauthenticated APIs
+  // legitimately want it) but always emits a startup warning so the
+  // operator sees it in logs.  Combined with credentialed requests
+  // this opens the same backdoor the empty-default fix closes.
+  if Cors.enabled and Cors.allowedOrigins == "*" {
+    Std.Log.warn(
+      "Cors.allowedOrigins = \"*\" is unsafe with authenticated APIs " +
+      "(CORS spec disallows credentials + wildcard origin). " +
+      "If this API is public and unauthenticated this is fine; " +
+      "otherwise list explicit origins.")
+  }
   HttpKernel.serve(
     Server.host,
     Server.port,
