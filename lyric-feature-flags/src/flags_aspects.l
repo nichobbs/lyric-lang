@@ -29,6 +29,7 @@ package Flags.Aspects
 import Std.Core
 import Flags
 import Flags.Kernel.Net
+import Flags.Kernel.Jvm
 
 // ─── FlagGated ────────────────────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@ pub aspect FlagGated {
     if not enabled {
       ret = call.proceed()
     } else {
-      val flagEnabled = Flags.Kernel.Net.checkFlag(flagName, defaultOnMissing)
+      val flagEnabled = aspectsKernelCheckFlag(flagName, defaultOnMissing)
       if flagEnabled {
         ret = call.proceed()
       } else {
@@ -97,4 +98,15 @@ pub aspect FlagVariant {
     // Stub: always proceeds. Variant-specific routing is deferred to a follow-up stage.
     ret = call.proceed()
   }
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+
+@cfg(feature = "dotnet")
+func aspectsKernelCheckFlag(name: in String, defaultValue: in Bool): Bool {
+  return Flags.Kernel.Net.checkFlag(name, defaultValue)
+}
+@cfg(feature = "jvm")
+func aspectsKernelCheckFlag(name: in String, defaultValue: in Bool): Bool {
+  return Flags.Kernel.Jvm.checkFlag(name, defaultValue)
 }

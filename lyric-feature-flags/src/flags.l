@@ -34,6 +34,7 @@ package Flags
 import Std.Core
 import Std.Collections
 import Flags.Kernel.Net
+import Flags.Kernel.Jvm
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -146,11 +147,11 @@ pub record NativeFlagStore {
 @cfg(feature = "remote")
 impl FlagStore for NativeFlagStore {
   func isEnabled(name: in String): Bool {
-    return Flags.Kernel.Net.isEnabled(storeHandle, name)
+    return flagsKernelIsEnabled(storeHandle, name)
   }
 
   func getValue(name: in String): Option[FlagValue] {
-    val raw = Flags.Kernel.Net.getValue(storeHandle, name)
+    val raw = flagsKernelGetValue(storeHandle, name)
     if raw == "" {
       return None
     }
@@ -172,7 +173,7 @@ impl FlagStore for NativeFlagStore {
   }
 
   func refresh(): Result[Unit, FlagError] {
-    match Flags.Kernel.Net.refresh(storeHandle) {
+    match flagsKernelRefresh(storeHandle) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(FlagError(message = msg, code = "REFRESH_ERROR"))
     }
@@ -225,7 +226,7 @@ pub func connectRemote(): Result[FlagStore, FlagError] {
                 "plaintext HTTP would expose the API key in every poll request",
       code    = "INSECURE_URL"))
   }
-  match Flags.Kernel.Net.connect(
+  match flagsKernelConnect(
     Remote.url,
     Remote.apiKey,
     Remote.appKey,
@@ -332,5 +333,102 @@ pub func makeFlagWithDesc(name: in String, enabled: in Bool, description: in Str
     name        = name,
     value       = FlagValue.FlagBool(value = enabled),
     description = description)
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+@cfg(feature = "remote")
+func flagsKernelConnect(
+  url:              in String,
+  apiKey:           in String,
+  appKey:           in String,
+  pollIntervalMs:   in Int,
+  connectTimeoutMs: in Int
+): Result[Int, String] {
+  return Flags.Kernel.Net.connect(url, apiKey, appKey, pollIntervalMs, connectTimeoutMs)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "remote")
+func flagsKernelConnect(
+  url:              in String,
+  apiKey:           in String,
+  appKey:           in String,
+  pollIntervalMs:   in Int,
+  connectTimeoutMs: in Int
+): Result[Int, String] {
+  return Flags.Kernel.Jvm.connect(url, apiKey, appKey, pollIntervalMs, connectTimeoutMs)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "remote")
+func flagsKernelIsEnabled(storeHandle: in Int, name: in String): Bool {
+  return Flags.Kernel.Net.isEnabled(storeHandle, name)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "remote")
+func flagsKernelIsEnabled(storeHandle: in Int, name: in String): Bool {
+  return Flags.Kernel.Jvm.isEnabled(storeHandle, name)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "remote")
+func flagsKernelGetValue(storeHandle: in Int, name: in String): String {
+  return Flags.Kernel.Net.getValue(storeHandle, name)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "remote")
+func flagsKernelGetValue(storeHandle: in Int, name: in String): String {
+  return Flags.Kernel.Jvm.getValue(storeHandle, name)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "remote")
+func flagsKernelRefresh(storeHandle: in Int): Result[Unit, String] {
+  return Flags.Kernel.Net.refresh(storeHandle)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "remote")
+func flagsKernelRefresh(storeHandle: in Int): Result[Unit, String] {
+  return Flags.Kernel.Jvm.refresh(storeHandle)
+}
+
+@cfg(feature = "dotnet")
+func flagsKernelCheckFlag(name: in String, defaultValue: in Bool): Bool {
+  return Flags.Kernel.Net.checkFlag(name, defaultValue)
+}
+@cfg(feature = "jvm")
+func flagsKernelCheckFlag(name: in String, defaultValue: in Bool): Bool {
+  return Flags.Kernel.Jvm.checkFlag(name, defaultValue)
+}
+
+@cfg(feature = "dotnet")
+func flagsKernelGetStringFlag(name: in String, defaultValue: in String): String {
+  return Flags.Kernel.Net.getStringFlag(name, defaultValue)
+}
+@cfg(feature = "jvm")
+func flagsKernelGetStringFlag(name: in String, defaultValue: in String): String {
+  return Flags.Kernel.Jvm.getStringFlag(name, defaultValue)
+}
+
+@cfg(feature = "dotnet")
+func flagsKernelRegisterBoolFlag(name: in String, value: in Bool): Unit {
+  Flags.Kernel.Net.registerBoolFlag(name, value)
+}
+@cfg(feature = "jvm")
+func flagsKernelRegisterBoolFlag(name: in String, value: in Bool): Unit {
+  Flags.Kernel.Jvm.registerBoolFlag(name, value)
+}
+
+@cfg(feature = "dotnet")
+func flagsKernelRegisterStringFlag(name: in String, value: in String): Unit {
+  Flags.Kernel.Net.registerStringFlag(name, value)
+}
+@cfg(feature = "jvm")
+func flagsKernelRegisterStringFlag(name: in String, value: in String): Unit {
+  Flags.Kernel.Jvm.registerStringFlag(name, value)
 }
 
