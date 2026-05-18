@@ -42,7 +42,7 @@ beyond syntax highlighting.
 
 ```sh
 # From the repository root
-cd compiler
+cd bootstrap
 dotnet publish src/Lyric.Lsp -c Release -o ../bin/lsp
 ```
 
@@ -110,7 +110,7 @@ first as shown above.
 ### LSP server tests
 
 ```sh
-cd compiler
+cd bootstrap
 dotnet run --project tests/Lyric.Lsp.Tests
 ```
 

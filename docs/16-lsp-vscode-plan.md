@@ -46,7 +46,7 @@ Files delivered under `lyric-vscode/`:
 
 ```sh
 # 1. Build the language server
-cd compiler
+cd bootstrap
 dotnet publish src/Lyric.Lsp -c Release -o ../bin/lsp
 # The binary is now at bin/lsp/lyric-lsp (linux) or bin/lsp/lyric-lsp.exe
 
