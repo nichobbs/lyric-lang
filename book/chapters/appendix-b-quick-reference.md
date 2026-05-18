@@ -671,14 +671,15 @@ Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `to
 | `lyric-otel` | `OTel`, `OTel.Otlp` | OpenTelemetry tracing, metrics, and OTLP export | 19 |
 | `lyric-search` | `Search` | Elasticsearch/Meilisearch integration; `SearchClient`; typed result model | — |
 | `lyric-session` | `Session` | Distributed session management; Redis-backed and in-process stores; UUID session IDs | — |
-| `lyric-storage` | `Storage`, `Storage.Aspects` | Object storage (S3/Azure Blob/local); `StorageBucket`; `AuditAccess`/`ValidateKey` aspects | — |
+| `lyric-storage` | `Storage`, `Storage.Aspects` | Object storage (S3/Azure Blob/local); `StorageBucket`; `AuditAccess`/`ValidateKey` aspects. **Note:** `presignedUrl` requires `expiresInSeconds <= 604800` (7 days); larger values violate the contract at runtime. | — |
 | `lyric-testing` | `Testing` | Mock implementations (`MockMailSender`, `MockStorageBucket`, `MockSessionStore`, `MockFlagStore`, …); `TestContext`; assertion helpers | — |
 | `lyric-validation` | `Validation` | Composable input validators returning `[ValidationError]`; string/numeric combinators; `toResult` helper | — |
-| `lyric-ws` | `Ws`, `Ws.Aspects` | WebSocket server (ASP.NET Core/.NET, Undertow/JVM); `WsHandler`/`WsRegistry`; `WsAuth`/`WsRateLimit` aspects | — |
-| `lyric-feature-flags` | `Flags`, `Flags.Aspects` | Runtime feature toggles; in-process/remote stores; `FlagGated` aspect | — |
+| `lyric-ws` | `Ws`, `Ws.Aspects` | WebSocket server (ASP.NET Core/.NET, Undertow/JVM); `WsHandler`/`WsRegistry`; `WsAuth`/`WsRateLimit` aspects. **Note:** `createRegistry()` returns `Err(WS_AUTH_MISCONFIGURED)` when `WsAuthConfig.enabled = true` and `WsAuthConfig.jwtSecret` is empty — set `LYRIC_CONFIG_WS_AUTH_JWTSECRET` or disable auth. | — |
+| `lyric-feature-flags` | `Flags`, `Flags.Aspects` | Runtime feature toggles; in-process/remote stores; `FlagGated` aspect. **Note:** `connectRemote()` returns `Err(INSECURE_URL)` when an API key is configured and `Remote.url` is not `https://` — use a TLS endpoint to prevent credential leakage. | — |
 | `lyric-i18n` | `I18n` | BCP 47 locale parsing; `TranslationStore`; `{placeholder}` substitution; JSON/file-backed loading | — |
 | `lyric-proto` | `Proto` | Pure-Lyric Protocol Buffer (proto3) wire-format encoder/decoder | — |
 | `lyric-grpc` | `Grpc` | General-purpose gRPC client; raw `slice[Byte]` payloads; compose with lyric-proto | — |
+| `lyric-resilience` | `Resilience` | `Retry` and `CircuitBreaker` aspect templates; `backoffDelay` helper. **Note:** `Retry` config now includes `maxDelayMs` (default 30000 ms) and `jitterFraction` (default 0.1), which add jitter to retry delays by default — existing code using `Retry` will see jittered backoff. | — |
 
 ---
 
@@ -774,7 +775,18 @@ lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compati
 
 ## B.11 Error codes
 
+### Lexer (L0xxx-series)
+
+Errors and warnings emitted during lexical analysis of source files.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `L0015` | error | Unrecognised numeric suffix (e.g. `100xyz`); use a valid type suffix (`u8`, `i32`, `f32`, etc.) or remove the suffix |
+| `L0016` | error | Based literal has no valid digit body (e.g. bare `0x`, `0b___` with only underscores) |
+
 ### Linter (L-series)
+
+Style and quality rules checked by `lyric lint`.  These are single-digit codes (no leading zeros) distinct from the four-digit lexer codes above.
 
 | Code | Severity | Meaning |
 |---|---|---|
@@ -837,6 +849,14 @@ lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compati
 | `E0900` | Internal emitter error (unexpected AST shape) |
 | `E0901` | Internal emitter error (unexpected type shape) |
 
+### Emitter warnings (A-series)
+
+Warnings emitted by the MSIL emitter for constructs that compile but may not behave as expected.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `A0001` | warning | `async func` declares an `out` or `inout` parameter; the async state machine stores a value copy, not the byref — the caller's variable is not updated. Return a `Result` or record instead. |
+
 ### Stability (S-series)
 
 | Code | Meaning |
@@ -857,6 +877,9 @@ lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compati
 | `V0007` | error (warning with `--allow-unverified`) | Solver returned `unknown` — budget exhausted |
 | `V0008` | error | Proof failed — counterexample available (`name : sort = value` bindings) |
 | `V0009` | error | `assume` used in `@proof_required` code outside `unsafe { }` |
+| `V0010` | error | Conflicting verification-level annotations on the same package |
+| `V0011` | error | Unknown verification-level modifier |
+| `V0013` | warning | Proof goal contains NaN or ±Infinity float literal; substituted with `0.0` in SMT-LIB output — verification result may be incorrect |
 
 ### Bench (B-series)
 

@@ -625,6 +625,12 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   (`Lyric.Storage`). S3, Azure Blob, and local filesystem backends;
   `StorageBucket` interface with put/get/delete/list/presignedUrl/exists;
   `AuditAccess` and `ValidateKey` aspects.
+- `lyric-resilience/` — `lyric-resilience` library: retry and circuit-breaker
+  aspect templates (`Lyric.Resilience`). `Retry` aspect template with
+  configurable `maxAttempts`, `initialDelayMs`, `maxDelayMs` (cap), and
+  `jitterFraction` (uniform jitter, default 10 %); `CircuitBreaker` aspect
+  template with `failureThreshold` and `cooldownMs`; `backoffDelay` helper.
+  Applies to functions returning `Result[T, String]`.
 - `lyric-validation/` — `lyric-validation` library: declarative input
   validation (`Lyric.Validation`). String and numeric combinators;
   `combine`/`all`/`toResult` helpers; `ValidateInput` and `ValidateEmail`
