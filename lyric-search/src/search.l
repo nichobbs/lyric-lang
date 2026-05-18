@@ -1,37 +1,37 @@
-/// Search — search engine integration for Lyric applications.
-///
-/// Provides a `SearchClient` interface with Elasticsearch and Meilisearch
-/// backends selectable at runtime via feature flags.  Both backends expose
-/// the same API: index, batch-index, search, suggest, delete, and index
-/// management.
-///
-/// Typical usage:
-///
-///   import Search
-///   import Std.Collections
-///
-///   // Connect (backend selected by compile-time feature flag):
-///   match Search.connect("elasticsearch") {
-///     case Ok(client) ->
-///       val doc = Search.makeDoc("products", "p-1", Map.of("name", "Widget"))
-///       Search.index(client, doc)
-///
-///       val q = Search.makeQuery("products", "Widget")
-///       match Search.search(client, q) {
-///         case Ok(result) -> ...
-///         case Err(e)     -> ...
-///       }
-///     case Err(e) -> ...
-///   }
-///
-/// Runtime config env vars (LYRIC_CONFIG_SEARCH_CONNECTION_*):
-///   LYRIC_CONFIG_SEARCH_CONNECTION_URL                — backend URL (required)
-///   LYRIC_CONFIG_SEARCH_CONNECTION_INDEXPREFIX        — prefix for all index names (default: "")
-///   LYRIC_CONFIG_SEARCH_CONNECTION_APIKEY             — API key (default: "")
-///   LYRIC_CONFIG_SEARCH_CONNECTION_USERNAME           — HTTP basic username (default: "")
-///   LYRIC_CONFIG_SEARCH_CONNECTION_PASSWORD           — HTTP basic password (default: "")
-///   LYRIC_CONFIG_SEARCH_CONNECTION_CONNECTTIMEOUTMS   — connection timeout ms (default: 5000)
-///   LYRIC_CONFIG_SEARCH_CONNECTION_REQUESTTIMEOUTMS   — request timeout ms (default: 30000)
+// Search — search engine integration for Lyric applications.
+//
+// Provides a `SearchClient` interface with Elasticsearch and Meilisearch
+// backends selectable at runtime via feature flags.  Both backends expose
+// the same API: index, batch-index, search, suggest, delete, and index
+// management.
+//
+// Typical usage:
+//
+//   import Search
+//   import Std.Collections
+//
+//   // Connect (backend selected by compile-time feature flag):
+//   match Search.connect("elasticsearch") {
+//     case Ok(client) ->
+//       val doc = Search.makeDoc("products", "p-1", Map.of("name", "Widget"))
+//       Search.index(client, doc)
+//
+//       val q = Search.makeQuery("products", "Widget")
+//       match Search.search(client, q) {
+//         case Ok(result) -> ...
+//         case Err(e)     -> ...
+//       }
+//     case Err(e) -> ...
+//   }
+//
+// Runtime config env vars (LYRIC_CONFIG_SEARCH_CONNECTION_*):
+//   LYRIC_CONFIG_SEARCH_CONNECTION_URL                — backend URL (required)
+//   LYRIC_CONFIG_SEARCH_CONNECTION_INDEXPREFIX        — prefix for all index names (default: "")
+//   LYRIC_CONFIG_SEARCH_CONNECTION_APIKEY             — API key (default: "")
+//   LYRIC_CONFIG_SEARCH_CONNECTION_USERNAME           — HTTP basic username (default: "")
+//   LYRIC_CONFIG_SEARCH_CONNECTION_PASSWORD           — HTTP basic password (default: "")
+//   LYRIC_CONFIG_SEARCH_CONNECTION_CONNECTTIMEOUTMS   — connection timeout ms (default: 5000)
+//   LYRIC_CONFIG_SEARCH_CONNECTION_REQUESTTIMEOUTMS   — request timeout ms (default: 30000)
 
 @runtime_checked
 package Search

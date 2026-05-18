@@ -1,27 +1,27 @@
-/// Mail.Kernel.Net — extern boundary for email-sending providers.
-///
-/// Bridges Lyric's Mail package to .NET email libraries:
-///   MailKit.Net.Smtp  — SMTP client via MailKit  (@cfg feature = "smtp")
-///   AWSSDK.SimpleEmail — Amazon SES             (@cfg feature = "ses")
-///   SendGrid           — SendGrid email API      (@cfg feature = "sendgrid")
-///
-/// Each provider exposes three functions: connect (returns an opaque Int handle),
-/// send (accepts a JSON-serialised EmailMessage), and close.
-///
-/// Message JSON format (produced by Mail.serialiseMessage):
-///   {
-///     "from":        {"address": "...", "displayName": "..."},
-///     "to":          [{"address": "...", "displayName": "..."}, ...],
-///     "cc":          [...],
-///     "bcc":         [...],
-///     "subject":     "...",
-///     "textBody":    "...",
-///     "htmlBody":    "...",
-///     "attachments": [{"filename": "...", "contentType": "...", "dataBase64": "..."}, ...],
-///     "replyTo":     {"address": "...", "displayName": "..."} | null
-///   }
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Mail.Kernel.Net — extern boundary for email-sending providers.
+//
+// Bridges Lyric's Mail package to .NET email libraries:
+//   MailKit.Net.Smtp  — SMTP client via MailKit  (@cfg feature = "smtp")
+//   AWSSDK.SimpleEmail — Amazon SES             (@cfg feature = "ses")
+//   SendGrid           — SendGrid email API      (@cfg feature = "sendgrid")
+//
+// Each provider exposes three functions: connect (returns an opaque Int handle),
+// send (accepts a JSON-serialised EmailMessage), and close.
+//
+// Message JSON format (produced by Mail.serialiseMessage):
+//   {
+//     "from":        {"address": "...", "displayName": "..."},
+//     "to":          [{"address": "...", "displayName": "..."}, ...],
+//     "cc":          [...],
+//     "bcc":         [...],
+//     "subject":     "...",
+//     "textBody":    "...",
+//     "htmlBody":    "...",
+//     "attachments": [{"filename": "...", "contentType": "...", "dataBase64": "..."}, ...],
+//     "replyTo":     {"address": "...", "displayName": "..."} | null
+//   }
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Mail.Kernel.Net
 

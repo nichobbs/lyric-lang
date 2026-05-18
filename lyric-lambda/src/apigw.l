@@ -1,31 +1,31 @@
-/// Lambda.ApiGw — API Gateway and ALB event types for Lyric Lambda handlers.
-///
-/// Models the three HTTP event payload formats that AWS delivers to a Lambda
-/// function from an HTTP frontend:
-///
-///   ApiGwV1Event  — REST API (payload format v1.0)
-///                   Key fields: httpMethod, path, headers, multiValueHeaders,
-///                   queryStringParameters, multiValueQueryStringParameters,
-///                   pathParameters, stageVariables, requestContext, body, isBase64Encoded
-///
-///   ApiGwV2Event  — HTTP API (payload format v2.0)
-///                   Key fields: version="2.0", routeKey, rawPath, rawQueryString,
-///                   headers, queryStringParameters, pathParameters, cookies,
-///                   requestContext.http.{method,path,...}, body, isBase64Encoded
-///
-///   AlbEvent      — Application Load Balancer
-///                   Key fields: httpMethod, path, headers, multiValueHeaders,
-///                   queryStringParameters, multiValueQueryStringParameters,
-///                   body, isBase64Encoded, requestContext.elb.targetGroupArn
-///
-/// User code does not usually work with these types directly.  Attach a
-/// Web.Router with Lambda.withRouter() and the kernel handles all three
-/// formats transparently, mapping each to the correct Web.Route dispatch
-/// call and serialising Result[T, Web.ApiError] back to ApiGwResponse.
-///
-/// Use these types only when you need direct access to API Gateway request
-/// context fields (stage variables, authorizer context, request-time epoch,
-/// multi-value header maps, etc.) that are not exposed through Web.Router.
+// Lambda.ApiGw — API Gateway and ALB event types for Lyric Lambda handlers.
+//
+// Models the three HTTP event payload formats that AWS delivers to a Lambda
+// function from an HTTP frontend:
+//
+//   ApiGwV1Event  — REST API (payload format v1.0)
+//                   Key fields: httpMethod, path, headers, multiValueHeaders,
+//                   queryStringParameters, multiValueQueryStringParameters,
+//                   pathParameters, stageVariables, requestContext, body, isBase64Encoded
+//
+//   ApiGwV2Event  — HTTP API (payload format v2.0)
+//                   Key fields: version="2.0", routeKey, rawPath, rawQueryString,
+//                   headers, queryStringParameters, pathParameters, cookies,
+//                   requestContext.http.{method,path,...}, body, isBase64Encoded
+//
+//   AlbEvent      — Application Load Balancer
+//                   Key fields: httpMethod, path, headers, multiValueHeaders,
+//                   queryStringParameters, multiValueQueryStringParameters,
+//                   body, isBase64Encoded, requestContext.elb.targetGroupArn
+//
+// User code does not usually work with these types directly.  Attach a
+// Web.Router with Lambda.withRouter() and the kernel handles all three
+// formats transparently, mapping each to the correct Web.Route dispatch
+// call and serialising Result[T, Web.ApiError] back to ApiGwResponse.
+//
+// Use these types only when you need direct access to API Gateway request
+// context fields (stage variables, authorizer context, request-time epoch,
+// multi-value header maps, etc.) that are not exposed through Web.Router.
 
 @runtime_checked
 package Lambda.ApiGw

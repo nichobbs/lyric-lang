@@ -1,41 +1,41 @@
-/// Health — liveness and readiness health-check endpoints for lyric-web services.
-///
-/// Registers `/health/live` and `/health/ready` routes on a `Web.Router`.
-/// Check functions are stored in a `HealthRegistry` value and run on each
-/// request to the corresponding endpoint.
-///
-/// Usage:
-///
-///   import Health
-///   import Web
-///
-///   func checkDb(conn: in DbConnection): Result[Unit, String] {
-///     match conn.execute("SELECT 1", []) {
-///       case Ok(_) -> Ok(())
-///       case Err(e) -> Err("db: " + e.message)
-///     }
-///   }
-///
-///   func main(): Unit {
-///     var router = Web.create()
-///     router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-///
-///     var health = Health.create()
-///     health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-///     router = Health.registerRoutes(router, health)
-///
-///     Web.start(router)
-///   }
-///
-/// Response shape (JSON):
-///   { "status": "ok" | "degraded",
-///     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
-///
-/// Runtime config env vars (LYRIC_CONFIG_HEALTH_ENDPOINTS_*):
-///   LYRIC_CONFIG_HEALTH_ENDPOINTS_LIVEPATH   — liveness path  (default: /health/live)
-///   LYRIC_CONFIG_HEALTH_ENDPOINTS_READYPATH  — readiness path (default: /health/ready)
-///
-/// See docs/03-decision-log.md D057 and lyric-health/README.md.
+// Health — liveness and readiness health-check endpoints for lyric-web services.
+//
+// Registers `/health/live` and `/health/ready` routes on a `Web.Router`.
+// Check functions are stored in a `HealthRegistry` value and run on each
+// request to the corresponding endpoint.
+//
+// Usage:
+//
+//   import Health
+//   import Web
+//
+//   func checkDb(conn: in DbConnection): Result[Unit, String] {
+//     match conn.execute("SELECT 1", []) {
+//       case Ok(_) -> Ok(())
+//       case Err(e) -> Err("db: " + e.message)
+//     }
+//   }
+//
+//   func main(): Unit {
+//     var router = Web.create()
+//     router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
+//
+//     var health = Health.create()
+//     health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
+//     router = Health.registerRoutes(router, health)
+//
+//     Web.start(router)
+//   }
+//
+// Response shape (JSON):
+//   { "status": "ok" | "degraded",
+//     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
+//
+// Runtime config env vars (LYRIC_CONFIG_HEALTH_ENDPOINTS_*):
+//   LYRIC_CONFIG_HEALTH_ENDPOINTS_LIVEPATH   — liveness path  (default: /health/live)
+//   LYRIC_CONFIG_HEALTH_ENDPOINTS_READYPATH  — readiness path (default: /health/ready)
+//
+// See docs/03-decision-log.md D057 and lyric-health/README.md.
 
 @runtime_checked
 package Health

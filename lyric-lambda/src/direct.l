@@ -1,34 +1,34 @@
-/// Lambda.Direct — AOT-compatible handler registration via function references.
-///
-/// The default registration model (onSqs / onS3 / etc.) identifies handlers
-/// by a fully-qualified Lyric function name resolved at runtime via DLL
-/// reflection.  This is incompatible with Native AOT (`PublishAot=true`)
-/// because the AOT linker trims unreferenced methods.
-///
-/// Lambda.Direct provides a parallel registration path that accepts a
-/// function reference directly.  The linker can see the reference at compile
-/// time and roots the method, so no reflection is required at runtime.
-///
-/// Usage:
-///
-///   import Lambda.Direct
-///
-///   Lambda.serve(
-///     Lambda.newApp()
-///       |> Lambda.withDirect(Lambda.Direct.sqsHandler(MyApp.Queue.handleBatch))
-///       |> Lambda.withDirect(Lambda.Direct.s3Handler(MyApp.Store.handleObject)))
-///
-///   // For API Gateway HTTP traffic, use withDirectRouter (see Lambda package).
-///
-/// Handler signatures are identical to the reflection-based model; only the
-/// registration call differs.  Both models may coexist in the same LambdaApp.
-///
-/// AOT build: set <PublishAot>true</PublishAot> in the .csproj (or pass
-/// --aot to lyric build) and use Lambda.Direct registration exclusively.
-/// String-based registrations (onSqs / onS3 / etc.) emit a build warning
-/// when PublishAot is detected.
-///
-/// See docs/35-lambda-library.md §10, decision log D064.
+// Lambda.Direct — AOT-compatible handler registration via function references.
+//
+// The default registration model (onSqs / onS3 / etc.) identifies handlers
+// by a fully-qualified Lyric function name resolved at runtime via DLL
+// reflection.  This is incompatible with Native AOT (`PublishAot=true`)
+// because the AOT linker trims unreferenced methods.
+//
+// Lambda.Direct provides a parallel registration path that accepts a
+// function reference directly.  The linker can see the reference at compile
+// time and roots the method, so no reflection is required at runtime.
+//
+// Usage:
+//
+//   import Lambda.Direct
+//
+//   Lambda.serve(
+//     Lambda.newApp()
+//       |> Lambda.withDirect(Lambda.Direct.sqsHandler(MyApp.Queue.handleBatch))
+//       |> Lambda.withDirect(Lambda.Direct.s3Handler(MyApp.Store.handleObject)))
+//
+//   // For API Gateway HTTP traffic, use withDirectRouter (see Lambda package).
+//
+// Handler signatures are identical to the reflection-based model; only the
+// registration call differs.  Both models may coexist in the same LambdaApp.
+//
+// AOT build: set <PublishAot>true</PublishAot> in the .csproj (or pass
+// --aot to lyric build) and use Lambda.Direct registration exclusively.
+// String-based registrations (onSqs / onS3 / etc.) emit a build warning
+// when PublishAot is detected.
+//
+// See docs/35-lambda-library.md §10, decision log D064.
 
 @runtime_checked
 package Lambda.Direct

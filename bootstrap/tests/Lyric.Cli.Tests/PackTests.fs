@@ -18,7 +18,7 @@ let private mkManifest (deps: (string * string) list) : Manifest =
         { Sources   = None
           OutputDir = None }
       Dependencies =
-        deps |> List.map (fun (n, v) -> { Name = n; Version = v })
+        deps |> List.map (fun (n, v) -> { Name = n; Version = v; LocalPath = None })
       Project  = None
       Nuget    = None
       Maven    = None

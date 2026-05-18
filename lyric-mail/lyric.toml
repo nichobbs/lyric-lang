@@ -23,7 +23,7 @@ ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET / software.amazon.awssd
 sendgrid = []   # SendGrid (SendGrid .NET library / sendgrid-java on JVM)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # feature = "smtp" — SMTP client for .NET

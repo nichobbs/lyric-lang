@@ -1,18 +1,18 @@
-/// Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
-/// templates.
-///
-/// Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
-/// so the aspect templates remain platform-neutral.  Consumers bind a
-/// `matches:` selector and optionally override config defaults:
-///
-///   aspect HttpTracing from OTel.Tracing {
-///     matches: name like "*/Http/*"
-///     config {
-///       spanKind: SpanKind = SpanKind.Server
-///     }
-///   }
-///
-/// See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
+// Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
+// templates.
+//
+// Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
+// so the aspect templates remain platform-neutral.  Consumers bind a
+// `matches:` selector and optionally override config defaults:
+//
+//   aspect HttpTracing from OTel.Tracing {
+//     matches: name like "*/Http/*"
+//     config {
+//       spanKind: SpanKind = SpanKind.Server
+//     }
+//   }
+//
+// See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
 package OTel
 
 import OTel.Types

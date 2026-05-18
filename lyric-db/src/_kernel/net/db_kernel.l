@@ -1,34 +1,34 @@
-/// Db.Kernel.Net — ADO.NET extern boundary for database drivers.
-///
-/// Bridges Lyric's Db package to .NET database drivers:
-///   Postgres.*  — Npgsql driver for PostgreSQL (@cfg feature = "postgres")
-///   Sqlite.*    — Microsoft.Data.Sqlite driver   (@cfg feature = "sqlite")
-///
-/// Shared functions (connect/query/execute/transaction) use integer connection
-/// and transaction handles.  The kernel maintains a connection pool per handle
-/// and serialises query results to JSON for decoding in db.l.
-///
-/// Result row format (JSON string returned by query / txQuery):
-///   [{"col": <json_value>, ...}, ...]
-///
-/// Column value encoding by SQL type:
-///   NULL             → JSON null
-///   INTEGER / BIGINT → JSON number (integer)
-///   REAL / FLOAT     → JSON number (floating-point)
-///   BOOLEAN          → JSON true / false
-///   TEXT / VARCHAR   → JSON string
-///   NUMERIC/DECIMAL  → JSON object  {"$decimal": "<exact-text>"}
-///   TIMESTAMP / DATE → JSON object  {"$datetime": "<ISO-8601-UTC>"}
-///   BYTEA / BLOB     → JSON object  {"$bytes": "<base64>"}
-///
-/// The tagged-object forms avoid precision loss (DECIMAL) and ambiguity
-/// (timestamps vs. plain strings).  The Db layer decodes all forms into
-/// DbValue variants; see `parseDbValue` in db.l.
-///
-/// Error strings contain the driver error message and, where available,
-/// the SQLSTATE code.
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Db.Kernel.Net — ADO.NET extern boundary for database drivers.
+//
+// Bridges Lyric's Db package to .NET database drivers:
+//   Postgres.*  — Npgsql driver for PostgreSQL (@cfg feature = "postgres")
+//   Sqlite.*    — Microsoft.Data.Sqlite driver   (@cfg feature = "sqlite")
+//
+// Shared functions (connect/query/execute/transaction) use integer connection
+// and transaction handles.  The kernel maintains a connection pool per handle
+// and serialises query results to JSON for decoding in db.l.
+//
+// Result row format (JSON string returned by query / txQuery):
+//   [{"col": <json_value>, ...}, ...]
+//
+// Column value encoding by SQL type:
+//   NULL             → JSON null
+//   INTEGER / BIGINT → JSON number (integer)
+//   REAL / FLOAT     → JSON number (floating-point)
+//   BOOLEAN          → JSON true / false
+//   TEXT / VARCHAR   → JSON string
+//   NUMERIC/DECIMAL  → JSON object  {"$decimal": "<exact-text>"}
+//   TIMESTAMP / DATE → JSON object  {"$datetime": "<ISO-8601-UTC>"}
+//   BYTEA / BLOB     → JSON object  {"$bytes": "<base64>"}
+//
+// The tagged-object forms avoid precision loss (DECIMAL) and ambiguity
+// (timestamps vs. plain strings).  The Db layer decodes all forms into
+// DbValue variants; see `parseDbValue` in db.l.
+//
+// Error strings contain the driver error message and, where available,
+// the SQLSTATE code.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Db.Kernel.Net
 

@@ -142,7 +142,10 @@ let private parseProtocol (filePath: string) (protocol: string) : Result<Manifes
                 pkgAuthors <- pkgAuthors @ [line.Substring 11]
             elif starts line "dep=" then
                 let name, ver = splitOnFirst '=' (line.Substring 4)
-                deps <- deps @ [{ Manifest.Dependency.Name = name; Version = ver }]
+                deps <- deps @ [{ Manifest.Dependency.Name = name; Version = ver; LocalPath = None }]
+            elif starts line "dep-path=" then
+                let name, path = splitOnFirst '=' (line.Substring 9)
+                deps <- deps @ [{ Manifest.Dependency.Name = name; Version = ""; LocalPath = Some path }]
             elif starts line "nuget=" then
                 let id_, ver = splitOnFirst '=' (line.Substring 6)
                 nugetEs <- nugetEs @ [{ Manifest.NugetEntry.Id = id_; Version = ver }]

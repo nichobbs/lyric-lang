@@ -55,10 +55,20 @@ type RestoredPackageRef =
 /// One adjustment: contract Reprs for interfaces don't carry a
 /// `{}` body block (the parser requires one), so synthesise an
 /// empty body for them.  Other shapes parse verbatim.
-let synthesiseSource (contract: ContractMeta.Contract) : string =
+///
+/// `preambleDecls` are extra declarations (extern types, opaque
+/// stubs) from sibling packages in the same bundle, prepended so
+/// that cross-package type references in this package's signatures
+/// resolve during contract type-checking.
+let synthesiseSource (contract: ContractMeta.Contract) (preambleDecls: ContractMeta.ContractDecl list) : string =
     let sb = System.Text.StringBuilder()
     sb.AppendLine ("package " + contract.PackageName) |> ignore
     sb.AppendLine "" |> ignore
+    // Emit preamble (extern / opaque stubs from sibling packages) first.
+    for d in preambleDecls do
+        match d.Kind with
+        | "interface" -> sb.AppendLine (d.Repr + " {}") |> ignore
+        | _ -> sb.AppendLine d.Repr |> ignore
     for d in contract.Decls do
         match d.Kind with
         | "interface" -> sb.AppendLine (d.Repr + " {}") |> ignore
@@ -136,8 +146,9 @@ let private artifactOfContract
         (ref': RestoredPackageRef)
         (assembly: Assembly)
         (contract: ContractMeta.Contract)
+        (preamble: ContractMeta.ContractDecl list)
         : Result<RestoredArtifact, RestoredLoadError> =
-    let synthSource = synthesiseSource contract
+    let synthSource = synthesiseSource contract preamble
     let parsed = Lyric.Parser.Parser.parse synthSource
     let parseErrors =
         parsed.Diagnostics
@@ -189,7 +200,7 @@ let loadRestoredPackage
         match ContractMeta.parseFromJson json with
         | None -> Error (MalformedContract ref'.DllPath)
         | Some contract ->
-            match artifactOfContract ref' assembly contract with
+            match artifactOfContract ref' assembly contract [] with
             | Ok a    -> Ok [a]
             | Error e -> Error e
     | None ->
@@ -198,6 +209,24 @@ let loadRestoredPackage
         let perPkg = ContractMeta.readAllContractsFromAssembly ref'.DllPath
         if List.isEmpty perPkg then Error (NoContractResource ref'.DllPath)
         else
+            // Collect all extern-type and protected-type (opaque) decls from every
+            // contract in the bundle.  These are used as a preamble when
+            // type-checking each individual package's contract so that
+            // cross-package type references (e.g. Map[K,V] from Std.CollectionsHost
+            // appearing in Std.Collections signatures) resolve correctly.
+            let allContracts =
+                perPkg
+                |> List.choose (fun (_, j) -> ContractMeta.parseFromJson j)
+            // Collect all type-declaring decls (extern_type, opaque, union, record,
+            // enum, distinct, alias) so that cross-package references in function
+            // signatures resolve during per-package contract type-checking.
+            let typeKinds = System.Collections.Generic.HashSet<string>
+                                (["extern_type"; "opaque"; "union"; "record"; "enum"; "distinct"; "alias"])
+            let globalTypeAnchors =
+                allContracts
+                |> List.collect (fun c ->
+                    c.Decls |> List.filter (fun d -> typeKinds.Contains d.Kind))
+                |> List.distinctBy (fun d -> d.Name)
             let mutable err : RestoredLoadError option = None
             let acc = ResizeArray<RestoredArtifact>()
             for (_pkgName, json) in perPkg do
@@ -205,7 +234,12 @@ let loadRestoredPackage
                     match ContractMeta.parseFromJson json with
                     | None -> err <- Some (MalformedContract ref'.DllPath)
                     | Some contract ->
-                        match artifactOfContract ref' assembly contract with
+                        // Preamble = all type anchors NOT already declared in this package.
+                        let ownNames = contract.Decls |> List.map (fun d -> d.Name) |> Set.ofList
+                        let preamble =
+                            globalTypeAnchors
+                            |> List.filter (fun d -> not (Set.contains d.Name ownNames))
+                        match artifactOfContract ref' assembly contract preamble with
                         | Ok a -> acc.Add a
                         | Error e -> err <- Some e
             match err with

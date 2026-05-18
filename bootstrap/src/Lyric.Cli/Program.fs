@@ -1072,19 +1072,60 @@ let bootstrapDispatch (argv: string array) : int =
         let restoredPackageRefs =
             match parsedManifest with
             | None -> []
-            | Some (_, manifest) ->
+            | Some (mf, manifest) ->
+                let manifestDir =
+                    safeStr (Path.GetDirectoryName(Path.GetFullPath mf)) "."
                 manifest.Dependencies
                 |> List.choose (fun dep ->
-                    match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
-                    | Some dll ->
-                        Some
-                            { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
-                              Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
-                              Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                    match dep.LocalPath with
+                    | Some localPath ->
+                        // Local path dependency: resolve the DLL from the dep's own
+                        // lyric.toml output_assembly (to avoid picking a wrong DLL when
+                        // the dep's bin/ contains multiple assemblies).
+                        let depDir = Path.GetFullPath(Path.Combine(manifestDir, localPath))
+                        let binDir = Path.Combine(depDir, "bin")
+                        let depToml = Path.Combine(depDir, "lyric.toml")
+                        let dllPath =
+                            if File.Exists depToml then
+                                match Lyric.Cli.Manifest.parseFile depToml with
+                                | Ok depMf ->
+                                    let dllName =
+                                        match depMf.Project with
+                                        | Some proj ->
+                                            match proj.OutputAssembly with
+                                            | Some asm -> asm
+                                            | None     -> proj.Name + ".dll"
+                                        | None ->
+                                            depMf.Package.Name + ".dll"
+                                    let full = Path.Combine(binDir, dllName)
+                                    if File.Exists full then Some full else None
+                                | Error _ -> None
+                            else None
+                        match dllPath with
+                        | Some dll ->
+                            Some
+                                { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = "0.0.0"
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                        | None ->
+                            if Directory.Exists binDir then
+                                printErr (sprintf "build: local dep '%s' not built — run `lyric build --manifest %s` first"
+                                                  dep.Name depToml)
+                            else
+                                printErr (sprintf "build: local dep '%s' not built (no bin/ at '%s')"
+                                                  dep.Name binDir)
+                            None
                     | None ->
-                        printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
-                                          dep.Name dep.Version)
-                        None)
+                        match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
+                        | Some dll ->
+                            Some
+                                { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                        | None ->
+                            printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
+                                              dep.Name dep.Version)
+                            None)
         // Phase 5 §M5.1 stage 2d.v: resolve [nuget] entries through
         // `project.assets.json` (written by `lyric restore`).  The
         // result feeds two parallel channels into the emit request:

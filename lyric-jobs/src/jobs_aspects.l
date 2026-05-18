@@ -1,33 +1,33 @@
-/// Jobs.Aspects — pub aspect templates for background job cross-cutting concerns.
-///
-/// Two templates:
-///
-///   Retryable — wraps a job handler returning `Result[String, JobError]`.
-///               Retries on Err with exponential backoff using
-///               `Resilience.sleepMs`.
-///
-///   Timed     — measures handler execution time and logs a warning when the
-///               elapsed time exceeds a configured threshold.
-///
-/// Typical consumer usage:
-///
-///   import Jobs.Aspects
-///
-///   aspect EmailRetry from Jobs.Aspects.Retryable {
-///     matches: name like "sendEmail*"
-///     config { maxAttempts: Int = 5, initialDelayMs: Int = 200, backoffFactor: Int = 2 }
-///   }
-///
-///   aspect EmailTimed from Jobs.Aspects.Timed {
-///     matches: name like "sendEmail*"
-///     inside:  EmailRetry
-///     config { warnThresholdMs: Int = 10000 }
-///   }
-///
-/// Both aspects apply to functions returning `Result[String, JobError]`,
-/// i.e. implementations of `JobHandler.handle`.
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-jobs/README.md.
+// Jobs.Aspects — pub aspect templates for background job cross-cutting concerns.
+//
+// Two templates:
+//
+//   Retryable — wraps a job handler returning `Result[String, JobError]`.
+//               Retries on Err with exponential backoff using
+//               `Resilience.sleepMs`.
+//
+//   Timed     — measures handler execution time and logs a warning when the
+//               elapsed time exceeds a configured threshold.
+//
+// Typical consumer usage:
+//
+//   import Jobs.Aspects
+//
+//   aspect EmailRetry from Jobs.Aspects.Retryable {
+//     matches: name like "sendEmail*"
+//     config { maxAttempts: Int = 5, initialDelayMs: Int = 200, backoffFactor: Int = 2 }
+//   }
+//
+//   aspect EmailTimed from Jobs.Aspects.Timed {
+//     matches: name like "sendEmail*"
+//     inside:  EmailRetry
+//     config { warnThresholdMs: Int = 10000 }
+//   }
+//
+// Both aspects apply to functions returning `Result[String, JobError]`,
+// i.e. implementations of `JobHandler.handle`.
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-jobs/README.md.
 
 @runtime_checked
 package Jobs.Aspects

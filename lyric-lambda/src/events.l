@@ -1,24 +1,24 @@
-/// Lambda.Events — typed event records for non-HTTP Lambda triggers.
-///
-/// Covers the most common AWS event sources that deliver batches of records
-/// to a Lambda invocation:
-///
-///   SqsEvent         — Simple Queue Service: batch of SqsRecord
-///   SqsBatchResponse — partial-batch-failure response for SQS handlers
-///   SnsEvent         — Simple Notification Service: batch of SnsRecord
-///   S3Event          — S3 object create / delete: batch of S3Record
-///   EventBridgeEvent — EventBridge (CloudWatch Events): single event envelope
-///   DynamoDbEvent    — DynamoDB Streams: batch of DynamoDbRecord
-///
-/// Each type faithfully models the JSON payload shape that AWS delivers to
-/// the Lambda handler.  The kernel deserialises the raw invocation JSON into
-/// the appropriate type before calling the registered handler.
-///
-/// Handler registration (in main() or a setup function):
-///   Lambda.serve(
-///     Lambda.newApp()
-///       |> Lambda.onSqs("MyApp.Queue.handleBatch")
-///       |> Lambda.onS3("MyApp.Storage.handleObjectEvent"))
+// Lambda.Events — typed event records for non-HTTP Lambda triggers.
+//
+// Covers the most common AWS event sources that deliver batches of records
+// to a Lambda invocation:
+//
+//   SqsEvent         — Simple Queue Service: batch of SqsRecord
+//   SqsBatchResponse — partial-batch-failure response for SQS handlers
+//   SnsEvent         — Simple Notification Service: batch of SnsRecord
+//   S3Event          — S3 object create / delete: batch of S3Record
+//   EventBridgeEvent — EventBridge (CloudWatch Events): single event envelope
+//   DynamoDbEvent    — DynamoDB Streams: batch of DynamoDbRecord
+//
+// Each type faithfully models the JSON payload shape that AWS delivers to
+// the Lambda handler.  The kernel deserialises the raw invocation JSON into
+// the appropriate type before calling the registered handler.
+//
+// Handler registration (in main() or a setup function):
+//   Lambda.serve(
+//     Lambda.newApp()
+//       |> Lambda.onSqs("MyApp.Queue.handleBatch")
+//       |> Lambda.onS3("MyApp.Storage.handleObjectEvent"))
 
 @runtime_checked
 package Lambda.Events

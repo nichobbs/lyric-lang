@@ -1,23 +1,23 @@
-/// Storage.Kernel.Net — extern boundary for object/file storage providers.
-///
-/// Bridges Lyric's Storage package to .NET storage libraries:
-///   AWSSDK.S3              — Amazon S3               (@cfg feature = "s3")
-///   Azure.Storage.Blobs    — Azure Blob Storage       (@cfg feature = "azureblob")
-///   Lyric.Storage.Local      — Local filesystem         (@cfg feature = "local")
-///   Lyric.Storage.Audit — Audit logging          (always available)
-///
-/// All storage operations use opaque Int handles returned by `connect*`.
-///
-/// JSON wire formats:
-///   put returns:  {"contentType":"...","contentLength":N,"etag":"...","lastModified":"...","userMeta":{...}}
-///   get returns:  {"bucket":"...","key":"...","metadata":{...},"dataBase64":"..."}
-///   list returns: {"entries":[{"key":"...","contentLength":N,"lastModified":"...","etag":"..."},...],
-///                  "nextContinuationToken":"..." | null, "isTruncated":true|false}
-///
-/// Error strings contain the provider error message and, where available, the
-/// provider-specific error code.
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Storage.Kernel.Net — extern boundary for object/file storage providers.
+//
+// Bridges Lyric's Storage package to .NET storage libraries:
+//   AWSSDK.S3              — Amazon S3               (@cfg feature = "s3")
+//   Azure.Storage.Blobs    — Azure Blob Storage       (@cfg feature = "azureblob")
+//   Lyric.Storage.Local      — Local filesystem         (@cfg feature = "local")
+//   Lyric.Storage.Audit — Audit logging          (always available)
+//
+// All storage operations use opaque Int handles returned by `connect*`.
+//
+// JSON wire formats:
+//   put returns:  {"contentType":"...","contentLength":N,"etag":"...","lastModified":"...","userMeta":{...}}
+//   get returns:  {"bucket":"...","key":"...","metadata":{...},"dataBase64":"..."}
+//   list returns: {"entries":[{"key":"...","contentLength":N,"lastModified":"...","etag":"..."},...],
+//                  "nextContinuationToken":"..." | null, "isTruncated":true|false}
+//
+// Error strings contain the provider error message and, where available, the
+// provider-specific error code.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Storage.Kernel.Net
 

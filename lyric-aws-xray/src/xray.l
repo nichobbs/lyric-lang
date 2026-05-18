@@ -1,40 +1,40 @@
-/// AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
-///
-/// The Lambda runtime opens a top-level X-Ray segment for every invocation
-/// when active tracing is enabled on the Lambda function.  This library
-/// wraps individual Lyric function calls as subsegments of that top-level
-/// segment via the Tracing pub aspect template.
-///
-/// Primary usage: instantiate the Tracing aspect template with a matches
-/// selector.  The aspect wraps each matched call in an X-Ray subsegment.
-///
-///   import AwsXRay
-///
-///   aspect TraceHandlers from AwsXRay.Tracing {
-///     matches: name like "handle*"
-///   }
-///
-/// The subsegment name is the function's qualified name (e.g.
-/// "MyApp.Orders.handleCreate").  On error the subsegment is closed with
-/// the error message recorded under the "error" annotation.
-///
-/// Secondary usage: attach annotations and metadata to the current subsegment
-/// from within a handler body.
-///
-///   func handleCreate(event: ApiGwV2Event, ctx: LambdaContext): Result[ApiGwResponse, LambdaError] {
-///     val seg = AwsXRay.currentSubsegment()
-///     AwsXRay.annotate(seg, "orderId", event.pathParameters.get("id"))
-///     ...
-///   }
-///
-/// Annotations are indexed by X-Ray and appear in filter expressions.
-/// Metadata is not indexed and can hold arbitrary string values.
-///
-/// IAM requirements:
-///   The Lambda execution role must have xray:PutTraceSegments and
-///   xray:PutTelemetryRecords on * (standard X-Ray active tracing policy).
-///
-/// See docs/35-lambda-library.md §13, decision log D064.
+// AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
+//
+// The Lambda runtime opens a top-level X-Ray segment for every invocation
+// when active tracing is enabled on the Lambda function.  This library
+// wraps individual Lyric function calls as subsegments of that top-level
+// segment via the Tracing pub aspect template.
+//
+// Primary usage: instantiate the Tracing aspect template with a matches
+// selector.  The aspect wraps each matched call in an X-Ray subsegment.
+//
+//   import AwsXRay
+//
+//   aspect TraceHandlers from AwsXRay.Tracing {
+//     matches: name like "handle*"
+//   }
+//
+// The subsegment name is the function's qualified name (e.g.
+// "MyApp.Orders.handleCreate").  On error the subsegment is closed with
+// the error message recorded under the "error" annotation.
+//
+// Secondary usage: attach annotations and metadata to the current subsegment
+// from within a handler body.
+//
+//   func handleCreate(event: ApiGwV2Event, ctx: LambdaContext): Result[ApiGwResponse, LambdaError] {
+//     val seg = AwsXRay.currentSubsegment()
+//     AwsXRay.annotate(seg, "orderId", event.pathParameters.get("id"))
+//     ...
+//   }
+//
+// Annotations are indexed by X-Ray and appear in filter expressions.
+// Metadata is not indexed and can hold arbitrary string values.
+//
+// IAM requirements:
+//   The Lambda execution role must have xray:PutTraceSegments and
+//   xray:PutTelemetryRecords on * (standard X-Ray active tracing policy).
+//
+// See docs/35-lambda-library.md §13, decision log D064.
 
 @runtime_checked
 package AwsXRay

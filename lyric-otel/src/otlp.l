@@ -1,32 +1,32 @@
-/// OTLP (OpenTelemetry Protocol) exporter for lyric-otel.
-///
-/// Configures the OTel SDK to export telemetry to an OTLP endpoint.
-/// Call one or more of configureOtlpTraces / configureOtlpMetrics /
-/// configureOtlpLogs once at application startup, before any spans or metrics
-/// are created.  The existing OTel.startSpan / OTel.endSpan / OTel.incrementCounter
-/// calls continue to work unchanged — the SDK pipeline picks them up and
-/// batches them for export.
-///
-/// Exports via gRPC+protobuf (default port 4317) or HTTP+protobuf (port 4318):
-///
-///   OTel.Otlp.configureOtlp(OtlpExporterConfig {
-///     endpoint  = "http://collector:4317"
-///     protocol  = OtlpProtocol.Grpc
-///     timeoutMs = 10000
-///     headers   = []
-///   })
-///
-/// Before process exit, call flushOtlp(timeoutMs) to ensure buffered data is
-/// sent.  Unregistered providers are flushed on garbage collection, but an
-/// explicit flush is strongly recommended in Lambda / short-lived contexts.
-///
-/// Implementation note: on .NET, the kernel calls
-///   Sdk.CreateTracerProviderBuilder()
-///     .AddSource("lyric.otel")
-///     .AddOtlpExporter(…)
-///     .Build()
-/// The returned provider is kept alive in a .NET static field for the process
-/// lifetime.  On JVM (Phase 6), the equivalent OTel Java SDK APIs are used.
+// OTLP (OpenTelemetry Protocol) exporter for lyric-otel.
+//
+// Configures the OTel SDK to export telemetry to an OTLP endpoint.
+// Call one or more of configureOtlpTraces / configureOtlpMetrics /
+// configureOtlpLogs once at application startup, before any spans or metrics
+// are created.  The existing OTel.startSpan / OTel.endSpan / OTel.incrementCounter
+// calls continue to work unchanged — the SDK pipeline picks them up and
+// batches them for export.
+//
+// Exports via gRPC+protobuf (default port 4317) or HTTP+protobuf (port 4318):
+//
+//   OTel.Otlp.configureOtlp(OtlpExporterConfig {
+//     endpoint  = "http://collector:4317"
+//     protocol  = OtlpProtocol.Grpc
+//     timeoutMs = 10000
+//     headers   = []
+//   })
+//
+// Before process exit, call flushOtlp(timeoutMs) to ensure buffered data is
+// sent.  Unregistered providers are flushed on garbage collection, but an
+// explicit flush is strongly recommended in Lambda / short-lived contexts.
+//
+// Implementation note: on .NET, the kernel calls
+//   Sdk.CreateTracerProviderBuilder()
+//     .AddSource("lyric.otel")
+//     .AddOtlpExporter(…)
+//     .Build()
+// The returned provider is kept alive in a .NET static field for the process
+// lifetime.  On JVM (Phase 6), the equivalent OTel Java SDK APIs are used.
 package OTel.Otlp
 
 import OTel.Types

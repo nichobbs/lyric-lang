@@ -1,9 +1,9 @@
-/// JVM kernel boundary for the OTLP exporter (Phase 6).
-///
-/// Mirrors OTel.Kernel.Net.Otlp using the OpenTelemetry Java SDK
-/// (io.opentelemetry:opentelemetry-exporter-otlp).
-///
-/// Not compiled today — present to drive API parity with the .NET kernel.
+// JVM kernel boundary for the OTLP exporter (Phase 6).
+//
+// Mirrors OTel.Kernel.Net.Otlp using the OpenTelemetry Java SDK
+// (io.opentelemetry:opentelemetry-exporter-otlp).
+//
+// Not compiled today — present to drive API parity with the .NET kernel.
 @cfg(feature = "jvm")
 package OTel.Kernel.Jvm.Otlp
 

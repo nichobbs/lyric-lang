@@ -1,32 +1,32 @@
-/// Ws.Aspects — pub aspect templates for WebSocket handler cross-cutting concerns.
-///
-/// Provides two reusable template aspects:
-///
-///   WsAuth      — validates a bearer token from the WebSocket handshake headers
-///                 before the connection upgrade completes.  C-mode (@inline_template):
-///                 reads args.ctx.headers to find the Authorization header.
-///
-///   WsRateLimit — per-connection message rate limit.  B-mode: uses
-///                 call.qualifiedName + args.ctx.connectionId as the rate key,
-///                 so each (handler, connection) pair has its own counter.
-///
-/// Auth delegates to lyric-auth (Auth.verifyJwt) for transport-agnostic
-/// token verification — the same JWT logic used by HTTP and gRPC handlers.
-///
-/// Typical consumer instantiation:
-///
-///   import Ws.Aspects
-///
-///   aspect WsAuthGate from Ws.Aspects.WsAuth {
-///     matches: name like "onOpen*"
-///   }
-///
-///   aspect WsThrottle from Ws.Aspects.WsRateLimit {
-///     matches: name like "onMessage*"
-///     config { messagesPerMinute: Int = 60 }
-///   }
-///
-/// See docs/26-aspects.md and docs/27-aspect-libraries.md.
+// Ws.Aspects — pub aspect templates for WebSocket handler cross-cutting concerns.
+//
+// Provides two reusable template aspects:
+//
+//   WsAuth      — validates a bearer token from the WebSocket handshake headers
+//                 before the connection upgrade completes.  C-mode (@inline_template):
+//                 reads args.ctx.headers to find the Authorization header.
+//
+//   WsRateLimit — per-connection message rate limit.  B-mode: uses
+//                 call.qualifiedName + args.ctx.connectionId as the rate key,
+//                 so each (handler, connection) pair has its own counter.
+//
+// Auth delegates to lyric-auth (Auth.verifyJwt) for transport-agnostic
+// token verification — the same JWT logic used by HTTP and gRPC handlers.
+//
+// Typical consumer instantiation:
+//
+//   import Ws.Aspects
+//
+//   aspect WsAuthGate from Ws.Aspects.WsAuth {
+//     matches: name like "onOpen*"
+//   }
+//
+//   aspect WsThrottle from Ws.Aspects.WsRateLimit {
+//     matches: name like "onMessage*"
+//     config { messagesPerMinute: Int = 60 }
+//   }
+//
+// See docs/26-aspects.md and docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Ws.Aspects

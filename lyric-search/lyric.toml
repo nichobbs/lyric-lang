@@ -25,7 +25,7 @@ jvm           = []   # JVM kernel backend (Phase 6)
 "Search.SearchTests" = "tests/search_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../stdlib" }
+"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
 
 [nuget]

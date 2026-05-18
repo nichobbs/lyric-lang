@@ -1,45 +1,45 @@
-/// Web.OpenApi — OpenAPI 3.1 spec type vocabulary and code-first spec builder.
-///
-/// Two uses:
-///
-/// 1. Code-first spec builder: populate Spec values in your package and pass
-///    them to `lyric web spec` via the `Lyric.Web.OpenApi.Spec` export, or
-///    serve them live via `Web.start(router)` with `Server.swaggerEnabled = true`.
-///
-/// 2. Spec-first reference: `lyric generate openapi spec.yaml` uses these types
-///    internally to represent the parsed spec before generating .l stubs.
-///
-/// OpenAPI → Lyric type mapping (used by code generation):
-///
-///   OpenAPI schema               Lyric type
-///   ─────────────────────────    ────────────────────────────────────────────
-///   type: integer, format: int32 Int
-///   type: integer, format: int64 Long
-///   type: number,  format: float Float
-///   type: number,  format: double Double
-///   type: boolean                Bool
-///   type: string                 String
-///   type: string, nullable: true Option[String]
-///   type: string, enum: [a,b]    pub enum T { case A; case B }
-///   type: object, properties:{}  pub record T { field: Type; ... }
-///   type: array, items: T        [T]   (Lyric list)
-///   $ref: '#/components/schemas/X'  the generated Lyric type for schema X
-///
-/// OpenAPI constraints → requires: clauses (spec-first code generation):
-///
-///   minimum: N (integer)      requires: param >= N
-///   maximum: N (integer)      requires: param <= N
-///   exclusiveMinimum: N       requires: param > N
-///   exclusiveMaximum: N       requires: param < N
-///   minLength: N              requires: param.length >= N
-///   maxLength: N              requires: param.length <= N
-///   minItems: N               requires: param.length >= N  (on list params)
-///   maxItems: N               requires: param.length <= N
-///   pattern: "regex"          // NOTE: can't express in Lyric requires: v1;
-///                             //   emitted as a // TODO comment in the stub.
-///   required: true (body)     the parameter is non-optional (no Option[T])
-///   required: false / absent  the parameter is Option[T]
-///   format: int32+minimum+maximum together emit an Int range N..=M subtype
+// Web.OpenApi — OpenAPI 3.1 spec type vocabulary and code-first spec builder.
+//
+// Two uses:
+//
+// 1. Code-first spec builder: populate Spec values in your package and pass
+//    them to `lyric web spec` via the `Lyric.Web.OpenApi.Spec` export, or
+//    serve them live via `Web.start(router)` with `Server.swaggerEnabled = true`.
+//
+// 2. Spec-first reference: `lyric generate openapi spec.yaml` uses these types
+//    internally to represent the parsed spec before generating .l stubs.
+//
+// OpenAPI → Lyric type mapping (used by code generation):
+//
+//   OpenAPI schema               Lyric type
+//   ─────────────────────────    ────────────────────────────────────────────
+//   type: integer, format: int32 Int
+//   type: integer, format: int64 Long
+//   type: number,  format: float Float
+//   type: number,  format: double Double
+//   type: boolean                Bool
+//   type: string                 String
+//   type: string, nullable: true Option[String]
+//   type: string, enum: [a,b]    pub enum T { case A; case B }
+//   type: object, properties:{}  pub record T { field: Type; ... }
+//   type: array, items: T        [T]   (Lyric list)
+//   $ref: '#/components/schemas/X'  the generated Lyric type for schema X
+//
+// OpenAPI constraints → requires: clauses (spec-first code generation):
+//
+//   minimum: N (integer)      requires: param >= N
+//   maximum: N (integer)      requires: param <= N
+//   exclusiveMinimum: N       requires: param > N
+//   exclusiveMaximum: N       requires: param < N
+//   minLength: N              requires: param.length >= N
+//   maxLength: N              requires: param.length <= N
+//   minItems: N               requires: param.length >= N  (on list params)
+//   maxItems: N               requires: param.length <= N
+//   pattern: "regex"          // NOTE: can't express in Lyric requires: v1;
+//                             //   emitted as a // TODO comment in the stub.
+//   required: true (body)     the parameter is non-optional (no Option[T])
+//   required: false / absent  the parameter is Option[T]
+//   format: int32+minimum+maximum together emit an Int range N..=M subtype
 
 @runtime_checked
 package Web.OpenApi

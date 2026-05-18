@@ -1,27 +1,27 @@
-/// Jobs.Kernel.Net — .NET extern boundary for background job scheduler backends.
-///
-/// Bridges Lyric's Jobs package to .NET job processing libraries:
-///   Hangfire.Core  — Hangfire background processing (@cfg feature = "hangfire")
-///   Quartz.Impl    — Quartz.NET cron scheduler       (@cfg feature = "quartz")
-///
-/// Shared BCL functions (always available regardless of feature flags):
-///   System.Threading — nowMs, sleepMs (Thread.Sleep), generateId (Guid)
-///
-/// All scheduler functions use an integer `schedulerId` handle issued at
-/// connect time.  The kernel maintains a handle table (ConcurrentDictionary)
-/// mapping each ID to the underlying scheduler instance.
-///
-/// Job status strings returned by `status`:
-///   "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
-///
-/// Results JSON format returned by `results`:
-///   [{"jobId":"...","status":"...","output":"...","error":"...",
-///     "startedAt":N,"finishedAt":N},...]
-///
-/// Error strings contain the driver exception message and, where available,
-/// a structured error code.
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Jobs.Kernel.Net — .NET extern boundary for background job scheduler backends.
+//
+// Bridges Lyric's Jobs package to .NET job processing libraries:
+//   Hangfire.Core  — Hangfire background processing (@cfg feature = "hangfire")
+//   Quartz.Impl    — Quartz.NET cron scheduler       (@cfg feature = "quartz")
+//
+// Shared BCL functions (always available regardless of feature flags):
+//   System.Threading — nowMs, sleepMs (Thread.Sleep), generateId (Guid)
+//
+// All scheduler functions use an integer `schedulerId` handle issued at
+// connect time.  The kernel maintains a handle table (ConcurrentDictionary)
+// mapping each ID to the underlying scheduler instance.
+//
+// Job status strings returned by `status`:
+//   "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
+//
+// Results JSON format returned by `results`:
+//   [{"jobId":"...","status":"...","output":"...","error":"...",
+//     "startedAt":N,"finishedAt":N},...]
+//
+// Error strings contain the driver exception message and, where available,
+// a structured error code.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Jobs.Kernel.Net
 

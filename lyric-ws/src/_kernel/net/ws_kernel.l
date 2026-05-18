@@ -1,16 +1,16 @@
-/// Ws.Kernel.Net — ASP.NET Core WebSockets extern boundary.
-///
-/// Bridges the Ws package to the ASP.NET Core WebSocket infrastructure:
-///   - createRegistry()   — allocates a connection registry and returns its handle
-///   - send()             — send a typed frame to one connection
-///   - broadcast()        — send a typed frame to all connections
-///   - close()            — close a connection with an RFC 6455 code
-///   - connectionCount()  — number of open connections
-///   - isConnected()      — query whether a specific connection is open
-///   - checkRateLimit()   — sliding-window rate limiter keyed by arbitrary string
-///
-/// Only active when compiled with feature = "dotnet".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Ws.Kernel.Net — ASP.NET Core WebSockets extern boundary.
+//
+// Bridges the Ws package to the ASP.NET Core WebSocket infrastructure:
+//   - createRegistry()   — allocates a connection registry and returns its handle
+//   - send()             — send a typed frame to one connection
+//   - broadcast()        — send a typed frame to all connections
+//   - close()            — close a connection with an RFC 6455 code
+//   - connectionCount()  — number of open connections
+//   - isConnected()      — query whether a specific connection is open
+//   - checkRateLimit()   — sliding-window rate limiter keyed by arbitrary string
+//
+// Only active when compiled with feature = "dotnet".
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "dotnet")
 package Ws.Kernel.Net

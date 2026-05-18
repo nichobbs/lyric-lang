@@ -1,26 +1,26 @@
-/// Auth — transport-agnostic authentication and credential verification.
-///
-/// Provides JWT, API-key, and role-claim primitives that work across HTTP,
-/// gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
-/// aspect *bindings* call these functions; the verification logic itself has
-/// no transport dependency.
-///
-/// Functions:
-///   Auth.verifyJwt      — validates a Bearer token against an explicit
-///                         allow-list of `alg` values (HS256, RS256, etc.).
-///                         Algorithm pinning prevents alg=none forgery and
-///                         HS256/RS256 confusion (RFC 8725 §3.1).
-///   Auth.extractClaim   — reads a named claim from a pre-verified JWT
-///   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
-///
-/// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
-///
-///   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256")
-///   if not ok { return Err(Web.forbidden("Token is invalid")) }
-///   val role = Auth.extractClaim(token, "role")
-///
-/// See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
-/// RequiresRole, ApiKey).
+// Auth — transport-agnostic authentication and credential verification.
+//
+// Provides JWT, API-key, and role-claim primitives that work across HTTP,
+// gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
+// aspect *bindings* call these functions; the verification logic itself has
+// no transport dependency.
+//
+// Functions:
+//   Auth.verifyJwt      — validates a Bearer token against an explicit
+//                         allow-list of `alg` values (HS256, RS256, etc.).
+//                         Algorithm pinning prevents alg=none forgery and
+//                         HS256/RS256 confusion (RFC 8725 §3.1).
+//   Auth.extractClaim   — reads a named claim from a pre-verified JWT
+//   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
+//
+// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
+//
+//   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256")
+//   if not ok { return Err(Web.forbidden("Token is invalid")) }
+//   val role = Auth.extractClaim(token, "role")
+//
+// See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
+// RequiresRole, ApiKey).
 
 @runtime_checked
 package Auth

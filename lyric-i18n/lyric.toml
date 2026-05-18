@@ -5,12 +5,6 @@ authors     = ["Lyric Contributors"]
 license     = "MIT"
 description = "Internationalization and localization library for Lyric: locale-aware translation with variable substitution."
 
-[features]
-# .NET kernel backend (System.IO + JSON parsing).
-dotnet = []
-# JVM kernel backend (java.nio.file.Files + JSON parsing — Phase 6).
-jvm    = []
-
 [project]
 name            = "Lyric.I18n"
 output          = "single"
@@ -19,14 +13,6 @@ output_assembly = "I18n.dll"
 [project.packages]
 "I18n"            = "src"
 "I18n.Kernel.Net" = "src/_kernel/net"
-"I18n.Kernel.Jvm" = "src/_kernel/jvm"
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
-
-# Translation file loading is backed by java.nio.file.Files and the
-# stdlib JSON parser — no external Maven dependency required.
-[maven]
-
-[project.tests]
-"I18n.I18nTests" = "tests/i18n_tests.l"
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

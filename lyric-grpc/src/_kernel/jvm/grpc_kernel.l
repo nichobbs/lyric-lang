@@ -1,11 +1,11 @@
-/// Grpc.Kernel.Jvm — JVM extern boundary for gRPC client and server (Phase 6).
-///
-/// Mirrors Grpc.Kernel.Net using io.grpc:
-///   Client: io.grpc.ManagedChannel + ClientCalls with pass-through MethodDescriptor<byte[],byte[]>
-///   Server: io.grpc.Server (Netty transport)
-///
-/// Not compiled today — present to drive API parity with the .NET kernel.
-/// See docs/18-jvm-emission.md and docs/37-grpc-proto-sketch.md §8.2.
+// Grpc.Kernel.Jvm — JVM extern boundary for gRPC client and server (Phase 6).
+//
+// Mirrors Grpc.Kernel.Net using io.grpc:
+//   Client: io.grpc.ManagedChannel + ClientCalls with pass-through MethodDescriptor<byte[],byte[]>
+//   Server: io.grpc.Server (Netty transport)
+//
+// Not compiled today — present to drive API parity with the .NET kernel.
+// See docs/18-jvm-emission.md and docs/37-grpc-proto-sketch.md §8.2.
 
 @cfg(feature = "jvm")
 package Grpc.Kernel.Jvm
