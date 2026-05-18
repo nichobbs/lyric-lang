@@ -135,7 +135,7 @@ func main(): Unit {
             let source = """
 package FFI_Neg2
 @externTarget("This.Does.Not.Exist.Method")
-pub func noSuchFunc(): Int = ()
+pub func noSuchFunc(): Int = 0
 func main(): Unit {
   println(toString(noSuchFunc()))
 }
