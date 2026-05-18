@@ -85,7 +85,7 @@ func testFullPackage(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4. [dependencies] section
+// §4. [dependencies] section — registry (version string) form
 // ─────────────────────────────────────────────────────────────────────────────
 
 func testDependencies(): Unit {
@@ -93,9 +93,139 @@ func testDependencies(): Unit {
   val m = parseOk(toml)
   assertEqualInt(m.deps.count, 2, "deps: two entries")
   assertEqual(m.deps[0].name, "Foo", "deps: first name")
-  assertEqual(m.deps[0].version, "1.2.3", "deps: first version")
+  match m.deps[0].source {
+    case Registry(version) -> assertEqual(version, "1.2.3", "deps: first version")
+    case _                 -> assertTrue(false, "deps: first source should be Registry")
+  }
   assertEqual(m.deps[1].name, "Bar.Baz", "deps: second name")
-  assertEqual(m.deps[1].version, "^0.5", "deps: second version")
+  match m.deps[1].source {
+    case Registry(version) -> assertEqual(version, "^0.5", "deps: second version")
+    case _                 -> assertTrue(false, "deps: second source should be Registry")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4b. [dependencies] — workspace dep form
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testWorkspaceDep(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"Lyric.Cache\" = { workspace = true }\n\"Lyric.Web\" = { workspace = true, version = \"0.1.0\" }\n"
+  val m = parseOk(toml)
+  assertEqualInt(m.deps.count, 2, "workspace-dep: two entries")
+  assertEqual(m.deps[0].name, "Lyric.Cache", "workspace-dep: first name")
+  match m.deps[0].source {
+    case Workspace(versionOpt) -> {
+      match versionOpt {
+        case None    -> ()
+        case Some(_) -> assertTrue(false, "workspace-dep: first dep has no version constraint")
+      }
+    }
+    case _ -> assertTrue(false, "workspace-dep: first source should be Workspace")
+  }
+  assertEqual(m.deps[1].name, "Lyric.Web", "workspace-dep: second name")
+  match m.deps[1].source {
+    case Workspace(versionOpt) -> {
+      match versionOpt {
+        case Some(v) -> assertEqual(v, "0.1.0", "workspace-dep: version constraint")
+        case None    -> assertTrue(false, "workspace-dep: second dep should have version constraint")
+      }
+    }
+    case _ -> assertTrue(false, "workspace-dep: second source should be Workspace")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4c. [dependencies] — path dep form
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testPathDep(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nMyLib = { path = \"../mylib\" }\n"
+  val m = parseOk(toml)
+  assertEqualInt(m.deps.count, 1, "path-dep: one entry")
+  assertEqual(m.deps[0].name, "MyLib", "path-dep: name")
+  match m.deps[0].source {
+    case Path(dir) -> assertEqual(dir, "../mylib", "path-dep: dir")
+    case _         -> assertTrue(false, "path-dep: source should be Path")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4d. [dependencies] — git dep forms (tag, rev, branch, subdir)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testGitDepTag(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nSomeLib = { git = \"https://github.com/user/repo\", tag = \"v1.0.0\" }\n"
+  val m = parseOk(toml)
+  assertEqualInt(m.deps.count, 1, "git-dep-tag: one entry")
+  match m.deps[0].source {
+    case Git(url, ref, subdir) -> {
+      assertEqual(url, "https://github.com/user/repo", "git-dep-tag: url")
+      match ref {
+        case Tag(name) -> assertEqual(name, "v1.0.0", "git-dep-tag: tag name")
+        case _         -> assertTrue(false, "git-dep-tag: ref should be Tag")
+      }
+      match subdir {
+        case None    -> ()
+        case Some(_) -> assertTrue(false, "git-dep-tag: no subdir")
+      }
+    }
+    case _ -> assertTrue(false, "git-dep-tag: source should be Git")
+  }
+}
+
+func testGitDepSubdir(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"Lyric.Cache\" = { git = \"https://github.com/nichobbs/lyric-lang\", tag = \"v0.1.0\", subdir = \"lyric-cache\" }\n"
+  val m = parseOk(toml)
+  assertEqualInt(m.deps.count, 1, "git-dep-subdir: one entry")
+  match m.deps[0].source {
+    case Git(url, ref, subdir) -> {
+      assertEqual(url, "https://github.com/nichobbs/lyric-lang", "git-dep-subdir: url")
+      match ref {
+        case Tag(name) -> assertEqual(name, "v0.1.0", "git-dep-subdir: tag name")
+        case _         -> assertTrue(false, "git-dep-subdir: ref should be Tag")
+      }
+      match subdir {
+        case Some(d) -> assertEqual(d, "lyric-cache", "git-dep-subdir: subdir")
+        case None    -> assertTrue(false, "git-dep-subdir: should have subdir")
+      }
+    }
+    case _ -> assertTrue(false, "git-dep-subdir: source should be Git")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4e. [workspace] section
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testWorkspaceSection(): Unit {
+  val toml = "[workspace]\nexclude = [\"bootstrap\", \"docs\"]\n"
+  match parseWorkspaceRoot(toml, "<test>") {
+    case Err(e)       -> assertTrue(false, "workspace-section: " + ManifestError.message(e))
+    case Ok(None)     -> assertTrue(false, "workspace-section: expected Some")
+    case Ok(Some(wr)) -> {
+      assertEqualInt(wr.workspace.exclude.count, 2, "workspace-section: exclude count")
+      assertEqual(wr.workspace.exclude[0], "bootstrap", "workspace-section: exclude[0]")
+      assertEqual(wr.workspace.exclude[1], "docs", "workspace-section: exclude[1]")
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4f. [registry] section
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testRegistrySection(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[registry]\ndotnet = \"https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json\"\n"
+  val m = parseOk(toml)
+  match m.registry {
+    case None     -> assertTrue(false, "registry: expected Some")
+    case Some(rc) -> {
+      match rc.dotnet {
+        case Some(url) -> assertEqual(url, "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json", "registry: dotnet url")
+        case None      -> assertTrue(false, "registry: expected dotnet url")
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,6 +352,12 @@ func main(): Unit {
   testMinimal()
   testFullPackage()
   testDependencies()
+  testWorkspaceDep()
+  testPathDep()
+  testGitDepTag()
+  testGitDepSubdir()
+  testWorkspaceSection()
+  testRegistrySection()
   testNuget()
   testProject()
   testFeatures()

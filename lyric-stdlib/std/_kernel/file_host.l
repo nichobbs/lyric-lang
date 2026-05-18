@@ -7,8 +7,8 @@
 // `@externTarget`s.  `Std.File` wraps each call in `try { … } catch
 // Bug as b { … b.message }` to surface failures as `Result.Err`.
 //
-// Internal: only `Std.File` should import this; per
-// `compiler/lyric/std/_kernel/README.md` the kernel is the audited
+// Internal: only `Std.File` and `Std.Directory` should import this;
+// per `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 // extern boundary, not a general-purpose API.
 
 @axiom("System.IO.File / Directory operations conform to their documented .NET contracts")
@@ -64,3 +64,12 @@ pub func hostEnumerateFiles(path: in String): slice[String] = ()
 
 @externTarget("System.IO.Directory.GetDirectories")
 pub func hostEnumerateDirectories(path: in String): slice[String] = ()
+
+@externTarget("System.IO.Directory.GetFileSystemEntries")
+pub func hostEnumerateFileSystemEntries(path: in String): slice[String] = ()
+
+@externTarget("System.IO.Directory.Delete")
+pub func hostDeleteDirectory(path: in String): Unit = ()
+
+@externTarget("System.IO.Directory.Delete")
+pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit = ()
