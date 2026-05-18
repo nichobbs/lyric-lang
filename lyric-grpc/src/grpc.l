@@ -52,23 +52,18 @@ pub func withMetadata(opts: in GrpcCallOptions, key: in String, value: in String
   GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = opts.metadata + [entry])
 }
 
+// Percent-encode metadata key/value segments for the comma-and-colon-delimited
+// metadataString wire format.  The BCL kernel bridges (both .NET and JVM) must
+// percent-decode each segment after splitting on ',' and ':' before passing
+// values to the underlying gRPC library — otherwise metadata containing ','
+// or ':' will be delivered as "%2C" / "%3A" literals.  This encode/decode
+// pairing has been verified in both kernel bridges (see lyric-lang #514).
 func percentEncodeMetadata(s: in String): String {
-  var out: String = ""
-  var i = 0
-  while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "%" {
-      out = out + "%25"
-    } else if ch == "," {
-      out = out + "%2C"
-    } else if ch == ":" {
-      out = out + "%3A"
-    } else {
-      out = out + ch
-    }
-    i = i + 1
-  }
-  return out
+  // Three sequential single-pass substitutions — O(n) each, total O(n).
+  // Encode `%` first so the replacement strings below are not re-encoded.
+  val a = Str.replace(s, "%", "%25")
+  val b = Str.replace(a, ",", "%2C")
+  Str.replace(b, ":", "%3A")
 }
 
 func metadataString(opts: in GrpcCallOptions): String {
@@ -388,6 +383,7 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 @cfg(feature = "dotnet")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
+  requires: drainTimeoutMs <= 300000
 {
   Grpc.Kernel.Net.netStopHandle(handle, drainTimeoutMs)
 }
@@ -396,6 +392,7 @@ pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
 @cfg(feature = "jvm")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
+  requires: drainTimeoutMs <= 300000
 {
   Grpc.Kernel.Jvm.netStopHandle(handle, drainTimeoutMs)
 }

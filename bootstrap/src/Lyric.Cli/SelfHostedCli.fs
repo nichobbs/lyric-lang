@@ -153,8 +153,12 @@ let tryRun (argv: string[]) : int option =
         eprintfn "self-hosted CLI unavailable (invalid emitted code: %s); falling back to bootstrap"
             ex.Message
         None
+    | :? System.IO.FileLoadException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
     | :? System.Reflection.TargetInvocationException as ex
         when (ex.InnerException :? System.InvalidProgramException) ->
         eprintfn "self-hosted CLI unavailable (invalid emitted code: %s); falling back to bootstrap"
-            ex.Message
+            (ex.InnerException.Message)
         None

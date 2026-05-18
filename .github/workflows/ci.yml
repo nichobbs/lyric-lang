@@ -48,6 +48,7 @@ jobs:
             exit 0
           fi
 
+          set -o pipefail
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
             | grep -v '^book/' \
             | grep -v '^docs/' \
@@ -131,7 +132,7 @@ jobs:
 
       - name: Collect coverage (best-effort)
         id: coverage
-        if: steps.changes.outputs.has_code_changes == 'true'
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         continue-on-error: true
         working-directory: bootstrap
         run: |
@@ -172,7 +173,7 @@ jobs:
           exit 0
 
       - name: Generate coverage report
-        if: steps.changes.outputs.has_code_changes == 'true'
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         working-directory: bootstrap
         run: |
           shopt -s nullglob
@@ -187,7 +188,7 @@ jobs:
             -reporttypes:'Html;MarkdownSummaryGithub;Cobertura;TextSummary'
 
       - name: Append coverage to job summary
-        if: steps.changes.outputs.has_code_changes == 'true'
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         working-directory: bootstrap
         run: |
           {
@@ -201,7 +202,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Print coverage summary to log
-        if: steps.changes.outputs.has_code_changes == 'true'
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         working-directory: bootstrap
         run: |
           if [ -f coverage/report/Summary.txt ]; then
@@ -211,7 +212,7 @@ jobs:
           fi
 
       - name: Upload coverage report artifact
-        if: steps.changes.outputs.has_code_changes == 'true'
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
@@ -220,7 +221,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Smoke-test the CLI on examples
-        if: steps.changes.outputs.has_code_changes == 'true'
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         working-directory: bootstrap
         run: |
           set -euo pipefail

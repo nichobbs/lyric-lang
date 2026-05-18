@@ -23,12 +23,12 @@ extern package System.IdentityModel.Tokens.Jwt {
   /// `requires: allowedAlgorithms.length > 0` enforces the explicit
   /// allow-list at the boundary.
   ///
-  /// INTERFACE-ONLY: the signature reserves the algorithm-pinning
-  /// argument; the .NET host shim still needs to route the value into
-  /// `TokenValidationParameters.ValidAlgorithms` and set
-  /// `RequireSignedTokens = true` / `ValidateIssuerSigningKey = true`
-  /// so the underlying validator rejects `alg=none` and mismatched
-  /// algorithms at the JWT layer.  See lyric-lang issue #315 follow-up.
+  /// Algorithm enforcement is applied at the Lyric layer (in Auth.verifyJwt)
+  /// before this extern is called, so alg=none and algorithm-confusion attacks
+  /// are rejected before reaching the BCL validator.  The host shim should
+  /// also wire `allowedAlgorithms` into `TokenValidationParameters.ValidAlgorithms`
+  /// and set `RequireSignedTokens = true` for defence-in-depth (see lyric-lang
+  /// #443 and #315 follow-up).
   ///
   /// Once the host shim is wired, this function returns true iff the
   /// token is well-formed, its `alg` header is in `allowedAlgorithms`,

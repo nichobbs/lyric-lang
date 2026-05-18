@@ -136,10 +136,12 @@ pub aspect Tracing {
       // the span when the hash exceeds sampleRate.
       var shouldTrace = true
       if sampleRate < 1.0 {
+        // FNV-1a-style polynomial hash for better distribution across functions
+        // sharing a long common prefix (e.g. all functions in a package).
         var hashSum = 0
         var hi = 0
         while hi < call.qualifiedName.length {
-          hashSum = (hashSum + Std.Char.toInt(call.qualifiedName.charAt(hi))) % 1000
+          hashSum = (hashSum * 31 + Std.Char.toInt(call.qualifiedName.charAt(hi))) % 1000
           hi = hi + 1
         }
         val hashFraction: Float = hashSum.toFloat() / 1000.0

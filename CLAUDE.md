@@ -267,10 +267,21 @@ notification to skip:
    block merge.  Address them if they are low-effort or if the
    user asks; otherwise note them for follow-up.
 
+Do **not** push empty commits or trivial no-op changes to get the
+check to pass — fix the actual underlying issues.  If a REQUIRED
+finding is incorrect or based on a misunderstanding of the
+codebase, comment on the GitHub issue explaining why, then ask the
+user whether to override it.
+
+Re-poll `get_comments` after each new push to confirm the review
+verdict changed.  Declare the review loop done only when:
+- The `review:changes-required` label is absent from the PR, AND
+- The `Claude Code Review / claude-review` check shows green.
+
 #### Closing the originating issue when a PR merges
 
 The auto-close logic above only runs against review-finding
-issues (the `review-finding`-labeled ones the workflow files).
+issues (the `review-finding`-labeled ones the review workflow creates).
 **Issues that originated *outside* the review loop** — e.g. the
 hand-authored CRITICAL / HIGH / MEDIUM / LOW tickets like #311,
 #316, #345, etc. — are *not* touched by the workflow, even when a
@@ -303,17 +314,6 @@ Do this as part of the same turn that handles the merge webhook
 — don't wait for a separate "tidy issues" pass.  The audit
 runs cleaner when an open issue list always reflects in-flight
 work, not historical bookkeeping debt.
-
-Do **not** push empty commits or trivial no-op changes to get the
-check to pass — fix the actual underlying issues.  If a REQUIRED
-finding is incorrect or based on a misunderstanding of the
-codebase, comment on the GitHub issue explaining why, then ask the
-user whether to override it.
-
-Re-poll `get_comments` after each new push to confirm the review
-verdict changed.  Declare the review loop done only when:
-- The `review:changes-required` label is absent from the PR, AND
-- The `Claude Code Review / claude-review` check shows green.
 
 ### F# surface is frozen — new logic goes in Lyric
 

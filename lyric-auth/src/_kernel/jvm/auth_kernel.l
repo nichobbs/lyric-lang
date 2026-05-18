@@ -20,11 +20,11 @@ extern package io.jsonwebtoken {
   /// `requires: allowedAlgorithms.length > 0` enforces the explicit
   /// allow-list at the boundary.
   ///
-  /// INTERFACE-ONLY: the signature reserves the algorithm-pinning
-  /// argument; the JVM host shim still needs to configure JJWT's
-  /// parser with the matching `SignatureAlgorithm` whitelist so the
-  /// underlying validator rejects `alg=none` and mismatched algorithms.
-  /// See lyric-lang issue #315 follow-up.
+  /// Algorithm enforcement is applied at the Lyric layer (in Auth.verifyJwt)
+  /// before this extern is called, so alg=none and algorithm-confusion attacks
+  /// are rejected before reaching the JVM validator.  The host shim should
+  /// also configure JJWT's parser with the matching `SignatureAlgorithm`
+  /// whitelist for defence-in-depth (see lyric-lang #443 and #315 follow-up).
   pub func verifyJwt(
     token:             String,
     secret:            String,

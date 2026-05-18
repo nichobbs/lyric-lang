@@ -338,8 +338,11 @@ val maxSubstOutputLength: Int = 1048576
 // Substitute {varName} placeholders in `template` using values from `vars`.
 // Unknown placeholder keys are left unchanged in the output.
 // Substitution values are inserted verbatim; they are NOT re-scanned for
-// further placeholders.  Returns `template` unchanged if the expanded output
-// would exceed `maxSubstOutputLength` characters.
+// further placeholders.  Returns `template` unchanged if the accumulated
+// output (literal characters plus substitution values) would exceed
+// `maxSubstOutputLength` characters.  Templates whose literal text alone
+// exceeds `maxSubstOutputLength` therefore return early with no substitutions
+// applied — callers relying on substitution must keep templates below this limit.
 func substitutePlaceholders(template: in String, vars: in Map[String, String]): String {
   var out: String = ""
   var i:   Int    = 0
@@ -369,6 +372,9 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
         i = j + 1
       }
     } else {
+      if out.length + 1 > maxSubstOutputLength {
+        return template
+      }
       out = out + ch
       i   = i + 1
     }

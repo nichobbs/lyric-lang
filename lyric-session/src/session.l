@@ -353,12 +353,11 @@ impl SessionStore for InProcessSessionStore {
               message = "session not found; call create() to obtain a fresh id before set()",
               code    = "SESSION_NOT_FOUND"))
           case Some(existing) ->
-            val ts = nowMs()
             val updated = SessionData(
               id             = existing.id,
               entries        = existing.entries.set(key, value),
               createdAt      = existing.createdAt,
-              lastAccessedAt = ts,
+              lastAccessedAt = nowMs(),
               expiresAt      = existing.expiresAt)
             save(updated)
         }
