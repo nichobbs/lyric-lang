@@ -159,6 +159,12 @@ let tryRun (argv: string[]) : int option =
         None
     | :? System.Reflection.TargetInvocationException as ex
         when (ex.InnerException :? System.InvalidProgramException) ->
+        // Use match to satisfy nullable analysis; the `when` guard ensures the
+        // None branch is unreachable at runtime.
+        let msg =
+            match ex.InnerException with
+            | null  -> "unknown"
+            | inner -> inner.Message
         eprintfn "self-hosted CLI unavailable (invalid emitted code: %s); falling back to bootstrap"
-            (ex.InnerException.Message)
+            msg
         None

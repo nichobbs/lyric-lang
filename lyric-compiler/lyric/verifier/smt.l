@@ -82,6 +82,22 @@ func smtRenderFloat(f: in Double): String {
   }
 }
 
+// True when the character at position `i` in `s` equals `expected`.
+func charIs(s: in String, i: in Int, expected: in Char): Bool {
+  match charAt(s, i) {
+    case Some(c) -> c == expected
+    case None    -> false
+  }
+}
+
+// Decimal digit value of a Char (0..9); returns 0 for non-digits.
+func digitCharVal(c: in Char): Int {
+  if c == '0' { 0 } else if c == '1' { 1 } else if c == '2' { 2 }
+  else if c == '3' { 3 } else if c == '4' { 4 } else if c == '5' { 5 }
+  else if c == '6' { 6 } else if c == '7' { 7 } else if c == '8' { 8 }
+  else if c == '9' { 9 } else { 0 }
+}
+
 // Convert a float string (possibly in scientific notation) to SMT-LIB Real
 // fixed-point form.  Returns the input unchanged when it already has a decimal
 // point and no exponent.
@@ -89,8 +105,10 @@ func expandToDecimal(s: in String): String {
   var ePos = -1
   var i = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "E" or ch == "e" { ePos = i }
+    match charAt(s, i) {
+      case Some(c) -> { if c == 'E' or c == 'e' { ePos = i } }
+      case None    -> {}
+    }
     i = i + 1
   }
   if ePos < 0 {
@@ -98,35 +116,31 @@ func expandToDecimal(s: in String): String {
   } else {
     val mPart  = s.substring(0, ePos)
     val ePart  = s.substring(ePos + 1, s.length)
-    val negM   = mPart.length > 0 and mPart.charAt(0).toString() == "-"
+    val negM   = mPart.length > 0 and charIs(mPart, 0, '-')
     val mAbs   = if negM { mPart.substring(1, mPart.length) } else { mPart }
     val prefix = if negM { "-" } else { "" }
     var dotAt  = -1
     var k      = 0
     while k < mAbs.length {
-      if mAbs.charAt(k).toString() == "." { dotAt = k }
+      if charIs(mAbs, k, '.') { dotAt = k }
       k = k + 1
     }
-    val digits    = if dotAt >= 0 { mAbs.substring(0, dotAt) + mAbs.substring(dotAt + 1, mAbs.length) } else { mAbs }
+    val digits      = if dotAt >= 0 { mAbs.substring(0, dotAt) + mAbs.substring(dotAt + 1, mAbs.length) } else { mAbs }
     val decFromLeft = if dotAt >= 0 { dotAt } else { mAbs.length }
-    val eNeg  = ePart.length > 0 and ePart.charAt(0).toString() == "-"
-    val eStart = if ePart.length > 0 and (ePart.charAt(0).toString() == "+" or ePart.charAt(0).toString() == "-") { 1 } else { 0 }
+    val eNeg  = ePart.length > 0 and charIs(ePart, 0, '-')
+    val eStart = if ePart.length > 0 and (charIs(ePart, 0, '+') or charIs(ePart, 0, '-')) { 1 } else { 0 }
     var expVal = 0
     var ei     = eStart
     while ei < ePart.length {
-      expVal = expVal * 10 + digitChar(ePart.charAt(ei).toString())
-      ei     = ei + 1
+      match charAt(ePart, ei) {
+        case Some(c) -> { expVal = expVal * 10 + digitCharVal(c) }
+        case None    -> {}
+      }
+      ei = ei + 1
     }
     val newDec = if eNeg { decFromLeft - expVal } else { decFromLeft + expVal }
     shiftDecimal(prefix, digits, newDec)
   }
-}
-
-func digitChar(ch: in String): Int {
-  if ch == "0" { 0 } else if ch == "1" { 1 } else if ch == "2" { 2 }
-  else if ch == "3" { 3 } else if ch == "4" { 4 } else if ch == "5" { 5 }
-  else if ch == "6" { 6 } else if ch == "7" { 7 } else if ch == "8" { 8 }
-  else if ch == "9" { 9 } else { 0 }
 }
 
 func shiftDecimal(prefix: in String, digits: in String, decPos: in Int): String {

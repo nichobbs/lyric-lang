@@ -137,7 +137,7 @@ func backoffDelay(
   // milliseconds with the attempt number so concurrent callers at the same
   // retry attempt get distinct pseudo-random values, breaking thundering herds.
   if jitterFraction > 0.0 {
-    val nowSeed    = (Std.Time.nowMs() mod 1000000L).toInt()
+    val nowSeed    = (Std.Time.monotonicNanos() mod 1000000i64).toInt()
     val pseudoRand = ((nowSeed * 1664525 + attempt * 22695477 + 1013904223) mod 1000).toFloat() / 1000.0
     val jitter = (pseudoRand * 2.0 - 1.0) * jitterFraction
     val jitteredDelay = (delay.toFloat() * (1.0 + jitter)).toInt()

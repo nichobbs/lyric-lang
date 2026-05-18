@@ -206,16 +206,12 @@ func testTermEqLitDiff(): Unit {
 //   (which is UNSOUND — y was captured).  Correct result: forall y$1. y > y$1.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func buildSubstEnvXtoY(): (Map[String, Term], List[String]) {
+func testSubstTermTForallCapture(): Unit {
+  // env = { x -> y }; subst into (forall y. x > y) — y must be alpha-renamed.
   val env: Map[String, Term] = newMap()
   env.add("x", TVar(name = "y", sort = SInt))
   val envNames: List[String] = newList()
   envNames.add("x")
-  (env, envNames)
-}
-
-func testSubstTermTForallCapture(): Unit {
-  val (env, envNames) = buildSubstEnvXtoY()
   val binderY = SortBinder(name = "y", sort = SInt)
   val bs: List[SortBinder] = newList()
   bs.add(binderY)
@@ -225,13 +221,18 @@ func testSubstTermTForallCapture(): Unit {
   val result = substTerm(env, envNames, forallXY)
   val rendered = smtRenderTerm(result)
   // The binder "y" must be renamed to avoid capturing the substituted "y".
+  // smtSanitize turns "$" into "_", so the freshened form "y$1" renders as "y_1".
   assertTrue(not rendered.contains("(forall ((y Int)) (> y y))"), "TForall: no capture")
   assertTrue(rendered.contains("forall"), "TForall: still a forall")
-  assertTrue(rendered.contains("y$1") or rendered.contains("y$"), "TForall: binder freshened")
+  assertTrue(rendered.contains("y_1"), "TForall: binder freshened")
 }
 
 func testSubstTermTExistsCapture(): Unit {
-  val (env, envNames) = buildSubstEnvXtoY()
+  // env = { x -> y }; subst into (exists y. x < y) — y must be alpha-renamed.
+  val env: Map[String, Term] = newMap()
+  env.add("x", TVar(name = "y", sort = SInt))
+  val envNames: List[String] = newList()
+  envNames.add("x")
   val binderY = SortBinder(name = "y", sort = SInt)
   val bs: List[SortBinder] = newList()
   bs.add(binderY)
@@ -241,7 +242,8 @@ func testSubstTermTExistsCapture(): Unit {
   val rendered = smtRenderTerm(result)
   assertTrue(not rendered.contains("(exists ((y Int)) (< y y))"), "TExists: no capture")
   assertTrue(rendered.contains("exists"), "TExists: still an exists")
-  assertTrue(rendered.contains("y$1") or rendered.contains("y$"), "TExists: binder freshened")
+  // smtSanitize turns "$" into "_", so "y$1" renders as "y_1".
+  assertTrue(rendered.contains("y_1"), "TExists: binder freshened")
 }
 
 func testSubstTermNoCapture(): Unit {

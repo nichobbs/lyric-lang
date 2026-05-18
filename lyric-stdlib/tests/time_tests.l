@@ -1,17 +1,21 @@
-// stdlib/tests/time_tests.l — Tests for Std.Time.
+// stdlib/tests/time_tests.l — Tests for Std.Time.monotonicNanos().
 //
-// Covers: nowMs returns a positive epoch, monotonicNanos returns non-decreasing
-// values across successive calls, and the difference between two calls is
-// non-zero after any observable work.
+// Verifies that monotonicNanos() returns non-decreasing values across successive
+// calls and that the value advances across observable work.  Also checks that
+// now() returns a positive epoch via totalMillis.
 package Std.Time.Tests
 
 import Std.Core
 import Std.Time
 import Std.Testing
 
-func testNowMsPositive(): Unit {
-  val t = nowMs()
-  assertTrue(t > 0L, "nowMs() must return a positive epoch millisecond value")
+func testNowReturnsPositiveEpoch(): Unit {
+  // now() returns a time after the Unix epoch.  We verify by computing elapsed
+  // milliseconds since epoch 0 using the stdlib's own fromEpochMillis / totalMillis.
+  val t      = now()
+  val epoch0 = fromEpochMillis(0i64)
+  val ms     = totalMillis(since(t, epoch0))
+  assertTrue(ms > 0.0, "now() must represent a time after the Unix epoch")
 }
 
 func testMonotonicNanosNonDecreasing(): Unit {
@@ -22,7 +26,7 @@ func testMonotonicNanosNonDecreasing(): Unit {
 
 func testMonotonicNanosTwoCallsDiffer(): Unit {
   val a = monotonicNanos()
-  // Busy-spin a tiny bit so the clock has a chance to advance.
+  // Busy-spin so the monotonic clock has a chance to advance.
   var i = 0
   while i < 10000 { i = i + 1 }
   val b = monotonicNanos()
@@ -38,7 +42,7 @@ func testMonotonicNanosThreeCallsOrdered(): Unit {
 }
 
 func main(): Unit {
-  testNowMsPositive()
+  testNowReturnsPositiveEpoch()
   testMonotonicNanosNonDecreasing()
   testMonotonicNanosTwoCallsDiffer()
   testMonotonicNanosThreeCallsOrdered()
