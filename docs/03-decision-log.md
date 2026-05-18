@@ -4047,6 +4047,68 @@ from application manifests entirely (renaming to `[platform.dotnet]` /
 
 ---
 
+## D074 — Lyric package registry: NuGet.org (.NET) and GitHub Packages Maven (JVM)
+
+**Date:** 2026-05-18
+**Spec:** `docs/39-package-registry.md`
+
+### Decision
+
+Third-party and first-party Lyric library packages are published to and
+consumed from existing package infrastructure rather than a bespoke registry:
+
+- **.NET target** → NuGet.org. Lyric DLLs are valid .NET assemblies; `lyric
+  publish` wraps them in `.nupkg` files tagged `lyric-package` and pushes via
+  `dotnet nuget push`. `lyric restore` resolves from the NuGet.org V3 feed.
+- **JVM target** → GitHub Packages Maven (short-term); Maven Central (Phase 6,
+  once GPG signing and namespace claim are set up — Q-R-002).
+
+Package identity is direct: the Lyric package name (`Lyric.Cache`) maps 1:1 to
+the NuGet package ID, and to the Maven artifact ID by lowercased kebab-case
+under the `io.lyric-lang` group.
+
+`[nuget]` / `[maven]` entries in library manifests are embedded in the
+published `.nupkg` as NuGet `<dependencies>` so that `lyric restore` propagates
+them transitively to consumers. Application developers never need to repeat
+native dep entries for libraries they consume.
+
+Discovery uses `lyric search`, which queries the NuGet.org search API filtered
+by `tags=lyric-package`. No separate registry site is required for v1.0.
+
+The lock file (`lyric.lock`) pins every resolved package to a version and
+SHA-512 checksum. `lyric restore --locked` (the CI flag) refuses to update the
+lock file and fails if any hash mismatches, providing supply-chain integrity.
+
+Private registries are supported via `[registry]` in `lyric.toml` and
+credentials in `~/.lyric/credentials.toml` or environment variables.
+
+### Alternatives considered
+
+**Bespoke registry.** Building a custom package index and file store (equivalent
+to crates.io) would give complete control but requires ongoing infrastructure
+maintenance, CDN costs, and security operations. Rejected for v1.0 in favour of
+piggy-backing on NuGet.org and GitHub Packages.
+
+**Static JSON index + GitHub Releases.** A minimal "registry" could be a JSON
+file committed to a repo with artifacts attached to GitHub Releases. Simpler
+than a bespoke registry but still requires a publish workflow and custom resolver
+code in the CLI. Rejected in favour of using existing NuGet tooling, which is
+already available in the F# bootstrap and requires no new infrastructure.
+
+**Go-style direct git resolution for all packages.** Every dep references a git
+URL with a version tag; no registry. Workable in the short term but poor for
+discoverability, requires network access for every build, and offers no
+checksum-based supply-chain guarantees. Retained as the git-dep escape hatch
+(docs/38-workspace.md §3.3) but not the primary registry mechanism.
+
+### Open questions
+
+Q-R-001 (GitHub Packages Maven auth friction), Q-R-002 (Maven Central GPG
+setup), Q-R-003 (GitHub Pages discovery site), Q-R-004 (`lyric publish
+--workspace` bulk tooling) — see `docs/39-package-registry.md` §10.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
