@@ -1652,9 +1652,14 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
     if n == 6 {
       // Hit the 6-digit cap without seeing `}` — the escape is
       // overlong, not unterminated.  Consume trailing hex digits up
-      // to a sensible limit and the closing `}` so the lexer resyncs.
+      // to a 16-char cap (large enough for any plausible overlong
+      // escape while keeping the lexer from bleeding past the next
+      // token on garbage input) then the closing `}` so the lexer
+      // resyncs at the brace.  Restricting the resync to hex digits
+      // means a stray non-hex character stops resync immediately and
+      // produces a tighter diagnostic span.
       var extra = 0
-      while not isAtEnd(state) and peek(state) != '}' and extra < 16 {
+      while not isAtEnd(state) and peek(state) != '}' and extra < 16 and isHexDigitChar(peek(state)) {
         advance(state)
         extra = extra + 1
       }
