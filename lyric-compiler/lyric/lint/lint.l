@@ -195,7 +195,9 @@ func checkItem(item: in Item): List[LintDiag] {
   appendDiags(acc, checkAnnotationsL006(item.annotations, item.span))
   match item.kind {
     case IFunc(fn) -> {
-      appendDiags(acc, checkAnnotationsL006(fn.annotations, fn.span))
+      // item.annotations and fn.annotations are the same list for top-level
+      // functions (both parsed from the same `anns` value); the outer
+      // checkAnnotationsL006(item.annotations, ...) above already covers them.
       appendDiags(acc, checkFuncName(fn.name, fn.span))
       appendDiags(acc, checkPubDoc(vis, docs, fn.name, "func", item.span))
       appendDiags(acc, checkDocTodos(docs))

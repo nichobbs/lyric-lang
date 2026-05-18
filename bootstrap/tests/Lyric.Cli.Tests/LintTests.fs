@@ -150,6 +150,17 @@ pub func doSomething(x: in Int): Int = x
 """
             Expect.contains (codes diags) "L006" "L006 for @inline_template on func"
 
+        testCase "L006 fires exactly once for one @inline_template annotation" <| fun () ->
+            let diags =
+                lintSource """
+package P
+/// A func annotated with inline_template.
+@inline_template
+pub func doSomething(x: in Int): Int = x
+"""
+            let l006s = diags |> List.filter (fun d -> d.Code = "L006")
+            Expect.equal (List.length l006s) 1 "L006 should fire exactly once, not be doubled"
+
         testCase "L006 does NOT fire when @inline_template absent" <| fun () ->
             let diags =
                 lintSource """
