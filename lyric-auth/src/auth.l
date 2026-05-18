@@ -144,6 +144,9 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 ///
 /// Used by RequiresRole bindings to match the `role` JWT claim against
 /// an allowlist.  For example, `"admin,manager"` contains `"admin"`.
+/// Whitespace around each comma-separated entry is trimmed before
+/// comparison, so `"admin, manager"` matches `"manager"`.  Empty
+/// entries (e.g. `",,"` or `"admin,"`) never match.
 @stable(since="0.1")
 pub func rolesContain(allowedRoles: in String, role: in String): Bool {
   if allowedRoles.length == 0 { return false }
@@ -155,8 +158,8 @@ pub func rolesContain(allowedRoles: in String, role: in String): Bool {
     val atEnd     = i == allowedRoles.length
     val atComma   = not atEnd && allowedRoles.charAt(i).toString() == ","
     if atEnd || atComma {
-      val candidate = allowedRoles.substring(start, i)
-      if candidate == role { return true }
+      val candidate = allowedRoles.substring(start, i).trim()
+      if candidate.length > 0 && candidate == role { return true }
       start = i + 1
     }
     i = i + 1

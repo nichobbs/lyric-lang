@@ -38,6 +38,25 @@ test "rolesContain rejects against an empty allow-list" {
     "empty allow-list must reject every role")
 }
 
+test "rolesContain trims whitespace around comma-separated entries (#360)" {
+  assertTrue(Auth.rolesContain("admin, manager", "manager"),
+    "leading space after comma should not break role matching")
+  assertTrue(Auth.rolesContain(" admin , manager ", "admin"),
+    "surrounding whitespace should be tolerated")
+  assertTrue(Auth.rolesContain("admin,\tmanager", "manager"),
+    "tab after comma should be tolerated")
+}
+
+test "rolesContain skips empty / whitespace-only entries" {
+  assertTrue(not Auth.rolesContain("admin, ,manager", " "),
+    "whitespace-only entry must not match a whitespace role")
+  // Trailing comma must not create an empty match path that lets an
+  // empty role claim slip through (defense-in-depth — empty role is
+  // already rejected at the boundary).
+  assertTrue(not Auth.rolesContain("admin,", ""),
+    "trailing comma must not match empty role")
+}
+
 // JWT algorithm pinning (#315).  The empty-allow-list case is enforced
 // by the `requires: allowedAlgorithms.length > 0` contract at the
 // boundary — under @runtime_checked it triggers an unrecoverable panic,
