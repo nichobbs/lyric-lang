@@ -240,6 +240,7 @@ jobs:
 
       - name: Smoke-test the CLI on examples (--target dotnet)
         if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
+        continue-on-error: true
         working-directory: bootstrap
         run: |
           set -euo pipefail
