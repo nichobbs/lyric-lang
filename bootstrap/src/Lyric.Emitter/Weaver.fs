@@ -291,6 +291,11 @@ let rec private typeExprToString (te: TypeExpr) : string =
 
 /// Returns true if `fn` satisfies all predicates in `matchers` (AND semantics).
 let private matchesPredicates (matchers: AspectMatcher list) (fn: FunctionDecl) : bool =
+    // An empty matchers list means the aspect is a library template with no
+    // local matches: clause — it should weave nothing in the current file.
+    // (List.forall [] would vacuously return true and match every function.)
+    if List.isEmpty matchers then false
+    else
     matchers |> List.forall (fun m ->
         match m with
         | AMNameLike (glob, _) ->

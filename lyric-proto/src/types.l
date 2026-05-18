@@ -1,7 +1,7 @@
-/// Platform-neutral Protocol Buffer types (proto3 subset).
-///
-/// Wire types follow the protobuf binary encoding specification.  Types 3 and 4
-/// (StartGroup / EndGroup) are deprecated in proto3 and are not supported.
+// Platform-neutral Protocol Buffer types (proto3 subset).
+//
+// Wire types follow the protobuf binary encoding specification.  Types 3 and 4
+// (StartGroup / EndGroup) are deprecated in proto3 and are not supported.
 package Proto.Types
 
 import Std.Core

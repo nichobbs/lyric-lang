@@ -6847,7 +6847,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         let bundleMain : MethodInfo option ref = ref None
         for pkgName in emitOrder do
             let parsed, combinedSrc = parsedByName.[pkgName]
-            let afterIntra, intraItems, intraArts = resolveIntraImports parsed.File
+            // Apply @cfg erasure before import resolution and type-checking so
+            // duplicate @cfg-gated overloads are pruned before the checker sees them.
+            let cfgErased, cfgDiags =
+                Lyric.Emitter.Cfg.applyCfgErasure
+                    req.ActiveFeatures req.DeclaredFeatures parsed.File
+            allDiags.AddRange cfgDiags
+            let afterIntra, intraItems, intraArts = resolveIntraImports cfgErased
             let afterRestored, restoredItems, restoredArtifacts, restoredDiags =
                 resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =

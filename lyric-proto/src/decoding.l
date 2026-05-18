@@ -1,12 +1,12 @@
-/// Pure-Lyric Protocol Buffer decoder.
-///
-/// The decoder reads a binary proto3 message byte-by-byte, producing a
-/// List[DecodedField] that the caller can pattern-match on.  Unknown fields
-/// are decoded by wire type and included in the output (proto3 unknown-field
-/// forwarding behaviour).
-///
-/// Decoding is safe: every out-of-bounds or malformed input returns
-/// Result.Err rather than panicking.
+// Pure-Lyric Protocol Buffer decoder.
+//
+// The decoder reads a binary proto3 message byte-by-byte, producing a
+// List[DecodedField] that the caller can pattern-match on.  Unknown fields
+// are decoded by wire type and included in the output (proto3 unknown-field
+// forwarding behaviour).
+//
+// Decoding is safe: every out-of-bounds or malformed input returns
+// Result.Err rather than panicking.
 package Proto.Decoding
 
 import Proto.Types

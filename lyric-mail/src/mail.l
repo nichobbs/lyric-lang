@@ -1,39 +1,39 @@
-/// Mail — email sending library for Lyric.
-///
-/// Provides a uniform `MailSender` interface over SMTP (MailKit), Amazon SES,
-/// and SendGrid.  Obtain a sender with one of the feature-gated `connect*`
-/// factory functions, then call `Mail.send` or the convenience helpers.
-///
-/// Usage:
-///
-///   import Mail
-///
-///   val sender = Mail.connectSmtp()?
-///   Mail.sendSimple(sender, "alice@example.com", "Hello", "World")?
-///   Mail.send(sender, EmailMessage(
-///     from        = Mail.makeAddress("bot@example.com"),
-///     to          = [Mail.makeAddressWithName("alice@example.com", "Alice")],
-///     cc          = [],
-///     bcc         = [],
-///     subject     = "Report",
-///     textBody    = "See attached.",
-///     htmlBody    = "<p>See attached.</p>",
-///     attachments = [Mail.makeAttachment("report.pdf", "application/pdf", base64Data)],
-///     replyTo     = None
-///   ))?
-///
-/// Runtime config env vars (LYRIC_CONFIG_SMTP_*, LYRIC_CONFIG_SENDER_*):
-///   LYRIC_CONFIG_SMTP_HOST          — SMTP server hostname (required for SMTP)
-///   LYRIC_CONFIG_SMTP_PORT          — SMTP port (default: 587)
-///   LYRIC_CONFIG_SMTP_USERNAME      — SMTP username (default: "")
-///   LYRIC_CONFIG_SMTP_PASSWORD      — SMTP password (default: "", @sensitive)
-///   LYRIC_CONFIG_SMTP_USETLS        — use TLS (default: true)
-///   LYRIC_CONFIG_SMTP_TIMEOUTMS     — send timeout ms (default: 30000)
-///   LYRIC_CONFIG_SENDER_FROMADDRESS     — envelope From address (required)
-///   LYRIC_CONFIG_SENDER_FROMDISPLAYNAME — envelope From display name (default: "")
-///   LYRIC_CONFIG_SENDER_PROVIDER        — provider name: smtp/ses/sendgrid (default: "smtp")
-///
-/// See docs/03-decision-log.md D062 and lyric-mail/README.md.
+// Mail — email sending library for Lyric.
+//
+// Provides a uniform `MailSender` interface over SMTP (MailKit), Amazon SES,
+// and SendGrid.  Obtain a sender with one of the feature-gated `connect*`
+// factory functions, then call `Mail.send` or the convenience helpers.
+//
+// Usage:
+//
+//   import Mail
+//
+//   val sender = Mail.connectSmtp()?
+//   Mail.sendSimple(sender, "alice@example.com", "Hello", "World")?
+//   Mail.send(sender, EmailMessage(
+//     from        = Mail.makeAddress("bot@example.com"),
+//     to          = [Mail.makeAddressWithName("alice@example.com", "Alice")],
+//     cc          = [],
+//     bcc         = [],
+//     subject     = "Report",
+//     textBody    = "See attached.",
+//     htmlBody    = "<p>See attached.</p>",
+//     attachments = [Mail.makeAttachment("report.pdf", "application/pdf", base64Data)],
+//     replyTo     = None
+//   ))?
+//
+// Runtime config env vars (LYRIC_CONFIG_SMTP_*, LYRIC_CONFIG_SENDER_*):
+//   LYRIC_CONFIG_SMTP_HOST          — SMTP server hostname (required for SMTP)
+//   LYRIC_CONFIG_SMTP_PORT          — SMTP port (default: 587)
+//   LYRIC_CONFIG_SMTP_USERNAME      — SMTP username (default: "")
+//   LYRIC_CONFIG_SMTP_PASSWORD      — SMTP password (default: "", @sensitive)
+//   LYRIC_CONFIG_SMTP_USETLS        — use TLS (default: true)
+//   LYRIC_CONFIG_SMTP_TIMEOUTMS     — send timeout ms (default: 30000)
+//   LYRIC_CONFIG_SENDER_FROMADDRESS     — envelope From address (required)
+//   LYRIC_CONFIG_SENDER_FROMDISPLAYNAME — envelope From display name (default: "")
+//   LYRIC_CONFIG_SENDER_PROVIDER        — provider name: smtp/ses/sendgrid (default: "smtp")
+//
+// See docs/03-decision-log.md D062 and lyric-mail/README.md.
 
 @runtime_checked
 package Mail
@@ -378,26 +378,26 @@ func containsHeaderInjection(s: in String): Bool {
 // Wrap a string value in JSON double quotes, escaping backslash, double-quote,
 // and the common control characters.
 func jsonString(s: in String): String {
-  var out = "\""
+  var buf = "\""
   var i   = 0
   while i < s.length {
     val ch = s.charAt(i).toString()
     if ch == "\"" {
-      out = out + "\\\""
+      buf = buf + "\\\""
     } else if ch == "\\" {
-      out = out + "\\\\"
+      buf = buf + "\\\\"
     } else if ch == "\n" {
-      out = out + "\\n"
+      buf = buf + "\\n"
     } else if ch == "\r" {
-      out = out + "\\r"
+      buf = buf + "\\r"
     } else if ch == "\t" {
-      out = out + "\\t"
+      buf = buf + "\\t"
     } else {
-      out = out + ch
+      buf = buf + ch
     }
     i = i + 1
   }
-  return out + "\""
+  return buf + "\""
 }
 
 // ─── Kernel dispatchers (target-gated) ────────────────────────────────────────

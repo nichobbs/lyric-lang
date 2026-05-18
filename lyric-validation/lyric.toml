@@ -11,8 +11,8 @@ output          = "single"
 output_assembly = "Validation.dll"
 
 [project.packages]
-"Validation"         = "src"
-"Validation.Aspects" = "src"
+"Validation"         = "src/validation.l"
+"Validation.Aspects" = "src/validation_aspects.l"
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }

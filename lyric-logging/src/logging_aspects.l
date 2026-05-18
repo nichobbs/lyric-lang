@@ -1,34 +1,34 @@
-/// Std.Logging.Aspects — aspect templates for automatic call instrumentation.
-///
-/// Provides three pub aspect templates consumers bind with a local matches:
-/// clause.  All three use Std.Logging for output, so the global level filter
-/// (LYRIC_CONFIG_STD_LOGGING_DEFAULTS_LEVEL) applies.
-///
-/// Templates:
-///   CallLogging       — logs function entry / exit with elapsed time (B-mode)
-///   SlowCallAlert     — logs a warning when a call exceeds a threshold (B-mode)
-///   ErrorResultLogging — logs when a function returns Err(...) (C-mode, @inline_template)
-///
-/// Typical consumer instantiation:
-///
-///   import Std.Logging.Aspects
-///
-///   aspect ApiLogging from Std.Logging.Aspects.CallLogging {
-///     matches: name like "handle*"
-///     config {
-///       level: LogLevel = LogLevel.Info
-///     }
-///   }
-///
-///   aspect ApiSlowAlert from Std.Logging.Aspects.SlowCallAlert {
-///     matches: name like "handle*"
-///     inside: ApiLogging
-///     config {
-///       thresholdMs: Int = 500
-///     }
-///   }
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+// Std.Logging.Aspects — aspect templates for automatic call instrumentation.
+//
+// Provides three pub aspect templates consumers bind with a local matches:
+// clause.  All three use Std.Logging for output, so the global level filter
+// (LYRIC_CONFIG_STD_LOGGING_DEFAULTS_LEVEL) applies.
+//
+// Templates:
+//   CallLogging       — logs function entry / exit with elapsed time (B-mode)
+//   SlowCallAlert     — logs a warning when a call exceeds a threshold (B-mode)
+//   ErrorResultLogging — logs when a function returns Err(...) (C-mode, @inline_template)
+//
+// Typical consumer instantiation:
+//
+//   import Std.Logging.Aspects
+//
+//   aspect ApiLogging from Std.Logging.Aspects.CallLogging {
+//     matches: name like "handle*"
+//     config {
+//       level: LogLevel = LogLevel.Info
+//     }
+//   }
+//
+//   aspect ApiSlowAlert from Std.Logging.Aspects.SlowCallAlert {
+//     matches: name like "handle*"
+//     inside: ApiLogging
+//     config {
+//       thresholdMs: Int = 500
+//     }
+//   }
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Std.Logging.Aspects

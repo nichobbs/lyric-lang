@@ -1,9 +1,9 @@
-/// Resilience.Kernel.Jvm — JVM resilience extern boundary.
-///
-/// JVM implementation of the same contract as Resilience.Kernel.Net.
-/// Circuit state uses ConcurrentHashMap; sleep uses Thread.sleep.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
+// Resilience.Kernel.Jvm — JVM resilience extern boundary.
+//
+// JVM implementation of the same contract as Resilience.Kernel.Net.
+// Circuit state uses ConcurrentHashMap; sleep uses Thread.sleep.
+//
+// Only active when compiled with feature = "jvm" (Phase 6).
 
 @cfg(feature = "jvm")
 package Resilience.Kernel.Jvm

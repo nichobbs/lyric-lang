@@ -1,30 +1,30 @@
-/// lyric-proto public API.
-///
-/// Consumers import this package and use encodeMessage / decodeMessage.
-/// Import Proto.Types for the field value constructors (ProtoField, DecodedField).
-/// Import Proto.Encoding for convenience constructors (floatField, boolField, …).
-/// Import Proto.Decoding for typed extraction helpers (findVarint, findBytes, …).
-///
-/// Quick start:
-///
-///   import Proto
-///   import Proto.Types
-///   import Proto.Encoding
-///
-///   // Encode a message with two fields: field 1 = int64 42, field 2 = "hello"
-///   val helloUtf8: slice[Byte] = ...
-///   val payload = Proto.encodeMessage([
-///     ProtoField.VarField(1, 42L),
-///     ProtoField.BytesField(2, helloUtf8),
-///   ])
-///
-///   // Decode a response
-///   match Proto.decodeMessage(responseBytes) {
-///     case Err(e) -> log("decode error: " + e)
-///     case Ok(fields) -> {
-///       val v = Proto.findVarint(fields, 1).unwrapOr(0L)
-///     }
-///   }
+// lyric-proto public API.
+//
+// Consumers import this package and use encodeMessage / decodeMessage.
+// Import Proto.Types for the field value constructors (ProtoField, DecodedField).
+// Import Proto.Encoding for convenience constructors (floatField, boolField, …).
+// Import Proto.Decoding for typed extraction helpers (findVarint, findBytes, …).
+//
+// Quick start:
+//
+//   import Proto
+//   import Proto.Types
+//   import Proto.Encoding
+//
+//   // Encode a message with two fields: field 1 = int64 42, field 2 = "hello"
+//   val helloUtf8: slice[Byte] = ...
+//   val payload = Proto.encodeMessage([
+//     ProtoField.VarField(1, 42L),
+//     ProtoField.BytesField(2, helloUtf8),
+//   ])
+//
+//   // Decode a response
+//   match Proto.decodeMessage(responseBytes) {
+//     case Err(e) -> log("decode error: " + e)
+//     case Ok(fields) -> {
+//       val v = Proto.findVarint(fields, 1).unwrapOr(0L)
+//     }
+//   }
 package Proto
 
 import Proto.Types
