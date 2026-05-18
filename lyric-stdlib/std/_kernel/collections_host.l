@@ -23,6 +23,9 @@ extern type Map[K, V] = "System.Collections.Generic.Dictionary`2"
 @externTarget("System.Collections.Generic.List`1..ctor")
 pub func newList[T](): List[T] = ()
 
+@externTarget("System.Collections.Generic.List`1..ctor")
+pub func newListWithCapacity[T](capacity: in Int): List[T] = ()
+
 @externTarget("System.Collections.Generic.Dictionary`2..ctor")
 pub func newMap[K, V](): Map[K, V] = ()
 

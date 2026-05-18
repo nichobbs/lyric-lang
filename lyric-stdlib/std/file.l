@@ -114,7 +114,7 @@ pub func readBytes(path: in String): Result[List[Byte], IOError] {
   }
   return try {
     val raw = hostReadAllBytes(path)
-    val acc: List[Byte] = newList()
+    val acc: List[Byte] = newListWithCapacity(raw.length)
     for b in raw {
       acc.add(b)
     }
