@@ -1558,13 +1558,15 @@ func decodeEscape(c: in Char): Option[Char] {
 
 // Convert a BMP scalar value (UTF-16 code unit, 0..0xFFFF) to a Char.
 //
-// The caller is responsible for excluding the surrogate range
-// (0xD800..0xDFFF) per Unicode §3.9 — surrogate code points are not
-// valid scalar values and feeding one to the underlying
-// `System.Convert.ToChar` produces an unpaired surrogate.  See #313
-// and #314.
+// Defensive: rejects the surrogate range (0xD800..0xDFFF) directly per
+// Unicode §3.9 — surrogate code points are not valid scalar values and
+// feeding one to `System.Convert.ToChar` produces an unpaired
+// surrogate.  The lexer's own `lexUnicodeEscape` already filters these
+// before calling; the guard here keeps the function unconditionally
+// safe for any future caller.  See #313 and #314.
+@pure
 func longToChar(v: in Long): Char {
-  if v < 0i64 or v > 65535i64 {
+  if v < 0i64 or v > 65535i64 or (v >= 55296i64 and v <= 57343i64) {
     '\u{FFFD}'
   } else {
     CharHost.hostIntToChar(longToInt(v))
