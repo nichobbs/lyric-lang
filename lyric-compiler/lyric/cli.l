@@ -91,9 +91,9 @@ import Lyric.Doc as Doc                // generate(source) -> String
 import Lyric.ContractMeta as Meta      // readFromFile, diffContracts, hasBreakingChanges
 import Lyric.Repl as Repl              // run(argv) -> Int
 import Lyric.TestSynth as TestSynth    // synthesize, listEntries
-import Lyric.BenchSynth as BenchSynth  // synthesize
+import Lyric.BenchSynth as BenchSynth  // synthesizeBench
 import Lyric.OpenApiParser as OAParser // parseSpec(json) -> Result[ParsedSpec, String]
-import Lyric.OpenApiGen as OAGen       // generate(spec, clientName, packageName) -> String
+import Lyric.OpenApiGen as OAGen       // generateOpenApi(spec, clientName, packageName) -> String
 
 func VERSION(): String { "0.1.0" }
 

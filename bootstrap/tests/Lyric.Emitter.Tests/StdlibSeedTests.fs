@@ -13,7 +13,7 @@ open Lyric.Emitter.Tests.EmitTestKit
 
 /// Locate `lyric-stdlib/std/` from the test binary. We walk
 /// up parent directories until the directory is found (typical
-/// structure is `compiler/tests/Lyric.Emitter.Tests/bin/Debug/net9.0/`).
+/// structure is `bootstrap/tests/Lyric.Emitter.Tests/bin/Debug/net10.0/`).
 let private locateStdlibDir () : string =
     let mutable dir = Some (DirectoryInfo(System.AppContext.BaseDirectory))
     let mutable found : string option = None

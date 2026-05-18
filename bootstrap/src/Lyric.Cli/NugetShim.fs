@@ -165,7 +165,7 @@ let lyricNameFromNugetId (nugetId: string) : string =
 /// Lyric reserved words — anything matching one of these is
 /// rewritten to `<name>_` per `docs/21` §4.  This is intentionally
 /// the conservative superset of the actual keyword tables in
-/// `compiler/src/Lyric.Lexer/Keywords.fs`; missing one just means a
+/// `bootstrap/src/Lyric.Lexer/Keywords.fs`; missing one just means a
 /// generated function name keeps a CLR-y feel, missing nothing means
 /// no false collisions can break parsing.
 let private lyricKeywords =

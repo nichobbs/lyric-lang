@@ -12,8 +12,8 @@ git clone https://github.com/nichobbs/lyric-lang
 cd lyric-lang
 
 # Build everything
-cd compiler
-dotnet build Lyric.sln
+cd bootstrap
+dotnet build Bootstrap.sln
 ```
 
 The first build downloads NuGet dependencies and compiles the compiler itself. Subsequent builds are incremental and take a few seconds.

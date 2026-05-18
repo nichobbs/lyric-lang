@@ -27,8 +27,8 @@ Lyric targets the .NET runtime initially, leveraging reified generics, value typ
 ### Build the compiler
 
 ```sh
-cd compiler
-dotnet build Lyric.sln
+cd bootstrap
+dotnet build Bootstrap.sln
 ```
 
 ### Compile and run a Lyric program
@@ -113,7 +113,7 @@ DLL into the user's output directory.  The search order is:
 ### Running the test suite
 
 ```sh
-cd compiler
+cd bootstrap
 dotnet run --project tests/Lyric.Lexer.Tests
 dotnet run --project tests/Lyric.Parser.Tests
 dotnet run --project tests/Lyric.TypeChecker.Tests

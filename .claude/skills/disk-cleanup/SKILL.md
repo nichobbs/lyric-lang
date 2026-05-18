@@ -44,9 +44,9 @@ Bash commands initialise (a few MB is plenty):
 
 1. **Build artefacts under `bootstrap/`** — large but non-essential
    text files:
-   - `compiler/src/Lyric.<X>/obj/Debug/net9.0/project.assets.json`
-   - `compiler/src/Lyric.<X>/obj/Debug/net9.0/Lyric.<X>.deps.json`
-   - `compiler/tests/Lyric.<X>.Tests/obj/.../*.deps.json`
+   - `bootstrap/src/Lyric.<X>/obj/Debug/net10.0/project.assets.json`
+   - `bootstrap/src/Lyric.<X>/obj/Debug/net10.0/Lyric.<X>.deps.json`
+   - `bootstrap/tests/Lyric.<X>.Tests/obj/.../*.deps.json`
    - The `.csproj.FileListAbsolute.txt` files under any `obj/`.
    These all regenerate on the next `dotnet build`.
 2. **Stale Claude session logs** — sometimes hundreds of MB of

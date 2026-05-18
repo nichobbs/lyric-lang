@@ -1,7 +1,7 @@
 #!/bin/bash
 # SessionStart hook — install the .NET SDK + runtime pinned by
-# `compiler/global.json` into `~/.dotnet` so Claude Code on the
-# web can `dotnet build Lyric.sln` and run the test projects
+# `bootstrap/global.json` into `~/.dotnet` so Claude Code on the
+# web can `dotnet build Bootstrap.sln` and run the test projects
 # without the agent having to bootstrap dotnet on every cold
 # session.
 #

@@ -186,8 +186,8 @@ let private copyNugetArtifacts
 ///
 /// The fingerprint covers:
 ///   * the source bytes
-///   * every file under `lyric/std/*.l` reachable from the source's
-///     directory (or any ancestor that contains a `lyric/std/` dir)
+///   * every file under `lyric-stdlib/std/*.l` reachable from the source's
+///     directory (or any ancestor that contains a `lyric-stdlib/std/` dir)
 ///   * the running CLI assembly's mtime — bumped when the compiler
 ///     itself is rebuilt, invalidating the cache for free.
 ///
@@ -209,7 +209,7 @@ module private BuildCache =
             appendString sha path
             appendBytes sha (File.ReadAllBytes path)
 
-    /// Locate the `lyric/std/` directory for cache fingerprinting.
+    /// Locate the `lyric-stdlib/std/` directory for cache fingerprinting.
     /// Checks `LYRIC_STD_PATH` first; falls back to walking up from `startDir`.
     let private locateStdlibFiles (startDir: string) : string list =
         let envDir =

@@ -1,5 +1,5 @@
 // bench_synth_bridge.l — text-protocol bridge for the F# SelfHostedBench.fs shim.
-// Wraps Lyric.BenchSynth.synthesize and serialises the result to a
+// Wraps Lyric.BenchSynth.synthesizeBench and serialises the result to a
 // line-oriented protocol so the F# shim avoids CLR reflection on Lyric union types.
 //
 // synthesizeBenchToProtocol protocol:
