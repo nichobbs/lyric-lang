@@ -254,7 +254,7 @@ enum Color {
 }
 ```
 
-Enums are unions with no payload. Values are distinct from integers; explicit conversion is required to interoperate with numeric APIs. Ordinals are non-negative — `.toNat()` returns the zero-indexed ordinal as `Nat`, and `Color.fromNat(n): Option[Color]` converts back (returning `None` for out-of-range values).
+Enums are unions with no payload. Values are distinct from integers; explicit conversion is required to interoperate with numeric APIs. Ordinals are non-negative — `.toNat()` returns the zero-indexed ordinal as `Nat`, and `Color.fromNat(n): Option[Color]` converts back (returning `None` for out-of-range values). **Status: specified; compiler synthesis of `toNat`/`fromNat` is planned for v1.0 and not yet shipped.**
 
 ### 2.7 Arrays and slices
 

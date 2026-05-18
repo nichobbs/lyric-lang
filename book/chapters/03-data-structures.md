@@ -178,7 +178,10 @@ func opposite(d: in Direction): Direction {
 
 Enums are distinct from integers. There is no implicit conversion between `Color` and any numeric type. To get the ordinal (for interop or serialization), use `.toNat()` — enum ordinals are always non-negative, so `Nat` is the right return type. To go the other direction, use `Color.fromNat(n)`, which returns `Option[Color]` — not every natural number is a valid color, so the conversion can fail.
 
+> **Not yet shipped:** `toNat()` and `fromNat()` are specified but not yet synthesised by the compiler. They are planned for the v1.0 release. Until then, use an explicit `match` or cast via `@externTarget` for ordinal access.
+
 ```lyric
+// Planned API (compiler support coming in v1.0):
 val n: Nat = Color.Green.toNat()        // 1 (by declaration order, zero-indexed)
 val c: Option[Color] = Color.fromNat(5) // None — no Color with index 5
 ```

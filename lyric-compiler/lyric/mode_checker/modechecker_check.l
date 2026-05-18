@@ -132,6 +132,7 @@ func checkCrossPackageCallee(
           "'; upgrade callee package or shift caller to @runtime_checked",
           span))
       }
+      return  // stop after first matching import (imports are unique after parsing)
     }
     ji = ji + 1
   }

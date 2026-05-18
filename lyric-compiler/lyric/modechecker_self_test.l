@@ -184,6 +184,19 @@ func testCrossPackageCallProofOk(): Unit {
   assertTrue(not (hasDiagCode(result, "V0002")), "cross-pkg-ok: V0002 not emitted for proof_required callee")
 }
 
+func testCrossPackageSingleSegmentV0002(): Unit {
+  // Single-segment package name: `import Pkg` then `Pkg.someFunc()`.
+  // `extractQualifiedName` handles the EPath-receiver case (segments.count == 1)
+  // which produces the package name "Pkg" from the receiver of the call.
+  val imports: List[ImportedMeta] = newList()
+  imports.add(ImportedMeta(name = "Pkg", level = "runtime_checked"))
+  val src =
+    "@proof_required\npackage P\nimport Pkg\nfunc f(): Unit { Pkg.someFunc() }\n"
+  val pr = parse(src)
+  val result = checkFileWithImports(pr.file, imports)
+  assertTrue(hasDiagCode(result, "V0002"), "single-seg-pkg: V0002 emitted for single-segment runtime_checked package call")
+}
+
 func main(): Unit {
   testRuntimeCheckedDefault()
   testExplicitRuntimeChecked()
@@ -204,5 +217,6 @@ func main(): Unit {
   testRuntimeCheckedNoChecks()
   testCrossPackageCallV0002()
   testCrossPackageCallProofOk()
+  testCrossPackageSingleSegmentV0002()
   println("modechecker self-test: ok")
 }
