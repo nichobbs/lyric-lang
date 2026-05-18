@@ -23,6 +23,7 @@ import Std.Path as Path
 import Std.Directory as Dir
 import Std.Environment as Env
 import Std.Process as Process
+import Std.ProcessCapture as PC
 import Std.Errors
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,9 +48,9 @@ pub record GitDepResult {
   /// Absolute path to the resolved directory.  This is either the clone
   /// root or the `subdir` within it when the dependency specifies one.
   localDir:    String
-  /// Resolved git commit SHA.  Currently left empty because the bootstrap
-  /// emitter does not yet expose a `git rev-parse HEAD` equivalent in the
-  /// self-hosted process layer; a follow-up stage will populate this field.
+  /// Resolved git commit SHA.  For `Rev` refs this is the SHA from the manifest;
+  /// for `Tag` and `Branch` refs it is the result of `git rev-parse HEAD`
+  /// after the clone/pull completes.
   resolvedRev: String
 }
 
@@ -186,6 +187,17 @@ func cloneBranch(url: in String, branchName: in String, targetDir: in String): R
   }
 }
 
+// Run `git -C <dir> rev-parse HEAD` and return the trimmed SHA.
+// Returns an empty string if the command fails (e.g. shallow clone edge cases).
+func revParseHead(dir: in String): String {
+  val args: List[String] = newList()
+  args.add("-C")
+  args.add(dir)
+  args.add("rev-parse")
+  args.add("HEAD")
+  Str.trim(PC.runCapture("git", args, ""))
+}
+
 // Pull the latest changes in an already-cloned branch directory.
 func pullBranch(targetDir: in String): Result[Unit, String] {
   val args: List[String] = newList()
@@ -238,6 +250,7 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
 
   // Clone or refresh depending on ref type and whether the clone exists.
   val alreadyCloned = isGitClone(targetDir)
+  var resolvedRev = ""
 
   match ref {
     case Tag(name) -> {
@@ -248,6 +261,8 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
         }
       }
       // Tag refs are immutable: once cloned, no refresh needed.
+      // Capture the pinned SHA for the lock file.
+      resolvedRev = revParseHead(targetDir)
     }
     case Rev(sha) -> {
       if not alreadyCloned {
@@ -256,7 +271,8 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
           case Ok(_)    -> ()
         }
       }
-      // Rev refs are immutable: a given SHA always resolves to the same tree.
+      // Rev refs are immutable: the SHA is already known from the manifest.
+      resolvedRev = sha
     }
     case Branch(name) -> {
       if not alreadyCloned {
@@ -271,6 +287,8 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
           case Ok(_)    -> ()
         }
       }
+      // Capture the current HEAD SHA so the lock file records a specific commit.
+      resolvedRev = revParseHead(targetDir)
     }
   }
 
@@ -289,5 +307,5 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
     return Err(error = "subdir '" + resolvedDir + "' does not exist in cloned repository")
   }
 
-  Ok(value = GitDepResult(localDir = resolvedDir, resolvedRev = ""))
+  Ok(value = GitDepResult(localDir = resolvedDir, resolvedRev = resolvedRev))
 }

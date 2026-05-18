@@ -14,7 +14,7 @@ import Lyric.Manifest
 
 // ─── Character helpers ────────────────────────────────────────────────────────
 
-func xmlEscape(s: in String): String {
+pub func xmlEscape(s: in String): String {
   var r = Str.replace(s, "&", "&amp;")
   r = Str.replace(r, "<", "&lt;")
   r = Str.replace(r, ">", "&gt;")
