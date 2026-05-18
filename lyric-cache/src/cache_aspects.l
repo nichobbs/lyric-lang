@@ -1,34 +1,13 @@
-/// Cache.Aspects — pub aspect templates for transparent result caching.
-///
-/// Two templates:
-///
-///   FunctionCache  — B-mode: caches by `call.qualifiedName`.  Best for
-///                    zero-arg or arg-independent pure functions (e.g.
-///                    `loadConfig()`, `getFeatureFlags()`).
-///
-///   ItemCache      — C-mode (@inline_template): reads a `cacheKey: String`
-///                    parameter from the handler's argument list.  Best for
-///                    per-item caching (e.g. `getUser(id, cacheKey)`).
-///
-/// Both templates share a package-level in-process store.  Consumers who
-/// need Redis or another remote store should implement `Cache.CacheStore`
-/// and call `Cache.get` / `Cache.set` directly in their own aspect body.
-///
-/// Typical consumer usage:
-///
-///   import Cache.Aspects
-///
-///   aspect ConfigCache from Cache.Aspects.FunctionCache {
-///     matches: name like "load*"
-///     config { ttlSeconds: Int = 3600 }
-///   }
-///
-///   aspect UserItemCache from Cache.Aspects.ItemCache {
-///     matches: name like "getUser*"
-///     config { ttlSeconds: Int = 300; keyPrefix: String = "user:" }
-///   }
-///
-/// See docs/03-decision-log.md D055 and lyric-cache/README.md.
+// Cache.Aspects — config types and helpers for transparent result caching.
+//
+// Two aspect templates are defined here as records + helper functions.
+// The full aspect-weaver wiring (B-mode / C-mode, around(call), config
+// injection) requires the aspect system described in docs/26-aspects.md and
+// is deferred until that system ships.  Until then, callers should use
+// Cache.get / Cache.set / Cache.setWithTtl directly, or consult
+// the typed config records below to construct equivalent call-site logic.
+//
+// See docs/03-decision-log.md D055 and lyric-cache/README.md.
 
 @runtime_checked
 package Cache.Aspects
@@ -36,102 +15,40 @@ package Cache.Aspects
 import Std.Core
 import Cache
 
-// Shared in-process store for all templates in this package.
-var store = Cache.inProcess()
-
 // ─── FunctionCache ────────────────────────────────────────────────────────────
 
-/// Cache the return value of matched functions by their qualified name.
+/// Configuration for the FunctionCache aspect template.
 ///
-/// B-mode: the cache key is always `call.qualifiedName`, so all calls to
-/// the same function share one cache slot regardless of arguments.  Only
-/// suitable for functions whose return value does not depend on their
-/// arguments (e.g. config loaders, feature-flag fetchers).
-///
-/// **Type constraint:** apply only to functions returning `Result[String, E]`.
-/// The `Ok` value is stored in the cache directly as a `String`.  For
-/// functions returning other types, use a custom aspect body that serialises
-/// the value before calling `Cache.setWithTtl`.
-///
-/// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled    Bool — master switch (default: true)
-///   ttlSeconds Int  — per-entry TTL in seconds; 0 = no expiry (default: 300)
+/// FunctionCache caches by `qualifiedName` (B-mode): all calls to the same
+/// function share one cache slot regardless of arguments.  Suitable for
+/// functions whose return value is argument-independent.
 @stable(since="0.1")
-pub aspect FunctionCache {
-  config {
-    enabled:    Bool = true
-    ttlSeconds: Int  = 300
-  }
+pub record FunctionCacheConfig {
+  enabled:    Bool
+  ttlSeconds: Int
+}
 
-  around(call) -> ret {
-    if not enabled {
-      ret = call.proceed()
-    } else {
-      val key = call.qualifiedName
-      match Cache.get(store, key) {
-        case Some(cached) ->
-          ret = Ok(cached)
-        case None ->
-          ret = call.proceed()
-          match ret {
-            case Ok(value) ->
-              Cache.setWithTtl(store, key, value, ttlSeconds)
-            case Err(_) -> ()
-          }
-      }
-    }
-  }
+/// Return the default FunctionCache configuration (enabled, 300 s TTL).
+@stable(since="0.1")
+pub func defaultFunctionCacheConfig(): FunctionCacheConfig {
+  return FunctionCacheConfig(enabled = true, ttlSeconds = 300)
 }
 
 // ─── ItemCache ────────────────────────────────────────────────────────────────
 
-/// Cache the return value of matched functions using a `cacheKey: String`
-/// parameter on the handler.
+/// Configuration for the ItemCache aspect template.
 ///
-/// C-mode (@inline_template): body is re-compiled in the consumer's package
-/// so it can read `args.cacheKey` from the concrete handler parameter list.
-/// Apply only to handlers that declare a `cacheKey: String` parameter;
-/// the compiler reports shape error A0042 otherwise.
-///
-/// **Type constraint:** apply only to handlers returning `Result[String, E]`.
-/// The `Ok` value is stored as a `String` in the cache.  For handlers
-/// returning other types, use a custom aspect body that serialises the value.
-///
-/// The effective key is `keyPrefix + args.cacheKey`.  Only `Ok` results are
-/// cached; `Err` results pass through without caching.
-///
-/// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled    Bool   — master switch (default: true)
-///   ttlSeconds Int    — per-entry TTL in seconds; 0 = no expiry (default: 300)
-///   keyPrefix  String — prefix prepended to each cache key (default: "")
+/// ItemCache caches per-item using a caller-supplied key (C-mode).
+/// The effective cache key is `keyPrefix + cacheKey`.
 @stable(since="0.1")
-@inline_template
-pub aspect ItemCache {
-  config {
-    enabled:    Bool   = true
-    ttlSeconds: Int    = 300
-    keyPrefix:  String = ""
-  }
+pub record ItemCacheConfig {
+  enabled:    Bool
+  ttlSeconds: Int
+  keyPrefix:  String
+}
 
-  requires:
-    args.cacheKey != ""    // handler must declare a cacheKey: String parameter
-
-  around(call) -> ret {
-    if not enabled {
-      ret = call.proceed()
-    } else {
-      val key = keyPrefix + args.cacheKey
-      match Cache.get(store, key) {
-        case Some(cached) ->
-          ret = Ok(cached)
-        case None ->
-          ret = call.proceed()
-          match ret {
-            case Ok(value) ->
-              Cache.setWithTtl(store, key, value, ttlSeconds)
-            case Err(_) -> ()
-          }
-      }
-    }
-  }
+/// Return the default ItemCache configuration (enabled, 300 s TTL, no prefix).
+@stable(since="0.1")
+pub func defaultItemCacheConfig(): ItemCacheConfig {
+  return ItemCacheConfig(enabled = true, ttlSeconds = 300, keyPrefix = "")
 }

@@ -1,21 +1,21 @@
-/// .NET kernel boundary for lyric-proto.
-///
-/// Provides two families of operations that cannot be expressed in pure Lyric:
-///
-///   1. IEEE 754 bit extraction (System.BitConverter) for float/double fields.
-///      Proto3 float fields carry the 32-bit IEEE 754 bit pattern as a fixed32;
-///      double fields carry the 64-bit bit pattern as a fixed64.
-///
-///   2. ProtoBuffer — an opaque mutable byte-accumulator backed by
-///      System.IO.MemoryStream.  The pure Lyric encoder (Proto.Encoding) calls
-///      bufWriteByte / bufWriteBytes to append bytes, then bufToBytes to extract
-///      the completed message.
-///
-/// Both families are audited at the kernel boundary (D038 Resolution F).
-/// No .NET types from this file are visible to consumers; Proto.Types provides
-/// the Lyric-level API.
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// .NET kernel boundary for lyric-proto.
+//
+// Provides two families of operations that cannot be expressed in pure Lyric:
+//
+//   1. IEEE 754 bit extraction (System.BitConverter) for float/double fields.
+//      Proto3 float fields carry the 32-bit IEEE 754 bit pattern as a fixed32;
+//      double fields carry the 64-bit bit pattern as a fixed64.
+//
+//   2. ProtoBuffer — an opaque mutable byte-accumulator backed by
+//      System.IO.MemoryStream.  The pure Lyric encoder (Proto.Encoding) calls
+//      bufWriteByte / bufWriteBytes to append bytes, then bufToBytes to extract
+//      the completed message.
+//
+// Both families are audited at the kernel boundary (D038 Resolution F).
+// No .NET types from this file are visible to consumers; Proto.Types provides
+// the Lyric-level API.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "dotnet")
 package Proto.Kernel.Net
 

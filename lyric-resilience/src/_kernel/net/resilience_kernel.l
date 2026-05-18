@@ -1,18 +1,18 @@
-/// Resilience.Kernel.Net — .NET resilience extern boundary.
-///
-/// Provides:
-///   sleepMs             — Thread.Sleep for retry backoff
-///   circuitIsOpen       — query per-named circuit state (thread-safe)
-///   circuitRecordSuccess — record a successful call
-///   circuitRecordFailure — record a failed call; may open the circuit
-///
-/// Circuit state is stored in a process-global ConcurrentDictionary keyed
-/// by circuit name.  Each entry tracks consecutive failures, open/closed
-/// status, and the timestamp when the circuit opened.  The kernel resets
-/// an open circuit to half-open after `cooldownMs` and allows one probe.
-///
-/// Only active when compiled with feature = "dotnet".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Resilience.Kernel.Net — .NET resilience extern boundary.
+//
+// Provides:
+//   sleepMs             — Thread.Sleep for retry backoff
+//   circuitIsOpen       — query per-named circuit state (thread-safe)
+//   circuitRecordSuccess — record a successful call
+//   circuitRecordFailure — record a failed call; may open the circuit
+//
+// Circuit state is stored in a process-global ConcurrentDictionary keyed
+// by circuit name.  Each entry tracks consecutive failures, open/closed
+// status, and the timestamp when the circuit opened.  The kernel resets
+// an open circuit to half-open after `cooldownMs` and allows one probe.
+//
+// Only active when compiled with feature = "dotnet".
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "dotnet")
 package Resilience.Kernel.Net

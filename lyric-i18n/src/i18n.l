@@ -1,27 +1,27 @@
-/// I18n — internationalization and localization library for Lyric.
-///
-/// Provides locale-aware translation with variable substitution.
-/// `TranslationStore` is the public interface; `InProcessTranslationStore` is
-/// the bundled in-process implementation backed by a mutable `Map`.
-///
-/// Usage:
-///
-///   import I18n
-///   import Std.Collections
-///
-///   val store = I18n.fromJson(translationsJson)?
-///   val locale = I18n.makeLocale("en-US")
-///   println(I18n.translateLocale(store, "greeting", locale))
-///
-///   val vars = Map.empty().set("name", "Alice")
-///   println(I18n.translateWithLocale(store, "greeting", locale, vars))
-///
-/// Runtime config env vars (LYRIC_CONFIG_I18NCONFIG_*):
-///   LYRIC_CONFIG_I18NCONFIG_DEFAULTLOCALE     — default locale tag (default: "en")
-///   LYRIC_CONFIG_I18NCONFIG_FALLBACKLOCALE    — fallback locale tag (default: "en")
-///   LYRIC_CONFIG_I18NCONFIG_TRANSLATIONSPATH  — path to translations directory (default: "translations")
-///
-/// See docs/03-decision-log.md and lyric-i18n/README.md.
+// I18n — internationalization and localization library for Lyric.
+//
+// Provides locale-aware translation with variable substitution.
+// `TranslationStore` is the public interface; `InProcessTranslationStore` is
+// the bundled in-process implementation backed by a mutable `Map`.
+//
+// Usage:
+//
+//   import I18n
+//   import Std.Collections
+//
+//   val store = I18n.fromJson(translationsJson)?
+//   val locale = I18n.makeLocale("en-US")
+//   println(I18n.translateLocale(store, "greeting", locale))
+//
+//   val vars = Map.empty().set("name", "Alice")
+//   println(I18n.translateWithLocale(store, "greeting", locale, vars))
+//
+// Runtime config env vars (LYRIC_CONFIG_I18NCONFIG_*):
+//   LYRIC_CONFIG_I18NCONFIG_DEFAULTLOCALE     — default locale tag (default: "en")
+//   LYRIC_CONFIG_I18NCONFIG_FALLBACKLOCALE    — fallback locale tag (default: "en")
+//   LYRIC_CONFIG_I18NCONFIG_TRANSLATIONSPATH  — path to translations directory (default: "translations")
+//
+// See docs/03-decision-log.md and lyric-i18n/README.md.
 
 @runtime_checked
 package I18n
@@ -345,7 +345,7 @@ val maxSubstOutputLength: Int = 1048576
 // exceeds `maxSubstOutputLength` therefore return early with no substitutions
 // applied — callers relying on substitution must keep templates below this limit.
 func substitutePlaceholders(template: in String, vars: in Map[String, String]): String {
-  var out: String = ""
+  var buf: String = ""
   var i:   Int    = 0
   while i < template.length {
     val ch = template.charAt(i).toString()
@@ -357,7 +357,7 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
       }
       if j >= template.length {
         // No closing brace found; emit everything from i and stop.
-        out = out + template.substring(i, template.length)
+        buf = buf + template.substring(i, template.length)
         i   = template.length
       } else {
         val varName = template.substring(i + 1, j)
@@ -366,21 +366,18 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
             if out.length + value.length > maxSubstOutputLength {
               return template
             }
-            out = out + value
+            buf = buf + value
           }
-          case None -> out = out + "{" + varName + "}"
+          case None -> buf = buf + "{" + varName + "}"
         }
         i = j + 1
       }
     } else {
-      if out.length + 1 > maxSubstOutputLength {
-        return template
-      }
-      out = out + ch
+      buf = buf + ch
       i   = i + 1
     }
   }
-  return out
+  return buf
 }
 
 // Build an InProcessTranslationStore from a JSON array of [localeKey, key, value] triples.

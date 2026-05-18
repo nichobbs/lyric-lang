@@ -24,6 +24,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 dotnet = []
 jvm    = []
 

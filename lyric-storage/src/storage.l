@@ -1,35 +1,35 @@
-/// Storage — object and file storage library for Lyric.
-///
-/// Provides a uniform `StorageBucket` interface over Amazon S3, Azure Blob
-/// Storage, and the local filesystem.  Obtain a bucket handle with one of the
-/// feature-gated `connect*` factory functions, then call the typed wrappers or
-/// the interface methods directly.
-///
-/// Usage:
-///
-///   import Storage
-///   import Std.Collections
-///
-///   val bucket = Storage.connectS3()?
-///   Storage.put(bucket, "uploads/photo.jpg", base64Data, "image/jpeg")?
-///   match Storage.get(bucket, "uploads/photo.jpg") {
-///     case Ok(obj) -> println(obj.metadata.contentType)
-///     case Err(e)  -> println(e.message)
-///   }
-///   val listing = Storage.list(bucket, "uploads/")?
-///
-/// Runtime config env vars (LYRIC_CONFIG_S3CONNECTION_*, etc.):
-///   LYRIC_CONFIG_S3CONNECTION_REGION       — AWS region (required for S3)
-///   LYRIC_CONFIG_S3CONNECTION_BUCKET       — S3 bucket name
-///   LYRIC_CONFIG_S3CONNECTION_ACCESSKEY    — AWS access key (@sensitive)
-///   LYRIC_CONFIG_S3CONNECTION_SECRETKEY    — AWS secret key (@sensitive)
-///   LYRIC_CONFIG_S3CONNECTION_ENDPOINTURL  — custom endpoint URL (default: "")
-///   LYRIC_CONFIG_AZURECONNECTION_CONNECTIONSTRING — Azure connection string
-///   LYRIC_CONFIG_AZURECONNECTION_CONTAINERNAME    — Azure container name
-///   LYRIC_CONFIG_LOCALCONNECTION_BASEPATH  — local base path (default: /tmp/lyric-storage)
-///   LYRIC_CONFIG_LOCALCONNECTION_BUCKETNAME — local bucket directory name
-///
-/// See docs/03-decision-log.md D056 and lyric-storage/README.md.
+// Storage — object and file storage library for Lyric.
+//
+// Provides a uniform `StorageBucket` interface over Amazon S3, Azure Blob
+// Storage, and the local filesystem.  Obtain a bucket handle with one of the
+// feature-gated `connect*` factory functions, then call the typed wrappers or
+// the interface methods directly.
+//
+// Usage:
+//
+//   import Storage
+//   import Std.Collections
+//
+//   val bucket = Storage.connectS3()?
+//   Storage.put(bucket, "uploads/photo.jpg", base64Data, "image/jpeg")?
+//   match Storage.get(bucket, "uploads/photo.jpg") {
+//     case Ok(obj) -> println(obj.metadata.contentType)
+//     case Err(e)  -> println(e.message)
+//   }
+//   val listing = Storage.list(bucket, "uploads/")?
+//
+// Runtime config env vars (LYRIC_CONFIG_S3CONNECTION_*, etc.):
+//   LYRIC_CONFIG_S3CONNECTION_REGION       — AWS region (required for S3)
+//   LYRIC_CONFIG_S3CONNECTION_BUCKET       — S3 bucket name
+//   LYRIC_CONFIG_S3CONNECTION_ACCESSKEY    — AWS access key (@sensitive)
+//   LYRIC_CONFIG_S3CONNECTION_SECRETKEY    — AWS secret key (@sensitive)
+//   LYRIC_CONFIG_S3CONNECTION_ENDPOINTURL  — custom endpoint URL (default: "")
+//   LYRIC_CONFIG_AZURECONNECTION_CONNECTIONSTRING — Azure connection string
+//   LYRIC_CONFIG_AZURECONNECTION_CONTAINERNAME    — Azure container name
+//   LYRIC_CONFIG_LOCALCONNECTION_BASEPATH  — local base path (default: /tmp/lyric-storage)
+//   LYRIC_CONFIG_LOCALCONNECTION_BUCKETNAME — local bucket directory name
+//
+// See docs/03-decision-log.md D056 and lyric-storage/README.md.
 
 @runtime_checked
 package Storage
@@ -585,24 +585,24 @@ func storageKernelExists(bucketHandle: in Int, key: in String): Result[Bool, Str
 
 // Wrap a string in JSON double quotes with basic escaping.
 func jsonString(s: in String): String {
-  var out = "\""
+  var buf = "\""
   var i   = 0
   while i < s.length {
     val ch = s.charAt(i).toString()
     if ch == "\"" {
-      out = out + "\\\""
+      buf = buf + "\\\""
     } else if ch == "\\" {
-      out = out + "\\\\"
+      buf = buf + "\\\\"
     } else if ch == "\n" {
-      out = out + "\\n"
+      buf = buf + "\\n"
     } else if ch == "\r" {
-      out = out + "\\r"
+      buf = buf + "\\r"
     } else if ch == "\t" {
-      out = out + "\\t"
+      buf = buf + "\\t"
     } else {
-      out = out + ch
+      buf = buf + ch
     }
     i = i + 1
   }
-  return out + "\""
+  return buf + "\""
 }

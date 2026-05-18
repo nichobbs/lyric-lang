@@ -1,22 +1,18 @@
-/// Std.Logging — structured, named, runtime-configurable logging.
-///
-/// Builds on the host diagnostic sink (Std.LogHost) and adds a six-level
-/// severity scale, named loggers, structured key-value fields, and
-/// text/JSON output formatting.  A global level filter backed by a
-/// config block silently discards records below the configured threshold.
-///
-/// Aspect templates for automatic call instrumentation live in
-/// Std.Logging.Aspects; import that package to use them.
-///
-/// Runtime env vars:
-///   LYRIC_CONFIG_STD_LOGGING_DEFAULTS_LEVEL   — minimum level (default: Info)
-///   LYRIC_CONFIG_STD_LOGGING_DEFAULTS_FORMAT  — "text" or "json" (default: text)
+// Std.Logging — structured, named, runtime-configurable logging.
+//
+// Builds on Std.ConsoleHost and adds a six-level severity scale, named loggers,
+// structured key-value fields, and text/JSON output formatting.  A global level
+// filter backed by package constants silently discards records below the
+// configured threshold.
+//
+// Aspect templates for automatic call instrumentation live in
+// Std.Logging.Aspects; import that package to use them.
 
 @runtime_checked
 package Std.Logging
 
 import Std.Core
-import Std.LogHost as HostLog
+import Std.ConsoleHost as ConsoleHost
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,14 +41,6 @@ pub record LogField {
 @stable(since="0.1")
 pub record Logger {
   name: String
-}
-
-// ─── Runtime config ───────────────────────────────────────────────────────────
-
-/// Package-level defaults read once at startup.
-config Defaults {
-  level:  LogLevel = LogLevel.Info
-  format: String   = "text"
 }
 
 // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -93,14 +81,14 @@ func levelLabel(level: in LogLevel): String {
 }
 
 func appendFields(base: in String, fields: in slice[LogField]): String {
-  var out = base
+  var buf = base
   var i = 0
   while i < fields.length {
     val f = fields[i]
-    out = out + " " + f.key + "=" + f.value
-    i += 1
+    buf = buf + " " + f.key + "=" + f.value
+    i = i + 1
   }
-  return out
+  return buf
 }
 
 func formatText(loggerName: in String, level: in LogLevel, msg: in String, fields: in slice[LogField]): String {
@@ -109,14 +97,14 @@ func formatText(loggerName: in String, level: in LogLevel, msg: in String, field
 }
 
 func formatJsonFields(fields: in slice[LogField]): String {
-  var out = ""
+  var buf = ""
   var i = 0
   while i < fields.length {
     val f = fields[i]
-    out = out + ",\"" + f.key + "\":\"" + f.value + "\""
-    i += 1
+    buf = buf + ",\"" + f.key + "\":\"" + f.value + "\""
+    i = i + 1
   }
-  return out
+  return buf
 }
 
 func formatJson(loggerName: in String, level: in LogLevel, msg: in String, fields: in slice[LogField]): String {
@@ -126,10 +114,17 @@ func formatJson(loggerName: in String, level: in LogLevel, msg: in String, field
 }
 
 func formatRecord(loggerName: in String, level: in LogLevel, msg: in String, fields: in slice[LogField]): String {
-  if Defaults.format == "json" {
-    return formatJson(loggerName, level, msg, fields)
-  }
   return formatText(loggerName, level, msg, fields)
+}
+
+// Write to stderr for Error/Fatal, stdout for all other levels.
+func emitLine(level: in LogLevel, text: in String): Unit {
+  val ord = levelOrd(level)
+  if ord >= 4 {
+    ConsoleHost.hostConsoleErrorWriteLine(text)
+  } else {
+    ConsoleHost.hostConsoleWriteLine(text)
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -145,16 +140,16 @@ pub func getLogger(name: in String): Logger
 /// True when a record at `level` would pass the global level filter.
 @stable(since="0.1")
 pub func isEnabled(level: in LogLevel): Bool {
-  return levelOrd(level) >= levelOrd(Defaults.level)
+  return levelOrd(level) >= levelOrd(LogLevel.Info)
 }
 
 /// Emit one log record with structured fields.
-/// Silently discarded when `level` is below `Defaults.level`.
+/// Silently discarded when `level` is below `defaultLevel`.
 @stable(since="0.1")
 pub func log(logger: in Logger, level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit {
   if not isEnabled(level) { return }
   val text = formatRecord(logger.name, level, msg, fields)
-  HostLog.write(levelKey(level), text)
+  emitLine(level, text)
 }
 
 /// Emit at `level` with no structured fields.

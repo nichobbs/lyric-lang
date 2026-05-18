@@ -683,24 +683,24 @@ func serialiseSession(data: in Session.SessionData): String {
 
 // Wrap a string in JSON double-quotes with minimal escaping.
 func sessionJsonStr(s: in String): String {
-  var out = "\""
+  var buf = "\""
   var i   = 0
   while i < s.length {
     val ch = s.charAt(i).toString()
     if ch == "\"" {
-      out = out + "\\\""
+      buf = buf + "\\\""
     } else if ch == "\\" {
-      out = out + "\\\\"
+      buf = buf + "\\\\"
     } else if ch == "\n" {
-      out = out + "\\n"
+      buf = buf + "\\n"
     } else if ch == "\r" {
-      out = out + "\\r"
+      buf = buf + "\\r"
     } else if ch == "\t" {
-      out = out + "\\t"
+      buf = buf + "\\t"
     } else {
-      out = out + ch
+      buf = buf + ch
     }
     i = i + 1
   }
-  return out + "\""
+  return buf + "\""
 }

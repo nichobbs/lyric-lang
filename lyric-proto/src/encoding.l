@@ -1,19 +1,19 @@
-/// Pure-Lyric Protocol Buffer encoder.
-///
-/// The encoder builds messages by accumulating bytes into a ProtoBuffer
-/// (an opaque kernel-backed accumulator).  Consumers do not interact with
-/// ProtoBuffer directly; the public entry point is encodeMessage, which
-/// takes a List[ProtoField] and returns a slice[Byte].
-///
-/// Field ordering: proto3 does not require fields to be in field-number order,
-/// but encoding them in ascending order is conventional and produces stable
-/// output.  encodeMessage preserves the order of the input list.
-///
-/// Embedded messages: encode the inner message with encodeMessage first, then
-/// wrap the result in a BytesField for the outer message.
-///
-///   val inner = encodeMessage([VarField(1, 42L)])
-///   val outer = encodeMessage([BytesField(1, inner)])
+// Pure-Lyric Protocol Buffer encoder.
+//
+// The encoder builds messages by accumulating bytes into a ProtoBuffer
+// (an opaque kernel-backed accumulator).  Consumers do not interact with
+// ProtoBuffer directly; the public entry point is encodeMessage, which
+// takes a List[ProtoField] and returns a slice[Byte].
+//
+// Field ordering: proto3 does not require fields to be in field-number order,
+// but encoding them in ascending order is conventional and produces stable
+// output.  encodeMessage preserves the order of the input list.
+//
+// Embedded messages: encode the inner message with encodeMessage first, then
+// wrap the result in a BytesField for the outer message.
+//
+//   val inner = encodeMessage([VarField(1, 42L)])
+//   val outer = encodeMessage([BytesField(1, inner)])
 package Proto.Encoding
 
 import Proto.Types

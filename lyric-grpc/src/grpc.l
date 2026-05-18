@@ -1,29 +1,29 @@
-/// Grpc — gRPC client and server API.
-///
-/// Client (outbound calls):
-///   val ch = Grpc.openChannel("https://host:4317").unwrap()
-///   val resp = Grpc.callUnary(ch, "svc.Name", "Method", payload, Grpc.defaultOptions())
-///   Grpc.closeChannel(ch)
-///
-/// Server (service hosting):
-///   val registry = Grpc.create()
-///   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
-///   Grpc.start(registry)              // blocks until SIGTERM
-///   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
-///
-/// Payload format: raw protobuf-encoded bytes (slice[Byte]).
-/// Use lyric-proto for encoding/decoding; the client layer is deliberately
-/// payload-agnostic so it works for any proto schema without code generation.
-///
-/// Status codes: handlers return Result[T, GrpcStatus] where GrpcStatus.code
-/// is a GrpcStatusCode enum value.  Use the constructor helpers (Grpc.notFound,
-/// Grpc.unavailable, etc.) rather than building GrpcStatus directly.
-///
-/// Auth parameters: the gRPC server kernel extracts the "authorization" metadata
-/// value and passes it as an `authToken: String` parameter to handlers that
-/// declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
-///
-/// See docs/37-grpc-proto-sketch.md.
+// Grpc — gRPC client and server API.
+//
+// Client (outbound calls):
+//   val ch = Grpc.openChannel("https://host:4317").unwrap()
+//   val resp = Grpc.callUnary(ch, "svc.Name", "Method", payload, Grpc.defaultOptions())
+//   Grpc.closeChannel(ch)
+//
+// Server (service hosting):
+//   val registry = Grpc.create()
+//   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
+//   Grpc.start(registry)              // blocks until SIGTERM
+//   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
+//
+// Payload format: raw protobuf-encoded bytes (slice[Byte]).
+// Use lyric-proto for encoding/decoding; the client layer is deliberately
+// payload-agnostic so it works for any proto schema without code generation.
+//
+// Status codes: handlers return Result[T, GrpcStatus] where GrpcStatus.code
+// is a GrpcStatusCode enum value.  Use the constructor helpers (Grpc.notFound,
+// Grpc.unavailable, etc.) rather than building GrpcStatus directly.
+//
+// Auth parameters: the gRPC server kernel extracts the "authorization" metadata
+// value and passes it as an `authToken: String` parameter to handlers that
+// declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
+//
+// See docs/37-grpc-proto-sketch.md.
 
 @runtime_checked
 package Grpc

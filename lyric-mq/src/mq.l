@@ -1,40 +1,40 @@
-/// Mq — transport-agnostic message queue library for Lyric.
-///
-/// `MessageQueue` and `QueueConsumer` are the public interfaces; implement
-/// them to plug in any broker.  `NativeQueue` is the built-in broker-backed
-/// implementation driven through the platform kernel.
-///
-/// Supported brokers (feature-gated via lyric.toml [features]):
-///   rabbitmq        — RabbitMQ via AMQP 0-9-1
-///   azureservicebus — Azure Service Bus
-///   sqs             — Amazon SQS
-///   kafka           — Apache Kafka
-///
-/// Usage:
-///
-///   import Mq
-///   import Std.Core
-///
-///   val queue = Mq.connect()?
-///   Mq.publish(queue, Message(
-///     id           = "msg-001",
-///     body         = "{\"event\":\"order.placed\",\"orderId\":42}",
-///     headers      = [MessageHeader(key = "content-type", value = "application/json")],
-///     deliveryCount = 0))?
-///
-///   Mq.consume(queue, 5000, func(msg: in Message): Result[Unit, String] {
-///     println("received: " + msg.id)
-///     Ok(())
-///   })?
-///
-/// Runtime config env vars (LYRIC_CONFIG_MQ_CONNECTION_*):
-///   LYRIC_CONFIG_MQ_CONNECTION_URL                 — broker URL (required)
-///   LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME           — queue / topic name (required)
-///   LYRIC_CONFIG_MQ_CONNECTION_ACKMODE             — "Auto" or "Manual" (default: Auto)
-///   LYRIC_CONFIG_MQ_CONNECTION_MAXDELIVERYCOUNT    — redelivery limit (default: 5)
-///   LYRIC_CONFIG_MQ_CONNECTION_VISIBILITYTIMEOUTMS — SQS/ASB visibility (default: 30000)
-///
-/// See docs/03-decision-log.md D056 and lyric-mq/README.md.
+// Mq — transport-agnostic message queue library for Lyric.
+//
+// `MessageQueue` and `QueueConsumer` are the public interfaces; implement
+// them to plug in any broker.  `NativeQueue` is the built-in broker-backed
+// implementation driven through the platform kernel.
+//
+// Supported brokers (feature-gated via lyric.toml [features]):
+//   rabbitmq        — RabbitMQ via AMQP 0-9-1
+//   azureservicebus — Azure Service Bus
+//   sqs             — Amazon SQS
+//   kafka           — Apache Kafka
+//
+// Usage:
+//
+//   import Mq
+//   import Std.Core
+//
+//   val queue = Mq.connect()?
+//   Mq.publish(queue, Message(
+//     id           = "msg-001",
+//     body         = "{\"event\":\"order.placed\",\"orderId\":42}",
+//     headers      = [MessageHeader(key = "content-type", value = "application/json")],
+//     deliveryCount = 0))?
+//
+//   Mq.consume(queue, 5000, func(msg: in Message): Result[Unit, String] {
+//     println("received: " + msg.id)
+//     Ok(())
+//   })?
+//
+// Runtime config env vars (LYRIC_CONFIG_MQ_CONNECTION_*):
+//   LYRIC_CONFIG_MQ_CONNECTION_URL                 — broker URL (required)
+//   LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME           — queue / topic name (required)
+//   LYRIC_CONFIG_MQ_CONNECTION_ACKMODE             — "Auto" or "Manual" (default: Auto)
+//   LYRIC_CONFIG_MQ_CONNECTION_MAXDELIVERYCOUNT    — redelivery limit (default: 5)
+//   LYRIC_CONFIG_MQ_CONNECTION_VISIBILITYTIMEOUTMS — SQS/ASB visibility (default: 30000)
+//
+// See docs/03-decision-log.md D056 and lyric-mq/README.md.
 
 @runtime_checked
 package Mq
@@ -573,17 +573,17 @@ func jsonExtractRaw(json: in String, field: in String): String {
 
 // Escape special characters for JSON string embedding.
 func jsonEscape(s: in String): String {
-  var out: String = ""
+  var buf: String = ""
   var i:   Int    = 0
   while i < s.length {
     val ch = s.charAt(i)
-    if ch == '"'       { out = out + "\\\"" }
-    else if ch == '\\' { out = out + "\\\\" }
-    else if ch == '\n' { out = out + "\\n"  }
-    else if ch == '\r' { out = out + "\\r"  }
-    else if ch == '\t' { out = out + "\\t"  }
-    else               { out = out + ch.toString() }
+    if ch == '"'       { buf = buf + "\\\"" }
+    else if ch == '\\' { buf = buf + "\\\\" }
+    else if ch == '\n' { buf = buf + "\\n"  }
+    else if ch == '\r' { buf = buf + "\\r"  }
+    else if ch == '\t' { buf = buf + "\\t"  }
+    else               { buf = buf + ch.toString() }
     i = i + 1
   }
-  return out
+  return buf
 }
