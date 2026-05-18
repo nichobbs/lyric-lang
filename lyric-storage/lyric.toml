@@ -35,7 +35,7 @@ local     = []   # Local filesystem storage (cross-platform, no extra deps)
 
 [maven]
 # feature = "s3" — AWS SDK S3 module for JVM
-"software.amazon.awssdk:s3"          = { version = "2.25.x",  features = ["s3"] }
+"software.amazon.awssdk:s3"          = { version = "2.25.70", features = ["s3"] }
 # feature = "azureblob" — Azure Blob Storage SDK for JVM
 "com.azure:azure-storage-blob"       = { version = "12.25.0", features = ["azureblob"] }
 # feature = "local" — no extra Maven deps (uses java.nio.file.Files)

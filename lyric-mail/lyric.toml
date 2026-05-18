@@ -37,6 +37,6 @@ sendgrid = []   # SendGrid (SendGrid .NET library / sendgrid-java on JVM)
 # feature = "smtp" — Jakarta Mail SMTP client for JVM
 "com.sun.mail:jakarta.mail"        = { version = "2.0.1",  features = ["smtp"] }
 # feature = "ses" — AWS SDK SES v2 client for JVM
-"software.amazon.awssdk:ses"       = { version = "2.25.x", features = ["ses"] }
+"software.amazon.awssdk:ses"       = { version = "2.25.70", features = ["ses"] }
 # feature = "sendgrid" — SendGrid Java client for JVM
 "com.sendgrid:sendgrid-java"       = { version = "4.10.2", features = ["sendgrid"] }
