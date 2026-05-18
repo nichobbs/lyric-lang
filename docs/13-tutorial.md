@@ -10,8 +10,8 @@ This tutorial assumes you have the bootstrap compiler built (see
 `README.md`):
 
 ```
-cd compiler
-dotnet build Lyric.sln
+cd bootstrap
+dotnet build Bootstrap.sln
 ```
 
 You'll run programs with `dotnet run --project src/Lyric.Cli -- run
@@ -414,7 +414,7 @@ packages (the partial order permits it).
 ### 8.3 Running the verifier
 
 ```
-cd compiler
+cd bootstrap
 lyric prove path/to/transfer.l
 ```
 
