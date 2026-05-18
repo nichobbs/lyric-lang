@@ -35,6 +35,7 @@ package Jobs
 import Std.Core
 import Std.Collections
 import Jobs.Kernel.Net
+import Jobs.Kernel.Jvm
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
@@ -171,7 +172,7 @@ impl JobScheduler for NativeJobScheduler {
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    return Jobs.Kernel.Net.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+    return jobsKernelEnqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
   }
 
   func schedule(
@@ -186,19 +187,19 @@ impl JobScheduler for NativeJobScheduler {
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    return Jobs.Kernel.Net.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+    return jobsKernelSchedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
   }
 
   func cancel(jobId: in JobId): Result[Unit, String]
     requires: jobId.length > 0
   {
-    return Jobs.Kernel.Net.cancel(schedulerId, jobId)
+    return jobsKernelCancel(schedulerId, jobId)
   }
 
   func status(jobId: in JobId): Result[JobStatus, String]
     requires: jobId.length > 0
   {
-    match Jobs.Kernel.Net.status(schedulerId, jobId) {
+    match jobsKernelStatus(schedulerId, jobId) {
       case Err(msg)    -> Err(msg)
       case Ok(rawStr)  -> Ok(parseStatus(rawStr))
     }
@@ -207,7 +208,7 @@ impl JobScheduler for NativeJobScheduler {
   func results(jobId: in JobId): Result[[JobResult], String]
     requires: jobId.length > 0
   {
-    match Jobs.Kernel.Net.results(schedulerId, jobId) {
+    match jobsKernelResults(schedulerId, jobId) {
       case Err(msg)      -> Err(msg)
       case Ok(jsonStr)   -> Ok(parseResults(jobId, jsonStr))
     }
@@ -315,7 +316,7 @@ impl JobScheduler for InProcessJobScheduler {
               output     = "",
               error      = "cancelled",
               startedAt  = result.startedAt,
-              finishedAt = Jobs.Kernel.Net.nowMs())
+              finishedAt = jobsKernelNowMs())
             jobs = jobs.set(jobId, cancelled)
             // Remove from the pending queue.
             queue = queue.filter(func(s: in JobSpec): Bool { s.id != jobId })
@@ -354,7 +355,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
   }
   val spec = scheduler.queue.head()
   scheduler.queue = scheduler.queue.tail()
-  val startMs = Jobs.Kernel.Net.nowMs()
+  val startMs = jobsKernelNowMs()
   val running = JobResult(
     jobId      = spec.id,
     status     = JobStatus.Running,
@@ -371,7 +372,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         output     = output,
         error      = "",
         startedAt  = startMs,
-        finishedAt = Jobs.Kernel.Net.nowMs())
+        finishedAt = jobsKernelNowMs())
       scheduler.jobs = scheduler.jobs.set(spec.id, result)
       return Ok(result)
     }
@@ -382,7 +383,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         output     = "",
         error      = jobErr.message,
         startedAt  = startMs,
-        finishedAt = Jobs.Kernel.Net.nowMs())
+        finishedAt = jobsKernelNowMs())
       scheduler.jobs = scheduler.jobs.set(spec.id, result)
       return Ok(result)
     }
@@ -418,7 +419,7 @@ config Defaults {
 /// Returns a `NativeJobScheduler` backed by the active feature (Hangfire or Quartz).
 @stable(since="0.1")
 pub func connect(): Result[NativeJobScheduler, String] {
-  match Jobs.Kernel.Net.connect(Defaults.workerCount) {
+  match jobsKernelConnect(Defaults.workerCount) {
     case Ok(schedulerId) -> Ok(NativeJobScheduler(schedulerId = schedulerId))
     case Err(msg)        -> Err(msg)
   }
@@ -504,13 +505,13 @@ pub func results(scheduler: in JobScheduler, jobId: in JobId): Result[[JobResult
 /// Generate a new unique job ID using the platform kernel.
 @stable(since="0.1")
 pub func newJobId(): JobId {
-  return Jobs.Kernel.Net.generateId()
+  return jobsKernelGenerateId()
 }
 
 /// Return the current wall-clock time in epoch milliseconds.
 @stable(since="0.1")
 pub func nowMs(): Long {
-  return Jobs.Kernel.Net.nowMs()
+  return jobsKernelNowMs()
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
@@ -633,4 +634,141 @@ func jsonExtractLong(json: in String, field: in String): Long {
     case Some(n) -> return n
     case None    -> return 0L
   }
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func jobsKernelNowMs(): Long {
+  return Jobs.Kernel.Net.nowMs()
+}
+@cfg(feature = "jvm")
+func jobsKernelNowMs(): Long {
+  return Jobs.Kernel.Jvm.nowMs()
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelGenerateId(): String {
+  return Jobs.Kernel.Net.generateId()
+}
+@cfg(feature = "jvm")
+func jobsKernelGenerateId(): String {
+  return Jobs.Kernel.Jvm.generateId()
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelConnect(workerCount: in Int): Result[Int, String]
+  requires: workerCount >= 1
+{
+  return Jobs.Kernel.Net.connect(workerCount)
+}
+@cfg(feature = "jvm")
+func jobsKernelConnect(workerCount: in Int): Result[Int, String]
+  requires: workerCount >= 1
+{
+  return Jobs.Kernel.Jvm.connect(workerCount)
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelEnqueue(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String]
+  requires: name.length > 0
+  requires: maxAttempts >= 1
+  requires: timeoutMs >= 1
+{
+  return Jobs.Kernel.Net.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+}
+@cfg(feature = "jvm")
+func jobsKernelEnqueue(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String]
+  requires: name.length > 0
+  requires: maxAttempts >= 1
+  requires: timeoutMs >= 1
+{
+  return Jobs.Kernel.Jvm.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelSchedule(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  cronExpr:    in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String]
+  requires: name.length > 0
+  requires: cronExpr.length > 0
+  requires: maxAttempts >= 1
+  requires: timeoutMs >= 1
+{
+  return Jobs.Kernel.Net.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+}
+@cfg(feature = "jvm")
+func jobsKernelSchedule(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  cronExpr:    in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String]
+  requires: name.length > 0
+  requires: cronExpr.length > 0
+  requires: maxAttempts >= 1
+  requires: timeoutMs >= 1
+{
+  return Jobs.Kernel.Jvm.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelCancel(schedulerId: in Int, jobId: in String): Result[Unit, String]
+  requires: jobId.length > 0
+{
+  return Jobs.Kernel.Net.cancel(schedulerId, jobId)
+}
+@cfg(feature = "jvm")
+func jobsKernelCancel(schedulerId: in Int, jobId: in String): Result[Unit, String]
+  requires: jobId.length > 0
+{
+  return Jobs.Kernel.Jvm.cancel(schedulerId, jobId)
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelStatus(schedulerId: in Int, jobId: in String): Result[String, String]
+  requires: jobId.length > 0
+{
+  return Jobs.Kernel.Net.status(schedulerId, jobId)
+}
+@cfg(feature = "jvm")
+func jobsKernelStatus(schedulerId: in Int, jobId: in String): Result[String, String]
+  requires: jobId.length > 0
+{
+  return Jobs.Kernel.Jvm.status(schedulerId, jobId)
+}
+
+@cfg(feature = "dotnet")
+func jobsKernelResults(schedulerId: in Int, jobId: in String): Result[String, String]
+  requires: jobId.length > 0
+{
+  return Jobs.Kernel.Net.results(schedulerId, jobId)
+}
+@cfg(feature = "jvm")
+func jobsKernelResults(schedulerId: in Int, jobId: in String): Result[String, String]
+  requires: jobId.length > 0
+{
+  return Jobs.Kernel.Jvm.results(schedulerId, jobId)
 }

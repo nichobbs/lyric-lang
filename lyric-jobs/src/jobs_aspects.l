@@ -114,9 +114,9 @@ pub aspect Timed {
     if not enabled {
       ret = call.proceed()
     } else {
-      val startMs = Jobs.Kernel.Net.nowMs()
+      val startMs = Jobs.nowMs()
       ret = call.proceed()
-      val elapsedMs = Jobs.Kernel.Net.nowMs() - startMs
+      val elapsedMs = Jobs.nowMs() - startMs
       if elapsedMs > warnThresholdMs {
         println("[warn] " + call.qualifiedName + " took " + elapsedMs.toString() + "ms (threshold: " + warnThresholdMs.toString() + "ms)")
       }
