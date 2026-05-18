@@ -12,6 +12,7 @@
 ///   L003  Missing doc comment on a `pub` item.
 ///   L004  `TODO` or `FIXME` found in a doc comment.
 ///   L005  `pub func` has no requires/ensures contracts.
+///   L006  `@inline_template` has no effect (C-mode inlining not yet implemented).
 module Lyric.Cli.Lint
 
 open Lyric.Lexer

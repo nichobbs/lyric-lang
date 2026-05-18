@@ -125,4 +125,41 @@ pub func computeSum(a: in Int, b: in Int): Int
                 lintSource
                     "package P\n/// An interface.\npub interface Foo {\n  func BadMethod(self: in Self): Unit\n}"
             Expect.contains (codes diags) "L002" "L002 for PascalCase interface method"
+
+        testCase "L006 fires for @inline_template on aspect" <| fun () ->
+            let diags =
+                lintSource """
+package P
+import Std.Core
+/// A C-mode aspect.
+@inline_template
+pub aspect MyAspect {
+  matches: { name: "doWork" }
+  around: { func advice(args): Unit { args.proceed() } }
+}
+"""
+            Expect.contains (codes diags) "L006" "L006 for @inline_template annotation"
+
+        testCase "L006 fires for @inline_template on func" <| fun () ->
+            let diags =
+                lintSource """
+package P
+/// A func annotated with inline_template.
+@inline_template
+pub func doSomething(x: in Int): Int = x
+"""
+            Expect.contains (codes diags) "L006" "L006 for @inline_template on func"
+
+        testCase "L006 does NOT fire when @inline_template absent" <| fun () ->
+            let diags =
+                lintSource """
+package P
+/// A clean pub func.
+pub func clean(x: in Int): Int
+  requires: x > 0
+{
+  return x
+}
+"""
+            Expect.isEmpty (codes diags |> List.filter ((=) "L006")) "no @inline_template = no L006"
     ]

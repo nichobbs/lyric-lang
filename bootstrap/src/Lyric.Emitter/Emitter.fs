@@ -2945,7 +2945,16 @@ let private emitFunctionBody
         let genericGtpbs =
             if sg.Generics.IsEmpty then [||]
             else mb.GetGenericArguments()
-        emitExternCall il fn paramList returnTy genericGtpbs resultLocal exitLabel targetStr
+        try
+            emitExternCall il fn paramList returnTy genericGtpbs resultLocal exitLabel targetStr
+        with ex ->
+            diags.Add(
+                err "F0001"
+                    (sprintf "FFI resolution error in '%s': %s" fn.Name ex.Message)
+                    fn.Span)
+            // Emit a branch to the exit label so the IL remains structurally
+            // valid even though the function body is incomplete.
+            il.Emit(OpCodes.Br, exitLabel)
     | None ->
         if isVoidReturn then
             il.Emit(OpCodes.Br, exitLabel)
@@ -3236,17 +3245,25 @@ let private emitAssembly
                         clr.GetGenericArguments().Length
                     else 0
                 if lyricArity <> clrArity then
-                    failwithf
-                        "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d"
-                        et.Name lyricArity et.ClrName clrArity
-                externTypeNames.[et.Name] <- clr
-                symbols.TryFind et.Name
-                |> Seq.tryHead
-                |> Option.bind Symbol.typeIdOpt
-                |> Option.iter (fun id -> typeIdToClr.[id] <- clr)
+                    codegenDiags.Add(
+                        err "F0002"
+                            (sprintf
+                                "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d — type parameter count must match"
+                                et.Name lyricArity et.ClrName clrArity)
+                            et.Span)
+                else
+                    externTypeNames.[et.Name] <- clr
+                    symbols.TryFind et.Name
+                    |> Seq.tryHead
+                    |> Option.bind Symbol.typeIdOpt
+                    |> Option.iter (fun id -> typeIdToClr.[id] <- clr)
             | None ->
-                failwithf "FFI: cannot resolve extern type '%s' = \"%s\" against the loaded AppDomain"
-                    et.Name et.ClrName
+                codegenDiags.Add(
+                    err "F0001"
+                        (sprintf
+                            "FFI: cannot resolve extern type '%s' = \"%s\" — type not found in the loaded AppDomain; check the fully-qualified CLR name"
+                            et.Name et.ClrName)
+                        et.Span)
 
         // Extern types coming in via stdlib imports.  The user's
         // symbol table has the imported `extern type` registered (so
@@ -5432,6 +5449,70 @@ let private emitAssembly
 let private stdlibArtifactCache : Dictionary<string, StdlibArtifact> = Dictionary()
 let private stdlibLock : obj = obj()
 
+/// SDK version skew diagnostics (B0050/B0051) detected during stdlib binary
+/// artifact loading.  Accumulated once per process (per DLL path) and merged
+/// into the user's final diagnostic list.
+let private sdkVersionDiags : ResizeArray<Diagnostic> = ResizeArray()
+let private sdkVersionCheckedPaths : System.Collections.Generic.HashSet<string> = System.Collections.Generic.HashSet()
+
+/// Compiler's own stdlib version.  Must match the `stdlib_version` field
+/// embedded in any pre-built `Lyric.Stdlib.dll` for a clean version pass.
+let private compilerStdlibVersion : string = "0.1.0"
+
+/// Parse a semver-like string `"major.minor.patch[-suffix]"` into
+/// `(major, minor)` ints.  Returns `None` on any parse failure.
+let private parseMajorMinor (v: string) : (int * int) option =
+    let segs = v.Split('.')
+    if segs.Length >= 2 then
+        match System.Int32.TryParse segs.[0], System.Int32.TryParse (segs.[1].Split('-').[0]) with
+        | (true, major), (true, minor) -> Some (major, minor)
+        | _ -> None
+    else None
+
+/// Check `dllPath`'s embedded `Lyric.SdkVersion` against the compiler's
+/// expected version.  Accumulates B0050/B0051 diagnostics in
+/// `sdkVersionDiags` (idempotent per path).
+let private checkSdkVersionSkew (dllPath: string) : unit =
+    lock stdlibLock (fun () ->
+        if sdkVersionCheckedPaths.Contains dllPath then ()
+        else
+            sdkVersionCheckedPaths.Add dllPath |> ignore
+            let zeroSpan = Span.make Position.initial Position.initial
+            let strict =
+                match System.Environment.GetEnvironmentVariable "LYRIC_STRICT_SDK_VERSION" with
+                | "1" | "true" | "yes" -> true
+                | _ -> false
+            match SdkRoot.tryReadSdkVersion dllPath with
+            | None -> ()   // No version resource: old DLL, no check.
+            | Some (_, stdlibVer, _, _) ->
+                if stdlibVer <> compilerStdlibVersion then
+                    match parseMajorMinor stdlibVer, parseMajorMinor compilerStdlibVersion with
+                    | Some (dMaj, dMin), Some (cMaj, cMin) ->
+                        let majorSkew = dMaj <> cMaj
+                        if majorSkew || strict then
+                            sdkVersionDiags.Add
+                                { Severity = DiagError
+                                  Code     = "B0051"
+                                  Message  =
+                                    sprintf
+                                        "SDK version mismatch: pre-built stdlib at '%s' has stdlib_version '%s' but compiler expects '%s'. \
+                                         Rebuild the stdlib or use a matching compiler version."
+                                        dllPath stdlibVer compilerStdlibVersion
+                                  Span = zeroSpan
+                                  Help = None; Related = []; Fix = None }
+                        else if dMin <> cMin then
+                            sdkVersionDiags.Add
+                                { Severity = DiagWarning
+                                  Code     = "B0050"
+                                  Message  =
+                                    sprintf
+                                        "SDK minor-version skew: pre-built stdlib at '%s' has stdlib_version '%s', compiler expects '%s'. \
+                                         Set LYRIC_STRICT_SDK_VERSION=1 to treat this as an error."
+                                        dllPath stdlibVer compilerStdlibVersion
+                                  Span = zeroSpan
+                                  Help = None; Related = []; Fix = None }
+                    | _ -> ())
+
 /// Convert a `RestoredPackages.RestoredArtifact` to the internal
 /// `StdlibArtifact` shape so a pre-built binary `Lyric.Stdlib.dll`
 /// can be consumed by the same import pipeline as source-compiled artifacts.
@@ -5809,6 +5890,7 @@ let rec private ensureStdlibArtifact
                     match RestoredPackages.loadRestoredPackage ref' with
                     | Error _ -> None
                     | Ok arts ->
+                        checkSdkVersionSkew dllPath
                         arts
                         |> List.tryFind (fun a -> a.Contract.PackageName = pkgName)
                         |> Option.map restoredToStdlib
@@ -6817,6 +6899,9 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         // single-output project.  Surface once after the full pass
         // so a downstream test can ASSERT the diagnostic regardless
         // of which package emitted main first.
+        // Merge any SDK version skew diagnostics (B0050/B0051) that were
+        // accumulated while loading pre-built stdlib artifacts.
+        lock stdlibLock (fun () -> allDiags.AddRange sdkVersionDiags)
         if mainCount > 1 then
             let zeroSpan = Span.make Position.initial Position.initial
             allDiags.Add
