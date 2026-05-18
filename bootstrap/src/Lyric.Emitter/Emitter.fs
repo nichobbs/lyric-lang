@@ -5447,7 +5447,74 @@ let private emitAssembly
 
 /// Cache: package key (e.g. `"Std.Core"`) → compiled artifact.
 let private stdlibArtifactCache : Dictionary<string, StdlibArtifact> = Dictionary()
+/// Per-artifact non-fatal diagnostics (B0050/B0051) stored alongside the
+/// cache entry so callers can surface them on each project without a global.
+let private stdlibArtifactWarnings : Dictionary<string, Diagnostic list> = Dictionary()
 let private stdlibLock : obj = obj()
+
+/// Tracks DLL paths already inspected for version skew so the check is
+/// idempotent within a process (the DLL doesn't change during a build session).
+let private sdkVersionCheckedPaths : System.Collections.Generic.HashSet<string> = System.Collections.Generic.HashSet()
+
+/// Compiler's own stdlib version.  Must match the `stdlib_version` field
+/// embedded in any pre-built `Lyric.Stdlib.dll` for a clean version pass.
+let private compilerStdlibVersion : string = "0.1.0"
+
+/// Parse a semver-like string `"major.minor.patch[-suffix]"` into
+/// `(major, minor)` ints.  Returns `None` on any parse failure.
+let private parseMajorMinor (v: string) : (int * int) option =
+    let segs = v.Split('.')
+    if segs.Length >= 2 then
+        match System.Int32.TryParse segs.[0], System.Int32.TryParse (segs.[1].Split('-').[0]) with
+        | (true, major), (true, minor) -> Some (major, minor)
+        | _ -> None
+    else None
+
+/// Check `dllPath`'s embedded `Lyric.SdkVersion` against the compiler's
+/// expected version.  Returns B0050/B0051 diagnostics (idempotent per path;
+/// returns `[]` on subsequent calls for the same path).
+let private checkSdkVersionSkew (dllPath: string) : Diagnostic list =
+    // Called from within `lock stdlibLock` in `ensureStdlibArtifact`; the
+    // re-entrant Monitor allows this nested lock acquisition.
+    lock stdlibLock (fun () ->
+        if sdkVersionCheckedPaths.Contains dllPath then []
+        else
+            sdkVersionCheckedPaths.Add dllPath |> ignore
+            let zeroSpan = Span.make Position.initial Position.initial
+            let strict =
+                match System.Environment.GetEnvironmentVariable "LYRIC_STRICT_SDK_VERSION" with
+                | "1" | "true" | "yes" -> true
+                | _ -> false
+            match SdkRoot.tryReadSdkVersion dllPath with
+            | None -> []   // No version resource: old DLL, no check.
+            | Some (_, stdlibVer, _, _) ->
+                if stdlibVer <> compilerStdlibVersion then
+                    match parseMajorMinor stdlibVer, parseMajorMinor compilerStdlibVersion with
+                    | Some (dMaj, dMin), Some (cMaj, cMin) ->
+                        let majorSkew = dMaj <> cMaj
+                        if majorSkew || strict then
+                            [ { Severity = DiagError
+                                Code     = "B0051"
+                                Message  =
+                                  sprintf
+                                      "SDK version mismatch: pre-built stdlib at '%s' has stdlib_version '%s' but compiler expects '%s'. \
+                                       Rebuild the stdlib or use a matching compiler version."
+                                      dllPath stdlibVer compilerStdlibVersion
+                                Span = zeroSpan
+                                Help = None; Related = []; Fix = None } ]
+                        elif dMin <> cMin then
+                            [ { Severity = DiagWarning
+                                Code     = "B0050"
+                                Message  =
+                                  sprintf
+                                      "SDK minor-version skew: pre-built stdlib at '%s' has stdlib_version '%s', compiler expects '%s'. \
+                                       Set LYRIC_STRICT_SDK_VERSION=1 to treat this as an error."
+                                      dllPath stdlibVer compilerStdlibVersion
+                                Span = zeroSpan
+                                Help = None; Related = []; Fix = None } ]
+                        else []
+                    | _ -> []
+                else [])
 
 /// Convert a `RestoredPackages.RestoredArtifact` to the internal
 /// `StdlibArtifact` shape so a pre-built binary `Lyric.Stdlib.dll`
@@ -5802,11 +5869,13 @@ let private parseAndMergeBuiltinFiles
 /// (D041).
 let rec private ensureStdlibArtifact
         (target: CompileTarget)
-        (segments: string list) : Result<StdlibArtifact, Diagnostic list> =
+        (segments: string list) : Result<StdlibArtifact * Diagnostic list, Diagnostic list> =
     let key = sprintf "%A:%s" target (packageKey segments)
     lock stdlibLock (fun () ->
         match stdlibArtifactCache.TryGetValue key with
-        | true, a -> Ok a
+        | true, a ->
+            let ws = match stdlibArtifactWarnings.TryGetValue key with true, ws -> ws | _ -> []
+            Ok (a, ws)
         | _ ->
             // Fast path: try a pre-built binary stdlib DLL (docs/22 §3)
             // before recompiling from source.  Checks SdkRoot for
@@ -5826,13 +5895,15 @@ let rec private ensureStdlibArtifact
                     match RestoredPackages.loadRestoredPackage ref' with
                     | Error _ -> None
                     | Ok arts ->
+                        let versionDiags = checkSdkVersionSkew dllPath
                         arts
                         |> List.tryFind (fun a -> a.Contract.PackageName = pkgName)
-                        |> Option.map restoredToStdlib
+                        |> Option.map (fun a -> restoredToStdlib a, versionDiags)
             match binaryArtifact with
-            | Some artifact ->
+            | Some (artifact, versionDiags) ->
                 stdlibArtifactCache.[key] <- artifact
-                Ok artifact
+                stdlibArtifactWarnings.[key] <- versionDiags
+                Ok (artifact, versionDiags)
             | None ->
             // Source fallback: walk stdlib/ tree and compile from .l files.
             let foundPaths, layoutDiag =
@@ -5888,7 +5959,10 @@ let rec private ensureStdlibArtifact
                         let key = packageKey segs
                         if visited.Add key then
                             match ensureStdlibArtifact target segs with
-                            | Ok a ->
+                            | Ok (a, _ws) ->
+                                // Version-skew warnings (_ws) are stored in
+                                // stdlibArtifactWarnings; the outer
+                                // resolveStdlibImports visit will surface them.
                                 let nestedDeps =
                                     a.Source.Imports
                                     |> List.choose (fun i ->
@@ -6013,7 +6087,8 @@ let rec private ensureStdlibArtifact
                               Lookup       =
                                 fun n -> Option.ofObj (assembly.GetType n) }
                         stdlibArtifactCache.[key] <- artifact
-                        Ok artifact)
+                        stdlibArtifactWarnings.[key] <- []
+                        Ok (artifact, []))
 
 /// Public accessor: returns the absolute paths to every compiled
 /// stdlib DLL that has run so far.  The test harness uses this to
@@ -6065,7 +6140,10 @@ let private resolveStdlibImports
             let key = packageKey segments
             if visited.Add key then
                 match ensureStdlibArtifact target segments with
-                | Ok a ->
+                | Ok (a, ws) ->
+                    // Surface per-artifact version-skew warnings (B0050/B0051)
+                    // into this project's diagnostic list.
+                    for w in ws do diags.Add w
                     // Visit deps first so they appear before in the
                     // ordered list — type-checker import processing
                     // expects topo order.
