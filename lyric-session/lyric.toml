@@ -13,6 +13,7 @@ output_assembly = "Session.dll"
 [project.packages]
 "Session"            = "src"
 "Session.Kernel.Net" = "src/_kernel/net"
+"Session.Kernel.Jvm" = "src/_kernel/jvm"
 
 # Session-fixation regression suite — pins the no-auto-create invariant
 # in InProcessSessionStore.set() (#316 / #436).  Runs via the
@@ -22,7 +23,9 @@ output_assembly = "Session.dll"
 "Session.SessionFixationTests" = "tests/session_fixation_tests.l"
 
 [features]
-redis    = []   # Redis-backed sessions (StackExchange.Redis)
+dotnet   = []   # .NET kernel backend (StackExchange.Redis, System.Collections.Concurrent)
+jvm      = []   # JVM kernel backend (Lettuce Redis, java.util.concurrent — Phase 6)
+redis    = []   # Redis-backed sessions (StackExchange.Redis / Lettuce)
 inmemory = []   # In-process sessions (suitable for single-instance deployments)
 
 [dependencies]
@@ -33,3 +36,8 @@ inmemory = []   # In-process sessions (suitable for single-instance deployments)
 # feature = "redis" — Redis client for .NET session backing store
 "StackExchange.Redis" = "2.7.33"
 # feature = "inmemory" — no extra NuGet deps
+
+[maven]
+# feature = "redis" — Lettuce Redis client for JVM session backing store
+"io.lettuce:lettuce-core" = { version = "6.3.2.RELEASE", features = ["redis"] }
+# feature = "inmemory" — java.util.concurrent.ConcurrentHashMap (no extra Maven dep)

@@ -43,7 +43,8 @@ package Db
 
 import Std.Core
 import Std.Json
-import Db.Kernel.Net as DbKernel
+import Db.Kernel.Net
+import Db.Kernel.Jvm
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
@@ -170,28 +171,28 @@ record NativeConnection { connId: Int }
 
 impl DbConnection for NativeConnection {
   func query(sql: in String, params: in [String]): Result[[DbRow], DbError] {
-    match DbKernel.query(connId, sql, params) {
+    match dbKernelQuery(connId, sql, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg)     -> Err(DbError(message = msg, code = "QUERY_ERROR"))
     }
   }
 
   func execute(sql: in String, params: in [String]): Result[Int, DbError] {
-    match DbKernel.execute(connId, sql, params) {
+    match dbKernelExecute(connId, sql, params) {
       case Ok(n)    -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "EXECUTE_ERROR"))
     }
   }
 
   func transaction(): Result[DbTransaction, DbError] {
-    match DbKernel.beginTransaction(connId) {
+    match dbKernelBeginTransaction(connId) {
       case Ok(txId) -> Ok(NativeTransaction(txId = txId))
       case Err(msg) -> Err(DbError(message = msg, code = "TX_BEGIN_ERROR"))
     }
   }
 
   func close(): Unit {
-    DbKernel.close(connId)
+    dbKernelClose(connId)
   }
 }
 
@@ -199,28 +200,28 @@ record NativeTransaction { txId: Int }
 
 impl DbTransaction for NativeTransaction {
   func query(sql: in String, params: in [String]): Result[[DbRow], DbError] {
-    match DbKernel.txQuery(txId, sql, params) {
+    match dbKernelTxQuery(txId, sql, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg)     -> Err(DbError(message = msg, code = "TX_QUERY_ERROR"))
     }
   }
 
   func execute(sql: in String, params: in [String]): Result[Int, DbError] {
-    match DbKernel.txExecute(txId, sql, params) {
+    match dbKernelTxExecute(txId, sql, params) {
       case Ok(n)    -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_EXECUTE_ERROR"))
     }
   }
 
   func commit(): Result[Unit, DbError] {
-    match DbKernel.commitTransaction(txId) {
+    match dbKernelCommitTransaction(txId) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_COMMIT_ERROR"))
     }
   }
 
   func rollback(): Result[Unit, DbError] {
-    match DbKernel.rollbackTransaction(txId) {
+    match dbKernelRollbackTransaction(txId) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_ROLLBACK_ERROR"))
     }
@@ -247,7 +248,7 @@ config Connection {
 @stable(since="0.1")
 @cfg(feature = "postgres")
 pub func connectPostgres(): Result[DbConnection, DbError] {
-  match DbKernel.Postgres.connect(
+  match dbKernelPostgresConnect(
     Connection.url, Connection.poolSize,
     Connection.connectTimeoutMs, Connection.password)
   {
@@ -261,7 +262,7 @@ pub func connectPostgres(): Result[DbConnection, DbError] {
 @stable(since="0.1")
 @cfg(feature = "sqlite")
 pub func connectSqlite(): Result[DbConnection, DbError] {
-  match DbKernel.Sqlite.connect(Connection.url, Connection.connectTimeoutMs) {
+  match dbKernelSqliteConnect(Connection.url, Connection.connectTimeoutMs) {
     case Ok(connId) -> Ok(NativeConnection(connId = connId))
     case Err(msg)   -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -352,7 +353,7 @@ func parseDbValue(raw: in String): DbValue {
 pub func connect(connStr: in String): Result[DbConnection, DbError]
   requires: connStr.length > 0
 {
-  match DbKernel.connectDsn(connStr) {
+  match dbKernelConnectDsn(connStr) {
     case Ok(connId) -> Ok(NativeConnection(connId = connId))
     case Err(msg)   -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -481,4 +482,116 @@ pub func getBoolOpt(row: in DbRow, name: in String): Option[Bool]
     case DbInt(value = v)  -> return Some(value = v != 0)
     case _                 -> return None
   }
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func dbKernelQuery(connId: in Int, sql: in String, params: in [String]): Result[String, String] {
+  return Db.Kernel.Net.query(connId, sql, params)
+}
+@cfg(feature = "jvm")
+func dbKernelQuery(connId: in Int, sql: in String, params: in [String]): Result[String, String] {
+  return Db.Kernel.Jvm.query(connId, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelExecute(connId: in Int, sql: in String, params: in [String]): Result[Int, String] {
+  return Db.Kernel.Net.execute(connId, sql, params)
+}
+@cfg(feature = "jvm")
+func dbKernelExecute(connId: in Int, sql: in String, params: in [String]): Result[Int, String] {
+  return Db.Kernel.Jvm.execute(connId, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelBeginTransaction(connId: in Int): Result[Int, String] {
+  return Db.Kernel.Net.beginTransaction(connId)
+}
+@cfg(feature = "jvm")
+func dbKernelBeginTransaction(connId: in Int): Result[Int, String] {
+  return Db.Kernel.Jvm.beginTransaction(connId)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelTxQuery(txId: in Int, sql: in String, params: in [String]): Result[String, String] {
+  return Db.Kernel.Net.txQuery(txId, sql, params)
+}
+@cfg(feature = "jvm")
+func dbKernelTxQuery(txId: in Int, sql: in String, params: in [String]): Result[String, String] {
+  return Db.Kernel.Jvm.txQuery(txId, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelTxExecute(txId: in Int, sql: in String, params: in [String]): Result[Int, String] {
+  return Db.Kernel.Net.txExecute(txId, sql, params)
+}
+@cfg(feature = "jvm")
+func dbKernelTxExecute(txId: in Int, sql: in String, params: in [String]): Result[Int, String] {
+  return Db.Kernel.Jvm.txExecute(txId, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelCommitTransaction(txId: in Int): Result[Unit, String] {
+  return Db.Kernel.Net.commitTransaction(txId)
+}
+@cfg(feature = "jvm")
+func dbKernelCommitTransaction(txId: in Int): Result[Unit, String] {
+  return Db.Kernel.Jvm.commitTransaction(txId)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelRollbackTransaction(txId: in Int): Result[Unit, String] {
+  return Db.Kernel.Net.rollbackTransaction(txId)
+}
+@cfg(feature = "jvm")
+func dbKernelRollbackTransaction(txId: in Int): Result[Unit, String] {
+  return Db.Kernel.Jvm.rollbackTransaction(txId)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelClose(connId: in Int): Unit {
+  Db.Kernel.Net.close(connId)
+}
+@cfg(feature = "jvm")
+func dbKernelClose(connId: in Int): Unit {
+  Db.Kernel.Jvm.close(connId)
+}
+
+@cfg(feature = "dotnet")
+func dbKernelConnectDsn(connStr: in String): Result[Int, String] {
+  return Db.Kernel.Net.connectDsn(connStr)
+}
+@cfg(feature = "jvm")
+func dbKernelConnectDsn(connStr: in String): Result[Int, String] {
+  return Db.Kernel.Jvm.connectDsn(connStr)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "postgres")
+func dbKernelPostgresConnect(
+  url: in String, poolSize: in Int, connectTimeoutMs: in Int, password: in String
+): Result[Int, String] {
+  return Db.Kernel.Net.Postgres.connect(url, poolSize, connectTimeoutMs, password)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "postgres")
+func dbKernelPostgresConnect(
+  url: in String, poolSize: in Int, connectTimeoutMs: in Int, password: in String
+): Result[Int, String] {
+  return Db.Kernel.Jvm.Postgres.connect(url, poolSize, connectTimeoutMs, password)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "sqlite")
+func dbKernelSqliteConnect(url: in String, connectTimeoutMs: in Int): Result[Int, String] {
+  return Db.Kernel.Net.Sqlite.connect(url, connectTimeoutMs)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "sqlite")
+func dbKernelSqliteConnect(url: in String, connectTimeoutMs: in Int): Result[Int, String] {
+  return Db.Kernel.Jvm.Sqlite.connect(url, connectTimeoutMs)
 }

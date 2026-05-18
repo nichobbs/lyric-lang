@@ -33,7 +33,8 @@ package Storage.Aspects
 import Std.Core
 import Std.String as Str
 import Storage
-import Storage.Kernel.Net as StorageKernel
+import Storage.Kernel.Net
+import Storage.Kernel.Jvm
 
 // ─── AuditAccess ─────────────────────────────────────────────────────────────
 
@@ -56,11 +57,11 @@ pub aspect AuditAccess {
     if not enabled {
       ret = call.proceed()
     } else {
-      StorageKernel.auditLog(call.qualifiedName, logLevel, "")
+      storageKernelAuditLog(call.qualifiedName, logLevel, "")
       ret = call.proceed()
       match ret {
-        case Ok(_)  -> StorageKernel.auditLog(call.qualifiedName + ":ok",  logLevel, "")
-        case Err(e) -> StorageKernel.auditLog(call.qualifiedName + ":err", "warn",   e.message)
+        case Ok(_)  -> storageKernelAuditLog(call.qualifiedName + ":ok",  logLevel, "")
+        case Err(e) -> storageKernelAuditLog(call.qualifiedName + ":err", "warn",   e.message)
       }
     }
   }
@@ -170,4 +171,15 @@ func containsDotDot(s: in String): Bool {
     i = i + 1
   }
   return false
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+
+@cfg(feature = "dotnet")
+func storageKernelAuditLog(operation: in String, level: in String, detail: in String): Unit {
+  Storage.Kernel.Net.auditLog(operation, level, detail)
+}
+@cfg(feature = "jvm")
+func storageKernelAuditLog(operation: in String, level: in String, detail: in String): Unit {
+  Storage.Kernel.Jvm.auditLog(operation, level, detail)
 }

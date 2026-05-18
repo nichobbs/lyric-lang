@@ -41,6 +41,7 @@ import Std.Core
 import Std.Collections
 import Auth
 import Ws.Kernel.Net
+import Ws.Kernel.Jvm
 
 // ─── Connection identity ──────────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ impl WsRegistry for NativeRegistry {
   func send(connectionId: in WsConnectionId, msg: in WsMessage): Result[Unit, WsError] {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
-    match Ws.Kernel.Net.send(registryHandle, connectionId, msgType, msgData) {
+    match wsKernelSend(registryHandle, connectionId, msgType, msgData) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
     }
@@ -166,7 +167,7 @@ impl WsRegistry for NativeRegistry {
   func broadcast(msg: in WsMessage): Result[Unit, WsError] {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
-    match Ws.Kernel.Net.broadcast(registryHandle, msgType, msgData) {
+    match wsKernelBroadcast(registryHandle, msgType, msgData) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
     }
@@ -174,18 +175,18 @@ impl WsRegistry for NativeRegistry {
 
   func close(connectionId: in WsConnectionId, code: in WsCloseCode, reason: in String): Result[Unit, WsError] {
     val codeInt = closeCodeToInt(code)
-    match Ws.Kernel.Net.close(registryHandle, connectionId, codeInt, reason) {
+    match wsKernelClose(registryHandle, connectionId, codeInt, reason) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
     }
   }
 
   func connectionCount(): Int {
-    return Ws.Kernel.Net.connectionCount(registryHandle)
+    return wsKernelConnectionCount(registryHandle)
   }
 
   func isConnected(connectionId: in WsConnectionId): Bool {
-    return Ws.Kernel.Net.isConnected(registryHandle, connectionId)
+    return wsKernelIsConnected(registryHandle, connectionId)
   }
 }
 
@@ -228,7 +229,7 @@ pub func createRegistry(): Result[WsRegistry, WsError] {
       code          = "WS_AUTH_MISCONFIGURED",
       connectionId  = ""))
   }
-  match Ws.Kernel.Net.createRegistry(Server.maxMessageSizeBytes, Server.pingIntervalMs) {
+  match wsKernelCreateRegistry(Server.maxMessageSizeBytes, Server.pingIntervalMs) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err)   -> Err(WsError(message = err, code = "REGISTRY_INIT_FAILED", connectionId = ""))
   }
@@ -314,4 +315,63 @@ func closeCodeToInt(code: in WsCloseCode): Int {
     case PolicyViolation -> 1008
     case InternalError  -> 1011
   }
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func wsKernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
+  return Ws.Kernel.Net.createRegistry(maxMessageSizeBytes, pingIntervalMs)
+}
+@cfg(feature = "jvm")
+func wsKernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
+  return Ws.Kernel.Jvm.createRegistry(maxMessageSizeBytes, pingIntervalMs)
+}
+
+@cfg(feature = "dotnet")
+func wsKernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
+  return Ws.Kernel.Net.send(registryHandle, connectionId, messageType, data)
+}
+@cfg(feature = "jvm")
+func wsKernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
+  return Ws.Kernel.Jvm.send(registryHandle, connectionId, messageType, data)
+}
+
+@cfg(feature = "dotnet")
+func wsKernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
+  return Ws.Kernel.Net.broadcast(registryHandle, messageType, data)
+}
+@cfg(feature = "jvm")
+func wsKernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
+  return Ws.Kernel.Jvm.broadcast(registryHandle, messageType, data)
+}
+
+@cfg(feature = "dotnet")
+func wsKernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
+  return Ws.Kernel.Net.close(registryHandle, connectionId, code, reason)
+}
+@cfg(feature = "jvm")
+func wsKernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
+  return Ws.Kernel.Jvm.close(registryHandle, connectionId, code, reason)
+}
+
+@cfg(feature = "dotnet")
+func wsKernelConnectionCount(registryHandle: in Int): Int {
+  return Ws.Kernel.Net.connectionCount(registryHandle)
+}
+@cfg(feature = "jvm")
+func wsKernelConnectionCount(registryHandle: in Int): Int {
+  return Ws.Kernel.Jvm.connectionCount(registryHandle)
+}
+
+@cfg(feature = "dotnet")
+func wsKernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
+  return Ws.Kernel.Net.isConnected(registryHandle, connectionId)
+}
+@cfg(feature = "jvm")
+func wsKernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
+  return Ws.Kernel.Jvm.isConnected(registryHandle, connectionId)
 }

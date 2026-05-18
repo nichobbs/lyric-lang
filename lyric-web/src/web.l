@@ -36,7 +36,8 @@ package Web
 
 import Std.Core
 import Std.Log
-import Web.Kernel.Net as HttpKernel
+import Web.Kernel.Net
+import Web.Kernel.Jvm
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
 
@@ -331,7 +332,7 @@ pub func start(router: in Router): Unit {
       "If this API is public and unauthenticated this is fine; " +
       "otherwise list explicit origins.")
   }
-  HttpKernel.serve(
+  webKernelServe(
     Server.host,
     Server.port,
     Server.swaggerEnabled,
@@ -341,5 +342,47 @@ pub func start(router: in Router): Unit {
     Cors.allowedMethods,
     Cors.allowedHeaders,
     Cors.maxAgeSeconds,
+    router)
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func webKernelServe(
+  host:           in String,
+  port:           in Int,
+  swaggerEnabled: in Bool,
+  specPath:       in String,
+  corsEnabled:    in Bool,
+  corsOrigins:    in String,
+  corsMethods:    in String,
+  corsHeaders:    in String,
+  corsMaxAge:     in Int,
+  router:         in Router
+): Unit {
+  return Web.Kernel.Net.serve(
+    host, port, swaggerEnabled, specPath,
+    corsEnabled, corsOrigins, corsMethods, corsHeaders, corsMaxAge,
+    router)
+}
+@cfg(feature = "jvm")
+func webKernelServe(
+  host:           in String,
+  port:           in Int,
+  swaggerEnabled: in Bool,
+  specPath:       in String,
+  corsEnabled:    in Bool,
+  corsOrigins:    in String,
+  corsMethods:    in String,
+  corsHeaders:    in String,
+  corsMaxAge:     in Int,
+  router:         in Router
+): Unit {
+  return Web.Kernel.Jvm.serve(
+    host, port, swaggerEnabled, specPath,
+    corsEnabled, corsOrigins, corsMethods, corsHeaders, corsMaxAge,
     router)
 }

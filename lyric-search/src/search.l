@@ -40,6 +40,7 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import Search.Kernel.Net
+import Search.Kernel.Jvm
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -187,7 +188,7 @@ pub record NativeSearchClient {
 impl SearchClient for NativeSearchClient {
   func index(doc: in SearchDocument): Result[IndexResult, SearchError] {
     val docJson = serializeDoc(doc)
-    match Search.Kernel.Net.index(clientHandle, docJson) {
+    match searchKernelIndex(clientHandle, docJson) {
       case Ok(json)  -> Ok(parseIndexResult(json))
       case Err(err)  -> Err(SearchError(message = err, code = "INDEX_FAILED", statusCode = 0))
     }
@@ -195,7 +196,7 @@ impl SearchClient for NativeSearchClient {
 
   func indexBatch(docs: in [SearchDocument]): Result[[IndexResult], SearchError] {
     val docsJson = serializeDocList(docs)
-    match Search.Kernel.Net.indexBatch(clientHandle, docsJson) {
+    match searchKernelIndexBatch(clientHandle, docsJson) {
       case Ok(json)  -> Ok(parseIndexResultList(json))
       case Err(err)  -> Err(SearchError(message = err, code = "BATCH_INDEX_FAILED", statusCode = 0))
     }
@@ -203,42 +204,42 @@ impl SearchClient for NativeSearchClient {
 
   func search(query: in SearchQuery): Result[SearchResult, SearchError] {
     val queryJson = serializeQuery(query)
-    match Search.Kernel.Net.search(clientHandle, queryJson) {
+    match searchKernelSearch(clientHandle, queryJson) {
       case Ok(json)  -> Ok(parseSearchResult(json))
       case Err(err)  -> Err(SearchError(message = err, code = "SEARCH_FAILED", statusCode = 0))
     }
   }
 
   func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError] {
-    match Search.Kernel.Net.suggest(clientHandle, index, text, field, size) {
+    match searchKernelSuggest(clientHandle, index, text, field, size) {
       case Ok(json)  -> Ok(parseSuggestResult(json))
       case Err(err)  -> Err(SearchError(message = err, code = "SUGGEST_FAILED", statusCode = 0))
     }
   }
 
   func delete(index: in String, id: in String): Result[Unit, SearchError] {
-    match Search.Kernel.Net.delete(clientHandle, index, id) {
+    match searchKernelDelete(clientHandle, index, id) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SearchError(message = err, code = "DELETE_FAILED", statusCode = 0))
     }
   }
 
   func deleteIndex(index: in String): Result[Unit, SearchError] {
-    match Search.Kernel.Net.deleteIndex(clientHandle, index) {
+    match searchKernelDeleteIndex(clientHandle, index) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SearchError(message = err, code = "DELETE_INDEX_FAILED", statusCode = 0))
     }
   }
 
   func exists(index: in String, id: in String): Result[Bool, SearchError] {
-    match Search.Kernel.Net.exists(clientHandle, index, id) {
+    match searchKernelExists(clientHandle, index, id) {
       case Ok(b)    -> Ok(b)
       case Err(err) -> Err(SearchError(message = err, code = "EXISTS_FAILED", statusCode = 0))
     }
   }
 
   func createIndex(index: in String, mappingJson: in String): Result[Unit, SearchError] {
-    match Search.Kernel.Net.createIndex(clientHandle, index, mappingJson) {
+    match searchKernelCreateIndex(clientHandle, index, mappingJson) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SearchError(message = err, code = "CREATE_INDEX_FAILED", statusCode = 0))
     }
@@ -267,7 +268,7 @@ config Connection {
 @stable(since="0.1")
 @cfg(feature = "elasticsearch")
 pub func connectElasticsearch(): Result[SearchClient, SearchError] {
-  match Search.Kernel.Net.connectElasticsearch(
+  match searchKernelConnectElasticsearch(
     Connection.url,
     Connection.apiKey,
     Connection.username,
@@ -284,7 +285,7 @@ pub func connectElasticsearch(): Result[SearchClient, SearchError] {
 @stable(since="0.1")
 @cfg(feature = "meilisearch")
 pub func connectMeilisearch(): Result[SearchClient, SearchError] {
-  match Search.Kernel.Net.connectMeilisearch(
+  match searchKernelConnectMeilisearch(
     Connection.url,
     Connection.apiKey,
     Connection.connectTimeoutMs)
@@ -305,7 +306,7 @@ pub func connect(provider: in String): Result[SearchClient, SearchError]
   requires: provider.length > 0
 {
   if provider == "elasticsearch" {
-    match Search.Kernel.Net.connectElasticsearch(
+    match searchKernelConnectElasticsearch(
       Connection.url,
       Connection.apiKey,
       Connection.username,
@@ -318,7 +319,7 @@ pub func connect(provider: in String): Result[SearchClient, SearchError]
     }
   }
   if provider == "meilisearch" {
-    match Search.Kernel.Net.connectMeilisearch(
+    match searchKernelConnectMeilisearch(
       Connection.url,
       Connection.apiKey,
       Connection.connectTimeoutMs)
@@ -718,4 +719,121 @@ func parseHighlight(json: in String): Highlight {
     case None -> ()
   }
   return Highlight(field = field, fragments = fragments)
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func searchKernelConnectElasticsearch(
+  url:              in String,
+  apiKey:           in String,
+  username:         in String,
+  password:         in String,
+  connectTimeoutMs: in Int,
+  requestTimeoutMs: in Int
+): Result[Int, String] {
+  return Search.Kernel.Net.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
+}
+@cfg(feature = "jvm")
+func searchKernelConnectElasticsearch(
+  url:              in String,
+  apiKey:           in String,
+  username:         in String,
+  password:         in String,
+  connectTimeoutMs: in Int,
+  requestTimeoutMs: in Int
+): Result[Int, String] {
+  return Search.Kernel.Jvm.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelConnectMeilisearch(
+  url:              in String,
+  apiKey:           in String,
+  connectTimeoutMs: in Int
+): Result[Int, String] {
+  return Search.Kernel.Net.connectMeilisearch(url, apiKey, connectTimeoutMs)
+}
+@cfg(feature = "jvm")
+func searchKernelConnectMeilisearch(
+  url:              in String,
+  apiKey:           in String,
+  connectTimeoutMs: in Int
+): Result[Int, String] {
+  return Search.Kernel.Jvm.connectMeilisearch(url, apiKey, connectTimeoutMs)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
+  return Search.Kernel.Net.index(clientHandle, docJson)
+}
+@cfg(feature = "jvm")
+func searchKernelIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
+  return Search.Kernel.Jvm.index(clientHandle, docJson)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
+  return Search.Kernel.Net.indexBatch(clientHandle, docsJson)
+}
+@cfg(feature = "jvm")
+func searchKernelIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
+  return Search.Kernel.Jvm.indexBatch(clientHandle, docsJson)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelSearch(clientHandle: in Int, queryJson: in String): Result[String, String] {
+  return Search.Kernel.Net.search(clientHandle, queryJson)
+}
+@cfg(feature = "jvm")
+func searchKernelSearch(clientHandle: in Int, queryJson: in String): Result[String, String] {
+  return Search.Kernel.Jvm.search(clientHandle, queryJson)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelSuggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String] {
+  return Search.Kernel.Net.suggest(clientHandle, index, text, field, size)
+}
+@cfg(feature = "jvm")
+func searchKernelSuggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String] {
+  return Search.Kernel.Jvm.suggest(clientHandle, index, text, field, size)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
+  return Search.Kernel.Net.delete(clientHandle, index, id)
+}
+@cfg(feature = "jvm")
+func searchKernelDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
+  return Search.Kernel.Jvm.delete(clientHandle, index, id)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
+  return Search.Kernel.Net.deleteIndex(clientHandle, index)
+}
+@cfg(feature = "jvm")
+func searchKernelDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
+  return Search.Kernel.Jvm.deleteIndex(clientHandle, index)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
+  return Search.Kernel.Net.exists(clientHandle, index, id)
+}
+@cfg(feature = "jvm")
+func searchKernelExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
+  return Search.Kernel.Jvm.exists(clientHandle, index, id)
+}
+
+@cfg(feature = "dotnet")
+func searchKernelCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
+  return Search.Kernel.Net.createIndex(clientHandle, index, mappingJson)
+}
+@cfg(feature = "jvm")
+func searchKernelCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
+  return Search.Kernel.Jvm.createIndex(clientHandle, index, mappingJson)
 }

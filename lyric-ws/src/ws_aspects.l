@@ -35,6 +35,7 @@ import Std.Core
 import Ws
 import Auth
 import Ws.Kernel.Net
+import Ws.Kernel.Jvm
 
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ pub aspect WsRateLimit {
       ret = call.proceed()
     } else {
       val rateKey = call.qualifiedName + ":" + args.ctx.connectionId
-      val allowed = Ws.Kernel.Net.checkRateLimit(rateKey, messagesPerMinute, burstSize)
+      val allowed = wsAspectKernelCheckRateLimit(rateKey, messagesPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {
@@ -162,4 +163,15 @@ pub aspect WsRateLimit {
       }
     }
   }
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+
+@cfg(feature = "dotnet")
+func wsAspectKernelCheckRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool {
+  return Ws.Kernel.Net.checkRateLimit(key, messagesPerMinute, burstSize)
+}
+@cfg(feature = "jvm")
+func wsAspectKernelCheckRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool {
+  return Ws.Kernel.Jvm.checkRateLimit(key, messagesPerMinute, burstSize)
 }

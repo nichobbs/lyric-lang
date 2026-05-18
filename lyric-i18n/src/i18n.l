@@ -30,6 +30,7 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import I18n.Kernel.Net
+import I18n.Kernel.Jvm
 
 // ─── Locale type ──────────────────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ record NativeTranslationStore { storeHandle: Int }
 
 impl TranslationStore for NativeTranslationStore {
   func translate(key: in String, locale: in Locale): String {
-    return I18n.Kernel.Net.translate(storeHandle, key, localeKey(locale))
+    return i18nKernelTranslate(storeHandle, key, localeKey(locale))
   }
 
   func translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String {
@@ -166,12 +167,12 @@ impl TranslationStore for NativeTranslationStore {
   }
 
   func availableLocales(): [Locale] {
-    val json = I18n.Kernel.Net.availableLocalesJson(storeHandle)
+    val json = i18nKernelAvailableLocalesJson(storeHandle)
     return parseLocaleArray(json)
   }
 
   func hasKey(key: in String, locale: in Locale): Bool {
-    return I18n.Kernel.Net.hasKey(storeHandle, key, localeKey(locale))
+    return i18nKernelHasKey(storeHandle, key, localeKey(locale))
   }
 }
 
@@ -198,7 +199,7 @@ pub func inProcess(): InProcessTranslationStore {
 ///   { "en": { "key": "value", ... }, "fr": { "key": "valeur", ... }, ... }
 @stable(since="0.1")
 pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError] {
-  match I18n.Kernel.Net.parseTranslationsJson(json) {
+  match i18nKernelParseTranslationsJson(json) {
     case Err(msg) ->
       return Err(I18nError(message = msg, code = "PARSE_ERROR"))
     case Ok(triplesJson) -> {
@@ -212,7 +213,7 @@ pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError]
 /// Returns an `InProcessTranslationStore` backed by a parsed in-memory map.
 @stable(since="0.1")
 pub func loadFromPath(): Result[InProcessTranslationStore, I18nError] {
-  match I18n.Kernel.Net.loadFromPath(I18nConfig.translationsPath) {
+  match i18nKernelLoadFromPath(I18nConfig.translationsPath) {
     case Err(msg) ->
       return Err(I18nError(message = msg, code = "LOAD_ERROR"))
     case Ok(json) ->
@@ -225,7 +226,7 @@ pub func loadFromPath(): Result[InProcessTranslationStore, I18nError] {
 /// file is large enough that an in-memory copy is undesirable.
 @stable(since="0.1")
 pub func loadNative(): Result[NativeTranslationStore, I18nError] {
-  match I18n.Kernel.Net.loadStore(I18nConfig.translationsPath, I18nConfig.fallbackLocale) {
+  match i18nKernelLoadStore(I18nConfig.translationsPath, I18nConfig.fallbackLocale) {
     case Ok(handle) -> Ok(NativeTranslationStore(storeHandle = handle))
     case Err(msg)   -> Err(I18nError(message = msg, code = "LOAD_ERROR"))
   }
@@ -408,4 +409,63 @@ func buildStoreFromTriples(triplesJson: in String): InProcessTranslationStore {
     }
   }
   return InProcessTranslationStore(translations = m)
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func i18nKernelLoadFromPath(path: in String): Result[String, String] {
+  return I18n.Kernel.Net.loadFromPath(path)
+}
+@cfg(feature = "jvm")
+func i18nKernelLoadFromPath(path: in String): Result[String, String] {
+  return I18n.Kernel.Jvm.loadFromPath(path)
+}
+
+@cfg(feature = "dotnet")
+func i18nKernelParseTranslationsJson(json: in String): Result[String, String] {
+  return I18n.Kernel.Net.parseTranslationsJson(json)
+}
+@cfg(feature = "jvm")
+func i18nKernelParseTranslationsJson(json: in String): Result[String, String] {
+  return I18n.Kernel.Jvm.parseTranslationsJson(json)
+}
+
+@cfg(feature = "dotnet")
+func i18nKernelLoadStore(path: in String, fallbackLocale: in String): Result[Int, String] {
+  return I18n.Kernel.Net.loadStore(path, fallbackLocale)
+}
+@cfg(feature = "jvm")
+func i18nKernelLoadStore(path: in String, fallbackLocale: in String): Result[Int, String] {
+  return I18n.Kernel.Jvm.loadStore(path, fallbackLocale)
+}
+
+@cfg(feature = "dotnet")
+func i18nKernelTranslate(storeHandle: in Int, key: in String, localeKey: in String): String {
+  return I18n.Kernel.Net.translate(storeHandle, key, localeKey)
+}
+@cfg(feature = "jvm")
+func i18nKernelTranslate(storeHandle: in Int, key: in String, localeKey: in String): String {
+  return I18n.Kernel.Jvm.translate(storeHandle, key, localeKey)
+}
+
+@cfg(feature = "dotnet")
+func i18nKernelAvailableLocalesJson(storeHandle: in Int): String {
+  return I18n.Kernel.Net.availableLocalesJson(storeHandle)
+}
+@cfg(feature = "jvm")
+func i18nKernelAvailableLocalesJson(storeHandle: in Int): String {
+  return I18n.Kernel.Jvm.availableLocalesJson(storeHandle)
+}
+
+@cfg(feature = "dotnet")
+func i18nKernelHasKey(storeHandle: in Int, key: in String, localeKey: in String): Bool {
+  return I18n.Kernel.Net.hasKey(storeHandle, key, localeKey)
+}
+@cfg(feature = "jvm")
+func i18nKernelHasKey(storeHandle: in Int, key: in String, localeKey: in String): Bool {
+  return I18n.Kernel.Jvm.hasKey(storeHandle, key, localeKey)
 }
