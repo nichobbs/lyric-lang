@@ -81,7 +81,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addMetadata(handle, key, value)
+  XRayKernel.addMetadata(handle, key, sanitizeAnnotation(value))
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
