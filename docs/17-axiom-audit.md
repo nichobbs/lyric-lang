@@ -439,12 +439,12 @@ environment variable being present or stable.
 ```
 
 **BCL surface**: `System.Text.Json.JsonSerializer` (Serialize,
-Deserialize) and related types, backing the `@derive(Json)` source-gen
+Deserialize) and related types, backing the `@generate(Json)` source-gen
 in `Std.Json`.
 
 **Gap**: JSON serialization involves reflection (for the BCL-side codegen
 path) and string-based encoding that is outside first-order scope.
-The `@derive(Json)` compile-time path generates type-specific code
+The `@generate(Json)` compile-time path generates type-specific code
 and does not use runtime reflection; the axiom covers the kernel FFI
 layer regardless.
 

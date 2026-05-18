@@ -404,7 +404,7 @@ For a `@projectable` opaque type `T`, the compiler additionally emits:
 - An instance method `T.toView(self): TView`.
 - A static method `TView.tryInto(self): Result[T, ContractViolation]`
   that runs `Inv_T` on the candidate and returns `Err` on failure.
-- A `@derive`-style hook so source generators (e.g. JSON) can emit
+- A `@generate`-style hook so source generators (e.g. JSON) can emit
   serialisers for `TView` *without* seeing `T`.
 
 Cycles in the projection graph are caught at compile time per Q003
@@ -578,7 +578,7 @@ on Roslyn) with all fields public, no opacity, no invariant clause.
 This is the wire-level type — DTOs, log payloads, configuration —
 intended to be reflected upon by serialisers, ORMs, and similar.
 
-`@derive(Json)`, `@derive(Sql)`, etc. are processed at compile time
+`@generate(Json)`, `@generate(Sql)`, etc. are processed at compile time
 by source generators that emit serialisers as additional types in the
 package's assembly. The serialisers are AOT-compatible by
 construction (no runtime reflection).
@@ -1229,28 +1229,31 @@ operations that can raise these exceptions; pure functions over
 range-bounded values get no wrapper, no overhead.
 
 
-## 20. `@derive` and source generators
+## 20. `@generate` and source generators
 
-`@derive(Json)`, `@derive(Sql)`, `@derive(Proto)`, `@derive(Equals)`,
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)`, `@generate(Equals)`,
 etc. are processed by source generators that run as part of the
 compilation pipeline. The bootstrap compiler (Phase 1) ships with a
-fixed, small set of source generators; user-defined derives are out
-of scope for v1 (per `docs/04-out-of-scope.md`).
+fixed set of built-in generators (bare single-segment names). Custom
+third-party generators are invoked with dotted package references
+(`@generate(Pkg.Name)`) and are declared as `kind = "source-generator"`
+dependencies; see `docs/40-source-generators.md` and D075.
 
 Each source generator:
 
-1. Reads the AST of the type to be derived.
-2. Emits additional Lyric or IL declarations (the implementation
-   choice is per-generator).
-3. Inserts the emitted code into the same package's assembly.
+1. Receives a structured `GeneratorRequest` descriptor for the annotated
+   type (via `Lyric.GeneratorSdk`).
+2. Returns `lyricSource`: a string of complete Lyric item declarations.
+3. The compiler re-parses that string and inserts the resulting items
+   into the same file before type checking.
 
 The output is AOT-compatible by construction: no runtime reflection,
 no `IDictionary` lookups against type tokens. Serialisation is
 generated as straight-line code over the type's fields.
 
-`@derive(Equals)` is the only auto-applied derive on `record` and
+`@generate(Equals)` is the only auto-applied generate on `record` and
 `union` types (structural equality is part of the language reference
-§2.4); the others are opt-in.
+§2.4); all others are opt-in.
 
 
 ## 21. AOT compatibility

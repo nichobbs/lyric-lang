@@ -122,7 +122,7 @@ For primitive types, there is no marshalling cost. `Int` and `int` have identica
 
 All Lyric code is AOT-compatible. The compiler generates no calls to `System.Reflection.Emit`, no `Type.GetType(...)`, no `Activator.CreateInstance`. Everything the compiler produces is statically known at build time.
 
-`@derive(Json)` generates a serializer at compile time. `@derive(Sql)` generates a query mapper at compile time. The `wire` block resolves the dependency graph at compile time. None of these require any runtime type introspection.
+`@generate(Json)` generates a serializer at compile time. `@generate(Sql)` generates a query mapper at compile time. The `wire` block resolves the dependency graph at compile time. None of these require any runtime type introspection.
 
 Native AOT (`lyric build --aot`) produces a self-contained executable. No .NET runtime is required at the deployment site — the runtime is compiled into the binary. This is meaningful for server deployments with strict startup-time budgets, for CLI tools shipped without a runtime prerequisite, and for environments where installing .NET is not practical.
 
@@ -131,7 +131,7 @@ Native AOT (`lyric build --aot`) produces a self-contained executable. No .NET r
 
 Reflection is also incompatible with Native AOT, which requires knowing at build time which types and members will be accessed at runtime. A runtime-discovered `GetField` call cannot be included in the AOT compilation because the compiler does not know about it until it happens.
 
-Source generators — the compile-time alternative Lyric uses — are more explicit about what they generate, faster (no startup cost), and AOT-safe. The trade is that you must opt in with `@derive`. The decision log entry D006 records this as one of the deliberate design costs.
+Source generators — the compile-time alternative Lyric uses — are more explicit about what they generate, faster (no startup cost), and AOT-safe. The trade is that you must opt in with `@generate`. The decision log entry D006 records this as one of the deliberate design costs.
 :::
 
 ## §13.7 `Std.Bcl` wrappers

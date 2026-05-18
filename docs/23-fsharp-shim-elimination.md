@@ -418,7 +418,7 @@ native stdlib applies here:
 2. **Contract assertions.** Each port declares its invariants
    in `@runtime_checked` mode. Contract failures during parity
    testing are a parity bug.
-3. **Snapshot tests for `@derive(Json)` synthesised output.**
+3. **Snapshot tests for `@generate(Json)` synthesised output.**
    The synthesiser already changed shape in P3-3 (D-progress-104);
    Phase 3's G10 work changes it again. Snapshot tests catch
    accidental output drift.

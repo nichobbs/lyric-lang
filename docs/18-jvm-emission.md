@@ -482,7 +482,7 @@ public final class T {
     private final T2 $f2;
     ...
     T(T1 $f1, T2 $f2, ...) { this.$f1 = $f1; ...; assertInvariant(); }
-    // generated equality if @derive(Equals); no auto-generation here
+    // generated equality if @generate(Equals); no auto-generation here
 }
 ```
 
@@ -653,7 +653,7 @@ as §5.1), with three differences:
    reflection is still forbidden, so the strong sealing in §7.2 is
    preserved.
 
-`@derive(Json)`, `@derive(Sql)`, `@derive(Proto)` are processed at
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` are processed at
 compile time by source generators; the emitter's role is just to drop
 the generator-produced classes alongside the user's classes in the
 same module.  Java records are first-class supported by Jackson 2.12+
@@ -1394,18 +1394,20 @@ still bridge to `Bug` so the failure surfaces as a Lyric-shaped
 diagnostic rather than a Java stack trace.
 
 
-## 21. `@derive` and source generators
+## 21. `@generate` and source generators
 
-`@derive(Json)`, `@derive(Sql)`, `@derive(Proto)`, `@derive(Equals)`
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)`, `@generate(Equals)`
 are processed at compile time by source generators that emit
 additional Lyric or class-file declarations.  The set of supported
-derives is identical to the MSIL backend; the emitter just produces
-different artefacts.
+built-in generators is identical to the MSIL backend; the emitter just
+produces different artefacts.  Custom third-party generators are invoked
+with dotted names (`@generate(Pkg.Name)`); see `docs/40-source-generators.md`
+and D075.
 
-For `@derive(Json)`, the generator produces a Jackson `MixIn`-shaped
+For `@generate(Json)`, the generator produces a Jackson `MixIn`-shaped
 class plus a `JsonSerializer<T>` and `JsonDeserializer<T>` pair, all
 emitted as direct class files (no runtime reflection).  For
-`@derive(Sql)`, the generator targets the JDBI 3 fluent SQL mapping
+`@generate(Sql)`, the generator targets the JDBI 3 fluent SQL mapping
 interface, again emitting the mapper class directly.
 
 The source generators run as Lyric-side AST transformers in the same

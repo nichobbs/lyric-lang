@@ -62,6 +62,7 @@ backing entry's id.
 - `docs/37-grpc-proto-sketch.md` — gRPC and Protobuf binding design: Lyric ↔ proto type mapping, `Result[T,E]` → gRPC Status, enum-with-payload → `oneof`, hybrid field-numbering (declaration-order default + lock file + `@proto_field` override), async streaming model (forward-looking, M1.4+), `lyric-grpc` library structure, `RequiresGrpcAuth` and `GrpcCircuitBreaker` aspect templates, tooling (`lyric grpc spec`, `lyric generate grpc`). _Unbacked (Q-G-001–Q-G-007 open)._
 - `docs/38-workspace.md` — workspace (root `[workspace]` table, auto-discovery, member opt-out), git dependency form (`git`, `tag`/`rev`/`branch`, `subdir`), workspace overrides, transitive native dep propagation, and an exploratory sketch of eliminating `[nuget]`/`[maven]` from application manifests. _Specced in D073. Open questions Q-W-001–Q-W-004._
 - `docs/39-package-registry.md` — Lyric package registry design: NuGet.org as the .NET channel, GitHub Packages Maven as the JVM channel, `lyric publish` and `lyric restore` flows, package naming convention, `lyric search` via NuGet tag filter, lock-file checksums, private feeds, and first-party ecosystem publish order. _Specced in D074. Open questions Q-R-001–Q-R-004._
+- `docs/40-source-generators.md` — custom source generator API: `@generate` unified annotation form (replaces `@derive`), built-in vs custom generator resolution, `Lyric.GeneratorSdk` types, subprocess bridge model, security and trust, phasing, and open questions Q-SG-001–Q-SG-004. _Specced in D075._
 
 ## Reading order (for Claude)
 

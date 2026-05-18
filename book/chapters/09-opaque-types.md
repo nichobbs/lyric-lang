@@ -60,7 +60,7 @@ You can tighten this by making `Amount` a package with private internals in othe
 The comparison to Java or C# `private` is instructive. `private` is enforced by the compiler — you cannot write `account.balance` in another class and have it compile. But it is not enforced by the runtime. Reflection bypasses the compiler check. Lyric's opaque types are enforced at both levels: the compiler rejects direct field access, and the emitted .NET type has no reflection surface to bypass.
 
 ::: sidebar
-**No reflection.** Lyric programs cannot use reflection at all. This is not an accident — it is the consequence of taking opaque types seriously. If the compiler allowed `typeof(Account).GetField("balance")`, the opaque guarantee would be fictional. Any library that wanted to crack open your domain types could do so. The decision to exclude reflection (D006 in the decision log) is what makes the opaque guarantee real. The cost is that reflection-driven .NET libraries — some serializers, some ORMs, most mocking frameworks — cannot work with Lyric types directly. Source generators (`@derive(Json)`, `@derive(Sql)`) are the compile-time substitute for serialization; `@projectable` is the substitute for reflection-based projection; `@stubbable` interfaces replace mocking frameworks. These are all better tools for their respective jobs — the no-reflection constraint forced the language to provide them.
+**No reflection.** Lyric programs cannot use reflection at all. This is not an accident — it is the consequence of taking opaque types seriously. If the compiler allowed `typeof(Account).GetField("balance")`, the opaque guarantee would be fictional. Any library that wanted to crack open your domain types could do so. The decision to exclude reflection (D006 in the decision log) is what makes the opaque guarantee real. The cost is that reflection-driven .NET libraries — some serializers, some ORMs, most mocking frameworks — cannot work with Lyric types directly. Source generators (`@generate(Json)`, `@generate(Sql)`) are the compile-time substitute for serialization; `@projectable` is the substitute for reflection-based projection; `@stubbable` interfaces replace mocking frameworks. These are all better tools for their respective jobs — the no-reflection constraint forced the language to provide them.
 :::
 
 ## §9.3 Exposed records
@@ -68,14 +68,14 @@ The comparison to Java or C# `private` is instructive. `private` is enforced by 
 Where opaque types hide everything, `exposed` records reveal everything. An exposed record is flat, host-visible, and reflection-friendly. It compiles to a plain .NET `record class` with public properties:
 
 ```lyric
-pub exposed record TransferRequest @derive(Json) {
+pub exposed record TransferRequest @generate(Json) {
   fromId: Guid
   toId: Guid
   amountCents: Long
 }
 ```
 
-`@derive(Json)` invokes a source generator that emits a JSON serializer at compile time. No runtime reflection library needed — the serializer is generated code that references the fields directly.
+`@generate(Json)` invokes a source generator that emits a JSON serializer at compile time. No runtime reflection library needed — the serializer is generated code that references the fields directly.
 
 Exposed records are the right type for:
 
@@ -96,7 +96,7 @@ The most practically useful pattern in Lyric combines exposed records and opaque
 The configuration example from the worked examples shows this clearly:
 
 ```lyric
-pub exposed record RawConfig @derive(Json) {
+pub exposed record RawConfig @generate(Json) {
   databaseUrl: String
   databasePoolSize: Long
   redisUrl: String
@@ -168,7 +168,7 @@ val roundTripped = view.tryInto()?     // validated reconstruction
 
 `toView()` is always safe — it only moves data outward, and `@hidden` fields never appear in the result. `tryInto()` is fallible — the invariant might not hold for arbitrary `UserView` data, so it returns `Result`.
 
-The generated `UserView` automatically gets `@derive(Json)`, so serialization works without any additional code.
+The generated `UserView` automatically gets `@generate(Json)`, so serialization works without any additional code.
 
 ::: note
 **Note:** The `@projectable` annotation generates code at compile time. If you add a field to the opaque type, the view type gains the field automatically, and `toView()` and `tryInto()` are updated. If you add a `@hidden` field, it is automatically excluded from the view. Field drift between the opaque type and its view is not possible — the compiler maintains the relationship.
@@ -197,13 +197,13 @@ pub opaque type User @projectable {
 The `@projectionBoundary(asId)` annotation tells the compiler: at this field, cut the projection cycle. Instead of recursively projecting the referenced type, emit the ID of the referenced value. The generated views become:
 
 ```lyric
-exposed record TeamView @derive(Json) {
+exposed record TeamView @generate(Json) {
   id: Guid
   name: String
   memberIds: slice[Guid]    // not slice[UserView]
 }
 
-exposed record UserView @derive(Json) {
+exposed record UserView @generate(Json) {
   id: Guid
   email: String
   teamId: Guid?             // not TeamView?
@@ -231,7 +231,7 @@ The error is precise enough to act on immediately. Per the decision log (D026), 
 
 1. Create an opaque type `Password` that stores a bcrypt hash. Provide a `pub func hash(plaintext: in String): Password` constructor. Then, from outside the package, attempt to read the inner hash field — observe the compile error. Can you construct a `Password` value directly without going through `hash`?
 
-2. Write a `pub exposed record ApiUser @derive(Json)` and an `opaque type User` with a `@hidden` field (for example, `roles: slice[String] @hidden`). Add `@projectable` to `User` and generate the view. Verify that the `roles` field is absent from `UserView`. What does `toView()` return for the hidden field — is it present as a default, or absent entirely?
+2. Write a `pub exposed record ApiUser @generate(Json)` and an `opaque type User` with a `@hidden` field (for example, `roles: slice[String] @hidden`). Add `@projectable` to `User` and generate the view. Verify that the `roles` field is absent from `UserView`. What does `toView()` return for the hidden field — is it present as a default, or absent entirely?
 
 3. Build the validate-at-the-boundary pattern: define a `RawInvoice` exposed record with `String` amounts, and an `Invoice` opaque type with `Cents` amounts and an `invariant: total > 0`. Write a `parse(raw: in RawInvoice): Result[Invoice, ValidationError]` function. Return a precise error for each possible validation failure.
 

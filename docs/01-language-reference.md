@@ -46,7 +46,7 @@ yield
 Annotation-style keywords (always preceded by `@`):
 
 ```
-@axiom         @bench           @bench_module          @derive
+@axiom         @bench           @bench_module          @generate
 @experimental  @global_clock_unsafe  @hidden           @projectable
 @proof_required  @provided      @runtime_checked       @stable
 @stubbable     @test_module
@@ -323,7 +323,7 @@ Cycles in the projection graph require explicit `@projectionBoundary` markers �
 ### 2.10 Exposed records
 
 ```
-exposed record TransferRequest @derive(Json) {
+exposed record TransferRequest @generate(Json) {
   fromId: Guid
   toId: Guid
   amountCents: Long
@@ -332,7 +332,7 @@ exposed record TransferRequest @derive(Json) {
 
 `exposed` types are flat, host-visible, and may be inspected by reflection. They compile to plain .NET `record class` types. They cannot have invariants beyond what the type system enforces structurally (no `invariant:` clause). They are intended for wire-level shapes — DTOs, log payloads, config records.
 
-`@derive(Json)`, `@derive(Sql)`, `@derive(Proto)` invoke source generators that emit serializers at compile time. No runtime serialization library is needed.
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`); see `docs/40-source-generators.md` and D075.
 
 An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an opaque field, but only as an opaque handle — the inner representation remains hidden.
 
