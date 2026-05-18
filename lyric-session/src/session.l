@@ -415,8 +415,14 @@ config SessionConfig {
 }
 
 /// Redis connection settings (requires feature = "redis").
+///
+/// `url` is marked `@sensitive` because Redis connection strings
+/// routinely embed credentials (e.g. `redis://:password@host:6379/0`),
+/// and the config framework masks `@sensitive` fields in log output,
+/// diagnostic dumps, and error messages.
 @cfg(feature = "redis")
 config RedisSession {
+  @sensitive
   url:       String
   keyPrefix: String = "session:"
 }
