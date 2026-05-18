@@ -48,3 +48,6 @@ output_assembly = "Lyric.Proto.dll"
 
 [dependencies]
 "Lyric.Stdlib" = "*"
+
+[project.tests]
+"Proto.ProtoTypesTests" = "tests/proto_types_tests.l"

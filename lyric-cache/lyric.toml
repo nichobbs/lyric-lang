@@ -16,3 +16,6 @@ output_assembly = "Cache.dll"
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
+
+[project.tests]
+"Cache.CacheTests" = "tests/cache_tests.l"

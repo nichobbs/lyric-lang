@@ -56,6 +56,9 @@ output_assembly = "Lyric.Grpc.dll"
 # JVM kernel: io.grpc client + server (Phase 6).
 "Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
 
+[project.tests]
+"Grpc.GrpcTypesTests" = "tests/grpc_types_tests.l"
+
 [dependencies]
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Auth"       = { path = "../lyric-auth" }

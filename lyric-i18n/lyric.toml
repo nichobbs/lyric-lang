@@ -27,3 +27,6 @@ output_assembly = "I18n.dll"
 # Translation file loading is backed by java.nio.file.Files and the
 # stdlib JSON parser — no external Maven dependency required.
 [maven]
+
+[project.tests]
+"I18n.I18nTests" = "tests/i18n_tests.l"

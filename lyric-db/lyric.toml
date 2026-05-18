@@ -22,6 +22,9 @@ jvm      = []    # Target the JVM kernel (Db.Kernel.Jvm)
 postgres = []    # enable the Npgsql / PostgreSQL JDBC driver
 sqlite   = []    # enable the Microsoft.Data.Sqlite / SQLite JDBC driver
 
+[project.tests]
+"Db.DbTests" = "tests/db_tests.l"
+
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
 

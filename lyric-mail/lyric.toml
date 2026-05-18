@@ -40,3 +40,6 @@ sendgrid = []   # SendGrid (SendGrid .NET library / sendgrid-java on JVM)
 "software.amazon.awssdk:ses"       = { version = "2.25.70", features = ["ses"] }
 # feature = "sendgrid" — SendGrid Java client for JVM
 "com.sendgrid:sendgrid-java"       = { version = "4.10.2", features = ["sendgrid"] }
+
+[project.tests]
+"Mail.MailTests" = "tests/mail_tests.l"

@@ -27,3 +27,6 @@ jvm    = []   # JVM kernel backend (Phase 6)
 # Remote HTTP polling on JVM uses java.net.http.HttpClient (JDK 11+) — no
 # external Maven dependency required.
 [maven]
+
+[project.tests]
+"Flags.FlagsTests" = "tests/flags_tests.l"

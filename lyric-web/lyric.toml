@@ -47,6 +47,9 @@ output_assembly = "Web.dll"
 # JVM extern boundary — Undertow HTTP server (Phase 6).
 "Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
 
+[project.tests]
+"Web.CorsGuardTests" = "tests/cors_guard_tests.l"
+
 [dependencies]
 "Lyric.Stdlib"       = { path = "../stdlib" }
 "Lyric.Auth"         = { path = "../lyric-auth" }

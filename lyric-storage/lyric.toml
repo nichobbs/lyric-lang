@@ -16,6 +16,9 @@ output_assembly = "Storage.dll"
 "Storage.Kernel.Net" = "src/_kernel/net"
 "Storage.Kernel.Jvm" = "src/_kernel/jvm"
 
+[project.tests]
+"Storage.StorageTests" = "tests/storage_tests.l"
+
 [features]
 dotnet    = []   # .NET kernel backend
 jvm       = []   # JVM kernel backend (Phase 6)
