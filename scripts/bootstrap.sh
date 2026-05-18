@@ -112,8 +112,8 @@ COMPILER_SOURCES=(
   "lyric-compiler/lyric/type_checker/typechecker_stmts.l"
   "lyric-compiler/lyric/type_checker/typechecker_symbols.l"
   "lyric-compiler/lyric/type_checker/typechecker_types.l"
-  "lyric-compiler/lyric/mode_checker/modechecker_check.l"
   "lyric-compiler/lyric/mode_checker/modechecker_mode.l"
+  "lyric-compiler/lyric/mode_checker/modechecker_check.l"
   "lyric-compiler/lyric/contract_elaborator/elaborator.l"
   "lyric-compiler/lyric/test_synth/test_synth.l"
 
