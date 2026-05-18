@@ -381,7 +381,7 @@ AnnotationArg  =
 (* Recognised annotation names (per reference §1.3) — enforced post-parse,
  * not by the grammar:
  *
- *   @axiom, @derive, @global_clock_unsafe, @hidden, @projectable,
+ *   @axiom, @generate, @global_clock_unsafe, @hidden, @projectable,
  *   @proof_required, @provided, @runtime_checked, @stubbable, @test_module,
  *   @projectionBoundary, @valueType, @referenceType, @hot,
  *   @pure, @reflection (warning-only), @inline (deferred), and any future

@@ -86,6 +86,8 @@ book/
     ├── 26-database-access.md
     ├── 27-health-checks.md
     ├── 28-benchmarking.md
+    ├── 29-application-libraries.md
+    ├── 30-source-generators.md
     ├── appendix-a-vscode.md
     └── appendix-b-quick-reference.md
 ```

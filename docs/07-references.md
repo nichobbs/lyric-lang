@@ -105,7 +105,7 @@ External standards Lyric conforms to, and prior art Lyric draws from. Each entry
 **What we don't take:**
 - Ownership/borrowing (we rely on GC)
 - Lifetimes (no need with GC)
-- Macros (rejected; we use `@derive` instead)
+- Macros (rejected; we use `@generate` instead)
 
 ### Swift
 **What we draw from:**

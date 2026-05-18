@@ -22,7 +22,7 @@ Polymorphism is via interfaces and sum types only. There is no class hierarchy, 
 
 Lyric programs cannot inspect types at runtime. There is no equivalent of `typeof(T).GetFields()`, `getClass()`, or `instanceof` outside of the pattern-matching context.
 
-**Why:** Reflection is what makes opaque types' representational privacy meaningless. It's also what blocks AOT compilation and forces runtime DI containers. Source generators (`@derive`) cover the legitimate use cases that reflection used to handle.
+**Why:** Reflection is what makes opaque types' representational privacy meaningless. It's also what blocks AOT compilation and forces runtime DI containers. Source generators (`@generate`) cover the legitimate use cases that reflection used to handle.
 
 ### Implicit numeric conversion
 
@@ -70,7 +70,7 @@ There is no preprocessor, no `#include`, no textual code expansion. Imports are 
 
 There is no Rust-style `macro_rules!`, no Lisp-style macros, no C++-style templates beyond the language's built-in generics.
 
-**Why:** Macros are powerful but they degrade tooling (LSP support is harder), make code less readable to outsiders, and create a parallel language that learners must also master. Lyric's `@derive` system handles the common case (generating boilerplate from type structure) without exposing a macro language.
+**Why:** Macros are powerful but they degrade tooling (LSP support is harder), make code less readable to outsiders, and create a parallel language that learners must also master. Lyric's `@generate` system handles the common case (generating boilerplate from type structure) without exposing a macro language.
 
 ### Operator overloading
 
@@ -224,11 +224,16 @@ The compiler evaluates `const` expressions and resolves wire blocks at compile t
 
 ### User-defined attributes (annotations)
 
-**Status:** DEFERRED to v2
+**Status:** INCLUDED — resolved by D075 (`docs/40-source-generators.md`)
 
-The annotation set in v1 is the language's built-in annotations (`@projectable`, `@stubbable`, `@derive`, `@runtime_checked`, etc.). Users cannot define new attributes.
-
-**Why:** Without reflection, user-defined attributes have nothing to act on at runtime. Defining them at compile time requires a macro/source-generator system. Defer until a clear use case emerges.
+Custom source generators provide the compile-time hook that makes user-defined
+`@generate(Pkg.Name)` annotations meaningful. Packages declare `kind =
+"source-generator"` in `lyric.toml` and export a `generate` entry point; the
+compiler calls them during synthesis and injects their output before type checking.
+This is not a general annotation system — annotations that are not `@generate`
+arguments remain compiler-defined — but it covers the primary use case (structured
+boilerplate generation from type shape) without a macro language or runtime
+reflection.
 
 ---
 

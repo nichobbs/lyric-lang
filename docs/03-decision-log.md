@@ -4109,6 +4109,86 @@ setup), Q-R-003 (GitHub Pages discovery site), Q-R-004 (`lyric publish
 
 ---
 
+## D075 — Custom source generator API; `@derive` renamed `@generate`
+
+**Date:** 2026-05-18
+**Spec:** `docs/40-source-generators.md`
+
+### Decision
+
+The `@derive` annotation is renamed `@generate` across the language. Built-in
+generators use bare single-segment names (`@generate(Json)`, `@generate(Sql)`,
+`@generate(Proto)`, `@generate(Equals)`). Custom generators use dotted names that
+resolve to source-generator packages (`@generate(Proto.Derive)`,
+`@generate(Acme.MyGenerator)`).
+
+The resolver rule is mechanical: no dot → built-in; contains dot → package reference.
+
+### Custom source generator API
+
+Any Lyric package may act as a compile-time code generator by declaring
+`kind = "source-generator"` in its `lyric.toml` and exporting a single entry point:
+
+```lyric
+import Lyric.GeneratorSdk
+
+pub func generate(req: GeneratorRequest): GeneratorResponse { ... }
+```
+
+`Lyric.GeneratorSdk` (new package, `lyric-generator-sdk/`) provides the
+`GeneratorRequest`, `GeneratorResponse`, `TypeDescriptor`, `FieldDescriptor`, and
+related descriptor types. Generator output is a string of complete Lyric source items
+(`lyricSource`) and an optional list of additional imports. The compiler re-parses
+this output and injects it into the file before type checking, so all generated code
+goes through the full type-checker and mode-checker. No AOT-safety exemptions are
+granted to generated items.
+
+### Pipeline position
+
+Custom generators run at the end of the pre-type-check synthesis chain, after the
+built-in passes:
+
+```
+hoistInlineMethods
+  → Stubbable.synthesizeItems
+  → Wire.synthesizeItems
+  → Generate.synthesizeItems   (replaces JsonDerive.synthesizeItems)
+```
+
+The `Generate.synthesizeItems` pass handles both built-in (inline) and custom
+(in-process bridge, following the `SelfHostedFmt.fs` pattern) generators.
+
+### Rationale
+
+`@derive(Json)` has proven the model: AOT-compatible, type-checked output, no runtime
+reflection. Third-party libraries need the same capability for custom wire formats,
+ORM column mappers, OpenAPI schema generation, etc. Maintaining a closed compiler
+built-in list for every use case is not sustainable.
+
+Renaming `@derive` → `@generate` eliminates the ambiguity with the `derives` clause
+on distinct types (which is a different mechanism: `type UserId = Long derives Hash`).
+`@generate` more clearly communicates intent — it runs a generator — whereas `@derive`
+sounds like a structural inheritance concept.
+
+Moving "user-defined attributes" from `docs/04-out-of-scope.md` DEFERRED into the
+language via this mechanism satisfies the original deferral condition: a concrete use
+case (cross-library source generation) has emerged, and the source-generator approach
+achieves it without a macro language or runtime reflection.
+
+### Security and trust
+
+Generator packages are opt-in (declared in `lyric.toml` and applied via `@generate`).
+Lock-file SHA-512 checksums cover generator packages identically to library
+dependencies. Generator output is fully validated by the compiler. Generators cannot
+observe the full AST; they receive only the structured `GeneratorRequest` descriptor
+for the annotated type.
+
+### Open questions
+
+Q-SG-001 through Q-SG-004 are tracked in `docs/40-source-generators.md` §10.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

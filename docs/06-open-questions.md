@@ -546,3 +546,12 @@ Workspace and native dep elimination open questions (Q-W-001–Q-W-004) are
 maintained in `docs/38-workspace.md` §8.  They live there because they require
 workspace and registry design context to evaluate.  All Q-W entries are
 currently open.
+
+---
+
+## Source generator questions
+
+Source generator open questions (Q-SG-001–Q-SG-004) are maintained in
+`docs/40-source-generators.md` §10.  They live there because they require
+source-generator design context to evaluate.  All Q-SG entries are currently
+open.

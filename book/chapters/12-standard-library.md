@@ -40,7 +40,7 @@ Here is the full module inventory:
 | `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `Clock` interface, ISO 8601 parsing |
-| `Std.Json` | `toJson`, `fromJson` for `@derive(Json)` types |
+| `Std.Json` | `toJson`, `fromJson` for `@generate(Json)` types |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
@@ -196,14 +196,14 @@ Path strings are unchecked at compile time. The compiler does not know whether `
 **Note:** `Std.File` is a Lyric wrapper around `System.IO.File`. Its `@axiom` block is in `stdlib/std/file.l`. If you are calling it in a `@proof_required` module, the prover will trust the axiom contracts and not check them. Chapter 13 explains what that means and when it matters.
 :::
 
-## §12.7 JSON with `@derive`
+## §12.7 JSON with `@generate`
 
-`@derive(Json)` generates `toJson` and `fromJson` at compile time. No reflection, no runtime type inspection — the serializer is source-generated and AOT-compatible.
+`@generate(Json)` generates `toJson` and `fromJson` at compile time. No reflection, no runtime type inspection — the serializer is source-generated and AOT-compatible.
 
 ```lyric
 import Std.Core
 
-@derive(Json)
+@generate(Json)
 pub exposed record Order {
   id:          String
   customerId:  String
@@ -231,9 +231,11 @@ func main(): Unit {
 
 `toJson` is a static method on the type, not a method on an instance — `Order.toJson(order)`, not `order.toJson()`. This is because the compiler generates the function into the type's namespace, and calling it as a static makes the generated nature explicit.
 
-Nested records work if each nested type is also `@derive(Json)`. `Option[T]` fields round-trip as `null` in JSON. Slices of primitives and slices of `@derive(Json)` records both work. What does not work: `Map[K, V]` with non-`String` keys (JSON object keys must be strings), `opaque` types (their representation is not visible), and types with `inout` or `out` fields (those are parameter modes, not field modifiers).
+Nested records work if each nested type is also `@generate(Json)`. `Option[T]` fields round-trip as `null` in JSON. Slices of primitives and slices of `@generate(Json)` records both work. What does not work: `Map[K, V]` with non-`String` keys (JSON object keys must be strings), `opaque` types (their representation is not visible), and types with `inout` or `out` fields (those are parameter modes, not field modifiers).
 
 If you need to serialise an opaque type across a boundary, the idiomatic pattern is to project it to an `exposed record` first, then derive JSON on the exposed form. Example 5 in `docs/02-worked-examples.md` shows this pattern with `RawConfig` and `AppConfig`.
+
+`@generate` is not limited to built-in generators. Chapter 30 covers how to write and publish your own source generator package so that consumers can annotate their types with `@generate(YourPkg.Name)` and receive whatever code your generator emits.
 
 ## §12.8 `Std.Http`
 

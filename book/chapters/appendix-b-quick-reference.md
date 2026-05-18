@@ -194,13 +194,13 @@ opaque type User @projectable {
 ### Exposed records
 
 ```lyric
-exposed record TransferRequest @derive(Json) {
+exposed record TransferRequest @generate(Json) {
   fromId:      Guid
   toId:        Guid
   amountCents: Long
 }
 // Flat, reflection-visible; no invariant clause; intended for DTOs / wire shapes.
-// @derive(Json|Sql|Proto) invokes compile-time source generators.
+// @generate(Json|Sql|Proto) invokes built-in source generators; @generate(Pkg.Name) invokes custom ones.
 ```
 
 ### Interfaces and implementations
@@ -571,7 +571,8 @@ output_assembly = "myapp.dll"
 | `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 20 §20.7 |
 | `@cfg(any(feature = "X", feature = "Y"))` | any item | Erase unless at least one listed feature is active |
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
-| `@derive(Json\|Sql\|Proto)` | `exposed record` | Emit compile-time serializer for the named target |
+| `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
+| `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |
 | `@experimental` | `pub` item | May change without SemVer major bump |
 | `@inline_template` | `pub aspect` | C-mode template: body re-compiled in consumer package so it can read named `args` fields (deferred; not yet implemented) |
 | `@global_clock_unsafe` | function | Suppresses the proof-system warning for non-`@stubbable` clock access |

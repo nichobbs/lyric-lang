@@ -313,7 +313,7 @@ For multi-call scenarios, use a `slice[String]` to accumulate arguments.
 
 ---
 
-### G-02  `@derive(Json)` `fromJson` re-parses the document on every field access
+### G-02  `@generate(Json)` `fromJson` re-parses the document on every field access
 
 **Current behavior:** The synthesised `fromJson` deserialiser re-parses the
 full JSON document on each call to access a single field (D-progress-046
