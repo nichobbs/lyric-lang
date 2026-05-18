@@ -274,6 +274,54 @@ func testUnterminatedString(): Unit {
   assertEqual(r.diagnostics[0].code, "L0025", "unterm: L0025")
 }
 
+// #314 — Unicode escapes in the full BMP must decode correctly, not
+// silently to U+FFFD as the old ASCII-only lookup table did.  The
+// surrogate range U+D800..U+DFFF must be rejected with an L0022
+// diagnostic mirroring the F# bootstrap (#313).
+func testUnicodeEscapeBmpRange(): Unit {
+  // \u{80} — first non-ASCII BMP scalar.  Previously decoded to U+FFFD
+  // under the 96-char ASCII lookup table.
+  val r1 = lex("\"\\u{80}\"")
+  assertEqualInt(diagCount(r1), 0, "u80: no diagnostics")
+  assertEqual(stringValueAt(r1, 0), "\u{80}", "u80: round-trips")
+
+  // \u{00FF} — Latin-1 supplement boundary.
+  val r2 = lex("\"\\u{00FF}\"")
+  assertEqualInt(diagCount(r2), 0, "u00FF: no diagnostics")
+  assertEqual(stringValueAt(r2, 0), "\u{00FF}", "u00FF: round-trips")
+
+  // \u{FFFF} — highest BMP scalar (last code point before surrogate
+  // range, well above the surrogate range itself).
+  val r3 = lex("\"\\u{FFFF}\"")
+  assertEqualInt(diagCount(r3), 0, "uFFFF: no diagnostics")
+  assertEqual(stringValueAt(r3, 0), "\u{FFFF}", "uFFFF: round-trips")
+}
+
+func testUnicodeEscapeSurrogateRejected(): Unit {
+  // U+D800 — first high (lead) surrogate.  Must produce an L0022 and
+  // substitute U+FFFD without panicking.
+  val r1 = lex("\"\\u{D800}\"")
+  assertEqualInt(diagCount(r1), 1, "uD800: one diagnostic")
+  assertEqual(r1.diagnostics[0].code, "L0022", "uD800: L0022")
+  assertEqual(stringValueAt(r1, 0), "\u{FFFD}", "uD800: U+FFFD substituted")
+
+  // U+DFFF — last low (trail) surrogate.
+  val r2 = lex("\"\\u{DFFF}\"")
+  assertEqualInt(diagCount(r2), 1, "uDFFF: one diagnostic")
+  assertEqual(r2.diagnostics[0].code, "L0022", "uDFFF: L0022")
+  assertEqual(stringValueAt(r2, 0), "\u{FFFD}", "uDFFF: U+FFFD substituted")
+}
+
+func testUnicodeEscapeNonBmpRejected(): Unit {
+  // \u{1F600} — non-BMP scalar (emoji).  The current Char-returning
+  // surface can't express a UTF-16 surrogate pair, so non-BMP escapes
+  // produce an L0022 + U+FFFD until the wider follow-up lands (#314).
+  val r = lex("\"\\u{1F600}\"")
+  assertEqualInt(diagCount(r), 1, "u1F600: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0022", "u1F600: L0022")
+  assertEqual(stringValueAt(r, 0), "\u{FFFD}", "u1F600: U+FFFD substituted")
+}
+
 // Phase 5 §M5.1 stage 3 — interpolated / triple / raw strings.
 //
 // Note on quoting: every time the body of a `lex(...)` call below
@@ -646,6 +694,9 @@ func main(): Unit {
   testStringLiteral()
   testStringEscapes()
   testUnterminatedString()
+  testUnicodeEscapeBmpRange()
+  testUnicodeEscapeSurrogateRejected()
+  testUnicodeEscapeNonBmpRejected()
   testInterpolatedString()
   testInterpolatedStringNoHoles()
   testTripleString()

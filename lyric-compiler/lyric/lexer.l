@@ -39,6 +39,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.UnicodeHost
+import Std.CharHost as CharHost
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1555,26 +1556,20 @@ func decodeEscape(c: in Char): Option[Char] {
   }
 }
 
+// Convert a BMP scalar value (UTF-16 code unit, 0..0xFFFF) to a Char.
+//
+// Defensive: rejects the surrogate range (0xD800..0xDFFF) directly per
+// Unicode §3.9 — surrogate code points are not valid scalar values and
+// feeding one to `System.Convert.ToChar` produces an unpaired
+// surrogate.  The lexer's own `lexUnicodeEscape` already filters these
+// before calling; the guard here keeps the function unconditionally
+// safe for any future caller.  See #313 and #314.
 @pure
 func longToChar(v: in Long): Char {
-  // Walk a small lookup table for ASCII; non-ASCII BMP scalars can be
-  // re-introduced once a `Char.fromCodepoint` builtin lands.
-  if v < 0i64 or v > 127i64 {
+  if v < 0i64 or v > 65535i64 or (v >= 55296i64 and v <= 57343i64) {
     '\u{FFFD}'
   } else {
-    val ascii = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
-    val i = longToInt(v)
-    if i < 32 {
-      if i == 9 { '\t' }
-      else if i == 10 { '\n' }
-      else if i == 13 { '\r' }
-      else if i == 0 { '\0' }
-      else { '\u{FFFD}' }
-    } else if i == 127 {
-      '\u{FFFD}'
-    } else {
-      ascii[i - 32]
-    }
+    CharHost.hostIntToChar(longToInt(v))
   }
 }
 
@@ -1630,10 +1625,16 @@ func lexEscape(state: inout LexerState, startP: in Position): Char {
   }
 }
 
-/// Lex a `\u{...}` Unicode escape.  v0.1 decodes only BMP scalars
-/// (≤ 0xFFFF) so the result fits in a `Char`; higher codepoints land
-/// with the wider-TChar follow-up.  The leading `\u` has already been
-/// consumed by the caller.
+/// Lex a `\u{...}` Unicode escape.
+///
+/// Decodes BMP scalar values (`\u{0}`..`\u{FFFF}` except the surrogate
+/// range `\u{D800}`..`\u{DFFF}`) to a single `Char`.  Non-BMP scalars
+/// (`\u{10000}`..`\u{10FFFF}`) require a UTF-16 surrogate pair which
+/// the current Char-returning surface cannot express; that work is
+/// tracked as the larger follow-up in #314.  The surrogate-range guard
+/// matches the F# bootstrap's behaviour after #313.
+///
+/// The leading `\u` has already been consumed by the caller.
 func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
   if peek(state) != '{' {
     recordError(state, "L0021", "expected '{' after \\u",
@@ -1655,9 +1656,22 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
   advance(state)   // '}'
   match parseDigits(hexBody, 16) {
     case Some(v) -> {
-      if v < 0i64 or v > 65535i64 {
+      if v < 0i64 or v > 1114111i64 {
         recordError(state, "L0022",
-                    "non-BMP unicode escape (deferred to follow-up)",
+                    "invalid unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
+                    makeSpan(startP, currentPosition(state)))
+        '\u{FFFD}'
+      } else if v >= 55296i64 and v <= 57343i64 {
+        // Surrogate range U+D800..U+DFFF: not a valid scalar value.
+        recordError(state, "L0022",
+                    "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
+                    makeSpan(startP, currentPosition(state)))
+        '\u{FFFD}'
+      } else if v > 65535i64 {
+        // Non-BMP scalar — needs a surrogate-pair encoding the current
+        // Char surface can't express.  Tracked in #314.
+        recordError(state, "L0022",
+                    "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding; tracked in #314",
                     makeSpan(startP, currentPosition(state)))
         '\u{FFFD}'
       } else {
