@@ -273,9 +273,14 @@ config Server {
 
 /// CORS policy applied by the kernel HTTP middleware layer.
 /// Applies to every response including 404 and OPTIONS preflight.
+///
+/// `allowedOrigins` defaults to the empty string — turning CORS on
+/// without explicitly listing origins is rejected at startup (see
+/// `start`).  `"*"` must never be paired with authenticated APIs
+/// (it interacts badly with credentialed requests under CORS spec).
 config Cors {
   enabled:        Bool   = false
-  allowedOrigins: String = "*"
+  allowedOrigins: String = ""
   allowedMethods: String = "GET,POST,PUT,DELETE,OPTIONS,PATCH"
   allowedHeaders: String = "Content-Type,Authorization,Accept"
   maxAgeSeconds:  Int    = 86400
@@ -290,6 +295,15 @@ config Cors {
 /// (the live OpenAPI JSON spec) and GET /swagger (Swagger UI).
 @stable(since="0.1")
 pub func start(router: in Router): Unit {
+  // Enabling CORS without an explicit origin list is a configuration
+  // mistake — under the previous default of `"*"` this silently opened
+  // a cross-origin backdoor (#353).  Fail closed at startup.
+  if Cors.enabled and Cors.allowedOrigins.length == 0 {
+    panic("Cors.enabled = true requires Cors.allowedOrigins to be a non-empty " +
+          "comma-separated list of allowed origins. Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
+          "or the equivalent config source. Using \"*\" is not allowed with " +
+          "authenticated APIs (see RFC 6454 §3 and the CORS spec on credentialed requests).")
+  }
   HttpKernel.serve(
     Server.host,
     Server.port,
