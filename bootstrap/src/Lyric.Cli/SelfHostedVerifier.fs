@@ -147,7 +147,8 @@ let private parseDiag (parts: string[]) : Diagnostic =
     let ln   = if parts.Length > 3 then (try int parts.[3] with _ -> 0) else 0
     let col  = if parts.Length > 4 then (try int parts.[4] with _ -> 0) else 0
     let msg  = if parts.Length > 5 then unescape parts.[5] else ""
-    { Code = code; Severity = sev; Span = makeSpan ln col; Message = msg }
+    { Code = code; Severity = sev; Span = makeSpan ln col; Message = msg
+      Help = None; Related = []; Fix = None }
 
 let private parseProtocol (protocol: string) : Result<VerifierResult, string> =
     let lines = protocol.Split('\n')

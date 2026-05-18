@@ -58,8 +58,9 @@ pub interface CacheStore {
 
 /// A single entry in the in-process store.
 record CacheEntry {
-  value:     String
-  expiresAt: Long    // epoch millis; 0 = no expiry
+  value:      String
+  expiresAt:  Long    // epoch millis; 0 = no expiry
+  insertedAt: Long    // monotonic insertion counter for LRU eviction order
 }
 
 /// In-process cache store backed by a mutable `Map`.
@@ -70,6 +71,7 @@ record CacheEntry {
 pub record InProcessCacheStore {
   var entries:    Map[String, CacheEntry]
   maxEntries: Int
+  var insertionCounter: Long    // monotonically increasing; used for LRU eviction
 }
 
 impl CacheStore for InProcessCacheStore {
@@ -80,7 +82,9 @@ impl CacheStore for InProcessCacheStore {
         if entry.expiresAt == 0 or entry.expiresAt > nowMs {
           Some(entry.value)
         } else {
-          // Do not mutate here; expired entry cleaned up on next set() call.
+          // Sweep the expired entry on read so read-mostly workloads
+          // don't accumulate stale entries indefinitely.
+          entries.remove(key)
           None
         }
       case None -> None
@@ -93,7 +97,11 @@ impl CacheStore for InProcessCacheStore {
     if entries.count >= maxEntries {
       evictOldest(entries)
     }
-    entries.set(key, CacheEntry(value = value, expiresAt = expires))
+    insertionCounter = insertionCounter + 1
+    entries.set(key, CacheEntry(
+      value      = value,
+      expiresAt  = expires,
+      insertedAt = insertionCounter))
   }
 
   func delete(key: in String): Unit {
@@ -119,8 +127,9 @@ config Defaults {
 @stable(since="0.1")
 pub func inProcess(): InProcessCacheStore {
   return InProcessCacheStore(
-    entries    = Map.empty(),
-    maxEntries = Defaults.maxEntries)
+    entries          = Map.empty(),
+    maxEntries       = Defaults.maxEntries,
+    insertionCounter = 0)
 }
 
 /// Create an in-process store with an explicit capacity limit.
@@ -129,8 +138,9 @@ pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
   requires: maxEntries >= 1
 {
   return InProcessCacheStore(
-    entries    = Map.empty(),
-    maxEntries = maxEntries)
+    entries          = Map.empty(),
+    maxEntries       = maxEntries,
+    insertionCounter = 0)
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -181,16 +191,18 @@ pub func clear(store: in CacheStore): Unit {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Remove the entry with the lowest expiresAt (or any entry when all are no-expiry).
-// Takes entries as inout so the caller (set()) can pass the var field directly.
+// Remove the entry with the smallest insertedAt counter (oldest insertion).
+// This implements LRU-by-insertion-order eviction, which is correct regardless
+// of whether entries have TTLs.  Previously the code evicted by expiresAt,
+// which was backwards (shortest TTL first) and silently no-oped when every
+// entry had expiresAt == 0 (no-expiry), allowing the map to exceed maxEntries.
 func evictOldest(entries: inout Map[String, CacheEntry]): Unit {
-  var minKey     = ""
-  var minExpires = Long.maxValue
+  var minKey       = ""
+  var minInserted  = Long.maxValue
   for (k, e) in entries {
-    val eff = if e.expiresAt == 0 then Long.maxValue else e.expiresAt
-    if minKey == "" or eff < minExpires {
-      minKey     = k
-      minExpires = eff
+    if minKey == "" or e.insertedAt < minInserted {
+      minKey      = k
+      minInserted = e.insertedAt
     }
   }
   if minKey.length > 0 {

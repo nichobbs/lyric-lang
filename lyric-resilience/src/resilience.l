@@ -107,15 +107,41 @@ pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
   Resilience.Kernel.Jvm.circuitRecordFailure(name, failureThreshold)
 }
 
-// Private: compute exponential backoff delay.
-func backoffDelay(initialDelayMs: in Int, backoffFactor: in Int, attempt: in Int): Int {
+// Private: compute exponential backoff delay with a cap and optional jitter.
+// Without a cap, `initialDelayMs=100, factor=2, attempt=25` overflows Int at
+// ~attempt 22 (2^22 × 100 ≈ 419 ms → 2^30 × 100 overflows Int.maxValue).
+// `maxDelayMs` (default 30000 ms) prevents this and also limits thundering
+// herds.  `jitterFraction` adds ±jitter×delay random jitter; 0.0 = no jitter.
+func backoffDelay(
+  initialDelayMs:  in Int,
+  backoffFactor:   in Int,
+  attempt:         in Int,
+  maxDelayMs:      in Int,
+  jitterFraction:  in Float
+): Int {
   var delay: Int = initialDelayMs
   var i:     Int = 0
   while i < attempt {
-    delay = delay * backoffFactor
-    i     = i + 1
+    // Clamp before multiplying to avoid Int overflow.
+    if delay >= maxDelayMs {
+      delay = maxDelayMs
+      i     = attempt    // early exit: already at cap
+    } else {
+      val next = delay * backoffFactor
+      delay    = if next > maxDelayMs then maxDelayMs else next
+      i        = i + 1
+    }
   }
-  return delay
+  // Apply jitter: delay × (1 ± jitterFraction).  Uses a simple deterministic
+  // hash of `attempt` as a pseudo-random seed to avoid a stdlib dependency.
+  if jitterFraction > 0.0 {
+    val pseudoRand = ((attempt * 1664525 + 1013904223) mod 1000).toFloat() / 1000.0
+    val jitter = (pseudoRand * 2.0 - 1.0) * jitterFraction
+    val jitteredDelay = (delay.toFloat() * (1.0 + jitter)).toInt()
+    if jitteredDelay < 0 then 0 else if jitteredDelay > maxDelayMs then maxDelayMs else jitteredDelay
+  } else {
+    delay
+  }
 }
 
 // ─── Retry ────────────────────────────────────────────────────────────────────
@@ -125,21 +151,25 @@ func backoffDelay(initialDelayMs: in Int, backoffFactor: in Int, attempt: in Int
 /// Applies to functions returning Result[T, String].
 /// On Ok the result is returned immediately.  On Err the call is retried
 /// up to `maxAttempts` times, sleeping for `initialDelayMs × backoffFactor^attempt`
-/// milliseconds between tries.  After all attempts are exhausted the last
-/// Err is returned.
+/// milliseconds between tries (capped at `maxDelayMs`).  After all attempts
+/// are exhausted the last Err is returned.
 ///
 /// Config:
-///   enabled         Bool — master switch; false passes through unchanged (default: true)
-///   maxAttempts     Int  — total attempts including the first (default: 3)
-///   initialDelayMs  Int  — base delay in ms before the second attempt (default: 100)
-///   backoffFactor   Int  — delay multiplier per retry (default: 2 — exponential)
+///   enabled         Bool  — master switch; false passes through unchanged (default: true)
+///   maxAttempts     Int   — total attempts including the first (default: 3)
+///   initialDelayMs  Int   — base delay in ms before the second attempt (default: 100)
+///   backoffFactor   Int   — delay multiplier per retry (default: 2 — exponential)
+///   maxDelayMs      Int   — upper bound on inter-retry delay (default: 30000)
+///   jitterFraction  Float — fraction of delay to add as ±jitter; 0.0 = no jitter (default: 0.1)
 @stable(since="0.1")
 pub aspect Retry {
   config {
-    enabled:        Bool = true
-    maxAttempts:    Int  = 3
-    initialDelayMs: Int  = 100
-    backoffFactor:  Int  = 2
+    enabled:        Bool  = true
+    maxAttempts:    Int   = 3
+    initialDelayMs: Int   = 100
+    backoffFactor:  Int   = 2
+    maxDelayMs:     Int   = 30000
+    jitterFraction: Float = 0.1
   }
 
   around(call) -> ret {
@@ -152,7 +182,7 @@ pub aspect Retry {
         match ret {
           case Ok(_)  -> attempt = maxAttempts    // exit: success
           case Err(_) -> {
-            val delay = backoffDelay(initialDelayMs, backoffFactor, attempt - 1)
+            val delay = backoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs, jitterFraction)
             Resilience.sleepMs(delay)
             ret     = call.proceed()
             attempt = attempt + 1

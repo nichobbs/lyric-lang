@@ -122,12 +122,15 @@ pub interface StorageBucket {
     requires: maxKeys >= 1
 
   /// Generate a pre-signed URL granting temporary access to `key`.
+  /// `expiresInSeconds` is capped at 604800 (7 days) to match the AWS S3
+  /// maximum and prevent permanent unrevocable access grants.
   func presignedUrl(
     key:              in String,
     expiresInSeconds: in Int
   ): Result[String, StorageError]
     requires: key.length > 0
     requires: expiresInSeconds >= 1
+    requires: expiresInSeconds <= 604800
 
   /// Return true if an object with the given `key` exists.
   func exists(key: in String): Result[Bool, StorageError]
@@ -338,6 +341,8 @@ pub func list(bucket: in StorageBucket, prefix: in String): Result[ListResult, S
 }
 
 /// Generate a pre-signed URL granting temporary access to `key`.
+/// `expiresInSeconds` must be between 1 and 604800 (7 days) inclusive.
+/// This cap prevents issuing effectively permanent unrevocable access URLs.
 @stable(since="0.1")
 pub func presignedUrl(
   bucket:           in StorageBucket,
@@ -346,6 +351,7 @@ pub func presignedUrl(
 ): Result[String, StorageError]
   requires: key.length > 0
   requires: expiresInSeconds >= 1
+  requires: expiresInSeconds <= 604800
 {
   return bucket.presignedUrl(key, expiresInSeconds)
 }

@@ -2039,7 +2039,17 @@ let private emitContractCheck
 // parameter arity is used as the disambiguator across BCL overloads.
 // ---------------------------------------------------------------------------
 
+// Cache for findClrType: avoids re-walking every loaded assembly on each
+// @externTarget resolution call.  The stdlib ships ~280 extern declarations,
+// each of which previously triggered a full AppDomain walk (~30 assemblies ×
+// ~10,000 types = ~3M comparisons).  One miss still walks the full domain,
+// but subsequent lookups for the same qualified name are O(1).
+let private clrTypeCache = System.Collections.Concurrent.ConcurrentDictionary<string, System.Type option>()
+
 let private findClrType (qualifiedName: string) : System.Type option =
+    match clrTypeCache.TryGetValue qualifiedName with
+    | true, cached -> cached
+    | false, _ ->
     // Force-touch a few well-known assemblies so they're loaded into
     // the AppDomain before we walk it.  `Lyric.Stdlib` no longer
     // hosts any types worth pinning (every shim retired into
@@ -2053,14 +2063,17 @@ let private findClrType (qualifiedName: string) : System.Type option =
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>
     let direct = System.Type.GetType qualifiedName
-    match Option.ofObj direct with
-    | Some t -> Some t
-    | None ->
-        System.AppDomain.CurrentDomain.GetAssemblies()
-        |> Array.tryPick (fun asm ->
-            try
-                Option.ofObj (asm.GetType qualifiedName)
-            with _ -> None)
+    let result =
+        match Option.ofObj direct with
+        | Some t -> Some t
+        | None ->
+            System.AppDomain.CurrentDomain.GetAssemblies()
+            |> Array.tryPick (fun asm ->
+                try
+                    Option.ofObj (asm.GetType qualifiedName)
+                with _ -> None)
+    clrTypeCache[qualifiedName] <- result
+    result
 
 /// Phase 5 §M5.1 stage 2d.v: pre-load the user's NuGet DLLs into
 /// the current AppDomain so `findClrType` finds extern types declared
@@ -4355,6 +4368,30 @@ let private emitAssembly
                 match methodTable.TryGetValue arityKey with
                 | true, m -> m
                 | _       -> methodTable.[fn.Name]
+            // Warn when an async function has `inout` or `out` parameters.
+            // Reflection.Emit does not allow byref field types on the SM class,
+            // so byref params are stripped to their element types in the SM
+            // (line ~1270 in AsyncStateMachine.fs) and the await semantics may
+            // diverge silently.  Surface this as a compiler warning so the
+            // author knows to refactor.
+            if sg.IsAsync then
+                let byrefParam =
+                    fn.Params |> List.tryFind (fun p ->
+                        match p.Mode with PMOut | PMInout -> true | _ -> false)
+                match byrefParam with
+                | Some p ->
+                    codegenDiags.Add(
+                        Diagnostic.warning "A0001"
+                            (sprintf
+                                "async function '%s' has an '%s' parameter '%s'; \
+                                 byref parameters in async functions are not fully supported \
+                                 (the async state machine stores a copy, not the reference) — \
+                                 consider returning a Result instead"
+                                fn.Name
+                                (match p.Mode with PMOut -> "out" | _ -> "inout")
+                                p.Name)
+                            p.Span)
+                | None -> ()
             // Phase A: async funcs whose body has no internal `await`.
             let usePhaseA =
                 sg.IsAsync && AsyncStateMachine.isPhaseAEligible fn
@@ -5361,7 +5398,8 @@ let private emitAssembly
                       Code     = "E0900"
                       Message  =
                         sprintf "could not embed Lyric.Contract resource: %s" e.Message
-                      Span     = sf.Span }
+                      Span     = sf.Span
+                      Help = None; Related = []; Fix = None }
             // Also embed the proof-only `Lyric.Proof` binary resource
             // (D-progress-086).  Same best-effort guard as above; the
             // resource is verifier-internal and a missing one only
@@ -5375,7 +5413,8 @@ let private emitAssembly
                       Code     = "E0901"
                       Message  =
                         sprintf "could not embed Lyric.Proof resource: %s" e.Message
-                      Span     = sf.Span }
+                      Span     = sf.Span
+                      Help = None; Related = []; Fix = None }
         List.ofSeq codegenDiags
 
 // ---------------------------------------------------------------------------
@@ -5511,7 +5550,8 @@ let private locateBuiltinFilesWithLayout
                         sprintf
                             "package '%s' matches both single-file and multi-file %s layout in '%s'; use one"
                             pkgKey loc root
-                      Span     = Span.make Position.initial Position.initial }
+                      Span     = Span.make Position.initial Position.initial
+                      Help = None; Related = []; Fix = None }
             | None -> None
         let probesIn (root: string) : (unit -> string list) list =
             // Order: top-level single-file, top-level multi-file directory,
@@ -5680,7 +5720,8 @@ let private parseAndMergeBuiltinFiles
                                     firstName pkgKey
                                     (Path.GetFileName prevPath)
                                     (Path.GetFileName path)
-                              Span     = item.Span }
+                              Span     = item.Span
+                              Help = None; Related = []; Fix = None }
                         // Drop the dupe from the merged list.
                     | false, _ ->
                         seenItem.[key] <- path
@@ -5711,7 +5752,8 @@ let private parseAndMergeBuiltinFiles
                                     (Path.GetFileName prevPath)
                                     target
                                     (Path.GetFileName path)
-                              Span     = imp.Span }
+                              Span     = imp.Span
+                              Help = None; Related = []; Fix = None }
                     | true, _ ->
                         // Same alias same target — silently dedup.
                         ()
@@ -6478,7 +6520,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 Message  =
                     "emitProject with Single=false is not implemented; \
                      drive per-package mode via repeated emit() calls"
-                Span     = zeroSpan } ] }
+                Span     = zeroSpan
+                Help = None; Related = []; Fix = None } ] }
     elif List.isEmpty req.Packages then
         let zeroSpan = Span.make Position.initial Position.initial
         { OutputPath  = None
@@ -6488,7 +6531,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                 Message  =
                     "project declared `output = \"single\"` but discovered \
                      zero packages"
-                Span     = zeroSpan } ] }
+                Span     = zeroSpan
+                Help = None; Related = []; Fix = None } ] }
     else
         // Open one shared backend for the whole project.
         let desc =
@@ -6567,7 +6611,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     sprintf
                         "intra-project import cycle detected; packages involved: %s"
                         (String.concat ", " cycleNames)
-                  Span     = zeroSpan }
+                  Span     = zeroSpan
+                  Help = None; Related = []; Fix = None }
 
         // Map from package name → its in-project artifact, populated
         // as we iterate in topo order.  Each downstream package's
@@ -6768,7 +6813,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                     sprintf
                         "project `%s` declares %d `pub func main` decls; expected at most 1"
                         req.AssemblyName mainCount
-                  Span     = zeroSpan }
+                  Span     = zeroSpan
+                  Help = None; Related = []; Fix = None }
         let fatal =
             allDiags |> Seq.exists (fun d -> d.Severity = DiagError)
         if fatal then
@@ -6791,7 +6837,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                       Code     = "B0098"
                       Message  =
                         sprintf "Backend.save failed: %s" e.Message
-                      Span     = Span.make Position.initial Position.initial }
+                      Span     = Span.make Position.initial Position.initial
+                      Help = None; Related = []; Fix = None }
             // Phase C — embed one `Lyric.Contract.<Pkg>` per package.
             for (pkgName, resolved, _sigs, importedSourcesMap) in perPackageContracts do
                 try
@@ -6809,7 +6856,8 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                             sprintf
                                 "could not embed Lyric.Contract.%s resource: %s"
                                 pkgName e.Message
-                          Span     = Span.make Position.initial Position.initial }
+                          Span     = Span.make Position.initial Position.initial
+                          Help = None; Related = []; Fix = None }
             // Phase D — embed `Lyric.SdkVersion` resource (docs/22 §5).
             // Present on every project DLL so installed builds can verify
             // language / stdlib / compiler version at compile time.
@@ -6826,6 +6874,7 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
                       Code     = "B0042"
                       Message  =
                         sprintf "could not embed Lyric.SdkVersion resource: %s" e.Message
-                      Span     = Span.make Position.initial Position.initial }
+                      Span     = Span.make Position.initial Position.initial
+                      Help = None; Related = []; Fix = None }
             { OutputPath  = Some req.OutputPath
               Diagnostics = List.ofSeq allDiags }

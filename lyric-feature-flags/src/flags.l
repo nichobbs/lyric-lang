@@ -212,9 +212,19 @@ pub func fromEntries(entries: in [FlagEntry]): InProcessFlagStore {
 
 /// Open a connection to the remote flag endpoint using the Remote config block.
 /// Requires the `remote` feature to be active (`[features] remote = []`).
+///
+/// Rejects plaintext HTTP connections when an API key is configured to prevent
+/// credential leakage (CWE-319 / OWASP A02:2021).  Set Remote.url to an
+/// https:// endpoint; http:// is only permitted when apiKey is empty.
 @stable(since="0.1")
 @cfg(feature = "remote")
 pub func connectRemote(): Result[FlagStore, FlagError] {
+  if Remote.apiKey.length > 0 and not Remote.url.startsWith("https://") {
+    return Err(FlagError(
+      message = "Remote.url must use https:// when an API key is configured; " +
+                "plaintext HTTP would expose the API key in every poll request",
+      code    = "INSECURE_URL"))
+  }
   match Flags.Kernel.Net.connect(
     Remote.url,
     Remote.apiKey,

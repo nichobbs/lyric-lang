@@ -63,12 +63,12 @@ let tests =
         }
 
         test "underscore-only digits parse to 0" {
-            // `0b___` has no body digits but the underscores are
-            // stripped, leaving an empty body. Convert.ToUInt64("",2)
-            // throws and the lexer emits L0010.
+            // `0b___` has no body digits (all underscores stripped) so
+            // the lexer emits L0016 "binary literal has no digits after
+            // the base prefix" rather than the generic L0010.
             let _, diags = lexBoth "0b___"
             let codes = diags |> List.map (fun d -> d.Code)
-            Expect.contains codes "L0010" "empty-body diag"
+            Expect.contains codes "L0016" "empty-body diag"
         }
 
         test "0 alone is fine" {

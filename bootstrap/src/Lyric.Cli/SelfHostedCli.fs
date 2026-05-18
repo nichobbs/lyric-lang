@@ -115,13 +115,46 @@ let private getDelegate () : string[] -> int =
 
 /// Attempt to dispatch `argv` through the self-hosted `Lyric.Cli`.
 /// Returns `Some exitCode` on success.
-/// Returns `None` when the bridge cannot be compiled or loaded, so the
-/// caller can fall back to the F# bootstrap dispatcher.
+/// Returns `None` when the bridge cannot be compiled, loaded, or when the
+/// self-hosted code itself fails to JIT-compile (invalid MSIL emitted by the
+/// self-hosted pipeline).  In all these cases the caller falls back to the
+/// F# bootstrap dispatcher.
+///
+/// Genuine runtime exceptions from the self-hosted CLI (application logic
+/// crashes, out-of-memory, etc.) are NOT caught here — they propagate so the
+/// user sees a real stack trace rather than a silent fallback.
 let tryRun (argv: string[]) : int option =
     try
         let fn = getDelegate ()
         Some (fn argv)
-    with ex ->
+    with
+    | :? FileNotFoundException as ex ->
         eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? ReflectionTypeLoadException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? MissingMethodException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? BadImageFormatException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    // InvalidProgramException means the CLR's JIT rejected the emitted MSIL —
+    // a compiler/emit bug in the self-hosted pipeline, not an application error.
+    // Treat it as a bridge infrastructure failure and fall back to bootstrap.
+    // When invoked via reflection, the JIT failure is wrapped in a
+    // TargetInvocationException; match both forms.
+    | :? System.InvalidProgramException as ex ->
+        eprintfn "self-hosted CLI unavailable (invalid emitted code: %s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? System.Reflection.TargetInvocationException as ex
+        when (ex.InnerException :? System.InvalidProgramException) ->
+        eprintfn "self-hosted CLI unavailable (invalid emitted code: %s); falling back to bootstrap"
             ex.Message
         None
