@@ -141,7 +141,12 @@ let tests =
             // added for the self-hosted LSP server's console I/O and file I/O
             // host boundaries (migrate-lsp-lyric task).  io.l's read() is inside
             // an existing extern package block so it doesn't affect the count.
-            Expect.isLessThanOrEqual total 274
+            // Bumped from 274 → 276: Std.TimeHost extended with
+            // hostStopwatchTimestamp + hostStopwatchFrequency for
+            // Std.Time.monotonicNanos() (monotonic high-resolution clock,
+            // #424); Std.VerifierEnvHost extended with hostIsWindows()
+            // (System.OperatingSystem.IsWindows, #426).
+            Expect.isLessThanOrEqual total 276
                 "total extern surface unexpectedly large"
         }
     ]
