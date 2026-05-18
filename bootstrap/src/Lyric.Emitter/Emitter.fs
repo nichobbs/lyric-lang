@@ -3993,6 +3993,7 @@ let private emitAssembly
                       Records.ProjectableInfo.ViewType      = viewInfo
                       Records.ProjectableInfo.TryIntoMethod = tryIntoMb }
             with ex ->
+                stub.ToView <- None
                 codegenDiags.Add(
                     err "F0001"
                         (sprintf "projectable synthesis error for '%s': %s" stub.OpaqueDecl.Name ex.Message)

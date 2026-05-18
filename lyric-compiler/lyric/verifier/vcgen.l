@@ -1853,7 +1853,28 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
         while mi < decl.members.count {
           match decl.members[mi] {
             case PMFunc(fn) -> callees.add(decl.name + "::" + fn.name, fn)
-            case _          -> {}
+            case PMEntry(ed) -> {
+              // Synthesise a minimal FunctionDecl so cross-entry Hoare-call
+              // lookups resolve.  Uses the entry's own contracts only; the
+              // invariant augmentation is applied during goal generation.
+              val noDoc: List[DocComment] = newList()
+              val noAnn: List[Annotation] = newList()
+              val entryFn: FunctionDecl = FunctionDecl(
+                docComments = noDoc,
+                annotations = noAnn,
+                visibility  = ed.visibility,
+                isAsync     = false,
+                name        = decl.name + "::" + ed.name,
+                generics    = None,
+                params      = ed.params,
+                ret         = ed.ret,
+                whereClause = None,
+                contracts   = ed.contracts,
+                body        = Some(value = ed.body),
+                span        = ed.span)
+              callees.add(decl.name + "::" + ed.name, entryFn)
+            }
+            case _ -> {}
           }
           mi = mi + 1
         }

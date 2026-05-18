@@ -411,6 +411,31 @@ func testProveParseError(): Unit {
   assertEqualInt(summaryTotalCount(summary), 0, "prove-parse-error: no goals")
 }
 
+func testProveProtectedTypeInvariantHolds(): Unit {
+  // An entry with an empty body trivially preserves the invariant:
+  // WP(n>=0, {}) = n>=0, which is the requires hypothesis — discharged.
+  val src = "@proof_required\npackage P\nprotected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry noop(): Unit { }\n}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "prot-inv-holds: expected VLProofRequired") }
+  }
+  assertTrue(not summaryHasFailure(summary), "prot-inv-holds: no failure")
+  assertTrue(not summaryHasErrorDiag(summary), "prot-inv-holds: no error diags")
+}
+
+func testProveProtectedTypeInvariantViolated(): Unit {
+  // An assert after a contradicting assignment produces an unresolvable side
+  // goal that the trivial discharger cannot close.
+  val src = "@proof_required\npackage P\nprotected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n    assert(n >= 0)\n  }\n}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "prot-inv-violated: expected VLProofRequired") }
+  }
+  assertTrue(summaryHasFailure(summary), "prot-inv-violated: has failure")
+}
+
 func testSummaryHelpers(): Unit {
   // Build a ProofSummary manually to test helpers.
   val hyps: List[Term] = newList()
@@ -490,6 +515,8 @@ func main(): Unit {
   testProveExplicitRuntimeChecked()
   testProveProofRequiredNoContracts()
   testProveParseError()
+  testProveProtectedTypeInvariantHolds()
+  testProveProtectedTypeInvariantViolated()
   testSummaryHelpers()
 
   println("verifier self-test: ok")
