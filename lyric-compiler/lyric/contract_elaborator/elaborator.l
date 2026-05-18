@@ -242,6 +242,7 @@ func blockContainsResult(body: in Block): Bool {
         if blockContainsResult(bdy)  { return true }
       }
       case SLoop(_, bdy)           -> if blockContainsResult(bdy) { return true }
+      case SAssign(_, rhs)         -> if exprContainsResult(rhs) { return true }
       case _                       -> {}
     }
     i = i + 1

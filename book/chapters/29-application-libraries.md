@@ -280,3 +280,19 @@ func processWithNewFlow(order: in Order): Unit {
 | lyric-search | stable | planned | D056 |
 | lyric-i18n | stable | planned | D056 |
 | lyric-feature-flags | stable | planned | D056 |
+| lyric-jobs | stable | planned | D056 |
+| lyric-ws | stable | planned | D057 |
+| lyric-session | stable | planned | D056 |
+| lyric-auth | stable | planned | — |
+| lyric-resilience | stable | planned | — |
+| lyric-validation | stable | planned | — |
+| lyric-testing | stable | — | — |
+| lyric-cache | stable | planned | D056 |
+| lyric-db | stable | planned | D056 |
+| lyric-health | stable | planned | D057 |
+| lyric-logging | stable | planned | D054 |
+
+> **Note:** `lyric-jobs`, `lyric-ws`, `lyric-session`, `lyric-auth`, `lyric-resilience`,
+> `lyric-validation`, `lyric-testing`, `lyric-cache`, `lyric-db`, `lyric-health`, and
+> `lyric-logging` are documented in their respective README files in the repository.
+> A dedicated book chapter covering these libraries is planned for a future release.

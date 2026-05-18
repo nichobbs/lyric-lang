@@ -3068,6 +3068,9 @@ pub func codegenPackage(file: in SourceFile): LPackage {
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
     val lyricMainPs: List[JvmType] = newList()
+    // Currently emits main():()V regardless of Lyric main's return type.
+    // Long/Double return would require POP2; Int/Bool etc. would require POP.
+    // Tracked as a follow-up once the JVM wrapper records the Lyric main return type.
     jvmMainInsns.add(LInvokestatic(
       owner  = funcsClass,
       name   = "main",

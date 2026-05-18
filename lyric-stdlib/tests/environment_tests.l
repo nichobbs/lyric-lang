@@ -1,6 +1,6 @@
 // stdlib/tests/environment_tests.l — Tests for Std.Environment.
 //
-// Covers: getVar for a known variable (PATH), getVar for an unknown variable,
+// Covers: getVar for an unknown variable, getVar for an empty key,
 // getVarOrDefault, and args (returns a slice without panicking).
 package Std.Environment.Tests
 

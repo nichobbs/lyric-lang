@@ -5,6 +5,9 @@
 // encodeString, getRawText, and valueKind.
 package Std.Json.Tests
 
+// System.Text.Json.JsonValueKind enum values used in valueKind() assertions:
+//   Undefined=0  Object=1  Array=2  String=3  Number=4  True=5  False=6  Null=7
+
 import Std.Core
 import Std.Json
 import Std.Testing

@@ -15,16 +15,20 @@ import Std.SecureRandomHost
 /// Cryptographically strong random integer in [0, max).
 /// max must be positive.
 @stable(since="1.0")
-pub func secureNextInt(max: in Int): Int { hostSecureNextInt(max) }
+pub func secureNextInt(max: in Int): Int
+  requires: max > 0
+{ hostSecureNextInt(max) }
 
 /// Cryptographically strong random integer in [min, max).
 /// min must be strictly less than max.
 @stable(since="1.0")
-pub func secureNextIntRange(min: in Int, max: in Int): Int {
-  hostSecureNextIntRange(min, max)
-}
+pub func secureNextIntRange(min: in Int, max: in Int): Int
+  requires: min < max
+{ hostSecureNextIntRange(min, max) }
 
 /// Return a new byte slice of the given length filled with cryptographically
 /// strong random bytes.  count must be >= 0.
 @stable(since="1.0")
-pub func secureGetBytes(count: in Int): slice[Byte] { hostSecureGetBytes(count) }
+pub func secureGetBytes(count: in Int): slice[Byte]
+  requires: count >= 0
+{ hostSecureGetBytes(count) }

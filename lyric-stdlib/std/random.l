@@ -15,6 +15,10 @@ package Std.Random
 import Std.Core
 import Std.RandomHost
 
+/// Re-export the Random opaque type so callers need only `import Std.Random`
+/// for both the helpers and explicit type annotations.
+pub alias Random = Std.RandomHost.Random
+
 /// Return the process-wide shared Random instance.
 /// Thread-safe per BCL documentation since .NET 6.
 @stable(since="1.0")

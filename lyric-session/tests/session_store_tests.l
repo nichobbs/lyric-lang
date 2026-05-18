@@ -107,8 +107,14 @@ test "set() then delete() then get() returns None" {
   match Session.create(store) {
     case Err(e)  -> assertTrue(false, "create() failed: " + e.message)
     case Ok(sid) -> {
-      Session.set(store, sid, "k", "v")
-      Session.delete(store, sid, "k")
+      match Session.set(store, sid, "k", "v") {
+        case Err(e) -> assertTrue(false, "set() failed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match Session.delete(store, sid, "k") {
+        case Err(e) -> assertTrue(false, "delete() failed: " + e.message)
+        case Ok(_)  -> ()
+      }
       match Session.get(store, sid, "k") {
         case Err(e)  -> assertTrue(false, "get() after delete() must return Ok(None): " + e.message)
         case Ok(opt) ->
@@ -126,8 +132,14 @@ test "multiple keys in same session are independent" {
   match Session.create(store) {
     case Err(e)  -> assertTrue(false, "create() failed: " + e.message)
     case Ok(sid) -> {
-      Session.set(store, sid, "a", "1")
-      Session.set(store, sid, "b", "2")
+      match Session.set(store, sid, "a", "1") {
+        case Err(e) -> assertTrue(false, "set(a) failed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match Session.set(store, sid, "b", "2") {
+        case Err(e) -> assertTrue(false, "set(b) failed: " + e.message)
+        case Ok(_)  -> ()
+      }
       val va = match Session.get(store, sid, "a") {
         case Ok(Some(v)) -> v
         case _           -> { assertTrue(false, "get(a) failed"); "" }
@@ -172,8 +184,14 @@ test "clear() empties all keys but session still exists" {
   match Session.create(store) {
     case Err(e)  -> assertTrue(false, "create() failed: " + e.message)
     case Ok(sid) -> {
-      Session.set(store, sid, "x", "hello")
-      Session.set(store, sid, "y", "world")
+      match Session.set(store, sid, "x", "hello") {
+        case Err(e) -> assertTrue(false, "set(x) failed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match Session.set(store, sid, "y", "world") {
+        case Err(e) -> assertTrue(false, "set(y) failed: " + e.message)
+        case Ok(_)  -> ()
+      }
       match Session.clear(store, sid) {
         case Err(e) -> assertTrue(false, "clear() failed: " + e.message)
         case Ok(_)  -> ()
@@ -184,7 +202,7 @@ test "clear() empties all keys but session still exists" {
         case Ok(opt) ->
           match opt {
             case None    -> assertTrue(false, "session must still exist after clear()")
-            case Some(d) -> assertEqualInt(d.entries.size(), 0, "entries must be empty after clear()")
+            case Some(d) -> assertEqualInt(d.entries.count, 0, "entries must be empty after clear()")
           }
       }
     }
@@ -241,8 +259,14 @@ test "two distinct sessions are independent" {
     case Ok(id)  -> id
     case Err(e)  -> { assertTrue(false, "create() #2 failed: " + e.message); "" }
   }
-  Session.set(store, sid1, "role", "admin")
-  Session.set(store, sid2, "role", "guest")
+  match Session.set(store, sid1, "role", "admin") {
+    case Err(e) -> assertTrue(false, "set(sid1, role) failed: " + e.message)
+    case Ok(_)  -> ()
+  }
+  match Session.set(store, sid2, "role", "guest") {
+    case Err(e) -> assertTrue(false, "set(sid2, role) failed: " + e.message)
+    case Ok(_)  -> ()
+  }
   val r1 = match Session.get(store, sid1, "role") {
     case Ok(Some(v)) -> v
     case _           -> { assertTrue(false, "get(sid1, role) failed"); "" }
