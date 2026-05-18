@@ -3,12 +3,15 @@
 // Covers LambdaError construction and errorMessage formatting, LambdaApp builder
 // (newApp / onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onKinesis / onRaw /
 // withStreamingHandler / onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer),
-// event record construction (SqsEvent, SnsEvent, S3Event, EventBridgeEvent,
-// DynamoDbEvent, KinesisEvent), and Lambda.Authorizer pure helpers
+// event record construction (SqsEvent, SqsBatchResponse, SnsEvent, S3Event,
+// EventBridgeEvent, DynamoDbEvent, KinesisEvent), and Lambda.Authorizer pure helpers
 // (allow, allowAll, deny, withContext, withUsageKey, authorized,
 // authorizedWithContext, denied).
 // serve() and the kernel runtime loop require the Lambda Runtime API and
 // are not exercised here.
+// Contract-violation tests (e.g. empty handlerName) require assertThrows, which
+// is not yet in Std.Testing; the requires: guards are verified structurally in
+// lambda.l source.
 
 @test_module
 package Lambda.LambdaTests
@@ -235,6 +238,93 @@ test "KinesisStreamRecord: fields are accessible" {
   assertEqual(evt.records[0].eventSource, "aws:kinesis", "eventSource")
 }
 
+test "SnsEvent: fields are accessible" {
+  val msg = SnsMessage(
+    messageId         = "sns-msg-1",
+    topicArn          = "arn:aws:sns:us-east-1:123:my-topic",
+    subject           = Some("Test Subject"),
+    message           = "hello from SNS",
+    timestamp         = "2024-01-01T00:00:00.000Z",
+    signatureVersion  = "1",
+    signature         = "sig==",
+    signingCertUrl    = "https://sns.amazonaws.com/cert.pem",
+    unsubscribeUrl    = "https://sns.amazonaws.com/unsubscribe",
+    messageAttributes = Map.empty())
+  val rec = SnsRecord(
+    eventSource          = "aws:sns",
+    eventVersion         = "1.0",
+    eventSubscriptionArn = "arn:aws:sns:us-east-1:123:my-topic:sub-1",
+    sns                  = msg)
+  val evt = SnsEvent(records = [rec])
+  assertEqualInt(evt.records.length, 1, "one record")
+  assertEqual(evt.records[0].eventSource, "aws:sns", "eventSource field")
+  assertEqual(evt.records[0].sns.message, "hello from SNS", "sns.message field")
+  match evt.records[0].sns.subject {
+    case Some(s) -> assertEqual(s, "Test Subject", "sns.subject field")
+    case None    -> assertTrue(false, "subject must be Some")
+  }
+}
+
+test "S3Event: fields are accessible" {
+  val s3obj  = S3Object(key = "images%2Fphoto.png", size = 12345L, eTag = "etag-1", sequencer = "seq-1")
+  val bucket = S3Bucket(name = "my-bucket", ownerIdentity = Map.empty(), arn = "arn:aws:s3:::my-bucket")
+  val detail = S3Detail(s3SchemaVersion = "1.0", configurationId = "MyConfig", bucket = bucket, object = s3obj)
+  val rec    = S3Record(
+    eventVersion      = "2.1",
+    eventSource       = "aws:s3",
+    awsRegion         = "us-east-1",
+    eventTime         = "2024-01-01T00:00:00.000Z",
+    eventName         = "ObjectCreated:Put",
+    userIdentity      = Map.empty(),
+    requestParameters = S3RequestParameters(sourceIpAddress = "1.2.3.4"),
+    responseElements  = S3ResponseElements(xAmzRequestId = "req-1", xAmzId2 = "id-2"),
+    s3                = detail)
+  val evt = S3Event(records = [rec])
+  assertEqualInt(evt.records.length, 1, "one record")
+  assertEqual(evt.records[0].eventSource, "aws:s3",             "eventSource field")
+  assertEqual(evt.records[0].eventName,   "ObjectCreated:Put",  "eventName field")
+  assertEqual(evt.records[0].s3.bucket.name,   "my-bucket",          "bucket name field")
+  assertEqual(evt.records[0].s3.object.key,    "images%2Fphoto.png", "object key field (URL-encoded)")
+}
+
+test "DynamoDbEvent: fields are accessible" {
+  val keyAttr   = DynamoDbAttributeValue(s = Some("pk-1"), n = None, b = None, bool = None, null = None, ss = None, ns = None, bs = None)
+  val streamRec = DynamoDbStreamRecord(
+    approximateCreationDateTime = Some(1700000000L),
+    keys           = Map.empty[String, DynamoDbAttributeValue]().set("id", keyAttr),
+    newImage       = None,
+    oldImage       = None,
+    sequenceNumber = "seq-1",
+    sizeBytes      = 42L,
+    streamViewType = "KEYS_ONLY")
+  val rec = DynamoDbRecord(
+    eventId        = "evt-1",
+    eventVersion   = "1.1",
+    eventSource    = "aws:dynamodb",
+    eventName      = "INSERT",
+    awsRegion      = "us-east-1",
+    dynamodb       = streamRec,
+    eventSourceArn = "arn:aws:dynamodb:us-east-1:123:table/my-table/stream/2024-01-01")
+  val evt = DynamoDbEvent(records = [rec])
+  assertEqualInt(evt.records.length, 1, "one record")
+  assertEqual(evt.records[0].eventSource, "aws:dynamodb", "eventSource field")
+  assertEqual(evt.records[0].eventName,   "INSERT",       "eventName field")
+  assertEqual(evt.records[0].dynamodb.streamViewType, "KEYS_ONLY", "streamViewType field")
+  match evt.records[0].dynamodb.approximateCreationDateTime {
+    case Some(t) -> assertTrue(t == 1700000000L, "approximateCreationDateTime field")
+    case None    -> assertTrue(false, "must have approximateCreationDateTime")
+  }
+  match evt.records[0].dynamodb.keys.get("id") {
+    case Some(attr) -> {
+      match attr.s {
+        case Some(v) -> assertEqual(v, "pk-1", "key attribute string value")
+        case None    -> assertTrue(false, "key attribute must have s field")
+      }
+    }
+    case None -> assertTrue(false, "must have id key in dynamodb.keys")
+  }
+}
+
 // ─── Lambda.Authorizer pure helpers ──────────────────────────────────────────
 
 test "IamEffect.Allow: can be matched" {
@@ -274,12 +364,12 @@ test "deny: returns AuthorizerResponse with Deny effect" {
   }
 }
 
-test "allowAll: resource uses wildcard suffix" {
+test "allowAll: resource is exact api/stage wildcard ARN" {
   val methodArn = "arn:aws:execute-api:us-east-1:123:abc123/prod/GET/users"
   val resp      = Lambda.Authorizer.allowAll("user-42", methodArn)
   val resource  = resp.policyDocument.statement[0].resource[0]
-  assertTrue(resource.contains("/*"), "allowAll wildcard resource ends with /*")
-  assertTrue(resource.contains("abc123/prod"), "allowAll preserves api/stage prefix")
+  assertEqual(resource, "arn:aws:execute-api:us-east-1:123:abc123/prod/*",
+    "allowAll produces exact api/stage wildcard ARN")
 }
 
 test "withContext: attaches context map to response" {
