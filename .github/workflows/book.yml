@@ -31,7 +31,7 @@ jobs:
         run: |
           # Download a pinned Pandoc release — Ubuntu apt ships an older version
           # that lacks --embed-resources (added in 3.0).
-          PANDOC_VER=3.6.4
+          PANDOC_VER=3.9.0.2
           wget -q "https://github.com/jgm/pandoc/releases/download/${PANDOC_VER}/pandoc-${PANDOC_VER}-1-amd64.deb"
           sudo dpkg -i "pandoc-${PANDOC_VER}-1-amd64.deb"
           pandoc --version | head -1
