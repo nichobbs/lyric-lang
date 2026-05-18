@@ -1,44 +1,44 @@
-/// Lambda — AWS Lambda runtime adapter for Lyric.
-///
-/// Provides the core vocabulary for writing Lambda functions in Lyric and
-/// the serve() entry point that drives the Lambda invocation loop.
-///
-/// Two composition modes (may be combined in the same LambdaApp):
-///
-///   1. lyric-web router reuse
-///      Build a Web.Router exactly as you would for a Kestrel service, then
-///      attach it with withRouter().  API Gateway v1 (REST API), v2 (HTTP API),
-///      and ALB events are all routed through the same Web.Route dispatch
-///      logic — the same handler functions work unchanged.
-///
-///      Example:
-///        val router = Web.create()
-///          |> Web.addGet("/users/{id}", "MyApp.Users.getUser")
-///          |> Web.addPost("/users",     "MyApp.Users.createUser")
-///        Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
-///
-///   2. Custom event source handlers
-///      Register handlers by fully-qualified function name with the
-///      onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onRaw helpers.
-///      The kernel resolves each handler via DLL reflection at startup and
-///      invokes it with the deserialised event and LambdaContext.
-///
-///      Handler signatures:
-///        SQS:         func h(event: Lambda.Events.SqsEvent,         ctx: Lambda.LambdaContext): Result[R, Lambda.LambdaError]
-///        SNS:         func h(event: Lambda.Events.SnsEvent,         ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
-///        S3:          func h(event: Lambda.Events.S3Event,          ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
-///        EventBridge: func h(event: Lambda.Events.EventBridgeEvent, ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
-///        DynamoDB:    func h(event: Lambda.Events.DynamoDbEvent,    ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
-///        Raw:         func h(payload: String,                       ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
-///
-///      where R for SQS may be Unit or Lambda.Events.SqsBatchResponse for
-///      partial-batch-failure reporting.
-///
-/// Runtime env vars:
-///   AWS_LAMBDA_RUNTIME_API                  — injected by Lambda; drives the custom runtime loop
-///   LYRIC_CONFIG_LAMBDA_RUNTIME_LOCALPORT   — local test server port (feature="local"; default: 9000)
-///
-/// See docs/35-lambda-library.md, decision log D062.
+// Lambda — AWS Lambda runtime adapter for Lyric.
+//
+// Provides the core vocabulary for writing Lambda functions in Lyric and
+// the serve() entry point that drives the Lambda invocation loop.
+//
+// Two composition modes (may be combined in the same LambdaApp):
+//
+//   1. lyric-web router reuse
+//      Build a Web.Router exactly as you would for a Kestrel service, then
+//      attach it with withRouter().  API Gateway v1 (REST API), v2 (HTTP API),
+//      and ALB events are all routed through the same Web.Route dispatch
+//      logic — the same handler functions work unchanged.
+//
+//      Example:
+//        val router = Web.create()
+//          |> Web.addGet("/users/{id}", "MyApp.Users.getUser")
+//          |> Web.addPost("/users",     "MyApp.Users.createUser")
+//        Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
+//
+//   2. Custom event source handlers
+//      Register handlers by fully-qualified function name with the
+//      onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onRaw helpers.
+//      The kernel resolves each handler via DLL reflection at startup and
+//      invokes it with the deserialised event and LambdaContext.
+//
+//      Handler signatures:
+//        SQS:         func h(event: Lambda.Events.SqsEvent,         ctx: Lambda.LambdaContext): Result[R, Lambda.LambdaError]
+//        SNS:         func h(event: Lambda.Events.SnsEvent,         ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+//        S3:          func h(event: Lambda.Events.S3Event,          ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+//        EventBridge: func h(event: Lambda.Events.EventBridgeEvent, ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+//        DynamoDB:    func h(event: Lambda.Events.DynamoDbEvent,    ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+//        Raw:         func h(payload: String,                       ctx: Lambda.LambdaContext): Result[Unit, Lambda.LambdaError]
+//
+//      where R for SQS may be Unit or Lambda.Events.SqsBatchResponse for
+//      partial-batch-failure reporting.
+//
+// Runtime env vars:
+//   AWS_LAMBDA_RUNTIME_API                  — injected by Lambda; drives the custom runtime loop
+//   LYRIC_CONFIG_LAMBDA_RUNTIME_LOCALPORT   — local test server port (feature="local"; default: 9000)
+//
+// See docs/35-lambda-library.md, decision log D062.
 
 @runtime_checked
 package Lambda

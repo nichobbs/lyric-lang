@@ -1,38 +1,38 @@
-/// Ws — WebSocket server library for Lyric.
-///
-/// Provides the full connection lifecycle for WebSocket servers:
-/// connection context, message types, a handler interface for
-/// application logic, and a registry interface for sending to
-/// connected clients.
-///
-/// Typical usage:
-///
-///   import Ws
-///
-///   // Implement WsHandler for application logic
-///   record MyHandler {}
-///   impl WsHandler for MyHandler {
-///     func onOpen(ctx: in WsContext): Result[Unit, WsError] { ... }
-///     func onMessage(ctx: in WsContext, msg: in WsMessage): Result[Unit, WsError] { ... }
-///     func onClose(ctx: in WsContext, code: in WsCloseCode): Unit { ... }
-///     func onError(ctx: in WsContext, error: in WsError): Unit { ... }
-///   }
-///
-///   // Create a registry and start serving
-///   match Ws.createRegistry() {
-///     case Ok(registry) -> ...
-///     case Err(e) -> ...
-///   }
-///
-/// Runtime config env vars (LYRIC_CONFIG_WS_SERVER_*):
-///   LYRIC_CONFIG_WS_SERVER_PATH                — WebSocket upgrade path (default: /ws)
-///   LYRIC_CONFIG_WS_SERVER_MAXMESSAGESIZEBYTES — max frame size in bytes (default: 65536)
-///   LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS      — ping interval in milliseconds (default: 30000)
-///   LYRIC_CONFIG_WS_SERVER_HANDSHAKETIMEOUTMS  — upgrade handshake timeout (default: 10000)
-///   LYRIC_CONFIG_WS_AUTH_ENABLED               — enable JWT gate on upgrade (default: true)
-///   LYRIC_CONFIG_WS_AUTH_JWTSECRET             — HMAC-SHA256 secret for JWT (required when auth enabled)
-///   LYRIC_CONFIG_WS_AUTH_ISSUER                — expected iss claim (default: "")
-///   LYRIC_CONFIG_WS_AUTH_AUDIENCE              — expected aud claim (default: "")
+// Ws — WebSocket server library for Lyric.
+//
+// Provides the full connection lifecycle for WebSocket servers:
+// connection context, message types, a handler interface for
+// application logic, and a registry interface for sending to
+// connected clients.
+//
+// Typical usage:
+//
+//   import Ws
+//
+//   // Implement WsHandler for application logic
+//   record MyHandler {}
+//   impl WsHandler for MyHandler {
+//     func onOpen(ctx: in WsContext): Result[Unit, WsError] { ... }
+//     func onMessage(ctx: in WsContext, msg: in WsMessage): Result[Unit, WsError] { ... }
+//     func onClose(ctx: in WsContext, code: in WsCloseCode): Unit { ... }
+//     func onError(ctx: in WsContext, error: in WsError): Unit { ... }
+//   }
+//
+//   // Create a registry and start serving
+//   match Ws.createRegistry() {
+//     case Ok(registry) -> ...
+//     case Err(e) -> ...
+//   }
+//
+// Runtime config env vars (LYRIC_CONFIG_WS_SERVER_*):
+//   LYRIC_CONFIG_WS_SERVER_PATH                — WebSocket upgrade path (default: /ws)
+//   LYRIC_CONFIG_WS_SERVER_MAXMESSAGESIZEBYTES — max frame size in bytes (default: 65536)
+//   LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS      — ping interval in milliseconds (default: 30000)
+//   LYRIC_CONFIG_WS_SERVER_HANDSHAKETIMEOUTMS  — upgrade handshake timeout (default: 10000)
+//   LYRIC_CONFIG_WS_AUTH_ENABLED               — enable JWT gate on upgrade (default: true)
+//   LYRIC_CONFIG_WS_AUTH_JWTSECRET             — HMAC-SHA256 secret for JWT (required when auth enabled)
+//   LYRIC_CONFIG_WS_AUTH_ISSUER                — expected iss claim (default: "")
+//   LYRIC_CONFIG_WS_AUTH_AUDIENCE              — expected aud claim (default: "")
 
 @runtime_checked
 package Ws

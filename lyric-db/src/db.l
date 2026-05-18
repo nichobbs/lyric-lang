@@ -1,42 +1,42 @@
-/// Db — driver-agnostic database access with typed rows and transactions.
-///
-/// `DbConnection` is the public interface; implement it to add a new driver.
-/// Two built-in drivers are provided via feature-gated kernel packages:
-///
-/// Convenience wrappers (added for gRPC / non-web consumers):
-///   Db.connect(connStr)      — open a connection from an explicit DSN
-///   Db.query(conn, sql, p)   — call conn.query; top-level wrapper
-///   Db.execute(conn, sql, p) — call conn.execute; top-level wrapper
-///   Db.getString/getInt/getLong/getBool — typed column extractors
-///
-///   Db.connectPostgres()  (@cfg feature = "postgres")  — Npgsql / PostgreSQL
-///   Db.connectSqlite()    (@cfg feature = "sqlite")    — Microsoft.Data.Sqlite
-///
-/// Usage:
-///
-///   import Db
-///
-///   val conn = Db.connectPostgres()?
-///   match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
-///     case Ok(rows) ->
-///       for row in rows {
-///         match Db.col(row, "name") {
-///           case DbValue.DbText(name) -> println(name)
-///           case _                   -> ()
-///         }
-///       }
-///     case Err(e) -> Err(Web.internalError(e.message))
-///   }
-///   conn.close()
-///
-/// Runtime config env vars (LYRIC_CONFIG_DB_CONNECTION_*):
-///   LYRIC_CONFIG_DB_CONNECTION_URL            — connection URL (required)
-///   LYRIC_CONFIG_DB_CONNECTION_POOLSIZE       — pool size (default: 10)
-///   LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS — connect timeout (default: 5000)
-///   LYRIC_CONFIG_DB_CONNECTION_QUERYTIMEOUTMS   — query timeout  (default: 30000)
-///   LYRIC_CONFIG_DB_CONNECTION_PASSWORD         — password override (default: "")
-///
-/// See docs/03-decision-log.md D056 and lyric-db/README.md.
+// Db — driver-agnostic database access with typed rows and transactions.
+//
+// `DbConnection` is the public interface; implement it to add a new driver.
+// Two built-in drivers are provided via feature-gated kernel packages:
+//
+// Convenience wrappers (added for gRPC / non-web consumers):
+//   Db.connect(connStr)      — open a connection from an explicit DSN
+//   Db.query(conn, sql, p)   — call conn.query; top-level wrapper
+//   Db.execute(conn, sql, p) — call conn.execute; top-level wrapper
+//   Db.getString/getInt/getLong/getBool — typed column extractors
+//
+//   Db.connectPostgres()  (@cfg feature = "postgres")  — Npgsql / PostgreSQL
+//   Db.connectSqlite()    (@cfg feature = "sqlite")    — Microsoft.Data.Sqlite
+//
+// Usage:
+//
+//   import Db
+//
+//   val conn = Db.connectPostgres()?
+//   match conn.query("SELECT id, name FROM users WHERE id = $1", ["42"]) {
+//     case Ok(rows) ->
+//       for row in rows {
+//         match Db.col(row, "name") {
+//           case DbValue.DbText(name) -> println(name)
+//           case _                   -> ()
+//         }
+//       }
+//     case Err(e) -> Err(Web.internalError(e.message))
+//   }
+//   conn.close()
+//
+// Runtime config env vars (LYRIC_CONFIG_DB_CONNECTION_*):
+//   LYRIC_CONFIG_DB_CONNECTION_URL            — connection URL (required)
+//   LYRIC_CONFIG_DB_CONNECTION_POOLSIZE       — pool size (default: 10)
+//   LYRIC_CONFIG_DB_CONNECTION_CONNECTTIMEOUTMS — connect timeout (default: 5000)
+//   LYRIC_CONFIG_DB_CONNECTION_QUERYTIMEOUTMS   — query timeout  (default: 30000)
+//   LYRIC_CONFIG_DB_CONNECTION_PASSWORD         — password override (default: "")
+//
+// See docs/03-decision-log.md D056 and lyric-db/README.md.
 
 @runtime_checked
 package Db

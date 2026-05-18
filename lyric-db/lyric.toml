@@ -14,22 +14,10 @@ output_assembly = "Db.dll"
 "Db"             = "src"
 "Db.Aspects"     = "src"
 "Db.Kernel.Net"  = "src/_kernel/net"
-"Db.Kernel.Jvm"  = "src/_kernel/jvm"
 
 [features]
-dotnet   = []    # Target the .NET kernel (Db.Kernel.Net)
-jvm      = []    # Target the JVM kernel (Db.Kernel.Jvm)
-postgres = []    # enable the Npgsql / PostgreSQL JDBC driver
-sqlite   = []    # enable the Microsoft.Data.Sqlite / SQLite JDBC driver
-
-[project.tests]
-"Db.DbTests" = "tests/db_tests.l"
+postgres = []    # enable the Npgsql (PostgreSQL) driver
+sqlite   = []    # enable the Microsoft.Data.Sqlite driver
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
-
-[maven]
-# feature = "postgres" — PostgreSQL JDBC driver for JVM
-"org.postgresql:postgresql" = { version = "42.7.3", features = ["postgres"] }
-# feature = "sqlite" — SQLite JDBC driver for JVM
-"org.xerial:sqlite-jdbc"    = { version = "3.45.3.0", features = ["sqlite"] }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

@@ -1,27 +1,27 @@
-/// Flags.Aspects — pub aspect templates for feature-flag-gated execution.
-///
-/// Two templates:
-///
-///   FlagGated   — B-mode: short-circuits execution when a named flag is
-///                 disabled.  Uses the process-global registry maintained by
-///                 `Flags.Kernel.Net.checkFlag` so that no store reference is
-///                 needed in the aspect config.  Register flags in the global
-///                 registry with `Flags.Kernel.Net.registerBoolFlag` at startup.
-///
-///   FlagVariant — B-mode: proceeds unconditionally; compares the current
-///                 String value of a named flag against a configured variant
-///                 string.  Intended as a stub for future A/B variant routing.
-///
-/// Typical consumer usage:
-///
-///   import Flags.Aspects
-///
-///   aspect NewCheckout from Flags.Aspects.FlagGated {
-///     matches: name like "handleCheckout*"
-///     config { flagName: String = "new-checkout"; defaultOnMissing: Bool = false }
-///   }
-///
-/// See docs/26-aspects.md §18 and lyric-feature-flags/README.md.
+// Flags.Aspects — pub aspect templates for feature-flag-gated execution.
+//
+// Two templates:
+//
+//   FlagGated   — B-mode: short-circuits execution when a named flag is
+//                 disabled.  Uses the process-global registry maintained by
+//                 `Flags.Kernel.Net.checkFlag` so that no store reference is
+//                 needed in the aspect config.  Register flags in the global
+//                 registry with `Flags.Kernel.Net.registerBoolFlag` at startup.
+//
+//   FlagVariant — B-mode: proceeds unconditionally; compares the current
+//                 String value of a named flag against a configured variant
+//                 string.  Intended as a stub for future A/B variant routing.
+//
+// Typical consumer usage:
+//
+//   import Flags.Aspects
+//
+//   aspect NewCheckout from Flags.Aspects.FlagGated {
+//     matches: name like "handleCheckout*"
+//     config { flagName: String = "new-checkout"; defaultOnMissing: Bool = false }
+//   }
+//
+// See docs/26-aspects.md §18 and lyric-feature-flags/README.md.
 
 @runtime_checked
 package Flags.Aspects

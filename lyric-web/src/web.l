@@ -1,35 +1,35 @@
-/// Web — HTTP server foundation, type vocabulary, and routing.
-///
-/// Provides the ApiError type (with status-code constructor helpers),
-/// the Router value type for building route tables, and the server
-/// entry point backed by a runtime config block.
-///
-/// Route annotations (@get, @post, @put, @delete, @patch) are custom
-/// annotations — apply them to handler functions and pass the handler's
-/// qualified name to the router registration functions.  Discovery via
-/// DLL reflection is planned once Lyric's annotation reflection ships.
-///
-/// Workflow — code-first:
-///   1. Annotate handler functions with @get / @post / etc.
-///   2. Register routes explicitly with addGet / addPost / etc.
-///   3. Call Web.start(router) from main().
-///   4. Run `lyric web spec` to emit openapi.yaml from the compiled DLL.
-///
-/// Workflow — spec-first:
-///   1. Run `lyric generate openapi spec.yaml` → stub .l files.
-///   2. Implement the generated handler bodies.
-///   3. Register and start as above.
-///
-/// Runtime env vars (all read once at startup, fail-fast if invalid):
-///   LYRIC_CONFIG_WEB_SERVER_HOST            — bind address (default: 0.0.0.0)
-///   LYRIC_CONFIG_WEB_SERVER_PORT            — TCP port (default: 8080)
-///   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED  — serve Swagger UI at /swagger (default: false)
-///   LYRIC_CONFIG_WEB_SERVER_SPECPATH        — OpenAPI spec URL path (default: /openapi.json)
-///   LYRIC_CONFIG_WEB_CORS_ENABLED           — enable CORS middleware (default: false)
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins (no default; required when Cors.enabled = true)
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS    — comma-separated HTTP methods
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
-///   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
+// Web — HTTP server foundation, type vocabulary, and routing.
+//
+// Provides the ApiError type (with status-code constructor helpers),
+// the Router value type for building route tables, and the server
+// entry point backed by a runtime config block.
+//
+// Route annotations (@get, @post, @put, @delete, @patch) are custom
+// annotations — apply them to handler functions and pass the handler's
+// qualified name to the router registration functions.  Discovery via
+// DLL reflection is planned once Lyric's annotation reflection ships.
+//
+// Workflow — code-first:
+//   1. Annotate handler functions with @get / @post / etc.
+//   2. Register routes explicitly with addGet / addPost / etc.
+//   3. Call Web.start(router) from main().
+//   4. Run `lyric web spec` to emit openapi.yaml from the compiled DLL.
+//
+// Workflow — spec-first:
+//   1. Run `lyric generate openapi spec.yaml` → stub .l files.
+//   2. Implement the generated handler bodies.
+//   3. Register and start as above.
+//
+// Runtime env vars (all read once at startup, fail-fast if invalid):
+//   LYRIC_CONFIG_WEB_SERVER_HOST            — bind address (default: 0.0.0.0)
+//   LYRIC_CONFIG_WEB_SERVER_PORT            — TCP port (default: 8080)
+//   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED  — serve Swagger UI at /swagger (default: false)
+//   LYRIC_CONFIG_WEB_SERVER_SPECPATH        — OpenAPI spec URL path (default: /openapi.json)
+//   LYRIC_CONFIG_WEB_CORS_ENABLED           — enable CORS middleware (default: false)
+//   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins (no default; required when Cors.enabled = true)
+//   LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS    — comma-separated HTTP methods
+//   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
+//   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
 
 @runtime_checked
 package Web

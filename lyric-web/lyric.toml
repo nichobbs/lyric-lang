@@ -25,6 +25,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 # ASP.NET Core / Kestrel HTTP server backend.
 dotnet = []
 # JVM backend (Phase 6 — not yet implemented).
@@ -51,7 +52,7 @@ output_assembly = "Web.dll"
 "Web.CorsGuardTests" = "tests/cors_guard_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"       = { path = "../stdlib" }
+"Lyric.Stdlib"       = { path = "../lyric-stdlib" }
 "Lyric.Auth"         = { path = "../lyric-auth" }
 "Lyric.Resilience"   = { path = "../lyric-resilience" }
 

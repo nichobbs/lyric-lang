@@ -1,32 +1,32 @@
-/// Mq.Kernel.Net — .NET extern boundary for message broker drivers.
-///
-/// Bridges Lyric's Mq package to .NET message broker client libraries.
-/// Each broker is guarded by a feature flag; at least one must be active:
-///
-///   rabbitmq        — RabbitMQ.Client AMQP 0-9-1 client
-///   azureservicebus — Azure.Messaging.ServiceBus client
-///   sqs             — AWSSDK.SQS Amazon SQS client
-///   kafka           — Confluent.Kafka producer/consumer client
-///
-/// All drivers use an integer `queueId` handle issued at connect time.
-/// The kernel maintains a handle table (ConcurrentDictionary) that maps
-/// each ID to the underlying channel/client object.
-///
-/// Wire format for messages returned by `consume`:
-///   JSON object: {"id":"...","body":"...","headers":[{"key":"...","value":"..."},...],
-///                 "deliveryCount":N}
-///   Empty string "" signals a timeout (no message available).
-///
-/// Wire format for `publishBatch`:
-///   JSON array of the same message objects above.
-///
-/// Error strings contain the driver exception message and, where available,
-/// the broker-specific error code.
-///
-/// Only active when compiled for .NET (feature = "dotnet" is implicit for
-/// Mq.Kernel.Net; individual broker externs are guarded by their own feature).
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Mq.Kernel.Net — .NET extern boundary for message broker drivers.
+//
+// Bridges Lyric's Mq package to .NET message broker client libraries.
+// Each broker is guarded by a feature flag; at least one must be active:
+//
+//   rabbitmq        — RabbitMQ.Client AMQP 0-9-1 client
+//   azureservicebus — Azure.Messaging.ServiceBus client
+//   sqs             — AWSSDK.SQS Amazon SQS client
+//   kafka           — Confluent.Kafka producer/consumer client
+//
+// All drivers use an integer `queueId` handle issued at connect time.
+// The kernel maintains a handle table (ConcurrentDictionary) that maps
+// each ID to the underlying channel/client object.
+//
+// Wire format for messages returned by `consume`:
+//   JSON object: {"id":"...","body":"...","headers":[{"key":"...","value":"..."},...],
+//                 "deliveryCount":N}
+//   Empty string "" signals a timeout (no message available).
+//
+// Wire format for `publishBatch`:
+//   JSON array of the same message objects above.
+//
+// Error strings contain the driver exception message and, where available,
+// the broker-specific error code.
+//
+// Only active when compiled for .NET (feature = "dotnet" is implicit for
+// Mq.Kernel.Net; individual broker externs are guarded by their own feature).
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Mq.Kernel.Net
 

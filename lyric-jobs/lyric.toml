@@ -26,7 +26,7 @@ jvm      = []   # JVM kernel backend (Phase 6)
 "Jobs.JobsTests" = "tests/jobs_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../stdlib" }
+"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
 
 [nuget]

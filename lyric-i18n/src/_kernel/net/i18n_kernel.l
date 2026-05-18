@@ -1,23 +1,23 @@
-/// I18n.Kernel.Net — extern boundary for translation file loading and JSON parsing.
-///
-/// Bridges Lyric's I18n package to .NET platform libraries:
-///   Lyric.I18n.FileLoader — file-system loading and JSON parsing for translation files.
-///
-/// The translation file format is a JSON object whose top-level keys are BCP 47
-/// language tags (e.g. "en", "en-US", "fr-FR").  The value for each key is a flat
-/// JSON object mapping translation keys to template strings.
-///
-/// Example input:
-///   {
-///     "en":    { "greeting": "Hello, {name}!", "farewell": "Goodbye." },
-///     "en-US": { "greeting": "Hey, {name}!" },
-///     "fr":    { "greeting": "Bonjour, {name}!", "farewell": "Au revoir." }
-///   }
-///
-/// `parseTranslationsJson` returns a JSON array of three-element arrays:
-///   [["en","greeting","Hello, {name}!"],["en","farewell","Goodbye."],...]
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// I18n.Kernel.Net — extern boundary for translation file loading and JSON parsing.
+//
+// Bridges Lyric's I18n package to .NET platform libraries:
+//   Lyric.I18n.FileLoader — file-system loading and JSON parsing for translation files.
+//
+// The translation file format is a JSON object whose top-level keys are BCP 47
+// language tags (e.g. "en", "en-US", "fr-FR").  The value for each key is a flat
+// JSON object mapping translation keys to template strings.
+//
+// Example input:
+//   {
+//     "en":    { "greeting": "Hello, {name}!", "farewell": "Goodbye." },
+//     "en-US": { "greeting": "Hey, {name}!" },
+//     "fr":    { "greeting": "Bonjour, {name}!", "farewell": "Au revoir." }
+//   }
+//
+// `parseTranslationsJson` returns a JSON array of three-element arrays:
+//   [["en","greeting","Hello, {name}!"],["en","farewell","Goodbye."],...]
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package I18n.Kernel.Net
 

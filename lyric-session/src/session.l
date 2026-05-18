@@ -1,43 +1,37 @@
-/// Session — distributed session management for Lyric web applications.
-///
-/// WARNING (thread safety): `InProcessSessionStore` is NOT thread-safe, and
-/// `NativeSessionStore` (Redis-backed) has a load-modify-save race window
-/// on `set` / `delete` / `clear` that can lose concurrent updates.
-/// Production multi-threaded services should expect lost-update behaviour
-/// until atomic CAS / Lua-EVAL session updates land (lyric-lang #398, #411).
-///
-/// Provides a `SessionStore` interface with Redis-backed and in-process
-/// implementations.  Both share the same API; swap the store at startup
-/// via factory functions without changing application code.
-///
-/// Typical usage:
-///
-///   import Session
-///
-///   // In-process (single-instance):
-///   var store = Session.inMemory()
-///
-///   // Redis-backed (multi-instance):
-///   match Session.connectRedis() {
-///     case Ok(store) -> ...
-///     case Err(e)    -> ...
-///   }
-///
-///   // Use the store:
-///   match Session.create(store) {
-///     case Ok(sessionId) ->
-///       Session.set(store, sessionId, "userId", "42")
-///     case Err(e) -> ...
-///   }
-///
-/// Runtime config env vars (LYRIC_CONFIG_SESSION_*):
-///   LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS    — session TTL in seconds (default: 3600)
-///   LYRIC_CONFIG_SESSION_SESSION_COOKIENAME    — session cookie name (default: LYRIC_SESSION)
-///   LYRIC_CONFIG_SESSION_SESSION_SECURE        — Secure cookie flag (default: true)
-///   LYRIC_CONFIG_SESSION_SESSION_HTTPONLY      — HttpOnly cookie flag (default: true)
-///   LYRIC_CONFIG_SESSION_SESSION_SAMESITE      — SameSite policy (default: Lax)
-///   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (redis feature)
-///   LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX — key namespace prefix (default: session:)
+// Session — distributed session management for Lyric web applications.
+//
+// Provides a `SessionStore` interface with Redis-backed and in-process
+// implementations.  Both share the same API; swap the store at startup
+// via factory functions without changing application code.
+//
+// Typical usage:
+//
+//   import Session
+//
+//   // In-process (single-instance):
+//   var store = Session.inMemory()
+//
+//   // Redis-backed (multi-instance):
+//   match Session.connectRedis() {
+//     case Ok(store) -> ...
+//     case Err(e)    -> ...
+//   }
+//
+//   // Use the store:
+//   match Session.create(store) {
+//     case Ok(sessionId) ->
+//       Session.set(store, sessionId, "userId", "42")
+//     case Err(e) -> ...
+//   }
+//
+// Runtime config env vars (LYRIC_CONFIG_SESSION_*):
+//   LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS    — session TTL in seconds (default: 3600)
+//   LYRIC_CONFIG_SESSION_SESSION_COOKIENAME    — session cookie name (default: LYRIC_SESSION)
+//   LYRIC_CONFIG_SESSION_SESSION_SECURE        — Secure cookie flag (default: true)
+//   LYRIC_CONFIG_SESSION_SESSION_HTTPONLY      — HttpOnly cookie flag (default: true)
+//   LYRIC_CONFIG_SESSION_SESSION_SAMESITE      — SameSite policy (default: Lax)
+//   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (redis feature)
+//   LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX — key namespace prefix (default: session:)
 
 @runtime_checked
 package Session
@@ -47,8 +41,8 @@ import Std.Collections
 import Std.Time
 import Std.Json
 import Std.Uuid
+@cfg(feature = "redis")
 import Session.Kernel.Net
-import Session.Kernel.Jvm
 
 // ─── Session identity ─────────────────────────────────────────────────────────
 
@@ -151,14 +145,14 @@ pub record NativeSessionStore {
 @cfg(feature = "redis")
 impl SessionStore for NativeSessionStore {
   func create(): Result[SessionId, SessionError] {
-    match sessionKernelCreate(storeHandle, SessionConfig.ttlSeconds) {
+    match Session.Kernel.Net.create(storeHandle, SessionConfig.ttlSeconds) {
       case Ok(id)   -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
   }
 
   func load(sessionId: in SessionId): Result[Option[SessionData], SessionError] {
-    match sessionKernelLoad(storeHandle, sessionId) {
+    match Session.Kernel.Net.load(storeHandle, sessionId) {
       case Ok(json) ->
         if json == "" {
           Ok(None)
@@ -171,21 +165,21 @@ impl SessionStore for NativeSessionStore {
 
   func save(data: in SessionData): Result[Unit, SessionError] {
     val json = serializeSessionJson(data)
-    match sessionKernelSave(storeHandle, json) {
+    match Session.Kernel.Net.save(storeHandle, json) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
     }
   }
 
   func destroy(sessionId: in SessionId): Result[Unit, SessionError] {
-    match sessionKernelDestroy(storeHandle, sessionId) {
+    match Session.Kernel.Net.destroy(storeHandle, sessionId) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "DESTROY_FAILED"))
     }
   }
 
   func touch(sessionId: in SessionId): Result[Unit, SessionError] {
-    match sessionKernelTouch(storeHandle, sessionId, SessionConfig.ttlSeconds) {
+    match Session.Kernel.Net.touch(storeHandle, sessionId, SessionConfig.ttlSeconds) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
@@ -359,11 +353,12 @@ impl SessionStore for InProcessSessionStore {
               message = "session not found; call create() to obtain a fresh id before set()",
               code    = "SESSION_NOT_FOUND"))
           case Some(existing) ->
+            val ts = nowMs()
             val updated = SessionData(
               id             = existing.id,
               entries        = existing.entries.set(key, value),
               createdAt      = existing.createdAt,
-              lastAccessedAt = nowMs(),
+              lastAccessedAt = ts,
               expiresAt      = existing.expiresAt)
             save(updated)
         }
@@ -439,7 +434,7 @@ config RedisSession {
 @stable(since="0.1")
 @cfg(feature = "redis")
 pub func connectRedis(): Result[SessionStore, SessionError] {
-  match sessionKernelConnect(RedisSession.url, RedisSession.keyPrefix) {
+  match Session.Kernel.Net.connect(RedisSession.url, RedisSession.keyPrefix) {
     case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle))
     case Err(err)   -> Err(SessionError(message = err, code = "CONNECT_FAILED"))
   }
@@ -598,7 +593,7 @@ func serializeSessionJson(data: in SessionData): String {
        + "\"entries\":" + entriesJson + "}"
 }
 
-// Deserialize the SessionData protocol format returned by the session kernel.
+// Deserialize the SessionData protocol format returned by Session.Kernel.Net.load.
 // Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
 func parseSessionJson(sessionId: in SessionId, json: in String): SessionData {
   val doc  = Std.Json.parseJson(json)
@@ -649,75 +644,4 @@ func parseSessionJson(sessionId: in SessionId, json: in String): SessionData {
     createdAt      = createdAt,
     lastAccessedAt = lastAccessedAt,
     expiresAt      = expiresAt)
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the package code above calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-@cfg(feature = "redis")
-func sessionKernelConnect(url: in String, keyPrefix: in String): Result[Int, String] {
-  return Session.Kernel.Net.connect(url, keyPrefix)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "redis")
-func sessionKernelConnect(url: in String, keyPrefix: in String): Result[Int, String] {
-  return Session.Kernel.Jvm.connect(url, keyPrefix)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "redis")
-func sessionKernelCreate(storeHandle: in Int, ttlSeconds: in Int): Result[String, String] {
-  return Session.Kernel.Net.create(storeHandle, ttlSeconds)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "redis")
-func sessionKernelCreate(storeHandle: in Int, ttlSeconds: in Int): Result[String, String] {
-  return Session.Kernel.Jvm.create(storeHandle, ttlSeconds)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "redis")
-func sessionKernelLoad(storeHandle: in Int, sessionId: in String): Result[String, String] {
-  return Session.Kernel.Net.load(storeHandle, sessionId)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "redis")
-func sessionKernelLoad(storeHandle: in Int, sessionId: in String): Result[String, String] {
-  return Session.Kernel.Jvm.load(storeHandle, sessionId)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "redis")
-func sessionKernelSave(storeHandle: in Int, sessionJson: in String): Result[Unit, String] {
-  return Session.Kernel.Net.save(storeHandle, sessionJson)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "redis")
-func sessionKernelSave(storeHandle: in Int, sessionJson: in String): Result[Unit, String] {
-  return Session.Kernel.Jvm.save(storeHandle, sessionJson)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "redis")
-func sessionKernelDestroy(storeHandle: in Int, sessionId: in String): Result[Unit, String] {
-  return Session.Kernel.Net.destroy(storeHandle, sessionId)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "redis")
-func sessionKernelDestroy(storeHandle: in Int, sessionId: in String): Result[Unit, String] {
-  return Session.Kernel.Jvm.destroy(storeHandle, sessionId)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "redis")
-func sessionKernelTouch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String] {
-  return Session.Kernel.Net.touch(storeHandle, sessionId, ttlSeconds)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "redis")
-func sessionKernelTouch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String] {
-  return Session.Kernel.Jvm.touch(storeHandle, sessionId, ttlSeconds)
 }

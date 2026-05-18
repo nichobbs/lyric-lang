@@ -1,10 +1,10 @@
-/// JVM OpenTelemetry extern boundary (Phase 6).
-/// Wires Lyric's OTel wrapper functions to io.opentelemetry.api.trace.Tracer
-/// (tracing) and io.opentelemetry.api.metrics.Meter (metrics).
-///
-/// Only active when compiled with feature = "jvm".
-/// Marked @phase(6) — not compiled today; present to drive API design.
-/// See docs/18-jvm-emission.md and docs/14-native-stdlib-plan.md.
+// JVM OpenTelemetry extern boundary (Phase 6).
+// Wires Lyric's OTel wrapper functions to io.opentelemetry.api.trace.Tracer
+// (tracing) and io.opentelemetry.api.metrics.Meter (metrics).
+//
+// Only active when compiled with feature = "jvm".
+// Marked @phase(6) — not compiled today; present to drive API design.
+// See docs/18-jvm-emission.md and docs/14-native-stdlib-plan.md.
 @cfg(feature = "jvm")
 package OTel.Kernel.Jvm
 

@@ -19,6 +19,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 # Enable the .NET kernel (System.Diagnostics.ActivitySource / Metrics).
 dotnet = []
 # Enable the JVM kernel (io.opentelemetry.api — Phase 6).

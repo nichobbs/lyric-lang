@@ -1,15 +1,15 @@
-/// Session.Kernel.Net — Redis extern boundary for distributed session storage.
-///
-/// Bridges the Session package to StackExchange.Redis:
-///   - connect()  — open a connection pool and return a store handle
-///   - create()   — allocate a new session with the given TTL
-///   - load()     — fetch a session as serialised JSON (empty string = not found)
-///   - save()     — persist serialised session JSON
-///   - destroy()  — permanently delete a session
-///   - touch()    — refresh the session TTL without changing its contents
-///
-/// Only active when compiled with feature = "redis".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Session.Kernel.Net — Redis extern boundary for distributed session storage.
+//
+// Bridges the Session package to StackExchange.Redis:
+//   - connect()  — open a connection pool and return a store handle
+//   - create()   — allocate a new session with the given TTL
+//   - load()     — fetch a session as serialised JSON (empty string = not found)
+//   - save()     — persist serialised session JSON
+//   - destroy()  — permanently delete a session
+//   - touch()    — refresh the session TTL without changing its contents
+//
+// Only active when compiled with feature = "redis".
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "redis")
 package Session.Kernel.Net

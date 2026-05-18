@@ -1,10 +1,10 @@
-/// Auth.Kernel.Jvm — JVM authentication extern boundary.
-///
-/// Bridges Auth's verification functions to io.jsonwebtoken (JJWT) for
-/// JWT handling and MessageDigest for constant-time key comparison.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Auth.Kernel.Jvm — JVM authentication extern boundary.
+//
+// Bridges Auth's verification functions to io.jsonwebtoken (JJWT) for
+// JWT handling and MessageDigest for constant-time key comparison.
+//
+// Only active when compiled with feature = "jvm" (Phase 6).
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Auth.Kernel.Jvm

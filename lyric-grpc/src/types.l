@@ -1,8 +1,8 @@
-/// Platform-neutral gRPC client types.
-///
-/// Consumers open a GrpcChannel to a server address, make RPC calls passing
-/// raw slice[Byte] payloads, and receive raw slice[Byte] responses.
-/// The gRPC status code and message are surfaced via GrpcStatus on error.
+// Platform-neutral gRPC client types.
+//
+// Consumers open a GrpcChannel to a server address, make RPC calls passing
+// raw slice[Byte] payloads, and receive raw slice[Byte] responses.
+// The gRPC status code and message are surfaced via GrpcStatus on error.
 package Grpc.Types
 
 import Std.Core

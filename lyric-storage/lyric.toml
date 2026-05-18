@@ -27,7 +27,7 @@ azureblob = []   # Azure Blob Storage (Azure.Storage.Blobs on .NET / com.azure:a
 local     = []   # Local filesystem storage (cross-platform, no extra deps)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # feature = "s3" — AWS SDK S3 module for .NET

@@ -1,38 +1,33 @@
-/// Jobs — background job scheduling and execution library for Lyric.
-///
-/// WARNING (thread safety): `InProcessJobScheduler` is NOT thread-safe and is
-/// intended only for single-threaded tests and prototyping.  Production
-/// services should use `NativeJobScheduler` with a Hangfire / Quartz
-/// backend which handles its own concurrency.  See lyric-lang #411.
-///
-/// `JobScheduler` is the public interface; implement it to add a custom
-/// backend.  Two implementations are provided:
-///
-///   NativeJobScheduler   — delegates to Jobs.Kernel.Net (Hangfire or Quartz)
-///   InProcessJobScheduler — in-memory queue for tests and single-process use
-///
-/// Supported backends (feature-gated via lyric.toml [features]):
-///   hangfire — Hangfire.Core + Hangfire.SqlServer background processing
-///   quartz   — Quartz.NET cron-capable scheduler
-///
-/// Usage:
-///
-///   import Jobs
-///   import Std.Core
-///
-///   val scheduler = Jobs.connect()?
-///   val jobId     = Jobs.enqueue(scheduler, "send-email", "{\"to\":\"user@example.com\"}")?
-///   match Jobs.status(scheduler, jobId) {
-///     case Ok(s)  -> println("job status: " + s.toString())
-///     case Err(e) -> println("error: " + e)
-///   }
-///
-/// Runtime config env vars (LYRIC_CONFIG_JOBS_DEFAULTS_*):
-///   LYRIC_CONFIG_JOBS_DEFAULTS_MAXATTEMPTS       — retry limit (default: 3)
-///   LYRIC_CONFIG_JOBS_DEFAULTS_DEFAULTTIMEOUTMS  — execution timeout ms (default: 30000)
-///   LYRIC_CONFIG_JOBS_DEFAULTS_WORKERCOUNT       — parallel worker threads (default: 4)
-///
-/// See docs/03-decision-log.md D056 and lyric-jobs/README.md.
+// Jobs — background job scheduling and execution library for Lyric.
+//
+// `JobScheduler` is the public interface; implement it to add a custom
+// backend.  Two implementations are provided:
+//
+//   NativeJobScheduler   — delegates to Jobs.Kernel.Net (Hangfire or Quartz)
+//   InProcessJobScheduler — in-memory queue for tests and single-process use
+//
+// Supported backends (feature-gated via lyric.toml [features]):
+//   hangfire — Hangfire.Core + Hangfire.SqlServer background processing
+//   quartz   — Quartz.NET cron-capable scheduler
+//
+// Usage:
+//
+//   import Jobs
+//   import Std.Core
+//
+//   val scheduler = Jobs.connect()?
+//   val jobId     = Jobs.enqueue(scheduler, "send-email", "{\"to\":\"user@example.com\"}")?
+//   match Jobs.status(scheduler, jobId) {
+//     case Ok(s)  -> println("job status: " + s.toString())
+//     case Err(e) -> println("error: " + e)
+//   }
+//
+// Runtime config env vars (LYRIC_CONFIG_JOBS_DEFAULTS_*):
+//   LYRIC_CONFIG_JOBS_DEFAULTS_MAXATTEMPTS       — retry limit (default: 3)
+//   LYRIC_CONFIG_JOBS_DEFAULTS_DEFAULTTIMEOUTMS  — execution timeout ms (default: 30000)
+//   LYRIC_CONFIG_JOBS_DEFAULTS_WORKERCOUNT       — parallel worker threads (default: 4)
+//
+// See docs/03-decision-log.md D056 and lyric-jobs/README.md.
 
 @runtime_checked
 package Jobs
@@ -40,7 +35,6 @@ package Jobs
 import Std.Core
 import Std.Collections
 import Jobs.Kernel.Net
-import Jobs.Kernel.Jvm
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
@@ -177,7 +171,7 @@ impl JobScheduler for NativeJobScheduler {
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    return jobsKernelEnqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+    return Jobs.Kernel.Net.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
   }
 
   func schedule(
@@ -192,19 +186,19 @@ impl JobScheduler for NativeJobScheduler {
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    return jobsKernelSchedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+    return Jobs.Kernel.Net.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
   }
 
   func cancel(jobId: in JobId): Result[Unit, String]
     requires: jobId.length > 0
   {
-    return jobsKernelCancel(schedulerId, jobId)
+    return Jobs.Kernel.Net.cancel(schedulerId, jobId)
   }
 
   func status(jobId: in JobId): Result[JobStatus, String]
     requires: jobId.length > 0
   {
-    match jobsKernelStatus(schedulerId, jobId) {
+    match Jobs.Kernel.Net.status(schedulerId, jobId) {
       case Err(msg)    -> Err(msg)
       case Ok(rawStr)  -> Ok(parseStatus(rawStr))
     }
@@ -213,7 +207,7 @@ impl JobScheduler for NativeJobScheduler {
   func results(jobId: in JobId): Result[[JobResult], String]
     requires: jobId.length > 0
   {
-    match jobsKernelResults(schedulerId, jobId) {
+    match Jobs.Kernel.Net.results(schedulerId, jobId) {
       case Err(msg)      -> Err(msg)
       case Ok(jsonStr)   -> Ok(parseResults(jobId, jsonStr))
     }
@@ -321,7 +315,7 @@ impl JobScheduler for InProcessJobScheduler {
               output     = "",
               error      = "cancelled",
               startedAt  = result.startedAt,
-              finishedAt = jobsKernelNowMs())
+              finishedAt = Jobs.Kernel.Net.nowMs())
             jobs = jobs.set(jobId, cancelled)
             // Remove from the pending queue.
             queue = queue.filter(func(s: in JobSpec): Bool { s.id != jobId })
@@ -360,7 +354,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
   }
   val spec = scheduler.queue.head()
   scheduler.queue = scheduler.queue.tail()
-  val startMs = jobsKernelNowMs()
+  val startMs = Jobs.Kernel.Net.nowMs()
   val running = JobResult(
     jobId      = spec.id,
     status     = JobStatus.Running,
@@ -377,7 +371,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         output     = output,
         error      = "",
         startedAt  = startMs,
-        finishedAt = jobsKernelNowMs())
+        finishedAt = Jobs.Kernel.Net.nowMs())
       scheduler.jobs = scheduler.jobs.set(spec.id, result)
       return Ok(result)
     }
@@ -388,7 +382,7 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         output     = "",
         error      = jobErr.message,
         startedAt  = startMs,
-        finishedAt = jobsKernelNowMs())
+        finishedAt = Jobs.Kernel.Net.nowMs())
       scheduler.jobs = scheduler.jobs.set(spec.id, result)
       return Ok(result)
     }
@@ -424,7 +418,7 @@ config Defaults {
 /// Returns a `NativeJobScheduler` backed by the active feature (Hangfire or Quartz).
 @stable(since="0.1")
 pub func connect(): Result[NativeJobScheduler, String] {
-  match jobsKernelConnect(Defaults.workerCount) {
+  match Jobs.Kernel.Net.connect(Defaults.workerCount) {
     case Ok(schedulerId) -> Ok(NativeJobScheduler(schedulerId = schedulerId))
     case Err(msg)        -> Err(msg)
   }
@@ -510,13 +504,13 @@ pub func results(scheduler: in JobScheduler, jobId: in JobId): Result[[JobResult
 /// Generate a new unique job ID using the platform kernel.
 @stable(since="0.1")
 pub func newJobId(): JobId {
-  return jobsKernelGenerateId()
+  return Jobs.Kernel.Net.generateId()
 }
 
 /// Return the current wall-clock time in epoch milliseconds.
 @stable(since="0.1")
 pub func nowMs(): Long {
-  return jobsKernelNowMs()
+  return Jobs.Kernel.Net.nowMs()
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
@@ -639,141 +633,4 @@ func jsonExtractLong(json: in String, field: in String): Long {
     case Some(n) -> return n
     case None    -> return 0L
   }
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-func jobsKernelNowMs(): Long {
-  return Jobs.Kernel.Net.nowMs()
-}
-@cfg(feature = "jvm")
-func jobsKernelNowMs(): Long {
-  return Jobs.Kernel.Jvm.nowMs()
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelGenerateId(): String {
-  return Jobs.Kernel.Net.generateId()
-}
-@cfg(feature = "jvm")
-func jobsKernelGenerateId(): String {
-  return Jobs.Kernel.Jvm.generateId()
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelConnect(workerCount: in Int): Result[Int, String]
-  requires: workerCount >= 1
-{
-  return Jobs.Kernel.Net.connect(workerCount)
-}
-@cfg(feature = "jvm")
-func jobsKernelConnect(workerCount: in Int): Result[Int, String]
-  requires: workerCount >= 1
-{
-  return Jobs.Kernel.Jvm.connect(workerCount)
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelEnqueue(
-  schedulerId: in Int,
-  name:        in String,
-  payload:     in String,
-  maxAttempts: in Int,
-  timeoutMs:   in Int
-): Result[String, String]
-  requires: name.length > 0
-  requires: maxAttempts >= 1
-  requires: timeoutMs >= 1
-{
-  return Jobs.Kernel.Net.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
-}
-@cfg(feature = "jvm")
-func jobsKernelEnqueue(
-  schedulerId: in Int,
-  name:        in String,
-  payload:     in String,
-  maxAttempts: in Int,
-  timeoutMs:   in Int
-): Result[String, String]
-  requires: name.length > 0
-  requires: maxAttempts >= 1
-  requires: timeoutMs >= 1
-{
-  return Jobs.Kernel.Jvm.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelSchedule(
-  schedulerId: in Int,
-  name:        in String,
-  payload:     in String,
-  cronExpr:    in String,
-  maxAttempts: in Int,
-  timeoutMs:   in Int
-): Result[String, String]
-  requires: name.length > 0
-  requires: cronExpr.length > 0
-  requires: maxAttempts >= 1
-  requires: timeoutMs >= 1
-{
-  return Jobs.Kernel.Net.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
-}
-@cfg(feature = "jvm")
-func jobsKernelSchedule(
-  schedulerId: in Int,
-  name:        in String,
-  payload:     in String,
-  cronExpr:    in String,
-  maxAttempts: in Int,
-  timeoutMs:   in Int
-): Result[String, String]
-  requires: name.length > 0
-  requires: cronExpr.length > 0
-  requires: maxAttempts >= 1
-  requires: timeoutMs >= 1
-{
-  return Jobs.Kernel.Jvm.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelCancel(schedulerId: in Int, jobId: in String): Result[Unit, String]
-  requires: jobId.length > 0
-{
-  return Jobs.Kernel.Net.cancel(schedulerId, jobId)
-}
-@cfg(feature = "jvm")
-func jobsKernelCancel(schedulerId: in Int, jobId: in String): Result[Unit, String]
-  requires: jobId.length > 0
-{
-  return Jobs.Kernel.Jvm.cancel(schedulerId, jobId)
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelStatus(schedulerId: in Int, jobId: in String): Result[String, String]
-  requires: jobId.length > 0
-{
-  return Jobs.Kernel.Net.status(schedulerId, jobId)
-}
-@cfg(feature = "jvm")
-func jobsKernelStatus(schedulerId: in Int, jobId: in String): Result[String, String]
-  requires: jobId.length > 0
-{
-  return Jobs.Kernel.Jvm.status(schedulerId, jobId)
-}
-
-@cfg(feature = "dotnet")
-func jobsKernelResults(schedulerId: in Int, jobId: in String): Result[String, String]
-  requires: jobId.length > 0
-{
-  return Jobs.Kernel.Net.results(schedulerId, jobId)
-}
-@cfg(feature = "jvm")
-func jobsKernelResults(schedulerId: in Int, jobId: in String): Result[String, String]
-  requires: jobId.length > 0
-{
-  return Jobs.Kernel.Jvm.results(schedulerId, jobId)
 }

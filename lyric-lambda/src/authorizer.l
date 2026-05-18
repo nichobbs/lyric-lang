@@ -1,41 +1,41 @@
-/// Lambda.Authorizer — event types and response types for Lambda authorizer functions.
-///
-/// AWS API Gateway supports two authorizer models, each with a distinct event
-/// shape and response contract:
-///
-///   REST API (v1) authorizers
-///   ─────────────────────────
-///   TOKEN authorizer    — receives an Authorization header value and the ARN
-///                         of the method being invoked.  Handler must verify the
-///                         token (e.g. JWT) and return an IAM policy document.
-///
-///   REQUEST authorizer  — receives the full request context (headers, query
-///                         parameters, stage variables).  Used when the
-///                         authorization decision depends on more than a single
-///                         header value.  Returns the same IAM policy type.
-///
-///   HTTP API (v2) authorizers
-///   ─────────────────────────
-///   Lambda authorizer   — receives a lightweight request context derived from
-///                         the HTTP API event.  Returns a simple boolean
-///                         { isAuthorized, context } instead of an IAM policy.
-///                         The context map is forwarded to the backend handler
-///                         as request context fields.
-///
-/// Handler signatures:
-///   TOKEN:   func h(event: Lambda.Authorizer.TokenAuthorizerEvent,   ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.AuthorizerResponse,     Lambda.LambdaError]
-///   REQUEST: func h(event: Lambda.Authorizer.RequestAuthorizerEvent, ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.AuthorizerResponse,     Lambda.LambdaError]
-///   HTTP:    func h(event: Lambda.Authorizer.HttpAuthorizerEvent,    ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.HttpAuthorizerResponse, Lambda.LambdaError]
-///
-/// Registration (in main() via the LambdaApp builder):
-///   Lambda.newApp()
-///     |> Lambda.onTokenAuthorizer("MyApp.Auth.verifyToken")
-///
-/// Each authorizer type is registered independently; a single Lambda function
-/// acts as one type of authorizer.  Combine types only when the same handler
-/// logic applies to multiple invocation shapes.
-///
-/// See docs/35-lambda-library.md §5 (Authorizers), D063.
+// Lambda.Authorizer — event types and response types for Lambda authorizer functions.
+//
+// AWS API Gateway supports two authorizer models, each with a distinct event
+// shape and response contract:
+//
+//   REST API (v1) authorizers
+//   ─────────────────────────
+//   TOKEN authorizer    — receives an Authorization header value and the ARN
+//                         of the method being invoked.  Handler must verify the
+//                         token (e.g. JWT) and return an IAM policy document.
+//
+//   REQUEST authorizer  — receives the full request context (headers, query
+//                         parameters, stage variables).  Used when the
+//                         authorization decision depends on more than a single
+//                         header value.  Returns the same IAM policy type.
+//
+//   HTTP API (v2) authorizers
+//   ─────────────────────────
+//   Lambda authorizer   — receives a lightweight request context derived from
+//                         the HTTP API event.  Returns a simple boolean
+//                         { isAuthorized, context } instead of an IAM policy.
+//                         The context map is forwarded to the backend handler
+//                         as request context fields.
+//
+// Handler signatures:
+//   TOKEN:   func h(event: Lambda.Authorizer.TokenAuthorizerEvent,   ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.AuthorizerResponse,     Lambda.LambdaError]
+//   REQUEST: func h(event: Lambda.Authorizer.RequestAuthorizerEvent, ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.AuthorizerResponse,     Lambda.LambdaError]
+//   HTTP:    func h(event: Lambda.Authorizer.HttpAuthorizerEvent,    ctx: Lambda.LambdaContext): Result[Lambda.Authorizer.HttpAuthorizerResponse, Lambda.LambdaError]
+//
+// Registration (in main() via the LambdaApp builder):
+//   Lambda.newApp()
+//     |> Lambda.onTokenAuthorizer("MyApp.Auth.verifyToken")
+//
+// Each authorizer type is registered independently; a single Lambda function
+// acts as one type of authorizer.  Combine types only when the same handler
+// logic applies to multiple invocation shapes.
+//
+// See docs/35-lambda-library.md §5 (Authorizers), D063.
 
 @runtime_checked
 package Lambda.Authorizer

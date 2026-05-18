@@ -1,31 +1,31 @@
-/// Storage.Aspects — pub aspect templates for storage cross-cutting concerns.
-///
-/// Two templates:
-///
-///   AuditAccess  — B-mode: logs every matched handler call (put, get, delete)
-///                  to a structured audit log before proceeding.  Uses
-///                  `call.qualifiedName` as the operation identifier.
-///
-///   ValidateKey  — C-mode (@inline_template): rejects empty or path-traversal
-///                  storage keys before the call reaches the handler.  Reads
-///                  `args.key` from the concrete handler parameter list.
-///
-/// Typical consumer usage:
-///
-///   import Storage.Aspects
-///
-///   aspect AuditStorage from Storage.Aspects.AuditAccess {
-///     matches: name in { put, get, delete }
-///     config { logLevel: String = "info" }
-///   }
-///
-///   aspect SafeKeys from Storage.Aspects.ValidateKey {
-///     matches: name in { put, get, delete }
-///     inside:  AuditStorage
-///     config { allowDots: Bool = false }
-///   }
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+// Storage.Aspects — pub aspect templates for storage cross-cutting concerns.
+//
+// Two templates:
+//
+//   AuditAccess  — B-mode: logs every matched handler call (put, get, delete)
+//                  to a structured audit log before proceeding.  Uses
+//                  `call.qualifiedName` as the operation identifier.
+//
+//   ValidateKey  — C-mode (@inline_template): rejects empty or path-traversal
+//                  storage keys before the call reaches the handler.  Reads
+//                  `args.key` from the concrete handler parameter list.
+//
+// Typical consumer usage:
+//
+//   import Storage.Aspects
+//
+//   aspect AuditStorage from Storage.Aspects.AuditAccess {
+//     matches: name in { put, get, delete }
+//     config { logLevel: String = "info" }
+//   }
+//
+//   aspect SafeKeys from Storage.Aspects.ValidateKey {
+//     matches: name in { put, get, delete }
+//     inside:  AuditStorage
+//     config { allowDots: Bool = false }
+//   }
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Storage.Aspects

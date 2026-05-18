@@ -14,19 +14,9 @@ output_assembly = "Flags.dll"
 "Flags"            = "src"
 "Flags.Aspects"    = "src"
 "Flags.Kernel.Net" = "src/_kernel/net"
-"Flags.Kernel.Jvm" = "src/_kernel/jvm"
 
 [features]
 remote = []   # Remote flag store via HTTP polling (custom endpoint, LaunchDarkly, Unleash)
-dotnet = []   # .NET kernel backend
-jvm    = []   # JVM kernel backend (Phase 6)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
-
-# Remote HTTP polling on JVM uses java.net.http.HttpClient (JDK 11+) — no
-# external Maven dependency required.
-[maven]
-
-[project.tests]
-"Flags.FlagsTests" = "tests/flags_tests.l"
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

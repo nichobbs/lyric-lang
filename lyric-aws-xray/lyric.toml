@@ -78,7 +78,7 @@ output_assembly = "AwsXRay.dll"
 ]
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # X-Ray recorder core — included when feature = "aws".

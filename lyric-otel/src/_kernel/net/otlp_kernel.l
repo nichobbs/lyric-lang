@@ -1,30 +1,30 @@
-/// .NET kernel boundary for the OTLP exporter.
-///
-/// Configures the OpenTelemetry .NET SDK to export traces, metrics, and logs
-/// via the OTLP exporter (OpenTelemetry.Exporter.OpenTelemetryProtocol NuGet).
-///
-/// Architecture:
-///   - Traces:  Sdk.CreateTracerProviderBuilder()
-///               .AddSource("lyric.otel")
-///               .AddOtlpExporter(opts => …)
-///               .Build()
-///   - Metrics: Sdk.CreateMeterProviderBuilder()
-///               .AddMeter("lyric.otel")
-///               .AddOtlpExporter(opts => …)
-///               .Build()
-///   - Logs:    Host.CreateDefaultBuilder()
-///               uses OpenTelemetry logging with AddOtlpExporter
-///              (simplified: LoggerFactory + OTel logging bridge)
-///
-/// Each provider is stored in a .NET static field for the process lifetime and
-/// can be force-flushed via netFlushOtlp.
-///
-/// The `protocol` argument: 0 = OtlpExportProtocol.Grpc, 1 = HttpProtobuf.
-/// The `headers` argument: comma-separated "key=value" string in the format
-///   the OTel SDK accepts for options.Headers.
-///
-/// These externs are @axiom-trusted because the OTel SDK handles all retry,
-/// batching, and protocol negotiation internally.
+// .NET kernel boundary for the OTLP exporter.
+//
+// Configures the OpenTelemetry .NET SDK to export traces, metrics, and logs
+// via the OTLP exporter (OpenTelemetry.Exporter.OpenTelemetryProtocol NuGet).
+//
+// Architecture:
+//   - Traces:  Sdk.CreateTracerProviderBuilder()
+//               .AddSource("lyric.otel")
+//               .AddOtlpExporter(opts => …)
+//               .Build()
+//   - Metrics: Sdk.CreateMeterProviderBuilder()
+//               .AddMeter("lyric.otel")
+//               .AddOtlpExporter(opts => …)
+//               .Build()
+//   - Logs:    Host.CreateDefaultBuilder()
+//               uses OpenTelemetry logging with AddOtlpExporter
+//              (simplified: LoggerFactory + OTel logging bridge)
+//
+// Each provider is stored in a .NET static field for the process lifetime and
+// can be force-flushed via netFlushOtlp.
+//
+// The `protocol` argument: 0 = OtlpExportProtocol.Grpc, 1 = HttpProtobuf.
+// The `headers` argument: comma-separated "key=value" string in the format
+//   the OTel SDK accepts for options.Headers.
+//
+// These externs are @axiom-trusted because the OTel SDK handles all retry,
+// batching, and protocol negotiation internally.
 @cfg(feature = "dotnet")
 package OTel.Kernel.Net.Otlp
 

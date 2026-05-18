@@ -1,45 +1,45 @@
-/// Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
-///
-/// Provides five reusable template aspects:
-///
-///   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
-///                         C-mode (@inline_template): reads args.authToken.
-///   RequiresRole        — validates token AND checks a role claim; 403 on
-///                         insufficient role.  C-mode: reads args.authToken.
-///   ApiKey              — constant-time API-key check; 401 on mismatch.
-///                         C-mode: reads args.apiKey.
-///   RateLimit           — per-endpoint sliding-window rate limit; 429 on
-///                         excess.  B-mode: uses call.qualifiedName.
-///   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
-///                         B-mode: uses call.qualifiedName.
-///
-/// Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
-/// Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
-/// transport-agnostic and can be reused from gRPC or queue aspects.
-///
-/// Typical consumer instantiation:
-///
-///   import Web.Aspects
-///
-///   aspect Auth from Web.Aspects.RequiresAuth {
-///     matches: name like "handle*"
-///     except name in { handleHealth, handleOpenApiSpec }
-///   }
-///
-///   aspect Throttle from Web.Aspects.RateLimit {
-///     matches: name like "handle*"
-///     inside:  Auth
-///     config { requestsPerMinute: Int = 30 }
-///   }
-///
-///   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
-///     matches: name like "handle*"
-///     inside:  Throttle
-///   }
-///
-/// CORS is not an aspect — configure it via the Web.Cors config block.
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+// Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
+//
+// Provides five reusable template aspects:
+//
+//   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
+//                         C-mode (@inline_template): reads args.authToken.
+//   RequiresRole        — validates token AND checks a role claim; 403 on
+//                         insufficient role.  C-mode: reads args.authToken.
+//   ApiKey              — constant-time API-key check; 401 on mismatch.
+//                         C-mode: reads args.apiKey.
+//   RateLimit           — per-endpoint sliding-window rate limit; 429 on
+//                         excess.  B-mode: uses call.qualifiedName.
+//   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
+//                         B-mode: uses call.qualifiedName.
+//
+// Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
+// Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
+// transport-agnostic and can be reused from gRPC or queue aspects.
+//
+// Typical consumer instantiation:
+//
+//   import Web.Aspects
+//
+//   aspect Auth from Web.Aspects.RequiresAuth {
+//     matches: name like "handle*"
+//     except name in { handleHealth, handleOpenApiSpec }
+//   }
+//
+//   aspect Throttle from Web.Aspects.RateLimit {
+//     matches: name like "handle*"
+//     inside:  Auth
+//     config { requestsPerMinute: Int = 30 }
+//   }
+//
+//   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
+//     matches: name like "handle*"
+//     inside:  Throttle
+//   }
+//
+// CORS is not an aspect — configure it via the Web.Cors config block.
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Web.Aspects

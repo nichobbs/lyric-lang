@@ -1,38 +1,38 @@
-/// Mq.Aspects — pub aspect templates for message queue cross-cutting concerns.
-///
-/// Two templates:
-///
-///   Idempotent  — C-mode (@inline_template): deduplicates message handlers
-///                 using a Cache.CacheStore keyed by `args.message.id`.  Reads
-///                 `args.message` from the handler argument list, so the handler
-///                 must declare a `message: Message` parameter.
-///
-///   DeadLetter  — B-mode: after a failed consume (handler returns Err), checks
-///                 the delivery count against `maxDeliveries` and dead-letters
-///                 the message when the limit is exceeded.  The dead-letter store
-///                 must be supplied by the consumer's wire block; this aspect
-///                 references it by the module-level `deadLetterStore` variable
-///                 that the consumer is expected to assign before the aspect fires.
-///
-/// Typical consumer usage:
-///
-///   import Mq.Aspects
-///   import Cache
-///   import Mq
-///
-///   var idemStore = Cache.inProcess()
-///
-///   aspect OrderIdempotent from Mq.Aspects.Idempotent {
-///     matches: name like "handleOrder*"
-///     config { cacheKeyPrefix: String = "mq:order:idem:", ttlSeconds: Int = 7200 }
-///   }
-///
-///   aspect OrderDeadLetter from Mq.Aspects.DeadLetter {
-///     matches: name like "handleOrder*"
-///     config { enabled: Bool = true, maxDeliveries: Int = 3 }
-///   }
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-mq/README.md.
+// Mq.Aspects — pub aspect templates for message queue cross-cutting concerns.
+//
+// Two templates:
+//
+//   Idempotent  — C-mode (@inline_template): deduplicates message handlers
+//                 using a Cache.CacheStore keyed by `args.message.id`.  Reads
+//                 `args.message` from the handler argument list, so the handler
+//                 must declare a `message: Message` parameter.
+//
+//   DeadLetter  — B-mode: after a failed consume (handler returns Err), checks
+//                 the delivery count against `maxDeliveries` and dead-letters
+//                 the message when the limit is exceeded.  The dead-letter store
+//                 must be supplied by the consumer's wire block; this aspect
+//                 references it by the module-level `deadLetterStore` variable
+//                 that the consumer is expected to assign before the aspect fires.
+//
+// Typical consumer usage:
+//
+//   import Mq.Aspects
+//   import Cache
+//   import Mq
+//
+//   var idemStore = Cache.inProcess()
+//
+//   aspect OrderIdempotent from Mq.Aspects.Idempotent {
+//     matches: name like "handleOrder*"
+//     config { cacheKeyPrefix: String = "mq:order:idem:", ttlSeconds: Int = 7200 }
+//   }
+//
+//   aspect OrderDeadLetter from Mq.Aspects.DeadLetter {
+//     matches: name like "handleOrder*"
+//     config { enabled: Bool = true, maxDeliveries: Int = 3 }
+//   }
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-mq/README.md.
 
 @runtime_checked
 package Mq.Aspects

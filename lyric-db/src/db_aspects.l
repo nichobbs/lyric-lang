@@ -1,33 +1,33 @@
-/// Db.Aspects — pub aspect templates for database cross-cutting concerns.
-///
-/// Provides two reusable template aspects:
-///
-///   QueryLogging   — B-mode: logs every query before and after execution,
-///                    including the SQL text (truncated) and elapsed time.
-///                    Apply to handler functions that call `DbConnection.query`
-///                    or `DbConnection.execute`; the aspect wraps the whole
-///                    handler call, not individual query calls.
-///
-///   SlowQueryAlert — B-mode: logs a warning when a matched handler takes
-///                    longer than `thresholdMs` milliseconds total.
-///
-/// Typical consumer usage:
-///
-///   import Db.Aspects
-///   import Std.Logging
-///
-///   aspect DbLogging from Db.Aspects.QueryLogging {
-///     matches: name like "handle*"
-///     config { level: Std.Logging.LogLevel = Std.Logging.LogLevel.Debug }
-///   }
-///
-///   aspect SlowDb from Db.Aspects.SlowQueryAlert {
-///     matches: name like "handle*"
-///     inside:  DbLogging
-///     config { thresholdMs: Int = 200 }
-///   }
-///
-/// See docs/03-decision-log.md D056 and lyric-db/README.md.
+// Db.Aspects — pub aspect templates for database cross-cutting concerns.
+//
+// Provides two reusable template aspects:
+//
+//   QueryLogging   — B-mode: logs every query before and after execution,
+//                    including the SQL text (truncated) and elapsed time.
+//                    Apply to handler functions that call `DbConnection.query`
+//                    or `DbConnection.execute`; the aspect wraps the whole
+//                    handler call, not individual query calls.
+//
+//   SlowQueryAlert — B-mode: logs a warning when a matched handler takes
+//                    longer than `thresholdMs` milliseconds total.
+//
+// Typical consumer usage:
+//
+//   import Db.Aspects
+//   import Std.Logging
+//
+//   aspect DbLogging from Db.Aspects.QueryLogging {
+//     matches: name like "handle*"
+//     config { level: Std.Logging.LogLevel = Std.Logging.LogLevel.Debug }
+//   }
+//
+//   aspect SlowDb from Db.Aspects.SlowQueryAlert {
+//     matches: name like "handle*"
+//     inside:  DbLogging
+//     config { thresholdMs: Int = 200 }
+//   }
+//
+// See docs/03-decision-log.md D056 and lyric-db/README.md.
 
 @runtime_checked
 package Db.Aspects
