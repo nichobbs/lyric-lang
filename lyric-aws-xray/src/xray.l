@@ -70,7 +70,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addAnnotation(handle, key, value)
+  XRayKernel.addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
 }
 
 /// Add unindexed metadata to the subsegment.
@@ -81,7 +81,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addMetadata(handle, key, value)
+  XRayKernel.addMetadata(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
@@ -116,10 +116,17 @@ pub aspect Tracing {
       val seg = XRayKernel.beginSubsegment(call.qualifiedName)
       ret = call.proceed()
       match ret {
-        Err(e) => XRayKernel.addAnnotation(seg, "error", e.toString())
+        Err(e) => XRayKernel.addAnnotation(seg, "error", sanitizeAnnotation(e.toString()))
         _      => ()
       }
       XRayKernel.endSubsegment(seg)
     }
   }
+}
+
+// CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's 1024-byte limit.
+func sanitizeAnnotation(s: in String): String {
+  val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
+  val b = a.replace("<", "_").replace(">", "_")
+  if b.length > 1000 { b.substring(0, 1000) } else { b }
 }
