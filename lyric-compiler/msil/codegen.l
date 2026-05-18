@@ -471,16 +471,26 @@ pub func freshLabelMsil(fctx: in FuncCtx): Int {
 // Assign the next combined slot to `name` with MSIL type `ty`.
 // Locals (slot >= paramCount) are appended to `fctx.locals`.
 // Returns the combined slot index (used as the key in the slots map).
+//
+// If `name` is already registered (same variable name declared in a
+// different branch of the same function), the existing slot is reused.
+// MSIL locals are function-wide, not block-scoped; disjoint branches
+// sharing the same binding name can safely reuse the same slot.
 pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int {
-  val slot = fctx.slotTicker.count
-  fctx.slots.add(name, slot)
-  fctx.types.add(name, ty)
-  fctx.slotTicker.add(0)
-  // Only add to locals if this is a local (not a param).
-  if slot >= fctx.paramCount {
-    fctx.locals.add(ty)
+  match mapGet(fctx.slots, name) {
+    case Some(existing) -> existing
+    case None -> {
+      val slot = fctx.slotTicker.count
+      fctx.slots.add(name, slot)
+      fctx.types.add(name, ty)
+      fctx.slotTicker.add(0)
+      // Only add to locals if this is a local (not a param).
+      if slot >= fctx.paramCount {
+        fctx.locals.add(ty)
+      }
+      slot
+    }
   }
-  slot
 }
 
 // Emit the appropriate load instruction for a slot, distinguishing params

@@ -220,7 +220,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Smoke-test the CLI on examples
+      - name: Smoke-test the CLI on examples (--target dotnet-legacy)
         if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
         working-directory: bootstrap
         run: |
@@ -234,9 +234,26 @@ jobs:
               dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex" --allow-unverified
             else
               echo "=== build $ex ==="
-              # Use --target dotnet-legacy (F# bootstrap emitter) for smoke tests.
-              # The self-hosted MSIL path (--target dotnet, the default) is still
-              # experimental; the MSIL self-test suite (M1–M83) validates its PE layer.
               dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force --target dotnet-legacy
             fi
           done
+
+      - name: Smoke-test the CLI on examples (--target dotnet)
+        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
+        working-directory: bootstrap
+        run: |
+          set -euo pipefail
+          for ex in ../examples/*.l; do
+            if head -n 1 "$ex" | grep -q '^@proof_required'; then
+              echo "=== skip proof-only $ex ==="
+            else
+              echo "=== build $ex --target dotnet ==="
+              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force --target dotnet
+            fi
+          done
+
+      - name: Bootstrap stage 1 (F# → self-hosted packages)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/bootstrap.sh --stage 1

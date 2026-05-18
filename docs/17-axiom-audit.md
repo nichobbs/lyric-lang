@@ -75,6 +75,27 @@ is `Unit`).  For the file-read/write operations, callers must ensure
 
 ---
 
+### `Std.ConsoleHost` — `lyric-stdlib/std/_kernel/console_host.l`
+
+```
+@axiom("System.Console operations conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Console` (Read, Write, WriteLine, ReadLine, In, Out,
+Error), backing `Std.Console`.
+
+**Gap**: Console I/O has observable side-effects and depends on process-level
+shared file descriptors that cannot be modelled in first-order logic without an
+I/O monad.
+
+**Caller obligation**: None for the write path (postcondition is `Unit`).
+`ReadLine` may return `null` on EOF; the kernel converts this to an empty
+string.
+
+**Review**: Stable.
+
+---
+
 ## 3. Collections
 
 ### `Std.CollectionsHost` — `lyric-stdlib/std/_kernel/collections_host.l`
@@ -260,6 +281,23 @@ track filesystem state changes across calls.
 
 **Review**: Stable.
 
+### `Std.PathHost` — `lyric-stdlib/std/_kernel/path_host.l`
+
+```
+@axiom("System.IO.Path operations conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.IO.Path` (Combine, GetExtension, GetFileName,
+GetDirectoryName, IsPathRooted), backing `Std.Path`.
+
+**Gap**: Path operations depend on host OS string conventions (Windows vs.
+POSIX) that the prover does not model.  The operations are pure (no filesystem
+access), but the output contains host-platform separators.
+
+**Caller obligation**: None.  All functions are total on their string inputs.
+
+**Review**: Stable.
+
 ---
 
 ## 7. Time
@@ -354,6 +392,42 @@ wrapper (`Std.Process`) converts OS-level failures to a `Result` type.
 
 **Review**: Stable.
 
+### `Std.ProcessCaptureHost` — `lyric-stdlib/std/_kernel/process_capture_host.l`
+
+```
+@axiom("System.Diagnostics.Process piped stdout capture")
+```
+
+**BCL surface**: `Lyric.Emitter.ProcessCapture.runCapture` — spawns a child
+process, writes to its stdin, and returns its stdout text.  Used by
+`Lyric.Verifier` to invoke z3/cvc5.
+
+**Gap**: Child-process lifecycle (spawn, I/O redirection, exit) involves OS
+state that cannot be modelled in first-order logic.  Spawn failure and I/O
+errors are converted to empty-string returns at the kernel boundary.
+
+**Caller obligation**: `executable` must be a valid path on the host system.
+The verifier pre-checks this; application code should not use this module.
+
+**Review**: Stable.
+
+### `Std.VerifierEnvHost` — `lyric-stdlib/std/_kernel/verifier_env_host.l`
+
+```
+@axiom("System.Environment.GetEnvironmentVariable with null → empty-string safety")
+```
+
+**BCL surface**: `Lyric.Emitter.VerifierEnv.getEnv` (a shim that converts
+`null` to `""`) and `System.OperatingSystem.IsWindows`.
+
+**Gap**: Environment variables are observable non-deterministic process state.
+`IsWindows` is a platform intrinsic; the prover does not model platform.
+
+**Caller obligation**: Callers must not rely on the value of any specific
+environment variable being present or stable.
+
+**Review**: Stable.
+
 ---
 
 ## 10. Serialization
@@ -435,7 +509,98 @@ to a safe representation before dispatch.
 
 ---
 
-## 13. `lyric-otel` library kernel boundary
+## 13. Randomness
+
+### `Std.RandomHost` — `lyric-stdlib/std/_kernel/random_host.l`
+
+```
+@axiom("System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6)")
+```
+
+**BCL surface**: `System.Random` (Shared, constructor, Next, NextInt64,
+NextDouble), backing `Std.Random`.
+
+**Gap**: PRNG output is modelled as non-deterministic from the prover's
+perspective.  Thread-safety of the shared instance depends on documented BCL
+behaviour that cannot be proved inside Lyric.
+
+**Caller obligation**: Callers must not use `Std.Random` for security-sensitive
+values (token generation, key material, nonces).  Use `Std.SecureRandom`
+instead.
+
+**Review**: Stable.
+
+---
+
+## 14. Cryptography
+
+### `Std.SecureRandomHost` — `lyric-stdlib/std/_kernel/secure_random_host.l`
+
+```
+@axiom("System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output")
+```
+
+**BCL surface**: `System.Security.Cryptography.RandomNumberGenerator`
+(GetInt32 overloads, GetBytes), backing `Std.SecureRandom`.
+
+**Gap**: CSPRNG output is by design non-deterministic and depends on OS entropy
+state.  Cryptographic strength is a probabilistic claim that the prover cannot
+discharge.
+
+**Caller obligation**: None.  All static methods are total and return fresh
+values from the OS CSPRNG on every call.
+
+**Review**: Stable.
+
+---
+
+## 15. JVM stdlib kernel boundary
+
+These entries are in `lyric-stdlib/std/_kernel/` and are JVM-target only.
+They count toward the shared extern cap (D038 Decision F) because they live
+in the same `_kernel/` directory as the .NET entries.
+
+### `Std.Jvm` — `lyric-stdlib/std/_kernel/jvm.l`
+
+```
+@axiom("Std.Jvm provides JVM-target escape hatches for interoperating with
+        Java exception semantics per docs/31-maven-linking.md Q-J012")
+```
+
+**BCL surface** (JVM): Java `try-catch` semantics via the JVM emitter's
+`tryCatch` codegen hook.
+
+**Gap**: Java checked-exception semantics are not part of the Lyric type
+system.  The JVM emitter inserts the `try-catch` at the bytecode level;
+the prover cannot reason about it.
+
+**Caller obligation**: Callers must handle both `Ok` and `Err` arms —
+`Error` subclasses propagate as unrecoverable JVM errors and are not caught.
+
+**Review**: Provisional (Phase 6).
+
+### `Std.JvmExceptionHost` — `lyric-stdlib/std/_kernel/jvm_exception.l`
+
+```
+@axiom("java.lang.Exception is the Java checked-exception root;
+        JvmException wraps it for Lyric callers at the FFI boundary
+        per docs/31-maven-linking.md §5")
+```
+
+**BCL surface** (JVM): `java.lang.Exception` as the supertype for all checked
+exceptions; `JvmException` is the Lyric opaque wrapper.
+
+**Gap**: Java exception hierarchies are a runtime property; the prover cannot
+model Java checked-exception resolution.
+
+**Caller obligation**: Use `Std.Jvm.tryCatch` to catch `JvmException`; do not
+use this module directly in application code.
+
+**Review**: Provisional (Phase 6).
+
+---
+
+## 16. `lyric-otel` library kernel boundary
 
 These axioms appear in the `lyric-otel` library's kernel files and
 follow the same extern-boundary pattern as `lyric-stdlib/std/_kernel/`.
@@ -443,14 +608,14 @@ They assert that the named CLR / JVM namespaces are present in the
 runtime and expose the functions declared in the `extern package` block.
 All are provisional pending weaver integration.
 
-### 13.1. .NET kernel (`OTel.Kernel.Net`, `@cfg(feature = "dotnet")`)
+### 16.1. .NET kernel (`OTel.Kernel.Net`, `@cfg(feature = "dotnet")`)
 
 | Claim | `@axiom` argument | Status |
 |---|---|---|
 | `System.Diagnostics.ActivitySource.StartActivity` is callable | `"System.Diagnostics"` | Provisional |
 | `System.Diagnostics.Metrics.Meter` counter/histogram are callable | `"System.Diagnostics.Metrics"` | Provisional |
 
-### 13.2. JVM kernel (`OTel.Kernel.Jvm`, `@cfg(feature = "jvm")`, Phase 6)
+### 16.2. JVM kernel (`OTel.Kernel.Jvm`, `@cfg(feature = "jvm")`, Phase 6)
 
 | Claim | `@axiom` argument | Status |
 |---|---|---|
@@ -459,7 +624,7 @@ All are provisional pending weaver integration.
 
 ---
 
-## 14. How to add a new axiom
+## 17. How to add a new axiom
 
 1. Identify the appropriate `lyric-stdlib/std/_kernel/<module>.l` file.  If no
    existing file covers the BCL surface, create a new one following the
@@ -479,27 +644,37 @@ All are provisional pending weaver integration.
 
 ---
 
-## 15. Axiom count by kernel package
+## 18. Axiom count by kernel package
 
-| Kernel package         | File                       | Stable | Provisional |
-|------------------------|----------------------------|--------|-------------|
-| `Std.IO`               | `io.l`                     | 1      | 0           |
-| `Std.CollectionsHost`  | `collections_host.l`       | 1      | 0           |
-| `Std.MathHost`         | `math_host.l`              | 1      | 0           |
-| `Std.ParseHost`        | `parse_host.l`             | 1      | 0           |
-| `Std.FormatHost`       | `format_host.l`            | 1      | 0           |
-| `Std.EncodingHost`     | `encoding_host.l`          | 1      | 0           |
-| `Std.CharHost`         | `char_host.l`              | 1      | 0           |
-| `Std.UnicodeHost`      | `unicode_host.l`           | 1      | 0           |
-| `Std.FileHost`         | `file_host.l`              | 1      | 0           |
-| `Std.TimeHost`         | `time_host.l`              | 1      | 0           |
-| `Std.HttpHost`         | `http_host.l`              | 1      | 0           |
-| `Std.EnvironmentHost`  | `environment_host.l`       | 1      | 0           |
-| `Std.ProcessHost`      | `process_host.l`           | 1      | 0           |
-| `Std.JsonHost`         | `json_host.l`              | 1      | 0           |
-| `Std.UuidHost`         | `uuid_host.l`              | 1      | 0           |
-| `Std.LogHost`          | `log_host.l`               | 1      | 0           |
-| **Total**              |                            | **16** | **0**       |
+### .NET kernel (`lyric-stdlib/std/_kernel/`)
+
+| Kernel package           | File                         | Stable | Provisional |
+|--------------------------|------------------------------|--------|-------------|
+| `Std.IO`                 | `io.l`                       | 1      | 0           |
+| `Std.ConsoleHost`        | `console_host.l`             | 1      | 0           |
+| `Std.CollectionsHost`    | `collections_host.l`         | 1      | 0           |
+| `Std.MathHost`           | `math_host.l`                | 1      | 0           |
+| `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
+| `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
+| `Std.EncodingHost`       | `encoding_host.l`            | 1      | 0           |
+| `Std.CharHost`           | `char_host.l`                | 1      | 0           |
+| `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
+| `Std.FileHost`           | `file_host.l`                | 1      | 0           |
+| `Std.PathHost`           | `path_host.l`                | 1      | 0           |
+| `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
+| `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
+| `Std.EnvironmentHost`    | `environment_host.l`         | 1      | 0           |
+| `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
+| `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
+| `Std.VerifierEnvHost`    | `verifier_env_host.l`        | 1      | 0           |
+| `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
+| `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
+| `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
+| `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
+| `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
+| `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
+| `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
+| **Total**                |                              | **22** | **2**       |
 
 Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
 modules) were the conceptual design-doc predecessors of the current
@@ -507,6 +682,7 @@ kernel axioms.  The kernel refactor (D-progress-140 and surrounding
 entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
-increased from 11 to 16 because several BCL surfaces (HTTP, Environment,
-Process, Encoding, Log, Unicode) were added in D-progress-140's
-follow-on work and were not present in the original M4.3 baseline.
+grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
+as additional BCL surfaces were added (Console, Path, ProcessCapture,
+VerifierEnv, Random, SecureRandom) and the JVM escape-hatch modules were
+brought under the same audit framework.
