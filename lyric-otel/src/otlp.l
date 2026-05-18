@@ -38,6 +38,7 @@ import Std.Collections
 // ─── Protocol selection ───────────────────────────────────────────────────────
 
 /// The OTLP transport protocol.
+@stable(since="0.1")
 pub type OtlpProtocol = enum {
   /// gRPC + protobuf (OTLP/gRPC) — default collector port 4317.
   case Grpc
@@ -57,12 +58,14 @@ func protocolId(p: OtlpProtocol): Int {
 
 /// A key-value header to attach to every OTLP request.
 /// Useful for authentication tokens or tenant routing headers.
+@stable(since="0.1")
 pub type OtlpHeader = record {
   key:   String
   value: String
 }
 
 /// Configuration for an OTLP exporter pipeline.
+@stable(since="0.1")
 pub type OtlpExporterConfig = record {
   /// Base endpoint URL including scheme and port.
   ///   gRPC:         "http://collector:4317"   (plain-text, no TLS)
@@ -84,6 +87,7 @@ pub type OtlpExporterConfig = record {
 }
 
 /// A default OTLP config pointing at a local collector on gRPC.
+@stable(since="0.1")
 pub func defaultConfig(): OtlpExporterConfig {
   OtlpExporterConfig {
     endpoint  = "http://localhost:4317"
@@ -112,11 +116,13 @@ func headersString(cfg: OtlpExporterConfig): String {
 /// Returns Err if the SDK is already configured for traces, or if the endpoint
 /// is unreachable at setup time (applies only when protocol = Grpc and the SDK
 /// performs a handshake on open).
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
   netConfigureOtlpTraces(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
   jvmConfigureOtlpTraces(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
@@ -125,11 +131,13 @@ pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
 /// Configure the OTel SDK to export metrics via OTLP.
 /// Sets up a MeterProvider with a periodic OTLP exporter (default interval: 60 s,
 /// overridable via OTEL_METRIC_EXPORT_INTERVAL environment variable).
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
   netConfigureOtlpMetrics(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
   jvmConfigureOtlpMetrics(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
@@ -137,11 +145,13 @@ pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
 
 /// Configure the OTel SDK to export logs via OTLP.
 /// Sets up a LoggerProvider that receives log records forwarded from Std.Log.
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func configureOtlpLogs(cfg: OtlpExporterConfig): Result[Unit, String] {
   netConfigureOtlpLogs(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func configureOtlpLogs(cfg: OtlpExporterConfig): Result[Unit, String] {
   jvmConfigureOtlpLogs(cfg.endpoint, protocolId(cfg.protocol), headersString(cfg), cfg.timeoutMs)
@@ -152,6 +162,7 @@ pub func configureOtlpLogs(cfg: OtlpExporterConfig): Result[Unit, String] {
 /// Configure traces, metrics, and logs to export via OTLP with the same config.
 /// Equivalent to calling configureOtlpTraces, configureOtlpMetrics, and
 /// configureOtlpLogs in sequence; short-circuits and returns the first Err.
+@stable(since="0.1")
 pub func configureOtlp(cfg: OtlpExporterConfig): Result[Unit, String] {
   match configureOtlpTraces(cfg) {
     case Err(e) -> Err(e)
@@ -171,11 +182,13 @@ pub func configureOtlp(cfg: OtlpExporterConfig): Result[Unit, String] {
 ///
 /// Call this before process exit in Lambda functions and short-lived containers
 /// to ensure the last batch of telemetry reaches the collector.
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func flushOtlp(timeoutMs: Int): Bool {
   netFlushOtlp(timeoutMs)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func flushOtlp(timeoutMs: Int): Bool {
   jvmFlushOtlp(timeoutMs)
@@ -187,6 +200,7 @@ pub func flushOtlp(timeoutMs: Int): Bool {
 /// All values can be overridden by the standard OTel environment variables
 /// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, etc.),
 /// which the OTel SDK reads at startup and takes precedence over these settings.
+@stable(since="0.1")
 pub config OtlpDefaults {
   /// Base collector endpoint.
   endpoint:  String  = "http://localhost:4317"

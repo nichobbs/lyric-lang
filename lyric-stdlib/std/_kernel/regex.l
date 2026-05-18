@@ -4,6 +4,7 @@
 // extract a captured group.  More elaborate APIs (named groups,
 // match collections, replace with backreferences) live behind
 // follow-up FFI work.
+@axiom("System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts")
 package Std.Regex
 
 import Std.Core

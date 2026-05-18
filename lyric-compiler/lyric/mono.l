@@ -1043,7 +1043,16 @@ pub func monoFile(file: in SourceFile): MonoResult {
 // Extract the base function name from a mangled specialisation name.
 // e.g. "mapFoo__Int__String" → "mapFoo"
 func extractBaseName(specName: in String): String {
-  var i = 0
+  // Skip leading underscore runs (e.g. `__lyric_helper`) so we don't
+  // truncate the base name to empty when the source name itself begins
+  // with `__`.  The monomorphizer appends `__<TyArg>__<TyArg>` to
+  // specialised names, so a real specialisation marker must appear
+  // after at least one non-underscore character.
+  var start = 0
+  while start < specName.length && specName[start] == '_' {
+    start = start + 1
+  }
+  var i = start
   while i + 1 < specName.length {
     if specName[i] == '_' && specName[i + 1] == '_' {
       return Str.substring(specName, 0, i)

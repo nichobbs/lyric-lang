@@ -37,60 +37,73 @@ import Std.Collections
 
 /// Encode a proto3 message from a list of fields.
 /// Fields are written in list order; proto3 does not require field ordering.
+@stable(since="0.1")
 pub func encodeMessage(fields: List[ProtoField]): slice[Byte] {
   Proto.Encoding.encodeMessage(fields)
 }
 
 /// Decode all fields from a proto3-encoded byte slice.
 /// Returns Err on the first malformed field; unknown fields are included.
+@stable(since="0.1")
 pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String] {
   Proto.Decoding.decodeMessage(data)
 }
 
 // ─── Re-export convenience constructors from Proto.Encoding ──────────────────
 
+@stable(since="0.1")
 pub func floatField(number: Int, v: Float): ProtoField {
   Proto.Encoding.floatField(number, v)
 }
 
+@stable(since="0.1")
 pub func doubleField(number: Int, v: Float): ProtoField {
   Proto.Encoding.doubleField(number, v)
 }
 
+@stable(since="0.1")
 pub func boolField(number: Int, v: Bool): ProtoField {
   Proto.Encoding.boolField(number, v)
 }
 
+@stable(since="0.1")
 pub func enumField(number: Int, ordinal: Int): ProtoField {
   Proto.Encoding.enumField(number, ordinal)
 }
 
+@stable(since="0.1")
 pub func stringField(number: Int, utf8: slice[Byte]): ProtoField {
   Proto.Encoding.stringField(number, utf8)
 }
 
+@stable(since="0.1")
 pub func embeddedField(number: Int, inner: slice[Byte]): ProtoField {
   Proto.Encoding.embeddedField(number, inner)
 }
 
+@stable(since="0.1")
 pub func sint32Field(number: Int, v: Int): ProtoField {
   Proto.Encoding.sint32Field(number, v)
 }
 
+@stable(since="0.1")
 pub func sint64Field(number: Int, v: Long): ProtoField {
   Proto.Encoding.sint64Field(number, v)
 }
 
 // ─── Re-export typed extraction helpers from Proto.Decoding ──────────────────
 
+@stable(since="0.1")
 pub func findVarint(fields: in List[DecodedField], number: Int): Option[Long] {
   Proto.Decoding.findVarint(fields, number)
 }
 
+@stable(since="0.1")
 pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byte]] {
   Proto.Decoding.findBytes(fields, number)
 }
 
+@stable(since="0.1")
 pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[Byte]] {
   Proto.Decoding.collectBytes(fields, number)
 }

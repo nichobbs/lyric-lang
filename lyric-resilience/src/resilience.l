@@ -47,6 +47,7 @@ package Resilience
 
 import Std.Core
 import Std.Time
+import Std.Log
 import Resilience.Kernel.Net
 import Resilience.Kernel.Jvm
 
@@ -167,6 +168,7 @@ func backoffDelay(
 ///   backoffFactor   Int   — delay multiplier per retry (default: 2 — exponential)
 ///   maxDelayMs      Int   — upper bound on inter-retry delay (default: 30000)
 ///   jitterFraction  Float — fraction of delay to add as ±jitter; 0.0 = no jitter (default: 0.1)
+///   logRetries      Bool  — log each failed attempt at warn level (default: true)
 @stable(since="0.1")
 pub aspect Retry {
   config {
@@ -176,6 +178,7 @@ pub aspect Retry {
     backoffFactor:  Int   = 2
     maxDelayMs:     Int   = 30000
     jitterFraction: Float = 0.1
+    logRetries:     Bool  = true
   }
 
   around(call) -> ret {
@@ -186,8 +189,12 @@ pub aspect Retry {
       var attempt: Int = 1
       while attempt < maxAttempts {
         match ret {
-          case Ok(_)  -> attempt = maxAttempts    // exit: success
-          case Err(_) -> {
+          case Ok(_)   -> attempt = maxAttempts    // exit: success
+          case Err(msg) -> {
+            if logRetries {
+              Std.Log.warn("Retry: attempt " + attempt.toString() + " of " +
+                           maxAttempts.toString() + " failed: " + msg)
+            }
             val delay = backoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs, jitterFraction)
             Resilience.sleepMs(delay)
             ret     = call.proceed()

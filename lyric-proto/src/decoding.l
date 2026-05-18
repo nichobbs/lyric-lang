@@ -49,6 +49,7 @@ func readVarint(data: in slice[Byte], offset: Int): Result[VarintResult, String]
 
 /// Attempt to decode one field starting at `offset`.
 /// Returns Err on truncation or an unrecognised wire type.
+@stable(since="0.1")
 pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, String] {
   if offset >= data.length {
     return Err("end of input at offset " + offset.toString())
@@ -121,6 +122,7 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
 
 /// Decode all fields in `data`, returning them in order.
 /// Stops at end-of-input; returns Err on the first malformed field.
+@stable(since="0.1")
 pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String] {
   var offset: Int                 = 0
   var fields: List[DecodedField]  = List.empty()
@@ -139,6 +141,7 @@ pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String]
 // ─── Typed field extraction helpers ──────────────────────────────────────────
 
 /// Find the first varint field with the given field number, or None.
+@stable(since="0.1")
 pub func findVarint(fields: in List[DecodedField], number: Int): Option[Long] {
   fields.find(func(f) {
     match f {
@@ -154,6 +157,7 @@ pub func findVarint(fields: in List[DecodedField], number: Int): Option[Long] {
 }
 
 /// Find the first bytes field with the given field number, or None.
+@stable(since="0.1")
 pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byte]] {
   fields.find(func(f) {
     match f {
@@ -169,6 +173,7 @@ pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byt
 }
 
 /// Collect all bytes fields with the given field number (repeated field).
+@stable(since="0.1")
 pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[Byte]] {
   fields.filterMap(func(f) {
     match f {

@@ -33,6 +33,8 @@ import Grpc.Kernel.Net
 import Grpc.Kernel.Jvm
 import Std.Core
 import Std.Collections
+import Std.Environment
+import Std.Log
 
 // ─── Client: default options ──────────────────────────────────────────────────
 
@@ -323,10 +325,28 @@ config GrpcServer {
   maxConnectionIdleMs: Int    = 300000
 }
 
+/// Emit a startup warning when gRPC reflection is enabled.  Reflection
+/// exposes the complete proto schema (service / method / field names) to
+/// any caller, which is useful in development but a confidentiality leak
+/// in production.  Set `LYRIC_GRPC_ALLOW_REFLECTION=1` to silence the
+/// warning when reflection is intentional (lyric-lang #400).
+func warnIfReflectionEnabled(): Unit {
+  if GrpcServer.reflectionEnabled {
+    val allow = Std.Environment.getVarOrDefault("LYRIC_GRPC_ALLOW_REFLECTION", "")
+    if allow != "1" {
+      Std.Log.warn(
+        "Grpc.start: reflectionEnabled=true exposes the gRPC service schema; \
+         disable in production or set LYRIC_GRPC_ALLOW_REFLECTION=1 to silence \
+         this warning.")
+    }
+  }
+}
+
 /// Start the gRPC server.  Blocks until SIGTERM / SIGINT.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func start(registry: in ServiceRegistry): Unit {
+  warnIfReflectionEnabled()
   Grpc.Kernel.Net.serve(
     GrpcServer.host,
     GrpcServer.port,
@@ -339,6 +359,7 @@ pub func start(registry: in ServiceRegistry): Unit {
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func start(registry: in ServiceRegistry): Unit {
+  warnIfReflectionEnabled()
   Grpc.Kernel.Jvm.serve(
     GrpcServer.host,
     GrpcServer.port,
@@ -356,6 +377,7 @@ pub func start(registry: in ServiceRegistry): Unit {
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
+  warnIfReflectionEnabled()
   return Grpc.Kernel.Net.netStartHandle(
     GrpcServer.host,
     GrpcServer.port,
@@ -368,6 +390,7 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
+  warnIfReflectionEnabled()
   return Grpc.Kernel.Jvm.netStartHandle(
     GrpcServer.host,
     GrpcServer.port,

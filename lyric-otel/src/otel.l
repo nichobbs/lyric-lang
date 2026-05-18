@@ -33,44 +33,52 @@ val sourceName: String = "lyric.otel"
 // ─── Tracing wrappers ────────────────────────────────────────────────────────
 
 /// Start a new tracing span.  `kind` is the integer value of `SpanKind`.
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func startSpan(operationName: String, kind: Int): Span {
   netStartSpan(sourceName, operationName, kind)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func startSpan(operationName: String, kind: Int): Span {
   jvmStartSpan(sourceName, operationName, kind)
 }
 
 /// Record an error on the span (does not end it).
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func setSpanError(span: Span, message: String): Unit {
   netSetSpanError(span, message)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func setSpanError(span: Span, message: String): Unit {
   jvmSetSpanError(span, message)
 }
 
 /// Attach a string attribute to the span.  Call before endSpan.
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
   netSetSpanAttribute(span, key, value)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
   jvmSetSpanAttribute(span, key, value)
 }
 
 /// End the span.  Must be called even when an error was recorded.
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func endSpan(span: Span): Unit {
   netEndSpan(span)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func endSpan(span: Span): Unit {
   jvmEndSpan(span)
@@ -78,21 +86,25 @@ pub func endSpan(span: Span): Unit {
 
 // ─── Metrics wrappers ────────────────────────────────────────────────────────
 
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
   netIncrementCounter(sourceName, name, delta, unit)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
   jvmIncrementCounter(sourceName, name, delta, unit)
 }
 
+@stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func recordHistogram(name: String, value: Float, unit: String): Unit {
   netRecordHistogram(sourceName, name, value, unit)
 }
 
+@stable(since="0.1")
 @cfg(feature = "jvm")
 pub func recordHistogram(name: String, value: Float, unit: String): Unit {
   jvmRecordHistogram(sourceName, name, value, unit)
@@ -117,6 +129,7 @@ func spanKindToInt(k: SpanKind): Int {
   }
 }
 
+@stable(since="0.1")
 pub aspect Tracing {
   config {
     enabled:    Bool      = true
@@ -170,6 +183,7 @@ pub aspect Tracing {
 /// Emit a call counter and a latency histogram for every matched call.
 /// Config fields:
 ///   enabled — gate the whole aspect at startup; default true.
+@stable(since="0.1")
 pub aspect Metrics {
   config {
     enabled: Bool = true
@@ -190,6 +204,7 @@ pub aspect Metrics {
 /// Config fields:
 ///   enabled — gate the whole aspect; default true.
 ///   level   — log level string ("debug" | "info" | "warn"); default "debug".
+@stable(since="0.1")
 pub aspect RequestLogging {
   config {
     enabled: Bool   = true
