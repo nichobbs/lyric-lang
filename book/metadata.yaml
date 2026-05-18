@@ -21,16 +21,11 @@ geometry:
   - a4paper
 
 # PDF fonts (requires these to be installed; falls back gracefully)
-mainfont: "Arial Unicode MS"
+mainfont: "Palatino"
 sansfont: "Helvetica Neue"
-monofont: "Hack"
+monofont: "Fira Code"
 monofontoptions:
   - Scale=0.88
-
-# Force hyperxmp-like quoting for PDF metadata
-header-includes:
-  - "\\usepackage{tcolorbox}"
-  - "\\providecommand{\\xmpquote}[1]{#1}"
 
 # Colour links in PDF
 colorlinks: true
