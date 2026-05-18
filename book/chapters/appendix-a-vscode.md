@@ -2,21 +2,14 @@
 
 ## Installation
 
-The Lyric VS Code extension is backed by `lyric-lsp`, a language server built from the same compiler pipeline that `lyric build` uses. You will need VS Code 1.70 or later and the Lyric compiler built from source.
+The Lyric VS Code extension is backed by `lyric-lsp`, a language server built from the same compiler pipeline that `lyric build` uses. You will need VS Code 1.70 or later and the `lyric` compiler installed (see Chapter 1).
 
 **Prerequisites:**
 
 - VS Code 1.70+
-- The Lyric compiler built: `cd bootstrap && dotnet build Bootstrap.sln`
+- `lyric` installed and on your `PATH`
 
-**Step 1.** Build and publish the language server binary:
-
-```sh
-cd bootstrap
-dotnet publish src/Lyric.Lsp -c Release -o ../bin/lsp
-```
-
-The resulting binary is `bin/lsp/lyric-lsp` on Linux and macOS, or `bin/lsp/lyric-lsp.exe` on Windows.
+**Step 1.** The language server binary (`lyric-lsp`) ships alongside the compiler in the same distribution. If it is not already on your `PATH`, locate it next to the `lyric` binary in your install directory (e.g. `~/.lyric/bin/lyric-lsp` on Linux and macOS, or `~/.lyric/bin/lyric-lsp.exe` on Windows).
 
 **Step 2.** Install the extension's Node.js dependencies and compile the TypeScript:
 

@@ -2,36 +2,32 @@
 
 Before you can write Lyric, you need a working compiler. This chapter gets you from zero to a compiled and running program. Along the way you will meet the basic anatomy of a Lyric source file, the handful of tools you will use constantly, and what Lyric errors look like when they occur.
 
-## Building the compiler
+## Installing the compiler
 
-Lyric is self-hosted in the sense that it targets .NET, and the bootstrap compiler is written in F#. You will need the .NET 10 SDK, then a single build command.
+The `lyric` compiler ships as a standalone binary. There are two install paths depending on whether you have the .NET SDK available.
+
+**Option A — .NET global tool (recommended if you already have the .NET 10 SDK):**
 
 ```sh
-# Clone the repository (if you haven't already)
-git clone https://github.com/nichobbs/lyric-lang
-cd lyric-lang
-
-# Build everything
-cd bootstrap
-dotnet build Bootstrap.sln
+dotnet tool install -g lyric
 ```
 
-The first build downloads NuGet dependencies and compiles the compiler itself. Subsequent builds are incremental and take a few seconds.
+This is one command. The tool is published to NuGet.org and includes the stdlib bundle; no separate download is needed.
 
-Once built, the `lyric` command is available via `dotnet run`:
+**Option B — standalone binary (no .NET SDK required):**
 
 ```sh
-dotnet run --project src/Lyric.Cli -- --help
+curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh
 ```
 
-For convenience, you can install the CLI as a global .NET tool or add a shell alias:
+The script detects your platform, downloads the appropriate release archive from GitHub, extracts it to `~/.lyric/bin`, and adds that directory to your shell profile.
+
+Alternatively, download the archive directly from the project's GitHub releases page and place the `lyric` binary (or `lyric.exe` on Windows) somewhere on your `PATH`.
+
+Verify the installation:
 
 ```sh
-# Option A: alias (put in your .bashrc / .zshrc)
-alias lyric='dotnet run --project /path/to/compiler/src/Lyric.Cli --'
-
-# Option B: publish as a self-contained binary (see compiler/src/Lyric.Cli)
-dotnet publish src/Lyric.Cli -c Release -o ~/bin/lyric
+lyric --version
 ```
 
 The examples in this book use `lyric` as the command name throughout.
@@ -142,7 +138,7 @@ By default every declaration is visible only inside its own package. `pub` makes
 
 `record User` declares a named collection of named fields. There are no classes, no constructors to write, no getters and setters. You get:
 
-- Named construction: `User(name = "Alice", age = 30)`. Positional construction works too, but named is idiomatic.
+- Named construction: `User(name = "Alice", age = 30)`. This is the only construction form — positional construction is not allowed.
 - Non-destructive update: `alice.copy(name = "Bob")` produces a new `User` with `name` changed and everything else unchanged.
 - Structural equality: two `User` values are equal if all their fields are equal.
 
@@ -165,7 +161,7 @@ The `in` on `pub func greet(u: in User)` is a parameter mode. It means the param
 The other modes are `out` (the function must assign the parameter exactly once before returning) and `inout` (read and write). You will see them in Chapter 4.
 
 ::: sidebar
-**Why mandatory parameter modes?** In C# and Java, pass-by-reference and pass-by-value are implicit. A `ref` parameter in C# is visible at the call site (`func(ref x)`) but nothing in the signature tells a reader whether the function reads the value, writes it, or both. Lyric's `in`/`out`/`inout` make this explicit in every signature, which is useful both for readability and for the proof system (a `requires:` clause on an `in` parameter is cleaner when you can trust the parameter won't be mutated). The decision to require explicit modes even for the common `in` case was made because the formatter enforces the convention anyway — you see it or the code doesn't format.
+**Why explicit parameter modes?** In C# and Java, pass-by-reference and pass-by-value are implicit. A `ref` parameter in C# is visible at the call site (`func(ref x)`) but nothing in the signature tells a reader whether the function reads the value, writes it, or both. Lyric's `in`/`out`/`inout` make this explicit in every signature, which is useful both for readability and for the proof system (a `requires:` clause on an `in` parameter is cleaner when you can trust the parameter won't be mutated). Omitting `in` is valid — the compiler defaults to it — but the formatter always inserts it, so in practice every parameter mode is visible in formatted code.
 :::
 
 ## The toolchain at a glance
@@ -315,9 +311,9 @@ See Appendix B §B.9 for the full module reference, and each library's `README.m
 
    Lyric's `main` function name is a convention, not a keyword. What happens if you rename it to `run`? Try it and see what error the compiler produces. Then look up how `lyric build --entrypoint` changes the convention.
 
-2. **Named vs positional construction**
+2. **Named construction and `.copy()`**
 
-   Create a `record Point { x: Double; y: Double }` and construct one using positional arguments (`Point(1.0, 2.0)`). Does it compile? Is the result the same as `Point(x = 1.0, y = 2.0)`? What do you think the tradeoff is between the two styles?
+   Create a `record Point { x: Double; y: Double }`. Construct a value with `Point(x = 1.0, y = 2.0)`, then use `.copy()` to produce a second `Point` with only `x` changed to `3.0`. Verify that the original is unchanged. Now try writing `Point(1.0, 2.0)` without field names — what error does the compiler produce?
 
 3. **Mutating with `var`**
 

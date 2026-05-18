@@ -9,7 +9,7 @@ lang: en-GB
 toc: true
 toc-depth: 2
 toc-title: "Contents"
-numbersections: true
+numbersections: false
 
 # Typography
 fontsize: 11pt
