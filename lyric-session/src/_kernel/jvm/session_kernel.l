@@ -56,9 +56,17 @@ extern package lyric.session.RedisStore {
 }
 
 // ─── In-memory session backend ────────────────────────────────────────────────
+//
+// NOTE (Q-session-inmemory): the public `InProcessSessionStore` in
+// `lyric-session/src/session.l` is implemented entirely in Lyric (a pure
+// `Map[String, Session]`), so the `inmemory` feature does not call into this
+// kernel today.  The extern block below is reserved for a future host-backed
+// in-memory store (e.g. a concurrent shared store across multiple workers in
+// the same JVM) and keeps wire-format / handle conventions aligned with the
+// Redis backend so the switch is mechanical when it lands.
 
 @cfg(feature = "inmemory")
-@axiom("lyric.session.InMemoryStore backed by java.util.concurrent.ConcurrentHashMap")
+@axiom("lyric.session.InMemoryStore backed by java.util.concurrent.ConcurrentHashMap — reserved; not currently called from the public Session package")
 extern package lyric.session.InMemoryStore {
   /// Open an in-memory session store.  Returns an opaque handle.
   pub func open(): Int
