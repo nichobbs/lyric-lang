@@ -3978,19 +3978,25 @@ let private emitAssembly
         // body only references the others' MethodBuilders, not their
         // bodies.
         for (stub, viewInfo) in viewInfos do
-            let toViewMb = populateToViewMethod stubByOpaqueClr stub viewInfo
-            stub.ToView <- Some toViewMb
-            // Pass D: optional reverse `<Name>View::tryInto`.  Skipped
-            // for projectables with nested-projectable fields (needs
-            // monadic bind through each nested tryInto) and when
-            // `Std.Core.Result` isn't imported.
-            let tryIntoMb =
-                populateTryIntoMethod importedUnionTable stubByOpaqueClr stub viewInfo
-            projectableTable.[stub.OpaqueDecl.Name] <-
-                { Records.ProjectableInfo.OpaqueName    = stub.OpaqueDecl.Name
-                  Records.ProjectableInfo.ToViewMethod  = toViewMb
-                  Records.ProjectableInfo.ViewType      = viewInfo
-                  Records.ProjectableInfo.TryIntoMethod = tryIntoMb }
+            try
+                let toViewMb = populateToViewMethod stubByOpaqueClr stub viewInfo
+                stub.ToView <- Some toViewMb
+                // Pass D: optional reverse `<Name>View::tryInto`.  Skipped
+                // for projectables with nested-projectable fields (needs
+                // monadic bind through each nested tryInto) and when
+                // `Std.Core.Result` isn't imported.
+                let tryIntoMb =
+                    populateTryIntoMethod importedUnionTable stubByOpaqueClr stub viewInfo
+                projectableTable.[stub.OpaqueDecl.Name] <-
+                    { Records.ProjectableInfo.OpaqueName    = stub.OpaqueDecl.Name
+                      Records.ProjectableInfo.ToViewMethod  = toViewMb
+                      Records.ProjectableInfo.ViewType      = viewInfo
+                      Records.ProjectableInfo.TryIntoMethod = tryIntoMb }
+            with ex ->
+                codegenDiags.Add(
+                    err "F0001"
+                        (sprintf "projectable synthesis error for '%s': %s" stub.OpaqueDecl.Name ex.Message)
+                        stub.OpaqueDecl.Span)
 
         // Pass 0.5 — distinct types and range subtypes.
         let distinctTable = Records.DistinctTypeTable()

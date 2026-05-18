@@ -330,7 +330,9 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
 
 Open-ended. Successful languages spend most of their lifetime here.
 
-### Shipped (Phase 6 early work)
+### Early-preview work (Phase 6)
+
+> **Framing note:** The libraries listed below (`lyric-*`) are showcase / early-preview packages. They arrived before v1.0 to stress-test the compiler and demonstrate real-world integration patterns, but their public API surfaces are unstable, test coverage is limited, and the JVM target is incomplete for most of them. They should not be treated as fully supported releases. The recommended framing until v1.0 is "early-preview"; see [issue #367](https://github.com/nichobbs/lyric-lang/issues/367).
 
 - **JVM emitter** — self-hosted Lyric emitter in `lyric-compiler/jvm/`
   (`classfile.l`, `bytecode.l`, `lowering.l`, `driver.l`, …);
