@@ -1733,6 +1733,108 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     symbols = freshSyms, checkedArithmetic = env.checkedArithmetic)
 }
 
+// Collect invariant contracts from a protected type's members.
+// Each PMInvariant becomes a CCRequires (assume at entry) and a CCEnsures
+// (must hold at exit) so entries are required to preserve the invariant.
+func collectProtectedInvariants(decl: in ProtectedTypeDecl): List[ContractClause] {
+  val result: List[ContractClause] = newList()
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case PMInvariant(inv) -> {
+        result.add(CCRequires(expr = inv.expr, span = inv.span))
+        result.add(CCEnsures(expr = inv.expr, span = inv.span))
+      }
+      case _ -> {}
+    }
+    mi = mi + 1
+  }
+  result
+}
+
+// Synthesize a FunctionDecl for a protected-type entry and verify it.
+// Results are accumulated into allGoals / allDiags (no tuple return needed).
+func goalsForProtectedEntry(
+  level:        in VerificationLevel,
+  env0:         in VEnv,
+  protName:     in String,
+  ed:           in EntryDecl,
+  invContracts: in List[ContractClause],
+  allGoals:     in List[Goal],
+  allDiags:     in List[Diagnostic]
+): Unit {
+  val entryContracts: List[ContractClause] = newList()
+  var eci = 0
+  while eci < invContracts.count { entryContracts.add(invContracts[eci]); eci = eci + 1 }
+  val entryOwn = ed.contracts
+  eci = 0
+  while eci < entryOwn.count { entryContracts.add(entryOwn[eci]); eci = eci + 1 }
+  val noDocComments: List[DocComment] = newList()
+  val noAnnotations: List[Annotation] = newList()
+  val entryBody: Option[FunctionBody] = Some(value = ed.body)
+  val synthDecl: FunctionDecl = FunctionDecl(
+    docComments = noDocComments,
+    annotations = noAnnotations,
+    visibility  = ed.visibility,
+    isAsync     = false,
+    name        = protName + "::" + ed.name,
+    generics    = None,
+    params      = ed.params,
+    ret         = ed.ret,
+    whereClause = None,
+    contracts   = entryContracts,
+    body        = entryBody,
+    span        = ed.span)
+  val fnLevel = levelOfFunction(level, synthDecl)
+  if vlIsProofRequired(fnLevel) {
+    val fnEnv = freshSymbolsEnv(env0)
+    val (goals, diags) = goalsForFunction(fnEnv, synthDecl)
+    var gi = 0
+    while gi < goals.count { allGoals.add(goals[gi]); gi = gi + 1 }
+    appendTermList2(allDiags, diags)
+  }
+}
+
+// Verify a protected-type PMFunc helper that has its own contracts.
+// Results are accumulated into allGoals / allDiags.
+func goalsForProtectedFunc(
+  level:    in VerificationLevel,
+  env0:     in VEnv,
+  fn:       in FunctionDecl,
+  allGoals: in List[Goal],
+  allDiags: in List[Diagnostic]
+): Unit {
+  val fnLevel = levelOfFunction(level, fn)
+  if vlIsProofRequired(fnLevel) {
+    val fnEnv = freshSymbolsEnv(env0)
+    val (goals, diags) = goalsForFunction(fnEnv, fn)
+    var gi = 0
+    while gi < goals.count { allGoals.add(goals[gi]); gi = gi + 1 }
+    appendTermList2(allDiags, diags)
+  }
+}
+
+// Iterate over protected-type members and collect goals for entries and funcs.
+func goalsForProtectedMembers(
+  level:        in VerificationLevel,
+  env0:         in VEnv,
+  protName:     in String,
+  members:      in List[ProtectedMember],
+  invContracts: in List[ContractClause],
+  allGoals:     in List[Goal],
+  allDiags:     in List[Diagnostic]
+): Unit {
+  var mi = 0
+  while mi < members.count {
+    match members[mi] {
+      case PMEntry(ed)    -> { goalsForProtectedEntry(level, env0, protName, ed, invContracts, allGoals, allDiags) }
+      case PMFunc(fn)     -> { goalsForProtectedFunc(level, env0, fn, allGoals, allDiags) }
+      case _              -> {}
+    }
+    mi = mi + 1
+  }
+}
+
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
   if not vlIsProofRequired(level) {
     val noGoals: List[Goal]       = newList()
@@ -1740,13 +1842,44 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     return (noGoals, noDiags)
   }
 
-  // Build callee table from file's IFunc items.
+  // Build callee table from file's IFunc and protected-type PMFunc items.
   val callees: Map[String, FunctionDecl] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> callees.add(fn.name, fn)
-      case _         -> {}
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> callees.add(decl.name + "::" + fn.name, fn)
+            case PMEntry(ed) -> {
+              // Synthesise a minimal FunctionDecl so cross-entry Hoare-call
+              // lookups resolve.  Uses the entry's own contracts only; the
+              // invariant augmentation is applied during goal generation.
+              val noDoc: List[DocComment] = newList()
+              val noAnn: List[Annotation] = newList()
+              val entryFn: FunctionDecl = FunctionDecl(
+                docComments = noDoc,
+                annotations = noAnn,
+                visibility  = ed.visibility,
+                isAsync     = false,
+                name        = decl.name + "::" + ed.name,
+                generics    = None,
+                params      = ed.params,
+                ret         = ed.ret,
+                whereClause = None,
+                contracts   = ed.contracts,
+                body        = Some(value = ed.body),
+                span        = ed.span)
+              callees.add(decl.name + "::" + ed.name, entryFn)
+            }
+            case _ -> {}
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {}
     }
     i = i + 1
   }
@@ -1773,6 +1906,10 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           while gi < goals.count { allGoals.add(goals[gi]); gi = gi + 1 }
           appendTermList2(allDiags, diags)
         }
+      }
+      case IProtected(decl) -> {
+        val invContracts: List[ContractClause] = collectProtectedInvariants(decl)
+        goalsForProtectedMembers(level, env0, decl.name, decl.members, invContracts, allGoals, allDiags)
       }
       case _ -> {}
     }

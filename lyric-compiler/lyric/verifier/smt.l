@@ -251,9 +251,10 @@ pub func smtRenderTerm(t: in Term): String {
 // §3. Free variable collection.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Collect all TVar occurrences in a term (deduplicated by name).
-// Simplified: does not track quantifier binders — the extra declare-consts
-// are harmless since quantifier variables shadow them within their scope.
+// Collect all free TVar occurrences in a term (deduplicated by name).
+// Quantifier binders are scoped correctly: variables bound by forall/exists
+// are not emitted as declare-const, even if they share a name with a free
+// variable elsewhere in the term.
 pub func collectFreeVars(t: in Term): List[VarRef] {
   val seen: Map[String, Bool] = newMap()
   val result: List[VarRef] = newList()
@@ -303,19 +304,54 @@ func collectVarsIn(t: in Term, seen: in Map[String, Bool], output: in List[VarRe
       collectVarsIn(b, seen, output)
     }
     case TForall(binders, triggers, body) -> {
+      // Collect into a fresh scope with binders pre-marked so they are not
+      // treated as free variables.  Any genuinely-free variables found in
+      // the body or triggers are then merged into the outer seen/output.
+      val innerSeen: Map[String, Bool] = newMap()
       var i = 0
+      while i < binders.count {
+        innerSeen.add(binders[i].name, true)
+        i = i + 1
+      }
+      val innerOut: List[VarRef] = newList()
+      i = 0
       while i < triggers.count {
         var j = 0
         while j < triggers[i].count {
-          collectVarsIn(triggers[i][j], seen, output)
+          collectVarsIn(triggers[i][j], innerSeen, innerOut)
           j = j + 1
         }
         i = i + 1
       }
-      collectVarsIn(body, seen, output)
+      collectVarsIn(body, innerSeen, innerOut)
+      i = 0
+      while i < innerOut.count {
+        val v = innerOut[i]
+        if not seen.containsKey(v.name) {
+          seen.add(v.name, true)
+          output.add(v)
+        }
+        i = i + 1
+      }
     }
     case TExists(binders, body) -> {
-      collectVarsIn(body, seen, output)
+      val innerSeen: Map[String, Bool] = newMap()
+      var i = 0
+      while i < binders.count {
+        innerSeen.add(binders[i].name, true)
+        i = i + 1
+      }
+      val innerOut: List[VarRef] = newList()
+      collectVarsIn(body, innerSeen, innerOut)
+      i = 0
+      while i < innerOut.count {
+        val v = innerOut[i]
+        if not seen.containsKey(v.name) {
+          seen.add(v.name, true)
+          output.add(v)
+        }
+        i = i + 1
+      }
     }
   }
 }

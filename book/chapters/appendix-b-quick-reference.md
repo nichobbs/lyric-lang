@@ -632,6 +632,8 @@ output_assembly = "myapp.dll"
 
 **External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
 
+> **Early-preview status.** The libraries below (`lyric-*`) are showcase / early-preview packages. Their public API surfaces are unstable and may change without a SemVer major bump until v1.0. They have limited automated test coverage and are not yet supported on both .NET and JVM targets. Use them in non-production code or with awareness of these gaps; see [issue #367](https://github.com/nichobbs/lyric-lang/issues/367) for the remediation plan.
+
 | Package | Provides | Key names |
 |---|---|---|
 | `Std.Logging` *(lyric-logging)* | Named loggers, six levels, structured fields, JSON/text output | `Logger`, `LogLevel`, `LogField`, `getLogger`, `info`, `warn`, `error`, `field` |
@@ -656,7 +658,7 @@ output_assembly = "myapp.dll"
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
-### Service libraries (separate packages, not in stdlib)
+### Service libraries (early-preview; separate packages, not in stdlib)
 
 | Library | Package(s) | Purpose | Chapter |
 |---|---|---|---|
