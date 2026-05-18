@@ -146,3 +146,17 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 
 @externTarget("System.Convert.ToString")
 pub func hostInstantToString(value: in Instant): String = ()
+
+// ─── Monotonic clock ──────────────────────────────────────────────────────────
+
+@externTarget("System.Diagnostics.Stopwatch.GetTimestamp")
+pub func hostStopwatchTimestamp(): Long = ()
+
+@externTarget("System.Diagnostics.Stopwatch.Frequency")
+pub func hostStopwatchFrequency(): Long = ()
+
+/// Nanoseconds from an unspecified epoch, using the high-resolution monotonic
+/// Stopwatch counter.  Use differences between two calls to measure elapsed time.
+pub func hostMonotonicNanos(): Long {
+  hostStopwatchTimestamp() * 1000000000 / hostStopwatchFrequency()
+}

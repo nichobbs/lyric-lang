@@ -90,6 +90,10 @@ pub type GrpcCallOptions = record {
 /// Call nextMessage() repeatedly until it returns None (end of stream) or Err.
 pub opaque type GrpcStream
 
+/// A handle to a running gRPC server.
+/// Created by Grpc.startHandle; passed to Grpc.stop for graceful shutdown.
+pub opaque type GrpcServerHandle
+
 // ─── Server routing ───────────────────────────────────────────────────────────
 
 /// Single RPC method registration: proto service name, proto method name,

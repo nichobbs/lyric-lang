@@ -231,6 +231,7 @@ impl DbTransaction for NativeTransaction {
 
 /// Connection pool and timeout settings.
 config Connection {
+  @sensitive
   url:               String                              // required
   poolSize:          Int range 1 ..= 100   = 10
   connectTimeoutMs:  Int range 100 ..= 30000 = 5000

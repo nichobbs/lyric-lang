@@ -89,6 +89,20 @@ extern package Grpc.AspNetCore {
   ): Unit
 }
 
+@axiom("Grpc.AspNetCore IHost.StopAsync provides drain-with-timeout shutdown")
+extern package Grpc.AspNetCore.Managed {
+  pub func netStartHandle(
+    host:               String,
+    port:               Int,
+    reflectionEnabled:  Bool,
+    maxConnectionIdleMs: Int,
+    registry:           Grpc.ServiceRegistry
+  ): GrpcServerHandle
+
+  pub func netStopHandle(handle: GrpcServerHandle, drainTimeoutMs: Int): Unit
+    requires: drainTimeoutMs >= 0
+}
+
 // ─── Server: rate limiting ────────────────────────────────────────────────────
 
 @axiom("In-process sliding-window rate limiter (System.Threading.RateLimiting)")

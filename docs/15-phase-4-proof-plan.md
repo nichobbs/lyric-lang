@@ -796,8 +796,10 @@ these here so reviewers do not re-litigate them:
   compile error (`V0002`).
 - **String-content reasoning.** Equality and length only. No
   regex, no parsing, no format strings.
-- **Self-hosting the verifier.** Phase 5 leaves the verifier in F#
-  (`05-implementation-plan.md` §"Phase 5").
+- **Self-hosting the verifier.** D-progress-234 shipped a self-hosted
+  port (`lyric-compiler/lyric/verifier/`) at M4.1 parity as part of
+  Phase 5 (M5.3).  The F# verifier project has been deleted; `lyric
+  prove` routes through the self-hosted implementation.
 - **Termination proofs of arbitrary recursion.** Required only for
   `@pure` callees that are themselves used in contracts; the
   decidable fragment requires a structural measure, the

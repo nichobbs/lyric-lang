@@ -70,6 +70,20 @@ extern package io.grpc.server {
   ): Unit
 }
 
+@axiom("io.grpc.Server.shutdown and awaitTermination provide drain-with-timeout shutdown")
+extern package io.grpc.server.managed {
+  pub func netStartHandle(
+    host:               String,
+    port:               Int,
+    reflectionEnabled:  Bool,
+    maxConnectionIdleMs: Int,
+    registry:           Grpc.ServiceRegistry
+  ): GrpcServerHandle
+
+  pub func netStopHandle(handle: GrpcServerHandle, drainTimeoutMs: Int): Unit
+    requires: drainTimeoutMs >= 0
+}
+
 // ─── Server: rate limiting ────────────────────────────────────────────────────
 
 @axiom("In-process rate limiter backed by Guava RateLimiter")

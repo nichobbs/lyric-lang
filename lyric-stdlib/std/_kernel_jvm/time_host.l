@@ -174,3 +174,8 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 // java.time.Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z").
 @externTarget("java.time.Instant.toString")
 pub func hostInstantToString(value: in Instant): String = ()
+
+// ─── Monotonic clock ──────────────────────────────────────────────────────────
+
+@externTarget("java.lang.System.nanoTime")
+pub func hostMonotonicNanos(): Long = ()

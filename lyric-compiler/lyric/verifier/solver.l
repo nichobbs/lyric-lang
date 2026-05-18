@@ -376,8 +376,7 @@ func getEnv(name: in String): String {
 }
 
 func isWindows(): Bool {
-  val os = getEnv("OS")
-  os.toLower().contains("windows")
+  hostIsWindows()
 }
 
 func pathJoin(dir: in String, file: in String): String {

@@ -207,7 +207,8 @@ this at startup:
 
 - **Match** — use the pre-compiled stdlib DLL.
 - **Mismatch** — warn and fall back to source stdlib, or error if
-  `LYRIC_STRICT_SDK_VERSION=1` is set.
+  `LYRIC_STRICT_SDK_VERSION=1` is set.  (Designed; not yet
+  implemented — tracked as Q-dist-007.)
 
 Side-by-side SDK installs are handled by `LYRIC_SDK_ROOT`: setting it to an
 absolute path overrides all search heuristics.  A `lyric-toolchain` multiplexer

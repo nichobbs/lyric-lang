@@ -212,3 +212,14 @@ pub func subDurations(a: in Duration, b: in Duration): Duration {
 pub func toIsoString(t: in Instant): String {
   hostInstantToString(t)
 }
+
+// =====================================================================
+// Monotonic clock.
+// =====================================================================
+
+/// Nanoseconds from an unspecified epoch using the platform's monotonic
+/// high-resolution clock.  The clock never goes backwards, even during
+/// NTP adjustments.  Use differences between two calls to measure
+/// elapsed time; do not compare values across processes.
+@stable(since="1.0")
+pub func monotonicNanos(): Long { hostMonotonicNanos() }

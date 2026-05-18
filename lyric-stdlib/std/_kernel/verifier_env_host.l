@@ -13,3 +13,6 @@ import Std.Core
 
 @externTarget("Lyric.Emitter.VerifierEnv.getEnv")
 pub func hostGetEnv(name: in String): String = ()
+
+@externTarget("System.OperatingSystem.IsWindows")
+pub func hostIsWindows(): Bool = ()

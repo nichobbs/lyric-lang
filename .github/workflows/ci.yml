@@ -142,7 +142,7 @@ jobs:
           reportgenerator \
             -reports:'coverage/*.cobertura.xml' \
             -targetdir:coverage/report \
-            -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
+            -reporttypes:'Html;MarkdownSummaryGithub;Cobertura;TextSummary'
 
       - name: Append coverage to job summary
         if: always()

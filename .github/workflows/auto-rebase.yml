@@ -1,6 +1,8 @@
 name: Auto-rebase open PRs onto main
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: write
