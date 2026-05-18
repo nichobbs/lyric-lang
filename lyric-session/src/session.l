@@ -41,8 +41,8 @@ import Std.Collections
 import Std.Time
 import Std.Json
 import Std.Uuid
-@cfg(feature = "redis")
 import Session.Kernel.Net
+import Session.Kernel.Jvm
 
 // ─── Session identity ─────────────────────────────────────────────────────────
 
@@ -145,14 +145,14 @@ pub record NativeSessionStore {
 @cfg(feature = "redis")
 impl SessionStore for NativeSessionStore {
   func create(): Result[SessionId, SessionError] {
-    match Session.Kernel.Net.create(storeHandle, SessionConfig.ttlSeconds) {
+    match sessionKernelCreate(storeHandle, SessionConfig.ttlSeconds) {
       case Ok(id)   -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
   }
 
   func load(sessionId: in SessionId): Result[Option[SessionData], SessionError] {
-    match Session.Kernel.Net.load(storeHandle, sessionId) {
+    match sessionKernelLoad(storeHandle, sessionId) {
       case Ok(json) ->
         if json == "" {
           Ok(None)
@@ -165,21 +165,21 @@ impl SessionStore for NativeSessionStore {
 
   func save(data: in SessionData): Result[Unit, SessionError] {
     val json = serializeSessionJson(data)
-    match Session.Kernel.Net.save(storeHandle, json) {
+    match sessionKernelSave(storeHandle, json) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
     }
   }
 
   func destroy(sessionId: in SessionId): Result[Unit, SessionError] {
-    match Session.Kernel.Net.destroy(storeHandle, sessionId) {
+    match sessionKernelDestroy(storeHandle, sessionId) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "DESTROY_FAILED"))
     }
   }
 
   func touch(sessionId: in SessionId): Result[Unit, SessionError] {
-    match Session.Kernel.Net.touch(storeHandle, sessionId, SessionConfig.ttlSeconds) {
+    match sessionKernelTouch(storeHandle, sessionId, SessionConfig.ttlSeconds) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
@@ -434,7 +434,7 @@ config RedisSession {
 @stable(since="0.1")
 @cfg(feature = "redis")
 pub func connectRedis(): Result[SessionStore, SessionError] {
-  match Session.Kernel.Net.connect(RedisSession.url, RedisSession.keyPrefix) {
+  match sessionKernelConnect(RedisSession.url, RedisSession.keyPrefix) {
     case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle))
     case Err(err)   -> Err(SessionError(message = err, code = "CONNECT_FAILED"))
   }
@@ -593,7 +593,7 @@ func serializeSessionJson(data: in SessionData): String {
        + "\"entries\":" + entriesJson + "}"
 }
 
-// Deserialize the SessionData protocol format returned by Session.Kernel.Net.load.
+// Deserialize the SessionData protocol format returned by the session kernel.
 // Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
 func parseSessionJson(sessionId: in SessionId, json: in String): SessionData {
   val doc  = Std.Json.parseJson(json)
@@ -644,4 +644,75 @@ func parseSessionJson(sessionId: in SessionId, json: in String): SessionData {
     createdAt      = createdAt,
     lastAccessedAt = lastAccessedAt,
     expiresAt      = expiresAt)
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the package code above calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+@cfg(feature = "redis")
+func sessionKernelConnect(url: in String, keyPrefix: in String): Result[Int, String] {
+  return Session.Kernel.Net.connect(url, keyPrefix)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "redis")
+func sessionKernelConnect(url: in String, keyPrefix: in String): Result[Int, String] {
+  return Session.Kernel.Jvm.connect(url, keyPrefix)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "redis")
+func sessionKernelCreate(storeHandle: in Int, ttlSeconds: in Int): Result[String, String] {
+  return Session.Kernel.Net.create(storeHandle, ttlSeconds)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "redis")
+func sessionKernelCreate(storeHandle: in Int, ttlSeconds: in Int): Result[String, String] {
+  return Session.Kernel.Jvm.create(storeHandle, ttlSeconds)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "redis")
+func sessionKernelLoad(storeHandle: in Int, sessionId: in String): Result[String, String] {
+  return Session.Kernel.Net.load(storeHandle, sessionId)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "redis")
+func sessionKernelLoad(storeHandle: in Int, sessionId: in String): Result[String, String] {
+  return Session.Kernel.Jvm.load(storeHandle, sessionId)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "redis")
+func sessionKernelSave(storeHandle: in Int, sessionJson: in String): Result[Unit, String] {
+  return Session.Kernel.Net.save(storeHandle, sessionJson)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "redis")
+func sessionKernelSave(storeHandle: in Int, sessionJson: in String): Result[Unit, String] {
+  return Session.Kernel.Jvm.save(storeHandle, sessionJson)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "redis")
+func sessionKernelDestroy(storeHandle: in Int, sessionId: in String): Result[Unit, String] {
+  return Session.Kernel.Net.destroy(storeHandle, sessionId)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "redis")
+func sessionKernelDestroy(storeHandle: in Int, sessionId: in String): Result[Unit, String] {
+  return Session.Kernel.Jvm.destroy(storeHandle, sessionId)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "redis")
+func sessionKernelTouch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String] {
+  return Session.Kernel.Net.touch(storeHandle, sessionId, ttlSeconds)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "redis")
+func sessionKernelTouch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String] {
+  return Session.Kernel.Jvm.touch(storeHandle, sessionId, ttlSeconds)
 }
