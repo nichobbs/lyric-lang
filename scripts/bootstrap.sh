@@ -24,8 +24,8 @@ BUILD_DIR="$REPO_ROOT/.bootstrap"
 STAGE0_BIN="$BUILD_DIR/stage0/lyric"
 STAGE1_DIR="$BUILD_DIR/stage1"
 STAGE2_DIR="$BUILD_DIR/stage2"
-COMPILER_DIR="$REPO_ROOT/compiler"
-STDLIB_DIR="$REPO_ROOT/stdlib"
+COMPILER_DIR="$REPO_ROOT/bootstrap"
+STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
@@ -97,26 +97,26 @@ COMPILER_SOURCES=(
   # (handled separately below via `lyric build --manifest`)
 
   # Self-hosted lexer/parser/type-checker
-  "compiler/lyric/lyric/lexer.l"
-  "compiler/lyric/lyric/ast.l"
-  "compiler/lyric/lyric/parser/parser_ast.l"
-  "compiler/lyric/lyric/parser/parser_core.l"
-  "compiler/lyric/lyric/parser/parser_exprs.l"
-  "compiler/lyric/lyric/parser/parser_items.l"
-  "compiler/lyric/lyric/type_checker/type_checker.l"
-  "compiler/lyric/lyric/mode_checker/mode_checker.l"
-  "compiler/lyric/lyric/contract_elaborator/elaborator.l"
-  "compiler/lyric/lyric/test_synth/test_synth.l"
+  "lyric-compiler/lyric/lexer.l"
+  "lyric-compiler/lyric/ast.l"
+  "lyric-compiler/lyric/parser/parser_ast.l"
+  "lyric-compiler/lyric/parser/parser_core.l"
+  "lyric-compiler/lyric/parser/parser_exprs.l"
+  "lyric-compiler/lyric/parser/parser_items.l"
+  "lyric-compiler/lyric/type_checker/type_checker.l"
+  "lyric-compiler/lyric/mode_checker/mode_checker.l"
+  "lyric-compiler/lyric/contract_elaborator/elaborator.l"
+  "lyric-compiler/lyric/test_synth/test_synth.l"
 
   # MSIL backend
-  "compiler/lyric/msil/heaps.l"
-  "compiler/lyric/msil/tables.l"
-  "compiler/lyric/msil/opcodes.l"
-  "compiler/lyric/msil/pe.l"
-  "compiler/lyric/msil/assembler.l"
-  "compiler/lyric/msil/lowering.l"
-  "compiler/lyric/msil/codegen.l"
-  "compiler/lyric/msil/bridge.l"
+  "lyric-compiler/msil/heaps.l"
+  "lyric-compiler/msil/tables.l"
+  "lyric-compiler/msil/opcodes.l"
+  "lyric-compiler/msil/pe.l"
+  "lyric-compiler/msil/assembler.l"
+  "lyric-compiler/msil/lowering.l"
+  "lyric-compiler/msil/codegen.l"
+  "lyric-compiler/msil/bridge.l"
 )
 
 # ---------------------------------------------------------------------------

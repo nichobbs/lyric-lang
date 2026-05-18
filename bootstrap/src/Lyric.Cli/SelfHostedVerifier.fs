@@ -1,11 +1,11 @@
 /// Bridge from the F# `lyric prove` subcommand to the self-hosted
 /// `Lyric.VerifierBridge` package.
 ///
-/// The self-hosted verifier (`Lyric.Verifier`) handles the basic proof path:
-/// parse → mode-check → stability-check → VC-gen → discharge.  Features that
-/// remain in the F# `Lyric.Verifier` project (cross-package imports, SMT-file
-/// writing, VC IR pretty-printing for `--explain`) are noted in Program.fs and
-/// will be migrated as follow-up work.
+/// The self-hosted verifier (`Lyric.Verifier`) handles the full proof path:
+/// parse → mode-check → stability-check → VC-gen → discharge, including
+/// cross-package imports, SMT-file writing, and VC IR pretty-printing for
+/// `--explain`.  The F# `Lyric.Verifier` project has been deleted; this bridge
+/// is the sole entry point for `lyric prove`.
 ///
 /// Protocol (see `verifier_bridge.l`):
 ///   ok

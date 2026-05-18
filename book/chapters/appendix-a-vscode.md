@@ -7,12 +7,12 @@ The Lyric VS Code extension is backed by `lyric-lsp`, a language server built fr
 **Prerequisites:**
 
 - VS Code 1.70+
-- The Lyric compiler built: `cd compiler && dotnet build Lyric.sln`
+- The Lyric compiler built: `cd bootstrap && dotnet build Bootstrap.sln`
 
 **Step 1.** Build and publish the language server binary:
 
 ```sh
-cd compiler
+cd bootstrap
 dotnet publish src/Lyric.Lsp -c Release -o ../bin/lsp
 ```
 

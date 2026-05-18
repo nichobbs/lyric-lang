@@ -6,7 +6,7 @@ on:
     paths:
       - 'bootstrap/**'
       - 'benchmarks/**'
-      - 'stdlib/**'
+      - 'lyric-stdlib/**'
       - '.github/workflows/bench.yml'
       - '.github/scripts/bench_report.py'
   schedule:

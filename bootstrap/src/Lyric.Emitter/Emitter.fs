@@ -5426,7 +5426,7 @@ let private segmentToFileBase (seg: string) : string =
         sb.Append(System.Char.ToLowerInvariant c) |> ignore)
     sb.ToString()
 
-/// True for any top-level package whose source lives under `lyric/<head.lower>/`
+/// True for any top-level package whose source lives under `lyric-compiler/<head.lower>/`
 /// in the source tree.  Add new built-in top-level packages here.
 /// `Testpkg` is reserved for `Lyric.Emitter.Tests.MultiFilePackageTests`,
 /// which uses the `LYRIC_TESTPKG_PATH` env-var override to point at a
@@ -5448,7 +5448,7 @@ let private isBuiltinHead (head: string) : bool =
 ///      `LYRIC_JVM_PATH` for `Jvm`, `LYRIC_<HEAD>_PATH` for others.
 ///   2. Walk up the directory tree from `startDir` (the CLI binary's
 ///      base directory).  For `Std.*` look for `lyric-stdlib/std/`; for
-///      other builtins look for `lyric/<head.lower>/`.
+///      other builtins look for `lyric-compiler/<head.lower>/`.
 ///
 /// Variant of `locateBuiltinFiles` that also reports a layout-conflict
 /// diagnostic (B0010) when both the single-file and multi-file forms
