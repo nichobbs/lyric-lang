@@ -120,6 +120,14 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
 
+// Note (#333): Ideally this returns a process-wide singleton to avoid
+// exhausting the TCP socket pool under load (the canonical HttpClient
+// anti-pattern).  A module-level `val` singleton is the correct fix but
+// requires bootstrap-emitter support for non-constant package-level vals
+// (only integer constants and @asyncLocal vals are currently supported).
+// Until that support lands, each call creates a new instance; callers
+// that need connection-pool reuse should construct their own client via
+// `hostClientWithRedirects` / `hostClientNoRedirects` and retain it.
 pub func hostDefaultClient(): HttpClient {
   newClient()
 }

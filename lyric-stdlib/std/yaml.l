@@ -9,9 +9,9 @@
 //                numbers, booleans, null.
 //   YAML mode  — JSON flow style + YAML block mappings and sequences,
 //                unquoted / single-quoted / double-quoted scalars, and
-//                the YAML null/bool aliases (~, null, true, false,
-//                yes, no, on, off).  Multi-document and anchors/aliases
-//                are not yet supported; they return UnsupportedFeature.
+//                the YAML 1.2 null/bool literals (~, null, true, false).
+//                Multi-document, anchors/aliases are not yet supported;
+//                they return UnsupportedFeature.
 //
 // Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
 // targets without any kernel bridge.
@@ -22,6 +22,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Std.Char
+import Std.Parse
 
 // ── Error type ─────────────────────────────────────────────────────────────────
 
@@ -317,18 +318,16 @@ func yIsScalarChar(c: in Char): Bool {
        c == '{' or c == '}' or c == ',' or c == '\n' or c == '\r')
 }
 
-// Interpret a raw unquoted string as a scalar value.
+// Interpret a raw unquoted string as a YAML 1.2 scalar value.
+// Only `true`/`false` (case-insensitive) are booleans — YAML 1.1
+// aliases `yes/no/on/off` are not recognised per YAML 1.2 §10.3.2.
 func yInterpretScalar(raw: in String): YamlValue {
   val t = raw.trim()
   if t == "null" or t == "~" or t == "" {
     YNull
-  } else if t == "true" or t == "True" or t == "TRUE" or
-            t == "yes"  or t == "Yes"  or t == "YES"  or
-            t == "on"   or t == "On"   or t == "ON" {
+  } else if t == "true" or t == "True" or t == "TRUE" {
     YBool(value = true)
-  } else if t == "false" or t == "False" or t == "FALSE" or
-            t == "no"    or t == "No"    or t == "NO"    or
-            t == "off"   or t == "Off"   or t == "OFF" {
+  } else if t == "false" or t == "False" or t == "FALSE" {
     YBool(value = false)
   } else {
     // Try integer parse (simple: optional '-', then digits)
@@ -351,9 +350,10 @@ func yInterpretScalar(raw: in String): YamlValue {
       }
       if neg { YInt(value = 0i64 - value) } else { YInt(value = value) }
     } else {
-      // Could be float — but for now treat as string; float parsing is below
-      // via the JSON number path.
-      YString(value = t)
+      match parseOptDouble(t) {
+        case Some(f) -> YFloat(value = f)
+        case None    -> YString(value = t)
+      }
     }
   }
 }
@@ -391,10 +391,10 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
   }
   val raw = st.src.substring(startPos, st.pos - startPos)
   if isFloat {
-    // Parse float via Long representation not available; use integer tricks for
-    // common cases, or return as string if complex.  For the bootstrap grade,
-    // parse the mantissa/exponent and reconstruct.
-    Ok(value = YString(value = raw))  // TODO: replace with real float parsing once toDouble lands
+    match parseOptDouble(raw) {
+      case Some(f) -> Ok(value = YFloat(value = f))
+      case None    -> Err(error = InvalidNumber(pos = startPos, raw = raw))
+    }
   } else {
     // Parse integer
     var neg = raw[0] == '-'
@@ -411,7 +411,10 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
 
 // ── JSON flow value parsing ────────────────────────────────────────────────────
 
-func yParseArray(st: inout YamlState): Result[YamlValue, YamlError] {
+func yParseArray(st: inout YamlState, depth: in Int): Result[YamlValue, YamlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   // Called after consuming '['
   val items: List[YamlValue] = newList()
   ySkipWs(st)
@@ -422,7 +425,7 @@ func yParseArray(st: inout YamlState): Result[YamlValue, YamlError] {
   var err: YamlError = InvalidDocument(message = "")
   var done = false
   while ok and not done {
-    match yParseValue(st) {
+    match yParseValue(st, depth + 1) {
       case Err(e) -> {
         ok = false
         err = e
@@ -444,9 +447,13 @@ func yParseArray(st: inout YamlState): Result[YamlValue, YamlError] {
   if ok { Ok(value = YSequence(items = items)) } else { Err(error = err) }
 }
 
-func yParseObject(st: inout YamlState): Result[YamlValue, YamlError] {
+func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   // Called after consuming '{'
   val pairs: List[YamlPair] = newList()
+  val seenKeys: List[String] = newList()
   ySkipWs(st)
   if yEat(st, '}') {
     return Ok(value = YMapping(pairs = pairs))
@@ -498,21 +505,27 @@ func yParseObject(st: inout YamlState): Result[YamlValue, YamlError] {
             err = UnexpectedChar(pos = st.pos, expected = "':' after object key")
           } else {
             ySkipWs(st)
-            match yParseValue(st) {
+            match yParseValue(st, depth + 1) {
               case Err(e) -> {
                 ok = false
                 err = e
               }
               case Ok(v) -> {
-                pairs.add(YamlPair(key = key, value = v))
-                ySkipWs(st)
-                if yEat(st, '}') {
-                  done = true
-                } else if not yEat(st, ',') {
+                if seenKeys.contains(key) {
                   ok = false
-                  err = UnexpectedChar(pos = st.pos, expected = "',' or '}' in object")
+                  err = DuplicateKey(pos = st.pos, key = key)
                 } else {
+                  seenKeys.add(key)
+                  pairs.add(YamlPair(key = key, value = v))
                   ySkipWs(st)
+                  if yEat(st, '}') {
+                    done = true
+                  } else if not yEat(st, ',') {
+                    ok = false
+                    err = UnexpectedChar(pos = st.pos, expected = "',' or '}' in object")
+                  } else {
+                    ySkipWs(st)
+                  }
                 }
               }
             }
@@ -524,10 +537,19 @@ func yParseObject(st: inout YamlState): Result[YamlValue, YamlError] {
   if ok { Ok(value = YMapping(pairs = pairs)) } else { Err(error = err) }
 }
 
-func yParseValue(st: inout YamlState): Result[YamlValue, YamlError] {
+func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   ySkipWs(st)
   if yAtEnd(st) {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "a value"))
+  }
+  if not st.isJson {
+    match yCheckUnsupported(st) {
+      case Some(e) -> return Err(error = e)
+      case None    -> ()
+    }
   }
   val c = st.src[st.pos]
   if c == '"' {
@@ -544,10 +566,10 @@ func yParseValue(st: inout YamlState): Result[YamlValue, YamlError] {
     }
   } else if c == '[' {
     st.pos = st.pos + 1
-    yParseArray(st)
+    yParseArray(st, depth + 1)
   } else if c == '{' {
     st.pos = st.pos + 1
-    yParseObject(st)
+    yParseObject(st, depth + 1)
   } else if c == 'n' and yStartsWith(st, "null") {
     st.pos = st.pos + 4
     Ok(value = YNull)
@@ -581,7 +603,10 @@ func yParseValue(st: inout YamlState): Result[YamlValue, YamlError] {
 // ── YAML block parsing ─────────────────────────────────────────────────────────
 
 // Parse the indented content after a block sequence or mapping key.
-func yParseBlockSequence(st: inout YamlState, seqIndent: in Int): Result[YamlValue, YamlError] {
+func yParseBlockSequence(st: inout YamlState, seqIndent: in Int, depth: in Int): Result[YamlValue, YamlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   val items: List[YamlValue] = newList()
   var ok = true
   var err: YamlError = InvalidDocument(message = "")
@@ -601,7 +626,7 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int): Result[YamlVal
         }
         // Inline content on the same line, or block content on next line(s)
         if yAtEnd(st) or st.src[st.pos] == '\n' or st.src[st.pos] == '\r' {
-          match yParseBlockNode(st, seqIndent + 1) {
+          match yParseBlockNode(st, seqIndent + 1, depth + 1) {
             case Err(e) -> {
               ok = false
               err = e
@@ -610,7 +635,7 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int): Result[YamlVal
           }
         } else {
           // Inline value (scalar or flow collection on the same line)
-          match yParseValue(st) {
+          match yParseValue(st, depth + 1) {
             case Err(e) -> {
               ok = false
               err = e
@@ -632,8 +657,12 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int): Result[YamlVal
   if ok { Ok(value = YSequence(items = items)) } else { Err(error = err) }
 }
 
-func yParseBlockMapping(st: inout YamlState, mapIndent: in Int): Result[YamlValue, YamlError] {
+func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): Result[YamlValue, YamlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   val pairs: List[YamlPair] = newList()
+  val seenKeys: List[String] = newList()
   var ok = true
   var err: YamlError = InvalidDocument(message = "")
   var done = false
@@ -665,31 +694,37 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int): Result[YamlValu
           done = true
         } else {
           val rawKey = st.src.substring(keyStart, st.pos - keyStart).trim()
-          st.pos = st.pos + 1  // consume ':'
-          ySkipSpaces(st)
-          if st.pos < st.src.length and st.src[st.pos] == '\n' {
-            // Block value on next line(s)
-            match yParseBlockNode(st, mapIndent + 1) {
-              case Err(e) -> {
-                ok = false
-                err = e
-              }
-              case Ok(v) -> {
-                pairs.add(YamlPair(key = rawKey, value = v))
-              }
-            }
+          if seenKeys.contains(rawKey) {
+            ok = false
+            err = DuplicateKey(pos = st.pos, key = rawKey)
           } else {
-            // Inline value
-            match yParseValue(st) {
-              case Err(e) -> {
-                ok = false
-                err = e
+            seenKeys.add(rawKey)
+            st.pos = st.pos + 1  // consume ':'
+            ySkipSpaces(st)
+            if st.pos < st.src.length and st.src[st.pos] == '\n' {
+              // Block value on next line(s)
+              match yParseBlockNode(st, mapIndent + 1, depth + 1) {
+                case Err(e) -> {
+                  ok = false
+                  err = e
+                }
+                case Ok(v) -> {
+                  pairs.add(YamlPair(key = rawKey, value = v))
+                }
               }
-              case Ok(v) -> {
-                pairs.add(YamlPair(key = rawKey, value = v))
-                // Skip to end of line
-                while st.pos < st.src.length and st.src[st.pos] != '\n' {
-                  st.pos = st.pos + 1
+            } else {
+              // Inline value
+              match yParseValue(st, depth + 1) {
+                case Err(e) -> {
+                  ok = false
+                  err = e
+                }
+                case Ok(v) -> {
+                  pairs.add(YamlPair(key = rawKey, value = v))
+                  // Skip to end of line
+                  while st.pos < st.src.length and st.src[st.pos] != '\n' {
+                    st.pos = st.pos + 1
+                  }
                 }
               }
             }
@@ -703,7 +738,10 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int): Result[YamlValu
   if ok { Ok(value = YMapping(pairs = pairs)) } else { Err(error = err) }
 }
 
-func yParseBlockNode(st: inout YamlState, minIndent: in Int): Result[YamlValue, YamlError] {
+func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Result[YamlValue, YamlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   ySkipBlankAndComment(st)
   if yAtEnd(st) {
     return Ok(value = YNull)
@@ -712,12 +750,16 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int): Result[YamlValue, 
   if indent < minIndent {
     return Ok(value = YNull)
   }
+  match yCheckUnsupported(st) {
+    case Some(e) -> return Err(error = e)
+    case None    -> ()
+  }
   val c = st.src[st.pos]
   // Flow nodes inline
   if c == '[' or c == '{' or c == '"' or c == '\'' {
-    yParseValue(st)
+    yParseValue(st, depth + 1)
   } else if yStartsWith(st, "- ") or yStartsWith(st, "-\n") {
-    yParseBlockSequence(st, indent)
+    yParseBlockSequence(st, indent, depth + 1)
   } else {
     // Peek ahead: if this line contains "key: ", it's a mapping; else scalar.
     val lineStart = st.pos
@@ -736,7 +778,7 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int): Result[YamlValue, 
       }
     }
     if colonPos >= 0 {
-      yParseBlockMapping(st, indent)
+      yParseBlockMapping(st, indent, depth + 1)
     } else {
       // Plain scalar (rest of line)
       val scStart = st.pos
@@ -776,7 +818,7 @@ pub func parseJson(src: in String): Result[YamlValue, YamlError] {
   if yAtEnd(st) {
     return Err(error = InvalidDocument(message = "empty input"))
   }
-  match yParseValue(st) {
+  match yParseValue(st, 0) {
     case Err(e) -> Err(error = e)
     case Ok(v)  -> {
       ySkipWs(st)
@@ -822,9 +864,9 @@ pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
           false
         }
       if goFlow {
-        yParseValue(st)
+        yParseValue(st, 0)
       } else {
-        yParseBlockNode(st, 0)
+        yParseBlockNode(st, 0, 0)
       }
     }
   }
@@ -865,6 +907,15 @@ pub func asInt(v: in YamlValue): Option[Long] {
   match v {
     case YInt(n) -> Some(value = n)
     case _       -> None
+  }
+}
+
+/// Extract a float value, or None.
+@stable(since="0.1")
+pub func asFloat(v: in YamlValue): Option[Double] {
+  match v {
+    case YFloat(f) -> Some(value = f)
+    case _         -> None
   }
 }
 
@@ -929,5 +980,14 @@ pub func getBool(v: in YamlValue, key: in String): Option[Bool] {
   match getField(v, key) {
     case None    -> None
     case Some(f) -> asBool(f)
+  }
+}
+
+/// Return the float at the given key in a mapping, or None.
+@stable(since="0.1")
+pub func getFloat(v: in YamlValue, key: in String): Option[Double] {
+  match getField(v, key) {
+    case None    -> None
+    case Some(f) -> asFloat(f)
   }
 }

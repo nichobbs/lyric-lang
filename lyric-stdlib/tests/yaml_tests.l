@@ -221,30 +221,33 @@ func testYamlNull(): Unit {
   }
 }
 
+// YAML 1.2 §10.3.2: only `true`/`false` (and their case variants) are
+// booleans.  The YAML 1.1 aliases `yes/no/on/off` are plain strings.
 func testYamlBoolAliases(): Unit {
   match parseYaml("true") {
     case Err(e) -> assertTrue(false, "yaml true: " + YamlError.message(e))
     case Ok(v)  -> { match asBool(v) { case Some(b) -> assertTrue(b, "true") case None -> assertTrue(false, "not bool") } }
   }
-  match parseYaml("yes") {
-    case Err(e) -> assertTrue(false, "yaml yes: " + YamlError.message(e))
-    case Ok(v)  -> { match asBool(v) { case Some(b) -> assertTrue(b, "yes=true") case None -> assertTrue(false, "not bool") } }
-  }
-  match parseYaml("on") {
-    case Err(e) -> assertTrue(false, "yaml on: " + YamlError.message(e))
-    case Ok(v)  -> { match asBool(v) { case Some(b) -> assertTrue(b, "on=true") case None -> assertTrue(false, "not bool") } }
-  }
   match parseYaml("false") {
     case Err(e) -> assertTrue(false, "yaml false: " + YamlError.message(e))
     case Ok(v)  -> { match asBool(v) { case Some(b) -> assertTrue(not b, "false") case None -> assertTrue(false, "not bool") } }
   }
+  // YAML 1.1 aliases must parse as strings in YAML 1.2 mode.
+  match parseYaml("yes") {
+    case Err(e) -> assertTrue(false, "yaml yes err: " + YamlError.message(e))
+    case Ok(v)  -> { match asString(v) { case Some(s) -> assertTrue(s == "yes", "yes=string") case None -> assertTrue(false, "yes not string") } }
+  }
   match parseYaml("no") {
-    case Err(e) -> assertTrue(false, "yaml no: " + YamlError.message(e))
-    case Ok(v)  -> { match asBool(v) { case Some(b) -> assertTrue(not b, "no=false") case None -> assertTrue(false, "not bool") } }
+    case Err(e) -> assertTrue(false, "yaml no err: " + YamlError.message(e))
+    case Ok(v)  -> { match asString(v) { case Some(s) -> assertTrue(s == "no", "no=string") case None -> assertTrue(false, "no not string") } }
+  }
+  match parseYaml("on") {
+    case Err(e) -> assertTrue(false, "yaml on err: " + YamlError.message(e))
+    case Ok(v)  -> { match asString(v) { case Some(s) -> assertTrue(s == "on", "on=string") case None -> assertTrue(false, "on not string") } }
   }
   match parseYaml("off") {
-    case Err(e) -> assertTrue(false, "yaml off: " + YamlError.message(e))
-    case Ok(v)  -> { match asBool(v) { case Some(b) -> assertTrue(not b, "off=false") case None -> assertTrue(false, "not bool") } }
+    case Err(e) -> assertTrue(false, "yaml off err: " + YamlError.message(e))
+    case Ok(v)  -> { match asString(v) { case Some(s) -> assertTrue(s == "off", "off=string") case None -> assertTrue(false, "off not string") } }
   }
 }
 

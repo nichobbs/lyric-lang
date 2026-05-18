@@ -463,7 +463,10 @@ func xParseXmlDecl(st: inout XmlState): Result[Unit, XmlError] {
 
 // Parse element content: text nodes, child elements, comments, CDATA.
 // Stops when it sees the closing tag </expectedTag> and consumes it.
-func xParseContent(st: inout XmlState, expectedTag: in String): Result[List[XmlNode], XmlError] {
+func xParseContent(st: inout XmlState, expectedTag: in String, depth: in Int): Result[List[XmlNode], XmlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   val children: List[XmlNode] = newList()
   var ok = true
   var err: XmlError = InvalidDocument(message = "")
@@ -517,7 +520,7 @@ func xParseContent(st: inout XmlState, expectedTag: in String): Result[List[XmlN
         }
       } else {
         // Child element
-        match xParseElement(st) {
+        match xParseElement(st, depth + 1) {
           case Err(e) -> { ok = false; err = e }
           case Ok(n)  -> children.add(n)
         }
@@ -542,7 +545,10 @@ func xParseContent(st: inout XmlState, expectedTag: in String): Result[List[XmlN
 }
 
 // Parse one element starting at '<'. Consumes through the matching closing tag.
-func xParseElement(st: inout XmlState): Result[XmlNode, XmlError] {
+func xParseElement(st: inout XmlState, depth: in Int): Result[XmlNode, XmlError] {
+  if depth > 1024 {
+    return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
+  }
   if not xEat(st, '<') {
     return Err(error = UnexpectedChar(pos = st.pos, expected = "'<' to start element"))
   }
@@ -558,7 +564,7 @@ func xParseElement(st: inout XmlState): Result[XmlNode, XmlError] {
             Ok(value = Element(tag = tag, attrs = attrs, children = children))
           } else if xEat(st, '>') {
             // Has children
-            match xParseContent(st, tag) {
+            match xParseContent(st, tag, depth + 1) {
               case Err(e) -> Err(error = e)
               case Ok(children) -> Ok(value = Element(tag = tag, attrs = attrs, children = children))
             }
@@ -625,7 +631,7 @@ pub func parseXml(src: in String): Result[XmlDoc, XmlError] {
       if xAtEnd(st) {
         return Err(error = InvalidDocument(message = "document is empty"))
       }
-      match xParseElement(st) {
+      match xParseElement(st, 0) {
         case Err(e) -> Err(error = e)
         case Ok(root) -> Ok(value = XmlDoc(version = None, encoding = None, root = root))
       }

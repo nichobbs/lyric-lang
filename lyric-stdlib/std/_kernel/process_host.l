@@ -33,3 +33,8 @@ pub func hostWait(proc: in ProcessHandle): Unit = ()
 /// Return the OS exit code of `proc`.  Only valid after `hostWait`.
 @externTarget("System.Diagnostics.Process.ExitCode")
 pub func hostExitCode(proc: in ProcessHandle): Int = ()
+
+/// Release the OS handle held by `proc`.
+/// Must be called after `hostWait` / `hostExitCode` to avoid handle leaks.
+@externTarget("System.Diagnostics.Process.Dispose")
+pub func hostDisposeProc(proc: in ProcessHandle): Unit = ()

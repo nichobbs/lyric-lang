@@ -50,7 +50,9 @@ pub func run(executable: in String, args: in List[String]): Result[Int, IOError]
     val arguments = buildArgString(args)
     val proc = hostSpawn(executable, arguments)
     hostWait(proc)
-    Ok(value = hostExitCode(proc))
+    val code = hostExitCode(proc)
+    hostDisposeProc(proc)
+    Ok(value = code)
   } catch Bug as b {
     Err(error = IoError(path = executable, message = b.message))
   }
