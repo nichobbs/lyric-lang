@@ -453,6 +453,7 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
   }
   // Called after consuming '{'
   val pairs: List[YamlPair] = newList()
+  // O(N²) for N keys: List.contains is O(N). Replace with Set when available.
   val seenKeys: List[String] = newList()
   ySkipWs(st)
   if yEat(st, '}') {
@@ -463,6 +464,7 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
   var done = false
   while ok and not done {
     ySkipWs(st)
+    val keyStartPos = st.pos
     // Key: JSON requires quoted string; YAML flow allows unquoted.
     var keyResult: Result[String, YamlError] = Err(error = InvalidDocument(message = "no key"))
     if st.pos < st.src.length and st.src[st.pos] == '"' {
@@ -513,7 +515,7 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
               case Ok(v) -> {
                 if seenKeys.contains(key) {
                   ok = false
-                  err = DuplicateKey(pos = st.pos, key = key)
+                  err = DuplicateKey(pos = keyStartPos, key = key)
                 } else {
                   seenKeys.add(key)
                   pairs.add(YamlPair(key = key, value = v))
@@ -662,6 +664,7 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
     return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
   }
   val pairs: List[YamlPair] = newList()
+  // O(N²) for N keys: List.contains is O(N). Replace with Set when available.
   val seenKeys: List[String] = newList()
   var ok = true
   var err: YamlError = InvalidDocument(message = "")

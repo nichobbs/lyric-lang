@@ -99,12 +99,12 @@ pub func urlToHash(url: in String): String {
   }
 
   // DJB2-style hash over the original URL for collision avoidance.
-  // Bounds: (h % 65000000) * 33 ≤ 64999999*33 = 2144999967,
-  // which leaves room for ASCII charCode (max 127) within Int.MAX.
+  // Char.toInt is clamped to 0..127 so the accumulator stays within Int.MAX
+  // regardless of non-ASCII characters in IDN hostnames.
   var h = 5381
   var ui = 0
   while ui < url.length {
-    h = (h % 65000000) * 33 + Char.toInt(url[ui])
+    h = (h % 65000000) * 33 + (Char.toInt(url[ui]) % 128)
     ui += 1
   }
   trimmed + "-" + Str.fromInt(h)

@@ -352,6 +352,98 @@ func testGetFieldMissing(): Unit {
   }
 }
 
+// ── Float parsing (#581) ───────────────────────────────────────────────────────
+
+func testYamlFloatBlock(): Unit {
+  match parseYaml("1.5") {
+    case Err(e) -> assertTrue(false, "float block: " + YamlError.message(e))
+    case Ok(v)  -> match asFloat(v) {
+      case None    -> assertTrue(false, "expected YFloat")
+      case Some(f) -> assertTrue(f == 1.5, "block scalar 1.5 parsed as YFloat")
+    }
+  }
+}
+
+func testJsonFloatRoundtrip(): Unit {
+  match parseJson("{\"x\":3.14}") {
+    case Err(e) -> assertTrue(false, "json float: " + YamlError.message(e))
+    case Ok(v)  -> match getFloat(v, "x") {
+      case None    -> assertTrue(false, "getFloat should return Some")
+      case Some(f) -> assertTrue(f == 3.14, "getFloat returns 3.14")
+    }
+  }
+}
+
+func testAsFloatNonFloat(): Unit {
+  match parseJson("42") {
+    case Err(e) -> assertTrue(false, "asFloat setup: " + YamlError.message(e))
+    case Ok(v)  -> assertTrue(isNone(asFloat(v)), "asFloat on int returns None")
+  }
+}
+
+func testYamlFloatExponent(): Unit {
+  match parseYaml("1.0e2") {
+    case Err(e) -> assertTrue(false, "float exp: " + YamlError.message(e))
+    case Ok(v)  -> match asFloat(v) {
+      case None    -> assertTrue(false, "1.0e2 should be YFloat")
+      case Some(f) -> assertTrue(f == 100.0, "1.0e2 == 100.0")
+    }
+  }
+}
+
+// ── DuplicateKey errors (#582) ─────────────────────────────────────────────────
+
+func testJsonDuplicateKey(): Unit {
+  match parseJson("{\"a\":1,\"a\":2}") {
+    case Err(e) -> assertTrue(YamlError.message(e).length > 0, "duplicate key error should have message")
+    case Ok(_)  -> assertTrue(false, "duplicate key must be rejected")
+  }
+}
+
+func testYamlFlowDuplicateKey(): Unit {
+  match parseYaml("{a: 1, a: 2}") {
+    case Err(e) -> assertTrue(YamlError.message(e).length > 0, "flow duplicate key error")
+    case Ok(_)  -> assertTrue(false, "flow duplicate key must be rejected")
+  }
+}
+
+func testYamlBlockDuplicateKey(): Unit {
+  match parseYaml("a: 1\na: 2") {
+    case Err(e) -> assertTrue(YamlError.message(e).length > 0, "block duplicate key error")
+    case Ok(_)  -> assertTrue(false, "block duplicate key must be rejected")
+  }
+}
+
+// ── Depth guard (#583) ─────────────────────────────────────────────────────────
+
+func testYamlDepthGuard(): Unit {
+  // 2000 nested flow arrays must be rejected by the depth guard.
+  var s = "x"
+  var d = 0
+  while d < 2000 {
+    s = "[" + s + "]"
+    d = d + 1
+  }
+  match parseYaml(s) {
+    case Err(e) -> assertTrue(YamlError.message(e).length > 0, "depth guard fires on 2000-deep document")
+    case Ok(_)  -> assertTrue(false, "2000-deep document must be rejected")
+  }
+}
+
+func testYamlDepthBoundary(): Unit {
+  // A shallow document (100 levels) is well within the depth limit.
+  var s = "x"
+  var d = 0
+  while d < 100 {
+    s = "[" + s + "]"
+    d = d + 1
+  }
+  match parseYaml(s) {
+    case Err(e) -> assertTrue(false, "100-deep document should parse: " + YamlError.message(e))
+    case Ok(_)  -> assertTrue(true, "100-deep document parsed ok")
+  }
+}
+
 func main(): Unit {
   testJsonNull()
   testJsonBool()
@@ -372,5 +464,14 @@ func main(): Unit {
   testJsonErrorUnexpectedEof()
   testJsonErrorTrailing()
   testGetFieldMissing()
+  testYamlFloatBlock()
+  testJsonFloatRoundtrip()
+  testAsFloatNonFloat()
+  testYamlFloatExponent()
+  testJsonDuplicateKey()
+  testYamlFlowDuplicateKey()
+  testYamlBlockDuplicateKey()
+  testYamlDepthGuard()
+  testYamlDepthBoundary()
   println("yaml_tests: ok")
 }
