@@ -70,7 +70,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addAnnotation(handle, key, sanitizeAnnotation(value))
+  XRayKernel.addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
 }
 
 /// Add unindexed metadata to the subsegment.
@@ -81,7 +81,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addMetadata(handle, key, sanitizeAnnotation(value))
+  XRayKernel.addMetadata(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
