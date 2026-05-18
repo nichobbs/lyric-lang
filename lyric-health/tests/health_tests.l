@@ -94,7 +94,10 @@ test "three chained checks are stored in insertion order" {
   assertEqual(r3.checks[2].name, "ready2", "third check name")
 }
 
-// ─── Stub handlers ────────────────────────────────────────────────────────────
+// ─── Route handlers ──────────────────────────────────────────────────────────
+// The __handle* functions are public (required for kernel dispatcher resolution)
+// but intentionally not @stable.  These tests cover the current stub behavior
+// that unconditionally returns {"status":"ok"} until the kernel dispatcher ships.
 
 test "liveness handler returns Ok" {
   match Health.__handleLiveness() {

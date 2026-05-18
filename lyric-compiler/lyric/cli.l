@@ -1741,6 +1741,8 @@ func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
       if c == 'n'      { s = s + "\n" }
       else if c == 't' { s = s + "\t" }
       else if c == 'r' { s = s + "\r" }
+      else if c == 'b' { s = s + "\u{08}" }
+      else if c == 'f' { s = s + "\u{0C}" }
       else             { s = s + ("" + c) }
       escaping = false
     } else if c == '\\' {

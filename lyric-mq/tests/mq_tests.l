@@ -56,7 +56,7 @@ test "DeadLetterEntry construction and field access" {
     failedAt = 1716000000000)
   assertEqual(entry.message.id, "dead-msg",                    "entry message id")
   assertEqual(entry.reason,     "exceeded max delivery count", "entry reason")
-  assertEqualInt(entry.failedAt.toInt(), 1716000000000.toInt(), "entry failedAt")
+  assertTrue(entry.failedAt == 1716000000000, "entry failedAt")
 }
 
 // ─── AckMode ─────────────────────────────────────────────────────────────────
