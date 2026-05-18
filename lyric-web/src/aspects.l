@@ -46,6 +46,8 @@ package Web.Aspects
 
 import Std.Core
 import Web
+import Web.Kernel.Net
+import Web.Kernel.Jvm
 import Auth
 import Resilience
 
@@ -241,7 +243,7 @@ pub aspect RateLimit {
     if not enabled {
       ret = call.proceed()
     } else {
-      val allowed = Web.Kernel.Net.checkRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
+      val allowed = webKernelCheckRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {
@@ -296,4 +298,23 @@ pub aspect HttpCircuitBreaker {
       }
     }
   }
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations so the same source compiles
+// under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+func webKernelCheckRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
+  requires: requestsPerMinute > 0
+  requires: burstSize > 0
+{
+  return Web.Kernel.Net.checkRateLimit(endpoint, requestsPerMinute, burstSize)
+}
+@cfg(feature = "jvm")
+func webKernelCheckRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
+  requires: requestsPerMinute > 0
+  requires: burstSize > 0
+{
+  return Web.Kernel.Jvm.checkRateLimit(endpoint, requestsPerMinute, burstSize)
 }

@@ -44,6 +44,8 @@ output_assembly = "Web.dll"
 "Web.Aspects"     = "src/aspects.l"
 # .NET extern boundary — ASP.NET Core minimal APIs + Kestrel.
 "Web.Kernel.Net"  = "src/_kernel/net/web_kernel.l"
+# JVM extern boundary — Undertow HTTP server (Phase 6).
+"Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
 
 [dependencies]
 "Lyric.Stdlib"       = { path = "../stdlib" }
@@ -54,3 +56,7 @@ output_assembly = "Web.dll"
 # ASP.NET Core is part of the .NET SDK; no extra package needed for Kestrel.
 # Add if using OpenTelemetry integration:
 # "OpenTelemetry.Extensions.Hosting" = "1.9.0"
+
+[maven]
+# JVM HTTP server backend (Phase 6).
+"io.undertow:undertow-core" = { version = "2.3.13.Final", features = ["jvm"] }
