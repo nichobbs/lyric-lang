@@ -185,9 +185,7 @@ func testCrossPackageCallProofOk(): Unit {
 }
 
 func testCrossPackageSingleSegmentV0002(): Unit {
-  // Single-segment package name: `import Pkg` then `Pkg.someFunc()`.
-  // `extractQualifiedName` handles the EPath-receiver case (segments.count == 1)
-  // which produces the package name "Pkg" from the receiver of the call.
+  // Covers the EPath-receiver branch (single-segment package name).
   val imports: List[ImportedMeta] = newList()
   imports.add(ImportedMeta(name = "Pkg", level = "runtime_checked"))
   val src =
