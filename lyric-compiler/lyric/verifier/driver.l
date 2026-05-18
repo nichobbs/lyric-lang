@@ -198,6 +198,16 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   var i = 0
   while i < goals.count {
     val g = goals[i]
+    // Warn before discharging if the goal contains NaN or ±Infinity float
+    // literals.  smtRenderFloat silently substitutes 0.0 for non-finite values
+    // (no SMT-LIB representation exists for them), so the verification result
+    // may be incorrect.  Surface this as V0009 so users know to review it.
+    if goalHasNonFiniteFloat(g) {
+      resultDiags.add(warningDiagnostic("V0009",
+        "goal '" + g.label + "' contains NaN or +/-Infinity float literal; \
+         replaced with 0.0 in SMT-LIB output — verification result may be incorrect",
+        g.origin))
+    }
     val outcome = discharge(g)
     results.add(ProofResult(goal = g, outcome = outcome))
     match outcomeToDiag(g, outcome, allowUnverified) {
@@ -233,4 +243,68 @@ func appendDiags(dst: in List[Diagnostic], src: in List[Diagnostic]): Unit {
     dst.add(src[i])
     i = i + 1
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. Non-finite float detection.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// True when a Lit is a NaN or ±Infinity float, which smtRenderFloat silently
+// replaces with "0.0" because SMT-LIB Real has no non-finite values.
+func litIsNonFiniteFloat(lit: in Lit): Bool {
+  match lit {
+    case VLFloat(f) -> {
+      val s = doubleToString(f)
+      s == "NaN" or s == "Infinity" or s == "-Infinity"
+    }
+    case _ -> false
+  }
+}
+
+// True when any subterm of `t` is a non-finite float literal.
+func termHasNonFiniteFloat(t: in Term): Bool {
+  match t {
+    case TLit(value, _)      -> litIsNonFiniteFloat(value)
+    case TVar(_, _)          -> false
+    case TBuiltin(_, args)   -> argsHaveNonFiniteFloat(args)
+    case TApp(_, args, _)    -> argsHaveNonFiniteFloat(args)
+    case TLet(bindings, body) -> {
+      var i = 0
+      while i < bindings.count {
+        if termHasNonFiniteFloat(bindings[i].term) { return true }
+        i = i + 1
+      }
+      termHasNonFiniteFloat(body)
+    }
+    case TIte(cond, thenT, elseT) ->
+      termHasNonFiniteFloat(cond) or termHasNonFiniteFloat(thenT) or termHasNonFiniteFloat(elseT)
+    case TForall(_, triggers, body) -> {
+      var i = 0
+      while i < triggers.count {
+        if argsHaveNonFiniteFloat(triggers[i]) { return true }
+        i = i + 1
+      }
+      termHasNonFiniteFloat(body)
+    }
+    case TExists(_, body) -> termHasNonFiniteFloat(body)
+  }
+}
+
+func argsHaveNonFiniteFloat(args: in List[Term]): Bool {
+  var i = 0
+  while i < args.count {
+    if termHasNonFiniteFloat(args[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+// True when any hypothesis or the conclusion of `g` contains a non-finite float.
+func goalHasNonFiniteFloat(g: in Goal): Bool {
+  var i = 0
+  while i < g.hypotheses.count {
+    if termHasNonFiniteFloat(g.hypotheses[i]) { return true }
+    i = i + 1
+  }
+  termHasNonFiniteFloat(g.conclusion)
 }

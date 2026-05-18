@@ -2044,7 +2044,7 @@ let private emitContractCheck
 // each of which previously triggered a full AppDomain walk (~30 assemblies ×
 // ~10,000 types = ~3M comparisons).  One miss still walks the full domain,
 // but subsequent lookups for the same qualified name are O(1).
-let private clrTypeCache = System.Collections.Generic.Dictionary<string, System.Type option>()
+let private clrTypeCache = System.Collections.Concurrent.ConcurrentDictionary<string, System.Type option>()
 
 let private findClrType (qualifiedName: string) : System.Type option =
     match clrTypeCache.TryGetValue qualifiedName with

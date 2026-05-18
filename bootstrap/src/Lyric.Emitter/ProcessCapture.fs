@@ -28,7 +28,14 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
             use _ = proc
             proc.StandardInput.Write stdinContent
             proc.StandardInput.Close()
-            let stdout = proc.StandardOutput.ReadToEnd()
+            // Start the stdout drain on a background thread BEFORE waiting.
+            // If ReadToEnd() ran first and the solver hung without closing its
+            // stdout pipe, it would block indefinitely — the WaitForExit timeout
+            // would never be reached.  Running them concurrently lets the kill
+            // fire after 10 s, which closes the pipe and unblocks the drain.
+            let stdoutTask =
+                System.Threading.Tasks.Task.Run(fun () ->
+                    proc.StandardOutput.ReadToEnd())
             // 10-second wall-clock cap: solvers already get a per-query
             // timeout flag (-T:5 for Z3, --tlimit=5000 for cvc5) but a
             // hung or misbehaving solver binary can still block indefinitely
@@ -36,5 +43,9 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
             // hasn't exited within 2× the configured solver timeout.
             if not (proc.WaitForExit 10000) then
                 try proc.Kill(entireProcessTree = true) with _ -> ()
-            stdout
+            // Process has exited or been killed; the stdout pipe is now closed.
+            // Give the background drain up to 5 s to flush any remaining bytes.
+            try
+                if stdoutTask.Wait 5000 then stdoutTask.Result else ""
+            with _ -> ""
     with _ -> ""
