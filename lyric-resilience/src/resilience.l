@@ -169,6 +169,12 @@ func backoffDelay(
 ///   maxDelayMs      Int   — upper bound on inter-retry delay (default: 30000)
 ///   jitterFraction  Float — fraction of delay to add as ±jitter; 0.0 = no jitter (default: 0.1)
 ///   logRetries      Bool  — log each failed attempt at warn level (default: true)
+///
+/// WARNING (information disclosure): when `logRetries` is true the raw
+/// `Err` message is written to the log aggregator verbatim.  Functions
+/// that may return credentials, tokens, or PII inside `Err` values
+/// should either set `logRetries: false` at the call site, or sanitise
+/// their error messages before returning.  See lyric-lang #602.
 @stable(since="0.1")
 pub aspect Retry {
   config {

@@ -1,6 +1,6 @@
 /// Flags — feature flag library for Lyric.
 ///
-/// ⚠️  THREAD SAFETY: `InProcessFlagStore` is NOT thread-safe.  Refresh-then-read
+/// WARNING (thread safety): `InProcessFlagStore` is NOT thread-safe.  Refresh-then-read
 /// races can return stale or torn values when concurrent threads call
 /// `setBool` / `setString` / `refresh`.  Use a remote store
 /// (`connectRemote`) or wrap the in-process store in an external mutex
