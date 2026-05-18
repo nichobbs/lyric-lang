@@ -699,8 +699,8 @@ When `feature = "jvm"`:
 - `com.amazonaws:aws-lambda-java-events:3.11.4`
 
 **lyric-aws-secrets:**
-- `software.amazon.awssdk:secretsmanager:2.25.x`
-- `software.amazon.awssdk:ssm:2.25.x`
+- `software.amazon.awssdk:secretsmanager:2.25.70`
+- `software.amazon.awssdk:ssm:2.25.70`
 
 **lyric-aws-xray:**
 - `com.amazonaws:aws-xray-recorder-sdk-core:2.15.3`

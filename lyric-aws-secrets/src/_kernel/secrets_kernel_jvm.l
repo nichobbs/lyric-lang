@@ -32,8 +32,8 @@
 ///     kms:Decrypt on KMS keys protecting SecureString parameters
 ///
 /// Maven dependencies (resolved when target = "jvm"):
-///   software.amazon.awssdk:secretsmanager:2.25.x
-///   software.amazon.awssdk:ssm:2.25.x
+///   software.amazon.awssdk:secretsmanager:2.25.70
+///   software.amazon.awssdk:ssm:2.25.70
 ///
 /// Enabled only when the "jvm" feature flag is active.
 /// See docs/35-lambda-library.md §12.3.
@@ -43,7 +43,7 @@ package AwsSecrets.Kernel.Net
 
 import AwsSecrets
 
-@axiom("software.amazon.awssdk:secretsmanager + ssm 2.25.x (AWS SDK for Java v2)")
+@axiom("software.amazon.awssdk:secretsmanager + ssm 2.25.70 (AWS SDK for Java v2)")
 extern package software.amazon.awssdk.secrets {
   pub func initFromAnnotations(ttlSeconds: Int): Result[Unit, AwsSecrets.SecretsError]
 
