@@ -2959,6 +2959,12 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   val fns:   List[LFunc]        = newList()
   val items: List[LPackageItem] = newList()
   var hasMain = false
+  // Captured return type of the Lyric `main(): T` so the JVM wrapper can
+  // emit a correctly-typed invokestatic.  `JVoid` until / unless a main is
+  // observed.  When the Lyric main returns `Int`, the wrapper pops the int
+  // off the stack (POSIX-style exit code semantics are not propagated yet —
+  // a follow-up can route through `java.lang.System.exit(int)`).
+  var mainRet: JvmType = JVoid
 
   var i = 0
   while i < file.items.count {
@@ -2995,6 +3001,13 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           fns.add(lowerFunc(decl, pkgName, funcsClass))
           if isMainFunc(decl) {
             hasMain = true
+            // Resolve the Lyric main's declared return type so the JVM
+            // wrapper can call it with the matching descriptor.
+            mainRet =
+              match decl.ret {
+                case Some(te) -> typeExprToJvm(te, pkgName)
+                case None     -> JVoid
+              }
           }
         }
       }
@@ -3030,9 +3043,25 @@ pub func codegenPackage(file: in SourceFile): LPackage {
     i = i + 1
   }
 
-  // If there's a `main(): Unit` function, add a JVM-main wrapper that accepts
-  // String[] and delegates to the Lyric main().
+  // If there's a `main(): T` function, add a JVM-main wrapper that accepts
+  // String[] and delegates to the Lyric main().  The wrapper has to call the
+  // Lyric main with its actual return descriptor (e.g. `()I` for `Int`,
+  // `()V` for `Unit`) — otherwise the JVM raises NoSuchMethodError.  Any
+  // non-void return value is dropped (POP/POP2) before returning; exposing
+  // it as a process exit code is a follow-up via java.lang.System.exit.
   if hasMain {
+    // Guard against Long/Double `main` returns: the wrapper would need
+    // category-2 `POP2` to discard them, and the generator only emits
+    // category-1 `LPop` today.  Emitting `LPop` against a 2-slot value
+    // would leave the stack unbalanced and trigger a JVM `VerifyError`
+    // at class load.  Refuse to compile rather than silently produce a
+    // broken class file; the source program can wrap the value in an
+    // `Int` return (the idiomatic exit-code shape) or `Unit`.
+    match mainRet {
+      case JLong   -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case _       -> ()
+    }
     val jvmMainParams: List[JvmType] = newList()
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
@@ -3041,7 +3070,16 @@ pub func codegenPackage(file: in SourceFile): LPackage {
       owner  = funcsClass,
       name   = "main",
       params = lyricMainPs,
-      ret    = JVoid))
+      ret    = mainRet))
+    // Discard the Lyric main's return value (when any) before issuing the
+    // JVM `void` return.  The Long/Double 2-slot cases are rejected above,
+    // so every remaining non-void return is category-1 (Int, Boolean,
+    // references, etc.) — a single `LPop` is correct.  Exposing the value
+    // as a process exit code is a follow-up via java.lang.System.exit.
+    match mainRet {
+      case JVoid -> ()
+      case _     -> jvmMainInsns.add(LPop)
+    }
     jvmMainInsns.add(LReturn)
     val jvmMain = LFunc(
       flags     = 0x0009,
@@ -3049,7 +3087,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
       params    = jvmMainParams,
       ret       = JVoid,
       insns     = jvmMainInsns,
-      maxStack  = 1,
+      maxStack  = 2,
       maxLocals = 1)
     fns.add(jvmMain)
   }

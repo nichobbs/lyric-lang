@@ -276,7 +276,20 @@ let private parityPrograms : (string * string * string * string) list =
 
     ("parity20_str_concat", "Parity20StrConcat",
      "package Parity20StrConcat\nfunc main(): Unit { println(\"hello\" + \" \" + \"world\") }\n",
-     "hello world") ]
+     "hello world")
+
+    // parity21 / parity22 cover the `func main(): Int` shape — exercises the
+    // JVM-main wrapper's POP-after-invokestatic on Lyric mains that return a
+    // value rather than Unit.  Without the codegen fix in
+    // `lyric-compiler/jvm/codegen.l`, the wrapper would emit `()V` against an
+    // `()I` symbol and the JVM raises NoSuchMethodError at startup.
+    ("parity21_main_int", "Parity21MainInt",
+     "package Parity21MainInt\nfunc main(): Int { println(\"int main works\"); return 0 }\n",
+     "int main works")
+
+    ("parity22_main_int_returning", "Parity22MainIntReturning",
+     "package Parity22MainIntReturning\nfunc main(): Int {\n  var total = 0\n  var i = 0\n  while i < 5 { total = total + i; i = i + 1 }\n  println(total)\n  return 0\n}\n",
+     "10") ]
 
 // ─── test list ────────────────────────────────────────────────────────────────
 

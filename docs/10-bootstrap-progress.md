@@ -12897,3 +12897,62 @@ Six new test functions exercise the new dep source forms:
 `testWorkspaceSection`, `testRegistrySection`.
 
 **Test results:** 782/782 emitter tests pass, 227/227 CLI tests pass.
+
+### D-progress-265 — End-to-end `lyric build --target jvm` fixes (Phase 6)
+
+`lyric build foo.l --target jvm` is now operational for Lyric programs that
+import the standard library and declare `func main(): Int` (the common
+idiomatic shape).  Three independent defects were closing in front of
+`SelfHostedJvm.compileToJar`:
+
+1. **JVM-target stdlib assembly identity collision.**
+   `bootstrap/src/Lyric.Emitter/Emitter.fs` precompiles `Std.X` for the
+   active `Target`.  The self-hosted CLI bridge (`SelfHostedCli.fs`)
+   compiles its own driver under `Target = Dotnet` before the user's
+   build runs, so `Lyric.Stdlib.Core` (`.NET`-flavour, `_kernel/`) is
+   already loaded into the default `AssemblyLoadContext` by the time the
+   user's `--target jvm` request tries to load the JVM-flavour
+   (`_kernel_jvm/`) DLL of the same name.  Two assemblies with the same
+   identity cannot coexist in one ALC; `Assembly.LoadFrom` raised
+   `FUSION_E_INVALID_NAME` (HRESULT `0x80131047`).  Fixed by suffixing
+   the JVM-target assembly identity with `.Jvm`
+   (`Lyric.Stdlib.Core` → `Lyric.Stdlib.Core.Jvm`), so the two flavours
+   coexist cleanly when both targets are touched within a single
+   `lyric` invocation.
+
+2. **JAR `Main-Class` derived from the source filename, not the package
+   declaration.**  `lyric-compiler/jvm/bridge.l` was passing the F#-supplied
+   `packageName` (the filename without extension) straight into both the
+   `Lyric-Package` manifest attribute and the JVM `Main-Class` attribute.
+   `lyric build hello_jvm.l --target jvm` on a file declaring
+   `package Hello` produced a JAR whose manifest pointed `Main-Class` at
+   `hello_jvm`, a class that does not exist — `java -jar` failed with
+   `ClassNotFoundException`.  Fixed by walking the parsed
+   `SourceFile.packageDecl.path.segments`, joining with `.`, and using
+   the result as `Main-Class`.  The `Lyric-Package` attribute keeps its
+   original filename-derived value for tooling backward compatibility.
+
+3. **JVM main-wrapper descriptor mismatch for `func main(): Int`.**
+   `Jvm.Codegen.codegenPackage` synthesises a `void main(String[])`
+   wrapper that delegates to the Lyric main via `invokestatic`.  The
+   wrapper hard-coded `()V` (void return) regardless of the Lyric main's
+   actual return type, so a `func main(): Int` program emitted
+   `invokestatic main:()V` against an `()I` symbol and the JVM raised
+   `NoSuchMethodError` at startup.  Fixed by recording the Lyric main's
+   resolved `JvmType` and emitting an `invokestatic` with the matching
+   descriptor.  When the Lyric main returns a value, the wrapper now
+   pops the result off the stack before issuing `return` (single-slot
+   only — a Long/Double main return is a follow-up).
+
+**Test coverage.**  Two new programs in the parity smoke suite
+(`bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs`) pin the fixes:
+
+- `parity21_main_int` — `func main(): Int { println(...); return 0 }`
+- `parity22_main_int_returning` — `func main(): Int` with a loop and an
+  intermediate accumulator
+
+Both run through the existing `dotnet-legacy` / `dotnet` / `jvm`
+trinity, so the parity suite now exercises 66 cases (22 programs × 3
+paths, up from 60).
+
+**Test results:** 783/783 emitter tests pass, 233/233 CLI tests pass.
