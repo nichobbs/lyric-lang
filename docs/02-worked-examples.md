@@ -797,7 +797,7 @@ Demonstrates an `extern package` declaration with `@axiom`. The block describes 
 @axiom("System.IO.File operations conform to the .NET BCL contract")
 extern package System.IO {
 
-  pub exposed type File @generate(opaqueHandle)
+  pub exposed type File @opaqueHandle
 
   pub func readAllBytes(path: in String): slice[Byte]
     requires: path.length > 0

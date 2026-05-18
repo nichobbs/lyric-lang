@@ -47,9 +47,9 @@ Annotation-style keywords (always preceded by `@`):
 
 ```
 @axiom         @bench           @bench_module          @generate
-@experimental  @global_clock_unsafe  @hidden           @projectable
-@proof_required  @provided      @runtime_checked       @stable
-@stubbable     @test_module
+@experimental  @global_clock_unsafe  @hidden           @opaqueHandle
+@projectable   @proof_required  @provided              @runtime_checked
+@stable        @stubbable       @test_module
 ```
 
 **Stability annotations** (`@stable` / `@experimental`) mark the API stability of `pub` items (D040):
