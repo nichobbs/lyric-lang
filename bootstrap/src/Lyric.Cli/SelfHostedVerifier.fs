@@ -47,6 +47,8 @@ let private ensureBridgeAssembly () : string =
                      sprintf "lyric-verifier-bridge-%d"
                          (Diagnostics.Process.GetCurrentProcess().Id))
     Directory.CreateDirectory scratch |> ignore
+    AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
+        try Directory.Delete(scratch, recursive = true) with _ -> ())
     let dllPath = Path.Combine(scratch, "Lyric.VerifierBridgeDriver.dll")
     let req : Emitter.EmitRequest =
         { Source             = driverSource

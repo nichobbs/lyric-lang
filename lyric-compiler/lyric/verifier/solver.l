@@ -54,6 +54,8 @@ func splitLines(s: in String): List[String] {
 }
 
 // Pull (define-fun NAME () SORT VALUE) clauses output of a Z3 model blob.
+// Uses parenthesis-depth counting to handle multi-line and nested values
+// such as `(- 5)`, `(_ bv42 32)`, and `(mk-Record 1 2)`.
 pub func parseModel(modelText: in String): List[CounterexampleBinding] {
   val lines = splitLines(modelText)
   val result: List[CounterexampleBinding] = newList()
@@ -67,30 +69,49 @@ pub func parseModel(modelText: in String): List[CounterexampleBinding] {
       if parts.count >= 3 and parts[1] == "()" {
         val bindName = parts[0]
         val bindSort = parts[2]
-        // Collect value lines until closing paren.
-        var valueLines: List[String] = newList()
-        var j = i + 1
-        while j < lines.count and not lines[j].trimEnd().endsWith(")") {
-          valueLines.add(lines[j].trim())
+        // Collect value using paren-depth counting.  depth=1 because we
+        // are inside the (define-fun ...) block.  When depth reaches 0
+        // we have consumed the closing ) that ends define-fun; the value
+        // is everything before that ).
+        var depth: Int = 1
+        var valueParts: List[String] = newList()
+        var j: Int = i + 1
+        var done: Bool = false
+        while j < lines.count and not done {
+          val rawLine = lines[j].trim()
+          if rawLine.length > 0 {
+            var kk: Int = 0
+            var cutAt: Int = rawLine.length
+            while kk < rawLine.length and not done {
+              match charAt(rawLine, kk) {
+                case Some(c) -> {
+                  if c == '(' { depth = depth + 1 }
+                  else if c == ')' {
+                    depth = depth - 1
+                    if depth == 0 {
+                      cutAt = kk   // exclude the define-fun closing ')'
+                      done = true
+                    }
+                  }
+                }
+                case None -> {}
+              }
+              kk = kk + 1
+            }
+            val part = rawLine.substring(0, cutAt).trimEnd()
+            if part.length > 0 { valueParts.add(part) }
+          }
           j = j + 1
         }
-        val lastLine = if j < lines.count { lines[j].trim() } else { "" }
-        var allValue = ""
-        var k = 0
-        while k < valueLines.count {
+        var allValue: String = ""
+        var k: Int = 0
+        while k < valueParts.count {
           if k > 0 { allValue = allValue + " " }
-          allValue = allValue + valueLines[k]
+          allValue = allValue + valueParts[k]
           k = k + 1
         }
-        if allValue.length > 0 { allValue = allValue + " " }
-        allValue = allValue + lastLine
-        // Strip trailing ')'.
-        allValue = allValue.trimEnd()
-        if allValue.endsWith(")") {
-          allValue = allValue.substring(0, allValue.length - 1).trimEnd()
-        }
         result.add(CounterexampleBinding(name = bindName, sort = bindSort, value = allValue))
-        i = j + 1
+        i = j
       } else {
         i = i + 1
       }

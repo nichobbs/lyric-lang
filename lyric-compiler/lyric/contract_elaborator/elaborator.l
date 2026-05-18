@@ -116,6 +116,87 @@ func freshResultName(c: inout RenameCounter): String {
 //     to, so downstream diagnostics keep pointing at user code.
 // ─────────────────────────────────────────────────────────────────────────────
 
+func mkUnit(sp: in Span): Expr {
+  mkExpr(ELiteral(lit = LUnit), sp)
+}
+
+// Returns true iff any expression in the list contains an EResult node.
+func anyHaveResult(exprs: in List[Expr]): Bool {
+  var i = 0
+  while i < exprs.count {
+    if exprContainsResult(exprs[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func exprContainsResult(e: in Expr): Bool {
+  match e.kind {
+    case EResult -> true
+    case ELiteral(_) -> false
+    case EPath(_) -> false
+    case ESelf -> false
+    case EError -> false
+    case EParen(inner) -> exprContainsResult(inner)
+    case ETuple(exprs) -> anyHaveResult(exprs)
+    case EList(exprs) -> anyHaveResult(exprs)
+    case EIf(cond, thenBranch, elseOpt, _) -> {
+      if exprContainsResult(cond) { return true }
+      if eobContainsResult(thenBranch) { return true }
+      match elseOpt {
+        case Some(eb) -> eobContainsResult(eb)
+        case None     -> false
+      }
+    }
+    case ECall(fn, args) -> {
+      if exprContainsResult(fn) { return true }
+      var i = 0
+      while i < args.count {
+        val hasIt = match args[i] {
+          case CAPositional(v)  -> exprContainsResult(v)
+          case CANamed(_, v, _) -> exprContainsResult(v)
+        }
+        if hasIt { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> if exprContainsResult(w) { return true }
+        case None    -> {}
+      }
+      exprContainsResult(body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> if exprContainsResult(w) { return true }
+        case None    -> {}
+      }
+      exprContainsResult(body)
+    }
+    case _ -> false
+  }
+}
+
+func eobContainsResult(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(e) -> exprContainsResult(e)
+    case EOBBlock(body) -> {
+      var i = 0
+      while i < body.statements.count {
+        match body.statements[i].kind {
+          case SExpr(e)         -> if exprContainsResult(e) { return true }
+          case SReturn(Some(e)) -> if exprContainsResult(e) { return true }
+          case _                -> {}
+        }
+        i = i + 1
+      }
+      false
+    }
+  }
+}
+
 func mkPath(name: in String, sp: in Span): Expr {
   val segs: List[String] = newList()
   segs.add(name)
@@ -447,18 +528,24 @@ func appendEnsuresAsserts(
 }
 
 // Variant for `SReturn(None)` and other no-result paths: ensures
-// clauses are still inserted, but `result` references are left as
-// `EResult`.  In practice ensures clauses on Unit-returning functions
-// don't reference `result` (the type-checker already rejects that), so
-// the leftover `EResult` is unreachable.
+// clauses are inserted with `result` substituted by `()` if any clause
+// references EResult.  This prevents dangling EResult nodes from reaching
+// codegen when the type-checker does not reject `ensures: result == …`
+// on a Unit-returning function.  Clauses that do not reference result
+// are emitted directly without extra bindings.
 func appendEnsuresAssertsNoResult(
   acc:           in List[Statement],
   ensuresExprs:  in List[Expr],
   sp:            in Span
 ): Unit {
+  if ensuresExprs.count == 0 { return }
+  val needUnit = anyHaveResult(ensuresExprs)
+  val dummyName = "__lyric_result_unit"
+  if needUnit { acc.add(mkLetBinding(dummyName, mkUnit(sp), sp)) }
   var i = 0
   while i < ensuresExprs.count {
-    acc.add(mkAssertCall(ensuresExprs[i], sp))
+    val cond = if needUnit { substResult(ensuresExprs[i], dummyName) } else { ensuresExprs[i] }
+    acc.add(mkAssertCall(cond, sp))
     i = i + 1
   }
 }
