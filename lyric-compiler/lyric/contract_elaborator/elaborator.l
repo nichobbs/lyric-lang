@@ -137,6 +137,7 @@ func exprContainsResult(e: in Expr): Bool {
     case EPath(_) -> false
     case ESelf -> false
     case EError -> false
+    case ERange(_) -> false
     case EParen(inner) -> exprContainsResult(inner)
     case ETuple(exprs) -> anyHaveResult(exprs)
     case EList(exprs) -> anyHaveResult(exprs)
@@ -148,6 +149,19 @@ func exprContainsResult(e: in Expr): Bool {
         case None     -> false
       }
     }
+    case EMatch(scrutinee, arms) -> {
+      if exprContainsResult(scrutinee) { return true }
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> if exprContainsResult(g) { return true }
+          case None    -> {}
+        }
+        if eobContainsResult(arms[i].body) { return true }
+        i = i + 1
+      }
+      false
+    }
     case ECall(fn, args) -> {
       if exprContainsResult(fn) { return true }
       var i = 0
@@ -157,6 +171,35 @@ func exprContainsResult(e: in Expr): Bool {
           case CANamed(_, v, _) -> exprContainsResult(v)
         }
         if hasIt { return true }
+        i = i + 1
+      }
+      false
+    }
+    case ETypeApp(fn, _) -> exprContainsResult(fn)
+    case EIndex(recv, indices) -> {
+      if exprContainsResult(recv) { return true }
+      anyHaveResult(indices)
+    }
+    case EMember(recv, _) -> exprContainsResult(recv)
+    case EBinop(_, l, r) -> exprContainsResult(l) or exprContainsResult(r)
+    case EPrefix(_, x) -> exprContainsResult(x)
+    case EPropagate(inner) -> exprContainsResult(inner)
+    case EAwait(inner) -> exprContainsResult(inner)
+    case EYield(inner) -> exprContainsResult(inner)
+    case ESpawn(inner) -> exprContainsResult(inner)
+    case ETry(inner) -> exprContainsResult(inner)
+    case EOld(inner) -> exprContainsResult(inner)
+    case EAssign(t, _, v) -> exprContainsResult(t) or exprContainsResult(v)
+    case EBlock(blk) -> blockContainsResult(blk)
+    case EUnsafe(blk) -> blockContainsResult(blk)
+    case ELambda(_, body) -> blockContainsResult(body)
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> if exprContainsResult(x) { return true }
+          case ISText(_, _) -> {}
+        }
         i = i + 1
       }
       false
@@ -175,8 +218,20 @@ func exprContainsResult(e: in Expr): Bool {
       }
       exprContainsResult(body)
     }
-    case _ -> false
   }
+}
+
+func blockContainsResult(body: in Block): Bool {
+  var i = 0
+  while i < body.statements.count {
+    match body.statements[i].kind {
+      case SExpr(e)         -> if exprContainsResult(e) { return true }
+      case SReturn(Some(e)) -> if exprContainsResult(e) { return true }
+      case _                -> {}
+    }
+    i = i + 1
+  }
+  false
 }
 
 func eobContainsResult(eob: in ExprOrBlock): Bool {
