@@ -247,9 +247,13 @@ notification to skip:
 1. **Read the summary comment** (`get_comments` on the PR) and
    the linked issues (`gh issue view <n>`) to understand each
    finding.
-2. **Fix every REQUIRED finding** in code.  Do not close issues
-   manually — the review workflow auto-closes them when the finding
-   is gone from the next diff.
+2. **Fix every REQUIRED finding** in code.  When the fix lands in
+   the *same* PR before merge, the review workflow auto-closes the
+   finding on the next `claude-review` run (it detects the finding
+   is gone from the new diff).  When you push fixes *after* a PR has
+   merged, or when a finding turns out to already be fixed on `main`,
+   the auto-closer cannot see them — close the issue manually
+   with a one-line comment pointing at the fixing commit / PR.
 3. **Commit and push** the fixes.  The push triggers a new
    `claude-review` run automatically (the workflow fires on
    `pull_request: synchronize`).
@@ -260,6 +264,43 @@ notification to skip:
 5. **SUGGESTION findings** are tracked as issues too but do not
    block merge.  Address them if they are low-effort or if the
    user asks; otherwise note them for follow-up.
+
+#### Closing the originating issue when a PR merges
+
+The auto-close logic above only runs against review-finding
+issues (the `review-finding`-labeled ones the workflow files).
+**Issues that originated *outside* the review loop** — e.g. the
+hand-authored CRITICAL / HIGH / MEDIUM / LOW tickets like #311,
+#316, #345, etc. — are *not* touched by the workflow, even when a
+PR explicitly fixes them.
+
+When you watch a PR through to merge, close every issue it
+addresses immediately after the merge webhook fires:
+
+1. Identify the originating issues — the PR description's
+   "Closes #N" / "Fixes #N" lines, plus any issues the PR body
+   references in its "Cross-references" / "Related" sections.
+2. For each, call `mcp__github__issue_write` with
+   `method: "update"`, `state: "closed"`, and
+   `state_reason: "completed"`.
+3. Follow with `mcp__github__add_issue_comment` carrying a
+   one-paragraph note that names the merged PR and summarises how
+   it was fixed (the fix, not the diff).  This makes the issue
+   self-explaining when someone lands on it from a search.
+4. If the PR only partially addresses the issue (the typical
+   parent-issue case — e.g. #318 covering 24 libraries while the
+   PR ships tests for two), leave it OPEN and add a status comment
+   listing what's done and what remains.
+5. For review-finding issues that addressed concerns the merged
+   PR fixed *after* the auto-close window (or were already stale
+   on `main`), close them manually with `state_reason: completed`
+   and a comment pointing at the resolving commit or the existing
+   state on `main`.
+
+Do this as part of the same turn that handles the merge webhook
+— don't wait for a separate "tidy issues" pass.  The audit
+runs cleaner when an open issue list always reflects in-flight
+work, not historical bookkeeping debt.
 
 Do **not** push empty commits or trivial no-op changes to get the
 check to pass — fix the actual underlying issues.  If a REQUIRED
