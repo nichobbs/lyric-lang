@@ -542,7 +542,18 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       val envNames2: List[String] = filterNames(envNames, bs)
       val env2:      Map[String, Term] = copyMap(env, envNames2)
       // Alpha-rename any binder that would capture a free var from env2.
+      // The freshened name must avoid *both* the env's codomain AND any
+      // sibling binder names — otherwise a freshly-generated `x$N` could
+      // collide with an adjacent unrenamed binder (see #448 #456).
       val captured = envCodomainFreeVars(env2, envNames2)
+      val taken: List[String] = newList()
+      var ki = 0
+      while ki < captured.count { taken.add(captured[ki]); ki = ki + 1 }
+      var ji = 0
+      while ji < bs.count {
+        if not nameMember(taken, bs[ji].name) { taken.add(bs[ji].name) }
+        ji = ji + 1
+      }
       val newBs: List[TermBinding] = newList()
       var rename:      Map[String, Term] = env2
       val renameNames: List[String]       = newList()
@@ -552,7 +563,8 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       while j < bs0.count {
         val orig = bs0[j]
         if nameMember(captured, orig.name) {
-          val fresh = freshNameAvoiding(orig.name, captured)
+          val fresh = freshNameAvoiding(orig.name, taken)
+          taken.add(fresh)
           rename.add(orig.name, TVar(name = fresh, sort = sortOf(orig.term)))
           if not nameMember(renameNames, orig.name) { renameNames.add(orig.name) }
           newBs.add(TermBinding(name = fresh, term = orig.term))
@@ -568,6 +580,15 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       val envNames2: List[String] = filterNamesByBinders(envNames, binders)
       val env2:      Map[String, Term] = copyMap(env, envNames2)
       val captured = envCodomainFreeVars(env2, envNames2)
+      // See TLet above — `taken` must include sibling binder names too.
+      val taken: List[String] = newList()
+      var ki = 0
+      while ki < captured.count { taken.add(captured[ki]); ki = ki + 1 }
+      var bi = 0
+      while bi < binders.count {
+        if not nameMember(taken, binders[bi].name) { taken.add(binders[bi].name) }
+        bi = bi + 1
+      }
       val newBinders: List[SortBinder] = newList()
       var rename:      Map[String, Term] = env2
       val renameNames: List[String]       = newList()
@@ -577,7 +598,8 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       while i < binders.count {
         val b = binders[i]
         if nameMember(captured, b.name) {
-          val fresh = freshNameAvoiding(b.name, captured)
+          val fresh = freshNameAvoiding(b.name, taken)
+          taken.add(fresh)
           rename.add(b.name, TVar(name = fresh, sort = b.sort))
           if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
           newBinders.add(SortBinder(name = fresh, sort = b.sort))
@@ -604,6 +626,15 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       val envNames2: List[String] = filterNamesByBinders(envNames, binders)
       val env2:      Map[String, Term] = copyMap(env, envNames2)
       val captured = envCodomainFreeVars(env2, envNames2)
+      // See TLet above — `taken` must include sibling binder names too.
+      val taken: List[String] = newList()
+      var ki = 0
+      while ki < captured.count { taken.add(captured[ki]); ki = ki + 1 }
+      var bi = 0
+      while bi < binders.count {
+        if not nameMember(taken, binders[bi].name) { taken.add(binders[bi].name) }
+        bi = bi + 1
+      }
       val newBinders: List[SortBinder] = newList()
       var rename:      Map[String, Term] = env2
       val renameNames: List[String]       = newList()
@@ -613,7 +644,8 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       while i < binders.count {
         val b = binders[i]
         if nameMember(captured, b.name) {
-          val fresh = freshNameAvoiding(b.name, captured)
+          val fresh = freshNameAvoiding(b.name, taken)
+          taken.add(fresh)
           rename.add(b.name, TVar(name = fresh, sort = b.sort))
           if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
           newBinders.add(SortBinder(name = fresh, sort = b.sort))
