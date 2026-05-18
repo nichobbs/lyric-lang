@@ -48,6 +48,6 @@ kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 # feature = "azureservicebus" — Azure Service Bus SDK for JVM
 "com.azure:azure-messaging-servicebus"      = { version = "7.17.6", features = ["azureservicebus"] }
 # feature = "sqs" — AWS SDK v2 SQS module for JVM
-"software.amazon.awssdk:sqs"                = { version = "2.25.x", features = ["sqs"] }
+"software.amazon.awssdk:sqs"                = { version = "2.25.70", features = ["sqs"] }
 # feature = "kafka" — Apache Kafka JVM client
 "org.apache.kafka:kafka-clients"            = { version = "3.7.0", features = ["kafka"] }

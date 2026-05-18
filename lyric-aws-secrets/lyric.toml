@@ -99,6 +99,6 @@ output_assembly = "AwsSecrets.dll"
 
 [maven]
 # JVM Secrets Manager client — included when feature = "jvm".
-"software.amazon.awssdk:secretsmanager" = { version = "2.25.x", features = ["jvm"] }
+"software.amazon.awssdk:secretsmanager" = { version = "2.25.70", features = ["jvm"] }
 # JVM Systems Manager (Parameter Store) client — included when feature = "jvm".
-"software.amazon.awssdk:ssm"            = { version = "2.25.x", features = ["jvm"] }
+"software.amazon.awssdk:ssm"            = { version = "2.25.70", features = ["jvm"] }
