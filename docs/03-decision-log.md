@@ -3964,6 +3964,89 @@ follows in a separate PR.
 
 ---
 
+## D073 — Workspace, git dependencies, and local library resolution
+
+**Date:** 2026-05-18
+**Sketch:** `docs/38-workspace.md`
+
+### Decision
+
+Three orthogonal mechanisms are added to the Lyric package system to address
+in-repo cross-library dependencies, external unregistered packages, and the
+goal of keeping NuGet / Maven out of application manifests.
+
+**Workspace.** A `[workspace]` table in a root `lyric.toml` (no `[package]`
+section — a "virtual workspace") enables a monorepo workflow. Members are
+auto-discovered by walking subdirectories for `lyric.toml` files; directories
+are excluded via `[workspace].exclude` (path-prefix list) or by setting
+`workspace = false` in a member's `[package]` table. A single `lyric.lock` at
+the workspace root unifies resolution for all members.
+
+**Workspace dependency form.** Members declare cross-member deps with
+`{ workspace = true }`:
+
+```toml
+"Lyric.Cache" = { workspace = true }
+"Lyric.Cache" = { workspace = true, version = "0.1.0" }  # version validates local manifest
+```
+
+The registry form (`"Lyric.Cache" = "0.1.0"`) is not redirected through the
+workspace — it always resolves from the registry. This lets a package pin a
+specific published version of a sibling without implicit substitution.
+
+**Git dependency form.** External packages can be depended on directly from a
+git source:
+
+```toml
+"SomeLib" = { git = "https://github.com/user/repo", tag = "v1.0.0" }
+"MonoLib" = { git = "https://...", tag = "v0.2.0", subdir = "lyric-somelib" }
+```
+
+Supported ref keys: `tag` (immutable, preferred), `rev` (pinned commit),
+`branch` (mutable, warns at build time, rejected in published packages). Git
+sources are cached in `~/.lyric/git-cache/` keyed on resolved commit. The lock
+file records the resolved commit SHA for every git dep.
+
+**Workspace overrides.** `[workspace.overrides]` in the root manifest redirects
+any dep (registry, git, or path) to a local directory for fork/patch
+development. Overrides trigger a warning during `lyric publish`.
+
+**Transitive native deps.** `[nuget]` and `[maven]` entries in library
+manifests are propagated transitively through the dep graph. Application
+manifests do not need to repeat native entries for libraries they consume.
+Published packages embed their native dep lists in registry metadata so
+downstream resolvers can reconstruct the NuGet / Maven graph without fetching
+source.
+
+### Alternatives considered
+
+**Explicit member list.** Cargo's `members = ["lyric-*"]` glob form. Rejected
+in favour of auto-discovery with an exclusion list — the ecosystem already has
+20+ member directories and explicit listing adds maintenance cost with no safety
+benefit (the opt-out per-member mechanism provides the precision when needed).
+
+**Go-style GitHub URL deps as the primary mechanism.** Go resolves packages
+directly by URL (`require github.com/user/repo v1.0.0`). Considered but
+rejected for the primary in-repo case: workspace-local resolution is more
+ergonomic and doesn't couple the build to a network fetch for packages that
+are already on disk. The git dep form provides the same URL-based escape hatch
+for external packages.
+
+**Automatic workspace substitution of registry deps.** Any dep on a package
+that happens to be a workspace member could be silently redirected to the local
+source. Rejected: implicit substitution makes it hard to pin a specific
+published version of a sibling or to test against a released artifact. The
+explicit `{ workspace = true }` opt-in is clearer.
+
+### Open questions
+
+Q-W-001 through Q-W-004 track the path toward eliminating `[nuget]` / `[maven]`
+from application manifests entirely (renaming to `[platform.dotnet]` /
+`[platform.jvm]`, enforcement at publish time, migration tooling). See
+`docs/38-workspace.md` §8.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

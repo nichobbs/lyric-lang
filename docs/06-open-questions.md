@@ -537,3 +537,12 @@ JS-target and WASM Component Model open questions (Q-JS-001–Q-JS-006 and
 later) are maintained in `docs/35-js-wasm-component-sketch.md` §11.  They
 live there because they require WASM Component Model domain context to
 evaluate.  All Q-JS entries are currently open.
+
+---
+
+## Workspace and native dep questions
+
+Workspace and native dep elimination open questions (Q-W-001–Q-W-004) are
+maintained in `docs/38-workspace.md` §8.  They live there because they require
+workspace and registry design context to evaluate.  All Q-W entries are
+currently open.
