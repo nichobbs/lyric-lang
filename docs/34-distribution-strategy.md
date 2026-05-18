@@ -318,7 +318,17 @@ curl -fsSL ... | sh -s -- --dir /usr/local/bin
 
 ---
 
-## 9. Open questions
+## 9. Library package registry
+
+This document covers the distribution of the `lyric` compiler and stdlib. The
+registry for third-party and first-party Lyric library packages (publish/restore
+flows, NuGet.org as the .NET channel, GitHub Packages Maven as the JVM channel,
+`lyric search`, lock-file checksums, private feeds) is specified separately in
+`docs/39-package-registry.md` (D074).
+
+---
+
+## 10. Open questions
 
 - **Q-dist-001** — AOT self-hosted binary path (§2.3): prerequisite is
   reproducible stage-2 bootstrap.  ETA: Phase 7.
