@@ -129,7 +129,9 @@ pub func parseOptLong(s: in String): Option[Long] {
 @stable(since="1.0")
 pub func parseOptDouble(s: in String): Option[Double] {
   var v: Double = default()
-  if Host.hostTryParseDouble(s, v) { Some(value = v) } else { None }
+  val styles  = Host.hostNumberStylesFloat()
+  val culture = Host.hostInvariantCulture()
+  if Host.hostTryParseDouble(s, styles, culture, v) { Some(value = v) } else { None }
 }
 
 @stable(since="1.0")

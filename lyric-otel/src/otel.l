@@ -23,6 +23,7 @@ import OTel.Types
 // below provide the only bindings actually used at call sites.
 import OTel.Kernel.Net
 import OTel.Kernel.Jvm
+import Std.Char
 import Std.Log
 
 // ─── Source / meter name used across all OTel emissions ──────────────────────
@@ -119,6 +120,11 @@ func spanKindToInt(k: SpanKind): Int {
 pub aspect Tracing {
   config {
     enabled:    Bool      = true
+    // sampleRate controls what fraction of calls are traced (0.0–1.0).
+    // Values below 1.0 are applied via a simple hash gate on the call
+    // name; use OTel SDK env vars (OTEL_TRACES_SAMPLER,
+    // OTEL_TRACES_SAMPLER_ARG) for head-based sampling at the exporter
+    // level when more sophisticated strategies are needed.
     sampleRate: Float     = 1.0
     spanKind:   SpanKind  = SpanKind.Internal
   }
@@ -126,16 +132,33 @@ pub aspect Tracing {
     if not enabled {
       ret = call.proceed()
     } else {
-      val span = startSpan(call.qualifiedName, spanKindToInt(spanKind))
-      match call.proceed() {
-        case Ok(v) -> {
-          endSpan(span)
-          ret = Ok(v)
+      // Deterministic sampling: hash the call name to [0,1) and skip
+      // the span when the hash exceeds sampleRate.
+      var shouldTrace = true
+      if sampleRate < 1.0 {
+        var hashSum = 0
+        var hi = 0
+        while hi < call.qualifiedName.length {
+          hashSum = (hashSum + Std.Char.toInt(call.qualifiedName.charAt(hi))) % 1000
+          hi = hi + 1
         }
-        case Err(e) -> {
-          setSpanError(span, e.message)
-          endSpan(span)
-          ret = Err(e)
+        val hashFraction: Float = hashSum.toFloat() / 1000.0
+        shouldTrace = hashFraction < sampleRate
+      }
+      if not shouldTrace {
+        ret = call.proceed()
+      } else {
+        val span = startSpan(call.qualifiedName, spanKindToInt(spanKind))
+        match call.proceed() {
+          case Ok(v) -> {
+            endSpan(span)
+            ret = Ok(v)
+          }
+          case Err(e) -> {
+            setSpanError(span, e.message)
+            endSpan(span)
+            ret = Err(e)
+          }
         }
       }
     }

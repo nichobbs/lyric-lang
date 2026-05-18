@@ -274,10 +274,8 @@ func testUnterminatedString(): Unit {
   assertEqual(r.diagnostics[0].code, "L0025", "unterm: L0025")
 }
 
-// #314 — Unicode escapes in the full BMP must decode correctly, not
-// silently to U+FFFD as the old ASCII-only lookup table did.  The
-// surrogate range U+D800..U+DFFF must be rejected with an L0022
-// diagnostic mirroring the F# bootstrap (#313).
+// Unicode escapes in the full BMP must decode correctly.
+// The surrogate range U+D800..U+DFFF must be rejected with L0022.
 func testUnicodeEscapeBmpRange(): Unit {
   // \u{80} — first non-ASCII BMP scalar.  Previously decoded to U+FFFD
   // under the 96-char ASCII lookup table.
@@ -314,8 +312,8 @@ func testUnicodeEscapeSurrogateRejected(): Unit {
 
 func testUnicodeEscapeNonBmpRejected(): Unit {
   // \u{1F600} — non-BMP scalar (emoji).  The current Char-returning
-  // surface can't express a UTF-16 surrogate pair, so non-BMP escapes
-  // produce an L0022 + U+FFFD until the wider follow-up lands (#314).
+  // surface cannot express a UTF-16 surrogate pair, so non-BMP escapes
+  // produce an L0022 + U+FFFD substitution.
   val r = lex("\"\\u{1F600}\"")
   assertEqualInt(diagCount(r), 1, "u1F600: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0022", "u1F600: L0022")

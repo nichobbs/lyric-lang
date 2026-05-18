@@ -217,6 +217,7 @@ pub func sendSimple(
   requires: to.length > 0
   requires: subject.length > 0
   requires: body.length > 0
+  requires: not containsHeaderInjection(subject)
 {
   val toAddr = makeAddress(to)
   val msg    = buildMessage([toAddr], subject, body, "")
@@ -235,6 +236,7 @@ pub func sendHtml(
   requires: to.length > 0
   requires: subject.length > 0
   requires: htmlBody.length > 0
+  requires: not containsHeaderInjection(subject)
 {
   val toAddr = makeAddress(to)
   val msg    = buildMessage([toAddr], subject, textBody, htmlBody)
@@ -243,13 +245,18 @@ pub func sendHtml(
 
 /// Construct an `EmailAddress` from a bare address string (no display name).
 @stable(since="0.1")
-pub func makeAddress(address: in String): EmailAddress {
+pub func makeAddress(address: in String): EmailAddress
+  requires: not containsHeaderInjection(address)
+{
   return EmailAddress(address = address, displayName = "")
 }
 
 /// Construct an `EmailAddress` with both an address and a display name.
 @stable(since="0.1")
-pub func makeAddressWithName(address: in String, displayName: in String): EmailAddress {
+pub func makeAddressWithName(address: in String, displayName: in String): EmailAddress
+  requires: not containsHeaderInjection(address)
+  requires: not containsHeaderInjection(displayName)
+{
   return EmailAddress(address = address, displayName = displayName)
 }
 
@@ -263,6 +270,8 @@ pub func makeAttachment(
 ): Attachment
   requires: filename.length > 0
   requires: contentType.length > 0
+  requires: not containsHeaderInjection(filename)
+  requires: not containsHeaderInjection(contentType)
 {
   return Attachment(
     filename    = filename,
@@ -351,6 +360,18 @@ func serialiseAttachmentList(attachments: in [Attachment]): String {
     first = false
   }
   return result + "]"
+}
+
+// Return true if `s` contains characters that could inject MIME headers.
+// Rejects carriage return, line feed, and NUL.
+func containsHeaderInjection(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    val ch = s.charAt(i).toString()
+    if ch == "\r" or ch == "\n" or ch == "\u{0}" { return true }
+    i = i + 1
+  }
+  return false
 }
 
 // Wrap a string value in JSON double quotes, escaping backslash, double-quote,

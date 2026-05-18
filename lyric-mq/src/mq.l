@@ -112,12 +112,12 @@ pub interface QueueConsumer {
   /// Block for up to `timeoutMs` milliseconds waiting for the next message,
   /// then invoke `handler`.  Returns Ok(()) when the handler completes
   /// successfully, or Err when the handler fails or no message arrived within
-  /// the timeout (Err("timeout")).
+  /// the timeout (Err("timeout")).  Pass 0 to poll without blocking.
   func consume(
     timeoutMs: in Int,
     handler:   func(msg: in Message): Result[Unit, String]
   ): Result[Unit, String]
-    requires: timeoutMs > 0
+    requires: timeoutMs >= 0
 
   /// Acknowledge that a message was processed successfully.
   /// No-op when ackMode is Auto.
@@ -214,11 +214,13 @@ impl QueueConsumer for NativeQueue {
     timeoutMs: in Int,
     handler:   func(msg: in Message): Result[Unit, String]
   ): Result[Unit, String]
-    requires: timeoutMs > 0
+    requires: timeoutMs >= 0
   {
     match mqKernelConsume(queueId, timeoutMs) {
       case Err(e)       -> Err(e)
       case Ok(msgJson)  -> {
+        // Empty string signals no message was available within the timeout
+        // (including an immediate poll when timeoutMs == 0).
         if msgJson == "" {
           return Err("timeout")
         }
@@ -317,14 +319,14 @@ pub func publishBatch(queue: in MessageQueue, messages: in [Message]): Result[Un
 }
 
 /// Block for up to `timeoutMs` milliseconds, consume one message, and invoke
-/// `handler`.
+/// `handler`.  Pass 0 to poll without blocking.
 @stable(since="0.1")
 pub func consume(
   consumer:  in QueueConsumer,
   timeoutMs: in Int,
   handler:   func(msg: in Message): Result[Unit, String]
 ): Result[Unit, String]
-  requires: timeoutMs > 0
+  requires: timeoutMs >= 0
 {
   return consumer.consume(timeoutMs, handler)
 }
@@ -453,9 +455,19 @@ func messagesToJson(messages: in [Message]): String {
 
 // Deserialise a JSON object (produced by the kernel) back into a Message.
 // The kernel emits the same format as messagesToJson above.
+// `id` and `body` are extracted via Std.Json to correctly handle escaped
+// characters in field values (fixes hand-rolled jsonExtractString truncation).
 func messageFromJson(json: in String): Message {
-  val id            = jsonExtractString(json, "id")
-  val body          = jsonExtractString(json, "body")
+  val doc  = Std.Json.parseJson(json)
+  val root = Std.Json.rootElement(doc)
+  val id = match Std.Json.tryGetProperty(root, "id") {
+    case Some(v) -> Std.Json.getString(v)
+    case None    -> ""
+  }
+  val body = match Std.Json.tryGetProperty(root, "body") {
+    case Some(v) -> Std.Json.getString(v)
+    case None    -> ""
+  }
   val deliveryCount = jsonExtractInt(json, "deliveryCount")
   // Headers are conveyed in a nested JSON array; parse key/value pairs.
   val hdrsRaw = jsonExtractRaw(json, "headers")
@@ -487,24 +499,6 @@ func parseHeadersJson(json: in String): [MessageHeader] {
     result = result + [MessageHeader(key = key, value = value)]
   }
   return result
-}
-
-// Extract a string field value from a JSON object literal.
-// Limitation: stops at the first unescaped quote after the opening quote;
-// values containing \" (escaped quotes) will be truncated at the first \".
-// All field values passed through here must be pre-escaped before embedding
-// (see jsonEscape); on the decode path, body content is not round-tripped
-// through this function — caller must be aware of this constraint.
-func jsonExtractString(json: in String, field: in String): String {
-  val needle = "\"" + field + "\":"
-  val start  = json.indexOf(needle)
-  if start < 0 { return "" }
-  val afterColon = start + needle.length
-  val q1 = json.indexOf("\"", afterColon)
-  if q1 < 0 { return "" }
-  val q2 = json.indexOf("\"", q1 + 1)
-  if q2 < 0 { return "" }
-  return json.substring(q1 + 1, q2)
 }
 
 // Extract an integer field value from a JSON object literal.

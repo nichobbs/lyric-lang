@@ -4,10 +4,10 @@
 // a Result-returning surface.  All failures surface as IOError so callers
 // can handle spawn errors the same way as file-IO errors.
 //
-// Argument handling: individual arguments that contain spaces or
-// double-quotes are wrapped in double-quotes with internal double-quotes
-// escaped as \".  This matches the Windows CreateProcess / .NET runtime
-// argument-splitting convention used on all platforms.
+// Argument handling: arguments that contain spaces, double-quotes, or
+// backslashes are wrapped in double-quotes.  Backslashes are doubled first
+// so that trailing backslashes before the closing quote do not escape it
+// (Windows CRT CommandLineToArgvW convention; safe on all platforms).
 
 @runtime_checked
 package Std.Process
@@ -26,8 +26,8 @@ func buildArgString(args: in List[String]): String {
   while i < count {
     val arg = args[i]
     if i > 0 { result = result + " " }
-    if arg.contains(" ") or arg.contains("\"") {
-      result = result + "\"" + arg.replace("\"", "\\\"") + "\""
+    if arg.contains(" ") or arg.contains("\"") or arg.contains("\\") {
+      result = result + "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
     } else {
       result = result + arg
     }

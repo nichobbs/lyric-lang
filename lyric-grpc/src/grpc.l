@@ -110,9 +110,9 @@ pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
   method:  in String,
-  payload: in [Byte],
+  payload: in slice[Byte],
   opts:    in GrpcCallOptions
-): Result[[Byte], GrpcStatus] {
+): Result[slice[Byte], GrpcStatus] {
   return Grpc.Kernel.Net.netCallUnary(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
 }
 
@@ -122,9 +122,9 @@ pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
   method:  in String,
-  payload: in [Byte],
+  payload: in slice[Byte],
   opts:    in GrpcCallOptions
-): Result[[Byte], GrpcStatus] {
+): Result[slice[Byte], GrpcStatus] {
   return Grpc.Kernel.Jvm.netCallUnary(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
 }
 
@@ -138,7 +138,7 @@ pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
   method:  in String,
-  payload: in [Byte],
+  payload: in slice[Byte],
   opts:    in GrpcCallOptions
 ): Result[GrpcStream, GrpcStatus] {
   return Grpc.Kernel.Net.netOpenServerStream(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
@@ -150,7 +150,7 @@ pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
   method:  in String,
-  payload: in [Byte],
+  payload: in slice[Byte],
   opts:    in GrpcCallOptions
 ): Result[GrpcStream, GrpcStatus] {
   return Grpc.Kernel.Jvm.netOpenServerStream(channel, service, method, payload, callTimeoutMs(opts), metadataString(opts))
@@ -160,13 +160,13 @@ pub func openServerStream(
 /// Returns Some(bytes) for each message; None when the stream ends cleanly.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
-pub func nextMessage(stream: in GrpcStream): Result[Option[[Byte]], GrpcStatus] {
+pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
   return Grpc.Kernel.Net.netNextStreamMessage(stream)
 }
 
 @stable(since="0.1")
 @cfg(feature = "jvm")
-pub func nextMessage(stream: in GrpcStream): Result[Option[[Byte]], GrpcStatus] {
+pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
   return Grpc.Kernel.Jvm.netNextStreamMessage(stream)
 }
 
