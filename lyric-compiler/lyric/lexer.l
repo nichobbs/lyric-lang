@@ -1557,13 +1557,8 @@ func decodeEscape(c: in Char): Option[Char] {
 }
 
 // Convert a BMP scalar value (UTF-16 code unit, 0..0xFFFF) to a Char.
-//
-// Defensive: rejects the surrogate range (0xD800..0xDFFF) directly per
-// Unicode §3.9 — surrogate code points are not valid scalar values and
-// feeding one to `System.Convert.ToChar` produces an unpaired
-// surrogate.  The lexer's own `lexUnicodeEscape` already filters these
-// before calling; the guard here keeps the function unconditionally
-// safe for any future caller.  See #313 and #314.
+// Rejects the surrogate range (0xD800..0xDFFF): surrogate code points
+// are not valid Unicode scalar values (Unicode §3.9).
 @pure
 func longToChar(v: in Long): Char {
   if v < 0i64 or v > 65535i64 or (v >= 55296i64 and v <= 57343i64) {
@@ -1630,9 +1625,7 @@ func lexEscape(state: inout LexerState, startP: in Position): Char {
 /// Decodes BMP scalar values (`\u{0}`..`\u{FFFF}` except the surrogate
 /// range `\u{D800}`..`\u{DFFF}`) to a single `Char`.  Non-BMP scalars
 /// (`\u{10000}`..`\u{10FFFF}`) require a UTF-16 surrogate pair which
-/// the current Char-returning surface cannot express; that work is
-/// tracked as the larger follow-up in #314.  The surrogate-range guard
-/// matches the F# bootstrap's behaviour after #313.
+/// the current Char-returning surface cannot express.
 ///
 /// The leading `\u` has already been consumed by the caller.
 func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
@@ -1690,9 +1683,9 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
         '\u{FFFD}'
       } else if v > 65535i64 {
         // Non-BMP scalar — needs a surrogate-pair encoding the current
-        // Char surface can't express.  Tracked in #314.
+        // Char surface cannot express.
         recordError(state, "L0022",
-                    "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding; tracked in #314",
+                    "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding",
                     makeSpan(startP, currentPosition(state)))
         '\u{FFFD}'
       } else {

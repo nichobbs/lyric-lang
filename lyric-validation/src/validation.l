@@ -38,6 +38,7 @@ package Validation
 
 import Std.Core
 import Std.Collections
+import Std.Regex
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -131,19 +132,22 @@ pub func notBlank(value: in String, field: in String): [ValidationError] {
   return err(field, "notBlank", field + " must not be blank")
 }
 
-/// Fail when `pattern` is non-empty and `value` is empty.
+/// Fail when `value` does not match the regular expression `pattern`.
 ///
-/// Note: full regular-expression matching is deferred; this rule enforces that
-/// a value is provided when a pattern constraint is declared.  Use `oneOf` or
-/// explicit string checks for structural validation until regex support ships.
-@experimental
+/// `patternDesc` is the human-readable description used in the error message
+/// (e.g. "E.164 phone number").  When `pattern` is empty, all values pass.
+@stable(since="0.1")
 pub func matches(
   value:       in String,
   field:       in String,
   pattern:     in String,
   patternDesc: in String
 ): [ValidationError] {
-  if pattern.length > 0 and value.length == 0 {
+  if pattern.length == 0 {
+    return []
+  }
+  val r = Std.Regex.compile(pattern)
+  if not Std.Regex.isMatch(r, value) {
     return err(field, "pattern", field + " must match " + patternDesc)
   }
   return []
@@ -167,20 +171,33 @@ pub func oneOf(value: in String, field: in String, allowed: in [String]): [Valid
   return err(field, "oneOf", field + " must be one of: " + joined)
 }
 
-/// Basic email address check: the value must contain exactly one "@" and at
-/// least one "." character after the "@".
+/// Email address validation.  Rejects obviously invalid addresses while
+/// accepting well-formed ones.  Not a full RFC 5322 validator; pair with
+/// a confirmation step for high-stakes flows.
 ///
-/// This is not a full RFC 5322 validator; it rejects obviously invalid addresses
-/// while accepting most well-formed ones.  For strict validation, pair this
-/// with a server-side confirmation step.
+/// Checks: non-empty; exactly one "@"; non-empty local part; non-empty
+/// domain with at least one "."; no leading/trailing dots in local or
+/// domain; no consecutive dots; no leading/trailing whitespace;
+/// TLD of at least two characters; no CRLF/NUL (injection guard).
 @stable(since="0.1")
 pub func email(value: in String, field: in String): [ValidationError] {
-  if value.length == 0 {
-    return err(field, "email", field + " must be a valid email address")
+  val badEmail = err(field, "email", field + " must be a valid email address")
+  if value.length == 0 { return badEmail }
+  // Reject CRLF/NUL — header injection guard.
+  var k = 0
+  while k < value.length {
+    val ch = value.charAt(k).toString()
+    if ch == "\r" or ch == "\n" or ch == "\u{0}" { return badEmail }
+    k = k + 1
   }
-  var atCount  = 0
-  var atIndex  = -1
-  var i        = 0
+  // Reject leading/trailing whitespace.
+  val first = value.charAt(0).toString()
+  val last  = value.charAt(value.length - 1).toString()
+  if first == " " or first == "\t" or last == " " or last == "\t" { return badEmail }
+  // Find the "@" — must appear exactly once.
+  var atCount = 0
+  var atIndex = -1
+  var i = 0
   while i < value.length {
     if value.charAt(i).toString() == "@" {
       atCount = atCount + 1
@@ -188,19 +205,39 @@ pub func email(value: in String, field: in String): [ValidationError] {
     }
     i = i + 1
   }
-  if atCount != 1 {
-    return err(field, "email", field + " must be a valid email address")
-  }
-  // Check there is at least one "." after the "@".
-  var hasDot = false
-  var j      = atIndex + 1
+  if atCount != 1 { return badEmail }
+  // Local part: must be non-empty, must not start or end with ".".
+  if atIndex == 0 { return badEmail }
+  val localFirst = value.charAt(0).toString()
+  val localLast  = value.charAt(atIndex - 1).toString()
+  if localFirst == "." or localLast == "." { return badEmail }
+  // Domain: must be non-empty, must not start or end with ".".
+  val domainStart = atIndex + 1
+  if domainStart >= value.length { return badEmail }
+  val domainFirstCh = value.charAt(domainStart).toString()
+  val domainLastCh  = value.charAt(value.length - 1).toString()
+  if domainFirstCh == "." or domainLastCh == "." { return badEmail }
+  // Domain: must contain at least one "." and no consecutive dots.
+  var dotCount = 0
+  var prevWasDot = false
+  var j = domainStart
   while j < value.length {
-    if value.charAt(j).toString() == "." { hasDot = true }
+    val ch = value.charAt(j).toString()
+    if ch == "." {
+      dotCount = dotCount + 1
+      if prevWasDot { return badEmail }
+      prevWasDot = true
+    } else {
+      prevWasDot = false
+    }
     j = j + 1
   }
-  if not hasDot {
-    return err(field, "email", field + " must be a valid email address")
-  }
+  if dotCount == 0 { return badEmail }
+  // TLD: must be at least 2 characters.
+  val lastDot = value.lastIndexOf(".")
+  if lastDot < 0 { return badEmail }
+  val tldLen = value.length - lastDot - 1
+  if tldLen < 2 { return badEmail }
   return []
 }
 

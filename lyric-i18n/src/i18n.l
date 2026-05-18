@@ -331,8 +331,15 @@ func parseLocaleKey(key: in String): Locale {
   }
 }
 
+// Maximum output length for substitutePlaceholders (1 MiB).
+// Prevents unbounded output when a substitution value is very large.
+val maxSubstOutputLength: Int = 1048576
+
 // Substitute {varName} placeholders in `template` using values from `vars`.
 // Unknown placeholder keys are left unchanged in the output.
+// Substitution values are inserted verbatim; they are NOT re-scanned for
+// further placeholders.  Returns `template` unchanged if the expanded output
+// would exceed `maxSubstOutputLength` characters.
 func substitutePlaceholders(template: in String, vars: in Map[String, String]): String {
   var out: String = ""
   var i:   Int    = 0
@@ -351,8 +358,13 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
       } else {
         val varName = template.substring(i + 1, j)
         match vars.get(varName) {
-          case Some(value) -> out = out + value
-          case None        -> out = out + "{" + varName + "}"
+          case Some(value) -> {
+            if out.length + value.length > maxSubstOutputLength {
+              return template
+            }
+            out = out + value
+          }
+          case None -> out = out + "{" + varName + "}"
         }
         i = j + 1
       }
