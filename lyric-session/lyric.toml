@@ -14,12 +14,19 @@ output_assembly = "Session.dll"
 "Session"            = "src"
 "Session.Kernel.Net" = "src/_kernel/net"
 
+# Session-fixation regression suite — pins the no-auto-create invariant
+# in InProcessSessionStore.set() (#316 / #436).  Runs via the
+# multi-package test runner once issue #465 lands; until then the test
+# files serve as living specs alongside the source.
+[project.tests]
+"Session.SessionFixationTests" = "tests/session_fixation_tests.l"
+
 [features]
 redis    = []   # Redis-backed sessions (StackExchange.Redis)
 inmemory = []   # In-process sessions (suitable for single-instance deployments)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 "Lyric.Cache"  = { path = "../lyric-cache" }
 
 [nuget]

@@ -35,5 +35,12 @@ output_assembly = "Lyric.Auth.dll"
 "Auth.Kernel.Net"  = "src/_kernel/net/auth_kernel.l"
 "Auth.Kernel.Jvm"  = "src/_kernel/jvm/auth_kernel.l"
 
+# Security regression suite — pins the JWT algorithm-pinning (#315) and
+# role allow-list (#360) invariants.  Runs via the multi-package test
+# runner once issue #465 lands; until then the test files serve as
+# living specs alongside the source.
+[project.tests]
+"Auth.AuthSecurityTests" = "tests/auth_security_tests.l"
+
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
