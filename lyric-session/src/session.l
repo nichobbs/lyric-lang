@@ -1,5 +1,11 @@
 /// Session — distributed session management for Lyric web applications.
 ///
+/// ⚠️  THREAD SAFETY: `InProcessSessionStore` is NOT thread-safe, and
+/// `NativeSessionStore` (Redis-backed) has a load-modify-save race window
+/// on `set` / `delete` / `clear` that can lose concurrent updates.
+/// Production multi-threaded services should expect lost-update behaviour
+/// until atomic CAS / Lua-EVAL session updates land (lyric-lang #398, #411).
+///
 /// Provides a `SessionStore` interface with Redis-backed and in-process
 /// implementations.  Both share the same API; swap the store at startup
 /// via factory functions without changing application code.

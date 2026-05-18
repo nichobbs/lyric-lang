@@ -160,6 +160,11 @@ func translateLit(lit: in Literal): Term {
 }
 
 // Convert an Int codepoint to a Long value for LInt literals.
+// Lyric's surface lacks a direct Int → Long cast today; mirror the
+// `intToLong` shim in lexer.l.  Inputs are bounded codepoint indices
+// (typically small non-negative integers) so the constant-time-per-bit
+// bound here is acceptable.  Will collapse to a single `conv.i8` IL
+// instruction when the cleaner widening shim lands (lyric-lang #418 §9).
 func codepointToLong(n: in Int): Long {
   var acc: Long = 0i64
   if n >= 0 {
@@ -1112,8 +1117,17 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
         wpWhile(env, resultSort, postcond, stmts, idx, cond, body, st.span)
       }
       case SInvariant(_) -> {
-        // SInvariant outside a loop — skip.
-        wpWalk(env, resultSort, postcond, stmts, idx + 1)
+        // SInvariant outside a loop is a user error (lyric-lang #418 §7).
+        // Emit a diagnostic so the misplaced clause is surfaced, then
+        // walk on so the rest of the body still gets verified.
+        val rest = wpWalk(env, resultSort, postcond, stmts, idx + 1)
+        val di: List[Diagnostic] = newList()
+        di.add(warningDiagnostic("V0030",
+          "invariant: clause outside loop head is ignored; move it onto a while/loop",
+          st.span))
+        var k: Int = 0
+        while k < rest.diags.count { di.add(rest.diags[k]); k = k + 1 }
+        WpResult(wp = rest.wp, sideGoals = rest.sideGoals, assumed = rest.assumed, diags = di)
       }
       case _ -> {
         val di: List[Diagnostic] = newList()

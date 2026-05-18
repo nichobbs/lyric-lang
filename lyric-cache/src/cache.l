@@ -1,5 +1,11 @@
 /// Cache — typed key-value cache with TTL and a pluggable store interface.
 ///
+/// ⚠️  THREAD SAFETY: `InProcessCacheStore` is NOT thread-safe.  Concurrent
+/// access from multiple threads produces undefined behaviour (lost updates,
+/// torn reads).  Until the `protected type` weaver ships, multi-threaded
+/// services should use a Redis-backed store (`Lyric.Cache.Redis`) or guard
+/// access with an external mutex.  See lyric-lang #411.
+///
 /// `CacheStore` is the public interface for the backing store.  Implement it
 /// to plug in Redis, Memcached, or any other remote store.  `InProcessCacheStore`
 /// is the bundled in-process implementation backed by a mutable `Map`.

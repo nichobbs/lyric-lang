@@ -160,6 +160,7 @@ pub func registerRoutes(router: in Web.Router, registry: in HealthRegistry): Web
 /// this function by name.  Do not call it directly from application code.
 /// Until the kernel dispatcher ships, `runChecks` is a stub that always
 /// returns `{"status":"ok"}` regardless of registered checks — see below.
+@stable(since="0.1")
 pub func __handleLiveness(): Result[String, Web.ApiError] {
   return runChecks(CheckGroup.Liveness)
 }
@@ -168,6 +169,7 @@ pub func __handleLiveness(): Result[String, Web.ApiError] {
 /// returns the aggregated JSON response.
 ///
 /// WARNING: same caveats as `__handleLiveness`; stub returns ok unconditionally.
+@stable(since="0.1")
 pub func __handleReadiness(): Result[String, Web.ApiError] {
   return runChecks(CheckGroup.Readiness)
 }

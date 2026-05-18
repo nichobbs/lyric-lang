@@ -1,5 +1,11 @@
 /// Flags — feature flag library for Lyric.
 ///
+/// ⚠️  THREAD SAFETY: `InProcessFlagStore` is NOT thread-safe.  Refresh-then-read
+/// races can return stale or torn values when concurrent threads call
+/// `setBool` / `setString` / `refresh`.  Use a remote store
+/// (`connectRemote`) or wrap the in-process store in an external mutex
+/// until the `protected type` weaver ships.  See lyric-lang #411.
+///
 /// Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
 /// `FlagStore` is the public interface; `InProcessFlagStore` is the bundled
 /// in-process implementation.  For remote stores (LaunchDarkly, Unleash, or a

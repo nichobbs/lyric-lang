@@ -114,23 +114,6 @@ func ySkipWs(st: inout YamlState): Unit {
   }
 }
 
-// Skip whitespace that is NOT a newline (used in YAML block parsing).
-func ySkipInlineWs(st: inout YamlState): Unit {
-  while st.pos < st.src.length {
-    val c = st.src[st.pos]
-    if c == ' ' or c == '\t' {
-      st.pos = st.pos + 1
-    } else {
-      st.pos = st.pos  // no-op to satisfy the else branch
-    }
-    if not (c == ' ' or c == '\t') {
-      st.pos = st.src.length + 1  // break via sentinel — reset below
-    }
-  }
-  // The sentinel overshoot: clamp back to length.
-  if st.pos > st.src.length { st.pos = st.src.length }
-}
-
 func yStartsWith(st: in YamlState, s: in String): Bool {
   val remaining = st.src.length - st.pos
   if remaining < s.length {

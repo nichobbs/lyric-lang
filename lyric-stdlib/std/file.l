@@ -41,20 +41,25 @@ pub func fileExists(path: in String): Bool {
 /// Read the entire contents of `path` as UTF-8 text.
 ///
 /// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
-/// the host probe says the file doesn't exist, and `Err(IoError)` for
-/// any other host failure (encoding, permission, device, …).
+/// the host reports the file is missing, and `Err(IoError)` for any
+/// other host failure (encoding, permission, device, …).  The existence
+/// probe was dropped to eliminate a TOCTOU race between the probe and
+/// the read — instead the host exception is classified by message.
 @stable(since="1.0")
 pub func readText(path: in String): Result[String, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
-  if not hostFileExists(path) {
-    return Err(error = FileNotFound(path = path))
-  }
   return try {
     Ok(value = hostReadAllText(path))
   } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+    if b.message.startsWith("Could not find file") or
+       b.message.contains("FileNotFoundException") or
+       b.message.contains("DirectoryNotFoundException") {
+      Err(error = FileNotFound(path = path))
+    } else {
+      Err(error = IoError(path = path, message = b.message))
+    }
   }
 }
 

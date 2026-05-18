@@ -27,6 +27,7 @@
 //     val _ = clock.now()
 //     println(toString(stubCounterGet(ticks)))   // prints "2"
 //   }
+@axiom("Lyric.Stdlib.StubCounter / .StubCounterHost are an opaque counter the host owns; semantics are make / get / increment with monotonic non-negative integer state")
 package Std.Testing.Mocking
 
 extern type StubCounter = "Lyric.Stdlib.StubCounter"

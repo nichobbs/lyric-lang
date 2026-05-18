@@ -9,6 +9,7 @@ import Std.Core
 // ─── Wire types ──────────────────────────────────────────────────────────────
 
 /// The four active protobuf wire types.
+@stable(since="0.1")
 pub type WireType = enum {
   case Varint          // id 0 — int32, int64, uint32, uint64, sint32, sint64, bool, enum
   case Fixed64         // id 1 — fixed64, sfixed64, double
@@ -17,6 +18,7 @@ pub type WireType = enum {
 }
 
 /// Integer wire-type identifier used when encoding field tags.
+@stable(since="0.1")
 pub func wireTypeId(w: WireType): Int {
   match w {
     case WireType.Varint          -> 0
@@ -31,6 +33,7 @@ pub func wireTypeId(w: WireType): Int {
 /// A field value ready to be written to a ProtoBuffer.
 /// The field number is carried alongside the value so the encoder can emit
 /// the tag and value together in a single pass over the field list.
+@stable(since="0.1")
 pub type ProtoField = enum {
   /// Variable-length integer.  Covers bool, enum, int32, int64, uint32, uint64.
   /// Callers pass the raw bit pattern (for sint32/sint64, ZigZag-encode first).
@@ -54,6 +57,7 @@ pub type ProtoField = enum {
 
 /// A field decoded from a raw protobuf byte stream.  The caller inspects the
 /// field number and wire type to decide how to interpret the raw bits.
+@stable(since="0.1")
 pub type DecodedField = enum {
   case DecodedVarint(number: Int, v: Long)
   case DecodedFixed32(number: Int, bits: Int)
@@ -63,6 +67,7 @@ pub type DecodedField = enum {
 
 /// One step of the streaming decoder: the field that was read and the byte
 /// offset immediately past it (ready for the next decodeStep call).
+@stable(since="0.1")
 pub type DecodeStep = record {
   field:      DecodedField
   nextOffset: Int
@@ -72,21 +77,25 @@ pub type DecodeStep = record {
 
 /// ZigZag-encode a signed 32-bit integer for sint32 fields.
 /// sint32 uses ZigZag so that small negative numbers encode compactly.
+@stable(since="0.1")
 pub func zigzag32(n: Int): Long {
   ((n << 1) ^ (n >> 31)).toLong()
 }
 
 /// ZigZag-encode a signed 64-bit integer for sint64 fields.
+@stable(since="0.1")
 pub func zigzag64(n: Long): Long {
   (n << 1) ^ (n >> 63)
 }
 
 /// ZigZag-decode a sint32 value.
+@stable(since="0.1")
 pub func unzigzag32(n: Long): Int {
   ((n >> 1) ^ -(n & 1L)).toInt()
 }
 
 /// ZigZag-decode a sint64 value.
+@stable(since="0.1")
 pub func unzigzag64(n: Long): Long {
   (n >> 1) ^ -(n & 1L)
 }
