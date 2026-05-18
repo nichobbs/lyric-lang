@@ -53,6 +53,11 @@ pub func readText(path: in String): Result[String, IOError] {
   return try {
     Ok(value = hostReadAllText(path))
   } catch Bug as b {
+    // Locale caveat: the "Could not find file" prefix match assumes
+    // an English .NET runtime.  On non-English runtimes a real
+    // FileNotFoundException may slip through as IoError until the
+    // host shim is upgraded to return an exception-type tag rather
+    // than the localised message text.  See lyric-lang #601.
     if b.message.startsWith("Could not find file") or
        b.message.contains("FileNotFoundException") or
        b.message.contains("DirectoryNotFoundException") {

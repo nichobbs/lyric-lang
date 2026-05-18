@@ -1,11 +1,11 @@
 /// Testing — mock implementations and test helpers for Lyric libraries.
 ///
-/// ⚠️  THREAD SAFETY: All Mock implementations in this library are NOT
+/// WARNING (thread safety): All Mock implementations in this library are NOT
 /// thread-safe.  Use them only in single-threaded test contexts; do not
 /// share a mock instance across concurrent test workers.  See
 /// lyric-lang #411.
 ///
-/// ⚠️  FAILURE INJECTION: The current mocks simulate only the happy path
+/// WARNING (failure injection): The current mocks simulate only the happy path
 /// (success returns).  Tests that need to exercise error-handling paths
 /// must subclass the relevant interface manually.  Configurable
 /// failure-injection hooks are tracked as lyric-lang #410.

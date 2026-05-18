@@ -1,6 +1,6 @@
 /// Jobs — background job scheduling and execution library for Lyric.
 ///
-/// ⚠️  THREAD SAFETY: `InProcessJobScheduler` is NOT thread-safe and is
+/// WARNING (thread safety): `InProcessJobScheduler` is NOT thread-safe and is
 /// intended only for single-threaded tests and prototyping.  Production
 /// services should use `NativeJobScheduler` with a Hangfire / Quartz
 /// backend which handles its own concurrency.  See lyric-lang #411.
