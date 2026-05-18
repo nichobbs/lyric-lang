@@ -37,7 +37,8 @@ package Storage
 import Std.Core
 import Std.Collections
 import Std.Json
-import Storage.Kernel.Net as StorageKernel
+import Storage.Kernel.Net
+import Storage.Kernel.Jvm
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -150,21 +151,21 @@ impl StorageBucket for NativeBucket {
     userMeta:    in Map[String, String]
   ): Result[StorageMetadata, StorageError] {
     val userMetaJson = serialiseStringMap(userMeta)
-    match StorageKernel.put(bucketHandle, key, dataBase64, contentType, userMetaJson) {
+    match storageKernelPut(bucketHandle, key, dataBase64, contentType, userMetaJson) {
       case Ok(json) -> parseMetadata(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "PUT_ERROR"))
     }
   }
 
   func get(key: in String): Result[StorageObject, StorageError] {
-    match StorageKernel.get(bucketHandle, key) {
+    match storageKernelGet(bucketHandle, key) {
       case Ok(json) -> parseStorageObject(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "GET_ERROR"))
     }
   }
 
   func delete(key: in String): Result[Unit, StorageError] {
-    match StorageKernel.delete(bucketHandle, key) {
+    match storageKernelDelete(bucketHandle, key) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(StorageError(message = msg, code = "DELETE_ERROR"))
     }
@@ -175,7 +176,7 @@ impl StorageBucket for NativeBucket {
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[ListResult, StorageError] {
-    match StorageKernel.list(bucketHandle, prefix, continuationToken, maxKeys) {
+    match storageKernelList(bucketHandle, prefix, continuationToken, maxKeys) {
       case Ok(json) -> parseListResult(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "LIST_ERROR"))
     }
@@ -185,14 +186,14 @@ impl StorageBucket for NativeBucket {
     key:              in String,
     expiresInSeconds: in Int
   ): Result[String, StorageError] {
-    match StorageKernel.presignedUrl(bucketHandle, key, expiresInSeconds) {
+    match storageKernelPresignedUrl(bucketHandle, key, expiresInSeconds) {
       case Ok(url)  -> Ok(url)
       case Err(msg) -> Err(StorageError(message = msg, code = "PRESIGN_ERROR"))
     }
   }
 
   func exists(key: in String): Result[Bool, StorageError] {
-    match StorageKernel.exists(bucketHandle, key) {
+    match storageKernelExists(bucketHandle, key) {
       case Ok(b)    -> Ok(b)
       case Err(msg) -> Err(StorageError(message = msg, code = "EXISTS_ERROR"))
     }
@@ -231,7 +232,7 @@ config LocalConnection {
 @stable(since="0.1")
 @cfg(feature = "s3")
 pub func connectS3(): Result[StorageBucket, StorageError] {
-  match StorageKernel.connectS3(
+  match storageKernelConnectS3(
     S3Connection.region,
     S3Connection.bucket,
     S3Connection.accessKey,
@@ -248,7 +249,7 @@ pub func connectS3(): Result[StorageBucket, StorageError] {
 @stable(since="0.1")
 @cfg(feature = "azureblob")
 pub func connectAzureBlob(): Result[StorageBucket, StorageError] {
-  match StorageKernel.connectAzure(
+  match storageKernelConnectAzure(
     AzureConnection.connectionString,
     AzureConnection.containerName)
   {
@@ -264,7 +265,7 @@ pub func connectAzureBlob(): Result[StorageBucket, StorageError] {
 @stable(since="0.1")
 @cfg(feature = "local")
 pub func connectLocal(): Result[StorageBucket, StorageError] {
-  match StorageKernel.connectLocal(
+  match storageKernelConnectLocal(
     LocalConnection.basePath,
     LocalConnection.bucketName)
   {
@@ -464,6 +465,122 @@ func parseStringMap(rawJson: in String): Map[String, String] {
     m = m.set(k, v)
   }
   return m
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+@cfg(feature = "s3")
+func storageKernelConnectS3(
+  region: in String, bucket: in String, accessKey: in String,
+  secretKey: in String, endpointUrl: in String
+): Result[Int, String] {
+  return Storage.Kernel.Net.connectS3(region, bucket, accessKey, secretKey, endpointUrl)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "s3")
+func storageKernelConnectS3(
+  region: in String, bucket: in String, accessKey: in String,
+  secretKey: in String, endpointUrl: in String
+): Result[Int, String] {
+  return Storage.Kernel.Jvm.connectS3(region, bucket, accessKey, secretKey, endpointUrl)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "azureblob")
+func storageKernelConnectAzure(
+  connectionString: in String, containerName: in String
+): Result[Int, String] {
+  return Storage.Kernel.Net.connectAzure(connectionString, containerName)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "azureblob")
+func storageKernelConnectAzure(
+  connectionString: in String, containerName: in String
+): Result[Int, String] {
+  return Storage.Kernel.Jvm.connectAzure(connectionString, containerName)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "local")
+func storageKernelConnectLocal(basePath: in String, bucketName: in String): Result[Int, String] {
+  return Storage.Kernel.Net.connectLocal(basePath, bucketName)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "local")
+func storageKernelConnectLocal(basePath: in String, bucketName: in String): Result[Int, String] {
+  return Storage.Kernel.Jvm.connectLocal(basePath, bucketName)
+}
+
+@cfg(feature = "dotnet")
+func storageKernelPut(
+  bucketHandle: in Int, key: in String, dataBase64: in String,
+  contentType: in String, userMetaJson: in String
+): Result[String, String] {
+  return Storage.Kernel.Net.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+}
+@cfg(feature = "jvm")
+func storageKernelPut(
+  bucketHandle: in Int, key: in String, dataBase64: in String,
+  contentType: in String, userMetaJson: in String
+): Result[String, String] {
+  return Storage.Kernel.Jvm.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
+}
+
+@cfg(feature = "dotnet")
+func storageKernelGet(bucketHandle: in Int, key: in String): Result[String, String] {
+  return Storage.Kernel.Net.get(bucketHandle, key)
+}
+@cfg(feature = "jvm")
+func storageKernelGet(bucketHandle: in Int, key: in String): Result[String, String] {
+  return Storage.Kernel.Jvm.get(bucketHandle, key)
+}
+
+@cfg(feature = "dotnet")
+func storageKernelDelete(bucketHandle: in Int, key: in String): Result[Unit, String] {
+  return Storage.Kernel.Net.delete(bucketHandle, key)
+}
+@cfg(feature = "jvm")
+func storageKernelDelete(bucketHandle: in Int, key: in String): Result[Unit, String] {
+  return Storage.Kernel.Jvm.delete(bucketHandle, key)
+}
+
+@cfg(feature = "dotnet")
+func storageKernelList(
+  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
+): Result[String, String] {
+  return Storage.Kernel.Net.list(bucketHandle, prefix, continuationToken, maxKeys)
+}
+@cfg(feature = "jvm")
+func storageKernelList(
+  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
+): Result[String, String] {
+  return Storage.Kernel.Jvm.list(bucketHandle, prefix, continuationToken, maxKeys)
+}
+
+@cfg(feature = "dotnet")
+func storageKernelPresignedUrl(
+  bucketHandle: in Int, key: in String, expiresInSeconds: in Int
+): Result[String, String] {
+  return Storage.Kernel.Net.presignedUrl(bucketHandle, key, expiresInSeconds)
+}
+@cfg(feature = "jvm")
+func storageKernelPresignedUrl(
+  bucketHandle: in Int, key: in String, expiresInSeconds: in Int
+): Result[String, String] {
+  return Storage.Kernel.Jvm.presignedUrl(bucketHandle, key, expiresInSeconds)
+}
+
+@cfg(feature = "dotnet")
+func storageKernelExists(bucketHandle: in Int, key: in String): Result[Bool, String] {
+  return Storage.Kernel.Net.exists(bucketHandle, key)
+}
+@cfg(feature = "jvm")
+func storageKernelExists(bucketHandle: in Int, key: in String): Result[Bool, String] {
+  return Storage.Kernel.Jvm.exists(bucketHandle, key)
 }
 
 // Wrap a string in JSON double quotes with basic escaping.
