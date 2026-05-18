@@ -26,7 +26,7 @@
 ///   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED  — serve Swagger UI at /swagger (default: false)
 ///   LYRIC_CONFIG_WEB_SERVER_SPECPATH        — OpenAPI spec URL path (default: /openapi.json)
 ///   LYRIC_CONFIG_WEB_CORS_ENABLED           — enable CORS middleware (default: false)
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins or * (default: *)
+///   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins (no default; required when Cors.enabled = true)
 ///   LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS    — comma-separated HTTP methods
 ///   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
 ///   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
@@ -35,6 +35,7 @@
 package Web
 
 import Std.Core
+import Std.Log
 import Web.Kernel.Net as HttpKernel
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
@@ -303,6 +304,17 @@ pub func start(router: in Router): Unit {
           "comma-separated list of allowed origins. Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
           "or the equivalent config source. Using \"*\" is not allowed with " +
           "authenticated APIs (see RFC 6454 §3 and the CORS spec on credentialed requests).")
+  }
+  // Explicit wildcard is permitted (some public, unauthenticated APIs
+  // legitimately want it) but always emits a startup warning so the
+  // operator sees it in logs.  Combined with credentialed requests
+  // this opens the same backdoor the empty-default fix closes.
+  if Cors.enabled and Cors.allowedOrigins == "*" {
+    Std.Log.warn(
+      "Cors.allowedOrigins = \"*\" is unsafe with authenticated APIs " +
+      "(CORS spec disallows credentials + wildcard origin). " +
+      "If this API is public and unauthenticated this is fine; " +
+      "otherwise list explicit origins.")
   }
   HttpKernel.serve(
     Server.host,
