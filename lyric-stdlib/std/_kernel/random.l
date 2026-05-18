@@ -1,5 +1,12 @@
 // std/random.l - Pseudorandom number generation.
 //
+// WARNING: System.Random is a PRNG (pseudorandom number generator), NOT a
+// cryptographically secure RNG (CSPRNG).  Do NOT use these functions for
+// security-sensitive purposes such as generating tokens, keys, nonces, or
+// passwords.  For cryptographic randomness use System.Security.Cryptography.
+// RandomNumberGenerator (not yet exposed in this stdlib; a future Std.Crypto
+// module will provide it).
+//
 // Wraps the BCL's `System.Random` shared instance plus a thin
 // constructor for seeded instances.  Lyric users see ordinary
 // `randomInt` / `randomDouble` helpers; the BCL handles state.

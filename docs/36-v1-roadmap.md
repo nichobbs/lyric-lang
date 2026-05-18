@@ -240,6 +240,8 @@ For Q022-2 and Q022-4: these are lower priority.  If they do not close before
 opaque) and document the `@externTarget` monomorphisation requirement in
 `docs/01-language-reference.md` §4 (FFI).
 
+**Fix target for Q022-2 and Q022-4:** v1.1.  Budget two milestones (one engineer-quarter each) for: (a) opaque-type CLR generic type argument emission in the `Lyric.Contract` resource writer, and (b) `@externTarget` resolution for Lyric-generic BCL methods.  FFI phase-3 escape-hatch tickets will be pre-filed before the v1.0 branch cut.
+
 **Q021 #4 — cross-package distinct types + imported interfaces in contract metadata**
 
 The gap: `satisfiesMarker` works for same-package type arguments but does not

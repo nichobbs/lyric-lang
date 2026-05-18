@@ -212,3 +212,22 @@ pub func subDurations(a: in Duration, b: in Duration): Duration {
 pub func toIsoString(t: in Instant): String {
   hostInstantToString(t)
 }
+
+// =====================================================================
+// Monotonic clock.
+// =====================================================================
+
+/// Nanoseconds from an unspecified epoch using the platform's monotonic
+/// high-resolution clock.  The clock never goes backwards, even during
+/// NTP adjustments.  Use differences between two calls to measure
+/// elapsed time; do not compare values across processes.
+///
+/// .NET: backed by System.Diagnostics.Stopwatch (GetTimestamp/Frequency).
+/// JVM:  backed by java.lang.System.nanoTime (modelled as freq=1e9).
+/// Two-step formula avoids Int64 overflow for any realistic timer frequency.
+@stable(since="1.0")
+pub func monotonicNanos(): Long {
+  var nanoTs: Long = hostStopwatchTimestamp()
+  var nanoFreq: Long = hostStopwatchFrequency()
+  return (nanoTs / nanoFreq) * 1000000000 + (nanoTs % nanoFreq) * 1000000000 / nanoFreq
+}

@@ -8,7 +8,8 @@
 /// Server (service hosting):
 ///   val registry = Grpc.create()
 ///   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
-///   Grpc.start(registry)   // blocks until SIGTERM
+///   Grpc.start(registry)              // blocks until SIGTERM
+///   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
 ///
 /// Payload format: raw protobuf-encoded bytes (slice[Byte]).
 /// Use lyric-proto for encoding/decoding; the client layer is deliberately
@@ -51,11 +52,30 @@ pub func withMetadata(opts: in GrpcCallOptions, key: in String, value: in String
   GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = opts.metadata + [entry])
 }
 
+func percentEncodeMetadata(s: in String): String {
+  var out: String = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.charAt(i).toString()
+    if ch == "%" {
+      out = out + "%25"
+    } else if ch == "," {
+      out = out + "%2C"
+    } else if ch == ":" {
+      out = out + "%3A"
+    } else {
+      out = out + ch
+    }
+    i = i + 1
+  }
+  return out
+}
+
 func metadataString(opts: in GrpcCallOptions): String {
   var result: String = ""
   for entry in opts.metadata {
     if result.length > 0 { result = result + "," }
-    result = result + entry.key + ":" + entry.value
+    result = result + percentEncodeMetadata(entry.key) + ":" + percentEncodeMetadata(entry.value)
   }
   return result
 }
@@ -331,4 +351,51 @@ pub func start(registry: in ServiceRegistry): Unit {
     GrpcServer.maxConnectionIdleMs,
     registry
   )
+}
+
+// ─── Server: non-blocking start with graceful stop ────────────────────────────
+
+/// Start the gRPC server and return a handle that can be used to stop it.
+/// Unlike `start`, this function returns immediately; the server runs in the
+/// background.  Call `stop` to drain in-flight RPCs and shut it down.
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
+  return Grpc.Kernel.Net.netStartHandle(
+    GrpcServer.host,
+    GrpcServer.port,
+    GrpcServer.reflectionEnabled,
+    GrpcServer.maxConnectionIdleMs,
+    registry
+  )
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
+  return Grpc.Kernel.Jvm.netStartHandle(
+    GrpcServer.host,
+    GrpcServer.port,
+    GrpcServer.reflectionEnabled,
+    GrpcServer.maxConnectionIdleMs,
+    registry
+  )
+}
+
+/// Stop the gRPC server, waiting up to `drainTimeoutMs` milliseconds for
+/// in-flight RPCs to complete before forcibly closing connections.
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
+  requires: drainTimeoutMs >= 0
+{
+  Grpc.Kernel.Net.netStopHandle(handle, drainTimeoutMs)
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
+  requires: drainTimeoutMs >= 0
+{
+  Grpc.Kernel.Jvm.netStopHandle(handle, drainTimeoutMs)
 }

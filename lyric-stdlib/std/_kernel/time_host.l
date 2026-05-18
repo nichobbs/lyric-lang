@@ -146,3 +146,14 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 
 @externTarget("System.Convert.ToString")
 pub func hostInstantToString(value: in Instant): String = ()
+
+// ─── Monotonic clock ──────────────────────────────────────────────────────────
+
+@externTarget("System.Diagnostics.Stopwatch.GetTimestamp")
+pub func hostStopwatchTimestamp(): Long = ()
+
+@externTarget("System.Diagnostics.Stopwatch.Frequency")
+pub func hostStopwatchFrequency(): Long = ()
+
+// Consumers: compute nanos in Std.Time.monotonicNanos using these two
+// building blocks so the formula lives in non-axiom Lyric code.

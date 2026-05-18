@@ -174,3 +174,12 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 // java.time.Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z").
 @externTarget("java.time.Instant.toString")
 pub func hostInstantToString(value: in Instant): String = ()
+
+// ─── Monotonic clock ──────────────────────────────────────────────────────────
+
+// System.nanoTime() returns nanoseconds directly; model it as a
+// 1 GHz stopwatch so Std.Time.monotonicNanos uses the same formula on both platforms.
+@externTarget("java.lang.System.nanoTime")
+pub func hostStopwatchTimestamp(): Long = ()
+
+pub func hostStopwatchFrequency(): Long { 1000000000 }
