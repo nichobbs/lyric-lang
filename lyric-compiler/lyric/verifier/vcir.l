@@ -385,9 +385,124 @@ func termListEq(xs: in List[Term], ys: in List[Term]): Bool {
   true
 }
 
+// Free variable collection used to detect capture during substitution.
+// Returns names in insertion order; duplicates are filtered before any
+// membership query via `nameMember`.
+pub func freeVarsOfTerm(t: in Term): List[String] {
+  val acc: List[String] = newList()
+  accumulateFreeVars(t, acc)
+  acc
+}
+
+func accumulateFreeVars(t: in Term, acc: inout List[String]): Unit {
+  match t {
+    case TVar(name, _) -> {
+      if not nameMember(acc, name) { acc.add(name) }
+    }
+    case TLit(_, _) -> {}
+    case TBuiltin(_, args) -> {
+      var i = 0
+      while i < args.count { accumulateFreeVars(args[i], acc); i = i + 1 }
+    }
+    case TApp(_, args, _) -> {
+      var i = 0
+      while i < args.count { accumulateFreeVars(args[i], acc); i = i + 1 }
+    }
+    case TLet(bs, body) -> {
+      // Init RHSes are in the outer scope; body shadows bound names.
+      var i = 0
+      while i < bs.count { accumulateFreeVars(bs[i].term, acc); i = i + 1 }
+      val inner: List[String] = newList()
+      accumulateFreeVars(body, inner)
+      var j = 0
+      while j < inner.count {
+        val n = inner[j]
+        var shadowed = false
+        var k = 0
+        while k < bs.count { if bs[k].name == n { shadowed = true }; k = k + 1 }
+        if not shadowed and not nameMember(acc, n) { acc.add(n) }
+        j = j + 1
+      }
+    }
+    case TIte(c, a, b) -> {
+      accumulateFreeVars(c, acc); accumulateFreeVars(a, acc); accumulateFreeVars(b, acc)
+    }
+    case TForall(binders, triggers, body) -> {
+      val inner: List[String] = newList()
+      var i = 0
+      while i < triggers.count {
+        var j = 0
+        while j < triggers[i].count { accumulateFreeVars(triggers[i][j], inner); j = j + 1 }
+        i = i + 1
+      }
+      accumulateFreeVars(body, inner)
+      addUnshadowed(inner, binders, acc)
+    }
+    case TExists(binders, body) -> {
+      val inner: List[String] = newList()
+      accumulateFreeVars(body, inner)
+      addUnshadowed(inner, binders, acc)
+    }
+  }
+}
+
+func addUnshadowed(inner: in List[String], binders: in List[SortBinder], acc: inout List[String]): Unit {
+  var j = 0
+  while j < inner.count {
+    val n = inner[j]
+    var shadowed = false
+    var k = 0
+    while k < binders.count { if binders[k].name == n { shadowed = true }; k = k + 1 }
+    if not shadowed and not nameMember(acc, n) { acc.add(n) }
+    j = j + 1
+  }
+}
+
+func nameMember(xs: in List[String], n: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == n { return true }
+    i = i + 1
+  }
+  false
+}
+
+// Generate a name not already in `taken` by appending `$<n>` for
+// increasing n.  No module-level mutable state required.
+func freshNameAvoiding(base_: in String, taken: in List[String]): String {
+  var n = 1
+  var candidate = base_ + "$" + intToString(n)
+  while nameMember(taken, candidate) {
+    n = n + 1
+    candidate = base_ + "$" + intToString(n)
+  }
+  candidate
+}
+
+// Aggregate free vars across every term in env's codomain.
+func envCodomainFreeVars(env: in Map[String, Term], envNames: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < envNames.count {
+    match mapGet(env, envNames[i]) {
+      case Some(v) -> accumulateFreeVars(v, acc)
+      case None    -> {}
+    }
+    i = i + 1
+  }
+  acc
+}
+
 // Capture-avoiding substitution.  envNames must contain exactly the keys
 // of env (maintained as a parallel list to avoid iterating Map.keys on a
 // TypeBuilderInstantiation, which generates invalid IL).
+//
+// When a binder name appears free in any term in the surviving env's
+// codomain, the binder is alpha-renamed to a fresh `<name>$<N>` and the
+// rename is threaded through every term that the binder scopes over —
+// closing the soundness hole described in lyric-lang #312 (a
+// substitution `{x -> y}` into `forall y. x > y` previously collapsed
+// to `forall y. y > y`).
 pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in Term): Term {
   match t {
     case TVar(name, _) -> {
@@ -416,39 +531,98 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       TApp(name = name, args = newArgs, retSort = s)
     }
     case TLet(bs, body) -> {
-      // Substitute into binding RHSes; shadow bound names in env copy.
-      val newBs: List[TermBinding] = newList()
+      // Init RHSes are evaluated in the outer scope.
+      val bs0: List[TermBinding] = newList()
       var i = 0
       while i < bs.count {
-        newBs.add(TermBinding(name = bs[i].name, term = substTerm(env, envNames, bs[i].term)))
+        bs0.add(TermBinding(name = bs[i].name, term = substTerm(env, envNames, bs[i].term)))
         i = i + 1
       }
+      // Body env removes the bound names from the outer env.
       val envNames2: List[String] = filterNames(envNames, bs)
-      val env2: Map[String, Term] = copyMap(env, envNames2)
-      TLet(bindings = newBs, body = substTerm(env2, envNames2, body))
+      val env2:      Map[String, Term] = copyMap(env, envNames2)
+      // Alpha-rename any binder that would capture a free var from env2.
+      val captured = envCodomainFreeVars(env2, envNames2)
+      val newBs: List[TermBinding] = newList()
+      var rename:      Map[String, Term] = env2
+      val renameNames: List[String]       = newList()
+      var k = 0
+      while k < envNames2.count { renameNames.add(envNames2[k]); k = k + 1 }
+      var j = 0
+      while j < bs0.count {
+        val orig = bs0[j]
+        if nameMember(captured, orig.name) {
+          val fresh = freshNameAvoiding(orig.name, captured)
+          rename.add(orig.name, TVar(name = fresh, sort = sortOf(orig.term)))
+          if not nameMember(renameNames, orig.name) { renameNames.add(orig.name) }
+          newBs.add(TermBinding(name = fresh, term = orig.term))
+        } else {
+          newBs.add(orig)
+        }
+        j = j + 1
+      }
+      TLet(bindings = newBs, body = substTerm(rename, renameNames, body))
     }
     case TIte(c, a, b) -> TIte(cond = substTerm(env, envNames, c), thenT = substTerm(env, envNames, a), elseT = substTerm(env, envNames, b))
     case TForall(binders, triggers, body) -> {
       val envNames2: List[String] = filterNamesByBinders(envNames, binders)
-      val env2: Map[String, Term] = copyMap(env, envNames2)
-      val newTriggers: List[List[Term]] = newList()
+      val env2:      Map[String, Term] = copyMap(env, envNames2)
+      val captured = envCodomainFreeVars(env2, envNames2)
+      val newBinders: List[SortBinder] = newList()
+      var rename:      Map[String, Term] = env2
+      val renameNames: List[String]       = newList()
+      var k = 0
+      while k < envNames2.count { renameNames.add(envNames2[k]); k = k + 1 }
       var i = 0
-      while i < triggers.count {
-        val row: List[Term] = newList()
-        var j = 0
-        while j < triggers[i].count {
-          row.add(substTerm(env2, envNames2, triggers[i][j]))
-          j = j + 1
+      while i < binders.count {
+        val b = binders[i]
+        if nameMember(captured, b.name) {
+          val fresh = freshNameAvoiding(b.name, captured)
+          rename.add(b.name, TVar(name = fresh, sort = b.sort))
+          if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
+          newBinders.add(SortBinder(name = fresh, sort = b.sort))
+        } else {
+          newBinders.add(b)
         }
-        newTriggers.add(row)
         i = i + 1
       }
-      TForall(binders = binders, triggers = newTriggers, body = substTerm(env2, envNames2, body))
+      val newTriggers: List[List[Term]] = newList()
+      var ti = 0
+      while ti < triggers.count {
+        val row: List[Term] = newList()
+        var tj = 0
+        while tj < triggers[ti].count {
+          row.add(substTerm(rename, renameNames, triggers[ti][tj]))
+          tj = tj + 1
+        }
+        newTriggers.add(row)
+        ti = ti + 1
+      }
+      TForall(binders = newBinders, triggers = newTriggers, body = substTerm(rename, renameNames, body))
     }
     case TExists(binders, body) -> {
       val envNames2: List[String] = filterNamesByBinders(envNames, binders)
-      val env2: Map[String, Term] = copyMap(env, envNames2)
-      TExists(binders = binders, body = substTerm(env2, envNames2, body))
+      val env2:      Map[String, Term] = copyMap(env, envNames2)
+      val captured = envCodomainFreeVars(env2, envNames2)
+      val newBinders: List[SortBinder] = newList()
+      var rename:      Map[String, Term] = env2
+      val renameNames: List[String]       = newList()
+      var k = 0
+      while k < envNames2.count { renameNames.add(envNames2[k]); k = k + 1 }
+      var i = 0
+      while i < binders.count {
+        val b = binders[i]
+        if nameMember(captured, b.name) {
+          val fresh = freshNameAvoiding(b.name, captured)
+          rename.add(b.name, TVar(name = fresh, sort = b.sort))
+          if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
+          newBinders.add(SortBinder(name = fresh, sort = b.sort))
+        } else {
+          newBinders.add(b)
+        }
+        i = i + 1
+      }
+      TExists(binders = newBinders, body = substTerm(rename, renameNames, body))
     }
   }
 }
