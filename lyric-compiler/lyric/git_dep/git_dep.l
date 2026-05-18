@@ -17,7 +17,6 @@ package Lyric.GitDep
 
 import Std.Core
 import Std.Collections
-import Std.Console
 import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
 import Std.Char as Char
 import Std.File as File
@@ -218,11 +217,7 @@ func revParseHead(dir: in String): String {
   args.add(dir)
   args.add("rev-parse")
   args.add("HEAD")
-  val sha = Str.trim(PC.runCapture("git", args, ""))
-  if sha.length == 0 {
-    Console.error("warning: git rev-parse HEAD returned empty in " + dir + "; lock file will record an empty SHA")
-  }
-  sha
+  Str.trim(PC.runCapture("git", args, ""))
 }
 
 // Pull the latest changes in an already-cloned branch directory.
