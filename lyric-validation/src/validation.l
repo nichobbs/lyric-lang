@@ -206,11 +206,24 @@ pub func email(value: in String, field: in String): [ValidationError] {
     i = i + 1
   }
   if atCount != 1 { return badEmail }
-  // Local part: must be non-empty, must not start or end with ".".
+  // Local part: must be non-empty, must not start or end with ".", and
+  // must not contain consecutive dots.
   if atIndex == 0 { return badEmail }
   val localFirst = value.charAt(0).toString()
   val localLast  = value.charAt(atIndex - 1).toString()
   if localFirst == "." or localLast == "." { return badEmail }
+  var localPrevDot = false
+  var li = 0
+  while li < atIndex {
+    val ch = value.charAt(li).toString()
+    if ch == "." {
+      if localPrevDot { return badEmail }
+      localPrevDot = true
+    } else {
+      localPrevDot = false
+    }
+    li = li + 1
+  }
   // Domain: must be non-empty, must not start or end with ".".
   val domainStart = atIndex + 1
   if domainStart >= value.length { return badEmail }
