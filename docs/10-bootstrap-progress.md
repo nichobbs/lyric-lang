@@ -12758,3 +12758,42 @@ exists, runs it, and asserts four output lines.  Added to `Program.fs` and
 `.fsproj`.
 
 **Test results:** 782/782 emitter tests pass, 0 failed. B130 is the new test.
+
+### D-progress-263 — HIGH-priority security, correctness, and robustness fixes (PR #515)
+
+**Goal.** Resolve 13 open HIGH-priority issues across security hardening, correctness, and robustness categories.
+
+**New lexer diagnostic codes.**
+
+- `L0015` — unrecognised numeric suffix (e.g. `100xyz`). Previously silently parsed the numeric part; now emits an error pointing at the unexpected suffix characters.
+- `L0016` — based literal with an empty digit body (e.g. bare `0x`, `0b___` with only underscores). Previously produced a garbled token or crashed; now emits a clear error.
+
+Both codes are added to `bootstrap/src/Lyric.Lexer/Lexer.fs` and covered by new tests in `NumericEdgeTests.fs`.
+
+**Emitter warning A0001 — async `out`/`inout` parameter.**  `async func` declarations with `out` or `inout` parameters are now flagged with `A0001` at emit time.  The async state-machine class cannot hold byref fields; the emitter stores a value copy, which means the caller's variable is not updated.  The warning directs callers to use `Result`-returning patterns instead.
+
+**Verifier warning V0013 — NaN/±Infinity in SMT goals.**  `smtRenderFloat` substitutes `0.0` for non-finite IEEE 754 values (SMT-LIB Real has no representation for them).  The verifier now detects these values in goals via `goalHasNonFiniteFloat` (added to `lyric-compiler/lyric/verifier/driver.l`) and emits `V0013` before discharging, making the approximation visible.
+
+Note: `V0009` is reserved by the mode checker for `assume` outside `unsafe {}`. The NaN/Infinity diagnostic uses the next unallocated code `V0013` (V0010 = conflicting level annotations, V0011 = unknown modifier, V0012 = planned for async-in-proof-required).
+
+**Diagnostic type extension (LSP consumers).**  `bootstrap/src/Lyric.Lexer/Diagnostics.fs` adds three optional fields to the `Diagnostic` record:
+
+- `Help : string option` — a human-readable hint surfaced as a related-information entry in LSP.
+- `Related : (Span × string) list` — additional source locations with explanatory labels (LSP `DiagnosticRelatedInformation[]`).
+- `Fix : TextEdit option` — a single-span text edit offered as a quick-fix code action in LSP clients.
+
+`TextEdit` is a new record (`Span` + `NewText : string`).  Combinators `withHelp`, `withRelated`, and `withFix` are available for chaining on `Diagnostic` instances.
+
+**ProcessCapture.fs — solver timeout fix.**  `WaitForExit()` (unbounded) replaced with `WaitForExit(10000)` + async `Task.Run` stdout reader, preventing hung Z3/CVC5 processes from blocking the emitter thread indefinitely.
+
+**Security hardening in service libraries.**
+
+- `lyric-feature-flags` — `connectRemote()` rejects plaintext HTTP when an API key is configured (`INSECURE_URL` error code, CWE-319 / OWASP A02:2021).
+- `lyric-ws` — `createRegistry()` fails fast with `WS_AUTH_MISCONFIGURED` when JWT auth is enabled but no secret is set, preventing a panic at the first upgrade attempt.
+- `lyric-storage` — `presignedUrl` adds `requires: expiresInSeconds <= 604800` (7-day cap) on both the interface and public wrapper.
+- `lyric-resilience` — `Retry` aspect config gains `maxDelayMs = 30000` (cap on exponential backoff) and `jitterFraction = 0.1` (10 % uniform jitter added to each delay interval); `backoffDelay` rewritten with safe multiplication and clamping to prevent overflow.
+- `lyric-cache` — `CacheEntry` tracks `insertedAt` counter; `evictOldest` evicts by insertion order rather than map-iteration order for deterministic LRU behaviour; expired entries are swept on read.
+
+**SelfHostedCli.fs — bridge robustness.**  Narrowed the broad `with _ ->` catch in `tryRun` to typed load-time exceptions (`FileNotFoundException`, `BadImageFormatException`, `ReflectionTypeLoadException`, `MissingMethodException`, `FileLoadException`).  Added `InvalidProgramException` and `TargetInvocationException wrapping InvalidProgramException` so CLR-JIT rejections of invalid MSIL in the self-hosted pipeline fall back to the bootstrap dispatcher instead of crashing the process.
+
+**Test results:** 782/782 emitter tests pass, 227/227 CLI tests pass.

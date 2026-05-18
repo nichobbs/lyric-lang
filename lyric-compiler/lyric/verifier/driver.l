@@ -201,9 +201,9 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
     // Warn before discharging if the goal contains NaN or ±Infinity float
     // literals.  smtRenderFloat silently substitutes 0.0 for non-finite values
     // (no SMT-LIB representation exists for them), so the verification result
-    // may be incorrect.  Surface this as V0009 so users know to review it.
+    // may be incorrect.  Surface this as V0013 so users know to review it.
     if goalHasNonFiniteFloat(g) {
-      resultDiags.add(warningDiagnostic("V0009",
+      resultDiags.add(warningDiagnostic("V0013",
         "goal '" + g.label + "' contains NaN or +/-Infinity float literal; " +
         "replaced with 0.0 in SMT-LIB output — verification result may be incorrect",
         g.origin))

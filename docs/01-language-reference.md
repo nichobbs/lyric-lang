@@ -73,6 +73,8 @@ The compiler enforces one direction: a non-experimental `pub` function may not c
 
 C-style leading-zero octal (`0755`) is rejected by the lexer.
 
+An unrecognised suffix on a numeric literal (e.g. `100xyz`) is a lexer error (`L0015`). A based literal with no valid digits after the prefix (e.g. bare `0x`, `0b___` with only underscores) is also a lexer error (`L0016`).
+
 **Float literals**:
 ```
 3.14
@@ -779,6 +781,8 @@ async func fetchUser(id: in UserId): User? {
 
 `async func` returns a value of type `Task[T]` (compiles to .NET `Task<T>` or `ValueTask<T>` per heuristic — see `docs/09-msil-emission.md` §14.2). `await` is a postfix operation in expression position.
 
+**Restriction — `out`/`inout` parameters:** `out` and `inout` parameters create byref slots that are incompatible with async state-machine classes (the CLR prohibits byref field types on state-machine classes). If an `async func` declares an `out` or `inout` parameter, the emitter stores a copy of the value in the state-machine rather than the reference — the caller's variable is not updated. The compiler emits warning `A0001` to flag this condition; the recommended fix is to return a `Result` or a record instead.
+
 ### 7.2 Async generators
 
 An `async func` whose body contains at least one `yield` expression is an *async generator*. Its return type must be a scalar element type `T`; the compiler infers the public signature as `IAsyncEnumerable[T]` (.NET) or `Iterable<T>` (JVM). The caller iterates with `for x in f(args) { … }`.
@@ -1135,6 +1139,8 @@ API surface and stability guarantees: governed by `@stable(since="1.0")` / `@exp
 
 `lyric prove` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.
 
+**NaN and ±Infinity in proof goals (`V0013`):** SMT-LIB Real has no representation for non-finite IEEE 754 values. When a proof goal contains a NaN or ±Infinity float literal, the emitter substitutes `0.0` in the generated SMT-LIB and emits warning `V0013`. The verification result may be incorrect; review such goals manually.
+
 ### 13.4 Documentation
 
 `lyric doc` generates HTML/JSON documentation from doc comments and contract metadata. Includes signatures, contracts, examples (extracted from doctests), and dependency graphs.
@@ -1146,6 +1152,16 @@ API surface and stability guarantees: governed by `@stable(since="1.0")` / `@exp
 ### 13.6 LSP
 
 The language server conforms to the Microsoft Language Server Protocol (latest stable). No Lyric-specific extensions in v1.
+
+**Diagnostic type (LSP consumers):** The internal `Diagnostic` record exposed via the compiler API carries three optional fields that map directly to LSP diagnostic capabilities:
+
+| Field | Type | LSP mapping |
+|---|---|---|
+| `Help` | `string option` | Rendered as a `DiagnosticRelatedInformation` entry with the current file URI and a "help" label |
+| `Related` | `(Span × string) list` | Rendered as additional `DiagnosticRelatedInformation` entries pointing to related source positions |
+| `Fix` | `TextEdit option` | Surfaced as a `CodeAction` of kind `quickfix` in the code-action response |
+
+`TextEdit` carries a `Span` (the source range to replace) and a `NewText` string (the replacement). Builder combinators `withHelp`, `withRelated`, and `withFix` are available on `Diagnostic` for constructing extended diagnostics.
 
 ### 13.7 Formatter
 
