@@ -123,9 +123,15 @@ pub aspect ValidateKey {
 // The returned string is *only* for inspection by `containsDotDot` /
 // `traversalReason`; it is never passed downstream to the storage backend.
 func normalisedKey(s: in String): String {
+  // Cap iterations to bound worst-case cost on adversarial keys.
+  // Each iteration strictly reduces the length of any percent-encoded prefix
+  // (e.g. %25 → %, %252e → %2e → .) so the loop converges; the cap is a
+  // defence-in-depth guard, not a correctness measure.
+  val maxIter = 20
   var cur  = s
   var prev = ""
-  while cur != prev {
+  var iter = 0
+  while cur != prev and iter < maxIter {
     prev    = cur
     val a   = Str.replace(cur,  "%25", "%")
     val b   = Str.replace(a,    "%2e", ".")
@@ -135,6 +141,7 @@ func normalisedKey(s: in String): String {
     val f   = Str.replace(e,    "%5c", "\\")
     val g   = Str.replace(f,    "%5C", "\\")
     cur     = Str.replace(g,    "\\",  "/")
+    iter    = iter + 1
   }
   cur
 }

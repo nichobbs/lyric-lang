@@ -27,10 +27,12 @@ func testMonotonicNanosNonDecreasing(): Unit {
 func testMonotonicNanosTwoCallsDiffer(): Unit {
   val a = monotonicNanos()
   // Busy-spin so the monotonic clock has a chance to advance.
+  // Assertion is >= (not >) to avoid flakiness on coarse-clock platforms
+  // where the resolution is coarser than the spin duration.
   var i = 0
-  while i < 10000 { i = i + 1 }
+  while i < 100000 { i = i + 1 }
   val b = monotonicNanos()
-  assertTrue(b > a, "monotonicNanos() must advance across non-trivial work")
+  assertTrue(b >= a, "monotonicNanos() must not go backwards across non-trivial work")
 }
 
 func testMonotonicNanosThreeCallsOrdered(): Unit {

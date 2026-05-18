@@ -193,9 +193,17 @@ toolchain emits a warning if `[workspace.overrides]` is non-empty when
 
 ## 4. Transitive native dependencies
 
-`[nuget]` and `[maven]` entries in a library's `lyric.toml` represent the
-library's native boundary — the point at which Lyric code delegates to a host
-platform assembly. These entries are:
+`[nuget]` / `[platform.dotnet]` and `[maven]` / `[platform.jvm]` entries in a
+library's `lyric.toml` declare the library's native boundary — the point at which
+Lyric code delegates to a host platform assembly.
+
+> **Naming note.** The current toolchain uses the table names `[nuget]` and
+> `[maven]`. §8 proposes renaming them to `[platform.dotnet]` and
+> `[platform.jvm]` to make their library-only role explicit. Examples in §9
+> already use the proposed names to pressure-test the rename. Until a
+> decision-log entry resolves Q-W-003, treat both names as equivalent.
+
+These entries are:
 
 - **Propagated transitively.** When a project depends on `Lyric.Grpc`, the
   toolchain reads `Grpc.Net.Client = "2.65.0"` from `lyric-grpc`'s manifest and
@@ -222,8 +230,11 @@ When `lyric publish` runs for a workspace member:
    dependencies.
 2. `{ git, branch = "..." }` deps are rejected — mutable refs cannot appear in
    a published manifest.
-3. `[workspace.overrides]` entries trigger a warning (see §3.4).
-4. The resulting manifest (with path deps replaced by registry refs) is what
+3. `{ git, tag = "..." }` and `{ git, rev = "..." }` deps are pinned to their
+   resolved commit SHA and are allowed in published manifests.  The lock file
+   records the exact `rev` so consumers reproduce the same clone.
+4. `[workspace.overrides]` entries trigger a warning (see §3.4).
+5. The resulting manifest (with path deps replaced by registry refs) is what
    appears in the registry.
 
 Publishing order within a workspace is the caller's responsibility. A future
@@ -254,6 +265,10 @@ name    = "SomeLib"
 version = "1.0.0"
 source  = { git = "https://github.com/user/repo", rev = "d4f9a1b2c3e..." }
 
+# [[package.platform.dotnet]] is a TOML sub-array nested under the preceding
+# [[package]] element (SomeLib in this case).  Each entry represents a NuGet
+# package that SomeLib's kernel code wraps and that must be included in the
+# NuGet restore graph for any consumer of SomeLib.
 [[package.platform.dotnet]]
 name    = "Grpc.Net.Client"
 version = "2.65.0"

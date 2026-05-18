@@ -85,6 +85,7 @@ import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, Wor
 import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
+import Std.Char as Ch
 
 // Phase 5 M5.2+ packages — present when the self-hosted compiler compiles this file.
 import Lyric.Emitter as Emitter        // emit(req) -> EmitResult; CompileTarget, Dotnet, Jvm
@@ -1067,13 +1068,16 @@ func cmdRestore(argv: in slice[String]): Int {
     case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
     case None      -> Path.join(mfDir, "lyric.lock")
   }
+  var lockFileExists = false
   val existingLf = match File.readText(lockPath) {
     case Err(_)     -> LF.emptyLockFile()
-    case Ok(locked) ->
+    case Ok(locked) -> {
+      lockFileExists = true
       match LF.parseLockFile(locked) {
         case Err(e)  -> { printErr("restore: lock file parse error: " + e); LF.emptyLockFile() }
         case Ok(clf) -> clf
       }
+    }
   }
   var lf = existingLf
 
@@ -1240,12 +1244,18 @@ func cmdRestore(argv: in slice[String]): Int {
 
   // Write the lock file or verify it (--locked mode).
   if lockedMode {
-    // --locked: fail if the freshly-resolved dep set differs from the on-disk lock.
-    if existingLf.packages.count == 0 and lf.packages.count > 0 {
+    // --locked: fail if no lock file exists on disk.
+    if not lockFileExists {
       printErr("restore: --locked: no lock file found; run 'lyric restore' first to generate it")
       return 1
     }
+    // Distinguish an empty lock file from a missing one.
+    if existingLf.packages.count == 0 and lf.packages.count > 0 {
+      printErr("restore: --locked: lock file exists but is empty; run 'lyric restore' to regenerate it")
+      return 1
+    }
     var lockMismatch = false
+    // Forward check: every resolved package must be in the lock file.
     var ci = 0
     while ci < lf.packages.count {
       val resolved = lf.packages[ci]
@@ -1265,6 +1275,19 @@ func cmdRestore(argv: in slice[String]): Int {
         }
       }
       ci += 1
+    }
+    // Reverse check: every locked package must still be in lyric.toml.
+    var ri = 0
+    while ri < existingLf.packages.count {
+      val locked = existingLf.packages[ri]
+      match LF.findPackage(lf, locked.name) {
+        case None -> {
+          printErr("restore: --locked: '" + locked.name + "' is in the lock file but not in lyric.toml (lyric.lock is stale — run 'lyric restore')")
+          lockMismatch = true
+        }
+        case Some(_) -> {}
+      }
+      ri += 1
     }
     if lockMismatch { return 1 }
     Console.println("restore: --locked: lock file verified")
@@ -1615,7 +1638,7 @@ func cmdSearch(argv: in slice[String]): Int {
   val encodedQuery = percentEncodeQuery(query)
 
   // Query the NuGet.org search API, filtered by the lyric-package tag.
-  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + encodedQuery + "&tags=lyric-package&take=20"
+  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + encodedQuery + "&packageType=lyric-package&take=20"
   val curlArgs: List[String] = newList()
   curlArgs.add("-fsSL")
   curlArgs.add(searchUrl)

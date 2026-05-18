@@ -128,7 +128,8 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
-  requires: not Std.String.contains(allowedAlgorithms, "none")
+  // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
+  requires: not Std.String.contains(Std.String.toLower(allowedAlgorithms), "none")
 {
   // Lyric-level algorithm pinning: reject before reaching the extern if the
   // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
@@ -151,7 +152,8 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
-  requires: not Std.String.contains(allowedAlgorithms, "none")
+  // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
+  requires: not Std.String.contains(Std.String.toLower(allowedAlgorithms), "none")
 {
   // Lyric-level algorithm pinning: same guard as the .NET overload above.
   val alg = jwtAlg(token)

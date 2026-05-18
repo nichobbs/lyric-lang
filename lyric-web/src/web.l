@@ -294,15 +294,15 @@ config Cors {
 /// Check the CORS configuration and return an error message if it is invalid,
 /// or None if it is acceptable to proceed.  Exposed for testing; production
 /// code goes through `start()` which panics on error.
-@stable(since="0.1")
+@experimental(since="0.1")
 pub func corsConfigError(enabled: in Bool, allowedOrigins: in String): Option[String] {
   if enabled and allowedOrigins.length == 0 {
     Some(value =
-      "Cors.enabled = true requires Cors.allowedOrigins to be a non-empty " +
-      "comma-separated list of allowed origins. Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
-      "or the equivalent config source. \"*\" is accepted (with a startup warning) " +
-      "but is unsafe for authenticated APIs (see RFC 6454 §3 and the CORS spec on " +
-      "credentialed requests).")
+      "Cors.enabled = true requires Cors.allowedOrigins to be set to a non-empty " +
+      "comma-separated list of allowed origins (e.g. \"https://example.com\") or " +
+      "\"*\" to allow all origins (acceptable for public APIs; not recommended for " +
+      "authenticated APIs — see RFC 6454 §3). Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
+      "or the equivalent config source.")
   } else {
     None
   }

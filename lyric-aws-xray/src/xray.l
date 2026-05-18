@@ -41,6 +41,7 @@ package AwsXRay
 
 import Std.Core
 import Std.Encoding
+import Std.Char as Ch
 import AwsXRay.Kernel.Net as XRayKernel
 
 // ─── SubsegmentHandle ─────────────────────────────────────────────────────────
@@ -125,20 +126,38 @@ pub aspect Tracing {
   }
 }
 
+// Return the number of UTF-8 bytes needed to encode a single BMP Char.
+// Surrogate halves (U+D800–U+DFFF) are counted as 3 bytes each — they
+// are technically invalid in UTF-8 but this is a conservative safe bound.
+func utf8CharBytes(c: in Char): Int {
+  val code = Ch.toInt(c)
+  if code < 0x80 { 1 } else if code < 0x800 { 2 } else { 3 }
+}
+
 // CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's 1024-byte limit.
 // Truncation is by UTF-8 byte count (not character count) so multi-byte characters
-// cannot push the encoded form over the limit.
+// cannot push the encoded form over the limit.  Single forward pass: O(n).
 func sanitizeAnnotation(s: in String): String {
   val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
   val b = a.replace("<", "_").replace(">", "_")
+  // Fast path: entire string fits.
   if Std.Encoding.encodeUtf8(b).length <= 1024 {
-    b
-  } else {
-    // Walk backwards one character at a time until the UTF-8 encoding fits.
-    var i = b.length
-    while i > 0 and Std.Encoding.encodeUtf8(b.substring(0, i)).length > 1024 {
-      i = i - 1
-    }
-    b.substring(0, i)
+    return b
   }
+  // Single forward pass: accumulate byte count and stop at the 1024-byte limit.
+  var byteCount = 0
+  var charCount = 0
+  var i = 0
+  var stop = false
+  while i < b.length and not stop {
+    val bytes = utf8CharBytes(b[i])
+    if byteCount + bytes > 1024 {
+      stop = true
+    } else {
+      byteCount = byteCount + bytes
+      charCount = charCount + 1
+      i = i + 1
+    }
+  }
+  b.substring(0, charCount)
 }

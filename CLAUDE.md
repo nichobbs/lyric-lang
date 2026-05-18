@@ -627,6 +627,12 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   (`Lyric.Storage`). S3, Azure Blob, and local filesystem backends;
   `StorageBucket` interface with put/get/delete/list/presignedUrl/exists;
   `AuditAccess` and `ValidateKey` aspects.
+- `lyric-auth/` — `lyric-auth` library: transport-agnostic authentication
+  (`Auth`). JWT verification (`verifyJwt`) with algorithm pinning (RFC 8725
+  §3.1; prevents alg=none forgery and HS256/RS256 confusion); claim extraction
+  (`extractClaim`); constant-time API key comparison (`verifyApiKey`); role
+  allow-list helper (`rolesContain`). `.NET` and JVM backends via
+  `Auth.Kernel.Net` / `Auth.Kernel.Jvm`.
 - `lyric-resilience/` — `lyric-resilience` library: retry and circuit-breaker
   aspect templates (`Lyric.Resilience`). `Retry` aspect template with
   configurable `maxAttempts`, `initialDelayMs`, `maxDelayMs` (cap), and

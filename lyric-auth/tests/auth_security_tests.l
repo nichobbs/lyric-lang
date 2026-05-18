@@ -76,3 +76,96 @@ test "verifyJwt multi-algorithm pin (HS256,RS256) still fails closed on junk" {
                           "issuer-x", "audience-y", "HS256,RS256")
   assertTrue(not ok, "multi-algorithm pin must still fail closed on junk")
 }
+
+// ─── jwtAlg extraction (#553) ─────────────────────────────────────────────────
+// jwtAlg is package-private; tested via verifyJwt which short-circuits to false
+// before the kernel when the extracted alg is missing or not in the allow-list.
+
+test "jwtAlg: no-padding header (rem==0) correctly extracts HS256" {
+  // Header: {"alg":"HS256","typ":"JWT"} → eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 (len=36, rem=0)
+  // Alg is HS256 which IS in the allow-list, so we reach the kernel.
+  // The kernel rejects the fake signature, so verifyJwt returns false.
+  // This confirms jwtAlg did not return "" (which would mean it failed to extract alg).
+  // Note: we cannot distinguish "alg extracted but sig invalid" from a correct extraction
+  // for this case — what matters is that no panic occurs and the result is false (safe).
+  val ok = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.fakesig",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "HS256 token with fake signature must fail closed")
+}
+
+test "jwtAlg: two-equals-padding header (rem==2) — missing alg returns false" {
+  // Header: {"typ":"JWT"} → eyJ0eXAiOiJKV1QifQ (len=18, rem=2; needs == padding)
+  // No "alg" key → jwtAlg returns "" → verifyJwt returns false before kernel.
+  val ok = Auth.verifyJwt(
+    "eyJ0eXAiOiJKV1QifQ.payload.fakesig",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "header with no alg field must fail closed (rem==2 padding path)")
+}
+
+test "jwtAlg: one-equals-padding header (rem==3) — empty JSON has no alg" {
+  // Header: {} → e30 (len=3, rem=3; needs = padding)
+  // No "alg" key → jwtAlg returns "" → verifyJwt returns false before kernel.
+  val ok = Auth.verifyJwt(
+    "e30.payload.fakesig",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "empty JSON header has no alg field (rem==3 padding path)")
+}
+
+test "jwtAlg: invalid rem==1 segment is treated as malformed" {
+  // A base64url segment whose length % 4 == 1 is not valid base64url.
+  // jwtAlg returns "" → verifyJwt returns false.
+  // "aaaaa" is 5 chars; 5 % 4 = 1.
+  val ok = Auth.verifyJwt(
+    "aaaaa.payload.fakesig",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "rem==1 base64url segment is malformed — must fail closed")
+}
+
+test "jwtAlg: token with no dot separator fails closed" {
+  // No '.' → dot < 0 → jwtAlg returns "" → verifyJwt returns false.
+  val ok = Auth.verifyJwt(
+    "nodot",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "token with no dot separator must fail closed")
+}
+
+test "jwtAlg: alg not in allow-list is rejected before the kernel" {
+  // Header: {"alg":"RS256"} → eyJhbGciOiJSUzI1NiJ9 (len=20, rem=0)
+  // jwtAlg extracts "RS256"; allowedAlgorithms is "HS256" → rejected before kernel.
+  val ok = Auth.verifyJwt(
+    "eyJhbGciOiJSUzI1NiJ9.payload.fakesig",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "RS256 alg rejected when only HS256 is in allow-list")
+}
+
+// ─── Duplicate alg key attack regression (#560) ───────────────────────────────
+// RFC 8259 §4 permits duplicate keys; last-wins is common in many JSON parsers.
+// A crafted header {"alg":"RS256","alg":"HS256"} tries to mask the real alg behind
+// a trusted-looking first alg value.  lastIndexOf in jwtAlg picks up "HS256" (last),
+// which is then checked against the allow-list — so the attack is detected.
+
+test "duplicate alg attack: lastIndexOf picks last alg, rejects wrong algorithm" {
+  // Header: {"alg":"RS256","typ":"JWT","alg":"HS256"} (last alg = HS256)
+  // → eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImFsZyI6IkhTMjU2In0 (len=55, rem=3; needs = padding)
+  // allowedAlgorithms = "RS256" — if we mistakenly picked the first alg (RS256)
+  // we would proceed to the kernel; with lastIndexOf we pick "HS256" and reject
+  // before the kernel since HS256 ∉ {"RS256"}.
+  val ok = Auth.verifyJwt(
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImFsZyI6IkhTMjU2In0.payload.fakesig",
+    "test-secret", "", "", "RS256")
+  assertTrue(not ok,
+    "duplicate alg header: last alg (HS256) not in RS256-only allow-list — must reject")
+}
+
+test "duplicate alg attack: both algs in allow-list — still fails on invalid sig" {
+  // Header: same duplicate alg header (last alg = HS256), but now HS256 IS allowed.
+  // jwtAlg returns "HS256"; rolesContain("HS256,RS256","HS256") = true → kernel called.
+  // Kernel rejects the fake signature → false.  Confirms lastIndexOf picks "HS256"
+  // and that the token is still validated (not silently accepted).
+  val ok = Auth.verifyJwt(
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImFsZyI6IkhTMjU2In0.payload.fakesig",
+    "test-secret", "", "", "HS256,RS256")
+  assertTrue(not ok,
+    "duplicate alg with both algs allowed: invalid sig must still fail closed")
+}

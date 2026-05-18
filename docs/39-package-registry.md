@@ -97,7 +97,7 @@ Rules:
 ### 4.1 .NET publish flow
 
 ```
-lyric publish [--manifest <lyric.toml>] [--registry <url>] [--api-key <key>]
+lyric publish [--manifest <lyric.toml>] [--no-build] [--registry <url>] [--api-key <key>]
 ```
 
 Steps performed by the CLI:
@@ -183,10 +183,11 @@ cache (`~/.lyric/pkg-cache/`).
 
 ### 5.2 Lock file checksums
 
-The lock file produced by `lyric restore` pins:
+The lock file produced by `lyric restore` pins all resolved packages.  After a
+`lyric publish` run, the lock file also records the uploaded artifact:
 
 ```toml
-# lyric.lock (excerpt)
+# lyric.lock (excerpt — combines restore and publish entries)
 
 [[package]]
 name     = "Lyric.Cache"
@@ -199,6 +200,15 @@ name     = "Lyric.Web"
 version  = "0.1.0"
 source   = "nuget:https://api.nuget.org/v3/index.json"
 sha512   = "sha512-def456..."
+
+# [[published]] entries are appended by `lyric publish`.
+# They record the package name, version, and SHA-512 of the uploaded .nupkg
+# so the publish is reproducible and auditable.
+[[published]]
+name     = "MyLib"
+version  = "0.2.0"
+registry = "https://api.nuget.org/v3/index.json"
+sha512   = "sha512-ghi789..."
 ```
 
 `lyric restore` in CI (`--locked` flag) refuses to update the lock file and
@@ -238,6 +248,13 @@ version control). They come from:
    ["https://pkgs.dev.azure.com/my-org/..."]
    token = "..."
    ```
+   Set restrictive file permissions so other users on the machine cannot read
+   the file:
+   ```sh
+   chmod 600 ~/.lyric/credentials.toml
+   ```
+   The toolchain emits a warning on startup if the file exists with permissions
+   broader than `600`.
 2. Environment variables: `LYRIC_NUGET_API_KEY`, `LYRIC_GITHUB_TOKEN`.
 3. Standard NuGet credential providers (for Azure Artifacts, the
    `CredentialProvider.Microsoft` plugin is detected automatically).
@@ -259,10 +276,12 @@ lyric search "Lyric.Cache"    # look up a specific package
 lyric search --all            # list all published Lyric packages
 ```
 
-Implementation: queries the NuGet.org search API with `q=<term>&tags=lyric-package`.
+Implementation: queries the NuGet.org search API with `q=<term>&packageType=lyric-package`.
+(`packageType` is the NuGet search API's filter for a named package type, distinct from
+the `tags` field which is a free-text keyword.)
 
 ```
-GET https://azuresearch-usnc.nuget.org/query?q=cache&tags=lyric-package
+GET https://azuresearch-usnc.nuget.org/query?q=cache&packageType=lyric-package
 ```
 
 Output example:
