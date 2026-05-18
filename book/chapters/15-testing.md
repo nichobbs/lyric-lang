@@ -5,7 +5,7 @@ Testing in Lyric is a language feature, not a framework. The `test`, `property`,
 This chapter covers the three test styles (unit tests, property tests, and snapshots), doctests extracted from doc comments, and the command-line flags that control what runs. The next chapter covers stubs and test wires, which are how you isolate code that depends on interfaces.
 
 ::: note
-**Bootstrap status (v1).** `lyric test <file.l>` ships single-file mode today — pass a `@test_module` file and it runs the `test` blocks. Property tests, doctests, snapshot updates, and manifest-driven discovery (`lyric test --properties`, `--doctests`, `--update-snapshots`, `--manifest`) are v2 work and are described here for the eventual surface; they will not run yet. Cross-package non-`pub` access (`@test_module package Account` reaching into the `Account` package's internals) also lands in v2; v1 supports only the same-package case where the test items live in the package they exercise. See `docs/24-test-runner-plan.md`.
+**Test runner status.** `lyric test <file.l>` runs `test` blocks and supports `--filter` and `--list`. `Std.Testing.Snapshot` is fully shipped and `@stable` — snapshot assertions write on first run and compare on subsequent runs, with diff output and a configurable snapshot directory (`snapshotIn(dir, label, actual)`). `Std.Testing.Property` is in the stdlib with composable generators, but `lyric test` currently skips `property` declarations (reporting `# skip`) — property execution is a v2 runner item. Doctests, `--manifest`-driven multi-file discovery, `--properties`, `--update-snapshots`, and cross-package non-`pub` access are also v2. See `docs/24-test-runner-plan.md`.
 :::
 
 ## §15.1 `@test_module`

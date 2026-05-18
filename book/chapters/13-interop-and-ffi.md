@@ -46,7 +46,7 @@ The `@axiom` string is not a comment — it is part of the contract metadata emi
 The `requires:` and `ensures:` clauses inside an extern declaration are axioms in the proof-theoretic sense: the prover treats them as facts, does not try to prove them, and uses them when verifying callers. If a caller in a `@proof_required` module calls `readAllBytes`, the prover knows `result.length >= 0` after the call because the axiom says so. If that axiom is wrong — if there is some code path that returns a negative length — the proof is wrong, and no tool will catch it. This is why the axiom string should be precise and the contracts should be conservative.
 
 ::: note
-**Note:** The current compiler resolves `extern package` declarations against the `Lyric.Stdlib` bundle for BCL surface. Arbitrary BCL types not covered by the stdlib modules produce an `E0030` diagnostic. The full reflection-driven binding, which will let any BCL type be used in an `extern package` block, is a future deliverable. For now, reach for the stdlib modules; they cover the common BCL surfaces.
+**Note:** The `Lyric.Stdlib` F# shim is fully retired; the compiler now resolves `extern package` declarations directly against the BCL via reflection-driven binding. Any BCL type can be declared in an `extern package` block and annotated with `@externTarget`. Reach for the stdlib modules first — they provide idiomatic Lyric wrappers with contracts — but arbitrary BCL surfaces are accessible when needed.
 :::
 
 ## §13.3 The `@axiom` social contract

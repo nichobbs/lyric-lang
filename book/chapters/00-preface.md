@@ -57,7 +57,7 @@ This is also not an API reference. The standard library's source lives in `stdli
 
 ## A note on the compiler
 
-The compiler exists and ships working code. `lyric build`, `lyric run`, `lyric test`, and `lyric prove` are real commands you can run today. The compiler targets .NET 10. Some features described in this book are ahead of what is shipped — notably, some advanced FFI, certain `@projectable` edge cases, and the full standard library surface — but the core language and the features that matter most for learning are implemented.
+The compiler exists and ships working code. `lyric build`, `lyric run`, `lyric test`, `lyric bench`, and `lyric prove` are real commands you can run today. The compiler targets .NET 10 and JVM (Java 21). The core language, standard library, FFI, contracts, aspects, formatter, test runner, and benchmarking tool are all implemented. Features still in progress are noted inline where they appear; the most significant are the `lyric run --target jvm` convenience wrapper, JUnit 5 ConsoleLauncher integration, `module-path.txt` generation for JVM builds, the `call` context inside aspect bodies, and `@inline_template` C-mode aspect inlining.
 
 Where a feature is not yet shipped, the text says so. Descriptions that say "the compiler checks" or "the prover discharges" are not hypothetical — they describe what actually happens when you run the commands.
 
