@@ -62,7 +62,7 @@ PDF_FLAGS := \
 	-V geometry:margin=2.5cm \
 	-V colorlinks=true \
 	-V linkcolor=NavyBlue \
-	--highlight-style=tango \
+	--syntax-highlighting=tango \
 	--lua-filter=filters/sidebar.lua
 
 ifeq ($(EISVOGEL),1)
@@ -70,7 +70,7 @@ PDF_FLAGS += --template=eisvogel
 endif
 
 pdf: $(METADATA) $(CHAPTERS)
-	$(PANDOC) $(METADATA) $(CHAPTERS) $(PDF_FLAGS) -o $(OUT_BASE).pdf
+	@$(PANDOC) $(METADATA) $(CHAPTERS) $(PDF_FLAGS) -o $(OUT_BASE).pdf
 	@echo "Written: $(OUT_BASE).pdf"
 
 # ── HTML ─────────────────────────────────────────────────────────────────────
@@ -81,12 +81,12 @@ HTML_FLAGS := \
 	--toc \
 	--toc-depth=2 \
 	--css=style.css \
-	--highlight-style=tango \
+	--syntax-highlighting=tango \
 	--lua-filter=filters/sidebar.lua \
 	-V lang=en
 
 html: $(METADATA) $(CHAPTERS) style.css
-	$(PANDOC) $(METADATA) $(CHAPTERS) $(HTML_FLAGS) -o $(OUT_BASE).html
+	@$(PANDOC) $(METADATA) $(CHAPTERS) $(HTML_FLAGS) -o $(OUT_BASE).html
 	@echo "Written: $(OUT_BASE).html"
 
 # ── Both ─────────────────────────────────────────────────────────────────────
