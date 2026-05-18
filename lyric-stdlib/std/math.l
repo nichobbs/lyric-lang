@@ -268,3 +268,20 @@ pub func isNaN(x: in Double): Bool        { Host.hostIsNaN(x) }
 pub func isInfinity(x: in Double): Bool   { Host.hostIsInfinity(x) }
 @stable(since="1.0")
 pub func isFinite(x: in Double): Bool     { Host.hostIsFinite(x) }
+
+/// Widen a 32-bit signed integer to a 64-bit signed integer.
+///
+/// Use this when arithmetic on the wider type is required and implicit
+/// widening is unavailable (mixed-width expressions evaluate in the
+/// narrower type in the current bootstrap).
+@pure
+@stable(since="1.0")
+pub func intToLong(n: in Int): Long { Host.hostIntToLong(n) }
+
+/// Narrow a 64-bit signed integer to a 32-bit signed integer.
+///
+/// Panics (OverflowException) if the value is outside the Int range
+/// [-2 147 483 648 .. 2 147 483 647].  Callers must range-check before
+/// calling if the value may be out of range.
+@stable(since="1.0")
+pub func longToInt(n: in Long): Int { Host.hostLongToInt(n) }

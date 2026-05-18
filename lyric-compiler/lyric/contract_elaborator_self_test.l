@@ -454,6 +454,64 @@ func testNonFuncItemsPassthrough(): Unit {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Nested-return elaboration tests (fix for #341).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A return nested inside an if-branch should be elaborated with ensures
+// checks, matching the behaviour for top-level returns.
+func testNestedReturnInIf(): Unit {
+  val src =
+    "package T\n" +
+    "func clamp(x: Int): Int\n" +
+    "  ensures: result >= 0\n" +
+    "{\n" +
+    "  if x < 0 { return 0 }\n" +
+    "  x\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn   = firstFunction(file, "clamp")
+  val blk  = bodyBlockOf(fn)
+  // Top level: [if-stmt, trailing SExpr(x)]
+  // The if-stmt is an SExpr(EIf(...)).  Its then-branch block must have
+  // been elaborated: original SReturn(0) → [let __lyric_result_N = 0,
+  // assert(ensures), return __lyric_result_N].
+  assertTrue(blk.statements.count >= 2, "nested-return-if: at least 2 top-level stmts")
+  // Find the if-statement (first non-assert top-level statement).
+  var found = false
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SExpr(e) -> {
+        match e.kind {
+          case EIf(_, thenBranch, _, _) -> {
+            match thenBranch {
+              case EOBBlock(innerBlk) -> {
+                // After elaboration the then-branch must have more than one
+                // statement (the let binding + assert + return).
+                assertTrue(innerBlk.statements.count > 1,
+                  "nested-return-if: then-branch elaborated (count > 1)")
+                // The last statement must be SReturn.
+                val last = innerBlk.statements[innerBlk.statements.count - 1]
+                match last.kind {
+                  case SReturn(_) -> {}
+                  case _          -> assertTrue(false, "nested-return-if: last stmt should be SReturn")
+                }
+                found = true
+              }
+              case _ -> {}
+            }
+          }
+          case _ -> {}
+        }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  assertTrue(found, "nested-return-if: EIf with EOBBlock then-branch found")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Test runner.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -472,5 +530,6 @@ func main(): Unit {
   testSyntheticNamesUnique()
   testFileLevelIdentity()
   testNonFuncItemsPassthrough()
+  testNestedReturnInIf()
   println("contract-elaborator self-test: ok")
 }
