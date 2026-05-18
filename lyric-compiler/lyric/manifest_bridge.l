@@ -45,7 +45,10 @@ pub func serializeManifest(text: in String, filePath: in String): String {
       }
       var di = 0
       while di < m.deps.count {
-        s = s + "dep=" + m.deps[di].name + "=" + m.deps[di].version + "\n"
+        match m.deps[di].source {
+          case Registry(v) -> { s = s + "dep=" + m.deps[di].name + "=" + v + "\n" }
+          case _ -> ()
+        }
         di = di + 1
       }
       match m.nuget {

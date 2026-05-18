@@ -8,7 +8,7 @@
 package Std.Directory
 
 import Std.Errors
-import System.IO as HostIO
+import Std.FileHost
 
 // Empty paths are represented as data errors so callers can recover
 // without catching Bug.
@@ -30,7 +30,7 @@ pub func exists(path: in String): Bool {
   if path.length == 0 {
     return false
   }
-  return HostIO.directoryExists(path)
+  return hostDirectoryExists(path)
 }
 
 /// Create the directory named by path.
@@ -56,7 +56,7 @@ pub func create(path: in String): Result[Unit, IOError] {
   }
 
   return try {
-    HostIO.createDirectory(path)
+    hostCreateDirectory(path)
     Ok(value = ())
   } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))
@@ -96,12 +96,12 @@ pub func enumerate(path: in String): Result[slice[String], IOError] {
     case None -> ()
   }
 
-  if not HostIO.directoryExists(path) {
+  if not hostDirectoryExists(path) {
     return Err(error = DirectoryNotFound(path = path))
   }
 
   return try {
-    Ok(value = HostIO.enumerateFileSystemEntries(path))
+    Ok(value = hostEnumerateFileSystemEntries(path))
   } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))
   }
@@ -121,12 +121,12 @@ pub func enumerateFiles(path: in String): Result[slice[String], IOError] {
     case None -> ()
   }
 
-  if not HostIO.directoryExists(path) {
+  if not hostDirectoryExists(path) {
     return Err(error = DirectoryNotFound(path = path))
   }
 
   return try {
-    Ok(value = HostIO.enumerateFiles(path))
+    Ok(value = hostEnumerateFiles(path))
   } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))
   }
@@ -146,12 +146,12 @@ pub func enumerateDirectories(path: in String): Result[slice[String], IOError] {
     case None -> ()
   }
 
-  if not HostIO.directoryExists(path) {
+  if not hostDirectoryExists(path) {
     return Err(error = DirectoryNotFound(path = path))
   }
 
   return try {
-    Ok(value = HostIO.enumerateDirectories(path))
+    Ok(value = hostEnumerateDirectories(path))
   } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))
   }
@@ -181,12 +181,12 @@ pub func delete(path: in String): Result[Unit, IOError] {
     case None -> ()
   }
 
-  if not HostIO.directoryExists(path) {
+  if not hostDirectoryExists(path) {
     return Err(error = DirectoryNotFound(path = path))
   }
 
   return try {
-    HostIO.deleteDirectory(path)
+    hostDeleteDirectory(path)
     Ok(value = ())
   } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))
@@ -213,12 +213,12 @@ pub func deleteRecursive(path: in String): Result[Unit, IOError] {
     case None -> ()
   }
 
-  if not HostIO.directoryExists(path) {
+  if not hostDirectoryExists(path) {
     return Err(error = DirectoryNotFound(path = path))
   }
 
   return try {
-    HostIO.deleteDirectoryRecursive(path)
+    hostDeleteDirectoryRecursive(path, true)
     Ok(value = ())
   } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))

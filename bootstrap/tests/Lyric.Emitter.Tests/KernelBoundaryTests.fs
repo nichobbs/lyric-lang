@@ -146,7 +146,12 @@ let tests =
             // Std.Time.monotonicNanos() (monotonic high-resolution clock,
             // #424); Std.VerifierEnvHost extended with hostIsWindows()
             // (System.OperatingSystem.IsWindows, #426).
-            Expect.isLessThanOrEqual total 276
+            // Bumped from 276 → 279: Std.FileHost extended with
+            // hostEnumerateFileSystemEntries (Directory.GetFileSystemEntries),
+            // hostDeleteDirectory (Directory.Delete), and
+            // hostDeleteDirectoryRecursive (Directory.Delete with recursive flag)
+            // for Std.Directory's delete and enumerate operations.
+            Expect.isLessThanOrEqual total 279
                 "total extern surface unexpectedly large"
         }
     ]

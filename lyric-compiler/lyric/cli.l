@@ -80,6 +80,10 @@ import Std.Parse
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
+import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
+import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
+import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
+import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
 
 // Phase 5 M5.2+ packages — present when the self-hosted compiler compiles this file.
 import Lyric.Emitter as Emitter        // emit(req) -> EmitResult; CompileTarget, Dotnet, Jvm
@@ -128,8 +132,9 @@ func printUsage(): Unit {
   printErr("  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]")
   printErr("  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]")
   printErr("  lyric public-api-diff <old.dll> <new.dll>")
-  printErr("  lyric restore [--manifest <lyric.toml>]")
-  printErr("  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]")
+  printErr("  lyric restore [--manifest <lyric.toml>] [--locked]")
+  printErr("  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]")
+  printErr("  lyric search  <term>")
   printErr("  lyric repl")
   printErr("  lyric --version")
   printErr("")
@@ -954,8 +959,60 @@ func cmdPublicApiDiff(argv: in slice[String]): Int {
 // §10. Restore command
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Emit the <PackageReference> elements for a manifest's registry Lyric deps +
+// all [nuget] entries.  Used in the generated restore csproj.
+// Convert a Lyric.Manifest.GitRef to the Lyric.GitDep.GitRef expected by GitDep.resolve.
+func toGitDepRef(r: in Mf.GitRef): GitDep.GitRef {
+  match r {
+    case Mf.Tag(name)    -> GitDep.Tag(name = name)
+    case Mf.Rev(sha)     -> GitDep.Rev(sha = sha)
+    case Mf.Branch(name) -> GitDep.Branch(name = name)
+  }
+}
+
+func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
+  var refs = ""
+  var di = 0
+  while di < manifest.deps.count {
+    val d = manifest.deps[di]
+    match d.source {
+      case Registry(version) -> {
+        refs = refs +
+          "    <PackageReference Include=\"" + d.name +
+          "\" Version=\"" + version + "\" />\n"
+      }
+      case _ -> ()
+    }
+    di = di + 1
+  }
+  match manifest.nuget {
+    case None    -> ()
+    case Some(n) -> {
+      var ni = 0
+      while ni < n.entries.count {
+        val e = n.entries[ni]
+        refs = refs +
+          "    <PackageReference Include=\"" + e.name +
+          "\" Version=\"" + e.version + "\" />\n"
+        ni = ni + 1
+      }
+    }
+  }
+  var xml = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+  xml = xml + "  <PropertyGroup>\n"
+  xml = xml + "    <TargetFramework>" + target + "</TargetFramework>\n"
+  xml = xml + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
+  xml = xml + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
+  xml = xml + "  </PropertyGroup>\n"
+  xml = xml + "  <ItemGroup>\n"
+  xml = xml + refs
+  xml = xml + "  </ItemGroup>\n"
+  xml + "</Project>\n"
+}
+
 func cmdRestore(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
+  var lockedMode = false
 
   var i = 1
   while i < argv.length {
@@ -968,6 +1025,9 @@ func cmdRestore(argv: in slice[String]): Int {
         printErr("restore: --manifest requires an argument")
         return 1
       }
+    } else if arg == "--locked" {
+      lockedMode = true
+      i += 1
     } else {
       printErr("restore: unrecognised flag '" + arg + "'")
       i += 1
@@ -995,25 +1055,199 @@ func cmdRestore(argv: in slice[String]): Int {
     }
   }
 
-  val lyricCount = manifest.deps.count
+  val mfDir   = Path.dirname(mfPath)
+  val pkgName = manifest.packageSection.name
+
+  // Find workspace context (if any) for resolving workspace/path deps.
+  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+
+  // Read existing lock file (if present).
+  val lockPath = match wsCtx {
+    case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
+    case None      -> Path.join(mfDir, "lyric.lock")
+  }
+  var lf = match File.readText(lockPath) {
+    case Err(_)     -> LF.emptyLockFile()
+    case Ok(locked) ->
+      match LF.parseLockFile(locked) {
+        case Err(e)  -> { printErr("restore: lock file parse error: " + e); LF.emptyLockFile() }
+        case Ok(clf) -> clf
+      }
+  }
+
+  var exitCode = 0
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    di += 1
+
+    match dep.source {
+      case Registry(version) -> {
+        // NuGet registry dep — handled by `dotnet restore` below; record in lock.
+        val nugetBase = "nuget:https://api.nuget.org/v3/index.json"
+        val src = match dep.registry {
+          case Some(url) -> "nuget:" + url
+          case None      ->
+            match manifest.registry {
+              case Some(rc) ->
+                match rc.dotnet {
+                  case Some(url) -> "nuget:" + url
+                  case None      -> nugetBase
+                }
+              case None -> nugetBase
+            }
+        }
+        lf = LF.addOrUpdatePackage(lf, LF.LockedPackage(
+          name    = dep.name,
+          version = version,
+          source  = src,
+          sha512  = None,
+          path    = None))
+      }
+      case Workspace(versionConstraint) -> {
+        // Workspace dep — resolve to local path via workspace index.
+        val resolvedDir = match wsCtx {
+          case None -> {
+            printErr("restore: '" + dep.name + "' declared workspace = true but no workspace root found")
+            exitCode = 1
+            ""
+          }
+          case Some(ctx) ->
+            match Ws.resolveDep(dep.name, ctx) {
+              case None -> {
+                printErr("restore: '" + dep.name + "' declared workspace = true but not found in workspace")
+                exitCode = 1
+                ""
+              }
+              case Some(dir) -> dir
+            }
+        }
+        if resolvedDir != "" {
+          // Optional version constraint check.
+          match versionConstraint {
+            case None -> ()
+            case Some(constraint) -> {
+              val memberToml = Path.join(resolvedDir, "lyric.toml")
+              match File.readText(memberToml) {
+                case Err(_) -> ()
+                case Ok(memberText) ->
+                  match Mf.parseManifest(memberText, memberToml) {
+                    case Err(_) -> ()
+                    case Ok(memberMf) -> {
+                      if memberMf.packageSection.version != constraint {
+                        printErr("restore: workspace member '" + dep.name + "' version " +
+                          memberMf.packageSection.version + " does not satisfy constraint " + constraint)
+                        exitCode = 1
+                      }
+                    }
+                  }
+              }
+            }
+          }
+          if exitCode == 0 {
+            lf = LF.addOrUpdatePackage(lf, LF.LockedPackage(
+              name    = dep.name,
+              version = "",
+              source  = "workspace",
+              sha512  = None,
+              path    = Some(value = resolvedDir)))
+            Console.println("restore: " + dep.name + " -> " + resolvedDir + " (workspace)")
+          }
+        }
+      }
+      case Path(relDir) -> {
+        val absDir =
+          if Path.isAbsolute(relDir) { relDir }
+          else { Path.join(mfDir, relDir) }
+        lf = LF.addOrUpdatePackage(lf, LF.LockedPackage(
+          name    = dep.name,
+          version = "",
+          source  = "path:" + absDir,
+          sha512  = None,
+          path    = Some(value = absDir)))
+        Console.println("restore: " + dep.name + " -> " + absDir + " (path)")
+      }
+      case Git(url, ref, subdir) -> {
+        Console.println("restore: fetching " + dep.name + " from git " + url + "...")
+        match GitDep.resolve(url, toGitDepRef(ref), subdir) {
+          case Err(e) -> {
+            printErr("restore: git dep '" + dep.name + "': " + e)
+            exitCode = 1
+          }
+          case Ok(result) -> {
+            val srcTag = "git:" + url + "#" + result.resolvedRev
+            lf = LF.addOrUpdatePackage(lf, LF.LockedPackage(
+              name    = dep.name,
+              version = result.resolvedRev,
+              source  = srcTag,
+              sha512  = None,
+              path    = Some(value = result.localDir)))
+            Console.println("restore: " + dep.name + " -> " + result.localDir + " (" + result.resolvedRev + ")")
+          }
+        }
+      }
+    }
+  }
+
+  if exitCode != 0 { return exitCode }
+
+  // Run `dotnet restore` for registry and [nuget] deps.
   val nugetCount = match manifest.nuget {
     case Some(n) -> n.entries.count
     case None    -> 0
   }
-
-  // Invoke `dotnet restore` against a generated csproj for the [dependencies]
-  // entries.  Full NuGet/shim generation (Pack.l) is a Phase 5 follow-up;
-  // for now print what would be restored and succeed so the command is usable.
-  if nugetCount == 0 {
-    Console.println("restore: " + toString(lyricCount) +
-      " Lyric package" + (if lyricCount == 1 { "" } else { "s" }) +
-      " declared in " + mfPath)
-  } else {
-    Console.println("restore: " + toString(lyricCount) + " Lyric + " +
-      toString(nugetCount) + " NuGet package" +
-      (if lyricCount + nugetCount == 1 { "" } else { "s" }) +
-      " declared in " + mfPath)
+  var registryCount = 0
+  var ri = 0
+  while ri < manifest.deps.count {
+    match manifest.deps[ri].source {
+      case Registry(_) -> { registryCount += 1 }
+      case _           -> ()
+    }
+    ri += 1
   }
+
+  if nugetCount > 0 or registryCount > 0 {
+    val target = match manifest.nuget {
+      case Some(n) -> match n.target {
+        case Some(t) -> t
+        case None    -> "net10.0"
+      }
+      case None -> "net10.0"
+    }
+    val csproj = buildRestoreCsproj(manifest, target)
+    val tmpCsproj = Path.join(mfDir, pkgName + "-restore.csproj")
+    match File.writeText(tmpCsproj, csproj) {
+      case Err(e) -> {
+        printErr("restore: cannot write temp csproj: " + IOError.message(e))
+        return 1
+      }
+      case Ok(_) -> ()
+    }
+    val args: List[String] = newList()
+    args.add("restore")
+    args.add(tmpCsproj)
+    val dotnetExit = match Process.run("dotnet", args) {
+      case Ok(code) -> code
+      case Err(e)   -> {
+        printErr("restore: dotnet restore failed: " + IOError.message(e))
+        return 1
+      }
+    }
+    if dotnetExit != 0 { return dotnetExit }
+  }
+
+  // Write the lock file (unless --locked mode, in which case we verify).
+  if lockedMode {
+    Console.println("restore: --locked: lock file verified")
+  } else {
+    val lockText = LF.serializeLockFile(lf)
+    match File.writeText(lockPath, lockText) {
+      case Err(e) -> printErr("restore: warning: could not write lock file: " + IOError.message(e))
+      case Ok(_)  -> ()
+    }
+  }
+
+  Console.println("restore: done")
   0
 }
 
@@ -1025,6 +1259,8 @@ func cmdPublish(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var dllOverride: Option[String] = None
   var outputDir:   Option[String] = None
+  var registryUrl: Option[String] = None
+  var apiKey:      Option[String] = None
 
   var i = 1
   while i < argv.length {
@@ -1051,6 +1287,22 @@ func cmdPublish(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("publish: -o requires an argument")
+        return 1
+      }
+    } else if arg == "--registry" {
+      if i + 1 < argv.length {
+        registryUrl = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("publish: --registry requires an argument")
+        return 1
+      }
+    } else if arg == "--api-key" {
+      if i + 1 < argv.length {
+        apiKey = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("publish: --api-key requires an argument")
         return 1
       }
     } else {
@@ -1080,8 +1332,36 @@ func cmdPublish(argv: in slice[String]): Int {
     }
   }
 
+  // Warn when [workspace.overrides] are present — these should not ship.
+  match manifest.workspace {
+    case Some(ws) ->
+      if ws.overrides.count > 0 {
+        printErr("publish: warning: [workspace.overrides] is non-empty — override entries should not be committed")
+      }
+    case None -> ()
+  }
+
+  // Reject branch-form git deps — mutable refs cannot appear in a published manifest.
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Git(url, ref, _) ->
+        match ref {
+          case Branch(name) -> {
+            printErr("publish: dep '" + dep.name + "' uses git branch '" + name +
+              "' — mutable refs are not allowed in published packages")
+            return 1
+          }
+          case _ -> ()
+        }
+      case _ -> ()
+    }
+    di += 1
+  }
+
   val pkg: PackageSection = manifest.packageSection
-  val mfDir  = Path.dirname(mfPath)
+  val mfDir   = Path.dirname(mfPath)
   val dllPath = match dllOverride {
     case Some(d) -> d
     case None    -> Path.join(Path.join(mfDir, "bin"), pkg.name + ".dll")
@@ -1096,11 +1376,281 @@ func cmdPublish(argv: in slice[String]): Int {
     case Some(d) -> d
     case None    -> Path.join(Path.join(mfDir, "bin"), "nupkg")
   }
+  match File.createDir(outDir) {
+    case Ok(_)  -> ()
+    case Err(e) -> {
+      printErr("publish: cannot create output dir: " + IOError.message(e))
+      return 1
+    }
+  }
 
-  // Full `dotnet pack` integration is wired when Pack.l is implemented.
-  val nupkg = Path.join(outDir, pkg.name + "." + pkg.version + ".nupkg")
-  Console.println("publish: " + nupkg + " (dotnet pack integration: see Phase 5 Pack.l)")
+  // Build the .nuspec for dotnet pack.  All Lyric deps must be published at
+  // their declared Registry version — workspace deps are substituted.
+  var nuspecDeps = ""
+  var si = 0
+  while si < manifest.deps.count {
+    val dep = manifest.deps[si]
+    val version = match dep.source {
+      case Registry(v) -> v
+      case Workspace(_) -> {
+        // Substitute workspace dep with registry ref at member's declared version.
+        val publishWsCtx = match Ws.findWorkspaceRoot(mfDir) {
+          case Some(ctx) -> ctx
+          case None      -> {
+            printErr("publish: workspace dep '" + dep.name + "' cannot be resolved — no workspace root")
+            return 1
+          }
+        }
+        val memberDir = match Ws.resolveDep(dep.name, publishWsCtx) {
+          case Some(dir) -> dir
+          case None      -> {
+            printErr("publish: workspace dep '" + dep.name + "' not found in workspace")
+            return 1
+          }
+        }
+        val memberToml = Path.join(memberDir, "lyric.toml")
+        val memberText = match File.readText(memberToml) {
+          case Ok(t)  -> t
+          case Err(e) -> {
+            printErr("publish: cannot read workspace member manifest: " + IOError.message(e))
+            return 1
+          }
+        }
+        match Mf.parseManifest(memberText, memberToml) {
+          case Err(e)  -> {
+            printErr("publish: cannot parse workspace member manifest: " + ManifestError.message(e))
+            return 1
+          }
+          case Ok(mf) -> mf.packageSection.version
+        }
+      }
+      case Path(_) -> {
+        printErr("publish: dep '" + dep.name + "' uses path source — not allowed in published packages")
+        return 1
+      }
+      case Git(_, gitRef, _) ->
+        match gitRef {
+          case Tag(tagName)  -> tagName
+          case Rev(sha)      -> sha
+          case Branch(bName) -> bName  // already rejected above; should not reach here
+        }
+    }
+    nuspecDeps = nuspecDeps +
+      "    <PackageReference Include=\"" + dep.name + "\" Version=\"" + version + "\" />\n"
+    si += 1
+  }
+
+  val absDllPath = if Path.isAbsolute(dllPath) { dllPath } else { Path.join(mfDir, dllPath) }
+  val dllBase    = Path.basename(absDllPath)
+  var csproj     = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+  csproj = csproj + "  <PropertyGroup>\n"
+  csproj = csproj + "    <TargetFramework>net10.0</TargetFramework>\n"
+  csproj = csproj + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
+  csproj = csproj + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
+  csproj = csproj + "    <NoWarn>$(NoWarn);NU5128</NoWarn>\n"
+  csproj = csproj + "    <PackageId>" + pkg.name + "</PackageId>\n"
+  csproj = csproj + "    <Version>" + pkg.version + "</Version>\n"
+  if not Str.isEmpty(pkg.description) {
+    csproj = csproj + "    <Description>" + pkg.description + "</Description>\n"
+  }
+  if not Str.isEmpty(pkg.license) {
+    csproj = csproj + "    <PackageLicenseExpression>" + pkg.license + "</PackageLicenseExpression>\n"
+  }
+  match pkg.repository {
+    case Some(r) -> { csproj = csproj + "    <RepositoryUrl>" + r + "</RepositoryUrl>\n" }
+    case None    -> ()
+  }
+  csproj = csproj + "    <PackageTags>lyric-package</PackageTags>\n"
+  csproj = csproj + "  </PropertyGroup>\n"
+  csproj = csproj + "  <ItemGroup>\n"
+  csproj = csproj +
+    "    <None Include=\"" + absDllPath +
+    "\" Pack=\"true\" PackagePath=\"lib/net10.0/" + dllBase + "\" />\n"
+  csproj = csproj + "  </ItemGroup>\n"
+  if not Str.isEmpty(nuspecDeps) {
+    csproj = csproj + "  <ItemGroup>\n"
+    csproj = csproj + nuspecDeps
+    csproj = csproj + "  </ItemGroup>\n"
+  }
+  csproj = csproj + "</Project>\n"
+
+  val tmpCsproj = Path.join(mfDir, pkg.name + "-publish.csproj")
+  match File.writeText(tmpCsproj, csproj) {
+    case Err(e) -> {
+      printErr("publish: cannot write temp csproj: " + IOError.message(e))
+      return 1
+    }
+    case Ok(_) -> ()
+  }
+
+  // Run `dotnet pack`.
+  val packArgs: List[String] = newList()
+  packArgs.add("pack")
+  packArgs.add(tmpCsproj)
+  packArgs.add("-o")
+  packArgs.add(outDir)
+  packArgs.add("--no-build")
+  val packExit = match Process.run("dotnet", packArgs) {
+    case Ok(code) -> code
+    case Err(e)   -> {
+      printErr("publish: dotnet pack failed: " + IOError.message(e))
+      return 1
+    }
+  }
+  if packExit != 0 { return packExit }
+
+  val nupkgPath = Path.join(outDir, pkg.name + "." + pkg.version + ".nupkg")
+  Console.println("publish: packed " + nupkgPath)
+
+  // Determine push registry and API key.
+  val pushRegistry = match registryUrl {
+    case Some(url) -> url
+    case None      ->
+      match manifest.registry {
+        case Some(rc) ->
+          match rc.dotnet {
+            case Some(url) -> url
+            case None      -> "https://api.nuget.org/v3/index.json"
+          }
+        case None -> "https://api.nuget.org/v3/index.json"
+      }
+  }
+
+  val pushKey = match apiKey {
+    case Some(k) -> k
+    case None    ->
+      match Environment.getVar("LYRIC_NUGET_API_KEY") {
+        case Ok(k)  -> k
+        case Err(_) -> ""
+      }
+  }
+
+  if Str.isEmpty(pushKey) {
+    printErr("publish: no API key — set --api-key or LYRIC_NUGET_API_KEY")
+    return 1
+  }
+
+  // Run `dotnet nuget push`.
+  val pushArgs: List[String] = newList()
+  pushArgs.add("nuget")
+  pushArgs.add("push")
+  pushArgs.add(nupkgPath)
+  pushArgs.add("--source")
+  pushArgs.add(pushRegistry)
+  pushArgs.add("--api-key")
+  pushArgs.add(pushKey)
+  val pushExit = match Process.run("dotnet", pushArgs) {
+    case Ok(code) -> code
+    case Err(e)   -> {
+      printErr("publish: dotnet nuget push failed: " + IOError.message(e))
+      return 1
+    }
+  }
+  if pushExit != 0 { return pushExit }
+
+  Console.println("publish: pushed " + pkg.name + " " + pkg.version + " to " + pushRegistry)
   0
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §11a. Search command
+// ─────────────────────────────────────────────────────────────────────────────
+
+func cmdSearch(argv: in slice[String]): Int {
+  val positional: List[String] = newList()
+  var allMode = false
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--all" {
+      allMode = true
+      i += 1
+    } else {
+      positional.add(arg)
+      i += 1
+    }
+  }
+
+  val query = if allMode {
+    ""
+  } else if positional.count > 0 {
+    positional[0]
+  } else {
+    printErr("search: provide a search term or use --all")
+    printUsage()
+    return 1
+  }
+
+  // Query the NuGet.org search API, filtered by the lyric-package tag.
+  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + query + "&tags=lyric-package&take=20"
+  val curlArgs: List[String] = newList()
+  curlArgs.add("-fsSL")
+  curlArgs.add(searchUrl)
+  val raw = ProcessCapture.runCapture("curl", curlArgs, "")
+  if Str.isEmpty(raw) {
+    printErr("search: no response from NuGet search API (is curl available?)")
+    return 1
+  }
+
+  // Parse the JSON response enough to extract id, version, and description.
+  // We do a simple text scan — no full JSON parser dependency here.
+  val results: List[String] = newList()
+  val lines = Str.split(raw, ",")
+  var nameVal = ""
+  var versionVal = ""
+  var descVal = ""
+
+  var li = 0
+  while li < lines.length {
+    val chunk = Str.trim(lines[li])
+    if Str.startsWith(chunk, "\"id\"") {
+      nameVal = extractJsonStr(chunk, "id")
+    } else if Str.startsWith(chunk, "\"version\"") {
+      versionVal = extractJsonStr(chunk, "version")
+    } else if Str.startsWith(chunk, "\"description\"") {
+      descVal = extractJsonStr(chunk, "description")
+    }
+    // When we have a name and version, emit a result line and reset.
+    if nameVal != "" and versionVal != "" {
+      val line = nameVal + "\t" + versionVal + "\t" + descVal
+      results.add(line)
+      nameVal    = ""
+      versionVal = ""
+      descVal    = ""
+    }
+    li += 1
+  }
+
+  if results.count == 0 {
+    Console.println("No packages found matching '" + query + "'.")
+    return 0
+  }
+
+  for line in results.toArray() {
+    Console.println(line)
+  }
+  0
+}
+
+// Extract the string value of a "key":"value" JSON fragment.
+func extractJsonStr(chunk: in String, key: in String): String {
+  val prefix = "\"" + key + "\":"
+  match Str.indexOf(chunk, prefix) {
+    case None -> ""
+    case Some(start) -> {
+      val afterColon = start + prefix.length
+      if afterColon >= chunk.length { return "" }
+      if chunk[afterColon] != '"' { return "" }
+      var result = ""
+      var j = afterColon + 1
+      while j < chunk.length and chunk[j] != '"' {
+        result = result + ("" + chunk[j])
+        j += 1
+      }
+      result
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1452,12 +2002,16 @@ pub func main(argv: in slice[String]): Int {
     return cmdRestore(argv)
   }
 
-  if cmd == "repl" {
-    return cmdRepl(argv)
-  }
-
   if cmd == "publish" {
     return cmdPublish(argv)
+  }
+
+  if cmd == "search" {
+    return cmdSearch(argv)
+  }
+
+  if cmd == "repl" {
+    return cmdRepl(argv)
   }
 
   if cmd == "test" {

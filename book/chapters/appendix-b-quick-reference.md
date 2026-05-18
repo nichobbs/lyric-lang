@@ -759,8 +759,12 @@ lyric openapi <spec.json> --client-name <Name>   # override the generated client
 lyric openapi <spec.json> --package <Pkg.Name>   # override the generated package declaration
 
 # Package management
-lyric restore                          # download dependencies declared in lyric.toml
-lyric publish                          # publish package to registry (NuGet piggyback)
+lyric restore                          # download all dependencies declared in lyric.toml
+lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
+lyric publish                          # publish package to the configured registry
+lyric publish --registry <url>         # publish to a specific registry feed URL
+lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)
+lyric search <query>                   # search the registry for matching packages
 
 # Interactive REPL
 lyric repl                             # start interactive read-eval-print loop

@@ -189,8 +189,11 @@ Core commands you will use constantly:
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
 | `lyric bench <file.l> --runs <N> --warmup <N>` | Control timed and warmup iteration counts |
 | `lyric bench <file.l> --filter <substring>` | Run only benchmarks whose name contains the substring |
-| `lyric publish` | Pack and publish the current package to a NuGet feed |
-| `lyric restore` | Restore declared NuGet/lyric.toml dependencies |
+| `lyric publish` | Pack and push the current package to the configured registry |
+| `lyric publish --registry <url> --api-key <key>` | Publish to a specific feed with an API key |
+| `lyric restore` | Restore all dependencies declared in `lyric.toml`; writes `lyric.lock` |
+| `lyric restore --locked` | Restore strictly from `lyric.lock` (fail if lock is stale) |
+| `lyric search <query>` | Search the registry for matching packages |
 | `lyric repl` | Start an interactive read-eval-print loop |
 | `lyric repl --verbose` | REPL with diagnostic output on each evaluation |
 | `lyric --sdk-info` | Print SDK root, stdlib path, and version information |

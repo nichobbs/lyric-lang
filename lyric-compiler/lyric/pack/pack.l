@@ -2,6 +2,9 @@
 // Mirrors the XML-generation portion of compiler/src/Lyric.Cli/Pack.fs
 // (Phase 5 §M5.3 shim elimination).  Process invocation (dotnet pack/restore)
 // stays in the F# Pack.fs.
+//
+// Only Registry(version) deps emit <PackageReference>; Workspace/Path/Git deps
+// are resolved locally by Lyric.Workspace and never expressed as NuGet refs.
 package Lyric.Pack
 
 import Std.Core
@@ -87,9 +90,14 @@ pub func publishCsproj(m: in Manifest, dllAbsPath: in String): String {
   var di = 0
   while di < m.deps.count {
     val d = m.deps[di]
-    depsXml = depsXml +
-      "    <PackageReference Include=\"" + xmlEscape(d.name) +
-      "\" Version=\"" + xmlEscape(d.version) + "\" />\n"
+    match d.source {
+      case Registry(version) -> {
+        depsXml = depsXml +
+          "    <PackageReference Include=\"" + xmlEscape(d.name) +
+          "\" Version=\"" + xmlEscape(version) + "\" />\n"
+      }
+      case _ -> ()
+    }
     di = di + 1
   }
 
@@ -129,9 +137,14 @@ pub func restoreCsproj(m: in Manifest): String {
   var di = 0
   while di < m.deps.count {
     val d = m.deps[di]
-    lyricDepsXml = lyricDepsXml +
-      "    <PackageReference Include=\"" + xmlEscape(d.name) +
-      "\" Version=\"" + xmlEscape(d.version) + "\" />\n"
+    match d.source {
+      case Registry(version) -> {
+        lyricDepsXml = lyricDepsXml +
+          "    <PackageReference Include=\"" + xmlEscape(d.name) +
+          "\" Version=\"" + xmlEscape(version) + "\" />\n"
+      }
+      case _ -> ()
+    }
     di = di + 1
   }
 

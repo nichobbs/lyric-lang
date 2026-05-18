@@ -12797,3 +12797,103 @@ Note: `V0009` is reserved by the mode checker for `assume` outside `unsafe {}`. 
 **SelfHostedCli.fs — bridge robustness.**  Narrowed the broad `with _ ->` catch in `tryRun` to typed load-time exceptions (`FileNotFoundException`, `BadImageFormatException`, `ReflectionTypeLoadException`, `MissingMethodException`, `FileLoadException`).  Added `InvalidProgramException` and `TargetInvocationException wrapping InvalidProgramException` so CLR-JIT rejections of invalid MSIL in the self-hosted pipeline fall back to the bootstrap dispatcher instead of crashing the process.
 
 **Test results:** 782/782 emitter tests pass, 227/227 CLI tests pass.
+
+### D-progress-264 — Workspace, lock file, git-dep, restore, publish, search (docs/38 + docs/39)
+
+**Goal.** Implement the workspace/git-dep spec (`docs/38-workspace.md`, D073)
+and the Lyric package registry spec (`docs/39-package-registry.md`, D074) in
+self-hosted Lyric source code.
+
+**`Lyric.Manifest` extensions (`lyric-compiler/lyric/manifest.l`).**
+
+New public types backing all dep source forms and workspace/registry config:
+
+- `union GitRef { Tag(name) | Rev(sha) | Branch(name) }` — git reference forms.
+- `union DepSource { Registry(version) | Workspace(version: Option[String]) | Path(dir) | Git(url, ref, subdir) }` — all dependency source kinds.
+- `record DependencyEntry { name; source: DepSource; registry: Option[String] }` — replaces the old name+version pair; `registry` is a per-dep feed override.
+- `record WorkspaceOverride { name; dir }`, `record WorkspaceSection { exclude; overrides }`, `record RegistryConfig { dotnet; jvm }`, `record WorkspaceRoot { filePath; workspace; registry }` — workspace and registry config types.
+- `Manifest` record extended: `workspace: Option[WorkspaceSection]` and `registry: Option[RegistryConfig]`.
+- `pub func parseWorkspaceRoot(text, filePath): Result[Option[WorkspaceRoot], ManifestError]` — parses a virtual workspace root `lyric.toml` (no `[package]`, just `[workspace]`).
+- `pub func depRegistryVersion(source): Option[String]` — helper for `pack.l`.
+
+Inline-table parsing now handles `{ workspace = true }`, `{ path = "…" }`,
+`{ git = "…", tag/rev/branch = "…", subdir = "…" }` forms and the optional
+`registry = "…"` per-dep feed override.
+
+**`Lyric.Lockfile` (`lyric-compiler/lyric/lockfile/lockfile.l`).**
+
+New library (M5.3 stage `restore`): reads and writes `lyric.lock`.
+
+- `record LockedPackage { name; version; source; sha512; path }` — one entry per resolved dep.
+- `record LockFile { formatVersion; packages }`.
+- `pub func emptyLockFile(): LockFile`, `addOrUpdatePackage`, `findPackage`, `serializeLockFile`, `parseLockFile`.
+
+Lock file format follows the TOML-like syntax from `docs/38-workspace.md §6`:
+`[workspace]` header with `version = 1`, then `[[package]]` blocks.  Source
+strings: `"workspace"`, `"path:<dir>"`, `"nuget:<url>"`, `"git:<url>#<rev>"`.
+
+**`Lyric.GitDep` (`lyric-compiler/lyric/git_dep/git_dep.l`).**
+
+New library (M5.3 stage `restore`): resolves `{ git = … }` dependencies.
+
+- `union GitRef { Tag | Rev | Branch }`, `record GitDepResult { localDir; resolvedRev }`.
+- `pub func resolve(url, ref, subdir): Result[GitDepResult, String]` — clones/fetches into `~/.lyric/git-cache/<url-hash>/<ref-label>/` using `git clone --depth 1` (tag/branch) or a full clone (rev); branch refs are always re-fetched.
+- `pub func cacheDir(): String`, `urlToHash(url): String`, `gitRefLabel(ref): String`.
+
+**`Lyric.Workspace` (`lyric-compiler/lyric/workspace/workspace.l`).**
+
+New library (M5.3 stage `restore`): workspace root discovery and member resolution.
+
+- `record WorkspaceMember { name; dir }`, `record WorkspaceContext { rootDir; rootFile; members; overrides }`.
+- `pub func findWorkspaceRoot(startDir): Option[WorkspaceContext]` — walks up the directory tree, finds the nearest `lyric.toml` with a `[workspace]` section, then recursively discovers member packages (skips hidden dirs, `node_modules`, `target`, `bin`, `obj`, and entries matching the `[workspace.exclude]` list).
+- `pub func findMember(members, name): Option[WorkspaceMember]`, `resolveDep(name, ctx): Option[String]`.
+
+**`Lyric.Pack` updates (`lyric-compiler/lyric/pack/pack.l`).**
+
+`publishCsproj` and `restoreCsproj` updated to use the new `DepSource` union:
+only `Registry(version)` deps emit `<PackageReference>` elements; `Workspace`,
+`Path`, and `Git` deps are resolved locally and never appear in the generated
+csproj.
+
+**`Lyric.Cli` updates (`lyric-compiler/lyric/cli.l`).**
+
+- `cmdRestore` — resolves all four dep source forms: `Registry` deps restored via `dotnet restore` on a generated csproj; `Workspace` deps resolved via `Lyric.Workspace`; `Path` deps resolved relative to the manifest; `Git` deps cloned/updated via `Lyric.GitDep`.  Writes a `lyric.lock` file after successful resolution.
+- `cmdPublish` — validates no branch (`Branch`) deps (require `tag` or `rev` for publishable packages), resolves workspace deps to their pinned registry versions, runs `dotnet pack` then `dotnet nuget push`.  Accepts `--registry <url>` and `--api-key <key>` flags.
+- `cmdSearch` — queries the NuGet V3 search API via `curl` (`ProcessCapture.runCapture`), displays matching packages as tab-separated columns.
+- `buildRestoreCsproj` helper — generates a minimal `<Project>` csproj with only `Registry` deps as `<PackageReference>` elements for `dotnet restore`.
+- `toGitDepRef` converter — maps `Lyric.Manifest.GitRef` to `Lyric.GitDep.GitRef`.
+
+**`Lyric.ManifestBridge` update (`lyric-compiler/lyric/manifest_bridge.l`).**
+
+`dep=<name>=<version>` lines in the bridge protocol are now only emitted for
+`Registry(version)` dep sources; `Workspace`, `Path`, and `Git` deps are
+omitted because the F# bootstrap `SelfHostedManifest.fs` shim does not need to
+round-trip non-NuGet dependency sources.
+
+**`Std.Directory` fix (`lyric-stdlib/std/directory.l`).**
+
+Replaced the broken `import System.IO as HostIO` pattern with `import Std.FileHost`.
+All `HostIO.xxx` calls updated to their corresponding `host*` function names.
+
+**`Std.FileHost` extension (`lyric-stdlib/std/_kernel/file_host.l`).**
+
+Three new externs for the directory operations now used by `Std.Directory`:
+
+- `hostEnumerateFileSystemEntries(path): slice[String]` — `Directory.GetFileSystemEntries`.
+- `hostDeleteDirectory(path): Unit` — `Directory.Delete(path)` (non-recursive).
+- `hostDeleteDirectoryRecursive(path, recursive): Unit` — `Directory.Delete(path, bool)` (recursive delete when `true`).
+
+Kernel boundary soft cap updated from 276 → 279.
+
+**Import-order fix for `Path.join` ambiguity.**  `Lyric.Workspace` and
+`Lyric.GitDep` now import `Std.String as Str` before `Std.Path as Path`,
+matching the pattern in `cli.l` and `emitter.l`, so the Lyric type checker
+resolves `Path.join/2` to `Std.Path.join` rather than `Std.String.join/2`.
+
+**Manifest self-test (`lyric-compiler/lyric/manifest_self_test.l`).**
+
+Six new test functions exercise the new dep source forms:
+`testWorkspaceDep`, `testPathDep`, `testGitDepTag`, `testGitDepSubdir`,
+`testWorkspaceSection`, `testRegistrySection`.
+
+**Test results:** 782/782 emitter tests pass, 227/227 CLI tests pass.
