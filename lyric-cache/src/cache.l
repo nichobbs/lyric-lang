@@ -199,7 +199,7 @@ pub func clear(store: in CacheStore): Unit {
 
 // Remove the entry with the smallest insertedAt counter (oldest insertion).
 // This implements FIFO eviction (first inserted, first evicted), which is correct
-// regardless of whether entries have TTLs.  Previously the code evicted by expiresAt,
+// of whether entries have TTLs.  Previously the code evicted by expiresAt,
 // which was backwards (shortest TTL first) and silently no-oped when every
 // entry had expiresAt == 0 (no-expiry), allowing the map to exceed maxEntries.
 func evictOldest(entries: inout Map[String, CacheEntry]): Unit {
