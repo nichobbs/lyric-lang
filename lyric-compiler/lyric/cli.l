@@ -1611,8 +1611,11 @@ func cmdSearch(argv: in slice[String]): Int {
     return 1
   }
 
+  // Percent-encode the query to prevent injection through & # % characters.
+  val encodedQuery = percentEncodeQuery(query)
+
   // Query the NuGet.org search API, filtered by the lyric-package tag.
-  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + query + "&tags=lyric-package&take=20"
+  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + encodedQuery + "&tags=lyric-package&take=20"
   val curlArgs: List[String] = newList()
   curlArgs.add("-fsSL")
   curlArgs.add(searchUrl)
@@ -1622,33 +1625,48 @@ func cmdSearch(argv: in slice[String]): Int {
     return 1
   }
 
-  // Parse the JSON response enough to extract id, version, and description.
-  // We do a simple text scan — no full JSON parser dependency here.
+  // Scan the JSON for "id":"…" / "version":"…" / "description":"…" patterns.
+  // We do NOT split on commas; instead we locate each key needle and extract
+  // the string value character-by-character so commas inside descriptions
+  // are handled correctly.
   val results: List[String] = newList()
-  val lines = Str.split(raw, ",")
-  var nameVal = ""
-  var versionVal = ""
-  var descVal = ""
-
-  var li = 0
-  while li < lines.length {
-    val chunk = Str.trim(lines[li])
-    if Str.startsWith(chunk, "\"id\"") {
-      nameVal = extractJsonStr(chunk, "id")
-    } else if Str.startsWith(chunk, "\"version\"") {
-      versionVal = extractJsonStr(chunk, "version")
-    } else if Str.startsWith(chunk, "\"description\"") {
-      descVal = extractJsonStr(chunk, "description")
+  val idNeedle   = "\"id\":\""
+  val verNeedle  = "\"version\":\""
+  val descNeedle = "\"description\":\""
+  var pos = 0
+  while pos < raw.length {
+    val tail = Str.substring(raw, pos, raw.length - pos)
+    match Str.indexOf(tail, idNeedle) {
+      case None -> { pos = raw.length }
+      case Some(rel) -> {
+        val idStart = pos + rel + idNeedle.length
+        val (idVal, afterId) = jsonStringAt(raw, idStart)
+        if idVal == "" {
+          pos = pos + rel + 1
+        } else {
+          // Look for "version" and "description" in the remainder of this entry.
+          val rest = Str.substring(raw, afterId, raw.length - afterId)
+          val versionVal = match Str.indexOf(rest, verNeedle) {
+            case None    -> ""
+            case Some(rv) -> {
+              val (v, _) = jsonStringAt(raw, afterId + rv + verNeedle.length)
+              v
+            }
+          }
+          val descVal = match Str.indexOf(rest, descNeedle) {
+            case None    -> ""
+            case Some(rd) -> {
+              val (d, _) = jsonStringAt(raw, afterId + rd + descNeedle.length)
+              d
+            }
+          }
+          if versionVal != "" {
+            results.add(idVal + "\t" + versionVal + "\t" + descVal)
+          }
+          pos = pos + rel + idNeedle.length + 1
+        }
+      }
     }
-    // When we have a name and version, emit a result line and reset.
-    if nameVal != "" and versionVal != "" {
-      val line = nameVal + "\t" + versionVal + "\t" + descVal
-      results.add(line)
-      nameVal    = ""
-      versionVal = ""
-      descVal    = ""
-    }
-    li += 1
   }
 
   if results.count == 0 {
@@ -1662,24 +1680,48 @@ func cmdSearch(argv: in slice[String]): Int {
   0
 }
 
-// Extract the string value of a "key":"value" JSON fragment.
-func extractJsonStr(chunk: in String, key: in String): String {
-  val prefix = "\"" + key + "\":"
-  match Str.indexOf(chunk, prefix) {
-    case None -> ""
-    case Some(start) -> {
-      val afterColon = start + prefix.length
-      if afterColon >= chunk.length { return "" }
-      if chunk[afterColon] != '"' { return "" }
-      var result = ""
-      var j = afterColon + 1
-      while j < chunk.length and chunk[j] != '"' {
-        result = result + ("" + chunk[j])
-        j += 1
-      }
-      result
-    }
+// Percent-encode characters unsafe in a URL query string.
+func percentEncodeQuery(q: in String): String {
+  var r = ""
+  var qi = 0
+  while qi < q.length {
+    val c = q[qi]
+    if c == ' '  { r = r + "%20" }
+    else if c == '%' { r = r + "%25" }
+    else if c == '&' { r = r + "%26" }
+    else if c == '+' { r = r + "%2B" }
+    else if c == '#' { r = r + "%23" }
+    else if c == '=' { r = r + "%3D" }
+    else if c == '?' { r = r + "%3F" }
+    else             { r = r + ("" + c) }
+    qi += 1
   }
+  r
+}
+
+// Extract a JSON string value starting at `startPos` (position right after the
+// opening double-quote).  Returns (value, endPos) where endPos is the position
+// after the closing double-quote.  Handles `\"` escapes.
+func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
+  if startPos >= json.length { return ("", startPos) }
+  var s = ""
+  var j = startPos
+  var escaping = false
+  while j < json.length {
+    val c = json[j]
+    if escaping {
+      s = s + ("" + c)
+      escaping = false
+    } else if c == '\\' {
+      escaping = true
+    } else if c == '"' {
+      return (s, j + 1)
+    } else {
+      s = s + ("" + c)
+    }
+    j += 1
+  }
+  (s, j)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
