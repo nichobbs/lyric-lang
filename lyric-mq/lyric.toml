@@ -16,6 +16,9 @@ output_assembly = "Mq.dll"
 "Mq.Kernel.Net"   = "src/_kernel/net"
 "Mq.Kernel.Jvm"   = "src/_kernel/jvm"
 
+[project.tests]
+"Mq.MqTests" = "tests/mq_tests.l"
+
 [features]
 dotnet          = []   # Target the .NET kernel (`Mq.Kernel.Net`)
 jvm             = []   # Target the JVM kernel (`Mq.Kernel.Jvm`)

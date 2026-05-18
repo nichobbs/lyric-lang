@@ -22,6 +22,9 @@ quartz   = []   # Quartz.NET scheduler (.NET); Quartz Scheduler on JVM
 dotnet   = []   # .NET kernel backend
 jvm      = []   # JVM kernel backend (Phase 6)
 
+[project.tests]
+"Jobs.JobsTests" = "tests/jobs_tests.l"
+
 [dependencies]
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }

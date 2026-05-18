@@ -16,3 +16,6 @@ output_assembly = "Health.dll"
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
 "Lyric.Web"    = { path = "../lyric-web" }
+
+[project.tests]
+"Health.HealthTests" = "tests/health_tests.l"

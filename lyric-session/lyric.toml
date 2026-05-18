@@ -21,6 +21,8 @@ output_assembly = "Session.dll"
 # files serve as living specs alongside the source.
 [project.tests]
 "Session.SessionFixationTests" = "tests/session_fixation_tests.l"
+"Session.SensitiveUrlTests"    = "tests/sensitive_url_tests.l"
+"Session.SessionStoreTests"    = "tests/session_store_tests.l"
 
 [features]
 dotnet   = []   # .NET kernel backend (StackExchange.Redis, System.Collections.Concurrent)

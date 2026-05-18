@@ -21,6 +21,9 @@ meilisearch   = []   # Meilisearch (Meilisearch .NET client / meilisearch-java o
 dotnet        = []   # .NET kernel backend
 jvm           = []   # JVM kernel backend (Phase 6)
 
+[project.tests]
+"Search.SearchTests" = "tests/search_tests.l"
+
 [dependencies]
 "Lyric.Stdlib"     = { path = "../stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }

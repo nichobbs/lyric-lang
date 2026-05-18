@@ -45,6 +45,9 @@ output_assembly = "Lyric.OTel.dll"
 # OTLP exporter configuration and lifecycle API.
 "OTel.Otlp"               = "src/otlp.l"
 
+[project.tests]
+"OTel.OTelTypesTests" = "tests/otel_types_tests.l"
+
 [nuget]
 # OTel API only — used by OTel.Kernel.Net for ActivitySource / Metrics.
 "OpenTelemetry.Api"                              = "1.9.0"

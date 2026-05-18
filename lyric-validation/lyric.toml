@@ -16,3 +16,6 @@ output_assembly = "Validation.dll"
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
+
+[project.tests]
+"Validation.ValidationTests" = "tests/validation_tests.l"

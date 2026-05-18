@@ -20,6 +20,9 @@ output_assembly = "Ws.dll"
 dotnet = []   # ASP.NET Core WebSockets
 jvm    = []   # Undertow WebSockets (Phase 6)
 
+[project.tests]
+"Ws.WsTests" = "tests/ws_tests.l"
+
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
 "Lyric.Auth"   = { path = "../lyric-auth" }
