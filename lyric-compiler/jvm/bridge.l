@@ -18,8 +18,12 @@ import Jvm.Driver
 /// Compile `source` to a JAR at `outputPath`.
 ///
 /// Returns true on success; false if the source contains parse errors or the
-/// JAR write fails.  `packageName` is used as both the Lyric package name and
-/// the JVM main-class attribute in the manifest.
+/// JAR write fails.  `packageName` is the Lyric package identifier the F# CLI
+/// derives from the source filename — it is used as the `Lyric-Package`
+/// manifest attribute.  The JVM `Main-Class` attribute is derived from the
+/// source's actual `package` declaration so a Lyric program saved as
+/// `hello_jvm.l` but declaring `package Hello` still produces a runnable
+/// `java -jar` artefact.
 pub func compileToJar(source: in String, outputPath: in String, packageName: in String): Bool {
   val parseResult = parse(source)
 
@@ -48,9 +52,26 @@ pub func compileToJar(source: in String, outputPath: in String, packageName: in 
     j = j + 1
   }
 
+  // Derive the JVM `Main-Class` from the source's `package` declaration.
+  // ModulePath segments are joined with "." (JVM manifest convention).
+  // Falls back to the F#-supplied packageName when the file has no package
+  // declaration (only the synthetic stdlib bootstrap can hit that path).
+  val segs = parseResult.file.packageDecl.path.segments
+  var mainClassName: String = packageName
+  if segs.count > 0 {
+    var k = 0
+    var acc = ""
+    while k < segs.count {
+      if k > 0 { acc = acc + "." }
+      acc = acc + segs[k]
+      k = k + 1
+    }
+    mainClassName = acc
+  }
+
   val req = BuildRequest(
     packageName = packageName,
-    mainClass   = packageName,
+    mainClass   = mainClassName,
     version     = "0.1.0",
     outPath     = outputPath
   )

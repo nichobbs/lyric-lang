@@ -126,12 +126,19 @@ Trait/interface-based generics ship in v1. Package generics (parameterizing whol
 
 ### JVM backend
 
-**Status:** PHASE 6 IN PROGRESS (self-hosted only — not yet wired to `lyric build`)
+**Status:** PHASE 6 SHIPPED (end-to-end `lyric build --target jvm` works)
 
-The self-hosted JVM emitter (`lyric-compiler/jvm/`) is in active development.
-`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` are complete and
-pass 125 self-tests (B3–B125).  CLI wiring (`lyric build --target jvm` producing
-a real JAR) is tracked in `docs/33-platform-parity-remediation.md §4–5`.
+The self-hosted JVM emitter (`lyric-compiler/jvm/`) is operational.
+`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` pass 129 self-tests
+(B3–B130).  The CLI pipeline — F# bootstrap `Emitter.emit` → JVM-flavoured
+stdlib precompile → `SelfHostedJvm.compileToJar` → runnable JAR — is wired and
+exercised by the 22-program × 3-path parity smoke suite in
+`bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs` (`Lyric.Cli.Parity smoke-tests`).
+A Lyric source declaring `func main(): Int` or `func main(): Unit` compiles
+to a `java -jar`-runnable archive whose `Main-Class` is derived from the
+source's `package` declaration.  Library / ecosystem maturity (real-world
+benchmarks, Maven Central publishing flow at scale, native-image AOT) is
+still post-v1 work.
 
 **Original rationale (v1):** Building two backends in parallel risks shipping
 neither. JVM's erased generics and reflection-heavy ecosystem make it a worse

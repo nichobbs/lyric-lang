@@ -5915,10 +5915,23 @@ let rec private ensureStdlibArtifact
                     // assembly-qualified type-ref in the self-hosted DLL keeps
                     // them disambiguated as long as the assembly names differ.
                     let assemblyName =
-                        match segments with
-                        | "Std" :: rest -> "Lyric.Stdlib." + String.concat "" rest
-                        | head :: rest  -> sprintf "Lyric.%s.%s" head (String.concat "" rest)
-                        | []            -> "Lyric.Unknown"
+                        let baseName =
+                            match segments with
+                            | "Std" :: rest -> "Lyric.Stdlib." + String.concat "" rest
+                            | head :: rest  -> sprintf "Lyric.%s.%s" head (String.concat "" rest)
+                            | []            -> "Lyric.Unknown"
+                        // Suffix the assembly identity with the target when
+                        // emitting for JVM so the JVM-flavoured stdlib DLLs
+                        // (with `_kernel_jvm/` externs) don't collide with the
+                        // .NET-flavoured stdlib DLLs (`_kernel/` externs)
+                        // already loaded by the self-hosted CLI bridge or any
+                        // prior `--target dotnet` invocation in the same
+                        // process.  Without this, `Assembly.LoadFrom` raises
+                        // FUSION_E_INVALID_NAME (0x80131047) because two
+                        // assemblies with the same identity cannot coexist.
+                        match target with
+                        | Jvm    -> baseName + ".Jvm"
+                        | Dotnet -> baseName
                     let outPath = Path.Combine(stdlibCacheDir, assemblyName + ".dll")
                     let req =
                         { Source             = src
