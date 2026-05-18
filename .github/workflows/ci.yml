@@ -3,16 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'book/**'
-      - 'docs/**'
-      - '**.md'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'book/**'
-      - 'docs/**'
-      - '**.md'
 
 permissions:
   contents: read
@@ -30,32 +22,77 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Determine whether any non-docs files changed. When only book/,
+      # docs/, or *.md files changed (docs-only PR), the expensive
+      # build and test steps are skipped and the job exits green so
+      # that required status checks are satisfied and auto-merge can
+      # proceed.
+      - name: Detect code changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+          fi
+
+          # First-ever push to a branch has no parent; treat as code change.
+          if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
+            echo "First push — assuming code changes."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
+            | grep -v '^book/' \
+            | grep -v '^docs/' \
+            | grep -v '\.md$' \
+            | head -1) || changed="yes"
+
+          if [ -n "$changed" ]; then
+            echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Code changes detected — full build and test will run."
+          else
+            echo "has_code_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only change — build and test skipped."
+          fi
 
       - name: Set up .NET (uses bootstrap/global.json)
+        if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-dotnet@v5
         with:
           global-json-file: bootstrap/global.json
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
+        if: steps.changes.outputs.has_code_changes == 'true'
         run: sudo apt-get update && sudo apt-get install -y z3
 
       - name: Install coverage tools
+        if: steps.changes.outputs.has_code_changes == 'true'
         run: |
           dotnet tool install --global coverlet.console
           dotnet tool install --global dotnet-reportgenerator-globaltool
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Restore
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet restore Bootstrap.sln
 
       - name: Build
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet build Bootstrap.sln --configuration Debug --no-restore
 
@@ -68,28 +105,33 @@ jobs:
       # ----------------------------------------------------------------
 
       - name: Lexer tests
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
 
       - name: Parser tests
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
 
       - name: Type-checker tests
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
 
       - name: Emitter tests
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
 
       - name: CLI tests
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration Debug
 
       - name: Collect coverage (best-effort)
         id: coverage
-        if: always()
+        if: steps.changes.outputs.has_code_changes == 'true'
         continue-on-error: true
         working-directory: bootstrap
         run: |
@@ -130,7 +172,7 @@ jobs:
           exit 0
 
       - name: Generate coverage report
-        if: always()
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: |
           shopt -s nullglob
@@ -145,7 +187,7 @@ jobs:
             -reporttypes:'HtmlInline_AzurePipelines;MarkdownSummaryGithub;Cobertura;TextSummary'
 
       - name: Append coverage to job summary
-        if: always()
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: |
           {
@@ -159,7 +201,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Print coverage summary to log
-        if: always()
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: |
           if [ -f coverage/report/Summary.txt ]; then
@@ -169,7 +211,7 @@ jobs:
           fi
 
       - name: Upload coverage report artifact
-        if: always()
+        if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
@@ -178,6 +220,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Smoke-test the CLI on examples
+        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: |
           set -euo pipefail
