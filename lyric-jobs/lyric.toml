@@ -34,10 +34,8 @@ jvm      = []   # JVM kernel backend (Phase 6)
 "Quartz"             = "3.9.0"
 
 # Hangfire has no JVM port; both hangfire and quartz Lyric features map to
-# Quartz Scheduler on JVM.  The @cfg gates in Jobs.Kernel.Jvm are preserved so
-# feature selection remains meaningful at the Lyric level.
+# Quartz Scheduler on JVM.  A single Maven entry covers both features so
+# only one Quartz JAR is restored regardless of which @cfg path activates.
 [maven]
-# feature = "hangfire" — degraded JVM fallback to Quartz Scheduler
-"org.quartz-scheduler:quartz" = { version = "2.3.2", features = ["hangfire"] }
-# feature = "quartz" — JVM Quartz Scheduler
-"org.quartz-scheduler:quartz" = { version = "2.3.2", features = ["quartz"] }
+# features = "hangfire" / "quartz" — JVM Quartz Scheduler (Hangfire degrades to it).
+"org.quartz-scheduler:quartz" = { version = "2.3.2", features = ["hangfire", "quartz"] }
