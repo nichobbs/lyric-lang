@@ -157,6 +157,11 @@ pub func hostStopwatchFrequency(): Long = ()
 
 /// Nanoseconds from an unspecified epoch, using the high-resolution monotonic
 /// Stopwatch counter.  Use differences between two calls to measure elapsed time.
+/// Two-step formula avoids Int64 overflow: whole-second part computed first,
+/// then sub-second remainder, each safe within Long range for any realistic timer
+/// frequency (up to ~9 GHz before (ts % freq) * 1_000_000_000 would overflow).
 pub func hostMonotonicNanos(): Long {
-  hostStopwatchTimestamp() * 1000000000 / hostStopwatchFrequency()
+  val ts   = hostStopwatchTimestamp()
+  val freq = hostStopwatchFrequency()
+  (ts / freq) * 1000000000 + (ts % freq) * 1000000000 / freq
 }
