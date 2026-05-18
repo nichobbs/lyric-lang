@@ -31,6 +31,7 @@
 package Storage.Aspects
 
 import Std.Core
+import Std.String as Str
 import Storage
 import Storage.Kernel.Net as StorageKernel
 
@@ -99,11 +100,12 @@ pub aspect ValidateKey {
     if not enabled {
       ret = call.proceed()
     } else {
-      if args.key == "" {
+      val reason = traversalReason(args.key)
+      if reason != "" {
         ret = Err(StorageError(
-          message = "storage key must not be empty",
+          message = "storage key rejected: " + reason,
           code    = "INVALID_KEY"))
-      } else if not allowDots and containsDotDot(args.key) {
+      } else if not allowDots and containsDotDot(normalisedKey(args.key)) {
         ret = Err(StorageError(
           message = "storage key must not contain path traversal segments (\"..\")",
           code    = "INVALID_KEY"))
@@ -116,10 +118,49 @@ pub aspect ValidateKey {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Checks for path-traversal via literal ".." segments.
-// Assumption: the kernel pre-decodes percent-encoded paths and normalises
-// path separators before the key reaches this aspect.  URL-encoded variants
-// (%2e%2e, ..%2f) and Windows backslash separators are not caught here.
+// Normalise a key for traversal-detection: URL-decode the path-relevant
+// percent-encodings (only `.`, `/`, `\`; everything else is left alone
+// to avoid silently rewriting legitimate object names), fold backslashes
+// to forward slashes, and lower-case nothing else.  The returned string
+// is *only* for inspection by `containsDotDot` / `traversalReason`;
+// it is never passed downstream to the storage backend.
+func normalisedKey(s: in String): String {
+  // Order matters: decode `%2e` / `%2E` before checking for `..`,
+  // and `%2f` / `%2F` / `%5c` / `%5C` before folding separators.
+  val a = Str.replace(s, "%2e", ".")
+  val b = Str.replace(a, "%2E", ".")
+  val c = Str.replace(b, "%2f", "/")
+  val d = Str.replace(c, "%2F", "/")
+  val e = Str.replace(d, "%5c", "\\")
+  val f = Str.replace(e, "%5C", "\\")
+  Str.replace(f, "\\", "/")
+}
+
+// Reject empty, leading-slash, null-byte, and clearly-bogus keys with
+// a structured reason.  Returns "" when the key clears the cheap
+// rejections; the caller then runs the more expensive
+// containsDotDot check against the normalised key.
+func traversalReason(s: in String): String {
+  if s == "" {
+    return "key must not be empty"
+  }
+  if Str.contains(s, "\u{0000}") {
+    return "key must not contain null bytes"
+  }
+  // After normalisation, a leading separator means an attempt to
+  // escape the configured base path.  Catch literal and percent-
+  // encoded variants.
+  val n = normalisedKey(s)
+  if n.length > 0 and n.charAt(0).toString() == "/" {
+    return "key must not be absolute or start with '/'"
+  }
+  return ""
+}
+
+// Checks for path-traversal via `..` segments.  The caller is expected
+// to pass a normalised key (percent-encodings expanded, backslashes
+// folded to forward slashes) so this check catches `%2e%2e`, `..%2f`,
+// `..\foo`, and `../foo` uniformly.
 func containsDotDot(s: in String): Bool {
   val limit = s.length - 1
   var i     = 0
