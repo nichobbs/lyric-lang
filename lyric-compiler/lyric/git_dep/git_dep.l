@@ -18,6 +18,7 @@ package Lyric.GitDep
 import Std.Core
 import Std.Collections
 import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
+import Std.Char as Char
 import Std.File as File
 import Std.Path as Path
 import Std.Directory as Dir
@@ -70,22 +71,43 @@ pub func cacheDir(): String {
 /// Derive a filesystem-safe directory name from a git URL.
 ///
 /// Strips `https://` and `http://` schemes, then replaces `/`, `:`, and
-/// `.` with `-`.  The result is trimmed of leading/trailing hyphens so it
-/// reads cleanly as a directory name fragment.
+/// `.` with `-`.  Appends a DJB2 hash of the full original URL (decimal)
+/// so that two URLs that collapse to the same sanitised prefix still map
+/// to distinct directories.  Leading/trailing hyphens are stripped
+/// character-by-character so they never appear at the boundaries.
 ///
 /// Examples:
-///   "https://github.com/example/repo" → "github-com-example-repo"
-///   "http://localhost:3000/my.git"     → "localhost-3000-my-git"
+///   "https://github.com/example/repo" → "github-com-example-repo-<hash>"
+///   "http://localhost:3000/my.git"     → "localhost-3000-my-git-<hash>"
 pub func urlToHash(url: in String): String {
-  val stripped = url
+  // Sanitise the URL into a human-readable prefix.
+  val prefix = url
     .replace("https://", "")
     .replace("http://", "")
     .replace("/", "-")
     .replace(":", "-")
     .replace(".", "-")
-  // Trim leading and trailing hyphens that arise when the URL begins or
-  // ends with a separator character.
-  Str.trim(stripped)
+
+  // Strip leading hyphens from prefix.
+  var trimmed = prefix
+  while trimmed.length > 0 and trimmed[0] == '-' {
+    trimmed = Str.substring(trimmed, 1, trimmed.length - 1)
+  }
+  // Strip trailing hyphens.
+  while trimmed.length > 0 and trimmed[trimmed.length - 1] == '-' {
+    trimmed = Str.substring(trimmed, 0, trimmed.length - 1)
+  }
+
+  // DJB2-style hash over the original URL for collision avoidance.
+  // Bounds: (h % 65000000) * 33 ≤ 64999999*33 = 2144999967,
+  // which leaves room for ASCII charCode (max 127) within Int.MAX.
+  var h = 5381
+  var ui = 0
+  while ui < url.length {
+    h = (h % 65000000) * 33 + Char.toInt(url[ui])
+    ui += 1
+  }
+  trimmed + "-" + Str.fromInt(h)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

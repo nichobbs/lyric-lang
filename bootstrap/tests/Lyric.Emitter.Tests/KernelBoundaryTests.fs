@@ -121,36 +121,6 @@ let tests =
                     total totalSoftCap
             // Sanity: kernel can't be negative or wildly huge.
             Expect.isGreaterThanOrEqual inside 0 "kernel count >= 0"
-            // Bumped from 250 → 260 during F# shim elimination (P0/4d):
-            // migrating FormatHost + EncodingHost + SetHost to direct BCL
-            // externs temporarily increases the Lyric extern count while
-            // shrinking Stdlib.fs.  Will drop back below 250 when the
-            // remaining Groups C/D land and Stdlib.fs is deleted.
-            // Bumped from 260 → 261: Std.Jvm package added to _kernel/jvm.l
-            // with @externTarget for Std.Jvm.catch[T] (Q-J012 resolution).
-            // Bumped from 261 → 268: Std.JsonHost extended with
-            // JsonObjectEnumerator + JsonProperty extern types and 5 extern
-            // functions for object-property enumeration (needed by
-            // Lyric.OpenApiParser).
-            // Bumped from 268 → 270: Std.VerifierEnvHost (1 extern) and
-            // Std.ProcessCaptureHost (1 extern) added for the self-hosted
-            // verifier's solver-path discovery and subprocess capture
-            // (D-progress-234).
-            // Bumped from 270 → 274: Std.ConsoleHost (new file, +2 externs)
-            // and Std.FileHost (9 externs total, +2 new: GetFiles + GetDirectories)
-            // added for the self-hosted LSP server's console I/O and file I/O
-            // host boundaries (migrate-lsp-lyric task).  io.l's read() is inside
-            // an existing extern package block so it doesn't affect the count.
-            // Bumped from 274 → 276: Std.TimeHost extended with
-            // hostStopwatchTimestamp + hostStopwatchFrequency for
-            // Std.Time.monotonicNanos() (monotonic high-resolution clock,
-            // #424); Std.VerifierEnvHost extended with hostIsWindows()
-            // (System.OperatingSystem.IsWindows, #426).
-            // Bumped from 276 → 279: Std.FileHost extended with
-            // hostEnumerateFileSystemEntries (Directory.GetFileSystemEntries),
-            // hostDeleteDirectory (Directory.Delete), and
-            // hostDeleteDirectoryRecursive (Directory.Delete with recursive flag)
-            // for Std.Directory's delete and enumerate operations.
             Expect.isLessThanOrEqual total 279
                 "total extern surface unexpectedly large"
         }
