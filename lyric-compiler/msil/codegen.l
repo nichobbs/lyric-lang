@@ -478,7 +478,9 @@ pub func freshLabelMsil(fctx: in FuncCtx): Int {
 // sharing the same binding name can safely reuse the same slot.
 pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int {
   match mapGet(fctx.slots, name) {
-    case Some(existing) -> existing
+    case Some(existing) ->
+      // Invariant: same name implies same type (enforced by the type checker).
+      existing
     case None -> {
       val slot = fctx.slotTicker.count
       fctx.slots.add(name, slot)

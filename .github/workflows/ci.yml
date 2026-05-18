@@ -254,6 +254,9 @@ jobs:
 
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
+        # continue-on-error is intentional during initial integration.
+        # Remove once bootstrap stage-1 passes consistently on main
+        # (tracked in lyric-lang #616).
         continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: ./scripts/bootstrap.sh --stage 1
