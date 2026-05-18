@@ -150,7 +150,7 @@ pub func propertyValue(prop: in JsonProperty): JsonElement {
 }
 
 // =====================================================================
-// fromJson scalar field readers — used by @derive(Json) synthesised stubs.
+// fromJson scalar field readers — used by @generate(Json) synthesised stubs.
 // Each re-parses the JSON string and walks to the named property.
 // =====================================================================
 

@@ -66,7 +66,7 @@ let tests =
         }
 
         test "annotation with bare-identifier arg" {
-            let f = parseClean "@derive(Json)\npackage Foo"
+            let f = parseClean "@generate(Json)\npackage Foo"
             let a = f.FileLevelAnnotations.[0]
             Expect.equal a.Args.Length 1 "one arg"
             match a.Args.[0] with
