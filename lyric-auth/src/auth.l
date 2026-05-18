@@ -72,8 +72,12 @@ func jwtAlg(token: in String): String {
         case None -> return ""
         case Some(header) -> {
           // Scan for the "alg":"VALUE" key-value pair in the header JSON.
+          // Use lastIndexOf so duplicate alg keys resolve to the last occurrence,
+          // matching last-wins parser semantics (RFC 8259 §4 permits duplicates;
+          // many JWT libraries use the last value).  This prevents a crafted first
+          // alg=RS256 from masking a final alg=none in the same header.
           val pfx    = "\"alg\":\""
-          val pfxPos = header.indexOf(pfx)
+          val pfxPos = header.lastIndexOf(pfx)
           if pfxPos < 0 { return "" }
           val vs = pfxPos + pfx.length
           val ve = indexOfCharAfter(header, "\"", vs)
