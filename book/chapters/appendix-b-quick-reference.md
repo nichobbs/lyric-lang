@@ -662,7 +662,7 @@ Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `to
 |---|---|---|---|
 | `lyric-logging` | `Std.Logging`, `Std.Logging.Aspects` | Named loggers, six levels, JSON/text output, aspect templates | 22 |
 | `lyric-web` | `Web`, `Web.OpenApi`, `Web.Aspects` | HTTP server (code-first + spec-first), `ApiError`, aspect templates | 23 |
-| `lyric-cache` | `Cache`, `Cache.Aspects` | In-memory/disk TTL cache, `CacheBucket` interface, `CachedResult`/`RateLimited` aspect templates | 24 |
+| `lyric-cache` | `Cache`, `Cache.Aspects` | In-memory/disk TTL cache, `CacheBucket` interface, `CachedResult`/`RateLimited` aspect templates. Eviction is FIFO by insertion order (oldest entry removed first when `maxEntries` is exceeded). | 24 |
 | `lyric-db` | `Db`, `Db.Aspects` | Typed SQL over `System.Data`/JDBC, `DbConnection`, parameterised queries, transactions, aspect templates | 25 |
 | `lyric-health` | `Health` | Liveness/readiness health-check endpoints; composite `HealthRegistry` | 26 |
 | `lyric-jobs` | `Jobs` | Background job scheduling; Hangfire/Quartz.NET backends; `JobHandler`/`JobScheduler`; `Retryable`/`Timed` aspects | — |
@@ -879,6 +879,7 @@ Warnings emitted by the MSIL emitter for constructs that compile but may not beh
 | `V0009` | error | `assume` used in `@proof_required` code outside `unsafe { }` |
 | `V0010` | error | Conflicting verification-level annotations on the same package |
 | `V0011` | error | Unknown verification-level modifier |
+| `V0012` | (reserved) | Planned: `async func` or `yield`-bearing function in `@proof_required` context — not yet emitted in the self-hosted verifier |
 | `V0013` | warning | Proof goal contains NaN or ±Infinity float literal; substituted with `0.0` in SMT-LIB output — verification result may be incorrect |
 
 ### Bench (B-series)

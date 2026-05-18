@@ -40,6 +40,7 @@
 package AwsXRay
 
 import Std.Core
+import Std.Encoding
 import AwsXRay.Kernel.Net as XRayKernel
 
 // ─── SubsegmentHandle ─────────────────────────────────────────────────────────
@@ -125,8 +126,19 @@ pub aspect Tracing {
 }
 
 // CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's 1024-byte limit.
+// Truncation is by UTF-8 byte count (not character count) so multi-byte characters
+// cannot push the encoded form over the limit.
 func sanitizeAnnotation(s: in String): String {
   val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
   val b = a.replace("<", "_").replace(">", "_")
-  if b.length > 1000 { b.substring(0, 1000) } else { b }
+  if Std.Encoding.encodeUtf8(b).length <= 1024 {
+    b
+  } else {
+    // Walk backwards one character at a time until the UTF-8 encoding fits.
+    var i = b.length
+    while i > 0 and Std.Encoding.encodeUtf8(b.substring(0, i)).length > 1024 {
+      i = i - 1
+    }
+    b.substring(0, i)
+  }
 }

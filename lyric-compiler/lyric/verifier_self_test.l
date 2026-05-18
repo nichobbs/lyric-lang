@@ -199,7 +199,73 @@ func testTermEqLitDiff(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §6. Trivial discharger.
+// §6. substTerm capture-avoiding substitution.
+//
+// Regression tests for the soundness fix in PR #448/#456:
+//   subst {x -> y} (forall y. x > y)  must NOT produce forall y. y > y
+//   (which is UNSOUND — y was captured).  Correct result: forall y$1. y > y$1.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testSubstTermTForallCapture(): Unit {
+  // env = { x -> y }; subst into (forall y. x > y) — y must be alpha-renamed.
+  val env: Map[String, Term] = newMap()
+  env.add("x", TVar(name = "y", sort = SInt))
+  val envNames: List[String] = newList()
+  envNames.add("x")
+  val binderY = SortBinder(name = "y", sort = SInt)
+  val bs: List[SortBinder] = newList()
+  bs.add(binderY)
+  val trigs: List[List[Term]] = newList()
+  val body = TBuiltin(op = BOpGt, args = termList2(TVar(name = "x", sort = SInt), TVar(name = "y", sort = SInt)))
+  val forallXY = TForall(binders = bs, triggers = trigs, body = body)
+  val result = substTerm(env, envNames, forallXY)
+  val rendered = smtRenderTerm(result)
+  // The binder "y" must be renamed to avoid capturing the substituted "y".
+  // smtSanitize turns "$" into "_", so the freshened form "y$1" renders as "y_1".
+  assertTrue(not rendered.contains("(forall ((y Int)) (> y y))"), "TForall: no capture")
+  assertTrue(rendered.contains("forall"), "TForall: still a forall")
+  assertTrue(rendered.contains("y_1"), "TForall: binder freshened")
+}
+
+func testSubstTermTExistsCapture(): Unit {
+  // env = { x -> y }; subst into (exists y. x < y) — y must be alpha-renamed.
+  val env: Map[String, Term] = newMap()
+  env.add("x", TVar(name = "y", sort = SInt))
+  val envNames: List[String] = newList()
+  envNames.add("x")
+  val binderY = SortBinder(name = "y", sort = SInt)
+  val bs: List[SortBinder] = newList()
+  bs.add(binderY)
+  val body = TBuiltin(op = BOpLt, args = termList2(TVar(name = "x", sort = SInt), TVar(name = "y", sort = SInt)))
+  val existsXY = TExists(binders = bs, body = body)
+  val result = substTerm(env, envNames, existsXY)
+  val rendered = smtRenderTerm(result)
+  assertTrue(not rendered.contains("(exists ((y Int)) (< y y))"), "TExists: no capture")
+  assertTrue(rendered.contains("exists"), "TExists: still an exists")
+  // smtSanitize turns "$" into "_", so "y$1" renders as "y_1".
+  assertTrue(rendered.contains("y_1"), "TExists: binder freshened")
+}
+
+func testSubstTermNoCapture(): Unit {
+  // subst {x -> z} (forall y. x > y) — no capture; binder should NOT be renamed.
+  val env: Map[String, Term] = newMap()
+  env.add("x", TVar(name = "z", sort = SInt))
+  val envNames: List[String] = newList()
+  envNames.add("x")
+  val binderY = SortBinder(name = "y", sort = SInt)
+  val bs: List[SortBinder] = newList()
+  bs.add(binderY)
+  val trigs: List[List[Term]] = newList()
+  val body = TBuiltin(op = BOpGt, args = termList2(TVar(name = "x", sort = SInt), TVar(name = "y", sort = SInt)))
+  val forallXY = TForall(binders = bs, triggers = trigs, body = body)
+  val result = substTerm(env, envNames, forallXY)
+  val rendered = smtRenderTerm(result)
+  // Substitution does not capture "y"; binder stays "y".
+  assertEqual(rendered, "(forall ((y Int)) (> z y))", "TForall: no rename needed")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7. Trivial discharger.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func testTrivialDischargeTrue(): Unit {
@@ -405,6 +471,10 @@ func main(): Unit {
   testTermEqDiff()
   testTermEqLit()
   testTermEqLitDiff()
+
+  testSubstTermTForallCapture()
+  testSubstTermTExistsCapture()
+  testSubstTermNoCapture()
 
   testTrivialDischargeTrue()
   testTrivialDischargeHyp()

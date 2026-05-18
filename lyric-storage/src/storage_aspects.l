@@ -93,19 +93,17 @@ pub aspect ValidateKey {
     allowDots: Bool = false
   }
 
-  requires:
-    args.key != ""    // handler must declare a key: String parameter
-
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
     } else {
-      val reason = traversalReason(args.key)
+      val norm   = normalisedKey(args.key)
+      val reason = traversalReason(args.key, norm)
       if reason != "" {
         ret = Err(StorageError(
           message = "storage key rejected: " + reason,
           code    = "INVALID_KEY"))
-      } else if not allowDots and containsDotDot(normalisedKey(args.key)) {
+      } else if not allowDots and containsDotDot(norm) {
         ret = Err(StorageError(
           message = "storage key must not contain path traversal segments (\"..\")",
           code    = "INVALID_KEY"))
@@ -119,39 +117,40 @@ pub aspect ValidateKey {
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 // Normalise a key for traversal-detection: URL-decode the path-relevant
-// percent-encodings (only `.`, `/`, `\`; everything else is left alone
-// to avoid silently rewriting legitimate object names), fold backslashes
-// to forward slashes, and lower-case nothing else.  The returned string
-// is *only* for inspection by `containsDotDot` / `traversalReason`;
-// it is never passed downstream to the storage backend.
+// percent-encodings (only `.`, `/`, `\`), fold backslashes to forward
+// slashes, and repeat until the output stabilises.  The iterative approach
+// handles double-encoded sequences (e.g. `%252e%252e` → `%2e%2e` → `..`).
+// The returned string is *only* for inspection by `containsDotDot` /
+// `traversalReason`; it is never passed downstream to the storage backend.
 func normalisedKey(s: in String): String {
-  // Order matters: decode `%2e` / `%2E` before checking for `..`,
-  // and `%2f` / `%2F` / `%5c` / `%5C` before folding separators.
-  val a = Str.replace(s, "%2e", ".")
-  val b = Str.replace(a, "%2E", ".")
-  val c = Str.replace(b, "%2f", "/")
-  val d = Str.replace(c, "%2F", "/")
-  val e = Str.replace(d, "%5c", "\\")
-  val f = Str.replace(e, "%5C", "\\")
-  Str.replace(f, "\\", "/")
+  var cur  = s
+  var prev = ""
+  while cur != prev {
+    prev    = cur
+    val a   = Str.replace(cur,  "%25", "%")
+    val b   = Str.replace(a,    "%2e", ".")
+    val c   = Str.replace(b,    "%2E", ".")
+    val d   = Str.replace(c,    "%2f", "/")
+    val e   = Str.replace(d,    "%2F", "/")
+    val f   = Str.replace(e,    "%5c", "\\")
+    val g   = Str.replace(f,    "%5C", "\\")
+    cur     = Str.replace(g,    "\\",  "/")
+  }
+  cur
 }
 
 // Reject empty, leading-slash, null-byte, and clearly-bogus keys with
 // a structured reason.  Returns "" when the key clears the cheap
-// rejections; the caller then runs the more expensive
-// containsDotDot check against the normalised key.
-func traversalReason(s: in String): String {
+// rejections.  Accepts a pre-computed normalised key (`norm`) to avoid
+// calling normalisedKey twice.
+func traversalReason(s: in String, norm: in String): String {
   if s == "" {
     return "key must not be empty"
   }
   if Str.contains(s, "\u{0000}") {
     return "key must not contain null bytes"
   }
-  // After normalisation, a leading separator means an attempt to
-  // escape the configured base path.  Catch literal and percent-
-  // encoded variants.
-  val n = normalisedKey(s)
-  if n.length > 0 and n.charAt(0).toString() == "/" {
+  if norm.length > 0 and norm.charAt(0).toString() == "/" {
     return "key must not be absolute or start with '/'"
   }
   return ""

@@ -1151,9 +1151,9 @@ API surface and stability guarantees: governed by `@stable(since="1.0")` / `@exp
 
 ### 13.6 LSP
 
-The language server conforms to the Microsoft Language Server Protocol (latest stable). No Lyric-specific extensions in v1.
+The language server conforms to the Microsoft Language Server Protocol (latest stable). No Lyric-specific LSP protocol extensions in v1 — the server uses only standard LSP message types.
 
-**Diagnostic type (LSP consumers):** The internal `Diagnostic` record exposed via the compiler API carries three optional fields that map directly to LSP diagnostic capabilities:
+**Diagnostic type (LSP consumers):** The internal `Diagnostic` record exposed via the compiler API carries three optional fields that map directly to LSP diagnostic capabilities. These are compiler API fields, not protocol-level extensions:
 
 | Field | Type | LSP mapping |
 |---|---|---|

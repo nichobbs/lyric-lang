@@ -46,6 +46,7 @@
 package Resilience
 
 import Std.Core
+import Std.Time
 import Resilience.Kernel.Net
 import Resilience.Kernel.Jvm
 
@@ -132,10 +133,12 @@ func backoffDelay(
       i        = i + 1
     }
   }
-  // Apply jitter: delay × (1 ± jitterFraction).  Uses a simple deterministic
-  // hash of `attempt` as a pseudo-random seed to avoid a stdlib dependency.
+  // Apply jitter: delay × (1 ± jitterFraction).  Mixes the current time in
+  // milliseconds with the attempt number so concurrent callers at the same
+  // retry attempt get distinct pseudo-random values, breaking thundering herds.
   if jitterFraction > 0.0 {
-    val pseudoRand = ((attempt * 1664525 + 1013904223) mod 1000).toFloat() / 1000.0
+    val nowSeed    = (Std.Time.monotonicNanos() mod 1000000i64).toInt()
+    val pseudoRand = ((nowSeed * 1664525 + attempt * 22695477 + 1013904223) mod 1000).toFloat() / 1000.0
     val jitter = (pseudoRand * 2.0 - 1.0) * jitterFraction
     val jitteredDelay = (delay.toFloat() * (1.0 + jitter)).toInt()
     if jitteredDelay < 0 then 0 else if jitteredDelay > maxDelayMs then maxDelayMs else jitteredDelay

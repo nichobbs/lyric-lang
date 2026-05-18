@@ -493,6 +493,53 @@ func envCodomainFreeVars(env: in Map[String, Term], envNames: in List[String]): 
   acc
 }
 
+// Result type for alphaRenameBinders.
+record AlphaRenameResult {
+  newBinders:  List[SortBinder]
+  rename:      Map[String, Term]
+  renameNames: List[String]
+}
+
+// Compute the capture-avoiding binder renaming needed when substituting `env2`
+// (already filtered to exclude binder-shadowed names) into a quantifier body.
+// Any binder name that appears free in the surviving env codomain is freshened
+// so the substitution cannot capture it.
+func alphaRenameBinders(
+  binders:   in List[SortBinder],
+  captured:  in List[String],
+  env2:      in Map[String, Term],
+  envNames2: in List[String]
+): AlphaRenameResult {
+  val taken: List[String] = newList()
+  var ki = 0
+  while ki < captured.count { taken.add(captured[ki]); ki = ki + 1 }
+  var bi = 0
+  while bi < binders.count {
+    if not nameMember(taken, binders[bi].name) { taken.add(binders[bi].name) }
+    bi = bi + 1
+  }
+  val newBinders:  List[SortBinder] = newList()
+  var rename:      Map[String, Term] = env2
+  val renameNames: List[String]      = newList()
+  var k = 0
+  while k < envNames2.count { renameNames.add(envNames2[k]); k = k + 1 }
+  var i = 0
+  while i < binders.count {
+    val b = binders[i]
+    if nameMember(captured, b.name) {
+      val fresh = freshNameAvoiding(b.name, taken)
+      taken.add(fresh)
+      rename.add(b.name, TVar(name = fresh, sort = b.sort))
+      if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
+      newBinders.add(SortBinder(name = fresh, sort = b.sort))
+    } else {
+      newBinders.add(b)
+    }
+    i = i + 1
+  }
+  AlphaRenameResult(newBinders = newBinders, rename = rename, renameNames = renameNames)
+}
+
 // Capture-avoiding substitution.  envNames must contain exactly the keys
 // of env (maintained as a parallel list to avoid iterating Map.keys on a
 // TypeBuilderInstantiation, which generates invalid IL).
@@ -577,84 +624,30 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
     }
     case TIte(c, a, b) -> TIte(cond = substTerm(env, envNames, c), thenT = substTerm(env, envNames, a), elseT = substTerm(env, envNames, b))
     case TForall(binders, triggers, body) -> {
-      val envNames2: List[String] = filterNamesByBinders(envNames, binders)
+      val envNames2: List[String]      = filterNamesByBinders(envNames, binders)
       val env2:      Map[String, Term] = copyMap(env, envNames2)
       val captured = envCodomainFreeVars(env2, envNames2)
-      // See TLet above — `taken` must include sibling binder names too.
-      val taken: List[String] = newList()
-      var ki = 0
-      while ki < captured.count { taken.add(captured[ki]); ki = ki + 1 }
-      var bi = 0
-      while bi < binders.count {
-        if not nameMember(taken, binders[bi].name) { taken.add(binders[bi].name) }
-        bi = bi + 1
-      }
-      val newBinders: List[SortBinder] = newList()
-      var rename:      Map[String, Term] = env2
-      val renameNames: List[String]       = newList()
-      var k = 0
-      while k < envNames2.count { renameNames.add(envNames2[k]); k = k + 1 }
-      var i = 0
-      while i < binders.count {
-        val b = binders[i]
-        if nameMember(captured, b.name) {
-          val fresh = freshNameAvoiding(b.name, taken)
-          taken.add(fresh)
-          rename.add(b.name, TVar(name = fresh, sort = b.sort))
-          if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
-          newBinders.add(SortBinder(name = fresh, sort = b.sort))
-        } else {
-          newBinders.add(b)
-        }
-        i = i + 1
-      }
+      val ar       = alphaRenameBinders(binders, captured, env2, envNames2)
       val newTriggers: List[List[Term]] = newList()
       var ti = 0
       while ti < triggers.count {
         val row: List[Term] = newList()
         var tj = 0
         while tj < triggers[ti].count {
-          row.add(substTerm(rename, renameNames, triggers[ti][tj]))
+          row.add(substTerm(ar.rename, ar.renameNames, triggers[ti][tj]))
           tj = tj + 1
         }
         newTriggers.add(row)
         ti = ti + 1
       }
-      TForall(binders = newBinders, triggers = newTriggers, body = substTerm(rename, renameNames, body))
+      TForall(binders = ar.newBinders, triggers = newTriggers, body = substTerm(ar.rename, ar.renameNames, body))
     }
     case TExists(binders, body) -> {
-      val envNames2: List[String] = filterNamesByBinders(envNames, binders)
+      val envNames2: List[String]      = filterNamesByBinders(envNames, binders)
       val env2:      Map[String, Term] = copyMap(env, envNames2)
       val captured = envCodomainFreeVars(env2, envNames2)
-      // See TLet above — `taken` must include sibling binder names too.
-      val taken: List[String] = newList()
-      var ki = 0
-      while ki < captured.count { taken.add(captured[ki]); ki = ki + 1 }
-      var bi = 0
-      while bi < binders.count {
-        if not nameMember(taken, binders[bi].name) { taken.add(binders[bi].name) }
-        bi = bi + 1
-      }
-      val newBinders: List[SortBinder] = newList()
-      var rename:      Map[String, Term] = env2
-      val renameNames: List[String]       = newList()
-      var k = 0
-      while k < envNames2.count { renameNames.add(envNames2[k]); k = k + 1 }
-      var i = 0
-      while i < binders.count {
-        val b = binders[i]
-        if nameMember(captured, b.name) {
-          val fresh = freshNameAvoiding(b.name, taken)
-          taken.add(fresh)
-          rename.add(b.name, TVar(name = fresh, sort = b.sort))
-          if not nameMember(renameNames, b.name) { renameNames.add(b.name) }
-          newBinders.add(SortBinder(name = fresh, sort = b.sort))
-        } else {
-          newBinders.add(b)
-        }
-        i = i + 1
-      }
-      TExists(binders = newBinders, body = substTerm(rename, renameNames, body))
+      val ar       = alphaRenameBinders(binders, captured, env2, envNames2)
+      TExists(binders = ar.newBinders, body = substTerm(ar.rename, ar.renameNames, body))
     }
   }
 }

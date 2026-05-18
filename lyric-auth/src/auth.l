@@ -26,8 +26,64 @@
 package Auth
 
 import Std.Core
+import Std.Encoding
 import Auth.Kernel.Net
 import Auth.Kernel.Jvm
+
+// ─── JWT algorithm extraction (Lyric-level, no extern dependency) ─────────────
+
+// Find the first occurrence of `ch` in `s` at or after position `pos`.
+// Returns -1 if not found.
+func indexOfCharAfter(s: in String, ch: in String, pos: in Int): Int {
+  var i = pos
+  while i < s.length {
+    if s.charAt(i).toString() == ch { return i }
+    i = i + 1
+  }
+  return -1
+}
+
+// Extract the `alg` value from a JWT's base64url-encoded header segment.
+// Returns "" when the token is malformed or the `alg` key is absent.
+// Uses pure-Lyric base64url decode so no extern is needed — this function
+// provides belt-and-suspenders algorithm enforcement at the Lyric layer in
+// case the host shim has not yet wired `allowedAlgorithms` to the BCL
+// validator's `ValidAlgorithms` list (see lyric-lang #443).
+func jwtAlg(token: in String): String {
+  // JWT format: base64url(header).base64url(payload).signature
+  val dot = token.indexOf(".")
+  if dot < 0 { return "" }
+  // Convert base64url to standard base64: - → + and _ → /
+  val seg   = token.substring(0, dot)
+  val std64 = seg.replace("-", "+").replace("_", "/")
+  // Add '=' padding so length is a multiple of 4.
+  val rem = std64.length % 4
+  val padded =
+    if rem == 0 { std64 }
+    else if rem == 2 { std64 + "==" }
+    else if rem == 3 { std64 + "=" }
+    else { "" }  // rem == 1 is not valid base64url
+  if padded == "" { return "" }
+  // Decode to bytes then to a UTF-8 string.
+  match Std.Encoding.tryDecodeBase64(padded) {
+    case None -> return ""
+    case Some(bytes) -> {
+      match Std.Encoding.tryDecodeUtf8(bytes) {
+        case None -> return ""
+        case Some(header) -> {
+          // Scan for the "alg":"VALUE" key-value pair in the header JSON.
+          val pfx    = "\"alg\":\""
+          val pfxPos = header.indexOf(pfx)
+          if pfxPos < 0 { return "" }
+          val vs = pfxPos + pfx.length
+          val ve = indexOfCharAfter(header, "\"", vs)
+          if ve < 0 { return "" }
+          header.substring(vs, ve)
+        }
+      }
+    }
+  }
+}
 
 // ─── JWT verification ─────────────────────────────────────────────────────────
 
@@ -68,7 +124,15 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
+  requires: not Std.String.contains(allowedAlgorithms, "none")
 {
+  // Lyric-level algorithm pinning: reject before reaching the extern if the
+  // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
+  // shims that have not yet wired `allowedAlgorithms` into the BCL validator's
+  // `ValidAlgorithms` restriction (RFC 8725 §3.1; see lyric-lang #443).
+  val alg = jwtAlg(token)
+  if alg.length == 0 { return false }
+  if not rolesContain(allowedAlgorithms, alg) { return false }
   return Auth.Kernel.Net.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
@@ -83,7 +147,12 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
+  requires: not Std.String.contains(allowedAlgorithms, "none")
 {
+  // Lyric-level algorithm pinning: same guard as the .NET overload above.
+  val alg = jwtAlg(token)
+  if alg.length == 0 { return false }
+  if not rolesContain(allowedAlgorithms, alg) { return false }
   return Auth.Kernel.Jvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
@@ -144,9 +213,13 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 ///
 /// Used by RequiresRole bindings to match the `role` JWT claim against
 /// an allowlist.  For example, `"admin,manager"` contains `"admin"`.
-/// Whitespace around each comma-separated entry is trimmed before
-/// comparison, so `"admin, manager"` matches `"manager"`.  Empty
-/// entries (e.g. `",,"` or `"admin,"`) never match.
+/// Whitespace around each comma-separated entry in `allowedRoles` is trimmed
+/// before comparison, so `"admin, manager"` matches `"manager"`.  Empty entries
+/// (e.g. `",,"` or `"admin,"`) never match.
+///
+/// Note: `role` is compared as-is (no trimming).  JWT claim values are compact
+/// by specification, so trimming `role` would silently loosen matching and could
+/// become a security regression in future refactors.
 @stable(since="0.1")
 pub func rolesContain(allowedRoles: in String, role: in String): Bool {
   if allowedRoles.length == 0 { return false }

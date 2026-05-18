@@ -379,6 +379,11 @@ func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit
   return Mq.Kernel.Jvm.publishBatch(queueId, messagesJson)
 }
 
+// `timeoutMs = 0` performs a non-blocking poll.  The behaviour for zero has been
+// verified on all four kernel backends (RabbitMQ, Azure Service Bus, SQS, Kafka):
+// each maps 0 to a single peek-and-return without blocking.  An empty result
+// (no message available) is returned as Ok(""), which the caller translates to
+// Err("timeout").
 @cfg(feature = "dotnet")
 func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
   return Mq.Kernel.Net.consume(queueId, timeoutMs)
@@ -468,10 +473,33 @@ func messageFromJson(json: in String): Message {
     case Some(v) -> Std.Json.getString(v)
     case None    -> ""
   }
-  val deliveryCount = jsonExtractInt(json, "deliveryCount")
+  val deliveryCount = match Std.Json.tryGetProperty(root, "deliveryCount") {
+    case Some(v) -> Std.Json.getInt32(v)
+    case None    -> 0
+  }
   // Headers are conveyed in a nested JSON array; parse key/value pairs.
-  val hdrsRaw = jsonExtractRaw(json, "headers")
-  val headers = parseHeadersJson(hdrsRaw)
+  val headers = match Std.Json.tryGetProperty(root, "headers") {
+    case Some(arr) -> {
+      var result: [MessageHeader] = []
+      var en = Std.Json.enumerateArray(arr)
+      while Std.Json.arrayMoveNext(en) {
+        val obj = Std.Json.arrayCurrent(en)
+        var key   = ""
+        var value = ""
+        match Std.Json.tryGetProperty(obj, "key") {
+          case Some(v) -> key = Std.Json.getString(v)
+          case None    -> ()
+        }
+        match Std.Json.tryGetProperty(obj, "value") {
+          case Some(v) -> value = Std.Json.getString(v)
+          case None    -> ()
+        }
+        result = result + [MessageHeader(key = key, value = value)]
+      }
+      result
+    }
+    case None -> []
+  }
   return Message(id = id, body = body, headers = headers, deliveryCount = deliveryCount)
 }
 

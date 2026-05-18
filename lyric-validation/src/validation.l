@@ -136,6 +136,11 @@ pub func notBlank(value: in String, field: in String): [ValidationError] {
 ///
 /// `patternDesc` is the human-readable description used in the error message
 /// (e.g. "E.164 phone number").  When `pattern` is empty, all values pass.
+///
+/// **Important:** `pattern` must be a syntactically valid .NET regular expression.
+/// An invalid pattern causes `Std.Regex.compile` to throw, propagating as an
+/// unhandled exception rather than returning a `[ValidationError]`.  Always
+/// pass a compile-time constant or a pre-validated pattern string.
 @stable(since="0.1")
 pub func matches(
   value:       in String,

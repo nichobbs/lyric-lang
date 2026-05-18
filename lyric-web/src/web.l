@@ -291,6 +291,23 @@ config Cors {
 
 /// Start the HTTP server with the given router.
 /// Blocks until the process receives a shutdown signal.
+/// Check the CORS configuration and return an error message if it is invalid,
+/// or None if it is acceptable to proceed.  Exposed for testing; production
+/// code goes through `start()` which panics on error.
+@stable(since="0.1")
+pub func corsConfigError(enabled: in Bool, allowedOrigins: in String): Option[String] {
+  if enabled and allowedOrigins.length == 0 {
+    Some(value =
+      "Cors.enabled = true requires Cors.allowedOrigins to be a non-empty " +
+      "comma-separated list of allowed origins. Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
+      "or the equivalent config source. \"*\" is accepted (with a startup warning) " +
+      "but is unsafe for authenticated APIs (see RFC 6454 §3 and the CORS spec on " +
+      "credentialed requests).")
+  } else {
+    None
+  }
+}
+
 /// Binds to Server.host:Server.port (from env vars).
 /// When Server.swaggerEnabled is true, also serves GET Server.specPath
 /// (the live OpenAPI JSON spec) and GET /swagger (Swagger UI).
@@ -299,11 +316,9 @@ pub func start(router: in Router): Unit {
   // Enabling CORS without an explicit origin list is a configuration
   // mistake — under the previous default of `"*"` this silently opened
   // a cross-origin backdoor (#353).  Fail closed at startup.
-  if Cors.enabled and Cors.allowedOrigins.length == 0 {
-    panic("Cors.enabled = true requires Cors.allowedOrigins to be a non-empty " +
-          "comma-separated list of allowed origins. Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
-          "or the equivalent config source. Using \"*\" is not allowed with " +
-          "authenticated APIs (see RFC 6454 §3 and the CORS spec on credentialed requests).")
+  match corsConfigError(Cors.enabled, Cors.allowedOrigins) {
+    case Some(msg) -> panic(msg)
+    case None      -> ()
   }
   // Explicit wildcard is permitted (some public, unauthenticated APIs
   // legitimately want it) but always emits a startup warning so the

@@ -147,7 +147,7 @@ let private parseProtocol (filePath: string) (protocol: string) : Result<Manifes
                 let id_, ver = splitOnFirst '=' (line.Substring 6)
                 nugetEs <- nugetEs @ [{ Manifest.NugetEntry.Id = id_; Version = ver }]
             elif starts line "nuget.target="          then nugetTarget  <- Some (line.Substring 13)
-            elif line = "nuget.allow_native=true"     then nugetNative  <- true
+            elif line = "nuget.allow_native=true"     then nugetNative  <- true  // intentional equality: F# `=` uses ordinal comparison; `starts` has a Turkish-locale hazard for single-char prefixes
             elif starts line "project.name="          then projName     <- Some (line.Substring 13)
             elif starts line "project.output_assembly=" then projOutAsm <- Some (line.Substring 24)
             elif starts line "project.output="        then projOutput   <- Some (line.Substring 15)

@@ -275,7 +275,7 @@ func testUnterminatedString(): Unit {
 }
 
 // Unicode escapes in the full BMP must decode correctly.
-// The surrogate range U+D800..U+DFFF must be rejected with L0022.
+// The surrogate range U+D800..U+DFFF must be rejected with L0023.
 func testUnicodeEscapeBmpRange(): Unit {
   // \u{80} — first non-ASCII BMP scalar.  Previously decoded to U+FFFD
   // under the 96-char ASCII lookup table.
@@ -296,17 +296,17 @@ func testUnicodeEscapeBmpRange(): Unit {
 }
 
 func testUnicodeEscapeSurrogateRejected(): Unit {
-  // U+D800 — first high (lead) surrogate.  Must produce an L0022 and
-  // substitute U+FFFD without panicking.
+  // U+D800 — first high (lead) surrogate.  Must produce L0023 (surrogate range)
+  // and substitute U+FFFD without panicking.
   val r1 = lex("\"\\u{D800}\"")
   assertEqualInt(diagCount(r1), 1, "uD800: one diagnostic")
-  assertEqual(r1.diagnostics[0].code, "L0022", "uD800: L0022")
+  assertEqual(r1.diagnostics[0].code, "L0023", "uD800: L0023")
   assertEqual(stringValueAt(r1, 0), "\u{FFFD}", "uD800: U+FFFD substituted")
 
   // U+DFFF — last low (trail) surrogate.
   val r2 = lex("\"\\u{DFFF}\"")
   assertEqualInt(diagCount(r2), 1, "uDFFF: one diagnostic")
-  assertEqual(r2.diagnostics[0].code, "L0022", "uDFFF: L0022")
+  assertEqual(r2.diagnostics[0].code, "L0023", "uDFFF: L0023")
   assertEqual(stringValueAt(r2, 0), "\u{FFFD}", "uDFFF: U+FFFD substituted")
 }
 

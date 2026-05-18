@@ -1681,14 +1681,14 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
                     makeSpan(startP, currentPosition(state)))
         '\u{FFFD}'
       } else if v >= 55296i64 and v <= 57343i64 {
-        // Surrogate range U+D800..U+DFFF: not a valid scalar value.
-        recordError(state, "L0022",
+        // Surrogate range U+D800..U+DFFF: not a valid Unicode scalar value (L0023).
+        recordError(state, "L0023",
                     "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
                     makeSpan(startP, currentPosition(state)))
         '\u{FFFD}'
       } else if v > 65535i64 {
         // Non-BMP scalar — needs a surrogate-pair encoding the current
-        // Char surface cannot express.
+        // Char surface cannot express (L0022, reachable via U+10000..U+10FFFF).
         recordError(state, "L0022",
                     "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding",
                     makeSpan(startP, currentPosition(state)))
