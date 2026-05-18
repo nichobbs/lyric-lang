@@ -1117,11 +1117,11 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
       }
       case _ -> {
         val di: List[Diagnostic] = newList()
-        di.add(warningDiagnostic("V0026",
-          "statement form not yet supported in M4.1 verifier", st.span))
+        di.add(errorDiagnostic("V0026",
+          "statement form not yet supported in M4.1 verifier; proof is unsound here", st.span))
         val sg: List[SideGoal]   = newList()
         val asList: List[Term]       = newList()
-        WpResult(wp = trueT(), sideGoals = sg, assumed = asList, diags = di)
+        WpResult(wp = falseT(), sideGoals = sg, assumed = asList, diags = di)
       }
     }
   }

@@ -51,6 +51,8 @@ let private ensureLyricMsilBridgeAssembly () : string =
                      sprintf "lyric-msil-bridge-%d"
                          (System.Diagnostics.Process.GetCurrentProcess().Id))
     Directory.CreateDirectory scratch |> ignore
+    AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
+        try Directory.Delete(scratch, recursive = true) with _ -> ())
     let dllPath = Path.Combine(scratch, "Lyric.Msil.MsilBridge.dll")
     let req : Emitter.EmitRequest =
         { Source             = driverSource
