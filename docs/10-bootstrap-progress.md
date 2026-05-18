@@ -11658,8 +11658,8 @@ library for AWS X-Ray active tracing as a B-mode aspect.
   ConcurrentHashMap cache, region resolution.
 - `lyric-aws-secrets/lyric.toml` — extended: `jvm = []` feature added;
   kernel list extended with `secrets_kernel_jvm.l`; `[maven]` table added
-  (`software.amazon.awssdk:secretsmanager:2.25.x`,
-  `software.amazon.awssdk:ssm:2.25.x`).
+  (`software.amazon.awssdk:secretsmanager:2.25.70`,
+  `software.amazon.awssdk:ssm:2.25.70`).
 
 **Shipped in lyric-aws-xray (new library):**
 
