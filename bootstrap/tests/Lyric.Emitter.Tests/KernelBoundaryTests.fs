@@ -121,7 +121,7 @@ let tests =
                     total totalSoftCap
             // Sanity: kernel can't be negative or wildly huge.
             Expect.isGreaterThanOrEqual inside 0 "kernel count >= 0"
-            Expect.isLessThanOrEqual total 290
+            Expect.isLessThanOrEqual total 292
                 "total extern surface unexpectedly large"
         }
     ]

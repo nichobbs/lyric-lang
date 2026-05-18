@@ -36,6 +36,14 @@ extern type JsonEncodedText      = "System.Text.Json.JsonEncodedText"
 @externTarget("System.Text.Json.JsonDocument.Parse")
 pub func hostParseJson(s: in String): JsonDoc = ()
 
+/// Release the unmanaged memory held by a JsonDocument.
+/// `JsonDocument` implements `IDisposable`; calling `Dispose()` immediately
+/// returns the pooled `byte[]` backing the JSON to the array pool instead
+/// of waiting for the GC.  Every `lyricJsonGet*` helper in `Std.Json` calls
+/// this via `defer` so documents are released at the earliest opportunity.
+@externTarget("System.Text.Json.JsonDocument.Dispose")
+pub func hostDisposeJson(d: in JsonDoc): Unit = ()
+
 @externTarget("System.Text.Json.JsonDocument.RootElement")
 pub func hostRootElement(d: in JsonDoc): JsonElement = ()
 
