@@ -5,6 +5,7 @@
 package Proto.Types
 
 import Std.Core
+import Std.Math
 
 // ─── Wire types ──────────────────────────────────────────────────────────────
 
@@ -76,26 +77,44 @@ pub type DecodeStep = record {
 // ─── Helpers for proto3 default filtering ────────────────────────────────────
 
 /// ZigZag-encode a signed 32-bit integer for sint32 fields.
-/// sint32 uses ZigZag so that small negative numbers encode compactly.
+///
+/// Maps signed integers to unsigned values so that small-magnitude
+/// negative numbers encode compactly in protobuf varint form.
+/// Encoding: n ≥ 0 → 2n; n < 0 → -2n - 1.
+/// This is equivalent to (n << 1) ^ (n >> 31) with arithmetic
+/// right shift, but expressed using only portable arithmetic since
+/// Lyric's bitwise-shift operators (.shl/.shr) are not yet available
+/// in the bootstrap compiler.
 @stable(since="0.1")
 pub func zigzag32(n: Int): Long {
-  ((n << 1) ^ (n >> 31)).toLong()
+  val longN = intToLong(n)
+  if n >= 0 { longN * 2i64 } else { longN * -2i64 - 1i64 }
 }
 
 /// ZigZag-encode a signed 64-bit integer for sint64 fields.
+///
+/// Same mapping as zigzag32 extended to 64-bit range.
+/// Equivalent to (n << 1) ^ (n >> 63) with arithmetic right shift.
 @stable(since="0.1")
 pub func zigzag64(n: Long): Long {
-  (n << 1) ^ (n >> 63)
+  if n >= 0i64 { n * 2i64 } else { n * -2i64 - 1i64 }
 }
 
 /// ZigZag-decode a sint32 value.
+///
+/// Reverses zigzag32: even inputs map to non-negative, odd inputs to
+/// negative integers.  Input must be non-negative (valid ZigZag output).
+/// Equivalent to (n >> 1) ^ -(n & 1) with logical right shift on the
+/// non-negative encoded value.
 @stable(since="0.1")
 pub func unzigzag32(n: Long): Int {
-  ((n >> 1) ^ -(n & 1L)).toInt()
+  if n % 2i64 == 0i64 { longToInt(n / 2i64) } else { longToInt(-((n + 1i64) / 2i64)) }
 }
 
 /// ZigZag-decode a sint64 value.
+///
+/// Reverses zigzag64.  Input must be non-negative.
 @stable(since="0.1")
 pub func unzigzag64(n: Long): Long {
-  (n >> 1) ^ -(n & 1L)
+  if n % 2i64 == 0i64 { n / 2i64 } else { -((n + 1i64) / 2i64) }
 }

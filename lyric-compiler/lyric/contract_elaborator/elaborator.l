@@ -22,16 +22,16 @@
 //     statement is prepended (in source order) to the body block of
 //     every non-`@axiom` function with a body.
 //
-//   * `ensures:`  clauses — top-level shape only.  Each `SReturn(Some(e))`
-//     and `SReturn(None)` directly under the function body block, plus
-//     the trailing `SExpr` (implicit fall-off), is rewritten to bind the
-//     produced value into a synthetic local `__lyric_result_<n>`, run
-//     every `assert(<ensures with result -> __lyric_result_<n>>)`, then
-//     yield (or `return`) the local.  Returns nested inside
-//     `if` / `match` / `try` / loop bodies are not yet elaborated; the
-//     bootstrap emitter still inserts a runtime check for them via the
-//     exit-label routing, so the bootstrap remains correct.  Nested-
-//     return elaboration is a follow-up stage.
+//   * `ensures:`  clauses — full elaboration including nested returns.
+//     Each `SReturn(Some(e))` and `SReturn(None)` at any nesting depth
+//     inside `if` / `match` / `try` / `for` / `while` / `loop` bodies
+//     is rewritten to bind the produced value into a synthetic local
+//     `__lyric_result_<n>`, run every `assert(<ensures with result ->
+//     __lyric_result_<n>>)`, then yield (or `return`) the local.  The
+//     trailing `SExpr` (implicit fall-off at the outermost level) is also
+//     rewritten.  Nested trailing expressions inside blocks are NOT
+//     rewritten — they are the value of the block expression, not a
+//     function return.
 //
 //   * `@axiom` functions — skipped (axiom decls have no body, so there
 //     is nothing to elaborate).
@@ -651,9 +651,142 @@ func rewriteTrailingSExpr(
   acc.add(mkStmt(SExpr(expr = mkPath(name, sp)), sp))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §5b. Deep (nested) elaboration.
+//
+//  `elaborateBlockDeep` / `elaborateStmtDeep` recursively rewrite
+//  `SReturn` nodes at any nesting depth inside if-branches, match arms,
+//  for/while/loop bodies, and try blocks.  They do NOT rewrite trailing
+//  `SExpr` statements (those are only implicit returns at the outermost
+//  level; inside an if-branch or loop they are just expression-statement
+//  side-effects or the value of the block expression).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func elaborateExprOrBlockDeep(
+  eob:          in ExprOrBlock,
+  ensuresExprs: in List[Expr],
+  counter:      inout RenameCounter
+): ExprOrBlock {
+  match eob {
+    case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter))
+    case EOBExpr(e)     -> EOBExpr(expr = e)
+  }
+}
+
+func elaborateExprDeep(
+  e:            in Expr,
+  ensuresExprs: in List[Expr],
+  counter:      inout RenameCounter
+): Expr {
+  match e.kind {
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      val newThen = elaborateExprOrBlockDeep(thenBranch, ensuresExprs, counter)
+      val newElse: Option[ExprOrBlock] =
+        match elseBranch {
+          case Some(eob) -> Some(value = elaborateExprOrBlockDeep(eob, ensuresExprs, counter))
+          case None      -> None
+        }
+      mkExpr(EIf(cond = cond, thenBranch = newThen, elseBranch = newElse, thenForm = thenForm), e.span)
+    }
+    case EMatch(scrutinee, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        newArms.add(MatchArm(
+          pattern = arm.pattern,
+          guard   = arm.guard,
+          body    = elaborateExprOrBlockDeep(arm.body, ensuresExprs, counter),
+          span    = arm.span))
+        i = i + 1
+      }
+      mkExpr(EMatch(scrutinee = scrutinee, arms = newArms), e.span)
+    }
+    case _ -> e
+  }
+}
+
+func elaborateBlockDeep(
+  block:        in Block,
+  ensuresExprs: in List[Expr],
+  counter:      inout RenameCounter
+): Block {
+  val outs: List[Statement] = newList()
+  var i = 0
+  while i < block.statements.count {
+    elaborateStmtDeep(block.statements[i], ensuresExprs, counter, outs)
+    i = i + 1
+  }
+  Block(statements = outs, span = block.span)
+}
+
+// Recursively rewrite SReturn nodes inside nested blocks, recursing into
+// SFor/SWhile/SLoop/STry/SScope bodies and SExpr(EIf)/SExpr(EMatch).
+// Does NOT rewrite trailing SExpr (nested trailing exprs are block values,
+// not function returns).
+func elaborateStmtDeep(
+  s:            in Statement,
+  ensuresExprs: in List[Expr],
+  counter:      inout RenameCounter,
+  acc:          in List[Statement]
+): Unit {
+  match s.kind {
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> rewriteReturnSome(e, ensuresExprs, counter, s.span, acc)
+        case None    -> {
+          appendEnsuresAssertsNoResult(acc, ensuresExprs, s.span)
+          acc.add(s)
+        }
+      }
+    }
+    case SExpr(e) -> {
+      val newE = elaborateExprDeep(e, ensuresExprs, counter)
+      acc.add(mkStmt(SExpr(expr = newE), s.span))
+    }
+    case SFor(label, pat, iter, body) ->
+      acc.add(mkStmt(SFor(
+        label = label,
+        pat   = pat,
+        iter  = iter,
+        body  = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case SWhile(label, cond, body) ->
+      acc.add(mkStmt(SWhile(
+        label = label,
+        cond  = cond,
+        body  = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case SLoop(label, body) ->
+      acc.add(mkStmt(SLoop(
+        label = label,
+        body  = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case STry(body, catches) -> {
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
+      val newCatches: List[CatchClause] = newList()
+      var ci = 0
+      while ci < catches.count {
+        val c = catches[ci]
+        newCatches.add(CatchClause(
+          typeName = c.typeName,
+          bindName = c.bindName,
+          body     = elaborateBlockDeep(c.body, ensuresExprs, counter),
+          span     = c.span))
+        ci = ci + 1
+      }
+      acc.add(mkStmt(STry(body = newBody, catches = newCatches), s.span))
+    }
+    case SScope(label, body) ->
+      acc.add(mkStmt(SScope(
+        binding = label,
+        body    = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case _ -> { acc.add(s) }
+  }
+}
+
 // Process a single statement at the top level of the function body.
 // `isLast` indicates whether this is the trailing statement of the
 // outer function-body block (relevant for implicit fall-off rewriting).
+// For non-SReturn, non-last-SExpr statements, delegates to
+// `elaborateStmtDeep` to rewrite nested returns inside any inner blocks.
 func elaborateTopLevelStmt(
   s:            in Statement,
   isLast:       in Bool,
@@ -675,10 +808,13 @@ func elaborateTopLevelStmt(
       if isLast {
         rewriteTrailingSExpr(e, ensuresExprs, counter, s.span, acc)
       } else {
-        acc.add(s)
+        // Not the trailing expression: recurse into any nested blocks so
+        // that returns inside if/match/loop branches are also elaborated.
+        val newE = elaborateExprDeep(e, ensuresExprs, counter)
+        acc.add(mkStmt(SExpr(expr = newE), s.span))
       }
     }
-    case _ -> { acc.add(s) }
+    case _ -> { elaborateStmtDeep(s, ensuresExprs, counter, acc) }
   }
 }
 
