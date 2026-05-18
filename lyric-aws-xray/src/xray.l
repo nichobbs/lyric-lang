@@ -70,7 +70,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addAnnotation(handle, key, value)
+  XRayKernel.addAnnotation(handle, key, sanitizeAnnotation(value))
 }
 
 /// Add unindexed metadata to the subsegment.
@@ -124,25 +124,7 @@ pub aspect Tracing {
   }
 }
 
-// ─── Internal helpers ────────────────────────────────────────────────────────
-
-// Sanitise an X-Ray annotation value to defend against log-injection /
-// stored-XSS in trace viewers (CWE-117).  X-Ray annotation values appear
-// in the AWS console (often searchable, sometimes rendered as HTML by
-// downstream dashboards) and may contain user-controlled content via
-// validation errors that echo submitted values.  This function:
-//
-//   1. Replaces CR / LF / NUL / TAB with single spaces so the value
-//      stays on one line and cannot smuggle structured log fields.
-//   2. Replaces `<` / `>` so a naive HTML-rendering viewer cannot
-//      interpret embedded tags.
-//   3. Caps the length at 1000 characters; X-Ray's own limit is 1024
-//      bytes per annotation value, and overlong values are usually
-//      bug-spam rather than useful trace data.
-//
-// Kept private — `lyric-aws-xray` is the only library producing X-Ray
-// annotations.  A generic `Std.Log.sanitize` lives in the stdlib log
-// module (see lyric-lang #394).
+// CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's 1024-byte limit.
 func sanitizeAnnotation(s: in String): String {
   val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
   val b = a.replace("<", "_").replace(">", "_")
