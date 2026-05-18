@@ -1,0 +1,29 @@
+* text=auto
+
+# Source code — always normalised to LF.  F# files contain `'\x00'`
+# character literals which trip git's binary-detection heuristic and
+# hide diffs from review; this attribute forces text-mode diffing.
+*.fs   text diff
+*.fsi  text diff
+*.fsx  text diff
+*.fsproj text diff
+
+*.cs   text diff
+*.csproj text diff
+
+*.l    text diff
+*.toml text diff
+*.md   text diff
+*.yml  text diff
+*.yaml text diff
+*.sh   text eol=lf
+*.json text diff
+
+# Binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.dll  binary
+*.exe  binary
