@@ -220,7 +220,7 @@ func revParseHead(dir: in String): String {
   args.add("HEAD")
   val sha = Str.trim(PC.runCapture("git", args, ""))
   if sha.length == 0 {
-    Std.Console.error("warning: git rev-parse HEAD returned empty in " + dir + "; lock file will record an empty SHA")
+    Console.error("warning: git rev-parse HEAD returned empty in " + dir + "; lock file will record an empty SHA")
   }
   sha
 }
