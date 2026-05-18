@@ -910,15 +910,15 @@ The kickoff stub is identical to the eager-producer: create instance,
 copy params to fields, return as `IAsyncEnumerable<T>`.
 
 Both strategies are implemented in
-`compiler/src/Lyric.Emitter/AsyncGenerator.fs`; the routing is in
-`compiler/src/Lyric.Emitter/Emitter.fs`.
+`bootstrap/src/Lyric.Emitter/AsyncGenerator.fs`; the routing is in
+`bootstrap/src/Lyric.Emitter/Emitter.fs`.
 
 `for x in gen() { … }` lowers to a standard `await foreach` —
 `GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
 `DisposeAsync` in a `finally` block.
 
 The JVM-target equivalent uses `java.lang.Iterable` + `java.util.Iterator`
-with the same eager `runBody()` pattern (B129, `compiler/lyric/jvm/lowering.l`).
+with the same eager `runBody()` pattern (B129, `lyric-compiler/jvm/lowering.l`).
 
 
 ## 15. Structured concurrency scopes
@@ -1388,7 +1388,7 @@ CLR or AOT linker resolves the actual code.
 
 This document describes the **F# bootstrap** MSIL strategy (Phase 0 design,
 Phase 1 implementation).  The self-hosted MSIL compilation pipeline shipped
-in Phase R5/R6 and lives in `compiler/lyric/msil/`.  Its design follows the
+in Phase R5/R6 and lives in `lyric-compiler/msil/`.  Its design follows the
 same strategy but is implemented in Lyric itself.
 
 ### Packages
@@ -1406,7 +1406,7 @@ same strategy but is implemented in Lyric itself.
 
 ### F# bridge
 
-`compiler/src/Lyric.Cli/SelfHostedMsil.fs` bootstraps `Msil.Bridge.dll` via a
+`bootstrap/src/Lyric.Cli/SelfHostedMsil.fs` bootstraps `Msil.Bridge.dll` via a
 throwaway driver compile on first use, preloads all stdlib DLLs into the
 AppDomain, reflects out `Msil.Bridge.Program.compileToMsil`, and caches the
 delegate process-wide.  `--target dotnet` (the default) routes through this

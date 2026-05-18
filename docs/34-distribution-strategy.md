@@ -137,7 +137,7 @@ Using the stage-0 `lyric` binary with `--target dotnet-legacy` (F# emitter),
 compile in dependency order:
 
 1. `stdlib/` — `lyric build --manifest stdlib/lyric.toml` → `Lyric.Stdlib.dll`
-2. Self-hosted lexer / AST / parser (`compiler/lyric/lyric/`)
+2. Self-hosted lexer / AST / parser (`lyric-compiler/lyric/`)
 3. Self-hosted type checker, mode checker, contract elaborator
 4. Self-hosted test synth
 5. MSIL binary layer: heaps → tables → opcodes → PE → assembler
@@ -186,7 +186,7 @@ installed builds use; `lyric build` finds it via `LYRIC_SDK_ROOT/lib/`
 or by walking up from the binary location.  Cold-build time is eliminated
 because stdlib packages are loaded from DLL rather than recompiled from source.
 
-**Source fallback (`stdlib/std/`)** — included in all distribution archives
+**Source fallback (`lyric-stdlib/std/`)** — included in all distribution archives
 as a fallback.  If `lib/Lyric.Stdlib.dll` is absent or the version resource
 does not match the compiler version, the compiler falls back to source and
 recompiles the stdlib package it needs.  This ensures out-of-tree builds (e.g.

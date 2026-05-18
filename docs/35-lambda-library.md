@@ -674,7 +674,7 @@ the AWS Java managed runtime.
 
 ### 12.1 Build output
 
-The Lyric JVM emitter (complete at `compiler/lyric/jvm/`, see
+The Lyric JVM emitter (complete at `lyric-compiler/jvm/`, see
 `docs/18-jvm-emission.md`) produces Java 21 class files.  For Lambda, the
 emitter generates a class `<RootPackage>$LambdaHandler` implementing
 `com.amazonaws.services.lambda.runtime.RequestStreamHandler`.

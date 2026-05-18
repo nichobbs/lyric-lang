@@ -45,7 +45,7 @@ annotated.
 
 **What to do:**
 
-1. Walk every `pub` item in `stdlib/std/*.l` and `stdlib/std/_kernel/*.l`.
+1. Walk every `pub` item in `lyric-stdlib/std/*.l` and `lyric-stdlib/std/_kernel/*.l`.
    For each item decide stable or experimental.  The current `@experimental`
    markers from D040 are a starting point; they are not comprehensive.
 2. Produce a `stdlib/STABILITY.md` table (or equivalent decision-log entry)
@@ -79,17 +79,17 @@ through the 1.0 release and will be removed in v1.1.
 
 **What to do:**
 
-1. **Per-expression CST granularity** in `compiler/lyric/lyric/fmt/fmt.l` and
-   `compiler/lyric/lyric/fmt/fmt_core.l`: extend the `FmtCtx` cursor so that
+1. **Per-expression CST granularity** in `lyric-compiler/lyric/fmt/fmt.l` and
+   `lyric-compiler/lyric/fmt/fmt_core.l`: extend the `FmtCtx` cursor so that
    leading trivia on tokens inside `EBinop`, `ECall`, `EIndex`, `EPrefix`,
    `EField`, and `EAs` nodes is reproduced at the token boundary rather than
    hoisted to the enclosing statement.  The CST infrastructure already carries
    `leadingTrivia` on every `SpannedToken`; this is a traversal-depth issue
    in the formatter, not a CST gap.
-2. Once the gap closes, **sunset `Fmt.fs`** in `compiler/src/Lyric.Cli/`:
+2. Once the gap closes, **sunset `Fmt.fs`** in `bootstrap/src/Lyric.Cli/`:
    - Remove the `--legacy` flag from `Program.fs`.
    - Remove `LYRIC_FMT_LEGACY` environment-variable check from `SelfHostedFmt.fs`.
-   - Delete `compiler/src/Lyric.Cli/Fmt.fs`.
+   - Delete `bootstrap/src/Lyric.Cli/Fmt.fs`.
    - Update `docs/01-language-reference.md` §11 (tooling table) to remove the
      `--legacy` flag.
    - Update `book/chapters/appendix-b-quick-reference.md` similarly.
@@ -118,29 +118,29 @@ stage B128.
 
 The gap: `MavenShim.fs` correctly declares `Result[T, JvmException]` as the
 return type for Maven methods with checked exceptions, but
-`compiler/lyric/jvm/lowering.l` never wraps the call site in a JVM
+`lyric-compiler/jvm/lowering.l` never wraps the call site in a JVM
 `try-catch` block.  Without the wrapper, the JVM verifier rejects the
 classfile or the exception propagates unhandled.
 
-What to do in `compiler/lyric/jvm/lowering.l`:
+What to do in `lyric-compiler/jvm/lowering.l`:
 
 - In the `ECall` lowering path, detect when the callee's resolved method
   descriptor has a non-empty `throws` list (obtained from the Maven JAR's
   constant pool via the `MavenResolver` type info surface).
 - Emit: `try { <call> } catch (Throwable e) { <construct JvmException(e)>; <wrap in Err> }`.
 - The catch block must call the Lyric-side `JvmException` constructor (in
-  `compiler/lyric/jvm/_kernel/kernel.l`) and wrap the result in the `Err`
+  `lyric-compiler/jvm/_kernel/kernel.l`) and wrap the result in the `Err`
   variant of the declared `Result` type.
-- Add tests to `compiler/tests/Lyric.Emitter.Tests/` exercising a Maven
+- Add tests to `bootstrap/tests/Lyric.Emitter.Tests/` exercising a Maven
   method with a declared checked exception (e.g. `java.io.IOException`).
 
 **Q-J012 — `Std.Jvm.catch[T]` emitter recognition**
 
-`Std.Jvm.catch[T]` is declared `@experimental` in `stdlib/std/jvm.l` but the
+`Std.Jvm.catch[T]` is declared `@experimental` in `lyric-stdlib/std/jvm.l` but the
 JVM emitter does not yet recognise the call as an intrinsic.  The intrinsic
 must lower to a JVM `try-catch` block wrapping the lambda body.
 
-What to do in `compiler/lyric/jvm/lowering.l`:
+What to do in `lyric-compiler/jvm/lowering.l`:
 
 - Add `Std.Jvm.catch` to the known-intrinsic table (alongside the existing
   `Std.Jvm.*` intrinsics).
@@ -167,11 +167,11 @@ and expose a non-throwing wrapper as a `@externTarget`.
 
 | Item | F# location | Target Lyric location |
 |---|---|---|
-| `Lyric.Lint` | `compiler/src/Lyric.Cli/Lint.fs` | `compiler/lyric/lyric/lint/lint.l` |
-| `Lyric.Doc` | `compiler/src/Lyric.Cli/Doc.fs` | `compiler/lyric/lyric/doc/doc.l` |
-| `Lyric.ContractMeta` | embedded resource reader in `compiler/src/Lyric.Cli/` (multiple sites) | `compiler/lyric/lyric/contract_meta/contract_meta.l` |
-| `Pack.l` | `compiler/src/Lyric.Cli/Pack.fs` | `compiler/lyric/lyric/pack/pack.l` |
-| F# `Fmt.fs` sunset | `compiler/src/Lyric.Cli/Fmt.fs` | gated on R2 |
+| `Lyric.Lint` | `bootstrap/src/Lyric.Cli/Lint.fs` | `lyric-compiler/lyric/lint/lint.l` |
+| `Lyric.Doc` | `bootstrap/src/Lyric.Cli/Doc.fs` | `lyric-compiler/lyric/doc/doc.l` |
+| `Lyric.ContractMeta` | embedded resource reader in `bootstrap/src/Lyric.Cli/` (multiple sites) | `lyric-compiler/lyric/contract_meta/contract_meta.l` |
+| `Pack.l` | `bootstrap/src/Lyric.Cli/Pack.fs` | `lyric-compiler/lyric/pack/pack.l` |
+| F# `Fmt.fs` sunset | `bootstrap/src/Lyric.Cli/Fmt.fs` | gated on R2 |
 
 **Sequencing:** `Lyric.Doc` depends on nothing external; do it first.
 `Lyric.Lint` is five AST-only rules (L001–L005); do it second.
@@ -181,18 +181,18 @@ of `Pack.l`; port in order.
 **Bridge pattern** (follow `SelfHostedFmt.fs` / `SelfHostedManifest.fs`):
 
 For each item:
-1. Implement the Lyric package under `compiler/lyric/lyric/<item>/`.
+1. Implement the Lyric package under `lyric-compiler/lyric/<item>/`.
 2. Write a `<item>_bridge.l` protocol file (string-in / JSON-out or string-in /
    string-out as appropriate).
-3. Write a thin `compiler/src/Lyric.Cli/SelfHosted<Item>.fs` shim that
+3. Write a thin `bootstrap/src/Lyric.Cli/SelfHosted<Item>.fs` shim that
    compiles the Lyric driver on first call, loads the DLL by reflection, and
    calls the bridge entry point.
 4. Wire the shim into the relevant command in `Program.fs`.
 5. Remove the F# `<Item>.fs` source file.
 
 **Acceptance criteria:** `dotnet build Lyric.sln` succeeds after each F#
-file deletion; all `compiler/tests/Lyric.Cli.Tests/` and
-`compiler/tests/Lyric.Emitter.Tests/` tests pass; `StdlibLyricTests.fs`
+file deletion; all `bootstrap/tests/Lyric.Cli.Tests/` and
+`bootstrap/tests/Lyric.Emitter.Tests/` tests pass; `StdlibLyricTests.fs`
 exercises each new self-test file.
 
 ---
@@ -213,12 +213,12 @@ within the first week of adoption.
 | Q022-3 | UFCS dispatch on opaque-with-generic-param: `myOpaque.method()` fails silently when `myOpaque` is `OpaqueType[T]` | Users see a T0050 "method not found" error with no guidance. |
 | Q022-4 | Generic `@externTarget` on BCL generic methods: `@externTarget("System.Collections.Generic.List`1::Add")` with a Lyric generic type parameter doesn't resolve correctly | Requires explicit monomorphised `@externTarget` per type. |
 
-**What to do for Q022-1:** In `compiler/src/Lyric.TypeChecker/Resolver.fs`
+**What to do for Q022-1:** In `bootstrap/src/Lyric.TypeChecker/Resolver.fs`
 (or the Lyric `typechecker_resolver.l` equivalent), implement symbol-level
 `pub use`: when `pub use Pkg.name` is present, add only the resolved `name`
 symbol to the exporting package's public table, not the whole `Pkg` surface.
 
-**What to do for Q022-3:** In `compiler/src/Lyric.TypeChecker/` (pass A.4
+**What to do for Q022-3:** In `bootstrap/src/Lyric.TypeChecker/` (pass A.4
 receiver resolution), when the receiver type is a closed opaque generic
 (`OpaqueInfo` with non-empty `TypeArgs`), substitute the type arguments into
 the method signature before attempting dispatch.
@@ -235,7 +235,7 @@ look up cross-package `derives` lists or imported interface impls.  This means
 `f[T] where T: Hash` fails when `T` is a distinct type from another package
 even if it `derives Hash`.
 
-What to do: in `compiler/src/Lyric.Emitter/Codegen.fs::satisfiesMarker`,
+What to do: in `bootstrap/src/Lyric.Emitter/Codegen.fs::satisfiesMarker`,
 extend Path 1 (distinct-type derives) to load the `DistinctTypeInfo` from the
 caller's `RestoredPackages` map (the embedded `Lyric.Contract` resource),
 not only from `ctx.DistinctTypes` (in-compilation).
@@ -295,7 +295,7 @@ func stubCall(s: inout MyServiceStub, arg: in String): String {
 For multi-call scenarios, use a `slice[String]` to accumulate arguments.
 
 **Fix target:** 1.1.  Port the DSL from the design in D-progress-016 to
-`compiler/lyric/lyric/stubbuilder/stub_derive.l`.
+`lyric-compiler/lyric/stubbuilder/stub_derive.l`.
 
 ---
 
@@ -473,14 +473,14 @@ match node {
 ```
 
 **Fix target:** 1.1.  Add `toDouble` BCL extern to
-`stdlib/std/_kernel/string_host.l` and wire it into the YAML parser at
-`stdlib/std/yaml.l::parseScalar`.
+`lyric-stdlib/std/_kernel/string_host.l` and wire it into the YAML parser at
+`lyric-stdlib/std/yaml.l::parseScalar`.
 
 ---
 
 ### G-09  `async` over generic instance impl methods
 
-**Current behavior:** `asyncSmEligible` in `compiler/src/Lyric.Emitter/Codegen.fs`
+**Current behavior:** `asyncSmEligible` in `bootstrap/src/Lyric.Emitter/Codegen.fs`
 gates on `sg.Generics.IsEmpty` — an `async func` inside an `impl[T] Foo for Bar[T]`
 block falls back to the blocking `.GetAwaiter().GetResult()` shim (D-progress-141
 close-out note).  Non-generic async impl methods are unaffected.
@@ -525,7 +525,7 @@ Instead, expose a `pub func toSourceId(v: in ViewType): SourceId` function in
 the boundary package and call it explicitly.
 
 **Fix target:** 1.1.  Implement the `asId` rename in the projection-synthesis
-pass in `compiler/src/Lyric.Emitter/Codegen.fs` under the `IProjectable`
+pass in `bootstrap/src/Lyric.Emitter/Codegen.fs` under the `IProjectable`
 synthesis block.
 
 ---

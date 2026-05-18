@@ -14,8 +14,8 @@ All tractable items below have shipped.  None were blocking v1.0.
 
 ### F1. B128 self-test `/tmp` path is non-portable
 
-`compiler/tests/Lyric.Emitter.Tests/JvmLoweringB128Test.fs:55` and
-`compiler/lyric/jvm/self_test_b128.l:216,241` hardcode
+`bootstrap/tests/Lyric.Emitter.Tests/JvmLoweringB128Test.fs:55` and
+`lyric-compiler/jvm/self_test_b128.l:216,241` hardcode
 `/tmp/lyric-jvm-b128/parse.jar`.  Fails on Windows CI runners and may
 collide across parallel test runs.
 
@@ -37,7 +37,7 @@ diagnostic message to match.
 
 ### F3. `@externTarget` static-vs-instance naming convention — document in spec
 
-`isStaticExternByName` in `compiler/lyric/jvm/codegen.l:1592-1602` detects
+`isStaticExternByName` in `lyric-compiler/jvm/codegen.l:1592-1602` detects
 static vs instance calls by checking whether the Lyric function name starts
 with a PascalCase prefix before `_`.  A hand-written extern that doesn't
 follow this convention will be silently miscompiled.
@@ -48,7 +48,7 @@ parameter on `@externTarget(...)`.
 
 ### F4. Lint bridge protocol breaks on multi-line diagnostic messages
 
-`compiler/lyric/lyric/lint_bridge.l:29-30` serialises one diagnostic per
+`lyric-compiler/lyric/lint_bridge.l:29-30` serialises one diagnostic per
 line using `'|'` fields and `'\n'` as the row separator.
 `SelfHostedLint.fs:107-118` splits on `'\n'` and drops any line where
 `parts.Length < 5`.  A lint rule emitting a `'\n'` in its message will have
@@ -94,7 +94,7 @@ comment.  Consider adding Dependabot or Renovate to automate SHA updates.
 
 ### F8. `lowerExternTargetBody` catches only `java/lang/Exception`, not `Error`
 
-`compiler/lyric/jvm/codegen.l` emits catch blocks targeting
+`lyric-compiler/jvm/codegen.l` emits catch blocks targeting
 `java/lang/Exception`.  JVM `Error` subclasses (`OutOfMemoryError`,
 `StackOverflowError`, `AssertionError`) are not subtypes of `Exception` and
 will not be caught.
@@ -105,7 +105,7 @@ needed.  Track as a known limitation in `docs/18-jvm-emission.md`.
 
 ### F9. `findExternTarget` double-walks the annotation list
 
-`compiler/lyric/jvm/codegen.l:1487-1510` walks `decl.annotations` twice:
+`lyric-compiler/jvm/codegen.l:1487-1510` walks `decl.annotations` twice:
 once to find `@externTarget` and once to check `@noJvmBridge`.  Minor
 optimisation opportunity; non-blocking.
 
@@ -117,7 +117,7 @@ parse time.
 `doc.l` and `lint.l` each define local list-to-string join helpers.
 
 **Fix:** Add `join(xs: in List[String], sep: in String): String` to
-`stdlib/std/string.l` (kernel: `String.Join` BCL extern) and update
+`lyric-stdlib/std/string.l` (kernel: `String.Join` BCL extern) and update
 `doc.l`, `lint.l`, and any other callers.  Mark `@stable(since="1.0")`.
 
 ### F11. Test coverage gaps — Q021-4 Path 1.5 and Q022-1 pubUseDecls

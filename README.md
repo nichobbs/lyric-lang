@@ -35,13 +35,13 @@ dotnet build Lyric.sln
 
 ```sh
 # Build: writes hello.dll + hello.runtimeconfig.json alongside hello.l
-dotnet run --project compiler/src/Lyric.Cli -- build hello.l
+dotnet run --project bootstrap/src/Lyric.Cli -- build hello.l
 
 # Build + run in one step
-dotnet run --project compiler/src/Lyric.Cli -- run hello.l
+dotnet run --project bootstrap/src/Lyric.Cli -- run hello.l
 
 # Pass args to the program
-dotnet run --project compiler/src/Lyric.Cli -- run hello.l -- arg1 arg2
+dotnet run --project bootstrap/src/Lyric.Cli -- run hello.l -- arg1 arg2
 ```
 
 `build` is incremental — re-running with the same source and stdlib files is
@@ -60,7 +60,7 @@ func main(): Unit {
 
 ### Using the standard library
 
-The stdlib lives in `stdlib/std/`.  Import individual modules with
+The stdlib lives in `lyric-stdlib/std/`.  Import individual modules with
 `import Std.X`:
 
 ```lyric
@@ -101,13 +101,13 @@ definite-assignment analysis ensures every `out` param is written
 on every path before return.
 
 The compiler resolves `import Std.X` by locating the matching `.l` source in
-the `lyric/std/` directory, compiling it on demand, and linking the produced
+the `lyric-stdlib/std/` directory, compiling it on demand, and linking the produced
 DLL into the user's output directory.  The search order is:
 
-1. `LYRIC_STD_PATH` environment variable (point this at the `lyric/std/`
+1. `LYRIC_STD_PATH` environment variable (point this at the `lyric-stdlib/std/`
    directory for out-of-tree / installed use)
 2. Walk up the directory tree from the compiler binary's location looking for
-   a `lyric/std/` subdirectory (works when running inside the repo with
+   a `lyric-stdlib/std/` subdirectory (works when running inside the repo with
    `dotnet run`)
 
 ### Running the test suite

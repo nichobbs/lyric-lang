@@ -29,7 +29,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 1. **Source layout**
 
    ```
-   stdlib/std/
+   lyric-stdlib/std/
      ├── core.l          (primitives, Option, Result, slice helpers)
      ├── errors.l        (ParseError, IOError, HttpError)
      ├── parse.l         (safe primitive parsing)
@@ -405,7 +405,7 @@ Phase 6 (examples & docs)
 
 ## Stability cut (Q011 / D040)
 
-Every `pub` item in `stdlib/std/` carries either `@stable(since="1.0")` or `@experimental`.  This table is the authoritative cut list for v1.0.
+Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or `@experimental`.  This table is the authoritative cut list for v1.0.
 
 | Module | Stability | Rationale |
 |--------|-----------|-----------|
@@ -441,7 +441,7 @@ Every `pub` item in `stdlib/std/` carries either `@stable(since="1.0")` or `@exp
 | `Std.Set` (`set.l`) | `@stable` | Immutable set backed by `Dictionary<object,object>` (`newSet`, `setAdd`, `setContains`, `setRemove`, `setUnion`, `setIntersect`). |
 | `Std.Uuid` (`uuid.l`) | `@stable` | UUID v4 generation (`newUuid`) and string round-trip. |
 | `Std.Process` (`process.l`) | `@stable` | Subprocess launch and wait (`spawn`, `spawnCaptured`, `runCapture`); backed by `_kernel/process_host.l`. |
-| `Std.Random` (`_kernel/random.l`) | `@stable` | Cryptographically-seeded RNG (`randomInt`, `randomDouble`, `randomBool`); kernel-only — no `stdlib/std/random.l` shim (package opens as `Std.Random` directly from `_kernel/`). |
+| `Std.Random` (`_kernel/random.l`) | `@stable` | Cryptographically-seeded RNG (`randomInt`, `randomDouble`, `randomBool`); kernel-only — no `lyric-stdlib/std/random.l` shim (package opens as `Std.Random` directly from `_kernel/`). |
 | `Std.Testing.Mocking` (`testing_mocking.l`) | `@experimental` | Lightweight mock-object helpers for unit tests; bootstrap-grade. |
 
 ### Enforcement summary

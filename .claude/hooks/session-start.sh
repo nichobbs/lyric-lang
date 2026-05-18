@@ -16,7 +16,7 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-GLOBAL_JSON="$REPO_ROOT/compiler/global.json"
+GLOBAL_JSON="$REPO_ROOT/bootstrap/global.json"
 
 if [ ! -f "$GLOBAL_JSON" ]; then
     echo "session-start.sh: $GLOBAL_JSON not found; skipping .NET install" >&2

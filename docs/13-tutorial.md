@@ -576,7 +576,7 @@ ensuring every assumption is explicitly bracketed.
 - **Bootstrap progress**: `docs/10-bootstrap-progress.md`
   tracks what's actually shipping in the bootstrap compiler
   (Phase 1) vs. deferred to Phase 2/3/4.
-- **Standard library**: source lives in `stdlib/std/`.
+- **Standard library**: source lives in `lyric-stdlib/std/`.
   Each `.l` file is the authoritative API for its package; the
   doc comments are surfaced by `lyric doc <file>`.
 - **Proof plan**: `docs/15-phase-4-proof-plan.md` gives the full

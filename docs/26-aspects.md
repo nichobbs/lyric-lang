@@ -1112,7 +1112,7 @@ A `Std.OTel` package provides tracing, metrics, and logging templates.
 Consumers opt in per-package with a one-block declaration.
 
 ```lyric
-// stdlib/std/otel.l  (simplified)
+// lyric-stdlib/std/otel.l  (simplified)
 package Std.OTel
 
 import Std.Core
@@ -1179,7 +1179,7 @@ aspect Tracing from Std.OTel.Tracing {
 }
 ```
 
-The kernel extern boundary (`stdlib/std/_kernel/otel.l`) holds
+The kernel extern boundary (`lyric-stdlib/std/_kernel/otel.l`) holds
 `@externTarget` / `extern type` declarations for
 `System.Diagnostics.ActivitySource`, `Activity`, and related BCL
 types. Standard OTel env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,

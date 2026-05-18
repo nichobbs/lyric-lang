@@ -1,7 +1,7 @@
 # 17 — Axiom Audit
 
 Every `@axiom`-annotated declaration in the Lyric standard library
-kernel (`stdlib/std/_kernel/*.l`).  This document is the authoritative
+kernel (`lyric-stdlib/std/_kernel/*.l`).  This document is the authoritative
 list.  Each entry records:
 
 - **What** the axiom claims (the contract it asserts without proof).
@@ -32,7 +32,7 @@ covers every `@externTarget`-declared function in that file.  The format
 for each entry is:
 
 ```
-### `Std.<HostPackage>` — `stdlib/std/_kernel/<file>.l`
+### `Std.<HostPackage>` — `lyric-stdlib/std/_kernel/<file>.l`
 
 @axiom("<claim>")
 
@@ -42,7 +42,7 @@ for each entry is:
 **Review**: Stable / Under review / Provisional.
 ```
 
-Only files under `stdlib/std/_kernel/` may contain `@externTarget` or
+Only files under `lyric-stdlib/std/_kernel/` may contain `@externTarget` or
 `extern type` declarations (per `docs/14-native-stdlib-plan.md`
 Decision F).  A new `@axiom` always goes in a new or existing kernel
 file.
@@ -51,7 +51,7 @@ file.
 
 ## 2. I/O
 
-### `Std.IO` — `stdlib/std/_kernel/io.l`
+### `Std.IO` — `lyric-stdlib/std/_kernel/io.l`
 
 ```
 @axiom("System.Console and System.IO operations conform to their documented .NET contracts")
@@ -77,7 +77,7 @@ is `Unit`).  For the file-read/write operations, callers must ensure
 
 ## 3. Collections
 
-### `Std.CollectionsHost` — `stdlib/std/_kernel/collections_host.l`
+### `Std.CollectionsHost` — `lyric-stdlib/std/_kernel/collections_host.l`
 
 ```
 @axiom("System.Collections.Generic.List / Dictionary conform to their documented .NET contracts")
@@ -106,7 +106,7 @@ system or explicit contracts.
 
 ## 4. Math and parsing
 
-### `Std.MathHost` — `stdlib/std/_kernel/math_host.l`
+### `Std.MathHost` — `lyric-stdlib/std/_kernel/math_host.l`
 
 ```
 @axiom("System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts")
@@ -129,7 +129,7 @@ the prover treats `NaN` as an uninterpreted value.
 
 **Review**: Stable.
 
-### `Std.ParseHost` — `stdlib/std/_kernel/parse_host.l`
+### `Std.ParseHost` — `lyric-stdlib/std/_kernel/parse_host.l`
 
 ```
 @axiom("System.Int32/Int64/Double/Boolean.TryParse conform to their documented .NET contracts")
@@ -153,7 +153,7 @@ return `Option[T]` (or equivalent) without throwing.
 
 ## 5. Text and encoding
 
-### `Std.FormatHost` — `stdlib/std/_kernel/format_host.l`
+### `Std.FormatHost` — `lyric-stdlib/std/_kernel/format_host.l`
 
 ```
 @axiom("System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts")
@@ -174,7 +174,7 @@ required).
 
 **Review**: Stable.
 
-### `Std.EncodingHost` — `stdlib/std/_kernel/encoding_host.l`
+### `Std.EncodingHost` — `lyric-stdlib/std/_kernel/encoding_host.l`
 
 ```
 @axiom("System.Convert and System.Text.Encoding encoding operations conform to their documented .NET contracts")
@@ -195,7 +195,7 @@ establish input validity.
 
 **Review**: Stable.
 
-### `Std.CharHost` — `stdlib/std/_kernel/char_host.l`
+### `Std.CharHost` — `lyric-stdlib/std/_kernel/char_host.l`
 
 ```
 @axiom("System.Char and System.Convert character operations conform to their documented .NET contracts")
@@ -213,7 +213,7 @@ on the `Char` (UTF-16 code unit) domain.
 
 **Review**: Stable.
 
-### `Std.UnicodeHost` — `stdlib/std/_kernel/unicode_host.l`
+### `Std.UnicodeHost` — `lyric-stdlib/std/_kernel/unicode_host.l`
 
 ```
 @axiom("System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32")
@@ -236,7 +236,7 @@ of the 30 known category values and not as an arbitrary integer.
 
 ## 6. Storage
 
-### `Std.FileHost` — `stdlib/std/_kernel/file_host.l`
+### `Std.FileHost` — `lyric-stdlib/std/_kernel/file_host.l`
 
 ```
 @axiom("System.IO.File / Directory operations conform to their documented .NET contracts")
@@ -264,7 +264,7 @@ track filesystem state changes across calls.
 
 ## 7. Time
 
-### `Std.TimeHost` — `stdlib/std/_kernel/time_host.l`
+### `Std.TimeHost` — `lyric-stdlib/std/_kernel/time_host.l`
 
 ```
 @axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo conform to their documented .NET contracts")
@@ -290,7 +290,7 @@ is a deployment concern, not a precondition that the prover can check.
 
 ## 8. Network
 
-### `Std.HttpHost` — `stdlib/std/_kernel/http_host.l`
+### `Std.HttpHost` — `lyric-stdlib/std/_kernel/http_host.l`
 
 ```
 @axiom("System.Net.Http operations conform to their documented .NET contracts")
@@ -314,7 +314,7 @@ validated before the kernel call.
 
 ## 9. System and process
 
-### `Std.EnvironmentHost` — `stdlib/std/_kernel/environment_host.l`
+### `Std.EnvironmentHost` — `lyric-stdlib/std/_kernel/environment_host.l`
 
 ```
 @axiom("System.Environment operations conform to their documented .NET contracts")
@@ -334,7 +334,7 @@ unreachable beyond the call site.
 
 **Review**: Stable.
 
-### `Std.ProcessHost` — `stdlib/std/_kernel/process_host.l`
+### `Std.ProcessHost` — `lyric-stdlib/std/_kernel/process_host.l`
 
 ```
 @axiom("System.Diagnostics.Process conforms to its documented .NET contracts")
@@ -358,7 +358,7 @@ wrapper (`Std.Process`) converts OS-level failures to a `Result` type.
 
 ## 10. Serialization
 
-### `Std.JsonHost` — `stdlib/std/_kernel/json_host.l`
+### `Std.JsonHost` — `lyric-stdlib/std/_kernel/json_host.l`
 
 ```
 @axiom("System.Text.Json operations conform to their documented .NET contracts")
@@ -386,7 +386,7 @@ explicit postcondition.
 
 ## 11. Identity
 
-### `Std.UuidHost` — `stdlib/std/_kernel/uuid_host.l`
+### `Std.UuidHost` — `lyric-stdlib/std/_kernel/uuid_host.l`
 
 ```
 @axiom("System.Guid conforms to its documented .NET contract")
@@ -413,7 +413,7 @@ negligible in practice but not zero; a stronger model is tracked in
 
 ## 12. Logging
 
-### `Std.LogHost` — `stdlib/std/_kernel/log_host.l`
+### `Std.LogHost` — `lyric-stdlib/std/_kernel/log_host.l`
 
 ```
 @axiom("Host logging writes diagnostic messages according to its configured sinks")
@@ -438,7 +438,7 @@ to a safe representation before dispatch.
 ## 13. `lyric-otel` library kernel boundary
 
 These axioms appear in the `lyric-otel` library's kernel files and
-follow the same extern-boundary pattern as `stdlib/std/_kernel/`.
+follow the same extern-boundary pattern as `lyric-stdlib/std/_kernel/`.
 They assert that the named CLR / JVM namespaces are present in the
 runtime and expose the functions declared in the `extern package` block.
 All are provisional pending weaver integration.
@@ -461,7 +461,7 @@ All are provisional pending weaver integration.
 
 ## 14. How to add a new axiom
 
-1. Identify the appropriate `stdlib/std/_kernel/<module>.l` file.  If no
+1. Identify the appropriate `lyric-stdlib/std/_kernel/<module>.l` file.  If no
    existing file covers the BCL surface, create a new one following the
    kernel file template (package-level `@axiom`, single-concern extern
    boundary, `Internal: only Std.<X> should import this` comment).
@@ -504,7 +504,7 @@ All are provisional pending weaver integration.
 Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
 modules) were the conceptual design-doc predecessors of the current
 kernel axioms.  The kernel refactor (D-progress-140 and surrounding
-entries) moved every BCL extern to `stdlib/std/_kernel/`, replacing
+entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 increased from 11 to 16 because several BCL surfaces (HTTP, Environment,

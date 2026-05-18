@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'compiler/**'
+      - 'bootstrap/**'
       - 'benchmarks/**'
       - 'stdlib/**'
       - '.github/workflows/bench.yml'
@@ -45,15 +45,15 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: compiler/global.json
+          global-json-file: bootstrap/global.json
 
       - name: Restore
-        working-directory: compiler
-        run: dotnet restore Lyric.sln
+        working-directory: bootstrap
+        run: dotnet restore Bootstrap.sln
 
       - name: Build (Release)
-        working-directory: compiler
-        run: dotnet build Lyric.sln --configuration Release --no-restore
+        working-directory: bootstrap
+        run: dotnet build Bootstrap.sln --configuration Release --no-restore
 
       - name: Create results directory
         run: mkdir -p bench-results
@@ -66,7 +66,7 @@ jobs:
 
       - name: bench — numeric kernels
         continue-on-error: true
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
             bench ../benchmarks/bench_numeric.l \
@@ -75,7 +75,7 @@ jobs:
 
       - name: bench — collections throughput
         continue-on-error: true
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
             bench ../benchmarks/bench_collections.l \
@@ -84,7 +84,7 @@ jobs:
 
       - name: bench — contract overhead
         continue-on-error: true
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
             bench ../benchmarks/bench_contracts.l \
@@ -93,7 +93,7 @@ jobs:
 
       - name: bench — string operations
         continue-on-error: true
-        working-directory: compiler
+        working-directory: bootstrap
         run: |
           dotnet run --project src/Lyric.Cli --no-build --configuration Release -- \
             bench ../benchmarks/bench_string.l \

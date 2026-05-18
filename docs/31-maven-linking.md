@@ -176,7 +176,7 @@ Important properties:
 ## 5. Checked exceptions
 
 `JvmException` is an extern type declared in the JVM stdlib kernel
-(`stdlib/std/_kernel/jvm_exception.l`):
+(`lyric-stdlib/std/_kernel/jvm_exception.l`):
 
 ```
 @axiom("JVM runtime boundary")
@@ -398,7 +398,7 @@ poorly-written library). Today there is no Lyric-level way to intercept
 unchecked exceptions without crashing the thread.
 
 **Resolution:** `Std.Jvm.catch[T](action: func(): T): Result[T, JvmException]`
-has been added to `stdlib/std/_kernel/jvm.l`, gated behind `@experimental`.
+has been added to `lyric-stdlib/std/_kernel/jvm.l`, gated behind `@experimental`.
 The declaration routes to `lyric.runtime.jvm.ExceptionHelper.catch` (a
 static helper in the JVM stdlib kernel JAR that wraps a Callable). `Error`
 subclasses are NOT caught (they propagate as unrecoverable JVM errors) per
@@ -418,7 +418,7 @@ block rather than a plain `invokestatic` / `invokevirtual`:
 3. Box the return value into `Ok(result)`.
 4. Catch `java.lang.Exception`; box the caught exception into `Err(exception)`.
 
-This wrapping is NOT currently present in `compiler/lyric/jvm/lowering.l`.
+This wrapping is NOT currently present in `lyric-compiler/jvm/lowering.l`.
 The shim generator (`MavenShim.fs`) correctly declares the Lyric return type
 as `Result[T, JvmException]` so the type checker accepts call sites correctly,
 but the JVM emitter will produce incorrect bytecode (no try-catch) until this
@@ -429,7 +429,7 @@ is implemented.
 exception-table entry rather than a direct call.
 
 **Recommended default:** implement as part of the Phase 6 `@externTarget`
-lowering pass in `compiler/lyric/jvm/`. Add an `LExternCall` instruction
+lowering pass in `lyric-compiler/jvm/`. Add an `LExternCall` instruction
 variant (or annotate `LInvokestatic` / `LInvokevirtual` with a `checkedWrap`
 flag) so `lowerFunc` emits the exception table entry automatically.
 

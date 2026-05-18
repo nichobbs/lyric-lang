@@ -1,7 +1,7 @@
 # 18 — Java Bytecode Emission Strategy
 
 A Phase 6 deliverable per `docs/05-implementation-plan.md` and decision-log
-entry D023.  The self-hosted JVM emitter shipped in `compiler/lyric/jvm/`
+entry D023.  The self-hosted JVM emitter shipped in `lyric-compiler/jvm/`
 (D-progress-124 / D-progress-125, PR #183–#186); `--target jvm` is wired
 in the CLI.
 
@@ -1468,7 +1468,7 @@ model preserves them.
 ## 23. Implementing the emitter in Lyric
 
 This is the core implementation specification.  The JVM emitter shipped
-as a Lyric package suite in `compiler/lyric/jvm/` — the first
+as a Lyric package suite in `lyric-compiler/jvm/` — the first
 non-trivial application written in Lyric.  The implementation surfaced
 language-design gaps (missing stdlib pieces, awkward APIs, ergonomic
 warts) that were closed before v2 shipped.  The emitter is therefore
@@ -1477,10 +1477,10 @@ both a deliverable and a self-hosting acceptance test.
 ### 23.1 Package layout
 
 The emitter shipped as a flat set of Lyric source files under
-`compiler/lyric/jvm/`, each responsible for one logical layer:
+`lyric-compiler/jvm/`, each responsible for one logical layer:
 
 ```
-compiler/lyric/jvm/
+lyric/jvm/
 ├── classfile.l      # binary class-file model + serializer (§4 JVMS)
 ├── bytecode.l       # opcode emitter, two-pass assembler, label resolution
 ├── lowering.l       # AST → class-file IR translation (JvmType, LInsn, LFunc …)
@@ -1799,7 +1799,7 @@ then migrating piece-by-piece to in-house code).
 This package consumes the **same lowered AST** the F#-bootstrap
 emitter produces and translates it into the class-file IR.  The
 lowered AST is the existing `Lyric.Emitter` IR (per
-`compiler/src/Lyric.Emitter/`); when the F# bootstrap port ships
+`bootstrap/src/Lyric.Emitter/`); when the F# bootstrap port ships
 (Phase 5), this IR moves into a Lyric-native package
 `Lyric.Compiler.Lowered` and the JVM emitter consumes it from there.
 
@@ -1990,7 +1990,7 @@ Building the emitter in Lyric will exercise:
 A class-file *reader* is not strictly needed for emission, but is
 indispensable for tooling: differential-fuzzing, test harnesses,
 linters that consume Lyric-emitted JARs.  `reader.l` ships alongside
-the other modules in `compiler/lyric/jvm/`; its inverse-of-write
+the other modules in `lyric-compiler/jvm/`; its inverse-of-write
 structure means most of the test surface comes for free
 (write-then-read-then-compare).
 
@@ -2050,7 +2050,7 @@ v2.1.  Do not ship v3.0 with an ASM dependency.
 ### Q-J005: Java interop type-mapping for opaque-typed parameters
 
 **Status: RESOLVED** — `lowerOpaqueFacade` shipped in
-`compiler/lyric/jvm/lowering.l` (D-progress-226).
+`lyric-compiler/jvm/lowering.l` (D-progress-226).
 
 Java code that calls into a Lyric module sees opaque-typed
 parameters as `Object` (since the underlying class is non-exported).
@@ -2109,7 +2109,7 @@ exceptions wrapped as `Result[T, JvmException]`.
 
 ### Q-J009: `@externTarget` catch scope — `Exception` vs `Throwable`
 
-`lowerExternTargetBody` in `compiler/lyric/jvm/codegen.l` emits a
+`lowerExternTargetBody` in `lyric-compiler/jvm/codegen.l` emits a
 `catch java/lang/Exception` handler around `@externTarget` calls whose
 return type is `Result[T, JvmException]`.  JVM `Error` subclasses
 (`OutOfMemoryError`, `StackOverflowError`, `AssertionError`) are not
@@ -2238,7 +2238,7 @@ standard `LineNumberTable` attribute, which we also emit for
 
 This document describes the **F# bootstrap** JVM strategy (Phase 0 design,
 Phase 1–6 implementation planning).  The self-hosted JVM compilation pipeline
-shipped in Phase R4 and lives in `compiler/lyric/jvm/`.  Its design follows
+shipped in Phase R4 and lives in `lyric-compiler/jvm/`.  Its design follows
 the same strategy but is implemented in Lyric itself.
 
 ### Packages
@@ -2259,18 +2259,18 @@ the same strategy but is implemented in Lyric itself.
 | `Jvm.Bridge` | `bridge.l` | Entry point `compileToJar(source, outputPath, classpath): Bool` — chains lexer → parser → type checker → codegen → lowering → JAR |
 
 The `_kernel/` subdirectory holds JVM-specific extern boundary files
-(analogous to `stdlib/std/_kernel/` for the stdlib).
+(analogous to `lyric-stdlib/std/_kernel/` for the stdlib).
 
 ### F# bridge
 
-`compiler/src/Lyric.Cli/SelfHostedJvm.fs` bootstraps `Jvm.Bridge.dll` via a
+`bootstrap/src/Lyric.Cli/SelfHostedJvm.fs` bootstraps `Jvm.Bridge.dll` via a
 throwaway driver compile on first use, preloads all stdlib DLLs into the
 AppDomain, reflects out `Jvm.Bridge.Program.compileToJar`, and caches the
 delegate process-wide.  `--target jvm` routes through this bridge.
 
 ### Self-tests
 
-`compiler/lyric/jvm/self_test.l` and the numbered `self_test_b3.l` …
+`lyric-compiler/jvm/self_test.l` and the numbered `self_test_b3.l` …
 `self_test_b126.l` files are incremental self-test programs exercising
 individual bytecode and classfile features.  They are discovered and run
 by the F# emitter test suite (`Lyric.Emitter.Tests`) alongside the MSIL

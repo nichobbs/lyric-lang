@@ -1047,7 +1047,7 @@ The standard library ships hand-curated wrappers for common .NET surfaces. Direc
 ### 11.3 `@externTarget` — direct BCL method binding
 
 `@externTarget("CLR.Type.Method")` maps a Lyric function declared inside a
-`stdlib/std/_kernel/` file directly to a specific BCL (or JVM) method, bypassing
+`lyric-stdlib/std/_kernel/` file directly to a specific BCL (or JVM) method, bypassing
 the `extern package` wrapper layer.  It is reserved for the standard-library
 kernel boundary; user code must not use it.
 
