@@ -79,6 +79,7 @@ import Std.Errors
 import Std.Parse
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
+import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
 import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
 import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
 import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
@@ -978,8 +979,8 @@ func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
     match d.source {
       case Registry(version) -> {
         refs = refs +
-          "    <PackageReference Include=\"" + d.name +
-          "\" Version=\"" + version + "\" />\n"
+          "    <PackageReference Include=\"" + Pack.xmlEscape(d.name) +
+          "\" Version=\"" + Pack.xmlEscape(version) + "\" />\n"
       }
       case _ -> ()
     }
@@ -992,15 +993,15 @@ func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
       while ni < n.entries.count {
         val e = n.entries[ni]
         refs = refs +
-          "    <PackageReference Include=\"" + e.name +
-          "\" Version=\"" + e.version + "\" />\n"
+          "    <PackageReference Include=\"" + Pack.xmlEscape(e.name) +
+          "\" Version=\"" + Pack.xmlEscape(e.version) + "\" />\n"
         ni = ni + 1
       }
     }
   }
   var xml = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
   xml = xml + "  <PropertyGroup>\n"
-  xml = xml + "    <TargetFramework>" + target + "</TargetFramework>\n"
+  xml = xml + "    <TargetFramework>" + Pack.xmlEscape(target) + "</TargetFramework>\n"
   xml = xml + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
   xml = xml + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
   xml = xml + "  </PropertyGroup>\n"
@@ -1066,7 +1067,7 @@ func cmdRestore(argv: in slice[String]): Int {
     case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
     case None      -> Path.join(mfDir, "lyric.lock")
   }
-  var lf = match File.readText(lockPath) {
+  val existingLf = match File.readText(lockPath) {
     case Err(_)     -> LF.emptyLockFile()
     case Ok(locked) ->
       match LF.parseLockFile(locked) {
@@ -1074,6 +1075,7 @@ func cmdRestore(argv: in slice[String]): Int {
         case Ok(clf) -> clf
       }
   }
+  var lf = existingLf
 
   var exitCode = 0
   var di = 0
@@ -1236,8 +1238,35 @@ func cmdRestore(argv: in slice[String]): Int {
     if dotnetExit != 0 { return dotnetExit }
   }
 
-  // Write the lock file (unless --locked mode, in which case we verify).
+  // Write the lock file or verify it (--locked mode).
   if lockedMode {
+    // --locked: fail if the freshly-resolved dep set differs from the on-disk lock.
+    if existingLf.packages.count == 0 and lf.packages.count > 0 {
+      printErr("restore: --locked: no lock file found; run 'lyric restore' first to generate it")
+      return 1
+    }
+    var lockMismatch = false
+    var ci = 0
+    while ci < lf.packages.count {
+      val resolved = lf.packages[ci]
+      match LF.findPackage(existingLf, resolved.name) {
+        case None -> {
+          printErr("restore: --locked: '" + resolved.name + "' is not recorded in the lock file (lyric.lock is stale — run 'lyric restore')")
+          lockMismatch = true
+        }
+        case Some(locked) -> {
+          if locked.source != resolved.source {
+            printErr("restore: --locked: '" + resolved.name + "' source changed: locked='" + locked.source + "' resolved='" + resolved.source + "'")
+            lockMismatch = true
+          } else if locked.version != resolved.version {
+            printErr("restore: --locked: '" + resolved.name + "' version changed: locked='" + locked.version + "' resolved='" + resolved.version + "'")
+            lockMismatch = true
+          }
+        }
+      }
+      ci += 1
+    }
+    if lockMismatch { return 1 }
     Console.println("restore: --locked: lock file verified")
   } else {
     val lockText = LF.serializeLockFile(lf)
@@ -1448,24 +1477,24 @@ func cmdPublish(argv: in slice[String]): Int {
   csproj = csproj + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
   csproj = csproj + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
   csproj = csproj + "    <NoWarn>$(NoWarn);NU5128</NoWarn>\n"
-  csproj = csproj + "    <PackageId>" + pkg.name + "</PackageId>\n"
-  csproj = csproj + "    <Version>" + pkg.version + "</Version>\n"
+  csproj = csproj + "    <PackageId>" + Pack.xmlEscape(pkg.name) + "</PackageId>\n"
+  csproj = csproj + "    <Version>" + Pack.xmlEscape(pkg.version) + "</Version>\n"
   if not Str.isEmpty(pkg.description) {
-    csproj = csproj + "    <Description>" + pkg.description + "</Description>\n"
+    csproj = csproj + "    <Description>" + Pack.xmlEscape(pkg.description) + "</Description>\n"
   }
   if not Str.isEmpty(pkg.license) {
-    csproj = csproj + "    <PackageLicenseExpression>" + pkg.license + "</PackageLicenseExpression>\n"
+    csproj = csproj + "    <PackageLicenseExpression>" + Pack.xmlEscape(pkg.license) + "</PackageLicenseExpression>\n"
   }
   match pkg.repository {
-    case Some(r) -> { csproj = csproj + "    <RepositoryUrl>" + r + "</RepositoryUrl>\n" }
+    case Some(r) -> { csproj = csproj + "    <RepositoryUrl>" + Pack.xmlEscape(r) + "</RepositoryUrl>\n" }
     case None    -> ()
   }
   csproj = csproj + "    <PackageTags>lyric-package</PackageTags>\n"
   csproj = csproj + "  </PropertyGroup>\n"
   csproj = csproj + "  <ItemGroup>\n"
   csproj = csproj +
-    "    <None Include=\"" + absDllPath +
-    "\" Pack=\"true\" PackagePath=\"lib/net10.0/" + dllBase + "\" />\n"
+    "    <None Include=\"" + Pack.xmlEscape(absDllPath) +
+    "\" Pack=\"true\" PackagePath=\"lib/net10.0/" + Pack.xmlEscape(dllBase) + "\" />\n"
   csproj = csproj + "  </ItemGroup>\n"
   if not Str.isEmpty(nuspecDeps) {
     csproj = csproj + "  <ItemGroup>\n"
