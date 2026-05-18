@@ -3050,6 +3050,18 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   // non-void return value is dropped (POP/POP2) before returning; exposing
   // it as a process exit code is a follow-up via java.lang.System.exit.
   if hasMain {
+    // Guard against Long/Double `main` returns: the wrapper would need
+    // category-2 `POP2` to discard them, and the generator only emits
+    // category-1 `LPop` today.  Emitting `LPop` against a 2-slot value
+    // would leave the stack unbalanced and trigger a JVM `VerifyError`
+    // at class load.  Refuse to compile rather than silently produce a
+    // broken class file; the source program can wrap the value in an
+    // `Int` return (the idiomatic exit-code shape) or `Unit`.
+    match mainRet {
+      case JLong   -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case _       -> ()
+    }
     val jvmMainParams: List[JvmType] = newList()
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
@@ -3060,10 +3072,10 @@ pub func codegenPackage(file: in SourceFile): LPackage {
       params = lyricMainPs,
       ret    = mainRet))
     // Discard the Lyric main's return value (when any) before issuing the
-    // JVM `void` return.  Only single-slot returns (Int, references, etc.)
-    // are handled here; a Long/Double main return would require POP2 and is
-    // tracked as a follow-up — Lyric's idiomatic `main(): Int` is the
-    // common case.
+    // JVM `void` return.  The Long/Double 2-slot cases are rejected above,
+    // so every remaining non-void return is category-1 (Int, Boolean,
+    // references, etc.) — a single `LPop` is correct.  Exposing the value
+    // as a process exit code is a follow-up via java.lang.System.exit.
     match mainRet {
       case JVoid -> ()
       case _     -> jvmMainInsns.add(LPop)
