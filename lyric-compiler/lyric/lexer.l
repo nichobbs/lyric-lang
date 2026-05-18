@@ -1649,11 +1649,32 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
     n = n + 1
   }
   if peek(state) != '}' {
-    recordError(state, "L0021", "unterminated unicode escape",
-                makeSpan(startP, currentPosition(state)))
+    if n == 6 {
+      // Hit the 6-digit cap without seeing `}` — the escape is
+      // overlong, not unterminated.  Consume trailing hex digits up
+      // to a sensible limit and the closing `}` so the lexer resyncs.
+      var extra = 0
+      while not isAtEnd(state) and peek(state) != '}' and extra < 16 {
+        advance(state)
+        extra = extra + 1
+      }
+      if peek(state) == '}' { advance(state) }
+      recordError(state, "L0022",
+                  "overlong unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
+                  makeSpan(startP, currentPosition(state)))
+    } else {
+      recordError(state, "L0021", "unterminated unicode escape",
+                  makeSpan(startP, currentPosition(state)))
+    }
     return '\u{FFFD}'
   }
   advance(state)   // '}'
+  if n == 0 {
+    recordError(state, "L0022",
+                "empty unicode escape (\\u{} requires 1-6 hex digits)",
+                makeSpan(startP, currentPosition(state)))
+    return '\u{FFFD}'
+  }
   match parseDigits(hexBody, 16) {
     case Some(v) -> {
       if v < 0i64 or v > 1114111i64 {

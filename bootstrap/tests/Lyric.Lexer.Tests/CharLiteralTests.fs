@@ -59,13 +59,36 @@ let tests =
         }
 
         test "invalid unicode escape — too many hex digits — is a diagnostic" {
-            // Seven hex digits exceeds the 6-digit cap. The lexer reads
-            // up to 6 chars, then expects a closing `}`. With seven hex
-            // chars in a row inside the braces, the closing `}` is not
-            // where expected, producing L0021.
+            // Seven hex digits exceeds the 6-digit cap. After #368 this
+            // is diagnosed as L0022 "overlong", not L0021 "unterminated".
             let _, diags = lexBoth "'\\u{1234567}'"
             Expect.isNonEmpty diags "expected diagnostic"
             let codes = diags |> List.map (fun d -> d.Code)
-            Expect.contains codes "L0021" "L0021 unterminated unicode escape"
+            Expect.contains codes "L0022" "L0022 overlong unicode escape"
+        }
+
+        test "overlong escape message distinguishes from unterminated" {
+            let _, diags = lexBoth "'\\u{12345678}'"
+            let msgs = diags |> List.map (fun d -> d.Message)
+            Expect.exists msgs (fun m -> m.Contains "overlong")
+                "diagnostic message contains 'overlong'"
+        }
+
+        test "empty unicode escape \\u{} is its own diagnostic" {
+            let _, diags = lexBoth "'\\u{}'"
+            Expect.isNonEmpty diags "expected diagnostic"
+            let codes = diags |> List.map (fun d -> d.Code)
+            Expect.contains codes "L0022" "L0022 for empty escape"
+            let msgs = diags |> List.map (fun d -> d.Message)
+            Expect.exists msgs (fun m -> m.Contains "empty")
+                "diagnostic message contains 'empty'"
+        }
+
+        test "truly unterminated escape still emits L0021" {
+            // No closing brace at all — fewer than 6 chars before EOF.
+            let _, diags = lexBoth "'\\u{123"
+            Expect.isNonEmpty diags "expected diagnostic"
+            let codes = diags |> List.map (fun d -> d.Code)
+            Expect.contains codes "L0021" "L0021 for genuinely unterminated"
         }
     ]
