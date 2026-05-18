@@ -227,7 +227,22 @@ func blockContainsResult(body: in Block): Bool {
     match body.statements[i].kind {
       case SExpr(e)         -> if exprContainsResult(e) { return true }
       case SReturn(Some(e)) -> if exprContainsResult(e) { return true }
-      case _                -> {}
+      case SLocal(binding)  -> match binding {
+        case LBVal(_, _, init)       -> if exprContainsResult(init) { return true }
+        case LBLet(_, _, init)       -> if exprContainsResult(init) { return true }
+        case LBVar(_, _, Some(init)) -> if exprContainsResult(init) { return true }
+        case LBVar(_, _, None)       -> {}
+      }
+      case SFor(_, _, iter, bdy)   -> {
+        if exprContainsResult(iter)  { return true }
+        if blockContainsResult(bdy)  { return true }
+      }
+      case SWhile(_, cond, bdy)    -> {
+        if exprContainsResult(cond)  { return true }
+        if blockContainsResult(bdy)  { return true }
+      }
+      case SLoop(_, bdy)           -> if blockContainsResult(bdy) { return true }
+      case _                       -> {}
     }
     i = i + 1
   }
@@ -237,18 +252,7 @@ func blockContainsResult(body: in Block): Bool {
 func eobContainsResult(eob: in ExprOrBlock): Bool {
   match eob {
     case EOBExpr(e) -> exprContainsResult(e)
-    case EOBBlock(body) -> {
-      var i = 0
-      while i < body.statements.count {
-        match body.statements[i].kind {
-          case SExpr(e)         -> if exprContainsResult(e) { return true }
-          case SReturn(Some(e)) -> if exprContainsResult(e) { return true }
-          case _                -> {}
-        }
-        i = i + 1
-      }
-      false
-    }
+    case EOBBlock(body) -> blockContainsResult(body)
   }
 }
 

@@ -217,6 +217,40 @@ func testElementChildren(): Unit {
   }
 }
 
+// ── Depth guard (#583) ─────────────────────────────────────────────────────────
+
+func testXmlDepthGuard(): Unit {
+  // 2000 nested elements must be rejected by the depth guard.
+  var open = ""
+  var close = ""
+  var d = 0
+  while d < 2000 {
+    open = open + "<a>"
+    close = "</" + "a>" + close
+    d = d + 1
+  }
+  match parseXml(open + close) {
+    case Err(e) -> assertTrue(XmlError.message(e).length > 0, "XML depth guard fires on 2000-deep document")
+    case Ok(_)  -> assertTrue(false, "2000-deep XML must be rejected")
+  }
+}
+
+func testXmlDepthBoundary(): Unit {
+  // A shallow document (100 levels) is well within the depth limit.
+  var open = ""
+  var close = ""
+  var d = 0
+  while d < 100 {
+    open = open + "<a>"
+    close = "</" + "a>" + close
+    d = d + 1
+  }
+  match parseXml(open + close) {
+    case Err(e) -> assertTrue(false, "100-deep XML should parse: " + XmlError.message(e))
+    case Ok(_)  -> assertTrue(true, "100-deep XML parsed ok")
+  }
+}
+
 func main(): Unit {
   testSelfClosing()
   testTextContent()
@@ -236,5 +270,7 @@ func main(): Unit {
   testErrorMismatched()
   testErrorEmpty()
   testElementChildren()
+  testXmlDepthGuard()
+  testXmlDepthBoundary()
   println("xml_tests: ok")
 }

@@ -1069,12 +1069,13 @@ func cmdRestore(argv: in slice[String]): Int {
     case None      -> Path.join(mfDir, "lyric.lock")
   }
   var lockFileExists = false
+  var lockParseError = false
   val existingLf = match File.readText(lockPath) {
     case Err(_)     -> LF.emptyLockFile()
     case Ok(locked) -> {
       lockFileExists = true
       match LF.parseLockFile(locked) {
-        case Err(e)  -> { printErr("restore: lock file parse error: " + e); LF.emptyLockFile() }
+        case Err(e)  -> { printErr("restore: lock file parse error: " + e); lockParseError = true; LF.emptyLockFile() }
         case Ok(clf) -> clf
       }
     }
@@ -1247,6 +1248,10 @@ func cmdRestore(argv: in slice[String]): Int {
     // --locked: fail if no lock file exists on disk.
     if not lockFileExists {
       printErr("restore: --locked: no lock file found; run 'lyric restore' first to generate it")
+      return 1
+    }
+    // A parse error was already reported above; fail without a misleading "is empty" message.
+    if lockParseError {
       return 1
     }
     // Distinguish an empty lock file from a missing one.
@@ -1733,7 +1738,10 @@ func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
   while j < json.length {
     val c = json[j]
     if escaping {
-      s = s + ("" + c)
+      if c == 'n'      { s = s + "\n" }
+      else if c == 't' { s = s + "\t" }
+      else if c == 'r' { s = s + "\r" }
+      else             { s = s + ("" + c) }
       escaping = false
     } else if c == '\\' {
       escaping = true
