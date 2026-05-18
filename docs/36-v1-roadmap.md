@@ -178,6 +178,18 @@ and expose a non-throwing wrapper as a `@externTarget`.
 `Lyric.ContractMeta` (cross-package contract resource reader) is a dependency
 of `Pack.l`; port in order.
 
+**Critical dependency — `--target dotnet-legacy` removal gated on contract-elaborator parity:**
+`Emitter.fs::emitContractCheck` handles nested-return `ensures:` clauses, loop
+`invariant:` lowering, and protected-type entries for the F# (`--target
+dotnet-legacy`) path.  The self-hosted `contract_elaborator/elaborator.l`
+(M5.2 stage 2) does not yet replicate these three cases — see
+`lyric-compiler/lyric/contract_elaborator/elaborator.l` and the "deferred to
+a follow-up stage" note therein.  Removing `--target dotnet-legacy` before
+the elaborator achieves parity silently drops `ensures:` enforcement on nested
+returns.  Gate the `Emitter.fs` deletion on a passing regression test that
+exercises each deferred construct against both the F# emitter output and the
+self-hosted elaborator output.
+
 **Bridge pattern** (follow `SelfHostedFmt.fs` / `SelfHostedManifest.fs`):
 
 For each item:
@@ -600,7 +612,10 @@ G1, G2, G3, G4, G5   (gate decisions — no code; answer in sequence)
      │
      ├── R4  (M5.3 stage 6 finish)          ← independent; Lyric.Doc first, then Lint,
      │        ContractMeta, Pack.l, Fmt.fs        ContractMeta, Pack.l, then Fmt.fs sunset
-     │        sunset gated on R2
+     │        sunset gated on R2;                 gated on R2; --target dotnet-legacy
+     │                                            removal ALSO gated on contract-
+     │                                            elaborator parity (nested returns,
+     │                                            loop invariants, protected types)
      │
      ├── R5  (Q022 / Q021 language gaps)    ← independent; do Q022-1 and Q021-#4 first
      │
