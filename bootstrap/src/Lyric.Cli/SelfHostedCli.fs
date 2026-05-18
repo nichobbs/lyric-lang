@@ -115,13 +115,31 @@ let private getDelegate () : string[] -> int =
 
 /// Attempt to dispatch `argv` through the self-hosted `Lyric.Cli`.
 /// Returns `Some exitCode` on success.
-/// Returns `None` when the bridge cannot be compiled or loaded, so the
-/// caller can fall back to the F# bootstrap dispatcher.
+/// Returns `None` only when the bridge cannot be compiled or loaded (e.g.
+/// emitter errors, missing DLL, reflection failure), so the caller can fall
+/// back to the F# bootstrap dispatcher.
+///
+/// Runtime exceptions thrown by the self-hosted CLI are NOT caught here —
+/// they propagate to the caller so the user sees a real stack trace rather
+/// than a silent fallback.
 let tryRun (argv: string[]) : int option =
     try
         let fn = getDelegate ()
         Some (fn argv)
-    with ex ->
+    with
+    | :? FileNotFoundException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? ReflectionTypeLoadException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? MissingMethodException as ex ->
+        eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
+            ex.Message
+        None
+    | :? BadImageFormatException as ex ->
         eprintfn "self-hosted CLI unavailable (%s); falling back to bootstrap"
             ex.Message
         None

@@ -66,6 +66,24 @@ pub func smtSanitize(s: in String): String {
 // §2. Literal and term rendering.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Render a Double as a valid SMT-LIB Real literal.
+// SMT-LIB requires a decimal point: "1.0", not "1".  F#'s `double.ToString()`
+// omits the decimal for whole-valued floats (e.g. 1.0 → "1"), which Z3 parses
+// as an Int and produces a sort error in the Real theory.  NaN and ±Infinity
+// are not representable in SMT Real and are replaced with "0.0" so the
+// solver returns a diagnostic rather than crashing.
+func smtRenderFloat(f: in Double): String {
+  val s = doubleToString(f)
+  // Detect non-finite values by their canonical string representations.
+  if s == "NaN" or s == "Infinity" or s == "-Infinity" {
+    "0.0"
+  } else if s.contains(".") or s.contains("E") or s.contains("e") {
+    s
+  } else {
+    s + ".0"
+  }
+}
+
 func smtRenderLit(lit: in Lit): String {
   match lit {
     case VLBool(true)  -> "true"
@@ -77,7 +95,7 @@ func smtRenderLit(lit: in Lit): String {
         longToString(n)
       }
     }
-    case VLFloat(f)    -> doubleToString(f)
+    case VLFloat(f)    -> smtRenderFloat(f)
     case VLString(s)   -> "\"" + s.replace("\"", "\"\"") + "\""
     case VLUnit        -> "unit"
   }

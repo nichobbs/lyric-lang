@@ -211,8 +211,23 @@ config WsAuthConfig {
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /// Create a kernel-backed connection registry using the Server config.
+///
+/// Fails fast if JWT authentication is enabled but no secret is configured:
+/// an empty `jwtSecret` with `enabled = true` would panic at the first
+/// upgrade attempt when `verifyJwt` violates its `requires: secret.length > 0`
+/// contract.  Callers should either set `WsAuthConfig.jwtSecret` via the
+/// environment variable `LYRIC_CONFIG_WS_AUTH_JWTSECRET`, or disable auth
+/// with `WsAuthConfig.enabled = false`.
 @stable(since="0.1")
 pub func createRegistry(): Result[WsRegistry, WsError] {
+  if WsAuthConfig.enabled and WsAuthConfig.jwtSecret.length == 0 {
+    return Err(WsError(
+      message = "WsAuthConfig.enabled is true but WsAuthConfig.jwtSecret is empty; \
+                 set LYRIC_CONFIG_WS_AUTH_JWTSECRET or disable auth with \
+                 LYRIC_CONFIG_WS_AUTH_ENABLED=false",
+      code          = "WS_AUTH_MISCONFIGURED",
+      connectionId  = ""))
+  }
   match Ws.Kernel.Net.createRegistry(Server.maxMessageSizeBytes, Server.pingIntervalMs) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err)   -> Err(WsError(message = err, code = "REGISTRY_INIT_FAILED", connectionId = ""))

@@ -123,7 +123,8 @@ let private parseDiag (line: string) : Lyric.Lexer.Diagnostic =
     let ln   = if parts.Length > 2 then (try int parts.[2] with _ -> 0) else 0
     let col  = if parts.Length > 3 then (try int parts.[3] with _ -> 0) else 0
     let msg  = if parts.Length > 4 then parts.[4] else ""
-    { Code = code; Severity = sev; Span = makeSpan ln col; Message = msg }
+    { Code = code; Severity = sev; Span = makeSpan ln col; Message = msg
+      Help = None; Related = []; Fix = None }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -166,7 +167,8 @@ let synthesize (source: string) (filter: string option) : TestSynth.Outcome =
             TestSynth.ParseFailures
                 [{ Code = "T0000"; Severity = DiagError
                    Span = makeSpan 0 0
-                   Message = sprintf "self-hosted test-synth bridge: unexpected protocol tag '%s'" other }]
+                   Message = sprintf "self-hosted test-synth bridge: unexpected protocol tag '%s'" other
+                   Help = None; Related = []; Fix = None }]
 
 let listEntries (source: string) : Result<TestSynth.ListEntry list, Lyric.Lexer.Diagnostic list> =
     let _, listFn = getDelegates ()

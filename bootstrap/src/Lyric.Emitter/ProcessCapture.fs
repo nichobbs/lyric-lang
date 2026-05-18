@@ -29,6 +29,12 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
             proc.StandardInput.Write stdinContent
             proc.StandardInput.Close()
             let stdout = proc.StandardOutput.ReadToEnd()
-            proc.WaitForExit()
+            // 10-second wall-clock cap: solvers already get a per-query
+            // timeout flag (-T:5 for Z3, --tlimit=5000 for cvc5) but a
+            // hung or misbehaving solver binary can still block indefinitely
+            // if those flags are ignored.  Kill the process tree if it
+            // hasn't exited within 2× the configured solver timeout.
+            if not (proc.WaitForExit 10000) then
+                try proc.Kill(entireProcessTree = true) with _ -> ()
             stdout
     with _ -> ""
