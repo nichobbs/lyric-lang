@@ -40,7 +40,8 @@ package Mail
 
 import Std.Core
 import Std.Collections
-import Mail.Kernel.Net as MailKernel
+import Mail.Kernel.Net
+import Mail.Kernel.Jvm
 
 // ─── Address and attachment types ────────────────────────────────────────────
 
@@ -107,14 +108,14 @@ record NativeSender { senderHandle: Int }
 impl MailSender for NativeSender {
   func send(msg: in EmailMessage): Result[Unit, MailError] {
     val json = serialiseMessage(msg)
-    match MailKernel.send(senderHandle, json) {
+    match mailKernelSend(senderHandle, json) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(MailError(message = msg, code = "SEND_ERROR"))
     }
   }
 
   func close(): Unit {
-    MailKernel.close(senderHandle)
+    mailKernelClose(senderHandle)
   }
 }
 
@@ -160,7 +161,7 @@ config SendGridMail {
 @stable(since="0.1")
 @cfg(feature = "smtp")
 pub func connectSmtp(): Result[MailSender, MailError] {
-  match MailKernel.connectSmtp(
+  match mailKernelConnectSmtp(
     Smtp.host, Smtp.port, Smtp.username, Smtp.password, Smtp.useTls, Smtp.timeoutMs)
   {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
@@ -174,7 +175,7 @@ pub func connectSmtp(): Result[MailSender, MailError] {
 @stable(since="0.1")
 @cfg(feature = "ses")
 pub func connectSes(): Result[MailSender, MailError] {
-  match MailKernel.connectSes(Ses.region, Ses.accessKey, Ses.secretKey) {
+  match mailKernelConnectSes(Ses.region, Ses.accessKey, Ses.secretKey) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -186,7 +187,7 @@ pub func connectSes(): Result[MailSender, MailError] {
 @stable(since="0.1")
 @cfg(feature = "sendgrid")
 pub func connectSendGrid(): Result[MailSender, MailError] {
-  match MailKernel.connectSendGrid(SendGridMail.apiKey) {
+  match mailKernelConnectSendGrid(SendGridMail.apiKey) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -397,4 +398,82 @@ func jsonString(s: in String): String {
     i = i + 1
   }
   return out + "\""
+}
+
+// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
+// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
+// one per active target; the public package code calls these wrappers so the
+// same source compiles under --target dotnet and --target jvm.
+
+@cfg(feature = "dotnet")
+@cfg(feature = "smtp")
+func mailKernelConnectSmtp(
+  host:      in String,
+  port:      in Int,
+  username:  in String,
+  password:  in String,
+  useTls:    in Bool,
+  timeoutMs: in Int
+): Result[Int, String] {
+  return Mail.Kernel.Net.connectSmtp(host, port, username, password, useTls, timeoutMs)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "smtp")
+func mailKernelConnectSmtp(
+  host:      in String,
+  port:      in Int,
+  username:  in String,
+  password:  in String,
+  useTls:    in Bool,
+  timeoutMs: in Int
+): Result[Int, String] {
+  return Mail.Kernel.Jvm.connectSmtp(host, port, username, password, useTls, timeoutMs)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "ses")
+func mailKernelConnectSes(
+  region:    in String,
+  accessKey: in String,
+  secretKey: in String
+): Result[Int, String] {
+  return Mail.Kernel.Net.connectSes(region, accessKey, secretKey)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "ses")
+func mailKernelConnectSes(
+  region:    in String,
+  accessKey: in String,
+  secretKey: in String
+): Result[Int, String] {
+  return Mail.Kernel.Jvm.connectSes(region, accessKey, secretKey)
+}
+
+@cfg(feature = "dotnet")
+@cfg(feature = "sendgrid")
+func mailKernelConnectSendGrid(apiKey: in String): Result[Int, String] {
+  return Mail.Kernel.Net.connectSendGrid(apiKey)
+}
+@cfg(feature = "jvm")
+@cfg(feature = "sendgrid")
+func mailKernelConnectSendGrid(apiKey: in String): Result[Int, String] {
+  return Mail.Kernel.Jvm.connectSendGrid(apiKey)
+}
+
+@cfg(feature = "dotnet")
+func mailKernelSend(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
+  return Mail.Kernel.Net.send(senderHandle, messageJson)
+}
+@cfg(feature = "jvm")
+func mailKernelSend(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
+  return Mail.Kernel.Jvm.send(senderHandle, messageJson)
+}
+
+@cfg(feature = "dotnet")
+func mailKernelClose(senderHandle: in Int): Unit {
+  Mail.Kernel.Net.close(senderHandle)
+}
+@cfg(feature = "jvm")
+func mailKernelClose(senderHandle: in Int): Unit {
+  Mail.Kernel.Jvm.close(senderHandle)
 }

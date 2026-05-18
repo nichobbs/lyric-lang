@@ -13,11 +13,14 @@ output_assembly = "Mail.dll"
 [project.packages]
 "Mail"            = "src"
 "Mail.Kernel.Net" = "src/_kernel/net"
+"Mail.Kernel.Jvm" = "src/_kernel/jvm"
 
 [features]
-smtp     = []   # SMTP via System.Net.Mail (MailKit on .NET)
-ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET)
-sendgrid = []   # SendGrid (SendGrid .NET library)
+dotnet   = []   # Target the .NET kernel (`Mail.Kernel.Net`)
+jvm      = []   # Target the JVM kernel (`Mail.Kernel.Jvm`)
+smtp     = []   # SMTP via MailKit on .NET / jakarta.mail on JVM
+ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET / software.amazon.awssdk:ses on JVM)
+sendgrid = []   # SendGrid (SendGrid .NET library / sendgrid-java on JVM)
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
@@ -29,3 +32,11 @@ sendgrid = []   # SendGrid (SendGrid .NET library)
 "AWSSDK.SimpleEmail"   = "3.7.300"
 # feature = "sendgrid" — SendGrid .NET client
 "SendGrid"             = "9.29.3"
+
+[maven]
+# feature = "smtp" — Jakarta Mail SMTP client for JVM
+"com.sun.mail:jakarta.mail"        = { version = "2.0.1",  features = ["smtp"] }
+# feature = "ses" — AWS SDK SES v2 client for JVM
+"software.amazon.awssdk:ses"       = { version = "2.25.x", features = ["ses"] }
+# feature = "sendgrid" — SendGrid Java client for JVM
+"com.sendgrid:sendgrid-java"       = { version = "4.10.2", features = ["sendgrid"] }
