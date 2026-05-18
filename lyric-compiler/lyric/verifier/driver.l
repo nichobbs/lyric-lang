@@ -204,8 +204,8 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
     // may be incorrect.  Surface this as V0009 so users know to review it.
     if goalHasNonFiniteFloat(g) {
       resultDiags.add(warningDiagnostic("V0009",
-        "goal '" + g.label + "' contains NaN or +/-Infinity float literal; \
-         replaced with 0.0 in SMT-LIB output — verification result may be incorrect",
+        "goal '" + g.label + "' contains NaN or +/-Infinity float literal; " +
+        "replaced with 0.0 in SMT-LIB output — verification result may be incorrect",
         g.origin))
     }
     val outcome = discharge(g)

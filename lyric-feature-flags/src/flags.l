@@ -221,8 +221,8 @@ pub func fromEntries(entries: in [FlagEntry]): InProcessFlagStore {
 pub func connectRemote(): Result[FlagStore, FlagError] {
   if Remote.apiKey.length > 0 and not Remote.url.startsWith("https://") {
     return Err(FlagError(
-      message = "Remote.url must use https:// when an API key is configured; \
-                 plaintext HTTP would expose the API key in every poll request",
+      message = "Remote.url must use https:// when an API key is configured; " +
+                "plaintext HTTP would expose the API key in every poll request",
       code    = "INSECURE_URL"))
   }
   match Flags.Kernel.Net.connect(

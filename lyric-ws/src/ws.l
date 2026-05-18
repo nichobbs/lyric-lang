@@ -222,9 +222,9 @@ config WsAuthConfig {
 pub func createRegistry(): Result[WsRegistry, WsError] {
   if WsAuthConfig.enabled and WsAuthConfig.jwtSecret.length == 0 {
     return Err(WsError(
-      message = "WsAuthConfig.enabled is true but WsAuthConfig.jwtSecret is empty; \
-                 set LYRIC_CONFIG_WS_AUTH_JWTSECRET or disable auth with \
-                 LYRIC_CONFIG_WS_AUTH_ENABLED=false",
+      message = "WsAuthConfig.enabled is true but WsAuthConfig.jwtSecret is empty; " +
+                "set LYRIC_CONFIG_WS_AUTH_JWTSECRET or disable auth with " +
+                "LYRIC_CONFIG_WS_AUTH_ENABLED=false",
       code          = "WS_AUTH_MISCONFIGURED",
       connectionId  = ""))
   }
