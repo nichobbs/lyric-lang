@@ -235,6 +235,8 @@ Nested records work if each nested type is also `@generate(Json)`. `Option[T]` f
 
 If you need to serialise an opaque type across a boundary, the idiomatic pattern is to project it to an `exposed record` first, then derive JSON on the exposed form. Example 5 in `docs/02-worked-examples.md` shows this pattern with `RawConfig` and `AppConfig`.
 
+`@generate` is not limited to built-in generators. Chapter 30 covers how to write and publish your own source generator package so that consumers can annotate their types with `@generate(YourPkg.Name)` and receive whatever code your generator emits.
+
 ## §12.8 `Std.Http`
 
 The HTTP module is interface-based. You inject it the same way you inject `Clock`:
