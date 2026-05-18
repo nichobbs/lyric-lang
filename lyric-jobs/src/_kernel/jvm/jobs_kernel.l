@@ -23,6 +23,7 @@
 package Jobs.Kernel.Jvm
 
 import Std.Core
+import Std.Log
 
 // ─── JVM threading and identity (always available) ────────────────────────────
 
@@ -172,12 +173,18 @@ pub func generateId(): String {
 
 /// Open a backend scheduler.  For Hangfire (JVM degraded fallback), the
 /// connection string is accepted for API parity but ignored; Quartz uses an
-/// in-memory RAMJobStore on JVM.
+/// in-memory RAMJobStore on JVM.  A non-empty connection string emits a
+/// warning so operators are not silently downgraded from SQL Server-backed
+/// persistence to in-memory storage.
 @cfg(feature = "hangfire")
 pub func connect(workerCount: in Int): Result[Int, String]
   requires: workerCount >= 1
 {
-  return org.quartz.Scheduler.connect(hangfireConnectionString(), workerCount)
+  val conn = hangfireConnectionString()
+  if conn.length > 0 {
+    Std.Log.warn("lyric-jobs: Hangfire connection string ignored on JVM; Quartz uses RAMJobStore (in-memory). Persistence configured for .NET-only Hangfire.SqlServer.")
+  }
+  return org.quartz.Scheduler.connect(conn, workerCount)
 }
 
 /// Open a backend scheduler backed by Quartz on JVM.
