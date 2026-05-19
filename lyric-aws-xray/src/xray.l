@@ -116,6 +116,24 @@ pub func currentSubsegment(): SubsegmentHandle {
 /// Add an indexed X-Ray annotation to the subsegment.
 /// Annotations appear in X-Ray filter expressions (e.g. annotation.orderId = "123").
 /// Both key and value must be non-empty strings.
+/// No-op when built with the local feature.
+@cfg(feature = "local")
+@stable(since="0.1")
+pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
+  requires: key.length > 0
+  requires: value.length > 0
+{ }
+
+@cfg(feature = "aws")
+@stable(since="0.1")
+pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
+  requires: key.length > 0
+  requires: value.length > 0
+{
+  kernel_addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
+}
+
+@cfg(feature = "jvm")
 @stable(since="0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
@@ -127,6 +145,24 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
 /// Add unindexed metadata to the subsegment.
 /// Metadata is visible in the X-Ray console but not searchable via filter expressions.
 /// Both key and value must be non-empty strings.
+/// No-op when built with the local feature.
+@cfg(feature = "local")
+@stable(since="0.1")
+pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String): Unit
+  requires: key.length > 0
+  requires: value.length > 0
+{ }
+
+@cfg(feature = "aws")
+@stable(since="0.1")
+pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String): Unit
+  requires: key.length > 0
+  requires: value.length > 0
+{
+  kernel_addMetadata(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
+}
+
+@cfg(feature = "jvm")
 @stable(since="0.1")
 pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String): Unit
   requires: key.length > 0
