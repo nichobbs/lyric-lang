@@ -2,12 +2,26 @@
 //
 // Parses the lyric.toml subset used by the Lyric package system.
 // The grammar covers:
-//   [package]      — package identity (name, version, description, authors, license)
-//   [project]      — project-mode bundling (name, output, output_assembly)
+//   [package]           — package identity (name, version, description, authors, license)
+//   [project]           — project-mode bundling (name, output, output_assembly)
 //   [project.packages]  — map of package-name -> source-path
-//   [dependencies] — map of package-name -> version constraint
-//   [nuget]        — map of NuGet-id -> version string
-//   [nuget.options] — target TFM and allow_native flag
+//   [dependencies]      — map of package-name -> dep-source (string, inline-table)
+//   [nuget]             — map of NuGet-id -> version string
+//   [nuget.options]     — target TFM and allow_native flag
+//   [workspace]         — workspace root declaration (exclude list, overrides)
+//   [workspace.overrides] — per-package path overrides for fork/patch workflows
+//   [registry]          — custom registry feed URLs
+//
+// Supported dependency source forms in [dependencies]:
+//   "1.0.0"                             — registry form (version string)
+//   { workspace = true }                — workspace-local source
+//   { workspace = true, version = "x" } — workspace-local with version check
+//   { path = "../relative/dir" }        — local path
+//   { git = "https://...", tag = "v1" } — git tag (immutable)
+//   { git = "https://...", rev = "sha"} — git commit (immutable)
+//   { git = "https://...", branch = "main" } — git branch (mutable, warns)
+//   { git = "...", tag = "v1", subdir = "lyric-foo" } — monorepo subdir
+//   Any form may include:  registry = "https://..."
 //
 // Mirrors the F# Manifest.fs parser in compiler/src/Lyric.Cli/Manifest.fs.
 // Values in unsupported sections are silently ignored; unrecognised keys in
@@ -70,10 +84,31 @@ pub record ProjectSection {
   packages:       List[PackageEntry]
 }
 
+// ── Dependency source forms ──────────────────────────────────────────────────
+
+pub union GitRef {
+  case Tag(name: String)
+  case Rev(sha: String)
+  case Branch(name: String)
+}
+
+pub union DepSource {
+  /// Plain version string resolved from the configured registry.
+  case Registry(version: String)
+  /// Workspace-local source. `version` is an optional constraint against the
+  /// member's declared version.
+  case Workspace(version: Option[String])
+  /// Local filesystem path (relative to the manifest directory).
+  case Path(dir: String)
+  /// Git repository source.
+  case Git(url: String, ref: GitRef, subdir: Option[String])
+}
+
 pub record DependencyEntry {
-  name:      String
-  version:   String
-  localPath: Option[String]
+  name:     String
+  source:   DepSource
+  /// Per-dependency registry override URL (overrides `[registry].dotnet`).
+  registry: Option[String]
 }
 
 pub record NugetEntry {
@@ -99,6 +134,39 @@ pub record FeaturesSection {
   defaults: List[String]
 }
 
+// ── Workspace types ──────────────────────────────────────────────────────────
+
+/// A single `[workspace.overrides]` entry.
+pub record WorkspaceOverride {
+  /// Lyric package name (e.g. `"Lyric.Cache"`).
+  name: String
+  /// Directory to use instead of the workspace-discovered or registry-resolved
+  /// source.  Relative to the workspace root; the resolver makes it absolute.
+  dir:  String
+}
+
+/// `[workspace]` table in the root `lyric.toml`.
+pub record WorkspaceSection {
+  /// Root-relative path prefixes to exclude from member discovery.
+  exclude:   List[String]
+  /// Per-package path overrides for fork/patch workflows.
+  overrides: List[WorkspaceOverride]
+}
+
+/// Per-target custom registry feed URLs from `[registry]`.
+pub record RegistryConfig {
+  dotnet: Option[String]
+  jvm:    Option[String]
+}
+
+/// Parsed form of a virtual workspace root (`lyric.toml` with `[workspace]`
+/// but no `[package]`).
+pub record WorkspaceRoot {
+  filePath:  String
+  workspace: WorkspaceSection
+  registry:  Option[RegistryConfig]
+}
+
 pub record Manifest {
   filePath:       String
   packageSection: PackageSection
@@ -106,11 +174,26 @@ pub record Manifest {
   deps:           List[DependencyEntry]
   nuget:          Option[NugetSection]
   features:       Option[FeaturesSection]
+  /// Non-None when this manifest also declares a `[workspace]` table.
+  workspace:      Option[WorkspaceSection]
+  registry:       Option[RegistryConfig]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Internal parser types
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Typed value inside an inline table `{ key = val, ... }`.
+union TVal {
+  case TVStr(s: String)
+  case TVBool(b: Bool)
+}
+
+// A single key–value pair inside an inline table.
+record InlinePair {
+  key:  String
+  tval: TVal
+}
 
 // Intermediate values before typed assembly.
 union Value {
@@ -118,8 +201,7 @@ union Value {
   case VStrList(items: List[String])
   case VBool(b: Bool)
   case VInt(n: Int)
-  // Inline table with a 'path' key — used by `[dependencies]` path entries.
-  case VPath(s: String)
+  case VTable(pairs: List[InlinePair])
 }
 
 // A single parsed key-value binding with its TOML section context.
@@ -291,7 +373,64 @@ func parseStringArray(c: inout Cursor, filePath: in String): Result[List[String]
   Ok(value = items)
 }
 
-// Parse a single TOML value (string, array, bool, integer).
+// Parse a TOML inline table: `{ key = value, ... }`.
+// Values may be quoted strings or booleans (true/false).
+func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlinePair], ManifestError] {
+  skipOne(c)  // consume `{`
+  val pairs: List[InlinePair] = newList()
+  var keepGoing = true
+  while keepGoing and not isAtEnd(c) {
+    skipWhitespace(c)
+    if isAtEnd(c) {
+      return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated inline table"))
+    }
+    val ch = peek(c)
+    if ch == '}' {
+      skipOne(c)
+      keepGoing = false
+    } else if ch == '#' or ch == '\n' {
+      skipToEndOfLine(c)
+    } else {
+      match parseKey(c, filePath) {
+        case Err(e) -> return Err(error = e)
+        case Ok(key) -> {
+          skipWhitespace(c)
+          if isAtEnd(c) or peek(c) != '=' {
+            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
+                                          message = "expected '=' in inline table after '" + key + "'"))
+          }
+          skipOne(c)  // consume `=`
+          skipWhitespace(c)
+          if isAtEnd(c) {
+            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
+                                          message = "expected value in inline table"))
+          }
+          val vc = peek(c)
+          if vc == '"' {
+            match parseQuotedString(c, filePath) {
+              case Err(e) -> return Err(error = e)
+              case Ok(s)  -> pairs.add(InlinePair(key = key, tval = TVStr(s = s)))
+            }
+          } else if vc == 't' and peekAt(c, 1) == 'r' and peekAt(c, 2) == 'u' and peekAt(c, 3) == 'e' {
+            skipOne(c); skipOne(c); skipOne(c); skipOne(c)
+            pairs.add(InlinePair(key = key, tval = TVBool(b = true)))
+          } else if vc == 'f' and peekAt(c, 1) == 'a' and peekAt(c, 2) == 'l' and peekAt(c, 3) == 's' and peekAt(c, 4) == 'e' {
+            skipOne(c); skipOne(c); skipOne(c); skipOne(c); skipOne(c)
+            pairs.add(InlinePair(key = key, tval = TVBool(b = false)))
+          } else {
+            return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
+                                          message = "expected string or bool value in inline table"))
+          }
+          skipWhitespace(c)
+          if not isAtEnd(c) and peek(c) == ',' { skipOne(c) }
+        }
+      }
+    }
+  }
+  Ok(value = pairs)
+}
+
+// Parse a single TOML value (string, array, bool, integer, or inline table).
 func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestError] {
   skipWhitespace(c)
   if isAtEnd(c) {
@@ -308,6 +447,11 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
       case Err(e)    -> Err(error = e)
       case Ok(items) -> Ok(value = VStrList(items = items))
     }
+  } else if ch == '{' {
+    match parseInlineTable(c, filePath) {
+      case Err(e)    -> Err(error = e)
+      case Ok(pairs) -> Ok(value = VTable(pairs = pairs))
+    }
   } else if ch == 't' and peekAt(c, 1) == 'r' and peekAt(c, 2) == 'u' and peekAt(c, 3) == 'e' {
     skipOne(c); skipOne(c); skipOne(c); skipOne(c)
     Ok(value = VBool(b = true))
@@ -321,56 +465,6 @@ func parseValue(c: inout Cursor, filePath: in String): Result[Value, ManifestErr
       skipOne(c)
     }
     Ok(value = VInt(n = n))
-  } else if ch == '{' {
-    // TOML inline table: `{ key = "value", ... }`.
-    // Extracts the 'path' key if present; other keys are skipped.
-    skipOne(c)  // consume '{'
-    var pathVal = ""
-    var keepGoing2 = true
-    while keepGoing2 and not isAtEnd(c) {
-      skipWhitespace(c)
-      if isAtEnd(c) {
-        return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                      message = "unterminated inline table"))
-      }
-      val ch2 = peek(c)
-      if ch2 == '}' {
-        keepGoing2 = false
-      } else if ch2 == '"' or isIdentChar(ch2) {
-        match parseKey(c, filePath) {
-          case Err(e) -> return Err(error = e)
-          case Ok(k)  -> {
-            skipWhitespace(c)
-            if isAtEnd(c) or peek(c) != '=' {
-              return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                            message = "expected '=' after key in inline table"))
-            }
-            skipOne(c)  // consume '='
-            skipWhitespace(c)
-            if not isAtEnd(c) and peek(c) == '"' {
-              match parseQuotedString(c, filePath) {
-                case Err(e) -> return Err(error = e)
-                case Ok(v)  -> { if k == "path" { pathVal = v } }
-              }
-            } else {
-              // Skip non-string value (boolean, number, nested array, etc.)
-              while not isAtEnd(c) and peek(c) != ',' and peek(c) != '}' and peek(c) != '\n' {
-                skipOne(c)
-              }
-            }
-            skipWhitespace(c)
-            if not isAtEnd(c) and peek(c) == ',' { skipOne(c) }
-          }
-        }
-      } else if ch2 == ',' {
-        skipOne(c)
-      } else {
-        return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
-                                      message = "unexpected character '" + charToString(ch2) + "' in inline table"))
-      }
-    }
-    if not isAtEnd(c) { skipOne(c) }  // consume '}'
-    Ok(value = VPath(s = pathVal))
   } else {
     Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
                            message = "unexpected character '" + charToString(ch) + "' in value"))
@@ -563,21 +657,111 @@ func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
     packages       = packages))
 }
 
-func assembleDeps(entries: in List[Entry]): List[DependencyEntry] {
+// ── Inline table helpers ─────────────────────────────────────────────────────
+
+func findInlineStr(pairs: in List[InlinePair], key: in String): Option[String] {
+  var i = 0
+  while i < pairs.count {
+    val p = pairs[i]
+    if p.key == key {
+      match p.tval {
+        case TVStr(s) -> return Some(value = s)
+        case _        -> return None
+      }
+    }
+    i += 1
+  }
+  None
+}
+
+func findInlineBool(pairs: in List[InlinePair], key: in String, default: in Bool): Bool {
+  var i = 0
+  while i < pairs.count {
+    val p = pairs[i]
+    if p.key == key {
+      match p.tval {
+        case TVBool(b) -> return b
+        case _         -> return default
+      }
+    }
+    i += 1
+  }
+  default
+}
+
+// Build a DepSource from an inline table.
+func buildDepSource(depName: in String, pairs: in List[InlinePair], section: in String): Result[DepSource, ManifestError] {
+  // Check for workspace = true
+  if findInlineBool(pairs, "workspace", false) {
+    val versionOpt = findInlineStr(pairs, "version")
+    return Ok(value = Workspace(version = versionOpt))
+  }
+  // Check for path = "..."
+  match findInlineStr(pairs, "path") {
+    case Some(dir) -> return Ok(value = Path(dir = dir))
+    case None      -> ()
+  }
+  // Check for git = "..."
+  match findInlineStr(pairs, "git") {
+    case Some(url) -> {
+      val subdir = findInlineStr(pairs, "subdir")
+      val ref: GitRef = match findInlineStr(pairs, "tag") {
+        case Some(t) -> Tag(name = t)
+        case None    -> match findInlineStr(pairs, "rev") {
+          case Some(r) -> Rev(sha = r)
+          case None    -> match findInlineStr(pairs, "branch") {
+            case Some(b) -> Branch(name = b)
+            case None    ->
+              return Err(error = InvalidField(
+                section = section,
+                field   = depName,
+                message = "git dep requires one of: tag, rev, branch"))
+          }
+        }
+      }
+      return Ok(value = Git(url = url, ref = ref, subdir = subdir))
+    }
+    case None -> ()
+  }
+  // Explicit version key in inline table: { version = "1.0.0" }
+  match findInlineStr(pairs, "version") {
+    case Some(v) -> Ok(value = Registry(version = v))
+    case None    ->
+      Err(error = InvalidField(
+        section = section,
+        field   = depName,
+        message = "dep must have one of: version, workspace = true, path, git"))
+  }
+}
+
+func assembleDeps(entries: in List[Entry]): Result[List[DependencyEntry], ManifestError] {
   val depList: List[DependencyEntry] = newList()
   var i = 0
   while i < entries.count {
     val e = entries[i]
     if e.section == "dependencies" {
       match e.value {
-        case VStr(v)  -> depList.add(DependencyEntry(name = e.key, version = v, localPath = None))
-        case VPath(p) -> depList.add(DependencyEntry(name = e.key, version = "", localPath = Some(value = p)))
-        case _        -> ()
+        case VStr(v) ->
+          depList.add(DependencyEntry(
+            name     = e.key,
+            source   = Registry(version = v),
+            registry = None))
+        case VTable(pairs) -> {
+          match buildDepSource(e.key, pairs, "dependencies") {
+            case Err(me) -> return Err(error = me)
+            case Ok(src) ->
+              depList.add(DependencyEntry(
+                name     = e.key,
+                source   = src,
+                registry = findInlineStr(pairs, "registry")))
+          }
+        }
+        case _ -> ()
       }
     }
     i += 1
   }
-  depList
+  Ok(value = depList)
 }
 
 // Local helpers used by the [features] assembly below.
@@ -670,7 +854,14 @@ func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
     if e.section == "nuget" {
       match e.value {
         case VStr(v) -> nugetEntries.add(NugetEntry(name = e.key, version = v))
-        case _       -> ()
+        case VTable(pairs) -> {
+          // Support { version = "1.0.0", features = [...] } form in [nuget].
+          match findInlineStr(pairs, "version") {
+            case Some(v) -> nugetEntries.add(NugetEntry(name = e.key, version = v))
+            case None    -> ()
+          }
+        }
+        case _ -> ()
       }
     }
     i += 1
@@ -683,11 +874,41 @@ func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
     allowNative = allowNative))
 }
 
+func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
+  if not hasSection(entries, "workspace") { return None }
+  val exclude: List[String] = unwrapOr(findStringList(entries, "workspace", "exclude"), newList())
+  val overrides: List[WorkspaceOverride] = newList()
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == "workspace.overrides" {
+      match e.value {
+        case VTable(pairs) ->
+          match findInlineStr(pairs, "path") {
+            case Some(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir))
+            case None      -> ()
+          }
+        case VStr(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir))
+        case _         -> ()
+      }
+    }
+    i += 1
+  }
+  Some(value = WorkspaceSection(exclude = exclude, overrides = overrides))
+}
+
+func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
+  if not hasSection(entries, "registry") { return None }
+  Some(value = RegistryConfig(
+    dotnet = findString(entries, "registry", "dotnet"),
+    jvm    = findString(entries, "registry", "jvm")))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// §6. Public entry point
+// §6. Public entry points
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parse the contents of a `lyric.toml` file.
+/// Parse the contents of a `lyric.toml` member manifest (must have `[package]`).
 ///
 /// `text` is the raw UTF-8 source; `filePath` is used only for error messages.
 ///
@@ -702,20 +923,57 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
         case Err(e)   -> Err(error = e)
         case Ok(pkg)  -> {
           val project = assembleProject(entries)
-          val deps    = assembleDeps(entries)
           val nuget   = assembleNuget(entries)
-          match assembleFeatures(entries) {
-            case Err(e)          -> Err(error = e)
-            case Ok(featuresOpt) ->
-              Ok(value = Manifest(
-                filePath       = filePath,
-                packageSection = pkg,
-                project        = project,
-                deps           = deps,
-                nuget          = nuget,
-                features       = featuresOpt))
+          val ws      = assembleWorkspace(entries)
+          val reg     = assembleRegistry(entries)
+          match assembleDeps(entries) {
+            case Err(e)    -> Err(error = e)
+            case Ok(deps)  ->
+              match assembleFeatures(entries) {
+                case Err(e)          -> Err(error = e)
+                case Ok(featuresOpt) ->
+                  Ok(value = Manifest(
+                    filePath       = filePath,
+                    packageSection = pkg,
+                    project        = project,
+                    deps           = deps,
+                    nuget          = nuget,
+                    features       = featuresOpt,
+                    workspace      = ws,
+                    registry       = reg))
+              }
           }
         }
       }
+  }
+}
+
+/// Parse a virtual workspace root `lyric.toml` (no `[package]` required).
+///
+/// Returns `Ok(None)` if the file has no `[workspace]` table (not a workspace
+/// root). Returns `Ok(Some(wr))` when `[workspace]` is present. TOML parse
+/// errors are forwarded as `Err(ManifestError)`.
+pub func parseWorkspaceRoot(text: in String, filePath: in String): Result[Option[WorkspaceRoot], ManifestError] {
+  match collectEntries(text, filePath) {
+    case Err(e)      -> Err(error = e)
+    case Ok(entries) ->
+      match assembleWorkspace(entries) {
+        case None    -> Ok(value = None)
+        case Some(ws) ->
+          Ok(value = Some(value = WorkspaceRoot(
+            filePath  = filePath,
+            workspace = ws,
+            registry  = assembleRegistry(entries))))
+      }
+  }
+}
+
+/// Helper: return the version string from a Registry dep source, or "" for
+/// all other source forms.  Used by pack.l and cli.l where only registry
+/// deps produce NuGet package references.
+pub func depRegistryVersion(source: in DepSource): Option[String] {
+  match source {
+    case Registry(v) -> Some(value = v)
+    case _           -> None
   }
 }

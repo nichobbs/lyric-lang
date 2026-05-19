@@ -12,8 +12,7 @@
 //     pkg.description=<desc>          (empty if absent)
 //     pkg.license=<license>           (empty if absent)
 //     pkg.author=<author>             (one per author)
-//     dep=<name>=<version>            (one per version-pinned dependency; first '=' is separator)
-//     dep-path=<name>=<path>          (one per local path dependency; first '=' is separator)
+//     dep=<name>=<version>            (one per dependency; first '=' is separator)
 //     nuget=<id>=<version>            (one per nuget entry)
 //     nuget.target=<tfm>
 //     nuget.allow_native=true
@@ -46,10 +45,9 @@ pub func serializeManifest(text: in String, filePath: in String): String {
       }
       var di = 0
       while di < m.deps.count {
-        val dep = m.deps[di]
-        match dep.localPath {
-          case Some(p) -> { s = s + "dep-path=" + dep.name + "=" + p + "\n" }
-          case None    -> { s = s + "dep=" + dep.name + "=" + dep.version + "\n" }
+        match m.deps[di].source {
+          case Registry(v) -> { s = s + "dep=" + m.deps[di].name + "=" + v + "\n" }
+          case _ -> ()
         }
         di = di + 1
       }
