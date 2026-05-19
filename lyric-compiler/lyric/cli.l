@@ -77,6 +77,7 @@ import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
 import Std.Parse
+import Std.Sort as Sort
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
@@ -329,14 +330,6 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // D045: feature-set computed here once buildOne / buildProject
-  // accept a `features` parameter (Phase 5+ stage 7 follow-up).  For
-  // now the parsed flags are intentionally unused — they document the
-  // CLI surface in lockstep with the F# bootstrap.
-  val _features = cliFeatures
-  val _noDefault = noDefaultFeatures
-  val _all = allFeatures
-
   // Project-mode: `lyric build --manifest lyric.toml` with no positional source.
   if positional.count == 0 {
     val mfPath = match manifestArg {
@@ -347,7 +340,7 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
-    return buildProject(mfPath, explicitOut, target)
+    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures)
   }
 
   val sourcePath = positional[0]
@@ -370,7 +363,14 @@ func cmdBuild(argv: in slice[String]): Int {
 
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
-func buildProject(mfPath: in String, explicitOut: in Option[String], target: in CompileTarget): Int {
+func buildProject(
+  mfPath:           in String,
+  explicitOut:      in Option[String],
+  target:           in CompileTarget,
+  cliFeatures:      in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures:      in Bool
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e)   -> {
@@ -393,6 +393,39 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     }
   }
 
+  // D045: resolve active feature set from manifest defaults + CLI flags.
+  // `getManifestFeaturesOrEmpty` returns the whole FeaturesSection record from
+  // the match arm (bootstrap-emitter-safe pattern); field access happens after
+  // the match, outside any match arm body.
+  // D045: resolve active feature set from manifest defaults + CLI flags.
+  // readFeatureDefaultsFromToml / readFeatureDeclaredFromToml bypass the
+  // Manifest.features field (which has a bootstrap-emitter match quirk when
+  // the field type is Option[FeaturesSection]) and scan the raw TOML text
+  // directly.  mfText was already read at the top of this function.
+  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
+  val activeFeatures: List[String] = newList()
+  if allFeatures {
+    var ai = 0
+    while ai < mfDeclared.count {
+      activeFeatures.add(mfDeclared[ai])
+      ai += 1
+    }
+  } else {
+    if not noDefaultFeatures {
+      var ai = 0
+      while ai < mfDefaults.count {
+        activeFeatures.add(mfDefaults[ai])
+        ai += 1
+      }
+    }
+    var ci = 0
+    while ci < cliFeatures.count {
+      activeFeatures.add(cliFeatures[ci])
+      ci += 1
+    }
+  }
+
   val mfDir   = Path.dirname(mfPath)
   val outPath = match explicitOut {
     case Some(o) -> o
@@ -411,24 +444,65 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     case Err(e) -> printErr("build: cannot create output dir: " + IOError.message(e))
   }
 
-  // Collect sources for each package entry.
-  val sources: List[String] = newList()
+  if proj.packages.count == 0 {
+    printErr("build: " + mfPath + " [project.packages] is empty — single-DLL projects require explicit per-package source dirs (auto-discovery not yet wired)")
+    return 1
+  }
+
+  // Collect sources for each package entry individually (not concatenated).
+  // Each package entry may be a single .l file or a directory of .l files.
+  val pkgs: List[ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
               else { Path.join(mfDir, pkgEntry.path) }
-    val text = match File.readText(abs) {
-      case Ok(t)  -> t
-      case Err(e) -> {
-        printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-        hadFatal = true
-        ""
+    val pkgSources: List[String] = newList()
+    if File.fileExists(abs) {
+      // Single .l file: read it directly.
+      match File.readText(abs) {
+        case Ok(t)  -> pkgSources.add(t)
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
       }
+    } else if File.dirExists(abs) {
+      // Directory: collect all .l files recursively, sorted for determinism.
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs)  -> fs
+        case Err(e)  -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") { lFiles.add(f) }
+      }
+      if lFiles.count == 0 {
+        printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
+        hadFatal = true
+      } else {
+        val sorted = Sort.sortStrings(lFiles.toArray())
+        for f in sorted {
+          match File.readText(f) {
+            case Ok(t)  -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+              hadFatal = true
+            }
+          }
+        }
+      }
+    } else {
+      printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
     }
-    if not hadFatal {
-      sources.add(text)
+    if pkgSources.count > 0 {
+      pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
     pi += 1
   }
@@ -437,26 +511,62 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     return 1
   }
 
-  // Emit all sources as a single combined source string (one-package bundle).
-  // The emitter's project path handles multi-package interleaving via
-  // Lyric.Emitter.emitProject when that API is available.  For now the
-  // sources list is passed joined as a sentinel; the emitter decides.
-  var combined = ""
-  var si = 0
-  while si < sources.count {
-    combined = combined + sources[si]
-    si += 1
+  // Resolve local-path dependencies to DLL paths.
+  // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
+  val restoredDlls: List[String] = newList()
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir }
+                     else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly {
+                      case Some(asm) -> asm
+                      case None      -> p.name + ".dll"
+                    }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    restoredDlls.add(dep.name + "\t" + dllPath)
+                  } else {
+                    printErr("build: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
+            case Err(_) -> ()
+          }
+        } else {
+          printErr("build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'; check the path = \"...\" entry in your lyric.toml")
+        }
+      }
+      case _ -> ()
+    }
+    di += 1
   }
 
   val asmName = stemOf(Path.basename(outPath), 4)
-  val req = EmitRequest(
-    source       = combined,
-    assemblyName = asmName,
-    outputPath   = outPath,
-    target       = target
+  val projReq = EmitProjectRequest(
+    packages         = pkgs,
+    assemblyName     = asmName,
+    outputPath       = outPath,
+    target           = target,
+    restoredDllPaths = restoredDlls,
+    activeFeatures   = activeFeatures
   )
 
-  val result  = Emitter.emit(req)
+  val result  = Emitter.emitProject(projReq)
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {

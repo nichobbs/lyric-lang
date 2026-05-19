@@ -1,47 +1,48 @@
-/// Mail — email sending library for Lyric.
-///
-/// Provides a uniform `MailSender` interface over SMTP (MailKit), Amazon SES,
-/// and SendGrid.  Obtain a sender with one of the feature-gated `connect*`
-/// factory functions, then call `Mail.send` or the convenience helpers.
-///
-/// Usage:
-///
-///   import Mail
-///
-///   val sender = Mail.connectSmtp()?
-///   Mail.sendSimple(sender, "alice@example.com", "Hello", "World")?
-///   Mail.send(sender, EmailMessage(
-///     from        = Mail.makeAddress("bot@example.com"),
-///     to          = [Mail.makeAddressWithName("alice@example.com", "Alice")],
-///     cc          = [],
-///     bcc         = [],
-///     subject     = "Report",
-///     textBody    = "See attached.",
-///     htmlBody    = "<p>See attached.</p>",
-///     attachments = [Mail.makeAttachment("report.pdf", "application/pdf", base64Data)],
-///     replyTo     = None
-///   ))?
-///
-/// Runtime config env vars (LYRIC_CONFIG_SMTP_*, LYRIC_CONFIG_SENDER_*):
-///   LYRIC_CONFIG_SMTP_HOST          — SMTP server hostname (required for SMTP)
-///   LYRIC_CONFIG_SMTP_PORT          — SMTP port (default: 587)
-///   LYRIC_CONFIG_SMTP_USERNAME      — SMTP username (default: "")
-///   LYRIC_CONFIG_SMTP_PASSWORD      — SMTP password (default: "", @sensitive)
-///   LYRIC_CONFIG_SMTP_USETLS        — use TLS (default: true)
-///   LYRIC_CONFIG_SMTP_TIMEOUTMS     — send timeout ms (default: 30000)
-///   LYRIC_CONFIG_SENDER_FROMADDRESS     — envelope From address (required)
-///   LYRIC_CONFIG_SENDER_FROMDISPLAYNAME — envelope From display name (default: "")
-///   LYRIC_CONFIG_SENDER_PROVIDER        — provider name: smtp/ses/sendgrid (default: "smtp")
-///
-/// See docs/03-decision-log.md D062 and lyric-mail/README.md.
+// Mail — email sending library for Lyric.
+//
+// Provides a uniform `MailSender` interface over SMTP (MailKit), Amazon SES,
+// and SendGrid.  Obtain a sender with one of the feature-gated `connect*`
+// factory functions, then call `Mail.send` or the convenience helpers.
+//
+// Usage:
+//
+//   import Mail
+//
+//   val sender = Mail.connectSmtp()?
+//   Mail.sendSimple(sender, "alice@example.com", "Hello", "World")?
+//   Mail.send(sender, EmailMessage(
+//     from        = Mail.makeAddress("bot@example.com"),
+//     to          = [Mail.makeAddressWithName("alice@example.com", "Alice")],
+//     cc          = [],
+//     bcc         = [],
+//     subject     = "Report",
+//     textBody    = "See attached.",
+//     htmlBody    = "<p>See attached.</p>",
+//     attachments = [Mail.makeAttachment("report.pdf", "application/pdf", base64Data)],
+//     replyTo     = None
+//   ))?
+//
+// Runtime config env vars (LYRIC_CONFIG_SMTP_*, LYRIC_CONFIG_SENDER_*):
+//   LYRIC_CONFIG_SMTP_HOST          — SMTP server hostname (required for SMTP)
+//   LYRIC_CONFIG_SMTP_PORT          — SMTP port (default: 587)
+//   LYRIC_CONFIG_SMTP_USERNAME      — SMTP username (default: "")
+//   LYRIC_CONFIG_SMTP_PASSWORD      — SMTP password (default: "", @sensitive)
+//   LYRIC_CONFIG_SMTP_USETLS        — use TLS (default: true)
+//   LYRIC_CONFIG_SMTP_TIMEOUTMS     — send timeout ms (default: 30000)
+//   LYRIC_CONFIG_SENDER_FROMADDRESS     — envelope From address (required)
+//   LYRIC_CONFIG_SENDER_FROMDISPLAYNAME — envelope From display name (default: "")
+//   LYRIC_CONFIG_SENDER_PROVIDER        — provider name: smtp/ses/sendgrid (default: "smtp")
+//
+// See docs/03-decision-log.md D062 and lyric-mail/README.md.
 
 @runtime_checked
 package Mail
 
 import Std.Core
 import Std.Collections
-import Mail.Kernel.Net
-import Mail.Kernel.Jvm
+import Std.String
+import Std.Environment as Env
+import Mail.Kernel.Net as MailKernel
 
 // ─── Address and attachment types ────────────────────────────────────────────
 
@@ -66,13 +67,13 @@ pub record Attachment {
 @stable(since="0.1")
 pub record EmailMessage {
   from:        EmailAddress
-  to:          [EmailAddress]
-  cc:          [EmailAddress]
-  bcc:         [EmailAddress]
+  to:          slice[EmailAddress]
+  cc:          slice[EmailAddress]
+  bcc:         slice[EmailAddress]
   subject:     String
   textBody:    String
   htmlBody:    String
-  attachments: [Attachment]
+  attachments: slice[Attachment]
   replyTo:     Option[EmailAddress]
 }
 
@@ -108,62 +109,45 @@ record NativeSender { senderHandle: Int }
 impl MailSender for NativeSender {
   func send(msg: in EmailMessage): Result[Unit, MailError] {
     val json = serialiseMessage(msg)
-    match mailKernelSend(senderHandle, json) {
+    match MailKernel.send(self.senderHandle, json) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(MailError(message = msg, code = "SEND_ERROR"))
     }
   }
 
   func close(): Unit {
-    mailKernelClose(senderHandle)
+    MailKernel.close(self.senderHandle)
   }
 }
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-/// SMTP connection settings.
-config Smtp {
-  host:      String
-  port:      Int range 1 ..= 65535   = 587
-  username:  String                  = ""
-  @sensitive
-  password:  String                  = ""
-  useTls:    Bool                    = true
-  timeoutMs: Int range 1000 ..= 60000 = 30000
-}
-
-/// Envelope-level sender settings shared by all providers.
-config Sender {
-  fromAddress:     String
-  fromDisplayName: String = ""
-  provider:        String = "smtp"   // smtp | ses | sendgrid
-}
-
-/// Amazon SES connection settings.
-config Ses {
-  region:    String = "us-east-1"
-  @sensitive
-  accessKey: String = ""
-  @sensitive
-  secretKey: String = ""
-}
-
-/// SendGrid connection settings.
-config SendGridMail {
-  @sensitive
-  apiKey: String = ""
-}
+// ─── Config (env-var backed) ──────────────────────────────────────────────────
+//
+// Config blocks are declared here for documentation purposes.
+// Field values are read from environment variables at connection time.
+// SMTP: LYRIC_CONFIG_SMTP_HOST, LYRIC_CONFIG_SMTP_PORT, LYRIC_CONFIG_SMTP_USERNAME,
+//       LYRIC_CONFIG_SMTP_PASSWORD, LYRIC_CONFIG_SMTP_USETLS, LYRIC_CONFIG_SMTP_TIMEOUTMS
+// Sender: LYRIC_CONFIG_SENDER_FROMADDRESS, LYRIC_CONFIG_SENDER_FROMDISPLAYNAME
+// SES: LYRIC_CONFIG_SES_REGION, LYRIC_CONFIG_SES_ACCESSKEY, LYRIC_CONFIG_SES_SECRETKEY
+// SendGrid: LYRIC_CONFIG_SENDGRIDMAIL_APIKEY
 
 // ─── Factory functions ────────────────────────────────────────────────────────
 
-/// Open an SMTP connection using the Smtp config block.
+/// Open an SMTP connection using environment variable config.
 /// Requires the `smtp` feature to be active (`[features] smtp = []`).
+/// Config is read from LYRIC_CONFIG_SMTP_* env vars.
 @stable(since="0.1")
 @cfg(feature = "smtp")
 pub func connectSmtp(): Result[MailSender, MailError] {
-  match mailKernelConnectSmtp(
-    Smtp.host, Smtp.port, Smtp.username, Smtp.password, Smtp.useTls, Smtp.timeoutMs)
-  {
+  val host      = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_HOST", "localhost")
+  val portStr   = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_PORT", "587")
+  val username  = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_USERNAME", "")
+  val password  = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_PASSWORD", "")
+  val useTlsStr = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_USETLS", "true")
+  val toMs      = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
+  val port      = match parseInt(portStr) { case Some(n) -> n  case None -> 587 }
+  val useTls    = useTlsStr != "false"
+  val timeoutMs = match parseInt(toMs) { case Some(n) -> n  case None -> 30000 }
+  match MailKernel.connectSmtp(host, port, username, password, useTls, timeoutMs) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -171,11 +155,14 @@ pub func connectSmtp(): Result[MailSender, MailError] {
 
 /// Open an Amazon SES client.
 /// Requires the `ses` feature to be active (`[features] ses = []`).
-/// Config is read from `LYRIC_CONFIG_SES_*` env vars (region, accessKey, secretKey).
+/// Config is read from LYRIC_CONFIG_SES_* env vars (region, accessKey, secretKey).
 @stable(since="0.1")
 @cfg(feature = "ses")
 pub func connectSes(): Result[MailSender, MailError] {
-  match mailKernelConnectSes(Ses.region, Ses.accessKey, Ses.secretKey) {
+  val region    = Env.getVarOrDefault("LYRIC_CONFIG_SES_REGION", "us-east-1")
+  val accessKey = Env.getVarOrDefault("LYRIC_CONFIG_SES_ACCESSKEY", "")
+  val secretKey = Env.getVarOrDefault("LYRIC_CONFIG_SES_SECRETKEY", "")
+  match MailKernel.connectSes(region, accessKey, secretKey) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -183,11 +170,12 @@ pub func connectSes(): Result[MailSender, MailError] {
 
 /// Open a SendGrid client.
 /// Requires the `sendgrid` feature to be active (`[features] sendgrid = []`).
-/// Config is read from `LYRIC_CONFIG_SENDGRID_*` env vars (apiKey).
+/// Config is read from LYRIC_CONFIG_SENDGRIDMAIL_APIKEY env var.
 @stable(since="0.1")
 @cfg(feature = "sendgrid")
 pub func connectSendGrid(): Result[MailSender, MailError] {
-  match mailKernelConnectSendGrid(SendGridMail.apiKey) {
+  val apiKey = Env.getVarOrDefault("LYRIC_CONFIG_SENDGRIDMAIL_APIKEY", "")
+  match MailKernel.connectSendGrid(apiKey) {
     case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
     case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
@@ -282,16 +270,18 @@ pub func makeAttachment(
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Build an EmailMessage using the Sender config for the From address.
+// Build an EmailMessage using env-var Sender config for the From address.
 func buildMessage(
-  to:       in [EmailAddress],
+  to:       in slice[EmailAddress],
   subject:  in String,
   textBody: in String,
   htmlBody: in String
 ): EmailMessage {
+  val fromAddress     = Env.getVarOrDefault("LYRIC_CONFIG_SENDER_FROMADDRESS", "")
+  val fromDisplayName = Env.getVarOrDefault("LYRIC_CONFIG_SENDER_FROMDISPLAYNAME", "")
   val fromAddr = EmailAddress(
-    address     = Sender.fromAddress,
-    displayName = Sender.fromDisplayName)
+    address     = fromAddress,
+    displayName = fromDisplayName)
   return EmailMessage(
     from        = fromAddr,
     to          = to,
@@ -337,7 +327,7 @@ func serialiseAddress(addr: in EmailAddress): String {
 }
 
 // Serialise a list of EmailAddress values to a JSON array.
-func serialiseAddressList(addrs: in [EmailAddress]): String {
+func serialiseAddressList(addrs: in slice[EmailAddress]): String {
   var result = "["
   var first  = true
   for addr in addrs {
@@ -349,7 +339,7 @@ func serialiseAddressList(addrs: in [EmailAddress]): String {
 }
 
 // Serialise a list of Attachment values to a JSON array.
-func serialiseAttachmentList(attachments: in [Attachment]): String {
+func serialiseAttachmentList(attachments: in slice[Attachment]): String {
   var result = "["
   var first  = true
   for att in attachments {
@@ -368,8 +358,8 @@ func serialiseAttachmentList(attachments: in [Attachment]): String {
 func containsHeaderInjection(s: in String): Bool {
   var i = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "\r" or ch == "\n" or ch == "\u{0}" { return true }
+    val ch = s[i]
+    if ch == '\r' or ch == '\n' or ch == '\u{0}' { return true }
     i = i + 1
   }
   return false
@@ -378,102 +368,24 @@ func containsHeaderInjection(s: in String): Bool {
 // Wrap a string value in JSON double quotes, escaping backslash, double-quote,
 // and the common control characters.
 func jsonString(s: in String): String {
-  var out = "\""
+  var buf = "\""
   var i   = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "\"" {
-      out = out + "\\\""
-    } else if ch == "\\" {
-      out = out + "\\\\"
-    } else if ch == "\n" {
-      out = out + "\\n"
-    } else if ch == "\r" {
-      out = out + "\\r"
-    } else if ch == "\t" {
-      out = out + "\\t"
+    val ch = s[i]
+    if ch == '"' {
+      buf = buf + "\\\""
+    } else if ch == '\\' {
+      buf = buf + "\\\\"
+    } else if ch == '\n' {
+      buf = buf + "\\n"
+    } else if ch == '\r' {
+      buf = buf + "\\r"
+    } else if ch == '\t' {
+      buf = buf + "\\t"
     } else {
-      out = out + ch
+      buf = buf + ch.toString()
     }
     i = i + 1
   }
-  return out + "\""
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-@cfg(feature = "smtp")
-func mailKernelConnectSmtp(
-  host:      in String,
-  port:      in Int,
-  username:  in String,
-  password:  in String,
-  useTls:    in Bool,
-  timeoutMs: in Int
-): Result[Int, String] {
-  return Mail.Kernel.Net.connectSmtp(host, port, username, password, useTls, timeoutMs)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "smtp")
-func mailKernelConnectSmtp(
-  host:      in String,
-  port:      in Int,
-  username:  in String,
-  password:  in String,
-  useTls:    in Bool,
-  timeoutMs: in Int
-): Result[Int, String] {
-  return Mail.Kernel.Jvm.connectSmtp(host, port, username, password, useTls, timeoutMs)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "ses")
-func mailKernelConnectSes(
-  region:    in String,
-  accessKey: in String,
-  secretKey: in String
-): Result[Int, String] {
-  return Mail.Kernel.Net.connectSes(region, accessKey, secretKey)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "ses")
-func mailKernelConnectSes(
-  region:    in String,
-  accessKey: in String,
-  secretKey: in String
-): Result[Int, String] {
-  return Mail.Kernel.Jvm.connectSes(region, accessKey, secretKey)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "sendgrid")
-func mailKernelConnectSendGrid(apiKey: in String): Result[Int, String] {
-  return Mail.Kernel.Net.connectSendGrid(apiKey)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "sendgrid")
-func mailKernelConnectSendGrid(apiKey: in String): Result[Int, String] {
-  return Mail.Kernel.Jvm.connectSendGrid(apiKey)
-}
-
-@cfg(feature = "dotnet")
-func mailKernelSend(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  return Mail.Kernel.Net.send(senderHandle, messageJson)
-}
-@cfg(feature = "jvm")
-func mailKernelSend(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  return Mail.Kernel.Jvm.send(senderHandle, messageJson)
-}
-
-@cfg(feature = "dotnet")
-func mailKernelClose(senderHandle: in Int): Unit {
-  Mail.Kernel.Net.close(senderHandle)
-}
-@cfg(feature = "jvm")
-func mailKernelClose(senderHandle: in Int): Unit {
-  Mail.Kernel.Jvm.close(senderHandle)
+  return buf + "\""
 }

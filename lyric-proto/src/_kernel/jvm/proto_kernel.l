@@ -1,10 +1,10 @@
-/// JVM kernel boundary for lyric-proto (Phase 6).
-///
-/// Mirrors Proto.Kernel.Net using java.io.ByteArrayOutputStream for the
-/// ProtoBuffer accumulator and java.lang.Float / java.lang.Double for the
-/// IEEE 754 bit-extraction helpers.
-///
-/// Not compiled today — present to drive API parity with the .NET kernel.
+// JVM kernel boundary for lyric-proto (Phase 6).
+//
+// Mirrors Proto.Kernel.Net using java.io.ByteArrayOutputStream for the
+// ProtoBuffer accumulator and java.lang.Float / java.lang.Double for the
+// IEEE 754 bit-extraction helpers.
+//
+// Not compiled today — present to drive API parity with the .NET kernel.
 @cfg(feature = "jvm")
 package Proto.Kernel.Jvm
 

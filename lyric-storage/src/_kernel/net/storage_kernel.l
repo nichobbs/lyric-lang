@@ -1,172 +1,20 @@
-/// Storage.Kernel.Net — extern boundary for object/file storage providers.
-///
-/// Bridges Lyric's Storage package to .NET storage libraries:
-///   AWSSDK.S3              — Amazon S3               (@cfg feature = "s3")
-///   Azure.Storage.Blobs    — Azure Blob Storage       (@cfg feature = "azureblob")
-///   Lyric.Storage.Local      — Local filesystem         (@cfg feature = "local")
-///   Lyric.Storage.Audit — Audit logging          (always available)
-///
-/// All storage operations use opaque Int handles returned by `connect*`.
-///
-/// JSON wire formats:
-///   put returns:  {"contentType":"...","contentLength":N,"etag":"...","lastModified":"...","userMeta":{...}}
-///   get returns:  {"bucket":"...","key":"...","metadata":{...},"dataBase64":"..."}
-///   list returns: {"entries":[{"key":"...","contentLength":N,"lastModified":"...","etag":"..."},...],
-///                  "nextContinuationToken":"..." | null, "isTruncated":true|false}
-///
-/// Error strings contain the provider error message and, where available, the
-/// provider-specific error code.
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Storage.Kernel.Net — extern boundary for object/file storage providers.
+//
+// Bridges Lyric's Storage package to .NET storage libraries:
+//   AWSSDK.S3              — Amazon S3               (@cfg feature = "s3")
+//   Azure.Storage.Blobs    — Azure Blob Storage       (@cfg feature = "azureblob")
+//   Local filesystem       — Local filesystem         (@cfg feature = "local")
+//   Audit logging          — Audit logging            (always available)
+//
+// All storage operations use opaque Int handles returned by `connect*`.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Storage.Kernel.Net
 
 // ─── Amazon S3 provider ───────────────────────────────────────────────────────
 
-@axiom("Amazon S3 SDK for .NET")
-@cfg(feature = "s3")
-extern package AWSSDK.S3 {
-  /// Open an S3 client for the given bucket.  Returns an opaque bucket handle.
-  /// Pass empty strings for accessKey/secretKey to use the ambient IAM role.
-  /// Pass an empty endpointUrl to use the default AWS regional endpoint.
-  pub func connect(
-    region:      String,
-    bucket:      String,
-    accessKey:   String,
-    secretKey:   String,
-    endpointUrl: String
-  ): Result[Int, String]
-
-  /// Upload an object.  userMetaJson is a JSON object of string key-value pairs.
-  /// Returns JSON-serialised StorageMetadata on success.
-  pub func put(
-    bucketHandle: Int,
-    key:          String,
-    dataBase64:   String,
-    contentType:  String,
-    userMetaJson: String
-  ): Result[String, String]
-
-  /// Download an object.  Returns JSON-serialised StorageObject on success.
-  pub func get(bucketHandle: Int, key: String): Result[String, String]
-
-  /// Delete an object.
-  pub func delete(bucketHandle: Int, key: String): Result[Unit, String]
-
-  /// List objects with an optional prefix.  Returns JSON-serialised ListResult.
-  pub func list(
-    bucketHandle:      Int,
-    prefix:            String,
-    continuationToken: String,
-    maxKeys:           Int
-  ): Result[String, String]
-
-  /// Generate a pre-signed URL valid for `expiresInSeconds` seconds.
-  pub func presignedUrl(
-    bucketHandle:     Int,
-    key:              String,
-    expiresInSeconds: Int
-  ): Result[String, String]
-
-  /// Check whether an object exists.
-  pub func exists(bucketHandle: Int, key: String): Result[Bool, String]
-}
-
-// ─── Azure Blob Storage provider ─────────────────────────────────────────────
-
-@axiom("Azure Blob Storage SDK for .NET")
-@cfg(feature = "azureblob")
-extern package Azure.Storage.Blobs {
-  /// Open an Azure Blob Storage container client.  Returns an opaque bucket handle.
-  pub func connect(connectionString: String, containerName: String): Result[Int, String]
-
-  /// Upload a blob.  Returns JSON-serialised StorageMetadata on success.
-  pub func put(
-    bucketHandle: Int,
-    key:          String,
-    dataBase64:   String,
-    contentType:  String,
-    userMetaJson: String
-  ): Result[String, String]
-
-  /// Download a blob.  Returns JSON-serialised StorageObject on success.
-  pub func get(bucketHandle: Int, key: String): Result[String, String]
-
-  /// Delete a blob.
-  pub func delete(bucketHandle: Int, key: String): Result[Unit, String]
-
-  /// List blobs with an optional prefix.  Returns JSON-serialised ListResult.
-  pub func list(
-    bucketHandle:      Int,
-    prefix:            String,
-    continuationToken: String,
-    maxKeys:           Int
-  ): Result[String, String]
-
-  /// Generate a SAS URL valid for `expiresInSeconds` seconds.
-  pub func presignedUrl(
-    bucketHandle:     Int,
-    key:              String,
-    expiresInSeconds: Int
-  ): Result[String, String]
-
-  /// Check whether a blob exists.
-  pub func exists(bucketHandle: Int, key: String): Result[Bool, String]
-}
-
-// ─── Local filesystem provider ────────────────────────────────────────────────
-
-@axiom("Local filesystem storage using System.IO")
-@cfg(feature = "local")
-extern package Lyric.Storage.Local {
-  /// Open a local filesystem store rooted at basePath/bucketName.
-  pub func connect(basePath: String, bucketName: String): Result[Int, String]
-
-  /// Write a file.  Returns JSON-serialised StorageMetadata on success.
-  pub func put(
-    bucketHandle: Int,
-    key:          String,
-    dataBase64:   String,
-    contentType:  String,
-    userMetaJson: String
-  ): Result[String, String]
-
-  /// Read a file.  Returns JSON-serialised StorageObject on success.
-  pub func get(bucketHandle: Int, key: String): Result[String, String]
-
-  /// Delete a file.
-  pub func delete(bucketHandle: Int, key: String): Result[Unit, String]
-
-  /// List files with an optional prefix.  Returns JSON-serialised ListResult.
-  pub func list(
-    bucketHandle:      Int,
-    prefix:            String,
-    continuationToken: String,
-    maxKeys:           Int
-  ): Result[String, String]
-
-  /// Return a file:// URL; expiresInSeconds is ignored for local storage.
-  pub func presignedUrl(
-    bucketHandle:     Int,
-    key:              String,
-    expiresInSeconds: Int
-  ): Result[String, String]
-
-  /// Check whether a file exists.
-  pub func exists(bucketHandle: Int, key: String): Result[Bool, String]
-}
-
-// ─── Audit logging ────────────────────────────────────────────────────────────
-
-@axiom("Audit logging via System.Diagnostics")
-extern package Lyric.Storage.Audit {
-  /// Emit a structured audit log entry for a storage operation.
-  pub func auditLog(operation: String, level: String, detail: String): Unit
-}
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
-
-/// Connect to an Amazon S3 bucket.
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
 @cfg(feature = "s3")
 pub func connectS3(
   region:      in String,
@@ -174,38 +22,57 @@ pub func connectS3(
   accessKey:   in String,
   secretKey:   in String,
   endpointUrl: in String
-): Result[Int, String] {
-  AWSSDK.S3.connect(region, bucket, accessKey, secretKey, endpointUrl)
-}
+): Result[Int, String] = Err("")
 
-/// Connect to an Azure Blob Storage container.
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
+@cfg(feature = "s3")
+pub func put(
+  bucketHandle: in Int,
+  key:          in String,
+  dataBase64:   in String,
+  contentType:  in String,
+  userMetaJson: in String
+): Result[String, String] = Err("")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
+@cfg(feature = "s3")
+pub func get(bucketHandle: in Int, key: in String): Result[String, String] = Err("")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
+@cfg(feature = "s3")
+pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] = Err("")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
+@cfg(feature = "s3")
+pub func list(
+  bucketHandle:      in Int,
+  prefix:            in String,
+  continuationToken: in String,
+  maxKeys:           in Int
+): Result[String, String] = Err("")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
+@cfg(feature = "s3")
+pub func presignedUrl(
+  bucketHandle:     in Int,
+  key:              in String,
+  expiresInSeconds: in Int
+): Result[String, String] = Err("")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
+@cfg(feature = "s3")
+pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] = Err("")
+
+// ─── Azure Blob Storage provider ─────────────────────────────────────────────
+
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
 @cfg(feature = "azureblob")
 pub func connectAzure(
   connectionString: in String,
   containerName:    in String
-): Result[Int, String] {
-  Azure.Storage.Blobs.connect(connectionString, containerName)
-}
+): Result[Int, String] = Err("")
 
-/// Connect to a local filesystem storage store.
-@cfg(feature = "local")
-pub func connectLocal(basePath: in String, bucketName: in String): Result[Int, String] {
-  Lyric.Storage.Local.connect(basePath, bucketName)
-}
-
-/// Upload an object to the S3 bucket identified by `bucketHandle`.
-@cfg(feature = "s3")
-pub func put(
-  bucketHandle: in Int,
-  key:          in String,
-  dataBase64:   in String,
-  contentType:  in String,
-  userMetaJson: in String
-): Result[String, String] {
-  return AWSSDK.S3.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-}
-
-/// Upload an object to the Azure Blob container identified by `bucketHandle`.
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
 @cfg(feature = "azureblob")
 pub func put(
   bucketHandle: in Int,
@@ -213,11 +80,44 @@ pub func put(
   dataBase64:   in String,
   contentType:  in String,
   userMetaJson: in String
-): Result[String, String] {
-  return Azure.Storage.Blobs.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-}
+): Result[String, String] = Err("")
 
-/// Upload an object to the local filesystem store identified by `bucketHandle`.
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
+@cfg(feature = "azureblob")
+pub func get(bucketHandle: in Int, key: in String): Result[String, String] = Err("")
+
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
+@cfg(feature = "azureblob")
+pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] = Err("")
+
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
+@cfg(feature = "azureblob")
+pub func list(
+  bucketHandle:      in Int,
+  prefix:            in String,
+  continuationToken: in String,
+  maxKeys:           in Int
+): Result[String, String] = Err("")
+
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
+@cfg(feature = "azureblob")
+pub func presignedUrl(
+  bucketHandle:     in Int,
+  key:              in String,
+  expiresInSeconds: in Int
+): Result[String, String] = Err("")
+
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
+@cfg(feature = "azureblob")
+pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] = Err("")
+
+// ─── Local filesystem provider ────────────────────────────────────────────────
+
+@axiom("Local filesystem storage using System.IO")
+@cfg(feature = "local")
+pub func connectLocal(basePath: in String, bucketName: in String): Result[Int, String] = Err("")
+
+@axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
 pub func put(
   bucketHandle: in Int,
@@ -225,128 +125,38 @@ pub func put(
   dataBase64:   in String,
   contentType:  in String,
   userMetaJson: in String
-): Result[String, String] {
-  return Lyric.Storage.Local.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-}
+): Result[String, String] = Err("")
 
-/// Download an object from the S3 bucket.
-@cfg(feature = "s3")
-pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
-  return AWSSDK.S3.get(bucketHandle, key)
-}
-
-/// Download an object from the Azure Blob container.
-@cfg(feature = "azureblob")
-pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
-  return Azure.Storage.Blobs.get(bucketHandle, key)
-}
-
-/// Download an object from the local filesystem store.
+@axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
-pub func get(bucketHandle: in Int, key: in String): Result[String, String] {
-  return Lyric.Storage.Local.get(bucketHandle, key)
-}
+pub func get(bucketHandle: in Int, key: in String): Result[String, String] = Err("")
 
-/// Delete an object from the S3 bucket.
-@cfg(feature = "s3")
-pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  return AWSSDK.S3.delete(bucketHandle, key)
-}
-
-/// Delete an object from the Azure Blob container.
-@cfg(feature = "azureblob")
-pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  return Azure.Storage.Blobs.delete(bucketHandle, key)
-}
-
-/// Delete an object from the local filesystem store.
+@axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
-pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  return Lyric.Storage.Local.delete(bucketHandle, key)
-}
+pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] = Err("")
 
-/// List objects in the S3 bucket.
-@cfg(feature = "s3")
-pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
-): Result[String, String] {
-  return AWSSDK.S3.list(bucketHandle, prefix, continuationToken, maxKeys)
-}
-
-/// List objects in the Azure Blob container.
-@cfg(feature = "azureblob")
-pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
-): Result[String, String] {
-  return Azure.Storage.Blobs.list(bucketHandle, prefix, continuationToken, maxKeys)
-}
-
-/// List objects in the local filesystem store.
+@axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
 pub func list(
   bucketHandle:      in Int,
   prefix:            in String,
   continuationToken: in String,
   maxKeys:           in Int
-): Result[String, String] {
-  return Lyric.Storage.Local.list(bucketHandle, prefix, continuationToken, maxKeys)
-}
+): Result[String, String] = Err("")
 
-/// Generate a pre-signed URL for the S3 bucket.
-@cfg(feature = "s3")
-pub func presignedUrl(
-  bucketHandle:     in Int,
-  key:              in String,
-  expiresInSeconds: in Int
-): Result[String, String] {
-  return AWSSDK.S3.presignedUrl(bucketHandle, key, expiresInSeconds)
-}
-
-/// Generate a SAS URL for the Azure Blob container.
-@cfg(feature = "azureblob")
-pub func presignedUrl(
-  bucketHandle:     in Int,
-  key:              in String,
-  expiresInSeconds: in Int
-): Result[String, String] {
-  return Azure.Storage.Blobs.presignedUrl(bucketHandle, key, expiresInSeconds)
-}
-
-/// Return a file:// URL for the local filesystem object.
+@axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
 pub func presignedUrl(
   bucketHandle:     in Int,
   key:              in String,
   expiresInSeconds: in Int
-): Result[String, String] {
-  return Lyric.Storage.Local.presignedUrl(bucketHandle, key, expiresInSeconds)
-}
+): Result[String, String] = Err("")
 
-/// Check whether an object exists in the S3 bucket.
-@cfg(feature = "s3")
-pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  return AWSSDK.S3.exists(bucketHandle, key)
-}
-
-/// Check whether an object exists in the Azure Blob container.
-@cfg(feature = "azureblob")
-pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  return Azure.Storage.Blobs.exists(bucketHandle, key)
-}
-
-/// Check whether an object exists in the local filesystem store.
+@axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
-pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  return Lyric.Storage.Local.exists(bucketHandle, key)
-}
+pub func exists(bucketHandle: in Int, key: in String): Result[Bool, String] = Err("")
 
-/// Emit an audit log entry.
-pub func auditLog(operation: in String, level: in String, detail: in String): Unit {
-  Lyric.Storage.Audit.auditLog(operation, level, detail)
-}
+// ─── Audit logging ────────────────────────────────────────────────────────────
+
+@axiom("Audit logging via System.Diagnostics")
+pub func auditLog(operation: in String, level: in String, detail: in String): Unit = ()

@@ -190,6 +190,75 @@ func main(): Unit {
 }
 """,
     "a | b | c"
+
+    // Regression: BCoalesce (the ?? operator) was not lowered to IL — the
+    // generic binop path emitted both operands but no null-check, leaving
+    // the stack imbalanced.  Std.Path.dirname is the only stdlib site that
+    // uses ?? (hostPathGetDirectoryName returns String?).
+    "import_std_path_dirname_non_root",
+    """
+package SI_Path1
+import Std.Path
+
+func main(): Unit {
+  val d = dirname("/home/user/file.txt")
+  println(d)
+}
+""",
+    "/home/user"
+
+    "import_std_path_dirname_no_dir_component",
+    """
+package SI_Path2
+import Std.Path
+
+func main(): Unit {
+  val d = dirname("file.txt")
+  println(d)
+}
+""",
+    "."
+
+    "import_std_path_join_basename",
+    """
+package SI_Path3
+import Std.Path
+
+func main(): Unit {
+  val b = basename("/home/user/report.l")
+  val e = extension("/home/user/report.l")
+  println(b)
+  println(e)
+}
+""",
+    "report.l\n.l"
+
+    // Regression for finding #716: BCoalesce (??) must emit valid IL for
+    // value-type Nullable<T>.  Using brtrue on a Nullable<int> struct is
+    // illegal (ECMA-335 §III.1.8.1.1); the fix stashes the nullable into a
+    // temp local and branches on HasValue via an instance Call.
+    //
+    // `var n: Int? = default()` produces a HasValue=false Nullable<int>;
+    // the ?? fallback (99) must be taken.  This is the only way to exercise
+    // the value-type nullable path without an extern returning Int? — the
+    // type checker rejects returning a literal Int from an Int?-typed function
+    // body, so we rely on default() for the null case and on a non-nullable
+    // local for the non-null path below.
+    "bcoalesce_value_type_nullable_null_arm",
+    """
+package NullCoalesce1
+import Std.Core
+
+func coalesceInt(n: in Int?): Int {
+  return n ?? 99
+}
+
+func main(): Unit {
+  var n: Int? = default()
+  println(coalesceInt(n))
+}
+""",
+    "99"
 ]
 
 let tests =

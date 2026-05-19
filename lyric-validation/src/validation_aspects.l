@@ -1,34 +1,34 @@
-/// Validation.Aspects — pub aspect templates for input validation concerns.
-///
-/// Two templates:
-///
-///   ValidateInput — C-mode (@inline_template): validates the `args.input`
-///                   string parameter of a handler for minimum and maximum
-///                   length before the handler runs.
-///
-///   ValidateEmail — C-mode (@inline_template): validates that `args.email`
-///                   is a syntactically valid email address before the handler
-///                   runs.
-///
-/// Both templates short-circuit and return `Err([ValidationError])` when
-/// validation fails.  The handler's return type must therefore be
-/// `Result[T, [ValidationError]]` for these aspects to compose correctly.
-///
-/// Typical consumer usage:
-///
-///   import Validation.Aspects
-///
-///   aspect InputGuard from Validation.Aspects.ValidateInput {
-///     matches: name like "handle*"
-///     config { minLen: Int = 1; maxLen: Int = 1000; field: String = "input" }
-///   }
-///
-///   aspect EmailGuard from Validation.Aspects.ValidateEmail {
-///     matches: name like "handleRegister*"
-///     inside:  InputGuard
-///   }
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+// Validation.Aspects — pub aspect templates for input validation concerns.
+//
+// Two templates:
+//
+//   ValidateInput — C-mode (@inline_template): validates the `args.input`
+//                   string parameter of a handler for minimum and maximum
+//                   length before the handler runs.
+//
+//   ValidateEmail — C-mode (@inline_template): validates that `args.email`
+//                   is a syntactically valid email address before the handler
+//                   runs.
+//
+// Both templates short-circuit and return `Err([ValidationError])` when
+// validation fails.  The handler's return type must therefore be
+// `Result[T, [ValidationError]]` for these aspects to compose correctly.
+//
+// Typical consumer usage:
+//
+//   import Validation.Aspects
+//
+//   aspect InputGuard from Validation.Aspects.ValidateInput {
+//     matches: name like "handle*"
+//     config { minLen: Int = 1; maxLen: Int = 1000; field: String = "input" }
+//   }
+//
+//   aspect EmailGuard from Validation.Aspects.ValidateEmail {
+//     matches: name like "handleRegister*"
+//     inside:  InputGuard
+//   }
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Validation.Aspects

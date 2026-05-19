@@ -2847,9 +2847,27 @@ let private emitFunctionBody
     // whether the source actually pushed something.  Inside a
     // `try { … } finally` protected region (any active defer), the
     // branch must be a `leave`, not a `br` — ECMA-335 III.3.55.
+    let liftToNullableIfNeeded (stackTy: System.Type) (targetTy: System.Type) =
+        // Implicit T → Nullable<T> lifting: when the body expression emits a
+        // value type T but the function declares return type Nullable<T>, wrap
+        // via the Nullable<T>(T) constructor before storing to the result local.
+        if stackTy.IsValueType
+           && not (stackTy.IsGenericType
+                   && not stackTy.IsGenericTypeDefinition
+                   && stackTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>)
+           && targetTy.IsValueType
+           && targetTy.IsGenericType
+           && not targetTy.IsGenericTypeDefinition
+           && targetTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+           && targetTy.GetGenericArguments().[0] = stackTy then
+            let nullableCtor = targetTy.GetConstructor([| stackTy |])
+            match Option.ofObj nullableCtor with
+            | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
+            | None -> ()
     let routeReturn (pushedTy: System.Type) =
         match resultLocal with
         | Some loc when pushedTy <> typeof<System.Void> ->
+            liftToNullableIfNeeded pushedTy loc.LocalType
             il.Emit(OpCodes.Stloc, loc)
         | None when pushedTy <> typeof<System.Void> ->
             il.Emit(OpCodes.Pop)
@@ -3535,6 +3553,31 @@ let private emitAssembly
                             |> Seq.tryHead
                             |> Option.bind Symbol.typeIdOpt
                             |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
+                | _ -> ()
+            // Enums — register imported enum cases so cross-package uses of
+            // `EnumName.CaseName` resolve correctly in the consuming package.
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IEnum ed ->
+                    match getType (qualify ed.Name) with
+                    | None -> ()
+                    | Some ty ->
+                        let cases =
+                            ed.Cases
+                            |> List.mapi (fun i c ->
+                                { Records.EnumCase.Name = c.Name; Records.EnumCase.Ordinal = i })
+                        let info =
+                            { Records.EnumInfo.Name  = ed.Name
+                              Records.EnumInfo.Type  = ty
+                              Records.EnumInfo.Cases = cases }
+                        enumTable.[ed.Name] <- info
+                        for c in info.Cases do
+                            enumCases.[c.Name] <- (info, c)
+                            enumCases.[ed.Name + "." + c.Name] <- (info, c)
+                        symbols.TryFind ed.Name
+                        |> Seq.tryHead
+                        |> Option.bind Symbol.typeIdOpt
+                        |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
                 | _ -> ()
             // Protected types — populate typeIdToClr so cross-package
             // references to a `protected type` (e.g. `StubCounter` from
@@ -5388,6 +5431,8 @@ let private emitAssembly
             recordSealed (kv.Value.Type.CreateType())
             for c in kv.Value.Cases do
                 recordSealed (c.Type.CreateType())
+        for kv in enumTable do
+            recordSealed kv.Value.Type
         // Async state-machine types — created before programTy so the
         // kickoff stubs in programTy can resolve their references at
         // runtime.
@@ -6847,7 +6892,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         let bundleMain : MethodInfo option ref = ref None
         for pkgName in emitOrder do
             let parsed, combinedSrc = parsedByName.[pkgName]
-            let afterIntra, intraItems, intraArts = resolveIntraImports parsed.File
+            // Apply @cfg erasure before import resolution and type-checking so
+            // duplicate @cfg-gated overloads are pruned before the checker sees them.
+            let cfgErased, cfgDiags =
+                Lyric.Emitter.Cfg.applyCfgErasure
+                    req.ActiveFeatures req.DeclaredFeatures parsed.File
+            allDiags.AddRange cfgDiags
+            let afterIntra, intraItems, intraArts = resolveIntraImports cfgErased
             let afterRestored, restoredItems, restoredArtifacts, restoredDiags =
                 resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =

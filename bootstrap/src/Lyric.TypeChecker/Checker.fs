@@ -137,8 +137,26 @@ let private registerItem
         | _ -> None
     | IWire w          -> Some (mkSym w.Name (DKWire w))
     | IExtern e        ->
-        // The extern itself isn't a name; its members are registered
-        // when the type checker visits the extern's body in T3.
+        // Register each EMSig member as a DKFunc so callers can look up
+        // the function in the symbol table during T5 expression checking.
+        for m in e.Members do
+            match m with
+            | EMSig sg ->
+                let fakeFn : FunctionDecl =
+                    { DocComments = []
+                      Annotations = []
+                      Visibility  = Some (Pub sg.Span)
+                      IsAsync     = sg.IsAsync
+                      Name        = sg.Name
+                      Generics    = sg.Generics
+                      Params      = sg.Params
+                      Return      = sg.Return
+                      Where       = sg.Where
+                      Contracts   = sg.Contracts
+                      Body        = None
+                      Span        = sg.Span }
+                mkSym sg.Name (DKFunc fakeFn) |> ignore
+            | _ -> ()
         None
     | IScopeKind s     -> Some (mkSym s.Name (DKScopeKind s))
     | ITest t          -> Some (mkSym t.Title (DKTest t))
@@ -462,14 +480,41 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     // and `name/N` (arity-qualified) so overloaded functions each have
     // a unique key while single-definition functions still resolve by
     // bare name at callsites.
+    // Also include EMSig members from IExtern items (extern package declarations)
+    // so callers can type-check calls to extern-package functions.
+    let zeroSpan = Lyric.Lexer.Span.make Lyric.Lexer.Position.initial Lyric.Lexer.Position.initial
+    let externSigToDecl (sg: FunctionSig) : FunctionDecl =
+        { DocComments = []
+          Annotations = []
+          Visibility  = Some (Pub zeroSpan)
+          IsAsync     = sg.IsAsync
+          Name        = sg.Name
+          Generics    = sg.Generics
+          Params      = sg.Params
+          Return      = sg.Return
+          Where       = sg.Where
+          Contracts   = sg.Contracts
+          Body        = None
+          Span        = sg.Span }
     let signatures =
         Seq.append (List.toSeq importedItems) (List.toSeq file.Items)
-        |> Seq.choose (fun it ->
+        |> Seq.collect (fun it ->
             match it.Kind with
             | IFunc fn ->
                 let sg = resolveFunctionSig table diags fn
-                Some (fn.Name, fn.Params.Length, sg)
-            | _ -> None)
+                Seq.ofList
+                    [ (fn.Name, fn.Params.Length, sg) ]
+            | IExtern e ->
+                e.Members
+                |> List.choose (fun m ->
+                    match m with
+                    | EMSig sg ->
+                        let fn = externSigToDecl sg
+                        let resolved = resolveFunctionSig table diags fn
+                        Some (fn.Name, fn.Params.Length, resolved)
+                    | _ -> None)
+                |> Seq.ofList
+            | _ -> Seq.empty)
         |> Seq.collect (fun (name, arity, sg) ->
             [ (name, sg)
               (name + "/" + string arity, sg) ])

@@ -51,6 +51,27 @@ pub record EmitResult {
   diagnostics: List[Diagnostic]
 }
 
+/// Per-package source feed for `emitProject`.  Each package's `sources` list
+/// holds the `.l` file contents in deterministic order (multi-file packages
+/// should already be resolved by the caller).
+pub record ProjectPackage {
+  name:    String
+  sources: List[String]
+}
+
+pub record EmitProjectRequest {
+  packages:         List[ProjectPackage]
+  assemblyName:     String
+  outputPath:       String
+  target:           CompileTarget
+  /// Restored dependency DLL paths.  Each entry is "depName\tdllPath".
+  /// Written to the spec file as `DEP\tdepName\tdllPath` lines.
+  restoredDllPaths: List[String]
+  /// Active feature flags for @cfg erasure.  Each entry is a feature name.
+  /// Written to the spec file as `FEATURE\t<name>` lines.
+  activeFeatures:   List[String]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Subprocess helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,25 +81,40 @@ pub record EmitResult {
 // `Lyric.CliShell` package would eliminate the duplication once the import
 // graph permits it.
 //
-// The executable to invoke.  When LYRIC_CLI_DLL is set this is "dotnet";
-// when only LYRIC_BIN is set (native binary or wrapper script) this is
-// that value; otherwise fall back to "lyric" on PATH.
+// The executable to invoke.  Two cases when LYRIC_CLI_DLL is set:
+//   a) LYRIC_BIN is the AppHost native launcher for the DLL
+//      (LYRIC_BIN + ".dll" == LYRIC_CLI_DLL).  Call it directly — the
+//      AppHost already knows its DLL, no "exec" prefix is needed.
+//   b) LYRIC_BIN is an explicit dotnet/wrapper executable (or unset).
+//      Use dotnet + "exec <dll>" prefix to run the managed DLL.
+// When LYRIC_CLI_DLL is unset, fall back to LYRIC_BIN or "lyric" on PATH.
+func lyrIsAppHost(): Bool {
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
+  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
+  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
+}
+
 func lyrExe(): String {
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
   if Str.isNotEmpty(cliDll) {
-    // Running under `dotnet exec <dll>`; use the dotnet executable.
-    Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
+    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
+    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
+      // AppHost mode: the native launcher IS the entry point for this DLL.
+      bin
+    } else {
+      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
+    }
   } else {
     Environment.getVarOrDefault("LYRIC_BIN", "lyric")
   }
 }
 
 // Leading args that must precede any subcommand args.
-// Non-empty only when LYRIC_CLI_DLL is set (inserts "exec <dll>").
+// Non-empty only when running under an explicit dotnet host (not AppHost).
 func lyrPrefixArgs(): List[String] {
   val prefix: List[String] = newList()
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
+  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
     prefix.add("exec")
     prefix.add(cliDll)
   }
@@ -128,6 +164,97 @@ func failResult(msg: in String): EmitResult {
   val diags: List[Diagnostic] = newList()
   diags.add(diag)
   EmitResult(outputPath = None, diagnostics = diags)
+}
+
+/// Compile a multi-package project to a single bundled DLL or JAR.
+///
+/// Shells out to `lyric --internal-project-build` which is handled by the F#
+/// bootstrap CLI before it routes to the self-hosted CLI dispatcher.  Each
+/// package's source texts are written to temp files; a tab-delimited spec file
+/// lists all packages and their temp source paths.
+@stable(since="0.1")
+pub func emitProject(req: in EmitProjectRequest): EmitResult {
+  val tmpDir = Path.join(tempBase(), "lyric-emit")
+  match File.createDir(tmpDir) {
+    case Ok(_)  -> ()
+    case Err(_) -> ()
+  }
+
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_)  -> ()
+      case Err(_) -> ()
+    }
+  }
+
+  // Write each package's sources to temp files and build spec lines.
+  // Spec line format: <packageName> TAB <srcPath1> TAB <srcPath2> ...
+  val specLines: List[String] = newList()
+  var pi = 0
+  while pi < req.packages.count {
+    val pkg = req.packages[pi]
+    var line = pkg.name
+    var si = 0
+    while si < pkg.sources.count {
+      val srcName = req.assemblyName + "__" + pkg.name + "__" + toString(si) + "__src.l"
+      val srcPath = Path.join(tmpDir, srcName)
+      match File.writeText(srcPath, pkg.sources[si]) {
+        case Ok(_)  -> ()
+        case Err(e) -> return failResult("cannot write temp source: " + IOError.message(e))
+      }
+      line = line + "\t" + srcPath
+      si += 1
+    }
+    specLines.add(line)
+    pi += 1
+  }
+
+  // Append restored dependency DLL lines: DEP\t<name>\t<dllPath>
+  var di = 0
+  while di < req.restoredDllPaths.count {
+    specLines.add("DEP\t" + req.restoredDllPaths[di])
+    di += 1
+  }
+
+  // Append active feature lines: FEATURE\t<name>
+  var fi = 0
+  while fi < req.activeFeatures.count {
+    specLines.add("FEATURE\t" + req.activeFeatures[fi])
+    fi += 1
+  }
+
+  val specContent = Str.joinList("\n", specLines)
+  val specPath = Path.join(tmpDir, req.assemblyName + "__project_spec.txt")
+  match File.writeText(specPath, specContent) {
+    case Ok(_)  -> ()
+    case Err(e) -> return failResult("cannot write project spec: " + IOError.message(e))
+  }
+
+  val targetStr = match req.target {
+    case Dotnet -> "dotnet"
+    case Jvm    -> "jvm"
+  }
+
+  val subcmd: List[String] = newList()
+  subcmd.add("--internal-project-build")
+  subcmd.add(specPath)
+  subcmd.add("-o")
+  subcmd.add(req.outputPath)
+  subcmd.add("--target")
+  subcmd.add(targetStr)
+
+  match Process.run(lyrExe(), lyrArgs(subcmd)) {
+    case Ok(code) -> {
+      if code != 0 {
+        return failResult("project build failed (see stderr)")
+      }
+      val okDiags: List[Diagnostic] = newList()
+      EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+    }
+    case Err(e) ->
+      return failResult("cannot launch compiler: " + IOError.message(e))
+  }
 }
 
 /// Compile Lyric source to a .NET DLL or JVM JAR.

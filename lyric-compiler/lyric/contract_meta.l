@@ -30,10 +30,21 @@ import Std.String as Str
 // §1. Subprocess helpers  (mirrors emitter.l §2 — keep in sync)
 // ─────────────────────────────────────────────────────────────────────────────
 
+func lyrIsAppHost(): Bool {
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
+  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
+  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
+}
+
 func lyrExe(): String {
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
   if Str.isNotEmpty(cliDll) {
-    Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
+    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
+    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
+      bin
+    } else {
+      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
+    }
   } else {
     Environment.getVarOrDefault("LYRIC_BIN", "lyric")
   }
@@ -42,7 +53,7 @@ func lyrExe(): String {
 func lyrPrefixArgs(): List[String] {
   val prefix: List[String] = newList()
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
+  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
     prefix.add("exec")
     prefix.add(cliDll)
   }

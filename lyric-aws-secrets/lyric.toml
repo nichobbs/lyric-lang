@@ -92,7 +92,7 @@ output_assembly = "AwsSecrets.dll"
 ]
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # AWS Secrets Manager SDK — included when feature = "aws".

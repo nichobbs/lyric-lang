@@ -90,6 +90,7 @@ pub record Customer {
   pub id:    CustomerId
   pub email: Email
   internalNotes: String    // package-private field
+  var count: Int           // mutable field (mutability enforcement: T6+)
 }
 
 // Sum type (union)
@@ -536,7 +537,8 @@ authors = ["alice <alice@example.com>"]
 license = "MIT"
 
 [dependencies]
-Money = "^2.1"
+Money = "^2.1"                          # registry/NuGet channel
+Lyric.Web = { path = "../lyric-web" }  # local-path dep (pre-built DLL in <dep>/bin/)
 
 # NuGet interop — resolved by `lyric restore`, shims generated in _extern/
 [nuget]

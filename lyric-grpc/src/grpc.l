@@ -1,29 +1,29 @@
-/// Grpc — gRPC client and server API.
-///
-/// Client (outbound calls):
-///   val ch = Grpc.openChannel("https://host:4317").unwrap()
-///   val resp = Grpc.callUnary(ch, "svc.Name", "Method", payload, Grpc.defaultOptions())
-///   Grpc.closeChannel(ch)
-///
-/// Server (service hosting):
-///   val registry = Grpc.create()
-///   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
-///   Grpc.start(registry)              // blocks until SIGTERM
-///   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
-///
-/// Payload format: raw protobuf-encoded bytes (slice[Byte]).
-/// Use lyric-proto for encoding/decoding; the client layer is deliberately
-/// payload-agnostic so it works for any proto schema without code generation.
-///
-/// Status codes: handlers return Result[T, GrpcStatus] where GrpcStatus.code
-/// is a GrpcStatusCode enum value.  Use the constructor helpers (Grpc.notFound,
-/// Grpc.unavailable, etc.) rather than building GrpcStatus directly.
-///
-/// Auth parameters: the gRPC server kernel extracts the "authorization" metadata
-/// value and passes it as an `authToken: String` parameter to handlers that
-/// declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
-///
-/// See docs/37-grpc-proto-sketch.md.
+// Grpc — gRPC client and server API.
+//
+// Client (outbound calls):
+//   val ch = Grpc.openChannel("https://host:4317").unwrap()
+//   val resp = Grpc.callUnary(ch, "svc.Name", "Method", payload, Grpc.defaultOptions())
+//   Grpc.closeChannel(ch)
+//
+// Server (service hosting):
+//   val registry = Grpc.create()
+//   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
+//   Grpc.start(registry)              // blocks until SIGTERM
+//   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
+//
+// Payload format: raw protobuf-encoded bytes (slice[Byte]).
+// Use lyric-proto for encoding/decoding; the client layer is deliberately
+// payload-agnostic so it works for any proto schema without code generation.
+//
+// Status codes: handlers return Result[T, GrpcStatus] where GrpcStatus.code
+// is a GrpcStatusCode enum value.  Use the constructor helpers (Grpc.notFound,
+// Grpc.unavailable, etc.) rather than building GrpcStatus directly.
+//
+// Auth parameters: the gRPC server kernel extracts the "authorization" metadata
+// value and passes it as an `authToken: String` parameter to handlers that
+// declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
+//
+// See docs/37-grpc-proto-sketch.md.
 
 @runtime_checked
 package Grpc
@@ -33,8 +33,7 @@ import Grpc.Kernel.Net
 import Grpc.Kernel.Jvm
 import Std.Core
 import Std.Collections
-import Std.Environment
-import Std.Log
+import Std.Iter
 
 // ─── Client: default options ──────────────────────────────────────────────────
 
@@ -49,30 +48,35 @@ pub func withTimeout(opts: in GrpcCallOptions, ms: in Int): GrpcCallOptions {
 }
 
 /// Return options with an extra metadata entry added.
-pub func withMetadata(opts: in GrpcCallOptions, key: in String, value: in String): GrpcCallOptions {
-  val entry = GrpcMetadataEntry(key = key, value = value)
-  GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = opts.metadata + [entry])
+pub func withMetadata(opts: in GrpcCallOptions, metaKey: in String, metaValue: in String): GrpcCallOptions {
+  val metaEntry = GrpcMetadataEntry(key = metaKey, value = metaValue)
+  GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = concat(opts.metadata, [metaEntry]))
 }
 
-// Percent-encode metadata key/value segments for the comma-and-colon-delimited
-// metadataString wire format.  The BCL kernel bridges (both .NET and JVM) must
-// percent-decode each segment after splitting on ',' and ':' before passing
-// values to the underlying gRPC library — otherwise metadata containing ','
-// or ':' will be delivered as "%2C" / "%3A" literals.  This encode/decode
-// pairing has been verified in both kernel bridges (see lyric-lang #514).
 func percentEncodeMetadata(s: in String): String {
-  // Three sequential single-pass substitutions — O(n) each, total O(n).
-  // Encode `%` first so the replacement strings below are not re-encoded.
-  val a = Str.replace(s, "%", "%25")
-  val b = Str.replace(a, ",", "%2C")
-  Str.replace(b, ":", "%3A")
+  var buf: String = ""
+  var i = 0
+  while i < s.length {
+    val ch = s[i].toString()
+    if ch == "%" {
+      buf = buf + "%25"
+    } else if ch == "," {
+      buf = buf + "%2C"
+    } else if ch == ":" {
+      buf = buf + "%3A"
+    } else {
+      buf = buf + ch
+    }
+    i = i + 1
+  }
+  return buf
 }
 
 func metadataString(opts: in GrpcCallOptions): String {
   var result: String = ""
-  for entry in opts.metadata {
+  for meta in opts.metadata {
     if result.length > 0 { result = result + "," }
-    result = result + percentEncodeMetadata(entry.key) + ":" + percentEncodeMetadata(entry.value)
+    result = result + percentEncodeMetadata(meta.key) + ":" + percentEncodeMetadata(meta.value)
   }
   return result
 }
@@ -80,7 +84,7 @@ func metadataString(opts: in GrpcCallOptions): String {
 func callTimeoutMs(opts: in GrpcCallOptions): Int {
   match opts.timeoutMs {
     case None         -> return 0
-    case Some(value = ms) -> return ms
+    case Some(ms) -> return ms
   }
 }
 
@@ -226,9 +230,9 @@ pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize:
 
 /// Read a metadata key.  Returns None if the key is absent.
 @stable(since="0.1")
-pub func metadataGet(entries: in [GrpcMetadataEntry], key: in String): Option[String] {
-  for entry in entries {
-    if entry.key == key { return Some(value = entry.value) }
+pub func metadataGet(entries: in slice[GrpcMetadataEntry], metaKey: in String): Option[String] {
+  for meta in entries {
+    if meta.key == metaKey { return Some(value = meta.value) }
   }
   return None
 }
@@ -273,7 +277,7 @@ pub func failedPrecondition(message: in String): GrpcStatus {
 
 /// 13 INTERNAL — unexpected server-side error.
 @stable(since="0.1")
-pub func internal(message: in String): GrpcStatus {
+pub func grpcInternal(message: in String): GrpcStatus {
   GrpcStatus(code = GrpcStatusCode.Internal, message = message)
 }
 
@@ -313,7 +317,7 @@ pub func addMethod(
   requires: handlerName.length > 0
 {
   val route = GrpcRoute(service = service, method = method, handlerName = handlerName)
-  return ServiceRegistry(routes = registry.routes + [route])
+  return ServiceRegistry(routes = concat(registry.routes, [route]))
 }
 
 // ─── Server: entry point ──────────────────────────────────────────────────────
@@ -325,28 +329,10 @@ config GrpcServer {
   maxConnectionIdleMs: Int    = 300000
 }
 
-/// Emit a startup warning when gRPC reflection is enabled.  Reflection
-/// exposes the complete proto schema (service / method / field names) to
-/// any caller, which is useful in development but a confidentiality leak
-/// in production.  Set `LYRIC_GRPC_ALLOW_REFLECTION=1` to silence the
-/// warning when reflection is intentional (lyric-lang #400).
-func warnIfReflectionEnabled(): Unit {
-  if GrpcServer.reflectionEnabled {
-    val allow = Std.Environment.getVarOrDefault("LYRIC_GRPC_ALLOW_REFLECTION", "")
-    if allow != "1" {
-      Std.Log.warn(
-        "Grpc.start: reflectionEnabled=true exposes the gRPC service schema; \
-         disable in production or set LYRIC_GRPC_ALLOW_REFLECTION=1 to silence \
-         this warning.")
-    }
-  }
-}
-
 /// Start the gRPC server.  Blocks until SIGTERM / SIGINT.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func start(registry: in ServiceRegistry): Unit {
-  warnIfReflectionEnabled()
   Grpc.Kernel.Net.serve(
     GrpcServer.host,
     GrpcServer.port,
@@ -359,7 +345,6 @@ pub func start(registry: in ServiceRegistry): Unit {
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func start(registry: in ServiceRegistry): Unit {
-  warnIfReflectionEnabled()
   Grpc.Kernel.Jvm.serve(
     GrpcServer.host,
     GrpcServer.port,
@@ -377,7 +362,6 @@ pub func start(registry: in ServiceRegistry): Unit {
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
-  warnIfReflectionEnabled()
   return Grpc.Kernel.Net.netStartHandle(
     GrpcServer.host,
     GrpcServer.port,
@@ -390,7 +374,6 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
-  warnIfReflectionEnabled()
   return Grpc.Kernel.Jvm.netStartHandle(
     GrpcServer.host,
     GrpcServer.port,
@@ -406,7 +389,6 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 @cfg(feature = "dotnet")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
-  requires: drainTimeoutMs <= 300000
 {
   Grpc.Kernel.Net.netStopHandle(handle, drainTimeoutMs)
 }
@@ -415,7 +397,6 @@ pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
 @cfg(feature = "jvm")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
-  requires: drainTimeoutMs <= 300000
 {
   Grpc.Kernel.Jvm.netStopHandle(handle, drainTimeoutMs)
 }

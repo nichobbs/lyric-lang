@@ -32,6 +32,10 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Core.Proof"       = "std/core_proof.l"
 # Kernel boundary for process execution — only Std.Core dependency.
 "Std.ProcessHost"      = "std/_kernel/process_host.l"
+# Kernel boundary for console I/O — @externTarget pattern, no extra deps.
+"Std.ConsoleHost"      = "std/_kernel/console_host.l"
+# Regex — extern type + @externTarget; used by lyric-validation.
+"Std.Regex"            = "std/_kernel/regex.l"
 
 # Tier 1 — collections; depends on Tier 0 + kernel.
 "Std.Collections"      = "std/collections.l"
@@ -50,8 +54,6 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 5 — testing utilities.
 "Std.Testing.Mocking"  = "std/testing_mocking.l"
-
-# Not yet included:
 #   Std.Environment — Std.EnvironmentHost uses `extern package {}` syntax;
 #                     the type checker does not flatten EMSig members into the
 #                     symbol table, so `getEnvironmentVariable` etc. are

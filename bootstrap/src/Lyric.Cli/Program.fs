@@ -1072,19 +1072,66 @@ let bootstrapDispatch (argv: string array) : int =
         let restoredPackageRefs =
             match parsedManifest with
             | None -> []
-            | Some (_, manifest) ->
+            | Some (mf, manifest) ->
+                let manifestDir =
+                    safeStr (Path.GetDirectoryName(Path.GetFullPath mf)) "."
                 manifest.Dependencies
                 |> List.choose (fun dep ->
-                    match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
-                    | Some dll ->
-                        Some
-                            { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
-                              Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
-                              Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                    match dep.LocalPath with
+                    | Some localPath ->
+                        // Local path dependency: resolve the DLL from the dep's own
+                        // lyric.toml output_assembly (to avoid picking a wrong DLL when
+                        // the dep's bin/ contains multiple assemblies).
+                        let depDir = Path.GetFullPath(Path.Combine(manifestDir, localPath))
+                        let binDir = Path.Combine(depDir, "bin")
+                        let depToml = Path.Combine(depDir, "lyric.toml")
+                        let dllPath =
+                            if File.Exists depToml then
+                                match Lyric.Cli.Manifest.parseFile depToml with
+                                | Ok depMf ->
+                                    let dllName =
+                                        match depMf.Project with
+                                        | Some proj ->
+                                            match proj.OutputAssembly with
+                                            | Some asm -> asm
+                                            | None     -> proj.Name + ".dll"
+                                        | None ->
+                                            depMf.Package.Name + ".dll"
+                                    let full = Path.Combine(binDir, dllName)
+                                    if File.Exists full then Some full else None
+                                | Error e ->
+                                    printErr (sprintf "build: local dep '%s' lyric.toml parse failed: %A" dep.Name e)
+                                    None
+                            else None
+                        match dllPath with
+                        | Some dll ->
+                            Some
+                                { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = "0.0.0"
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                        | None ->
+                            if Directory.Exists binDir then
+                                if File.Exists depToml then
+                                    printErr (sprintf "build: local dep '%s' not built — run `lyric build --manifest %s` first"
+                                                      dep.Name depToml)
+                                else
+                                    printErr (sprintf "build: local dep '%s' — no lyric.toml found at '%s'; check the path = \"...\" entry in your lyric.toml"
+                                                      dep.Name depToml)
+                            else
+                                printErr (sprintf "build: local dep '%s' not built (no bin/ at '%s')"
+                                                  dep.Name binDir)
+                            None
                     | None ->
-                        printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
-                                          dep.Name dep.Version)
-                        None)
+                        match Lyric.Emitter.RestoredPackages.tryLocateRestoredDll dep.Name dep.Version with
+                        | Some dll ->
+                            Some
+                                { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = dep.Name
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = dep.Version
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
+                        | None ->
+                            printErr (sprintf "build: '%s' %s not found in NuGet cache — run `lyric restore` first"
+                                              dep.Name dep.Version)
+                            None)
         // Phase 5 §M5.1 stage 2d.v: resolve [nuget] entries through
         // `project.assets.json` (written by `lyric restore`).  The
         // result feeds two parallel channels into the emit request:
@@ -2193,6 +2240,120 @@ let private internalContractMeta (rest: string list) : int =
         printErr "internal-contract-meta: unknown subcommand (expected 'read' or 'diff')"
         1
 
+/// `lyric --internal-project-build <specFile> -o <outFile> [--target dotnet|jvm]`
+/// Multi-package project compile.  The spec file is a tab-delimited text file;
+/// each line has the form: <packageName> TAB <srcPath1> TAB <srcPath2> ...
+/// Errors are printed to stderr; the process exits non-zero on failure.
+/// Used by the Lyric `Lyric.Emitter` package's `emitProject` function.
+let private internalProjectBuild (rest: string list) : int =
+    let mutable specPath = ""
+    let mutable outPath  = ""
+    let mutable target   = Emitter.Dotnet
+    let mutable cursor   = rest
+    while not (List.isEmpty cursor) do
+        match cursor with
+        | "-o" :: out :: tail ->
+            outPath <- out
+            cursor  <- tail
+        | "--target" :: "jvm" :: tail ->
+            target <- Emitter.Jvm
+            cursor <- tail
+        | "--target" :: _ :: tail ->
+            target <- Emitter.Dotnet
+            cursor <- tail
+        | arg :: tail ->
+            if not (arg.StartsWith("-", StringComparison.Ordinal)) then
+                specPath <- arg
+            cursor <- tail
+        | [] -> cursor <- []
+
+    if String.IsNullOrEmpty specPath || not (File.Exists specPath) then
+        printErr (sprintf "internal-project-build: spec file not found: %s" specPath)
+        1
+    elif String.IsNullOrEmpty outPath then
+        printErr "internal-project-build: missing -o <outputPath>"
+        1
+    else
+        let lines = File.ReadAllLines specPath
+        let pkgInputs      = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
+        let depRefs        = ResizeArray<Lyric.Emitter.RestoredPackages.RestoredPackageRef>()
+        let activeFeatures = ResizeArray<string>()
+        let mutable hadFatal = false
+        for line in lines do
+            if not (String.IsNullOrEmpty line) then
+                if line.StartsWith("DEP\t", StringComparison.Ordinal) then
+                    // DEP line: DEP\t<depName>\t<dllPath>
+                    let parts = line.Split('\t')
+                    if parts.Length >= 3 then
+                        let depName = parts.[1]
+                        let depDll  = parts.[2]
+                        if File.Exists depDll then
+                            depRefs.Add
+                                { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = depName
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = "0.0.0"
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = depDll }
+                        else
+                            printErr (sprintf "internal-project-build: dep DLL not found: %s" depDll)
+                elif line.StartsWith("FEATURE\t", StringComparison.Ordinal) then
+                    // FEATURE line: FEATURE\t<featureName>
+                    let parts = line.Split('\t')
+                    if parts.Length >= 2 then
+                        activeFeatures.Add parts.[1]
+                else
+                    // PKG line: <packageName>\t<srcPath1>\t<srcPath2>...
+                    let parts = line.Split('\t')
+                    if parts.Length < 2 then
+                        printErr (sprintf "internal-project-build: malformed spec line: %s" line)
+                        hadFatal <- true
+                    else
+                        let pkgName  = parts.[0]
+                        let srcPaths = parts |> Array.skip 1
+                        let sources  = ResizeArray<string>()
+                        for sp in srcPaths do
+                            if File.Exists sp then
+                                sources.Add(File.ReadAllText sp)
+                            else
+                                printErr (sprintf "internal-project-build: source file not found: %s" sp)
+                                hadFatal <- true
+                        if not hadFatal then
+                            pkgInputs.Add
+                                { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
+                                  Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = List.ofSeq sources }
+        if hadFatal then 1
+        else
+        match Option.ofObj (Path.GetDirectoryName outPath) with
+        | Some dir when not (String.IsNullOrEmpty dir) ->
+            Directory.CreateDirectory dir |> ignore
+        | _ -> ()
+        let asmName =
+            match Option.ofObj (Path.GetFileNameWithoutExtension outPath) with
+            | Some n -> n
+            | None   -> "lyric_build_out"
+        let req : Lyric.Emitter.Emitter.ProjectEmitRequest =
+            { Packages           = List.ofSeq pkgInputs
+              AssemblyName       = asmName
+              OutputPath         = outPath
+              RestoredPackages   = List.ofSeq depRefs
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Single             = true
+              Target             = target
+              ActiveFeatures     = Set.ofSeq activeFeatures
+              DeclaredFeatures   = Set.ofSeq activeFeatures }
+        let result = Emitter.emitProject req
+        let errs   = result.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
+        for d in result.Diagnostics do
+            printErr (sprintf "%s %s [%d:%d]: %s"
+                d.Code
+                (if d.Severity = DiagError then "error" else "warning")
+                d.Span.Start.Line d.Span.Start.Column d.Message)
+        if not (List.isEmpty errs) then
+            printErr (sprintf "%s: project build failed" specPath)
+            1
+        else
+            writeRuntimeConfig outPath
+            0
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2218,11 +2379,12 @@ let main (argv: string array) : int =
                 Environment.SetEnvironmentVariable("LYRIC_CLI_DLL", entry.Location)
             | _ -> ()
         with _ -> ()
-
     let args = List.ofArray argv
     match args with
     | "--internal-build" :: rest ->
         internalBuild rest
+    | "--internal-project-build" :: rest ->
+        internalProjectBuild rest
     | "--internal-contract-meta" :: rest ->
         internalContractMeta rest
     | _ ->

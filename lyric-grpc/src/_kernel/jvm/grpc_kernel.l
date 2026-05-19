@@ -1,11 +1,11 @@
-/// Grpc.Kernel.Jvm — JVM extern boundary for gRPC client and server (Phase 6).
-///
-/// Mirrors Grpc.Kernel.Net using io.grpc:
-///   Client: io.grpc.ManagedChannel + ClientCalls with pass-through MethodDescriptor<byte[],byte[]>
-///   Server: io.grpc.Server (Netty transport)
-///
-/// Not compiled today — present to drive API parity with the .NET kernel.
-/// See docs/18-jvm-emission.md and docs/37-grpc-proto-sketch.md §8.2.
+// Grpc.Kernel.Jvm — JVM extern boundary for gRPC client and server (Phase 6).
+//
+// Mirrors Grpc.Kernel.Net using io.grpc:
+//   Client: io.grpc.ManagedChannel + ClientCalls with pass-through MethodDescriptor<byte[],byte[]>
+//   Server: io.grpc.Server (Netty transport)
+//
+// Not compiled today — present to drive API parity with the .NET kernel.
+// See docs/18-jvm-emission.md and docs/37-grpc-proto-sketch.md §8.2.
 
 @cfg(feature = "jvm")
 package Grpc.Kernel.Jvm
@@ -34,10 +34,10 @@ extern package io.grpc.unary {
     channel:   GrpcChannel,
     service:   in String,
     method:    in String,
-    payload:   in [Byte],
+    payload:   in slice[Byte],
     timeoutMs: in Int,
     metadata:  in String
-  ): Result[[Byte], GrpcStatus]
+  ): Result[slice[Byte], GrpcStatus]
 }
 
 // ─── Client: server-streaming calls ──────────────────────────────────────────
@@ -48,12 +48,12 @@ extern package io.grpc.stream {
     channel:   GrpcChannel,
     service:   in String,
     method:    in String,
-    payload:   in [Byte],
+    payload:   in slice[Byte],
     timeoutMs: in Int,
     metadata:  in String
   ): Result[GrpcStream, GrpcStatus]
 
-  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[[Byte]], GrpcStatus]
+  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[slice[Byte]], GrpcStatus]
   pub func netCloseStream(stream: GrpcStream): Unit
 }
 

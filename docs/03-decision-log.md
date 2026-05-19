@@ -4189,6 +4189,34 @@ Q-SG-001 through Q-SG-004 are tracked in `docs/40-source-generators.md` §10.
 
 ---
 
+## D076 — Bootstrap F# changes for 24-library build (PR #687)
+
+**Context:** PR #687 compiled all 24 Lyric library packages through the bootstrap
+emitter for the first time.  Several changes were required in the F# bootstrap to
+unblock those builds.  CLAUDE.md §"F# surface is frozen" prohibits new domain logic
+in `bootstrap/src/`; this entry documents each change and its justification so the
+set of permitted F# edits is explicit and auditable.
+
+**Changes and justifications:**
+
+| File | Change | Justification |
+|------|--------|---------------|
+| `Parser.fs` | Accept `var` keyword in record member position | Bootstrap parser must parse valid Lyric source; the self-hosted parser already handles this.  No new semantics — `var` is silently passed through (AST tracking deferred to T6+). |
+| `Codegen.fs` | `BCoalesce` (`??`) IL emission | IL-level code generation for an existing Lyric operator that had no emitter branch.  Purely an emitter completeness fix; no new language surface. |
+| `Codegen.fs` | `case null` pattern in match | Same: completeness fix for a pattern form already in the language spec.  The self-hosted emitter inherits this from the Lyric-side codegen. |
+| `Emitter.fs` | Cross-package enum case registration | Registers imported enum cases so `EnumName.CaseName` can resolve across package boundaries.  No new language semantics; fixes a missing loop in the bootstrap multi-package path. |
+| `Emitter.fs` | `@cfg` erasure before import resolution | Correctness fix: feature-gated overloads were reaching the type checker as duplicates.  The erasure step existed; the ordering was wrong. |
+| `Checker.fs` | Extern-sig registration in `registerItem`; `externSigToDecl` for cross-package preambles | Infrastructure to thread restored-package type anchors (extern / opaque / record / enum / union) through the type checker when checking cross-package imports.  This has no self-hosted equivalent yet because the self-hosted type checker runs on single compilation units; a follow-up will move this to `typechecker_resolver.l`. |
+| `Program.fs` | `--internal-project-build` command (114 lines) | Shim infrastructure required because `lyric build --manifest` in the F# CLI must delegate to the self-hosted CLI for project builds, then receive back the resolved DLL paths over a line-based protocol.  The domain logic lives in `lyric-compiler/lyric/cli.l`; the F# side is a parser for the protocol response (permitted shim infrastructure per CLAUDE.md). |
+
+**Status:** All F# changes in this entry are bootstrap-grade infrastructure.
+Domain logic equivalents belong in the self-hosted compiler and will migrate there
+as the corresponding self-hosted stages mature (type checker resolver: T5.3+;
+parser `var` field AST: T6+).  No further F# domain logic additions are permitted
+beyond this set without a new decision-log entry.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
