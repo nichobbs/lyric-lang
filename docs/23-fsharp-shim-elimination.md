@@ -391,7 +391,7 @@ runtime resolution required.  D-progress-140 ships:
 - `<ProjectReference>` lines pulled from `Lyric.Cli`,
   `Lyric.Emitter`, and `Lyric.Emitter.Tests`.
 - Solution entry / configuration / nesting tag scrubbed from
-  `Lyric.sln`.
+  `Bootstrap.sln`.
 - CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`,
   `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their
   `Lyric.Stdlib.dll` copy / probe paths.
