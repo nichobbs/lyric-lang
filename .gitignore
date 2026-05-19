@@ -10,6 +10,13 @@
 # Lyric compiler output (lyric build, lyric prove proof caches)
 target/
 
+# Lyric restore cache (lyric restore)
+.lyric/
+
+# Compiled kernel DLLs and runtime configs emitted into src/_kernel/ directories
+**/src/_kernel/**/*.dll
+**/src/_kernel/**/*.runtimeconfig.json
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
