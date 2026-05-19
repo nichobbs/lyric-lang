@@ -120,17 +120,22 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
 
-// Note (#333): Ideally this returns a process-wide singleton to avoid
-// exhausting the TCP socket pool under load (the canonical HttpClient
-// anti-pattern).  A module-level `val` singleton is the correct fix but
-// requires bootstrap-emitter support for non-constant package-level vals
-// (only integer constants and @asyncLocal vals are currently supported).
-// Until that support lands, each call creates a new instance; callers
-// that need connection-pool reuse should construct their own client via
-// `hostClientWithRedirects` / `hostClientNoRedirects` and retain it.
-pub func hostDefaultClient(): HttpClient {
-  newClient()
-}
+// #333: process-wide HttpClient singleton.
+//
+// Creating a new HttpClient per call is the canonical .NET anti-pattern:
+// under load the per-call clients exhaust the TCP socket pool because
+// sockets stay in TIME_WAIT for two MSL after the client is GC'd.  The
+// real fix would be a Lyric `pub val` at module scope, but the bootstrap
+// emitter doesn't yet support non-constant package-level vals (only
+// integer constants and @asyncLocal vals).  Until that support lands
+// (M5.2 stage 3+), the singleton lives in a tiny F# helper exposed via
+// `Lyric.Emitter.HttpClientHost.defaultClient`, which holds a
+// thread-safe `Lazy<HttpClient>` and returns the same instance on every
+// call.  Callers that need a custom client (e.g. disabled redirects)
+// should still construct their own via `hostClientWithRedirects` /
+// `hostClientNoRedirects` and retain it.
+@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
+pub func hostDefaultClient(): HttpClient = ()
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
   newRequest(newHttpMethod(httpMethod), url)
