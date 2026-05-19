@@ -479,12 +479,56 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     return 1
   }
 
+  // Resolve local-path dependencies to DLL paths.
+  // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
+  val restoredDlls: List[String] = newList()
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir }
+                     else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly {
+                      case Some(asm) -> asm
+                      case None      -> p.name + ".dll"
+                    }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    restoredDlls.add(dep.name + "\t" + dllPath)
+                  } else {
+                    printErr("build: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
+            case Err(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    di += 1
+  }
+
   val asmName = stemOf(Path.basename(outPath), 4)
   val projReq = EmitProjectRequest(
-    packages     = pkgs,
-    assemblyName = asmName,
-    outputPath   = outPath,
-    target       = target
+    packages         = pkgs,
+    assemblyName     = asmName,
+    outputPath       = outPath,
+    target           = target,
+    restoredDllPaths = restoredDlls
   )
 
   val result  = Emitter.emitProject(projReq)

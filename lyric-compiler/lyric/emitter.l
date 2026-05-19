@@ -60,10 +60,13 @@ pub record ProjectPackage {
 }
 
 pub record EmitProjectRequest {
-  packages:     List[ProjectPackage]
-  assemblyName: String
-  outputPath:   String
-  target:       CompileTarget
+  packages:         List[ProjectPackage]
+  assemblyName:     String
+  outputPath:       String
+  target:           CompileTarget
+  /// Restored dependency DLL paths.  Each entry is "depName\tdllPath".
+  /// Written to the spec file as `DEP\tdepName\tdllPath` lines.
+  restoredDllPaths: List[String]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,25 +78,40 @@ pub record EmitProjectRequest {
 // `Lyric.CliShell` package would eliminate the duplication once the import
 // graph permits it.
 //
-// The executable to invoke.  When LYRIC_CLI_DLL is set this is "dotnet";
-// when only LYRIC_BIN is set (native binary or wrapper script) this is
-// that value; otherwise fall back to "lyric" on PATH.
+// The executable to invoke.  Two cases when LYRIC_CLI_DLL is set:
+//   a) LYRIC_BIN is the AppHost native launcher for the DLL
+//      (LYRIC_BIN + ".dll" == LYRIC_CLI_DLL).  Call it directly — the
+//      AppHost already knows its DLL, no "exec" prefix is needed.
+//   b) LYRIC_BIN is an explicit dotnet/wrapper executable (or unset).
+//      Use dotnet + "exec <dll>" prefix to run the managed DLL.
+// When LYRIC_CLI_DLL is unset, fall back to LYRIC_BIN or "lyric" on PATH.
+func lyrIsAppHost(): Bool {
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
+  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
+  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
+}
+
 func lyrExe(): String {
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
   if Str.isNotEmpty(cliDll) {
-    // Running under `dotnet exec <dll>`; use the dotnet executable.
-    Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
+    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
+    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
+      // AppHost mode: the native launcher IS the entry point for this DLL.
+      bin
+    } else {
+      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
+    }
   } else {
     Environment.getVarOrDefault("LYRIC_BIN", "lyric")
   }
 }
 
 // Leading args that must precede any subcommand args.
-// Non-empty only when LYRIC_CLI_DLL is set (inserts "exec <dll>").
+// Non-empty only when running under an explicit dotnet host (not AppHost).
 func lyrPrefixArgs(): List[String] {
   val prefix: List[String] = newList()
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
+  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
     prefix.add("exec")
     prefix.add(cliDll)
   }
@@ -187,6 +205,13 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     }
     specLines.add(line)
     pi += 1
+  }
+
+  // Append restored dependency DLL lines: DEP\t<name>\t<dllPath>
+  var di = 0
+  while di < req.restoredDllPaths.count {
+    specLines.add("DEP\t" + req.restoredDllPaths[di])
+    di += 1
   }
 
   val specContent = Str.joinList("\n", specLines)

@@ -2270,27 +2270,43 @@ let private internalProjectBuild (rest: string list) : int =
     else
         let lines = File.ReadAllLines specPath
         let pkgInputs = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
+        let depRefs   = ResizeArray<Lyric.Emitter.RestoredPackages.RestoredPackageRef>()
         let mutable hadFatal = false
         for line in lines do
             if not (String.IsNullOrEmpty line) then
-                let parts = line.Split('\t')
-                if parts.Length < 2 then
-                    printErr (sprintf "internal-project-build: malformed spec line: %s" line)
-                    hadFatal <- true
-                else
-                    let pkgName  = parts.[0]
-                    let srcPaths = parts |> Array.skip 1
-                    let sources  = ResizeArray<string>()
-                    for sp in srcPaths do
-                        if File.Exists sp then
-                            sources.Add(File.ReadAllText sp)
+                if line.StartsWith("DEP\t", StringComparison.Ordinal) then
+                    // DEP line: DEP\t<depName>\t<dllPath>
+                    let parts = line.Split('\t')
+                    if parts.Length >= 3 then
+                        let depName = parts.[1]
+                        let depDll  = parts.[2]
+                        if File.Exists depDll then
+                            depRefs.Add
+                                { Lyric.Emitter.RestoredPackages.RestoredPackageRef.Name    = depName
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.Version = "0.0.0"
+                                  Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = depDll }
                         else
-                            printErr (sprintf "internal-project-build: source file not found: %s" sp)
-                            hadFatal <- true
-                    if not hadFatal then
-                        pkgInputs.Add
-                            { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
-                              Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = List.ofSeq sources }
+                            printErr (sprintf "internal-project-build: dep DLL not found: %s" depDll)
+                else
+                    // PKG line: <packageName>\t<srcPath1>\t<srcPath2>...
+                    let parts = line.Split('\t')
+                    if parts.Length < 2 then
+                        printErr (sprintf "internal-project-build: malformed spec line: %s" line)
+                        hadFatal <- true
+                    else
+                        let pkgName  = parts.[0]
+                        let srcPaths = parts |> Array.skip 1
+                        let sources  = ResizeArray<string>()
+                        for sp in srcPaths do
+                            if File.Exists sp then
+                                sources.Add(File.ReadAllText sp)
+                            else
+                                printErr (sprintf "internal-project-build: source file not found: %s" sp)
+                                hadFatal <- true
+                        if not hadFatal then
+                            pkgInputs.Add
+                                { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
+                                  Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = List.ofSeq sources }
         if hadFatal then 1
         else
         match Option.ofObj (Path.GetDirectoryName outPath) with
@@ -2305,7 +2321,7 @@ let private internalProjectBuild (rest: string list) : int =
             { Packages           = List.ofSeq pkgInputs
               AssemblyName       = asmName
               OutputPath         = outPath
-              RestoredPackages   = []
+              RestoredPackages   = List.ofSeq depRefs
               NugetAssemblyPaths = []
               ExternShimRoot     = None
               Single             = true
