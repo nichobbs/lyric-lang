@@ -1099,7 +1099,9 @@ let bootstrapDispatch (argv: string array) : int =
                                             depMf.Package.Name + ".dll"
                                     let full = Path.Combine(binDir, dllName)
                                     if File.Exists full then Some full else None
-                                | Error _ -> None
+                                | Error e ->
+                                    printErr (sprintf "build: local dep '%s' lyric.toml parse failed: %A" dep.Name e)
+                                    None
                             else None
                         match dllPath with
                         | Some dll ->

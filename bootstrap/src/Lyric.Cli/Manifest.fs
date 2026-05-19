@@ -329,7 +329,7 @@ let private parseInlineTable (c: Cursor) : Result<Value, ManifestError> =
                                 skipInlineWhitespace c
                                 if peek c = Some ',' then advance c |> ignore
                         | _ ->
-                            // Skip non-string value
+                            eprintfn "warning: inline table key '%s' has a non-string value (only string values are supported); the key will be ignored" k
                             while c.Pos < c.Text.Length
                                   && c.Text.[c.Pos] <> ','
                                   && c.Text.[c.Pos] <> '}'
