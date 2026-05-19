@@ -70,7 +70,7 @@ find compiler -type d \( -name bin -o -name obj \) -exec rm -rf {} +
 ```
 
 `bin/` and `obj/` together are typically the largest single
-contributor; `dotnet build Lyric.sln` repopulates them on demand.
+contributor; `dotnet build Bootstrap.sln` repopulates them on demand.
 
 The emitter test suite also leaves a separate cache under
 `/tmp/lyric-emit-<label>-<guid>/` — one directory per

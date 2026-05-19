@@ -220,7 +220,7 @@ absolute path overrides all search heuristics.  A `lyric-toolchain` multiplexer
 
 The GitHub Actions workflow (`ci.yml`) runs after every push to `main`:
 
-1. `dotnet build Lyric.sln` — F# compiler build.
+1. `dotnet build Bootstrap.sln` — F# compiler build.
 2. `dotnet run --project tests/Lyric.Emitter.Tests` — full test suite.
 3. `./scripts/bootstrap.sh --stage 1` — compile Lyric packages with the F#
    emitter.  Validates that all self-hosted source files compile cleanly.

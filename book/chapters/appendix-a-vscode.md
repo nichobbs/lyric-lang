@@ -164,4 +164,4 @@ If pressing `F5` in the `lyric-vscode/` folder opens an Extension Development Ho
 
 ## See also
 
-The language server source is at `compiler/src/Lyric.Lsp/`. The end-to-end test suite for the LSP protocol is in `compiler/tests/Lyric.Lsp.Tests/ProtocolTests.fs`; reading those tests is the fastest way to understand exactly which LSP methods the server implements and what responses it produces.
+The language server source is at `bootstrap/src/Lyric.Lsp/`. The end-to-end test suite for the LSP protocol is in `bootstrap/tests/Lyric.Lsp.Tests/ProtocolTests.fs`; reading those tests is the fastest way to understand exactly which LSP methods the server implements and what responses it produces.

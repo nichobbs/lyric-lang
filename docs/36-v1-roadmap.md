@@ -202,7 +202,7 @@ For each item:
 4. Wire the shim into the relevant command in `Program.fs`.
 5. Remove the F# `<Item>.fs` source file.
 
-**Acceptance criteria:** `dotnet build Lyric.sln` succeeds after each F#
+**Acceptance criteria:** `dotnet build Bootstrap.sln` succeeds after each F#
 file deletion; all `bootstrap/tests/Lyric.Cli.Tests/` and
 `bootstrap/tests/Lyric.Emitter.Tests/` tests pass; `StdlibLyricTests.fs`
 exercises each new self-test file.

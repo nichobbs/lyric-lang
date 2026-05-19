@@ -12,7 +12,7 @@ Every Lyric stdlib module that depends on a host operation that
 cannot be expressed in pure Lyric — syscalls (file/network/console),
 hardware-tuned BCL primitives (transcendentals, regex, JSON
 tokenizer, TLS), threading primitives, IEEE 754 corner cases.
-Anything else lives in the parent `compiler/lyric/std/` directory
+Anything else lives in the parent `lyric-compiler/lyric/std/` directory
 as a native Lyric implementation.
 
 ## What does NOT live here
@@ -32,7 +32,7 @@ new declaration in their description.
 
 ## Enforcement (the ratchet)
 
-`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs` runs
+`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs` runs
 on every CI build:
 
 - **`extern declarations outside _kernel/ never grow`**: hard
