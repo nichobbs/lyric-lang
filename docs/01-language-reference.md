@@ -226,7 +226,7 @@ record Counter {
 }
 ```
 
-The `var` prefix is accepted by the parser and preserved in the AST. Full mutability enforcement (preventing external reassignment, restricting write sites to the owning package) is deferred to the T6+ type-checker tier; the bootstrap emitter currently treats `var` and non-`var` fields identically at the IL level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+The `var` prefix is accepted by the parser. The bootstrap parser consumes the keyword but does not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are deferred to the T6+ type-checker tier; the bootstrap emitter currently treats `var` and non-`var` fields identically at the IL level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
 
 ### 2.5 Unions (sum types)
 
