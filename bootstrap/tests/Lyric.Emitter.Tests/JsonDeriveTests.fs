@@ -1,10 +1,10 @@
-/// End-to-end tests for `@derive(Json)` source-gen (Tier 2.3 /
+/// End-to-end tests for `@generate(Json)` source-gen (Tier 2.3 /
 /// D-progress-030).
 ///
-/// For each `pub record T` annotated `@derive(Json)`, the synthesiser
+/// For each `pub record T` annotated `@generate(Json)`, the synthesiser
 /// appends a `T.toJson(self): String` function that serialises the
 /// record's fields as a JSON object.  Nested records also annotated
-/// `@derive(Json)` dispatch recursively to their own toJson.
+/// `@generate(Json)` dispatch recursively to their own toJson.
 module Lyric.Emitter.Tests.JsonDeriveTests
 
 open Expecto
@@ -23,7 +23,7 @@ let private cases : (string * string * string) list = [
 package JD1
 import Std.Core
 
-@derive(Json)
+@generate(Json)
 pub record Person { name: String, age: Int }
 
 func main(): Unit {
@@ -38,10 +38,10 @@ func main(): Unit {
 package JD2
 import Std.Core
 
-@derive(Json)
+@generate(Json)
 pub record Addr { city: String, zip: String }
 
-@derive(Json)
+@generate(Json)
 pub record Person { name: String, addr: Addr }
 
 func main(): Unit {
@@ -56,7 +56,7 @@ func main(): Unit {
 package JD3
 import Std.Core
 
-@derive(Json)
+@generate(Json)
 pub record Flag { active: Bool, count: Int }
 
 func main(): Unit {
@@ -74,7 +74,7 @@ import Std.Core
 pub record Plain { x: Int }
 
 func main(): Unit {
-  // No @derive(Json) → no Plain.toJson; this should print the int.
+  // No @generate(Json) → no Plain.toJson; this should print the int.
   val p = Plain(x = 42)
   println(p.x)
 }
@@ -89,7 +89,7 @@ func main(): Unit {
 package JD5
 import Std.Core
 
-@derive(Json)
+@generate(Json)
 pub record M { msg: String }
 
 func main(): Unit {
@@ -102,7 +102,7 @@ func main(): Unit {
     // Phase 3 (D-progress-043): slice[Int] field rendering.
     """
 package J7
-@derive(Json)
+@generate(Json)
 pub record Page {
   total: Int
   items: slice[Int]
@@ -117,7 +117,7 @@ func main(): Unit {
     // String slice elements get JsonEncodedText.Encode'd individually.
     """
 package J8
-@derive(Json)
+@generate(Json)
 pub record Tags {
   values: slice[String]
 }
@@ -130,7 +130,7 @@ func main(): Unit {
     "json_derive_bool_slice_field",
     """
 package J9
-@derive(Json)
+@generate(Json)
 pub record Flags {
   values: slice[Bool]
 }
@@ -146,7 +146,7 @@ func main(): Unit {
     """
 package J11
 import Std.Core
-@derive(Json)
+@generate(Json)
 pub record Item {
   name: String
   count: Option[Int]
@@ -164,7 +164,7 @@ func main(): Unit {
     """
 package J12
 import Std.Core
-@derive(Json)
+@generate(Json)
 pub record Tag {
   label: Option[String]
 }
@@ -181,7 +181,7 @@ func main(): Unit {
     // typed fields default-initialise.
     """
 package J13
-@derive(Json)
+@generate(Json)
 pub record User {
   name: String
   age: Int
@@ -197,18 +197,18 @@ func main(): Unit {
     "Alice\n30\nTrue"
 
     "json_derive_record_slice_field",
-    // D-progress-044: slice of @derive(Json) records lowers to a
+    // D-progress-044: slice of @generate(Json) records lowers to a
     // synthesised __lyricJsonRender<RecName>Slice helper that
     // loops the slice and dispatches to <RecName>.toJson per
     // element.
     """
 package J10
-@derive(Json)
+@generate(Json)
 pub record Item {
   name: String
   count: Int
 }
-@derive(Json)
+@generate(Json)
 pub record Bag {
   items: slice[Item]
 }
@@ -226,7 +226,7 @@ func main(): Unit {
     // primitive slices) via __lyricJsonGetIntSlice / etc.
     """
 package J14
-@derive(Json)
+@generate(Json)
 pub record Bag {
   ids: slice[Int]
   names: slice[String]
@@ -242,16 +242,16 @@ func main(): Unit {
 
     "json_derive_fromJson_nested_record",
     // D-progress-060: fromJson on a record containing a nested
-    // @derive(Json) record field reads the sub-object as raw JSON
+    // @generate(Json) record field reads the sub-object as raw JSON
     // text and recurses through Inner.fromJson(subStr).
     """
 package J15
-@derive(Json)
+@generate(Json)
 pub record Address {
   city: String
   zip: Int
 }
-@derive(Json)
+@generate(Json)
 pub record User {
   name: String
   address: Address
@@ -269,7 +269,7 @@ func main(): Unit {
     // Double-slice round-trip exercises the GetDoubleSlice helper.
     """
 package J16
-@derive(Json)
+@generate(Json)
 pub record Stats {
   values: slice[Double]
 }
@@ -285,5 +285,5 @@ func main(): Unit {
 
 let tests =
     testSequenced
-    <| testList "@derive(Json) source-gen (Tier 2.3 / D-progress-030)"
+    <| testList "@generate(Json) source-gen (Tier 2.3 / D-progress-030)"
                 (cases |> List.map mk)

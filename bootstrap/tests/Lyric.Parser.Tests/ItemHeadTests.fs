@@ -56,7 +56,7 @@ let tests =
                 prelude
                 + "/// the function f\n"
                 + "/// returns the answer\n"
-                + "@derive(Json)\n"
+                + "@generate(Json)\n"
                 + "pub func f(): Int = 42\n"
             let r = parseFile src
             Expect.equal r.File.Items.Length 1 "one item"

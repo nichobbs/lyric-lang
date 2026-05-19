@@ -1,8 +1,8 @@
-/// AST-level synthesis for `@derive(Json)` records (Tier 2.3 /
+/// AST-level synthesis for `@generate(Json)` records (Tier 2.3 /
 /// D-progress-030).
 ///
 /// For each `pub record T` (or `pub exposed record T`) annotated with
-/// `@derive(Json)`, the synthesiser appends a `T.toJson(self): String`
+/// `@generate(Json)`, the synthesiser appends a `T.toJson(self): String`
 /// function that builds an RFC-8259-conformant JSON string by
 /// concatenating field-by-field renderings.  Per-field renderings:
 ///
@@ -11,7 +11,7 @@
 ///     `UInt`, `ULong`,
 ///     `Double`, `Float`  → `toString(value)`
 ///   - `String`           → `"\"" + value + "\""` (no escaping yet)
-///   - Nested record with `@derive(Json)`  → `<TypeName>.toJson(value)`
+///   - Nested record with `@generate(Json)` → `<TypeName>.toJson(value)`
 ///   - Anything else      → `toString(value)` as a best-effort fallback
 ///
 /// Bootstrap-grade scope (D-progress-030 follow-ups):
@@ -29,7 +29,7 @@ open Lyric.Parser.Ast
 
 let private isDeriveJson (a: Annotation) : bool =
     match a.Name.Segments with
-    | ["derive"] ->
+    | ["generate"] ->
         a.Args
         |> List.exists (fun arg ->
             match arg with
@@ -53,7 +53,7 @@ let private mkType (kind: TypeExprKind) (span: Span) : TypeExpr =
 let private strLit (s: string) (span: Span) : Expr =
     mkExpr (ELiteral (LString s)) span
 
-/// True if `te` mentions another user record with `@derive(Json)`.
+/// True if `te` mentions another user record with `@generate(Json)`.
 /// Used to decide whether to dispatch to `<TypeName>.toJson(value)`
 /// or fall back to a primitive / `toString` rendering.
 let private nestedJsonTypeName
@@ -94,7 +94,7 @@ let private slicePrimitiveHelper (te: TypeExpr) : string option =
     | _ -> None
 
 /// Detect a `slice[Rec]` / `array[N, Rec]` field whose element
-/// type is a user record with `@derive(Json)`.  Returns the
+/// type is a user record with `@generate(Json)`.  Returns the
 /// record name when matched; the synthesiser then routes through
 /// a per-record `__lyricJsonRender<RecName>Slice` helper that
 /// loops over the slice and calls `<RecName>.toJson` per element.
@@ -310,7 +310,7 @@ let private classifyField
 /// Synthesise `<RecName>.fromJson(s: String): <RecName>` when
 /// every field is a primitive Lyric type the
 /// `__lyricJsonGet<T>` shims handle.  Records with non-primitive
-/// fields (nested @derive(Json) records, slices, Option) skip
+/// fields (nested @generate(Json) records, slices, Option) skip
 /// `fromJson` synthesis — Phase 2 (D-progress-046 follow-ups).
 ///
 /// The synthesised body is straight-line:
@@ -461,9 +461,9 @@ let private synthesiseFromJsonOpt
               Body        = Some (FBBlock body)
               Span        = span }
 
-/// Synthetic imports required by `@derive(Json)` synthesis.
+/// Synthetic imports required by `@generate(Json)` synthesis.
 ///
-/// Returns `[import Std.Json]` if any `@derive(Json)` record exists
+/// Returns `[import Std.Json]` if any `@generate(Json)` record exists
 /// in the item list; returns `[]` otherwise.  The emitter's
 /// `resolveStdlibImports` deduplicates via `HashSet`, so injecting a
 /// duplicate when the user already has `import Std.Json` is harmless.
@@ -490,7 +490,7 @@ let synthesizeImports (items: Item list) : ImportDecl list =
 
 let synthesizeItems (items: Item list) : Item list =
     // First pass: collect the names of every record with
-    // `@derive(Json)` so the per-field renderer knows which fields
+    // `@generate(Json)` so the per-field renderer knows which fields
     // dispatch to a recursive `T.toJson(value)` call.
     let deriveJsonRecords =
         items
@@ -723,7 +723,7 @@ let synthesizeItems (items: Item list) : Item list =
             (mkRefTy "String")
             strRender)
         // Per-record slice helpers — one `__lyricJsonRender<Rec>Slice`
-        // function per `@derive(Json)` record so fields of type
+        // function per `@generate(Json)` record so fields of type
         // `slice[Rec]` can lower to `__lyricJsonRender<Rec>Slice
         // (self.<field>)`.  The body is a hand-rolled `while` loop
         // that calls `<Rec>.toJson(items[i])` on each element.

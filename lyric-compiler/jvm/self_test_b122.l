@@ -1,4 +1,4 @@
-// jvm/self_test_b122.l — Stage B122: lowerDeriveEquality (@derive(Equals) and @derive(Hash)).
+// jvm/self_test_b122.l — Stage B122: lowerDeriveEquality (@generate(Equals) and @generate(Hash)).
 //
 // Creates a `Point` record (x: JInt, y: JInt) with both Equals and Hash derived.
 // Main:
@@ -19,7 +19,7 @@ import Jvm.Bytecode
 import Jvm.Lowering
 import Jvm.Driver
 
-// ── Build Point record with @derive(Equals, Hash) ─────────────────────────────
+// ── Build Point record with @generate(Equals, Hash) ─────────────────────────────
 
 func makePointBytes(pool: in Pool): List[Byte] {
   val fields: List[LField] = newList()

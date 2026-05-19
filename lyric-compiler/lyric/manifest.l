@@ -67,6 +67,9 @@ pub record PackageSection {
   authors:     List[String]
   license:     String
   repository:  Option[String]
+  /// Package kind — `Some("source-generator")` for generator packages,
+  /// `None` for normal library or application packages.
+  kind:        Option[String]
 }
 
 pub record PackageEntry {
@@ -618,13 +621,15 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
           val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList())
           val license     = unwrapOr(findString(entries, "package", "license"), "")
           val repository  = findString(entries, "package", "repository")
+          val kind        = findString(entries, "package", "kind")
           Ok(value = PackageSection(
             name        = name,
             version     = version,
             description = description,
             authors     = authors,
             license     = license,
-            repository  = repository))
+            repository  = repository,
+            kind        = kind))
         }
       }
   }
