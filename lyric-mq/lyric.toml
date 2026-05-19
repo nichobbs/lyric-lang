@@ -47,10 +47,10 @@ kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 # All four broker JARs are declared; only the active feature's code compiles.
 [maven]
 # feature = "rabbitmq" — AMQP 0-9-1 client for JVM
-"com.rabbitmq:amqp-client"                  = { version = "5.21.0", features = ["rabbitmq"] }
+"com.rabbitmq:amqp-client"                  = "5.21.0"
 # feature = "azureservicebus" — Azure Service Bus SDK for JVM
-"com.azure:azure-messaging-servicebus"      = { version = "7.17.6", features = ["azureservicebus"] }
+"com.azure:azure-messaging-servicebus"      = "7.17.6"
 # feature = "sqs" — AWS SDK v2 SQS module for JVM
-"software.amazon.awssdk:sqs"                = { version = "2.25.70", features = ["sqs"] }
+"software.amazon.awssdk:sqs"                = "2.25.70"
 # feature = "kafka" — Apache Kafka JVM client
-"org.apache.kafka:kafka-clients"            = { version = "3.7.0", features = ["kafka"] }
+"org.apache.kafka:kafka-clients"            = "3.7.0"

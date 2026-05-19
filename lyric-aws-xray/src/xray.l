@@ -40,7 +40,6 @@
 package AwsXRay
 
 import Std.Core
-import Std.Encoding
 import Std.Char as Ch
 import AwsXRay.Kernel.Net as XRayKernel
 
@@ -140,10 +139,6 @@ func utf8CharBytes(c: in Char): Int {
 func sanitizeAnnotation(s: in String): String {
   val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
   val b = a.replace("<", "_").replace(">", "_")
-  // Fast path: entire string fits.
-  if Std.Encoding.encodeUtf8(b).length <= 1024 {
-    return b
-  }
   // Single forward pass: accumulate byte count and stop at the 1024-byte limit.
   var byteCount = 0
   var charCount = 0
@@ -158,6 +153,9 @@ func sanitizeAnnotation(s: in String): String {
       charCount = charCount + 1
       i = i + 1
     }
+  }
+  if charCount == b.length {
+    return b
   }
   b.substring(0, charCount)
 }
