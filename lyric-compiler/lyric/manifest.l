@@ -984,3 +984,84 @@ pub func depRegistryVersion(source: in DepSource): Option[String] {
     case _           -> None
   }
 }
+
+/// Return the `FeaturesSection` from the manifest, or a synthetic empty one
+/// if the `[features]` section is absent.
+pub func getManifestFeaturesOrEmpty(m: in Manifest): FeaturesSection {
+  match m.features {
+    case Some(f) -> return f
+    case None    -> return FeaturesSection(declared = newList(), defaults = newList())
+  }
+}
+
+/// Return the `defaults` field of a FeaturesSection (intra-package accessor).
+pub func featureSectionDefaults(s: in FeaturesSection): List[String] { s.defaults }
+
+/// Return the `declared` field of a FeaturesSection (intra-package accessor).
+pub func featureSectionDeclared(s: in FeaturesSection): List[String] { s.declared }
+
+/// Return the `default` feature list from the manifest's `[features]` section,
+/// or an empty list if the section is absent.
+pub func getManifestFeatureDefaults(m: in Manifest): List[String] {
+  featureSectionDefaults(getManifestFeaturesOrEmpty(m))
+}
+
+/// Return the `declared` feature list from the manifest's `[features]` section,
+/// or an empty list if the section is absent.
+pub func getManifestFeatureDeclared(m: in Manifest): List[String] {
+  featureSectionDeclared(getManifestFeaturesOrEmpty(m))
+}
+
+/// Read the `default` feature list directly from raw TOML text, bypassing the
+/// Manifest.features field entirely.  This avoids a bootstrap-emitter
+/// code-gen issue where matching Option[FeaturesSection] and accessing the
+/// resulting record's fields can return null in certain call-chain shapes.
+///
+/// Re-parses only the [features] entries — O(n) scan of the TOML token
+/// stream, acceptable for the bootstrap phase.
+pub func readFeatureDefaultsFromToml(text: in String, filePath: in String): List[String] {
+  val result: List[String] = newList()
+  match collectEntries(text, filePath) {
+    case Err(_)      -> ()
+    case Ok(entries) -> {
+      var i = 0
+      while i < entries.count {
+        val e = entries[i]
+        if e.section == "features" and e.key == "default" {
+          match e.value {
+            case VStrList(items) -> {
+              var j = 0
+              while j < items.count {
+                result.add(items[j])
+                j += 1
+              }
+            }
+            case _ -> ()
+          }
+        }
+        i += 1
+      }
+    }
+  }
+  result
+}
+
+/// Read all declared feature names directly from raw TOML text, bypassing
+/// Manifest.features.  See `readFeatureDefaultsFromToml` for rationale.
+pub func readFeatureDeclaredFromToml(text: in String, filePath: in String): List[String] {
+  val result: List[String] = newList()
+  match collectEntries(text, filePath) {
+    case Err(_)      -> ()
+    case Ok(entries) -> {
+      var i = 0
+      while i < entries.count {
+        val e = entries[i]
+        if e.section == "features" and e.key != "default" {
+          result.add(e.key)
+        }
+        i += 1
+      }
+    }
+  }
+  result
+}

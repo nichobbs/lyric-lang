@@ -330,14 +330,6 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // D045: feature-set computed here once buildOne / buildProject
-  // accept a `features` parameter (Phase 5+ stage 7 follow-up).  For
-  // now the parsed flags are intentionally unused — they document the
-  // CLI surface in lockstep with the F# bootstrap.
-  val _features = cliFeatures
-  val _noDefault = noDefaultFeatures
-  val _all = allFeatures
-
   // Project-mode: `lyric build --manifest lyric.toml` with no positional source.
   if positional.count == 0 {
     val mfPath = match manifestArg {
@@ -348,7 +340,7 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
-    return buildProject(mfPath, explicitOut, target)
+    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures)
   }
 
   val sourcePath = positional[0]
@@ -371,7 +363,14 @@ func cmdBuild(argv: in slice[String]): Int {
 
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
-func buildProject(mfPath: in String, explicitOut: in Option[String], target: in CompileTarget): Int {
+func buildProject(
+  mfPath:           in String,
+  explicitOut:      in Option[String],
+  target:           in CompileTarget,
+  cliFeatures:      in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures:      in Bool
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e)   -> {
@@ -391,6 +390,39 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     case None    -> {
       printErr("build: " + mfPath + " has no [project] section")
       return 1
+    }
+  }
+
+  // D045: resolve active feature set from manifest defaults + CLI flags.
+  // `getManifestFeaturesOrEmpty` returns the whole FeaturesSection record from
+  // the match arm (bootstrap-emitter-safe pattern); field access happens after
+  // the match, outside any match arm body.
+  // D045: resolve active feature set from manifest defaults + CLI flags.
+  // readFeatureDefaultsFromToml / readFeatureDeclaredFromToml bypass the
+  // Manifest.features field (which has a bootstrap-emitter match quirk when
+  // the field type is Option[FeaturesSection]) and scan the raw TOML text
+  // directly.  mfText was already read at the top of this function.
+  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
+  val activeFeatures: List[String] = newList()
+  if allFeatures {
+    var ai = 0
+    while ai < mfDeclared.count {
+      activeFeatures.add(mfDeclared[ai])
+      ai += 1
+    }
+  } else {
+    if not noDefaultFeatures {
+      var ai = 0
+      while ai < mfDefaults.count {
+        activeFeatures.add(mfDefaults[ai])
+        ai += 1
+      }
+    }
+    var ci = 0
+    while ci < cliFeatures.count {
+      activeFeatures.add(cliFeatures[ci])
+      ci += 1
     }
   }
 
@@ -530,7 +562,8 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     assemblyName     = asmName,
     outputPath       = outPath,
     target           = target,
-    restoredDllPaths = restoredDlls
+    restoredDllPaths = restoredDlls,
+    activeFeatures   = activeFeatures
   )
 
   val result  = Emitter.emitProject(projReq)

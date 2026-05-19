@@ -67,6 +67,9 @@ pub record EmitProjectRequest {
   /// Restored dependency DLL paths.  Each entry is "depName\tdllPath".
   /// Written to the spec file as `DEP\tdepName\tdllPath` lines.
   restoredDllPaths: List[String]
+  /// Active feature flags for @cfg erasure.  Each entry is a feature name.
+  /// Written to the spec file as `FEATURE\t<name>` lines.
+  activeFeatures:   List[String]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,6 +215,13 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   while di < req.restoredDllPaths.count {
     specLines.add("DEP\t" + req.restoredDllPaths[di])
     di += 1
+  }
+
+  // Append active feature lines: FEATURE\t<name>
+  var fi = 0
+  while fi < req.activeFeatures.count {
+    specLines.add("FEATURE\t" + req.activeFeatures[fi])
+    fi += 1
   }
 
   val specContent = Str.joinList("\n", specLines)

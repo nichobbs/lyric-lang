@@ -12,6 +12,7 @@ output_assembly = "Db.dll"
 
 [project.packages]
 "Db"            = "src/db.l"
+"Db.Aspects"    = "src/db_aspects.l"
 "Db.Kernel.Net" = "src/_kernel/net/db_kernel.l"
 
 [features]

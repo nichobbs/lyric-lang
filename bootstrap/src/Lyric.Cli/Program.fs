@@ -2275,8 +2275,9 @@ let private internalProjectBuild (rest: string list) : int =
         1
     else
         let lines = File.ReadAllLines specPath
-        let pkgInputs = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
-        let depRefs   = ResizeArray<Lyric.Emitter.RestoredPackages.RestoredPackageRef>()
+        let pkgInputs      = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
+        let depRefs        = ResizeArray<Lyric.Emitter.RestoredPackages.RestoredPackageRef>()
+        let activeFeatures = ResizeArray<string>()
         let mutable hadFatal = false
         for line in lines do
             if not (String.IsNullOrEmpty line) then
@@ -2293,6 +2294,11 @@ let private internalProjectBuild (rest: string list) : int =
                                   Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = depDll }
                         else
                             printErr (sprintf "internal-project-build: dep DLL not found: %s" depDll)
+                elif line.StartsWith("FEATURE\t", StringComparison.Ordinal) then
+                    // FEATURE line: FEATURE\t<featureName>
+                    let parts = line.Split('\t')
+                    if parts.Length >= 2 then
+                        activeFeatures.Add parts.[1]
                 else
                     // PKG line: <packageName>\t<srcPath1>\t<srcPath2>...
                     let parts = line.Split('\t')
@@ -2332,8 +2338,8 @@ let private internalProjectBuild (rest: string list) : int =
               ExternShimRoot     = None
               Single             = true
               Target             = target
-              ActiveFeatures     = Set.empty
-              DeclaredFeatures   = Set.empty }
+              ActiveFeatures     = Set.ofSeq activeFeatures
+              DeclaredFeatures   = Set.ofSeq activeFeatures }
         let result = Emitter.emitProject req
         let errs   = result.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
         for d in result.Diagnostics do

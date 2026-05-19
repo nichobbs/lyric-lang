@@ -41,7 +41,6 @@ package AwsXRay
 
 import Std.Core
 import Std.Char as Ch
-import AwsXRay.Kernel.Net as XRayKernel
 
 // ─── SubsegmentHandle ─────────────────────────────────────────────────────────
 
@@ -53,6 +52,57 @@ pub opaque type SubsegmentHandle {
   // kernel-managed subsegment reference
 }
 
+// ─── Internal platform-dispatch extern boundaries ─────────────────────────────
+//
+// Exactly one extern package block is active per build (selected by @cfg).
+// Functions are named with a kernel_ prefix to avoid conflicts between blocks.
+// These are package-internal; the public API is the pub functions below.
+
+@cfg(feature = "local")
+func kernel_beginSubsegment(name: String): SubsegmentHandle {
+  return SubsegmentHandle()
+}
+
+@cfg(feature = "local")
+func kernel_endSubsegment(handle: SubsegmentHandle): Unit { }
+
+@cfg(feature = "local")
+func kernel_addAnnotation(handle: SubsegmentHandle, key: String, value: String): Unit { }
+
+@cfg(feature = "local")
+func kernel_addMetadata(handle: SubsegmentHandle, key: String, value: String): Unit { }
+
+@cfg(feature = "local")
+func kernel_currentSubsegment(): SubsegmentHandle {
+  return SubsegmentHandle()
+}
+
+@cfg(feature = "aws")
+@axiom("Amazon.XRay.Recorder.Core 2.14.0 — AWSXRayRecorder.Instance")
+extern package Amazon.XRay.Recorder {
+  func kernel_beginSubsegment(name: String): SubsegmentHandle
+    requires: name.length > 0
+  func kernel_endSubsegment(handle: SubsegmentHandle): Unit
+  func kernel_addAnnotation(handle: SubsegmentHandle, key: String, value: String): Unit
+    requires: key.length > 0
+  func kernel_addMetadata(handle: SubsegmentHandle, key: String, value: String): Unit
+    requires: key.length > 0
+  func kernel_currentSubsegment(): SubsegmentHandle
+}
+
+@cfg(feature = "jvm")
+@axiom("com.amazonaws:aws-xray-recorder-sdk-core 2.15.3 — AWSXRay.beginSubsegment / endSubsegment")
+extern package com.amazonaws.xray {
+  func kernel_beginSubsegment(name: String): SubsegmentHandle
+    requires: name.length > 0
+  func kernel_endSubsegment(handle: SubsegmentHandle): Unit
+  func kernel_addAnnotation(handle: SubsegmentHandle, key: String, value: String): Unit
+    requires: key.length > 0
+  func kernel_addMetadata(handle: SubsegmentHandle, key: String, value: String): Unit
+    requires: key.length > 0
+  func kernel_currentSubsegment(): SubsegmentHandle
+}
+
 // ─── Helpers available inside wrapped handlers ────────────────────────────────
 
 /// Return the active subsegment opened by the enclosing Tracing aspect call.
@@ -60,7 +110,7 @@ pub opaque type SubsegmentHandle {
 /// when the local feature is active.
 @stable(since="0.1")
 pub func currentSubsegment(): SubsegmentHandle {
-  return XRayKernel.currentSubsegment()
+  return kernel_currentSubsegment()
 }
 
 /// Add an indexed X-Ray annotation to the subsegment.
@@ -71,7 +121,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  ()
+  kernel_addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
 }
 
 /// Add unindexed metadata to the subsegment.
@@ -82,7 +132,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  ()
+  kernel_addMetadata(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
@@ -114,13 +164,13 @@ pub aspect Tracing {
     if not enabled {
       ret = call.proceed()
     } else {
-      val seg = XRayKernel.beginSubsegment(call.qualifiedName)
+      val seg = kernel_beginSubsegment(call.qualifiedName)
       ret = call.proceed()
       match ret {
-        case Err(e) -> { XRayKernel.addAnnotation(seg, "error", sanitizeAnnotation(e.toString())) }
+        case Err(e) -> { kernel_addAnnotation(seg, "error", sanitizeAnnotation(e.toString())) }
         case _      -> ()
       }
-      XRayKernel.endSubsegment(seg)
+      kernel_endSubsegment(seg)
     }
   }
 }
