@@ -515,6 +515,8 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
             }
             case Err(_) -> ()
           }
+        } else {
+          printErr("build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'; check the path = \"...\" entry in your lyric.toml")
         }
       }
       case _ -> ()

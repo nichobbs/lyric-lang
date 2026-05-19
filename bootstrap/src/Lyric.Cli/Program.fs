@@ -1109,8 +1109,12 @@ let bootstrapDispatch (argv: string array) : int =
                                   Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = dll }
                         | None ->
                             if Directory.Exists binDir then
-                                printErr (sprintf "build: local dep '%s' not built — run `lyric build --manifest %s` first"
-                                                  dep.Name depToml)
+                                if File.Exists depToml then
+                                    printErr (sprintf "build: local dep '%s' not built — run `lyric build --manifest %s` first"
+                                                      dep.Name depToml)
+                                else
+                                    printErr (sprintf "build: local dep '%s' — no lyric.toml found at '%s'; check the path = \"...\" entry in your lyric.toml"
+                                                      dep.Name depToml)
                             else
                                 printErr (sprintf "build: local dep '%s' not built (no bin/ at '%s')"
                                                   dep.Name binDir)

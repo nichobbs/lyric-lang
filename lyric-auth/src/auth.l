@@ -68,6 +68,7 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
+  requires: not rolesContain(allowedAlgorithms, "none")
 {
   return AuthKernelNet.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
@@ -83,6 +84,7 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
+  requires: not rolesContain(allowedAlgorithms, "none")
 {
   return AuthKernelJvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
@@ -147,6 +149,12 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 /// Whitespace around each comma-separated entry is trimmed before
 /// comparison, so `"admin, manager"` matches `"manager"`.  Empty
 /// entries (e.g. `",,"` or `"admin,"`) never match.
+///
+/// Security note: `role` is compared as-is without trimming.  JWT claim
+/// values are compact by specification, so trimming `role` would silently
+/// loosen matching — a JWT claim of `"admin "` (trailing space) would
+/// match `"admin"`, which is a security regression.  Only entries in
+/// `allowedRoles` (caller-controlled) are trimmed for convenience.
 @stable(since="0.1")
 pub func rolesContain(allowedRoles: in String, role: in String): Bool {
   if allowedRoles.length == 0 { return false }
