@@ -34,13 +34,15 @@ package Jobs
 
 import Std.Core
 import Std.Collections
+import Std.Parse
+import Std.Iter
 import Jobs.Kernel.Net
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
 /// A unique job identifier (opaque string).  Obtained from `enqueue` or `schedule`.
 @stable(since="0.1")
-pub type JobId = String
+pub alias JobId = String
 
 // ─── Enumerations ─────────────────────────────────────────────────────────────
 
@@ -68,7 +70,7 @@ pub enum JobStatus {
 /// epoch-millisecond timestamp for deferred / cron jobs.
 @stable(since="0.1")
 pub record JobSpec {
-  id:          JobId
+  id:          String
   name:        String
   payload:     String
   maxAttempts: Int
@@ -79,12 +81,20 @@ pub record JobSpec {
 /// The recorded outcome of a job execution attempt.
 @stable(since="0.1")
 pub record JobResult {
-  jobId:      JobId
+  jobId:      String
   status:     JobStatus
   output:     String    // handler-produced output (empty when not Succeeded)
   error:      String    // error description (empty when not Failed)
   startedAt:  Long      // epoch ms
   finishedAt: Long      // epoch ms
+}
+
+/// A list of job results returned by `JobScheduler.results`.
+/// Wraps `slice[JobResult]` to avoid TypeBuilder-instantiation limitations
+/// when the slice type appears as a generic argument.
+@stable(since="0.1")
+pub record JobResultList {
+  items: slice[JobResult]
 }
 
 /// A structured error returned by a `JobHandler`.
@@ -115,40 +125,40 @@ pub interface JobHandler {
 /// Interface for submitting, querying, and cancelling background jobs.
 @stable(since="0.1")
 pub interface JobScheduler {
-  /// Enqueue a job for immediate execution.  Returns the assigned JobId.
+  /// Enqueue a job for immediate execution.  Returns the assigned String.
   func enqueue(
     name:        in String,
     payload:     in String,
     maxAttempts: in Int,
     timeoutMs:   in Int
-  ): Result[JobId, String]
+  ): Result[String, String]
     requires: name.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
 
-  /// Schedule a recurring job using a cron expression.  Returns the JobId.
+  /// Schedule a recurring job using a cron expression.  Returns the String.
   func schedule(
     name:        in String,
     payload:     in String,
     cronExpr:    in String,
     maxAttempts: in Int,
     timeoutMs:   in Int
-  ): Result[JobId, String]
+  ): Result[String, String]
     requires: name.length > 0
     requires: cronExpr.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
 
   /// Cancel a pending or running job.  No-op if the job has already completed.
-  func cancel(jobId: in JobId): Result[Unit, String]
+  func cancel(jobId: in String): Result[Unit, String]
     requires: jobId.length > 0
 
   /// Return the current status of a job.
-  func status(jobId: in JobId): Result[JobStatus, String]
+  func status(jobId: in String): Result[JobStatus, String]
     requires: jobId.length > 0
 
   /// Return all recorded results for a job (one per attempt).
-  func results(jobId: in JobId): Result[[JobResult], String]
+  func results(jobId: in String): Result[JobResultList, String]
     requires: jobId.length > 0
 }
 
@@ -166,12 +176,12 @@ impl JobScheduler for NativeJobScheduler {
     payload:     in String,
     maxAttempts: in Int,
     timeoutMs:   in Int
-  ): Result[JobId, String]
+  ): Result[String, String]
     requires: name.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    return Jobs.Kernel.Net.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
+    return jobsEnqueueBackend(self.schedulerId, name, payload, maxAttempts, timeoutMs)
   }
 
   func schedule(
@@ -180,36 +190,36 @@ impl JobScheduler for NativeJobScheduler {
     cronExpr:    in String,
     maxAttempts: in Int,
     timeoutMs:   in Int
-  ): Result[JobId, String]
+  ): Result[String, String]
     requires: name.length > 0
     requires: cronExpr.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    return Jobs.Kernel.Net.schedule(schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
+    return jobsScheduleBackend(self.schedulerId, name, payload, cronExpr, maxAttempts, timeoutMs)
   }
 
-  func cancel(jobId: in JobId): Result[Unit, String]
+  func cancel(jobId: in String): Result[Unit, String]
     requires: jobId.length > 0
   {
-    return Jobs.Kernel.Net.cancel(schedulerId, jobId)
+    return jobsCancelBackend(self.schedulerId, jobId)
   }
 
-  func status(jobId: in JobId): Result[JobStatus, String]
+  func status(jobId: in String): Result[JobStatus, String]
     requires: jobId.length > 0
   {
-    match Jobs.Kernel.Net.status(schedulerId, jobId) {
+    match jobsStatusBackend(self.schedulerId, jobId) {
       case Err(msg)    -> Err(msg)
       case Ok(rawStr)  -> Ok(parseStatus(rawStr))
     }
   }
 
-  func results(jobId: in JobId): Result[[JobResult], String]
+  func results(jobId: in String): Result[JobResultList, String]
     requires: jobId.length > 0
   {
-    match Jobs.Kernel.Net.results(schedulerId, jobId) {
-      case Err(msg)      -> Err(msg)
-      case Ok(jsonStr)   -> Ok(parseResults(jobId, jsonStr))
+    match jobsResultsBackend(self.schedulerId, jobId) {
+      case Err(msg)    -> Err(msg)
+      case Ok(jsonStr) -> Ok(JobResultList(items = parseResults(jobId, jsonStr)))
     }
   }
 }
@@ -226,8 +236,8 @@ impl JobScheduler for NativeJobScheduler {
 /// Not thread-safe; use in single-threaded test scenarios only.
 @stable(since="0.1")
 pub record InProcessJobScheduler {
-  var jobs:    Map[JobId, JobResult]
-  var queue:   [JobSpec]
+  var jobs:    Map[String, JobResult]
+  var queue:   List[JobSpec]
   var counter: Int    // monotonic counter for ID generation
 }
 
@@ -237,29 +247,29 @@ impl JobScheduler for InProcessJobScheduler {
     payload:     in String,
     maxAttempts: in Int,
     timeoutMs:   in Int
-  ): Result[JobId, String]
+  ): Result[String, String]
     requires: name.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
   {
-    counter = counter + 1
-    val id = "inproc-" + counter.toString()
+    self.counter = self.counter + 1
+    val id = "inproc-" + self.counter.toString()
     val spec = JobSpec(
       id          = id,
       name        = name,
       payload     = payload,
       maxAttempts = maxAttempts,
       timeoutMs   = timeoutMs,
-      scheduledAt = 0L)
-    queue = queue + [spec]
+      scheduledAt = 0i64)
+    self.queue.add(spec)
     val pending = JobResult(
       jobId      = id,
       status     = JobStatus.Pending,
       output     = "",
       error      = "",
-      startedAt  = 0L,
-      finishedAt = 0L)
-    jobs = jobs.set(id, pending)
+      startedAt  = 0i64,
+      finishedAt = 0i64)
+    self.jobs[id] = pending
     return Ok(id)
   }
 
@@ -269,7 +279,7 @@ impl JobScheduler for InProcessJobScheduler {
     cronExpr:    in String,
     maxAttempts: in Int,
     timeoutMs:   in Int
-  ): Result[JobId, String]
+  ): Result[String, String]
     requires: name.length > 0
     requires: cronExpr.length > 0
     requires: maxAttempts >= 1
@@ -277,31 +287,31 @@ impl JobScheduler for InProcessJobScheduler {
   {
     // In-process scheduler does not evaluate cron expressions; the cron string
     // is stored for test inspection but the job is enqueued immediately.
-    counter = counter + 1
-    val id = "inproc-cron-" + counter.toString()
+    self.counter = self.counter + 1
+    val id = "inproc-cron-" + self.counter.toString()
     val spec = JobSpec(
       id          = id,
       name        = name,
       payload     = "{\"cron\":\"" + jsonEscapeStr(cronExpr) + "\",\"payload\":" + payload + "}",
       maxAttempts = maxAttempts,
       timeoutMs   = timeoutMs,
-      scheduledAt = 0L)
-    queue = queue + [spec]
+      scheduledAt = 0i64)
+    self.queue.add(spec)
     val pending = JobResult(
       jobId      = id,
       status     = JobStatus.Pending,
       output     = "",
       error      = "",
-      startedAt  = 0L,
-      finishedAt = 0L)
-    jobs = jobs.set(id, pending)
+      startedAt  = 0i64,
+      finishedAt = 0i64)
+    self.jobs[id] = pending
     return Ok(id)
   }
 
-  func cancel(jobId: in JobId): Result[Unit, String]
+  func cancel(jobId: in String): Result[Unit, String]
     requires: jobId.length > 0
   {
-    match jobs.get(jobId) {
+    match mapGet(self.jobs, jobId) {
       case None -> Ok(())    // Job not found; treat as no-op.
       case Some(result) -> {
         match result.status {
@@ -315,10 +325,16 @@ impl JobScheduler for InProcessJobScheduler {
               output     = "",
               error      = "cancelled",
               startedAt  = result.startedAt,
-              finishedAt = Jobs.Kernel.Net.nowMs())
-            jobs = jobs.set(jobId, cancelled)
-            // Remove from the pending queue.
-            queue = queue.filter(func(s: in JobSpec): Bool { s.id != jobId })
+              finishedAt = nowMs())
+            self.jobs[jobId] = cancelled
+            // Remove matching entries from the pending queue (iterate backward).
+            var i = self.queue.count - 1
+            while i >= 0 {
+              if self.queue[i].id == jobId {
+                self.queue.removeAt(i)
+              }
+              i = i - 1
+            }
             Ok(())
           }
         }
@@ -326,21 +342,21 @@ impl JobScheduler for InProcessJobScheduler {
     }
   }
 
-  func status(jobId: in JobId): Result[JobStatus, String]
+  func status(jobId: in String): Result[JobStatus, String]
     requires: jobId.length > 0
   {
-    match jobs.get(jobId) {
+    match mapGet(self.jobs, jobId) {
       case None         -> Err("job not found: " + jobId)
       case Some(result) -> Ok(result.status)
     }
   }
 
-  func results(jobId: in JobId): Result[[JobResult], String]
+  func results(jobId: in String): Result[JobResultList, String]
     requires: jobId.length > 0
   {
-    match jobs.get(jobId) {
+    match mapGet(self.jobs, jobId) {
       case None         -> Err("job not found: " + jobId)
-      case Some(result) -> Ok([result])
+      case Some(result) -> Ok(JobResultList(items = [result]))
     }
   }
 }
@@ -349,20 +365,20 @@ impl JobScheduler for InProcessJobScheduler {
 /// Returns Err("queue empty") when there are no pending jobs.
 @stable(since="0.1")
 pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler): Result[JobResult, String] {
-  if scheduler.queue.length == 0 {
+  if scheduler.queue.count == 0 {
     return Err("queue empty")
   }
-  val spec = scheduler.queue.head()
-  scheduler.queue = scheduler.queue.tail()
-  val startMs = Jobs.Kernel.Net.nowMs()
+  val spec = scheduler.queue[0]
+  scheduler.queue.removeAt(0)
+  val startMs = nowMs()
   val running = JobResult(
     jobId      = spec.id,
     status     = JobStatus.Running,
     output     = "",
     error      = "",
     startedAt  = startMs,
-    finishedAt = 0L)
-  scheduler.jobs = scheduler.jobs.set(spec.id, running)
+    finishedAt = 0i64)
+  scheduler.jobs[spec.id] = running
   match handler.handle(spec) {
     case Ok(output) -> {
       val result = JobResult(
@@ -371,8 +387,8 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         output     = output,
         error      = "",
         startedAt  = startMs,
-        finishedAt = Jobs.Kernel.Net.nowMs())
-      scheduler.jobs = scheduler.jobs.set(spec.id, result)
+        finishedAt = nowMs())
+      scheduler.jobs[spec.id] = result
       return Ok(result)
     }
     case Err(jobErr) -> {
@@ -382,8 +398,8 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
         output     = "",
         error      = jobErr.message,
         startedAt  = startMs,
-        finishedAt = Jobs.Kernel.Net.nowMs())
-      scheduler.jobs = scheduler.jobs.set(spec.id, result)
+        finishedAt = nowMs())
+      scheduler.jobs[spec.id] = result
       return Ok(result)
     }
   }
@@ -392,11 +408,11 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
 /// Drain the entire pending queue, executing each job with `handler`.
 /// Returns the list of results in execution order.
 @stable(since="0.1")
-pub func runAll(scheduler: inout InProcessJobScheduler, handler: in JobHandler): [JobResult] {
-  var results: [JobResult] = []
-  while scheduler.queue.length > 0 {
+pub func runAll(scheduler: inout InProcessJobScheduler, handler: in JobHandler): slice[JobResult] {
+  var results: slice[JobResult] = []
+  while scheduler.queue.count > 0 {
     match runNext(scheduler, handler) {
-      case Ok(r)  -> results = results + [r]
+      case Ok(r)  -> { results = concat(results, [r]) }
       case Err(_) -> ()    // runNext only returns Err on empty queue
     }
   }
@@ -404,13 +420,11 @@ pub func runAll(scheduler: inout InProcessJobScheduler, handler: in JobHandler):
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-
-/// Default scheduling and worker settings.
-config Defaults {
-  maxAttempts:       Int range 1 ..= 10        = 3
-  defaultTimeoutMs:  Int range 1000 ..= 3600000 = 30000
-  workerCount:       Int range 1 ..= 64         = 4
-}
+// Default scheduling and worker settings.
+// (config block emitter not yet implemented; using module-level val constants)
+val defaultMaxAttempts:      Int = 3
+val defaultTimeoutMs:        Int = 30000
+val defaultWorkerCount:      Int = 4
 
 // ─── Factory functions ────────────────────────────────────────────────────────
 
@@ -418,7 +432,7 @@ config Defaults {
 /// Returns a `NativeJobScheduler` backed by the active feature (Hangfire or Quartz).
 @stable(since="0.1")
 pub func connect(): Result[NativeJobScheduler, String] {
-  match Jobs.Kernel.Net.connect(Defaults.workerCount) {
+  match jobsConnectBackend(defaultWorkerCount) {
     case Ok(schedulerId) -> Ok(NativeJobScheduler(schedulerId = schedulerId))
     case Err(msg)        -> Err(msg)
   }
@@ -428,8 +442,8 @@ pub func connect(): Result[NativeJobScheduler, String] {
 @stable(since="0.1")
 pub func inProcess(): InProcessJobScheduler {
   return InProcessJobScheduler(
-    jobs    = Map.empty(),
-    queue   = [],
+    jobs    = newMap(),
+    queue   = newList(),
     counter = 0)
 }
 
@@ -441,10 +455,10 @@ pub func enqueue(
   scheduler: in JobScheduler,
   name:      in String,
   payload:   in String
-): Result[JobId, String]
+): Result[String, String]
   requires: name.length > 0
 {
-  return scheduler.enqueue(name, payload, Defaults.maxAttempts, Defaults.defaultTimeoutMs)
+  return scheduler.enqueue(name, payload, defaultMaxAttempts, defaultTimeoutMs)
 }
 
 /// Enqueue a job with explicit retry and timeout settings.
@@ -455,7 +469,7 @@ pub func enqueueWith(
   payload:     in String,
   maxAttempts: in Int,
   timeoutMs:   in Int
-): Result[JobId, String]
+): Result[String, String]
   requires: name.length > 0
   requires: maxAttempts >= 1
   requires: timeoutMs >= 1
@@ -470,16 +484,16 @@ pub func schedule(
   name:      in String,
   payload:   in String,
   cronExpr:  in String
-): Result[JobId, String]
+): Result[String, String]
   requires: name.length > 0
   requires: cronExpr.length > 0
 {
-  return scheduler.schedule(name, payload, cronExpr, Defaults.maxAttempts, Defaults.defaultTimeoutMs)
+  return scheduler.schedule(name, payload, cronExpr, defaultMaxAttempts, defaultTimeoutMs)
 }
 
 /// Cancel a pending or running job.
 @stable(since="0.1")
-pub func cancel(scheduler: in JobScheduler, jobId: in JobId): Result[Unit, String]
+pub func cancel(scheduler: in JobScheduler, jobId: in String): Result[Unit, String]
   requires: jobId.length > 0
 {
   return scheduler.cancel(jobId)
@@ -487,7 +501,7 @@ pub func cancel(scheduler: in JobScheduler, jobId: in JobId): Result[Unit, Strin
 
 /// Query the current status of a job.
 @stable(since="0.1")
-pub func status(scheduler: in JobScheduler, jobId: in JobId): Result[JobStatus, String]
+pub func status(scheduler: in JobScheduler, jobId: in String): Result[JobStatus, String]
   requires: jobId.length > 0
 {
   return scheduler.status(jobId)
@@ -495,7 +509,7 @@ pub func status(scheduler: in JobScheduler, jobId: in JobId): Result[JobStatus, 
 
 /// Return all recorded results for a job.
 @stable(since="0.1")
-pub func results(scheduler: in JobScheduler, jobId: in JobId): Result[[JobResult], String]
+pub func results(scheduler: in JobScheduler, jobId: in String): Result[JobResultList, String]
   requires: jobId.length > 0
 {
   return scheduler.results(jobId)
@@ -503,15 +517,46 @@ pub func results(scheduler: in JobScheduler, jobId: in JobId): Result[[JobResult
 
 /// Generate a new unique job ID using the platform kernel.
 @stable(since="0.1")
-pub func newJobId(): JobId {
-  return Jobs.Kernel.Net.generateId()
+pub func newJobId(): String {
+  return generateId()
 }
 
-/// Return the current wall-clock time in epoch milliseconds.
-@stable(since="0.1")
-pub func nowMs(): Long {
-  return Jobs.Kernel.Net.nowMs()
-}
+
+
+// ─── Private kernel stubs ─────────────────────────────────────────────────────
+// When neither the hangfire nor the quartz feature is enabled the
+// @cfg-guarded kernel functions are excluded from compilation.  These
+// stubs stand in so the type-checker can resolve the call sites; at
+// runtime they return Err to signal "no backend configured".
+
+func jobsConnectBackend(workerCount: in Int): Result[Int, String] =
+  Err("no backend configured; enable the hangfire or quartz feature in lyric.toml")
+
+func jobsEnqueueBackend(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String] = Err("no backend configured")
+
+func jobsScheduleBackend(
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  cronExpr:    in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
+): Result[String, String] = Err("no backend configured")
+
+func jobsCancelBackend(schedulerId: in Int, jobId: in String): Result[Unit, String] =
+  Err("no backend configured")
+
+func jobsStatusBackend(schedulerId: in Int, jobId: in String): Result[String, String] =
+  Err("no backend configured")
+
+func jobsResultsBackend(schedulerId: in Int, jobId: in String): Result[String, String] =
+  Err("no backend configured")
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
@@ -530,11 +575,11 @@ func parseStatus(raw: in String): JobStatus {
 // Parse a JSON array of job result objects from the kernel into a list.
 // Wire format: [{"jobId":"...","status":"...","output":"...","error":"...",
 //                "startedAt":N,"finishedAt":N},...]
-func parseResults(jobId: in JobId, json: in String): [JobResult] {
+func parseResults(jobId: in String, json: in String): slice[JobResult] {
   if json == "[]" or json == "" {
     return []
   }
-  var results: [JobResult] = []
+  var results: slice[JobResult] = []
   var pos: Int = 0
   while pos < json.length {
     val objStart = json.indexOf("{", pos)
@@ -549,13 +594,13 @@ func parseResults(jobId: in JobId, json: in String): [JobResult] {
         val error      = jsonExtractString(obj, "error")
         val startedAt  = jsonExtractLong(obj, "startedAt")
         val finishedAt = jsonExtractLong(obj, "finishedAt")
-        results = results + [JobResult(
+        results = concat(results, [JobResult(
           jobId      = jobId,
           status     = parseStatus(statusStr),
           output     = output,
           error      = error,
           startedAt  = startedAt,
-          finishedAt = finishedAt)]
+          finishedAt = finishedAt)])
         pos = objEnd + 1
       }
     }
@@ -568,7 +613,7 @@ func findObjectEnd(json: in String, start: in Int): Int {
   var depth: Int = 0
   var i:     Int = start
   while i < json.length {
-    val ch = json.charAt(i)
+    val ch = json[i]
     if ch == '{' { depth = depth + 1 }
     else if ch == '}' {
       depth = depth - 1
@@ -584,7 +629,7 @@ func jsonEscapeStr(s: in String): String {
   var result = ""
   var i = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
+    val ch = s[i].toString()
     if ch == "\\" {
       result = result + "\\\\"
     } else if ch == "\"" {
@@ -620,17 +665,17 @@ func jsonExtractString(json: in String, field: in String): String {
 func jsonExtractLong(json: in String, field: in String): Long {
   val needle = "\"" + field + "\":"
   val start  = json.indexOf(needle)
-  if start < 0 { return 0L }
+  if start < 0 { return 0i64 }
   val afterColon = start + needle.length
   var i: Int = afterColon
-  while i < json.length and json.charAt(i) == ' ' { i = i + 1 }
+  while i < json.length and json[i] == ' ' { i = i + 1 }
   var numStr: String = ""
-  while i < json.length and json.charAt(i) != ',' and json.charAt(i) != '}' {
-    numStr = numStr + json.charAt(i).toString()
+  while i < json.length and json[i] != ',' and json[i] != '}' {
+    numStr = numStr + json[i].toString()
     i = i + 1
   }
-  match Std.Core.parseLong(numStr.trim()) {
+  match parseOptLong(numStr.trim()) {
     case Some(n) -> return n
-    case None    -> return 0L
+    case None    -> return 0i64
   }
 }

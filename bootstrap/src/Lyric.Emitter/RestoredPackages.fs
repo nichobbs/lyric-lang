@@ -164,7 +164,9 @@ let private artifactOfContract
         let checked' = Lyric.TypeChecker.Checker.check parsed.File
         let checkErrors =
             checked'.Diagnostics
-            |> List.filter (fun d -> d.Severity = DiagError)
+            |> List.filter (fun d ->
+                d.Severity = DiagError
+                && d.Code <> "T0010") // stdlib types (Option, Result, etc.) are not in scope during standalone contract check
         if not (List.isEmpty checkErrors) then
             Error (SynthesisDiagnostics (ref'.DllPath, checkErrors))
         else

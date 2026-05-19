@@ -46,7 +46,12 @@ extern package com.amazonaws.lambda {
   /// Register the LambdaApp with the Java Lambda managed runtime.
   /// Blocks until the Lambda execution environment exits the JVM process.
   pub func serve(
-    app:       Lambda.LambdaApp,
+    app:       LambdaApp,
     localPort: Int
   ): Unit
+}
+
+/// Start the JVM Lambda managed runtime (delegates to com.amazonaws.lambda).
+pub func serve(app: in LambdaApp, localPort: in Int): Unit {
+  com.amazonaws.lambda.serve(app, localPort)
 }

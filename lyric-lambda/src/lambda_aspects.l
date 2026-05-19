@@ -36,6 +36,7 @@
 package Lambda.Aspects
 
 import Std.Core
+import Web
 import Lambda
 
 // ─── EventLogging ─────────────────────────────────────────────────────────────
@@ -65,8 +66,8 @@ pub aspect EventLogging {
       ret = call.proceed()
       val elapsedMs = Std.Core.currentTimeMs() - startMs
       val outcome = match ret {
-        Ok(_)  => "ok"
-        Err(_) => "err"
+        case Ok(_)  -> "ok"
+        case Err(_) -> "err"
       }
       Std.Core.log(logLevel,
         call.qualifiedName + " " + outcome + " " + elapsedMs.toString() + "ms")

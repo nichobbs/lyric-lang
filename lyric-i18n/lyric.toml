@@ -11,8 +11,7 @@ output          = "single"
 output_assembly = "I18n.dll"
 
 [project.packages]
-"I18n"            = "src"
-"I18n.Kernel.Net" = "src/_kernel/net"
+"I18n" = "src/i18n.l"
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../lyric-stdlib" }

@@ -11,13 +11,13 @@ output          = "single"
 output_assembly = "Db.dll"
 
 [project.packages]
-"Db"             = "src"
-"Db.Aspects"     = "src"
-"Db.Kernel.Net"  = "src/_kernel/net"
+"Db"            = "src/db.l"
+"Db.Kernel.Net" = "src/_kernel/net/db_kernel.l"
 
 [features]
 postgres = []    # enable the Npgsql (PostgreSQL) driver
 sqlite   = []    # enable the Microsoft.Data.Sqlite driver
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
+"Lyric.Stdlib"  = { path = "../lyric-stdlib" }
+"Std.Logging"   = { path = "../lyric-logging" }

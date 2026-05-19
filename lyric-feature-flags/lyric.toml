@@ -11,8 +11,8 @@ output          = "single"
 output_assembly = "Flags.dll"
 
 [project.packages]
-"Flags"            = "src"
-"Flags.Aspects"    = "src"
+"Flags"            = "src/flags.l"
+"Flags.Aspects"    = "src/flags_aspects.l"
 "Flags.Kernel.Net" = "src/_kernel/net"
 
 [features]

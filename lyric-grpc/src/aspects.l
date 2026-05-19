@@ -45,6 +45,7 @@
 package Grpc.Aspects
 
 import Std.Core
+import Grpc.Types
 import Grpc
 import Auth
 import Resilience
@@ -151,8 +152,9 @@ pub aspect RequiresGrpcRole {
         } else {
           val claimOpt = Auth.extractClaim(args.authToken, "role")
           match claimOpt {
-            case None ->
+            case None -> {
               ret = Err(Grpc.permissionDenied("Token does not carry a role claim"))
+            }
             case Some(roleValue) -> {
               if Auth.rolesContain(allowedRoles, roleValue) {
                 ret = call.proceed()

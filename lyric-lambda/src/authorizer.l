@@ -41,6 +41,7 @@
 package Lambda.Authorizer
 
 import Std.Core
+import Std.Collections
 
 // ─── REST API TOKEN authorizer event ─────────────────────────────────────────
 
@@ -87,12 +88,12 @@ pub record RequestAuthorizerContext {
 /// but all request metadata is available for policy enrichment.
 @stable(since="0.1")
 pub record RequestAuthorizerEvent {
-  type:                String   // always "REQUEST"
+  authorizerType:      String   // always "REQUEST"
   methodArn:           String
   headers:             Option[Map[String, String]]
-  multiValueHeaders:   Option[Map[String, [String]]]
+  multiValueHeaders:   Option[Map[String, slice[String]]]
   queryStringParameters:          Option[Map[String, String]]
-  multiValueQueryStringParameters: Option[Map[String, [String]]]
+  multiValueQueryStringParameters: Option[Map[String, slice[String]]]
   pathParameters:      Option[Map[String, String]]
   stageVariables:      Option[Map[String, String]]
   requestContext:      RequestAuthorizerContext
@@ -132,13 +133,13 @@ pub record HttpAuthorizerRequestContext {
 @stable(since="0.1")
 pub record HttpAuthorizerEvent {
   version:               String   // always "2.0"
-  type:                  String   // always "REQUEST"
+  authorizerType:        String   // always "REQUEST"
   routeArn:              String
   identitySource:        String   // resolved identity source value
   routeKey:              String
   rawPath:               String
   rawQueryString:        String
-  cookies:               Option[[String]]
+  cookies:               Option[slice[String]]
   headers:               Map[String, String]
   queryStringParameters: Option[Map[String, String]]
   pathParameters:        Option[Map[String, String]]
@@ -164,15 +165,15 @@ pub union IamEffect {
 @stable(since="0.1")
 pub record IamStatement {
   effect:   IamEffect
-  action:   [String]   // e.g. ["execute-api:Invoke"]
-  resource: [String]   // method ARNs; may contain wildcards
+  action:   slice[String]   // e.g. ["execute-api:Invoke"]
+  resource: slice[String]   // method ARNs; may contain wildcards
 }
 
 /// IAM policy document returned to API Gateway by a REST API authorizer.
 @stable(since="0.1")
 pub record IamPolicyDocument {
   version:   String          // always "2012-10-17"
-  statement: [IamStatement]
+  statement: slice[IamStatement]
 }
 
 /// Full authorizer response for REST API TOKEN and REQUEST authorizers.
@@ -202,8 +203,8 @@ pub func allow(principalId: in String, methodArn: in String): AuthorizerResponse
     principalId        = principalId,
     policyDocument     = IamPolicyDocument(
       version   = "2012-10-17",
-      statement = [IamStatement(effect = IamEffect.Allow, action = ["execute-api:Invoke"], resource = [methodArn])]),
-    context            = Map[String, String].empty(),
+      statement = [IamStatement(effect = Allow, action = ["execute-api:Invoke"], resource = [methodArn])]),
+    context            = newMap(),
     usageIdentifierKey = None)
 }
 
@@ -215,14 +216,16 @@ pub func allowAll(principalId: in String, methodArn: in String): AuthorizerRespo
   requires: principalId.length > 0
   requires: methodArn.length > 0
 {
-  val parts     = methodArn.splitOn("/")
+  // Derive the stage wildcard from the method ARN by keeping only
+  // the first two slash-separated segments (arnBase/stage) and appending "/*".
+  val parts     = methodArn.split("/")
   val stageBase = parts[0] + "/" + parts[1] + "/*"
   return AuthorizerResponse(
     principalId        = principalId,
     policyDocument     = IamPolicyDocument(
       version   = "2012-10-17",
-      statement = [IamStatement(effect = IamEffect.Allow, action = ["execute-api:Invoke"], resource = [stageBase])]),
-    context            = Map[String, String].empty(),
+      statement = [IamStatement(effect = Allow, action = ["execute-api:Invoke"], resource = [stageBase])]),
+    context            = newMap(),
     usageIdentifierKey = None)
 }
 
@@ -236,8 +239,8 @@ pub func deny(principalId: in String, methodArn: in String): AuthorizerResponse
     principalId        = principalId,
     policyDocument     = IamPolicyDocument(
       version   = "2012-10-17",
-      statement = [IamStatement(effect = IamEffect.Deny, action = ["execute-api:Invoke"], resource = [methodArn])]),
-    context            = Map[String, String].empty(),
+      statement = [IamStatement(effect = Deny, action = ["execute-api:Invoke"], resource = [methodArn])]),
+    context            = newMap(),
     usageIdentifierKey = None)
 }
 
@@ -280,7 +283,7 @@ pub record HttpAuthorizerResponse {
 /// Allow the request to proceed with no context.
 @stable(since="0.1")
 pub func authorized(): HttpAuthorizerResponse {
-  return HttpAuthorizerResponse(isAuthorized = true, context = Map[String, String].empty())
+  return HttpAuthorizerResponse(isAuthorized = true, context = newMap())
 }
 
 /// Allow the request to proceed, forwarding context to the backend handler.
@@ -292,5 +295,5 @@ pub func authorizedWithContext(ctx: in Map[String, String]): HttpAuthorizerRespo
 /// Deny the request.  API Gateway returns 403 Forbidden to the caller.
 @stable(since="0.1")
 pub func denied(): HttpAuthorizerResponse {
-  return HttpAuthorizerResponse(isAuthorized = false, context = Map[String, String].empty())
+  return HttpAuthorizerResponse(isAuthorized = false, context = newMap())
 }

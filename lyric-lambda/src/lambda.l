@@ -44,8 +44,19 @@
 package Lambda
 
 import Std.Core
+import Std.Iter
 import Web
 import Lambda.Kernel.Runtime as LambdaRuntime
+
+// ─── DirectHandler ───────────────────────────────────────────────────────────
+
+/// An AOT-rooted handler wrapping a function reference.
+/// Created exclusively by the typed factory functions in Lambda.Direct.
+/// The kernel holds the delegate directly without reflection.
+@stable(since="0.1")
+pub opaque type DirectHandler {
+  // kernel-held delegate; eventSource key for dispatch
+}
 
 // ─── LambdaContext ────────────────────────────────────────────────────────────
 
@@ -72,14 +83,9 @@ pub record LambdaContext {
 /// Typed error union for Lambda handler failures.
 @stable(since="0.1")
 pub union LambdaError {
-  /// The handler returned an application-level error.
   case HandlerError(message: String, errorType: String)
-  /// The kernel could not deserialise the event payload into the expected type.
   case ParseError(message: String)
-  /// The handler was not invoked because the deadline was too close.
-  /// remainingMs carries the time left at the point the guard fired.
   case TimeoutError(remainingMs: Long)
-  /// An unexpected runtime failure (DLL reflection miss, unhandled exception, etc.).
   case InternalError(message: String)
 }
 
@@ -87,10 +93,10 @@ pub union LambdaError {
 @stable(since="0.1")
 pub func errorMessage(err: in LambdaError): String {
   match err {
-    HandlerError(msg, t) => return t + ": " + msg
-    ParseError(msg)      => return "ParseError: " + msg
-    TimeoutError(ms)     => return "TimeoutError: " + ms.toString() + "ms remaining"
-    InternalError(msg)   => return "InternalError: " + msg
+    case HandlerError(msg, t) -> return t + ": " + msg
+    case ParseError(msg)      -> return "ParseError: " + msg
+    case TimeoutError(ms)     -> return "TimeoutError: " + ms.toString() + "ms remaining"
+    case InternalError(msg)   -> return "InternalError: " + msg
   }
 }
 
@@ -139,11 +145,11 @@ pub record AuthorizerHandler {
 /// based handlers are the fallback for non-AOT builds.
 @stable(since="0.1")
 pub record LambdaApp {
-  httpRouter:          Option[Web.Router]
+  httpRouter:          Option[Router]
   streamingHandler:    Option[String]           // qualified name of a streaming HTTP handler
-  eventHandlers:       [EventHandler]
-  authorizerHandlers:  [AuthorizerHandler]
-  directHandlers:      [Lambda.Direct.DirectHandler]  // AOT-safe function-reference handlers
+  eventHandlers:       slice[EventHandler]
+  authorizerHandlers:  slice[AuthorizerHandler]
+  directHandlers:      slice[DirectHandler]  // AOT-safe function-reference handlers
 }
 
 /// Empty application.
@@ -163,7 +169,7 @@ pub func newApp(): LambdaApp {
 /// as Web.start().  CORS config is read from the Web.Cors config block.
 /// Cannot be combined with withStreamingHandler in the same LambdaApp.
 @stable(since="0.1")
-pub func withRouter(app: in LambdaApp, router: in Web.Router): LambdaApp {
+pub func withRouter(app: in LambdaApp, router: in Router): LambdaApp {
   return LambdaApp(
     httpRouter         = Some(router),
     streamingHandler   = app.streamingHandler,
@@ -193,13 +199,13 @@ pub func withStreamingHandler(app: in LambdaApp, handlerName: in String): Lambda
 /// Register an AOT-compatible direct handler created with Lambda.Direct.*Handler().
 /// Replaces the string-based on*() registration for Native AOT builds.
 @stable(since="0.1")
-pub func withDirect(app: in LambdaApp, handler: in Lambda.Direct.DirectHandler): LambdaApp {
+pub func withDirect(app: in LambdaApp, handler: in DirectHandler): LambdaApp {
   return LambdaApp(
     httpRouter         = app.httpRouter,
     streamingHandler   = app.streamingHandler,
     eventHandlers      = app.eventHandlers,
     authorizerHandlers = app.authorizerHandlers,
-    directHandlers     = app.directHandlers + [handler])
+    directHandlers     = concat(app.directHandlers, [handler]))
 }
 
 // Private helper — adds an EventHandler to the app.
@@ -211,7 +217,7 @@ func addHandler(app: in LambdaApp, src: in String, name: in String): LambdaApp
   return LambdaApp(
     httpRouter         = app.httpRouter,
     streamingHandler   = app.streamingHandler,
-    eventHandlers      = app.eventHandlers + [h],
+    eventHandlers      = concat(app.eventHandlers, [h]),
     authorizerHandlers = app.authorizerHandlers,
     directHandlers     = app.directHandlers)
 }
@@ -226,7 +232,7 @@ func addAuthorizerHandler(app: in LambdaApp, authType: in String, name: in Strin
     httpRouter         = app.httpRouter,
     streamingHandler   = app.streamingHandler,
     eventHandlers      = app.eventHandlers,
-    authorizerHandlers = app.authorizerHandlers + [h],
+    authorizerHandlers = concat(app.authorizerHandlers, [h]),
     directHandlers     = app.directHandlers)
 }
 
@@ -361,7 +367,7 @@ pub func onHttpAuthorizer(app: in LambdaApp, handlerName: in String): LambdaApp
 /// In production (feature="aws") localPort is unused.
 /// In local mode (feature="local") localPort is the port for the test server.
 config Runtime {
-  localPort: Int range 1..=65535 = 9000
+  localPort: Int = 9000
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -382,6 +388,19 @@ config Runtime {
 ///   Response: the Lambda response JSON.
 ///   Compatible with `aws lambda invoke` and `sam local invoke`.
 @stable(since="0.1")
+@cfg(feature = "aws")
+pub func serve(app: in LambdaApp): Unit {
+  LambdaRuntime.serve(app, Runtime.localPort)
+}
+
+@stable(since="0.1")
+@cfg(feature = "local")
+pub func serve(app: in LambdaApp): Unit {
+  LambdaRuntime.serve(app, Runtime.localPort)
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
 pub func serve(app: in LambdaApp): Unit {
   LambdaRuntime.serve(app, Runtime.localPort)
 }

@@ -13,13 +13,9 @@
 //   val locale = I18n.makeLocale("en-US")
 //   println(I18n.translateLocale(store, "greeting", locale))
 //
-//   val vars = Map.empty().set("name", "Alice")
+//   val vars = newMap()
+//   vars.add("name", "Alice")
 //   println(I18n.translateWithLocale(store, "greeting", locale, vars))
-//
-// Runtime config env vars (LYRIC_CONFIG_I18NCONFIG_*):
-//   LYRIC_CONFIG_I18NCONFIG_DEFAULTLOCALE     — default locale tag (default: "en")
-//   LYRIC_CONFIG_I18NCONFIG_FALLBACKLOCALE    — fallback locale tag (default: "en")
-//   LYRIC_CONFIG_I18NCONFIG_TRANSLATIONSPATH  — path to translations directory (default: "translations")
 //
 // See docs/03-decision-log.md and lyric-i18n/README.md.
 
@@ -29,8 +25,7 @@ package I18n
 import Std.Core
 import Std.Collections
 import Std.Json
-import I18n.Kernel.Net
-import I18n.Kernel.Jvm
+import Std.File as File
 
 // ─── Locale type ──────────────────────────────────────────────────────────────
 
@@ -69,7 +64,7 @@ pub interface TranslationStore {
     requires: key.length > 0
 
   /// Return all locales for which at least one translation key is registered.
-  func availableLocales(): [Locale]
+  func availableLocales(): slice[Locale]
 
   /// Return true if `key` has a translation registered for `locale`.
   func hasKey(key: in String, locale: in Locale): Bool
@@ -78,111 +73,66 @@ pub interface TranslationStore {
 
 // ─── InProcessTranslationStore ────────────────────────────────────────────────
 
-/// In-process translation store backed by a nested `Map`.
+/// In-process translation store backed by a flat `Map[String, String]`.
 ///
-/// The outer key is the locale key string (e.g. "en-US" or "en"); the inner
-/// key is the translation key; the value is the raw template string.
+/// Keys are compound: `"<localeKey>|<translationKey>"`, e.g. `"en-US|greeting"`.
+/// This avoids nested generic maps, which the bootstrap emitter cannot index
+/// reliably in impl blocks.
 @stable(since="0.1")
 pub record InProcessTranslationStore {
-  var translations: Map[String, Map[String, String]]
+  var translations: Map[String, String]
+  var localeKeys:   List[String]
 }
 
 impl TranslationStore for InProcessTranslationStore {
   func translate(key: in String, locale: in Locale): String {
     val fullKey = localeKey(locale)
-    // Try full locale key first (e.g. "en-US").
-    match translations.get(fullKey) {
-      case Some(inner) ->
-        match inner.get(key) {
-          case Some(v) -> return v
-          case None    -> ()
-        }
-      case None -> ()
+    val compoundFull = fullKey + "|" + key
+    val r1 = mapGet(self.translations, compoundFull)
+    if isSome(r1) {
+      return unwrapOr(r1, key)
     }
-    // Fall back to language-only key (e.g. "en").
     if locale.region.length > 0 {
-      match translations.get(locale.language) {
-        case Some(inner) ->
-          match inner.get(key) {
-            case Some(v) -> return v
-            case None    -> ()
-          }
-        case None -> ()
+      val compoundLang = locale.language + "|" + key
+      val r2 = mapGet(self.translations, compoundLang)
+      if isSome(r2) {
+        return unwrapOr(r2, key)
       }
     }
-    // Final fallback: return the key itself.
     return key
   }
 
   func translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String {
-    val template = translate(key, locale)
+    val template = self.translate(key, locale)
     return substitutePlaceholders(template, vars)
   }
 
-  func availableLocales(): [Locale] {
-    var result: [Locale] = []
-    for (lk, _) in translations {
-      result = result + [parseLocaleKey(lk)]
+  func availableLocales(): slice[Locale] {
+    val result: List[Locale] = newList()
+    var i: Int = 0
+    while i < self.localeKeys.count {
+      result.add(parseLocaleKey(self.localeKeys[i]))
+      i = i + 1
     }
-    return result
+    return result.toArray()
   }
 
   func hasKey(key: in String, locale: in Locale): Bool {
     val fullKey = localeKey(locale)
-    match translations.get(fullKey) {
-      case Some(inner) ->
-        match inner.get(key) {
-          case Some(_) -> return true
-          case None    -> ()
-        }
-      case None -> ()
+    val compoundFull = fullKey + "|" + key
+    val r1 = mapGet(self.translations, compoundFull)
+    if isSome(r1) {
+      return true
     }
     if locale.region.length > 0 {
-      match translations.get(locale.language) {
-        case Some(inner) ->
-          match inner.get(key) {
-            case Some(_) -> return true
-            case None    -> ()
-          }
-        case None -> ()
+      val compoundLang = locale.language + "|" + key
+      val r2 = mapGet(self.translations, compoundLang)
+      if isSome(r2) {
+        return true
       }
     }
     return false
   }
-}
-
-// ─── NativeTranslationStore (file-system backed) ──────────────────────────────
-
-// Integer handle issued by the kernel; opaque to consumers.
-record NativeTranslationStore { storeHandle: Int }
-
-impl TranslationStore for NativeTranslationStore {
-  func translate(key: in String, locale: in Locale): String {
-    return i18nKernelTranslate(storeHandle, key, localeKey(locale))
-  }
-
-  func translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String {
-    val template = translate(key, locale)
-    return substitutePlaceholders(template, vars)
-  }
-
-  func availableLocales(): [Locale] {
-    val json = i18nKernelAvailableLocalesJson(storeHandle)
-    return parseLocaleArray(json)
-  }
-
-  func hasKey(key: in String, locale: in Locale): Bool {
-    return i18nKernelHasKey(storeHandle, key, localeKey(locale))
-  }
-}
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-/// I18n configuration: locale defaults and translation file path.
-config I18nConfig {
-  defaultLocale:     String = "en"
-  fallbackLocale:    String = "en"
-  translationsPath:  String = "translations"
 }
 
 // ─── Factory functions ────────────────────────────────────────────────────────
@@ -190,8 +140,9 @@ config I18nConfig {
 /// Create an empty in-process translation store.
 @stable(since="0.1")
 pub func inProcess(): InProcessTranslationStore {
-  return InProcessTranslationStore(translations = Map.empty())
+  return InProcessTranslationStore(translations = newMap(), localeKeys = newList())
 }
+
 
 /// Parse a translations JSON object and return an in-process store.
 ///
@@ -199,42 +150,24 @@ pub func inProcess(): InProcessTranslationStore {
 ///   { "en": { "key": "value", ... }, "fr": { "key": "valeur", ... }, ... }
 @stable(since="0.1")
 pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError] {
-  match i18nKernelParseTranslationsJson(json) {
-    case Err(msg) ->
-      return Err(I18nError(message = msg, code = "PARSE_ERROR"))
-    case Ok(triplesJson) -> {
-      val store = buildStoreFromTriples(triplesJson)
-      return Ok(store)
-    }
-  }
+  val store = buildStoreFromObject(json)
+  return Ok(store)
 }
 
-/// Load translations from the path configured in `I18nConfig.translationsPath`.
-/// Returns an `InProcessTranslationStore` backed by a parsed in-memory map.
+/// Load translations from `path` and return an in-process store.
 @stable(since="0.1")
-pub func loadFromPath(): Result[InProcessTranslationStore, I18nError] {
-  match i18nKernelLoadFromPath(I18nConfig.translationsPath) {
-    case Err(msg) ->
-      return Err(I18nError(message = msg, code = "LOAD_ERROR"))
-    case Ok(json) ->
-      return fromJson(json)
+pub func loadFromPath(path: in String): Result[InProcessTranslationStore, I18nError] {
+  val readResult = readText(path)
+  if isErr(readResult) {
+    return Err(I18nError(message = "Failed to read file: " + path, code = "LOAD_ERROR"))
   }
-}
-
-/// Load translations from the path and return a kernel-backed `NativeTranslationStore`.
-/// Prefer `loadFromPath` for most uses; use `loadNative` when the translation
-/// file is large enough that an in-memory copy is undesirable.
-@stable(since="0.1")
-pub func loadNative(): Result[NativeTranslationStore, I18nError] {
-  match i18nKernelLoadStore(I18nConfig.translationsPath, I18nConfig.fallbackLocale) {
-    case Ok(handle) -> Ok(NativeTranslationStore(storeHandle = handle))
-    case Err(msg)   -> Err(I18nError(message = msg, code = "LOAD_ERROR"))
-  }
+  val json = unwrapResultOr(readResult, "")
+  return fromJson(json)
 }
 
 // ─── Convenience functions ────────────────────────────────────────────────────
 
-/// Translate `key` using the default locale from `I18nConfig`.
+/// Translate `key` using the default locale ("en").
 @stable(since="0.1")
 pub func translate(store: in TranslationStore, key: in String): String
   requires: key.length > 0
@@ -292,42 +225,26 @@ pub func localeKey(locale: in Locale): String {
   }
 }
 
-/// Return the default locale parsed from `I18nConfig.defaultLocale`.
+/// Return the default locale ("en").
 @stable(since="0.1")
 pub func defaultLocale(): Locale {
-  return parseLocaleKey(I18nConfig.defaultLocale)
+  return parseLocaleKey("en")
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-
-// Parse a JSON array of locale-key strings (from availableLocalesJson) into [Locale].
-func parseLocaleArray(json: in String): [Locale] {
-  var result: [Locale] = []
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  if Std.Json.valueKind(root) != 2 { return result }
-  var en = Std.Json.enumerateArray(root)
-  while Std.Json.arrayMoveNext(en) {
-    val elem = Std.Json.arrayCurrent(en)
-    if Std.Json.valueKind(elem) == 3 {
-      result = result + [parseLocaleKey(Std.Json.getString(elem))]
-    }
-  }
-  return result
-}
 
 // Parse a BCP 47 locale key string into a Locale.
 // "en-US" → Locale(language = "en", region = "US"); "en" → Locale(language = "en", region = "")
 func parseLocaleKey(key: in String): Locale {
   var i: Int = 0
-  while i < key.length and key.charAt(i).toString() != "-" {
+  while i < key.length and key.substring(i, 1) != "-" {
     i = i + 1
   }
   if i >= key.length {
     return Locale(language = key, region = "")
   } else {
     val lang   = key.substring(0, i)
-    val region = key.substring(i + 1, key.length)
+    val region = key.substring(i + 1, key.length - i - 1)
     return Locale(language = lang, region = region)
   }
 }
@@ -339,36 +256,34 @@ val maxSubstOutputLength: Int = 1048576
 // Substitute {varName} placeholders in `template` using values from `vars`.
 // Unknown placeholder keys are left unchanged in the output.
 // Substitution values are inserted verbatim; they are NOT re-scanned for
-// further placeholders.  Returns `template` unchanged if the accumulated
-// output (literal characters plus substitution values) would exceed
-// `maxSubstOutputLength` characters.  Templates whose literal text alone
-// exceeds `maxSubstOutputLength` therefore return early with no substitutions
-// applied — callers relying on substitution must keep templates below this limit.
+// further placeholders.  Returns `template` unchanged if the expanded output
+// would exceed `maxSubstOutputLength` characters.
 func substitutePlaceholders(template: in String, vars: in Map[String, String]): String {
   var buf: String = ""
   var i:   Int    = 0
   while i < template.length {
-    val ch = template.charAt(i).toString()
+    val ch = template.substring(i, 1)
     if ch == "{" {
       // Scan forward to find the closing '}'.
       var j: Int = i + 1
-      while j < template.length and template.charAt(j).toString() != "}" {
+      while j < template.length and template.substring(j, 1) != "}" {
         j = j + 1
       }
       if j >= template.length {
         // No closing brace found; emit everything from i and stop.
-        buf = buf + template.substring(i, template.length)
+        buf = buf + template.substring(i, template.length - i)
         i   = template.length
       } else {
-        val varName = template.substring(i + 1, j)
-        match vars.get(varName) {
-          case Some(value) -> {
-            if out.length + value.length > maxSubstOutputLength {
-              return template
-            }
-            buf = buf + value
+        val varName = template.substring(i + 1, j - i - 1)
+        val getResult = mapGet(vars, varName)
+        if isSome(getResult) {
+          val value = unwrapOr(getResult, "")
+          if buf.length + value.length > maxSubstOutputLength {
+            return template
           }
-          case None -> buf = buf + "{" + varName + "}"
+          buf = buf + value
+        } else {
+          buf = buf + "{" + varName + "}"
         }
         i = j + 1
       }
@@ -380,89 +295,46 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
   return buf
 }
 
-// Build an InProcessTranslationStore from a JSON array of [localeKey, key, value] triples.
-// The kernel produces a JSON array of 3-element arrays; parsed via Std.Json.
-func buildStoreFromTriples(triplesJson: in String): InProcessTranslationStore {
-  var m: Map[String, Map[String, String]] = Map.empty()
-  val doc    = Std.Json.parseJson(triplesJson)
-  val root   = Std.Json.rootElement(doc)
-  var outerEn = Std.Json.enumerateArray(root)
-  while Std.Json.arrayMoveNext(outerEn) {
-    val triple  = Std.Json.arrayCurrent(outerEn)
-    var innerEn = Std.Json.enumerateArray(triple)
-    var parts: [String] = []
-    while Std.Json.arrayMoveNext(innerEn) {
-      val elem = Std.Json.arrayCurrent(innerEn)
-      parts = parts + [Std.Json.getString(elem)]
-    }
-    if parts.length == 3 {
-      val lk  = parts[0]
-      val key = parts[1]
-      val value = parts[2]
-      match m.get(lk) {
-        case Some(inner) -> m = m.set(lk, inner.set(key, value))
-        case None        -> m = m.set(lk, Map.empty().set(key, value))
+// Build an InProcessTranslationStore by directly parsing the translations JSON object.
+// Expected format: { "en": { "key": "value", ... }, "fr": { ... }, ... }
+// Keys in the flat map are compound: "<localeKey>|<translationKey>".
+func buildStoreFromObject(json: in String): InProcessTranslationStore {
+  var m:    Map[String, String] = newMap()
+  var keys: List[String] = newList()
+  val doc     = parseJson(json)
+  val root    = rootElement(doc)
+  if valueKind(root) != 1 {
+    return InProcessTranslationStore(translations = m, localeKeys = keys)
+  }
+  var outerEn = enumerateObject(root)
+  while objectMoveNext(outerEn) {
+    val localeProp = objectCurrent(outerEn)
+    val lk = propertyName(localeProp)
+    val localeVal = propertyValue(localeProp)
+    if valueKind(localeVal) == 1 {
+      var innerEn = enumerateObject(localeVal)
+      while objectMoveNext(innerEn) {
+        val tkeyProp = objectCurrent(innerEn)
+        val tkey = propertyName(tkeyProp)
+        val tval = getString(propertyValue(tkeyProp))
+        val compound = lk + "|" + tkey
+        if not m.containsKey(compound) {
+          m.add(compound, tval)
+        }
+      }
+      // Track locale keys (without duplicates).
+      var found: Bool = false
+      var ki: Int = 0
+      while ki < keys.count {
+        if keys[ki] == lk {
+          found = true
+        }
+        ki = ki + 1
+      }
+      if not found {
+        keys.add(lk)
       }
     }
   }
-  return InProcessTranslationStore(translations = m)
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-func i18nKernelLoadFromPath(path: in String): Result[String, String] {
-  return I18n.Kernel.Net.loadFromPath(path)
-}
-@cfg(feature = "jvm")
-func i18nKernelLoadFromPath(path: in String): Result[String, String] {
-  return I18n.Kernel.Jvm.loadFromPath(path)
-}
-
-@cfg(feature = "dotnet")
-func i18nKernelParseTranslationsJson(json: in String): Result[String, String] {
-  return I18n.Kernel.Net.parseTranslationsJson(json)
-}
-@cfg(feature = "jvm")
-func i18nKernelParseTranslationsJson(json: in String): Result[String, String] {
-  return I18n.Kernel.Jvm.parseTranslationsJson(json)
-}
-
-@cfg(feature = "dotnet")
-func i18nKernelLoadStore(path: in String, fallbackLocale: in String): Result[Int, String] {
-  return I18n.Kernel.Net.loadStore(path, fallbackLocale)
-}
-@cfg(feature = "jvm")
-func i18nKernelLoadStore(path: in String, fallbackLocale: in String): Result[Int, String] {
-  return I18n.Kernel.Jvm.loadStore(path, fallbackLocale)
-}
-
-@cfg(feature = "dotnet")
-func i18nKernelTranslate(storeHandle: in Int, key: in String, localeKey: in String): String {
-  return I18n.Kernel.Net.translate(storeHandle, key, localeKey)
-}
-@cfg(feature = "jvm")
-func i18nKernelTranslate(storeHandle: in Int, key: in String, localeKey: in String): String {
-  return I18n.Kernel.Jvm.translate(storeHandle, key, localeKey)
-}
-
-@cfg(feature = "dotnet")
-func i18nKernelAvailableLocalesJson(storeHandle: in Int): String {
-  return I18n.Kernel.Net.availableLocalesJson(storeHandle)
-}
-@cfg(feature = "jvm")
-func i18nKernelAvailableLocalesJson(storeHandle: in Int): String {
-  return I18n.Kernel.Jvm.availableLocalesJson(storeHandle)
-}
-
-@cfg(feature = "dotnet")
-func i18nKernelHasKey(storeHandle: in Int, key: in String, localeKey: in String): Bool {
-  return I18n.Kernel.Net.hasKey(storeHandle, key, localeKey)
-}
-@cfg(feature = "jvm")
-func i18nKernelHasKey(storeHandle: in Int, key: in String, localeKey: in String): Bool {
-  return I18n.Kernel.Jvm.hasKey(storeHandle, key, localeKey)
+  return InProcessTranslationStore(translations = m, localeKeys = keys)
 }

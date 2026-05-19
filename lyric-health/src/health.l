@@ -1,6 +1,6 @@
 // Health — liveness and readiness health-check endpoints for lyric-web services.
 //
-// Registers `/health/live` and `/health/ready` routes on a `Web.Router`.
+// Registers `/health/live` and `/health/ready` routes on a `Router`.
 // Check functions are stored in a `HealthRegistry` value and run on each
 // request to the corresponding endpoint.
 //
@@ -18,7 +18,7 @@
 //
 //   func main(): Unit {
 //     var router = Web.create()
-//     router = Web.addGet(router, "/users/{id}", "MyService.Handlers.getUser")
+//     router = addGet(router, "/users/{id}", "MyService.Handlers.getUser")
 //
 //     var health = Health.create()
 //     health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
@@ -41,6 +41,7 @@
 package Health
 
 import Std.Core
+import Std.Iter
 import Web
 
 // ─── Check descriptor ─────────────────────────────────────────────────────────
@@ -72,13 +73,14 @@ pub record HealthCheck {
 /// `Health.registerRoutes(router, registry)`.
 @stable(since="0.1")
 pub record HealthRegistry {
-  checks: [HealthCheck]
+  checks: slice[HealthCheck]
 }
 
 /// Create an empty registry.
 @stable(since="0.1")
 pub func create(): HealthRegistry {
-  return HealthRegistry(checks = [])
+  val empty: slice[HealthCheck] = []
+  return HealthRegistry(checks = empty)
 }
 
 /// Register a liveness check.
@@ -99,7 +101,7 @@ pub func addLivenessCheck(
     name        = name,
     group       = CheckGroup.Liveness,
     handlerName = handlerName)
-  return HealthRegistry(checks = registry.checks + [check])
+  return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
 /// Register a readiness check.
@@ -120,7 +122,7 @@ pub func addReadinessCheck(
     name        = name,
     group       = CheckGroup.Readiness,
     handlerName = handlerName)
-  return HealthRegistry(checks = registry.checks + [check])
+  return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -145,9 +147,9 @@ val readinessHandlerName = "Health.__handleReadiness"
 ///   GET <Endpoints.livePath>   → run all Liveness checks
 ///   GET <Endpoints.readyPath>  → run all Readiness checks
 @stable(since="0.1")
-pub func registerRoutes(router: in Web.Router, registry: in HealthRegistry): Web.Router {
-  val r1 = Web.addGet(router, Endpoints.livePath,  livenessHandlerName)
-  val r2 = Web.addGet(r1,     Endpoints.readyPath, readinessHandlerName)
+pub func registerRoutes(router: in Router, registry: in HealthRegistry): Router {
+  val r1 = addGet(router, "/health/live",  "Health.__handleLiveness")
+  val r2 = addGet(r1,     "/health/ready", "Health.__handleReadiness")
   return attachRegistry(r2, registry)
 }
 
@@ -160,9 +162,7 @@ pub func registerRoutes(router: in Web.Router, registry: in HealthRegistry): Web
 /// this function by name.  Do not call it directly from application code.
 /// Until the kernel dispatcher ships, `runChecks` is a stub that always
 /// returns `{"status":"ok"}` regardless of registered checks — see below.
-/// Intentionally NOT @stable: signature may change when the real kernel
-/// dispatcher lands.  Excluded from the public-api-diff baseline.
-pub func __handleLiveness(): Result[String, Web.ApiError] {
+pub func __handleLiveness(): Result[String, ApiError] {
   return runChecks(CheckGroup.Liveness)
 }
 
@@ -170,8 +170,7 @@ pub func __handleLiveness(): Result[String, Web.ApiError] {
 /// returns the aggregated JSON response.
 ///
 /// WARNING: same caveats as `__handleLiveness`; stub returns ok unconditionally.
-/// Intentionally NOT @stable: see __handleLiveness.
-pub func __handleReadiness(): Result[String, Web.ApiError] {
+pub func __handleReadiness(): Result[String, ApiError] {
   return runChecks(CheckGroup.Readiness)
 }
 
@@ -184,7 +183,7 @@ pub func __handleReadiness(): Result[String, Web.ApiError] {
 // will resolve each handlerName via DLL reflection and call the actual check
 // functions.  Until that milestone ships, all endpoints unconditionally report
 // healthy regardless of what checks were registered.  See docs/14.
-func runChecks(group: in CheckGroup): Result[String, Web.ApiError] {
+func runChecks(group: in CheckGroup): Result[String, ApiError] {
   return Ok("{\"status\":\"ok\",\"checks\":{}}")
 }
 
@@ -192,7 +191,7 @@ func runChecks(group: in CheckGroup): Result[String, Web.ApiError] {
 //
 // NOT YET FUNCTIONAL: the registry is silently dropped until the router
 // supports arbitrary route annotations (tracked as a follow-up milestone).
-func attachRegistry(router: in Web.Router, registry: in HealthRegistry): Web.Router {
+func attachRegistry(router: in Router, registry: in HealthRegistry): Router {
   // TODO: encode registry into router metadata once the router supports
   //       arbitrary route annotations (tracked as a follow-up milestone).
   //       For now, the registry is stored at module scope and read by the kernel.

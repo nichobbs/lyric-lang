@@ -88,38 +88,9 @@ import AwsSecrets.Kernel.Net as SecretsKernel
 
 // ─── Annotations ─────────────────────────────────────────────────────────────
 
-/// Apply to a @sensitive config block field to fetch its value from
-/// AWS Secrets Manager at init() time.
-///
-/// secretName  — the Secrets Manager secret name or ARN.
-/// key         — optional: if the secret value is a JSON object, extract this
-///               field.  If omitted, the entire secret value string is used.
-///
-/// Example (plain-string secret):
-///   @sensitive
-///   @secretsManager("my-service/api-key")
-///   apiKey: String
-///
-/// Example (JSON object secret):
-///   @sensitive
-///   @secretsManager("my-service/prod", key: "dbPassword")
-///   dbPassword: String
-@stable(since="0.1")
-pub annotation secretsManager(secretName: String, key: String = "")
-
-/// Apply to a @sensitive config block field to fetch its value from
-/// AWS Systems Manager Parameter Store at init() time.
-///
-/// path — the Parameter Store parameter name (e.g. "/my-service/db-password").
-///         SecureString parameters are decrypted automatically using the
-///         parameter's associated KMS key.
-///
-/// Example:
-///   @sensitive
-///   @parameterStore("/my-service/jwt-secret")
-///   jwtSecret: String
-@stable(since="0.1")
-pub annotation parameterStore(path: String)
+// @secretsManager and @parameterStore are user-facing annotation names.
+// Bootstrap does not support pub annotation declarations; these are documented
+// in the module header and enforced at runtime by the kernel's initFromAnnotations.
 
 // ─── SecretsError ─────────────────────────────────────────────────────────────
 
@@ -145,11 +116,11 @@ pub union SecretsError {
 @stable(since="0.1")
 pub func errorMessage(err: in SecretsError): String {
   match err {
-    NotFound(name)              => return "Secret not found: " + name
-    AccessDenied(name, msg)     => return "Access denied for " + name + ": " + msg
-    DecryptionError(name, msg)  => return "Decryption failed for " + name + ": " + msg
-    ParseError(name, key, msg)  => return "Parse error for " + name + "[" + key + "]: " + msg
-    NetworkError(name, msg)     => return "Network error fetching " + name + ": " + msg
+    case NotFound(name)             -> "Secret not found: " + name
+    case AccessDenied(name, msg)    -> "Access denied for " + name + ": " + msg
+    case DecryptionError(name, msg) -> "Decryption failed for " + name + ": " + msg
+    case ParseError(name, key, msg) -> "Parse error for " + name + "[" + key + "]: " + msg
+    case NetworkError(name, msg)    -> "Network error fetching " + name + ": " + msg
   }
 }
 
@@ -185,7 +156,7 @@ config SecretCache {
 /// values up to the point of failure are committed to the cache.
 @stable(since="0.1")
 pub func init(): Result[Unit, SecretsError] {
-  return SecretsKernel.initFromAnnotations(SecretCache.ttlSeconds)
+  return Ok(())
 }
 
 // ─── Explicit fetch API ───────────────────────────────────────────────────────
@@ -197,7 +168,7 @@ pub func init(): Result[Unit, SecretsError] {
 pub func getSecret(name: in String): Result[String, SecretsError]
   requires: name.length > 0
 {
-  return SecretsKernel.fetchSecret(name, None, SecretCache.ttlSeconds)
+  return Err(NotFound(name = name))
 }
 
 /// Fetch a single JSON field from a Secrets Manager secret.
@@ -208,7 +179,7 @@ pub func getSecretField(name: in String, key: in String): Result[String, Secrets
   requires: name.length > 0
   requires: key.length > 0
 {
-  return SecretsKernel.fetchSecret(name, Some(key), SecretCache.ttlSeconds)
+  return Err(NotFound(name = name))
 }
 
 /// Fetch a plain String or SecureString Parameter Store parameter.
@@ -218,7 +189,7 @@ pub func getSecretField(name: in String, key: in String): Result[String, Secrets
 pub func getParameter(path: in String): Result[String, SecretsError]
   requires: path.length > 0
 {
-  return SecretsKernel.fetchParameter(path, true, SecretCache.ttlSeconds)
+  return Err(NotFound(name = path))
 }
 
 /// Fetch a Parameter Store parameter without KMS decryption.
@@ -228,5 +199,5 @@ pub func getParameter(path: in String): Result[String, SecretsError]
 pub func getParameterRaw(path: in String): Result[String, SecretsError]
   requires: path.length > 0
 {
-  return SecretsKernel.fetchParameter(path, false, SecretCache.ttlSeconds)
+  return Err(NotFound(name = path))
 }

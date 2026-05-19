@@ -24,6 +24,7 @@
 package Lambda.Events
 
 import Std.Core
+import Std.Collections
 
 // ─── SQS ─────────────────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ pub record SqsRecord {
 ///   Result[SqsBatchResponse, LambdaError] — partial failure (per-message reporting)
 @stable(since="0.1")
 pub record SqsEvent {
-  records: [SqsRecord]
+  records: slice[SqsRecord]
 }
 
 /// Identifies a single SQS message that failed processing.
@@ -75,7 +76,7 @@ pub record SqsBatchItemFailure {
 /// and will not be re-delivered.
 @stable(since="0.1")
 pub record SqsBatchResponse {
-  batchItemFailures: [SqsBatchItemFailure]
+  batchItemFailures: slice[SqsBatchItemFailure]
 }
 
 // ─── SNS ─────────────────────────────────────────────────────────────────────
@@ -83,8 +84,8 @@ pub record SqsBatchResponse {
 /// A typed SNS message attribute.
 @stable(since="0.1")
 pub record SnsMessageAttribute {
-  type:  String   // "String", "Number", "Binary"
-  value: String
+  attributeType: String
+  value:         String
 }
 
 /// An SNS message payload as delivered to a Lambda subscriber.
@@ -116,7 +117,7 @@ pub record SnsRecord {
 /// event envelope is still an array for consistency with other sources.
 @stable(since="0.1")
 pub record SnsEvent {
-  records: [SnsRecord]
+  records: slice[SnsRecord]
 }
 
 // ─── S3 ───────────────────────────────────────────────────────────────────────
@@ -179,7 +180,7 @@ pub record S3Record {
 /// Batch of S3 object events delivered to a Lambda invocation.
 @stable(since="0.1")
 pub record S3Event {
-  records: [S3Record]
+  records: slice[S3Record]
 }
 
 // ─── EventBridge ─────────────────────────────────────────────────────────────
@@ -202,7 +203,7 @@ pub record EventBridgeEvent {
   account:    String
   time:       String    // ISO-8601
   region:     String
-  resources:  [String]  // ARNs of resources involved
+  resources:  slice[String]  // ARNs of resources involved
   detailType: String    // the "detail-type" JSON field
   detail:     String    // raw JSON detail object; parse based on source + detailType
 }
@@ -220,9 +221,9 @@ pub record DynamoDbAttributeValue {
   b:    Option[String]    // Binary (base64-encoded)
   bool: Option[Bool]      // Boolean
   null: Option[Bool]      // Null (true = null value)
-  ss:   Option[[String]]  // String Set
-  ns:   Option[[String]]  // Number Set (decimal strings)
-  bs:   Option[[String]]  // Binary Set (base64-encoded elements)
+  ss:   Option[slice[String]]  // String Set
+  ns:   Option[slice[String]]  // Number Set (decimal strings)
+  bs:   Option[slice[String]]  // Binary Set (base64-encoded elements)
 }
 
 /// The DynamoDB stream data for a single modified item.
@@ -259,7 +260,7 @@ pub record DynamoDbRecord {
 /// Batch of DynamoDB Streams records delivered to a Lambda invocation.
 @stable(since="0.1")
 pub record DynamoDbEvent {
-  records: [DynamoDbRecord]
+  records: slice[DynamoDbRecord]
 }
 
 // ─── Kinesis Data Streams ─────────────────────────────────────────────────────
@@ -303,5 +304,5 @@ pub record KinesisStreamRecord {
 /// stream.  Design handlers to be idempotent on the partition key.
 @stable(since="0.1")
 pub record KinesisEvent {
-  records: [KinesisStreamRecord]
+  records: slice[KinesisStreamRecord]
 }

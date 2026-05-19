@@ -53,10 +53,10 @@ extern package Grpc.Net.Client.Unary {
     channel:   GrpcChannel,
     service:   in String,
     method:    in String,
-    payload:   in [Byte],
+    payload:   in slice[Byte],
     timeoutMs: in Int,
     metadata:  in String
-  ): Result[[Byte], GrpcStatus]
+  ): Result[slice[Byte], GrpcStatus]
 }
 
 // ─── Client: server-streaming calls ──────────────────────────────────────────
@@ -67,12 +67,12 @@ extern package Grpc.Net.Client.Stream {
     channel:   GrpcChannel,
     service:   in String,
     method:    in String,
-    payload:   in [Byte],
+    payload:   in slice[Byte],
     timeoutMs: in Int,
     metadata:  in String
   ): Result[GrpcStream, GrpcStatus]
 
-  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[[Byte]], GrpcStatus]
+  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[slice[Byte]], GrpcStatus]
   pub func netCloseStream(stream: GrpcStream): Unit
 }
 

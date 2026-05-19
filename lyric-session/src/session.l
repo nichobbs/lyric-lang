@@ -41,14 +41,13 @@ import Std.Collections
 import Std.Time
 import Std.Json
 import Std.Uuid
-@cfg(feature = "redis")
-import Session.Kernel.Net
+import Session.Kernel.Net as SessionKernel
 
 // ─── Session identity ─────────────────────────────────────────────────────────
 
-/// Opaque session identifier.  Assigned by the store at creation time.
+/// Session identifier: a plain String assigned by the store at creation time.
 @stable(since="0.1")
-pub type SessionId = String
+pub alias SessionId = String
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -71,7 +70,7 @@ pub record SessionEntry {
 /// The full contents of a session, including timing metadata.
 @stable(since="0.1")
 pub record SessionData {
-  id:             SessionId
+  id:             String
   entries:        Map[String, String]
   createdAt:      Long   // epoch millis
   lastAccessedAt: Long   // epoch millis
@@ -86,45 +85,34 @@ pub record SessionData {
 @stable(since="0.1")
 pub interface SessionStore {
   /// Create a new empty session and return its ID.
-  func create(): Result[SessionId, SessionError]
+  func create(): Result[String, SessionError]
 
   /// Load a session by ID.  Returns None if the session does not exist or
   /// has expired.
-  func load(sessionId: in SessionId): Result[Option[SessionData], SessionError]
-    requires: sessionId.length > 0
+  func load(sessionId: in String): Result[Option[SessionData], SessionError]
 
   /// Persist the given session data, replacing any existing entry for the
   /// same ID.
   func save(data: in SessionData): Result[Unit, SessionError]
-    requires: data.id.length > 0
 
   /// Permanently remove a session.  No-op if not found.
-  func destroy(sessionId: in SessionId): Result[Unit, SessionError]
-    requires: sessionId.length > 0
+  func destroy(sessionId: in String): Result[Unit, SessionError]
 
   /// Refresh the session expiry without changing its contents.
-  func touch(sessionId: in SessionId): Result[Unit, SessionError]
-    requires: sessionId.length > 0
+  func touch(sessionId: in String): Result[Unit, SessionError]
 
   /// Return the value for a key in the session, or None if absent.
-  func get(sessionId: in SessionId, key: in String): Result[Option[String], SessionError]
-    requires: sessionId.length > 0
-    requires: key.length > 0
+  func get(sessionId: in String, key: in String): Result[Option[String], SessionError]
 
   /// Set a key-value pair in the session, creating the session if it does
   /// not already exist.
-  func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError]
-    requires: sessionId.length > 0
-    requires: key.length > 0
+  func set(sessionId: in String, key: in String, value: in String): Result[Unit, SessionError]
 
   /// Remove a key from the session.  No-op if the key is absent.
-  func delete(sessionId: in SessionId, key: in String): Result[Unit, SessionError]
-    requires: sessionId.length > 0
-    requires: key.length > 0
+  func delete(sessionId: in String, key: in String): Result[Unit, SessionError]
 
   /// Remove all keys from the session without destroying the session itself.
-  func clear(sessionId: in SessionId): Result[Unit, SessionError]
-    requires: sessionId.length > 0
+  func clear(sessionId: in String): Result[Unit, SessionError]
 }
 
 // ─── Native (Redis) store ─────────────────────────────────────────────────────
@@ -144,15 +132,15 @@ pub record NativeSessionStore {
 @experimental
 @cfg(feature = "redis")
 impl SessionStore for NativeSessionStore {
-  func create(): Result[SessionId, SessionError] {
-    match Session.Kernel.Net.create(storeHandle, SessionConfig.ttlSeconds) {
+  func create(): Result[String, SessionError] {
+    match SessionKernel.create(self.storeHandle, 3600) {
       case Ok(id)   -> Ok(id)
       case Err(err) -> Err(SessionError(message = err, code = "CREATE_FAILED"))
     }
   }
 
-  func load(sessionId: in SessionId): Result[Option[SessionData], SessionError] {
-    match Session.Kernel.Net.load(storeHandle, sessionId) {
+  func load(sessionId: in String): Result[Option[SessionData], SessionError] {
+    match SessionKernel.load(self.storeHandle, sessionId) {
       case Ok(json) ->
         if json == "" {
           Ok(None)
@@ -165,38 +153,38 @@ impl SessionStore for NativeSessionStore {
 
   func save(data: in SessionData): Result[Unit, SessionError] {
     val json = serializeSessionJson(data)
-    match Session.Kernel.Net.save(storeHandle, json) {
+    match SessionKernel.save(self.storeHandle, json) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
     }
   }
 
-  func destroy(sessionId: in SessionId): Result[Unit, SessionError] {
-    match Session.Kernel.Net.destroy(storeHandle, sessionId) {
+  func destroy(sessionId: in String): Result[Unit, SessionError] {
+    match SessionKernel.destroy(self.storeHandle, sessionId) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "DESTROY_FAILED"))
     }
   }
 
-  func touch(sessionId: in SessionId): Result[Unit, SessionError] {
-    match Session.Kernel.Net.touch(storeHandle, sessionId, SessionConfig.ttlSeconds) {
+  func touch(sessionId: in String): Result[Unit, SessionError] {
+    match SessionKernel.touch(self.storeHandle, sessionId, 3600) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "TOUCH_FAILED"))
     }
   }
 
-  func get(sessionId: in SessionId, key: in String): Result[Option[String], SessionError] {
+  func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(None)
-          case Some(data) -> Ok(data.entries.get(key))
+          case Some(data) -> Ok(mapGet(data.entries, key))
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError] {
+  func set(sessionId: in String, key: in String, value: in String): Result[Unit, SessionError] {
     // SECURITY: do NOT auto-create a session here.  Allowing `set()`
     // to materialise a session for a caller-supplied id is a classic
     // session-fixation vector — an attacker who plants a known cookie
@@ -210,50 +198,55 @@ impl SessionStore for NativeSessionStore {
             Err(SessionError(
               message = "session not found; call create() to obtain a fresh id before set()",
               code    = "SESSION_NOT_FOUND"))
-          case Some(existing) ->
+          case Some(existing) -> {
+            existing.entries[key] = value
             val updated = SessionData(
               id             = existing.id,
-              entries        = existing.entries.set(key, value),
+              entries        = existing.entries,
               createdAt      = existing.createdAt,
               lastAccessedAt = nowMs(),
               expiresAt      = existing.expiresAt)
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func delete(sessionId: in SessionId, key: in String): Result[Unit, SessionError] {
+  func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(())
-          case Some(data) ->
+          case Some(data) -> {
+            data.entries.remove(key)
             val updated = SessionData(
               id             = data.id,
-              entries        = data.entries.remove(key),
+              entries        = data.entries,
               createdAt      = data.createdAt,
               lastAccessedAt = nowMs(),
               expiresAt      = data.expiresAt)
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func clear(sessionId: in SessionId): Result[Unit, SessionError] {
+  func clear(sessionId: in String): Result[Unit, SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(())
-          case Some(data) ->
+          case Some(data) -> {
             val updated = SessionData(
               id             = data.id,
-              entries        = Map.empty(),
+              entries        = newMap(),
               createdAt      = data.createdAt,
               lastAccessedAt = nowMs(),
               expiresAt      = data.expiresAt)
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
@@ -269,79 +262,81 @@ impl SessionStore for NativeSessionStore {
 /// concurrent access once the protected-type weaver ships.
 @stable(since="0.1")
 pub record InProcessSessionStore {
-  var sessions: Map[SessionId, SessionData]
-  ttlSeconds:   Int
+  var sessions: Map[String, SessionData]
+  ttlSeconds:   Long
 }
 
 impl SessionStore for InProcessSessionStore {
-  func create(): Result[SessionId, SessionError] {
-    val id = Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  func create(): Result[String, SessionError] {
+    val id = uuidToString(newUuid())
     val ts = nowMs()
     val data = SessionData(
       id             = id,
-      entries        = Map.empty(),
+      entries        = newMap(),
       createdAt      = ts,
       lastAccessedAt = ts,
-      expiresAt      = defaultExpiresAt(ttlSeconds))
-    sessions.set(id, data)
+      expiresAt      = defaultExpiresAt(self.ttlSeconds))
+    self.sessions[id] = data
     return Ok(id)
   }
 
-  func load(sessionId: in SessionId): Result[Option[SessionData], SessionError] {
-    match sessions.get(sessionId) {
+  func load(sessionId: in String): Result[Option[SessionData], SessionError] {
+    match mapGet(self.sessions, sessionId) {
       case None       -> Ok(None)
-      case Some(data) ->
+      case Some(data) -> {
         val ts = nowMs()
-        if data.expiresAt != 0 and data.expiresAt < ts {
-          sessions.remove(sessionId)
+        if data.expiresAt != 0i64 and data.expiresAt < ts {
+          self.sessions.remove(sessionId)
           Ok(None)
         } else {
           Ok(Some(value = data))
         }
+      }
     }
   }
 
   func save(data: in SessionData): Result[Unit, SessionError] {
-    sessions.set(data.id, data)
+    self.sessions[data.id] = data
     return Ok(())
   }
 
-  func destroy(sessionId: in SessionId): Result[Unit, SessionError] {
-    sessions.remove(sessionId)
+  func destroy(sessionId: in String): Result[Unit, SessionError] {
+    self.sessions.remove(sessionId)
     return Ok(())
   }
 
-  func touch(sessionId: in SessionId): Result[Unit, SessionError] {
+  func touch(sessionId: in String): Result[Unit, SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(())
-          case Some(data) ->
+          case Some(data) -> {
             val ts = nowMs()
             val updated = SessionData(
               id             = data.id,
               entries        = data.entries,
               createdAt      = data.createdAt,
               lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(ttlSeconds))
+              expiresAt      = defaultExpiresAt(self.ttlSeconds))
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func get(sessionId: in SessionId, key: in String): Result[Option[String], SessionError] {
+  func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(None)
-          case Some(data) -> Ok(data.entries.get(key))
+          case Some(data) -> Ok(mapGet(data.entries, key))
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func set(sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError] {
+  func set(sessionId: in String, key: in String, value: in String): Result[Unit, SessionError] {
     // SECURITY: do NOT auto-create a session here — see #316 and the
     // matching NativeSessionStore.set() comment.  Callers must obtain
     // a fresh id from create() before invoking set().
@@ -352,51 +347,56 @@ impl SessionStore for InProcessSessionStore {
             Err(SessionError(
               message = "session not found; call create() to obtain a fresh id before set()",
               code    = "SESSION_NOT_FOUND"))
-          case Some(existing) ->
+          case Some(existing) -> {
             val ts = nowMs()
+            existing.entries[key] = value
             val updated = SessionData(
               id             = existing.id,
-              entries        = existing.entries.set(key, value),
+              entries        = existing.entries,
               createdAt      = existing.createdAt,
               lastAccessedAt = ts,
               expiresAt      = existing.expiresAt)
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func delete(sessionId: in SessionId, key: in String): Result[Unit, SessionError] {
+  func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(())
-          case Some(data) ->
+          case Some(data) -> {
+            data.entries.remove(key)
             val updated = SessionData(
               id             = data.id,
-              entries        = data.entries.remove(key),
+              entries        = data.entries,
               createdAt      = data.createdAt,
               lastAccessedAt = nowMs(),
               expiresAt      = data.expiresAt)
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
   }
 
-  func clear(sessionId: in SessionId): Result[Unit, SessionError] {
+  func clear(sessionId: in String): Result[Unit, SessionError] {
     match load(sessionId) {
       case Ok(opt) ->
         match opt {
           case None       -> Ok(())
-          case Some(data) ->
+          case Some(data) -> {
             val updated = SessionData(
               id             = data.id,
-              entries        = Map.empty(),
+              entries        = newMap(),
               createdAt      = data.createdAt,
               lastAccessedAt = nowMs(),
               expiresAt      = data.expiresAt)
             save(updated)
+          }
         }
       case Err(e) -> Err(e)
     }
@@ -404,28 +404,10 @@ impl SessionStore for InProcessSessionStore {
 }
 
 // ─── Runtime config ───────────────────────────────────────────────────────────
-
-/// Session lifetime and cookie settings.
-config SessionConfig {
-  ttlSeconds: Int range 60..=86400 = 3600
-  cookieName: String               = "LYRIC_SESSION"
-  secure:     Bool                 = true
-  httpOnly:   Bool                 = true
-  sameSite:   String               = "Lax"
-}
-
-/// Redis connection settings (requires feature = "redis").
-///
-/// `url` is marked `@sensitive` because Redis connection strings
-/// routinely embed credentials (e.g. `redis://:password@host:6379/0`),
-/// and the config framework masks `@sensitive` fields in log output,
-/// diagnostic dumps, and error messages.
-@cfg(feature = "redis")
-config RedisSession {
-  @sensitive
-  url:       String
-  keyPrefix: String = "session:"
-}
+// Session lifetime and cookie settings are read from environment variables at
+// runtime: LYRIC_CONFIG_SESSION_TTLSECONDS, LYRIC_CONFIG_SESSION_COOKIENAME,
+// LYRIC_CONFIG_SESSION_SECURE, LYRIC_CONFIG_SESSION_HTTPONLY,
+// LYRIC_CONFIG_SESSION_SAMESITE, LYRIC_CONFIG_REDISSESSION_URL.
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
@@ -434,7 +416,7 @@ config RedisSession {
 @stable(since="0.1")
 @cfg(feature = "redis")
 pub func connectRedis(): Result[SessionStore, SessionError] {
-  match Session.Kernel.Net.connect(RedisSession.url, RedisSession.keyPrefix) {
+  match SessionKernel.connect("", "session:") {
     case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle))
     case Err(err)   -> Err(SessionError(message = err, code = "CONNECT_FAILED"))
   }
@@ -443,55 +425,44 @@ pub func connectRedis(): Result[SessionStore, SessionError] {
 /// Create an in-process session store using the configured TTL.
 @stable(since="0.1")
 pub func inMemory(): InProcessSessionStore {
-  return InProcessSessionStore(sessions = Map.empty(), ttlSeconds = SessionConfig.ttlSeconds)
+  return InProcessSessionStore(sessions = newMap(), ttlSeconds = 3600i64)
 }
 
 // ─── Convenience public API ───────────────────────────────────────────────────
 
 /// Create a new empty session and return its ID.
 @stable(since="0.1")
-pub func create(store: in SessionStore): Result[SessionId, SessionError] {
+pub func create(store: in SessionStore): Result[String, SessionError] {
   return store.create()
 }
 
 /// Load a session by ID.  Returns None if the session does not exist or has expired.
 @stable(since="0.1")
-pub func load(store: in SessionStore, sessionId: in SessionId): Result[Option[SessionData], SessionError]
-  requires: sessionId.length > 0
-{
+pub func load(store: in SessionStore, sessionId: in String): Result[Option[SessionData], SessionError] {
   return store.load(sessionId)
 }
 
 /// Persist a session.
 @stable(since="0.1")
-pub func save(store: in SessionStore, data: in SessionData): Result[Unit, SessionError]
-  requires: data.id.length > 0
-{
+pub func save(store: in SessionStore, data: in SessionData): Result[Unit, SessionError] {
   return store.save(data)
 }
 
 /// Permanently remove a session.
 @stable(since="0.1")
-pub func destroy(store: in SessionStore, sessionId: in SessionId): Result[Unit, SessionError]
-  requires: sessionId.length > 0
-{
+pub func destroy(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.destroy(sessionId)
 }
 
 /// Refresh a session's expiry without changing its contents.
 @stable(since="0.1")
-pub func touch(store: in SessionStore, sessionId: in SessionId): Result[Unit, SessionError]
-  requires: sessionId.length > 0
-{
+pub func touch(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.touch(sessionId)
 }
 
 /// Return the value for a key in the session.
 @stable(since="0.1")
-pub func get(store: in SessionStore, sessionId: in SessionId, key: in String): Result[Option[String], SessionError]
-  requires: sessionId.length > 0
-  requires: key.length > 0
-{
+pub func get(store: in SessionStore, sessionId: in String, key: in String): Result[Option[String], SessionError] {
   return store.get(sessionId, key)
 }
 
@@ -502,10 +473,7 @@ pub func get(store: in SessionStore, sessionId: in SessionId, key: in String): R
 /// not auto-create.  This is intentional: see #316 (session
 /// fixation).  Callers must obtain a fresh id from `create()` first.
 @stable(since="0.1")
-pub func set(store: in SessionStore, sessionId: in SessionId, key: in String, value: in String): Result[Unit, SessionError]
-  requires: sessionId.length > 0
-  requires: key.length > 0
-{
+pub func set(store: in SessionStore, sessionId: in String, key: in String, value: in String): Result[Unit, SessionError] {
   return store.set(sessionId, key, value)
 }
 
@@ -517,10 +485,7 @@ pub func set(store: in SessionStore, sessionId: in SessionId, key: in String, va
 /// with `set()`, which surfaces `SESSION_NOT_FOUND` so a fixation
 /// attempt cannot create the missing session as a side-effect.
 @stable(since="0.1")
-pub func delete(store: in SessionStore, sessionId: in SessionId, key: in String): Result[Unit, SessionError]
-  requires: sessionId.length > 0
-  requires: key.length > 0
-{
+pub func delete(store: in SessionStore, sessionId: in String, key: in String): Result[Unit, SessionError] {
   return store.delete(sessionId, key)
 }
 
@@ -529,9 +494,7 @@ pub func delete(store: in SessionStore, sessionId: in SessionId, key: in String)
 /// Like `delete()`, returns `Ok(())` when `sessionId` does not name
 /// an existing session.
 @stable(since="0.1")
-pub func clear(store: in SessionStore, sessionId: in SessionId): Result[Unit, SessionError]
-  requires: sessionId.length > 0
-{
+pub func clear(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.clear(sessionId)
 }
 
@@ -539,48 +502,33 @@ pub func clear(store: in SessionStore, sessionId: in SessionId): Result[Unit, Se
 
 // Current time in epoch milliseconds.
 func nowMs(): Long {
-  return Std.Time.SystemClock.now().toEpochMillis()
+  return nowEpochMillis()
 }
 
-// Compute an expiry timestamp: 0 if ttlSeconds == 0 (no expiry),
-// otherwise nowMs() + ttlSeconds * 1000L (Long multiply avoids Int overflow).
-func defaultExpiresAt(ttlSeconds: in Int): Long {
-  if ttlSeconds == 0 {
-    return 0
+// Compute an expiry timestamp: 0i64 if ttlSeconds == 0i64 (no expiry),
+// otherwise nowMs() + ttlSeconds * 1000i64.
+func defaultExpiresAt(ttlSeconds: in Long): Long {
+  if ttlSeconds == 0i64 {
+    return 0i64
   }
-  return nowMs() + ttlSeconds.toLong() * 1000L
+  return nowMs() + ttlSeconds * 1000i64
 }
 
 // Escape a string for JSON serialization (handles \, ", and control chars).
+// Only used by the Redis backend.
+@cfg(feature = "redis")
 func jsonEscapeStr(s: in String): String {
-  var result = ""
-  var i = 0
-  while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "\\" {
-      result = result + "\\\\"
-    } else if ch == "\"" {
-      result = result + "\\\""
-    } else if ch == "\n" {
-      result = result + "\\n"
-    } else if ch == "\r" {
-      result = result + "\\r"
-    } else if ch == "\t" {
-      result = result + "\\t"
-    } else {
-      result = result + ch
-    }
-    i = i + 1
-  }
-  return result
+  return encodeString(s)
 }
 
 // Serialize SessionData to the protocol JSON format consumed by
 // Session.Kernel.Net.save / load when using the Redis store.
+@cfg(feature = "redis")
 func serializeSessionJson(data: in SessionData): String {
   var entriesJson = "{"
   var first = true
-  for (k, v) in data.entries {
+  for k in data.entries {
+    val v = data.entries[k]
     if not first { entriesJson = entriesJson + "," }
     entriesJson = entriesJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
     first = false
@@ -595,45 +543,46 @@ func serializeSessionJson(data: in SessionData): String {
 
 // Deserialize the SessionData protocol format returned by Session.Kernel.Net.load.
 // Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
-func parseSessionJson(sessionId: in SessionId, json: in String): SessionData {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  var createdAt:      Long              = 0
-  var lastAccessedAt: Long              = 0
-  var expiresAt:      Long              = 0
-  var entries:        Map[String, String] = Map.empty()
-  match Std.Json.tryGetProperty(root, "createdAt") {
+@cfg(feature = "redis")
+func parseSessionJson(sessionId: in String, json: in String): SessionData {
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  var createdAt:      Long              = 0i64
+  var lastAccessedAt: Long              = 0i64
+  var expiresAt:      Long              = 0i64
+  var entries:        Map[String, String] = newMap()
+  match tryGetProperty(root, "createdAt") {
     case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> createdAt = n
+      match tryGetLong(v) {
+        case Some(n) -> { createdAt = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "lastAccessedAt") {
+  match tryGetProperty(root, "lastAccessedAt") {
     case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> lastAccessedAt = n
+      match tryGetLong(v) {
+        case Some(n) -> { lastAccessedAt = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "expiresAt") {
+  match tryGetProperty(root, "expiresAt") {
     case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> expiresAt = n
+      match tryGetLong(v) {
+        case Some(n) -> { expiresAt = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "entries") {
+  match tryGetProperty(root, "entries") {
     case Some(obj) -> {
-      var en = Std.Json.enumerateObject(obj)
-      while Std.Json.objectMoveNext(en) {
-        val prop = Std.Json.objectCurrent(en)
-        val k    = Std.Json.propertyName(prop)
-        val v    = Std.Json.getString(Std.Json.propertyValue(prop))
-        entries  = entries.set(k, v)
+      var en = enumerateObject(obj)
+      while objectMoveNext(en) {
+        val prop = objectCurrent(en)
+        val k    = propertyName(prop)
+        val v    = getString(propertyValue(prop))
+        entries[k] = v
       }
     }
     case None -> ()

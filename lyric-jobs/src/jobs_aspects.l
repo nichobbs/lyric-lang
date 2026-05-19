@@ -73,7 +73,7 @@ pub aspect Retryable {
       var attempt: Int = 1
       while attempt < maxAttempts {
         match ret {
-          case Ok(_)  -> attempt = maxAttempts    // exit loop on success
+          case Ok(_)  -> { attempt = maxAttempts }    // exit loop on success
           case Err(_) -> {
             val delay = retryBackoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs)
             Resilience.sleepMs(delay)
@@ -91,7 +91,7 @@ pub aspect Retryable {
 /// Measure handler execution time and warn when the threshold is exceeded.
 ///
 /// B-mode: wraps any function returning `Result[String, JobError]`.  Records
-/// the start time via `Jobs.Kernel.Net.nowMs()` before calling the handler,
+/// the start time via `nowMs()` before calling the handler,
 /// then computes elapsed time after `call.proceed()` returns.
 ///
 /// When elapsed > `warnThresholdMs` and `enabled` is true, a warning line is
@@ -114,9 +114,9 @@ pub aspect Timed {
     if not enabled {
       ret = call.proceed()
     } else {
-      val startMs = Jobs.nowMs()
+      val startMs = nowMs()
       ret = call.proceed()
-      val elapsedMs = Jobs.nowMs() - startMs
+      val elapsedMs = nowMs() - startMs
       if elapsedMs > warnThresholdMs {
         println("[warn] " + call.qualifiedName + " took " + elapsedMs.toString() + "ms (threshold: " + warnThresholdMs.toString() + "ms)")
       }

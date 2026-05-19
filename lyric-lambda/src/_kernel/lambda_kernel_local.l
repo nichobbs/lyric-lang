@@ -42,7 +42,12 @@ import Web
 @axiom("Lightweight single-threaded HTTP server for local Lambda event testing")
 extern package Lambda.LocalServer {
   pub func serve(
-    app:       Lambda.LambdaApp,
+    app:       LambdaApp,
     localPort: Int
   ): Unit
+}
+
+/// Start the local test HTTP server (delegates to Lambda.LocalServer).
+pub func serve(app: in LambdaApp, localPort: in Int): Unit {
+  Lambda.LocalServer.serve(app, localPort)
 }
