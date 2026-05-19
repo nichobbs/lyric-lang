@@ -26,8 +26,69 @@
 package Auth
 
 import Std.Core
+import Std.Encoding
+import Std.String
 import Auth.Kernel.Net as AuthKernelNet
 import Auth.Kernel.Jvm as AuthKernelJvm
+
+// ─── JWT algorithm extraction (Lyric-level, no extern dependency) ─────────────
+
+// Find the first occurrence of `ch` in `s` at or after position `pos`.
+// Returns -1 if not found.
+func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
+  var i = pos
+  while i < s.length {
+    if s[i] == ch { return i }
+    i = i + 1
+  }
+  return -1
+}
+
+// Extract the `alg` value from a JWT's base64url-encoded header segment.
+// Returns "" when the token is malformed or the `alg` key is absent.
+// Uses pure-Lyric base64url decode so no extern is needed — this function
+// provides belt-and-suspenders algorithm enforcement at the Lyric layer in
+// case the host shim has not yet wired `allowedAlgorithms` to the BCL
+// validator's `ValidAlgorithms` list (see lyric-lang #443).
+func jwtAlg(token: in String): String {
+  // JWT format: base64url(header).base64url(payload).signature
+  val dot = token.indexOf(".")
+  if dot < 0 { return "" }
+  // Convert base64url to standard base64: - → + and _ → /
+  val seg   = token.substring(0, dot)
+  val std64 = seg.replace("-", "+").replace("_", "/")
+  // Add '=' padding so length is a multiple of 4.
+  val rem = std64.length % 4
+  val padded =
+    if rem == 0 { std64 }
+    else if rem == 2 { std64 + "==" }
+    else if rem == 3 { std64 + "=" }
+    else { "" }  // rem == 1 is not valid base64url
+  if padded == "" { return "" }
+  // Decode to bytes then to a UTF-8 string.
+  match tryDecodeBase64(padded) {
+    case None -> return ""
+    case Some(bytes) -> {
+      match tryDecodeUtf8(bytes) {
+        case None -> return ""
+        case Some(header) -> {
+          // Scan for the "alg":"VALUE" key-value pair in the header JSON.
+          // Use lastIndexOf so duplicate alg keys resolve to the last occurrence,
+          // matching last-wins parser semantics (RFC 8259 §4 permits duplicates;
+          // many JWT libraries use the last value).  This prevents a crafted first
+          // alg=RS256 from masking a final alg=none in the same header.
+          val pfx    = "\"alg\":\""
+          val pfxPos = header.lastIndexOf(pfx)
+          if pfxPos < 0 { return "" }
+          val vs = pfxPos + pfx.length
+          val ve = indexOfCharAfter(header, '"', vs)
+          if ve < 0 { return "" }
+          header.substring(vs, ve)
+        }
+      }
+    }
+  }
+}
 
 // ─── JWT verification ─────────────────────────────────────────────────────────
 
@@ -68,8 +129,16 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
-  requires: not rolesContain(allowedAlgorithms, "none")
+  // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
+  requires: not contains(toLower(allowedAlgorithms), "none")
 {
+  // Lyric-level algorithm pinning: reject before reaching the extern if the
+  // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
+  // shims that have not yet wired `allowedAlgorithms` into the BCL validator's
+  // `ValidAlgorithms` restriction (RFC 8725 §3.1; see lyric-lang #443).
+  val alg = jwtAlg(token)
+  if alg.length == 0 { return false }
+  if not rolesContain(allowedAlgorithms, alg) { return false }
   return AuthKernelNet.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
@@ -84,8 +153,13 @@ pub func verifyJwt(
 ): Bool
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
-  requires: not rolesContain(allowedAlgorithms, "none")
+  // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
+  requires: not contains(toLower(allowedAlgorithms), "none")
 {
+  // Lyric-level algorithm pinning: same guard as the .NET overload above.
+  val alg = jwtAlg(token)
+  if alg.length == 0 { return false }
+  if not rolesContain(allowedAlgorithms, alg) { return false }
   return AuthKernelJvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
