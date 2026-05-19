@@ -112,13 +112,12 @@ Override these when the defaults conflict with another route in your service.
 
 ## Implementation status
 
-> **Note:** The kernel dispatcher that resolves check functions by name and
-> executes them at request time has not yet shipped.  Until it does,
+> **Note:** The DLL-reflection dispatcher that resolves check functions by name
+> and executes them at request time has not yet shipped.  Until it does,
 > `Health.registerRoutes` installs the endpoints but **checks are never
 > called** — both `/health/live` and `/health/ready` unconditionally return
 > `{"status":"ok"}` regardless of what checks are registered.  Do not rely
-> on these endpoints for real health signalling until the dispatcher milestone
-> is complete (see `docs/14-native-stdlib-plan.md`).
+> on these endpoints for real health signalling yet (see `docs/14-native-stdlib-plan.md`).
 
 ## API summary
 

@@ -132,9 +132,9 @@ If you need per-aspect isolation — for example, a short-TTL store for session
 data and a long-TTL store for config — write a custom aspect body that
 constructs its own `Cache.inProcess()` store rather than using a template.
 
-> **Note:** The in-process store is not thread-safe in v1.  For concurrent
-> access, use a Redis-backed `CacheStore` implementation or wait for the
-> protected-type weaver to ship.
+> **Note:** The in-process store is not thread-safe.  For concurrent access,
+> use a Redis-backed `CacheStore` implementation, or wrap your own in-process
+> store in a `protected type` (Chapter 10 §10.4) to serialise access.
 
 ## Custom store example
 

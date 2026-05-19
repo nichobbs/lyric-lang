@@ -714,13 +714,13 @@ lyric build --all-features             # transitive closure of every declared fe
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
 
-# Test  (single-file mode; --manifest and --doctests are planned for v2)
+# Test  (single-file; --manifest, --doctests, --update-snapshots, property execution: v2)
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
 lyric test <file.l> --list             # print test titles only; do not compile or run
 lyric test <file.l> --jvm              # compile with JVM backend; write annotated JAR
-                                       # (JUnit 5 ConsoleLauncher integration in B127+)
+                                       # (full JUnit 5 ConsoleLauncher integration in progress)
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)

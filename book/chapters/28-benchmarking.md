@@ -5,7 +5,7 @@ Performance work without measurement is guesswork. Lyric provides `lyric bench` 
 This chapter covers how to write a benchmark module, how to interpret the output, how to control the experiment with `--runs`, `--warmup`, and `--filter`, and what pitfalls to avoid so your numbers reflect reality.
 
 ::: note
-**Bootstrap status (v1).** `lyric bench` runs on the .NET target today. JVM target support (via `--target jvm`) follows the JVM emit pipeline and is tracked as a v2 item. The `.NET` timings use `Std.Time.now()` / `since()` / `totalMillis()` backed by `System.Diagnostics.Stopwatch`, which measures wall-clock time to the nearest microsecond on most hosts.
+`lyric bench` runs on the .NET target. JVM target support (`--target jvm`) is a v2 item. The `.NET` timings use `Std.Time.now()` / `since()` / `totalMillis()` backed by `System.Diagnostics.Stopwatch`, which measures wall-clock time to the nearest microsecond on most hosts.
 :::
 
 ## §28.1 Anatomy of a benchmark module
