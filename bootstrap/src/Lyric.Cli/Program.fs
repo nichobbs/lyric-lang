@@ -2234,6 +2234,98 @@ let private internalContractMeta (rest: string list) : int =
         printErr "internal-contract-meta: unknown subcommand (expected 'read' or 'diff')"
         1
 
+/// `lyric --internal-project-build <specFile> -o <outFile> [--target dotnet|jvm]`
+/// Multi-package project compile.  The spec file is a tab-delimited text file;
+/// each line has the form: <packageName> TAB <srcPath1> TAB <srcPath2> ...
+/// Errors are printed to stderr; the process exits non-zero on failure.
+/// Used by the Lyric `Lyric.Emitter` package's `emitProject` function.
+let private internalProjectBuild (rest: string list) : int =
+    let mutable specPath = ""
+    let mutable outPath  = ""
+    let mutable target   = Emitter.Dotnet
+    let mutable cursor   = rest
+    while not (List.isEmpty cursor) do
+        match cursor with
+        | "-o" :: out :: tail ->
+            outPath <- out
+            cursor  <- tail
+        | "--target" :: "jvm" :: tail ->
+            target <- Emitter.Jvm
+            cursor <- tail
+        | "--target" :: _ :: tail ->
+            target <- Emitter.Dotnet
+            cursor <- tail
+        | arg :: tail ->
+            if not (arg.StartsWith("-", StringComparison.Ordinal)) then
+                specPath <- arg
+            cursor <- tail
+        | [] -> cursor <- []
+
+    if String.IsNullOrEmpty specPath || not (File.Exists specPath) then
+        printErr (sprintf "internal-project-build: spec file not found: %s" specPath)
+        1
+    elif String.IsNullOrEmpty outPath then
+        printErr "internal-project-build: missing -o <outputPath>"
+        1
+    else
+        let lines = File.ReadAllLines specPath
+        let pkgInputs = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
+        let mutable hadFatal = false
+        for line in lines do
+            if not (String.IsNullOrEmpty line) then
+                let parts = line.Split('\t')
+                if parts.Length < 2 then
+                    printErr (sprintf "internal-project-build: malformed spec line: %s" line)
+                    hadFatal <- true
+                else
+                    let pkgName  = parts.[0]
+                    let srcPaths = parts |> Array.skip 1
+                    let sources  = ResizeArray<string>()
+                    for sp in srcPaths do
+                        if File.Exists sp then
+                            sources.Add(File.ReadAllText sp)
+                        else
+                            printErr (sprintf "internal-project-build: source file not found: %s" sp)
+                            hadFatal <- true
+                    if not hadFatal then
+                        pkgInputs.Add
+                            { Lyric.Emitter.Emitter.ProjectPackageInput.PackageName = pkgName
+                              Lyric.Emitter.Emitter.ProjectPackageInput.Sources     = List.ofSeq sources }
+        if hadFatal then 1
+        else
+        match Option.ofObj (Path.GetDirectoryName outPath) with
+        | Some dir when not (String.IsNullOrEmpty dir) ->
+            Directory.CreateDirectory dir |> ignore
+        | _ -> ()
+        let asmName =
+            match Option.ofObj (Path.GetFileNameWithoutExtension outPath) with
+            | Some n -> n
+            | None   -> "lyric_build_out"
+        let req : Lyric.Emitter.Emitter.ProjectEmitRequest =
+            { Packages           = List.ofSeq pkgInputs
+              AssemblyName       = asmName
+              OutputPath         = outPath
+              RestoredPackages   = []
+              NugetAssemblyPaths = []
+              ExternShimRoot     = None
+              Single             = true
+              Target             = target
+              ActiveFeatures     = Set.empty
+              DeclaredFeatures   = Set.empty }
+        let result = Emitter.emitProject req
+        let errs   = result.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
+        for d in result.Diagnostics do
+            printErr (sprintf "%s %s [%d:%d]: %s"
+                d.Code
+                (if d.Severity = DiagError then "error" else "warning")
+                d.Span.Start.Line d.Span.Start.Column d.Message)
+        if not (List.isEmpty errs) then
+            printErr (sprintf "%s: project build failed" specPath)
+            1
+        else
+            writeRuntimeConfig outPath
+            0
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2259,11 +2351,12 @@ let main (argv: string array) : int =
                 Environment.SetEnvironmentVariable("LYRIC_CLI_DLL", entry.Location)
             | _ -> ()
         with _ -> ()
-
     let args = List.ofArray argv
     match args with
     | "--internal-build" :: rest ->
         internalBuild rest
+    | "--internal-project-build" :: rest ->
+        internalProjectBuild rest
     | "--internal-contract-meta" :: rest ->
         internalContractMeta rest
     | _ ->

@@ -190,6 +190,48 @@ func main(): Unit {
 }
 """,
     "a | b | c"
+
+    // Regression: BCoalesce (the ?? operator) was not lowered to IL — the
+    // generic binop path emitted both operands but no null-check, leaving
+    // the stack imbalanced.  Std.Path.dirname is the only stdlib site that
+    // uses ?? (hostPathGetDirectoryName returns String?).
+    "import_std_path_dirname_non_root",
+    """
+package SI_Path1
+import Std.Path
+
+func main(): Unit {
+  val d = dirname("/home/user/file.txt")
+  println(d)
+}
+""",
+    "/home/user"
+
+    "import_std_path_dirname_no_dir_component",
+    """
+package SI_Path2
+import Std.Path
+
+func main(): Unit {
+  val d = dirname("file.txt")
+  println(d)
+}
+""",
+    "."
+
+    "import_std_path_join_basename",
+    """
+package SI_Path3
+import Std.Path
+
+func main(): Unit {
+  val b = basename("/home/user/report.l")
+  val e = extension("/home/user/report.l")
+  println(b)
+  println(e)
+}
+""",
+    "report.l\n.l"
 ]
 
 let tests =

@@ -2578,6 +2578,27 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.MarkLabel(lblEnd)
         typeof<bool>
 
+    // ?? operator: if lhs (nullable reference) is non-null use it, else rhs.
+    // Must be a special case like BAnd/BOr because both operands must NOT be
+    // evaluated eagerly — the stack would be imbalanced if we fall through the
+    // generic binop path (which evaluates both sides before applying the op).
+    | EBinop (BCoalesce, lhs, rhs) ->
+        let _lt             = emitExpr ctx lhs   // push nullable lhs
+        il.Emit(OpCodes.Dup)                     // [lhs, lhs_dup]
+        let lblHaveValue    = il.DefineLabel()
+        let lblEnd          = il.DefineLabel()
+        // Use long-form Brtrue: PersistedAssemblyBuilder's short-branch upgrade
+        // can corrupt IL when the gap crosses other resized instructions.
+        il.Emit(OpCodes.Brtrue, lblHaveValue)    // pop lhs_dup; branch if non-null
+        // lhs was null: discard the null, push the fallback.
+        il.Emit(OpCodes.Pop)
+        let rt = emitExpr ctx rhs
+        il.Emit(OpCodes.Br, lblEnd)
+        il.MarkLabel(lblHaveValue)
+        // lhs was non-null: the original lhs value is already on the stack.
+        il.MarkLabel(lblEnd)
+        rt                                       // result type is the rhs (non-nullable) type
+
     | EBinop (op, lhs, rhs) ->
         let lt = emitExpr ctx lhs
         // Distinct-type binop: if the lhs is a distinct-type struct, the
@@ -2771,11 +2792,10 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         | BGte ->
             if isUnsignedClr opTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
             emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
-        | BCoalesce -> opTy
         | BImplies  ->
             il.Emit(OpCodes.Pop); il.Emit(OpCodes.Pop); emitLdcI4 il 1; typeof<bool>
-        | BAnd | BOr ->
-            failwith "logical op fell through to fallback"
+        | BAnd | BOr | BCoalesce ->
+            failwith "short-circuit op fell through to generic binop path"
 
     // ---- if-expression ------------------------------------------------
 
@@ -4471,6 +4491,7 @@ and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
     match pat.Kind with
     | PWildcard -> true
     | PBinding ("_", None) -> true
+    | PBinding ("null", None) -> false  // null literal pattern — only matches null
     | PBinding (name, None) ->
         not (ctx.EnumCases.ContainsKey name)
         && not (ctx.UnionCases.ContainsKey name)
@@ -4579,6 +4600,11 @@ and private emitPatternTest
     match pat.Kind with
     | PWildcard | PBinding ("_", None) ->
         emitLdcI4 il 1
+    | PBinding ("null", None) ->
+        // `case null` — test whether the scrutinee is null (nullable reference).
+        il.Emit(OpCodes.Ldloc, tmp)
+        il.Emit(OpCodes.Ldnull)
+        il.Emit(OpCodes.Ceq)
     | PBinding (name, None) ->
         match ctx.EnumCases.TryGetValue name with
         | true, (_, c) ->
@@ -4792,6 +4818,9 @@ and private emitPatternBind
         (pat: Pattern) : unit =
     let il = ctx.IL
     match pat.Kind with
+    | PBinding ("null", None) ->
+        // Null literal pattern — no variable to bind; the scrutinee matched null.
+        ()
     | PBinding (name, None)
         when name <> "_"
              && not (ctx.EnumCases.ContainsKey name)

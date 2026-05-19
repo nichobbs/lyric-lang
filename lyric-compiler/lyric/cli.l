@@ -77,6 +77,7 @@ import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
 import Std.Parse
+import Std.Sort as Sort
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
@@ -411,24 +412,65 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     case Err(e) -> printErr("build: cannot create output dir: " + IOError.message(e))
   }
 
-  // Collect sources for each package entry.
-  val sources: List[String] = newList()
+  if proj.packages.count == 0 {
+    printErr("build: " + mfPath + " [project.packages] is empty — single-DLL projects require explicit per-package source dirs (auto-discovery not yet wired)")
+    return 1
+  }
+
+  // Collect sources for each package entry individually (not concatenated).
+  // Each package entry may be a single .l file or a directory of .l files.
+  val pkgs: List[ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
               else { Path.join(mfDir, pkgEntry.path) }
-    val text = match File.readText(abs) {
-      case Ok(t)  -> t
-      case Err(e) -> {
-        printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-        hadFatal = true
-        ""
+    val pkgSources: List[String] = newList()
+    if File.fileExists(abs) {
+      // Single .l file: read it directly.
+      match File.readText(abs) {
+        case Ok(t)  -> pkgSources.add(t)
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
       }
+    } else if File.dirExists(abs) {
+      // Directory: collect all .l files recursively, sorted for determinism.
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs)  -> fs
+        case Err(e)  -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") { lFiles.add(f) }
+      }
+      if lFiles.count == 0 {
+        printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
+        hadFatal = true
+      } else {
+        val sorted = Sort.sortStrings(lFiles.toArray())
+        for f in sorted {
+          match File.readText(f) {
+            case Ok(t)  -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+              hadFatal = true
+            }
+          }
+        }
+      }
+    } else {
+      printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
     }
-    if not hadFatal {
-      sources.add(text)
+    if pkgSources.count > 0 {
+      pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
     pi += 1
   }
@@ -437,26 +479,15 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     return 1
   }
 
-  // Emit all sources as a single combined source string (one-package bundle).
-  // The emitter's project path handles multi-package interleaving via
-  // Lyric.Emitter.emitProject when that API is available.  For now the
-  // sources list is passed joined as a sentinel; the emitter decides.
-  var combined = ""
-  var si = 0
-  while si < sources.count {
-    combined = combined + sources[si]
-    si += 1
-  }
-
   val asmName = stemOf(Path.basename(outPath), 4)
-  val req = EmitRequest(
-    source       = combined,
+  val projReq = EmitProjectRequest(
+    packages     = pkgs,
     assemblyName = asmName,
     outputPath   = outPath,
     target       = target
   )
 
-  val result  = Emitter.emit(req)
+  val result  = Emitter.emitProject(projReq)
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
