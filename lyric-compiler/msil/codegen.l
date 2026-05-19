@@ -34,6 +34,7 @@ import Std.Collections
 import Std.String
 import Lyric.Parser
 import Msil.Lowering
+import Msil.Ffi
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. CodegenCtx — package-level context with pre-registered external tokens.
