@@ -1,8 +1,8 @@
-/// Platform-neutral gRPC client types.
-///
-/// Consumers open a GrpcChannel to a server address, make RPC calls passing
-/// raw slice[Byte] payloads, and receive raw slice[Byte] responses.
-/// The gRPC status code and message are surfaced via GrpcStatus on error.
+// Platform-neutral gRPC client types.
+//
+// Consumers open a GrpcChannel to a server address, make RPC calls passing
+// raw slice[Byte] payloads, and receive raw slice[Byte] responses.
+// The gRPC status code and message are surfaced via GrpcStatus on error.
 package Grpc.Types
 
 import Std.Core
@@ -12,14 +12,12 @@ import Std.Core
 /// An open gRPC channel to a single server address.
 /// Created by Grpc.openChannel; released by Grpc.closeChannel.
 /// Channels are safe to share across calls but are not automatically closed.
-@stable(since="0.1")
 pub opaque type GrpcChannel
 
 // ─── Status codes ────────────────────────────────────────────────────────────
 
 /// Canonical gRPC status codes (https://grpc.github.io/grpc/core/md_doc_statuscodes.html).
-@stable(since="0.1")
-pub type GrpcStatusCode = enum {
+pub enum GrpcStatusCode {
   case Ok                 // 0 — not an error
   case Cancelled          // 1 — caller cancelled the operation
   case Unknown            // 2 — unknown error
@@ -40,7 +38,6 @@ pub type GrpcStatusCode = enum {
 }
 
 /// Map an integer gRPC status code to GrpcStatusCode.
-@stable(since="0.1")
 pub func statusCodeFromInt(n: Int): GrpcStatusCode {
   match n {
     case 0  -> GrpcStatusCode.Ok
@@ -65,15 +62,13 @@ pub func statusCodeFromInt(n: Int): GrpcStatusCode {
 }
 
 /// A gRPC call result status (code + human-readable message).
-@stable(since="0.1")
-pub type GrpcStatus = record {
+pub record GrpcStatus {
   code:    GrpcStatusCode
   message: String
 }
 
 /// A metadata key-value pair (sent as gRPC request headers).
-@stable(since="0.1")
-pub type GrpcMetadataEntry = record {
+pub record GrpcMetadataEntry {
   key:   String
   value: String
 }
@@ -81,32 +76,25 @@ pub type GrpcMetadataEntry = record {
 // ─── Call options ─────────────────────────────────────────────────────────────
 
 /// Per-call options.
-@stable(since="0.1")
-pub type GrpcCallOptions = record {
-  /// Optional call deadline in milliseconds from now.
-  /// None means no deadline (inherits channel default, if any).
+pub record GrpcCallOptions {
   timeoutMs: Option[Int]
-  /// Extra gRPC metadata (request headers) to attach to this call.
-  metadata:  List[GrpcMetadataEntry]
+  metadata:  slice[GrpcMetadataEntry]
 }
 
 // ─── Server-streaming response ────────────────────────────────────────────────
 
 /// A lazy sequence of server-streaming response messages.
 /// Call nextMessage() repeatedly until it returns None (end of stream) or Err.
-@stable(since="0.1")
 pub opaque type GrpcStream
 
 /// A handle to a running gRPC server.
 /// Created by Grpc.startHandle; passed to Grpc.stop for graceful shutdown.
-@stable(since="0.1")
 pub opaque type GrpcServerHandle
 
 // ─── Server routing ───────────────────────────────────────────────────────────
 
 /// Single RPC method registration: proto service name, proto method name,
 /// and the qualified Lyric function name the kernel dispatches to.
-@stable(since="0.1")
 pub record GrpcRoute {
   service:     String
   method:      String
@@ -114,7 +102,6 @@ pub record GrpcRoute {
 }
 
 /// Immutable registry of gRPC routes; built with Grpc.addMethod, passed to Grpc.start.
-@stable(since="0.1")
 pub record ServiceRegistry {
-  routes: [GrpcRoute]
+  routes: slice[GrpcRoute]
 }

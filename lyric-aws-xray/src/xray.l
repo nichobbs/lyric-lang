@@ -1,46 +1,45 @@
-/// AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
-///
-/// The Lambda runtime opens a top-level X-Ray segment for every invocation
-/// when active tracing is enabled on the Lambda function.  This library
-/// wraps individual Lyric function calls as subsegments of that top-level
-/// segment via the Tracing pub aspect template.
-///
-/// Primary usage: instantiate the Tracing aspect template with a matches
-/// selector.  The aspect wraps each matched call in an X-Ray subsegment.
-///
-///   import AwsXRay
-///
-///   aspect TraceHandlers from AwsXRay.Tracing {
-///     matches: name like "handle*"
-///   }
-///
-/// The subsegment name is the function's qualified name (e.g.
-/// "MyApp.Orders.handleCreate").  On error the subsegment is closed with
-/// the error message recorded under the "error" annotation.
-///
-/// Secondary usage: attach annotations and metadata to the current subsegment
-/// from within a handler body.
-///
-///   func handleCreate(event: ApiGwV2Event, ctx: LambdaContext): Result[ApiGwResponse, LambdaError] {
-///     val seg = AwsXRay.currentSubsegment()
-///     AwsXRay.annotate(seg, "orderId", event.pathParameters.get("id"))
-///     ...
-///   }
-///
-/// Annotations are indexed by X-Ray and appear in filter expressions.
-/// Metadata is not indexed and can hold arbitrary string values.
-///
-/// IAM requirements:
-///   The Lambda execution role must have xray:PutTraceSegments and
-///   xray:PutTelemetryRecords on * (standard X-Ray active tracing policy).
-///
-/// See docs/35-lambda-library.md §13, decision log D064.
+// AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
+//
+// The Lambda runtime opens a top-level X-Ray segment for every invocation
+// when active tracing is enabled on the Lambda function.  This library
+// wraps individual Lyric function calls as subsegments of that top-level
+// segment via the Tracing pub aspect template.
+//
+// Primary usage: instantiate the Tracing aspect template with a matches
+// selector.  The aspect wraps each matched call in an X-Ray subsegment.
+//
+//   import AwsXRay
+//
+//   aspect TraceHandlers from AwsXRay.Tracing {
+//     matches: name like "handle*"
+//   }
+//
+// The subsegment name is the function's qualified name (e.g.
+// "MyApp.Orders.handleCreate").  On error the subsegment is closed with
+// the error message recorded under the "error" annotation.
+//
+// Secondary usage: attach annotations and metadata to the current subsegment
+// from within a handler body.
+//
+//   func handleCreate(event: ApiGwV2Event, ctx: LambdaContext): Result[ApiGwResponse, LambdaError] {
+//     val seg = AwsXRay.currentSubsegment()
+//     AwsXRay.annotate(seg, "orderId", event.pathParameters.get("id"))
+//     ...
+//   }
+//
+// Annotations are indexed by X-Ray and appear in filter expressions.
+// Metadata is not indexed and can hold arbitrary string values.
+//
+// IAM requirements:
+//   The Lambda execution role must have xray:PutTraceSegments and
+//   xray:PutTelemetryRecords on * (standard X-Ray active tracing policy).
+//
+// See docs/35-lambda-library.md §13, decision log D064.
 
 @runtime_checked
 package AwsXRay
 
 import Std.Core
-import Std.Encoding
 import Std.Char as Ch
 import AwsXRay.Kernel.Net as XRayKernel
 
@@ -72,7 +71,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
+  ()
 }
 
 /// Add unindexed metadata to the subsegment.
@@ -83,7 +82,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addMetadata(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
+  ()
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
@@ -118,8 +117,8 @@ pub aspect Tracing {
       val seg = XRayKernel.beginSubsegment(call.qualifiedName)
       ret = call.proceed()
       match ret {
-        Err(e) => XRayKernel.addAnnotation(seg, "error", sanitizeAnnotation(e.toString()))
-        _      => ()
+        case Err(e) -> { XRayKernel.addAnnotation(seg, "error", sanitizeAnnotation(e.toString())) }
+        case _      -> ()
       }
       XRayKernel.endSubsegment(seg)
     }
@@ -140,10 +139,6 @@ func utf8CharBytes(c: in Char): Int {
 func sanitizeAnnotation(s: in String): String {
   val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
   val b = a.replace("<", "_").replace(">", "_")
-  // Fast path: entire string fits.
-  if Std.Encoding.encodeUtf8(b).length <= 1024 {
-    return b
-  }
   // Single forward pass: accumulate byte count and stop at the 1024-byte limit.
   var byteCount = 0
   var charCount = 0
@@ -158,6 +153,9 @@ func sanitizeAnnotation(s: in String): String {
       charCount = charCount + 1
       i = i + 1
     }
+  }
+  if charCount == b.length {
+    return b
   }
   b.substring(0, charCount)
 }

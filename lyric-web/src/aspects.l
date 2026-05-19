@@ -1,55 +1,54 @@
-/// Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
-///
-/// Provides five reusable template aspects:
-///
-///   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
-///                         C-mode (@inline_template): reads args.authToken.
-///   RequiresRole        — validates token AND checks a role claim; 403 on
-///                         insufficient role.  C-mode: reads args.authToken.
-///   ApiKey              — constant-time API-key check; 401 on mismatch.
-///                         C-mode: reads args.apiKey.
-///   RateLimit           — per-endpoint sliding-window rate limit; 429 on
-///                         excess.  B-mode: uses call.qualifiedName.
-///   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
-///                         B-mode: uses call.qualifiedName.
-///
-/// Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
-/// Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
-/// transport-agnostic and can be reused from gRPC or queue aspects.
-///
-/// Typical consumer instantiation:
-///
-///   import Web.Aspects
-///
-///   aspect Auth from Web.Aspects.RequiresAuth {
-///     matches: name like "handle*"
-///     except name in { handleHealth, handleOpenApiSpec }
-///   }
-///
-///   aspect Throttle from Web.Aspects.RateLimit {
-///     matches: name like "handle*"
-///     inside:  Auth
-///     config { requestsPerMinute: Int = 30 }
-///   }
-///
-///   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
-///     matches: name like "handle*"
-///     inside:  Throttle
-///   }
-///
-/// CORS is not an aspect — configure it via the Web.Cors config block.
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+// Web.Aspects — pub aspect templates for cross-cutting HTTP handler concerns.
+//
+// Provides five reusable template aspects:
+//
+//   RequiresAuth        — validates a bearer token; 401 / 403 on failure.
+//                         C-mode (@inline_template): reads args.authToken.
+//   RequiresRole        — validates token AND checks a role claim; 403 on
+//                         insufficient role.  C-mode: reads args.authToken.
+//   ApiKey              — constant-time API-key check; 401 on mismatch.
+//                         C-mode: reads args.apiKey.
+//   RateLimit           — per-endpoint sliding-window rate limit; 429 on
+//                         excess.  B-mode: uses call.qualifiedName.
+//   HttpCircuitBreaker  — open-circuit short-circuit; 503 when open.
+//                         B-mode: uses call.qualifiedName.
+//
+// Auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.extractClaim,
+// Auth.verifyApiKey, Auth.rolesContain) so the JWT and API-key logic is
+// transport-agnostic and can be reused from gRPC or queue aspects.
+//
+// Typical consumer instantiation:
+//
+//   import Web.Aspects
+//
+//   aspect Auth from Web.Aspects.RequiresAuth {
+//     matches: name like "handle*"
+//     except name in { handleHealth, handleOpenApiSpec }
+//   }
+//
+//   aspect Throttle from Web.Aspects.RateLimit {
+//     matches: name like "handle*"
+//     inside:  Auth
+//     config { requestsPerMinute: Int = 30 }
+//   }
+//
+//   aspect Circuit from Web.Aspects.HttpCircuitBreaker {
+//     matches: name like "handle*"
+//     inside:  Throttle
+//   }
+//
+// CORS is not an aspect — configure it via env vars (see Web.start).
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Web.Aspects
 
 import Std.Core
-import Web
-import Web.Kernel.Net
-import Web.Kernel.Jvm
+import Web as WebPkg
 import Auth
 import Resilience
+import Web.Kernel.Net as HttpKernel
 
 // ─── RequiresAuth ─────────────────────────────────────────────────────────────
 
@@ -94,13 +93,13 @@ pub aspect RequiresAuth {
       ret = call.proceed()
     } else {
       if args.authToken == "" {
-        ret = Err(Web.unauthorized("Authorization header missing or empty"))
+        ret = Err(WebPkg.unauthorized("Authorization header missing or empty"))
       } else {
         val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
         if ok {
           ret = call.proceed()
         } else {
-          ret = Err(Web.forbidden("Token is invalid or has expired"))
+          ret = Err(WebPkg.forbidden("Token is invalid or has expired"))
         }
       }
     }
@@ -146,21 +145,22 @@ pub aspect RequiresRole {
       ret = call.proceed()
     } else {
       if args.authToken == "" {
-        ret = Err(Web.unauthorized("Authorization header missing or empty"))
+        ret = Err(WebPkg.unauthorized("Authorization header missing or empty"))
       } else {
         val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
         if not ok {
-          ret = Err(Web.forbidden("Token is invalid or has expired"))
+          ret = Err(WebPkg.forbidden("Token is invalid or has expired"))
         } else {
           val claimOpt = Auth.extractClaim(args.authToken, "role")
           match claimOpt {
-            case None ->
-              ret = Err(Web.forbidden("Token does not carry a role claim"))
+            case None -> {
+              ret = Err(WebPkg.forbidden("Token does not carry a role claim"))
+            }
             case Some(roleValue) -> {
               if Auth.rolesContain(allowedRoles, roleValue) {
                 ret = call.proceed()
               } else {
-                ret = Err(Web.forbidden("Insufficient role: " + roleValue))
+                ret = Err(WebPkg.forbidden("Insufficient role: " + roleValue))
               }
             }
           }
@@ -201,13 +201,13 @@ pub aspect ApiKey {
       ret = call.proceed()
     } else {
       if args.apiKey == "" {
-        ret = Err(Web.unauthorized("X-Api-Key header missing"))
+        ret = Err(WebPkg.unauthorized("X-Api-Key header missing"))
       } else {
         val ok = Auth.verifyApiKey(args.apiKey, expectedKey)
         if ok {
           ret = call.proceed()
         } else {
-          ret = Err(Web.unauthorized("API key is invalid"))
+          ret = Err(WebPkg.unauthorized("API key is invalid"))
         }
       }
     }
@@ -243,11 +243,11 @@ pub aspect RateLimit {
     if not enabled {
       ret = call.proceed()
     } else {
-      val allowed = webKernelCheckRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
+      val allowed = HttpKernel.checkRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {
-        ret = Err(Web.tooManyRequests("Rate limit exceeded — try again later"))
+        ret = Err(WebPkg.tooManyRequests("Rate limit exceeded — try again later"))
       }
     }
   }
@@ -288,7 +288,7 @@ pub aspect HttpCircuitBreaker {
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
       if Resilience.circuitIsOpen(key, cooldownMs) {
-        ret = Err(Web.serviceUnavailable(key + " is temporarily unavailable"))
+        ret = Err(WebPkg.serviceUnavailable(key + " is temporarily unavailable"))
       } else {
         ret = call.proceed()
         match ret {
@@ -298,23 +298,4 @@ pub aspect HttpCircuitBreaker {
       }
     }
   }
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations so the same source compiles
-// under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-func webKernelCheckRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
-  requires: requestsPerMinute > 0
-  requires: burstSize > 0
-{
-  return Web.Kernel.Net.checkRateLimit(endpoint, requestsPerMinute, burstSize)
-}
-@cfg(feature = "jvm")
-func webKernelCheckRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
-  requires: requestsPerMinute > 0
-  requires: burstSize > 0
-{
-  return Web.Kernel.Jvm.checkRateLimit(endpoint, requestsPerMinute, burstSize)
 }

@@ -1,50 +1,51 @@
-/// Grpc.Aspects — pub aspect templates for cross-cutting gRPC handler concerns.
-///
-/// Provides three reusable template aspects that mirror Web.Aspects but
-/// target gRPC handlers (returning Result[T, GrpcStatus]).
-///
-///   RequiresGrpcAuth    — validates a bearer token; UNAUTHENTICATED (16) /
-///                         PERMISSION_DENIED (7) on failure.
-///                         C-mode (@inline_template): reads args.authToken.
-///                         The gRPC kernel extracts the token from the
-///                         "authorization" metadata header and passes it as
-///                         the `authToken: String` handler parameter.
-///
-///   RequiresGrpcRole    — validates token AND checks a role claim.
-///                         C-mode: reads args.authToken.
-///
-///   GrpcRateLimit       — per-method sliding-window rate limit; RESOURCE_EXHAUSTED
-///                         (8) on excess.  B-mode: uses call.qualifiedName.
-///
-///   GrpcCircuitBreaker  — open-circuit short-circuit; UNAVAILABLE (14) when open.
-///                         B-mode: uses call.qualifiedName.
-///
-/// Both auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.rolesContain).
-/// GrpcCircuitBreaker delegates to lyric-resilience (Resilience.circuitIsOpen, etc.).
-/// The same underlying functions are used by Web.Aspects, so a single
-/// lyric-auth configuration covers HTTP and gRPC services uniformly.
-///
-/// Typical consumer instantiation:
-///
-///   import Grpc.Aspects
-///
-///   aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
-///     matches: name like "get*" || name like "list*" || name like "create*"
-///             || name like "update*" || name like "delete*"
-///   }
-///
-///   aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
-///     matches: name like "get*" || name like "list*" || name like "create*"
-///             || name like "update*" || name like "delete*"
-///     inside: GrpcAuth
-///   }
-///
-/// See docs/37-grpc-proto-sketch.md §6.2.
+// Grpc.Aspects — pub aspect templates for cross-cutting gRPC handler concerns.
+//
+// Provides three reusable template aspects that mirror Web.Aspects but
+// target gRPC handlers (returning Result[T, GrpcStatus]).
+//
+//   RequiresGrpcAuth    — validates a bearer token; UNAUTHENTICATED (16) /
+//                         PERMISSION_DENIED (7) on failure.
+//                         C-mode (@inline_template): reads args.authToken.
+//                         The gRPC kernel extracts the token from the
+//                         "authorization" metadata header and passes it as
+//                         the `authToken: String` handler parameter.
+//
+//   RequiresGrpcRole    — validates token AND checks a role claim.
+//                         C-mode: reads args.authToken.
+//
+//   GrpcRateLimit       — per-method sliding-window rate limit; RESOURCE_EXHAUSTED
+//                         (8) on excess.  B-mode: uses call.qualifiedName.
+//
+//   GrpcCircuitBreaker  — open-circuit short-circuit; UNAVAILABLE (14) when open.
+//                         B-mode: uses call.qualifiedName.
+//
+// Both auth aspects delegate to lyric-auth (Auth.verifyJwt, Auth.rolesContain).
+// GrpcCircuitBreaker delegates to lyric-resilience (Resilience.circuitIsOpen, etc.).
+// The same underlying functions are used by Web.Aspects, so a single
+// lyric-auth configuration covers HTTP and gRPC services uniformly.
+//
+// Typical consumer instantiation:
+//
+//   import Grpc.Aspects
+//
+//   aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
+//     matches: name like "get*" || name like "list*" || name like "create*"
+//             || name like "update*" || name like "delete*"
+//   }
+//
+//   aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
+//     matches: name like "get*" || name like "list*" || name like "create*"
+//             || name like "update*" || name like "delete*"
+//     inside: GrpcAuth
+//   }
+//
+// See docs/37-grpc-proto-sketch.md §6.2.
 
 @runtime_checked
 package Grpc.Aspects
 
 import Std.Core
+import Grpc.Types
 import Grpc
 import Auth
 import Resilience
@@ -151,8 +152,9 @@ pub aspect RequiresGrpcRole {
         } else {
           val claimOpt = Auth.extractClaim(args.authToken, "role")
           match claimOpt {
-            case None ->
+            case None -> {
               ret = Err(Grpc.permissionDenied("Token does not carry a role claim"))
+            }
             case Some(roleValue) -> {
               if Auth.rolesContain(allowedRoles, roleValue) {
                 ret = call.proceed()

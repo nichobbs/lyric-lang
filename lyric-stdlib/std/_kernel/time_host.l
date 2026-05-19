@@ -157,3 +157,11 @@ pub func hostStopwatchFrequency(): Long = ()
 
 // Consumers: compute nanos in Std.Time.monotonicNanos using these two
 // building blocks so the formula lives in non-axiom Lyric code.
+
+// ─── Epoch millis — current time as Unix milliseconds ────────────────────────
+
+@externTarget("System.DateTimeOffset.get_UtcNow")
+pub func hostDtoUtcNow(): DateTimeOffset = ()
+
+@externTarget("System.DateTimeOffset.ToUnixTimeMilliseconds")
+pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long = ()

@@ -24,6 +24,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 dotnet = []
 jvm    = []
 
@@ -33,18 +34,10 @@ output          = "single"
 output_assembly = "Lyric.Proto.dll"
 
 [project.packages]
-# Platform-neutral types: WireType, ProtoField, DecodedField.
-"Proto.Types"      = "src/types.l"
-# .NET kernel: ProtoBuffer (MemoryStream) + IEEE 754 helpers.
-"Proto.Kernel.Net" = "src/_kernel/net/proto_kernel.l"
 # JVM kernel: ProtoBuffer (ByteArrayOutputStream) + IEEE 754 helpers (Phase 6).
 "Proto.Kernel.Jvm" = "src/_kernel/jvm/proto_kernel.l"
-# Pure-Lyric encoder: List[ProtoField] → slice[Byte].
-"Proto.Encoding"   = "src/encoding.l"
-# Pure-Lyric decoder: slice[Byte] → List[DecodedField].
-"Proto.Decoding"   = "src/decoding.l"
-# Public API re-exports and convenience helpers.
-"Proto"            = "src/proto.l"
+# Merged package: types + encoding + decoding + public API + .NET kernel boundary.
+"Proto"            = "src/proto_main.l"
 
 [dependencies]
 "Lyric.Stdlib" = "*"

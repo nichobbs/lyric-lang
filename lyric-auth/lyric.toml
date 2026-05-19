@@ -20,6 +20,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 # ASP.NET Core backend — System.IdentityModel.Tokens.Jwt.
 dotnet = []
 # JVM backend — io.jsonwebtoken (Phase 6).

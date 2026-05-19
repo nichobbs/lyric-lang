@@ -414,6 +414,13 @@ func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlineP
           } else if vc == 'f' and peekAt(c, 1) == 'a' and peekAt(c, 2) == 'l' and peekAt(c, 3) == 's' and peekAt(c, 4) == 'e' {
             skipOne(c); skipOne(c); skipOne(c); skipOne(c); skipOne(c)
             pairs.add(InlinePair(key = key, tval = TVBool(b = false)))
+          } else if vc == '[' {
+            // Array value (e.g. features = ["aws"]) — consume and skip;
+            // InlinePair only tracks strings and bools so arrays are discarded.
+            match parseStringArray(c, filePath) {
+              case Err(e) -> return Err(error = e)
+              case Ok(_)  -> ()  // intentionally dropped
+            }
           } else {
             return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
                                           message = "expected string or bool value in inline table"))

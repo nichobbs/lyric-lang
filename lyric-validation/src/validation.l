@@ -1,44 +1,44 @@
-/// Validation — declarative input validation for Lyric.
-///
-/// Provides composable validator combinators that return `[ValidationError]` —
-/// an empty list means the value is valid.  This library is distinct from
-/// contract `requires:` clauses: `requires:` enforces internal function
-/// invariants (programmer errors), while Validation checks external user-
-/// supplied inputs (user-facing error messages).
-///
-/// Usage:
-///
-///   import Validation
-///   import Std.Core
-///
-///   func validateUser(name: in String, age: in Int, email: in String): [ValidationError] {
-///     return Validation.all([
-///       Validation.required(name, "name"),
-///       Validation.minLength(name, "name", 2),
-///       Validation.maxLength(name, "name", 100),
-///       Validation.rangeValue(age, "age", 0, 150),
-///       Validation.email(email, "email"),
-///     ])
-///   }
-///
-///   val errs = validateUser("", -1, "not-an-email")
-///   if Validation.isValid(errs) {
-///     // proceed
-///   } else {
-///     // report errs to the caller
-///   }
-///
-///   // Or lift to Result:
-///   val result = Validation.toResult(user, validateUser(user.name, user.age, user.email))
-///
-/// See docs/03-decision-log.md D056 and lyric-validation/README.md.
+// Validation — declarative input validation for Lyric.
+//
+// Provides composable validator combinators that return `[ValidationError]` —
+// an empty list means the value is valid.  This library is distinct from
+// contract `requires:` clauses: `requires:` enforces internal function
+// invariants (programmer errors), while Validation checks external user-
+// supplied inputs (user-facing error messages).
+//
+// Usage:
+//
+//   import Validation
+//   import Std.Core
+//
+//   func validateUser(name: in String, age: in Int, email: in String): slice[ValidationError] {
+//     return Validation.all([
+//       Validation.required(name, "name"),
+//       Validation.minLength(name, "name", 2),
+//       Validation.maxLength(name, "name", 100),
+//       Validation.rangeValue(age, "age", 0, 150),
+//       Validation.email(email, "email"),
+//     ])
+//   }
+//
+//   val errs = validateUser("", -1, "not-an-email")
+//   if Validation.isValid(errs) {
+//     // proceed
+//   } else {
+//     // report errs to the caller
+//   }
+//
+//   // Or lift to Result:
+//   val result = Validation.toResult(user, validateUser(user.name, user.age, user.email))
+//
+// See docs/03-decision-log.md D056 and lyric-validation/README.md.
 
 @runtime_checked
 package Validation
 
 import Std.Core
-import Std.Collections
-import Std.Regex
+import Std.Collections as Collections
+import Std.Regex as Regex
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -62,14 +62,14 @@ pub record ValidationError {
 @stable(since="0.1")
 pub interface Validator[T] {
   /// Validate `value` for the named `field`.  Returns an empty list when valid.
-  func validate(value: in T, field: in String): [ValidationError]
+  func validate(value: in T, field: in String): slice[ValidationError]
 }
 
 // ─── String validators ────────────────────────────────────────────────────────
 
 /// Fail when `value` is an empty string.
 @stable(since="0.1")
-pub func required(value: in String, field: in String): [ValidationError] {
+pub func required(value: in String, field: in String): slice[ValidationError] {
   if value.length == 0 {
     return err(field, "required", field + " is required")
   }
@@ -78,7 +78,7 @@ pub func required(value: in String, field: in String): [ValidationError] {
 
 /// Fail when `value` is shorter than `min` characters.
 @stable(since="0.1")
-pub func minLength(value: in String, field: in String, min: in Int): [ValidationError]
+pub func minLength(value: in String, field: in String, min: in Int): slice[ValidationError]
   requires: min >= 0
 {
   if value.length < min {
@@ -90,7 +90,7 @@ pub func minLength(value: in String, field: in String, min: in Int): [Validation
 
 /// Fail when `value` is longer than `max` characters.
 @stable(since="0.1")
-pub func maxLength(value: in String, field: in String, max: in Int): [ValidationError]
+pub func maxLength(value: in String, field: in String, max: in Int): slice[ValidationError]
   requires: max >= 0
 {
   if value.length > max {
@@ -102,7 +102,7 @@ pub func maxLength(value: in String, field: in String, max: in Int): [Validation
 
 /// Fail when `value` does not have exactly `length` characters.
 @stable(since="0.1")
-pub func exactLength(value: in String, field: in String, length: in Int): [ValidationError]
+pub func exactLength(value: in String, field: in String, length: in Int): slice[ValidationError]
   requires: length >= 0
 {
   if value.length != length {
@@ -117,14 +117,14 @@ pub func exactLength(value: in String, field: in String, length: in Int): [Valid
 /// Whitespace is defined as space (0x20), tab (0x09), carriage return (0x0D),
 /// and newline (0x0A).
 @stable(since="0.1")
-pub func notBlank(value: in String, field: in String): [ValidationError] {
+pub func notBlank(value: in String, field: in String): slice[ValidationError] {
   if value.length == 0 {
     return err(field, "notBlank", field + " must not be blank")
   }
   var i = 0
   while i < value.length {
-    val ch = value.charAt(i).toString()
-    if ch != " " and ch != "\t" and ch != "\r" and ch != "\n" {
+    val ch: Char = value[i]
+    if ch != ' ' and ch != '\t' and ch != '\r' and ch != '\n' {
       return []
     }
     i = i + 1
@@ -147,12 +147,12 @@ pub func matches(
   field:       in String,
   pattern:     in String,
   patternDesc: in String
-): [ValidationError] {
+): slice[ValidationError] {
   if pattern.length == 0 {
     return []
   }
-  val r = Std.Regex.compile(pattern)
-  if not Std.Regex.isMatch(r, value) {
+  val r = Regex.compile(pattern)
+  if not Regex.isMatch(r, value) {
     return err(field, "pattern", field + " must match " + patternDesc)
   }
   return []
@@ -162,7 +162,7 @@ pub func matches(
 ///
 /// Comparison is case-sensitive.  The allowed list is scanned linearly.
 @stable(since="0.1")
-pub func oneOf(value: in String, field: in String, allowed: in [String]): [ValidationError] {
+pub func oneOf(value: in String, field: in String, allowed: in slice[String]): slice[ValidationError] {
   for option in allowed {
     if value == option { return [] }
   }
@@ -185,26 +185,26 @@ pub func oneOf(value: in String, field: in String, allowed: in [String]): [Valid
 /// domain; no consecutive dots; no leading/trailing whitespace;
 /// TLD of at least two characters; no CRLF/NUL (injection guard).
 @stable(since="0.1")
-pub func email(value: in String, field: in String): [ValidationError] {
+pub func email(value: in String, field: in String): slice[ValidationError] {
   val badEmail = err(field, "email", field + " must be a valid email address")
   if value.length == 0 { return badEmail }
   // Reject CRLF/NUL — header injection guard.
   var k = 0
   while k < value.length {
-    val ch = value.charAt(k).toString()
-    if ch == "\r" or ch == "\n" or ch == "\u{0}" { return badEmail }
+    val ch: Char = value[k]
+    if ch == '\r' or ch == '\n' or ch == '\u{0}' { return badEmail }
     k = k + 1
   }
   // Reject leading/trailing whitespace.
-  val first = value.charAt(0).toString()
-  val last  = value.charAt(value.length - 1).toString()
-  if first == " " or first == "\t" or last == " " or last == "\t" { return badEmail }
+  val first: Char = value[0]
+  val last:  Char = value[value.length - 1]
+  if first == ' ' or first == '\t' or last == ' ' or last == '\t' { return badEmail }
   // Find the "@" — must appear exactly once.
   var atCount = 0
   var atIndex = -1
   var i = 0
   while i < value.length {
-    if value.charAt(i).toString() == "@" {
+    if value[i] == '@' {
       atCount = atCount + 1
       atIndex = i
     }
@@ -214,14 +214,14 @@ pub func email(value: in String, field: in String): [ValidationError] {
   // Local part: must be non-empty, must not start or end with ".", and
   // must not contain consecutive dots.
   if atIndex == 0 { return badEmail }
-  val localFirst = value.charAt(0).toString()
-  val localLast  = value.charAt(atIndex - 1).toString()
-  if localFirst == "." or localLast == "." { return badEmail }
+  val localFirst: Char = value[0]
+  val localLast:  Char = value[atIndex - 1]
+  if localFirst == '.' or localLast == '.' { return badEmail }
   var localPrevDot = false
   var li = 0
   while li < atIndex {
-    val ch = value.charAt(li).toString()
-    if ch == "." {
+    val ch: Char = value[li]
+    if ch == '.' {
       if localPrevDot { return badEmail }
       localPrevDot = true
     } else {
@@ -232,16 +232,16 @@ pub func email(value: in String, field: in String): [ValidationError] {
   // Domain: must be non-empty, must not start or end with ".".
   val domainStart = atIndex + 1
   if domainStart >= value.length { return badEmail }
-  val domainFirstCh = value.charAt(domainStart).toString()
-  val domainLastCh  = value.charAt(value.length - 1).toString()
-  if domainFirstCh == "." or domainLastCh == "." { return badEmail }
+  val domainFirstCh: Char = value[domainStart]
+  val domainLastCh:  Char = value[value.length - 1]
+  if domainFirstCh == '.' or domainLastCh == '.' { return badEmail }
   // Domain: must contain at least one "." and no consecutive dots.
   var dotCount = 0
   var prevWasDot = false
   var j = domainStart
   while j < value.length {
-    val ch = value.charAt(j).toString()
-    if ch == "." {
+    val ch: Char = value[j]
+    if ch == '.' {
       dotCount = dotCount + 1
       if prevWasDot { return badEmail }
       prevWasDot = true
@@ -261,7 +261,7 @@ pub func email(value: in String, field: in String): [ValidationError] {
 
 /// Fail when `value` does not start with "http://" or "https://".
 @stable(since="0.1")
-pub func url(value: in String, field: in String): [ValidationError] {
+pub func url(value: in String, field: in String): slice[ValidationError] {
   if value.length == 0 {
     return err(field, "url", field + " must be a valid URL (http:// or https://)")
   }
@@ -277,7 +277,7 @@ pub func url(value: in String, field: in String): [ValidationError] {
 
 /// Fail when `value` is less than `min`.
 @stable(since="0.1")
-pub func minValue(value: in Int, field: in String, min: in Int): [ValidationError] {
+pub func minValue(value: in Int, field: in String, min: in Int): slice[ValidationError] {
   if value < min {
     return err(field, "minValue",
       field + " must be at least " + min.toString())
@@ -287,7 +287,7 @@ pub func minValue(value: in Int, field: in String, min: in Int): [ValidationErro
 
 /// Fail when `value` is greater than `max`.
 @stable(since="0.1")
-pub func maxValue(value: in Int, field: in String, max: in Int): [ValidationError] {
+pub func maxValue(value: in Int, field: in String, max: in Int): slice[ValidationError] {
   if value > max {
     return err(field, "maxValue",
       field + " must be at most " + max.toString())
@@ -297,7 +297,7 @@ pub func maxValue(value: in Int, field: in String, max: in Int): [ValidationErro
 
 /// Fail when `value` is outside the closed range [`min`, `max`].
 @stable(since="0.1")
-pub func rangeValue(value: in Int, field: in String, min: in Int, max: in Int): [ValidationError]
+pub func rangeValue(value: in Int, field: in String, min: in Int, max: in Int): slice[ValidationError]
   requires: min <= max
 {
   if value < min or value > max {
@@ -311,8 +311,11 @@ pub func rangeValue(value: in Int, field: in String, min: in Int, max: in Int): 
 
 /// Concatenate two error lists.  The result is valid iff both inputs are empty.
 @stable(since="0.1")
-pub func combine(a: in [ValidationError], b: in [ValidationError]): [ValidationError] {
-  return a + b
+pub func combine(a: in slice[ValidationError], b: in slice[ValidationError]): slice[ValidationError] {
+  val acc = newList()
+  for e in a { acc.add(e) }
+  for e in b { acc.add(e) }
+  return acc.toArray()
 }
 
 /// Concatenate all error lists in `errors`.  The result is valid iff every
@@ -323,23 +326,23 @@ pub func combine(a: in [ValidationError], b: in [ValidationError]): [ValidationE
 ///     Validation.minLength(name, "name", 2),
 ///   ])
 @stable(since="0.1")
-pub func all(errors: in [[ValidationError]]): [ValidationError] {
-  var result: [ValidationError] = []
+pub func all(errors: in slice[slice[ValidationError]]): slice[ValidationError] {
+  val acc = newList()
   for errs in errors {
-    result = result + errs
+    for e in errs { acc.add(e) }
   }
-  return result
+  return acc.toArray()
 }
 
 /// Return true iff the error list is empty (all validations passed).
 @stable(since="0.1")
-pub func isValid(errors: in [ValidationError]): Bool {
+pub func isValid(errors: in slice[ValidationError]): Bool {
   return errors.length == 0
 }
 
 /// Return the first validation error, or `None` if the list is empty.
 @stable(since="0.1")
-pub func firstError(errors: in [ValidationError]): Option[ValidationError] {
+pub func firstError(errors: in slice[ValidationError]): Option[ValidationError] {
   for e in errors {
     return Some(value = e)
   }
@@ -349,7 +352,7 @@ pub func firstError(errors: in [ValidationError]): Option[ValidationError] {
 /// Lift a validated value into a `Result`.
 /// Returns `Ok(value)` when `errors` is empty; `Err(errors)` otherwise.
 @stable(since="0.1")
-pub func toResult[T](value: in T, errors: in [ValidationError]): Result[T, [ValidationError]] {
+pub func toResult[T](value: in T, errors: in slice[ValidationError]): Result[T, slice[ValidationError]] {
   if errors.length == 0 {
     return Ok(value)
   }
@@ -359,6 +362,6 @@ pub func toResult[T](value: in T, errors: in [ValidationError]): Result[T, [Vali
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 // Construct a single-element error list.
-func err(field: in String, code: in String, message: in String): [ValidationError] {
+func err(field: in String, code: in String, message: in String): slice[ValidationError] {
   return [ValidationError(field = field, message = message, code = code)]
 }

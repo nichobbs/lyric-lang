@@ -2542,6 +2542,13 @@ and private parseRecordMembers
         | TKeyword KwAsync
             when (Cursor.peekAt cursor 1).Token = TKeyword KwFunc ->
             xs.Add(RMFunc (parseFunctionDeclBody cursor diags None))
+        | TKeyword KwVar ->
+            // `var name: Type [= default]` — mutable record field.
+            // Consume the `var` keyword then parse the rest as a plain FieldDecl.
+            // Mutability enforcement is deferred to T6+; the emitter treats all
+            // record fields uniformly for now.
+            Cursor.advance cursor |> ignore
+            xs.Add(RMField (parseFieldDecl cursor diags))
         | _ ->
             xs.Add(RMField (parseFieldDecl cursor diags))
         // Tolerate STMT_END or comma between members.

@@ -1,46 +1,46 @@
-/// Resilience — retry and circuit-breaker aspect templates.
-///
-/// Two pub aspect templates with no `matches:` clause; consumers bind them
-/// locally with a `matches:` selector:
-///
-///   aspect DbRetry from Resilience.Retry {
-///     matches: name like "query*" || name like "execute*"
-///     config { maxAttempts: Int = 5, initialDelayMs: Int = 50 }
-///   }
-///
-///   aspect WorkerCircuit from Resilience.CircuitBreaker {
-///     matches: name in { workerTick }
-///     config { failureThreshold: Int = 3, cooldownMs: Int = 60000 }
-///   }
-///
-/// Both aspects apply to functions returning Result[T, String].
-/// HTTP handlers (Result[T, ApiError]) should use Web.Aspects.HttpCircuitBreaker
-/// from lyric-web, which calls the same kernel functions.
-///
-/// Circuit-breaker state design:
-///
-///   The ideal Lyric model is a protected type:
-///
-///     protected type CircuitBreakerState {
-///       var consecutiveFailures: Int
-///       var isOpen:              Bool
-///       var openedAtMs:          Long
-///       invariant: consecutiveFailures >= 0
-///       entry recordSuccess(): Unit { consecutiveFailures = 0; isOpen = false }
-///       entry recordFailure(threshold: in Int): Unit {
-///         consecutiveFailures = consecutiveFailures + 1
-///         if consecutiveFailures >= threshold { isOpen = true; openedAtMs = now() }
-///       }
-///       entry checkOpen(cooldownMs: in Int): Bool { ... }
-///     }
-///
-///   Process-global lifetime requires a wire singleton (M5.2 stage 3+).
-///   Until wire emitter support is complete, process-global state is
-///   managed by the kernel (ConcurrentDictionary / ConcurrentHashMap)
-///   and exposed through the functions below.  The protected type above
-///   is the formal model; compile it separately to verify invariants.
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D056.
+// Resilience — retry and circuit-breaker aspect templates.
+//
+// Two pub aspect templates with no `matches:` clause; consumers bind them
+// locally with a `matches:` selector:
+//
+//   aspect DbRetry from Resilience.Retry {
+//     matches: name like "query*" || name like "execute*"
+//     config { maxAttempts: Int = 5, initialDelayMs: Int = 50 }
+//   }
+//
+//   aspect WorkerCircuit from Resilience.CircuitBreaker {
+//     matches: name in { workerTick }
+//     config { failureThreshold: Int = 3, cooldownMs: Int = 60000 }
+//   }
+//
+// Both aspects apply to functions returning Result[T, String].
+// HTTP handlers (Result[T, ApiError]) should use Web.Aspects.HttpCircuitBreaker
+// from lyric-web, which calls the same kernel functions.
+//
+// Circuit-breaker state design:
+//
+//   The ideal Lyric model is a protected type:
+//
+//     protected type CircuitBreakerState {
+//       var consecutiveFailures: Int
+//       var isOpen:              Bool
+//       var openedAtMs:          Long
+//       invariant: consecutiveFailures >= 0
+//       entry recordSuccess(): Unit { consecutiveFailures = 0; isOpen = false }
+//       entry recordFailure(threshold: in Int): Unit {
+//         consecutiveFailures = consecutiveFailures + 1
+//         if consecutiveFailures >= threshold { isOpen = true; openedAtMs = now() }
+//       }
+//       entry checkOpen(cooldownMs: in Int): Bool { ... }
+//     }
+//
+//   Process-global lifetime requires a wire singleton (M5.2 stage 3+).
+//   Until wire emitter support is complete, process-global state is
+//   managed by the kernel (ConcurrentDictionary / ConcurrentHashMap)
+//   and exposed through the functions below.  The protected type above
+//   is the formal model; compile it separately to verify invariants.
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D056.
 
 @runtime_checked
 package Resilience
@@ -48,8 +48,8 @@ package Resilience
 import Std.Core
 import Std.Time
 import Std.Log
-import Resilience.Kernel.Net
-import Resilience.Kernel.Jvm
+import Resilience.Kernel.Net as ResKernelNet
+import Resilience.Kernel.Jvm as ResKernelJvm
 
 // ─── Kernel-backed helpers (public so lyric-web can call them) ────────────────
 
@@ -59,7 +59,7 @@ import Resilience.Kernel.Jvm
 pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
 {
-  Resilience.Kernel.Net.sleepMs(ms)
+  ResKernelNet.sleepMs(ms)
 }
 
 @stable(since="0.1")
@@ -67,46 +67,46 @@ pub func sleepMs(ms: in Int): Unit
 pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
 {
-  Resilience.Kernel.Jvm.sleepMs(ms)
+  ResKernelJvm.sleepMs(ms)
 }
 
 /// True if the named circuit is currently open.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool {
-  return Resilience.Kernel.Net.circuitIsOpen(name, cooldownMs)
+  return ResKernelNet.circuitIsOpen(name, cooldownMs)
 }
 
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool {
-  return Resilience.Kernel.Jvm.circuitIsOpen(name, cooldownMs)
+  return ResKernelJvm.circuitIsOpen(name, cooldownMs)
 }
 
 /// Record a successful call — closes the circuit and resets failure count.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func circuitRecordSuccess(name: in String): Unit {
-  Resilience.Kernel.Net.circuitRecordSuccess(name)
+  ResKernelNet.circuitRecordSuccess(name)
 }
 
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func circuitRecordSuccess(name: in String): Unit {
-  Resilience.Kernel.Jvm.circuitRecordSuccess(name)
+  ResKernelJvm.circuitRecordSuccess(name)
 }
 
 /// Record a failed call — opens the circuit when threshold is reached.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
-  Resilience.Kernel.Net.circuitRecordFailure(name, failureThreshold)
+  ResKernelNet.circuitRecordFailure(name, failureThreshold)
 }
 
 @stable(since="0.1")
 @cfg(feature = "jvm")
 pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
-  Resilience.Kernel.Jvm.circuitRecordFailure(name, failureThreshold)
+  ResKernelJvm.circuitRecordFailure(name, failureThreshold)
 }
 
 // Private: compute exponential backoff delay with a cap and optional jitter.
@@ -114,6 +114,9 @@ pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
 // ~attempt 22 (2^22 × 100 ≈ 419 ms → 2^30 × 100 overflows Int.maxValue).
 // `maxDelayMs` (default 30000 ms) prevents this and also limits thundering
 // herds.  `jitterFraction` adds ±jitter×delay random jitter; 0.0 = no jitter.
+// `jitterFraction` is accepted for API compatibility but not applied in this
+// implementation (deterministic jitter requires float arithmetic not yet
+// available in the bootstrap emitter).
 func backoffDelay(
   initialDelayMs:  in Int,
   backoffFactor:   in Int,
@@ -124,31 +127,18 @@ func backoffDelay(
   var delay: Int = initialDelayMs
   var i:     Int = 0
   while i < attempt {
-    // Clamp before multiplying to avoid Int overflow.
     if delay >= maxDelayMs {
       delay = maxDelayMs
-      i     = attempt    // early exit: already at cap
+      i     = attempt
     } else {
       val next = delay * backoffFactor
       delay    = if next > maxDelayMs then maxDelayMs else next
       i        = i + 1
     }
   }
-  // Apply jitter: delay × (1 ± jitterFraction).  Mixes the current time in
-  // milliseconds with the attempt number so concurrent callers at the same
-  // retry attempt get distinct pseudo-random values, breaking thundering herds.
-  if jitterFraction > 0.0 {
-    // Widen to Int64 before the multiply to avoid Int overflow.
-    // `nowSeed` is already < 1_000_000 (mod result) but multiplying by 1664525
-    // can exceed Int32.MaxValue without the explicit i64 promotion.
-    val nowSeed    = (Std.Time.monotonicNanos() mod 1000000i64)
-    val pseudoRand = ((nowSeed * 1664525i64 + attempt.toLong() * 22695477i64 + 1013904223i64) mod 1000i64).toInt().toFloat() / 1000.0
-    val jitter = (pseudoRand * 2.0 - 1.0) * jitterFraction
-    val jitteredDelay = (delay.toFloat() * (1.0 + jitter)).toInt()
-    if jitteredDelay < 0 then 0 else if jitteredDelay > maxDelayMs then maxDelayMs else jitteredDelay
-  } else {
-    delay
-  }
+  // jitterFraction is accepted for API compatibility but not applied here;
+  // deterministic jitter requires float arithmetic not yet available in the bootstrap emitter.
+  delay
 }
 
 // ─── Retry ────────────────────────────────────────────────────────────────────
@@ -195,14 +185,14 @@ pub aspect Retry {
       var attempt: Int = 1
       while attempt < maxAttempts {
         match ret {
-          case Ok(_)   -> attempt = maxAttempts    // exit: success
+          case Ok(_)   -> { attempt = maxAttempts }    // exit: success
           case Err(msg) -> {
             if logRetries {
               Std.Log.warn("Retry: attempt " + attempt.toString() + " of " +
                            maxAttempts.toString() + " failed: " + msg)
             }
             val delay = backoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs, jitterFraction)
-            Resilience.sleepMs(delay)
+            sleepMs(delay)
             ret     = call.proceed()
             attempt = attempt + 1
           }
@@ -243,13 +233,13 @@ pub aspect CircuitBreaker {
       ret = call.proceed()
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
-      if Resilience.circuitIsOpen(key, cooldownMs) {
+      if circuitIsOpen(key, cooldownMs) {
         ret = Err("circuit open: " + key + " is temporarily unavailable")
       } else {
         ret = call.proceed()
         match ret {
-          case Ok(_)  -> Resilience.circuitRecordSuccess(key)
-          case Err(_) -> Resilience.circuitRecordFailure(key, failureThreshold)
+          case Ok(_)  -> circuitRecordSuccess(key)
+          case Err(_) -> circuitRecordFailure(key, failureThreshold)
         }
       }
     }

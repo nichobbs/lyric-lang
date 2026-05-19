@@ -1,10 +1,10 @@
-/// Auth.Kernel.Net — .NET authentication extern boundary.
-///
-/// Bridges Auth's verification functions to System.IdentityModel.Tokens.Jwt
-/// (JWT) and BCL string-comparison primitives (API key).
-///
-/// Only active when compiled with feature = "dotnet".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Auth.Kernel.Net — .NET authentication extern boundary.
+//
+// Bridges Auth's verification functions to System.IdentityModel.Tokens.Jwt
+// (JWT) and BCL string-comparison primitives (API key).
+//
+// Only active when compiled with feature = "dotnet".
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "dotnet")
 package Auth.Kernel.Net

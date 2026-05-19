@@ -27,6 +27,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 dotnet = []
 jvm    = []
 
@@ -44,4 +45,4 @@ output_assembly = "Lyric.Resilience.dll"
 "Resilience.ResilienceTests" = "tests/resilience_tests.l"
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

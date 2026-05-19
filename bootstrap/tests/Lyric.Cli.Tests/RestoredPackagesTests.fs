@@ -44,7 +44,7 @@ let tests =
                         "func" "greet" "pub func greet(name: in String): String"
                       ContractMeta.ContractDecl.basic
                         "interface" "Sayable" "pub interface Sayable" ]
-            let source = synthesiseSource contract
+            let source = synthesiseSource contract []
             Expect.stringContains source "package Lyric.Greeter" "package header"
             Expect.stringContains source
                 "pub func greet(name: in String): String"
