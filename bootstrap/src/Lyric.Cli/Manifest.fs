@@ -538,7 +538,8 @@ let private toManifest (entries: Map<string * string, Value>)
                 | VInlineTable pairs ->
                     match Map.tryFind "path" pairs with
                     | Some p -> Some (Ok { Name = key; Version = ""; LocalPath = Some p })
-                    | None   -> None
+                    | None   -> Some (Error (InvalidFieldType (sec, key,
+                                                               "inline table dependency must have a 'path' key")))
                 | _ ->
                     Some (Error (InvalidFieldType (sec, key,
                                                    "dependency version string or inline table with 'path' key")))
