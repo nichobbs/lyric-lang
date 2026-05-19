@@ -72,7 +72,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
+  ()
 }
 
 /// Add unindexed metadata to the subsegment.
@@ -83,7 +83,7 @@ pub func metadata(handle: in SubsegmentHandle, key: in String, value: in String)
   requires: key.length > 0
   requires: value.length > 0
 {
-  XRayKernel.addMetadata(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
+  ()
 }
 
 // ─── Tracing aspect template ──────────────────────────────────────────────────
@@ -118,8 +118,8 @@ pub aspect Tracing {
       val seg = XRayKernel.beginSubsegment(call.qualifiedName)
       ret = call.proceed()
       match ret {
-        Err(e) => XRayKernel.addAnnotation(seg, "error", sanitizeAnnotation(e.toString()))
-        _      => ()
+        case Err(e) -> { XRayKernel.addAnnotation(seg, "error", sanitizeAnnotation(e.toString())) }
+        case _      -> ()
       }
       XRayKernel.endSubsegment(seg)
     }

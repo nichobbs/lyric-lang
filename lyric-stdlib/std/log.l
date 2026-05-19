@@ -41,26 +41,26 @@ func levelName(level: in LogLevel): String {
 // Escape special characters in a log field key or value to prevent log injection.
 // Replaces \, newlines, carriage returns, = and " with safe escape sequences.
 func escapeLogValue(s: in String): String {
-  var out = ""
+  var buf = ""
   var i   = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "\\" {
-      out = out + "\\\\"
-    } else if ch == "\n" {
-      out = out + "\\n"
-    } else if ch == "\r" {
-      out = out + "\\r"
-    } else if ch == "=" {
-      out = out + "\\="
-    } else if ch == "\"" {
-      out = out + "\\\""
+    val ch: Char = s[i]
+    if ch == '\\' {
+      buf = buf + "\\\\"
+    } else if ch == '\n' {
+      buf = buf + "\\n"
+    } else if ch == '\r' {
+      buf = buf + "\\r"
+    } else if ch == '=' {
+      buf = buf + "\\="
+    } else if ch == '"' {
+      buf = buf + "\\\""
     } else {
-      out = out + ch
+      buf = buf + s.substring(i, i + 1)
     }
     i = i + 1
   }
-  return out
+  return buf
 }
 
 @pure

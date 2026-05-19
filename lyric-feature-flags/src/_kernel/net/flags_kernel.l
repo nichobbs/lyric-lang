@@ -1,10 +1,10 @@
 // Flags.Kernel.Net — extern boundary for remote feature flag store drivers.
 //
 // Bridges Lyric's Flags package to .NET platform libraries:
-//   Lyric.Flags.Http             — HTTP polling client for remote stores
-//                                       (@cfg feature = "remote")
+//   Lyric.Flags.Http     — HTTP polling client for remote stores
+//                          (@cfg feature = "remote")
 //   Lyric.Flags.Registry — process-global flag registry for
-//                                         aspect use (always available)
+//                          aspect use (always available)
 //
 // The HTTP client polls the configured endpoint on a background thread,
 // updating an in-memory ConcurrentDictionary with the latest flag values.
@@ -60,62 +60,4 @@ extern package Lyric.Flags.Registry {
 
   /// Register (or overwrite) a String flag in the process-global registry.
   pub func registerStringFlag(name: String, value: String): Unit
-}
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
-
-/// Open a polling connection to the remote flag endpoint.
-@cfg(feature = "remote")
-pub func connect(
-  url:              in String,
-  apiKey:           in String,
-  appKey:           in String,
-  pollIntervalMs:   in Int,
-  connectTimeoutMs: in Int
-): Result[Int, String] {
-  return Lyric.Flags.Http.connect(url, apiKey, appKey, pollIntervalMs, connectTimeoutMs)
-}
-
-/// Return true if the named flag is enabled in the remote store.
-@cfg(feature = "remote")
-pub func isEnabled(storeHandle: in Int, name: in String): Bool {
-  return Lyric.Flags.Http.isEnabled(storeHandle, name)
-}
-
-/// Return the JSON-encoded value for the named flag, or "" if absent.
-@cfg(feature = "remote")
-pub func getValue(storeHandle: in Int, name: in String): String {
-  return Lyric.Flags.Http.getValue(storeHandle, name)
-}
-
-/// Return a JSON array of all flag entries in the remote store.
-@cfg(feature = "remote")
-pub func listFlags(storeHandle: in Int): String {
-  return Lyric.Flags.Http.listFlags(storeHandle)
-}
-
-/// Trigger an immediate refresh from the remote endpoint.
-@cfg(feature = "remote")
-pub func refresh(storeHandle: in Int): Result[Unit, String] {
-  return Lyric.Flags.Http.refresh(storeHandle)
-}
-
-/// Return the Bool value of a named flag from the process-global registry.
-pub func checkFlag(name: in String, defaultValue: in Bool): Bool {
-  return Lyric.Flags.Registry.checkFlag(name, defaultValue)
-}
-
-/// Return the String value of a named flag from the process-global registry.
-pub func getStringFlag(name: in String, defaultValue: in String): String {
-  return Lyric.Flags.Registry.getStringFlag(name, defaultValue)
-}
-
-/// Register a Bool flag in the process-global registry.
-pub func registerBoolFlag(name: in String, value: in Bool): Unit {
-  Lyric.Flags.Registry.registerBoolFlag(name, value)
-}
-
-/// Register a String flag in the process-global registry.
-pub func registerStringFlag(name: in String, value: in String): Unit {
-  Lyric.Flags.Registry.registerStringFlag(name, value)
 }

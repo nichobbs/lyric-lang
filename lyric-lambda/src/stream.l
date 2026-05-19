@@ -11,7 +11,7 @@
 //                          check current AWS documentation for region support).
 //
 // Handler signature (string-based registration via Lambda.withStreamingHandler):
-//   func h(rawEvent: String, ctx: Lambda.LambdaContext, writer: Lambda.Stream.StreamWriter): Result[Unit, Lambda.LambdaError]
+//   func h(rawEvent: String, ctx: Lambda.LambdaContext, writer: Lambda.Stream.StreamWriter): Result[Unit, LambdaError]
 //
 //   rawEvent is the full API Gateway / Function URL event JSON.  Parse it
 //   with Lambda.ApiGw types if structured access is needed.
@@ -23,7 +23,7 @@
 // Example:
 //
 //   func streamTokens(rawEvent: String, ctx: Lambda.LambdaContext, writer: Lambda.Stream.StreamWriter)
-//       : Result[Unit, Lambda.LambdaError] {
+//       : Result[Unit, LambdaError] {
 //     Lambda.Stream.setContentType(writer, "text/event-stream")
 //     val tokens = MyApp.Llm.generate(rawEvent)
 //     for token in tokens {
@@ -55,6 +55,7 @@
 package Lambda.Stream
 
 import Std.Core
+import Web
 import Lambda
 
 // ─── StreamWriter ─────────────────────────────────────────────────────────────
@@ -79,13 +80,13 @@ pub func setContentType(writer: in StreamWriter, contentType: in String): Unit
 /// Returns LambdaError.InternalError if the stream is already closed or
 /// the connection was dropped by the caller.
 @stable(since="0.1")
-pub func write(writer: in StreamWriter, chunk: in String): Result[Unit, Lambda.LambdaError]
+pub func write(writer: in StreamWriter, chunk: in String): Result[Unit, LambdaError]
   requires: chunk.length > 0
 
 /// Write a base64-encoded binary chunk to the response stream.
 /// The kernel decodes the base64 and delivers raw bytes to the caller.
 @stable(since="0.1")
-pub func writeBytes(writer: in StreamWriter, base64Chunk: in String): Result[Unit, Lambda.LambdaError]
+pub func writeBytes(writer: in StreamWriter, base64Chunk: in String): Result[Unit, LambdaError]
   requires: base64Chunk.length > 0
 
 /// Close the response stream.

@@ -3536,6 +3536,31 @@ let private emitAssembly
                             |> Option.bind Symbol.typeIdOpt
                             |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
                 | _ -> ()
+            // Enums — register imported enum cases so cross-package uses of
+            // `EnumName.CaseName` resolve correctly in the consuming package.
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IEnum ed ->
+                    match getType (qualify ed.Name) with
+                    | None -> ()
+                    | Some ty ->
+                        let cases =
+                            ed.Cases
+                            |> List.mapi (fun i c ->
+                                { Records.EnumCase.Name = c.Name; Records.EnumCase.Ordinal = i })
+                        let info =
+                            { Records.EnumInfo.Name  = ed.Name
+                              Records.EnumInfo.Type  = ty
+                              Records.EnumInfo.Cases = cases }
+                        enumTable.[ed.Name] <- info
+                        for c in info.Cases do
+                            enumCases.[c.Name] <- (info, c)
+                            enumCases.[ed.Name + "." + c.Name] <- (info, c)
+                        symbols.TryFind ed.Name
+                        |> Seq.tryHead
+                        |> Option.bind Symbol.typeIdOpt
+                        |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
+                | _ -> ()
             // Protected types — populate typeIdToClr so cross-package
             // references to a `protected type` (e.g. `StubCounter` from
             // `Std.Testing.Mocking`) resolve to the correct CLR type.
@@ -5388,6 +5413,8 @@ let private emitAssembly
             recordSealed (kv.Value.Type.CreateType())
             for c in kv.Value.Cases do
                 recordSealed (c.Type.CreateType())
+        for kv in enumTable do
+            recordSealed kv.Value.Type
         // Async state-machine types — created before programTy so the
         // kickoff stubs in programTy can resolve their references at
         // runtime.

@@ -37,8 +37,40 @@ package Storage
 import Std.Core
 import Std.Collections
 import Std.Json
-import Storage.Kernel.Net
-import Storage.Kernel.Jvm
+import Std.Iter
+
+// ─── Kernel boundary (inlined) ────────────────────────────────────────────────
+// Declared here rather than imported from Storage.Kernel.Net because
+// intra-project import resolution does not yet propagate function signatures
+// to the caller's type-checker.  Storage.Kernel.Net still exports these for
+// aspects and external consumers.
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storageConnectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[Int, String] = Err("s3 not linked")
+
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
+func storageConnectAzure(connectionString: in String, containerName: in String): Result[Int, String] = Err("azureblob not linked")
+
+@axiom("Local filesystem storage using System.IO")
+func storageConnectLocal(basePath: in String, bucketName: in String): Result[Int, String] = Err("local not linked")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storagePut(bucketHandle: in Int, key: in String, dataBase64: in String, contentType: in String, userMetaJson: in String): Result[String, String] = Err("storage not linked")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storageGet(bucketHandle: in Int, key: in String): Result[String, String] = Err("storage not linked")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storageDelete(bucketHandle: in Int, key: in String): Result[Unit, String] = Err("storage not linked")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storageList(bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int): Result[String, String] = Err("storage not linked")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storagePresignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String] = Err("storage not linked")
+
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
+func storageExists(bucketHandle: in Int, key: in String): Result[Bool, String] = Err("storage not linked")
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -83,7 +115,7 @@ pub record ListEntry {
 /// `nextContinuationToken` to the next `list` call to page through results.
 @stable(since="0.1")
 pub record ListResult {
-  entries:                [ListEntry]
+  entries:                slice[ListEntry]
   nextContinuationToken:  Option[String]
   isTruncated:            Bool
 }
@@ -151,21 +183,21 @@ impl StorageBucket for NativeBucket {
     userMeta:    in Map[String, String]
   ): Result[StorageMetadata, StorageError] {
     val userMetaJson = serialiseStringMap(userMeta)
-    match storageKernelPut(bucketHandle, key, dataBase64, contentType, userMetaJson) {
+    match storagePut(self.bucketHandle, key, dataBase64, contentType, userMetaJson) {
       case Ok(json) -> parseMetadata(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "PUT_ERROR"))
     }
   }
 
   func get(key: in String): Result[StorageObject, StorageError] {
-    match storageKernelGet(bucketHandle, key) {
+    match storageGet(self.bucketHandle, key) {
       case Ok(json) -> parseStorageObject(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "GET_ERROR"))
     }
   }
 
   func delete(key: in String): Result[Unit, StorageError] {
-    match storageKernelDelete(bucketHandle, key) {
+    match storageDelete(self.bucketHandle, key) {
       case Ok(_)    -> Ok(())
       case Err(msg) -> Err(StorageError(message = msg, code = "DELETE_ERROR"))
     }
@@ -176,7 +208,7 @@ impl StorageBucket for NativeBucket {
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[ListResult, StorageError] {
-    match storageKernelList(bucketHandle, prefix, continuationToken, maxKeys) {
+    match storageList(self.bucketHandle, prefix, continuationToken, maxKeys) {
       case Ok(json) -> parseListResult(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "LIST_ERROR"))
     }
@@ -186,115 +218,63 @@ impl StorageBucket for NativeBucket {
     key:              in String,
     expiresInSeconds: in Int
   ): Result[String, StorageError] {
-    match storageKernelPresignedUrl(bucketHandle, key, expiresInSeconds) {
+    match storagePresignedUrl(self.bucketHandle, key, expiresInSeconds) {
       case Ok(url)  -> Ok(url)
       case Err(msg) -> Err(StorageError(message = msg, code = "PRESIGN_ERROR"))
     }
   }
 
   func exists(key: in String): Result[Bool, StorageError] {
-    match storageKernelExists(bucketHandle, key) {
+    match storageExists(self.bucketHandle, key) {
       case Ok(b)    -> Ok(b)
       case Err(msg) -> Err(StorageError(message = msg, code = "EXISTS_ERROR"))
     }
   }
 }
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-/// Amazon S3 connection settings.
-config S3Connection {
-  region:      String
-  bucket:      String
-  @sensitive
-  accessKey:   String = ""
-  @sensitive
-  secretKey:   String = ""
-  endpointUrl: String = ""   // empty = use the default AWS regional endpoint
-}
-
-/// Azure Blob Storage connection settings.
-config AzureConnection {
-  connectionString: String
-  containerName:    String
-}
-
-/// Local filesystem storage settings.
-config LocalConnection {
-  basePath:   String = "/tmp/lyric-storage"
-  bucketName: String
-}
-
 // ─── Factory functions ────────────────────────────────────────────────────────
 
-/// Open an Amazon S3 bucket using the S3Connection config block.
-/// Requires the `s3` feature to be active (`[features] s3 = []`).
+/// Open an Amazon S3 bucket.  Credentials and region are passed explicitly.
 @stable(since="0.1")
-@cfg(feature = "s3")
-pub func connectS3(): Result[StorageBucket, StorageError] {
-  match storageKernelConnectS3(
-    S3Connection.region,
-    S3Connection.bucket,
-    S3Connection.accessKey,
-    S3Connection.secretKey,
-    S3Connection.endpointUrl)
+pub func connectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[StorageBucket, StorageError] {
+  match storageConnectS3(region, bucket, accessKey, secretKey, endpointUrl)
   {
-    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = S3Connection.bucket))
+    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = bucket))
     case Err(msg)   -> Err(StorageError(message = msg, code = "CONNECT_ERROR"))
   }
 }
 
-/// Open an Azure Blob Storage container using the AzureConnection config block.
-/// Requires the `azureblob` feature to be active (`[features] azureblob = []`).
+/// Open an Azure Blob Storage container.  Connection string and container name are passed explicitly.
 @stable(since="0.1")
-@cfg(feature = "azureblob")
-pub func connectAzureBlob(): Result[StorageBucket, StorageError] {
-  match storageKernelConnectAzure(
-    AzureConnection.connectionString,
-    AzureConnection.containerName)
+pub func connectAzureBlob(connectionString: in String, containerName: in String): Result[StorageBucket, StorageError] {
+  match storageConnectAzure(connectionString, containerName)
   {
-    case Ok(handle) ->
-      Ok(NativeBucket(bucketHandle = handle, bucketName = AzureConnection.containerName))
-    case Err(msg) ->
-      Err(StorageError(message = msg, code = "CONNECT_ERROR"))
+    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = containerName))
+    case Err(msg)   -> Err(StorageError(message = msg, code = "CONNECT_ERROR"))
   }
 }
 
-/// Open a local filesystem store using the LocalConnection config block.
-/// Requires the `local` feature to be active (`[features] local = []`).
+/// Open a local filesystem store.  Base path and bucket name are passed explicitly.
 @stable(since="0.1")
-@cfg(feature = "local")
-pub func connectLocal(): Result[StorageBucket, StorageError] {
-  match storageKernelConnectLocal(
-    LocalConnection.basePath,
-    LocalConnection.bucketName)
+pub func connectLocal(basePath: in String, bucketName: in String): Result[StorageBucket, StorageError] {
+  match storageConnectLocal(basePath, bucketName)
   {
-    case Ok(handle) ->
-      Ok(NativeBucket(bucketHandle = handle, bucketName = LocalConnection.bucketName))
-    case Err(msg) ->
-      Err(StorageError(message = msg, code = "CONNECT_ERROR"))
+    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = bucketName))
+    case Err(msg)   -> Err(StorageError(message = msg, code = "CONNECT_ERROR"))
   }
 }
 
-/// Dispatch `connect` by provider name: "s3", "azure", or "local".
-/// Falls back to `Err` for unrecognised provider strings.
-///
-/// **Note:** this function calls the `@cfg`-gated `connectS3()`, `connectAzureBlob()`,
-/// and `connectLocal()` helpers.  The caller must ensure that the matching
-/// feature is active in the compiled binary; calling `connect("s3")` without
-/// the `s3` feature will produce a link error.  For compile-time safety,
-/// prefer calling the typed `connectS3()` / `connectAzureBlob()` / `connectLocal()`
-/// directly.
+/// Dispatch to the configured backend.  Returns Err when provider is unrecognised.
 @experimental
 pub func connect(provider: in String): Result[StorageBucket, StorageError]
   requires: provider.length > 0
 {
   if provider == "s3" {
-    return connectS3()
+    return connectS3("", "", "", "", "")
   } else if provider == "azure" {
-    return connectAzureBlob()
+    return connectAzureBlob("", "")
   } else if provider == "local" {
-    return connectLocal()
+    return connectLocal("/tmp/lyric-storage", "")
   } else {
     return Err(StorageError(
       message = "unknown storage provider: " + provider,
@@ -315,7 +295,7 @@ pub func put(
   requires: key.length > 0
   requires: contentType.length > 0
 {
-  return bucket.put(key, dataBase64, contentType, Map.empty())
+  return bucket.put(key, dataBase64, contentType, newMap())
 }
 
 /// Download an object.
@@ -371,10 +351,15 @@ pub func exists(bucket: in StorageBucket, key: in String): Result[Bool, StorageE
 func serialiseStringMap(m: in Map[String, String]): String {
   var result = "{"
   var first  = true
-  for (k, v) in m {
-    if not first { result = result + "," }
-    result = result + jsonString(k) + ":" + jsonString(v)
-    first  = false
+  for k in m {
+    match mapGet(m, k) {
+      case Some(v) -> {
+        if not first { result = result + "," }
+        result = result + jsonString(k) + ":" + jsonString(v)
+        first  = false
+      }
+      case None -> ()
+    }
   }
   return result + "}"
 }
@@ -382,16 +367,16 @@ func serialiseStringMap(m: in Map[String, String]): String {
 // Deserialise the JSON returned by the kernel's `put` into StorageMetadata.
 // JSON shape: {"contentType":"...","contentLength":N,"etag":"...","lastModified":"...","userMeta":{...}}
 func parseMetadata(json: in String): Result[StorageMetadata, StorageError] {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  if Std.Json.valueKind(root) != 1 {
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  if valueKind(root) != 1 {
     return Err(StorageError(message = "unexpected metadata JSON shape", code = "PARSE_ERROR"))
   }
-  val ct  = Std.Json.getString(Std.Json.getProperty(root, "contentType"))
-  val cl  = Std.Json.getInt64(Std.Json.getProperty(root, "contentLength"))
-  val et  = Std.Json.getString(Std.Json.getProperty(root, "etag"))
-  val lm  = Std.Json.getString(Std.Json.getProperty(root, "lastModified"))
-  val um  = parseStringMap(Std.Json.getRawText(Std.Json.getProperty(root, "userMeta")))
+  val ct  = getString(getProperty(root, "contentType"))
+  val cl  = getInt64(getProperty(root, "contentLength"))
+  val et  = getString(getProperty(root, "etag"))
+  val lm  = getString(getProperty(root, "lastModified"))
+  val um  = parseStringMap(getRawText(getProperty(root, "userMeta")))
   return Ok(StorageMetadata(
     contentType   = ct,
     contentLength = cl,
@@ -403,16 +388,16 @@ func parseMetadata(json: in String): Result[StorageMetadata, StorageError] {
 // Deserialise the JSON returned by the kernel's `get` into StorageObject.
 // JSON shape: {"bucket":"...","key":"...","metadata":{...},"dataBase64":"..."}
 func parseStorageObject(json: in String): Result[StorageObject, StorageError] {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  if Std.Json.valueKind(root) != 1 {
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  if valueKind(root) != 1 {
     return Err(StorageError(message = "unexpected object JSON shape", code = "PARSE_ERROR"))
   }
-  val bucket = Std.Json.getString(Std.Json.getProperty(root, "bucket"))
-  val key    = Std.Json.getString(Std.Json.getProperty(root, "key"))
-  val data   = Std.Json.getString(Std.Json.getProperty(root, "dataBase64"))
-  val metaEl = Std.Json.getProperty(root, "metadata")
-  val metaJson = Std.Json.getRawText(metaEl)
+  val bucket = getString(getProperty(root, "bucket"))
+  val key    = getString(getProperty(root, "key"))
+  val data   = getString(getProperty(root, "dataBase64"))
+  val metaEl = getProperty(root, "metadata")
+  val metaJson = getRawText(metaEl)
   match parseMetadata(metaJson) {
     case Ok(meta) ->
       Ok(StorageObject(bucket = bucket, key = key, metadata = meta, dataBase64 = data))
@@ -424,25 +409,24 @@ func parseStorageObject(json: in String): Result[StorageObject, StorageError] {
 // Deserialise the JSON returned by the kernel's `list` into ListResult.
 // JSON shape: {"entries":[...],"nextContinuationToken":"..."|null,"isTruncated":bool}
 func parseListResult(json: in String): Result[ListResult, StorageError] {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  if Std.Json.valueKind(root) != 1 {
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  if valueKind(root) != 1 {
     return Err(StorageError(message = "unexpected list JSON shape", code = "PARSE_ERROR"))
   }
-  val truncated = Std.Json.getBoolean(Std.Json.getProperty(root, "isTruncated"))
-  val tokenEl   = Std.Json.getProperty(root, "nextContinuationToken")
-  val tokenOpt  = if Std.Json.valueKind(tokenEl) == 7 then None
-                  else Some(value = Std.Json.getString(tokenEl))
-  val arrEl     = Std.Json.getProperty(root, "entries")
-  var entries: [ListEntry] = []
-  var en = Std.Json.enumerateArray(arrEl)
-  while Std.Json.arrayMoveNext(en) {
-    val e   = Std.Json.arrayCurrent(en)
-    val ek  = Std.Json.getString(Std.Json.getProperty(e, "key"))
-    val ecl = Std.Json.getInt64(Std.Json.getProperty(e, "contentLength"))
-    val elm = Std.Json.getString(Std.Json.getProperty(e, "lastModified"))
-    val eet = Std.Json.getString(Std.Json.getProperty(e, "etag"))
-    entries = entries + [ListEntry(key = ek, contentLength = ecl, lastModified = elm, etag = eet)]
+  val truncated = getBoolean(getProperty(root, "isTruncated"))
+  val tokenEl   = getProperty(root, "nextContinuationToken")
+  val tokenOpt  = if valueKind(tokenEl) == 7 { None } else { Some(value = getString(tokenEl)) }
+  val arrEl     = getProperty(root, "entries")
+  var entries: slice[ListEntry] = []
+  var en = enumerateArray(arrEl)
+  while arrayMoveNext(en) {
+    val e   = arrayCurrent(en)
+    val ek  = getString(getProperty(e, "key"))
+    val ecl = getInt64(getProperty(e, "contentLength"))
+    val elm = getString(getProperty(e, "lastModified"))
+    val eet = getString(getProperty(e, "etag"))
+    entries = concat(entries, [ListEntry(key = ek, contentLength = ecl, lastModified = elm, etag = eet)])
   }
   return Ok(ListResult(
     entries                = entries,
@@ -453,134 +437,18 @@ func parseListResult(json: in String): Result[ListResult, StorageError] {
 // Deserialise a JSON object of string-string pairs into Map[String, String].
 // Accepts raw JSON text so JsonElement does not escape this helper.
 func parseStringMap(rawJson: in String): Map[String, String] {
-  var m    = Map.empty()
-  val doc  = Std.Json.parseJson(rawJson)
-  val elem = Std.Json.rootElement(doc)
-  if Std.Json.valueKind(elem) != 1 { return m }
-  var en = Std.Json.enumerateObject(elem)
-  while Std.Json.objectMoveNext(en) {
-    val prop = Std.Json.objectCurrent(en)
-    val k    = Std.Json.propertyName(prop)
-    val v    = Std.Json.getString(Std.Json.propertyValue(prop))
-    m = m.set(k, v)
+  var m    = newMap()
+  val doc  = parseJson(rawJson)
+  val elem = rootElement(doc)
+  if valueKind(elem) != 1 { return m }
+  var en = enumerateObject(elem)
+  while objectMoveNext(en) {
+    val prop = objectCurrent(en)
+    val k    = propertyName(prop)
+    val v    = getString(propertyValue(prop))
+    m.add(k, v)
   }
   return m
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-@cfg(feature = "s3")
-func storageKernelConnectS3(
-  region: in String, bucket: in String, accessKey: in String,
-  secretKey: in String, endpointUrl: in String
-): Result[Int, String] {
-  return Storage.Kernel.Net.connectS3(region, bucket, accessKey, secretKey, endpointUrl)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "s3")
-func storageKernelConnectS3(
-  region: in String, bucket: in String, accessKey: in String,
-  secretKey: in String, endpointUrl: in String
-): Result[Int, String] {
-  return Storage.Kernel.Jvm.connectS3(region, bucket, accessKey, secretKey, endpointUrl)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "azureblob")
-func storageKernelConnectAzure(
-  connectionString: in String, containerName: in String
-): Result[Int, String] {
-  return Storage.Kernel.Net.connectAzure(connectionString, containerName)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "azureblob")
-func storageKernelConnectAzure(
-  connectionString: in String, containerName: in String
-): Result[Int, String] {
-  return Storage.Kernel.Jvm.connectAzure(connectionString, containerName)
-}
-
-@cfg(feature = "dotnet")
-@cfg(feature = "local")
-func storageKernelConnectLocal(basePath: in String, bucketName: in String): Result[Int, String] {
-  return Storage.Kernel.Net.connectLocal(basePath, bucketName)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "local")
-func storageKernelConnectLocal(basePath: in String, bucketName: in String): Result[Int, String] {
-  return Storage.Kernel.Jvm.connectLocal(basePath, bucketName)
-}
-
-@cfg(feature = "dotnet")
-func storageKernelPut(
-  bucketHandle: in Int, key: in String, dataBase64: in String,
-  contentType: in String, userMetaJson: in String
-): Result[String, String] {
-  return Storage.Kernel.Net.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-}
-@cfg(feature = "jvm")
-func storageKernelPut(
-  bucketHandle: in Int, key: in String, dataBase64: in String,
-  contentType: in String, userMetaJson: in String
-): Result[String, String] {
-  return Storage.Kernel.Jvm.put(bucketHandle, key, dataBase64, contentType, userMetaJson)
-}
-
-@cfg(feature = "dotnet")
-func storageKernelGet(bucketHandle: in Int, key: in String): Result[String, String] {
-  return Storage.Kernel.Net.get(bucketHandle, key)
-}
-@cfg(feature = "jvm")
-func storageKernelGet(bucketHandle: in Int, key: in String): Result[String, String] {
-  return Storage.Kernel.Jvm.get(bucketHandle, key)
-}
-
-@cfg(feature = "dotnet")
-func storageKernelDelete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  return Storage.Kernel.Net.delete(bucketHandle, key)
-}
-@cfg(feature = "jvm")
-func storageKernelDelete(bucketHandle: in Int, key: in String): Result[Unit, String] {
-  return Storage.Kernel.Jvm.delete(bucketHandle, key)
-}
-
-@cfg(feature = "dotnet")
-func storageKernelList(
-  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
-): Result[String, String] {
-  return Storage.Kernel.Net.list(bucketHandle, prefix, continuationToken, maxKeys)
-}
-@cfg(feature = "jvm")
-func storageKernelList(
-  bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int
-): Result[String, String] {
-  return Storage.Kernel.Jvm.list(bucketHandle, prefix, continuationToken, maxKeys)
-}
-
-@cfg(feature = "dotnet")
-func storageKernelPresignedUrl(
-  bucketHandle: in Int, key: in String, expiresInSeconds: in Int
-): Result[String, String] {
-  return Storage.Kernel.Net.presignedUrl(bucketHandle, key, expiresInSeconds)
-}
-@cfg(feature = "jvm")
-func storageKernelPresignedUrl(
-  bucketHandle: in Int, key: in String, expiresInSeconds: in Int
-): Result[String, String] {
-  return Storage.Kernel.Jvm.presignedUrl(bucketHandle, key, expiresInSeconds)
-}
-
-@cfg(feature = "dotnet")
-func storageKernelExists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  return Storage.Kernel.Net.exists(bucketHandle, key)
-}
-@cfg(feature = "jvm")
-func storageKernelExists(bucketHandle: in Int, key: in String): Result[Bool, String] {
-  return Storage.Kernel.Jvm.exists(bucketHandle, key)
 }
 
 // Wrap a string in JSON double quotes with basic escaping.
@@ -588,7 +456,7 @@ func jsonString(s: in String): String {
   var buf = "\""
   var i   = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
+    val ch = s[i].toString()
     if ch == "\"" {
       buf = buf + "\\\""
     } else if ch == "\\" {

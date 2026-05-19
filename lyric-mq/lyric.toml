@@ -11,10 +11,10 @@ output          = "single"
 output_assembly = "Mq.dll"
 
 [project.packages]
-"Mq"              = "src"
-"Mq.Aspects"      = "src"
-"Mq.Kernel.Net"   = "src/_kernel/net"
-"Mq.Kernel.Jvm"   = "src/_kernel/jvm"
+"Mq"              = "src/mq.l"
+"Mq.Aspects"      = "src/mq_aspects.l"
+"Mq.Kernel.Net"   = "src/_kernel/net/mq_kernel.l"
+"Mq.Kernel.Jvm"   = "src/_kernel/jvm/mq_kernel.l"
 
 [project.tests]
 "Mq.MqTests" = "tests/mq_tests.l"

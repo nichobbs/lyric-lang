@@ -39,8 +39,51 @@ package Search
 import Std.Core
 import Std.Collections
 import Std.Json
-import Search.Kernel.Net
-import Search.Kernel.Jvm
+import Std.Iter
+
+// ─── Kernel boundary (unconditional stubs) ───────────────────────────────────
+// These stubs are always available regardless of feature flags.  When an
+// elasticsearch or meilisearch feature is enabled, the actual BCL-backed
+// implementations are provided by Search.Kernel.Net; these stubs serve as
+// the fallback type-correct placeholders used by NativeSearchClient.
+
+@axiom("Elastic.Clients.Elasticsearch .NET client")
+@cfg(feature = "elasticsearch")
+func searchConnectElasticsearch(url: in String, apiKey: in String, username: in String, password: in String, connectTimeoutMs: in Int, requestTimeoutMs: in Int): Result[Int, String] = Err("elasticsearch not linked")
+
+@axiom("Meilisearch .NET client")
+@cfg(feature = "meilisearch")
+func searchConnectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] = Err("meilisearch not linked")
+
+func searchIndex(clientHandle: in Int, docJson: in String): Result[String, String] =
+  Err("no search backend configured; enable the elasticsearch or meilisearch feature")
+
+func searchIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] =
+  Err("no search backend configured")
+
+func searchQuery(clientHandle: in Int, queryJson: in String): Result[String, String] =
+  Err("no search backend configured")
+
+func searchSuggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String] =
+  Err("no search backend configured")
+
+func searchDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] =
+  Err("no search backend configured")
+
+func searchDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] =
+  Err("no search backend configured")
+
+func searchExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] =
+  Err("no search backend configured")
+
+func searchCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] =
+  Err("no search backend configured")
+
+func searchConnectBackendElasticsearch(url: in String, apiKey: in String, username: in String, password: in String, connectTimeoutMs: in Int, requestTimeoutMs: in Int): Result[Int, String] =
+  Err("no elasticsearch backend configured; enable the elasticsearch feature in lyric.toml")
+
+func searchConnectBackendMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[Int, String] =
+  Err("no meilisearch backend configured; enable the meilisearch feature in lyric.toml")
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -69,7 +112,7 @@ pub record SearchDocument {
 @stable(since="0.1")
 pub record Highlight {
   field:     String
-  fragments: [String]
+  fragments: slice[String]
 }
 
 /// A single search hit.
@@ -78,7 +121,7 @@ pub record SearchHit {
   id:         String
   index:      String
   score:      Double
-  highlights: [Highlight]
+  highlights: slice[Highlight]
   source:     Map[String, String]
 }
 
@@ -103,18 +146,18 @@ pub record SearchFilter {
 pub record SearchQuery {
   index:           String
   query:           String
-  filters:         [SearchFilter]
+  filters:         slice[SearchFilter]
   from:            Int
   size:            Int
-  sort:            [SortField]
-  highlightFields: [String]
+  sort:            slice[SortField]
+  highlightFields: slice[String]
 }
 
 /// The result of a search operation.
 @stable(since="0.1")
 pub record SearchResult {
   total:    Long
-  hits:     [SearchHit]
+  hits:     slice[SearchHit]
   tookMs:   Int
   scrollId: Option[String]
 }
@@ -122,7 +165,7 @@ pub record SearchResult {
 /// Autocomplete / type-ahead suggestions.
 @stable(since="0.1")
 pub record SuggestResult {
-  suggestions: [String]
+  suggestions: slice[String]
   tookMs:      Int
 }
 
@@ -131,7 +174,7 @@ pub record SuggestResult {
 pub record IndexResult {
   id:      String
   version: Long
-  result:  String   // "created", "updated", or "noop"
+  status:  String   // "created", "updated", or "noop"
 }
 
 // ─── Client interface ─────────────────────────────────────────────────────────
@@ -146,7 +189,7 @@ pub interface SearchClient {
     requires: doc.id.length > 0
 
   /// Index a batch of documents in a single request.
-  func indexBatch(docs: in [SearchDocument]): Result[[IndexResult], SearchError]
+  func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError]
 
   /// Execute a search query and return matching hits.
   func search(query: in SearchQuery): Result[SearchResult, SearchError]
@@ -188,15 +231,15 @@ pub record NativeSearchClient {
 impl SearchClient for NativeSearchClient {
   func index(doc: in SearchDocument): Result[IndexResult, SearchError] {
     val docJson = serializeDoc(doc)
-    match searchKernelIndex(clientHandle, docJson) {
+    match searchIndex(self.clientHandle, docJson) {
       case Ok(json)  -> Ok(parseIndexResult(json))
       case Err(err)  -> Err(SearchError(message = err, code = "INDEX_FAILED", statusCode = 0))
     }
   }
 
-  func indexBatch(docs: in [SearchDocument]): Result[[IndexResult], SearchError] {
+  func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError] {
     val docsJson = serializeDocList(docs)
-    match searchKernelIndexBatch(clientHandle, docsJson) {
+    match searchIndexBatch(self.clientHandle, docsJson) {
       case Ok(json)  -> Ok(parseIndexResultList(json))
       case Err(err)  -> Err(SearchError(message = err, code = "BATCH_INDEX_FAILED", statusCode = 0))
     }
@@ -204,125 +247,87 @@ impl SearchClient for NativeSearchClient {
 
   func search(query: in SearchQuery): Result[SearchResult, SearchError] {
     val queryJson = serializeQuery(query)
-    match searchKernelSearch(clientHandle, queryJson) {
+    match searchQuery(self.clientHandle, queryJson) {
       case Ok(json)  -> Ok(parseSearchResult(json))
       case Err(err)  -> Err(SearchError(message = err, code = "SEARCH_FAILED", statusCode = 0))
     }
   }
 
   func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError] {
-    match searchKernelSuggest(clientHandle, index, text, field, size) {
+    match searchSuggest(self.clientHandle, index, text, field, size) {
       case Ok(json)  -> Ok(parseSuggestResult(json))
       case Err(err)  -> Err(SearchError(message = err, code = "SUGGEST_FAILED", statusCode = 0))
     }
   }
 
   func delete(index: in String, id: in String): Result[Unit, SearchError] {
-    match searchKernelDelete(clientHandle, index, id) {
+    match searchDelete(self.clientHandle, index, id) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SearchError(message = err, code = "DELETE_FAILED", statusCode = 0))
     }
   }
 
   func deleteIndex(index: in String): Result[Unit, SearchError] {
-    match searchKernelDeleteIndex(clientHandle, index) {
+    match searchDeleteIndex(self.clientHandle, index) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SearchError(message = err, code = "DELETE_INDEX_FAILED", statusCode = 0))
     }
   }
 
   func exists(index: in String, id: in String): Result[Bool, SearchError] {
-    match searchKernelExists(clientHandle, index, id) {
+    match searchExists(self.clientHandle, index, id) {
       case Ok(b)    -> Ok(b)
       case Err(err) -> Err(SearchError(message = err, code = "EXISTS_FAILED", statusCode = 0))
     }
   }
 
   func createIndex(index: in String, mappingJson: in String): Result[Unit, SearchError] {
-    match searchKernelCreateIndex(clientHandle, index, mappingJson) {
+    match searchCreateIndex(self.clientHandle, index, mappingJson) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SearchError(message = err, code = "CREATE_INDEX_FAILED", statusCode = 0))
     }
   }
 }
 
-// ─── Runtime config ───────────────────────────────────────────────────────────
-
-/// Connection settings for the search backend.
-config Connection {
-  url:               String
-  indexPrefix:       String                      = ""
-  @sensitive
-  apiKey:            String                      = ""
-  @sensitive
-  username:          String                      = ""
-  @sensitive
-  password:          String                      = ""
-  connectTimeoutMs:  Int range 1000..=30000      = 5000
-  requestTimeoutMs:  Int range 1000..=300000     = 30000
-}
-
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-/// Connect to Elasticsearch using the Connection config block.
+/// Connect to Elasticsearch.  URL, credentials, and timeouts are read from
+/// LYRIC_CONFIG_SEARCH_CONNECTION_* environment variables at runtime.
 @stable(since="0.1")
 @cfg(feature = "elasticsearch")
-pub func connectElasticsearch(): Result[SearchClient, SearchError] {
-  match searchKernelConnectElasticsearch(
-    Connection.url,
-    Connection.apiKey,
-    Connection.username,
-    Connection.password,
-    Connection.connectTimeoutMs,
-    Connection.requestTimeoutMs)
+pub func connectElasticsearch(url: in String, apiKey: in String, username: in String, password: in String, connectTimeoutMs: in Int, requestTimeoutMs: in Int): Result[SearchClient, SearchError] {
+  match searchConnectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
   {
     case Ok(handle) -> Ok(NativeSearchClient(clientHandle = handle))
     case Err(err)   -> Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
   }
 }
 
-/// Connect to Meilisearch using the Connection config block.
+/// Connect to Meilisearch.  URL, API key, and timeout are passed explicitly.
 @stable(since="0.1")
 @cfg(feature = "meilisearch")
-pub func connectMeilisearch(): Result[SearchClient, SearchError] {
-  match searchKernelConnectMeilisearch(
-    Connection.url,
-    Connection.apiKey,
-    Connection.connectTimeoutMs)
+pub func connectMeilisearch(url: in String, apiKey: in String, connectTimeoutMs: in Int): Result[SearchClient, SearchError] {
+  match searchConnectMeilisearch(url, apiKey, connectTimeoutMs)
   {
     case Ok(handle) -> Ok(NativeSearchClient(clientHandle = handle))
     case Err(err)   -> Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
   }
 }
 
-/// Dispatch to Elasticsearch or Meilisearch based on the `provider` string.
-/// `provider` must be "elasticsearch" or "meilisearch".
-///
-/// **Note:** calls `@cfg`-gated helpers; the matching feature must be active
-/// at compile time.  Prefer the typed `connectElasticsearch()` or
-/// `connectMeilisearch()` for compile-time safety.
+/// Dispatch to the configured backend.  Returns Err when no feature is enabled.
 @experimental
 pub func connect(provider: in String): Result[SearchClient, SearchError]
   requires: provider.length > 0
 {
   if provider == "elasticsearch" {
-    match searchKernelConnectElasticsearch(
-      Connection.url,
-      Connection.apiKey,
-      Connection.username,
-      Connection.password,
-      Connection.connectTimeoutMs,
-      Connection.requestTimeoutMs)
+    match searchConnectBackendElasticsearch("", "", "", "", 5000, 30000)
     {
       case Ok(handle) -> return Ok(NativeSearchClient(clientHandle = handle))
       case Err(err)   -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
     }
   }
   if provider == "meilisearch" {
-    match searchKernelConnectMeilisearch(
-      Connection.url,
-      Connection.apiKey,
-      Connection.connectTimeoutMs)
+    match searchConnectBackendMeilisearch("", "", 5000)
     {
       case Ok(handle) -> return Ok(NativeSearchClient(clientHandle = handle))
       case Err(err)   -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
@@ -434,7 +439,7 @@ func jsonEscapeStr(s: in String): String {
   var result = ""
   var i = 0
   while i < s.length {
-    val ch = s.charAt(i).toString()
+    val ch = s[i].toString()
     if ch == "\\" {
       result = result + "\\\\"
     } else if ch == "\"" {
@@ -457,10 +462,15 @@ func jsonEscapeStr(s: in String): String {
 func serializeDoc(doc: in SearchDocument): String {
   var fieldsJson = "{"
   var first = true
-  for (k, v) in doc.fields {
-    if not first { fieldsJson = fieldsJson + "," }
-    fieldsJson = fieldsJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
-    first = false
+  for k in doc.fields {
+    match mapGet(doc.fields, k) {
+      case Some(v) -> {
+        if not first { fieldsJson = fieldsJson + "," }
+        fieldsJson = fieldsJson + "\"" + jsonEscapeStr(k) + "\":\"" + jsonEscapeStr(v) + "\""
+        first = false
+      }
+      case None -> ()
+    }
   }
   fieldsJson = fieldsJson + "}"
   return "{\"id\":\"" + jsonEscapeStr(doc.id) + "\","
@@ -469,7 +479,7 @@ func serializeDoc(doc: in SearchDocument): String {
 }
 
 // Serialize a list of documents as a JSON array.
-func serializeDocList(docs: in [SearchDocument]): String {
+func serializeDocList(docs: in slice[SearchDocument]): String {
   var json = "["
   var first = true
   for doc in docs {
@@ -481,7 +491,7 @@ func serializeDocList(docs: in [SearchDocument]): String {
 }
 
 // Serialize a list of SearchFilter to a JSON array.
-func serializeFilters(filters: in [SearchFilter]): String {
+func serializeFilters(filters: in slice[SearchFilter]): String {
   var json = "["
   var first = true
   for f in filters {
@@ -495,7 +505,7 @@ func serializeFilters(filters: in [SearchFilter]): String {
 }
 
 // Serialize a list of SortField to a JSON array.
-func serializeSortFields(sorts: in [SortField]): String {
+func serializeSortFields(sorts: in slice[SortField]): String {
   var json = "["
   var first = true
   for s in sorts {
@@ -509,7 +519,7 @@ func serializeSortFields(sorts: in [SortField]): String {
 }
 
 // Serialize a list of highlight field names to a JSON array.
-func serializeHighlightFields(fields: in [String]): String {
+func serializeHighlightFields(fields: in slice[String]): String {
   var json = "["
   var first = true
   for f in fields {
@@ -534,40 +544,40 @@ func serializeQuery(query: in SearchQuery): String {
 // Parse an IndexResult from the JSON object returned by the kernel.
 // Expected fields: id (String), version (Long), result (String).
 func parseIndexResult(json: in String): IndexResult {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  var id:      String = ""
-  var version: Long   = 0
-  var result:  String = "created"
-  match Std.Json.tryGetProperty(root, "id") {
-    case Some(v) -> id = Std.Json.getString(v)
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  var id:          String = ""
+  var version:     Long   = 0i64
+  var indexStatus: String = "created"
+  match tryGetProperty(root, "id") {
+    case Some(v) -> { id = getString(v) }
     case None    -> ()
   }
-  match Std.Json.tryGetProperty(root, "version") {
+  match tryGetProperty(root, "version") {
     case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> version = n
+      match tryGetLong(v) {
+        case Some(n) -> { version = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "result") {
-    case Some(v) -> result = Std.Json.getString(v)
+  match tryGetProperty(root, "result") {
+    case Some(v) -> { indexStatus = getString(v) }
     case None    -> ()
   }
-  return IndexResult(id = id, version = version, result = result)
+  return IndexResult(id = id, version = version, status = indexStatus)
 }
 
 // Parse a JSON array of IndexResult objects returned by the kernel.
-func parseIndexResultList(json: in String): [IndexResult] {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  var results: [IndexResult] = []
-  var en = Std.Json.enumerateArray(root)
-  while Std.Json.arrayMoveNext(en) {
-    val elem   = Std.Json.arrayCurrent(en)
-    val raw    = Std.Json.getRawText(elem)
-    results    = results + [parseIndexResult(raw)]
+func parseIndexResultList(json: in String): slice[IndexResult] {
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  var results: slice[IndexResult] = []
+  var en = enumerateArray(root)
+  while arrayMoveNext(en) {
+    val elem   = arrayCurrent(en)
+    val raw    = getRawText(elem)
+    results    = concat(results, [parseIndexResult(raw)])
   }
   return results
 }
@@ -575,42 +585,42 @@ func parseIndexResultList(json: in String): [IndexResult] {
 // Parse a SearchResult from the JSON object returned by the kernel.
 // Expected fields: total (Long), tookMs (Int), scrollId (String|null), hits (Array).
 func parseSearchResult(json: in String): SearchResult {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  var total:    Long          = 0
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  var total:    Long          = 0i64
   var tookMs:   Int           = 0
   var scrollId: Option[String] = None
-  var hits:     [SearchHit]   = []
-  match Std.Json.tryGetProperty(root, "total") {
+  var hits:     slice[SearchHit]   = []
+  match tryGetProperty(root, "total") {
     case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> total = n
+      match tryGetLong(v) {
+        case Some(n) -> { total = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "tookMs") {
+  match tryGetProperty(root, "tookMs") {
     case Some(v) ->
-      match Std.Json.tryGetInt(v) {
-        case Some(n) -> tookMs = n
+      match tryGetInt(v) {
+        case Some(n) -> { tookMs = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "scrollId") {
+  match tryGetProperty(root, "scrollId") {
     case Some(v) ->
-      if Std.Json.valueKind(v) == 3 {   // 3 = string
-        scrollId = Some(value = Std.Json.getString(v))
+      if valueKind(v) == 3 {   // 3 = string
+        scrollId = Some(value = getString(v))
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "hits") {
+  match tryGetProperty(root, "hits") {
     case Some(arr) -> {
-      var en = Std.Json.enumerateArray(arr)
-      while Std.Json.arrayMoveNext(en) {
-        val elem    = Std.Json.arrayCurrent(en)
-        val hitJson = Std.Json.getRawText(elem)
-        hits        = hits + [parseSearchHit(hitJson)]
+      var en = enumerateArray(arr)
+      while arrayMoveNext(en) {
+        val elem    = arrayCurrent(en)
+        val hitJson = getRawText(elem)
+        hits        = concat(hits, [parseSearchHit(hitJson)])
       }
     }
     case None -> ()
@@ -621,25 +631,25 @@ func parseSearchResult(json: in String): SearchResult {
 // Parse a SuggestResult from the JSON object returned by the kernel.
 // Expected fields: tookMs (Int), suggestions (Array of String).
 func parseSuggestResult(json: in String): SuggestResult {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
   var tookMs:      Int      = 0
-  var suggestions: [String] = []
-  match Std.Json.tryGetProperty(root, "tookMs") {
+  var suggestions: slice[String] = []
+  match tryGetProperty(root, "tookMs") {
     case Some(v) ->
-      match Std.Json.tryGetInt(v) {
-        case Some(n) -> tookMs = n
+      match tryGetInt(v) {
+        case Some(n) -> { tookMs = n }
         case None    -> ()
       }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "suggestions") {
+  match tryGetProperty(root, "suggestions") {
     case Some(arr) -> {
-      var en = Std.Json.enumerateArray(arr)
-      while Std.Json.arrayMoveNext(en) {
-        val elem = Std.Json.arrayCurrent(en)
-        if Std.Json.valueKind(elem) == 3 {   // 3 = string
-          suggestions = suggestions + [Std.Json.getString(elem)]
+      var en = enumerateArray(arr)
+      while arrayMoveNext(en) {
+        val elem = arrayCurrent(en)
+        if valueKind(elem) == 3 {   // 3 = string
+          suggestions = concat(suggestions, [getString(elem)])
         }
       }
     }
@@ -650,44 +660,44 @@ func parseSuggestResult(json: in String): SuggestResult {
 
 // Parse a single SearchHit from a raw JSON string.
 func parseSearchHit(json: in String): SearchHit {
-  val doc        = Std.Json.parseJson(json)
-  val root       = Std.Json.rootElement(doc)
+  val doc        = parseJson(json)
+  val root       = rootElement(doc)
   var id:         String              = ""
   var index:      String              = ""
   var score:      Double              = 0.0
-  var source:     Map[String, String] = Map.empty()
-  var highlights: [Highlight]         = []
-  match Std.Json.tryGetProperty(root, "score") {
-    case Some(v) -> score = Std.Json.getDouble(v)
+  var source:     Map[String, String] = newMap()
+  var highlights: slice[Highlight]         = []
+  match tryGetProperty(root, "score") {
+    case Some(v) -> { score = getDouble(v) }
     case None    -> ()
   }
-  match Std.Json.tryGetProperty(root, "id") {
-    case Some(v) -> id = Std.Json.getString(v)
+  match tryGetProperty(root, "id") {
+    case Some(v) -> { id = getString(v) }
     case None    -> ()
   }
-  match Std.Json.tryGetProperty(root, "index") {
-    case Some(v) -> index = Std.Json.getString(v)
+  match tryGetProperty(root, "index") {
+    case Some(v) -> { index = getString(v) }
     case None    -> ()
   }
-  match Std.Json.tryGetProperty(root, "source") {
+  match tryGetProperty(root, "source") {
     case Some(obj) -> {
-      var en = Std.Json.enumerateObject(obj)
-      while Std.Json.objectMoveNext(en) {
-        val prop = Std.Json.objectCurrent(en)
-        val k    = Std.Json.propertyName(prop)
-        val v    = Std.Json.getString(Std.Json.propertyValue(prop))
-        source   = source.set(k, v)
+      var en = enumerateObject(obj)
+      while objectMoveNext(en) {
+        val prop = objectCurrent(en)
+        val k    = propertyName(prop)
+        val v    = getString(propertyValue(prop))
+        source.add(k, v)
       }
     }
     case None -> ()
   }
-  match Std.Json.tryGetProperty(root, "highlights") {
+  match tryGetProperty(root, "highlights") {
     case Some(arr) -> {
-      var en = Std.Json.enumerateArray(arr)
-      while Std.Json.arrayMoveNext(en) {
-        val hElem    = Std.Json.arrayCurrent(en)
-        val hJson    = Std.Json.getRawText(hElem)
-        highlights   = highlights + [parseHighlight(hJson)]
+      var en = enumerateArray(arr)
+      while arrayMoveNext(en) {
+        val hElem    = arrayCurrent(en)
+        val hJson    = getRawText(hElem)
+        highlights   = concat(highlights, [parseHighlight(hJson)])
       }
     }
     case None -> ()
@@ -698,142 +708,25 @@ func parseSearchHit(json: in String): SearchHit {
 // Parse a Highlight from a raw JSON string.
 // Expected fields: field (String), fragments (Array of String).
 func parseHighlight(json: in String): Highlight {
-  val doc        = Std.Json.parseJson(json)
-  val root       = Std.Json.rootElement(doc)
+  val doc        = parseJson(json)
+  val root       = rootElement(doc)
   var field:     String   = ""
-  var fragments: [String] = []
-  match Std.Json.tryGetProperty(root, "field") {
-    case Some(v) -> field = Std.Json.getString(v)
+  var fragments: slice[String] = []
+  match tryGetProperty(root, "field") {
+    case Some(v) -> { field = getString(v) }
     case None    -> ()
   }
-  match Std.Json.tryGetProperty(root, "fragments") {
+  match tryGetProperty(root, "fragments") {
     case Some(arr) -> {
-      var en = Std.Json.enumerateArray(arr)
-      while Std.Json.arrayMoveNext(en) {
-        val fElem = Std.Json.arrayCurrent(en)
-        if Std.Json.valueKind(fElem) == 3 {   // 3 = string
-          fragments = fragments + [Std.Json.getString(fElem)]
+      var en = enumerateArray(arr)
+      while arrayMoveNext(en) {
+        val fElem = arrayCurrent(en)
+        if valueKind(fElem) == 3 {   // 3 = string
+          fragments = concat(fragments, [getString(fElem)])
         }
       }
     }
     case None -> ()
   }
   return Highlight(field = field, fragments = fragments)
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-func searchKernelConnectElasticsearch(
-  url:              in String,
-  apiKey:           in String,
-  username:         in String,
-  password:         in String,
-  connectTimeoutMs: in Int,
-  requestTimeoutMs: in Int
-): Result[Int, String] {
-  return Search.Kernel.Net.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
-}
-@cfg(feature = "jvm")
-func searchKernelConnectElasticsearch(
-  url:              in String,
-  apiKey:           in String,
-  username:         in String,
-  password:         in String,
-  connectTimeoutMs: in Int,
-  requestTimeoutMs: in Int
-): Result[Int, String] {
-  return Search.Kernel.Jvm.connectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelConnectMeilisearch(
-  url:              in String,
-  apiKey:           in String,
-  connectTimeoutMs: in Int
-): Result[Int, String] {
-  return Search.Kernel.Net.connectMeilisearch(url, apiKey, connectTimeoutMs)
-}
-@cfg(feature = "jvm")
-func searchKernelConnectMeilisearch(
-  url:              in String,
-  apiKey:           in String,
-  connectTimeoutMs: in Int
-): Result[Int, String] {
-  return Search.Kernel.Jvm.connectMeilisearch(url, apiKey, connectTimeoutMs)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
-  return Search.Kernel.Net.index(clientHandle, docJson)
-}
-@cfg(feature = "jvm")
-func searchKernelIndex(clientHandle: in Int, docJson: in String): Result[String, String] {
-  return Search.Kernel.Jvm.index(clientHandle, docJson)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
-  return Search.Kernel.Net.indexBatch(clientHandle, docsJson)
-}
-@cfg(feature = "jvm")
-func searchKernelIndexBatch(clientHandle: in Int, docsJson: in String): Result[String, String] {
-  return Search.Kernel.Jvm.indexBatch(clientHandle, docsJson)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelSearch(clientHandle: in Int, queryJson: in String): Result[String, String] {
-  return Search.Kernel.Net.search(clientHandle, queryJson)
-}
-@cfg(feature = "jvm")
-func searchKernelSearch(clientHandle: in Int, queryJson: in String): Result[String, String] {
-  return Search.Kernel.Jvm.search(clientHandle, queryJson)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelSuggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String] {
-  return Search.Kernel.Net.suggest(clientHandle, index, text, field, size)
-}
-@cfg(feature = "jvm")
-func searchKernelSuggest(clientHandle: in Int, index: in String, text: in String, field: in String, size: in Int): Result[String, String] {
-  return Search.Kernel.Jvm.suggest(clientHandle, index, text, field, size)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
-  return Search.Kernel.Net.delete(clientHandle, index, id)
-}
-@cfg(feature = "jvm")
-func searchKernelDelete(clientHandle: in Int, index: in String, id: in String): Result[Unit, String] {
-  return Search.Kernel.Jvm.delete(clientHandle, index, id)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
-  return Search.Kernel.Net.deleteIndex(clientHandle, index)
-}
-@cfg(feature = "jvm")
-func searchKernelDeleteIndex(clientHandle: in Int, index: in String): Result[Unit, String] {
-  return Search.Kernel.Jvm.deleteIndex(clientHandle, index)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
-  return Search.Kernel.Net.exists(clientHandle, index, id)
-}
-@cfg(feature = "jvm")
-func searchKernelExists(clientHandle: in Int, index: in String, id: in String): Result[Bool, String] {
-  return Search.Kernel.Jvm.exists(clientHandle, index, id)
-}
-
-@cfg(feature = "dotnet")
-func searchKernelCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
-  return Search.Kernel.Net.createIndex(clientHandle, index, mappingJson)
-}
-@cfg(feature = "jvm")
-func searchKernelCreateIndex(clientHandle: in Int, index: in String, mappingJson: in String): Result[Unit, String] {
-  return Search.Kernel.Jvm.createIndex(clientHandle, index, mappingJson)
 }

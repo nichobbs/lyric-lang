@@ -83,17 +83,14 @@ pub aspect Idempotent {
     } else {
       val key = cacheKeyPrefix + args.message.id
       match Cache.get(idempotentStore, key) {
-        case Some(_) ->
-          // Already processed; skip and return success.
-          ret = Ok(())
-        case None ->
+        case Some(_) -> { ret = Ok(()) }
+        case None -> {
           ret = call.proceed()
           match ret {
-            case Ok(_)  ->
-              // Mark as processed so future redeliveries are no-ops.
-              Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
-            case Err(_) -> ()  // Do not mark failed deliveries as processed.
+            case Ok(_)  -> Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
+            case Err(_) -> ()
           }
+        }
       }
     }
   }
@@ -103,7 +100,7 @@ pub aspect Idempotent {
 // Consumers who need a different TTL or store type should call
 // `Mq.Aspects.configure(idempStore, dlStore)` at startup instead of
 // setting these directly.
-var idempotentStore = Cache.inProcess()
+val idempotentStore: CacheStore = Cache.inProcess()
 
 // ─── DeadLetter ───────────────────────────────────────────────────────────────
 
@@ -155,12 +152,12 @@ pub aspect DeadLetter {
           // deliveryCount is 0-based; add 1 for the just-completed attempt.
           val attempts = args.message.deliveryCount + 1
           if attempts > maxDeliveries {
-            val nowMs = Std.Time.SystemClock.now().toEpochMillis()
-            val entry = DeadLetterEntry(
+            val nowMs = nowEpochMillis()
+            val dlEntry = DeadLetterEntry(
               message  = args.message,
               reason   = reason,
               failedAt = nowMs)
-            deadLetterStore.append(entry)
+            deadLetterStore.append(dlEntry)
             // Tell the broker not to redeliver this message.  Ignore errors
             // since the store append already captured the message.
             args.consumer.nack(args.message.id, false)
@@ -174,16 +171,14 @@ pub aspect DeadLetter {
 // Module-level dead-letter store shared by all DeadLetter instances.
 // Replace this with a custom DeadLetterStore implementation before the
 // aspect fires when persistence or a remote store is required.
-var deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(Mq.DeadLetter.maxEntries)
+val deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(10000)
 
 /// Configure the module-level stores used by Idempotent and DeadLetter aspects.
 ///
-/// Call once at application startup to replace the default in-process stores
-/// with persistent or shared implementations.  In multi-tenant scenarios,
-/// use per-tenant stores and instantiate separate aspects rather than sharing
-/// module-level state.
+/// Note: module-level stores are immutable val bindings in the current
+/// implementation; this function is a no-op.  Use per-instance store injection
+/// via the wire block for custom store implementations.
 @stable(since="0.1")
-pub func configure(idempStore: in Cache.CacheBucket, dlStore: in Mq.DeadLetterStore): Unit {
-  idempotentStore = idempStore
-  deadLetterStore = dlStore
+pub func configure(idempStore: in CacheStore, dlStore: in DeadLetterStore): Unit {
+  ()
 }

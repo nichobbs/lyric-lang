@@ -54,3 +54,8 @@ extern package Amazon.Lambda.RuntimeSupport {
     localPort: Int
   ): Unit
 }
+
+/// Start the Lambda invocation loop (delegates to Amazon.Lambda.RuntimeSupport).
+pub func serve(app: in LambdaApp, localPort: in Int): Unit {
+  Amazon.Lambda.RuntimeSupport.serve(app, localPort)
+}
