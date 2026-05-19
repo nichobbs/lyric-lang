@@ -2847,9 +2847,27 @@ let private emitFunctionBody
     // whether the source actually pushed something.  Inside a
     // `try { … } finally` protected region (any active defer), the
     // branch must be a `leave`, not a `br` — ECMA-335 III.3.55.
+    let liftToNullableIfNeeded (stackTy: System.Type) (targetTy: System.Type) =
+        // Implicit T → Nullable<T> lifting: when the body expression emits a
+        // value type T but the function declares return type Nullable<T>, wrap
+        // via the Nullable<T>(T) constructor before storing to the result local.
+        if stackTy.IsValueType
+           && not (stackTy.IsGenericType
+                   && not stackTy.IsGenericTypeDefinition
+                   && stackTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>)
+           && targetTy.IsValueType
+           && targetTy.IsGenericType
+           && not targetTy.IsGenericTypeDefinition
+           && targetTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+           && targetTy.GetGenericArguments().[0] = stackTy then
+            let nullableCtor = targetTy.GetConstructor([| stackTy |])
+            match Option.ofObj nullableCtor with
+            | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
+            | None -> ()
     let routeReturn (pushedTy: System.Type) =
         match resultLocal with
         | Some loc when pushedTy <> typeof<System.Void> ->
+            liftToNullableIfNeeded pushedTy loc.LocalType
             il.Emit(OpCodes.Stloc, loc)
         | None when pushedTy <> typeof<System.Void> ->
             il.Emit(OpCodes.Pop)
