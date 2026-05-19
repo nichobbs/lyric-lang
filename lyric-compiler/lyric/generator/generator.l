@@ -343,12 +343,14 @@ func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String 
         val f = fields[fi]
         if fi > 0 { fieldsJson = fieldsJson + "," }
         val classified = classifyType(f.second)
+        val typeArgsJson = if classified.second == "" { "[]" }
+                           else { "[\"" + jsonEscape(classified.second) + "\"]" }
         fieldsJson = fieldsJson +
             "{\"name\":\"" + jsonEscape(f.first) + "\"" +
             ",\"fieldType\":{" +
                 "\"kind\":\"" + classified.first + "\"" +
                 ",\"name\":\"" + jsonEscape(f.second) + "\"" +
-                ",\"typeArgs\":[]}" +
+                ",\"typeArgs\":" + typeArgsJson + "}" +
             ",\"isPublic\":true" +
             ",\"annotations\":[]}"
         fi += 1

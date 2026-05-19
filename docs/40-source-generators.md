@@ -332,6 +332,8 @@ pub func generate(req: GeneratorRequest): GeneratorResponse {
         diagnostics = []
     }
 }
+
+pub func main(): Int { runGenerator(generate) }
 ```
 
 Published to NuGet as a package with `kind = "source-generator"` in its `lyric.toml`.

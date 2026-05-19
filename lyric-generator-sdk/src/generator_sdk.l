@@ -283,7 +283,7 @@ pub func serializeRequest(req: in GeneratorRequest): String {
         case Interface     -> "Interface"
     }
 
-    "{\"schemaVersion\":1" +
+    "{\"schemaVersion\":\"1\"" +
     ",\"generatorArg\":\"" + jsonEscape(req.generatorArg) + "\"" +
     ",\"packageName\":\"" + jsonEscape(req.packageName) + "\"" +
     ",\"sourceFile\":\"" + jsonEscape(req.sourceFile) + "\"" +
@@ -426,6 +426,7 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
             val ftPos = jsonFindBlock(objContent, "fieldType")
             var ftKind: FieldTypeKind = Named
             var ftName = ""
+            var ftTypeArgs: slice[String] = [||]
             if ftPos >= 0 {
                 var mFtPos = ftPos
                 val ftContent = extractJsonBlock(objContent, mFtPos)
@@ -437,11 +438,17 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
                          else if ftKindStr == "ResultType" { ResultType }
                          else if ftKindStr == "Generic"    { Generic }
                          else                              { Named }
+                val taPos = jsonFindBlock(ftContent, "typeArgs")
+                if taPos >= 0 {
+                    var mTaPos = taPos
+                    val taList = parseJsonStringArray(ftContent, mTaPos)
+                    ftTypeArgs = taList.toSlice()
+                }
             }
             if fName != "" {
                 result.add(FieldDescriptor(
                     name        = fName,
-                    fieldType   = FieldType(kind = ftKind, name = ftName, typeArgs = [||]),
+                    fieldType   = FieldType(kind = ftKind, name = ftName, typeArgs = ftTypeArgs),
                     isPublic    = true,
                     annotations = [||]))
             }
