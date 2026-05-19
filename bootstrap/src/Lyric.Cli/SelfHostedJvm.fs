@@ -34,16 +34,6 @@ func main(): Unit { }
 let private bridgeLock = obj ()
 let mutable private resolved : (string -> string -> string -> bool) option = None
 
-/// Pre-load every cached stdlib DLL into the default AppDomain so
-/// `Lyric.Jvm.Bridge.dll`'s typeRef chain resolves when the bridge assembly
-/// itself loads.  Idempotent: `Assembly.LoadFrom` returns the same `Assembly`
-/// instance on a duplicate path.
-let private preloadStdlibAssemblies () : unit =
-    for p in Emitter.stdlibAssemblyPaths () do
-        try Assembly.LoadFrom p |> ignore
-        with _ -> ()  // best-effort; missing/corrupt cache entries
-                      // surface later when the consumer reflects
-
 /// Compile the driver source so the emitter produces and caches
 /// `Lyric.Jvm.Bridge.dll`.  Returns the absolute path to it.
 let private ensureLyricJvmBridgeAssembly () : string =
@@ -80,7 +70,7 @@ let private ensureLyricJvmBridgeAssembly () : string =
             |> String.concat "\n"
         failwithf "self-hosted JVM bridge: emitter produced errors:\n%s" msg
 
-    preloadStdlibAssemblies ()
+    Lyric.Cli.SelfHostedBridge.preloadStdlibAssemblies ()
 
     // Emitter mints stdlib assemblies as `Lyric.<head>.<rest>.dll` for
     // builtin heads, so `Jvm.Bridge` lands as `Lyric.Jvm.Bridge.dll` in
@@ -105,7 +95,7 @@ let private ensureLyricJvmBridgeAssembly () : string =
 /// Reflect out the `compileToJar` entry point and stash it in `resolved`.
 let private resolveDelegates () : string -> string -> string -> bool =
     let dll = ensureLyricJvmBridgeAssembly ()
-    let asm = Assembly.LoadFrom dll
+    let asm = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let progType =
         match Option.ofObj (asm.GetType "Jvm.Bridge.Program") with
         | Some t -> t

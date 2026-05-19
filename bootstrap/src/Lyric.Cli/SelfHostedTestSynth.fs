@@ -25,11 +25,6 @@ func main(): Unit { }
 let private bridgeLock = obj ()
 let mutable private resolved : ((string -> string -> bool -> string) * (string -> string)) option = None
 
-let private preloadStdlibAssemblies () : unit =
-    for p in Emitter.stdlibAssemblyPaths () do
-        try Assembly.LoadFrom p |> ignore
-        with _ -> ()
-
 let private ensureBridgeAssembly () : string =
     let scratch =
         Path.Combine(Path.GetTempPath(),
@@ -59,7 +54,7 @@ let private ensureBridgeAssembly () : string =
             |> String.concat "\n"
         failwithf "self-hosted test-synth bridge: emitter errors:\n%s" msg
 
-    preloadStdlibAssemblies ()
+    Lyric.Cli.SelfHostedBridge.preloadStdlibAssemblies ()
 
     match Emitter.stdlibAssemblyPaths ()
           |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension p = "Lyric.Lyric.TestSynthBridge") with
@@ -73,7 +68,7 @@ let private ensureBridgeAssembly () : string =
 
 let private resolveDelegates () : (string -> string -> bool -> string) * (string -> string) =
     let dll = ensureBridgeAssembly ()
-    let asm = Assembly.LoadFrom dll
+    let asm = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let progType =
         match Option.ofObj (asm.GetType "Lyric.TestSynthBridge.Program") with
         | Some t -> t

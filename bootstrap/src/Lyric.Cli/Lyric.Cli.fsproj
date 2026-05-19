@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="SelfHostedBridge.fs" />
     <Compile Include="Manifest.fs" />
     <Compile Include="Maven.fs" />
     <Compile Include="MavenShim.fs" />

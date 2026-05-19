@@ -19,8 +19,11 @@
 @axiom("lyric.stdlib.jvm.JsonHost operations conform to their documented JVM contracts")
 package Std.JsonHost
 
-extern type JsonDoc     = "lyric.stdlib.jvm.JsonDoc"
-extern type JsonElement = "lyric.stdlib.jvm.JsonElement"
+extern type JsonDoc              = "lyric.stdlib.jvm.JsonDoc"
+extern type JsonElement          = "lyric.stdlib.jvm.JsonElement"
+extern type JsonArrayEnumerator  = "lyric.stdlib.jvm.JsonArrayEnumerator"
+extern type JsonObjectEnumerator = "lyric.stdlib.jvm.JsonObjectEnumerator"
+extern type JsonProperty         = "lyric.stdlib.jvm.JsonProperty"
 
 // =====================================================================
 // Parsing.
@@ -28,6 +31,12 @@ extern type JsonElement = "lyric.stdlib.jvm.JsonElement"
 
 @externTarget("lyric.stdlib.jvm.JsonHost.hostParseJson")
 pub func hostParseJson(s: in String): JsonDoc = ()
+
+// Release any pooled resources held by a JsonDoc.  No-op for backends
+// where parsed trees are pure managed objects (e.g. Jackson JsonNode);
+// kept for API parity with the .NET kernel's JsonDocument.Dispose.
+@externTarget("lyric.stdlib.jvm.JsonHost.hostDisposeJson")
+pub func hostDisposeJson(d: in JsonDoc): Unit = ()
 
 @externTarget("lyric.stdlib.jvm.JsonHost.hostRootElement")
 pub func hostRootElement(d: in JsonDoc): JsonElement = ()
@@ -68,6 +77,55 @@ pub func hostTryGetInt32(elem: in JsonElement, value: out Int): Bool = ()
 
 @externTarget("lyric.stdlib.jvm.JsonHost.hostTryGetInt64")
 pub func hostTryGetInt64(elem: in JsonElement, value: out Long): Bool = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostTryGetDouble")
+pub func hostTryGetDouble(elem: in JsonElement, value: out Double): Bool = ()
+
+// Returns the verbatim source text of `elem`, equivalent to .NET's
+// JsonElement.GetRawText.  Useful for capturing sub-objects or arrays
+// as opaque strings.
+@externTarget("lyric.stdlib.jvm.JsonHost.hostGetRawText")
+pub func hostGetRawText(elem: in JsonElement): String = ()
+
+// Returns the JsonValueKind ordinal of `elem`:
+// 0=Undefined, 1=Object, 2=Array, 3=String, 4=Number, 5=True, 6=False, 7=Null.
+@externTarget("lyric.stdlib.jvm.JsonHost.hostValueKind")
+pub func hostValueKind(elem: in JsonElement): Int = ()
+
+// =====================================================================
+// Array enumeration — mirrors System.Text.Json.JsonElement.EnumerateArray
+// returning a struct enumerator with MoveNext / Current.  The JVM shim
+// uses a single-pass cursor wrapping the backing list iterator.
+// =====================================================================
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostEnumerateArray")
+pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostEnumMoveNext")
+pub func hostEnumMoveNext(en: inout JsonArrayEnumerator): Bool = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostEnumCurrent")
+pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement = ()
+
+// =====================================================================
+// Object enumeration — mirrors JsonElement.EnumerateObject for walking
+// the (name, value) pairs of a JSON object.
+// =====================================================================
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostEnumerateObject")
+pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostEnumObjectMoveNext")
+pub func hostEnumObjectMoveNext(en: inout JsonObjectEnumerator): Bool = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostEnumObjectCurrent")
+pub func hostEnumObjectCurrent(en: inout JsonObjectEnumerator): JsonProperty = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostPropertyName")
+pub func hostPropertyName(prop: in JsonProperty): String = ()
+
+@externTarget("lyric.stdlib.jvm.JsonHost.hostPropertyValue")
+pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
 
 // =====================================================================
 // Serialisation helpers.

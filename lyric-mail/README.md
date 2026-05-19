@@ -2,6 +2,19 @@
 
 Email sending with pluggable provider backends.
 
+## Platform parity
+
+| Feature flag | Backend                                                  | Status                |
+|--------------|----------------------------------------------------------|-----------------------|
+| `dotnet`     | MailKit (SMTP), AWS SDK SES, SendGrid .NET client        | Available             |
+| `jvm`        | Jakarta Mail (SMTP), AWS SDK for Java v2 SES             | Planned (Phase 6)     |
+
+The JVM kernel (`Mail.Kernel.Jvm`) declares the SMTP / SES bindings
+against `com.sun.mail:jakarta.mail` and `software.amazon.awssdk:ses`,
+plus `lyric.mail.*` helpers supplied by the Lyric JVM stdlib JAR
+(out-of-repo).  Until that JAR ships, only the `dotnet` feature
+produces a runnable artifact.
+
 ## Packages
 
 | Package | Purpose |

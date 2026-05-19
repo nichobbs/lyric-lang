@@ -28,11 +28,6 @@ func main(): Unit { }
 let private bridgeLock  = obj ()
 let mutable private resolved : (string[] -> int) option = None
 
-let private preloadStdlibAssemblies () : unit =
-    for p in Emitter.stdlibAssemblyPaths () do
-        try Assembly.LoadFrom p |> ignore
-        with _ -> ()   // best-effort; missing entries surface later
-
 let private ensureCliAssembly () : string =
     let scratch =
         Path.Combine(Path.GetTempPath(),
@@ -65,7 +60,7 @@ let private ensureCliAssembly () : string =
             |> String.concat "\n"
         failwithf "self-hosted CLI bridge: emitter errors:\n%s" msg
 
-    preloadStdlibAssemblies ()
+    Lyric.Cli.SelfHostedBridge.preloadStdlibAssemblies ()
 
     // The emitter mints builtin-head assemblies as `Lyric.<head>.<rest>.dll`,
     // so `Lyric.Cli` lands as `Lyric.Lyric.Cli.dll` in the stdlib cache.
@@ -85,7 +80,7 @@ let private ensureCliAssembly () : string =
 
 let private resolveFn () : string[] -> int =
     let dll  = ensureCliAssembly ()
-    let asm  = Assembly.LoadFrom dll
+    let asm  = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let prog =
         match Option.ofObj (asm.GetType "Lyric.Cli.Program") with
         | Some t -> t

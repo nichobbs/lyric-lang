@@ -2,6 +2,20 @@
 
 Object and file storage with pluggable backend support.
 
+## Platform parity
+
+| Feature flag | Backend                                                              | Status                |
+|--------------|----------------------------------------------------------------------|-----------------------|
+| `dotnet`     | AWS SDK for .NET (S3), Azure Blob SDK, local filesystem              | Available             |
+| `jvm`        | AWS SDK for Java v2 (S3), Azure Blob SDK for Java, local filesystem  | Planned (Phase 6)     |
+
+The JVM kernel (`Storage.Kernel.Jvm`) declares S3 / Azure Blob
+bindings against `software.amazon.awssdk:s3` and
+`com.azure:azure-storage-blob`, plus `lyric.storage.*` helpers; the
+JVM helpers are supplied by the Lyric JVM stdlib JAR (out-of-repo).
+Until that JAR ships, only the `dotnet` feature produces a runnable
+artifact.
+
 ## Packages
 
 | Package | Purpose |
