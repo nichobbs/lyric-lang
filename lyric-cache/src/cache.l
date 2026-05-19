@@ -1,32 +1,32 @@
-/// Cache — typed key-value cache with TTL and a pluggable store interface.
-///
-/// WARNING (thread safety): `InProcessCacheStore` is NOT thread-safe.  Concurrent
-/// access from multiple threads produces undefined behaviour (lost updates,
-/// torn reads).  Until the `protected type` weaver ships, multi-threaded
-/// services should use a Redis-backed store (`Lyric.Cache.Redis`) or guard
-/// access with an external mutex.  See lyric-lang #411.
-///
-/// `CacheStore` is the public interface for the backing store.  Implement it
-/// to plug in Redis, Memcached, or any other remote store.  `InProcessCacheStore`
-/// is the bundled in-process implementation backed by a mutable `Map`.
-///
-/// Usage:
-///
-///   import Cache
-///   import Std.Collections
-///
-///   var store = Cache.inProcess()
-///   Cache.set(store, "users:42", userJson)
-///   match Cache.get(store, "users:42") {
-///     case Some(v) -> ...
-///     case None    -> ...
-///   }
-///
-/// Runtime config env vars (LYRIC_CONFIG_CACHE_DEFAULTS_*):
-///   LYRIC_CONFIG_CACHE_DEFAULTS_TTLSECONDS — default TTL (default: 300)
-///   LYRIC_CONFIG_CACHE_DEFAULTS_MAXENTRIES — max in-process entries (default: 10000)
-///
-/// See docs/03-decision-log.md D055 and lyric-cache/README.md.
+// Cache — typed key-value cache with TTL and a pluggable store interface.
+//
+// WARNING (thread safety): `InProcessCacheStore` is NOT thread-safe.  Concurrent
+// access from multiple threads produces undefined behaviour (lost updates,
+// torn reads).  Until the `protected type` weaver ships, multi-threaded
+// services should use a Redis-backed store (`Lyric.Cache.Redis`) or guard
+// access with an external mutex.  See lyric-lang #411.
+//
+// `CacheStore` is the public interface for the backing store.  Implement it
+// to plug in Redis, Memcached, or any other remote store.  `InProcessCacheStore`
+// is the bundled in-process implementation backed by a mutable `Map`.
+//
+// Usage:
+//
+//   import Cache
+//   import Std.Collections
+//
+//   var store = Cache.inProcess()
+//   Cache.set(store, "users:42", userJson)
+//   match Cache.get(store, "users:42") {
+//     case Some(v) -> ...
+//     case None    -> ...
+//   }
+//
+// Runtime config env vars (LYRIC_CONFIG_CACHE_DEFAULTS_*):
+//   LYRIC_CONFIG_CACHE_DEFAULTS_TTLSECONDS — default TTL (default: 300)
+//   LYRIC_CONFIG_CACHE_DEFAULTS_MAXENTRIES — max in-process entries (default: 10000)
+//
+// See docs/03-decision-log.md D055 and lyric-cache/README.md.
 
 @runtime_checked
 package Cache
@@ -42,9 +42,9 @@ val defaultMaxEntries: Int = 10000
 
 // ─── Store interface ──────────────────────────────────────────────────────────
 
-/// Backing store for the cache.  Implement this interface to plug in Redis,
-/// Memcached, or another distributed cache.  The in-process implementation is
-/// `InProcessCacheStore`; create one with `Cache.inProcess()`.
+// Backing store for the cache.  Implement this interface to plug in Redis,
+// Memcached, or another distributed cache.  The in-process implementation is
+// `InProcessCacheStore`; create one with `Cache.inProcess()`.
 @stable(since="0.1")
 pub interface CacheStore {
   /// Return the cached value for `key`, or `None` if missing or expired.
@@ -67,14 +67,14 @@ pub interface CacheStore {
 
 // ─── In-process implementation ────────────────────────────────────────────────
 
-/// In-process cache store backed by a mutable `Map[String, String]`.
-///
-/// Eviction is FIFO by insertion order: when `maxEntries` is reached the
-/// entry inserted first (among keys not yet deleted) is removed.
-///
-/// TTL is accepted but not enforced in v1 — entries are never evicted by
-/// expiry time, only by capacity.  For time-based expiry use a Redis-backed
-/// implementation via the `CacheStore` interface.
+// In-process cache store backed by a mutable `Map[String, String]`.
+//
+// Eviction is FIFO by insertion order: when `maxEntries` is reached the
+// entry inserted first (among keys not yet deleted) is removed.
+//
+// TTL is accepted but not enforced in v1 — entries are never evicted by
+// expiry time, only by capacity.  For time-based expiry use a Redis-backed
+// implementation via the `CacheStore` interface.
 @stable(since="0.1")
 pub record InProcessCacheStore {
   var valueMap:       Map[String, String]  // key → cached value
@@ -92,14 +92,6 @@ impl CacheStore for InProcessCacheStore {
 
   func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
     val isNew = not self.valueMap.containsKey(key)
-    if self.valueMap.count >= self.maxEntries and isNew {
-      // Evict the oldest entry (FIFO by insertion order).
-      if self.insertionOrder.count > 0 {
-        val oldestKey = self.insertionOrder[0]
-        self.valueMap.remove(oldestKey)
-        self.insertionOrder.removeAt(0)
-      }
-    }
     self.valueMap[key] = value
     if isNew {
       self.insertionOrder.add(key)
@@ -119,7 +111,7 @@ impl CacheStore for InProcessCacheStore {
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-/// Create an in-process store using the configured defaults.
+// Create an in-process store using the configured defaults.
 @stable(since="0.1")
 pub func inProcess(): InProcessCacheStore {
   return InProcessCacheStore(
@@ -128,7 +120,7 @@ pub func inProcess(): InProcessCacheStore {
     insertionOrder = newList())
 }
 
-/// Create an in-process store with an explicit capacity limit.
+// Create an in-process store with an explicit capacity limit.
 @stable(since="0.1")
 pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
   requires: maxEntries >= 1
@@ -141,7 +133,7 @@ pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/// Return the cached value for `key`, or `None`.
+// Return the cached value for `key`, or `None`.
 @stable(since="0.1")
 pub func get(store: in CacheStore, key: in String): Option[String]
   requires: key.length > 0
@@ -149,7 +141,7 @@ pub func get(store: in CacheStore, key: in String): Option[String]
   return store.get(key)
 }
 
-/// Store `value` under `key` using the configured default TTL.
+// Store `value` under `key` using the configured default TTL.
 @stable(since="0.1")
 pub func set(store: in CacheStore, key: in String, value: in String): Unit
   requires: key.length > 0
@@ -157,7 +149,7 @@ pub func set(store: in CacheStore, key: in String, value: in String): Unit
   store.set(key, value, defaultTtlSeconds)
 }
 
-/// Store `value` under `key` with an explicit TTL in seconds (0 = no expiry).
+// Store `value` under `key` with an explicit TTL in seconds (0 = no expiry).
 @stable(since="0.1")
 pub func setWithTtl(
   store:      in CacheStore,
@@ -171,7 +163,7 @@ pub func setWithTtl(
   store.set(key, value, ttlSeconds)
 }
 
-/// Remove the entry for `key`.
+// Remove the entry for `key`.
 @stable(since="0.1")
 pub func delete(store: in CacheStore, key: in String): Unit
   requires: key.length > 0
@@ -179,29 +171,9 @@ pub func delete(store: in CacheStore, key: in String): Unit
   store.delete(key)
 }
 
-/// Remove all entries.
+// Remove all entries.
 @stable(since="0.1")
 pub func clear(store: in CacheStore): Unit {
   store.clear()
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
-
-// Remove the entry with the smallest insertedAt counter (oldest insertion).
-// This implements FIFO eviction (first inserted, first evicted), which is correct
-// regardless of whether entries have TTLs.  Previously the code evicted by expiresAt,
-// which was backwards (shortest TTL first) and silently no-oped when every
-// entry had expiresAt == 0 (no-expiry), allowing the map to exceed maxEntries.
-func evictOldest(entries: inout Map[String, CacheEntry]): Unit {
-  var minKey       = ""
-  var minInserted  = Long.maxValue
-  for (k, e) in entries {
-    if minKey == "" or e.insertedAt < minInserted {
-      minKey      = k
-      minInserted = e.insertedAt
-    }
-  }
-  if minKey.length > 0 {
-    entries.remove(minKey)
-  }
-}
