@@ -2,6 +2,19 @@
 
 Distributed session management with pluggable backends (Redis, in-process).
 
+## Platform parity
+
+| Feature flag | Backend                                                              | Status                |
+|--------------|----------------------------------------------------------------------|-----------------------|
+| `dotnet`     | StackExchange.Redis + `System.Collections.Concurrent`                | Available             |
+| `jvm`        | Lettuce Redis client + `java.util.concurrent.ConcurrentHashMap`      | Planned (Phase 6)     |
+
+The JVM kernel (`Session.Kernel.Jvm`) declares the Redis bindings
+against `io.lettuce:lettuce-core` plus a `lyric.session.InMemoryStore`
+helper; the JVM helpers are supplied by the Lyric JVM stdlib JAR
+(out-of-repo).  Until that JAR ships, only the `dotnet` feature
+produces a runnable artifact.
+
 ## Packages
 
 | Package | Purpose |

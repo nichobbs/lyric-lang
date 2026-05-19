@@ -2,6 +2,19 @@
 
 Background job scheduling with pluggable backends (Hangfire, Quartz.NET).
 
+## Platform parity
+
+| Feature flag | Backend                                                              | Status                |
+|--------------|----------------------------------------------------------------------|-----------------------|
+| `dotnet`     | Hangfire / Quartz.NET + `System.Threading.Timer`                     | Available             |
+| `jvm`        | Quartz Java + `java.util.concurrent.ScheduledExecutorService`        | Planned (Phase 6)     |
+
+The JVM kernel (`Jobs.Kernel.Jvm`) declares Quartz bindings against
+`org.quartz-scheduler:quartz` plus `lyric.jobs.*` helpers; the JVM
+helpers are supplied by the Lyric JVM stdlib JAR (out-of-repo).
+Until that JAR ships, only the `dotnet` feature produces a runnable
+artifact.
+
 ## Packages
 
 | Package | Purpose |

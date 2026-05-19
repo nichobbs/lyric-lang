@@ -4,6 +4,18 @@ OpenAPI-first HTTP web service library for [Lyric](https://github.com/nichobbs/l
 
 > **Status**: Library source and type vocabulary are complete.  The HTTP kernel dispatch (ASP.NET Core Kestrel integration via `Web.Kernel.Net`) and the aspect weaver are planned compiler / runtime milestones.  The library can be imported, routers built, and aspects instantiated today; HTTP serving and weaving take effect once those milestones ship.
 
+## Platform parity
+
+| Feature flag | Backend                                              | Status                |
+|--------------|------------------------------------------------------|-----------------------|
+| `dotnet`     | ASP.NET Core / Kestrel via `Web.Kernel.Net`          | Available             |
+| `jvm`        | Undertow (`io.undertow:undertow-core`) via `Web.Kernel.Jvm` | Planned (Phase 6) |
+
+`Web.Kernel.Jvm` declares the Undertow bindings plus a
+`lyric.web.RateLimiter` helper supplied by the Lyric JVM stdlib JAR
+(out-of-repo).  Until that JAR ships, only the `dotnet` feature
+produces a runnable artifact.
+
 ## Packages
 
 | Package | Description |
