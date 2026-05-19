@@ -37,17 +37,6 @@ func main(): Unit { }
 let private bridgeLock = obj ()
 let mutable private resolved : ((string -> string) * (string -> bool)) option = None
 
-/// Pre-load every cached stdlib DLL into the default AppDomain so
-/// `Lyric.Fmt.dll`'s typeRef chain (Std.Core → Lyric.Lexer →
-/// Lyric.Parser → Lyric.Fmt) resolves when the formatter assembly
-/// itself loads.  Idempotent: `Assembly.LoadFrom` returns the same
-/// `Assembly` instance on a duplicate path.
-let private preloadStdlibAssemblies () : unit =
-    for p in Emitter.stdlibAssemblyPaths () do
-        try Assembly.LoadFrom p |> ignore
-        with _ -> ()  // best-effort; missing/corrupt cache entries
-                      // surface later when the consumer reflects
-
 /// Compile the driver source so the emitter produces and caches
 /// `Lyric.Fmt.dll`.  Returns the absolute path to it.
 let private ensureLyricFmtAssembly () : string =
@@ -84,7 +73,7 @@ let private ensureLyricFmtAssembly () : string =
             |> String.concat "\n"
         failwithf "self-hosted formatter bridge: emitter produced errors:\n%s" msg
 
-    preloadStdlibAssemblies ()
+    Lyric.Cli.SelfHostedBridge.preloadStdlibAssemblies ()
 
     // Emitter mints stdlib assemblies as `Lyric.<head>.<rest>.dll` for
     // builtin heads, so `Lyric.Fmt` lands as `Lyric.Lyric.Fmt.dll` in
@@ -116,7 +105,7 @@ let private ensureLyricFmtAssembly () : string =
 /// Reflect out the two entry points and stash them in `resolved`.
 let private resolveDelegates () : (string -> string) * (string -> bool) =
     let dll = ensureLyricFmtAssembly ()
-    let asm = Assembly.LoadFrom dll
+    let asm = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let progType =
         match Option.ofObj (asm.GetType "Lyric.Fmt.Program") with
         | Some t -> t

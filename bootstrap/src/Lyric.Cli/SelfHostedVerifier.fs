@@ -31,11 +31,6 @@ func main(): Unit { }
 let private bridgeLock = obj ()
 let mutable private resolved : (string -> bool -> string) option = None
 
-let private preloadStdlibAssemblies () =
-    for p in Emitter.stdlibAssemblyPaths () do
-        try Assembly.LoadFrom p |> ignore
-        with _ -> ()
-
 // Emitting the tiny driver package is the cheapest way to warm the emitter's
 // stdlib-assembly cache: the emit call resolves all transitive Lyric.* imports
 // (including Lyric.VerifierBridge) and stores the resulting DLL paths in
@@ -71,7 +66,7 @@ let private ensureBridgeAssembly () : string =
             |> String.concat "\n"
         failwithf "self-hosted verifier bridge: emitter errors:\n%s" msg
 
-    preloadStdlibAssemblies ()
+    Lyric.Cli.SelfHostedBridge.preloadStdlibAssemblies ()
 
     match Emitter.stdlibAssemblyPaths ()
           |> List.tryFind (fun p ->
@@ -89,7 +84,7 @@ let private ensureBridgeAssembly () : string =
 
 let private resolveFn () : string -> bool -> string =
     let dll  = ensureBridgeAssembly ()
-    let asm  = Assembly.LoadFrom dll
+    let asm  = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let prog =
         match Option.ofObj (asm.GetType "Lyric.VerifierBridge.Program") with
         | Some t -> t
