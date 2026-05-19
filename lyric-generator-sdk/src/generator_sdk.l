@@ -143,13 +143,13 @@ func jsonGetString(json: in String, key: in String): Option[String] {
     while i < json.length {
         // Look for "key"
         if json.length - i >= needle.length {
-            var match = true
+            var ok = true
             var k = 0
             while k < needle.length {
-                if json[i + k] != needle[k] { match = false }
+                if json[i + k] != needle[k] { ok = false }
                 k += 1
             }
-            if match {
+            if ok {
                 var pos = i + needle.length
                 skipJsonWhitespace(json, pos)
                 if pos < json.length and json[pos] == ':' {
@@ -344,6 +344,117 @@ pub func parseResponse(json: in String): Result[GeneratorResponse, String] {
         diagnostics       = diagnostics.toSlice()))
 }
 
+// Extract the content of a balanced JSON block ({...} or [...]) starting at
+// `pos` (positioned at the opening delimiter).  Advances `pos` to after the
+// closing delimiter and returns the inner text (without the outer delimiters).
+func extractJsonBlock(src: in String, pos: inout Int): String {
+    pos += 1  // skip opener
+    var depth = 1
+    var content = ""
+    while pos < src.length and depth > 0 {
+        val c = src[pos]
+        if (c == '{') or (c == '[') {
+            depth += 1
+            content = content + charToString(c)
+            pos += 1
+        } else if (c == '}') or (c == ']') {
+            depth -= 1
+            if depth > 0 { content = content + charToString(c) }
+            pos += 1
+        } else if c == '"' {
+            content = content + "\""
+            pos += 1
+            while pos < src.length and src[pos] != '"' {
+                if src[pos] == '\\' and pos + 1 < src.length {
+                    content = content + charToString(src[pos]) + charToString(src[pos + 1])
+                    pos += 2
+                } else {
+                    content = content + charToString(src[pos])
+                    pos += 1
+                }
+            }
+            if pos < src.length { content = content + "\""; pos += 1 }
+        } else {
+            content = content + charToString(c)
+            pos += 1
+        }
+    }
+    content
+}
+
+// Find the position of a JSON array or object value for `key` in `json`.
+// Returns the index of the opening `{` or `[`, or -1 if not found.
+func jsonFindBlock(json: in String, key: in String): Int {
+    val needle = "\"" + key + "\""
+    var i = 0
+    while i < json.length {
+        if json.length - i >= needle.length {
+            var ok = true
+            var k = 0
+            while k < needle.length {
+                if json[i + k] != needle[k] { ok = false }
+                k += 1
+            }
+            if ok {
+                var pos = i + needle.length
+                skipJsonWhitespace(json, pos)
+                if pos < json.length and json[pos] == ':' {
+                    pos += 1
+                    skipJsonWhitespace(json, pos)
+                    if pos < json.length and ((json[pos] == '{') or (json[pos] == '[')) {
+                        return pos
+                    }
+                }
+            }
+        }
+        i += 1
+    }
+    -1
+}
+
+// Parse a slice of FieldDescriptor from the inner content of the fields JSON
+// array (i.e. the text between `[` and `]`).
+func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
+    val result: List[FieldDescriptor] = newList()
+    var pos = 0
+    skipJsonWhitespace(fieldsContent, pos)
+    while pos < fieldsContent.length {
+        if fieldsContent[pos] == '{' {
+            val objContent = extractJsonBlock(fieldsContent, pos)
+            val fName = unwrapOr(jsonGetString(objContent, "name"), "")
+            // Parse the nested fieldType object
+            val ftPos = jsonFindBlock(objContent, "fieldType")
+            var ftKind: FieldTypeKind = Named
+            var ftName = ""
+            if ftPos >= 0 {
+                var mFtPos = ftPos
+                val ftContent = extractJsonBlock(objContent, mFtPos)
+                val ftKindStr = unwrapOr(jsonGetString(ftContent, "kind"), "Named")
+                ftName = unwrapOr(jsonGetString(ftContent, "name"), "")
+                ftKind = if ftKindStr == "Primitive"  { Primitive }
+                         else if ftKindStr == "Slice"      { Slice }
+                         else if ftKindStr == "OptionType" { OptionType }
+                         else if ftKindStr == "ResultType" { ResultType }
+                         else if ftKindStr == "Generic"    { Generic }
+                         else                              { Named }
+            }
+            if fName != "" {
+                result.add(FieldDescriptor(
+                    name        = fName,
+                    fieldType   = FieldType(kind = ftKind, name = ftName, typeArgs = [||]),
+                    isPublic    = true,
+                    annotations = [||]))
+            }
+        } else {
+            pos += 1
+        }
+        skipJsonWhitespace(fieldsContent, pos)
+        if pos < fieldsContent.length and fieldsContent[pos] == ',' { pos += 1 }
+        skipJsonWhitespace(fieldsContent, pos)
+    }
+    result.toSlice()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Entry-point wiring — reads stdin, calls `generate`, writes stdout
 // ─────────────────────────────────────────────────────────────────────────────
@@ -360,7 +471,6 @@ pub func parseResponse(json: in String): Result[GeneratorResponse, String] {
 
 pub func runGenerator(generate: in func(GeneratorRequest): GeneratorResponse): Int {
     val json = Console.readAll()
-    // Extract schemaVersion
     val version = match jsonGetString(json, "schemaVersion") {
         case None    -> {
             Console.error("GeneratorSdk: missing schemaVersion in request")
@@ -377,21 +487,49 @@ pub func runGenerator(generate: in func(GeneratorRequest): GeneratorResponse): I
     val pkgName      = unwrapOr(jsonGetString(json, "packageName"), "")
     val srcFile      = unwrapOr(jsonGetString(json, "sourceFile"), "")
 
-    // Extract typeDescriptor sub-object fields with prefixed key search
-    val tdKindStr = unwrapOr(jsonGetString(json, "kind"), "Record")
-    val tdKind = if tdKindStr == "ExposedRecord" { ExposedRecord }
-                 else if tdKindStr == "Union"    { Union }
-                 else if tdKindStr == "Interface"{ Interface }
+    // Extract the typeDescriptor sub-object and deserialize it fully.
+    var tdKind: ItemKind = Record
+    var tdName = ""
+    var tdPkg  = ""
+    var tdTypeParams: slice[String] = [||]
+    var tdFields: slice[FieldDescriptor] = [||]
+
+    val tdBlockPos = jsonFindBlock(json, "typeDescriptor")
+    if tdBlockPos >= 0 {
+        var mTdPos = tdBlockPos
+        val tdContent = extractJsonBlock(json, mTdPos)
+
+        val kindStr = unwrapOr(jsonGetString(tdContent, "kind"), "Record")
+        tdKind = if kindStr == "ExposedRecord" { ExposedRecord }
+                 else if kindStr == "Union"     { Union }
+                 else if kindStr == "Interface"  { Interface }
                  else                            { Record }
-    val tdName    = unwrapOr(jsonGetString(json, "name"), "")
-    val tdPkg     = unwrapOr(jsonGetString(json, "packageName"), "")
+        tdName = unwrapOr(jsonGetString(tdContent, "name"), "")
+        tdPkg  = unwrapOr(jsonGetString(tdContent, "packageName"), "")
+
+        // typeParams
+        val tpPos = jsonFindBlock(tdContent, "typeParams")
+        if tpPos >= 0 {
+            var mTpPos = tpPos
+            val tpList = parseJsonStringArray(tdContent, mTpPos)
+            tdTypeParams = tpList.toSlice()
+        }
+
+        // fields
+        val fPos = jsonFindBlock(tdContent, "fields")
+        if fPos >= 0 {
+            var mFPos = fPos
+            val fContent = extractJsonBlock(tdContent, mFPos)
+            tdFields = parseFieldDescriptors(fContent)
+        }
+    }
 
     val td = TypeDescriptor(
         kind        = tdKind,
         name        = tdName,
         packageName = tdPkg,
-        typeParams  = [||],
-        fields      = [||],
+        typeParams  = tdTypeParams,
+        fields      = tdFields,
         annotations = [||])
 
     val req = GeneratorRequest(
@@ -402,7 +540,6 @@ pub func runGenerator(generate: in func(GeneratorRequest): GeneratorResponse): I
 
     val resp = generate(req)
 
-    // Write response to stdout
     val jsonOut = serializeResponseForOutput(resp)
     Console.print(jsonOut)
     0

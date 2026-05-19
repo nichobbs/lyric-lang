@@ -302,9 +302,10 @@ func classifyType(typeText: in String): StringPair {
         if primitives[pi] == typeText { return StringPair(first = "Primitive", second = "") }
         pi += 1
     }
-    if matchAt(typeText, 0, "slice[") { return StringPair(first = "Slice", second = typeText.substring(6, typeText.length - 1)) }
-    if matchAt(typeText, 0, "Option[") { return StringPair(first = "OptionType", second = typeText.substring(7, typeText.length - 1)) }
-    if matchAt(typeText, 0, "Result[") { return StringPair(first = "ResultType", second = typeText.substring(7, typeText.length - 1)) }
+    // substring(start, count): subtract prefix length + 1 for the closing ']'
+    if matchAt(typeText, 0, "slice[") { return StringPair(first = "Slice", second = typeText.substring(6, typeText.length - 7)) }
+    if matchAt(typeText, 0, "Option[") { return StringPair(first = "OptionType", second = typeText.substring(7, typeText.length - 8)) }
+    if matchAt(typeText, 0, "Result[") { return StringPair(first = "ResultType", second = typeText.substring(7, typeText.length - 8)) }
     if Str.contains(typeText, "[") { return StringPair(first = "Generic", second = "") }
     StringPair(first = "Named", second = "")
 }
@@ -449,6 +450,14 @@ func parseJsonStringArray(json: in String, pos: inout Int): List[String] {
 // Parse the response JSON: extract lyricSource, additionalImports, and any
 // Error-severity diagnostics.
 func parseResponseJson(json: in String): Result[StringPair, String] {
+    // Guard: empty/non-JSON output means the generator process crashed or exited non-zero.
+    if json == "" {
+        return Err(error = "generator produced no output (process may have crashed)")
+    }
+    if not Str.contains(json, "lyricSource") {
+        return Err(error = "generator output is not a valid GeneratorResponse")
+    }
+
     val lyricSource = unwrapOr(jsonGetString(json, "lyricSource"), "")
 
     // Parse additionalImports — find the key then the array
@@ -484,27 +493,14 @@ func parseResponseJson(json: in String): Result[StringPair, String] {
         }
     }
 
-    // Check for Error-severity diagnostics
-    val errKey = "\"Error\""
-    var hasError = false
-    var errorMsg = ""
-    var ei = 0
-    while ei <= json.length - errKey.length {
-        var ok = true
-        var m = 0
-        while m < errKey.length {
-            if json[ei + m] != errKey[m] { ok = false }
-            m += 1
-        }
-        if ok {
-            hasError = true
-            errorMsg = unwrapOr(jsonGetString(json, "message"), "generator error")
-            ei = json.length
-        } else {
-            ei += 1
-        }
+    // Check for Error-severity diagnostics.
+    // Match "severity":"Error" as a literal substring — the generator SDK emits
+    // compact JSON (no spaces), so this is safe.  Generated source text goes
+    // through jsonEscape, so a type named Error becomes \"Error\" in the JSON
+    // and cannot produce a false match here.
+    if Str.contains(json, "\"severity\":\"Error\"") {
+        return Err(error = unwrapOr(jsonGetString(json, "message"), "generator error"))
     }
-    if hasError { return Err(error = errorMsg) }
 
     // Return lyricSource and imports as a pair (separator "\n---imports---\n")
     Ok(value = StringPair(first = lyricSource, second = importsText))
