@@ -82,6 +82,10 @@ pub record ProjectSection {
   output:         String
   outputAssembly: Option[String]
   packages:       List[PackageEntry]
+  // `[project.tests]` entries.  Mapping from synthetic-package-name
+  // (e.g. "Auth.AuthSecurityTests") to test file path.  Consumed by
+  // `lyric test --manifest <toml>` (#465).
+  tests:          List[PackageEntry]
 }
 
 // ── Dependency source forms ──────────────────────────────────────────────────
@@ -657,11 +661,13 @@ func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
   val output         = unwrapOr(findString(entries, "project", "output"), "single")
   val outputAssembly = findString(entries, "project", "output_assembly")
   val packages       = collectSectionPairs(entries, "project.packages")
+  val tests          = collectSectionPairs(entries, "project.tests")
   Some(value = ProjectSection(
     name           = name,
     output         = output,
     outputAssembly = outputAssembly,
-    packages       = packages))
+    packages       = packages,
+    tests          = tests))
 }
 
 // ── Inline table helpers ─────────────────────────────────────────────────────
