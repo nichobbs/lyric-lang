@@ -217,6 +217,17 @@ val p2 = p.copy(x = 3.0)        // non-destructive update
 
 All fields must be named at construction. Positional construction is rejected by the parser.
 
+**Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code:
+
+```
+record Counter {
+  var count: Int
+  label: String
+}
+```
+
+The `var` prefix is accepted by the parser and preserved in the AST. Full mutability enforcement (preventing external reassignment, restricting write sites to the owning package) is deferred to the T6+ type-checker tier; the bootstrap emitter currently treats `var` and non-`var` fields identically at the IL level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+
 ### 2.5 Unions (sum types)
 
 ```

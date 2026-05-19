@@ -12996,3 +12996,74 @@ generators (dotted names: `@generate(Proto.Derive)`).
   All test source strings and comments updated accordingly.
 
 **Test results:** 323/323 parser, 789/789 emitter, 237/237 CLI.
+
+### D-progress-267 — All 24 Lyric library packages compile; local-path dependency resolution shipped
+
+All 24 first-party Lyric library packages now compile without errors via
+`lyric build --manifest <lib>/lyric.toml`:
+
+`lyric-auth`, `lyric-aws-secrets`, `lyric-aws-xray`, `lyric-cache`,
+`lyric-db`, `lyric-feature-flags`, `lyric-grpc`, `lyric-health`,
+`lyric-i18n`, `lyric-jobs`, `lyric-lambda`, `lyric-logging`, `lyric-mail`,
+`lyric-mq`, `lyric-otel`, `lyric-proto`, `lyric-resilience`, `lyric-search`,
+`lyric-session`, `lyric-storage`, `lyric-testing`, `lyric-validation`,
+`lyric-web`, `lyric-ws`.
+
+**Key bootstrap-compiler changes that unblocked compilation:**
+
+- **Cross-package type anchors** (`ContractMeta.fs` + `RestoredPackages.fs`):
+  A preamble of `extern type`, `opaque`, `union`, `record`, `enum`, `distinct`,
+  and `alias` declarations is extracted from every restored dependency contract
+  and prepended to each package source before type-checking, so that types
+  defined in one DLL are resolvable when compiling a package that imports it.
+
+- **Enum case cross-package registration** (`Emitter.fs`): Imported enum cases
+  are now registered in `enumTable` / `enumCases`, enabling cross-package
+  `EnumName.CaseName` pattern matching in packages that import enums from
+  dependency DLLs.
+
+- **`@cfg` erasure before import resolution** (`Emitter.fs`): Feature-flag
+  erasure (`applyCfgErasure`) is now applied before `resolveIntraImports` and
+  type-checking, so `@cfg`-gated overloads are pruned before the checker sees
+  potential duplicate symbols.
+
+- **Weaver empty-matchers guard** (`Weaver.fs`): The aspect weaver now returns
+  `false` (no match) for templates with an empty `matchers` list instead of
+  falling through to `List.forall []` vacuous-truth, which was silently applying
+  library-template aspects to every function in every file.
+
+- **`BCoalesce` (`??`) IL generation** (`Codegen.fs`): The null-coalescing
+  operator now emits correct `dup / brtrue / pop` IL instead of producing no
+  code.
+
+- **Null-pattern match handling** (`Codegen.fs`): `case null` in a match
+  expression is now correctly treated as a non-catch-all pattern (emits a
+  `ldnull / ceq` null-check) rather than as a catch-all binding named `"null"`.
+
+**Local-path dependency resolution (self-hosted CLI):**
+
+`lyric build --manifest lyric.toml` now resolves `[dependencies]` entries of
+the form `{ path = "..." }` (inline-table local-path deps).  The self-hosted
+`buildProject` function reads each dependency's `lyric.toml`, finds its output
+DLL in `<dep>/bin/<asm>.dll`, and passes the DLL path to the emitter as a
+restored reference.  The `emitProject` → `--internal-project-build` subprocess
+pipeline carries these paths in `DEP\t<name>\t<path>` spec-file lines so the
+F# emitter can load them as `RestoredPackageRef` entries during compilation.
+
+**AppHost subprocess fix (self-hosted emitter):**
+
+The `lyrExe()` / `lyrPrefixArgs()` helpers in `emitter.l` and `contract_meta.l`
+now detect when `LYRIC_BIN` is the native AppHost launcher for the CLI DLL
+(`LYRIC_BIN + ".dll" == LYRIC_CLI_DLL`).  In AppHost mode the helpers call the
+AppHost directly without the `exec <dll>` prefix, avoiding the `dotnet run`
+scenario where the AppHost process would receive `"exec"` as `argv[0]` and
+route it to the unknown-command handler.
+
+**`var` record fields (parser):**
+
+The parser now accepts `var name: Type` in record member declarations,
+preserving the `var` annotation in the AST. Mutability enforcement is deferred
+to the T6+ type-checker tier; the emitter currently treats `var` fields
+identically to non-`var` fields at the IL level.
+
+**Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
