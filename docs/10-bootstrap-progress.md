@@ -12956,3 +12956,43 @@ trinity, so the parity suite now exercises 66 cases (22 programs × 3
 paths, up from 60).
 
 **Test results:** 783/783 emitter tests pass, 233/233 CLI tests pass.
+
+### D-progress-266 — Custom source generator API: `@generate(Pkg.Gen)` runtime
+
+Implements the custom source generator runtime specced in docs/40
+(D075).  The unified `@generate` annotation now handles both built-in
+generators (bare names: `@generate(Json)`) and custom package-based
+generators (dotted names: `@generate(Proto.Derive)`).
+
+**What shipped:**
+
+- **`lyric-compiler/lyric/generator/generator.l`** (`Lyric.Generator`
+  package) — source-text pre-processor wired into `cli.l buildOne`.
+  Scans for dotted `@generate(X.Y)` annotations, resolves the generator
+  DLL from the `lyric.toml` package manifest (path:
+  `.lyric/packages/<name>/<name>.dll` relative to the manifest), invokes
+  it via `dotnet exec <dll>` with a JSON `GeneratorRequest` on stdin, and
+  splices the returned source text and import lines into the compilation
+  unit before the emitter sees it.  Only dotted names trigger the
+  subprocess path; bare names (e.g. `@generate(Json)`) pass through to
+  the existing built-in synthesisers unchanged.
+
+- **`lyric-generator-sdk/`** (`Lyric.GeneratorSdk` package) — SDK
+  types and helpers for authoring generator packages:
+  `GeneratorRequest`, `GeneratorResponse`, `TypeDescriptor`,
+  `FieldDescriptor`, `AnnotationDescriptor`, and `runGenerator(handler)`
+  which wires stdin → handler → stdout for the subprocess bridge.
+
+- **`lyric-compiler/lyric/manifest.l`** — adds `kind: Option[String]` to
+  `PackageSection` so generator packages can declare
+  `kind = "source-generator"` in their `[package]` section.
+
+- **`lyric-compiler/lyric/cli.l`** — threads `manifestPath` through
+  `buildOne`; calls `Generator.preprocess` before emitting.
+
+- **`bootstrap/src/Lyric.Parser/JsonDerive.fs`** (bootstrap shim only)
+  — renames the `@derive(Json)` detector to `@generate(Json)` to keep
+  the F# bootstrap emitter in sync with the unified annotation form.
+  All test source strings and comments updated accordingly.
+
+**Test results:** 323/323 parser, 789/789 emitter, 237/237 CLI.

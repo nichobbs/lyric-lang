@@ -86,6 +86,7 @@ import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResu
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
 import Std.Char as Ch
+import Lyric.Generator as Generator          // preprocess(source, manifestPath, sourceFile) -> Result[String, String]
 
 // Phase 5 M5.2+ packages — present when the self-hosted compiler compiles this file.
 import Lyric.Emitter as Emitter        // emit(req) -> EmitResult; CompileTarget, Dotnet, Jvm
@@ -182,11 +183,24 @@ func writeRuntimeConfig(dllPath: in String): Unit {
 
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
-func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget): Int {
-  val source = match File.readText(sourcePath) {
+// `manifestPath` is forwarded to the generator pre-processor so custom
+// @generate(Pkg.Name) annotations can resolve their generator DLLs.
+func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+  var source = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e)   -> {
       printErr("build: " + IOError.message(e))
+      return 1
+    }
+  }
+
+  // Run custom @generate(X.Y) pre-processing before handing source to the
+  // emitter.  Built-in generators (@generate(Json) etc.) are handled later
+  // inside the F# bootstrap's Generate.synthesizeItems pass.
+  source = match Generator.preprocess(source, manifestPath, sourcePath) {
+    case Ok(augmented) -> augmented
+    case Err(msg)      -> {
+      printErr("build: generator error: " + msg)
       return 1
     }
   }
@@ -351,7 +365,7 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
-  buildOne(sourcePath, outPath, target)
+  buildOne(sourcePath, outPath, target, manifestArg)
 }
 
 // Project-mode build: reads [project.packages] from lyric.toml and
@@ -498,7 +512,7 @@ func cmdRun(argv: in slice[String]): Int {
   val stem    = stemOf(Path.basename(sourcePath), 2)
   val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
 
-  val buildExit = buildOne(sourcePath, outPath, Dotnet)
+  val buildExit = buildOne(sourcePath, outPath, Dotnet, None)
   if buildExit != 0 {
     return buildExit
   }

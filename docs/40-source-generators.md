@@ -119,29 +119,29 @@ the descriptor and response types. It is published alongside the compiler distri
 
 ```lyric
 // Annotation applied to a type or field, as seen in source.
-type AnnotationDescriptor = record {
+record AnnotationDescriptor {
     name: String
     args: slice[String]    // rendered args, e.g. ["since=\"1.0\"", "Json"]
 }
 
 // How a field's type is categorised.
-type FieldTypeKind = enum {
-    Primitive    // Bool, Int, Long, UInt, ULong, Float, Double, Char, String
-  | Slice        // slice[T]
-  | OptionType   // Option[T]
-  | ResultType   // Result[T, E]
-  | Named        // any other single-segment name (record, union, alias, distinct)
-  | Generic      // multi-argument or type-param reference
+enum FieldTypeKind {
+    case Primitive    // Bool, Int, Long, UInt, ULong, Float, Double, Char, String
+    case Slice        // slice[T]
+    case OptionType   // Option[T]
+    case ResultType   // Result[T, E]
+    case Named        // any other single-segment name (record, union, alias, distinct)
+    case Generic      // multi-argument or type-param reference
 }
 
 // A field's resolved type.
-type FieldType = record {
+record FieldType {
     kind: FieldTypeKind
     name: String              // display form, e.g. "Int", "Option[String]", "MyRecord"
     typeArgs: slice[String]   // inner type names for Slice, Option, Result, Generic
 }
 
-type FieldDescriptor = record {
+record FieldDescriptor {
     name: String
     fieldType: FieldType
     isPublic: Bool
@@ -149,11 +149,14 @@ type FieldDescriptor = record {
 }
 
 // The kind of the annotated item.
-type ItemKind = enum {
-    Record | ExposedRecord | Union | Interface
+enum ItemKind {
+    case Record
+    case ExposedRecord
+    case Union
+    case Interface
 }
 
-type TypeDescriptor = record {
+record TypeDescriptor {
     kind: ItemKind
     name: String                    // unqualified name, e.g. "Order"
     packageName: String             // fully qualified package, e.g. "MyApp.Models"
@@ -163,7 +166,7 @@ type TypeDescriptor = record {
 }
 
 // The full request handed to the generator entry point.
-type GeneratorRequest = record {
+record GeneratorRequest {
     generatorArg: String          // the argument to @generate, e.g. "Json", "Proto.Derive"
     typeDescriptor: TypeDescriptor
     packageName: String           // package currently being compiled
@@ -171,16 +174,20 @@ type GeneratorRequest = record {
 }
 
 // Severity of a generator diagnostic.
-type GeneratorDiagnosticSeverity = enum { Error | Warning | Info }
+enum GeneratorDiagnosticSeverity {
+    case Error
+    case Warning
+    case Info
+}
 
-type GeneratorDiagnostic = record {
+record GeneratorDiagnostic {
     severity: GeneratorDiagnosticSeverity
     message: String
     code: Option[String]          // e.g. Some("PD001")
 }
 
 // What the generator returns.
-type GeneratorResponse = record {
+record GeneratorResponse {
     lyricSource: String               // Lyric source fragment; complete items only
     additionalImports: slice[String]  // e.g. ["import Std.Json"]
     diagnostics: slice[GeneratorDiagnostic]
@@ -215,21 +222,24 @@ routing each to the appropriate handler by name.
 
 ### 4.2 Custom generator invocation
 
-For custom generators the compiler follows the `SelfHostedFmt.fs` bridge pattern:
+Custom generators run as a **source pre-processing step** inside the self-hosted
+`Lyric.Cli` pipeline, before the file is handed to the F# bootstrap for compilation.
+No new F# shim is needed. The steps are:
 
 1. Resolve the generator package from the lock file (must already be present; `lyric
    restore` is a prerequisite, like any other dependency).
-2. Compile the generator package with `--internal-build` (cached after first compile
-   in the build session).
-3. Load the compiled DLL by reflection into the compiler process via a thin
-   `SelfHostedGenerator.fs` shim.
-4. Construct a `GeneratorRequest` and serialize it to JSON.
-5. Call the reflected `generate` function, passing the JSON string.
-6. Deserialize the `GeneratorResponse`.
-7. If any `Error`-severity diagnostics are present, fail the build with G0005 (report
-   each diagnostic as a child note).
-8. Re-parse `lyricSource`; splice the resulting items and `additionalImports` into the
-   file's item list and import list respectively.
+2. Compile the generator DLL with `--internal-build` (cached after first compile in
+   the build session).
+3. Invoke the compiled DLL as a subprocess via a `Process.run` kernel extern:
+   serialise the `GeneratorRequest` to JSON on stdin; read the `GeneratorResponse`
+   JSON from stdout.
+4. If any `Error`-severity diagnostics are present, fail the build with G0005 (report
+   each as a child note).
+5. Append the returned `lyricSource` to the source text and add `additionalImports`
+   to the import list; pass the augmented source to `--internal-build` as normal.
+
+The F# bootstrap compiles the augmented file like any other Lyric source and never
+observes the `@generate(Pkg.Name)` annotation directly.
 
 ### 4.3 Invocation granularity
 
@@ -289,7 +299,7 @@ exposed record Order { ... }                      // original
 
 // From built-in Json generator:
 pub func Order.toJson(self): String { ... }
-pub func Order.fromJson(s: in String): Order { ... }
+pub func Order.fromJson(s: in String): Result[Order, String] { ... }
 
 // From custom Proto.Derive generator:
 pub func Order.toProto(self): slice[Byte] { ... }
@@ -310,18 +320,20 @@ A minimal generator that adds a `describe()` method:
 import Lyric.GeneratorSdk
 
 pub func generate(req: GeneratorRequest): GeneratorResponse {
-    let typeName = req.typeDescriptor.name
-    let fieldList = req.typeDescriptor.fields
+    val typeName = req.typeDescriptor.name
+    val fieldList = req.typeDescriptor.fields
         |> map(func(f): String = "\"" + f.name + "\": " + f.fieldType.name)
-        |> join(", ")
-    let body = "\"" + typeName + " { " + fieldList + " }\""
-    let src = "pub func " + typeName + ".describe(self): String = " + body + "\n"
+        |> String.join(", ")
+    val body = "\"" + typeName + " { " + fieldList + " }\""
+    val src = "pub func " + typeName + ".describe(self): String = " + body + "\n"
     return GeneratorResponse {
         lyricSource = src
         additionalImports = []
         diagnostics = []
     }
 }
+
+pub func main(): Int { runGenerator(generate) }
 ```
 
 Published to NuGet as a package with `kind = "source-generator"` in its `lyric.toml`.
@@ -331,16 +343,26 @@ Consumers add it as a regular dependency and annotate types with `@generate(Acme
 
 ## 7. Security and trust model
 
-- Generator packages are opt-in: a user must add the generator as a dependency in
-  `lyric.toml` and annotate a type with `@generate(...)`. No implicit execution.
-- The lock file (`lyric.lock`) pins every generator to a version and SHA-512
-  checksum. `lyric restore --locked` (the CI flag) refuses to update the lock file,
-  providing supply-chain integrity.
-- Generators run in-process after the build-session compile step. They receive only
-  the structured `GeneratorRequest` JSON — they cannot read arbitrary files or the
-  full compiler AST.
-- Generator output is type-checked and mode-checked by the full pipeline. A malicious
-  generator cannot inject AOT-unsafe code that would pass the compiler's checks.
+What is enforced today:
+
+- **Opt-in only.** A user must add the generator as an explicit `lyric.toml`
+  dependency and annotate a type with `@generate(...)`. No generator executes
+  without a deliberate act by the project author.
+- **Lock-file integrity.** The lock file (`lyric.lock`) pins every generator to a
+  version and SHA-512 checksum. `lyric restore --locked` (the CI flag) refuses to
+  update the lock file and fails on any hash mismatch.
+- **Output validation.** Generator output is type-checked and mode-checked by the
+  full compiler pipeline. A generator cannot inject AOT-unsafe code that would pass
+  the compiler's checks, use `@externTarget` outside the kernel boundary, or produce
+  ill-typed functions without triggering a build error.
+
+What is **not** enforced (tracked as Q-SG-005):
+
+- **Runtime sandbox.** A generator is compiled Lyric code; it can import `Std.File`,
+  `Std.Http`, or other stdlib modules at build time. The opt-in prevents unexpected
+  execution, but does not restrict what an explicitly declared generator may do while
+  running. Generator sandboxing — restricting imports to `Lyric.GeneratorSdk` and
+  `Std.Core`, enforced at `lyric publish` time — is deferred to a future phase.
 
 ---
 
@@ -370,7 +392,7 @@ Stable API; breaking changes require a major version bump and a decision log ent
 | P1 | `Generate.synthesizeItems` unifying the built-in path (replaces `JsonDerive.synthesizeItems`) |
 | P1 | Diagnostics G0001–G0003 (annotation target restriction, kind enforcement, missing entry point) |
 | P2 | `Lyric.GeneratorSdk` package (`lyric-generator-sdk/`) |
-| P2 | Custom generator subprocess/in-process bridge (`SelfHostedGenerator.fs`) |
+| P2 | Custom generator subprocess bridge via `Process.run` kernel extern (no new `.fs` file) |
 | P2 | Diagnostics G0004–G0006 (parse error, error-severity diagnostic, import restriction) |
 | P2 | `lyric.toml` `kind = "source-generator"` enforcement in `Manifest.fs` |
 | P3 | `@generate(Sql)` built-in |
@@ -452,3 +474,28 @@ invisible to the LSP until the generator has run.
 **Recommendation:** LSP runs generators once on file open and on save (debounced, 500 ms).
 Results are cached per generator+type hash until the annotated type's AST changes. Tracked
 by the LSP plan (`docs/16-lsp-vscode-plan.md`) as a follow-up to basic symbol resolution.
+
+### Q-SG-005: Generator runtime sandboxing
+
+**Status:** Open.
+
+**Question:** Should generator packages be restricted to a subset of the stdlib at
+`lyric publish` time, preventing them from accessing the filesystem, network, or
+environment variables during compilation?
+
+**Context:** As noted in §7, a declared generator can currently import any stdlib module
+and perform arbitrary I/O at build time. This is the same trust model as build scripts in
+Cargo or NPM. For a safety-oriented language, stricter sandboxing (allow only
+`Lyric.GeneratorSdk` + `Std.Core` imports in generator packages) would be consistent with
+the language's philosophy, but adds complexity to the `lyric publish` and `lyric restore`
+pipelines.
+
+**Options:**
+1. No sandbox. Trust the opt-in + lock-file model (current approach).
+2. Import allowlist enforced at `lyric publish` time (generators that import disallowed
+   modules are rejected on publish; consumers get a pre-validated guarantee).
+3. OS-level sandbox (seccomp/AppArmor on Linux, sandbox profiles on macOS) applied to
+   the generator subprocess. Strongest guarantee; highest implementation cost.
+
+**Recommendation:** Option 1 for v1. Option 2 is the right long-term direction and can be
+added to the `lyric publish` validation pass without breaking existing generators.

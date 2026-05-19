@@ -1232,28 +1232,29 @@ range-bounded values get no wrapper, no overhead.
 ## 20. `@generate` and source generators
 
 `@generate(Json)`, `@generate(Sql)`, `@generate(Proto)`, `@generate(Equals)`,
-etc. are processed by source generators that run as part of the
-compilation pipeline. The bootstrap compiler (Phase 1) ships with a
-fixed set of built-in generators (bare single-segment names). Custom
-third-party generators are invoked with dotted package references
-(`@generate(Pkg.Name)`) and are declared as `kind = "source-generator"`
-dependencies; see `docs/40-source-generators.md` and D075.
+etc. are processed by source generators that run as part of the compilation
+pipeline. The bootstrap compiler (Phase 1) ships with a fixed set of built-in
+generators (bare single-segment names). Custom third-party generators are invoked
+with dotted package references (`@generate(Pkg.Name)`) and are declared as
+`kind = "source-generator"` dependencies; see `docs/40-source-generators.md` and D075.
 
-Each source generator:
+**Built-in generators** (`Json`, `Sql`, `Proto`, `Equals`) run inline inside the
+compiler's synthesis pass with direct AST access. They are hard-coded and require
+no subprocess invocation or JSON bridge.
 
-1. Receives a structured `GeneratorRequest` descriptor for the annotated
-   type (via `Lyric.GeneratorSdk`).
-2. Returns `lyricSource`: a string of complete Lyric item declarations.
-3. The compiler re-parses that string and inserts the resulting items
-   into the same file before type checking.
+**Custom generators** receive a structured `GeneratorRequest` descriptor (via
+`Lyric.GeneratorSdk`) and return `lyricSource`: a string of complete Lyric item
+declarations. The compiler re-parses that string and inserts the resulting items into
+the same file before type checking. Custom generators run as a pre-processing step
+driven by the self-hosted `Lyric.Cli` pipeline; the F# bootstrap never sees the
+raw `@generate(Pkg.Name)` annotation.
 
-The output is AOT-compatible by construction: no runtime reflection,
-no `IDictionary` lookups against type tokens. Serialisation is
-generated as straight-line code over the type's fields.
+The output of both paths is AOT-compatible by construction: no runtime reflection,
+no `IDictionary` lookups against type tokens. Serialisation is generated as
+straight-line code over the type's fields.
 
-`@generate(Equals)` is the only auto-applied generate on `record` and
-`union` types (structural equality is part of the language reference
-§2.4); all others are opt-in.
+`@generate(Equals)` is the only auto-applied generate on `record` and `union` types
+(structural equality is part of the language reference §2.4); all others are opt-in.
 
 
 ## 21. AOT compatibility

@@ -19,7 +19,7 @@ let tests =
             let src = """
 package MyApp
 
-@derive(Json)
+@generate(Json)
 pub record User { name: String, age: Int }
 
 pub func greet(u: in User): String {

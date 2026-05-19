@@ -3312,7 +3312,7 @@ pub func lowerFuncWithContract(f: in LFunc, contract: in LContract, pool: in Poo
   lowerFunc(wFunc, pool)
 }
 
-// ── B122: lowerDeriveEquality (@derive(Equals) + @derive(Hash)) ──────────────
+// ── B122: lowerDeriveEquality (@generate(Equals) + @generate(Hash)) ──────────────
 
 pub record LRecordWithDerives {
   className:  String
@@ -3321,7 +3321,7 @@ pub record LRecordWithDerives {
   deriveHash: Bool
 }
 
-/// Lower a record with `@derive(Equals)` and/or `@derive(Hash)`.
+/// Lower a record with `@generate(Equals)` and/or `@generate(Hash)`.
 /// Emits `equals(Object): boolean` with field-by-field comparison
 /// and `hashCode(): int` with a prime-multiply accumulator.
 pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile {
@@ -3462,7 +3462,7 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
   )
 }
 
-// ── B123: lowerDeriveOrd (@derive(Compare/Add/Sub) on distinct types) ─────────
+// ── B123: lowerDeriveOrd (@generate(Compare/Add/Sub) on distinct types) ─────────
 
 pub record LDistinctWithDerives {
   wrapperClass:  String
@@ -3472,7 +3472,7 @@ pub record LDistinctWithDerives {
   deriveSub:     Bool
 }
 
-/// Lower a distinct type with optional @derive(Compare), @derive(Add), @derive(Sub).
+/// Lower a distinct type with optional @generate(Compare), @generate(Add), @generate(Sub).
 /// Emits `compareTo(T): int`, `$add(T): T`, `$sub(T): T` by delegating to the
 /// underlying primitive.
 pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
