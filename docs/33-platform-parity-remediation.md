@@ -387,8 +387,19 @@ uses the F# bootstrap emitter as an escape hatch during stabilisation.
 **Status: SHIPPED (D-progress-241)** — All 60 cross-path parity tests pass:
 20 programs × 3 paths (dotnet-legacy / dotnet / jvm).
 
-Both self-hosted emitters have reached **Phase R parity**.  The following are
-all true as of D-progress-241:
+**Scope clarification (per `docs/41`).**  "Phase R parity" here means
+**parity on the 20-program smoke-test subset**, not on the full M1.4
+language surface.  Both self-hosted emitters still stub or skip ~15 of
+the 25 top-level item kinds (enums, opaque types, interfaces, impl
+blocks, aspects, async non-generator, lambdas, `?` propagation, etc. —
+see `docs/41 §3.1 / §4.1`).  The 20 parity programs are deliberately
+restricted to the common subset of all three paths (no user-defined
+function calls, no records, no contracts) precisely because the
+self-hosted codegens cannot yet handle the broader surface.  Production
+readiness for the full language is tracked in `docs/41` Bands 2–3.
+
+Both self-hosted emitters have reached **Phase R parity** (for the
+20-program subset).  The following are all true as of D-progress-241:
 
 - `lyric build --target dotnet-legacy <file.l>` — F# emitter baseline (escape hatch).
 - `lyric build --target dotnet <file.l>` (default) — produces a `.dll` via

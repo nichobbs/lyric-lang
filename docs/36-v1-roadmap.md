@@ -184,22 +184,26 @@ of `Pack.l`; port in order.
 dotnet-legacy`) path.  The self-hosted `contract_elaborator/elaborator.l`
 (M5.2 stage 2) covers `requires:` and `ensures:` (including nested returns at
 any depth inside `if` / `match` / `try` / `for` / `while` / `loop` bodies — see
-the file header at `elaborator.l:25-34`).  **Still deferred:** loop
-`invariant:` lowering (`elaborator.l:39-41`) and protected-type entries
-(`PMEntry` barriers, `elaborator.l:43-47`).  Removing `--target dotnet-legacy`
-before those two deferrals close silently drops `invariant:` enforcement on
-loop bodies and `when:` / `invariant:` enforcement on protected entries.
-Gate the `Emitter.fs` deletion on a passing regression test that exercises
-each deferred construct against both the F# emitter output and the
-self-hosted elaborator output.
+the file header at `elaborator.l:25-34`) and now also covers loop
+`invariant:` lowering (D-progress-277, docs/41 Band 4).  **Still deferred:**
+protected-type entries (`PMEntry` barriers, `elaborator.l:43-47`).
+Removing `--target dotnet-legacy` before that deferral closes silently
+drops `when:` / `invariant:` enforcement on protected entries.  Gate the
+`Emitter.fs` deletion on a passing regression test that exercises each
+deferred construct against both the F# emitter output and the self-hosted
+elaborator output.
 
 **Additional structural blocker (added by `docs/41-self-hosted-compiler-gap-analysis.md`):**
-`Msil.Bridge.compileToMsil` and `Jvm.Bridge.compileToJar` do not invoke the
-self-hosted middle-end at all today — they go `parse → codegen → lowering`
-and skip `Lyric.TypeChecker`, `Lyric.ModeChecker`, `Lyric.ContractElaborator`,
-and `Lyric.Mono`.  Until the bridges are wired (see `docs/41` band 1),
-contract elaborator parity is moot for production builds because the
-elaborator never runs.  Wire the bridges before declaring R4 done.
+`Msil.Bridge.compileToMsil` and `Jvm.Bridge.compileToJar` historically went
+`parse → codegen → lowering` directly and skipped the self-hosted
+middle-end entirely.  D-progress-276 wired `Lyric.ModeChecker` (fatal),
+`Lyric.ContractElaborator` (lowering), and `Lyric.TypeChecker` (advisory,
+pending Band 6 cross-package resolution) into both bridges.  `Lyric.Mono`
+wiring is still deferred (the F# bootstrap parser cannot compile mono.l;
+see docs/41 Band 1 status block).  Production builds under `--target
+dotnet` now enforce V0001–V0011 and run `requires:` / `ensures:` /
+`invariant:` runtime asserts; cross-package type resolution and same-package
+monomorphisation remain on the Band 6 / Band 5 follow-up list.
 
 **Bridge pattern** (follow `SelfHostedFmt.fs` / `SelfHostedManifest.fs`):
 
