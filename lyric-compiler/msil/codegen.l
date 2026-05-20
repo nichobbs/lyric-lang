@@ -2320,16 +2320,28 @@ func emitExternTargetBody(
 
       // The bootstrap-grade FFI resolver hasn't wired up TypeRef-
       // encoded MemberRef signatures yet, so externs whose Lyric
-      // signature mentions a non-primitive class type can't emit
-      // here.  Panic with a clear message instead of falling through
-      // to the empty-body lowering — for non-void returns the empty
-      // body is invalid MSIL and would surface as a runtime
-      // VerificationException with no build-time signal (#791).
+      // signature mentions a non-primitive class type can't emit a
+      // direct call yet.  Earlier the codegen returned `false` and
+      // the default lowering emitted bare `MRet` — invalid MSIL for
+      // non-void returns and a runtime VerificationException with no
+      // build-time signal (#791).  Now we emit a *runtime stub* that
+      // unconditionally throws a System.Exception carrying the
+      // diagnostic message.  The build succeeds (so examples that
+      // declare these externs but never call them at runtime — the
+      // smoke-test case — still build cleanly), and any call site
+      // gets a clear runtime error directing the user to
+      // `--target dotnet-legacy`.
       if mentionsMClass(paramTypes) or mentionsMClassRet(retTy) {
-        panic("Msil.Codegen: @externTarget(\"" + target + "\") on '"
-          + decl.name + "' uses class-typed params or return that the "
-          + "self-hosted MSIL FFI does not yet support; use "
-          + "--target dotnet-legacy or wrap the call in a primitive-typed shim.")
+        val msg = "FFI '" + target + "' on '" + decl.name
+          + "' uses class-typed params or return that the self-hosted "
+          + "MSIL emitter does not yet support; rebuild with "
+          + "--target dotnet-legacy or wrap the call in a primitive-"
+          + "typed shim."
+        val msgTok = ctxInternUs(cctx.lctx, msg)
+        insns.add(MLdStr(token = msgTok))
+        insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+        insns.add(MThrow)
+        return true
       }
 
       val tRefRow = internFfiTypeRef(
