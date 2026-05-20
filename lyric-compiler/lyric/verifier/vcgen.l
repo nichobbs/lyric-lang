@@ -1776,11 +1776,12 @@ func goalsForProtectedEntry(
   eci = 0
   while eci < entryOwn.count { entryContracts.add(entryOwn[eci]); eci = eci + 1 }
   val noDocComments: List[DocComment] = newList()
-  val noAnnotations: List[Annotation] = newList()
   val entryBody: Option[FunctionBody] = Some(value = ed.body)
+  // Pass entry-level annotations through (#662): @axiom / @runtime_checked
+  // overrides on the EntryDecl must reach `levelOfFunction` below.
   val synthDecl: FunctionDecl = FunctionDecl(
     docComments = noDocComments,
-    annotations = noAnnotations,
+    annotations = ed.annotations,
     visibility  = ed.visibility,
     isAsync     = false,
     name        = protName + "::" + ed.name,
@@ -1894,14 +1895,23 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     match file.items[i].kind {
       case IFunc(fn) -> callees.add(fn.name, fn)
       case IProtected(decl) -> {
+        // #663: Hoare-call rule at a PMEntry call site reads
+        // `callees.<entry>.contracts` to derive the post-state.
+        // Verification combines invariants with ed.contracts, so the
+        // callee stub must do the same; otherwise a caller can't
+        // conclude the invariant after a cross-entry call.
+        val protInvs: List[ContractClause] = collectProtectedInvariants(decl)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
             case PMFunc(fn) -> callees.add(decl.name + "::" + fn.name, fn)
             case PMEntry(ed) -> {
-              // Synthesise a minimal FunctionDecl so cross-entry Hoare-call
-              // lookups resolve.  Uses the entry's own contracts only; the
-              // invariant augmentation is applied during goal generation.
+              val stubContracts: List[ContractClause] = newList()
+              var pi = 0
+              while pi < protInvs.count { stubContracts.add(protInvs[pi]); pi = pi + 1 }
+              val edOwn = ed.contracts
+              pi = 0
+              while pi < edOwn.count { stubContracts.add(edOwn[pi]); pi = pi + 1 }
               val noDoc: List[DocComment] = newList()
               val noAnn: List[Annotation] = newList()
               val entryFn: FunctionDecl = FunctionDecl(
@@ -1914,7 +1924,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
                 params      = ed.params,
                 ret         = ed.ret,
                 whereClause = None,
-                contracts   = ed.contracts,
+                contracts   = stubContracts,
                 body        = Some(value = ed.body),
                 span        = ed.span)
               callees.add(decl.name + "::" + ed.name, entryFn)
