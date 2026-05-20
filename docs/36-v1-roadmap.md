@@ -182,13 +182,24 @@ of `Pack.l`; port in order.
 `Emitter.fs::emitContractCheck` handles nested-return `ensures:` clauses, loop
 `invariant:` lowering, and protected-type entries for the F# (`--target
 dotnet-legacy`) path.  The self-hosted `contract_elaborator/elaborator.l`
-(M5.2 stage 2) does not yet replicate these three cases — see
-`lyric-compiler/lyric/contract_elaborator/elaborator.l` and the "deferred to
-a follow-up stage" note therein.  Removing `--target dotnet-legacy` before
-the elaborator achieves parity silently drops `ensures:` enforcement on nested
-returns.  Gate the `Emitter.fs` deletion on a passing regression test that
-exercises each deferred construct against both the F# emitter output and the
+(M5.2 stage 2) covers `requires:` and `ensures:` (including nested returns at
+any depth inside `if` / `match` / `try` / `for` / `while` / `loop` bodies — see
+the file header at `elaborator.l:25-34`).  **Still deferred:** loop
+`invariant:` lowering (`elaborator.l:39-41`) and protected-type entries
+(`PMEntry` barriers, `elaborator.l:43-47`).  Removing `--target dotnet-legacy`
+before those two deferrals close silently drops `invariant:` enforcement on
+loop bodies and `when:` / `invariant:` enforcement on protected entries.
+Gate the `Emitter.fs` deletion on a passing regression test that exercises
+each deferred construct against both the F# emitter output and the
 self-hosted elaborator output.
+
+**Additional structural blocker (added by `docs/41-self-hosted-compiler-gap-analysis.md`):**
+`Msil.Bridge.compileToMsil` and `Jvm.Bridge.compileToJar` do not invoke the
+self-hosted middle-end at all today — they go `parse → codegen → lowering`
+and skip `Lyric.TypeChecker`, `Lyric.ModeChecker`, `Lyric.ContractElaborator`,
+and `Lyric.Mono`.  Until the bridges are wired (see `docs/41` band 1),
+contract elaborator parity is moot for production builds because the
+elaborator never runs.  Wire the bridges before declaring R4 done.
 
 **Bridge pattern** (follow `SelfHostedFmt.fs` / `SelfHostedManifest.fs`):
 

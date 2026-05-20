@@ -63,6 +63,7 @@ backing entry's id.
 - `docs/38-workspace.md` — workspace (root `[workspace]` table, auto-discovery, member opt-out), git dependency form (`git`, `tag`/`rev`/`branch`, `subdir`), workspace overrides, transitive native dep propagation, and an exploratory sketch of eliminating `[nuget]`/`[maven]` from application manifests. _Specced in D073. Open questions Q-W-001–Q-W-004._
 - `docs/39-package-registry.md` — Lyric package registry design: NuGet.org as the .NET channel, GitHub Packages Maven as the JVM channel, `lyric publish` and `lyric restore` flows, package naming convention, `lyric search` via NuGet tag filter, lock-file checksums, private feeds, and first-party ecosystem publish order. _Specced in D074. Open questions Q-R-001–Q-R-004._
 - `docs/40-source-generators.md` — custom source generator API: `@generate` unified annotation form (replaces `@derive`), built-in vs custom generator resolution, `Lyric.GeneratorSdk` types, subprocess bridge model, security and trust, phasing, and open questions Q-SG-001–Q-SG-004. _Specced in D075._
+- `docs/41-self-hosted-compiler-gap-analysis.md` — static audit (2026-05-20) of the self-hosted compiler vs. the language reference. Documents the pipeline disconnect (self-hosted backends bypass middle-end), per-feature MSIL and JVM coverage, F#-only constructs, and a seven-band remediation plan toward a production-ready self-hosted compiler on both targets.
 
 ## Reading order (for Claude)
 
