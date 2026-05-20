@@ -23,6 +23,7 @@ import Std.String as Str
 import Std.File as File
 import Std.Path as Path
 import Std.ProcessCapture as ProcessCapture
+import Lyric.Manifest as Manifest
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Lightweight source scanner
@@ -509,6 +510,114 @@ func parseResponseJson(json: in String): Result[StringPair, String] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §4a. Supply-chain enforcement (docs/40 §3.1, lyric-lang #737)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Verify a generator package is declared as a dependency in the consumer
+// manifest and (when locatable) carries `kind = "source-generator"`.
+//
+// Returns Ok(()) when the generator may proceed.  Returns Err with a
+// structured G0002 / G0008 message when the supply-chain check fails.
+//
+// G0008 — generator package not declared in [dependencies].  Always
+// enforceable because the consumer manifest is right there at mfPath.
+// G0001 is reserved by docs/40 §2.2 / §10 P1 for the annotation-target
+// restriction (`@generate` on non-structural types), so this check uses
+// the next free slot (G0008).
+//
+// G0002 — kind mismatch on the referenced package (matches the spec
+// reservation in docs/40 §10 P1 for kind enforcement).  Enforceable
+// when the dependency is a Path dep (we can read its lyric.toml).
+// Registry / Workspace / Git deps skip the kind check until the
+// restore pipeline persists cached manifests; G0008 still catches the
+// obvious supply-chain hole for those cases.  Follow-up tracked in
+// the closing/open issues referenced from PR #753.
+// Pure G0008 check — verifies the generator package appears in
+// `[dependencies]`.  Returns the matched DependencyEntry on success so
+// the caller can inspect the dep source.  Exposed `pub` so self-tests
+// can exercise it against synthesised Manifest values.
+pub func checkGeneratorDeclaredIn(
+        consumerMf:   in Manifest.Manifest,
+        generatorArg: in String): Result[Manifest.DependencyEntry, String] {
+  var i = 0
+  while i < consumerMf.deps.count {
+    if consumerMf.deps[i].name == generatorArg {
+      return Ok(value = consumerMf.deps[i])
+    }
+    i = i + 1
+  }
+  Err(error =
+    "G0008: @generate(" + generatorArg + ") references a package not declared in [dependencies] of " +
+    consumerMf.filePath + "; add it to the manifest or the supply-chain check will reject the build")
+}
+
+// Pure G0002 check — verifies the dependency's manifest declares
+// `[package].kind = "source-generator"`.  `depMfPath` is included in
+// the diagnostic so the user can locate the offending manifest.
+pub func checkGeneratorKind(
+        generatorArg: in String,
+        depMfPath:    in String,
+        depMf:        in Manifest.Manifest): Result[Unit, String] {
+  match depMf.packageSection.kind {
+    case Some(k) ->
+      if k == "source-generator" {
+        Ok(value = ())
+      } else {
+        Err(error =
+          "G0002: @generate(" + generatorArg + ") declares [package].kind = \"" + k +
+          "\" (must be \"source-generator\") in " + depMfPath)
+      }
+    case None ->
+      Err(error =
+        "G0002: @generate(" + generatorArg + ") is missing [package].kind = \"source-generator\" in " + depMfPath)
+  }
+}
+
+func checkGeneratorDependency(
+        mfPath:       in String,
+        generatorArg: in String): Result[Unit, String] {
+  val consumerMf = match File.readText(mfPath) {
+    case Err(_)   -> return Ok(value = ())  // can't read manifest -> skip; cli.l will surface the real error
+    case Ok(text) ->
+      match Manifest.parseManifest(text, mfPath) {
+        case Err(_) -> return Ok(value = ())  // parse error -> cli.l will surface it
+        case Ok(m)  -> m
+      }
+  }
+  val declared = checkGeneratorDeclaredIn(consumerMf, generatorArg)
+  match declared {
+    case Err(e) -> return Err(error = e)
+    case Ok(_)  -> ()
+  }
+  val dep = match declared {
+    case Ok(d)  -> d
+    case Err(_) -> return Ok(value = ())  // unreachable — handled above
+  }
+  // If we can resolve the dep's manifest, check its [package].kind.
+  val depManifestPath = match dep.source {
+    case Manifest.Path(relDir) -> {
+      val manifestDir = Path.dirname(mfPath)
+      val absDir = if Path.isAbsolute(relDir) { relDir } else { Path.join(manifestDir, relDir) }
+      Some(value = Path.join(absDir, "lyric.toml"))
+    }
+    case _ -> None
+  }
+  match depManifestPath {
+    case None -> Ok(value = ())  // Registry / Workspace / Git — skip kind check (see header comment).
+    case Some(p) -> {
+      match File.readText(p) {
+        case Err(_) -> Ok(value = ())  // missing — restore step will surface it.
+        case Ok(text) ->
+          match Manifest.parseManifest(text, p) {
+            case Err(_) -> Ok(value = ())  // parse error there — separate concern.
+            case Ok(depMf) -> checkGeneratorKind(generatorArg, p, depMf)
+          }
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §5. Generator DLL resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -576,6 +685,16 @@ pub func preprocess(source: in String, manifestPath: in Option[String], sourceFi
     var di = 0
     while di < directives.count {
         val dir = directives[di]
+
+        // Supply-chain enforcement (#737): the generator package must be
+        // declared in the consumer's [dependencies] (G0008) and, when its
+        // manifest is locatable, must carry `kind = "source-generator"`
+        // (G0002).  Run before DLL resolution so a misconfigured manifest
+        // produces a clear diagnostic, not a "DLL not found" message.
+        match checkGeneratorDependency(mfPath, dir.generatorArg) {
+            case Err(e) -> return Err(error = e)
+            case Ok(_)  -> ()
+        }
 
         val dllPath = match resolveGeneratorDll(mfPath, dir.generatorArg) {
             case Err(e) -> return Err(error = e)
