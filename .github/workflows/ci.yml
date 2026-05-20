@@ -139,13 +139,19 @@ jobs:
       # Closes #744.
       - name: JVM execution smoke (run Hello.class via `java`)
         if: steps.changes.outputs.has_code_changes == 'true'
+        timeout-minutes: 1
+        env:
+          # Hardcoded path; shared with the emitter test that writes the
+          # class so a rename in either site is caught here as a missing
+          # file rather than a silent skip (#776).
+          JVM_SELFTEST_DIR: /tmp/lyric-jvm-selftest
         run: |
           set -euo pipefail
-          if [ ! -f /tmp/lyric-jvm-selftest/Hello.class ]; then
-            echo "::error::Hello.class missing — Jvm.SelfTest must have run during the Emitter tests step"
+          if [ ! -f "$JVM_SELFTEST_DIR/Hello.class" ]; then
+            echo "::error::Hello.class missing under $JVM_SELFTEST_DIR — Jvm.SelfTest must have run during the Emitter tests step"
             exit 1
           fi
-          out=$(java -cp /tmp/lyric-jvm-selftest Hello)
+          out=$(java -cp "$JVM_SELFTEST_DIR" Hello)
           echo "java output: $out"
           if [ "$out" != "hello from lyric-jvm" ]; then
             echo "::error::JVM execution produced unexpected output: '$out'"

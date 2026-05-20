@@ -458,6 +458,23 @@ func testProveSortNamespacing(): Unit {
   assertTrue(not summaryHasErrorDiag(summary), "sort-namespace: no error diags")
 }
 
+// #752: pin the collision scenario that motivated the `.` separator in
+// `qualifiedDatatypeName`.  With a `_` separator, segments
+// `["Pkg_A", "Foo"]` and `["Pkg", "A_Foo"]` would both render as
+// "Pkg_A_Foo" — the join is now `.`-separated, so the two paths
+// produce distinct sort names ("Pkg_A.Foo" vs "Pkg.A_Foo").
+func testQualifiedDatatypeNameNoCollision(): Unit {
+  val left:  List[String] = newList()
+  left.add("Pkg_A"); left.add("Foo")
+  val right: List[String] = newList()
+  right.add("Pkg"); right.add("A_Foo")
+  val l = qualifiedDatatypeName(left)
+  val r = qualifiedDatatypeName(right)
+  assertEqual(l, "Pkg_A.Foo", "left rendered as Pkg_A.Foo")
+  assertEqual(r, "Pkg.A_Foo", "right rendered as Pkg.A_Foo")
+  assertTrue(l != r, "the two rendered names are distinct (no `_`-join collision)")
+}
+
 func testSummaryHelpers(): Unit {
   // Build a ProofSummary manually to test helpers.
   val hyps: List[Term] = newList()
@@ -541,6 +558,7 @@ func main(): Unit {
   testProveProtectedTypeInvariantViolated()
   testProveRangeBoundUpperOnly()
   testProveSortNamespacing()
+  testQualifiedDatatypeNameNoCollision()
   testSummaryHelpers()
 
   println("verifier self-test: ok")

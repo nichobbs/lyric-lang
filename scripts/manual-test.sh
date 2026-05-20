@@ -622,18 +622,36 @@ generate_reports() {
   } > "$md"
 
   # ---- summary.json ----
+  # JSON-escape arbitrary text — `git rev-parse` can return error
+  # messages with backslashes / quotes / control characters when the
+  # repo is in an unusual state, and notes may contain those too.
+  # Escapes minimum: `\`, `"`, and the ASCII C0 controls (per RFC 8259).
+  json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"   # \ -> \\
+    s="${s//\"/\\\"}"   # " -> \"
+    s="${s//$'\n'/\\n}" # newline -> \n
+    s="${s//$'\r'/\\r}" # CR -> \r
+    s="${s//$'\t'/\\t}" # tab -> \t
+    s="${s//$'\b'/\\b}" # backspace -> \b
+    s="${s//$'\f'/\\f}" # formfeed -> \f
+    printf '%s' "$s"
+  }
+  local branch_raw head_raw
+  branch_raw=$(git rev-parse --abbrev-ref HEAD 2>&1)
+  head_raw=$(git rev-parse HEAD 2>&1)
   {
     echo '{'
     echo '  "generatedAt": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-    echo '  "branch": "'"$(git rev-parse --abbrev-ref HEAD 2>&1)"'",'
-    echo '  "head": "'"$(git rev-parse HEAD 2>&1)"'",'
+    printf '  "branch": "%s",\n' "$(json_escape "$branch_raw")"
+    printf '  "head": "%s",\n'   "$(json_escape "$head_raw")"
     echo '  "stages": ['
     local first=1
     local name status dur notes
     while IFS=$'\t' read -r name status dur notes; do
       [ $first = 1 ] && first=0 || echo ','
       printf '    {"name":"%s","status":"%s","durationSeconds":%s,"notes":"%s"}' \
-        "$name" "$status" "$dur" "${notes//\"/\\\"}"
+        "$(json_escape "$name")" "$(json_escape "$status")" "$dur" "$(json_escape "$notes")"
     done < "$RESULTS_TSV"
     echo
     echo '  ],'

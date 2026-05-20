@@ -73,7 +73,7 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
 // `Pkg_A.Foo` vs `Pkg.A_Foo`.  `.` cannot appear inside a single
 // identifier segment, so the joined string is unambiguous, and SMT-LIB
 // v2.6 §3.1 admits `.` in simple symbols.
-func qualifiedDatatypeName(segs: in List[String]): String {
+pub func qualifiedDatatypeName(segs: in List[String]): String {
   if segs.count == 0 { return "?" }
   if segs.count == 1 { return segs[0] }
   var name = segs[0]
