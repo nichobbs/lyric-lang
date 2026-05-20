@@ -32,7 +32,9 @@ import Std.ProcessCaptureHost
 // reach this path because the .NET `ProcessStartInfo` does its own
 // re-tokenisation), and the alternative — only doubling runs that
 // precede `"` — is harder to get right.
-func quoteArg(arg: in String): String {
+// Exposed `pub` so callers building command lines piecemeal (outside
+// `buildArgString`) can reuse the same escape ordering.
+pub func quoteArg(arg: in String): String {
   // Order matters: escape backslashes first so the `\` introduced by
   // the second step don't get double-escaped.
   val escaped = arg.replace("\\", "\\\\").replace("\"", "\\\"")
