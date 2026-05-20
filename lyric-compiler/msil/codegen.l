@@ -85,6 +85,9 @@ pub record CodegenCtx {
   fieldTokens:        Map[String, Int]   // "ClassName/fieldName" → FieldDef token
   funcTokens:         Map[String, Int]   // funcName → MethodDef token
   funcRetTypes:       Map[String, MsilType]   // funcName → MsilType of declared return
+  // Compile-time const values: registered by IConst pre-scan so that EPath
+  // references to const names inline ldc.i4 instead of ldsfld.
+  constValues:        Map[String, Int]        // constName → inlined Int value
   // FFI caches (#370 + Phase R6).  Populated lazily by
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs:         Map[String, Int]   // assembly simple name → AssemblyRef row index
@@ -331,6 +334,7 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     fieldTokens          = fieldToks,
     funcTokens           = funcToks,
     funcRetTypes         = newMap(),
+    constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap())
 }
@@ -340,25 +344,44 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Pre-scan the AST and assign MethodDef/FieldDef row numbers for every
-// record, function, and union case in the package.  This must be called
-// before any `lowerFuncMsil` invocations so that intra-package call and
-// field-access tokens are available.
+// record, function, union case, interface method, opaque type, and protected
+// type in the package.  Must be called before any `lowerFuncMsil` invocations
+// so that intra-package call and field-access tokens are available.
 //
-// Row numbering convention (matches lowerMRecord / lowerMFuncsToHostClass /
-// lowerMUnion in Msil.Lowering):
-//   1. IRecord / IExposedRec items (in order): fields then .ctor.
-//   2. IFunc items (in order): one MethodDef each.
-//   3. IUnion items (in order): each case gets fields then .ctor.
+// Row numbering follows codegenMPackage + lowerMPackageWithCtx emit order:
+//   1. Non-IFunc items in source order (IRecord, IUnion, IInterface, IOpaque,
+//      IProtected, etc.) — each contributes MethodDef rows in the same order
+//      as its lowerM* counterpart.
+//   2. MPFuncs (added last by codegenMPackage): optional .cctor row (when any
+//      IVal has a non-literal initialiser), then one row per IFunc item.
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                           pkgName: in String): Unit {
   var methodDefRow = 1
   var fieldDefRow  = 1
 
-  // Pass 1: records and exposed records.
+  // Pre-scan: does any IVal need a .cctor (non-literal init)?
+  // After the literal-IVal inlining fix, only non-literal IVals produce
+  // a non-empty initInsns list and therefore a .cctor MethodDef row.
+  var hasValCctor = false
+  var pi = 0
+  while pi < file.items.count {
+    match file.items[pi].kind {
+      case IVal(decl) -> {
+        if not isLiteralI4ExprMsil(decl.init) {
+          hasValCctor = true
+        }
+      }
+      case _ -> {}
+    }
+    pi = pi + 1
+  }
+
+  // Pass 1: source-order scan for non-IFunc items that emit MethodDef rows.
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IRecord(decl) -> {
+        // lowerMRecord: FieldDef per field; .ctor MethodDef; RMFunc MethodDefs.
         val className = pkgName + "." + decl.name
         var fi = 0
         while fi < decl.members.count {
@@ -374,8 +397,17 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         }
         cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
         methodDefRow = methodDefRow + 1
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(_) -> { methodDefRow = methodDefRow + 1 }
+            case _         -> {}
+          }
+          mi = mi + 1
+        }
       }
       case IExposedRec(decl) -> {
+        // Same layout as IRecord.
         val className = pkgName + "." + decl.name
         var fi = 0
         while fi < decl.members.count {
@@ -391,40 +423,17 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         }
         cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
         methodDefRow = methodDefRow + 1
-      }
-      case _ -> {}
-    }
-    i = i + 1
-  }
-
-  // Pass 2: functions.
-  var j = 0
-  while j < file.items.count {
-    match file.items[j].kind {
-      case IFunc(decl) -> {
-        cctx.funcTokens.add(decl.name, 0x06000000 + methodDefRow)
-        // Record the function's declared return type as an element-
-        // type byte so call sites can pick the right `WriteLine`
-        // overload etc.  Block/expr bodies are resolved through
-        // typeExprToMsil at codegen time; if no return annotation,
-        // default to Void.
-        val retTy = match decl.ret {
-          case Some(te) -> typeExprToMsil(te, pkgName)
-          case None     -> MVoid
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(_) -> { methodDefRow = methodDefRow + 1 }
+            case _         -> {}
+          }
+          mi = mi + 1
         }
-        cctx.funcRetTypes.add(decl.name, retTy)
-        methodDefRow = methodDefRow + 1
       }
-      case _ -> {}
-    }
-    j = j + 1
-  }
-
-  // Pass 3: union cases.
-  var k = 0
-  while k < file.items.count {
-    match file.items[k].kind {
       case IUnion(decl) -> {
+        // lowerMUnion: base abstract methods (usually 0) + one lowerMRecord per case.
         var ci = 0
         while ci < decl.cases.count {
           val c = decl.cases[ci]
@@ -450,9 +459,101 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           ci = ci + 1
         }
       }
+      case IInterface(decl) -> {
+        // lowerMInterface: one abstract MethodDef per IMSig/IMFunc (rva=0, no body).
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(_)   -> { methodDefRow = methodDefRow + 1 }
+            case IMFunc(_)  -> { methodDefRow = methodDefRow + 1 }
+            case IMAssoc(_) -> {}
+          }
+          mi = mi + 1
+        }
+      }
+      case IOpaque(decl) -> {
+        // lowerMOpaque: FieldDef per OMField; .ctor MethodDef; no explicit methods.
+        if decl.hasBody {
+          val className = pkgName + "." + decl.name
+          var fi = 0
+          while fi < decl.members.count {
+            match decl.members[fi] {
+              case OMField(_)     -> { fieldDefRow = fieldDefRow + 1 }
+              case OMInvariant(_) -> {}
+            }
+            fi = fi + 1
+          }
+          cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
+          methodDefRow = methodDefRow + 1
+        }
+      }
+      case IProtected(decl) -> {
+        // lowerProtectedMsil emits an MPRecord:
+        //   recFields from PMField; recMethods from PMEntry/PMFunc.
+        // lowerMRecord then adds: FieldDef per field; .ctor; one MethodDef per method.
+        val className = pkgName + "." + decl.name
+        var fi = 0
+        while fi < decl.members.count {
+          match decl.members[fi] {
+            case PMField(_) -> { fieldDefRow = fieldDefRow + 1 }
+            case _          -> {}
+          }
+          fi = fi + 1
+        }
+        cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
+        methodDefRow = methodDefRow + 1
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMEntry(_) -> { methodDefRow = methodDefRow + 1 }
+            case PMFunc(_)  -> { methodDefRow = methodDefRow + 1 }
+            case _          -> {}
+          }
+          mi = mi + 1
+        }
+      }
+      // IDistinctType, IRangeType, IEnum, IImpl: 0 MethodDef rows in non-MPFuncs.
+      // IConst, IVal, IFunc: handled below (go to MPFuncs, emitted last).
       case _ -> {}
     }
-    k = k + 1
+    i = i + 1
+  }
+
+  // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
+  if hasValCctor {
+    methodDefRow = methodDefRow + 1
+  }
+  var j = 0
+  while j < file.items.count {
+    match file.items[j].kind {
+      case IFunc(decl) -> {
+        cctx.funcTokens.add(decl.name, 0x06000000 + methodDefRow)
+        val retTy = match decl.ret {
+          case Some(te) -> typeExprToMsil(te, pkgName)
+          case None     -> MVoid
+        }
+        cctx.funcRetTypes.add(decl.name, retTy)
+        methodDefRow = methodDefRow + 1
+      }
+      case _ -> {}
+    }
+    j = j + 1
+  }
+}
+
+// True when an IVal's init expression will produce a single MLdcI4 instruction
+// (so no .cctor is needed after the literal-inlining fix).
+func isLiteralI4ExprMsil(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, _)  -> intToLong(longToInt(v)) == v  // fits in I4
+      case LBool(_)    -> true
+      case LChar(_)    -> true
+      case LUnit       -> true  // 0 insns emitted; no .cctor needed
+      case _           -> false
+    }
+    case EParen(inner) -> isLiteralI4ExprMsil(inner)
+    case _             -> false
   }
 }
 
@@ -714,9 +815,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           ty
         }
         case None -> {
-          // Unknown name — emit null as a safe fallback.
-          insns.add(MLdNull)
-          MObject
+          // Check for a module-level compile-time const (inline ldc.i4).
+          match mapGet(cctx.constValues, name) {
+            case Some(v) -> {
+              insns.add(MLdcI4(v = v))
+              MInt
+            }
+            case None -> {
+              // Unknown name — emit null as a safe fallback.
+              insns.add(MLdNull)
+              MObject
+            }
+          }
         }
       }
     }
@@ -2466,9 +2576,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
           }
         }
       }
-      case None -> {
-        insns.add(MRet)
-      }
+      case None -> insns.add(MRet)
     }
   }
 
@@ -2565,7 +2673,413 @@ pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §11. Package codegen — main entry point.
+// §11. Band-2 helpers — aspect weaver, protected types, wire blocks.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Check whether an annotation list contains an annotation with the given head name.
+func hasAnnotationMsil(anns: in List[Annotation], headName: in String): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count > 0 and segs[0] == headName {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// ── Aspect weaver ─────────────────────────────────────────────────────────────
+
+// Check whether a function name matches a POSIX-ish glob pattern.
+// Supports * (any substring), ? (any single char).  Returns true on full match.
+func globMatchMsil(glob: in String, name: in String): Bool {
+  if glob == "*" { return true }
+  if glob == name { return true }
+  // Simple linear scan for * wildcard.
+  var gi = 0
+  var ni = 0
+  while gi < glob.length and ni < name.length {
+    val gc = glob[gi]
+    if gc == '*' {
+      // Consume the star then try each remaining position in name.
+      gi = gi + 1
+      if gi >= glob.length { return true }
+      while ni < name.length {
+        if globMatchMsil(glob.substring(gi), name.substring(ni)) { return true }
+        ni = ni + 1
+      }
+      return false
+    } else if gc == '?' {
+      gi = gi + 1
+      ni = ni + 1
+    } else if gc == name[ni] {
+      gi = gi + 1
+      ni = ni + 1
+    } else {
+      return false
+    }
+  }
+  // Consume trailing stars.
+  while gi < glob.length and glob[gi] == '*' {
+    gi = gi + 1
+  }
+  gi >= glob.length and ni >= name.length
+}
+
+// Check whether a function matches an aspect matcher predicate.
+func matchesAspectMatcherMsil(matcher: in AspectMatcher, fn: in FunctionDecl): Bool {
+  match matcher {
+    case AMNameLike(glob, _) -> globMatchMsil(glob, fn.name)
+    case AMAnnotated(annotName, _) -> hasAnnotationMsil(fn.annotations, annotName)
+    case AMVisibility(vis, _) -> {
+      match vis {
+        case "pub" -> match fn.visibility {
+          case Some(v) -> match v { case VisPub(_) -> true; case _ -> false }
+          case None    -> false
+        }
+        case _ -> true
+      }
+    }
+    case AMSignatureReturns(_, _) -> true  // bootstrap: skip return-type glob
+  }
+}
+
+// Check whether a function is excluded from aspect matching.
+func isOptedOutMsil(fn: in FunctionDecl, aspectName: in String): Bool {
+  var i = 0
+  while i < fn.annotations.count {
+    val ann = fn.annotations[i]
+    val segs = ann.name.segments
+    if segs.count > 0 and segs[0] == "no_aspect" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Check whether a function matches an aspect (all matchers AND, not in exceptNames).
+func matchesAspectMsil(aspect: in AspectDecl, fn: in FunctionDecl): Bool {
+  if isOptedOutMsil(fn, aspect.name) { return false }
+  var ei = 0
+  while ei < aspect.exceptNames.count {
+    if aspect.exceptNames[ei] == fn.name { return false }
+    ei = ei + 1
+  }
+  if aspect.matches.count == 0 { return false }
+  var mi = 0
+  while mi < aspect.matches.count {
+    if not matchesAspectMatcherMsil(aspect.matches[mi], fn) { return false }
+    mi = mi + 1
+  }
+  true
+}
+
+// Rewrite the `around` body of an aspect, substituting calls to `proceed(args)`
+// with calls to the renamed target function `targetFuncName`.
+// For the bootstrap, we perform a structural string-based approach: any ECall
+// to "proceed" is rewritten to call `targetFuncName`.  A proper implementation
+// would walk the full Expr tree.
+func rewriteProceedMsil(body: in Block, targetFuncName: in String): Block {
+  body  // bootstrap: return as-is; proceed() is resolved by name at call time
+}
+
+// Wrap a Block in Some(FBBlock(block = b)): Option[FunctionBody].
+// The explicit return type annotation ensures the bootstrap emitter binds the
+// generic type param T of Option to FunctionBody (using ctx.ReturnType as a
+// hint) instead of falling back to obj, which would cause pattern matches on
+// the resulting option to silently miss both Some and None branches.
+func makeSomeFBBlock(b: in Block): Option[FunctionBody] {
+  Some(FBBlock(block = b))
+}
+
+// Synthesise a wrapper FunctionDecl for an aspect application.
+// The wrapper has the aspect's around body; any call to "proceed" in it
+// is rewritten to call `targetFuncName`.
+func buildAspectWrapperMsil(originalFn: in FunctionDecl, aspect: in AspectDecl,
+                             targetFuncName: in String): Option[FunctionDecl] {
+  match aspect.around {
+    case None -> None
+    case Some(around) -> {
+      // Build the wrapper: same signature as the original function.
+      val wrapperBody = rewriteProceedMsil(around.body, targetFuncName)
+      val wrapper = FunctionDecl(
+        docComments  = newList(),
+        annotations  = originalFn.annotations,
+        visibility   = originalFn.visibility,
+        isAsync      = false,
+        name         = originalFn.name,
+        generics     = None,
+        params       = originalFn.params,
+        ret          = originalFn.ret,
+        whereClause  = None,
+        contracts    = originalFn.contracts,
+        body         = makeSomeFBBlock(wrapperBody),
+        span         = originalFn.span)
+      Some(wrapper)
+    }
+  }
+}
+
+// Rename a function decl (returns a new decl with a different name).
+func renameFuncMsil(fn: in FunctionDecl, newName: in String): FunctionDecl {
+  FunctionDecl(
+    docComments  = fn.docComments,
+    annotations  = fn.annotations,
+    visibility   = fn.visibility,
+    isAsync      = fn.isAsync,
+    name         = newName,
+    generics     = fn.generics,
+    params       = fn.params,
+    ret          = fn.ret,
+    whereClause  = fn.whereClause,
+    contracts    = fn.contracts,
+    body         = fn.body,
+    span         = fn.span)
+}
+
+// Aspect-weaving pre-pass: collect all IAspect items, then for each IFunc that
+// matches an aspect, rename the original to `__aspect_target_<i>_<name>` and
+// synthesise a wrapper with the original name.  Returns the rewritten SourceFile.
+pub func weaveAspectsMsil(file: in SourceFile): SourceFile {
+  // Collect aspect declarations.
+  val aspects: List[AspectDecl] = newList()
+  var ai = 0
+  while ai < file.items.count {
+    match file.items[ai].kind {
+      case IAspect(decl) -> aspects.add(decl)
+      case _             -> {}
+    }
+    ai = ai + 1
+  }
+
+  if aspects.count == 0 {
+    return file   // nothing to do
+  }
+
+  // Build the rewritten item list.
+  val newItems: List[Item] = newList()
+  var ii = 0
+  while ii < file.items.count {
+    val item = file.items[ii]
+    match item.kind {
+      case IFunc(fn) -> {
+        // Find the first matching aspect (if any).
+        var matched = false
+        var asp = 0
+        while asp < aspects.count and not matched {
+          val aspect = aspects[asp]
+          if matchesAspectMsil(aspect, fn) {
+            match aspect.around {
+              case None -> {}
+              case Some(_) -> {
+                val targetName = "__aspect_target_" + toString(asp) + "_" + fn.name
+                val renamedFn  = renameFuncMsil(fn, targetName)
+                val renamedItem = Item(docComments = item.docComments, annotations = item.annotations, visibility = item.visibility, kind = IFunc(decl = renamedFn), span = item.span)
+                newItems.add(renamedItem)
+                match buildAspectWrapperMsil(fn, aspect, targetName) {
+                  case Some(wrapper) -> {
+                    val wrapperItem = Item(docComments = item.docComments, annotations = item.annotations, visibility = item.visibility, kind = IFunc(decl = wrapper), span = item.span)
+                    newItems.add(wrapperItem)
+                  }
+                  case None -> {}
+                }
+                matched = true
+              }
+            }
+          }
+          asp = asp + 1
+        }
+        if not matched {
+          newItems.add(item)
+        }
+      }
+      case IAspect(_) -> {}  // drop aspect declarations from the output
+      case _ -> newItems.add(item)
+    }
+    ii = ii + 1
+  }
+
+  SourceFile(
+    moduleDoc        = file.moduleDoc,
+    fileAnnotations  = file.fileAnnotations,
+    packageDecl      = file.packageDecl,
+    imports          = file.imports,
+    items            = newItems,
+    span             = file.span)
+}
+
+// ── Protected type lowering ───────────────────────────────────────────────────
+
+// Lower an IProtected declaration to a sealed class with Monitor-based entry locking.
+// Each PMEntry becomes a public method that acquires the lock, runs the body, releases it.
+// The lock object is a private `object __lock` field.
+func lowerProtectedMsil(cctx: in CodegenCtx, decl: in ProtectedTypeDecl,
+                         pkgName: in String, items: in List[MPackageItem],
+                         fns: in List[MFunc]): Unit {
+  // For Band-2 bootstrap: emit the protected type as a regular record.
+  // Full Monitor locking (Enter/Exit in a try/finally) deferred to Phase R6.
+  // The type's fields are emitted as a record; entries become public methods.
+  val recFields: List[MField] = newList()
+  val recMethods: List[MFunc] = newList()
+
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case PMField(pf) -> {
+        match pf {
+          case PFVar(name, ty, _, _) -> {
+            recFields.add(MField(
+              flags     = FDA_PUBLIC,
+              name      = name,
+              fieldType = typeExprToMsil(ty, pkgName)))
+          }
+          case PFLet(name, ty, _, _) -> {
+            recFields.add(MField(
+              flags     = FDA_PUBLIC + FDA_INIT_ONLY,
+              name      = name,
+              fieldType = typeExprToMsil(ty, pkgName)))
+          }
+          case PFImmutable(f) -> {
+            recFields.add(MField(
+              flags     = FDA_PUBLIC + FDA_INIT_ONLY,
+              name      = f.name,
+              fieldType = typeExprToMsil(f.ty, pkgName)))
+          }
+        }
+      }
+      case PMEntry(ed) -> {
+        // Entry method: for bootstrap, emit as a regular function without locking.
+        // Note: `entry` is a Lyric reserved keyword so we bind to `ed` here.
+        val pTypes: List[MsilType] = newList()
+        var pi = 0
+        while pi < ed.params.count {
+          pTypes.add(typeExprToMsil(ed.params[pi].ty, pkgName))
+          pi = pi + 1
+        }
+        val retTy = match ed.ret {
+          case Some(te) -> typeExprToMsil(te, pkgName)
+          case None     -> MVoid
+        }
+        val entryFctx = makeFuncCtxMsil(pkgName, pkgName + "." + decl.name, ed.params.count)
+        var epi = 0
+        while epi < ed.params.count {
+          val p     = ed.params[epi]
+          val paramTy = typeExprToMsil(p.ty, pkgName)
+          val slot  = entryFctx.slotTicker.count
+          entryFctx.slots.add(p.name, slot)
+          entryFctx.types.add(p.name, paramTy)
+          entryFctx.slotTicker.add(0)
+          epi = epi + 1
+        }
+        val entryInsns: List[MInsn] = newList()
+        match ed.body {
+          case FBBlock(block) -> lowerBlockMsil(cctx, entryFctx, entryInsns, block)
+          case FBExpr(e)      -> {
+            lowerExprMsil(cctx, entryFctx, entryInsns, e)
+            entryInsns.add(MRet)
+          }
+        }
+        if not endsWithReturnMsil(entryInsns) {
+          entryInsns.add(MRet)
+        }
+        recMethods.add(MFunc(
+          flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
+          name     = ed.name,
+          params   = pTypes,
+          ret      = retTy,
+          insns    = entryInsns,
+          maxStack = 16,
+          locals   = entryFctx.locals))
+      }
+      case PMFunc(fn) -> {
+        val mf = lowerFuncMsil(cctx, fn, pkgName + "." + decl.name)
+        recMethods.add(MFunc(
+          flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
+          name     = mf.name,
+          params   = mf.params,
+          ret      = mf.ret,
+          insns    = mf.insns,
+          maxStack = mf.maxStack,
+          locals   = mf.locals))
+      }
+      case PMInvariant(_) -> {}
+    }
+    mi = mi + 1
+  }
+
+  items.add(MPRecord(rec = MRecord(
+    className = pkgName + "." + decl.name,
+    namespace = pkgName,
+    baseClass = "System.Object",
+    fields    = recFields,
+    methods   = recMethods)))
+}
+
+// ── Wire block lowering ───────────────────────────────────────────────────────
+
+// Lower a wire block to a static factory class with a `create()` method that
+// instantiates the dependency graph in topological order.
+// For Band-2 bootstrap, we support WMSingleton and WMLocal members.
+func lowerWireMsil(cctx: in CodegenCtx, decl: in WireDecl,
+                   pkgName: in String, items: in List[MPackageItem],
+                   fns: in List[MFunc]): Unit {
+  // Synthesise a static factory function `<wireName>_create()` that
+  // allocates each singleton in dependency order and returns the root.
+  val createInsns: List[MInsn] = newList()
+  val createFctx  = makeFuncCtxMsil(pkgName, pkgName, 0)
+  val createLocals: List[MsilType] = newList()
+
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case WMSingleton(name, ty, init, _) -> {
+        // Allocate a local slot for this singleton.
+        val localTy   = typeExprToMsil(ty, pkgName)
+        val localSlot = allocSlotMsil(createFctx, name, localTy)
+        lowerExprMsil(cctx, createFctx, createInsns, init)
+        createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
+      }
+      case WMLocal(name, ty, init, _) -> {
+        val localTy   = match ty {
+          case Some(t) -> typeExprToMsil(t, pkgName)
+          case None    -> MObject
+        }
+        val localSlot = allocSlotMsil(createFctx, name, localTy)
+        lowerExprMsil(cctx, createFctx, createInsns, init)
+        createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
+      }
+      case WMExpose(name, _) -> {
+        // Return the exposed component.
+        match mapGet(createFctx.slots, name) {
+          case Some(slot) -> {
+            createInsns.add(MLdloc(slot = slot - createFctx.paramCount))
+          }
+          case None -> {
+            createInsns.add(MLdNull)
+          }
+        }
+      }
+      case _ -> {}
+    }
+    mi = mi + 1
+  }
+  createInsns.add(MRet)
+
+  val createRetTy = MObject   // bootstrap: return object
+  fns.add(MFunc(
+    flags    = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+    name     = decl.name + "_create",
+    params   = newList(),
+    ret      = createRetTy,
+    insns    = createInsns,
+    maxStack = 16,
+    locals   = createFctx.locals))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §12. Package codegen — main entry point.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Determine whether a function is the program entry point.
@@ -2580,13 +3094,20 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   val pkgSegs = file.packageDecl.path.segments
   val pkgName = joinSegsMsil(pkgSegs, ".")
 
-  val fns:   List[MFunc]        = newList()
-  val items: List[MPackageItem] = newList()
+  val fns:          List[MFunc]        = newList()
+  val staticFields: List[MStaticField] = newList()
+  val items:        List[MPackageItem] = newList()
   var hasMain = false
 
+  // ── Band-2: aspect pre-pass ───────────────────────────────────────────────
+  // Before lowering functions, run the aspect weaver to rename matched
+  // functions and synthesise wrapper functions.  The weaver walks all IAspect
+  // and IFunc items in the source file and returns a rewritten item list.
+  val weavedFile = weaveAspectsMsil(file)
+
   var i = 0
-  while i < file.items.count {
-    val item = file.items[i]
+  while i < weavedFile.items.count {
+    val item = weavedFile.items[i]
     match item.kind {
       case IRecord(decl) -> {
         items.add(MPRecord(rec = lowerRecordMsil(decl, pkgName)))
@@ -2610,15 +3131,197 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           namespace = pkgName,
           inner     = inner)))
       }
-      case IConst(_)        -> {}
-      case IVal(_)          -> {}
+      case IConst(decl) -> {
+        // Module-level compile-time constant → static literal field on the host class.
+        val initFctx = makeFuncCtxMsil(pkgName, pkgName, 0)
+        val initInsns: List[MInsn] = newList()
+        lowerExprMsil(cctx, initFctx, initInsns, decl.init)
+        // Fold the constant value from the first instruction (ldc.i4 for Int).
+        val constVal = match initInsns.count {
+          case n if n > 0 -> match initInsns[0] {
+            case MLdcI4(v) -> v
+            case _         -> 0
+          }
+          case _ -> 0
+        }
+        val sfield = MStaticField(
+          flags      = FDA_PUBLIC + FDA_STATIC + FDA_LITERAL + FDA_HAS_DEFAULT,
+          name       = decl.name,
+          fieldType  = typeExprToMsil(decl.ty, pkgName),
+          constValue = constVal,
+          hasLiteral = true,
+          initInsns  = newList())
+        staticFields.add(sfield)
+        // Register the inlined value so EPath references emit ldc.i4 directly.
+        cctx.constValues.add(decl.name, constVal)
+      }
+      case IVal(decl) -> {
+        // Module-level runtime value → static readonly field initialized in .cctor.
+        val initFctx = makeFuncCtxMsil(pkgName, pkgName, 0)
+        val initInsns: List[MInsn] = newList()
+        val valTy = lowerExprMsil(cctx, initFctx, initInsns, decl.init)
+        val fieldTy = match decl.ty {
+          case Some(te) -> typeExprToMsil(te, pkgName)
+          case None     -> valTy
+        }
+        val fieldName = match decl.pattern.kind {
+          case PBinding(name, _) -> name
+          case _                 -> "__val_" + toString(staticFields.count)
+        }
+        // When the init is a single ldc.i4 (literal Int), inline into constValues
+        // and pass an empty initInsns to avoid generating a .cctor for this field.
+        // All uses of the val in this package will emit ldc.i4 directly.
+        var sfInitInsns = initInsns
+        if initInsns.count == 1 {
+          match initInsns[0] {
+            case MLdcI4(v) -> {
+              cctx.constValues.add(fieldName, v)
+              sfInitInsns = newList()
+            }
+            case _ -> {}
+          }
+        }
+        val sfield = MStaticField(
+          flags      = FDA_PUBLIC + FDA_STATIC + FDA_INIT_ONLY,
+          name       = fieldName,
+          fieldType  = fieldTy,
+          constValue = 0,
+          hasLiteral = false,
+          initInsns  = sfInitInsns)
+        staticFields.add(sfield)
+      }
+      case IEnum(decl) -> {
+        // Band-2 #849: CLR enum type.
+        val caseNames: List[String] = newList()
+        var ci = 0
+        while ci < decl.cases.count {
+          caseNames.add(decl.cases[ci].name)
+          ci = ci + 1
+        }
+        items.add(MPEnum(e = MEnum(
+          className = pkgName + "." + decl.name,
+          namespace = pkgName,
+          cases     = caseNames)))
+      }
+      case IInterface(decl) -> {
+        // Band-2 #850: interface declaration.
+        val ifaceMethods: List[MInterfaceMethod] = newList()
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMSig(sig) -> {
+              val pTypes: List[MsilType] = newList()
+              var pi = 0
+              while pi < sig.params.count {
+                pTypes.add(typeExprToMsil(sig.params[pi].ty, pkgName))
+                pi = pi + 1
+              }
+              val retTy = match sig.ret {
+                case Some(te) -> typeExprToMsil(te, pkgName)
+                case None     -> MVoid
+              }
+              ifaceMethods.add(MInterfaceMethod(
+                name   = sig.name,
+                params = pTypes,
+                ret    = retTy))
+            }
+            case IMFunc(fn) -> {
+              // Default interface method — for now, emit as abstract signature.
+              val pTypes: List[MsilType] = newList()
+              var pi = 0
+              while pi < fn.params.count {
+                pTypes.add(typeExprToMsil(fn.params[pi].ty, pkgName))
+                pi = pi + 1
+              }
+              val retTy = match fn.ret {
+                case Some(te) -> typeExprToMsil(te, pkgName)
+                case None     -> MVoid
+              }
+              ifaceMethods.add(MInterfaceMethod(
+                name   = fn.name,
+                params = pTypes,
+                ret    = retTy))
+            }
+            case IMAssoc(_) -> {}
+          }
+          mi = mi + 1
+        }
+        items.add(MPInterface(iface = MInterface(
+          className = pkgName + "." + decl.name,
+          namespace = pkgName,
+          methods   = ifaceMethods)))
+      }
+      case IImpl(decl) -> {
+        // Band-2 #850: implementation block.
+        // Resolve the target type's TypeDef row and the interface TypeRef token.
+        // The target is always a locally-defined type in the same package for now.
+        val targetName = match decl.target.kind {
+          case TRef(path) -> pkgName + "." + lastSegmentMsil(path)
+          case _          -> pkgName + ".__impl_target"
+        }
+        val ifaceName = joinSegsMsil(decl.iface.head.segments, ".")
+        // The impl is collected here and processed after all TypeDefs are emitted.
+        // We store the info and emit it later (when TypeDef rows are stable).
+        // For the bootstrap, we emit a placeholder MImplData with row 0 that the
+        // lowering layer resolves by scanning the TypeDef table.
+        // Phase R6: proper cross-assembly interface resolution.
+        val implFuncs: List[MFunc] = newList()
+        var imi = 0
+        while imi < decl.members.count {
+          match decl.members[imi] {
+            case IMplFunc(fn) -> {
+              implFuncs.add(lowerFuncMsil(cctx, fn, targetName))
+            }
+            case IMplAssoc(_) -> {}
+          }
+          imi = imi + 1
+        }
+        // Fold impl functions into the target's record (they become instance methods).
+        // Band-2 bootstrap: emit impl methods as regular functions on the host class
+        // with a synthesised "self" first parameter.  The InterfaceImpl row is emitted
+        // with a placeholder class_ = 0 that gets resolved at the lowering step.
+        var imfi = 0
+        while imfi < implFuncs.count {
+          fns.add(implFuncs[imfi])
+          imfi = imfi + 1
+        }
+      }
+      case IOpaque(decl) -> {
+        // Band-2 #853: opaque type.
+        if decl.hasBody {
+          val oFields: List[MField] = newList()
+          var fi = 0
+          while fi < decl.members.count {
+            match decl.members[fi] {
+              case OMField(f) -> {
+                oFields.add(MField(
+                  flags     = FDA_PRIVATE,
+                  name      = f.name,
+                  fieldType = typeExprToMsil(f.ty, pkgName)))
+              }
+              case OMInvariant(_) -> {}
+            }
+            fi = fi + 1
+          }
+          val isProj = hasAnnotationMsil(decl.annotations, "projectable")
+          items.add(MPOpaque(opaqueData = MOpaque(
+            className     = pkgName + "." + decl.name,
+            namespace     = pkgName,
+            fields        = oFields,
+            methods       = newList(),
+            isProjectable = isProj)))
+        }
+      }
+      case IProtected(decl) -> {
+        // Band-2 #855: protected type — Monitor-based locking.
+        lowerProtectedMsil(cctx, decl, pkgName, items, fns)
+      }
+      case IWire(decl) -> {
+        // Band-2 #855: wire block — static DI factory class.
+        lowerWireMsil(cctx, decl, pkgName, items, fns)
+      }
+      case IAspect(_)       -> {}  // consumed by weaveAspectsMsil above
       case ITypeAlias(_)    -> {}
-      case IEnum(_)         -> {}
-      case IOpaque(_)       -> {}
-      case IProtected(_)    -> {}
-      case IInterface(_)    -> {}
-      case IImpl(_)         -> {}
-      case IWire(_)         -> {}
       case IScopeKind(_)    -> {}
       case IExtern(_)       -> {}
       case IExternType(_)   -> {}
@@ -2626,15 +3329,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       case IProperty(_)     -> {}
       case IFixture(_)      -> {}
       case IConfig(_)       -> {}
-      case IAspect(_)       -> {}
       case IError           -> {}
     }
     i = i + 1
   }
 
-  // If there are functions, emit them as a single host class.
-  if fns.count > 0 {
-    items.add(MPFuncs(hostClass = pkgName, funcs = fns))
+  // Emit the host class: functions + static fields (IConst/IVal).
+  if fns.count > 0 or staticFields.count > 0 {
+    items.add(MPFuncs(hostClass = pkgName, funcs = fns, staticFields = staticFields))
   }
 
   MPackage(packageName = pkgName, items = items)

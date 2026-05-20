@@ -74,12 +74,18 @@ pub func compileToMsil(source: in String, outputPath: in String): Bool {
   // library AssemblyRef / TypeRef / MemberRef rows.
   val cctx = newCodegenCtx(pkgName)
 
+  // Run the aspect weaver before the token pre-scan so that the pre-scan
+  // sees the post-weave function list (renamed originals + synthesised wrappers).
+  // `codegenMPackage` will call weaveAspectsMsil internally too, but it
+  // short-circuits when the file has no IAspect items remaining.
+  val weavedFile = weaveAspectsMsil(file)
+
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
   // same-package types and functions.
-  addPackageTokens(cctx, file, pkgName)
+  addPackageTokens(cctx, weavedFile, pkgName)
 
   // Walk the AST and produce the MSIL package IR.
-  val pkg = codegenMPackage(file, cctx)
+  val pkg = codegenMPackage(weavedFile, cctx)
 
   // Determine the entry-point MethodDef token (0 = no entry point / library).
   val entryToken = resolveEntryToken(cctx)
