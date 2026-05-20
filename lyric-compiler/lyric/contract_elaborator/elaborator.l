@@ -45,11 +45,17 @@
 //     `SInvariant` nodes from the original AST (before elaboration), so
 //     the F# emitter and `lyric prove` continue to see them.
 //
-//   * Protected-type entries (`PMEntry`) — deferred to a follow-up
-//     stage.  Barrier (`when:`) checks and protected-type `invariant:`
-//     clauses are emitted by the bootstrap directly in IL; the
-//     self-host elaborator will lower them to `assert` statements once
-//     it picks up the protected-type lowering as well.
+//   * Protected-type entries (`PMEntry`) — fully elaborated.  For each
+//     `IProtected` item, the `PMInvariant` clauses are collected as
+//     `CCEnsures` and appended to each `PMEntry`'s own contract list.
+//     `elaborateFunctionBody` is then applied to the combined list,
+//     inserting `assert(requires)` at the top and the combined
+//     ensures / invariant asserts at every return / fall-off site.
+//     `PMFunc` members delegate to `elaborateFunction`.  `PMField` and
+//     `PMInvariant` are passed through unchanged.  Barrier (`when:`)
+//     clauses survive in `ed.contracts` for the verifier but are not
+//     lowered to run-time asserts here (they become Monitor.Wait
+//     conditions in the backend).
 //
 // Public surface:
 //
@@ -862,6 +868,13 @@ func functionBodyHasInvariant(fn: in FunctionDecl): Bool {
   }
 }
 
+func entryBodyHasInvariant(body: in FunctionBody): Bool {
+  match body {
+    case FBBlock(blk) -> blockHasInvariant(blk)
+    case FBExpr(_)    -> false
+  }
+}
+
 func blockHasInvariant(blk: in Block): Bool {
   var i = 0
   while i < blk.statements.count {
@@ -1019,6 +1032,46 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
     span        = fn.span)
 }
 
+func elaborateProtectedMember(
+  m:                in ProtectedMember,
+  invariantEnsures: in List[ContractClause]
+): ProtectedMember {
+  match m {
+    case PMEntry(ed) -> {
+      val combined: List[ContractClause] = newList()
+      var ci = 0
+      while ci < ed.contracts.count { combined.add(ed.contracts[ci]); ci = ci + 1 }
+      ci = 0
+      while ci < invariantEnsures.count { combined.add(invariantEnsures[ci]); ci = ci + 1 }
+      val hasReq = collectRequires(combined).count > 0
+      val hasEns = collectEnsures(combined).count > 0
+      val hasInv = entryBodyHasInvariant(ed.body)
+      if not hasReq and not hasEns and not hasInv {
+        m
+      } else {
+        var counter = newRenameCounter()
+        val newBody: FunctionBody =
+          match ed.body {
+            case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(combined, blk, counter))
+            case FBExpr(e)    -> FBBlock(block = elaborateFunctionBody(combined, wrapExprBody(e), counter))
+          }
+        PMEntry(entryDecl = EntryDecl(
+          docComments = ed.docComments,
+          annotations = ed.annotations,
+          visibility  = ed.visibility,
+          name        = ed.name,
+          params      = ed.params,
+          ret         = ed.ret,
+          contracts   = ed.contracts,
+          body        = newBody,
+          span        = ed.span))
+      }
+    }
+    case PMFunc(fn) -> PMFunc(fn = elaborateFunction(fn))
+    case other      -> other
+  }
+}
+
 func elaborateItem(it: in Item): Item {
   match it.kind {
     case IFunc(fn) ->
@@ -1028,6 +1081,35 @@ func elaborateItem(it: in Item): Item {
         visibility  = it.visibility,
         kind        = IFunc(decl = elaborateFunction(fn)),
         span        = it.span)
+    case IProtected(decl) -> {
+      val invariantEnsures: List[ContractClause] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        match decl.members[mi] {
+          case PMInvariant(inv) ->
+            invariantEnsures.add(CCEnsures(expr = inv.expr, span = inv.span))
+          case _ -> {}
+        }
+        mi = mi + 1
+      }
+      val newMembers: List[ProtectedMember] = newList()
+      mi = 0
+      while mi < decl.members.count {
+        newMembers.add(elaborateProtectedMember(decl.members[mi], invariantEnsures))
+        mi = mi + 1
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility  = it.visibility,
+        kind        = IProtected(decl = ProtectedTypeDecl(
+          name        = decl.name,
+          generics    = decl.generics,
+          whereClause = decl.whereClause,
+          members     = newMembers,
+          span        = decl.span)),
+        span        = it.span)
+    }
     case _ -> it
   }
 }

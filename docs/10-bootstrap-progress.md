@@ -13471,3 +13471,60 @@ Both diagnostics fire as errors at build time, after `scanDirectives`
 returns a `Pkg.Name` reference and before any subprocess is launched.
 The corresponding entries land in the §10 diagnostic table in
 `docs/40-source-generators.md`.
+
+### D-progress-279 — Contract elaborator: protected-type entry elaboration (Band 4 finish)
+
+Completes the second half of docs/41 §9 Band 4: protected-type
+`PMEntry` contract elaboration in the self-hosted elaborator.
+
+* **`elaborator.l`** — `elaborateItem` gains an `IProtected` branch.
+  `elaborateProtectedMember` handles per-member dispatch: for each
+  `PMEntry(ed)`, it collects the enclosing type's `PMInvariant` clauses
+  as `CCEnsures` and appends them to `ed.contracts` to form a combined
+  list. `elaborateFunctionBody` is then applied to the combined list,
+  inserting `assert(requires)` at the body's start and
+  `assert(invariant-as-ensures)` at every return / fall-off site.
+  `PMFunc` members delegate to `elaborateFunction`. `PMField` and
+  `PMInvariant` pass through unchanged.
+* **`contract_elaborator_self_test.l`** gains
+  `testProtectedEntryRequiresLowered` (verifies requires asserts land
+  at the start of an elaborated PMEntry body) and
+  `testProtectedInvariantAppendedToEntries` (verifies PMInvariant
+  clauses are injected as ensures asserts before every return site).
+
+Closes issue #848.
+
+### D-progress-280 — JVM backend: IEnum and IDistinctType codegen (Band 3 partial)
+
+Wires up two previously-stubbed AST item kinds in
+`lyric-compiler/jvm/codegen.l`:
+
+* **`IEnum(decl)`** now produces `LPEnum(LEnumType(className =
+  pkgName + "/" + decl.name, variants = [case names]))`.  The enum
+  class is lowered by the existing `lowerEnum` in `lowering.l`
+  (B112), producing a valid `java.lang.Enum<E>` subclass with
+  `public static final` instance fields.
+* **`IDistinctType(decl)`** now produces `LPDistinctType(LDistinctType(
+  wrapperClass = pkgName + "/" + decl.name, underlyingType =
+  typeExprToJvm(decl.underlying)))`.  The wrapper class is lowered by
+  the existing `lowerDistinctType` in `lowering.l` (B97–B99),
+  producing a class with a private `$value` field and a public
+  accessor.
+
+New end-to-end tests added:
+
+* `self_test_b131.l` / `JvmLoweringB131Test.fs` — compiles a Lyric
+  source file containing an `enum Direction { ... }` declaration via
+  `compileToJar`, runs the JAR, and asserts output = `enum_ok`.
+* `self_test_b132.l` / `JvmLoweringB132Test.fs` — compiles a Lyric
+  source file containing a `type UserId = Int` distinct-type
+  declaration via `compileToJar`, runs the JAR, and asserts output =
+  `distinct_ok`.
+
+Remaining Band 3 items (`IInterface`, `IImpl`, `IAspect`, `ELambda`
+general case, and proper `EPropagate` desugaring) are deferred: they
+require new `LPackageItem` variants in `lowering.l` and/or
+`invokedynamic` infrastructure that does not yet exist.
+
+Closes issue #856 (partial — structural items wired up; complex
+constructs tracked as follow-up).

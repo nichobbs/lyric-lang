@@ -734,6 +734,99 @@ func testIfNestedWhileInvariantLowered(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Protected-type entry elaboration (docs/41 §9 Band 4 finish).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func firstProtected(file: in SourceFile, name: in String): ProtectedTypeDecl {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IProtected(decl) -> {
+        if decl.name == name { return decl }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  panic("firstProtected: no protected type named '" + name + "'")
+}
+
+func firstEntry(decl: in ProtectedTypeDecl, name: in String): EntryDecl {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMEntry(ed) -> {
+        if ed.name == name { return ed }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  panic("firstEntry: no entry named '" + name + "'")
+}
+
+func entryBodyBlock(ed: in EntryDecl): Block {
+  match ed.body {
+    case FBBlock(blk) -> blk
+    case FBExpr(_)    -> panic("entryBodyBlock: entry '" + ed.name + "' has FBExpr body")
+  }
+}
+
+func testProtectedEntryRequiresLowered(): Unit {
+  val src =
+    "package P\n" +
+    "protected type Q {\n" +
+    "  var count: Int\n" +
+    "  entry add(x: in Int): Int\n" +
+    "    requires: x > 0\n" +
+    "  {\n" +
+    "    x + 1\n" +
+    "  }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val decl = firstProtected(file, "Q")
+  val ed   = firstEntry(decl, "add")
+  val blk  = entryBodyBlock(ed)
+  // After elaboration: [0] = assert(x > 0); [1] = trailing SExpr (no ensures, unchanged)
+  assertTrue(blk.statements.count >= 2, "protected-requires: elaborated body has >= 2 stmts")
+  assertTrue(isAssertCall(blk.statements[0]), "protected-requires: stmt[0] is assert(x > 0)")
+  // Original contracts list preserved (not the combined list)
+  assertEqualInt(ed.contracts.count, 1, "protected-requires: original contracts preserved")
+}
+
+func testProtectedInvariantAppendedToEntries(): Unit {
+  val src =
+    "package P\n" +
+    "protected type Q {\n" +
+    "  var count: Int\n" +
+    "  invariant: count >= 0\n" +
+    "  entry add(x: in Int): Int\n" +
+    "    requires: x > 0\n" +
+    "  {\n" +
+    "    x + 1\n" +
+    "  }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val decl = firstProtected(file, "Q")
+  val ed   = firstEntry(decl, "add")
+  val blk  = entryBodyBlock(ed)
+  // After elaboration with requires + invariant-as-ensures on body { x + 1 }:
+  // [0] = assert(x > 0)          [requires]
+  // [1] = let __lyric_result_0 = x + 1
+  // [2] = assert(count >= 0)     [invariant as ensures]
+  // [3] = __lyric_result_0
+  assertEqualInt(blk.statements.count, 4, "protected-invariant: 4 stmts after elaboration")
+  assertTrue(isAssertCall(blk.statements[0]), "protected-invariant: stmt[0] is requires assert")
+  assertTrue(isLetBinding(blk.statements[1]), "protected-invariant: stmt[1] is let binding")
+  assertTrue(isAssertCall(blk.statements[2]), "protected-invariant: stmt[2] is invariant assert")
+  assertTrue(isTrailingPathSExpr(blk.statements[3], "__lyric_result_0"),
+             "protected-invariant: stmt[3] is trailing path")
+  // Original entry contracts preserved (1 requires clause only, not the added invariant)
+  assertEqualInt(ed.contracts.count, 1, "protected-invariant: original entry contracts preserved")
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Test runner.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -759,5 +852,7 @@ func main(): Unit {
   testWhileInvariantLowered()
   testForInvariantLowered()
   testIfNestedWhileInvariantLowered()
+  testProtectedEntryRequiresLowered()
+  testProtectedInvariantAppendedToEntries()
   println("contract-elaborator self-test: ok")
 }

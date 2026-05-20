@@ -3023,8 +3023,22 @@ pub func codegenPackage(file: in SourceFile): LPackage {
       case IConst(_)         -> {}
       case IVal(_)           -> {}
       case ITypeAlias(_)     -> {}
-      case IDistinctType(_)  -> {}
-      case IEnum(_)          -> {}
+      case IDistinctType(decl) -> {
+        val inner = typeExprToJvm(decl.underlying, pkgName)
+        items.add(LPDistinctType(dt = LDistinctType(
+          wrapperClass   = pkgName + "/" + decl.name,
+          underlyingType = inner)))
+      }
+      case IEnum(decl) -> {
+        val className = pkgName + "/" + decl.name
+        val variants: List[String] = newList()
+        var ci = 0
+        while ci < decl.cases.count {
+          variants.add(decl.cases[ci].name)
+          ci = ci + 1
+        }
+        items.add(LPEnum(en = LEnumType(className = className, variants = variants)))
+      }
       case IOpaque(_)        -> {}
       case IProtected(_)     -> {}
       case IInterface(_)     -> {}
