@@ -2863,7 +2863,14 @@ let private emitFunctionBody
             let nullableCtor = targetTy.GetConstructor([| stackTy |])
             match Option.ofObj nullableCtor with
             | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
-            | None -> ()
+            | None ->
+                // The Nullable<T>(T) constructor is guaranteed to exist
+                // by the BCL contract, so a missing lookup means our
+                // reflection environment is misconfigured (or `targetTy`
+                // is not actually Nullable<T>).  Surfacing a panic here
+                // avoids silently emitting malformed IL that would
+                // crash much later in JIT verification.
+                failwithf "Nullable<T>(T) constructor not found for %s" targetTy.FullName
     let routeReturn (pushedTy: System.Type) =
         match resultLocal with
         | Some loc when pushedTy <> typeof<System.Void> ->

@@ -28,6 +28,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 
+import Std.Uuid as Uuid
 import Lyric.Lexer
 import Lyric.CliShell as CliShell
 
@@ -126,10 +127,19 @@ func failResult(msg: in String): EmitResult {
 /// lists all packages and their temp source paths.
 @stable(since="0.1")
 pub func emitProject(req: in EmitProjectRequest): EmitResult {
-  val tmpDir = Path.join(tempBase(), "lyric-emit")
-  match File.createDir(tmpDir) {
+  // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
+  // Two concurrent builds for the same assemblyName would otherwise
+  // race on the spec / source filenames; the UUID guarantees a unique
+  // namespace and a clean tree to delete on completion.
+  val tmpRoot = Path.join(tempBase(), "lyric-emit")
+  match File.createDir(tmpRoot) {
     case Ok(_)  -> ()
     case Err(_) -> ()
+  }
+  val tmpDir = Path.join(tmpRoot, Uuid.uuidToString(Uuid.newUuid()))
+  match File.createDir(tmpDir) {
+    case Ok(_)  -> ()
+    case Err(e) -> return failResult("cannot create temp build directory: " + IOError.message(e))
   }
 
   val outDir = Path.dirname(req.outputPath)
@@ -196,17 +206,28 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   subcmd.add("--target")
   subcmd.add(targetStr)
 
-  match Process.run(lyrExe(), lyrArgs(subcmd)) {
+  val result = match Process.run(lyrExe(), lyrArgs(subcmd)) {
     case Ok(code) -> {
       if code != 0 {
-        return failResult("project build failed (see stderr)")
+        failResult("project build failed (see stderr)")
+      } else {
+        val okDiags: List[Diagnostic] = newList()
+        EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
       }
-      val okDiags: List[Diagnostic] = newList()
-      EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
     }
     case Err(e) ->
-      return failResult("cannot launch compiler: " + IOError.message(e))
+      failResult("cannot launch compiler: " + IOError.message(e))
   }
+
+  // Best-effort cleanup of the per-invocation temp directory.
+  // We ignore errors here so a transient file-handle leak doesn't fail
+  // a successful build; the OS will sweep the parent eventually.
+  match File.deleteDirRecursive(tmpDir) {
+    case Ok(_)  -> ()
+    case Err(_) -> ()
+  }
+
+  result
 }
 
 /// Compile Lyric source to a .NET DLL or JVM JAR.

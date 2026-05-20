@@ -162,11 +162,36 @@ let private artifactOfContract
         // package qualifications).  Type-check failures
         // surface as a single load error.
         let checked' = Lyric.TypeChecker.Checker.check parsed.File
+        // T0010 ("unknown type name 'X'") fires for stdlib anchors
+        // (Option, Result, …) that aren't in scope during the
+        // standalone contract check.  A blanket suppression hides
+        // real type-resolution gaps in the contract Repr, so we
+        // whitelist only the known stdlib names and let any other
+        // unknown type bubble up as a SynthesisDiagnostics error.
+        let knownStdlibTypeNames =
+            set [
+                "Option"; "Result"; "List"; "Map"; "Set"; "Iter"
+                "Slice"; "String"; "Int"; "Bool"; "Double"; "Long"
+                "Byte"; "Char"; "Unit"; "Never"; "Float"
+                "IOError"; "ParseError"; "ParseResult"
+                "Instant"; "Duration"; "Clock"
+                "Uuid"; "JsonValue"; "Diagnostic"
+            ]
+        let isWhitelistedT0010 (msg: string) =
+            // Message is `unknown type name 'X'`; extract X.
+            let openQ = msg.IndexOf '\''
+            if openQ < 0 then false
+            else
+                let closeQ = msg.IndexOf('\'', openQ + 1)
+                if closeQ < 0 then false
+                else
+                    let name = msg.Substring(openQ + 1, closeQ - openQ - 1)
+                    Set.contains name knownStdlibTypeNames
         let checkErrors =
             checked'.Diagnostics
             |> List.filter (fun d ->
                 d.Severity = DiagError
-                && d.Code <> "T0010") // stdlib types (Option, Result, etc.) are not in scope during standalone contract check
+                && not (d.Code = "T0010" && isWhitelistedT0010 d.Message))
         if not (List.isEmpty checkErrors) then
             Error (SynthesisDiagnostics (ref'.DllPath, checkErrors))
         else

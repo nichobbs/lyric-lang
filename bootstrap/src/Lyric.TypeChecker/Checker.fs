@@ -34,6 +34,27 @@ let private err
         (span:  Span) =
     diags.Add(Diagnostic.error code msg span)
 
+/// Build a body-less `FunctionDecl` from a `FunctionSig` for symbol-table
+/// registration.  Used both for `IExtern` members (where the visibility
+/// span is the signature's own) and for `extern package` block members
+/// (where no host annotations exist and the visibility span falls back
+/// to `zeroSpan` because the sig itself has no decl span).
+let private sigToFunctionDecl
+        (sg: FunctionSig)
+        (visibilitySpan: Span) : FunctionDecl =
+    { DocComments = []
+      Annotations = []
+      Visibility  = Some (Pub visibilitySpan)
+      IsAsync     = sg.IsAsync
+      Name        = sg.Name
+      Generics    = sg.Generics
+      Params      = sg.Params
+      Return      = sg.Return
+      Where       = sg.Where
+      Contracts   = sg.Contracts
+      Body        = None
+      Span        = sg.Span }
+
 /// Allocate fresh type identifiers monotonically. The numbering is
 /// scoped to the package being checked; cross-package identity is a
 /// problem for the future contract-metadata layer.
@@ -142,20 +163,11 @@ let private registerItem
         for m in e.Members do
             match m with
             | EMSig sg ->
-                let fakeFn : FunctionDecl =
-                    { DocComments = []
-                      Annotations = []
-                      Visibility  = Some (Pub sg.Span)
-                      IsAsync     = sg.IsAsync
-                      Name        = sg.Name
-                      Generics    = sg.Generics
-                      Params      = sg.Params
-                      Return      = sg.Return
-                      Where       = sg.Where
-                      Contracts   = sg.Contracts
-                      Body        = None
-                      Span        = sg.Span }
-                mkSym sg.Name (DKFunc fakeFn) |> ignore
+                // `mkSym` mutates `byName`; the returned Symbol isn't
+                // used here because IExtern members aren't tracked in
+                // the outer item list.  The `|> ignore` discards the
+                // value but keeps the side effect.
+                mkSym sg.Name (DKFunc (sigToFunctionDecl sg sg.Span)) |> ignore
             | _ -> ()
         None
     | IScopeKind s     -> Some (mkSym s.Name (DKScopeKind s))
@@ -484,18 +496,7 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     // so callers can type-check calls to extern-package functions.
     let zeroSpan = Lyric.Lexer.Span.make Lyric.Lexer.Position.initial Lyric.Lexer.Position.initial
     let externSigToDecl (sg: FunctionSig) : FunctionDecl =
-        { DocComments = []
-          Annotations = []
-          Visibility  = Some (Pub zeroSpan)
-          IsAsync     = sg.IsAsync
-          Name        = sg.Name
-          Generics    = sg.Generics
-          Params      = sg.Params
-          Return      = sg.Return
-          Where       = sg.Where
-          Contracts   = sg.Contracts
-          Body        = None
-          Span        = sg.Span }
+        sigToFunctionDecl sg zeroSpan
     let signatures =
         Seq.append (List.toSeq importedItems) (List.toSeq file.Items)
         |> Seq.collect (fun it ->

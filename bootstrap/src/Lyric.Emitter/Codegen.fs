@@ -5486,7 +5486,12 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
             let nullableCtor = loc.LocalType.GetConstructor([| exprTy |])
             match Option.ofObj nullableCtor with
             | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
-            | None -> ()
+            | None ->
+                // Matches the get_HasValue / get_Value defensive style
+                // above (#723): a null ctor lookup on a closed Nullable<T>
+                // signals a misconfigured reflection environment, never
+                // a legitimate program shape — refuse to emit broken IL.
+                failwithf "Nullable<T>(T) constructor not found for %s" loc.LocalType.FullName
         | _ -> ()
         match ctx.ReturnLabel, ctx.ResultLocal with
         | Some lbl, Some loc ->
