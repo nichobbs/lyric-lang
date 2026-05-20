@@ -2294,6 +2294,7 @@ let private internalProjectBuild (rest: string list) : int =
                                   Lyric.Emitter.RestoredPackages.RestoredPackageRef.DllPath = depDll }
                         else
                             printErr (sprintf "internal-project-build: dep DLL not found: %s" depDll)
+                            hadFatal <- true
                 elif line.StartsWith("FEATURE\t", StringComparison.Ordinal) then
                     // FEATURE line: FEATURE\t<featureName>
                     let parts = line.Split('\t')

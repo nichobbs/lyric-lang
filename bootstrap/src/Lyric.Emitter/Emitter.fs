@@ -5514,7 +5514,7 @@ let private compilerStdlibVersion : string = "0.1.0"
 
 /// Parse a semver-like string `"major.minor.patch[-suffix]"` into
 /// `(major, minor)` ints.  Returns `None` on any parse failure.
-let private parseMajorMinor (v: string) : (int * int) option =
+let parseMajorMinor (v: string) : (int * int) option =
     let segs = v.Split('.')
     if segs.Length >= 2 then
         match System.Int32.TryParse segs.[0], System.Int32.TryParse (segs.[1].Split('-').[0]) with

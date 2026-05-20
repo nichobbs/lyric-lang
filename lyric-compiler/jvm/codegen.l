@@ -3057,8 +3057,12 @@ pub func codegenPackage(file: in SourceFile): LPackage {
     // at class load.  Refuse to compile rather than silently produce a
     // broken class file; the source program can wrap the value in an
     // `Int` return (the idiomatic exit-code shape) or `Unit`.
-    // bridge.l::mainReturns2SlotType pre-validates this case and returns false
-    // before reaching codegenPackage, so the panics below are safety nets only.
+    // bridge.l::mainReturns2SlotType pre-validates literal Long/Double
+    // return-type identifiers via J001 before reaching codegenPackage,
+    // but only catches the bare name; a type alias such as
+    // `type MyLong = Long` resolves to JLong here and trips these
+    // panics rather than J001.  See follow-up to widen
+    // mainReturns2SlotType to the resolved slot type.
     match mainRet {
       case JLong   -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
       case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")

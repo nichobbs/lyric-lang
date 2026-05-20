@@ -436,20 +436,7 @@ func testProveProtectedTypeInvariantViolated(): Unit {
   assertTrue(summaryHasFailure(summary), "prot-inv-violated: has failure")
 }
 
-// Range-bound smoke coverage for the two new `RangeBoundKind` arms.
-// `..= hi` form (no lower bound, closed upper) — `RBLowerOpen(hi)` →
-// `RBKUpperBound`.  We can't observe SMT goal text from the proof
-// entry point, so pin only that the verifier doesn't crash on the
-// half-open AST shape, the resulting summary level is VLProofRequired
-// (i.e. the file reached the verifier — `sortOfTypeExpr` accepted the
-// type), and no error diagnostics fire during VC generation.
-//
-// `lo..` (`RBUpperOpen(lo)` → `RBKLowerBound`) is not reachable from a
-// `type X = Int range lo ..` declaration today because the parser's
-// `isEnd` check in `parseRangeBound` requires a closing-delim token
-// after `..` which a type-alias context doesn't provide.  The
-// `RBKLowerBound` arm in `theory.l` is defensive against future grammar
-// extension.
+// `..= hi` smoke: verifier accepts the half-open AST without crashing (RBKLowerBound is parser-unreachable today; theory.l keeps it defensive).
 func testProveRangeBoundUpperOnly(): Unit {
   val src = "@proof_required\npackage P\ntype Pct = Int range ..= 100\nfunc clip(x: in Pct): Int { return x }\n"
   val summary = prove(src)
@@ -460,10 +447,7 @@ func testProveRangeBoundUpperOnly(): Unit {
   assertTrue(not summaryHasErrorDiag(summary), "range-upper-only: no error diags")
 }
 
-// Sort namespacing smoke test (#735, #746): two locally-declared
-// records with the same field shape exercise `sortOfTypeExpr` via
-// `qualifiedDatatypeName`.  Confirms no crash, VLProofRequired, no
-// error diags.
+// #735/#746 sort-name smoke: two same-shape records compile through `qualifiedDatatypeName` without crash.
 func testProveSortNamespacing(): Unit {
   val src = "@proof_required\npackage P\nrecord A { x: Int }\nrecord B { x: Int }\nfunc id(a: in A): A { return a }\n"
   val summary = prove(src)

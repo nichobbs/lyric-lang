@@ -1,18 +1,13 @@
-// stdlib/tests/hash_tests.l — Tests for Std.Hash (SHA-512).
-//
-// Anchors the digest output against the canonical NIST test vector
-// (`abc` → DDAF...A38B) so any future regression in the kernel or
-// hex formatting surfaces immediately.
+// Std.Hash tests anchored to FIPS 180-4 vectors (regression net for kernel/hex changes).
 
 package Std.Hash.Tests
 
 import Std.Core
+import Std.File
 import Std.Hash
 import Std.Testing
 
-// SHA-512("abc") — canonical NIST FIPS 180-4 test vector, uppercase.
-// Wrapped in a function because top-level `val` constants are not
-// supported by the bootstrap parser today.
+// FIPS 180-4 "abc" vector (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
 func sha512Abc(): String {
   "DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A" +
   "2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F"
@@ -40,11 +35,22 @@ func testSha512OfBytesEmpty(): Unit {
 }
 
 func testSha512OfFileNotFound(): Unit {
-  // Path that cannot exist on any sane host — confirms the Err
-  // surface fires rather than panicking.
+  // Unreachable path: asserts Err surface fires rather than panic.
   match sha512OfFile("/this/path/should/never/exist.lyric-hash-test") {
     case Ok(_)  -> assertTrue(false, "expected Err for non-existent file")
     case Err(_) -> ()
+  }
+}
+
+func testSha512OfFileKnownVector(): Unit {
+  val path = "/tmp/lyric-hash-test-abc.txt"
+  match writeText(path, "abc") {
+    case Ok(_)  -> ()
+    case Err(_) -> { assertTrue(false, "could not write temp file"); return }
+  }
+  match sha512OfFile(path) {
+    case Ok(hex) -> assertEqual(hex, sha512Abc(), "sha512OfFile('abc') matches NIST vector")
+    case Err(_)  -> assertTrue(false, "expected Ok for readable file")
   }
 }
 
@@ -52,6 +58,7 @@ func main(): Int {
   testSha512OfBytesKnownVector()
   testSha512OfBytesEmpty()
   testSha512OfFileNotFound()
+  testSha512OfFileKnownVector()
   println("hash tests: ok")
   return 0
 }
