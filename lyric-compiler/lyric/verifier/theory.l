@@ -63,17 +63,23 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Build a qualified SMT datatype name from a module path.  Joins segments with
-// `_` so distinct packages with the same short type name (e.g. `Std.Time.Instant`
+// `.` so distinct packages with the same short type name (e.g. `Std.Time.Instant`
 // vs `MyPkg.Instant`) produce distinct sorts.  Single-segment paths return the
 // segment unchanged so primitive sorts and built-ins like `Option` keep their
 // canonical names.
+//
+// `.` is chosen over `_` because Lyric identifiers allow `_` (UAX #31
+// XID_Continue), so a `_` separator would collide on inputs like
+// `Pkg_A.Foo` vs `Pkg.A_Foo`.  `.` cannot appear inside a single
+// identifier segment, so the joined string is unambiguous, and SMT-LIB
+// v2.6 §3.1 admits `.` in simple symbols.
 func qualifiedDatatypeName(segs: in List[String]): String {
   if segs.count == 0 { return "?" }
   if segs.count == 1 { return segs[0] }
   var name = segs[0]
   var i = 1
   while i < segs.count {
-    name = name + "_" + segs[i]
+    name = name + "." + segs[i]
     i = i + 1
   }
   name
