@@ -146,3 +146,66 @@ test "roundtrip: unzigzag64(zigzag64(0)) == 0" {
 test "roundtrip: unzigzag64(zigzag64(-1)) == -1" {
   assertTrue(unzigzag64(zigzag64(-1i64)) == -1i64, "roundtrip negative one long")
 }
+
+// ─── RFC zigzag vectors (#361) ───────────────────────────────────────────────
+//
+// Protobuf zigzag encoding is specified at
+//   https://protobuf.dev/programming-guides/encoding/#signed-ints
+// The encoding maps each signed integer to an unsigned representation
+// so that small-magnitude negatives encode in few varint bytes.  The
+// vectors below cover the boundary cases — the encoding/decoding
+// algorithm is correct iff every roundtrip below holds.
+
+// 32-bit boundary: int.MinValue = -2147483648; int.MaxValue = 2147483647.
+// zigzag32(int.MinValue) = 2 * (-int.MinValue) - 1 = 4294967295 = uint.MaxValue.
+test "zigzag32(int.MaxValue) returns 0xFFFFFFFE" {
+  assertTrue(zigzag32(2147483647) == 4294967294i64,
+             "zigzag32(INT_MAX) = 2 * INT_MAX = 0xFFFFFFFE")
+}
+
+test "zigzag32(int.MinValue) returns 0xFFFFFFFF" {
+  assertTrue(zigzag32(-2147483648) == 4294967295i64,
+             "zigzag32(INT_MIN) = -2 * INT_MIN - 1 = 0xFFFFFFFF")
+}
+
+test "unzigzag32(0xFFFFFFFE) returns int.MaxValue" {
+  assertEqualInt(unzigzag32(4294967294i64), 2147483647,
+                 "unzigzag32(2 * INT_MAX) = INT_MAX")
+}
+
+test "unzigzag32(0xFFFFFFFF) returns int.MinValue" {
+  assertEqualInt(unzigzag32(4294967295i64), -2147483648,
+                 "unzigzag32(-2 * INT_MIN - 1) = INT_MIN")
+}
+
+test "zigzag32 roundtrip: INT_MAX" {
+  assertEqualInt(unzigzag32(zigzag32(2147483647)), 2147483647,
+                 "roundtrip INT_MAX")
+}
+
+test "zigzag32 roundtrip: INT_MIN" {
+  assertEqualInt(unzigzag32(zigzag32(-2147483648)), -2147483648,
+                 "roundtrip INT_MIN")
+}
+
+// 64-bit boundary: long.MaxValue = 9223372036854775807,
+// long.MinValue = -9223372036854775808.  zigzag64 maps these to
+// values that overflow to negative when interpreted as Long, which
+// is precisely the wire encoding of ulong.MaxValue and ulong.MaxValue - 1.
+test "zigzag64 roundtrip: LONG_MAX" {
+  val v = 9223372036854775807i64
+  assertTrue(unzigzag64(zigzag64(v)) == v, "roundtrip LONG_MAX")
+}
+
+test "zigzag64 roundtrip: LONG_MIN" {
+  val v = -9223372036854775807i64 - 1i64   // LONG_MIN — split to dodge parser limits
+  assertTrue(unzigzag64(zigzag64(v)) == v, "roundtrip LONG_MIN")
+}
+
+test "zigzag64 roundtrip: -1" {
+  assertTrue(unzigzag64(zigzag64(-1i64)) == -1i64, "roundtrip -1")
+}
+
+test "zigzag64 roundtrip: 1" {
+  assertTrue(unzigzag64(zigzag64(1i64)) == 1i64, "roundtrip 1")
+}

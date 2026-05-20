@@ -155,6 +155,7 @@ does not check the call-graph rule.
 | `V0010` | Package declares conflicting verification annotations (`@proof_required` and `@runtime_checked`, etc.) | error | pick one |
 | `V0011` | Unknown `@proof_required` modifier (only `unsafe_blocks_allowed` and `checked_arithmetic` are recognised) | error | drop or correct the modifier |
 | `V0012` | `async func` or `yield`-bearing function appears in proof-required code | error | refactor into a sync core, or mark `@runtime_checked` |
+| `V0031` | Proof-required function carries a **same-package** aspect annotation (`@MyAspect`); proofs verify the unelaborated body — contracts on the aspect's `around { }` block are not discharged.  **Limitation:** the detector scans `IAspect` items in the current file only; aspects imported from another package (e.g. `@Cache.FunctionCache`) do not fire the warning today and leave the same proof gap silent.  Resolving that needs the verifier to read each imported package's `Lyric.Contract` resource for the aspect-name index — tracked under #336 follow-ups. | warning | mark function `@runtime_checked` or hand-inline the aspect for proof |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
 how every academic verifier's user community ends up tolerating

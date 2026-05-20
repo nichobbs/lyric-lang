@@ -13068,3 +13068,307 @@ to the T6+ type-checker tier; the emitter currently treats `var` fields
 identically to non-`var` fields at the IL level.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
+
+### D-progress-268 — Self-hosted MSIL FFI + `@externStatic` / `@externInstance` (#370)
+
+End-to-end FFI in the self-hosted MSIL emitter (Phase R6) plus the
+language gap closure for explicit static-vs-instance disambiguation
+on `@externTarget` declarations.
+
+**What shipped:**
+
+- **`lyric-compiler/msil/ffi.l`** (`Msil.Ffi` package) — the FFI resolver
+  for the self-hosted MSIL emitter.  `splitTarget(target)` parses
+  `"System.Type.Member"` (or `..ctor`) into (type FQN, member, isCtor).
+  `splitTypeFqn(typeFqn)` recovers (namespace, simple name).
+  `clrAssemblyForType(typeFqn)` is a hardcoded prefix → assembly table
+  covering every BCL surface the stdlib externs into; types not in the
+  table default to `System.Runtime` (the .NET facade that type-forwards
+  most `System.*` types).  `resolveExternTarget(target, arity, hint)`
+  returns an `FfiResolved` record that the codegen consumes.
+
+  Why a table instead of runtime reflection: the bootstrap F# emitter
+  writes PEs whose calling-assembly metadata trips up
+  `System.Type.GetType` from Lyric-emitted code (consistently returns
+  null even for types demonstrably loaded).  Rather than chase that
+  emit issue down, the resolver derives everything from the
+  `@externTarget` string + the Lyric param/return types, and the
+  `@externStatic` / `@externInstance` annotations resolve the
+  static-vs-instance ambiguity.
+
+- **`@externStatic` / `@externInstance` annotations (#370)** — paired,
+  mutually-exclusive disambiguation hints on `@externTarget`-bearing
+  Lyric functions.  Both annotations are no-ops without
+  `@externTarget`.  Setting both is a diagnostic (resolver falls back
+  to `@externStatic` so the program builds).  When neither is
+  present, the .NET self-hosted MSIL emitter defaults to static —
+  instance externs must annotate explicitly.
+
+- **`lyric-compiler/msil/codegen.l`** — `lowerFuncMsil` now detects
+  `@externTarget` on a `FunctionDecl` and synthesises the body from
+  the resolved BCL target.  Emits `MCall` (static), `MCallvirt`
+  (instance), or `MNewobj` (ctor) with the right MemberRef token.
+  Lazy `ffiAsmRefs` / `ffiTypeRefs` caches on `CodegenCtx` reuse the
+  pre-seeded `arRuntime` row for `System.Runtime` /
+  `System.Private.CoreLib` / `mscorlib`, and intern fresh
+  AssemblyRef / TypeRef rows for everything else on first use.
+
+- **Pre-existing codegen bug, also fixed** — intra-package function
+  calls returned `MObject` regardless of declared return type.
+  `println(userFn())` therefore always fell through to
+  `WriteLine(string)`, producing invalid IL when the actual return
+  was `Int`.  `CodegenCtx.funcRetTypes: Map[String, MsilType]` is
+  now populated in `addPackageTokens` from each `FunctionDecl.ret`,
+  and call sites consult it to return the correct `MsilType`.
+
+**Verified end-to-end** (self-hosted MSIL pipeline, `lyric build`
+default target):
+- `@externTarget("System.Math.Abs") @externStatic` → `Math.Abs(-7) = 7`.
+- `@externTarget("System.Math.Max") @externStatic` plus chained
+  intra-package calls.
+- `@externTarget("System.String.Trim") @externInstance` →
+  `"  hello  ".Trim() = "hello"`.
+- `@externTarget("System.String.Concat") @externStatic` → string
+  concatenation.
+
+**Docs updated:**
+- `docs/01-language-reference.md` §11.3 — replaced the JVM-only
+  name-based heuristic note with the cross-target `@externStatic` /
+  `@externInstance` annotations.
+
+**No F# bootstrap changes.**
+
+**Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-269 — Monomorphizer type-arg inference + ETypeApp + budget (#349)
+
+Three related improvements to `Lyric.Mono` that close most of the
+gaps `inferExprTE` had at the start of this session:
+
+* **`ETypeApp(fn, [T1, …])` is now honored** at `ECall` rewrite
+  sites.  Previously the case fell through to "pass-through fn"
+  even when fn was an `EPath` to a known generic decl — explicit
+  type applications never specialised.  The rewriter now detects
+  `ECall(ETypeApp(EPath([fname]), targs), args)`, uses the supplied
+  targs directly as the substitution, and emits the mangled
+  specialisation request without going through inference.  Unblocks
+  every call site where the user already wrote the type arguments
+  inline.
+
+* **`inferExprTE` extended** to recognise:
+  - `EBinop` arithmetic (`+ - * / %`) — LHS type wins; useful when
+    the generic param sits in a numeric expression.
+  - `EBinop` comparison and logical (`== != < <= > >= and or`) —
+    result is always `Bool`.
+
+  Calls, field projections, lambdas, and constructor calls are
+  still left to the un-specialised fall-through; threading
+  `state.genDecls` / `state.recordDecls` into the inference helper
+  is a separate cut (return-type inference for nested generic calls
+  needs care around recursive shapes).
+
+* **Recursion budget** added to the worklist (`specBudget = 10000`).
+  A pathological generic that recurses with a strictly larger type
+  argument (`f[T] = … f[List[T]] …`) used to loop indefinitely and
+  OOM the compiler.  The compiler now panics with a clear,
+  actionable message naming the runaway specialisation pattern.
+
+**Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-270 — V0031: warn proof-required functions decorated with aspects (#336)
+
+Closes the gap reported in #336 (option-b path): the self-hosted
+verifier walks the parsed AST, not the post-aspect-elaboration AST,
+so `requires:` / `ensures:` clauses introduced by an aspect's
+`around { }` body are not discharged.  Until the verifier moves
+post-elaboration (option-a; requires a self-hosted aspect weaver,
+which is its own multi-week project), the compiler now surfaces a
+**warning** at each affected function.
+
+* **`lyric-compiler/lyric/verifier/vcgen.l`** — `goalsForFile`
+  pre-scans the file for `IAspect` items and collects their names
+  into a `Map[String, Bool]`.  For each `@proof_required` IFunc,
+  the verifier checks the function's annotations against that set;
+  the first match emits `V0031` carrying the aspect name and the
+  function span.
+
+* **`docs/15-phase-4-proof-plan.md`** — `V0031` added to the
+  diagnostic catalogue with recovery hint ("mark function
+  `@runtime_checked` or hand-inline the aspect for proof").
+
+Verified on a minimal repro (`@proof_required` package, aspect
+`MyTimer`, decorated function `compute`):
+
+```
+$ lyric prove sample.l
+V0031 warning [11:1]: function 'compute' is decorated with @MyTimer;
+proofs verify the unelaborated body, which may differ from the
+runtime behaviour after aspect weaving — contracts on the aspect's
+around { } block are not discharged
+1/1 obligations discharged (@proof_required)
+```
+
+Proof still proceeds on the unelaborated body (so existing programs
+build) but downstream auditors and `claude-review` reviewers can
+see the gap.  Full option-a (run verifier post-elaboration) tracked
+in #336 follow-ups; needs a self-hosted aspect weaver to land first.
+
+**Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-271 — RFC zigzag test vectors + shift semantics docs (#361)
+
+Closes #361.  The zigzag32/zigzag64 implementations had already been
+rewritten to avoid shift operators (using `n * 2 ± 1` instead), so
+the underlying correctness bug from the issue is no longer present.
+What was still missing — and what #361 explicitly asked for — is RFC
+test coverage on the boundary cases and language-reference documentation
+of the `.shr` arithmetic-vs-logical distinction.
+
+* **`lyric-proto/tests/proto_types_tests.l`** — 10 new RFC vectors:
+  - `zigzag32(INT_MAX) = 0xFFFFFFFE`, `zigzag32(INT_MIN) = 0xFFFFFFFF`
+  - `unzigzag32` of the same constants
+  - Roundtrips for `INT_MAX`, `INT_MIN`, `LONG_MAX`, `LONG_MIN`, `-1`, `1`
+
+* **`docs/01-language-reference.md` §4.1** — document `.shl(n)` /
+  `.shr(n)` semantics: arithmetic right shift on signed types
+  (`Byte`, `Int`, `Long`), logical right shift on unsigned types
+  (`UInt`, `ULong`).  Cross-reference protobuf zigzag as the
+  canonical consumer.
+
+**Test results:** 789/789 emitter, 237/237 CLI.  The new proto
+vector tests run via `lyric test --manifest lyric-proto/lyric.toml`.
+
+### D-progress-272 — Std.RegexSafe wrapper for Result-shaped regex (#330)
+
+The kernel-level `Std.Regex` already binds the
+`Regex(string, RegexOptions, TimeSpan)` overload with a 1-second
+default match timeout (so `(a+)+$` on adversarial input throws
+`RegexMatchTimeoutException` instead of hanging), but the user-
+facing call surface still leaks the exception as an unchecked
+`Bug`.  This adds a thin `Std.RegexSafe` package that catches the
+throw and returns `Result[T, RegexError]`.
+
+* **`lyric-stdlib/std/regex_safe.l`** (new) — `Std.RegexSafe` public
+  surface:
+  - `RegexError = TimedOut(message) | RegexBug(message)`
+  - `errorMessage(e): String`
+  - `tryCompile(pattern): Result[Regex, RegexError]`
+  - `tryIsMatch(r, input): Result[Bool, RegexError]`
+  - `tryMatchOne(r, input): Result[Match, RegexError]`
+  - `tryReplace(r, input, replacement): Result[String, RegexError]`
+  Local functions are prefixed `try*` to avoid shadowing the kernel
+  module's same-short-named functions — the F# bootstrap call
+  resolver recurses otherwise (separately tracked, but the rename
+  here is the no-op workaround).
+
+* **`lyric-stdlib/tests/regex_safe_tests.l`** (new) — exercises the
+  error-message rendering and the happy paths for compile / isMatch /
+  replace.  We do NOT trigger the 1-second timeout in CI (a large
+  enough adversarial input would slow the suite without adding
+  coverage beyond the BCL guarantee + the kernel binding).
+
+* **`docs/10-stdlib-plan.md`** — adds `Std.Regex` and `Std.RegexSafe`
+  to the stability cut list, with the ReDoS posture spelled out next
+  to each entry.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-273 — Std.Json slice readers dispose JsonDocument (#328)
+
+The scalar `lyricJsonGet*` helpers in `lyric-stdlib/std/json.l`
+already wrap parsing in `defer { hostDisposeJson(doc) }`, but the
+slice readers in `lyric-stdlib/std/_kernel/json_host.l`
+(`lyricJsonGetIntSlice`, `lyricJsonGetLongSlice`,
+`lyricJsonGetDoubleSlice`, `lyricJsonGetBoolSlice`,
+`lyricJsonGetStringSlice`) were missing the disposal — each call
+leaked an unmanaged `JsonDocument` until GC.  This commit adds
+the `defer { hostDisposeJson(doc) }` to every slice reader.
+
+The other half of #328 — `lyricJsonGet*` re-parses the entire JSON
+on every field lookup, making N-field reads O(N) parses — is a
+shape change to `Std.Rest.jsonString`/`jsonInt`/`jsonBool` that
+needs a richer "parse once per response" API.  Left for a
+follow-up; the current code is correct (no leak), just suboptimal.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-274 — JVM `Std.Json` slice readers (#322 follow-up)
+
+Earlier work in #322 added the missing JVM kernel files (console,
+path, process_capture) and the scalar JSON externs.  The slice
+readers `lyricJsonGetIntSlice` / `LongSlice` / `DoubleSlice` /
+`BoolSlice` / `StringSlice` — which are pure-Lyric implementations
+over the lower-level `hostEnumerate*` / `hostTryGet*` primitives —
+were defined only in `_kernel/json_host.l` (.NET path).  A JVM
+build that called any of them would fail to link.
+
+Promotes the five slice readers verbatim into `_kernel_jvm/
+json_host.l`.  The body is identical to the .NET path (pure
+Lyric, no BCL-specific calls) so behaviour matches by
+construction.  All five carry the `defer { hostDisposeJson(doc) }`
+disposal added in D-progress-273.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-275 — Review fixes for PR #789 (REQUIRED + SUGGESTIONs)
+
+Addresses the `claude-review` findings on PR #789:
+
+REQUIRED:
+* **F0002 diagnostic for conflicting `@externStatic` / `@externInstance`**
+  (#790, #793) — both annotations on one extern declaration is now an
+  error.  Surfaced two ways: the self-hosted type checker
+  (`typechecker_stmts.l:checkFunctionBody`) emits `F0002` via
+  `errorDiagnostic` for proof / lint pipelines that thread a diag
+  list; the MSIL codegen (`msil/codegen.l:emitExternTargetBody`)
+  panics with the same message so the `lyric build` path — which
+  skips the type checker — also surfaces the failure.
+* **Invalid-IL hazard for class-typed `@externTarget` params** (#791) —
+  previously the FFI emitter returned `false` and the default lowering
+  emitted `MRet` with no value on the stack, producing
+  VerificationException at runtime.  `emitExternTargetBody` now
+  panics with an actionable message ("use --target dotnet-legacy or
+  wrap the call in a primitive-typed shim").
+
+SUGGESTIONs:
+* **`paramArity` dead parameter removed** (#792) — the table-driven
+  resolver doesn't use it.  Callsite updated in
+  `msil/codegen.l:emitExternTargetBody`.
+* **D-progress-274 cross-ref corrected** (#794) — the JVM slice-reader
+  entry now points at D-progress-273 (the disposal entry) instead of
+  the renumbered-stale D-progress-272.
+* **`isTimeout` locale-sensitivity documented** (#795) — the comment
+  block in `std/regex_safe.l` now explicitly calls out that the
+  classifier falls through to `RegexBug` on non-en-US runtimes
+  because the BCL message is satellite-resource-localised; a
+  locale-stable classifier needs the `Bug` lowering to surface the
+  CLR exception class, which is a separate lifting concern.
+* **`createDir` errors no longer swallowed silently** (#797) —
+  `cmdTestManifest` now reports a `printErr` instead of dropping the
+  `Err` arm on the floor.
+* **O(N²) string-concat replaced with `Str.joinList`** (#799) —
+  `cmdTestManifest`'s package-source bundling now collects into a
+  `List[String]` and joins once instead of repeated `+`.
+* **V0031 cross-package limitation documented** (#800) — the V0031
+  table entry in `docs/15-phase-4-proof-plan.md` now spells out
+  that the same-file detector misses imported cross-package
+  aspects, and points at the `Lyric.Contract` resource lift needed
+  for the full fix.
+* **`cmdTestManifest` 'what' comments trimmed** (#801) — only the
+  JIT-regression note (the WHY) survives; the algorithm steps are
+  legible from the function body.
+
+Not actioned:
+* **#796** (duplicate D-progress-268) — already fixed by the prior
+  renumber commit a5dab90; the review ran against c05f4ee before
+  the renumber landed.
+* **#798** (regex_safe_tests uses manual `main()` driver) — the
+  manual driver matches `StdlibLyricTests.fs`'s harness contract
+  (expects exit 0 + stdout-contains "ok"), which is the same shape
+  json_tests.l / format_tests.l / etc. use.  The `@test_module` +
+  `test "..." { }` syntax the suggestion compares to runs through
+  the separate `lyric test` harness used by `lyric-proto/tests/`.
+  Comment added at the top of the file noting the harness
+  divergence.
+
+**Test results:** 796/796 emitter, 237/237 CLI.

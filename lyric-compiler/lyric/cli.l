@@ -2013,6 +2013,7 @@ func cmdRepl(argv: in slice[String]): Int {
 
 func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
+  var manifestArg: Option[String] = None
   var listMode = false
   val positional: List[String] = newList()
 
@@ -2027,6 +2028,14 @@ func cmdTest(argv: in slice[String]): Int {
         printErr("test: --filter requires a value")
         return 1
       }
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("test: --manifest requires a path")
+        return 1
+      }
     } else if arg == "--list" {
       listMode = true
       i += 1
@@ -2036,8 +2045,17 @@ func cmdTest(argv: in slice[String]): Int {
     }
   }
 
+  // `lyric test --manifest <toml>` reads `[project.tests]` and runs
+  // each test file bundled with the manifest's `[project.packages]`
+  // (#465).  Each test contributes one synthesised executable; the
+  // command's exit code is non-zero if any test fails.
+  match manifestArg {
+    case Some(p) -> return cmdTestManifest(p, filterArg)
+    case None    -> ()
+  }
+
   if positional.count == 0 {
-    printErr("test: missing source file")
+    printErr("test: missing source file (or pass --manifest <lyric.toml>)")
     return 1
   }
 
@@ -2125,6 +2143,184 @@ func cmdTest(argv: in slice[String]): Int {
       }
     }
   }
+}
+
+// Unreachable today: the F# bootstrap CLI fall-back doesn't know
+// `--manifest` for `test`, so this entry point only fires once the
+// self-hosted CLI bridge regains JIT (#465).
+func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
+  val mfText = match File.readText(mfPath) {
+    case Ok(text) -> text
+    case Err(e)   -> {
+      printErr("test: " + IOError.message(e))
+      return 1
+    }
+  }
+  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m)  -> m
+    case Err(e) -> {
+      printErr("test: " + ManifestError.message(e))
+      return 1
+    }
+  }
+  val proj: ProjectSection = match manifest.project {
+    case Some(p) -> p
+    case None    -> {
+      printErr("test: " + mfPath + " has no [project] section")
+      return 1
+    }
+  }
+
+  if proj.tests.count == 0 {
+    printErr("test: " + mfPath + " has no [project.tests] entries")
+    return 1
+  }
+
+  val mfDir = Path.dirname(mfPath)
+
+  // Pre-read every [project.packages] source so each test build
+  // reuses the same content.
+  val pkgSources: List[String] = newList()
+  var pi = 0
+  while pi < proj.packages.count {
+    val pkgEntry = proj.packages[pi]
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
+              else { Path.join(mfDir, pkgEntry.path) }
+    match File.readText(abs) {
+      case Ok(t)  -> pkgSources.add(t)
+      case Err(e) -> {
+        printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+        return 1
+      }
+    }
+    pi += 1
+  }
+
+  val testOutDir = Path.join(mfDir, ".lyric-test")
+  match File.createDir(testOutDir) {
+    case Ok(_)  -> ()
+    case Err(e) -> {
+      // Existing directory is fine — every other createDir failure
+      // surfaces as an emit-write failure later, but report it here
+      // so the user knows what's going on (#797).
+      printErr("test: cannot create '" + testOutDir + "': " + IOError.message(e))
+    }
+  }
+
+  var totalPassed = 0
+  var totalFailed = 0
+
+  // Walk each [project.tests] entry.
+  var ti = 0
+  while ti < proj.tests.count {
+    val testEntry = proj.tests[ti]
+    val abs = if Path.isAbsolute(testEntry.path) { testEntry.path }
+              else { Path.join(mfDir, testEntry.path) }
+    Console.println("== " + testEntry.name + " (" + testEntry.path + ")")
+
+    val testSource = match File.readText(abs) {
+      case Ok(t)  -> t
+      case Err(e) -> {
+        printErr("test: " + IOError.message(e))
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+    }
+
+    val synth = TestSynth.synthesize(testSource, filterArg)
+    val rewritten: String = match synth {
+      case Synthesised(rw, _, _) -> rw
+      case NoTestModule(span)    -> {
+        printErr(abs + ":" + toString(span.startPos.line) +
+                 ": not a @test_module — add @test_module annotation")
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+      case UserMainExists(span) -> {
+        printErr(abs + ":" + toString(span.startPos.line) +
+                 ": @test_module cannot define func main()")
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+      case FixtureUnsupported(span) -> {
+        printErr(abs + ":" + toString(span.startPos.line) +
+                 ": fixture types are not yet supported by `lyric test`")
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+      case ParseFailures(diags) -> {
+        for d in diags.toArray() { printDiag(d) }
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+    }
+
+    // Build the combined source: every [project.packages] file plus
+    // the synthesised test (which now carries a `main()` that runs
+    // every test function).  Collect into a List and `Str.joinList`
+    // at the end to avoid the O(N^2) repeated-concat cost.
+    val parts: List[String] = newList()
+    var si = 0
+    while si < pkgSources.count {
+      parts.add(pkgSources[si])
+      si += 1
+    }
+    parts.add(rewritten)
+    val combined = Str.joinList("", parts)
+
+    val asmStem = stemOf(Path.basename(testEntry.path), 2)
+    val outPath = Path.join(testOutDir, asmStem + ".dll")
+
+    val req = EmitRequest(
+      source       = combined,
+      assemblyName = asmStem,
+      outputPath   = outPath,
+      target       = Dotnet
+    )
+    val result  = Emitter.emit(req)
+    var hadBuildError = false
+    for d in result.diagnostics.toArray() {
+      match d.severity {
+        case DiagError   -> { hadBuildError = true }
+        case DiagWarning -> ()
+      }
+      printDiag(d)
+    }
+    if hadBuildError {
+      printErr(abs + ": test build failed")
+      totalFailed += 1
+      ti += 1
+      continue
+    }
+    writeRuntimeConfig(outPath)
+
+    val execArgs: List[String] = newList()
+    execArgs.add("exec")
+    execArgs.add(outPath)
+    val testExitCode = match Process.run("dotnet", execArgs) {
+      case Ok(code) -> code
+      case Err(e)   -> {
+        printErr("test: failed to start dotnet: " + IOError.message(e))
+        1
+      }
+    }
+    if testExitCode == 0 {
+      totalPassed += 1
+    } else {
+      totalFailed += 1
+    }
+    ti += 1
+  }
+
+  Console.println("")
+  Console.println("== summary: " + toString(totalPassed) + " passed, " +
+                  toString(totalFailed) + " failed")
+  if totalFailed > 0 { 1 } else { 0 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
