@@ -38,6 +38,10 @@ pub func hintFromAnnotations(anns: in List[Annotation]): ResolveHint {
   RHEither
 }
 
+// Keep in sync with `lyric/type_checker/typechecker_stmts.l`
+// `hasConflictingExternHints` (#803).  Both functions look for the
+// same annotation pair; extracting shared annotation-name constants
+// is a follow-up tracked in the `Lyric.Annotations` rollup.
 pub func hasConflictingHints(anns: in List[Annotation]): Bool {
   var i = 0
   var hasStatic = false

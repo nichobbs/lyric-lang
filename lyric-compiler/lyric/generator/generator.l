@@ -170,7 +170,7 @@ func readBracedBlock(src: in String, pos: inout Int): String {
 // Comments AND double-quoted string literals are skipped so a `@generate(X.Y)`
 // embedded in a string (e.g. a help-text constant or a documentation example)
 // does not trigger a spurious generator invocation (#702).
-func scanDirectives(src: in String, packageName: in String): List[GenerateDirective] {
+pub func scanDirectives(src: in String, packageName: in String): List[GenerateDirective] {
     val results: List[GenerateDirective] = newList()
     var i = 0
     while i < src.length {
@@ -607,10 +607,16 @@ func parseResponseJson(json: in String): Result[StringPair, String] {
 // G0002 — kind mismatch on the referenced package (matches the spec
 // reservation in docs/40 §10 P1 for kind enforcement).  Enforceable
 // when the dependency is a Path dep (we can read its lyric.toml).
+//
 // Registry / Workspace / Git deps skip the kind check until the
-// restore pipeline persists cached manifests; G0008 still catches the
-// obvious supply-chain hole for those cases.  Follow-up tracked in
-// the closing/open issues referenced from PR #753.
+// restore pipeline persists cached manifests under a known path
+// (`.lyric/restore/<name>-<ver>/lyric.toml`); G0008 still catches the
+// obvious supply-chain hole for those cases (the package must be in
+// `[dependencies]`).  See PR #753 and #757 (review-finding) for the
+// status of the cached-manifest probe; once cached `lyric.toml`s are
+// available, replace `case _ -> None` in `depManifestPath` below
+// with a probe under the restore root for Registry/Workspace/Git
+// variants.
 // Pure G0008 check — verifies the generator package appears in
 // `[dependencies]`.  Returns the matched DependencyEntry on success so
 // the caller can inspect the dep source.  Exposed `pub` so self-tests
