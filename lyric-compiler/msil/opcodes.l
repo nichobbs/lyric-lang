@@ -243,7 +243,7 @@ pub val OP2_STLOC      : Int = 0x0E
 //   Token2(op,tok)  — 6 bytes: 0xFE + op + token LE.
 //   VarS(op,idx)    — 2 bytes: op + u8 index.
 //   VarF(op,idx)    — 4 bytes: 0xFE + op + u16 index LE.
-//   Branch(op,lbl)  — 5 bytes: op + i32 LE offset (resolved from label ID).
+//   BranchInsn(op,lbl)  — 5 bytes: op + i32 LE offset (resolved from label ID).
 //   Switch(n,swIdx) — variable: 0x45 + u32 count + count * i32 offsets.
 //                     n=target count; swIdx=start offset into MethodBody.swData.
 //                     List[T] fields in union cases are erased by D035 and cannot be
@@ -262,7 +262,7 @@ pub union Insn {
   case Token2(op: Int, token: Int)
   case VarS(op: Int, index: Int)
   case VarF(op: Int, index: Int)
-  case Branch(op: Int, label: Int)
+  case BranchInsn(op: Int, label: Int)
   case Switch(n: Int, swIdx: Int)
 }
 
@@ -444,20 +444,20 @@ pub func iLdloc(n: in Int):    Insn = VarF(op = OP2_LDLOC, index = n)
 pub func iLdloca(n: in Int):   Insn = VarF(op = OP2_LDLOCA, index = n)
 pub func iStloc(n: in Int):    Insn = VarF(op = OP2_STLOC, index = n)
 
-pub func iBr(lbl: in Int):       Insn = Branch(op = OP_BR, label = lbl)
-pub func iBrfalse(lbl: in Int):  Insn = Branch(op = OP_BRFALSE, label = lbl)
-pub func iBrtrue(lbl: in Int):   Insn = Branch(op = OP_BRTRUE, label = lbl)
-pub func iBeq(lbl: in Int):      Insn = Branch(op = OP_BEQ, label = lbl)
-pub func iBge(lbl: in Int):      Insn = Branch(op = OP_BGE, label = lbl)
-pub func iBge_Un(lbl: in Int):   Insn = Branch(op = OP_BGE_UN, label = lbl)
-pub func iBgt(lbl: in Int):      Insn = Branch(op = OP_BGT, label = lbl)
-pub func iBgt_Un(lbl: in Int):   Insn = Branch(op = OP_BGT_UN, label = lbl)
-pub func iBlt(lbl: in Int):      Insn = Branch(op = OP_BLT, label = lbl)
-pub func iBlt_Un(lbl: in Int):   Insn = Branch(op = OP_BLT_UN, label = lbl)
-pub func iBle(lbl: in Int):      Insn = Branch(op = OP_BLE, label = lbl)
-pub func iBle_Un(lbl: in Int):   Insn = Branch(op = OP_BLE_UN, label = lbl)
-pub func iBne_Un(lbl: in Int):   Insn = Branch(op = OP_BNE_UN, label = lbl)
-pub func iLeave(lbl: in Int):    Insn = Branch(op = OP_LEAVE, label = lbl)
+pub func iBr(lbl: in Int):       Insn = BranchInsn(op = OP_BR, label = lbl)
+pub func iBrfalse(lbl: in Int):  Insn = BranchInsn(op = OP_BRFALSE, label = lbl)
+pub func iBrtrue(lbl: in Int):   Insn = BranchInsn(op = OP_BRTRUE, label = lbl)
+pub func iBeq(lbl: in Int):      Insn = BranchInsn(op = OP_BEQ, label = lbl)
+pub func iBge(lbl: in Int):      Insn = BranchInsn(op = OP_BGE, label = lbl)
+pub func iBge_Un(lbl: in Int):   Insn = BranchInsn(op = OP_BGE_UN, label = lbl)
+pub func iBgt(lbl: in Int):      Insn = BranchInsn(op = OP_BGT, label = lbl)
+pub func iBgt_Un(lbl: in Int):   Insn = BranchInsn(op = OP_BGT_UN, label = lbl)
+pub func iBlt(lbl: in Int):      Insn = BranchInsn(op = OP_BLT, label = lbl)
+pub func iBlt_Un(lbl: in Int):   Insn = BranchInsn(op = OP_BLT_UN, label = lbl)
+pub func iBle(lbl: in Int):      Insn = BranchInsn(op = OP_BLE, label = lbl)
+pub func iBle_Un(lbl: in Int):   Insn = BranchInsn(op = OP_BLE_UN, label = lbl)
+pub func iBne_Un(lbl: in Int):   Insn = BranchInsn(op = OP_BNE_UN, label = lbl)
+pub func iLeave(lbl: in Int):    Insn = BranchInsn(op = OP_LEAVE, label = lbl)
 // iSwitch is not provided: Switch targets are stored in MethodBody.swData; use emitSwitch.
 
 // ── MethodBody ───────────────────────────────────────────────────────────────
@@ -735,7 +735,7 @@ func insnSize(i: in Insn): Int {
     case Token2(_, _)    -> 6
     case VarS(_, _)      -> 2
     case VarF(_, _)      -> 4
-    case Branch(_, _)    -> 5
+    case BranchInsn(_, _)    -> 5
     case Switch(n, _)    -> 1 + 4 + n * 4
   }
 }
@@ -843,7 +843,7 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
         bufU2(w, n)
         pc = pc + 4
       }
-      case Branch(op, lbl) -> {
+      case BranchInsn(op, lbl) -> {
         val nextPc = pc + 5
         val targetPc = resolveLbl(offsets, lbl)
         bufU1(w, op)
