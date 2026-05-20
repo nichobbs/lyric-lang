@@ -350,12 +350,6 @@ let rec private bindPattern
     match pat.Kind with
     | PWildcard | PBinding("_", _) ->
         ()
-    | PBinding("null", None) ->
-        // `case null ->` is recognised by the codegen as a null-equality
-        // test against a nullable scrutinee (#370 / Msil.Ffi).  The
-        // identifier must NOT be added to scope — it carries no
-        // narrowed binding for the arm body.
-        ()
     | PBinding(name, None) ->
         // If this name resolves to a zero-field union case constructor
         // (e.g. `case None ->` parsed without parens), treat it as a
