@@ -391,6 +391,28 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   }
 }
 
+// Conservative type inference for expressions during monomorphisation
+// (#349).  Returns the declared TypeExpr for an expression when it
+// can be determined from the local type environment, literal shape,
+// or a small set of structural rules.  Returns None when the
+// expression's type can't be inferred without a full type checker.
+//
+// Coverage:
+//   * Literals — via inferLitTE.
+//   * Parens — recurse.
+//   * Single-segment paths — look up in env (which is seeded with
+//     function params and explicitly-annotated locals).
+//   * `ETypeApp(fn, [T1, …])` — if fn is a single-segment path to a
+//     known generic decl, walk the decl's return TypeExpr substituting
+//     the supplied type args.
+//   * Binary arithmetic (Add/Sub/Mul/Div/Mod) — LHS type wins.
+//   * Comparison and logical ops — Bool.
+//   * `EMember(recv, name)` — if recv has an inferrable type pointing
+//     at a same-package record, return the named field's type.
+//   * `state` is NOT in scope here, so `ECall` is not inferred at
+//     this level (we don't want to thread state through inferLit/inferExpr).
+//     The richer call-site inference path is in `rewriteExpr` proper,
+//     which has access to `state.genDecls` and `state.recordDecls`.
 func inferExprTE(env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr] {
   match expr.kind {
     case ELiteral(lit)  -> inferLitTE(lit, expr.span)
@@ -399,6 +421,24 @@ func inferExprTE(env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr]
       if path.segments.count == 1 {
         mapGet(env, path.segments[0])
       } else { None }
+    }
+    case EBinop(op, lhs, _) -> {
+      match op {
+        case BAdd -> inferExprTE(env, lhs)
+        case BSub -> inferExprTE(env, lhs)
+        case BMul -> inferExprTE(env, lhs)
+        case BDiv -> inferExprTE(env, lhs)
+        case BMod -> inferExprTE(env, lhs)
+        case BEq  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BNeq -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BLt  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BLte -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BGt  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BGte -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BAnd -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case BOr  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
+        case _    -> None
+      }
     }
     case _              -> None
   }
@@ -549,9 +589,63 @@ func rewriteExpr(
   match expr.kind {
 
     // ── Generic call sites ────────────────────────────────────────────────
+    //
+    // Two callable shapes are recognised:
+    //
+    //   * `EPath([fname])` — bare name; infer type args by unifying the
+    //     declared param types against argument types pulled from
+    //     `inferExprTE`.  Falls through unchanged when inference is
+    //     incomplete (the un-specialised call survives to the emitter,
+    //     which handles imported generics via real CLR generics).
+    //
+    //   * `ETypeApp(EPath([fname]), [T1, …])` — explicit type
+    //     application `fname[T1, …](args)`.  Use the supplied targs
+    //     directly; no inference needed.  This unblocks any call site
+    //     where the user already wrote the type arguments inline (#349
+    //     called out that `ETypeApp` was pass-through before).
     case ECall(fn, args) -> {
       val newArgs = rewriteCallArgs(state, env, args)
       match fn.kind {
+        case ETypeApp(innerFn, targs) -> {
+          match innerFn.kind {
+            case EPath(path) -> {
+              if path.segments.count == 1 {
+                val fname = path.segments[0]
+                match mapGet(state.genDecls, fname) {
+                  case Some(baseDecl) -> {
+                    val typeParams = extractTypeParamNames(baseDecl.generics)
+                    if typeParams.count > 0 && targs.count == typeParams.count {
+                      val subst: Map[String, TypeExpr] = newMap()
+                      var i = 0
+                      while i < typeParams.count {
+                        subst.add(typeParams[i], targs[i])
+                        i = i + 1
+                      }
+                      val name = specFuncName(fname, typeParams, subst)
+                      if not state.seenSpecs.containsKey(name) {
+                        state.seenSpecs.add(name, true)
+                        val specDecl = specializeFunc(baseDecl, name, subst)
+                        state.allSpecs.add(SpecRequest(
+                          specName = name,
+                          baseDecl = specDecl,
+                          subst    = subst))
+                      }
+                      val newFn = singleSegPathExpr(name, fn.span)
+                      return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
+                    }
+                    Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+                  }
+                  case None ->
+                    Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+                }
+              } else {
+                Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+              }
+            }
+            case _ ->
+              Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
+          }
+        }
         case EPath(path) -> {
           if path.segments.count == 1 {
             val fname = path.segments[0]
@@ -967,10 +1061,24 @@ pub func monoFile(file: in SourceFile): MonoResult {
   // ── Phase 3: process worklist (fixpoint over allSpecs) ──────────────────
   // Each iteration picks up the next SpecRequest.  Rewriting the body may
   // add further requests; the while condition re-evaluates count each round.
+  //
+  // Recursion budget (#349): cap the worklist size so a pathological
+  // nested-generic recursion (`f[T] = … g[List[T]] …` that always
+  // adds a deeper specialisation) terminates with a clear error
+  // instead of OOM'ing the compiler.  10_000 specialisations is well
+  // beyond any reasonable program; real codebases land in the low
+  // hundreds.
   val finalSpecDecls: List[FunctionDecl] = newList()
+  val specBudget = 10000
 
   var wi = 0
   while wi < state.allSpecs.count {
+    if wi >= specBudget {
+      panic("Lyric.Mono: specialisation budget exhausted (" + toString(specBudget)
+        + " specs).  Most likely a generic function recurses with an unbounded "
+        + "type-argument shape (e.g. `f[T] = … f[List[T]] …`).  Refactor to "
+        + "stop instantiating with strictly larger types.")
+    }
     val req = state.allSpecs[wi]
     // The baseDecl already has type-var substitution applied to its params/ret.
     // Now rewrite its body to replace nested generic calls.

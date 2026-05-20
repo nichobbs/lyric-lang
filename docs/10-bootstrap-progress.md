@@ -13138,3 +13138,38 @@ default target):
 **No F# bootstrap changes.**
 
 **Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-268 — Monomorphizer type-arg inference + ETypeApp + budget (#349)
+
+Three related improvements to `Lyric.Mono` that close most of the
+gaps `inferExprTE` had at the start of this session:
+
+* **`ETypeApp(fn, [T1, …])` is now honored** at `ECall` rewrite
+  sites.  Previously the case fell through to "pass-through fn"
+  even when fn was an `EPath` to a known generic decl — explicit
+  type applications never specialised.  The rewriter now detects
+  `ECall(ETypeApp(EPath([fname]), targs), args)`, uses the supplied
+  targs directly as the substitution, and emits the mangled
+  specialisation request without going through inference.  Unblocks
+  every call site where the user already wrote the type arguments
+  inline.
+
+* **`inferExprTE` extended** to recognise:
+  - `EBinop` arithmetic (`+ - * / %`) — LHS type wins; useful when
+    the generic param sits in a numeric expression.
+  - `EBinop` comparison and logical (`== != < <= > >= and or`) —
+    result is always `Bool`.
+
+  Calls, field projections, lambdas, and constructor calls are
+  still left to the un-specialised fall-through; threading
+  `state.genDecls` / `state.recordDecls` into the inference helper
+  is a separate cut (return-type inference for nested generic calls
+  needs care around recursive shapes).
+
+* **Recursion budget** added to the worklist (`specBudget = 10000`).
+  A pathological generic that recurses with a strictly larger type
+  argument (`f[T] = … f[List[T]] …`) used to loop indefinitely and
+  OOM the compiler.  The compiler now panics with a clear,
+  actionable message naming the runaway specialisation pattern.
+
+**Test results:** 789/789 emitter, 237/237 CLI.
