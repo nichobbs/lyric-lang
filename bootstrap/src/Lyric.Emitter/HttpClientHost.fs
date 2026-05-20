@@ -19,7 +19,6 @@ module Lyric.Emitter.HttpClientHost
 
 open System
 open System.Net.Http
-open System.Threading
 
 /// Lazy is thread-safe by default (LazyThreadSafetyMode.ExecutionAndPublication),
 /// so the underlying HttpClient is created exactly once per process even under

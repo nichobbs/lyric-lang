@@ -12,8 +12,7 @@
 package Std.SecureRandomHost
 
 // Cryptographically strong random integer in [0, max).
-// max must be positive; the shim panics with ArgumentOutOfRangeException
-// equivalent otherwise.
+// max must be positive; the shim panics with IllegalArgumentException otherwise.
 @externTarget("lyric.stdlib.jvm.SecureRandomHost.nextInt")
 pub func hostSecureNextInt(max: in Int): Int = ()
 
