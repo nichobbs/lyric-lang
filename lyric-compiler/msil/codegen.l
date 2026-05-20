@@ -84,6 +84,10 @@ pub record CodegenCtx {
   recordCtorTokens:   Map[String, Int]   // className → MethodDef token
   fieldTokens:        Map[String, Int]   // "ClassName/fieldName" → FieldDef token
   funcTokens:         Map[String, Int]   // funcName → MethodDef token
+  // FFI caches (#370 + Phase R6).  Populated lazily by
+  // emitExternTargetBody as `@externTarget` declarations are walked.
+  ffiAsmRefs:         Map[String, Int]   // assembly simple name → AssemblyRef row index
+  ffiTypeRefs:        Map[String, Int]   // "asm/ns.name" key → TypeRef row index
 }
 
 // Build and return a fresh CodegenCtx for the named package.
@@ -324,7 +328,9 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     tokDictObjTryGetValue = tokDictObjTryGetValue,
     recordCtorTokens     = recCtorToks,
     fieldTokens          = fieldToks,
-    funcTokens           = funcToks)
+    funcTokens           = funcToks,
+    ffiAsmRefs           = newMap(),
+    ffiTypeRefs          = newMap())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2166,6 +2172,204 @@ func endsWithReturnMsil(insns: in List[MInsn]): Bool {
   false
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §8b. FFI emission for `@externTarget` (#370 + Phase R6).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// True iff the annotation list contains `@externTarget("...")`.
+func hasExternTargetMsil(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "externTarget" { return true }
+    i = i + 1
+  }
+  false
+}
+
+// Pull the `"Type.Member"` string out of `@externTarget("...")`.
+// Returns "" when the annotation is malformed.
+func externTargetStringMsil(anns: in List[Annotation]): String {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "externTarget" {
+      var j = 0
+      while j < anns[i].args.count {
+        match anns[i].args[j] {
+          case ALiteral(v, _) -> match v {
+            case AVString(s, _) -> { return s }
+            case _              -> ()
+          }
+          case AAName(_, v, _) -> match v {
+            case AVString(s, _) -> { return s }
+            case _              -> ()
+          }
+          case _ -> ()
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// Look up (or add) the AssemblyRef row index for an external
+// assembly name.  System.Runtime / mscorlib reuse the pre-seeded
+// `lctx.arRuntime` row so we don't write a duplicate.
+func internFfiAssemblyRef(cctx: in CodegenCtx, asmName: in String): Int {
+  match mapGet(cctx.ffiAsmRefs, asmName) {
+    case Some(r) -> r
+    case None    -> {
+      val row = if asmName == "System.Runtime"
+                  or asmName == "System.Private.CoreLib"
+                  or asmName == "mscorlib" {
+        cctx.lctx.arRuntime
+      } else {
+        ctxAddAssemblyRef(cctx.lctx, asmName, 10, 0)
+      }
+      cctx.ffiAsmRefs.add(asmName, row)
+      row
+    }
+  }
+}
+
+// Look up (or add) the TypeRef row for a CLR type identified by
+// (assembly, namespace, simple name).
+func internFfiTypeRef(cctx: in CodegenCtx, asmName: in String,
+                      ns: in String, typeName: in String): Int {
+  val key = asmName + "/" + ns + "." + typeName
+  match mapGet(cctx.ffiTypeRefs, key) {
+    case Some(r) -> r
+    case None    -> {
+      val arRow = internFfiAssemblyRef(cctx, asmName)
+      val tRow  = ctxAddTypeRef(cctx.lctx, ns, typeName, arRow)
+      cctx.ffiTypeRefs.add(key, tRow)
+      tRow
+    }
+  }
+}
+
+// Build the MSIL body for a `@externTarget`-bearing function.
+// Returns true when emission succeeded (caller skips the default
+// body lowering); false when the target could not be resolved.
+//
+// Coverage today:
+//   * Static method with primitive / String parameter and return types.
+//   * Instance method (receiver = Lyric arg 0) with primitive/string args.
+//   * Constructor (..ctor) with primitive/string args.
+//
+// Deferred: extern types as parameters (need TypeRef-typed signatures),
+// generic types, with-defaults trailing arguments, property getters,
+// static field reads.  Programs depending on those forms still need
+// `--target dotnet-legacy` (F# bootstrap emitter).
+func emitExternTargetBody(
+  cctx:    in CodegenCtx,
+  fctx:    in FuncCtx,
+  insns:   in List[MInsn],
+  decl:    in FunctionDecl,
+  pkgName: in String
+): Bool {
+  val target = externTargetStringMsil(decl.annotations)
+  if target == "" { return false }
+
+  val hint = hintFromAnnotations(decl.annotations)
+  match resolveExternTarget(target, decl.params.count, hint) {
+    case None -> false
+    case Some(r) -> {
+      // Map every Lyric param + return type to MSIL.
+      val paramTypes: List[MsilType] = newList()
+      var pi = 0
+      while pi < decl.params.count {
+        paramTypes.add(typeExprToMsil(decl.params[pi].ty, pkgName))
+        pi = pi + 1
+      }
+      val retTy = match decl.ret {
+        case Some(te) -> typeExprToMsil(te, pkgName)
+        case None     -> MVoid
+      }
+
+      // Skip externs whose Lyric signature mentions a non-primitive
+      // class type — the bootstrap-grade resolver hasn't wired up
+      // TypeRef-encoded MemberRef signatures yet.  Falling through
+      // makes the function body empty; the legacy F# emitter
+      // (--target dotnet-legacy) covers these for now.
+      if mentionsMClass(paramTypes) or mentionsMClassRet(retTy) {
+        return false
+      }
+
+      val tRefRow = internFfiTypeRef(
+        cctx, r.assemblyName, r.namespaceStr, r.typeName)
+
+      // Build the method signature blob.
+      val sig =
+        if r.isStatic and not r.isCtor {
+          buildStaticMethodSig(paramTypes, retTy)
+        } else if r.isCtor {
+          // .ctor: HASTHIS, void return, all params explicit.
+          buildInstanceMethodSig(paramTypes, MVoid)
+        } else {
+          // Instance method: skip the first Lyric param (it's the
+          // receiver — already on the stack as `this`).
+          val instArgs: List[MsilType] = newList()
+          var ii = 1
+          while ii < paramTypes.count {
+            instArgs.add(paramTypes[ii])
+            ii = ii + 1
+          }
+          buildInstanceMethodSig(instArgs, retTy)
+        }
+      val mrRow = ctxAddMemberRef(
+        cctx.lctx, tRefRow, r.memberName,
+        "ffi_" + target, sig)
+      val tok = 0x0A000000 + mrRow
+
+      // Load every Lyric param in order.  For instance calls the
+      // receiver is param 0 and lands on the stack first; for static
+      // calls every param is explicit.
+      var li = 0
+      while li < decl.params.count {
+        insns.add(MLdarg(slot = li))
+        li = li + 1
+      }
+      if r.isCtor {
+        insns.add(MNewobj(ctorToken = tok))
+      } else if r.isStatic {
+        insns.add(MCall(methodToken = tok))
+      } else {
+        insns.add(MCallvirt(methodToken = tok))
+      }
+      insns.add(MRet)
+      true
+    }
+  }
+}
+
+// Return true if the list contains an MClass — those need TypeRef-
+// encoded class tokens in the signature blob, which the bootstrap-
+// grade FFI cascade does not yet synthesise.
+func mentionsMClass(types: in List[MsilType]): Bool {
+  var i = 0
+  while i < types.count {
+    match types[i] {
+      case MClass(_) -> { return true }
+      case MObject   -> { return true }
+      case _         -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func mentionsMClassRet(ty: in MsilType): Bool {
+  match ty {
+    case MClass(_) -> true
+    case MObject   -> true
+    case _         -> false
+  }
+}
+
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
                        pkgName: in String): MFunc {
   val retTy =
@@ -2191,24 +2395,35 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     pi = pi + 1
   }
 
-  // Lower the body.
-  match decl.body {
-    case Some(body) -> {
-      match body {
-        case FBBlock(block) -> {
-          lowerBlockMsil(cctx, fctx, insns, block)
-          if not endsWithReturnMsil(insns) {
+  // FFI: a function carrying `@externTarget("Type.Member")` synthesises
+  // its body from the BCL target (#370 / Phase R6).  Falls through to
+  // the normal body lowering when the annotation is absent or the
+  // resolver returns None (e.g. extern types in the signature).
+  val externEmitted =
+    if hasExternTargetMsil(decl.annotations) {
+      emitExternTargetBody(cctx, fctx, insns, decl, pkgName)
+    } else { false }
+
+  if not externEmitted {
+    // Lower the body.
+    match decl.body {
+      case Some(body) -> {
+        match body {
+          case FBBlock(block) -> {
+            lowerBlockMsil(cctx, fctx, insns, block)
+            if not endsWithReturnMsil(insns) {
+              insns.add(MRet)
+            }
+          }
+          case FBExpr(e) -> {
+            lowerExprMsil(cctx, fctx, insns, e)
             insns.add(MRet)
           }
         }
-        case FBExpr(e) -> {
-          lowerExprMsil(cctx, fctx, insns, e)
-          insns.add(MRet)
-        }
       }
-    }
-    case None -> {
-      insns.add(MRet)
+      case None -> {
+        insns.add(MRet)
+      }
     }
   }
 

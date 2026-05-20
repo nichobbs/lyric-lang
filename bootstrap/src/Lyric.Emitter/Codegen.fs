@@ -4678,9 +4678,23 @@ and private emitPatternTest
                     il.Emit(OpCodes.Ldnull)
                     il.Emit(OpCodes.Cgt_Un)
                 | _ ->
-                    // Plain identifier binding — always matches; the
-                    // bind happens in `emitPatternBind`.
-                    emitLdcI4 il 1
+                    if name = "null" then
+                        // Lyric has no PNull literal pattern (yet); the
+                        // parser produces `PBinding("null", None)` for
+                        // `case null -> …`.  When the scrutinee is a
+                        // reference / nullable type, emit a real null-
+                        // equality test instead of treating "null" as a
+                        // free identifier binding.  Without this, the
+                        // arm always matches and any subsequent arm is
+                        // unreachable — see #370 (the FFI resolver in
+                        // Msil.Ffi.findClrType depends on this working).
+                        il.Emit(OpCodes.Ldloc, tmp)
+                        il.Emit(OpCodes.Ldnull)
+                        il.Emit(OpCodes.Ceq)
+                    else
+                        // Plain identifier binding — always matches; the
+                        // bind happens in `emitPatternBind`.
+                        emitLdcI4 il 1
     | PParen inner ->
         emitPatternTest ctx tmp slotTy inner
     | PLiteral lit ->
@@ -4855,6 +4869,7 @@ and private emitPatternBind
         ()
     | PBinding (name, None)
         when name <> "_"
+             && name <> "null"   // null is a literal test, not a binding
              && not (ctx.EnumCases.ContainsKey name)
              && not (ctx.UnionCases.ContainsKey name)
              && not (ctx.ImportedUnionCases.ContainsKey name) ->
