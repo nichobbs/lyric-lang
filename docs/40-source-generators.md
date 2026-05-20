@@ -395,6 +395,7 @@ Stable API; breaking changes require a major version bump and a decision log ent
 | P2 | Custom generator subprocess bridge via `Process.run` kernel extern (no new `.fs` file) |
 | P2 | Diagnostics G0004–G0006 (parse error, error-severity diagnostic, import restriction) |
 | P2 | `lyric.toml` `kind = "source-generator"` enforcement in `Manifest.fs` |
+| P2 | Diagnostic G0008 (`@generate(Pkg.Name)` references a package not declared in `[dependencies]`) — supply-chain guard so a generator can't run unless the manifest opted into it. |
 | P3 | `@generate(Sql)` built-in |
 | P3 | `@generate(Proto)` built-in (backed by `lyric-proto`) |
 
