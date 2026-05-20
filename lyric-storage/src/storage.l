@@ -38,6 +38,57 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import Std.Iter
+import Std.String as Str
+
+// ─── Key safety primitives (defense-in-depth against path traversal) ─────────
+//
+// These helpers are exposed at the interface boundary so every
+// `StorageBucket` method can require `isSafeKey(key)` as a contract.
+// `Storage.Aspects.ValidateKey` adds a structured-error aspect-mode
+// wrapper for callers who want a `Result[T, StorageError]` rather than a
+// contract panic; the helpers in this file are the primary line of
+// defense (CWE-22).
+
+// Build a normalised inspection form: expand percent-encodings of `.`,
+// `/`, `\` only, then fold `\` → `/`.  The returned string is for
+// inspection only — the original key still reaches the backend.
+pub func normalisedStorageKey(s: in String): String {
+  val a = Str.replace(s, "%2e", ".")
+  val b = Str.replace(a, "%2E", ".")
+  val c = Str.replace(b, "%2f", "/")
+  val d = Str.replace(c, "%2F", "/")
+  val e = Str.replace(d, "%5c", "\\")
+  val f = Str.replace(e, "%5C", "\\")
+  Str.replace(f, "\\", "/")
+}
+
+// True when `s` contains a `..` path-traversal segment.  Caller is
+// expected to pass a normalised key.
+pub func storageKeyHasDotDot(s: in String): Bool {
+  val limit = s.length - 1
+  var i     = 0
+  while i < limit {
+    if s.charAt(i).toString() == "." and s.charAt(i + 1).toString() == "." {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+// True when `key` is safe to pass to a storage backend.  Rejects empty,
+// null-byte, leading-slash (absolute), and `..` traversal forms after
+// percent-decoding.  Used as a `requires:` precondition on every
+// `StorageBucket` method that accepts a key.
+pub func isSafeKey(key: in String): Bool {
+  if key.length == 0                    { return false }
+  if Str.contains(key, "\u{0000}")      { return false }
+  val n = normalisedStorageKey(key)
+  if n.length == 0                      { return false }
+  if n.charAt(0).toString() == "/"      { return false }
+  if storageKeyHasDotDot(n)             { return false }
+  return true
+}
 
 // ─── Kernel boundary (inlined) ────────────────────────────────────────────────
 // Declared here rather than imported from Storage.Kernel.Net because
@@ -134,16 +185,16 @@ pub interface StorageBucket {
     contentType: in String,
     userMeta:    in Map[String, String]
   ): Result[StorageMetadata, StorageError]
-    requires: key.length > 0
+    requires: isSafeKey(key)
     requires: contentType.length > 0
 
   /// Download the object stored under `key`.
   func get(key: in String): Result[StorageObject, StorageError]
-    requires: key.length > 0
+    requires: isSafeKey(key)
 
   /// Delete the object stored under `key`.
   func delete(key: in String): Result[Unit, StorageError]
-    requires: key.length > 0
+    requires: isSafeKey(key)
 
   /// List objects whose keys begin with `prefix`.  Pass an empty string to
   /// list all objects.  Use `continuationToken` and `maxKeys` for paging.
@@ -161,13 +212,13 @@ pub interface StorageBucket {
     key:              in String,
     expiresInSeconds: in Int
   ): Result[String, StorageError]
-    requires: key.length > 0
+    requires: isSafeKey(key)
     requires: expiresInSeconds >= 1
     requires: expiresInSeconds <= 604800
 
   /// Return true if an object with the given `key` exists.
   func exists(key: in String): Result[Bool, StorageError]
-    requires: key.length > 0
+    requires: isSafeKey(key)
 }
 
 // ─── Native bucket wrapper (internal) ────────────────────────────────────────
