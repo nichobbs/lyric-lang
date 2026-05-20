@@ -29,6 +29,7 @@ import Std.Process as Process
 import Std.Environment as Environment
 
 import Lyric.Lexer
+import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
@@ -73,61 +74,12 @@ pub record EmitProjectRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2. Subprocess helpers
+// §2. Subprocess helpers — shared with contract_meta.l via Lyric.CliShell.
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// NOTE: lyrExe / lyrPrefixArgs / lyrArgs are duplicated verbatim in
-// contract_meta.l.  If you change one, change both.  A shared
-// `Lyric.CliShell` package would eliminate the duplication once the import
-// graph permits it.
-//
-// The executable to invoke.  Two cases when LYRIC_CLI_DLL is set:
-//   a) LYRIC_BIN is the AppHost native launcher for the DLL
-//      (LYRIC_BIN + ".dll" == LYRIC_CLI_DLL).  Call it directly — the
-//      AppHost already knows its DLL, no "exec" prefix is needed.
-//   b) LYRIC_BIN is an explicit dotnet/wrapper executable (or unset).
-//      Use dotnet + "exec <dll>" prefix to run the managed DLL.
-// When LYRIC_CLI_DLL is unset, fall back to LYRIC_BIN or "lyric" on PATH.
-func lyrIsAppHost(): Bool {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
-  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
-}
 
-func lyrExe(): String {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
-    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
-    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
-      // AppHost mode: the native launcher IS the entry point for this DLL.
-      bin
-    } else {
-      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
-    }
-  } else {
-    Environment.getVarOrDefault("LYRIC_BIN", "lyric")
-  }
-}
+func lyrExe(): String { CliShell.lyrExe() }
 
-// Leading args that must precede any subcommand args.
-// Non-empty only when running under an explicit dotnet host (not AppHost).
-func lyrPrefixArgs(): List[String] {
-  val prefix: List[String] = newList()
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
-    prefix.add("exec")
-    prefix.add(cliDll)
-  }
-  prefix
-}
-
-// Build the full args list for a lyric subcommand invocation.
-func lyrArgs(subcmd: in List[String]): List[String] {
-  val all: List[String] = newList()
-  for a in lyrPrefixArgs().toArray() { all.add(a) }
-  for a in subcmd.toArray()          { all.add(a) }
-  all
-}
+func lyrArgs(subcmd: in List[String]): List[String] { CliShell.lyrArgs(subcmd) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Temporary source file

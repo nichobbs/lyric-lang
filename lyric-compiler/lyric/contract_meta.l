@@ -25,47 +25,15 @@ import Std.Process
 import Std.ProcessCapture
 import Std.Environment as Environment
 import Std.String as Str
+import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1. Subprocess helpers  (mirrors emitter.l §2 — keep in sync)
+// §1. Subprocess helpers — shared with emitter.l via Lyric.CliShell.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func lyrIsAppHost(): Bool {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
-  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
-}
+func lyrExe(): String { CliShell.lyrExe() }
 
-func lyrExe(): String {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
-    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
-    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
-      bin
-    } else {
-      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
-    }
-  } else {
-    Environment.getVarOrDefault("LYRIC_BIN", "lyric")
-  }
-}
-
-func lyrPrefixArgs(): List[String] {
-  val prefix: List[String] = newList()
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
-    prefix.add("exec")
-    prefix.add(cliDll)
-  }
-  prefix
-}
-
-func lyrArgs(subcmd: in List[String]): List[String] {
-  val all: List[String] = newList()
-  for a in lyrPrefixArgs().toArray() { all.add(a) }
-  for a in subcmd.toArray()          { all.add(a) }
-  all
-}
+func lyrArgs(subcmd: in List[String]): List[String] { CliShell.lyrArgs(subcmd) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. readFromFile
