@@ -1655,6 +1655,12 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
       rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
       rangeTerms.add(TBuiltin(op = BOpLt,  args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
     }
+    case RBKUpperBound(hi) -> {
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
+    }
+    case RBKLowerBound(lo) -> {
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
+    }
   }
   val allPostParts: List[Term] = newList()
   allPostParts.add(postTerm)
