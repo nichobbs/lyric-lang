@@ -82,14 +82,25 @@ jobs:
 
       - name: Run manual-test.sh
         id: run_pipeline
+        # Inputs are passed through `env:` so the shell sees them as data,
+        # not as code interpolated into the script body (workflow input
+        # injection class — see #820).  `only_stage` is the string input
+        # that strictly requires this; the booleans are safer but routed
+        # the same way for consistency.
+        env:
+          FAIL_FAST:  ${{ inputs.fail_fast }}
+          SKIP_JVM:   ${{ inputs.skip_jvm }}
+          SKIP_PROVE: ${{ inputs.skip_prove }}
+          SKIP_REPRO: ${{ inputs.skip_repro }}
+          ONLY_STAGE: ${{ inputs.only_stage }}
         run: |
           set -uo pipefail
           args=()
-          if [ "${{ inputs.fail_fast }}"  = "true" ]; then args+=(--fail-fast); fi
-          if [ "${{ inputs.skip_jvm }}"   = "true" ]; then args+=(--skip-jvm); fi
-          if [ "${{ inputs.skip_prove }}" = "true" ]; then args+=(--skip-prove); fi
-          if [ "${{ inputs.skip_repro }}" = "true" ]; then args+=(--skip-repro); fi
-          if [ -n "${{ inputs.only_stage }}" ]; then args+=(--only "${{ inputs.only_stage }}"); fi
+          [ "$FAIL_FAST"  = "true" ] && args+=(--fail-fast)
+          [ "$SKIP_JVM"   = "true" ] && args+=(--skip-jvm)
+          [ "$SKIP_PROVE" = "true" ] && args+=(--skip-prove)
+          [ "$SKIP_REPRO" = "true" ] && args+=(--skip-repro)
+          [ -n "$ONLY_STAGE" ]       && args+=(--only "$ONLY_STAGE")
           bash scripts/manual-test.sh "${args[@]}"
         # The script handles every stage's failure itself (unless
         # --fail-fast).  We still want a non-zero exit to mark the run as

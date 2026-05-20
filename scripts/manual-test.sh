@@ -284,9 +284,12 @@ build_one_manifest() {
   local manifest="$1" target="$2"
   local dir
   dir="$(dirname "$manifest")"
+  # `restore` runs first; if it fails we surface the error and skip the
+  # build (an `&&` chain) rather than running build against an un-restored
+  # tree and getting a misleading "package not found" failure downstream.
   ( cd "$dir" \
-      && lyric restore --manifest lyric.toml 2>/dev/null \
-      ; lyric build --manifest lyric.toml --target "$target"
+      && lyric restore --manifest lyric.toml \
+      && lyric build --manifest lyric.toml --target "$target"
   )
 }
 
@@ -406,10 +409,13 @@ tracked_lyric_files() {
 }
 
 stage_fmt_check() {
+  # Diagnostics from `lyric fmt --check` (the "not formatted" lines) flow
+  # into this stage's log file via `run_stage`, so reviewers can see *what*
+  # is unformatted, not just that something is.
   local rc=0 count=0 fail=0 f
   while IFS= read -r f; do
     count=$((count + 1))
-    if ! lyric fmt "$f" --check >/dev/null 2>&1; then
+    if ! lyric fmt "$f" --check; then
       fail=$((fail + 1))
       echo "FMT  $f"
     fi
@@ -421,10 +427,11 @@ stage_fmt_check() {
 }
 
 stage_lint() {
+  # Lint diagnostics flow into the stage log for the same reason as fmt.
   local rc=0 count=0 fail=0 f
   while IFS= read -r f; do
     count=$((count + 1))
-    if ! lyric lint "$f" --error-on-warning >/dev/null 2>&1; then
+    if ! lyric lint "$f" --error-on-warning; then
       fail=$((fail + 1))
       echo "LINT $f"
     fi
