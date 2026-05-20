@@ -1,9 +1,19 @@
 // msil/bridge.l — Self-hosted MSIL compilation pipeline (Phase R6).
 //
 // Public entry point that chains the self-hosted Lyric pipeline to produce a
-// .NET PE DLL from Lyric source text.  Calls:
-//   parse → error-check → newCodegenCtx → addPackageTokens
-//   → codegenMPackage → lowerMPackageWithCtx → writeBytes
+// .NET PE DLL from Lyric source text.  Calls (docs/41 §9 Band 1):
+//   parse → typecheck → modecheck → elaborate
+//        → newCodegenCtx → addPackageTokens
+//        → codegenMPackage → lowerMPackageWithCtx → writeBytes
+//
+// `Lyric.Mono` (call-site monomorphiser) is NOT yet wired in.  Its source
+// `lyric-compiler/lyric/mono.l` uses Lyric idioms that the frozen F#
+// bootstrap parser can't compile (literal-pattern match arms followed by
+// further arms — the F# parser P0040s on the second arm), so importing it
+// here breaks the precompile of `Lyric.Msil.Bridge.dll` itself.  Until
+// mono.l is restructured around the F# parser's quirks (or the F# parser
+// is patched), bare generics in source-code calls fall through to the
+// codegen's `MObject` default — which is the existing v0.x behaviour.
 
 package Msil.Bridge
 
@@ -12,32 +22,48 @@ import Std.Collections
 import Std.File
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.TypeChecker
+import Lyric.ModeChecker
+import Lyric.ContractElaborator
+// import Lyric.Mono     // (see header) — wiring deferred to Band 5/6
 import Msil.Lowering
 import Msil.Codegen
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.
 ///
-/// Returns true on success; false if the source contains parse errors or the
-/// file write fails.  The package name and assembly name are taken from the
-/// parsed `package` declaration in the source.
+/// Returns true on success; false if the source contains parse / type /
+/// mode errors, or if the file write fails.  All error- and warning-severity
+/// diagnostics from each pass are printed to stdout before the bridge
+/// returns.  The package name and assembly name are taken from the parsed
+/// `package` declaration in the source.
 pub func compileToMsil(source: in String, outputPath: in String): Bool {
   val parseResult = parse(source)
+  if reportAndAbort(parseResult.diagnostics) { return false }
 
-  // Abort on any error-severity diagnostic.
-  var hasErrors = false
-  var i = 0
-  while i < parseResult.diagnostics.count {
-    val diag = parseResult.diagnostics[i]
-    match diag.severity {
-      case DiagError   -> { hasErrors = true }
-      case DiagWarning -> { () }
-    }
-    i = i + 1
-  }
-  if hasErrors { return false }
+  // ── Middle-end (Band 1 of docs/41 §9) ─────────────────────────────────
+  // Run the self-hosted type checker, mode checker, and contract
+  // elaborator before codegen so that source-level diagnostics surface
+  // here instead of producing broken IL further down.
+  //
+  // Type-checker diagnostics are printed but NOT fatal yet: the self-hosted
+  // typechecker doesn't resolve cross-package imports (Band 6 in docs/41 —
+  // typechecker_resolver.l:129 "deferred to T7+"), so it raises T0010 /
+  // T0020 / T0050 for every reference to a stdlib name like `newList` or
+  // `List[Int]`.  Treating those as build failures here would regress every
+  // production program that imports `Std.*`.  Mode-checker diagnostics are
+  // fatal — V0001–V0011 enforcement only consults the file itself plus
+  // imported metadata, which the bridge supplies as the empty list (M4.1
+  // conservative fallback per modechecker_check.l:81).
+  val file0 = parseResult.file
 
-  val file = parseResult.file
+  val tcRes = check(file0)
+  reportDiagnostics(tcRes.diagnostics)   // advisory until Band 6
+
+  val mcRes = checkFile(file0)
+  if reportAndAbort(mcRes.diagnostics) { return false }
+
+  val file = elaborateFile(file0)
 
   // Reconstruct the package name as a dotted string (e.g. "Hello" or
   // "My.Package") from the parsed path segments.
@@ -66,6 +92,42 @@ pub func compileToMsil(source: in String, outputPath: in String): Bool {
     case Ok(_)  -> true
     case Err(_) -> false
   }
+}
+
+// Print every diagnostic in `diags` to stdout and return true when any of
+// them is error-severity.  Returning true tells the caller to abort the
+// compilation; warnings alone do not abort.
+func reportAndAbort(diags: in List[Diagnostic]): Bool {
+  var hasErrors = false
+  var i = 0
+  while i < diags.count {
+    val d = diags[i]
+    println(formatDiagnostic(d))
+    if d.severity == DiagError { hasErrors = true }
+    i = i + 1
+  }
+  hasErrors
+}
+
+// Print every diagnostic in `diags` to stdout without affecting the
+// compile's success/failure outcome.  Used for typechecker output until
+// Band 6 (cross-package resolution) lands.
+func reportDiagnostics(diags: in List[Diagnostic]): Unit {
+  var i = 0
+  while i < diags.count {
+    println(formatDiagnostic(diags[i]))
+    i = i + 1
+  }
+}
+
+func formatDiagnostic(d: in Diagnostic): String {
+  val sev = match d.severity {
+    case DiagError   -> "error"
+    case DiagWarning -> "warning"
+  }
+  sev + "[" + d.code + "] " +
+    d.span.startPos.line.toString() + ":" +
+    d.span.startPos.column.toString() + ": " + d.message
 }
 
 // Join path segments with "." — e.g. ["My", "Package"] → "My.Package".

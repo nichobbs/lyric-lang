@@ -3,17 +3,64 @@
 // Public entry point that chains the self-hosted Lyric pipeline to produce a
 // JAR file from Lyric source text.  Calls parse → codegen → lower → write.
 
+// `Lyric.Mono` (call-site monomorphiser) is NOT yet wired in.  Its source
+// `lyric-compiler/lyric/mono.l` uses Lyric idioms that the frozen F#
+// bootstrap parser can't compile (literal-pattern match arms followed by
+// further arms), so importing it here would break the precompile of
+// `Lyric.Jvm.Bridge.dll` itself.  See header comment in `msil/bridge.l`
+// for details.  Tracking: docs/41 §9 Bands 5–6.
+
 package Jvm.Bridge
 
 import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.TypeChecker
+import Lyric.ModeChecker
+import Lyric.ContractElaborator
+// import Lyric.Mono     // (see header) — wiring deferred
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.Codegen
 import Jvm.Driver
+
+// Print every diagnostic in `diags` to stdout and return true when any of
+// them is error-severity.  Warnings alone do not abort the build.  Mirrors
+// the helper in `msil/bridge.l` (Band 1 of docs/41 §9).
+func reportAndAbort(diags: in List[Diagnostic]): Bool {
+  var hasErrors = false
+  var i = 0
+  while i < diags.count {
+    val d = diags[i]
+    println(formatDiagnostic(d))
+    if d.severity == DiagError { hasErrors = true }
+    i = i + 1
+  }
+  hasErrors
+}
+
+// Print every diagnostic in `diags` to stdout without affecting the
+// compile's success/failure outcome.  Used for typechecker output until
+// Band 6 (cross-package resolution) lands.
+func reportDiagnostics(diags: in List[Diagnostic]): Unit {
+  var i = 0
+  while i < diags.count {
+    println(formatDiagnostic(diags[i]))
+    i = i + 1
+  }
+}
+
+func formatDiagnostic(d: in Diagnostic): String {
+  val sev = match d.severity {
+    case DiagError   -> "error"
+    case DiagWarning -> "warning"
+  }
+  sev + "[" + d.code + "] " +
+    d.span.startPos.line.toString() + ":" +
+    d.span.startPos.column.toString() + ": " + d.message
+}
 
 // Returns Some(typeName) if func main() has a 2-slot return type (Long or Double);
 // None otherwise.  These types require POP2 to discard, but the JVM main wrapper
@@ -62,19 +109,7 @@ func mainReturns2SlotType(file: in SourceFile): Option[String] {
 /// `java -jar` artefact.
 pub func compileToJar(source: in String, outputPath: in String, packageName: in String): Bool {
   val parseResult = parse(source)
-
-  // Abort on any error-severity diagnostic.
-  var hasErrors = false
-  var i = 0
-  while i < parseResult.diagnostics.count {
-    val diag = parseResult.diagnostics[i]
-    match diag.severity {
-      case DiagError   -> { hasErrors = true }
-      case DiagWarning -> { () }
-    }
-    i = i + 1
-  }
-  if hasErrors { return false }
+  if reportAndAbort(parseResult.diagnostics) { return false }
 
   // Reject func main(): Long/Double before codegen: the JVM main wrapper emits
   // a single-slot POP to discard the return value, which would corrupt the operand
@@ -89,7 +124,27 @@ pub func compileToJar(source: in String, outputPath: in String, packageName: in 
     case None -> ()
   }
 
-  val pkg    = codegenPackage(parseResult.file)
+  // ── Middle-end (Band 1 of docs/41 §9) ─────────────────────────────────
+  // Run the self-hosted type checker, mode checker, and contract
+  // elaborator before codegen.  The F# emitter co-runs today, but
+  // wiring the self-hosted middle-end here lets the JVM bridge stand on
+  // its own once `--target dotnet-legacy` is removed.
+  //
+  // Type-checker diagnostics are advisory only (no cross-package import
+  // resolution yet — see Band 6 in docs/41).  Mode-checker and elaborator
+  // output is fully self-contained, so V-codes / elaborated requires-and-
+  // ensures asserts are load-bearing here.
+  val file0 = parseResult.file
+
+  val tcRes = check(file0)
+  reportDiagnostics(tcRes.diagnostics)   // advisory until Band 6
+
+  val mcRes = checkFile(file0)
+  if reportAndAbort(mcRes.diagnostics) { return false }
+
+  val file = elaborateFile(file0)
+
+  val pkg    = codegenPackage(file)
   val pool   = poolNew()
   val classFiles = lowerPackage(pkg, pool)
 
@@ -105,7 +160,9 @@ pub func compileToJar(source: in String, outputPath: in String, packageName: in 
   // ModulePath segments are joined with "." (JVM manifest convention).
   // Falls back to the F#-supplied packageName when the file has no package
   // declaration (only the synthetic stdlib bootstrap can hit that path).
-  val segs = parseResult.file.packageDecl.path.segments
+  // Use the post-mono `file` rather than the raw parse tree so that
+  // future package-renaming passes in the middle-end stay authoritative.
+  val segs = file.packageDecl.path.segments
   var mainClassName: String = packageName
   if segs.count > 0 {
     var k = 0

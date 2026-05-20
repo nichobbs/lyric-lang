@@ -106,7 +106,7 @@ func singleSegPathExpr(name: in String, span: in Span): Expr {
 func typeExprKey(te: in TypeExpr): String {
   match te.kind {
     case TRef(path)         -> pathSegsKey(path.segments)
-    case TGenericApp(h, as) -> pathSegsKey(h.segments) + "_" + typeArgListKey(as)
+    case TGenericApp(h, gargs) -> pathSegsKey(h.segments) + "_" + typeArgListKey(gargs)
     case TUnit              -> "Unit"
     case TNever             -> "Never"
     case TSelf              -> "Self"
