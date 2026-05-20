@@ -184,11 +184,77 @@ pub func connectSendGrid(): Result[MailSender, MailError] {
 // ─── Convenience functions ────────────────────────────────────────────────────
 
 /// Top-level wrapper for `sender.send(msg)`.
+///
+/// Guards every CRLF / NUL-bearing field on `msg` before the kernel
+/// path can compose it into MIME headers (CWE-93).  The convenience
+/// wrappers (`sendSimple`, `sendHtml`) carry the same `requires:`
+/// clauses; this guard catches the direct-`send` path that constructed
+/// the `EmailMessage` record by hand.  See lyric-lang #396 / #740.
 @stable(since="0.1")
 pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailError]
   requires: msg.subject.length > 0
   requires: msg.to.length > 0
+  requires: not containsHeaderInjection(msg.subject)
+  requires: not containsHeaderInjection(msg.from.address)
+  requires: not containsHeaderInjection(msg.from.displayName)
 {
+  // Recipient addresses and attachment metadata can also carry CRLF;
+  // since they're collections the contract clauses above can't pin
+  // them, so check at the call boundary and produce a structured Err
+  // for the caller.
+  var i = 0
+  while i < msg.to.length {
+    if containsHeaderInjection(msg.to[i].address) or
+       containsHeaderInjection(msg.to[i].displayName) {
+      return Err(MailError(
+        message = "to[" + ("" + i) + "] contains CR/LF/NUL — header injection rejected",
+        code    = "HEADER_INJECTION"))
+    }
+    i = i + 1
+  }
+  var ci = 0
+  while ci < msg.cc.length {
+    if containsHeaderInjection(msg.cc[ci].address) or
+       containsHeaderInjection(msg.cc[ci].displayName) {
+      return Err(MailError(
+        message = "cc[" + ("" + ci) + "] contains CR/LF/NUL — header injection rejected",
+        code    = "HEADER_INJECTION"))
+    }
+    ci = ci + 1
+  }
+  var bi = 0
+  while bi < msg.bcc.length {
+    if containsHeaderInjection(msg.bcc[bi].address) or
+       containsHeaderInjection(msg.bcc[bi].displayName) {
+      return Err(MailError(
+        message = "bcc[" + ("" + bi) + "] contains CR/LF/NUL — header injection rejected",
+        code    = "HEADER_INJECTION"))
+    }
+    bi = bi + 1
+  }
+  // replyTo is optional — guard it when present.  Without this the
+  // MailKit / SendGrid kernels can still smuggle a Reply-To header.
+  match msg.replyTo {
+    case None -> ()
+    case Some(addr) ->
+      if containsHeaderInjection(addr.address) or
+         containsHeaderInjection(addr.displayName) {
+        return Err(MailError(
+          message = "replyTo contains CR/LF/NUL — header injection rejected",
+          code    = "HEADER_INJECTION"))
+      }
+  }
+  var ai = 0
+  while ai < msg.attachments.length {
+    if containsHeaderInjection(msg.attachments[ai].filename) or
+       containsHeaderInjection(msg.attachments[ai].contentType) {
+      return Err(MailError(
+        message = "attachments[" + ("" + ai) +
+                  "] filename/contentType contains CR/LF/NUL — header injection rejected",
+        code    = "HEADER_INJECTION"))
+    }
+    ai = ai + 1
+  }
   return sender.send(msg)
 }
 
@@ -207,6 +273,7 @@ pub func sendSimple(
   requires: subject.length > 0
   requires: body.length > 0
   requires: not containsHeaderInjection(subject)
+  requires: not containsHeaderInjection(to)
 {
   val toAddr = makeAddress(to)
   val msg    = buildMessage([toAddr], subject, body, "")
@@ -226,6 +293,7 @@ pub func sendHtml(
   requires: subject.length > 0
   requires: htmlBody.length > 0
   requires: not containsHeaderInjection(subject)
+  requires: not containsHeaderInjection(to)
 {
   val toAddr = makeAddress(to)
   val msg    = buildMessage([toAddr], subject, textBody, htmlBody)
