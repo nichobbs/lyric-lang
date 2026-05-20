@@ -13213,3 +13213,26 @@ see the gap.  Full option-a (run verifier post-elaboration) tracked
 in #336 follow-ups; needs a self-hosted aspect weaver to land first.
 
 **Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-270 — RFC zigzag test vectors + shift semantics docs (#361)
+
+Closes #361.  The zigzag32/zigzag64 implementations had already been
+rewritten to avoid shift operators (using `n * 2 ± 1` instead), so
+the underlying correctness bug from the issue is no longer present.
+What was still missing — and what #361 explicitly asked for — is RFC
+test coverage on the boundary cases and language-reference documentation
+of the `.shr` arithmetic-vs-logical distinction.
+
+* **`lyric-proto/tests/proto_types_tests.l`** — 10 new RFC vectors:
+  - `zigzag32(INT_MAX) = 0xFFFFFFFE`, `zigzag32(INT_MIN) = 0xFFFFFFFF`
+  - `unzigzag32` of the same constants
+  - Roundtrips for `INT_MAX`, `INT_MIN`, `LONG_MAX`, `LONG_MIN`, `-1`, `1`
+
+* **`docs/01-language-reference.md` §4.1** — document `.shl(n)` /
+  `.shr(n)` semantics: arithmetic right shift on signed types
+  (`Byte`, `Int`, `Long`), logical right shift on unsigned types
+  (`UInt`, `ULong`).  Cross-reference protobuf zigzag as the
+  canonical consumer.
+
+**Test results:** 789/789 emitter, 237/237 CLI.  The new proto
+vector tests run via `lyric test --manifest lyric-proto/lyric.toml`.

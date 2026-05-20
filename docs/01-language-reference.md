@@ -518,6 +518,8 @@ In split mode, packages are authored as `<package>.lspec` (containing `pub` decl
 Lyric adopts the **Swift operator precedence table** as its base, with the following modifications:
 
 - Bitwise operators are not symbolic — use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` methods on integer types. This sidesteps the C-family precedence trap with `&` and `==`.
+  - `.shl(n: Int)` — logical left shift by `n` bits.  Equivalent to multiplication by `2^n`; high bits are discarded.
+  - `.shr(n: Int)` — **arithmetic** right shift on signed integer types (`Byte`, `Int`, `Long`).  Sign bit is replicated into the vacated high bits, so negative inputs stay negative (`-1.shr(1) == -1`).  Unsigned types (`UInt`, `ULong`) get **logical** right shift (zero-extended).  This matches the .NET runtime's distinction between `>>` on `int` (arithmetic) and `int.UnsignedRightShift` / `>>>` introduced in .NET 7.  Protobuf zigzag encoders rely on this signed/unsigned split — see lyric-proto #361 for the RFC vector tests that pin the behaviour.
 - Chained comparisons follow **Rust's rule**: `a < b < c` is a parse error, not `(a < b) < c`. Comparison operators do not associate.
 - The ternary `?:` operator does not exist. Use `if expr then a else b`.
 - The `?` operator (error propagation) has its own precedence level immediately above postfix.
