@@ -223,7 +223,7 @@ pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailErr
     ci = ci + 1
   }
   var bi = 0
-  while bi < msg.bcc.count {
+  while bi < msg.bcc.length {
     if containsHeaderInjection(msg.bcc[bi].address) or
        containsHeaderInjection(msg.bcc[bi].displayName) {
       return Err(MailError(
@@ -232,8 +232,20 @@ pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailErr
     }
     bi = bi + 1
   }
+  // replyTo is optional — guard it when present.  Without this the
+  // MailKit / SendGrid kernels can still smuggle a Reply-To header.
+  match msg.replyTo {
+    case None -> ()
+    case Some(addr) ->
+      if containsHeaderInjection(addr.address) or
+         containsHeaderInjection(addr.displayName) {
+        return Err(MailError(
+          message = "replyTo contains CR/LF/NUL — header injection rejected",
+          code    = "HEADER_INJECTION"))
+      }
+  }
   var ai = 0
-  while ai < msg.attachments.count {
+  while ai < msg.attachments.length {
     if containsHeaderInjection(msg.attachments[ai].filename) or
        containsHeaderInjection(msg.attachments[ai].contentType) {
       return Err(MailError(
@@ -261,6 +273,7 @@ pub func sendSimple(
   requires: subject.length > 0
   requires: body.length > 0
   requires: not containsHeaderInjection(subject)
+  requires: not containsHeaderInjection(to)
 {
   val toAddr = makeAddress(to)
   val msg    = buildMessage([toAddr], subject, body, "")
@@ -280,6 +293,7 @@ pub func sendHtml(
   requires: subject.length > 0
   requires: htmlBody.length > 0
   requires: not containsHeaderInjection(subject)
+  requires: not containsHeaderInjection(to)
 {
   val toAddr = makeAddress(to)
   val msg    = buildMessage([toAddr], subject, textBody, htmlBody)
