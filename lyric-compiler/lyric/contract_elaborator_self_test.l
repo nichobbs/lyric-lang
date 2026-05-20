@@ -678,6 +678,61 @@ func testForInvariantLowered(): Unit {
   assertTrue(found, "for-invariant: SFor node found in body")
 }
 
+// #826 regression: a while-loop invariant nested inside an if-block must be
+// lowered to a runtime assert.  The function has no requires:/ensures: clauses,
+// so the early-return path in elaborateFunction must still detect the nested
+// SInvariant via stmtHasInvariant's SExpr case (otherwise the deep walk skips
+// and the assert is silently dropped).
+func testIfNestedWhileInvariantLowered(): Unit {
+  val src =
+    "package P\n" +
+    "func f(x: Int): Unit {\n" +
+    "  if x > 0 {\n" +
+    "    var i = 0\n" +
+    "    while i < 10\n" +
+    "      invariant: i >= 0\n" +
+    "    {\n" +
+    "      i = i + 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn   = firstFunction(file, "f")
+  val blk  = bodyBlockOf(fn)
+  var found = false
+  var i = 0
+  // Drill: body has [SExpr(EIf(_, EOBBlock([..., SWhile(...)])))].
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SExpr(e) -> match e.kind {
+        case EIf(_, thenBranch, _, _) -> match thenBranch {
+          case EOBBlock(thenBlk) -> {
+            var j = 0
+            while j < thenBlk.statements.count {
+              match thenBlk.statements[j].kind {
+                case SWhile(_, _, whileBody) -> {
+                  assertTrue(whileBody.statements.count >= 2,
+                    "if-nested while-invariant: body has assert + at least one user stmt")
+                  assertTrue(isAssertCall(whileBody.statements[0]),
+                    "if-nested while-invariant: body[0] is assert(...)")
+                  found = true
+                }
+                case _ -> {}
+              }
+              j = j + 1
+            }
+          }
+          case _ -> {}
+        }
+        case _ -> {}
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  assertTrue(found, "if-nested while-invariant: SWhile inside EIf body found")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test runner.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -703,5 +758,6 @@ func main(): Unit {
   testNestedReturnInTry()
   testWhileInvariantLowered()
   testForInvariantLowered()
+  testIfNestedWhileInvariantLowered()
   println("contract-elaborator self-test: ok")
 }

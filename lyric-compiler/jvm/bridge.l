@@ -20,6 +20,7 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.DiagnosticUtil as DiagUtil
 // import Lyric.Mono     // (see header) — wiring deferred
 import Jvm.Kernel
 import Jvm.Classfile
@@ -27,40 +28,19 @@ import Jvm.Lowering
 import Jvm.Codegen
 import Jvm.Driver
 
-// Print every diagnostic in `diags` to stdout and return true when any of
-// them is error-severity.  Warnings alone do not abort the build.  Mirrors
-// the helper in `msil/bridge.l` (Band 1 of docs/41 §9).
+// Diagnostic-printing helpers — thin wrappers over `Lyric.DiagnosticUtil`
+// (#827).  Local names differ from `DiagUtil.diag*` to dodge the
+// bootstrap call-resolver shadowing pitfall (lyric-lang #714).
 func reportAndAbort(diags: in List[Diagnostic]): Bool {
-  var hasErrors = false
-  var i = 0
-  while i < diags.count {
-    val d = diags[i]
-    println(formatDiagnostic(d))
-    if d.severity == DiagError { hasErrors = true }
-    i = i + 1
-  }
-  hasErrors
+  DiagUtil.diagReportAndAbort(diags)
 }
 
-// Print every diagnostic in `diags` to stdout without affecting the
-// compile's success/failure outcome.  Used for typechecker output until
-// Band 6 (cross-package resolution) lands.
 func reportDiagnostics(diags: in List[Diagnostic]): Unit {
-  var i = 0
-  while i < diags.count {
-    println(formatDiagnostic(diags[i]))
-    i = i + 1
-  }
+  DiagUtil.diagReport(diags)
 }
 
 func formatDiagnostic(d: in Diagnostic): String {
-  val sev = match d.severity {
-    case DiagError   -> "error"
-    case DiagWarning -> "warning"
-  }
-  sev + "[" + d.code + "] " +
-    d.span.startPos.line.toString() + ":" +
-    d.span.startPos.column.toString() + ": " + d.message
+  DiagUtil.diagFormat(d)
 }
 
 // Returns Some(typeName) if func main() has a 2-slot return type (Long or Double);

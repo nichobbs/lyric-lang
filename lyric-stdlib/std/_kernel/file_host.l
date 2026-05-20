@@ -73,3 +73,6 @@ pub func hostDeleteDirectory(path: in String): Unit = ()
 
 @externTarget("System.IO.Directory.Delete")
 pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit = ()
+
+@externTarget("System.IO.File.Delete")
+pub func hostDeleteFile(path: in String): Unit = ()
