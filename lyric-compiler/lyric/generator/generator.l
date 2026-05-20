@@ -183,9 +183,15 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
             skipBlockComment(src, i)
         }
         // Skip double-quoted string literals (including \" escapes).  Triple-
-        // quoted and raw strings are uncommon in source-generator-decorated
-        // files and would need a separate scanner; the plain-`"` form
-        // covers the dominant false-positive case.
+        // quoted (`"""..."""`) and raw (`r"..."`) string literals are NOT
+        // skipped today — a `@generate(X.Y)` embedded in either form would
+        // still trigger a directive.  These forms are uncommon in
+        // source-generator-decorated files; extending the scanner to honour
+        // them requires either re-using the full lexer or maintaining a
+        // shadow state machine here.  See PR #830 review #840 for the
+        // status; once `scanDirectives` consumers complain (or a fuzz pass
+        // surfaces a real false positive) the scanner gains a triple-quoted
+        // arm and the same `\\` escape treatment.
         else if src[i] == '"' {
             i = i + 1
             while i < src.length and src[i] != '"' {

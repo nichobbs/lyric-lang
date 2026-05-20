@@ -159,26 +159,38 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     }
   }
 
+  // Helper: best-effort cleanup of the per-invocation temp directory.
+  // Errors are swallowed so a transient file-handle leak doesn't fail
+  // a successful build; the OS will sweep the parent eventually.
+  // (#837: every early-exit path runs this before returning, so a
+  // write failure never leaves an orphaned UUID directory.)
+
   // Write each package's sources to temp files and build spec lines.
   // Spec line format: <packageName> TAB <srcPath1> TAB <srcPath2> ...
   val specLines: List[String] = newList()
+  var failMsg = ""
   var pi = 0
-  while pi < req.packages.count {
+  while pi < req.packages.count and failMsg == "" {
     val pkg = req.packages[pi]
     var line = pkg.name
     var si = 0
-    while si < pkg.sources.count {
+    while si < pkg.sources.count and failMsg == "" {
       val srcName = req.assemblyName + "__" + pkg.name + "__" + toString(si) + "__src.l"
       val srcPath = Path.join(tmpDir, srcName)
       match File.writeText(srcPath, pkg.sources[si]) {
         case Ok(_)  -> ()
-        case Err(e) -> return failResult("cannot write temp source: " + IOError.message(e))
+        case Err(e) -> { failMsg = "cannot write temp source: " + IOError.message(e) }
       }
       line = line + "\t" + srcPath
       si += 1
     }
     specLines.add(line)
     pi += 1
+  }
+
+  if failMsg != "" {
+    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    return failResult(failMsg)
   }
 
   // Append restored dependency DLL lines: DEP\t<name>\t<dllPath>
@@ -199,7 +211,12 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   val specPath = Path.join(tmpDir, req.assemblyName + "__project_spec.txt")
   match File.writeText(specPath, specContent) {
     case Ok(_)  -> ()
-    case Err(e) -> return failResult("cannot write project spec: " + IOError.message(e))
+    case Err(e) -> { failMsg = "cannot write project spec: " + IOError.message(e) }
+  }
+
+  if failMsg != "" {
+    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    return failResult(failMsg)
   }
 
   val targetStr = match req.target {
@@ -228,13 +245,7 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
       failResult("cannot launch compiler: " + IOError.message(e))
   }
 
-  // Best-effort cleanup of the per-invocation temp directory.
-  // We ignore errors here so a transient file-handle leak doesn't fail
-  // a successful build; the OS will sweep the parent eventually.
-  match File.deleteDirRecursive(tmpDir) {
-    case Ok(_)  -> ()
-    case Err(_) -> ()
-  }
+  match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
 
   result
 }

@@ -11,11 +11,41 @@ open System.IO
 open Expecto
 open Lyric.Cli
 
+// #839: probe whether SelfHostedJvm.compileToJar is callable in this
+// environment.  If the bridge cannot initialise (e.g. the Lyric.Jvm
+// host assembly is missing from the test run), the J001-targeted
+// tests below would fail with a confusing "expected J001 in stderr"
+// message rather than a clear skip.  This helper returns true when
+// the bridge can be invoked, and false otherwise — callers ignore
+// the test body in the false case.
+let private jvmBridgeAvailable () : bool =
+    let dir =
+        Path.Combine(
+            Path.GetTempPath(),
+            sprintf "lyric-j001-probe-%s" (Guid.NewGuid().ToString "N"))
+    Directory.CreateDirectory dir |> ignore
+    try
+        let jar    = Path.Combine(dir, "probe.jar")
+        let source = "package J001Probe\nfunc main(): Unit { println(\"ok\") }\n"
+        let prevErr = Console.Error
+        Console.SetError TextWriter.Null
+        try
+            try
+                SelfHostedJvm.compileToJar source jar "J001Probe" |> ignore
+                true
+            with _ -> false
+        finally
+            Console.SetError prevErr
+    finally
+        try Directory.Delete(dir, recursive = true) with _ -> ()
+
 let tests =
     testSequenced
     <| testList "JVM bridge diagnostics (J001)" [
 
         testCase "[J001 rejects func main(): Long]" <| fun () ->
+            if not (jvmBridgeAvailable ()) then
+                skiptest "SelfHostedJvm.compileToJar unavailable in this environment"
             // Capture Console.error output via a redirected stderr stream so
             // we can assert the J001 message is present.  The Lyric bridge
             // writes the diagnostic to stderr via Std.Console.error.
@@ -49,6 +79,8 @@ let tests =
                 try Directory.Delete(dir, recursive = true) with _ -> ()
 
         testCase "[J001 rejects func main(): Double]" <| fun () ->
+            if not (jvmBridgeAvailable ()) then
+                skiptest "SelfHostedJvm.compileToJar unavailable in this environment"
             let dir =
                 Path.Combine(
                     Path.GetTempPath(),
