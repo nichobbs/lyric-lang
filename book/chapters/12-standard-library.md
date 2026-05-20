@@ -37,6 +37,8 @@ Here is the full module inventory:
 | `Std.Iter` | `map`, `filter`, `fold`, `zip`, `take`, `drop` over slices |
 | `Std.Math` | `abs`, `sqrt`, `pow`, `min`, `max`, `floor`, `ceil` |
 | `Std.Random` | seeded RNG: `makeRandom`, `nextInt`, `nextDouble` |
+| `Std.SecureRandom` | CSPRNG: `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
+| `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]` |
 | `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `Clock` interface, ISO 8601 parsing |

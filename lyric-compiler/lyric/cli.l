@@ -1164,16 +1164,25 @@ func lockSha512OfLocalManifest(localDir: in String): Option[String] {
 /// NuGet cache lives elsewhere, or when `dotnet restore` was skipped).
 func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
   if name.length == 0 or version.length == 0 { return None }
-  val home = match Environment.getVar("HOME") {
-    case Ok(h)  -> h
-    case Err(_) ->
-      match Environment.getVar("USERPROFILE") {
-        case Ok(h)  -> h
-        case Err(_) -> return None
-      }
-  }
   val lower = name.toLower()
-  val cacheDir = Path.join(Path.join(Path.join(home, ".nuget"), "packages"), lower)
+  // NuGet honours `NUGET_PACKAGES` as an absolute override of the
+  // cache root — CI runners commonly point this at the workspace.
+  // Honour it first so the integrity check works on every host.
+  val cacheRoot = match Environment.getVar("NUGET_PACKAGES") {
+    case Ok(p)  -> p
+    case Err(_) -> {
+      val home = match Environment.getVar("HOME") {
+        case Ok(h)  -> h
+        case Err(_) ->
+          match Environment.getVar("USERPROFILE") {
+            case Ok(h)  -> h
+            case Err(_) -> return None
+          }
+      }
+      Path.join(home, ".nuget/packages")
+    }
+  }
+  val cacheDir = Path.join(cacheRoot, lower)
   val versionDir = Path.join(cacheDir, version)
   val nupkgPath = Path.join(versionDir, lower + "." + version + ".nupkg")
   match Hash.sha512OfFile(nupkgPath) {
@@ -1484,7 +1493,12 @@ func cmdRestore(argv: in slice[String]): Int {
             match locked.sha512 {
               case None ->
                 match resolved.sha512 {
-                  case None -> ()  // both None: e.g. pre-#738 lock file + non-NuGet HOME — soft path; warn but allow
+                  case None ->
+                    // Both None — typical for pre-#738 lock files on
+                    // hosts where the NuGet cache isn't under HOME.
+                    // Soft-pass but surface a warning so the operator
+                    // knows the integrity check was skipped.
+                    printErr("restore: --locked: warning: '" + resolved.name + "' has no SHA-512 on either side; integrity check skipped (regenerate lyric.lock with 'lyric restore' to populate digests)")
                   case Some(_) -> {
                     printErr("restore: --locked: '" + resolved.name + "' has no SHA-512 in the lock file; lyric.lock pre-dates content-integrity enforcement — run 'lyric restore' to regenerate")
                     lockMismatch = true
