@@ -13173,3 +13173,43 @@ gaps `inferExprTE` had at the start of this session:
   actionable message naming the runaway specialisation pattern.
 
 **Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-269 — V0031: warn proof-required functions decorated with aspects (#336)
+
+Closes the gap reported in #336 (option-b path): the self-hosted
+verifier walks the parsed AST, not the post-aspect-elaboration AST,
+so `requires:` / `ensures:` clauses introduced by an aspect's
+`around { }` body are not discharged.  Until the verifier moves
+post-elaboration (option-a; requires a self-hosted aspect weaver,
+which is its own multi-week project), the compiler now surfaces a
+**warning** at each affected function.
+
+* **`lyric-compiler/lyric/verifier/vcgen.l`** — `goalsForFile`
+  pre-scans the file for `IAspect` items and collects their names
+  into a `Map[String, Bool]`.  For each `@proof_required` IFunc,
+  the verifier checks the function's annotations against that set;
+  the first match emits `V0031` carrying the aspect name and the
+  function span.
+
+* **`docs/15-phase-4-proof-plan.md`** — `V0031` added to the
+  diagnostic catalogue with recovery hint ("mark function
+  `@runtime_checked` or hand-inline the aspect for proof").
+
+Verified on a minimal repro (`@proof_required` package, aspect
+`MyTimer`, decorated function `compute`):
+
+```
+$ lyric prove sample.l
+V0031 warning [11:1]: function 'compute' is decorated with @MyTimer;
+proofs verify the unelaborated body, which may differ from the
+runtime behaviour after aspect weaving — contracts on the aspect's
+around { } block are not discharged
+1/1 obligations discharged (@proof_required)
+```
+
+Proof still proceeds on the unelaborated body (so existing programs
+build) but downstream auditors and `claude-review` reviewers can
+see the gap.  Full option-a (run verifier post-elaboration) tracked
+in #336 follow-ups; needs a self-hosted aspect weaver to land first.
+
+**Test results:** 789/789 emitter, 237/237 CLI.
