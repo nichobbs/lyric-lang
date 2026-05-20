@@ -49,6 +49,20 @@ The `requires:` and `ensures:` clauses inside an extern declaration are axioms i
 **Note:** The `Lyric.Stdlib` F# shim is fully retired; the compiler now resolves `extern package` declarations directly against the BCL via reflection-driven binding. Any BCL type can be declared in an `extern package` block and annotated with `@externTarget`. Reach for the stdlib modules first — they provide idiomatic Lyric wrappers with contracts — but arbitrary BCL surfaces are accessible when needed.
 :::
 
+**Static vs. instance calls.** Lyric writes `@externStatic` or `@externInstance` next to `@externTarget` to tell the compiler which CIL/JVM call instruction to emit:
+
+```
+@externTarget("System.Math.Abs")
+@externStatic
+pub func absInt(n: in Int): Int
+
+@externTarget("System.String.Trim")
+@externInstance
+pub func strTrim(s: in String): String
+```
+
+`@externStatic` emits `call` / `invokestatic`; `@externInstance` emits `callvirt` / `invokevirtual` with Lyric arg 0 as the receiver. They are mutually exclusive; setting both is a diagnostic. When neither is present the .NET self-hosted MSIL emitter defaults to static — instance externs must annotate explicitly.
+
 ## §13.3 The `@axiom` social contract
 
 An `@axiom` block is not just compiler syntax. It is a commitment you record in your code review history.

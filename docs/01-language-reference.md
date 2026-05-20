@@ -1093,20 +1093,42 @@ If you need a generic list-add wrapper, implement it in Lyric using a kernel-lev
 monomorphised helper and expose a generic Lyric function that delegates to the
 concrete helper.
 
-**Static vs. instance call detection (JVM target).**  On the JVM backend the
-emitter determines whether a `@externTarget` binding is a static or instance
-call by inspecting the Lyric function name: if the name begins with a
-PascalCase prefix followed by an underscore (e.g. `Integer_parseInt`,
-`Math_abs`) the emitter emits `invokestatic`; otherwise it emits
-`invokevirtual` with the first parameter treated as the receiver.  A
-hand-written kernel extern that does not follow this convention will be
-silently misrouted.  The long-term fix is an explicit `kind = "static"` /
-`kind = "instance"` parameter on `@externTarget(...)` (tracked as a future
-enhancement); until then, all JVM kernel externs must obey the naming
-convention:
+**Static vs. instance call detection.**  Both backends need to know
+whether a `@externTarget` binding is a static or instance call.  The
+explicit form is two paired annotations (#370):
 
 ```
-// Static call — PascalCase prefix + underscore.
+// Static call — emits `call` / `invokestatic`.
+@externTarget("System.Math.Abs")
+@externStatic
+pub func absInt(n: in Int): Int
+
+// Instance call — emits `callvirt` / `invokevirtual` with the
+// receiver as Lyric arg 0.
+@externTarget("System.String.Trim")
+@externInstance
+pub func strTrim(s: in String): String
+```
+
+`@externStatic` and `@externInstance` are mutually exclusive; setting
+both is a diagnostic (the resolver falls back to `@externStatic` so
+the program still builds).  When neither is present, the .NET
+self-hosted MSIL emitter defaults to static, which is the safer
+choice for stdlib `@externTarget` declarations (most BCL externs are
+static methods or constructors).  Instance externs MUST be annotated
+explicitly — the resolver cannot disambiguate without the hint.
+
+**JVM backend (legacy convention).**  On the JVM backend the emitter
+also accepts a name-based heuristic for legacy stdlib code: if the
+Lyric function name begins with a PascalCase prefix followed by an
+underscore (e.g. `Integer_parseInt`, `Math_abs`) the emitter emits
+`invokestatic`; otherwise `invokevirtual`.  New code on either
+backend should use the explicit `@externStatic` / `@externInstance`
+annotations — the name-based convention is retained only for
+backwards compatibility with externs that pre-date #370:
+
+```
+// Static call — PascalCase prefix + underscore (legacy).
 @externTarget("java.lang.Integer.parseInt")
 pub func Integer_parseInt(s: in String): Int
 

@@ -13067,3 +13067,74 @@ to the T6+ type-checker tier; the emitter currently treats `var` fields
 identically to non-`var` fields at the IL level.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
+
+### D-progress-268 — Self-hosted MSIL FFI + `@externStatic` / `@externInstance` (#370)
+
+End-to-end FFI in the self-hosted MSIL emitter (Phase R6) plus the
+language gap closure for explicit static-vs-instance disambiguation
+on `@externTarget` declarations.
+
+**What shipped:**
+
+- **`lyric-compiler/msil/ffi.l`** (`Msil.Ffi` package) — the FFI resolver
+  for the self-hosted MSIL emitter.  `splitTarget(target)` parses
+  `"System.Type.Member"` (or `..ctor`) into (type FQN, member, isCtor).
+  `splitTypeFqn(typeFqn)` recovers (namespace, simple name).
+  `clrAssemblyForType(typeFqn)` is a hardcoded prefix → assembly table
+  covering every BCL surface the stdlib externs into; types not in the
+  table default to `System.Runtime` (the .NET facade that type-forwards
+  most `System.*` types).  `resolveExternTarget(target, arity, hint)`
+  returns an `FfiResolved` record that the codegen consumes.
+
+  Why a table instead of runtime reflection: the bootstrap F# emitter
+  writes PEs whose calling-assembly metadata trips up
+  `System.Type.GetType` from Lyric-emitted code (consistently returns
+  null even for types demonstrably loaded).  Rather than chase that
+  emit issue down, the resolver derives everything from the
+  `@externTarget` string + the Lyric param/return types, and the
+  `@externStatic` / `@externInstance` annotations resolve the
+  static-vs-instance ambiguity.
+
+- **`@externStatic` / `@externInstance` annotations (#370)** — paired,
+  mutually-exclusive disambiguation hints on `@externTarget`-bearing
+  Lyric functions.  Both annotations are no-ops without
+  `@externTarget`.  Setting both is a diagnostic (resolver falls back
+  to `@externStatic` so the program builds).  When neither is
+  present, the .NET self-hosted MSIL emitter defaults to static —
+  instance externs must annotate explicitly.
+
+- **`lyric-compiler/msil/codegen.l`** — `lowerFuncMsil` now detects
+  `@externTarget` on a `FunctionDecl` and synthesises the body from
+  the resolved BCL target.  Emits `MCall` (static), `MCallvirt`
+  (instance), or `MNewobj` (ctor) with the right MemberRef token.
+  Lazy `ffiAsmRefs` / `ffiTypeRefs` caches on `CodegenCtx` reuse the
+  pre-seeded `arRuntime` row for `System.Runtime` /
+  `System.Private.CoreLib` / `mscorlib`, and intern fresh
+  AssemblyRef / TypeRef rows for everything else on first use.
+
+- **Pre-existing codegen bug, also fixed** — intra-package function
+  calls returned `MObject` regardless of declared return type.
+  `println(userFn())` therefore always fell through to
+  `WriteLine(string)`, producing invalid IL when the actual return
+  was `Int`.  `CodegenCtx.funcRetTypes: Map[String, MsilType]` is
+  now populated in `addPackageTokens` from each `FunctionDecl.ret`,
+  and call sites consult it to return the correct `MsilType`.
+
+**Verified end-to-end** (self-hosted MSIL pipeline, `lyric build`
+default target):
+- `@externTarget("System.Math.Abs") @externStatic` → `Math.Abs(-7) = 7`.
+- `@externTarget("System.Math.Max") @externStatic` plus chained
+  intra-package calls.
+- `@externTarget("System.String.Trim") @externInstance` →
+  `"  hello  ".Trim() = "hello"`.
+- `@externTarget("System.String.Concat") @externStatic` → string
+  concatenation.
+
+**Docs updated:**
+- `docs/01-language-reference.md` §11.3 — replaced the JVM-only
+  name-based heuristic note with the cross-target `@externStatic` /
+  `@externInstance` annotations.
+
+**No F# bootstrap changes.**
+
+**Test results:** 789/789 emitter, 237/237 CLI.
