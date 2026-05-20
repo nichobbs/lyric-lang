@@ -13271,3 +13271,22 @@ throw and returns `Result[T, RegexError]`.
   to each entry.
 
 **Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-272 — Std.Json slice readers dispose JsonDocument (#328)
+
+The scalar `lyricJsonGet*` helpers in `lyric-stdlib/std/json.l`
+already wrap parsing in `defer { hostDisposeJson(doc) }`, but the
+slice readers in `lyric-stdlib/std/_kernel/json_host.l`
+(`lyricJsonGetIntSlice`, `lyricJsonGetLongSlice`,
+`lyricJsonGetDoubleSlice`, `lyricJsonGetBoolSlice`,
+`lyricJsonGetStringSlice`) were missing the disposal — each call
+leaked an unmanaged `JsonDocument` until GC.  This commit adds
+the `defer { hostDisposeJson(doc) }` to every slice reader.
+
+The other half of #328 — `lyricJsonGet*` re-parses the entire JSON
+on every field lookup, making N-field reads O(N) parses — is a
+shape change to `Std.Rest.jsonString`/`jsonInt`/`jsonBool` that
+needs a richer "parse once per response" API.  Left for a
+follow-up; the current code is correct (no leak), just suboptimal.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
