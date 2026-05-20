@@ -135,12 +135,19 @@ pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   }
 }
 
-/// Delete a single file.  Returns `Ok(())` on success and
-/// `Err(IoError)` for any host failure (not-found included — the
-/// kernel doesn't surface exception types, see deleteDirRecursive).
-/// `Err(InvalidPath)` for empty paths.  Callers that need idempotent
-/// "best-effort delete" semantics should `match` on the result and
-/// ignore `Err(IoError)`.
+/// Delete a single file.  Returns `Ok(())` on success;
+/// `Err(InvalidPath)` for empty paths; `Err(IoError)` for permission
+/// errors, locks, read-only-filesystem failures, and similar host
+/// problems.
+///
+/// **Idempotent on not-found.**  On .NET `System.IO.File.Delete`
+/// silently succeeds when the path doesn't exist (documented BCL
+/// behaviour: "An exception is not thrown if the specified file does
+/// not exist"), so this wrapper returns `Ok(())` for missing files too.
+/// Callers wanting "delete this file if it exists" semantics can
+/// invoke `deleteFile` unconditionally.  This is the opposite of
+/// `deleteDirRecursive`, which routes the BCL's
+/// `DirectoryNotFoundException` into `Err(IoError)`.
 @stable(since="0.1")
 pub func deleteFile(path: in String): Result[Unit, IOError] {
   if path.length == 0 {

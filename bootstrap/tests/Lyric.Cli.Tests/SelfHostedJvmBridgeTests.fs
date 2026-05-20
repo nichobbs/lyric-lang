@@ -12,12 +12,41 @@ open System.IO
 open Expecto
 open Lyric.Cli
 
+/// Probe whether `SelfHostedJvm.compileToJar` is callable in this
+/// environment by handing it a trivial-but-valid program.  If it
+/// returns true the bridge is healthy and the Band-1 gating tests
+/// below run their assertions; otherwise they `skiptest` so that a
+/// JVM-less host produces a clean skip rather than a false-pass on
+/// `Expect.isFalse ok` (the bridge would return false because it
+/// couldn't initialise, not because gating fired — #862).
+let private jvmBridgeAvailable () : bool =
+    let dir =
+        Path.Combine(
+            Path.GetTempPath(),
+            sprintf "lyric-jvm-bridge-probe-%s" (Guid.NewGuid().ToString "N"))
+    Directory.CreateDirectory dir |> ignore
+    try
+        let jar    = Path.Combine(dir, "probe.jar")
+        let source = "package JvmBridgeProbe\nfunc main(): Unit { println(\"ok\") }\n"
+        let prevErr = Console.Error
+        Console.SetError TextWriter.Null
+        try
+            try
+                SelfHostedJvm.compileToJar source jar "JvmBridgeProbe"
+            with _ -> false
+        finally
+            Console.SetError prevErr
+    finally
+        try Directory.Delete(dir, recursive = true) with _ -> ()
+
 /// Compile `source` via `SelfHostedJvm.compileToJar` and assert it
-/// FAILS.  Probes the bridge's static surface first; skips the
-/// assertion when the JVM kernel can't initialise in this environment
-/// (matching the #839 pattern from JvmDiagnosticTests).
+/// FAILS.  Skips when `jvmBridgeAvailable()` returns false so that a
+/// JVM-less host can't pass-by-accident on the `Expect.isFalse ok`
+/// assertion below.
 let private mkBridgeFails (label: string) (pkgName: string) (source: string) : Test =
     testCase (sprintf "[%s]" label) <| fun () ->
+        if not (jvmBridgeAvailable ()) then
+            skiptest "SelfHostedJvm.compileToJar unavailable in this environment"
         let dir =
             Path.Combine(
                 Path.GetTempPath(),
