@@ -84,6 +84,7 @@ pub record CodegenCtx {
   recordCtorTokens:   Map[String, Int]   // className → MethodDef token
   fieldTokens:        Map[String, Int]   // "ClassName/fieldName" → FieldDef token
   funcTokens:         Map[String, Int]   // funcName → MethodDef token
+  funcRetTypes:       Map[String, MsilType]   // funcName → MsilType of declared return
   // FFI caches (#370 + Phase R6).  Populated lazily by
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs:         Map[String, Int]   // assembly simple name → AssemblyRef row index
@@ -329,6 +330,7 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     recordCtorTokens     = recCtorToks,
     fieldTokens          = fieldToks,
     funcTokens           = funcToks,
+    funcRetTypes         = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap())
 }
@@ -401,6 +403,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
     match file.items[j].kind {
       case IFunc(decl) -> {
         cctx.funcTokens.add(decl.name, 0x06000000 + methodDefRow)
+        // Record the function's declared return type as an element-
+        // type byte so call sites can pick the right `WriteLine`
+        // overload etc.  Block/expr bodies are resolved through
+        // typeExprToMsil at codegen time; if no return annotation,
+        // default to Void.
+        val retTy = match decl.ret {
+          case Some(te) -> typeExprToMsil(te, pkgName)
+          case None     -> MVoid
+        }
+        cctx.funcRetTypes.add(decl.name, retTy)
         methodDefRow = methodDefRow + 1
       }
       case _ -> {}
@@ -1785,7 +1797,14 @@ func lowerBuiltinOrStaticCallMsil(
           i = i + 1
         }
         insns.add(MCall(methodToken = tok))
-        MObject
+        // Return the function's declared return type so call sites
+        // can dispatch builtins (println etc.) on the actual value
+        // type instead of falling through to the `WriteLine(string)`
+        // default.
+        match mapGet(cctx.funcRetTypes, funcName) {
+          case Some(rt) -> rt
+          case None     -> MObject
+        }
       }
       case None -> {
         // Could be a cross-package call via qualified path.

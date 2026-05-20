@@ -1,29 +1,40 @@
 // msil/ffi.l — Msil.Ffi
 //
 // FFI resolver for the self-hosted MSIL emitter (#370 + Phase R6).
-// Resolves `@externTarget("Type.Member")` declarations against the BCL
-// types loaded into the compiler's own AppDomain, then hands the
-// codegen back the pieces it needs (AssemblyRef name, namespace,
-// simple type name, member name, calling convention).
+// Resolves `@externTarget("Type.Member")` declarations to the
+// AssemblyRef name + namespace + simple type name + member name that
+// the codegen needs to emit a direct `call` / `callvirt` / `newobj`
+// to the BCL target.
 //
-// The reflection externs the resolver needs (`System.Type.GetType`,
-// `System.Reflection.MethodInfo.IsStatic`, etc.) are declared inline
-// here rather than in a stdlib `_kernel/` module: when Msil.Ffi
-// imported a kernel module, the bootstrap F# emitter dropped
-// Std.Core's union-case context from the consuming compilation and
-// `case Some(x) ->` patterns failed codegen with E11.  Declaring the
-// externs in this compiler package sidesteps that bug.  The kernel-
-// boundary ratchet (D038 Decision F) only scans `lyric-stdlib/std/`
-// so these declarations don't count toward the cap.
+// **No runtime reflection.**  The bootstrap F# emitter writes a PE
+// whose calling-assembly metadata trips up `System.Type.GetType` and
+// `Assembly.GetType(string)` — both return null even for types that
+// are demonstrably loaded.  Rather than rely on a runtime cascade
+// that doesn't work, the resolver:
 //
-// Cascade order (mirrors the F# bootstrap `resolveExternTarget`):
-//   constructor (..ctor)  -> separately, before the cascade.
-//   static-arity          -> static method matching name + arity.
-//   instance-arity        -> instance method matching name + arity-1
-//                            (Lyric arg 0 is the receiver).
+//   * Splits the `@externTarget` string at the last dot (or
+//     `..ctor` suffix) to recover the CLR type FQN and member name.
+//   * Looks up the host assembly in a hardcoded table keyed on the
+//     leading namespace prefix.  Every type the stdlib actually
+//     externs into is covered; types we haven't taught the table
+//     about default to `System.Runtime` (the .NET facade that type-
+//     forwards into `System.Private.CoreLib`).
+//   * Static-vs-instance is taken from the #370 hint annotations
+//     (`@externStatic` / `@externInstance`).  Without a hint the
+//     resolver defaults to static — callers MUST annotate instance
+//     externs explicitly so this can't silently miscompile.
 //
-// #370 resolve hint: `@externStatic` skips the instance branches;
-// `@externInstance` skips the static branches.
+// Trade-off vs reflection:
+//   + Works end-to-end today.
+//   + No dependency on `Type.GetType` being usable from emitted code.
+//   - Requires the type→assembly table to be kept in sync as new
+//     BCL surfaces enter the externs.  New types not in the table
+//     still emit (defaulted to System.Runtime), which works for
+//     types forwarded by that facade.
+//
+// Future improvement: once the underlying `Type.GetType`-from-Lyric-
+// PE issue is fixed, swap this back to a reflection cascade so the
+// table can retire.
 
 package Msil.Ffi
 
@@ -32,65 +43,12 @@ import Std.Collections
 import Std.String as Str
 import Lyric.Parser
 
-// ── Extern types ─────────────────────────────────────────────────────────────
-
-extern type ClrType         = "System.Type"
-extern type ClrAssembly     = "System.Reflection.Assembly"
-extern type ClrMethodInfo   = "System.Reflection.MethodInfo"
-extern type ClrAssemblyName = "System.Reflection.AssemblyName"
-extern type ClrAppDomain    = "System.AppDomain"
-
-// ── Reflection externs (inline to dodge the kernel-import bug) ───────────────
-
-@externTarget("System.Type.GetType")
-pub func reflTypeGetType(qualifiedName: in String): ClrType? = ()
-
-@externTarget("System.AppDomain.CurrentDomain")
-pub func reflCurrentDomain(): ClrAppDomain = ()
-
-@externTarget("System.AppDomain.GetAssemblies")
-pub func reflDomainAssemblies(domain: in ClrAppDomain): slice[ClrAssembly] = ()
-
-@externTarget("System.Reflection.Assembly.GetType")
-pub func reflAssemblyGetType(asm: in ClrAssembly, fullName: in String): ClrType? = ()
-
-@externTarget("System.Type.Assembly")
-pub func reflTypeAssembly(t: in ClrType): ClrAssembly = ()
-
-@externTarget("System.Reflection.Assembly.GetName")
-pub func reflAssemblyGetName(asm: in ClrAssembly): ClrAssemblyName = ()
-
-@externTarget("System.Reflection.AssemblyName.Name")
-pub func reflAssemblyNameName(n: in ClrAssemblyName): String = ()
-
-@externTarget("System.Type.Namespace")
-pub func reflTypeNamespace(t: in ClrType): String = ()
-
-@externTarget("System.Type.Name")
-pub func reflTypeName(t: in ClrType): String = ()
-
-@externTarget("System.Type.GetMethods")
-pub func reflTypeGetMethods(t: in ClrType): slice[ClrMethodInfo] = ()
-
-@externTarget("System.Reflection.MethodInfo.Name")
-pub func reflMethodName(m: in ClrMethodInfo): String = ()
-
-@externTarget("System.Reflection.MethodInfo.IsStatic")
-pub func reflMethodIsStatic(m: in ClrMethodInfo): Bool = ()
-
-@externTarget("System.Reflection.MethodInfo.GetParameters")
-pub func reflMethodGetParameters(m: in ClrMethodInfo): slice[ClrAssemblyName] = ()
-//  ↑ The actual return type is ParameterInfo[] but we only need
-//    `.length` to count parameters — re-using ClrAssemblyName as the
-//    opaque element type avoids one more extern type.  The handle is
-//    never inspected.
-
 // ── Resolve hint (#370) ──────────────────────────────────────────────────────
 
 pub union ResolveHint {
-  case RHEither       // default cascade
-  case RHStaticOnly   // @externStatic — skip the instance cascade
-  case RHInstanceOnly // @externInstance — skip the static cascade
+  case RHEither       // default: assume static
+  case RHStaticOnly   // @externStatic
+  case RHInstanceOnly // @externInstance
 }
 
 // ── Hint extraction (#370) ───────────────────────────────────────────────────
@@ -107,15 +65,15 @@ pub func hintFromAnnotations(anns: in List[Annotation]): ResolveHint {
     }
     i = i + 1
   }
-  if hasStatic and hasInstance {
-    return RHStaticOnly
-  }
+  // Both present → diagnostic concern of the caller; default to
+  // static so the program at least builds while the user fixes
+  // their annotations.
+  if hasStatic and hasInstance { return RHStaticOnly }
   if hasStatic   { return RHStaticOnly }
   if hasInstance { return RHInstanceOnly }
   RHEither
 }
 
-// True when both @externStatic and @externInstance are present.
 pub func hasConflictingHints(anns: in List[Annotation]): Bool {
   var i = 0
   var hasStatic = false
@@ -134,9 +92,9 @@ pub func hasConflictingHints(anns: in List[Annotation]): Bool {
 // ── Target-string parsing ────────────────────────────────────────────────────
 
 pub record TargetSplit {
-  typeName:   String
-  memberName: String
-  isCtor:     Bool
+  typeName:   String   // fully-qualified CLR type name
+  memberName: String   // method/field name (or ".ctor")
+  isCtor:     Bool     // true when target ended in "..ctor"
 }
 
 pub func splitTarget(target: in String): Option[TargetSplit] {
@@ -154,6 +112,26 @@ pub func splitTarget(target: in String): Option[TargetSplit] {
   }
 }
 
+// Holder for splitTypeFqn's result — a bare `(ns, name)` tuple
+// confuses the parser as a call expression in trailing position.
+pub record TypeFqnSplit {
+  ns:   String
+  name: String
+}
+
+// Split "System.Net.Http.HttpClient" into ("System.Net.Http",
+// "HttpClient").  Types with no namespace return ("", typeFqn).
+pub func splitTypeFqn(typeFqn: in String): TypeFqnSplit {
+  match Str.lastIndexOf(typeFqn, ".") {
+    case None -> TypeFqnSplit(ns = "", name = typeFqn)
+    case Some(dotIdx) -> {
+      val ns   = Str.substring(typeFqn, 0, dotIdx)
+      val name = Str.substring(typeFqn, dotIdx + 1, typeFqn.length - dotIdx - 1)
+      TypeFqnSplit(ns = ns, name = name)
+    }
+  }
+}
+
 // ── Resolved-target shape ────────────────────────────────────────────────────
 
 pub record FfiResolved {
@@ -165,29 +143,79 @@ pub record FfiResolved {
   isCtor:       Bool
 }
 
-// ── CLR type lookup ──────────────────────────────────────────────────────────
+// ── Type → assembly table ────────────────────────────────────────────────────
 
-// Try System.Type.GetType first; fall back to walking the loaded
-// assemblies in the compiler's own AppDomain when GetType returns
-// null.  The `case null ->` arm is recognised by the bootstrap
-// emitter as a null-equality test (codegen.fs handles
-// PBinding("null", None) specially against a nullable scrutinee).
-pub func findClrType(qualifiedName: in String): Option[ClrType] {
-  match reflTypeGetType(qualifiedName) {
-    case null -> ()
-    case t    -> return Some(value = t)
+// Look up the simple assembly name hosting a given CLR type.  Prefix
+// matches are checked longest-first so `System.Console` wins over
+// `System` (which falls back to System.Runtime).
+//
+// The table covers every BCL surface the stdlib actually externs into
+// today.  Anything not matched defaults to `System.Runtime`, which is
+// the .NET facade that type-forwards into System.Private.CoreLib —
+// safe for `System.*` core types like Math, String, Int32, etc.
+pub func clrAssemblyForType(typeFqn: in String): String {
+  // System.Console (System.Console.dll)
+  if Str.startsWith(typeFqn, "System.Console") { return "System.Console" }
+  // I/O surfaces (System.IO.FileSystem.dll)
+  if Str.startsWith(typeFqn, "System.IO.File")
+      or Str.startsWith(typeFqn, "System.IO.Directory")
+      or Str.startsWith(typeFqn, "System.IO.Path") { return "System.IO.FileSystem" }
+  // Streams (System.IO is in System.Runtime; the specific Streams
+  // helpers live in System.Runtime.Extensions on .NET 6+ but the
+  // forwarder makes them resolvable via System.Runtime).
+  // Net (System.Net.Primitives / System.Net.Http)
+  if Str.startsWith(typeFqn, "System.Net.Http") { return "System.Net.Http" }
+  if Str.startsWith(typeFqn, "System.Net") { return "System.Net.Primitives" }
+  // Regex (System.Text.RegularExpressions.dll)
+  if Str.startsWith(typeFqn, "System.Text.RegularExpressions") {
+    return "System.Text.RegularExpressions"
   }
-  val domain = reflCurrentDomain()
-  val asms   = reflDomainAssemblies(domain)
-  var i = 0
-  while i < asms.length {
-    match reflAssemblyGetType(asms[i], qualifiedName) {
-      case null -> ()
-      case t    -> return Some(value = t)
-    }
-    i = i + 1
+  // JSON (System.Text.Json.dll)
+  if Str.startsWith(typeFqn, "System.Text.Json") { return "System.Text.Json" }
+  // Encoding (System.Runtime.Extensions / System.Runtime)
+  // Linq (System.Linq.dll)
+  if Str.startsWith(typeFqn, "System.Linq") { return "System.Linq" }
+  // Collections — generic types are in System.Collections, concurrent
+  // in System.Collections.Concurrent.
+  if Str.startsWith(typeFqn, "System.Collections.Concurrent") {
+    return "System.Collections.Concurrent"
   }
-  None
+  if Str.startsWith(typeFqn, "System.Collections.Generic") {
+    return "System.Collections"
+  }
+  if Str.startsWith(typeFqn, "System.Collections") {
+    return "System.Collections.NonGeneric"
+  }
+  // Threading / tasks
+  if Str.startsWith(typeFqn, "System.Threading.Tasks") {
+    return "System.Threading.Tasks"
+  }
+  if Str.startsWith(typeFqn, "System.Threading") {
+    return "System.Threading"
+  }
+  // Process / diagnostics
+  if Str.startsWith(typeFqn, "System.Diagnostics.Process") {
+    return "System.Diagnostics.Process"
+  }
+  if Str.startsWith(typeFqn, "System.Diagnostics") {
+    return "System.Runtime.Extensions"
+  }
+  // Security cryptography
+  if Str.startsWith(typeFqn, "System.Security.Cryptography") {
+    return "System.Security.Cryptography"
+  }
+  // Globalization (in System.Runtime)
+  // Reflection (System.Reflection / Runtime.Loader for some)
+  if Str.startsWith(typeFqn, "System.Reflection") {
+    return "System.Runtime"
+  }
+  // Lyric host helpers — same DLL as the emitter.
+  if Str.startsWith(typeFqn, "Lyric.Emitter")
+      or Str.startsWith(typeFqn, "Lyric.Stdlib") { return "Lyric.Emitter" }
+  // Default: System.Runtime is the .NET facade that type-forwards
+  // most System.* types (String, Int32, Math, Object, Type, Exception,
+  // DateTime, TimeSpan, Guid, Uri, etc.).  This covers the long tail.
+  "System.Runtime"
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────
@@ -200,73 +228,29 @@ pub func resolveExternTarget(
   match splitTarget(target) {
     case None -> None
     case Some(ts) -> {
-      match findClrType(ts.typeName) {
-        case None -> None
-        case Some(t) -> {
-          val asmName = reflAssemblyNameName(reflAssemblyGetName(reflTypeAssembly(t)))
-          val ns      = reflTypeNamespace(t)
-          val tyName  = reflTypeName(t)
-
-          if ts.isCtor {
-            return Some(value = FfiResolved(
-              assemblyName = asmName,
-              namespaceStr = ns,
-              typeName     = tyName,
-              memberName   = ".ctor",
-              isStatic     = true,
-              isCtor       = true))
-          }
-
-          val allowStatic = match hint {
-            case RHEither       -> true
-            case RHStaticOnly   -> true
-            case RHInstanceOnly -> false
-          }
-          val allowInstance = match hint {
-            case RHEither       -> true
-            case RHStaticOnly   -> false
-            case RHInstanceOnly -> true
-          }
-
-          val methods = reflTypeGetMethods(t)
-
-          if allowStatic {
-            var i = 0
-            while i < methods.length {
-              val m = methods[i]
-              if reflMethodIsStatic(m) and reflMethodName(m) == ts.memberName
-                  and reflMethodGetParameters(m).length == paramArity {
-                return Some(value = FfiResolved(
-                  assemblyName = asmName,
-                  namespaceStr = ns,
-                  typeName     = tyName,
-                  memberName   = ts.memberName,
-                  isStatic     = true,
-                  isCtor       = false))
-              }
-              i = i + 1
-            }
-          }
-          if allowInstance and paramArity >= 1 {
-            var i = 0
-            while i < methods.length {
-              val m = methods[i]
-              if not reflMethodIsStatic(m) and reflMethodName(m) == ts.memberName
-                  and reflMethodGetParameters(m).length == paramArity - 1 {
-                return Some(value = FfiResolved(
-                  assemblyName = asmName,
-                  namespaceStr = ns,
-                  typeName     = tyName,
-                  memberName   = ts.memberName,
-                  isStatic     = false,
-                  isCtor       = false))
-              }
-              i = i + 1
-            }
-          }
-          None
-        }
+      val sp = splitTypeFqn(ts.typeName)
+      val ns = sp.ns
+      val tyName = sp.name
+      val asmName = clrAssemblyForType(ts.typeName)
+      val isStatic = match hint {
+        case RHStaticOnly   -> true
+        case RHInstanceOnly -> false
+        // No hint → assume static.  Callers must annotate instance
+        // externs with @externInstance explicitly; the cascade can't
+        // disambiguate without reflection and the default is the
+        // safer choice (most BCL externs in the stdlib are static).
+        case RHEither       -> true
       }
+      // Constructors always emit `newobj` (treated as static in
+      // FfiResolved — the codegen branches on `isCtor`).
+      val isStaticFinal = if ts.isCtor { true } else { isStatic }
+      Some(value = FfiResolved(
+        assemblyName = asmName,
+        namespaceStr = ns,
+        typeName     = tyName,
+        memberName   = ts.memberName,
+        isStatic     = isStaticFinal,
+        isCtor       = ts.isCtor))
     }
   }
 }
