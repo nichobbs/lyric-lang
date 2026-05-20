@@ -512,6 +512,77 @@ func testNestedReturnInIf(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Loop invariant lowering (docs/41 §9 Band 4).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func testWhileInvariantLowered(): Unit {
+  val src =
+    "package P\n" +
+    "func f(): Unit {\n" +
+    "  var i = 0\n" +
+    "  while i < 10\n" +
+    "    invariant: i >= 0\n" +
+    "  {\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn   = firstFunction(file, "f")
+  val blk  = bodyBlockOf(fn)
+  // Function body: [0] = var i, [1] = while
+  var found = false
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SWhile(_, _, body) -> {
+        // First statement of loop body must be the lowered assert.
+        assertTrue(body.statements.count >= 2,
+          "while-invariant: body has assert + at least one user stmt")
+        assertTrue(isAssertCall(body.statements[0]),
+          "while-invariant: body[0] is assert(...)")
+        found = true
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  assertTrue(found, "while-invariant: SWhile node found in body")
+}
+
+func testForInvariantLowered(): Unit {
+  val src =
+    "package P\n" +
+    "import Std.Collections\n" +
+    "func f(): Unit {\n" +
+    "  val xs: List[Int] = newList()\n" +
+    "  for x in xs\n" +
+    "    invariant: true\n" +
+    "  {\n" +
+    "    println(x)\n" +
+    "  }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn   = firstFunction(file, "f")
+  val blk  = bodyBlockOf(fn)
+  var found = false
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SFor(_, _, _, body) -> {
+        assertTrue(body.statements.count >= 2,
+          "for-invariant: body has assert + at least one user stmt")
+        assertTrue(isAssertCall(body.statements[0]),
+          "for-invariant: body[0] is assert(...)")
+        found = true
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  assertTrue(found, "for-invariant: SFor node found in body")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Test runner.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -531,5 +602,7 @@ func main(): Unit {
   testFileLevelIdentity()
   testNonFuncItemsPassthrough()
   testNestedReturnInIf()
+  testWhileInvariantLowered()
+  testForInvariantLowered()
   println("contract-elaborator self-test: ok")
 }

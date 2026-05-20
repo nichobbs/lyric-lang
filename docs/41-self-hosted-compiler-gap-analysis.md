@@ -45,6 +45,16 @@ source and surfaces errors before the JVM JAR is written under `--target
 jvm`, or (c) require `--target dotnet-legacy` (the F# escape hatch) which
 is the only path that runs the full middle-end.
 
+_Update (D-progress-276):_ Band 1 partially landed.  The MSIL and JVM
+bridges now run `Lyric.ModeChecker.checkFile` (fatal) and
+`Lyric.ContractElaborator.elaborateFile` (lowers `requires:` / `ensures:`)
+on every build.  `Lyric.TypeChecker.check` runs but its diagnostics are
+advisory until Band 6 plumbs cross-package import resolution into the
+self-hosted resolver.  `Lyric.Mono.monoFile` wiring is deferred — the F#
+bootstrap parser cannot compile `mono.l`'s literal-pattern match arms
+followed by further arms, so importing the package breaks the bridge
+precompile (see Band 1's status block in §9).
+
 ---
 
 ## §2  Compilation pipeline reality (verified from source)
@@ -540,25 +550,53 @@ exercised end-to-end.
 
 ### Band 1 — Wire the self-hosted middle-end into both bridges
 
+_Status: partially shipped in D-progress-276._
+
 Touch points:
 
 - `lyric-compiler/msil/bridge.l:24-69` and `lyric-compiler/jvm/bridge.l:63-129`.
 - Insert (in order, after parse, before codegen):
 
-  1. `Lyric.TypeChecker.checkFile(file)` — surface type-check diagnostics.
-  2. `Lyric.ModeChecker.checkFile(file)` — surface V-prefixed diagnostics.
-  3. `Lyric.ContractElaborator.elaborateFile(file)` — lower requires/ensures.
+  1. `Lyric.TypeChecker.check(file)` — surface type-check diagnostics.
+     **Shipped advisory only:** typechecker raises T0010 / T0020 / T0050
+     for every reference to a stdlib name like `newList` because the
+     resolver doesn't import cross-package items (Band 6;
+     `typechecker_resolver.l:129`).  Treating those as fatal would
+     regress every program that imports `Std.*`, so the bridge prints
+     the diagnostics without gating on them.  Promote to fatal once
+     Band 6 lands.
+  2. `Lyric.ModeChecker.checkFile(file)` — surface V-prefixed
+     diagnostics.  **Shipped fatal.**  Verified by
+     `SelfHostedMsilBridgeTests.[shm_mode_check_v0004]`.
+  3. `Lyric.ContractElaborator.elaborateFile(file)` — lower
+     requires/ensures.  **Shipped.**
   4. `Lyric.Mono.monoFile(file)` — same-package monomorphisation.
+     **Deferred.**  The F# bootstrap parser cannot compile mono.l
+     because its match arms like
+     `case Some(te) -> result = result + typeExprKey(te)` are
+     literal-pattern-shaped from the parser's view (followed by a
+     further arm) and trigger P0040 ("expected an item declaration")
+     on the next `case _ -> …`.  Until mono.l is restructured around
+     constructor-only patterns or the F# parser is patched (which is
+     blocked by the F# surface freeze in
+     `docs/23-fsharp-shim-elimination.md`), Band 1's mono step stays
+     commented out in both bridges.
   5. Then `codegenMPackage(file, ctx)` / `codegenPackage(file)`.
 
-- Add a smoke-test that compiles a deliberately type-incorrect program
-  under `--target dotnet` and asserts the build fails with a `T-` code.
-- Add a smoke-test that compiles a `requires false { … }` program and
-  asserts the resulting program panics at the `assert(false)` insertion.
+- Smoke tests landed in `SelfHostedMsilBridgeTests`:
+  - `[shm_mode_check_v0004]` compiles a `@proof_required` program with
+    an `@axiom` function carrying a body and asserts the bridge
+    rejects it.
+  - `[shm_parse_error]` compiles a trailing-`+` expression and asserts
+    the bridge rejects it.
+  - `requires false { … }` runtime panic test is still TODO — the
+    self-hosted MSIL emitter doesn't yet support user-defined function
+    calls in non-trivial shape (Band 2 §3.6), so the test would fail
+    on backend, not on the elaborator.  Re-add once Band 2 lands.
 
-Estimated size: ~150 LoC in each bridge plus a few hundred lines of new
-tests.  This is the single highest-leverage change in the entire
-remediation.
+The Band 1 change is in `msil/bridge.l` + `jvm/bridge.l` (~70 LoC each)
+plus `SelfHostedMsilBridgeTests.fs` (~35 LoC of new tests).  This is the
+single highest-leverage change in the entire remediation.
 
 ### Band 2 — MSIL backend feature parity
 
@@ -605,11 +643,18 @@ async generators, protected types, wire blocks, and FFI:
 
 ### Band 4 — Contract elaborator parity
 
-- Add protected-type entry lowering in
-  `contract_elaborator/elaborator.l` (the `:43-47` deferral).
-- Add loop `invariant:` runtime check insertion (the `:39-41` deferral)
+_Status: loop-invariant lowering shipped in D-progress-277.  Protected-type
+entries still deferred._
+
+- ~~Add loop `invariant:` runtime check insertion (the `:39-41` deferral)
   — produces `assert(inv)` at loop-head and at every `continue` /
-  fall-through edge.
+  fall-through edge.~~ **Shipped.**  `elaborator.l:elaborateStmtDeep`
+  now rewrites `SInvariant(inv)` to `mkAssertCall(inv, span)`, and a
+  new `functionBodyHasInvariant` predicate opts the function into the
+  deep-walk even when the function carries no requires/ensures clauses.
+- Add protected-type entry lowering in
+  `contract_elaborator/elaborator.l` (the `:43-47` deferral).  **Still
+  deferred.**
 - Update `docs/36-v1-roadmap.md` R4 to reflect that nested-return
   ensures already work (the current text is stale).
 
@@ -660,12 +705,12 @@ While auditing, the following authoritative docs were found to contradict
 the actual state of the code.  Each should be patched as part of band 1
 (low-risk doc work):
 
-| Doc | Line range | Current text | Reality |
-|---|---|---|---|
-| `docs/36-v1-roadmap.md` | R4 §"Critical dependency" paragraph (~lines 181-191) | "self-hosted `contract_elaborator/elaborator.l` (M5.2 stage 2) does not yet replicate these three cases" | Elaborator file header at `elaborator.l:25-34` documents full nested-return ensures support; only protected-type entries remain deferred |
-| `docs/10-bootstrap-progress.md` | tier table referencing `Lyric.Mono` | "M5.2 stage 4 — D-progress-229" | Per `mono.l:6-27` mono runs same-package-only; not wired into `Msil.Bridge` / `Jvm.Bridge`. Add explicit "not invoked from production builds" note |
-| `docs/33-platform-parity-remediation.md` | §7 Parity milestone | "Both self-hosted emitters have reached Phase R parity" | True for 20-program smoke-test set only; not true for full M1.4 language surface. Section should explicitly bracket "Phase R parity" as the smoke-test subset |
-| `docs/05-implementation-plan.md` | Phase 1 / Phase 5 status text | implies self-hosting milestones for codegen | self-hosted backend production-readiness blocker is band 1 (middle-end plumbing), not in any phased plan; this audit recommends adding §"Phase 5 production readiness" with the seven bands above |
+| Doc | Line range | Current text | Reality | Status |
+|---|---|---|---|---|
+| `docs/36-v1-roadmap.md` | R4 §"Critical dependency" paragraph (~lines 181-191) | "self-hosted `contract_elaborator/elaborator.l` (M5.2 stage 2) does not yet replicate these three cases" | Elaborator now covers nested-return ensures (was already true) and loop `invariant:` lowering (D-progress-277); only protected-type entries remain deferred | ✅ Patched in D-progress-277 commit |
+| `docs/10-bootstrap-progress.md` | tier table referencing `Lyric.Mono` | "M5.2 stage 4 — D-progress-229" | Per `mono.l:6-27` mono runs same-package-only; not wired into `Msil.Bridge` / `Jvm.Bridge`. Add explicit "not invoked from production builds" note | ✅ Patched in D-progress-276 |
+| `docs/33-platform-parity-remediation.md` | §7 Parity milestone | "Both self-hosted emitters have reached Phase R parity" | True for 20-program smoke-test set only; not true for full M1.4 language surface. Section should explicitly bracket "Phase R parity" as the smoke-test subset | Pending |
+| `docs/05-implementation-plan.md` | Phase 1 / Phase 5 status text | implies self-hosting milestones for codegen | self-hosted backend production-readiness blocker is band 1 (middle-end plumbing), partly addressed in D-progress-276 (typechecker / modechecker / elaborator wired; mono and cross-package still deferred) | Pending |
 
 ---
 

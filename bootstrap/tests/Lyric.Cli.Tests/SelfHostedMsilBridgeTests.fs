@@ -61,6 +61,21 @@ let private mkBridge (label: string) (source: string) (expected: string) : Test 
         finally
             try Directory.Delete(dir, recursive = true) with _ -> ()
 
+/// Compile `source` via the self-hosted MSIL bridge and assert that the
+/// compile FAILS — used to verify Band 1 middle-end gating (mode checker
+/// catches V-codes, parse errors abort, etc.).
+let private mkBridgeFails (label: string) (source: string) : Test =
+    testCase (sprintf "[%s]" label) <| fun () ->
+        let dir = Path.Combine(Path.GetTempPath(), "lyric-msil-bridge-test-" + label + "-" + Guid.NewGuid().ToString("N"))
+        Directory.CreateDirectory dir |> ignore
+        try
+            let dllPath = Path.Combine(dir, label + ".dll")
+            let ok = SelfHostedMsil.compileToDll source dllPath
+            Expect.isFalse ok
+                (sprintf "self-hosted MSIL compile should fail for '%s' (Band 1 gating)" label)
+        finally
+            try Directory.Delete(dir, recursive = true) with _ -> ()
+
 let tests =
     testSequenced
     <| testList "SelfHostedMsil bridge (codegen end-to-end)" [
@@ -146,4 +161,30 @@ func main(): Unit {
 """
             "3"
 
+        // ── Band 1 (docs/41 §9) — middle-end gating ───────────────────────────
+
+        // The mode checker now runs from the bridge.  An @axiom function with
+        // a body is V0004; without Band 1's wiring the bridge silently emitted
+        // a DLL anyway.
+        mkBridgeFails "shm_mode_check_v0004"
+            """@proof_required
+package ShMVerify
+
+@axiom
+func aboveSafe(x: in Int): Bool {
+  x > 0
+}
+
+func main(): Unit { }
+"""
+
+        // Parse errors must also abort the bridge before codegen — verifies
+        // the new `reportAndAbort` plumbing.
+        mkBridgeFails "shm_parse_error"
+            """package ShMParse
+
+func main(): Unit {
+  val x = 1 +
+}
+"""
     ]

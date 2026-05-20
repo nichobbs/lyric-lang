@@ -13372,3 +13372,81 @@ Not actioned:
   divergence.
 
 **Test results:** 796/796 emitter, 237/237 CLI.
+
+### D-progress-276 — Self-hosted middle-end wired into MSIL and JVM bridges (docs/41 Band 1, partial)
+
+Wires the self-hosted Lyric middle-end into both production back-end
+bridges per `docs/41 §9 Band 1`.  Previously the bridges ran
+`parse → codegen → lowering` directly: a type-incorrect program under
+`--target dotnet` compiled to broken IL with no diagnostic, and
+`requires:` / `ensures:` clauses survived in the AST without ever being
+lowered to runtime asserts.
+
+Scope landed:
+
+* **`lyric-compiler/msil/bridge.l` and `jvm/bridge.l`** now call, after
+  parse and before codegen:
+  1. `Lyric.TypeChecker.check(file)` — diagnostics printed (see below).
+  2. `Lyric.ModeChecker.checkFile(file)` — V-code errors abort the build.
+  3. `Lyric.ContractElaborator.elaborateFile(file)` — `requires:` /
+     `ensures:` lowered to runtime asserts in the AST.
+* **Diagnostic printing.**  Each pass's diagnostics (severity + code +
+  span + message) now print to stdout before the bridge returns.  Parse
+  errors and mode-checker errors fail the build immediately.
+* **Typechecker diagnostics are advisory.**  The self-hosted typechecker
+  doesn't resolve cross-package imports yet (Band 6;
+  `typechecker_resolver.l:129` "deferred to T7+"), so it raises T0010 /
+  T0020 / T0050 for every reference to a stdlib name.  Treating those as
+  build failures would regress every production program that imports
+  `Std.*`, so `tcRes.diagnostics` are surfaced but not gating.  When
+  Band 6 lands the bridge will switch back to `reportAndAbort`.
+* **`Lyric.Mono` wiring deferred.**  Importing `Lyric.Mono` from the
+  bridge breaks the precompile of `Lyric.Msil.Bridge.dll` itself: the
+  frozen F# bootstrap parser cannot parse literal-pattern match arms
+  followed by a further arm — every `case 1 -> 42 \n case _ -> 99`
+  shape P0040s.  `mono.l:782+` uses this idiom (via `case Some(te) ->
+  result = result + …`), and the workaround is to restructure mono.l
+  around constructor-only patterns.  Tracking in the band 5–6 follow-up;
+  for now the `Lyric.Mono` import is commented out with a header note.
+* **Bridge tests added.**  `SelfHostedMsilBridgeTests` gains
+  `mkBridgeFails` for "compile should fail" assertions, plus
+  `shm_mode_check_v0004` (V0004: `@axiom` function with body) and
+  `shm_parse_error` (trailing `+` in a `val` initialiser).
+
+Side fix: renamed the `as` binding in
+`lyric-compiler/lyric/mono.l:typeExprKey` (`case TGenericApp(h, as) ->
+…`) to `gargs` — `as` is a reserved keyword in Lyric and the bare
+binding name was a latent footgun, even though mono.l doesn't yet ride
+the production import path.
+
+**Test results:** 237/237 Lyric.Cli (including 8/8
+SelfHostedMsilBridgeTests, 66/66 ParityTests across the three targets).
+
+### D-progress-277 — Contract elaborator lowers loop invariants (docs/41 Band 4)
+
+Closes the first half of docs/41 §9 Band 4: loop `invariant:`
+clauses now lower to runtime `assert(inv)` calls at the top of every
+reachable loop body, instead of being passed through as inert
+`SInvariant` AST nodes.
+
+* **`lyric-compiler/lyric/contract_elaborator/elaborator.l:elaborateStmtDeep`**
+  gains an `SInvariant(inv)` case that emits `mkAssertCall(inv, span)`.
+  Continue and fall-through edges both re-enter the loop head, so a
+  single assert at the start of the body covers them.  Break exits
+  without re-checking, matching the operational semantics in
+  `docs/08-contract-semantics.md`.
+* **Function-body opt-in.**  `elaborateFunction` previously short-circuited
+  when a function had no `requires:` and no `ensures:` — that path
+  bypassed the deep-walk that would have rewritten `SInvariant`.  A new
+  `functionBodyHasInvariant` predicate (walks `SWhile` / `SFor` / `SLoop` /
+  `STry` / `SScope` / `SDefer` bodies) now also opts the function into
+  elaboration.
+* **`contract_elaborator_self_test.l`** gains `testWhileInvariantLowered`
+  and `testForInvariantLowered`, both verifying that the first
+  statement of the rewritten loop body is `SExpr(ECall(EPath("assert"),
+  …))`.
+
+Still deferred (will follow as part of the second half of Band 4):
+protected-type entries (`PMEntry` with `barrier:` / `invariant:` clauses).
+
+**Test results:** 797/797 emitter, 239/239 Lyric.Cli.
