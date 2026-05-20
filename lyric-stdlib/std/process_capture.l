@@ -44,7 +44,7 @@ pub func quoteArg(arg: in String): String {
 // Build a single pre-formed argument string from a list.  Every
 // argument is wrapped in `"..."` with backslash + quote escaping so
 // the receiving process re-tokenises identically on POSIX and Windows.
-func buildArgString(args: in List[String]): String {
+pub func buildArgString(args: in List[String]): String {
   var result = ""
   var i = 0
   val count = args.count
