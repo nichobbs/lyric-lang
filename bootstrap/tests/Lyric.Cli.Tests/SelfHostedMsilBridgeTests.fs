@@ -187,4 +187,118 @@ func main(): Unit {
   val x = 1 +
 }
 """
+
+        // ── Band 2 (#849): IEnum → CLR int enum TypeDef ───────────────────────
+        // Enum cases use the `case Name` syntax (no value list on one line).
+        mkBridge "shm_enum_smoke"
+            """package ShMEnum
+
+enum Color {
+  case Red
+  case Green
+  case Blue
+}
+
+func main(): Unit {
+  println("enum ok")
+}
+"""
+            "enum ok"
+
+        // ── Band 2 (#850): IVal → static init-only field; literal val inlines ──
+        // `val ANSWER: Int = 42` produces a single ldc.i4 init, which the
+        // codegen inlines into constValues so `println(ANSWER)` emits ldc.i4 42.
+        mkBridge "shm_const_int"
+            """package ShMConst
+
+val ANSWER: Int = 42
+
+func main(): Unit {
+  println(ANSWER)
+}
+"""
+            "42"
+
+        // ── Band 2 (#850): IVal with non-literal init → static .cctor ────────
+        mkBridge "shm_val_cctor"
+            """package ShMVal
+
+val COMPUTED: Int = 10 + 5
+
+func main(): Unit {
+  println("val ok")
+}
+"""
+            "val ok"
+
+        // ── Band 2 (#853): IInterface → CLR interface TypeDef ────────────────
+        mkBridge "shm_interface_smoke"
+            """package ShMIface
+
+interface Greeter {
+  func greet(name: in String): String
+}
+
+func main(): Unit {
+  println("interface ok")
+}
+"""
+            "interface ok"
+
+        // ── Band 2 (#853): IOpaque → sealed TypeDef with private fields + .ctor ─
+        // Opaque field syntax is `fieldName: Type` (no `val` keyword).
+        mkBridge "shm_opaque_smoke"
+            """package ShMOpaque
+
+opaque type Token {
+  raw: String
+}
+
+func main(): Unit {
+  println("opaque ok")
+}
+"""
+            "opaque ok"
+
+        // ── Band 2 (#855): IAspect + aspect weaver ────────────────────────────
+        // The weaver runs before addPackageTokens so that `doWork` in funcTokens
+        // points to the synthesised wrapper.  The wrapper's body is the aspect's
+        // `around` block; `main` calls `doWork()` which dispatches to the wrapper.
+        mkBridge "shm_aspect_weave"
+            """package ShMAspect
+
+aspect Shim {
+  matches: visibility: pub
+  around(args) {
+    println("shim ran")
+  }
+}
+
+pub func doWork(): Unit {
+  println("original")
+}
+
+func main(): Unit {
+  doWork()
+}
+"""
+            "shim ran"
+
+        // ── Band 2 (#855): IProtected → Monitor-based record (bootstrap: regular record) ─
+        // Protected fields use `var` / `let`; entries use `entry name(params): Ret { body }`.
+        mkBridge "shm_protected_smoke"
+            """package ShMProtected
+
+protected type Counter {
+  var count: Int = 0
+  entry increment(): Unit {
+    count = count + 1
+  }
+}
+
+func main(): Unit {
+  println("protected ok")
+}
+"""
+            "protected ok"
     ]

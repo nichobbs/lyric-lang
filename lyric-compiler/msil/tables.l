@@ -88,6 +88,7 @@ pub val FDA_INIT_ONLY          : Int = 0x0020
 pub val FDA_LITERAL            : Int = 0x0040
 pub val FDA_SPECIAL_NAME       : Int = 0x0200
 pub val FDA_RT_SPECIAL_NAME    : Int = 0x0400
+pub val FDA_HAS_DEFAULT        : Int = 0x8000   // field has a constant in the Constant table
 
 // ── Param attribute flags (ECMA-335 §II.23.1.13) ─────────────────────────────
 pub val PRA_NONE               : Int = 0x0000
@@ -279,6 +280,34 @@ pub record AssemblyRefRow {
   hashValue:      Int  // #Blob (0 if no hash)
 }
 
+// Constant (Table 0x0B) — ECMA-335 §II.22.9.
+// Records a compile-time constant value for a Field, Param, or Property.
+pub record ConstantRow {
+  type_:  Int  // ELEMENT_TYPE_* constant (e.g., 0x08 = ELEMENT_TYPE_I4)
+  parent: Int  // coded: HasConstant (Field=0, Param=1, Property=2), 2-bit tag
+  value:  Int  // #Blob index of little-endian constant value bytes
+}
+
+// MethodImpl (Table 0x19) — ECMA-335 §II.22.27.
+// Maps an interface method slot to its implementing method in a type.
+pub record MethodImplRow {
+  class_:              Int  // 1-based TypeDef row of the implementing type
+  methodBody:          Int  // coded: MethodDefOrRef — the implementing method
+  methodDeclaration:   Int  // coded: MethodDefOrRef — the interface slot being implemented
+}
+
+// ── Coded-index helpers (additional) ─────────────────────────────────────────
+
+// HasConstant (2-bit tag, §II.24.2.6 tag table 3):
+//   Field=0, Param=1, Property=2
+pub func hconstField(row: in Int): Int = (row * 4) + 0
+pub func hconstParam(row: in Int): Int = (row * 4) + 1
+
+// MethodDefOrRef (1-bit tag, §II.24.2.6 tag table 10):
+//   MethodDef=0, MemberRef=1
+pub func mdorMethodDef(row: in Int): Int = (row * 2) + 0
+pub func mdorMemberRef(row: in Int): Int = (row * 2) + 1
+
 // ── MetadataTables container ───────────────────────────────────────────────────
 
 pub record MetadataTables {
@@ -290,8 +319,10 @@ pub record MetadataTables {
   params_:          List[ParamRow]
   interfaceImpls:   List[InterfaceImplRow]
   memberRefs:       List[MemberRefRow]
+  constants:        List[ConstantRow]
   customAttrs:      List[CustomAttrRow]
   standAloneSigs:   List[StandAloneSigRow]
+  methodImpls:      List[MethodImplRow]
   typeSpecs:        List[TypeSpecRow]
   assemblies:       List[AssemblyRow]
   assemblyRefs:     List[AssemblyRefRow]
@@ -307,8 +338,10 @@ pub func newMetadataTables(): MetadataTables {
     params_        = newList(),
     interfaceImpls = newList(),
     memberRefs     = newList(),
+    constants      = newList(),
     customAttrs    = newList(),
     standAloneSigs = newList(),
+    methodImpls    = newList(),
     typeSpecs      = newList(),
     assemblies     = newList(),
     assemblyRefs   = newList()
@@ -351,6 +384,16 @@ pub func addParam(t: in MetadataTables, r: in ParamRow): Int {
 pub func addInterfaceImpl(t: in MetadataTables, r: in InterfaceImplRow): Int {
   t.interfaceImpls.add(r)
   t.interfaceImpls.count
+}
+
+pub func addConstant(t: in MetadataTables, r: in ConstantRow): Int {
+  t.constants.add(r)
+  t.constants.count
+}
+
+pub func addMethodImpl(t: in MetadataTables, r: in MethodImplRow): Int {
+  t.methodImpls.add(r)
+  t.methodImpls.count
 }
 
 pub func addMemberRef(t: in MetadataTables, r: in MemberRefRow): Int {
@@ -419,8 +462,10 @@ val TABLE_BIT_METHOD_DEF  : Long = 64i64          // table 0x06, bit 6
 val TABLE_BIT_PARAM       : Long = 256i64         // table 0x08, bit 8
 val TABLE_BIT_INTERFACE_IMPL  : Long = 512i64           // table 0x09, bit 9
 val TABLE_BIT_MEMBER_REF      : Long = 1024i64          // table 0x0A, bit 10
+val TABLE_BIT_CONSTANT        : Long = 2048i64          // table 0x0B, bit 11 (2^11)
 val TABLE_BIT_CUSTOM_ATTR     : Long = 4096i64          // table 0x0C, bit 12
 val TABLE_BIT_STAND_ALONE_SIG : Long = 131072i64        // table 0x11, bit 17 (2^17)
+val TABLE_BIT_METHOD_IMPL     : Long = 33554432i64      // table 0x19, bit 25 (2^25)
 val TABLE_BIT_TYPE_SPEC       : Long = 134217728i64     // table 0x1B, bit 27 (2^27)
 val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
 val TABLE_BIT_ASSEMBLY_REF    : Long = 34359738368i64   // table 0x23, bit 35 (2^35)
@@ -468,8 +513,10 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.params_.count > 0          { valid = valid + TABLE_BIT_PARAM }
   if t.interfaceImpls.count > 0   { valid = valid + TABLE_BIT_INTERFACE_IMPL }
   if t.memberRefs.count > 0       { valid = valid + TABLE_BIT_MEMBER_REF }
+  if t.constants.count > 0        { valid = valid + TABLE_BIT_CONSTANT }
   if t.customAttrs.count > 0      { valid = valid + TABLE_BIT_CUSTOM_ATTR }
   if t.standAloneSigs.count > 0   { valid = valid + TABLE_BIT_STAND_ALONE_SIG }
+  if t.methodImpls.count > 0      { valid = valid + TABLE_BIT_METHOD_IMPL }
   if t.typeSpecs.count > 0        { valid = valid + TABLE_BIT_TYPE_SPEC }
   if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
   if t.assemblyRefs.count > 0     { valid = valid + TABLE_BIT_ASSEMBLY_REF }
@@ -487,8 +534,10 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.params_.count > 0          { w4(buf, t.params_.count) }
   if t.interfaceImpls.count > 0   { w4(buf, t.interfaceImpls.count) }
   if t.memberRefs.count > 0       { w4(buf, t.memberRefs.count) }
+  if t.constants.count > 0        { w4(buf, t.constants.count) }
   if t.customAttrs.count > 0      { w4(buf, t.customAttrs.count) }
   if t.standAloneSigs.count > 0   { w4(buf, t.standAloneSigs.count) }
+  if t.methodImpls.count > 0      { w4(buf, t.methodImpls.count) }
   if t.typeSpecs.count > 0        { w4(buf, t.typeSpecs.count) }
   if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
   if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
@@ -590,6 +639,17 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     mri = mri + 1
   }
 
+  // Constant rows (table 0x0B)
+  var coni = 0
+  while coni < t.constants.count {
+    val r = t.constants[coni]
+    bufU1(buf, r.type_)
+    bufU1(buf, 0)           // padding byte (always 0)
+    w2(buf, r.parent)
+    w2(buf, r.value)
+    coni = coni + 1
+  }
+
   // CustomAttribute rows (table 0x0C)
   var cai = 0
   while cai < t.customAttrs.count {
@@ -606,6 +666,16 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = t.standAloneSigs[ssi]
     w2(buf, r.signature)
     ssi = ssi + 1
+  }
+
+  // MethodImpl rows (table 0x19)
+  var impi = 0
+  while impi < t.methodImpls.count {
+    val r = t.methodImpls[impi]
+    w2(buf, r.class_)
+    w2(buf, r.methodBody)
+    w2(buf, r.methodDeclaration)
+    impi = impi + 1
   }
 
   // TypeSpec rows (table 0x1B)
