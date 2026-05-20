@@ -108,10 +108,6 @@ func reportDiagnostics(diags: in List[Diagnostic]): Unit {
   DiagUtil.diagReport(diags)
 }
 
-func formatDiagnostic(d: in Diagnostic): String {
-  DiagUtil.diagFormat(d)
-}
-
 // Join path segments with "." — e.g. ["My", "Package"] → "My.Package".
 func segmentsToString(segments: in List[String]): String {
   var result = ""

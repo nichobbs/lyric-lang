@@ -39,10 +39,6 @@ func reportDiagnostics(diags: in List[Diagnostic]): Unit {
   DiagUtil.diagReport(diags)
 }
 
-func formatDiagnostic(d: in Diagnostic): String {
-  DiagUtil.diagFormat(d)
-}
-
 // Returns Some(typeName) if func main() has a 2-slot return type (Long or Double);
 // None otherwise.  These types require POP2 to discard, but the JVM main wrapper
 // only emits a single-slot POP — so they must be rejected before codegen rather
