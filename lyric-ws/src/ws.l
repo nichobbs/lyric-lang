@@ -39,26 +39,16 @@ package Ws
 
 import Std.Core
 import Std.Collections
+@cfg(feature = "dotnet")
+import Ws.Kernel.Net as WsKernel
+@cfg(feature = "jvm")
+import Ws.Kernel.Jvm as WsKernel
 
-// ─── Kernel boundary (inlined) ────────────────────────────────────────────────
-
-@axiom("ASP.NET Core WebSockets (Microsoft.AspNetCore.WebSockets)")
-func wsKernelCreateRegistry(maxMessageSizeBytes: Int, pingIntervalMs: Int): Result[Int, String] = Ok(0)
-
-@axiom("ASP.NET Core WebSockets (Microsoft.AspNetCore.WebSockets)")
-func wsKernelSend(registryHandle: Int, connectionId: String, messageType: String, data: String): Result[Unit, String] = Ok(())
-
-@axiom("ASP.NET Core WebSockets (Microsoft.AspNetCore.WebSockets)")
-func wsKernelBroadcast(registryHandle: Int, messageType: String, data: String): Result[Unit, String] = Ok(())
-
-@axiom("ASP.NET Core WebSockets (Microsoft.AspNetCore.WebSockets)")
-func wsKernelClose(registryHandle: Int, connectionId: String, code: Int, reason: String): Result[Unit, String] = Ok(())
-
-@axiom("ASP.NET Core WebSockets (Microsoft.AspNetCore.WebSockets)")
-func wsKernelConnectionCount(registryHandle: Int): Int = 0
-
-@axiom("ASP.NET Core WebSockets (Microsoft.AspNetCore.WebSockets)")
-func wsKernelIsConnected(registryHandle: Int, connectionId: String): Bool = false
+// Kernel boundary: every BCL / JDK interaction goes through `WsKernel`
+// (`Ws.Kernel.Net` on .NET, `Ws.Kernel.Jvm` on JVM).  This file is the
+// public surface of the library; it must not declare its own `@axiom`
+// stubs (doing so previously shadowed the kernel boundary and broke
+// the trust-boundary audit — see lyric-lang #739).
 
 // ─── Connection identity ──────────────────────────────────────────────────────
 
@@ -173,7 +163,7 @@ impl WsRegistry for NativeRegistry {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
     val rh = self.registryHandle
-    match wsKernelSend(rh, connectionId, msgType, msgData) {
+    match WsKernel.send(rh, connectionId, msgType, msgData) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
     }
@@ -183,7 +173,7 @@ impl WsRegistry for NativeRegistry {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
     val rh = self.registryHandle
-    match wsKernelBroadcast(rh, msgType, msgData) {
+    match WsKernel.broadcast(rh, msgType, msgData) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
     }
@@ -192,7 +182,7 @@ impl WsRegistry for NativeRegistry {
   func close(connectionId: in String, code: in WsCloseCode, reason: in String): Result[Unit, WsError] {
     val codeInt = closeCodeToInt(code)
     val rh = self.registryHandle
-    match wsKernelClose(rh, connectionId, codeInt, reason) {
+    match WsKernel.close(rh, connectionId, codeInt, reason) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
     }
@@ -200,12 +190,12 @@ impl WsRegistry for NativeRegistry {
 
   func connectionCount(): Int {
     val rh = self.registryHandle
-    return wsKernelConnectionCount(rh)
+    return WsKernel.connectionCount(rh)
   }
 
   func isConnected(connectionId: in String): Bool {
     val rh = self.registryHandle
-    return wsKernelIsConnected(rh, connectionId)
+    return WsKernel.isConnected(rh, connectionId)
   }
 }
 
@@ -215,7 +205,7 @@ impl WsRegistry for NativeRegistry {
 /// The registry manages WebSocket connection lifecycle.
 @stable(since="0.1")
 pub func createRegistry(): Result[NativeRegistry, WsError] {
-  match wsKernelCreateRegistry(65536, 30000) {
+  match WsKernel.createRegistry(65536, 30000) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err)   -> Err(WsError(message = err, code = "REGISTRY_INIT_FAILED", connectionId = ""))
   }
@@ -227,7 +217,7 @@ pub func createRegistry(): Result[NativeRegistry, WsError] {
 @stable(since="0.1")
 pub func sendText(registry: in NativeRegistry, connectionId: in String, text: in String): Result[Unit, WsError] {
   val rh = registry.registryHandle
-  match wsKernelSend(rh, connectionId, "text", text) {
+  match WsKernel.send(rh, connectionId, "text", text) {
     case Ok(u)    -> Ok(u)
     case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
   }
@@ -237,7 +227,7 @@ pub func sendText(registry: in NativeRegistry, connectionId: in String, text: in
 @stable(since="0.1")
 pub func broadcastText(registry: in NativeRegistry, text: in String): Result[Unit, WsError] {
   val rh = registry.registryHandle
-  match wsKernelBroadcast(rh, "text", text) {
+  match WsKernel.broadcast(rh, "text", text) {
     case Ok(u)    -> Ok(u)
     case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
   }
@@ -247,7 +237,7 @@ pub func broadcastText(registry: in NativeRegistry, text: in String): Result[Uni
 @stable(since="0.1")
 pub func closeConnection(registry: in NativeRegistry, connectionId: in String): Result[Unit, WsError] {
   val rh = registry.registryHandle
-  match wsKernelClose(rh, connectionId, 1000, "") {
+  match WsKernel.close(rh, connectionId, 1000, "") {
     case Ok(u)    -> Ok(u)
     case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
   }
@@ -257,14 +247,14 @@ pub func closeConnection(registry: in NativeRegistry, connectionId: in String): 
 @stable(since="0.1")
 pub func connectionCount(registry: in NativeRegistry): Int {
   val rh = registry.registryHandle
-  return wsKernelConnectionCount(rh)
+  return WsKernel.connectionCount(rh)
 }
 
 /// Return whether the given connection is currently open.
 @stable(since="0.1")
 pub func isConnected(registry: in NativeRegistry, connectionId: in String): Bool {
   val rh = registry.registryHandle
-  return wsKernelIsConnected(rh, connectionId)
+  return WsKernel.isConnected(rh, connectionId)
 }
 
 /// Construct a Normal(1000) close code.
