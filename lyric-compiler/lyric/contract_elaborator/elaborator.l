@@ -648,7 +648,16 @@ func rewriteTrailingSExpr(
   acc:          in List[Statement]
 ): Unit {
   if ensuresExprs.count == 0 {
-    acc.add(mkStmt(SExpr(expr = e), sp))
+    // No ensures clauses, but we still need to descend through any
+    // nested EIf/EMatch branches so loop invariants buried inside
+    // them get lowered (#826: stmtHasInvariant's new SExpr arm now
+    // opts a function with no contracts into elaboration when an
+    // invariant hides inside an if-block, but the deep-walk has to
+    // actually reach the nested SInvariant — `elaborateExprDeep` is
+    // the existing rewriter that recurses through EIf/EMatch into
+    // the inner blocks).
+    val newE = elaborateExprDeep(e, ensuresExprs, counter)
+    acc.add(mkStmt(SExpr(expr = newE), sp))
     return
   }
   val name = freshResultName(counter)
@@ -879,7 +888,43 @@ func stmtHasInvariant(s: in Statement): Bool {
       }
       false
     }
+    // #826: statement-level if/match blocks lower to SExpr(EIf|EMatch), so
+    // a `while ... invariant:` nested inside an `if` body produces a
+    // tree like SExpr(EIf(_, EOBBlock([SWhile(..., SInvariant)]))).
+    // Without this case, `functionBodyHasInvariant` returns false and
+    // `elaborateFunction` skips the deep walk that would lower
+    // SInvariant — the runtime assert is silently dropped.
+    case SExpr(e)                  -> exprHasInvariant(e)
     case _ -> false
+  }
+}
+
+func exprHasInvariant(e: in Expr): Bool {
+  match e.kind {
+    case EIf(_, thenBranch, elseOpt, _) -> {
+      if exprOrBlockHasInvariant(thenBranch) { return true }
+      match elseOpt {
+        case Some(eb) -> exprOrBlockHasInvariant(eb)
+        case None     -> false
+      }
+    }
+    case EMatch(_, arms) -> {
+      var i = 0
+      while i < arms.count {
+        if exprOrBlockHasInvariant(arms[i].body) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EParen(inner) -> exprHasInvariant(inner)
+    case _ -> false
+  }
+}
+
+func exprOrBlockHasInvariant(eb: in ExprOrBlock): Bool {
+  match eb {
+    case EOBExpr(e)    -> exprHasInvariant(e)
+    case EOBBlock(blk) -> blockHasInvariant(blk)
   }
 }
 

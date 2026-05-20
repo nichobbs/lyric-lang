@@ -55,6 +55,12 @@ func testSha512OfFileKnownVector(): Unit {
     case Ok(hex) -> assertEqual(hex, sha512Abc(), "sha512OfFile('abc') matches NIST vector")
     case Err(_)  -> assertTrue(false, "expected Ok for readable file")
   }
+  // Best-effort cleanup (#845); ignore failures — `/tmp` files are
+  // OS-swept eventually and the test has already asserted what it needs.
+  match deleteFile(path) {
+    case Ok(_)  -> ()
+    case Err(_) -> ()
+  }
 }
 
 func main(): Int {

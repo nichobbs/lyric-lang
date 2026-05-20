@@ -121,7 +121,7 @@ pub func createDir(path: in String): Result[Unit, IOError] {
 /// shim which the kernel doesn't expose today.  Callers that need
 /// idempotent semantics should check `dirExists(path)` first or
 /// match on `Err(IoError)` and ignore it.
-@stable(since="1.0")
+@stable(since="0.1")
 pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -131,6 +131,25 @@ pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
     Ok(value = ())
   } catch Bug as b {
     // See doc comment: not-found vs. permission-denied is indistinguishable.
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+/// Delete a single file.  Returns `Ok(())` on success and
+/// `Err(IoError)` for any host failure (not-found included — the
+/// kernel doesn't surface exception types, see deleteDirRecursive).
+/// `Err(InvalidPath)` for empty paths.  Callers that need idempotent
+/// "best-effort delete" semantics should `match` on the result and
+/// ignore `Err(IoError)`.
+@stable(since="0.1")
+pub func deleteFile(path: in String): Result[Unit, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    hostDeleteFile(path)
+    Ok(value = ())
+  } catch Bug as b {
     Err(error = IoError(path = path, message = b.message))
   }
 }

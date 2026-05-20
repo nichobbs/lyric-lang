@@ -25,6 +25,7 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.DiagnosticUtil as DiagUtil
 // import Lyric.Mono     // (see header) — wiring deferred to Band 5/6
 import Msil.Lowering
 import Msil.Codegen
@@ -94,40 +95,21 @@ pub func compileToMsil(source: in String, outputPath: in String): Bool {
   }
 }
 
-// Print every diagnostic in `diags` to stdout and return true when any of
-// them is error-severity.  Returning true tells the caller to abort the
-// compilation; warnings alone do not abort.
+// Diagnostic-printing helpers — thin wrappers over `Lyric.DiagnosticUtil`.
+// The local names differ from `DiagUtil.diagReportAndAbort` etc. because
+// the bootstrap call resolver shadows fully-qualified cross-package
+// calls with the enclosing module's same-named symbol, producing
+// infinite recursion at runtime (lyric-lang #714).
 func reportAndAbort(diags: in List[Diagnostic]): Bool {
-  var hasErrors = false
-  var i = 0
-  while i < diags.count {
-    val d = diags[i]
-    println(formatDiagnostic(d))
-    if d.severity == DiagError { hasErrors = true }
-    i = i + 1
-  }
-  hasErrors
+  DiagUtil.diagReportAndAbort(diags)
 }
 
-// Print every diagnostic in `diags` to stdout without affecting the
-// compile's success/failure outcome.  Used for typechecker output until
-// Band 6 (cross-package resolution) lands.
 func reportDiagnostics(diags: in List[Diagnostic]): Unit {
-  var i = 0
-  while i < diags.count {
-    println(formatDiagnostic(diags[i]))
-    i = i + 1
-  }
+  DiagUtil.diagReport(diags)
 }
 
 func formatDiagnostic(d: in Diagnostic): String {
-  val sev = match d.severity {
-    case DiagError   -> "error"
-    case DiagWarning -> "warning"
-  }
-  sev + "[" + d.code + "] " +
-    d.span.startPos.line.toString() + ":" +
-    d.span.startPos.column.toString() + ": " + d.message
+  DiagUtil.diagFormat(d)
 }
 
 // Join path segments with "." — e.g. ["My", "Package"] → "My.Package".
