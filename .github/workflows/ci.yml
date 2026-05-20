@@ -125,6 +125,26 @@ jobs:
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
 
+      # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
+      # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
+      # with `javap -c` but never execute the class via `java`, so JVM-side
+      # codegen bugs (linkage, descriptor mismatches, etc.) reach main undetected.
+      # Closes #744.
+      - name: JVM execution smoke (run Hello.class via `java`)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f /tmp/lyric-jvm-selftest/Hello.class ]; then
+            echo "::error::Hello.class missing — Jvm.SelfTest must have run during the Emitter tests step"
+            exit 1
+          fi
+          out=$(java -cp /tmp/lyric-jvm-selftest Hello)
+          echo "java output: $out"
+          if [ "$out" != "hello from lyric-jvm" ]; then
+            echo "::error::JVM execution produced unexpected output: '$out'"
+            exit 1
+          fi
+
       - name: CLI tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
