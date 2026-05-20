@@ -1,21 +1,12 @@
-// stdlib/tests/regex_safe_tests.l — Tests for Std.RegexSafe (#330).
-//
-// Covers: error-message rendering and the public tryCompile /
-// tryIsMatch / tryReplace paths against benign inputs.  We
-// deliberately do NOT trigger the 1-second match timeout —
-// constructing an adversarial input large enough would slow the
-// test suite without adding coverage beyond what the BCL itself
-// guarantees.
-//
-// Uses the `func main(): Unit` + `println "ok"` pattern that
-// `StdlibLyricTests.fs` expects.  Other stdlib test files
-// (json_tests.l, format_tests.l, …) follow the same shape.  The
-// `test "..." { }` block syntax used by `lyric-proto/tests/` runs
-// through `lyric test`, not through `StdlibLyricTests`.
+// Tests for Std.RegexSafe (#330) and Std.Regex (#632).  Uses the
+// `func main(): Unit` + `println "ok"` shape that `StdlibLyricTests.fs`
+// runs (the `test "..." {}` block syntax is for `lyric test`, not this
+// runner).
 
 package Std.RegexSafe.Tests
 
 import Std.Core
+import Std.Regex as Re
 import Std.RegexSafe as Rx
 import Std.Testing
 
@@ -66,6 +57,41 @@ func testReplaceSuccess(): Unit {
   }
 }
 
+// Smoke test that compileWithTimeout produces a usable Regex.
+// Confirms the 3-arg ctor binding and that `isMatch` works against it.
+func testCompileWithTimeoutSmoke(): Unit {
+  val r = Re.compileWithTimeout("h.llo", 5.0)
+  assertTrue(Re.isMatch(r, "hello world"), "compileWithTimeout produces a working regex")
+}
+
+// ReDoS regression: a catastrophic-backtracking pattern with a short
+// timeout must surface an Err (rather than hang).  We accept either
+// TimedOut or RegexBug because the BCL's RegexMatchTimeoutException.Message
+// is locale-sensitive and the classifier in `Std.RegexSafe.isTimeout`
+// only handles the en-US "time-out" phrasing.  The important guarantee
+// is that the match returns rather than running for minutes.
+//
+// Uses `Re.compileWithTimeout(0.1)` rather than the 1-second default
+// so the test costs ~100 ms in CI instead of ~1 s (#832).
+func testReDoSTimeoutFires(): Unit {
+  // 60-character string of 'a's followed by 'b' — non-matching suffix
+  // forces the (a+)+$ backtrack explosion.
+  var hostile = ""
+  var i = 0
+  while i < 60 {
+    hostile = hostile + "a"
+    i = i + 1
+  }
+  hostile = hostile + "b"
+  val r = Re.compileWithTimeout("(a+)+$", 0.1)
+  try {
+    val matched = Re.isMatch(r, hostile)
+    assertTrue(false, "ReDoS match unexpectedly returned " + toString(matched))
+  } catch Bug as _ {
+    ()
+  }
+}
+
 func main(): Unit {
   testErrorMessageTimedOut()
   testErrorMessageRegexBug()
@@ -73,5 +99,7 @@ func main(): Unit {
   testCompileInvalid()
   testIsMatchSuccess()
   testReplaceSuccess()
+  testCompileWithTimeoutSmoke()
+  testReDoSTimeoutFires()
   println("regex_safe_tests: ok")
 }

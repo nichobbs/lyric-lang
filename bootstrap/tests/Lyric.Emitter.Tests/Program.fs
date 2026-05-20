@@ -51,6 +51,7 @@ let main argv =
             GenericRecordTests.tests
             JsonDeriveTests.tests
             ContractMetaTests.tests
+            SdkVersionSkewTests.tests
             TryCatchTests.tests
             StdHttpTests.tests
             StdMathTests.tests

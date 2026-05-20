@@ -15,6 +15,7 @@ let main argv =
             SelfHostedFmtBridgeTests.tests
             SelfHostedMsilBridgeTests.tests
             ParityTests.tests
+            JvmDiagnosticTests.tests
             LintTests.tests
             ProjectBuildTests.tests
             ProveTests.tests

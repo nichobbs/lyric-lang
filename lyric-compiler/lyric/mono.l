@@ -391,28 +391,7 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   }
 }
 
-// Conservative type inference for expressions during monomorphisation
-// (#349).  Returns the declared TypeExpr for an expression when it
-// can be determined from the local type environment, literal shape,
-// or a small set of structural rules.  Returns None when the
-// expression's type can't be inferred without a full type checker.
-//
-// Coverage:
-//   * Literals — via inferLitTE.
-//   * Parens — recurse.
-//   * Single-segment paths — look up in env (which is seeded with
-//     function params and explicitly-annotated locals).
-//   * `ETypeApp(fn, [T1, …])` — if fn is a single-segment path to a
-//     known generic decl, walk the decl's return TypeExpr substituting
-//     the supplied type args.
-//   * Binary arithmetic (Add/Sub/Mul/Div/Mod) — LHS type wins.
-//   * Comparison and logical ops — Bool.
-//   * `EMember(recv, name)` — if recv has an inferrable type pointing
-//     at a same-package record, return the named field's type.
-//   * `state` is NOT in scope here, so `ECall` is not inferred at
-//     this level (we don't want to thread state through inferLit/inferExpr).
-//     The richer call-site inference path is in `rewriteExpr` proper,
-//     which has access to `state.genDecls` and `state.recordDecls`.
+// #349: best-effort TypeExpr inference during monomorphisation (literals/params/annotated locals/structural rules); ECall stays in `rewriteExpr` proper (state-dependent). See D-progress-268.
 func inferExprTE(env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr] {
   match expr.kind {
     case ELiteral(lit)  -> inferLitTE(lit, expr.span)

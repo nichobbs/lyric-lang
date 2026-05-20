@@ -1,40 +1,4 @@
-// msil/ffi.l — Msil.Ffi
-//
-// FFI resolver for the self-hosted MSIL emitter (#370 + Phase R6).
-// Resolves `@externTarget("Type.Member")` declarations to the
-// AssemblyRef name + namespace + simple type name + member name that
-// the codegen needs to emit a direct `call` / `callvirt` / `newobj`
-// to the BCL target.
-//
-// **No runtime reflection.**  The bootstrap F# emitter writes a PE
-// whose calling-assembly metadata trips up `System.Type.GetType` and
-// `Assembly.GetType(string)` — both return null even for types that
-// are demonstrably loaded.  Rather than rely on a runtime cascade
-// that doesn't work, the resolver:
-//
-//   * Splits the `@externTarget` string at the last dot (or
-//     `..ctor` suffix) to recover the CLR type FQN and member name.
-//   * Looks up the host assembly in a hardcoded table keyed on the
-//     leading namespace prefix.  Every type the stdlib actually
-//     externs into is covered; types we haven't taught the table
-//     about default to `System.Runtime` (the .NET facade that type-
-//     forwards into `System.Private.CoreLib`).
-//   * Static-vs-instance is taken from the #370 hint annotations
-//     (`@externStatic` / `@externInstance`).  Without a hint the
-//     resolver defaults to static — callers MUST annotate instance
-//     externs explicitly so this can't silently miscompile.
-//
-// Trade-off vs reflection:
-//   + Works end-to-end today.
-//   + No dependency on `Type.GetType` being usable from emitted code.
-//   - Requires the type→assembly table to be kept in sync as new
-//     BCL surfaces enter the externs.  New types not in the table
-//     still emit (defaulted to System.Runtime), which works for
-//     types forwarded by that facade.
-//
-// Future improvement: once the underlying `Type.GetType`-from-Lyric-
-// PE issue is fixed, swap this back to a reflection cascade so the
-// table can retire.
+// Msil.Ffi: table-driven @externTarget resolver (no runtime reflection — Lyric-emitted PEs trip Type.GetType); see D-progress-268 for trade-offs.
 
 package Msil.Ffi
 
@@ -74,6 +38,10 @@ pub func hintFromAnnotations(anns: in List[Annotation]): ResolveHint {
   RHEither
 }
 
+// Keep in sync with `lyric/type_checker/typechecker_stmts.l`
+// `hasConflictingExternHints` (#803).  Both functions look for the
+// same annotation pair; extracting shared annotation-name constants
+// is a follow-up tracked in the `Lyric.Annotations` rollup.
 pub func hasConflictingHints(anns: in List[Annotation]): Bool {
   var i = 0
   var hasStatic = false

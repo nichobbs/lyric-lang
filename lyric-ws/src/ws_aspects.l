@@ -7,7 +7,10 @@ package Ws.Aspects
 
 import Std.Core
 import Auth
+@cfg(feature = "dotnet")
 import Ws.Kernel.Net as WsKernel
+@cfg(feature = "jvm")
+import Ws.Kernel.Jvm as WsKernel
 
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 

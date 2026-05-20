@@ -110,7 +110,7 @@ deferred to Phase 3 by design.
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3a — self-hosted MSIL PE / opcode / tables layer (M1–M83) | **Shipped** | D-progress-213..D-progress-219 |
 | M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`), `Msil.Codegen`, `Msil.Bridge`, F# bridge `SelfHostedMsil.fs` | **Shipped** | D-progress-227 / D-progress-238 / D-progress-240 |
-| M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions) | **Shipped** | D-progress-229 |
+| M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions; **not invoked from production builds** — `Msil.Bridge` / `Jvm.Bridge` pass parsed input directly to codegen, so generics are still monomorphised by the F# emitter's middle-end. Self-hosted monomorphizer is exercised by `mono_self_test.l` only, per `mono.l:6-27`) | **Shipped** | D-progress-229 |
 | M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
 | M5.3 — self-hosted verifier (`Lyric.Verifier` package: VCGen, SMT emission, trivial discharger, `prove` driver + `verifier_self_test.l`) | **Shipped** | D-progress-234 |
 | M5.3 — self-hosted stdlib / formatter / package manager / CLI | **Shipped** (`Lyric.Manifest`, `Lyric.Fmt` CST formatter, `Lyric.ManifestBridge`, `Lyric.TestSynthBridge`, `Lyric.Cli` full command dispatcher handling all CLI commands natively via `SelfHostedCli.fs`) | — |
@@ -13450,3 +13450,24 @@ Still deferred (will follow as part of the second half of Band 4):
 protected-type entries (`PMEntry` with `barrier:` / `invariant:` clauses).
 
 **Test results:** 797/797 emitter, 239/239 Lyric.Cli.
+
+### D-progress-278 — Source-generator supply-chain enforcement (G0002, G0008)
+
+Address review-finding gap #762 documenting the supply-chain
+guardrails added to the custom source-generator pipeline in
+D-progress-266.
+
+* **G0002** — `@generate(Pkg.Gen)` rejects packages whose `lyric.toml`
+  does not declare `[package].kind = "source-generator"`.  Prevents a
+  caller from accidentally running an arbitrary library as a source
+  generator.
+* **G0008** — `@generate(Pkg.Gen)` rejects packages not listed in
+  `[dependencies]` of the consuming `lyric.toml`.  Forces the
+  consumer to opt in explicitly before any generator subprocess can
+  fire.  See `docs/40-source-generators.md` §9 (Phasing) and
+  `lyric-compiler/lyric/generator/generator.l:checkGeneratorDependency`.
+
+Both diagnostics fire as errors at build time, after `scanDirectives`
+returns a `Pkg.Name` reference and before any subprocess is launched.
+The corresponding entries land in the §10 diagnostic table in
+`docs/40-source-generators.md`.

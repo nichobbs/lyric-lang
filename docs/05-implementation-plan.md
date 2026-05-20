@@ -326,6 +326,20 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
 - All tests pass
 - Performance within 50% of the F# bootstrap
 
+### Phase 5 production readiness
+
+Phase R parity (shipped in D-progress-241) covers a 20-program
+smoke-test subset across `--target dotnet-legacy`, `--target dotnet`,
+and `--target jvm`. **Full production-grade self-hosting** — every
+M1.4 program compiling identically through the self-hosted pipeline
+on both targets — still requires the seven remediation bands in
+[`docs/41-self-hosted-compiler-gap-analysis.md`](41-self-hosted-compiler-gap-analysis.md)
+§9 (middle-end plumbing, MSIL feature parity, JVM feature parity,
+contract elaborator nested-return cases for protected entries / loops,
+self-hosted FFI table parity, …). The blocker is not in any of the
+Phase 1–5 milestones above; it lives in the gap-analysis bands and
+should be tracked there until cleared.
+
 ## Phase 6 and beyond: ecosystem
 
 Open-ended. Successful languages spend most of their lifetime here.

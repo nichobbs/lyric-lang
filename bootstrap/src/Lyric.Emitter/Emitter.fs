@@ -2863,7 +2863,14 @@ let private emitFunctionBody
             let nullableCtor = targetTy.GetConstructor([| stackTy |])
             match Option.ofObj nullableCtor with
             | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
-            | None -> ()
+            | None ->
+                // The Nullable<T>(T) constructor is guaranteed to exist
+                // by the BCL contract, so a missing lookup means our
+                // reflection environment is misconfigured (or `targetTy`
+                // is not actually Nullable<T>).  Surfacing a panic here
+                // avoids silently emitting malformed IL that would
+                // crash much later in JIT verification.
+                failwithf "Nullable<T>(T) constructor not found for %s" targetTy.FullName
     let routeReturn (pushedTy: System.Type) =
         match resultLocal with
         | Some loc when pushedTy <> typeof<System.Void> ->
@@ -5514,7 +5521,12 @@ let private compilerStdlibVersion : string = "0.1.0"
 
 /// Parse a semver-like string `"major.minor.patch[-suffix]"` into
 /// `(major, minor)` ints.  Returns `None` on any parse failure.
-let private parseMajorMinor (v: string) : (int * int) option =
+///
+/// Internal helper for the SDK-skew check (B0050/B0051).  Exposed
+/// (rather than `let private`) so `Lyric.Emitter.Tests` can unit-test
+/// it directly via the `InternalsVisibleTo` declaration in the
+/// project's `.fsproj`; do NOT call from outside this module.
+let internal parseMajorMinor (v: string) : (int * int) option =
     let segs = v.Split('.')
     if segs.Length >= 2 then
         match System.Int32.TryParse segs.[0], System.Int32.TryParse (segs.[1].Split('-').[0]) with

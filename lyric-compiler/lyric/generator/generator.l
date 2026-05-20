@@ -166,7 +166,11 @@ func readBracedBlock(src: in String, pos: inout Int): String {
 
 // Scan `src` for all @generate(X.Y) directives where the argument contains a dot
 // (custom generator).  Returns a list of GenerateDirective values.
-func scanDirectives(src: in String, packageName: in String): List[GenerateDirective] {
+//
+// Comments AND double-quoted string literals are skipped so a `@generate(X.Y)`
+// embedded in a string (e.g. a help-text constant or a documentation example)
+// does not trigger a spurious generator invocation (#702).
+pub func scanDirectives(src: in String, packageName: in String): List[GenerateDirective] {
     val results: List[GenerateDirective] = newList()
     var i = 0
     while i < src.length {
@@ -177,6 +181,29 @@ func scanDirectives(src: in String, packageName: in String): List[GenerateDirect
         // Skip block comments
         else if src[i] == '/' and i + 1 < src.length and src[i + 1] == '*' {
             skipBlockComment(src, i)
+        }
+        // Skip double-quoted string literals (including \" escapes).  Triple-
+        // quoted (`"""..."""`) and raw (`r"..."`) string literals are NOT
+        // skipped today — a `@generate(X.Y)` embedded in either form would
+        // still trigger a directive.  These forms are uncommon in
+        // source-generator-decorated files; extending the scanner to honour
+        // them requires either re-using the full lexer or maintaining a
+        // shadow state machine here.  See PR #830 review #840 for the
+        // status; once `scanDirectives` consumers complain (or a fuzz pass
+        // surfaces a real false positive) the scanner gains a triple-quoted
+        // arm and the same `\\` escape treatment.
+        else if src[i] == '"' {
+            i = i + 1
+            while i < src.length and src[i] != '"' {
+                // Skip escaped character (\", \\, etc.) so a closing-`"`
+                // is not consumed inside the escape pair.
+                if src[i] == '\\' and i + 1 < src.length {
+                    i = i + 2
+                } else {
+                    i = i + 1
+                }
+            }
+            if i < src.length { i = i + 1 }  // consume closing `"`
         }
         // Look for @generate(
         else if src[i] == '@' and matchAt(src, i + 1, "generate(") {
@@ -295,6 +322,10 @@ record StringPair {
 }
 
 // Classify a type text string into FieldTypeKind + inner args.
+// The `second` field carries the inner type-args text (everything
+// between the outer brackets) so callers can re-split as needed —
+// `Result[Order, String]` returns `("ResultType", "Order, String")`,
+// and `Map[K, V]` returns `("Generic", "K, V")`.
 func classifyType(typeText: in String): StringPair {
     // slice[String] literal — use .length, not .count
     val primitives: slice[String] = ["Bool", "Int", "Long", "UInt", "ULong", "Float", "Double", "Char", "String"]
@@ -307,7 +338,23 @@ func classifyType(typeText: in String): StringPair {
     if matchAt(typeText, 0, "slice[") { return StringPair(first = "Slice", second = typeText.substring(6, typeText.length - 7)) }
     if matchAt(typeText, 0, "Option[") { return StringPair(first = "OptionType", second = typeText.substring(7, typeText.length - 8)) }
     if matchAt(typeText, 0, "Result[") { return StringPair(first = "ResultType", second = typeText.substring(7, typeText.length - 8)) }
-    if Str.contains(typeText, "[") { return StringPair(first = "Generic", second = "") }
+    if Str.contains(typeText, "[") {
+        // Generic[arg1, arg2, ...] — capture the inner text between the
+        // first `[` and the last `]` so source generators can see the
+        // applied arguments (#703).
+        match Str.indexOf(typeText, "[") {
+            case Some(openIx) ->
+                match Str.lastIndexOf(typeText, "]") {
+                    case Some(closeIx) ->
+                        if closeIx > openIx {
+                            return StringPair(first = "Generic", second = typeText.substring(openIx + 1, closeIx - openIx - 1))
+                        }
+                    case None -> {}
+                }
+            case None -> {}
+        }
+        return StringPair(first = "Generic", second = "")
+    }
     StringPair(first = "Named", second = "")
 }
 
@@ -331,6 +378,30 @@ func jsonEscape(s: in String): String {
     buf
 }
 
+// Split a comma-separated type-args text at the top level (i.e. ignoring
+// commas nested inside `[ ]` brackets so `Result[Map[K,V], Err]` produces
+// two args, not three).  Whitespace around each split element is trimmed.
+func splitTopLevelTypeArgs(s: in String): List[String] {
+    val parts: List[String] = newList()
+    var i = 0
+    var depth = 0
+    var start = 0
+    while i < s.length {
+        val c = s[i]
+        if c == '[' { depth = depth + 1 }
+        else if c == ']' { depth = depth - 1 }
+        else if c == ',' and depth == 0 {
+            parts.add(Str.trim(s.substring(start, i - start)))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if s.length > start {
+        parts.add(Str.trim(s.substring(start, s.length - start)))
+    }
+    parts
+}
+
 func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String {
     val itemKindStr = if dir.typeKind == "exposed record" { "ExposedRecord" }
                      else if dir.typeKind == "union"     { "Union" }
@@ -344,8 +415,22 @@ func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String 
         val f = fields[fi]
         if fi > 0 { fieldsJson = fieldsJson + "," }
         val classified = classifyType(f.second)
-        val typeArgsJson = if classified.second == "" { "[]" }
-                           else { "[\"" + jsonEscape(classified.second) + "\"]" }
+        // Split the inner type-args text on top-level commas so that
+        // `Result[Order, String]` produces ["Order","String"] rather
+        // than a single combined element (#703).
+        var typeArgsJson = "[]"
+        if classified.second != "" {
+            val args = splitTopLevelTypeArgs(classified.second)
+            var ta = "["
+            var ai = 0
+            while ai < args.count {
+                if ai > 0 { ta = ta + "," }
+                ta = ta + "\"" + jsonEscape(args[ai]) + "\""
+                ai = ai + 1
+            }
+            ta = ta + "]"
+            typeArgsJson = ta
+        }
         fieldsJson = fieldsJson +
             "{\"name\":\"" + jsonEscape(f.first) + "\"" +
             ",\"fieldType\":{" +
@@ -528,10 +613,16 @@ func parseResponseJson(json: in String): Result[StringPair, String] {
 // G0002 — kind mismatch on the referenced package (matches the spec
 // reservation in docs/40 §10 P1 for kind enforcement).  Enforceable
 // when the dependency is a Path dep (we can read its lyric.toml).
+//
 // Registry / Workspace / Git deps skip the kind check until the
-// restore pipeline persists cached manifests; G0008 still catches the
-// obvious supply-chain hole for those cases.  Follow-up tracked in
-// the closing/open issues referenced from PR #753.
+// restore pipeline persists cached manifests under a known path
+// (`.lyric/restore/<name>-<ver>/lyric.toml`); G0008 still catches the
+// obvious supply-chain hole for those cases (the package must be in
+// `[dependencies]`).  See PR #753 and #757 (review-finding) for the
+// status of the cached-manifest probe; once cached `lyric.toml`s are
+// available, replace `case _ -> None` in `depManifestPath` below
+// with a probe under the restore root for Registry/Workspace/Git
+// variants.
 // Pure G0008 check — verifies the generator package appears in
 // `[dependencies]`.  Returns the matched DependencyEntry on success so
 // the caller can inspect the dep source.  Exposed `pub` so self-tests

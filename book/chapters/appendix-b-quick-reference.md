@@ -725,6 +725,8 @@ lyric test <file.l> --filter <substr>  # only run tests whose title contains <su
 lyric test <file.l> --list             # print test titles only; do not compile or run
 lyric test <file.l> --jvm              # compile with JVM backend; write annotated JAR
                                        # (full JUnit 5 ConsoleLauncher integration in progress)
+lyric test --manifest <lyric.toml>     # run every [project.tests] entry in the manifest
+                                       # (gated by self-hosted CLI bridge; see #465)
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)

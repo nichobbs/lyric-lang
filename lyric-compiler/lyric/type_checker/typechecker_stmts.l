@@ -305,6 +305,9 @@ func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
 // in that case (so the program still builds), but it's almost
 // always a copy-paste bug — surface it as a diagnostic instead of
 // silently picking one.
+// Keep in sync with `msil/ffi.l` `hasConflictingHints` (#803).  Both
+// scan the same annotation pair; the duplication will retire when
+// the shared `Lyric.Annotations` rollup lands.
 func hasConflictingExternHints(anns: in List[Annotation]): Bool {
   var i = 0
   var hasStatic = false

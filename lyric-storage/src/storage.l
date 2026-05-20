@@ -52,6 +52,11 @@ import Std.String as Str
 // Build a normalised inspection form: expand percent-encodings of `.`,
 // `/`, `\` only, then fold `\` → `/`.  The returned string is for
 // inspection only — the original key still reaches the backend.
+//
+// Any residual `%25` (encoded `%`) sequences after the single-pass decode
+// signal a double-encoded payload (e.g. `%252e%252e/etc/passwd` →
+// `%2e%2e/etc/passwd`).  `isSafeKey` rejects those keys outright to
+// avoid a second OS-level decode reconstituting `..`.
 pub func normalisedStorageKey(s: in String): String {
   val a = Str.replace(s, "%2e", ".")
   val b = Str.replace(a, "%2E", ".")
@@ -62,13 +67,16 @@ pub func normalisedStorageKey(s: in String): String {
   Str.replace(f, "\\", "/")
 }
 
-// True when `s` contains a `..` path-traversal segment.  Caller is
-// expected to pass a normalised key.
+// True when the normalised `s` contains a path segment that is exactly
+// `..`.  Splitting on `/` makes the check segment-aware — `version..2.0`
+// and `my..file.txt` are intentionally accepted while `../` and `/../`
+// and a bare `..` are rejected.  Caller is expected to pass a key that
+// has already been normalised by `normalisedStorageKey`.
 pub func storageKeyHasDotDot(s: in String): Bool {
-  val limit = s.length - 1
-  var i     = 0
-  while i < limit {
-    if s.charAt(i).toString() == "." and s.charAt(i + 1).toString() == "." {
+  val segs = Str.split(s, "/")
+  var i    = 0
+  while i < segs.length {
+    if segs[i] == ".." {
       return true
     }
     i = i + 1
@@ -76,18 +84,44 @@ pub func storageKeyHasDotDot(s: in String): Bool {
   return false
 }
 
-// True when `key` is safe to pass to a storage backend.  Rejects empty,
-// null-byte, leading-slash (absolute), and `..` traversal forms after
-// percent-decoding.  Used as a `requires:` precondition on every
-// `StorageBucket` method that accepts a key.
+// True when `key` is safe to pass to a storage backend.  Rejects:
+//   * empty keys
+//   * keys containing a NUL byte
+//   * leading-slash (absolute) keys
+//   * `..` path-traversal segments (after percent-decoding)
+//   * **any literal `%`** — implemented by rejecting `%25` (the
+//     percent-encoded form of `%`) anywhere in the key.  Single-pass
+//     decoding in `normalisedStorageKey` would otherwise let
+//     `%252e%252e/etc/passwd` through to the backend, where an
+//     OS-level second decode would reconstitute `..`.  This means
+//     **filenames whose intended characters include a literal `%`
+//     are rejected**; callers that need raw `%` (rare) should
+//     bypass `isSafeKey` and call the backend method directly.
+// Used as a `requires:` precondition on every `StorageBucket` method
+// that accepts a key.
 pub func isSafeKey(key: in String): Bool {
   if key.length == 0                    { return false }
   if Str.contains(key, "\u{0000}")      { return false }
+  // Reject double-encoded payloads (`%25` is the percent-encoded `%`).
+  // A single-pass decode in `normalisedStorageKey` would otherwise let
+  // `%252e%252e/etc/passwd` through, and an OS-level second decode at
+  // the backend would reconstitute `../../etc/passwd`.
+  val lk = Str.toLower(key)
+  if Str.contains(lk, "%25")            { return false }
   val n = normalisedStorageKey(key)
   if n.length == 0                      { return false }
   if n.charAt(0).toString() == "/"      { return false }
   if storageKeyHasDotDot(n)             { return false }
   return true
+}
+
+// True when `prefix` is safe to pass to a storage backend's `list`
+// operation.  Mirrors `isSafeKey` (see its doc-comment caveats — in
+// particular the literal-`%` rejection) but admits the empty prefix
+// (list everything) since `list` semantically accepts that.
+pub func isSafePrefix(prefix: in String): Bool {
+  if prefix.length == 0 { return true }
+  return isSafeKey(prefix)
 }
 
 // ─── Kernel boundary (inlined) ────────────────────────────────────────────────
@@ -204,6 +238,7 @@ pub interface StorageBucket {
     maxKeys:           in Int
   ): Result[ListResult, StorageError]
     requires: maxKeys >= 1
+    requires: isSafePrefix(prefix)
 
   /// Generate a pre-signed URL granting temporary access to `key`.
   /// `expiresInSeconds` is capped at 604800 (7 days) to match the AWS S3

@@ -57,6 +57,53 @@ func testQuoteEmpty(): Unit {
               "empty string becomes empty quoted token")
 }
 
+// ─── buildArgString — joining + spacing semantics (#786) ─────────────────────
+
+func testBuildArgStringMultiple(): Unit {
+  val args: List[String] = newList()
+  args.add("ls")
+  args.add("-la")
+  args.add("/tmp")
+  assertEqual(buildArgString(args), "\"ls\" \"-la\" \"/tmp\"",
+              "three plain args joined by single spaces, each quoted")
+}
+
+func testBuildArgStringSingle(): Unit {
+  val args: List[String] = newList()
+  args.add("solo")
+  assertEqual(buildArgString(args), "\"solo\"",
+              "single arg has no leading space")
+}
+
+func testBuildArgStringEmpty(): Unit {
+  val args: List[String] = newList()
+  assertEqual(buildArgString(args), "",
+              "empty list produces empty string")
+}
+
+func testBuildArgStringEmptyMember(): Unit {
+  val args: List[String] = newList()
+  args.add("cmd")
+  args.add("")
+  args.add("after")
+  assertEqual(buildArgString(args), "\"cmd\" \"\" \"after\"",
+              "empty middle arg still gets a bracketing pair")
+}
+
+func testBuildArgStringCwe78Vector(): Unit {
+  // The trailing-backslash arg pattern (CWE-78 surface): one arg ends
+  // with a single `\` and the next contains `&` and a space.  Joining
+  // must double the trailing backslash before the closing `"` so the
+  // shell never sees `\"` followed by an unquoted `&`.
+  val args: List[String] = newList()
+  args.add("path\\")           // "path\"
+  args.add("&malicious flag")  // contains & and space
+  // Expected: `"path\\" "&malicious flag"` — trailing backslash on the
+  // first arg is doubled, the second arg's contents are wrapped as-is.
+  assertEqual(buildArgString(args), "\"path\\\\\" \"&malicious flag\"",
+              "trailing-backslash arg can't bleed into the next token")
+}
+
 func main(): Int {
   testQuoteSimple()
   testQuoteWithSpaces()
@@ -65,6 +112,11 @@ func main(): Int {
   testQuoteBackslashBeforeQuote()
   testQuoteBackslashOnly()
   testQuoteEmpty()
+  testBuildArgStringMultiple()
+  testBuildArgStringSingle()
+  testBuildArgStringEmpty()
+  testBuildArgStringEmptyMember()
+  testBuildArgStringCwe78Vector()
   println("process_capture tests: ok")
   return 0
 }

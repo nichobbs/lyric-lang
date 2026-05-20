@@ -44,7 +44,7 @@ in a non-kernel file, move the declaration here.
 Same 150-declaration cap as the .NET kernel (D038 / D041).  Count
 must stay below the cap before the JVM target ships.  A parallel
 `KernelBoundaryTests` probe must be added to
-`compiler/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs` before
+`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs` before
 release (tracked in D041).
 
 ## See also

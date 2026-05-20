@@ -17,11 +17,11 @@
 @axiom("lyric.stdlib.jvm.ProcessCaptureHost piped stdout capture")
 package Std.ProcessCaptureHost
 
-import Std.Core
-
 // Run `executable` with a pre-formed `arguments` string (whitespace-
-// split by the JVM shim), write `stdinContent` to the child's stdin,
-// close stdin, and return the child's stdout text.  Returns "" on
-// spawn failure or I/O error.
+// split by the JVM shim — note this diverges from the .NET host, which
+// accepts a single pre-quoted shell-style string via
+// ProcessStartInfo.Arguments and does not split on whitespace), write
+// `stdinContent` to the child's stdin, close stdin, and return the
+// child's stdout text.  Returns "" on spawn failure or I/O error.
 @externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCapture")
 pub func hostRunCapture(executable: in String, arguments: in String, stdinContent: in String): String = ()

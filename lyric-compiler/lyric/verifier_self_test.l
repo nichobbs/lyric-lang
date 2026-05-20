@@ -436,20 +436,7 @@ func testProveProtectedTypeInvariantViolated(): Unit {
   assertTrue(summaryHasFailure(summary), "prot-inv-violated: has failure")
 }
 
-// Range-bound smoke coverage for the two new `RangeBoundKind` arms.
-// `..= hi` form (no lower bound, closed upper) — `RBLowerOpen(hi)` →
-// `RBKUpperBound`.  We can't observe SMT goal text from the proof
-// entry point, so pin only that the verifier doesn't crash on the
-// half-open AST shape, the resulting summary level is VLProofRequired
-// (i.e. the file reached the verifier — `sortOfTypeExpr` accepted the
-// type), and no error diagnostics fire during VC generation.
-//
-// `lo..` (`RBUpperOpen(lo)` → `RBKLowerBound`) is not reachable from a
-// `type X = Int range lo ..` declaration today because the parser's
-// `isEnd` check in `parseRangeBound` requires a closing-delim token
-// after `..` which a type-alias context doesn't provide.  The
-// `RBKLowerBound` arm in `theory.l` is defensive against future grammar
-// extension.
+// `..= hi` smoke: verifier accepts the half-open AST without crashing (RBKLowerBound is parser-unreachable today; theory.l keeps it defensive).
 func testProveRangeBoundUpperOnly(): Unit {
   val src = "@proof_required\npackage P\ntype Pct = Int range ..= 100\nfunc clip(x: in Pct): Int { return x }\n"
   val summary = prove(src)
@@ -460,10 +447,7 @@ func testProveRangeBoundUpperOnly(): Unit {
   assertTrue(not summaryHasErrorDiag(summary), "range-upper-only: no error diags")
 }
 
-// Sort namespacing smoke test (#735, #746): two locally-declared
-// records with the same field shape exercise `sortOfTypeExpr` via
-// `qualifiedDatatypeName`.  Confirms no crash, VLProofRequired, no
-// error diags.
+// #735/#746 sort-name smoke: two same-shape records compile through `qualifiedDatatypeName` without crash.
 func testProveSortNamespacing(): Unit {
   val src = "@proof_required\npackage P\nrecord A { x: Int }\nrecord B { x: Int }\nfunc id(a: in A): A { return a }\n"
   val summary = prove(src)
@@ -472,6 +456,23 @@ func testProveSortNamespacing(): Unit {
     case _ -> { assertTrue(false, "sort-namespace: expected VLProofRequired") }
   }
   assertTrue(not summaryHasErrorDiag(summary), "sort-namespace: no error diags")
+}
+
+// #752: pin the collision scenario that motivated the `.` separator in
+// `qualifiedDatatypeName`.  With a `_` separator, segments
+// `["Pkg_A", "Foo"]` and `["Pkg", "A_Foo"]` would both render as
+// "Pkg_A_Foo" — the join is now `.`-separated, so the two paths
+// produce distinct sort names ("Pkg_A.Foo" vs "Pkg.A_Foo").
+func testQualifiedDatatypeNameNoCollision(): Unit {
+  val left:  List[String] = newList()
+  left.add("Pkg_A"); left.add("Foo")
+  val right: List[String] = newList()
+  right.add("Pkg"); right.add("A_Foo")
+  val l = qualifiedDatatypeName(left)
+  val r = qualifiedDatatypeName(right)
+  assertEqual(l, "Pkg_A.Foo", "left rendered as Pkg_A.Foo")
+  assertEqual(r, "Pkg.A_Foo", "right rendered as Pkg.A_Foo")
+  assertTrue(l != r, "the two rendered names are distinct (no `_`-join collision)")
 }
 
 func testSummaryHelpers(): Unit {
@@ -557,6 +558,7 @@ func main(): Unit {
   testProveProtectedTypeInvariantViolated()
   testProveRangeBoundUpperOnly()
   testProveSortNamespacing()
+  testQualifiedDatatypeNameNoCollision()
   testSummaryHelpers()
 
   println("verifier self-test: ok")

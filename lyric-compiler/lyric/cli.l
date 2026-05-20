@@ -1165,12 +1165,14 @@ func lockSha512OfLocalManifest(localDir: in String): Option[String] {
 func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
   if name.length == 0 or version.length == 0 { return None }
   val lower = name.toLower()
-  // NuGet honours `NUGET_PACKAGES` as an absolute override of the
-  // cache root — CI runners commonly point this at the workspace.
-  // Honour it first so the integrity check works on every host.
-  val cacheRoot = match Environment.getVar("NUGET_PACKAGES") {
-    case Ok(p)  -> p
-    case Err(_) -> {
+  // NUGET_PACKAGES overrides the cache root (CI uses this); empty falls through so `--locked` isn't soft-bypassed.
+  val nugetPkgVar: Option[String] = match Environment.getVar("NUGET_PACKAGES") {
+    case Ok(p)  -> if p.length > 0 { Some(value = p) } else { None }
+    case Err(_) -> None
+  }
+  val cacheRoot = match nugetPkgVar {
+    case Some(p) -> p
+    case None    -> {
       val home = match Environment.getVar("HOME") {
         case Ok(h)  -> h
         case Err(_) ->
@@ -1494,10 +1496,7 @@ func cmdRestore(argv: in slice[String]): Int {
               case None ->
                 match resolved.sha512 {
                   case None ->
-                    // Both None — typical for pre-#738 lock files on
-                    // hosts where the NuGet cache isn't under HOME.
-                    // Soft-pass but surface a warning so the operator
-                    // knows the integrity check was skipped.
+                    // Both None — soft-pass with a warning so the operator knows the integrity check was skipped (typical for pre-#738 lock files).
                     printErr("restore: --locked: warning: '" + resolved.name + "' has no SHA-512 on either side; integrity check skipped (regenerate lyric.lock with 'lyric restore' to populate digests)")
                   case Some(_) -> {
                     printErr("restore: --locked: '" + resolved.name + "' has no SHA-512 in the lock file; lyric.lock pre-dates content-integrity enforcement — run 'lyric restore' to regenerate")
@@ -2200,10 +2199,10 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   match File.createDir(testOutDir) {
     case Ok(_)  -> ()
     case Err(e) -> {
-      // Existing directory is fine — every other createDir failure
-      // surfaces as an emit-write failure later, but report it here
-      // so the user knows what's going on (#797).
+      // Without an output directory every later test emit fails and the
+      // resulting N-test failure cascade obscures the root cause.
       printErr("test: cannot create '" + testOutDir + "': " + IOError.message(e))
+      return 1
     }
   }
 

@@ -14,6 +14,7 @@ package Jvm.Bridge
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -117,8 +118,8 @@ pub func compileToJar(source: in String, outputPath: in String, packageName: in 
   // as a clean compiler diagnostic rather than a panic inside codegenPackage.
   match mainReturns2SlotType(parseResult.file) {
     case Some(ty) -> {
-      println("error[J001]: `func main(): " + ty + "` is not supported on the JVM target")
-      println("  hint: use `func main(): Int` (exit code) or `func main(): Unit`")
+      Console.error("error[J001]: `func main(): " + ty + "` is not supported on the JVM target")
+      Console.error("  hint: use `func main(): Int` (exit code) or `func main(): Unit`")
       return false
     }
     case None -> ()

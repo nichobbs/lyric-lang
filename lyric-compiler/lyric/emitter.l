@@ -28,7 +28,9 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 
+import Std.Uuid as Uuid
 import Lyric.Lexer
+import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
@@ -73,60 +75,20 @@ pub record EmitProjectRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2. Subprocess helpers
+// §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// NOTE: lyrExe / lyrPrefixArgs / lyrArgs are duplicated verbatim in
-// contract_meta.l.  If you change one, change both.  A shared
-// `Lyric.CliShell` package would eliminate the duplication once the import
-// graph permits it.
-//
-// The executable to invoke.  Two cases when LYRIC_CLI_DLL is set:
-//   a) LYRIC_BIN is the AppHost native launcher for the DLL
-//      (LYRIC_BIN + ".dll" == LYRIC_CLI_DLL).  Call it directly — the
-//      AppHost already knows its DLL, no "exec" prefix is needed.
-//   b) LYRIC_BIN is an explicit dotnet/wrapper executable (or unset).
-//      Use dotnet + "exec <dll>" prefix to run the managed DLL.
-// When LYRIC_CLI_DLL is unset, fall back to LYRIC_BIN or "lyric" on PATH.
-func lyrIsAppHost(): Bool {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
-  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
-}
+// The wrapper names below are deliberately distinct from CliShell's
+// public surface: when the local function and the cross-package
+// callee share a name, the bootstrap parser shadows the call site
+// with the enclosing module's symbol, producing infinite recursion
+// at runtime (observed via stack-overflow when both were named
+// `lyrExe`).
 
-func lyrExe(): String {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
-    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
-    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
-      // AppHost mode: the native launcher IS the entry point for this DLL.
-      bin
-    } else {
-      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
-    }
-  } else {
-    Environment.getVarOrDefault("LYRIC_BIN", "lyric")
-  }
-}
+func cliShellExe(): String { CliShell.lyrExe() }
 
-// Leading args that must precede any subcommand args.
-// Non-empty only when running under an explicit dotnet host (not AppHost).
-func lyrPrefixArgs(): List[String] {
-  val prefix: List[String] = newList()
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
-    prefix.add("exec")
-    prefix.add(cliDll)
-  }
-  prefix
-}
-
-// Build the full args list for a lyric subcommand invocation.
-func lyrArgs(subcmd: in List[String]): List[String] {
-  val all: List[String] = newList()
-  for a in lyrPrefixArgs().toArray() { all.add(a) }
-  for a in subcmd.toArray()          { all.add(a) }
-  all
+func cliShellArgs(subcmd: in List[String]): List[String] {
+  CliShell.lyrArgs(subcmd)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,10 +136,19 @@ func failResult(msg: in String): EmitResult {
 /// lists all packages and their temp source paths.
 @stable(since="0.1")
 pub func emitProject(req: in EmitProjectRequest): EmitResult {
-  val tmpDir = Path.join(tempBase(), "lyric-emit")
-  match File.createDir(tmpDir) {
+  // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
+  // Two concurrent builds for the same assemblyName would otherwise
+  // race on the spec / source filenames; the UUID guarantees a unique
+  // namespace and a clean tree to delete on completion.
+  val tmpRoot = Path.join(tempBase(), "lyric-emit")
+  match File.createDir(tmpRoot) {
     case Ok(_)  -> ()
     case Err(_) -> ()
+  }
+  val tmpDir = Path.join(tmpRoot, Uuid.uuidToString(Uuid.newUuid()))
+  match File.createDir(tmpDir) {
+    case Ok(_)  -> ()
+    case Err(e) -> return failResult("cannot create temp build directory: " + IOError.message(e))
   }
 
   val outDir = Path.dirname(req.outputPath)
@@ -188,26 +159,38 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     }
   }
 
+  // Helper: best-effort cleanup of the per-invocation temp directory.
+  // Errors are swallowed so a transient file-handle leak doesn't fail
+  // a successful build; the OS will sweep the parent eventually.
+  // (#837: every early-exit path runs this before returning, so a
+  // write failure never leaves an orphaned UUID directory.)
+
   // Write each package's sources to temp files and build spec lines.
   // Spec line format: <packageName> TAB <srcPath1> TAB <srcPath2> ...
   val specLines: List[String] = newList()
+  var failMsg = ""
   var pi = 0
-  while pi < req.packages.count {
+  while pi < req.packages.count and failMsg == "" {
     val pkg = req.packages[pi]
     var line = pkg.name
     var si = 0
-    while si < pkg.sources.count {
+    while si < pkg.sources.count and failMsg == "" {
       val srcName = req.assemblyName + "__" + pkg.name + "__" + toString(si) + "__src.l"
       val srcPath = Path.join(tmpDir, srcName)
       match File.writeText(srcPath, pkg.sources[si]) {
         case Ok(_)  -> ()
-        case Err(e) -> return failResult("cannot write temp source: " + IOError.message(e))
+        case Err(e) -> { failMsg = "cannot write temp source: " + IOError.message(e) }
       }
       line = line + "\t" + srcPath
       si += 1
     }
     specLines.add(line)
     pi += 1
+  }
+
+  if failMsg != "" {
+    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    return failResult(failMsg)
   }
 
   // Append restored dependency DLL lines: DEP\t<name>\t<dllPath>
@@ -228,7 +211,12 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   val specPath = Path.join(tmpDir, req.assemblyName + "__project_spec.txt")
   match File.writeText(specPath, specContent) {
     case Ok(_)  -> ()
-    case Err(e) -> return failResult("cannot write project spec: " + IOError.message(e))
+    case Err(e) -> { failMsg = "cannot write project spec: " + IOError.message(e) }
+  }
+
+  if failMsg != "" {
+    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    return failResult(failMsg)
   }
 
   val targetStr = match req.target {
@@ -244,17 +232,22 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   subcmd.add("--target")
   subcmd.add(targetStr)
 
-  match Process.run(lyrExe(), lyrArgs(subcmd)) {
+  val result = match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
     case Ok(code) -> {
       if code != 0 {
-        return failResult("project build failed (see stderr)")
+        failResult("project build failed (see stderr)")
+      } else {
+        val okDiags: List[Diagnostic] = newList()
+        EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
       }
-      val okDiags: List[Diagnostic] = newList()
-      EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
     }
     case Err(e) ->
-      return failResult("cannot launch compiler: " + IOError.message(e))
+      failResult("cannot launch compiler: " + IOError.message(e))
   }
+
+  match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+
+  result
 }
 
 /// Compile Lyric source to a .NET DLL or JVM JAR.
@@ -295,7 +288,7 @@ pub func emit(req: in EmitRequest): EmitResult {
   subcmd.add("--target")
   subcmd.add(targetStr)
 
-  match Process.run(lyrExe(), lyrArgs(subcmd)) {
+  match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
     case Ok(code) -> {
       if code != 0 {
         return failResult("build failed (see stderr)")

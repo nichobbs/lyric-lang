@@ -40,12 +40,13 @@ patterns=(
 )
 joined=$(IFS='|'; echo "${patterns[*]}")
 
-# `git diff --diff-filter=AM` matches added or modified lines.  We only
-# care about ADDED `+` lines that look like new stub declarations.
-# Scan all `_kernel/net/*.l` paths in the ecosystem libraries.
+# Walk a unified-0 diff of every `_kernel/net/*.l` file changed on this
+# branch and grep for lines starting with `+` whose body matches a stub
+# pattern.  The leading-`+` filter alone restricts us to additions; the
+# `(pub )?func` prefix catches both public and private stub declarations.
 added_stubs=$(git diff "$base_sha"..HEAD --unified=0 \
   -- 'lyric-*/src/_kernel/net/*.l' 2>/dev/null \
-  | grep -E "^\+pub func.*($joined)" \
+  | grep -E "^\+[[:space:]]*(pub[[:space:]]+)?func.*($joined)" \
   || true)
 
 if [ -n "$added_stubs" ]; then

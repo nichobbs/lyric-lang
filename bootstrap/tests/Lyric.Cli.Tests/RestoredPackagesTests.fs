@@ -133,4 +133,39 @@ func main(): Unit { ()  }
                 | Error (NoContractResource _) -> ()
                 | other ->
                     failwithf "expected NoContractResource, got %A" other
+
+        // #836: extraction logic in `isWhitelistedT0010Message` couples
+        // to the T0010 message format produced by the type checker
+        // (`Resolver.fs:err diags "T0010" (sprintf "unknown type name
+        // '%s'" name)`).  Lock that behaviour in with unit tests so
+        // either side can't drift silently.
+        testCase "isWhitelistedT0010Message: known stdlib anchor accepted" <| fun () ->
+            Expect.isTrue
+                (isWhitelistedT0010Message "unknown type name 'Option'")
+                "Option is in the whitelist"
+            Expect.isTrue
+                (isWhitelistedT0010Message "unknown type name 'Result'")
+                "Result is in the whitelist"
+            Expect.isTrue
+                (isWhitelistedT0010Message "unknown type name 'IOError'")
+                "IOError is in the whitelist"
+
+        testCase "isWhitelistedT0010Message: unknown name rejected" <| fun () ->
+            Expect.isFalse
+                (isWhitelistedT0010Message "unknown type name 'NotInWhitelist'")
+                "arbitrary names must surface as real errors"
+            Expect.isFalse
+                (isWhitelistedT0010Message "unknown type name 'MyAppType'")
+                "user types must surface"
+
+        testCase "isWhitelistedT0010Message: malformed message rejected" <| fun () ->
+            Expect.isFalse
+                (isWhitelistedT0010Message "no quotes at all")
+                "missing quotes returns false (no name to extract)"
+            Expect.isFalse
+                (isWhitelistedT0010Message "")
+                "empty message returns false"
+            Expect.isFalse
+                (isWhitelistedT0010Message "trailing only '")
+                "single quote returns false (no closing match)"
     ]

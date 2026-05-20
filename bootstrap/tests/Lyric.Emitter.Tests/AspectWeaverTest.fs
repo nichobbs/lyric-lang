@@ -593,4 +593,40 @@ func main(): Unit {
             // handlePing is excluded, so 'logged' appears exactly once
             Expect.equal (stdout.Split("logged").Length - 1) 1
                 (sprintf "expected exactly one 'logged' (handlePing excluded), got stdout: '%s'" stdout)
+
+        // #705 regression: an aspect with no `matches:` clause must
+        // weave nothing.  Previously `matchesPredicates []` used
+        // `List.forall []` which is vacuously true and would have
+        // matched (and wrapped) every function in the file.
+        testCase "aspect_weaver_empty_matchers_weaves_nothing" <| fun () ->
+            let src = """
+package Test.EmptyMatchers
+
+import Std.Core
+
+aspect Noop {
+  around(args) -> ret {
+    println("noop wrapped")
+    proceed(args)
+  }
+}
+
+func work(): Unit {
+  println("work")
+}
+
+func main(): Unit {
+  work()
+}
+"""
+            let r, stdout, stderr, exitCode = compileAndRun "aspect_weaver_empty_matchers" src
+            let errors = r.Diagnostics |> List.filter (fun d -> d.Code.StartsWith "E" || d.Code.StartsWith "T")
+            Expect.isEmpty errors (sprintf "compile errors: %A" (errors |> List.map (fun d -> sprintf "%s: %s" d.Code d.Message)))
+            Expect.equal exitCode 0 (sprintf "expected exit 0, stderr=%s stdout=%s" stderr stdout)
+            // `work` ran (so we know the program compiled and executed),
+            // but the wrapper print was NOT emitted.
+            Expect.stringContains stdout "work"
+                (sprintf "expected 'work' (unwrapped target ran), got: '%s'" stdout)
+            Expect.equal (stdout.Contains "noop wrapped") false
+                (sprintf "empty-matchers aspect must NOT wrap any function (got: '%s')" stdout)
     ]

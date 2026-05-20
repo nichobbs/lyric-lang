@@ -113,6 +113,28 @@ pub func createDir(path: in String): Result[Unit, IOError] {
   }
 }
 
+/// Recursively delete a directory and every file it contains.
+/// Returns `Ok(())` on success.  `Err(InvalidPath)` for empty paths.
+/// **Every host-side failure surfaces as `Err(IoError)`** — including
+/// the "directory does not exist" case, because distinguishing
+/// not-found from permission-denied requires an exception-type-aware
+/// shim which the kernel doesn't expose today.  Callers that need
+/// idempotent semantics should check `dirExists(path)` first or
+/// match on `Err(IoError)` and ignore it.
+@stable(since="1.0")
+pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  return try {
+    hostDeleteDirectoryRecursive(path, true)
+    Ok(value = ())
+  } catch Bug as b {
+    // See doc comment: not-found vs. permission-denied is indistinguishable.
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 /// Read the file at `path` as raw bytes.
 ///
 /// Returns `Ok(bytes)` on success, `Err(InvalidPath)` for empty paths,

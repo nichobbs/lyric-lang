@@ -22,7 +22,7 @@ geometry:
 
 # PDF fonts (requires these to be installed; falls back gracefully)
 mainfont: "Palatino"
-sansfont: "Helvetica Neue"
+sansfont: "Liberation Sans"
 monofont: "Fira Code"
 monofontoptions:
   - Scale=0.88

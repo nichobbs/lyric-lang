@@ -25,46 +25,21 @@ import Std.Process
 import Std.ProcessCapture
 import Std.Environment as Environment
 import Std.String as Str
+import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1. Subprocess helpers  (mirrors emitter.l §2 — keep in sync)
+// §1. Subprocess helpers — thin wrappers over Lyric.CliShell.
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Wrapper names are deliberately distinct from CliShell's public
+// surface: when the local function and the cross-package alias share
+// a name, the bootstrap resolver shadows the call site with the
+// enclosing module's symbol, producing infinite recursion at runtime.
 
-func lyrIsAppHost(): Bool {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  val bin    = Environment.getVarOrDefault("LYRIC_BIN",    "")
-  Str.isNotEmpty(bin) and cliDll == bin + ".dll"
-}
+func cliShellExe(): String { CliShell.lyrExe() }
 
-func lyrExe(): String {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
-    val bin = Environment.getVarOrDefault("LYRIC_BIN", "")
-    if Str.isNotEmpty(bin) and cliDll == bin + ".dll" {
-      bin
-    } else {
-      Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
-    }
-  } else {
-    Environment.getVarOrDefault("LYRIC_BIN", "lyric")
-  }
-}
-
-func lyrPrefixArgs(): List[String] {
-  val prefix: List[String] = newList()
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) and not lyrIsAppHost() {
-    prefix.add("exec")
-    prefix.add(cliDll)
-  }
-  prefix
-}
-
-func lyrArgs(subcmd: in List[String]): List[String] {
-  val all: List[String] = newList()
-  for a in lyrPrefixArgs().toArray() { all.add(a) }
-  for a in subcmd.toArray()          { all.add(a) }
-  all
+func cliShellArgs(subcmd: in List[String]): List[String] {
+  CliShell.lyrArgs(subcmd)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,7 +54,7 @@ pub func readFromFile(path: in String): Option[String] {
   subcmd.add("--internal-contract-meta")
   subcmd.add("read")
   subcmd.add(path)
-  val output = runCapture(lyrExe(), lyrArgs(subcmd), "")
+  val output = runCapture(cliShellExe(), cliShellArgs(subcmd), "")
   val trimmed = Str.trim(output)
   if Str.isEmpty(trimmed) {
     None
@@ -102,7 +77,7 @@ pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
   subcmd.add("--internal-contract-meta")
   subcmd.add("diff")
   val stdin = oldJson + "\n---\n" + newJson
-  val output = runCapture(lyrExe(), lyrArgs(subcmd), stdin)
+  val output = runCapture(cliShellExe(), cliShellArgs(subcmd), stdin)
 
   // Entries are separated by blank lines (\n\n).
   val rawParts = Str.split(output, "\n\n")

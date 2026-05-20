@@ -124,7 +124,7 @@ actions, rename, and background workspace analysis.
 VS Code (vscode-languageclient)
         │  JSON-RPC over stdio
         ▼
-lyric-lsp  (compiler/src/Lyric.Lsp/)
+lyric-lsp  (bootstrap/src/Lyric.Lsp/)
   ├── JsonRpc.fs    — LSP framing (Content-Length headers)
   └── Server.fs     — request dispatch, document store, workspace index
         │

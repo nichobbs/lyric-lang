@@ -15,6 +15,7 @@
     <Compile Include="SelfHostedFmtBridgeTests.fs" />
     <Compile Include="SelfHostedMsilBridgeTests.fs" />
     <Compile Include="ParityTests.fs" />
+    <Compile Include="JvmDiagnosticTests.fs" />
     <Compile Include="LintTests.fs" />
     <Compile Include="ProjectBuildTests.fs" />
     <Compile Include="ProveTests.fs" />

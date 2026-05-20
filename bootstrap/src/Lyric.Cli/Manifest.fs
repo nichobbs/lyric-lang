@@ -330,11 +330,22 @@ let private parseInlineTable (c: Cursor) : Result<Value, ManifestError> =
                                 if peek c = Some ',' then advance c |> ignore
                         | _ ->
                             eprintfn "warning: inline table key '%s' has a non-string value (only string values are supported); the key will be ignored" k
-                            while c.Pos < c.Text.Length
-                                  && c.Text.[c.Pos] <> ','
-                                  && c.Text.[c.Pos] <> '}'
-                                  && c.Text.[c.Pos] <> '\n' do
-                                advance c |> ignore
+                            // Track bracket / brace depth so nested arrays
+                            // and inline tables don't terminate the outer
+                            // skip prematurely (e.g. `path = { a = "x" }`
+                            // or `xs = [1, 2]`).  Newlines, top-level `,`,
+                            // and the top-level closing `}` are the
+                            // legitimate stops.
+                            let mutable depth = 0
+                            let mutable stop  = false
+                            while not stop && c.Pos < c.Text.Length do
+                                let ch = c.Text.[c.Pos]
+                                if depth = 0 && (ch = ',' || ch = '}' || ch = '\n') then
+                                    stop <- true
+                                else
+                                    if ch = '{' || ch = '[' then depth <- depth + 1
+                                    elif ch = '}' || ch = ']' then depth <- depth - 1
+                                    advance c |> ignore
                             skipInlineWhitespace c
                             if peek c = Some ',' then advance c |> ignore
             | Some ',' ->
