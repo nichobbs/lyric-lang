@@ -78,6 +78,7 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Parse
 import Std.Sort as Sort
+import Std.Hash as Hash       // sha512OfFile / sha512OfBytes for #738 lock integrity
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
@@ -1136,6 +1137,51 @@ func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
   xml + "</Project>\n"
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §10a. Lock-file content hashing (lyric-lang #738)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// SHA-512 of the resolved dependency's `lyric.toml`.  Used as the lockable
+/// content identity for `Path`, `Workspace`, and `Git` deps — the manifest
+/// is the canonical content-snapshot for source-form dependencies.
+///
+/// Returns `None` when the file is missing or unreadable; callers treat that
+/// as "graceful skip" in normal restore and as a hard failure in `--locked`.
+func lockSha512OfLocalManifest(localDir: in String): Option[String] {
+  if localDir.length == 0 { return None }
+  val manifestPath = Path.join(localDir, "lyric.toml")
+  match Hash.sha512OfFile(manifestPath) {
+    case Ok(hex) -> Some(value = hex)
+    case Err(_)  -> None
+  }
+}
+
+/// SHA-512 of the resolved NuGet `.nupkg` for a registry dep.  Layout is
+/// `~/.nuget/packages/<name-lower>/<version>/<name-lower>.<version>.nupkg`
+/// — populated by `dotnet restore` before this is called.
+///
+/// Returns `None` when the file is missing (e.g. on a host where the
+/// NuGet cache lives elsewhere, or when `dotnet restore` was skipped).
+func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
+  if name.length == 0 or version.length == 0 { return None }
+  val home = match Environment.getVar("HOME") {
+    case Ok(h)  -> h
+    case Err(_) ->
+      match Environment.getVar("USERPROFILE") {
+        case Ok(h)  -> h
+        case Err(_) -> return None
+      }
+  }
+  val lower = name.toLower()
+  val cacheDir = Path.join(Path.join(Path.join(home, ".nuget"), "packages"), lower)
+  val versionDir = Path.join(cacheDir, version)
+  val nupkgPath = Path.join(versionDir, lower + "." + version + ".nupkg")
+  match Hash.sha512OfFile(nupkgPath) {
+    case Ok(hex) -> Some(value = hex)
+    case Err(_)  -> None
+  }
+}
+
 func cmdRestore(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var lockedMode = false
@@ -1232,7 +1278,7 @@ func cmdRestore(argv: in slice[String]): Int {
           name    = dep.name,
           version = version,
           source  = src,
-          sha512  = None,
+          sha512  = None,                       // populated after `dotnet restore` below
           path    = None))
       }
       case Workspace(versionConstraint) -> {
@@ -1280,7 +1326,7 @@ func cmdRestore(argv: in slice[String]): Int {
               name    = dep.name,
               version = "",
               source  = "workspace",
-              sha512  = None,
+              sha512  = lockSha512OfLocalManifest(resolvedDir),
               path    = Some(value = resolvedDir)))
             Console.println("restore: " + dep.name + " -> " + resolvedDir + " (workspace)")
           }
@@ -1294,7 +1340,7 @@ func cmdRestore(argv: in slice[String]): Int {
           name    = dep.name,
           version = "",
           source  = "path:" + absDir,
-          sha512  = None,
+          sha512  = lockSha512OfLocalManifest(absDir),
           path    = Some(value = absDir)))
         Console.println("restore: " + dep.name + " -> " + absDir + " (path)")
       }
@@ -1311,7 +1357,7 @@ func cmdRestore(argv: in slice[String]): Int {
               name    = dep.name,
               version = result.resolvedRev,
               source  = srcTag,
-              sha512  = None,
+              sha512  = lockSha512OfLocalManifest(result.localDir),
               path    = Some(value = result.localDir)))
             Console.println("restore: " + dep.name + " -> " + result.localDir + " (" + result.resolvedRev + ")")
           }
@@ -1367,6 +1413,33 @@ func cmdRestore(argv: in slice[String]): Int {
     if dotnetExit != 0 { return dotnetExit }
   }
 
+  // Second pass: now that `dotnet restore` has populated the NuGet cache,
+  // compute SHA-512 of each registry dep's `.nupkg` and write it back into
+  // the lock entry (#738 supply-chain integrity).  Path / Workspace / Git
+  // deps already had their digests written in the resolution loop above.
+  val upgraded: List[LF.LockedPackage] = newList()
+  var ui = 0
+  while ui < lf.packages.count {
+    val pkgEntry = lf.packages[ui]
+    val nupkgSha: Option[String] =
+      if Str.startsWith(pkgEntry.source, "nuget:") {
+        match pkgEntry.sha512 {
+          case Some(_) -> pkgEntry.sha512    // unlikely — kept defensively
+          case None    -> lockSha512OfNupkg(pkgEntry.name, pkgEntry.version)
+        }
+      } else {
+        pkgEntry.sha512
+      }
+    upgraded.add(LF.LockedPackage(
+      name    = pkgEntry.name,
+      version = pkgEntry.version,
+      source  = pkgEntry.source,
+      sha512  = nupkgSha,
+      path    = pkgEntry.path))
+    ui = ui + 1
+  }
+  lf = LF.LockFile(formatVersion = lf.formatVersion, packages = upgraded)
+
   // Write the lock file or verify it (--locked mode).
   if lockedMode {
     // --locked: fail if no lock file exists on disk.
@@ -1400,6 +1473,37 @@ func cmdRestore(argv: in slice[String]): Int {
           } else if locked.version != resolved.version {
             printErr("restore: --locked: '" + resolved.name + "' version changed: locked='" + locked.version + "' resolved='" + resolved.version + "'")
             lockMismatch = true
+          } else {
+            // Content-integrity check (#738).  A `None` on the lock side
+            // means the lock file pre-dates the SHA-512 enforcement; we
+            // refuse to proceed and instruct the user to regenerate.  A
+            // mismatch between the two digests means the resolved
+            // artifact's content changed since the lock was written — the
+            // exact registry-poisoning attack the lock file is supposed
+            // to detect.
+            match locked.sha512 {
+              case None ->
+                match resolved.sha512 {
+                  case None -> ()  // both None: e.g. pre-#738 lock file + non-NuGet HOME — soft path; warn but allow
+                  case Some(_) -> {
+                    printErr("restore: --locked: '" + resolved.name + "' has no SHA-512 in the lock file; lyric.lock pre-dates content-integrity enforcement — run 'lyric restore' to regenerate")
+                    lockMismatch = true
+                  }
+                }
+              case Some(lockedHash) ->
+                match resolved.sha512 {
+                  case None ->
+                    printErr("restore: --locked: warning: '" + resolved.name + "' could not be re-hashed; integrity check skipped (locked='" + lockedHash + "')")
+                  case Some(resolvedHash) ->
+                    if lockedHash != resolvedHash {
+                      printErr("restore: --locked: '" + resolved.name + "' content changed: locked SHA-512 != resolved SHA-512")
+                      printErr("  locked   : " + lockedHash)
+                      printErr("  resolved : " + resolvedHash)
+                      printErr("  (a registry-poisoning attack would surface here; if the package was legitimately updated, run 'lyric restore' to regenerate the lock)")
+                      lockMismatch = true
+                    }
+                }
+            }
           }
         }
       }
