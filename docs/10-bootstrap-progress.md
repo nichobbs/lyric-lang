@@ -13421,3 +13421,32 @@ the production import path.
 
 **Test results:** 237/237 Lyric.Cli (including 8/8
 SelfHostedMsilBridgeTests, 66/66 ParityTests across the three targets).
+
+### D-progress-277 — Contract elaborator lowers loop invariants (docs/41 Band 4)
+
+Closes the first half of docs/41 §9 Band 4: loop `invariant:`
+clauses now lower to runtime `assert(inv)` calls at the top of every
+reachable loop body, instead of being passed through as inert
+`SInvariant` AST nodes.
+
+* **`lyric-compiler/lyric/contract_elaborator/elaborator.l:elaborateStmtDeep`**
+  gains an `SInvariant(inv)` case that emits `mkAssertCall(inv, span)`.
+  Continue and fall-through edges both re-enter the loop head, so a
+  single assert at the start of the body covers them.  Break exits
+  without re-checking, matching the operational semantics in
+  `docs/08-contract-semantics.md`.
+* **Function-body opt-in.**  `elaborateFunction` previously short-circuited
+  when a function had no `requires:` and no `ensures:` — that path
+  bypassed the deep-walk that would have rewritten `SInvariant`.  A new
+  `functionBodyHasInvariant` predicate (walks `SWhile` / `SFor` / `SLoop` /
+  `STry` / `SScope` / `SDefer` bodies) now also opts the function into
+  elaboration.
+* **`contract_elaborator_self_test.l`** gains `testWhileInvariantLowered`
+  and `testForInvariantLowered`, both verifying that the first
+  statement of the rewritten loop body is `SExpr(ECall(EPath("assert"),
+  …))`.
+
+Still deferred (will follow as part of the second half of Band 4):
+protected-type entries (`PMEntry` with `barrier:` / `invariant:` clauses).
+
+**Test results:** 797/797 emitter, 239/239 Lyric.Cli.

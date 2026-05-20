@@ -36,9 +36,14 @@
 //   * `@axiom` functions — skipped (axiom decls have no body, so there
 //     is nothing to elaborate).
 //
-//   * Loop `invariant:` (`SInvariant`) — left as-is.  The verifier
-//     consumes it; the bootstrap emitter does not insert runtime
-//     checks for loop invariants, and neither does the elaborator.
+//   * Loop `invariant:` (`SInvariant`) — lowered to `assert(inv)` at
+//     the top of every reachable loop body (docs/41 §9 Band 4).  The
+//     check fires on initial entry and at the start of each iteration
+//     (continue / fall-through both re-enter the loop head).  Break
+//     exits without re-checking, matching the operational semantics in
+//     `docs/08-contract-semantics.md`.  The verifier consumes
+//     `SInvariant` nodes from the original AST (before elaboration), so
+//     the F# emitter and `lyric prove` continue to see them.
 //
 //   * Protected-type entries (`PMEntry`) — deferred to a follow-up
 //     stage.  Barrier (`when:`) checks and protected-type `invariant:`
@@ -779,6 +784,15 @@ func elaborateStmtDeep(
       acc.add(mkStmt(SScope(
         binding = label,
         body    = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case SInvariant(inv) ->
+      // Loop `invariant:` (docs/41 §9 Band 4).  We lower to a runtime
+      // `assert(inv)` so the check fires at the top of every iteration:
+      // the first iteration checks the entry state, and every subsequent
+      // iteration checks that the previous body re-established the
+      // invariant.  Continue / fall-through both re-enter the loop head,
+      // so a single assert at the start of the body covers them; break
+      // exits without a check (no postcondition is recovered here).
+      acc.add(mkAssertCall(inv, s.span))
     case _ -> { acc.add(s) }
   }
 }
@@ -816,6 +830,56 @@ func elaborateTopLevelStmt(
       }
     }
     case _ -> { elaborateStmtDeep(s, ensuresExprs, counter, acc) }
+  }
+}
+
+// True iff any reachable statement inside `fn.body` is an `SInvariant`
+// (a loop `invariant:` clause that has been prepended to a loop body by
+// `prependLoopInvariants`).  Used to opt the function into elaboration
+// when it has no requires / ensures but does need loop-invariant
+// lowering.  Walks SWhile / SFor / SLoop / STry / SScope / SDefer
+// bodies; nested expression matches (EIf / EMatch / EBlock) cannot
+// contain SInvariant because the parser only attaches invariants to
+// loops.
+func functionBodyHasInvariant(fn: in FunctionDecl): Bool {
+  match fn.body {
+    case None -> false
+    case Some(fb) -> {
+      match fb {
+        case FBBlock(blk) -> blockHasInvariant(blk)
+        case FBExpr(_)    -> false
+      }
+    }
+  }
+}
+
+func blockHasInvariant(blk: in Block): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtHasInvariant(blk.statements[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func stmtHasInvariant(s: in Statement): Bool {
+  match s.kind {
+    case SInvariant(_)             -> true
+    case SWhile(_, _, body)        -> blockHasInvariant(body)
+    case SFor(_, _, _, body)       -> blockHasInvariant(body)
+    case SLoop(_, body)            -> blockHasInvariant(body)
+    case SScope(_, body)           -> blockHasInvariant(body)
+    case SDefer(body)              -> blockHasInvariant(body)
+    case STry(body, catches)       -> {
+      if blockHasInvariant(body) { return true }
+      var i = 0
+      while i < catches.count {
+        if blockHasInvariant(catches[i].body) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
   }
 }
 
@@ -876,10 +940,13 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
     case _    -> {}
   }
 
-  // No clauses → nothing to do; preserve identity of the input record.
+  // No requires / ensures / loop invariants → nothing to do.  Preserve
+  // identity of the input record so downstream passes (verifier,
+  // contract-meta) see the original FunctionDecl.
   val hasReq = collectRequires(fn.contracts).count > 0
   val hasEns = collectEnsures(fn.contracts).count > 0
-  if not hasReq and not hasEns { return fn }
+  val hasInv = functionBodyHasInvariant(fn)
+  if not hasReq and not hasEns and not hasInv { return fn }
 
   var counter = newRenameCounter()
   val newBody: FunctionBody =
