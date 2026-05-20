@@ -34,6 +34,7 @@ import Std.ProcessCaptureHost
 // precede `"` — is harder to get right.
 // Exposed `pub` so callers building command lines piecemeal (outside
 // `buildArgString`) can reuse the same escape ordering.
+@stable(since="1.0")
 pub func quoteArg(arg: in String): String {
   // Order matters: escape backslashes first so the `\` introduced by
   // the second step don't get double-escaped.
@@ -44,6 +45,7 @@ pub func quoteArg(arg: in String): String {
 // Build a single pre-formed argument string from a list.  Every
 // argument is wrapped in `"..."` with backslash + quote escaping so
 // the receiving process re-tokenises identically on POSIX and Windows.
+@stable(since="1.0")
 pub func buildArgString(args: in List[String]): String {
   var result = ""
   var i = 0

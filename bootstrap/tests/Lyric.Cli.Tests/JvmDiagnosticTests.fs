@@ -105,6 +105,8 @@ let tests =
                 let stderr = stderrSb.ToString()
                 Expect.stringContains stderr "J001"
                     (sprintf "expected J001 in stderr, got: %s" stderr)
+                Expect.stringContains stderr "Double"
+                    (sprintf "expected the offending type in the J001 message, got: %s" stderr)
             finally
                 try Directory.Delete(dir, recursive = true) with _ -> ()
     ]
