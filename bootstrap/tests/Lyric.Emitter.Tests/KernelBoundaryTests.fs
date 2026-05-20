@@ -121,7 +121,10 @@ let tests =
                     total totalSoftCap
             // Sanity: kernel can't be negative or wildly huge.
             Expect.isGreaterThanOrEqual inside 0 "kernel count >= 0"
-            Expect.isLessThanOrEqual total 294
+            // Hard cap raised from 294 → 296 to admit the two new
+            // `Std.HashHost` externs (`hostSha512Bytes`, `hostBytesToHex`)
+            // landed for #738 (lock-file content integrity).
+            Expect.isLessThanOrEqual total 296
                 "total extern surface unexpectedly large"
         }
     ]
