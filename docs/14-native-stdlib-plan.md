@@ -452,6 +452,21 @@ D038 for the umbrella record. Resolutions reproduced inline.
 
 ---
 
+### 10.1 Extern-target field reads (post-resolution clarification)
+
+`@externTarget("…")` resolves member references at emit time by walking
+the target type for an instance method, then a static method, then a
+static field with that name. The field path is intentional: it is the
+canonical way to bind to BCL static enum values (such as
+`System.Text.RegularExpressions.RegexOptions.None`) without inventing a
+fresh literal-zero helper. The kernel uses this pattern in
+`lyric-stdlib/std/_kernel/regex.l` for `regexOptionsNone()`; new
+declarations may follow the same shape provided the target is a
+static field of a public BCL type. Audit treats `@externTarget` field
+reads identically to method bindings — both count against Decision F.
+
+---
+
 ## 11. Risk register
 
 | Risk | Probability | Impact | Mitigation |

@@ -136,3 +136,76 @@ test "ListResult with isTruncated true and continuation token" {
     case Some(t) -> assertEqual(t, "token-xyz", "token value")
   }
 }
+
+// ─── Key safety primitives ───────────────────────────────────────────────────
+
+test "isSafeKey accepts ordinary keys" {
+  assertTrue(Storage.isSafeKey("uploads/photo.jpg"), "ordinary key")
+  assertTrue(Storage.isSafeKey("a"),                  "single char key")
+  assertTrue(Storage.isSafeKey("nested/dir/file.txt"), "nested key")
+  assertTrue(Storage.isSafeKey("version..2.0"),       "dot-dot inside a segment is fine")
+  assertTrue(Storage.isSafeKey("my..file.txt"),       "filename embedding .. is fine")
+}
+
+test "isSafeKey rejects empty key" {
+  assertFalse(Storage.isSafeKey(""), "empty key")
+}
+
+test "isSafeKey rejects leading slash (absolute path)" {
+  assertFalse(Storage.isSafeKey("/etc/passwd"), "leading slash")
+}
+
+test "isSafeKey rejects raw .. segment" {
+  assertFalse(Storage.isSafeKey("../etc/passwd"),     "leading ..")
+  assertFalse(Storage.isSafeKey("uploads/../etc"),    "interior ..")
+  assertFalse(Storage.isSafeKey(".."),                "lone ..")
+  assertFalse(Storage.isSafeKey("a/.."),              "trailing ..")
+}
+
+test "isSafeKey rejects percent-encoded .. (single)" {
+  assertFalse(Storage.isSafeKey("%2e%2e/etc/passwd"),  "lowercase percent")
+  assertFalse(Storage.isSafeKey("%2E%2E/etc/passwd"),  "uppercase percent")
+}
+
+test "isSafeKey rejects mixed-case percent traversal" {
+  assertFalse(Storage.isSafeKey("%2e%2E/etc/passwd"), "mixed-case percent")
+}
+
+test "isSafeKey rejects double-encoded percent payloads" {
+  assertFalse(Storage.isSafeKey("%252e%252e/etc/passwd"),
+              "double-encoded %25 lowercase")
+  assertFalse(Storage.isSafeKey("%252E%252E/etc/passwd"),
+              "double-encoded %25 uppercase")
+}
+
+test "isSafeKey rejects backslash traversal" {
+  assertFalse(Storage.isSafeKey("..\\etc\\passwd"), "backslash traversal")
+}
+
+test "isSafeKey rejects null bytes" {
+  assertFalse(Storage.isSafeKey("ok\u{0000}/etc/passwd"), "embedded null byte")
+}
+
+test "normalisedStorageKey decodes target characters only" {
+  assertEqual(Storage.normalisedStorageKey("%2e%2e/etc"), "../etc", "decode dot")
+  assertEqual(Storage.normalisedStorageKey("%2F/path"),   "//path", "decode slash")
+  assertEqual(Storage.normalisedStorageKey("a\\b"),       "a/b",    "fold backslash")
+}
+
+test "storageKeyHasDotDot segment-aware" {
+  assertTrue(Storage.storageKeyHasDotDot("../etc"),      "leading ..")
+  assertTrue(Storage.storageKeyHasDotDot("a/../b"),      "interior ..")
+  assertFalse(Storage.storageKeyHasDotDot("version..2"), "embedded .. is not a segment")
+  assertFalse(Storage.storageKeyHasDotDot("my..file"),   "filename .. is not a segment")
+  assertFalse(Storage.storageKeyHasDotDot("a/b/c"),      "no .. anywhere")
+}
+
+test "isSafePrefix admits empty prefix" {
+  assertTrue(Storage.isSafePrefix(""),         "empty prefix is list-all")
+  assertTrue(Storage.isSafePrefix("uploads/"), "ordinary prefix")
+}
+
+test "isSafePrefix rejects traversal" {
+  assertFalse(Storage.isSafePrefix("../etc"),               "leading ..")
+  assertFalse(Storage.isSafePrefix("%252e%252e/etc"),       "double-encoded")
+}
