@@ -75,12 +75,21 @@ pub record EmitProjectRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2. Subprocess helpers — shared with contract_meta.l via Lyric.CliShell.
+// §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// The wrapper names below are deliberately distinct from CliShell's
+// public surface: when the local function and the cross-package
+// callee share a name, the bootstrap parser shadows the call site
+// with the enclosing module's symbol, producing infinite recursion
+// at runtime (observed via stack-overflow when both were named
+// `lyrExe`).
 
-func lyrExe(): String { CliShell.lyrExe() }
+func cliShellExe(): String { CliShell.lyrExe() }
 
-func lyrArgs(subcmd: in List[String]): List[String] { CliShell.lyrArgs(subcmd) }
+func cliShellArgs(subcmd: in List[String]): List[String] {
+  CliShell.lyrArgs(subcmd)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Temporary source file
@@ -206,7 +215,7 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   subcmd.add("--target")
   subcmd.add(targetStr)
 
-  val result = match Process.run(lyrExe(), lyrArgs(subcmd)) {
+  val result = match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
     case Ok(code) -> {
       if code != 0 {
         failResult("project build failed (see stderr)")
@@ -268,7 +277,7 @@ pub func emit(req: in EmitRequest): EmitResult {
   subcmd.add("--target")
   subcmd.add(targetStr)
 
-  match Process.run(lyrExe(), lyrArgs(subcmd)) {
+  match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
     case Ok(code) -> {
       if code != 0 {
         return failResult("build failed (see stderr)")

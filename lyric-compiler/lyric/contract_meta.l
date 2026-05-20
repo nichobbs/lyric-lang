@@ -28,12 +28,19 @@ import Std.String as Str
 import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1. Subprocess helpers — shared with emitter.l via Lyric.CliShell.
+// §1. Subprocess helpers — thin wrappers over Lyric.CliShell.
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Wrapper names are deliberately distinct from CliShell's public
+// surface: when the local function and the cross-package alias share
+// a name, the bootstrap resolver shadows the call site with the
+// enclosing module's symbol, producing infinite recursion at runtime.
 
-func lyrExe(): String { CliShell.lyrExe() }
+func cliShellExe(): String { CliShell.lyrExe() }
 
-func lyrArgs(subcmd: in List[String]): List[String] { CliShell.lyrArgs(subcmd) }
+func cliShellArgs(subcmd: in List[String]): List[String] {
+  CliShell.lyrArgs(subcmd)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. readFromFile
@@ -47,7 +54,7 @@ pub func readFromFile(path: in String): Option[String] {
   subcmd.add("--internal-contract-meta")
   subcmd.add("read")
   subcmd.add(path)
-  val output = runCapture(lyrExe(), lyrArgs(subcmd), "")
+  val output = runCapture(cliShellExe(), cliShellArgs(subcmd), "")
   val trimmed = Str.trim(output)
   if Str.isEmpty(trimmed) {
     None
@@ -70,7 +77,7 @@ pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
   subcmd.add("--internal-contract-meta")
   subcmd.add("diff")
   val stdin = oldJson + "\n---\n" + newJson
-  val output = runCapture(lyrExe(), lyrArgs(subcmd), stdin)
+  val output = runCapture(cliShellExe(), cliShellArgs(subcmd), stdin)
 
   // Entries are separated by blank lines (\n\n).
   val rawParts = Str.split(output, "\n\n")
