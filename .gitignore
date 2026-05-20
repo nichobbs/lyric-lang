@@ -68,3 +68,7 @@ TestResult.xml
 nunit-*.xml
 
 .fake
+
+# scripts/manual-test.sh output and 3-stage bootstrap workdir
+.manual-test-report/
+.bootstrap/

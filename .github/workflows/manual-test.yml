@@ -1,0 +1,116 @@
+name: Manual Ecosystem Test
+
+# Manual smoke for the full Lyric ecosystem — bootstrap → self-hosted
+# compiler → stdlib → ecosystem libraries → examples → fmt / lint / prove
+# → gap analysis.  Surfaces production-readiness gaps in one run.
+#
+# Trigger via the GitHub Actions UI ("Run workflow") on any branch.  The
+# job runs `scripts/manual-test.sh` and uploads the full report bundle
+# (`.manual-test-report/`) as a workflow artifact, so reviewers can read
+# `report.md`, `summary.json`, the per-stage logs, and the gap census
+# without re-running locally.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fail_fast:
+        description: 'Stop on first failed stage (default: continue and report all gaps)'
+        type: boolean
+        default: false
+      skip_jvm:
+        description: 'Skip --target jvm build stages (no Java setup, faster run)'
+        type: boolean
+        default: false
+      skip_prove:
+        description: 'Skip the Phase 4 verifier stage (no Z3 needed)'
+        type: boolean
+        default: false
+      skip_repro:
+        description: 'Skip the 3-stage reproducibility bootstrap (faster smoke run)'
+        type: boolean
+        default: false
+      only_stage:
+        description: 'Run a single stage by name (e.g. gap-analysis). Leave blank to run all.'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  manual-test:
+    runs-on: ubuntu-latest
+    # Generous budget; the full pipeline (incl. repro bootstrap and JVM
+    # builds) can take 30-60 minutes on the GitHub-hosted runner.
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 21 (JVM emission target)
+        if: inputs.skip_jvm == false
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Maven (JVM target dependency resolution)
+        if: inputs.skip_jvm == false
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y maven
+
+      - name: Install Z3 (Phase 4 verifier)
+        if: inputs.skip_prove == false
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
+
+      - name: Show tool versions
+        run: |
+          dotnet --version
+          java -version || true
+          mvn --version || true
+          z3 --version  || true
+
+      - name: Run manual-test.sh
+        id: run_pipeline
+        run: |
+          set -uo pipefail
+          args=()
+          if [ "${{ inputs.fail_fast }}"  = "true" ]; then args+=(--fail-fast); fi
+          if [ "${{ inputs.skip_jvm }}"   = "true" ]; then args+=(--skip-jvm); fi
+          if [ "${{ inputs.skip_prove }}" = "true" ]; then args+=(--skip-prove); fi
+          if [ "${{ inputs.skip_repro }}" = "true" ]; then args+=(--skip-repro); fi
+          if [ -n "${{ inputs.only_stage }}" ]; then args+=(--only "${{ inputs.only_stage }}"); fi
+          bash scripts/manual-test.sh "${args[@]}"
+        # The script handles every stage's failure itself (unless
+        # --fail-fast).  We still want a non-zero exit to mark the run as
+        # failed when any stage failed, which the script provides.
+        continue-on-error: false
+
+      - name: Render report summary to job log
+        if: always()
+        run: |
+          if [ -f .manual-test-report/report.md ]; then
+            echo "## Pipeline summary" >> "$GITHUB_STEP_SUMMARY"
+            cat .manual-test-report/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report.md produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload manual-test report bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-test-report
+          path: .manual-test-report/
+          if-no-files-found: warn
+          retention-days: 30
