@@ -2293,8 +2293,17 @@ func emitExternTargetBody(
   val target = externTargetStringMsil(decl.annotations)
   if target == "" { return false }
 
+  // F0002 (also emitted by the type checker for proof/lint paths,
+  // but Msil.Bridge skips type checking — panic here so the user
+  // build sees the diagnostic, #790).
+  if hasConflictingHints(decl.annotations) {
+    panic("Msil.Codegen: function '" + decl.name + "' has both "
+      + "@externStatic and @externInstance — pick one (the FFI "
+      + "resolver cannot honour both).")
+  }
+
   val hint = hintFromAnnotations(decl.annotations)
-  match resolveExternTarget(target, decl.params.count, hint) {
+  match resolveExternTarget(target, hint) {
     case None -> false
     case Some(r) -> {
       // Map every Lyric param + return type to MSIL.
@@ -2309,13 +2318,18 @@ func emitExternTargetBody(
         case None     -> MVoid
       }
 
-      // Skip externs whose Lyric signature mentions a non-primitive
-      // class type — the bootstrap-grade resolver hasn't wired up
-      // TypeRef-encoded MemberRef signatures yet.  Falling through
-      // makes the function body empty; the legacy F# emitter
-      // (--target dotnet-legacy) covers these for now.
+      // The bootstrap-grade FFI resolver hasn't wired up TypeRef-
+      // encoded MemberRef signatures yet, so externs whose Lyric
+      // signature mentions a non-primitive class type can't emit
+      // here.  Panic with a clear message instead of falling through
+      // to the empty-body lowering — for non-void returns the empty
+      // body is invalid MSIL and would surface as a runtime
+      // VerificationException with no build-time signal (#791).
       if mentionsMClass(paramTypes) or mentionsMClassRet(retTy) {
-        return false
+        panic("Msil.Codegen: @externTarget(\"" + target + "\") on '"
+          + decl.name + "' uses class-typed params or return that the "
+          + "self-hosted MSIL FFI does not yet support; use "
+          + "--target dotnet-legacy or wrap the call in a primitive-typed shim.")
       }
 
       val tRefRow = internFfiTypeRef(

@@ -119,9 +119,19 @@ func classifyReplace(msg: in String): Result[String, RegexError] {
   else              { Err(error = RegexBug(message = msg)) }
 }
 
-// The BCL `RegexMatchTimeoutException.Message` reliably contains
-// the phrase "time-out" — see the standard message format in
-// `System.Text.RegularExpressions.SR.RegexMatchTimeoutException_*`.
+// Best-effort classifier for the `Bug` we caught.  In .NET 6+ the
+// BCL `RegexMatchTimeoutException.Message` reliably contains the
+// phrase "time-out" in en-US, but the message is satellite-
+// resource-localised in non-en-US runtimes (#795).  When the
+// phrase is absent we fall through to RegexBug; the caller still
+// sees an `Err`, just typed conservatively.
+//
+// A locale-stable classifier would need to inspect the exception
+// class instead of its message — the Lyric `try`/`catch Bug` lowers
+// every exception into a single `Bug` shape, so the exception's
+// runtime type is not surfaced.  Until that loweing changes we
+// document the locale dependency explicitly.
+//
 // We scan the message manually so the wrapper has no `Std.String`
 // import; that import has triggered an F#-bootstrap union-case
 // context bug in the past (see lyric-compiler/msil/ffi.l for the

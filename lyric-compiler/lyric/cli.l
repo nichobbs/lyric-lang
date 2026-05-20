@@ -2027,22 +2027,9 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
-// `lyric test --manifest <toml>` (#465).
-//
-// Reads the manifest, iterates `[project.tests]`, and for each entry:
-//   * loads the test source
-//   * runs `Lyric.TestSynth.synthesize` to rewrite it (injects a
-//     synthetic `main()` that runs every test and prints TAP output)
-//   * concatenates the manifest's `[project.packages]` sources with
-//     the synthesised test source into one combined unit
-//   * emits the bundle to `.lyric-test/<test-stem>.dll`
-//   * `dotnet exec`s the DLL and prints the result
-//
-// The command exit code is non-zero if any test fails (or if any
-// build step fails).
-//
-// `filterArg`, when present, is forwarded into TestSynth.synthesize so
-// callers can scope to one test inside one file (the `--filter` flag).
+// Unreachable today: the F# bootstrap CLI fall-back doesn't know
+// `--manifest` for `test`, so this entry point only fires once the
+// self-hosted CLI bridge regains JIT (#465).
 func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2094,7 +2081,12 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   val testOutDir = Path.join(mfDir, ".lyric-test")
   match File.createDir(testOutDir) {
     case Ok(_)  -> ()
-    case Err(_) -> ()
+    case Err(e) -> {
+      // Existing directory is fine — every other createDir failure
+      // surfaces as an emit-write failure later, but report it here
+      // so the user knows what's going on (#797).
+      printErr("test: cannot create '" + testOutDir + "': " + IOError.message(e))
+    }
   }
 
   var totalPassed = 0
@@ -2152,14 +2144,16 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
 
     // Build the combined source: every [project.packages] file plus
     // the synthesised test (which now carries a `main()` that runs
-    // every test function).
-    var combined = ""
+    // every test function).  Collect into a List and `Str.joinList`
+    // at the end to avoid the O(N^2) repeated-concat cost.
+    val parts: List[String] = newList()
     var si = 0
     while si < pkgSources.count {
-      combined = combined + pkgSources[si]
+      parts.add(pkgSources[si])
       si += 1
     }
-    combined = combined + rewritten
+    parts.add(rewritten)
+    val combined = Str.joinList("", parts)
 
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + ".dll")

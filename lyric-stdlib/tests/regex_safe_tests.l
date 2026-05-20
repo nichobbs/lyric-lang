@@ -6,6 +6,12 @@
 // constructing an adversarial input large enough would slow the
 // test suite without adding coverage beyond what the BCL itself
 // guarantees.
+//
+// Uses the `func main(): Unit` + `println "ok"` pattern that
+// `StdlibLyricTests.fs` expects.  Other stdlib test files
+// (json_tests.l, format_tests.l, …) follow the same shape.  The
+// `test "..." { }` block syntax used by `lyric-proto/tests/` runs
+// through `lyric test`, not through `StdlibLyricTests`.
 
 package Std.RegexSafe.Tests
 
@@ -13,11 +19,14 @@ import Std.Core
 import Std.RegexSafe as Rx
 import Std.Testing
 
-func testErrorMessageRoundtrip(): Unit {
-  val timedOutMsg = Rx.errorMessage(TimedOut(message = "x"))
-  val bugMsg      = Rx.errorMessage(RegexBug(message = "y"))
-  assertTrue(timedOutMsg == "regex match timed out: x", "TimedOut renders")
-  assertTrue(bugMsg      == "regex error: y",           "RegexBug renders")
+func testErrorMessageTimedOut(): Unit {
+  val msg = Rx.errorMessage(TimedOut(message = "x"))
+  assertTrue(msg == "regex match timed out: x", "TimedOut renders")
+}
+
+func testErrorMessageRegexBug(): Unit {
+  val msg = Rx.errorMessage(RegexBug(message = "y"))
+  assertTrue(msg == "regex error: y", "RegexBug renders")
 }
 
 func testCompileOk(): Unit {
@@ -58,7 +67,8 @@ func testReplaceSuccess(): Unit {
 }
 
 func main(): Unit {
-  testErrorMessageRoundtrip()
+  testErrorMessageTimedOut()
+  testErrorMessageRegexBug()
   testCompileOk()
   testCompileInvalid()
   testIsMatchSuccess()

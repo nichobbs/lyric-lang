@@ -220,10 +220,15 @@ pub func clrAssemblyForType(typeFqn: in String): String {
 
 // ── Resolver ─────────────────────────────────────────────────────────────────
 
+// `paramArity` was carried over from the earlier reflection-based
+// cascade (`MethodInfo.GetParameters().Length`) that the resolver no
+// longer uses — the table-driven resolver derives everything from
+// the target string + the Lyric param/return types.  Leaving the
+// parameter in place would be unused noise (#792), so it is gone;
+// callers no longer pass it.
 pub func resolveExternTarget(
-  target:     in String,
-  paramArity: in Int,
-  hint:       in ResolveHint
+  target: in String,
+  hint:   in ResolveHint
 ): Option[FfiResolved] {
   match splitTarget(target) {
     case None -> None

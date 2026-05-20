@@ -13305,6 +13305,69 @@ Promotes the five slice readers verbatim into `_kernel_jvm/
 json_host.l`.  The body is identical to the .NET path (pure
 Lyric, no BCL-specific calls) so behaviour matches by
 construction.  All five carry the `defer { hostDisposeJson(doc) }`
-disposal added in D-progress-272.
+disposal added in D-progress-273.
 
 **Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-275 — Review fixes for PR #789 (REQUIRED + SUGGESTIONs)
+
+Addresses the `claude-review` findings on PR #789:
+
+REQUIRED:
+* **F0002 diagnostic for conflicting `@externStatic` / `@externInstance`**
+  (#790, #793) — both annotations on one extern declaration is now an
+  error.  Surfaced two ways: the self-hosted type checker
+  (`typechecker_stmts.l:checkFunctionBody`) emits `F0002` via
+  `errorDiagnostic` for proof / lint pipelines that thread a diag
+  list; the MSIL codegen (`msil/codegen.l:emitExternTargetBody`)
+  panics with the same message so the `lyric build` path — which
+  skips the type checker — also surfaces the failure.
+* **Invalid-IL hazard for class-typed `@externTarget` params** (#791) —
+  previously the FFI emitter returned `false` and the default lowering
+  emitted `MRet` with no value on the stack, producing
+  VerificationException at runtime.  `emitExternTargetBody` now
+  panics with an actionable message ("use --target dotnet-legacy or
+  wrap the call in a primitive-typed shim").
+
+SUGGESTIONs:
+* **`paramArity` dead parameter removed** (#792) — the table-driven
+  resolver doesn't use it.  Callsite updated in
+  `msil/codegen.l:emitExternTargetBody`.
+* **D-progress-274 cross-ref corrected** (#794) — the JVM slice-reader
+  entry now points at D-progress-273 (the disposal entry) instead of
+  the renumbered-stale D-progress-272.
+* **`isTimeout` locale-sensitivity documented** (#795) — the comment
+  block in `std/regex_safe.l` now explicitly calls out that the
+  classifier falls through to `RegexBug` on non-en-US runtimes
+  because the BCL message is satellite-resource-localised; a
+  locale-stable classifier needs the `Bug` lowering to surface the
+  CLR exception class, which is a separate lifting concern.
+* **`createDir` errors no longer swallowed silently** (#797) —
+  `cmdTestManifest` now reports a `printErr` instead of dropping the
+  `Err` arm on the floor.
+* **O(N²) string-concat replaced with `Str.joinList`** (#799) —
+  `cmdTestManifest`'s package-source bundling now collects into a
+  `List[String]` and joins once instead of repeated `+`.
+* **V0031 cross-package limitation documented** (#800) — the V0031
+  table entry in `docs/15-phase-4-proof-plan.md` now spells out
+  that the same-file detector misses imported cross-package
+  aspects, and points at the `Lyric.Contract` resource lift needed
+  for the full fix.
+* **`cmdTestManifest` 'what' comments trimmed** (#801) — only the
+  JIT-regression note (the WHY) survives; the algorithm steps are
+  legible from the function body.
+
+Not actioned:
+* **#796** (duplicate D-progress-268) — already fixed by the prior
+  renumber commit a5dab90; the review ran against c05f4ee before
+  the renumber landed.
+* **#798** (regex_safe_tests uses manual `main()` driver) — the
+  manual driver matches `StdlibLyricTests.fs`'s harness contract
+  (expects exit 0 + stdout-contains "ok"), which is the same shape
+  json_tests.l / format_tests.l / etc. use.  The `@test_module` +
+  `test "..." { }` syntax the suggestion compares to runs through
+  the separate `lyric test` harness used by `lyric-proto/tests/`.
+  Comment added at the top of the file noting the harness
+  divergence.
+
+**Test results:** 796/796 emitter, 237/237 CLI.
