@@ -63,6 +63,13 @@ jobs:
             echo "Docs-only change — build and test skipped."
           fi
 
+      # Guardrail for #733: PR #687 gutted `_kernel/net/*.l` files in
+      # eight ecosystem libraries; the lint blocks new stubs from
+      # landing while restoration PRs reintroduce real bindings.
+      - name: Audit ecosystem kernel stubs (#733 guardrail)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/audit-kernel-stubs.sh
+
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-dotnet@v5
