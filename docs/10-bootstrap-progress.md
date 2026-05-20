@@ -13236,3 +13236,38 @@ of the `.shr` arithmetic-vs-logical distinction.
 
 **Test results:** 789/789 emitter, 237/237 CLI.  The new proto
 vector tests run via `lyric test --manifest lyric-proto/lyric.toml`.
+
+### D-progress-271 — Std.RegexSafe wrapper for Result-shaped regex (#330)
+
+The kernel-level `Std.Regex` already binds the
+`Regex(string, RegexOptions, TimeSpan)` overload with a 1-second
+default match timeout (so `(a+)+$` on adversarial input throws
+`RegexMatchTimeoutException` instead of hanging), but the user-
+facing call surface still leaks the exception as an unchecked
+`Bug`.  This adds a thin `Std.RegexSafe` package that catches the
+throw and returns `Result[T, RegexError]`.
+
+* **`lyric-stdlib/std/regex_safe.l`** (new) — `Std.RegexSafe` public
+  surface:
+  - `RegexError = TimedOut(message) | RegexBug(message)`
+  - `errorMessage(e): String`
+  - `tryCompile(pattern): Result[Regex, RegexError]`
+  - `tryIsMatch(r, input): Result[Bool, RegexError]`
+  - `tryMatchOne(r, input): Result[Match, RegexError]`
+  - `tryReplace(r, input, replacement): Result[String, RegexError]`
+  Local functions are prefixed `try*` to avoid shadowing the kernel
+  module's same-short-named functions — the F# bootstrap call
+  resolver recurses otherwise (separately tracked, but the rename
+  here is the no-op workaround).
+
+* **`lyric-stdlib/tests/regex_safe_tests.l`** (new) — exercises the
+  error-message rendering and the happy paths for compile / isMatch /
+  replace.  We do NOT trigger the 1-second timeout in CI (a large
+  enough adversarial input would slow the suite without adding
+  coverage beyond the BCL guarantee + the kernel binding).
+
+* **`docs/10-stdlib-plan.md`** — adds `Std.Regex` and `Std.RegexSafe`
+  to the stability cut list, with the ReDoS posture spelled out next
+  to each entry.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
