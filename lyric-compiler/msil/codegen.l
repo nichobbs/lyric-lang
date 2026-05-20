@@ -2304,23 +2304,7 @@ func emitExternTargetBody(
 
   val hint = hintFromAnnotations(decl.annotations)
   match resolveExternTarget(target, hint) {
-    case None -> {
-      // #811: malformed @externTarget strings (e.g. "NoDots") leave
-      // the caller emitting bare `MRet` with nothing on the stack —
-      // a runtime VerificationException with no build-time signal.
-      // Mirror the class-typed-params throw-stub below so the build
-      // succeeds (the program may not call this function) but any
-      // call site receives a clear runtime error.
-      val msg = "FFI '" + target + "' on '" + decl.name
-        + "' has a malformed @externTarget — expected "
-        + "'Namespace.Type.Member' or '..ctor' but the resolver "
-        + "could not parse it; verify the @externTarget literal."
-      val msgTok = ctxInternUs(cctx.lctx, msg)
-      insns.add(MLdStr(token = msgTok))
-      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-      insns.add(MThrow)
-      return true
-    }
+    case None -> false
     case Some(r) -> {
       // Map every Lyric param + return type to MSIL.
       val paramTypes: List[MsilType] = newList()
