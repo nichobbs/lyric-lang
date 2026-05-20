@@ -6,6 +6,7 @@ import Std.Core
 import Std.File
 import Std.Hash
 import Std.Testing
+import Std.Uuid as Uuid
 
 // FIPS 180-4 "abc" vector (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
 func sha512Abc(): String {
@@ -43,7 +44,9 @@ func testSha512OfFileNotFound(): Unit {
 }
 
 func testSha512OfFileKnownVector(): Unit {
-  val path = "/tmp/lyric-hash-test-abc.txt"
+  // Per-invocation UUID-suffixed temp path so parallel CI runs of the
+  // stdlib suite can't collide on the same `/tmp/<name>` (#833).
+  val path = "/tmp/lyric-hash-test-abc-" + Uuid.uuidToString(Uuid.newUuid()) + ".txt"
   match writeText(path, "abc") {
     case Ok(_)  -> ()
     case Err(_) -> { assertTrue(false, "could not write temp file"); return }

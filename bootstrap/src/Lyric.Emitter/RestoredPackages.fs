@@ -142,6 +142,36 @@ let private renderError (err: RestoredLoadError) : string =
 
 /// Synthesise + type-check a single contract into a `RestoredArtifact`.
 /// Shared between the single-package and multi-package code paths.
+/// Stdlib type anchors that are not in scope during the standalone
+/// contract Repr type-check.  T0010 "unknown type name 'X'" for one
+/// of these is expected and gets filtered out by `artifactOfContract`;
+/// anything else surfaces as a real load error.
+let internal knownStdlibTypeNames : Set<string> =
+    set [
+        "Option"; "Result"; "List"; "Map"; "Set"; "Iter"
+        "Slice"; "String"; "Int"; "Bool"; "Double"; "Long"
+        "Byte"; "Char"; "Unit"; "Never"; "Float"
+        "IOError"; "ParseError"; "ParseResult"
+        "Instant"; "Duration"; "Clock"
+        "Uuid"; "JsonValue"; "Diagnostic"
+    ]
+
+/// True when `msg` is a T0010 diagnostic message that names a known
+/// stdlib type anchor.  Couples to the T0010 message format from
+/// `Lyric.TypeChecker.Resolver.fs:err diags "T0010" (sprintf "unknown
+/// type name '%s'" name)` — any change to that format must update the
+/// extraction logic here (and the test in
+/// `Lyric.Emitter.Tests.RestoredPackagesTests`).
+let internal isWhitelistedT0010Message (msg: string) : bool =
+    let openQ = msg.IndexOf '\''
+    if openQ < 0 then false
+    else
+        let closeQ = msg.IndexOf('\'', openQ + 1)
+        if closeQ < 0 then false
+        else
+            let name = msg.Substring(openQ + 1, closeQ - openQ - 1)
+            Set.contains name knownStdlibTypeNames
+
 let private artifactOfContract
         (ref': RestoredPackageRef)
         (assembly: Assembly)
@@ -164,34 +194,13 @@ let private artifactOfContract
         let checked' = Lyric.TypeChecker.Checker.check parsed.File
         // T0010 ("unknown type name 'X'") fires for stdlib anchors
         // (Option, Result, …) that aren't in scope during the
-        // standalone contract check.  A blanket suppression hides
-        // real type-resolution gaps in the contract Repr, so we
-        // whitelist only the known stdlib names and let any other
-        // unknown type bubble up as a SynthesisDiagnostics error.
-        let knownStdlibTypeNames =
-            set [
-                "Option"; "Result"; "List"; "Map"; "Set"; "Iter"
-                "Slice"; "String"; "Int"; "Bool"; "Double"; "Long"
-                "Byte"; "Char"; "Unit"; "Never"; "Float"
-                "IOError"; "ParseError"; "ParseResult"
-                "Instant"; "Duration"; "Clock"
-                "Uuid"; "JsonValue"; "Diagnostic"
-            ]
-        let isWhitelistedT0010 (msg: string) =
-            // Message is `unknown type name 'X'`; extract X.
-            let openQ = msg.IndexOf '\''
-            if openQ < 0 then false
-            else
-                let closeQ = msg.IndexOf('\'', openQ + 1)
-                if closeQ < 0 then false
-                else
-                    let name = msg.Substring(openQ + 1, closeQ - openQ - 1)
-                    Set.contains name knownStdlibTypeNames
+        // standalone contract check.  See `isWhitelistedT0010Message`
+        // above for the extraction logic and test coverage.
         let checkErrors =
             checked'.Diagnostics
             |> List.filter (fun d ->
                 d.Severity = DiagError
-                && not (d.Code = "T0010" && isWhitelistedT0010 d.Message))
+                && not (d.Code = "T0010" && isWhitelistedT0010Message d.Message))
         if not (List.isEmpty checkErrors) then
             Error (SynthesisDiagnostics (ref'.DllPath, checkErrors))
         else

@@ -84,11 +84,21 @@ pub func storageKeyHasDotDot(s: in String): Bool {
   return false
 }
 
-// True when `key` is safe to pass to a storage backend.  Rejects empty,
-// null-byte, leading-slash (absolute), double-encoded percent payloads,
-// and `..` traversal forms after percent-decoding.  Used as a
-// `requires:` precondition on every `StorageBucket` method that accepts
-// a key.
+// True when `key` is safe to pass to a storage backend.  Rejects:
+//   * empty keys
+//   * keys containing a NUL byte
+//   * leading-slash (absolute) keys
+//   * `..` path-traversal segments (after percent-decoding)
+//   * **any literal `%`** — implemented by rejecting `%25` (the
+//     percent-encoded form of `%`) anywhere in the key.  Single-pass
+//     decoding in `normalisedStorageKey` would otherwise let
+//     `%252e%252e/etc/passwd` through to the backend, where an
+//     OS-level second decode would reconstitute `..`.  This means
+//     **filenames whose intended characters include a literal `%`
+//     are rejected**; callers that need raw `%` (rare) should
+//     bypass `isSafeKey` and call the backend method directly.
+// Used as a `requires:` precondition on every `StorageBucket` method
+// that accepts a key.
 pub func isSafeKey(key: in String): Bool {
   if key.length == 0                    { return false }
   if Str.contains(key, "\u{0000}")      { return false }
@@ -106,8 +116,9 @@ pub func isSafeKey(key: in String): Bool {
 }
 
 // True when `prefix` is safe to pass to a storage backend's `list`
-// operation.  Mirrors `isSafeKey` but admits the empty prefix (list
-// everything) since `list` semantically accepts that.
+// operation.  Mirrors `isSafeKey` (see its doc-comment caveats — in
+// particular the literal-`%` rejection) but admits the empty prefix
+// (list everything) since `list` semantically accepts that.
 pub func isSafePrefix(prefix: in String): Bool {
   if prefix.length == 0 { return true }
   return isSafeKey(prefix)

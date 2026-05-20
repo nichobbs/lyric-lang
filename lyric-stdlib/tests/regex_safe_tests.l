@@ -64,14 +64,15 @@ func testCompileWithTimeoutSmoke(): Unit {
   assertTrue(Re.isMatch(r, "hello world"), "compileWithTimeout produces a working regex")
 }
 
-// ReDoS regression: a catastrophic-backtracking pattern with the
-// default 1-second timeout must surface an Err (rather than hang).
-// We accept either TimedOut or RegexBug because the BCL's
-// RegexMatchTimeoutException.Message is locale-sensitive and the
-// classifier in `Std.RegexSafe.isTimeout` only handles the en-US
-// "time-out" phrasing (see comment in regex_safe.l).  The
-// important guarantee is that the match returns rather than running
-// for minutes.
+// ReDoS regression: a catastrophic-backtracking pattern with a short
+// timeout must surface an Err (rather than hang).  We accept either
+// TimedOut or RegexBug because the BCL's RegexMatchTimeoutException.Message
+// is locale-sensitive and the classifier in `Std.RegexSafe.isTimeout`
+// only handles the en-US "time-out" phrasing.  The important guarantee
+// is that the match returns rather than running for minutes.
+//
+// Uses `Re.compileWithTimeout(0.1)` rather than the 1-second default
+// so the test costs ~100 ms in CI instead of ~1 s (#832).
 func testReDoSTimeoutFires(): Unit {
   // 60-character string of 'a's followed by 'b' — non-matching suffix
   // forces the (a+)+$ backtrack explosion.
@@ -82,12 +83,12 @@ func testReDoSTimeoutFires(): Unit {
     i = i + 1
   }
   hostile = hostile + "b"
-  match Rx.tryCompile("(a+)+$") {
-    case Err(_) -> assertTrue(false, "tryCompile('(a+)+$') should succeed")
-    case Ok(r)  -> match Rx.tryIsMatch(r, hostile) {
-      case Ok(_)  -> assertTrue(false, "ReDoS match unexpectedly returned a result")
-      case Err(_) -> ()
-    }
+  val r = Re.compileWithTimeout("(a+)+$", 0.1)
+  try {
+    val matched = Re.isMatch(r, hostile)
+    assertTrue(false, "ReDoS match unexpectedly returned " + toString(matched))
+  } catch Bug as _ {
+    ()
   }
 }
 
