@@ -13290,3 +13290,21 @@ needs a richer "parse once per response" API.  Left for a
 follow-up; the current code is correct (no leak), just suboptimal.
 
 **Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-273 — JVM `Std.Json` slice readers (#322 follow-up)
+
+Earlier work in #322 added the missing JVM kernel files (console,
+path, process_capture) and the scalar JSON externs.  The slice
+readers `lyricJsonGetIntSlice` / `LongSlice` / `DoubleSlice` /
+`BoolSlice` / `StringSlice` — which are pure-Lyric implementations
+over the lower-level `hostEnumerate*` / `hostTryGet*` primitives —
+were defined only in `_kernel/json_host.l` (.NET path).  A JVM
+build that called any of them would fail to link.
+
+Promotes the five slice readers verbatim into `_kernel_jvm/
+json_host.l`.  The body is identical to the .NET path (pure
+Lyric, no BCL-specific calls) so behaviour matches by
+construction.  All five carry the `defer { hostDisposeJson(doc) }`
+disposal added in D-progress-272.
+
+**Test results:** 790/790 emitter, 237/237 CLI.

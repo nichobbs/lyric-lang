@@ -135,3 +135,140 @@ pub func hostPropertyValue(prop: in JsonProperty): JsonElement = ()
 // included), equivalent to .NET's JsonEncodedText.Encode.
 @externTarget("lyric.stdlib.jvm.JsonHost.hostEncodeString")
 pub func hostEncodeString(s: in String): String = ()
+
+// =====================================================================
+// fromJson slice readers — pure-Lyric implementations identical to the
+// .NET kernel (`_kernel/json_host.l`); promoted here so a JVM-target
+// build can link `Std.Json`'s `lyricJsonGet*Slice` calls.  See #322.
+// =====================================================================
+
+pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[Int]): Bool {
+  val list: List[Int] = newList()
+  val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    var v: Int = default()
+    if hostTryGetInt32(curr, v) {
+      list.add(v)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[Long]): Bool {
+  val list: List[Long] = newList()
+  val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    var v: Long = default()
+    if hostTryGetInt64(curr, v) {
+      list.add(v)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice[Double]): Bool {
+  val list: List[Double] = newList()
+  val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    var v: Double = default()
+    if hostTryGetDouble(curr, v) {
+      list.add(v)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[Bool]): Bool {
+  val list: List[Bool] = newList()
+  val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    val k = hostValueKind(curr)
+    if k == 5 {
+      list.add(true)
+    } else if k == 6 {
+      list.add(false)
+    }
+  }
+  value = list.toArray()
+  return true
+}
+
+pub func lyricJsonGetStringSlice(s: in String, name: in String, value: out slice[String]): Bool {
+  val list: List[String] = newList()
+  val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
+  val root = hostRootElement(doc)
+  var elem: JsonElement = default()
+  if not hostTryGetProperty(root, name, elem) {
+    value = list.toArray()
+    return false
+  }
+  if hostValueKind(elem) != 2 {
+    value = list.toArray()
+    return false
+  }
+  var en: JsonArrayEnumerator = hostEnumerateArray(elem)
+  while hostEnumMoveNext(en) {
+    val curr = hostEnumCurrent(en)
+    if hostValueKind(curr) == 3 {
+      list.add(hostGetString(curr))
+    }
+  }
+  value = list.toArray()
+  return true
+}
