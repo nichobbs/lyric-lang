@@ -13139,7 +13139,7 @@ default target):
 
 **Test results:** 789/789 emitter, 237/237 CLI.
 
-### D-progress-268 — Monomorphizer type-arg inference + ETypeApp + budget (#349)
+### D-progress-269 — Monomorphizer type-arg inference + ETypeApp + budget (#349)
 
 Three related improvements to `Lyric.Mono` that close most of the
 gaps `inferExprTE` had at the start of this session:
@@ -13174,7 +13174,7 @@ gaps `inferExprTE` had at the start of this session:
 
 **Test results:** 789/789 emitter, 237/237 CLI.
 
-### D-progress-269 — V0031: warn proof-required functions decorated with aspects (#336)
+### D-progress-270 — V0031: warn proof-required functions decorated with aspects (#336)
 
 Closes the gap reported in #336 (option-b path): the self-hosted
 verifier walks the parsed AST, not the post-aspect-elaboration AST,
@@ -13214,7 +13214,7 @@ in #336 follow-ups; needs a self-hosted aspect weaver to land first.
 
 **Test results:** 789/789 emitter, 237/237 CLI.
 
-### D-progress-270 — RFC zigzag test vectors + shift semantics docs (#361)
+### D-progress-271 — RFC zigzag test vectors + shift semantics docs (#361)
 
 Closes #361.  The zigzag32/zigzag64 implementations had already been
 rewritten to avoid shift operators (using `n * 2 ± 1` instead), so
@@ -13237,7 +13237,7 @@ of the `.shr` arithmetic-vs-logical distinction.
 **Test results:** 789/789 emitter, 237/237 CLI.  The new proto
 vector tests run via `lyric test --manifest lyric-proto/lyric.toml`.
 
-### D-progress-271 — Std.RegexSafe wrapper for Result-shaped regex (#330)
+### D-progress-272 — Std.RegexSafe wrapper for Result-shaped regex (#330)
 
 The kernel-level `Std.Regex` already binds the
 `Regex(string, RegexOptions, TimeSpan)` overload with a 1-second
@@ -13272,7 +13272,7 @@ throw and returns `Result[T, RegexError]`.
 
 **Test results:** 790/790 emitter, 237/237 CLI.
 
-### D-progress-272 — Std.Json slice readers dispose JsonDocument (#328)
+### D-progress-273 — Std.Json slice readers dispose JsonDocument (#328)
 
 The scalar `lyricJsonGet*` helpers in `lyric-stdlib/std/json.l`
 already wrap parsing in `defer { hostDisposeJson(doc) }`, but the
@@ -13291,7 +13291,7 @@ follow-up; the current code is correct (no leak), just suboptimal.
 
 **Test results:** 790/790 emitter, 237/237 CLI.
 
-### D-progress-273 — JVM `Std.Json` slice readers (#322 follow-up)
+### D-progress-274 — JVM `Std.Json` slice readers (#322 follow-up)
 
 Earlier work in #322 added the missing JVM kernel files (console,
 path, process_capture) and the scalar JSON externs.  The slice
