@@ -290,6 +290,7 @@
     <Compile Include="SelfHostedTestSynthTests.fs" />
     <Compile Include="SelfHostedManifestTests.fs" />
     <Compile Include="SelfHostedVerifierTests.fs" />
+    <Compile Include="SelfHostedGeneratorTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="CfgErasureTests.fs" />
