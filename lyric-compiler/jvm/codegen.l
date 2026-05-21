@@ -22,6 +22,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+import Jvm.Classfile
 import Jvm.Lowering
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2663,9 +2664,10 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String): LRecord {
   }
 
   LRecord(
-    className = className,
-    fields    = fields,
-    methods   = methods)
+    className        = className,
+    fields           = fields,
+    methods          = methods,
+    implementsIfaces = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2952,6 +2954,39 @@ func makeGeneratorFactory(
     maxLocals = 0)        // inferred from slot scan
 }
 
+// ── IImpl pre-pass helpers ────────────────────────────────────────────────────
+
+record ImplEntry {
+  targetClass: String
+  ifaceClass:  String
+  methods:     List[LFunc]
+}
+
+// Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
+// Used to resolve `impl Y for X` target from the AST.
+func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        pkgName + "/" + path.segments[0]
+      } else {
+        segmentsToJvmPath(path.segments)
+      }
+    }
+    case _ -> pkgName + "/$unknown"
+  }
+}
+
+// Convert a ConstraintRef to a JVM binary class name.
+// Used to resolve `impl Y for X` interface from the AST.
+func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String): String {
+  if cr.head.segments.count == 1 {
+    pkgName + "/" + cr.head.segments[0]
+  } else {
+    segmentsToJvmPath(cr.head.segments)
+  }
+}
+
 pub func codegenPackage(file: in SourceFile): LPackage {
   val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
@@ -2965,6 +3000,35 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   // off the stack (POSIX-style exit code semantics are not propagated yet —
   // a follow-up can route through `java.lang.System.exit(int)`).
   var mainRet: JvmType = JVoid
+
+  // ── IImpl pre-pass ──────────────────────────────────────────────────────────
+  // Collect all IImpl blocks before the main item loop so that when IRecord
+  // is processed, its ClassFile can include the correct `implements` list.
+  val implEntries: List[ImplEntry] = newList()
+  var pi = 0
+  while pi < file.items.count {
+    match file.items[pi].kind {
+      case IImpl(decl) -> {
+        val targetClass = typeExprToJvmClass(decl.target, pkgName)
+        val ifaceClass  = constraintRefToJvmClass(decl.iface, pkgName)
+        val implFuncs: List[LFunc] = newList()
+        var mi2 = 0
+        while mi2 < decl.members.count {
+          match decl.members[mi2] {
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass))
+            case IMplAssoc(_) -> {}
+          }
+          mi2 = mi2 + 1
+        }
+        implEntries.add(ImplEntry(
+          targetClass = targetClass,
+          ifaceClass  = ifaceClass,
+          methods     = implFuncs))
+      }
+      case _ -> {}
+    }
+    pi = pi + 1
+  }
 
   var i = 0
   while i < file.items.count {
@@ -3012,7 +3076,29 @@ pub func codegenPackage(file: in SourceFile): LPackage {
         }
       }
       case IRecord(decl) -> {
-        items.add(LPRecord(rec = lowerRecord(decl, pkgName)))
+        // Look up any IImpl entries for this type and inject interfaces + methods.
+        val className = pkgName + "/" + decl.name
+        val ifaces: List[String] = newList()
+        val implFuncs: List[LFunc] = newList()
+        var ei = 0
+        while ei < implEntries.count {
+          if implEntries[ei].targetClass == className {
+            ifaces.add(implEntries[ei].ifaceClass)
+            val ms = implEntries[ei].methods
+            var mi3 = 0
+            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+          }
+          ei = ei + 1
+        }
+        val baseRec = lowerRecord(decl, pkgName)
+        val mergedMethods: List[LFunc] = newList()
+        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
+        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
+        items.add(LPRecord(rec = LRecord(
+          className        = baseRec.className,
+          fields           = baseRec.fields,
+          methods          = mergedMethods,
+          implementsIfaces = ifaces)))
       }
       case IExposedRec(decl) -> {
         items.add(LPRecord(rec = lowerRecord(decl, pkgName)))
@@ -3030,19 +3116,54 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           underlyingType = inner)))
       }
       case IEnum(decl) -> {
-        val className = pkgName + "/" + decl.name
+        val className2 = pkgName + "/" + decl.name
         val variants: List[String] = newList()
         var ci = 0
         while ci < decl.cases.count {
           variants.add(decl.cases[ci].name)
           ci = ci + 1
         }
-        items.add(LPEnum(en = LEnumType(className = className, variants = variants)))
+        items.add(LPEnum(en = LEnumType(className = className2, variants = variants)))
       }
       case IOpaque(_)        -> {}
       case IProtected(_)     -> {}
-      case IInterface(_)     -> {}
-      case IImpl(_)          -> {}
+      case IInterface(decl) -> {
+        // Emit a JVM interface ClassFile: one abstract method per IMSig member.
+        val ifClassName = pkgName + "/" + decl.name
+        val abstractMethods: List[MethodInfo] = newList()
+        val concreteFuncs: List[LFunc] = newList()
+        val emptyAttrs: List[Attribute] = newList()
+        var imi = 0
+        while imi < decl.members.count {
+          match decl.members[imi] {
+            case IMSig(sig) -> {
+              val params: List[JvmType] = newList()
+              var spi = 0
+              while spi < sig.params.count {
+                params.add(typeExprToJvm(sig.params[spi].ty, pkgName))
+                spi = spi + 1
+              }
+              val ret = match sig.ret {
+                case Some(te) -> typeExprToJvm(te, pkgName)
+                case None     -> JVoid
+              }
+              val desc = buildDescriptor(params, ret)
+              abstractMethods.add(makeMethodInfo(
+                ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
+            }
+            case IMFunc(fn) -> {
+              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName))
+            }
+            case IMAssoc(_) -> {}
+          }
+          imi = imi + 1
+        }
+        items.add(LPInterface(iface = LInterface(
+          className       = ifClassName,
+          abstractMethods = abstractMethods,
+          concreteFuncs   = concreteFuncs)))
+      }
+      case IImpl(_)          -> {}   // handled by pre-pass above
       case IWire(_)          -> {}
       case IScopeKind(_)     -> {}
       case IExtern(_)        -> {}

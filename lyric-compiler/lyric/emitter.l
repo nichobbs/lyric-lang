@@ -317,7 +317,7 @@ func useSubprocessFallback(): Bool {
 // bridge returns true on success and false on any error (parse,
 // type-check, mode-check, codegen).
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
-  val ok = MsilBridge.compileToMsil(req.source, req.outputPath)
+  val ok = MsilBridge.compileToMsil(req.source, req.outputPath, newList())
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)

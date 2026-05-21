@@ -32,7 +32,7 @@ func main(): Unit { }
 /// slow part (~3-5 s on a cold cache); we only do it once per `lyric`
 /// invocation that touches the self-hosted MSIL emitter.
 let private bridgeLock = obj ()
-let mutable private resolved : (string -> string -> bool) option = None
+let mutable private resolved : (string -> string -> System.Collections.Generic.List<string> -> bool) option = None
 
 /// Compile the driver source so the emitter produces and caches
 /// `Lyric.Msil.Bridge.dll`.  Returns the absolute path to it.
@@ -93,7 +93,9 @@ let private ensureLyricMsilBridgeAssembly () : string =
         failwithf "self-hosted MSIL bridge: 'Lyric.Msil.Bridge.dll' not found in stdlib cache after emit (cached: %s)" cached
 
 /// Reflect out the `compileToMsil` entry point and stash it in `resolved`.
-let private resolveDelegates () : string -> string -> bool =
+/// Band 6: the bridge now accepts a 3rd parameter (stdlibSources) for
+/// cross-package type resolution.
+let private resolveDelegates () : string -> string -> System.Collections.Generic.List<string> -> bool =
     let dll = ensureLyricMsilBridgeAssembly ()
     let asm = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let progType =
@@ -102,19 +104,23 @@ let private resolveDelegates () : string -> string -> bool =
         | None ->
             failwithf "self-hosted MSIL bridge: 'Msil.Bridge.Program' type missing from %s" dll
 
+    let listOfStringType = typeof<System.Collections.Generic.List<string>>
     let compileToMsilM =
-        match Option.ofObj (progType.GetMethod("compileToMsil", [| typeof<string>; typeof<string> |])) with
+        match Option.ofObj (progType.GetMethod("compileToMsil", [| typeof<string>; typeof<string>; listOfStringType |])) with
         | Some m when m.IsStatic -> m
-        | _ -> failwithf "self-hosted MSIL bridge: static method 'compileToMsil' not found on Msil.Bridge.Program"
+        | _ -> failwithf "self-hosted MSIL bridge: static method 'compileToMsil(string,string,List<string>)' not found on Msil.Bridge.Program"
 
-    let compileToMsilFn (source: string) (outputPath: string) : bool =
-        match Option.ofObj (compileToMsilM.Invoke(null, [| box source; box outputPath |])) with
+    let compileToMsilFn
+        (source: string)
+        (outputPath: string)
+        (stdlibSources: System.Collections.Generic.List<string>) : bool =
+        match Option.ofObj (compileToMsilM.Invoke(null, [| box source; box outputPath; box stdlibSources |])) with
         | Some o -> unbox<bool> o
         | None   -> false
 
     compileToMsilFn
 
-let private getDelegate () : string -> string -> bool =
+let private getDelegate () : string -> string -> System.Collections.Generic.List<string> -> bool =
     lock bridgeLock (fun () ->
         match resolved with
         | None ->
@@ -146,9 +152,11 @@ let private writeRuntimeConfig (dllPath: string) : unit =
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// `Msil.Bridge` pipeline.  Returns true on success, false on parse errors
-/// or write failure.
+/// or write failure.  Band 6: stdlib sources are pre-read from disk and
+/// passed to the bridge for cross-package type resolution.
 let compileToDll (source: string) (outputPath: string) : bool =
     let fn = getDelegate ()
-    let ok = fn source outputPath
+    let stdlibSources = Lyric.Cli.SelfHostedBridge.findStdlibSources ()
+    let ok = fn source outputPath stdlibSources
     if ok then writeRuntimeConfig outputPath
     ok
