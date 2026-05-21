@@ -174,6 +174,36 @@ func testHotAnnotationFlag(): Unit {
   }
 }
 
+func testQualifiedTypeResolvesViaImport(): Unit {
+  // `Lib.Point` in a type position should resolve to the same `Point`
+  // type registered by checkWithImports — no T0014 "qualified type not
+  // resolved".
+  val libSrc = "package Lib\npub record Point { x: Int; y: Int }\n"
+  val libPr  = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  val src = "package App\nfunc f(p: Lib.Point): Int { 0 }\n"
+  val pr  = parse(src)
+  val cr  = checkWithImports(pr.file, importedItems)
+  assertTrue(not hasDiagCode(cr, "T0014"),
+    "qualified-type-import: no T0014 for Lib.Point when Point is imported")
+}
+
+func testQualifiedTypeUnknownEmitsT0014(): Unit {
+  // A qualified name whose last segment is not in scope should still
+  // emit T0014, not resolve silently.
+  val src = "package App\nfunc f(x: Unknown.Pkg.Blorp): Int { 0 }\n"
+  val empty: List[Item] = newList()
+  val pr = parse(src)
+  val cr = checkWithImports(pr.file, empty)
+  assertTrue(hasDiagCode(cr, "T0014"),
+    "qualified-unknown: T0014 for Unknown.Pkg.Blorp not in scope")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -193,5 +223,7 @@ func main(): Unit {
   testYieldOutsideAsync()
   testAsyncGeneratorFlags()
   testHotAnnotationFlag()
+  testQualifiedTypeResolvesViaImport()
+  testQualifiedTypeUnknownEmitsT0014()
   println("typechecker self-test: ok")
 }

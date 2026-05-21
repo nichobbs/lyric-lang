@@ -122,39 +122,39 @@ func typeExprKey(te: in TypeExpr): String {
 }
 
 func pathSegsKey(segs: in List[String]): String {
-  var result = ""
+  var acc = ""
   var i = 0
   while i < segs.count {
-    if i > 0 { result = result + "." }
-    result = result + segs[i]
+    if i > 0 { acc = acc + "." }
+    acc = acc + segs[i]
     i = i + 1
   }
-  result
+  acc
 }
 
 func typeArgListKey(args: in List[TypeArg]): String {
-  var result = ""
+  var acc = ""
   var i = 0
   while i < args.count {
-    if i > 0 { result = result + "_" }
+    if i > 0 { acc = acc + "_" }
     match args[i] {
-      case TAType(te) -> result = result + typeExprKey(te)
-      case TAValue(_) -> result = result + "V"
+      case TAType(te) -> { acc = acc + typeExprKey(te) }
+      case TAValue(_) -> { acc = acc + "V" }
     }
     i = i + 1
   }
-  result
+  acc
 }
 
 func typeExprListKey(ts: in List[TypeExpr]): String {
-  var result = ""
+  var acc = ""
   var i = 0
   while i < ts.count {
-    if i > 0 { result = result + "_" }
-    result = result + typeExprKey(ts[i])
+    if i > 0 { acc = acc + "_" }
+    acc = acc + typeExprKey(ts[i])
     i = i + 1
   }
-  result
+  acc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,8 +239,7 @@ func unifyTE(
     case TGenericApp(h1, a1) -> {
       match argTE.kind {
         case TGenericApp(h2, a2) -> {
-          if pathSegsKey(h1.segments) == pathSegsKey(h2.segments) &&
-             a1.count == a2.count {
+          if pathSegsKey(h1.segments) == pathSegsKey(h2.segments) and a1.count == a2.count {
             var i = 0
             while i < a1.count {
               match a1[i] {
@@ -309,21 +308,21 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func extractTypeParamNames(gps: in Option[GenericParams]): List[String] {
-  val result: List[String] = newList()
+  val names: List[String] = newList()
   match gps {
     case None -> ()
     case Some(gp) -> {
       var i = 0
       while i < gp.params.count {
         match gp.params[i] {
-          case GPType(name, _) -> result.add(name)
+          case GPType(name, _) -> names.add(name)
           case GPValue(_, _, _) -> ()
         }
         i = i + 1
       }
     }
   }
-  result
+  names
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,17 +334,17 @@ func specFuncName(
   typeParams: in List[String],
   subst:      in Map[String, TypeExpr]
 ): String {
-  var result = base
+  var acc = base
   var i = 0
   while i < typeParams.count {
-    result = result + "__"
+    acc = acc + "__"
     match mapGet(subst, typeParams[i]) {
-      case Some(te) -> result = result + typeExprKey(te)
-      case None     -> result = result + "Unknown"
+      case Some(te) -> { acc = acc + typeExprKey(te) }
+      case None     -> { acc = acc + "Unknown" }
     }
     i = i + 1
   }
-  result
+  acc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -494,18 +493,18 @@ func rewriteCallArgs(
   env:   in Map[String, TypeExpr],
   args:  in List[CallArg]
 ): List[CallArg] {
-  val result: List[CallArg] = newList()
+  val buf: List[CallArg] = newList()
   var i = 0
   while i < args.count {
     match args[i] {
       case CAPositional(e)      ->
-        result.add(CAPositional(expr = rewriteExpr(state, env, e)))
+        buf.add(CAPositional(expr = rewriteExpr(state, env, e)))
       case CANamed(n, e, span)  ->
-        result.add(CANamed(name = n, value = rewriteExpr(state, env, e), span = span))
+        buf.add(CANamed(name = n, value = rewriteExpr(state, env, e), span = span))
     }
     i = i + 1
   }
-  result
+  buf
 }
 
 func rewriteEOB(
@@ -524,7 +523,7 @@ func rewriteMatchArms(
   env:   in Map[String, TypeExpr],
   arms:  in List[MatchArm]
 ): List[MatchArm] {
-  val result: List[MatchArm] = newList()
+  val buf: List[MatchArm] = newList()
   var i = 0
   while i < arms.count {
     val arm = arms[i]
@@ -532,14 +531,14 @@ func rewriteMatchArms(
       case None    -> None
       case Some(g) -> Some(value = rewriteExpr(state, env, g))
     }
-    result.add(MatchArm(
+    buf.add(MatchArm(
       pattern = arm.pattern,
       guard   = newGuard,
       body    = rewriteEOB(state, env, arm.body),
       span    = arm.span))
     i = i + 1
   }
-  result
+  buf
 }
 
 func rewriteInterpolSegs(
@@ -547,16 +546,16 @@ func rewriteInterpolSegs(
   env:   in Map[String, TypeExpr],
   segs:  in List[InterpolatedSegment]
 ): List[InterpolatedSegment] {
-  val result: List[InterpolatedSegment] = newList()
+  val buf: List[InterpolatedSegment] = newList()
   var i = 0
   while i < segs.count {
     match segs[i] {
-      case ISText(t, sp) -> result.add(ISText(text = t, span = sp))
-      case ISExpr(e)     -> result.add(ISExpr(expr = rewriteExpr(state, env, e)))
+      case ISText(t, sp) -> buf.add(ISText(text = t, span = sp))
+      case ISExpr(e)     -> buf.add(ISExpr(expr = rewriteExpr(state, env, e)))
     }
     i = i + 1
   }
-  result
+  buf
 }
 
 func rewriteExpr(
@@ -593,7 +592,7 @@ func rewriteExpr(
                 match mapGet(state.genDecls, fname) {
                   case Some(baseDecl) -> {
                     val typeParams = extractTypeParamNames(baseDecl.generics)
-                    if typeParams.count > 0 && targs.count == typeParams.count {
+                    if typeParams.count > 0 and targs.count == typeParams.count {
                       val subst: Map[String, TypeExpr] = newMap()
                       var i = 0
                       while i < typeParams.count {
@@ -634,10 +633,11 @@ func rewriteExpr(
                 if typeParams.count > 0 {
                   val subst: Map[String, TypeExpr] = newMap()
                   var i = 0
-                  while i < args.count && i < baseDecl.params.count {
+                  while i < args.count and i < baseDecl.params.count {
                     match inferExprTE(env, callArgExpr(args[i])) {
-                      case Some(argTE) ->
+                      case Some(argTE) -> {
                         unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                      }
                       case None -> ()
                     }
                     i = i + 1
@@ -1136,12 +1136,12 @@ func extractBaseName(specName: in String): String {
   // specialised names, so a real specialisation marker must appear
   // after at least one non-underscore character.
   var start = 0
-  while start < specName.length && specName[start] == '_' {
+  while start < specName.length and specName[start] == '_' {
     start = start + 1
   }
   var i = start
   while i + 1 < specName.length {
-    if specName[i] == '_' && specName[i + 1] == '_' {
+    if specName[i] == '_' and specName[i + 1] == '_' {
       return Str.substring(specName, 0, i)
     }
     i = i + 1

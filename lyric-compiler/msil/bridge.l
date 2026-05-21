@@ -1,19 +1,10 @@
 // msil/bridge.l — Self-hosted MSIL compilation pipeline (Phase R6).
 //
 // Public entry point that chains the self-hosted Lyric pipeline to produce a
-// .NET PE DLL from Lyric source text.  Calls (docs/41 §9 Band 1):
-//   parse → typecheck → modecheck → elaborate
+// .NET PE DLL from Lyric source text.  Calls (docs/41 §9 Band 1 + Band 5):
+//   parse → typecheck → modecheck → elaborate → mono
 //        → newCodegenCtx → addPackageTokens
 //        → codegenMPackage → lowerMPackageWithCtx → writeBytes
-//
-// `Lyric.Mono` (call-site monomorphiser) is NOT yet wired in.  Its source
-// `lyric-compiler/lyric/mono.l` uses Lyric idioms that the frozen F#
-// bootstrap parser can't compile (literal-pattern match arms followed by
-// further arms — the F# parser P0040s on the second arm), so importing it
-// here breaks the precompile of `Lyric.Msil.Bridge.dll` itself.  Until
-// mono.l is restructured around the F# parser's quirks (or the F# parser
-// is patched), bare generics in source-code calls fall through to the
-// codegen's `MObject` default — which is the existing v0.x behaviour.
 
 package Msil.Bridge
 
@@ -26,7 +17,7 @@ import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.DiagnosticUtil as DiagUtil
-// import Lyric.Mono     // (see header) — wiring deferred to Band 5/6
+import Lyric.Mono
 import Msil.Lowering
 import Msil.Codegen
 
@@ -96,7 +87,11 @@ pub func compileToMsil(
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) { return false }
 
-  val file = elaborateFile(file0)
+  val elaborated = elaborateFile(file0)
+
+  // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
+  val monoRes = monoFile(elaborated)
+  val file = monoRes.file
 
   // Reconstruct the package name as a dotted string (e.g. "Hello" or
   // "My.Package") from the parsed path segments.

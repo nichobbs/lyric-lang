@@ -366,9 +366,10 @@ Covers primitives, range subtypes, distinct types, opaque types,
 generics with bounds, interface dispatch, UFCS, async types, protected
 types.  Known limitations:
 
-- Cross-package resolution deferred (`typechecker_resolver.l:129`,
-  "deferred to T7+").  `import Pkg.Module` resolves only within the
-  current compilation unit.
+- Cross-package qualified type resolution: multi-segment type names now
+  resolve via last-segment symbol-table lookup (D-progress-285).
+  `import Pkg.Module` import-statement resolution (registering all
+  exports of a restored package) is deferred to Track A.
 - Q022-1 (`pub use Foo.bar` symbol-level re-export) — parser accepts but
   the typechecker implements package-level only.  Same gap exists in the
   F# `Lyric.TypeChecker.Resolver.fs`; tracked in `docs/36-v1-roadmap.md`
@@ -553,29 +554,24 @@ Touch points:
 - Insert (in order, after parse, before codegen):
 
   1. `Lyric.TypeChecker.check(file)` — surface type-check diagnostics.
-     **Shipped advisory only:** typechecker raises T0010 / T0020 / T0050
-     for every reference to a stdlib name like `newList` because the
-     resolver doesn't import cross-package items (Band 6;
-     `typechecker_resolver.l:129`).  Treating those as fatal would
-     regress every program that imports `Std.*`, so the bridge prints
-     the diagnostics without gating on them.  Promote to fatal once
-     Band 6 lands.
+     **Shipped advisory only:** typechecker raises T0020 / T0050 for
+     references to builtin names like `newList` (no Lyric source
+     defines them).  Band 6 (D-progress-284/285) added stdlib *type*
+     resolution and qualified-name lookup; builtin *function* coverage
+     remains incomplete.  Promote to fatal once builtin coverage lands.
   2. `Lyric.ModeChecker.checkFile(file)` — surface V-prefixed
      diagnostics.  **Shipped fatal.**  Verified by
      `SelfHostedMsilBridgeTests.[shm_mode_check_v0004]`.
   3. `Lyric.ContractElaborator.elaborateFile(file)` — lower
      requires/ensures.  **Shipped.**
   4. `Lyric.Mono.monoFile(file)` — same-package monomorphisation.
-     **Deferred.**  The F# bootstrap parser cannot compile mono.l
-     because its match arms like
-     `case Some(te) -> result = result + typeExprKey(te)` are
-     literal-pattern-shaped from the parser's view (followed by a
-     further arm) and trigger P0040 ("expected an item declaration")
-     on the next `case _ -> …`.  Until mono.l is restructured around
-     constructor-only patterns or the F# parser is patched (which is
-     blocked by the F# surface freeze in
-     `docs/23-fsharp-shim-elimination.md`), Band 1's mono step stays
-     commented out in both bridges.
+     **Shipped (D-progress-286).**  `mono.l` was restructured to
+     compile under the F# bootstrap parser (replaced `&&` with `and`,
+     wrapped unbraced mutation match arms in braces, renamed `result`
+     and `out` locals that collided with Lyric keywords `KwResult` /
+     `KwOut`).  Both `msil/bridge.l` and `jvm/bridge.l` now import
+     `Lyric.Mono` and call `monoFile(elaborated)` between
+     `elaborateFile` and the backend codegen step.
   5. Then `codegenMPackage(file, ctx)` / `codegenPackage(file)`.
 
 - Smoke tests landed in `SelfHostedMsilBridgeTests`:
@@ -665,17 +661,22 @@ package + bridge protocol + F# shim, per `SelfHostedFmt.fs` pattern:
 - `Lyric.Derives` (or equivalent) — `@derive(Equals)`, `@derive(Hash)`,
   `@derive(Show)`, `@generate(Json)`.
 - `Lyric.Generics.Monomorphizer` — cross-package + value-generic
-  extensions.
+  extensions.  (Same-package mono via `Lyric.Mono.monoFile` is now
+  wired in both bridges — D-progress-286; cross-package and
+  value-generic specialisation remain F#-only.)
 - `Lyric.RestoredPackages` — cross-package symbol resolution.
 
 ### Band 6 — Cross-package support
 
-- `lyric-compiler/lyric/type_checker/typechecker_resolver.l:129` —
-  remove "deferred to T7+" branch; implement `import Pkg.Symbol`
-  resolution against restored package metadata.
-- Multi-file packages (`docs/19`) and project-as-DLL bundling
-  (`docs/20`) — verify the self-hosted CLI's `emitProject` reaches the
-  same paths the F# `emitProject` does.
+- ✅ `lyric-compiler/lyric/type_checker/typechecker_resolver.l` —
+  multi-segment qualified type names (e.g. `Std.Collections.List`) now
+  resolve via last-segment symbol-table lookup; no longer deferred to
+  T7+ (D-progress-285).
+- ✅ Multi-file packages (`docs/19`) and project-as-DLL bundling
+  (`docs/20`) — `emitProject` routes through `--internal-project-build`
+  → F# `internalProjectBuild` → F# `Emitter.emitProject`; parity
+  verified by `ProjectBuildTests.fs` (D-progress-285).  In-process
+  multi-file bridge deferred to Track A A1.x.
 
 ### Band 7 — Acceptance gate
 
