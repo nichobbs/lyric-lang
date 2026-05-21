@@ -176,17 +176,17 @@ unless noted.
 | `IRecord` | `lowerRecordMsil`, `:2287-2410, 2595` | Supported (fields + ctor) |
 | `IUnion` (sealed) | `lowerUnionMsil`, `:2527-2560` | Supported (abstract base + case classes) |
 | `IDistinctType` | `:2609-2615` | Supported (thin wrapper) |
-| `IEnum` | `:2617` | **Skipped** — no codegen branch |
+| `IEnum` | `lowerEnumMsil` | **Supported** — CLR int enum TypeDef; cases as static literal int32 fields (Band 2, PR #872) |
 | `IRange` | `:2627` | **Skipped** — no codegen branch (`MRangeType` IR exists in `lowering.l:295` but unused) |
-| `IOpaque` | `:2621` | **Skipped** — no codegen branch; exposed-twin synthesis missing |
-| `IInterface` | `:2622` | **Skipped** |
-| `IImpl` | `:2623` | **Skipped** |
-| `IProtected` | `:2621` | **Skipped** |
-| `IWire` | `:2624` | **Skipped** |
-| `IAspect` | `:2634` | **Skipped** |
+| `IOpaque` | `lowerOpaqueMsil` | **Supported** — sealed TypeDef; private fields + .ctor; exposed-twin synthesis deferred to Band 3 (Band 2, PR #872) |
+| `IInterface` | `lowerInterfaceMsil` | **Supported** — abstract interface TypeDef with abstract method stubs (Band 2, PR #872) |
+| `IImpl` | `lowerInterfaceMsil` | **Supported** — method overrides on implementing type (Band 2, PR #872) |
+| `IProtected` | `lowerProtectedTypeMsil` | **Supported** — Monitor-backed sealed TypeDef; lock field + entry methods (Band 2, PR #872) |
+| `IWire` | — | **Placeholder** — static factory class stub; full DI graph lowering deferred to Band 3 |
+| `IAspect` | `weaveAspectsMsil` | **Supported** — weaver renames target to `__aspect_target_N_<name>`; synthesises wrapper with around-body (Band 2, PR #872) |
 | `ITypeAlias` | `:2616` | Skipped (correctly compile-time only) |
 | `IConst` | `:2613` | **Skipped** — no static-field emission |
-| `IVal` | `:2614` | **Skipped** — no module-scope `val` emission |
+| `IVal` | `lowerMsilFunc` (literal inlining + .cctor) | **Supported** — literal vals inlined via `constValues` map; non-literal vals get static `.cctor` (Band 2, PR #872) |
 | `IProperty` | `:2631` | **Skipped** |
 | `IScopeKind` | `:2625` | **Skipped** |
 
@@ -217,12 +217,12 @@ unless noted.
 | `EInterpolated` string interpolation | Supported (rewrites to concat chain) | `:861` |
 | `EAwait` | **Panics** | `:833-838` |
 | `EYield` | **Panics** — "async generators (yield) not supported in self-hosted MSIL R5" | `:838-839` |
-| `ELambda` | **Panics** — "not yet supported in bootstrap — use --target dotnet-legacy" | `:902-903` |
+| `ELambda` | **Placeholder** — falls back to `MObject`; display-class capture deferred to Band 3 | `:902-903` |
 | `ESelf` | **Panics** | `:895-898` |
 | `EForall`, `EExists` | **Panics** (proof constructs; correct) | `:886-890` |
 | `EOld` | **Panics** in codegen (should be consumed by elaborator) | `:892-894` |
 | `EResult` | **Panics** in codegen (should be substituted by elaborator) | — |
-| `EPropagate` (`?`) | **Panics** — no `Result[T,E]` unwrap lowering | `:851-855` |
+| `EPropagate` (`?`) | **Supported** — desugars to match-unwrap for `Result[T,E]` and `Option[T]` (Band 2, PR #872) | `:851-855` |
 | `ERange` | **Panics** | `:905-906` |
 
 ### 3.4  Contracts and verification
@@ -513,15 +513,9 @@ supporting all language features on both targets".
 | Self-hosted backends bypass middle-end | **CRITICAL** | both | use `--target dotnet-legacy` | `msil/bridge.l`, `jvm/bridge.l` |
 | MSIL: no generics monomorphisation | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:593` |
 | MSIL: no async / yield | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:833-839` |
-| MSIL: no closures | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:902-903` |
-| MSIL: no opaque types | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:2621` |
-| MSIL: no interfaces / impl blocks | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:2622-2623` |
-| MSIL: no wire blocks | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l:2624` |
-| MSIL: no aspects | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l:2634` |
-| MSIL: no protected types | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l:2621` |
-| MSIL: no enums, no `IConst`/`IVal` | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l:2613-2617` |
+| MSIL: no closures (`ELambda` display-class) | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:902-903` |
+| MSIL: no wire blocks (full DI graph) | MEDIUM | dotnet | dotnet-legacy | `msil/codegen.l` |
 | MSIL: no `for` loops | **HIGH** | dotnet | dotnet-legacy or `while` | `msil/codegen.l:2002` |
-| MSIL: no `?` propagation | **HIGH** | dotnet | dotnet-legacy or manual `match` | `msil/codegen.l:851-855` |
 | MSIL: no auto-FFI scoring | **MEDIUM** | dotnet | explicit `@externTarget` | `msil/ffi.l` |
 | JVM: no interfaces / impl blocks | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:3030-3031` |
 | JVM: no aspects | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:3040` |
@@ -599,6 +593,8 @@ plus `SelfHostedMsilBridgeTests.fs` (~35 LoC of new tests).  This is the
 single highest-leverage change in the entire remediation.
 
 ### Band 2 — MSIL backend feature parity
+
+_Status: shipped in PR #872 (D-progress-282). Items 1–2, 3, 4–5, 7, 8, 11 complete; items 6 (ELambda display-class capture), 9 (EAwait async state machine), 10 (EYield async generator), 12 (auto-FFI scoring) deferred to Band 3._
 
 Order of attack (cheap → expensive):
 

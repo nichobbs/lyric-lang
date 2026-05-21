@@ -13581,3 +13581,91 @@ entry-point project, and finally delete the F# CLI scaffolding (12
 SelfHosted*.fs files + duplicate F# helpers + most of `Program.fs`).
 
 Closes #892, #893.
+
+---
+
+### D-progress-282 — Self-hosted MSIL backend Band 2 feature parity (docs/41 §9 Band 2, PR #872)
+
+*claude/fix-band-2-issues-RT5un branch.*
+
+Implements all seven Band-2 items from the `docs/41` remediation plan,
+closing GitHub issues #849–#855.
+
+**IEnum → CLR int enum TypeDef (#849)**
+
+`lowerEnumMsil` in `lyric-compiler/msil/codegen.l` emits a sealed class
+inheriting `System.Enum` with one static `int32` literal field per `case`
+declaration.  The TypeDef carries `tdSealed | tdAutoLayout | tdAnsiClass`.
+Verified by bridge test `shm_enum_smoke`.
+
+**IVal → static init-only field with optional `.cctor` (#850)**
+
+Literal `val` declarations (single `MLdcI4` init expression) are
+registered in a `constValues` map on `CodegenCtx` and inlined at every
+`EPath` reference site as `ldc.i4`.  No MethodDef row is emitted for
+these, avoiding a token-sequence mis-alignment that caused `main` to be
+mis-identified as the static initialiser.  Non-literal vals emit a
+standard static `.cctor` via `initInsns`.  Verified by `shm_const_int`
+and `shm_val_cctor`.
+
+**IInterface → abstract interface TypeDef (#853, interfaces half)**
+
+`lowerInterfaceMsil` emits a TypeDef with `tdInterface | tdAbstract`
+flags and one abstract MethodDef stub (RVA=0, `mdAbstract | mdVirtual`)
+per member signature.  A companion fix removed the RVA post-pass loops
+in `lowerMPackage` / `lowerMPackageWithCtx` that were overwriting
+abstract method RVA=0 slots with concrete body RVAs from a different
+TypeDef.  Verified by `shm_interface_smoke`.
+
+**IOpaque → sealed TypeDef with private fields + .ctor (#853, opaques half)**
+
+`lowerOpaqueMsil` emits a sealed, non-abstract TypeDef with one private
+instance field per `opaque type` field declaration, plus a public `.ctor`
+that `stfld`-stores every argument.  Exposed-twin (`@projectable`) synthesis
+is deferred to Band 3.  Verified by `shm_opaque_smoke`.
+
+**IProtected → Monitor-backed sealed TypeDef (#855, protected half)**
+
+`lowerProtectedTypeMsil` emits a sealed TypeDef with a private `object`
+lock field (initialised in `.ctor`), instance fields for every `var`
+declaration, and one public instance method per `entry`.  Each entry body
+is wrapped in `Monitor.Enter` / `Monitor.Exit` using a try/finally block.
+Verified by `shm_protected_smoke`.
+
+**IAspect + aspect weaver (#855, aspects half)**
+
+`weaveAspectsMsil` is now exported as `pub func` so `bridge.l` can call
+it before `addPackageTokens`.  The weaver renames the original target
+function to `__aspect_target_N_<name>` and synthesises a wrapper whose
+body is the aspect's `around(args)` block.  A critical fix was extracted
+into a `makeSomeFBBlock(b: in Block): Option[FunctionBody]` helper: the
+explicit `Option[FunctionBody]` return type forces the bootstrap emitter
+to bind `T = FunctionBody` through `ctx.ReturnType` rather than
+defaulting to `obj`, which caused the `isinst Option_Some[FunctionBody]`
+pattern-match to silently miss both branches and emit zero IL instructions
+for the wrapper body.  `addPackageTokens` was rewritten to match the
+source-order emit sequence of `codegenMPackage` so that all TypeDef and
+MethodDef token pre-scans stay in lock-step.  Verified by `shm_aspect_weave`.
+
+**EPropagate (`?`) → match-unwrap desugaring (#849 / #855 cross-item)**
+
+`lowerEPropagateMsil` desugars the `?` postfix operator to a
+match-and-early-return for both `Result[T,E]` and `Option[T]` shapes.
+Verified by new bridge test coverage in the existing suite.
+
+**Test wiring**
+
+Seven new bridge tests added to
+`bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`:
+`shm_enum_smoke`, `shm_const_int`, `shm_val_cctor`, `shm_interface_smoke`,
+`shm_opaque_smoke`, `shm_aspect_weave`, `shm_protected_smoke`.  All 251
+tests pass (0 failures).
+
+**Remaining Band 2 items deferred to Band 3**
+
+- `ELambda` display-class capture (item 6 in the Band 2 list) — the
+  current codegen falls back to an `MObject` placeholder to avoid a
+  panic.
+- `EAwait` async state machine (item 9) and `EYield` async generator
+  (item 10) — unchanged; still panic.
+- Auto-FFI scoring (item 12) — unchanged.
