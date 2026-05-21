@@ -317,6 +317,9 @@ func useSubprocessFallback(): Bool {
 // bridge returns true on success and false on any error (parse,
 // type-check, mode-check, codegen).
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
+  // Band 6 stdlib sources are not yet available from within the self-hosted
+  // CLI path (no Lyric equivalent of SelfHostedBridge.findStdlibSources).
+  // Pass an empty list; the F# shim paths populate this correctly.
   val ok = MsilBridge.compileToMsil(req.source, req.outputPath, newList())
   if ok {
     val okDiags: List[Diagnostic] = newList()

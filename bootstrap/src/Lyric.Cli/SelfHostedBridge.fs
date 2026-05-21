@@ -79,5 +79,6 @@ let findStdlibSources () : System.Collections.Generic.List<string> =
     | Some sd ->
         for f in sd.GetFiles("*.l") do
             try result.Add(File.ReadAllText f.FullName)
-            with _ -> ()
+            with ex ->
+                eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message
     result
