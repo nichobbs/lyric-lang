@@ -13899,3 +13899,59 @@ The Band 5 pipeline for both targets is now:
   elaborate → **deriveFile** → monoFile → codegen
 
 All tests: 189/189 TypeChecker, 811/811 Emitter, 254/254 Cli.
+
+### D-progress-288 — Band 2 R6: ELambda, EYield (collect-all), auto-FFI for IExternType (PR #927)
+
+Three remaining Band 2 gaps in the self-hosted MSIL backend are now closed
+(docs/41 §9 Band 2, items 6 / 10 / 12):
+
+**ELambda — non-capturing lambda lifting** (`msil/codegen.l`, `msil/bridge.l`):
+
+Non-capturing lambdas are now fully lowered in the self-hosted MSIL backend.
+A BFS pre-pass (`liftLambdasMsil`) runs between aspect weaving and
+`addPackageTokens`: it extracts every `ELambda` node into a synthetic
+`__lambda_<i>` `IFunc` appended to the `SourceFile`, processes lambda bodies
+in FIFO / breadth-first order (so outer lambdas are always numbered before
+any lambdas nested inside their bodies), and adds each body to a deferred
+queue rather than recursing immediately.  `addPackageTokens` then assigns
+stable `MethodDef` tokens to the synthetic functions.  At codegen, each
+`ELambda` site reads `cctx.lambdaTicker.count` as its index (same BFS
+order), looks up `__lambda_<i>` in `funcTokens`, and emits
+`ldnull + ldftn methodToken + newobj System.Action::.ctor`.
+
+Two new `MInsn` cases in `lowering.l` support this: `MLdftn(methodToken)`
+(ECMA-335 `ldftn` opcode) and `MNativeInt` in `MsilType`
+(`ELEMENT_TYPE_I = 0x18`, used in the `Action::.ctor(object, native int)`
+member-ref signature).
+
+Display-class synthesis for capturing lambdas remains deferred to Band 3.
+
+**EYield — collect-all async generator model** (`msil/codegen.l`):
+
+Async functions whose bodies contain `EYield` nodes are now detected via
+`decl.isAsync && funcBodyContainsYieldMsil(decl)`.  A `List<object>`
+collector local is allocated at function entry; each `EYield(inner)` appends
+its value (boxed if primitive) to the collector; the function returns the
+collector as `MObject` at exit.  The yield-slot index is stored in
+`fctx.yieldSlots` so `EYield` lowering can reference it without re-scanning.
+
+**Auto-FFI scoring for IExternType** (`msil/codegen.l`):
+
+`IExternType` items (e.g. `extern type StringWrapper = "System.String"`) now
+populate `cctx.externTypeNames` (a `Map[String, String]` mapping the Lyric
+type name to the CLR FQN) during `addPackageTokens`.  `lowerMethodCallMsil`
+intercepts call sites where the receiver is an `EPath` whose last segment
+resolves to an `externTypeNames` entry and routes them through
+`emitAutoFfiCallMsil`, which looks up or registers the CLR type/member ref
+and emits a direct `call` or `callvirt` without requiring `@externTarget`
+annotations on each method.
+
+**Test coverage** (added to `SelfHostedMsilBridgeTests.fs`):
+- `shm_lambda_non_capturing` — non-capturing lambda compiles and the program
+  prints "lambda ok".
+- `shm_yield_collect` — async generator with 3 yields compiles and the
+  program prints "yield ok".
+- `shm_extern_type_smoke` — `extern type` declaration compiles and the
+  program prints "extern type ok".
+
+All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.

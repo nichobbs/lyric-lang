@@ -1060,8 +1060,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           MObject
         }
         case None -> {
-          // Lambda not found in token table — emit null (should not happen after lifting).
-          insns.add(MLdNull)
+          panic("Msil.Codegen: lambda token missing for " + lname + " — liftLambdasMsil pre-pass was not run")
           MObject
         }
       }
@@ -2770,11 +2769,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
             lowerBlockMsil(cctx, fctx, insns, block)
             // Generators always return the collector; non-generators add ret if
             // the block didn't already end with one.
-            if isGenerator {
+            if isGenerator and not endsWithReturnMsil(insns) {
               val collSlot2 = fctx.yieldSlots[0]
               insns.add(MLdloc(slot = collSlot2 - fctx.paramCount))
               insns.add(MRet)
-            } else if not endsWithReturnMsil(insns) {
+            } else if not isGenerator and not endsWithReturnMsil(insns) {
               insns.add(MRet)
             }
           }
@@ -3347,247 +3346,22 @@ func lambdaParamToParam(lp: in LambdaParam): Param {
   Param(mode = PMIn, name = lp.name, ty = ty, dflt = None, span = lp.span)
 }
 
-// Count ELambda nodes in an expression (for pre-scan purposes).
-// We only need to count, not collect, to determine the ticker offset.
-func countLambdasInExpr(e: in Expr): Int {
-  match e.kind {
-    case ELambda(_, body) -> {
-      var n = 1
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case ECall(fn, args) -> {
-      var n = countLambdasInExpr(fn)
-      var ai = 0
-      while ai < args.count {
-        match args[ai] {
-          case CAPositional(ex)    -> { n = n + countLambdasInExpr(ex) }
-          case CANamed(_, ex, _)   -> { n = n + countLambdasInExpr(ex) }
-        }
-        ai = ai + 1
-      }
-      n
-    }
-    case EBinop(_, lhs, rhs) -> countLambdasInExpr(lhs) + countLambdasInExpr(rhs)
-    case EPrefix(_, operand) -> countLambdasInExpr(operand)
-    case EParen(inner)       -> countLambdasInExpr(inner)
-    case EMember(recv, _)    -> countLambdasInExpr(recv)
-    case EIf(cond, thenB, elseOpt, _) -> {
-      var n = countLambdasInExpr(cond)
-      match thenB {
-        case EOBExpr(ex)  -> { n = n + countLambdasInExpr(ex) }
-        case EOBBlock(blk) -> {
-          var si = 0
-          while si < blk.statements.count {
-            n = n + countLambdasInStmt(blk.statements[si])
-            si = si + 1
-          }
-        }
-      }
-      match elseOpt {
-        case Some(elseB) -> {
-          match elseB {
-            case EOBExpr(ex)   -> { n = n + countLambdasInExpr(ex) }
-            case EOBBlock(blk) -> {
-              var ei = 0
-              while ei < blk.statements.count {
-                n = n + countLambdasInStmt(blk.statements[ei])
-                ei = ei + 1
-              }
-            }
-          }
-        }
-        case None -> {}
-      }
-      n
-    }
-    case EBlock(block) -> {
-      var n = 0
-      var si = 0
-      while si < block.statements.count {
-        n = n + countLambdasInStmt(block.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case EMatch(scr, arms) -> {
-      var n = countLambdasInExpr(scr)
-      var ai = 0
-      while ai < arms.count {
-        match arms[ai].body {
-          case EOBExpr(ex)   -> { n = n + countLambdasInExpr(ex) }
-          case EOBBlock(blk) -> {
-            var si = 0
-            while si < blk.statements.count {
-              n = n + countLambdasInStmt(blk.statements[si])
-              si = si + 1
-            }
-          }
-        }
-        ai = ai + 1
-      }
-      n
-    }
-    case EList(exprs) -> {
-      var n = 0
-      var ei = 0
-      while ei < exprs.count {
-        n = n + countLambdasInExpr(exprs[ei])
-        ei = ei + 1
-      }
-      n
-    }
-    case EIndex(recv, indices) -> {
-      var n = countLambdasInExpr(recv)
-      var ii = 0
-      while ii < indices.count {
-        n = n + countLambdasInExpr(indices[ii])
-        ii = ii + 1
-      }
-      n
-    }
-    case EAwait(inner)     -> countLambdasInExpr(inner)
-    case EYield(inner)     -> countLambdasInExpr(inner)
-    case ESpawn(inner)     -> countLambdasInExpr(inner)
-    case ETry(inner)       -> countLambdasInExpr(inner)
-    case EPropagate(inner) -> countLambdasInExpr(inner)
-    case EAssign(_, _, v)  -> countLambdasInExpr(v)
-    case EInterpolated(segs) -> {
-      var n = 0
-      var si = 0
-      while si < segs.count {
-        match segs[si] {
-          case ISExpr(ex) -> { n = n + countLambdasInExpr(ex) }
-          case _          -> {}
-        }
-        si = si + 1
-      }
-      n
-    }
-    case ETuple(exprs) -> {
-      var n = 0
-      var ei = 0
-      while ei < exprs.count {
-        n = n + countLambdasInExpr(exprs[ei])
-        ei = ei + 1
-      }
-      n
-    }
-    case ETypeApp(fn, _) -> countLambdasInExpr(fn)
-    case EUnsafe(block) -> {
-      var n = 0
-      var si = 0
-      while si < block.statements.count {
-        n = n + countLambdasInStmt(block.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case _ -> 0
-  }
-}
-
-func countLambdasInStmt(s: in Statement): Int {
-  match s.kind {
-    case SLocal(binding) -> match binding {
-      case LBVal(_, _, init)   -> countLambdasInExpr(init)
-      case LBLet(_, _, init)   -> countLambdasInExpr(init)
-      case LBVar(_, _, initOpt) -> match initOpt {
-        case Some(init) -> countLambdasInExpr(init)
-        case None       -> 0
-      }
-    }
-    case SAssign(_, _, v) -> countLambdasInExpr(v)
-    case SReturn(valOpt)  -> match valOpt {
-      case Some(e) -> countLambdasInExpr(e)
-      case None    -> 0
-    }
-    case SExpr(e) -> countLambdasInExpr(e)
-    case SThrow(e) -> countLambdasInExpr(e)
-    case SWhile(_, cond, body) -> {
-      var n = countLambdasInExpr(cond)
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case SFor(_, _, iter, body) -> {
-      var n = countLambdasInExpr(iter)
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case SLoop(_, body) -> {
-      var n = 0
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case SScope(_, body) -> {
-      var n = 0
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case SDefer(body) -> {
-      var n = 0
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      n
-    }
-    case STry(body, catches) -> {
-      var n = 0
-      var si = 0
-      while si < body.statements.count {
-        n = n + countLambdasInStmt(body.statements[si])
-        si = si + 1
-      }
-      var ci = 0
-      while ci < catches.count {
-        val cblk = catches[ci].body
-        var csi = 0
-        while csi < cblk.statements.count {
-          n = n + countLambdasInStmt(cblk.statements[csi])
-          csi = csi + 1
-        }
-        ci = ci + 1
-      }
-      n
-    }
-    case SInvariant(e)  -> countLambdasInExpr(e)
-    case SRule(lhs, rhs) -> countLambdasInExpr(lhs) + countLambdasInExpr(rhs)
-    case _ -> 0
-  }
-}
-
-// Collect ELambda nodes from an expression into `out`, appending one
-// synthetic FunctionDecl per lambda in DFS order (matching the counter
-// incremented in ELambda codegen).
-func collectLambdasInExpr(e: in Expr, ticker: in List[Int], out: in List[Item]): Unit {
+// BFS lambda-lifting helpers — collect ELambda nodes in breadth-first order
+// so that indices assigned here match the order codegenMsil encounters them.
+//
+// The BFS contract: when an ELambda is found, assign its index, create the
+// synthetic IFunc, and push the lambda body onto `deferred` for later
+// processing.  Do NOT recurse into the lambda body here.  The caller
+// (liftLambdasMsil) drains `deferred` in FIFO order after all top-level
+// expressions are processed, which naturally matches the codegen traversal
+// order (outer lambdas numbered before any nested lambda in their bodies).
+func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item], deferred: in List[Block]): Unit {
   match e.kind {
     case ELambda(lparams, body) -> {
+      // BFS: assign index, create synthetic IFunc, defer body (no recursion here).
       val idx = ticker.count
       ticker.add(0)
       val lname = "__lambda_" + toString(idx)
-      // Convert LambdaParam list to Param list.
       val params: List[Param] = newList()
       var lpi = 0
       while lpi < lparams.count {
@@ -3613,39 +3387,34 @@ func collectLambdasInExpr(e: in Expr, ticker: in List[Int], out: in List[Item]):
         visibility  = None,
         kind        = IFunc(decl = decl),
         span        = syntheticSpan()))
-      // Recurse into the lambda body (nested lambdas).
-      var si = 0
-      while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
-        si = si + 1
-      }
+      deferred.add(body)
     }
     case ECall(fn, args) -> {
-      collectLambdasInExpr(fn, ticker, out)
+      collectLambdasBfsExpr(fn, ticker, out, deferred)
       var ai = 0
       while ai < args.count {
         match args[ai] {
-          case CAPositional(ex)    -> { collectLambdasInExpr(ex, ticker, out) }
-          case CANamed(_, ex, _)   -> { collectLambdasInExpr(ex, ticker, out) }
+          case CAPositional(ex)    -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
+          case CANamed(_, ex, _)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
         }
         ai = ai + 1
       }
     }
     case EBinop(_, lhs, rhs) -> {
-      collectLambdasInExpr(lhs, ticker, out)
-      collectLambdasInExpr(rhs, ticker, out)
+      collectLambdasBfsExpr(lhs, ticker, out, deferred)
+      collectLambdasBfsExpr(rhs, ticker, out, deferred)
     }
-    case EPrefix(_, operand)  -> { collectLambdasInExpr(operand, ticker, out) }
-    case EParen(inner)        -> { collectLambdasInExpr(inner, ticker, out) }
-    case EMember(recv, _)     -> { collectLambdasInExpr(recv, ticker, out) }
+    case EPrefix(_, operand)  -> { collectLambdasBfsExpr(operand, ticker, out, deferred) }
+    case EParen(inner)        -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
+    case EMember(recv, _)     -> { collectLambdasBfsExpr(recv, ticker, out, deferred) }
     case EIf(cond, thenB, elseOpt, _) -> {
-      collectLambdasInExpr(cond, ticker, out)
+      collectLambdasBfsExpr(cond, ticker, out, deferred)
       match thenB {
-        case EOBExpr(ex)   -> { collectLambdasInExpr(ex, ticker, out) }
+        case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
         case EOBBlock(blk) -> {
           var si = 0
           while si < blk.statements.count {
-            collectLambdasInStmt(blk.statements[si], ticker, out)
+            collectLambdasBfsStmt(blk.statements[si], ticker, out, deferred)
             si = si + 1
           }
         }
@@ -3653,11 +3422,11 @@ func collectLambdasInExpr(e: in Expr, ticker: in List[Int], out: in List[Item]):
       match elseOpt {
         case Some(elseB) -> {
           match elseB {
-            case EOBExpr(ex)   -> { collectLambdasInExpr(ex, ticker, out) }
+            case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
             case EOBBlock(blk) -> {
               var ei = 0
               while ei < blk.statements.count {
-                collectLambdasInStmt(blk.statements[ei], ticker, out)
+                collectLambdasBfsStmt(blk.statements[ei], ticker, out, deferred)
                 ei = ei + 1
               }
             }
@@ -3669,27 +3438,27 @@ func collectLambdasInExpr(e: in Expr, ticker: in List[Int], out: in List[Item]):
     case EBlock(block) -> {
       var si = 0
       while si < block.statements.count {
-        collectLambdasInStmt(block.statements[si], ticker, out)
+        collectLambdasBfsStmt(block.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case EUnsafe(block) -> {
       var si = 0
       while si < block.statements.count {
-        collectLambdasInStmt(block.statements[si], ticker, out)
+        collectLambdasBfsStmt(block.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case EMatch(scr, arms) -> {
-      collectLambdasInExpr(scr, ticker, out)
+      collectLambdasBfsExpr(scr, ticker, out, deferred)
       var ai = 0
       while ai < arms.count {
         match arms[ai].body {
-          case EOBExpr(ex)   -> { collectLambdasInExpr(ex, ticker, out) }
+          case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
           case EOBBlock(blk) -> {
             var si = 0
             while si < blk.statements.count {
-              collectLambdasInStmt(blk.statements[si], ticker, out)
+              collectLambdasBfsStmt(blk.statements[si], ticker, out, deferred)
               si = si + 1
             }
           }
@@ -3700,29 +3469,29 @@ func collectLambdasInExpr(e: in Expr, ticker: in List[Int], out: in List[Item]):
     case EList(exprs) -> {
       var ei = 0
       while ei < exprs.count {
-        collectLambdasInExpr(exprs[ei], ticker, out)
+        collectLambdasBfsExpr(exprs[ei], ticker, out, deferred)
         ei = ei + 1
       }
     }
     case EIndex(recv, indices) -> {
-      collectLambdasInExpr(recv, ticker, out)
+      collectLambdasBfsExpr(recv, ticker, out, deferred)
       var ii = 0
       while ii < indices.count {
-        collectLambdasInExpr(indices[ii], ticker, out)
+        collectLambdasBfsExpr(indices[ii], ticker, out, deferred)
         ii = ii + 1
       }
     }
-    case EAwait(inner)     -> { collectLambdasInExpr(inner, ticker, out) }
-    case EYield(inner)     -> { collectLambdasInExpr(inner, ticker, out) }
-    case ESpawn(inner)     -> { collectLambdasInExpr(inner, ticker, out) }
-    case ETry(inner)       -> { collectLambdasInExpr(inner, ticker, out) }
-    case EPropagate(inner) -> { collectLambdasInExpr(inner, ticker, out) }
-    case EAssign(_, _, v)  -> { collectLambdasInExpr(v, ticker, out) }
+    case EAwait(inner)     -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
+    case EYield(inner)     -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
+    case ESpawn(inner)     -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
+    case ETry(inner)       -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
+    case EPropagate(inner) -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
+    case EAssign(_, _, v)  -> { collectLambdasBfsExpr(v, ticker, out, deferred) }
     case EInterpolated(segs) -> {
       var si = 0
       while si < segs.count {
         match segs[si] {
-          case ISExpr(ex) -> { collectLambdasInExpr(ex, ticker, out) }
+          case ISExpr(ex) -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
           case _          -> {}
         }
         si = si + 1
@@ -3731,73 +3500,73 @@ func collectLambdasInExpr(e: in Expr, ticker: in List[Int], out: in List[Item]):
     case ETuple(exprs) -> {
       var ei = 0
       while ei < exprs.count {
-        collectLambdasInExpr(exprs[ei], ticker, out)
+        collectLambdasBfsExpr(exprs[ei], ticker, out, deferred)
         ei = ei + 1
       }
     }
-    case ETypeApp(fn, _)  -> { collectLambdasInExpr(fn, ticker, out) }
-    case _                -> {}
+    case ETypeApp(fn, _)  -> { collectLambdasBfsExpr(fn, ticker, out, deferred) }
+    case _ -> {}
   }
 }
 
-func collectLambdasInStmt(s: in Statement, ticker: in List[Int], out: in List[Item]): Unit {
+func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], out: in List[Item], deferred: in List[Block]): Unit {
   match s.kind {
     case SLocal(binding) -> match binding {
-      case LBVal(_, _, init)    -> { collectLambdasInExpr(init, ticker, out) }
-      case LBLet(_, _, init)    -> { collectLambdasInExpr(init, ticker, out) }
+      case LBVal(_, _, init)    -> { collectLambdasBfsExpr(init, ticker, out, deferred) }
+      case LBLet(_, _, init)    -> { collectLambdasBfsExpr(init, ticker, out, deferred) }
       case LBVar(_, _, initOpt) -> match initOpt {
-        case Some(init) -> { collectLambdasInExpr(init, ticker, out) }
+        case Some(init) -> { collectLambdasBfsExpr(init, ticker, out, deferred) }
         case None       -> {}
       }
     }
-    case SAssign(_, _, v)  -> { collectLambdasInExpr(v, ticker, out) }
+    case SAssign(_, _, v)  -> { collectLambdasBfsExpr(v, ticker, out, deferred) }
     case SReturn(valOpt)   -> match valOpt {
-      case Some(e) -> { collectLambdasInExpr(e, ticker, out) }
+      case Some(e) -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
       case None    -> {}
     }
-    case SExpr(e)  -> { collectLambdasInExpr(e, ticker, out) }
-    case SThrow(e) -> { collectLambdasInExpr(e, ticker, out) }
+    case SExpr(e)  -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
+    case SThrow(e) -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
     case SWhile(_, cond, body) -> {
-      collectLambdasInExpr(cond, ticker, out)
+      collectLambdasBfsExpr(cond, ticker, out, deferred)
       var si = 0
       while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
+        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case SFor(_, _, iter, body) -> {
-      collectLambdasInExpr(iter, ticker, out)
+      collectLambdasBfsExpr(iter, ticker, out, deferred)
       var si = 0
       while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
+        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case SLoop(_, body) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
+        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case SScope(_, body) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
+        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case SDefer(body) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
+        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
         si = si + 1
       }
     }
     case STry(body, catches) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasInStmt(body.statements[si], ticker, out)
+        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
         si = si + 1
       }
       var ci = 0
@@ -3805,34 +3574,33 @@ func collectLambdasInStmt(s: in Statement, ticker: in List[Int], out: in List[It
         val cblk = catches[ci].body
         var csi = 0
         while csi < cblk.statements.count {
-          collectLambdasInStmt(cblk.statements[csi], ticker, out)
+          collectLambdasBfsStmt(cblk.statements[csi], ticker, out, deferred)
           csi = csi + 1
         }
         ci = ci + 1
       }
     }
-    case SInvariant(e)   -> { collectLambdasInExpr(e, ticker, out) }
+    case SInvariant(e)   -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
     case SRule(lhs, rhs) -> {
-      collectLambdasInExpr(lhs, ticker, out)
-      collectLambdasInExpr(rhs, ticker, out)
+      collectLambdasBfsExpr(lhs, ticker, out, deferred)
+      collectLambdasBfsExpr(rhs, ticker, out, deferred)
     }
     case _ -> {}
   }
 }
 
-// Lambda-lifting pre-pass: extract all ELambda nodes in the file into synthetic
-// IFunc items appended after the existing items.  Returns a new SourceFile with
-// the synthetic items appended.  Must be called before addPackageTokens so that
-// the pre-scan assigns MethodDef tokens to the synthetic functions.
+// BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
+// items in breadth-first order so lambda indices match the codegen traversal.
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val ticker: List[Int] = newList()
   val synths: List[Item] = newList()
+  val deferred: List[Block] = newList()
 
-  // Walk every item to collect lambdas in DFS order.
+  // Phase 1: walk every top-level item's body, collecting direct lambdas.
+  // Each ELambda body is pushed to `deferred` rather than recursed into.
   var i = 0
   while i < file.items.count {
-    val item = file.items[i]
-    match item.kind {
+    match file.items[i].kind {
       case IFunc(decl) -> {
         match decl.body {
           case Some(body) -> {
@@ -3840,24 +3608,36 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
               case FBBlock(block) -> {
                 var si = 0
                 while si < block.statements.count {
-                  collectLambdasInStmt(block.statements[si], ticker, synths)
+                  collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
                   si = si + 1
                 }
               }
-              case FBExpr(e) -> { collectLambdasInExpr(e, ticker, synths) }
+              case FBExpr(e) -> { collectLambdasBfsExpr(e, ticker, synths, deferred) }
             }
           }
           case None -> {}
         }
       }
-      case IRecord(_)    -> {}
-      case IExposedRec(_) -> {}
-      case IUnion(_)     -> {}
-      case IVal(decl)    -> { collectLambdasInExpr(decl.init, ticker, synths) }
-      case IConst(decl)  -> { collectLambdasInExpr(decl.init, ticker, synths) }
-      case _             -> {}
+      case IVal(decl)   -> { collectLambdasBfsExpr(decl.init, ticker, synths, deferred) }
+      case IConst(decl) -> { collectLambdasBfsExpr(decl.init, ticker, synths, deferred) }
+      case _ -> {}
     }
     i = i + 1
+  }
+
+  // Phase 2: BFS — process deferred lambda bodies in FIFO order.
+  // New lambdas found inside lambda bodies are appended to `deferred` and
+  // processed in subsequent iterations, ensuring outer lambdas are always
+  // numbered before any lambdas nested inside their bodies.
+  var di = 0
+  while di < deferred.count {
+    val blk = deferred[di]
+    var si = 0
+    while si < blk.statements.count {
+      collectLambdasBfsStmt(blk.statements[si], ticker, synths, deferred)
+      si = si + 1
+    }
+    di = di + 1
   }
 
   if synths.count == 0 {

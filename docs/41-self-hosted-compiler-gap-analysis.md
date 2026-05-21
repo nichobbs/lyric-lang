@@ -216,8 +216,8 @@ unless noted.
 | `EMatch` (literal + binding + variant payload) | Supported | `:1335-1464` |
 | `EInterpolated` string interpolation | Supported (rewrites to concat chain) | `:861` |
 | `EAwait` | **Panics** | `:833-838` |
-| `EYield` | **Panics** — "async generators (yield) not supported in self-hosted MSIL R5" | `:838-839` |
-| `ELambda` | **Placeholder** — falls back to `MObject`; display-class capture deferred to Band 3 | `:902-903` |
+| `EYield` | **Supported** — collect-all model; async func with yield allocates `List<object>` collector, each yield appends, return collector (R6, PR #927) | `:977-990` |
+| `ELambda` | **Supported** — non-capturing lambdas lifted to static `__lambda_<i>` methods via BFS pre-pass; lowered as `ldnull + ldftn + newobj Action::.ctor` (R6, PR #927) | `:1051-1068` |
 | `ESelf` | **Panics** | `:895-898` |
 | `EForall`, `EExists` | **Panics** (proof constructs; correct) | `:886-890` |
 | `EOld` | **Panics** in codegen (should be consumed by elaborator) | `:892-894` |
@@ -248,12 +248,12 @@ written by hand do get lowered (`:1783-1827`).
   no static type guarantees.
 - **FFI (`@externTarget`).**  Handled by `Msil.Ffi.resolveExternTarget`
   (`ffi.l:229-261`).  Hardcoded type→assembly table; static/instance
-  dispatch via `@externStatic`/`@externInstance` hints.  No auto-FFI
-  scoring (C4 phase 1–2 from `docs/01-language-reference.md` §11.3) —
-  every BCL method must be declared with an explicit `@externTarget`
-  annotation.  Cross-assembly types not in `Msil.Ffi.clrAssemblyForType`
-  default to `System.Runtime`, which silently breaks for non-forwarded
-  types.
+  dispatch via `@externStatic`/`@externInstance` hints.  Auto-FFI scoring
+  is now partially supported (R6, PR #927): `IExternType` items populate
+  `cctx.externTypeNames`; call sites where the receiver resolves to an
+  extern type name emit a direct `callvirt` without requiring `@externTarget`
+  on each method.  Cross-assembly types not in `Msil.Ffi.clrAssemblyForType`
+  still default to `System.Runtime`, which silently breaks for non-forwarded types.
 - **`@externTarget` on Lyric generic functions.**  Q022-4 (`docs/36-v1-roadmap.md`):
   not implemented — only fully-monomorphised externs resolve.
 
@@ -513,11 +513,10 @@ supporting all language features on both targets".
 |---|---|---|---|---|
 | Self-hosted backends bypass middle-end | **CRITICAL** | both | use `--target dotnet-legacy` | `msil/bridge.l`, `jvm/bridge.l` |
 | MSIL: no generics monomorphisation | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:593` |
-| MSIL: no async / yield | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:833-839` |
-| MSIL: no closures (`ELambda` display-class) | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:902-903` |
+| MSIL: no async / await state machine | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l` |
+| MSIL: no closures with capture (`ELambda` display-class) | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l` |
 | MSIL: no wire blocks (full DI graph) | **MEDIUM** | dotnet | dotnet-legacy | `msil/codegen.l` |
 | MSIL: no `for` loops | **HIGH** | dotnet | dotnet-legacy or `while` | `msil/codegen.l:2002` |
-| MSIL: no auto-FFI scoring | **MEDIUM** | dotnet | explicit `@externTarget` | `msil/ffi.l` |
 | MSIL: no `IConst` static-field emission | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l:2613` |
 | JVM: no interfaces / impl blocks | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:3030-3031` |
 | JVM: no aspects | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:3040` |
@@ -591,7 +590,7 @@ single highest-leverage change in the entire remediation.
 
 ### Band 2 — MSIL backend feature parity
 
-_Status: shipped in PR #872 (D-progress-282). Items 1–2, 3, 4–5, 7, 8, 11 complete; items 6 (ELambda display-class capture), 9 (EAwait async state machine), 10 (EYield async generator), 12 (auto-FFI scoring) deferred to Band 3._
+_Status: core items shipped in PR #872 (D-progress-282); R6 items shipped in PR #927. Items 1–2, 3, 4–5, 6 (non-capturing lambdas), 7, 8, 10 (collect-all yield), 11, 12 (auto-FFI for IExternType) complete. Items 9 (EAwait async state machine) and 6-capturing (display-class capture) deferred to Band 3._
 
 Order of attack (cheap → expensive):
 
