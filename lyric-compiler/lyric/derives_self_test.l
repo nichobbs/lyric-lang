@@ -68,8 +68,10 @@ func testDeriveShowRecord(): Unit {
 
 func testGenerateJsonRecord(): Unit {
   val src = "package P\n@generate(Json)\nrecord Point { x: Int; y: Int }\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"),
-    "json-rec: Point.toJson synthesised")
+  val pr  = parse(src)
+  val sf  = deriveFile(pr.file)
+  assertEqualInt(sf.items.count, 2, "json-rec: 1 record + 1 synth (toJson)")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"), "json-rec: Point.toJson synthesised")
 }
 
 func testMultipleDerives(): Unit {
