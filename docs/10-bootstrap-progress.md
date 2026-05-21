@@ -13872,3 +13872,30 @@ The Band 1 pipeline for both targets is now complete:
   parse → typecheck (advisory) → modecheck (fatal) → elaborate → **mono** → codegen
 
 All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
+
+### D-progress-287 — Band 5: Lyric.Derives self-hosted derive/generate synthesiser (#857)
+
+New package `lyric-compiler/lyric/derives/derives.l` (`Lyric.Derives`):
+
+- `deriveFile(file: in SourceFile): SourceFile` — entry point.  Walks all
+  items and appends synthesised `IFunc` items for each annotated type:
+  - `@derive(Equals)` on records/exposed-records → `TypeName.equals(self, other): Bool`
+  - `@derive(Hash)` on records/exposed-records → `TypeName.hash(self): Int`
+  - `@derive(Show)` on records/exposed-records → `TypeName.show(self): String`
+  - `@generate(Json)` on records/exposed-records → `TypeName.toJson(self): String`
+  - `type X = T derives Equals/Hash/Show` on distinct types → matching UFCS functions
+- Idempotent: a second `deriveFile` call on an already-derived file does not
+  duplicate the synthesised functions (checked via `funcAlreadyExists`).
+- Both bridges updated: `lyric-compiler/msil/bridge.l` and
+  `lyric-compiler/jvm/bridge.l` call `deriveFile(elaborated)` after
+  `elaborateFile` and before `monoFile`.
+
+New self-test `lyric-compiler/lyric/derives_self_test.l` (14 tests) covers:
+no-annotation, equals/hash/show/toJson on records, multiple derives,
+distinct-type derives, empty record, exposed record, idempotency.
+Runs via the F# Expecto harness in `SelfHostedDerivesTests.fs`.
+
+The Band 5 pipeline for both targets is now:
+  elaborate → **deriveFile** → monoFile → codegen
+
+All tests: 189/189 TypeChecker, 811/811 Emitter, 254/254 Cli.

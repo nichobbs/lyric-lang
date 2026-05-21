@@ -16,6 +16,7 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
+import Lyric.Derives
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
@@ -154,8 +155,11 @@ pub func compileToJar(
 
   val elaborated = elaborateFile(file0)
 
+  // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
+  val derived = deriveFile(elaborated)
+
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
-  val monoRes = monoFile(elaborated)
+  val monoRes = monoFile(derived)
   val file = monoRes.file
 
   val pkg    = codegenPackage(file)

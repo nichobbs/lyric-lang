@@ -13,6 +13,9 @@ target/
 # Lyric restore cache (lyric restore)
 .lyric/
 
+# lyric run / lyric build temp output directories
+.lyric-run/
+
 # Compiled kernel DLLs and runtime configs emitted into src/_kernel/ directories
 **/src/_kernel/**/*.dll
 **/src/_kernel/**/*.runtimeconfig.json
