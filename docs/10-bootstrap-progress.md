@@ -13899,3 +13899,103 @@ The Band 5 pipeline for both targets is now:
   elaborate → **deriveFile** → monoFile → codegen
 
 All tests: 189/189 TypeChecker, 811/811 Emitter, 254/254 Cli.
+
+### D-progress-288 — Track A A1.3: AOT entry-point project + CoreLib-ref rewriter
+
+Third step of Track A (`docs/41 §860` — F# CLI elimination + Native-AOT
+publishing).  A1.2 produced the closed set of Lyric-compiled DLLs in
+`.bootstrap/stage1/`; A1.3 makes that set usable as compile-time
+`<Reference>` inputs from a tiny C# AOT entry-point project that
+forwards `Main(args)` straight into `Lyric.Cli.Program.main`.
+
+Two artefacts shipped:
+
+* **`bootstrap/src/Lyric.Cli.Aot/`** (new project) — a Microsoft.NET.Sdk
+  Exe csproj plus a 4-line `Program.cs` trampoline.  The csproj
+  `<Reference Include="..\..\..\.bootstrap\stage1\Lyric.*.dll" />`
+  wildcard pulls in every artefact the stage-1 bundle produces, which
+  is exactly the closed set the AOT linker needs.  The trampoline is
+  deliberately tiny — anything we add to the C# layer blocks deleting
+  the F# CLI in A1.4.
+
+* **`scripts/rewrite-corelib-refs.fsx`** (new) — Mono.Cecil-based
+  rewriter that retargets `TypeRef.Scope` from `System.Private.CoreLib`
+  (the unified CoreCLR runtime assembly) to the matching public-facade
+  reference assembly (`System.Runtime`, `System.Collections`,
+  `System.Console`, `mscorlib`, …).  The F# Lyric emitter writes every
+  typeref to `System.Private.CoreLib` because that's where the type
+  actually lives in CoreCLR, but the reference assemblies the C#
+  compiler trusts split BCL types across ~200 facade assemblies —
+  `System.Object` is exposed by `System.Runtime`, `List<T>` by
+  `System.Collections`, `Console` by `System.Console`, etc.  A bulk
+  AssemblyRef rename can't work because no single facade exposes every
+  type the emitted DLLs reference.
+
+  The script crawls the .NET reference pack at
+  `~/.dotnet/packs/Microsoft.NETCore.App.Ref/<version>/ref/net10.0/`
+  to build a `(TypeFullName → AssemblyName)` lookup and a
+  `(AssemblyName → FacadeId)` lookup with the real version and
+  public-key token from each ref-pack DLL.  Facades use the BCL token
+  (`b03f5f7f11d50a3a`) at v10.0.0.0, but `mscorlib` uses the ECMA token
+  (`b77a5c561934e089`) at v4.0.0.0 for back-compat — hardcoding either
+  set produces refs the C# compiler / CLR loader rejects, so identities
+  are read from the actual ref-pack DLLs.
+
+  For each input DLL, the script walks the TypeRef table; for every
+  TypeRef whose Scope is `System.Private.CoreLib`, it looks up the
+  type's facade, ensures an AssemblyRef row exists for it (adds one if
+  not), retargets the TypeRef.Scope to the new ref, then prunes any
+  AssemblyRef rows nothing points at any more.  Cecil's nested-class
+  `+` separator (`System.IDisposable+EmptyEnumerator`) and the dotted
+  form returned by `System.Reflection` are both tried as lookup keys.
+
+* **`scripts/bootstrap.sh`** changes:
+
+  - Stage 1 now copies `Lyric.Jvm.Hosts.dll` from the stage-0 publish
+    output into `.bootstrap/stage1/`.  It's a hand-written F# project
+    (provides the `Jvm.Hosts.*` extern surface that the JVM kernel
+    calls into), not a Lyric-emitted artefact, so it doesn't land in
+    the F# emitter's per-process stdlib cache.  But `Msil.Lowering` /
+    `Msil.Codegen` reference it statically — without it the AOT csproj
+    fails to resolve transitive deps.
+
+  - Stage 1 invokes `dotnet fsi scripts/rewrite-corelib-refs.fsx
+    .bootstrap/stage1/*.dll` after the copy, retargeting every TypeRef
+    to its public facade.  Output is logged to
+    `.bootstrap/rewrite-corelib-refs.log`.
+
+  - **`SKIP_COREREF_REWRITE=1`** env var skips the rewrite for users
+    who want to inspect the raw emitted DLLs.
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1
+    ...
+    [bootstrap]   copied 68 DLLs into .bootstrap/stage1
+    [bootstrap]   retargeting System.Private.CoreLib refs -> public facades
+    [bootstrap] OK: Stage 1 CLI bundle complete
+
+    $ dotnet build bootstrap/src/Lyric.Cli.Aot
+    ...
+    Build succeeded.
+
+    $ echo 'func main(): Int { println("hello from aot-wrapped lyric"); 0 }' > /tmp/hello.l
+    $ bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric build /tmp/hello.l -o /tmp/hello.dll
+    $ dotnet exec /tmp/hello.dll
+    hello from aot-wrapped lyric
+
+Tests: 810/810 emitter, 254/254 Lyric.Cli — unchanged.
+
+Known limitation: `dotnet publish -p:PublishAot=true` on
+`Lyric.Cli.Aot.csproj` fails inside `ilc` codegen on a specific
+Lyric-emitted method (`Lyric.Cli.Program.cmdPublish`).  The
+non-AOT apphost build works end-to-end; the ilc compatibility issue
+is filed as #915 and tackled separately.  Once #915 is fixed the
+same project will publish to a single self-contained native binary.
+
+Followup (Track A, A1.4): delete the F# CLI scaffolding in
+`bootstrap/src/Lyric.Cli/` — `Program.fs` shrinks to the
+`--internal-build` entry point that stage 1 uses; all `SelfHosted*.fs`
+shims plus `Pack.fs` / `Manifest.fs` / `Maven*.fs` / `Nuget*.fs` /
+`Lint.fs` / `TestSynth.fs` go away.
