@@ -13528,3 +13528,56 @@ require new `LPackageItem` variants in `lowering.l` and/or
 
 Closes issue #856 (partial — structural items wired up; complex
 constructs tracked as follow-up).
+
+### D-progress-281 — Track A A1.1: in-process MSIL emit + stderr diagnostics
+
+First concrete step of Track A (`docs/41 §860` — F# CLI elimination +
+Native-AOT publishing).  `Lyric.Emitter.emit` now compiles
+`--target dotnet` single-source builds in-process via a direct call to
+`Msil.Bridge.compileToMsil`, instead of spawning a `lyric
+--internal-build` subprocess that bounces back into F# `Program.fs`.
+
+End-to-end: `cli.l → Lyric.Emitter.emit → MsilBridge.compileToMsil`
+(direct package call).  No subprocess hop, no F# emitter touched at
+runtime.
+
+Three escape hatches preserved for transition and differential testing:
+
+* `LYRIC_FORCE_SUBPROCESS=1` forces every emit through the subprocess
+  shellout regardless of target.  Used by the bootstrap reproducibility
+  pipeline to compare in-process vs subprocess output.
+* `--target jvm` still routes through the subprocess fallback —
+  importing `Jvm.Bridge` from `Lyric.Emitter` would pull
+  `Jvm.Bytecode.BranchInsn` into the same F# emitter import closure as
+  `Lyric.Manifest.Branch` / `Lyric.GitDep.Branch`.  PR #868 already
+  renamed the bytecode case to clear the collision, but the JVM-side
+  switch warrants its own validation pass before flipping.
+* `emitProject` (multi-package + restored-dep builds) still routes
+  through F# `Program.fs::internalProjectBuild` because the
+  self-hosted MSIL bridge doesn't yet expose a multi-package entry
+  point.
+
+Diagnostic-routing fix (#893): `Lyric.DiagnosticUtil`'s
+`diagReportAndAbort` and `diagReport` helpers now write to **stderr**
+via `Std.Console.error` instead of stdout.  This matches the F#
+bootstrap CLI convention; IDE integrations, CI scripts, and
+`2>errors.txt` redirects that worked with the old subprocess path
+continue to work.  The `failResult` text in `emitter.l` was updated to
+reference stderr accordingly.
+
+Pre-required by:
+* PR #888 (#867) — fixed two F# bootstrap emitter bugs in
+  `Lyric.Generator.preprocess` that were silently breaking the
+  self-hosted CLI bridge.  Without #888, the in-process path was
+  unreachable because `Lyric.Cli.dll` couldn't even load.
+* PR #868 — defensive `Branch`→`BranchInsn` rename in
+  `Jvm.Bytecode` / `Msil.Opcodes` that cleared the import-collision
+  hazard for adding `import Msil.Bridge` to `Lyric.Emitter`.
+
+Followup actions (see `docs/41 §860`): port `emitProject` to a
+multi-package bridge entry point, switch JVM target to in-process,
+pre-build `Lyric.Cli.dll` into a checked-in artifact, generate an AOT
+entry-point project, and finally delete the F# CLI scaffolding (12
+SelfHosted*.fs files + duplicate F# helpers + most of `Program.fs`).
+
+Closes #892, #893.
