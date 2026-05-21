@@ -207,23 +207,41 @@ EOF
 
   local driver_out="$driver_dir/Lyric.CliBundle.dll"
 
-  # Force the F# emitter via `LYRIC_FORCE_SUBPROCESS=1` + `--internal-build`.
-  # The driver has a `func main(): Unit { }` so it satisfies the F#
-  # emitter's executable contract; we don't care about running it, only
-  # about the side effect of populating the per-process stdlib cache
-  # with every Lyric package the driver transitively imports.
+  # Snapshot the existing /tmp/lyric-stdlib-* directories so we can
+  # identify *the one the upcoming compile creates* unambiguously (#908).
+  # Reusing CI runners often leaves stale dirs in /tmp; `ls -dt | head -1`
+  # would happily pick one of those if filesystem mtimes were close.
+  # `|| true` swallows the non-zero exit when the glob doesn't match —
+  # `set -euo pipefail` would otherwise abort here before the post-
+  # compile check produces a useful error.
+  local pre_snapshot
+  pre_snapshot="$(ls -d /tmp/lyric-stdlib-* 2>/dev/null || true)"
+
+  # Force the F# emitter via `--internal-build`.  The driver has a
+  # `func main(): Unit { }` so it satisfies the F# emitter's executable
+  # contract; we don't care about running it, only about the side effect
+  # of populating the per-process stdlib cache with every Lyric package
+  # the driver transitively imports.
   LYRIC_STD_PATH="$STAGE1_DIR" \
     "$STAGE0_BIN" --internal-build "$driver_dir/driver.l" -o "$driver_out" \
     --target dotnet 2>&1 || \
     die "stage-1 CLI-bundle driver compile failed"
 
-  # The F# emitter caches the precompiled stdlib artefacts in a per-process
-  # temp dir.  Locate the most recent one and copy everything into stage1/.
+  # Locate the cache dir the compile created: take all current matches,
+  # subtract the pre-compile snapshot, expect exactly one new entry.
   # Pattern: /tmp/lyric-stdlib-<pid>/ — see Emitter.fs::stdlibCacheDir.
+  local post_snapshot
+  post_snapshot="$(ls -d /tmp/lyric-stdlib-* 2>/dev/null || true)"
+  local new_dirs
+  new_dirs="$(comm -13 \
+    <(echo "$pre_snapshot"  | sort) \
+    <(echo "$post_snapshot" | sort) \
+    | grep -v '^$' || true)"
+
   local cache_dir
-  cache_dir="$(ls -dt /tmp/lyric-stdlib-* 2>/dev/null | head -1)"
+  cache_dir="$(echo "$new_dirs" | head -1)"
   [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
-    die "stage-1 CLI bundle: no /tmp/lyric-stdlib-*/ cache found after compile"
+    die "stage-1 CLI bundle: no new /tmp/lyric-stdlib-*/ cache found after compile (pre='$pre_snapshot', post='$post_snapshot')"
 
   info "  CLI bundle cache: $cache_dir"
   local copied=0
@@ -252,12 +270,29 @@ stage2() {
   # NOTE (Track A, A1.2): stage 2 still walks the legacy COMPILER_SOURCES
   # list, which expects per-source-file DLL names (lexer.dll, parser.dll,
   # …) — but stage 1's CLI-bundle precompile emits per-package DLLs
-  # named `Lyric.Lyric.<Pkg>.dll`.  The reproducibility check below thus
-  # won't find matching files and reports MISSING for every entry.  This
-  # is documented as expected; the long-term fix is to rewrite stage 2
-  # to drive the same `import Lyric.Cli` driver used in stage 1 and
-  # compare the resulting bundles file-by-file.  Tracked in `docs/41`
-  # Track A A1.2 followups.
+  # named `Lyric.Lyric.<Pkg>.dll`.  Until stage 2 is rewritten to drive
+  # the same `import Lyric.Cli` driver and compare bundles file-by-file,
+  # the reproducibility check below cannot run meaningfully.  Rather
+  # than silently report MISSING for every entry and exit 0 (#907), the
+  # check now fails loudly with a clear message and points the user at
+  # `SKIP_VERIFY=1` if they want to opt out.
+  #
+  # If you're here because CI failed: set `SKIP_VERIFY=1` to skip the
+  # check, or contribute the rewrite (snapshot the `Lyric.Lyric.<Pkg>.dll`
+  # outputs of stage 1's CLI-bundle, recompile the driver in stage 2,
+  # and compare each artefact across the two stages).
+  if [[ "$SKIP_VERIFY" != "1" ]]; then
+    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs (#907)"
+  fi
+  info "SKIP_VERIFY=1; skipping the reproducibility recompile entirely"
+  return 0
+}
+
+# The legacy stage 2 body — kept for reference until the A1.2 stage-2
+# rewrite lands.  Not currently reachable because stage2() above hard-
+# fails (or returns when SKIP_VERIFY=1).
+_stage2_legacy() {
+  info "Stage 2: recompiling Lyric compiler packages with stage-1 self-hosted emitter"
 
   # The stage-1 lyric binary: same F# host, but --target dotnet now routes
   # through SelfHostedMsil which loads Msil.Bridge from the stage-1 DLLs.
