@@ -180,7 +180,7 @@ unless noted.
 | `IRange` | `:2627` | **Skipped** — no codegen branch (`MRangeType` IR exists in `lowering.l:295` but unused) |
 | `IOpaque` | `lowerOpaqueMsil` | **Supported** — sealed TypeDef; private fields + .ctor; exposed-twin synthesis deferred to Band 3 (Band 2, PR #872) |
 | `IInterface` | `lowerInterfaceMsil` | **Supported** — abstract interface TypeDef with abstract method stubs (Band 2, PR #872) |
-| `IImpl` | `lowerInterfaceMsil` | **Supported** — method overrides on implementing type (Band 2, PR #872) |
+| `IImpl` | `lowerMImpl` (`msil/lowering.l`) | **Supported** — emits InterfaceImpl + MethodImpl rows on the implementing type (Band 2, PR #872) |
 | `IProtected` | `lowerProtectedTypeMsil` | **Supported** — Monitor-backed sealed TypeDef; lock field + entry methods (Band 2, PR #872) |
 | `IWire` | — | **Placeholder** — static factory class stub; full DI graph lowering deferred to Band 3 |
 | `IAspect` | `weaveAspectsMsil` | **Supported** — weaver renames target to `__aspect_target_N_<name>`; synthesises wrapper with around-body (Band 2, PR #872) |
@@ -514,9 +514,10 @@ supporting all language features on both targets".
 | MSIL: no generics monomorphisation | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:593` |
 | MSIL: no async / yield | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:833-839` |
 | MSIL: no closures (`ELambda` display-class) | **CRITICAL** | dotnet | dotnet-legacy | `msil/codegen.l:902-903` |
-| MSIL: no wire blocks (full DI graph) | MEDIUM | dotnet | dotnet-legacy | `msil/codegen.l` |
+| MSIL: no wire blocks (full DI graph) | **MEDIUM** | dotnet | dotnet-legacy | `msil/codegen.l` |
 | MSIL: no `for` loops | **HIGH** | dotnet | dotnet-legacy or `while` | `msil/codegen.l:2002` |
 | MSIL: no auto-FFI scoring | **MEDIUM** | dotnet | explicit `@externTarget` | `msil/ffi.l` |
+| MSIL: no `IConst` static-field emission | **HIGH** | dotnet | dotnet-legacy | `msil/codegen.l:2613` |
 | JVM: no interfaces / impl blocks | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:3030-3031` |
 | JVM: no aspects | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:3040` |
 | JVM: no closures (except `Std.Jvm.catch`) | **CRITICAL** | jvm | dotnet-legacy + dotnet | `jvm/codegen.l:718` |
@@ -525,9 +526,9 @@ supporting all language features on both targets".
 | JVM: `func main(): Long/Double` rejected | LOW | jvm | `Int` or `Unit` | `jvm/bridge.l:22-52` |
 | Contract elaborator: protected entries deferred | **HIGH** | both | dotnet-legacy | `contract_elaborator/elaborator.l:43-47` |
 | Cross-package type resolution | **HIGH** | both | single-package only | `typechecker_resolver.l:129` |
-| Cross-package generics monomorphisation | MEDIUM | both | dotnet-legacy uses reified CLR generics | `mono.l:6-27` |
+| Cross-package generics monomorphisation | **MEDIUM** | both | dotnet-legacy uses reified CLR generics | `mono.l:6-27` |
 | Cross-package generics + opaque + interfaces in metadata (Q022-2, R5) | **HIGH** | both | dotnet-legacy | F# `Codegen.fs::satisfiesMarker`, `ContractMeta.fs` |
-| `pub use Foo.bar` symbol-level (Q022-1) | MEDIUM | both | re-export whole package | `typechecker_resolver.l` |
+| `pub use Foo.bar` symbol-level (Q022-1) | **MEDIUM** | both | re-export whole package | `typechecker_resolver.l` |
 | Auto-FFI scoring | MEDIUM | both | explicit `@externTarget` | F# `Codegen.fs:1842-1972`; no self-host port |
 | `@derive(Equals)`, `@generate(Json)` | **HIGH** | both | hand-written equality / `Json.parse` | F# `Records.fs` + emitter sites |
 | Opaque-twin generation (`@projectable`) | **HIGH** | both | dotnet-legacy | F# `Emitter.fs` |

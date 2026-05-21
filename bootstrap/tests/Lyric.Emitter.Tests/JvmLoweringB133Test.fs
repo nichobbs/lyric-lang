@@ -7,36 +7,20 @@ open System
 open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
-
-let private findSource () : string option =
-    let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
-    let mutable found : string option = None
-    while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b133.l")
-        if File.Exists candidate then found <- Some candidate
-        dir <- dir.Value.Parent |> Option.ofObj
-    found
-
-let private runJar (jarPath: string) : string * int =
-    try
-        let psi = System.Diagnostics.ProcessStartInfo("java", $"-jar {jarPath}")
-        psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError  <- true
-        psi.UseShellExecute        <- false
-        match System.Diagnostics.Process.Start(psi) |> Option.ofObj with
-        | None -> "", -1
-        | Some proc ->
-            let stdout = proc.StandardOutput.ReadToEnd()
-            proc.WaitForExit()
-            stdout, proc.ExitCode
-    with _ -> "", -1
+open Lyric.Emitter.Tests.JvmTestKit
 
 let tests =
     testList "Jvm.Lowering B133 (IInterface codegen pipeline, Band 3)" [
 
         testCase "b133_interface_codegen_pipeline" <| fun () ->
+            // #899: wipe any stale JAR from a prior run so `File.Exists`
+            // can't pass on a leftover artifact when the new compile
+            // silently fails to overwrite.
+            let jarPath = "/tmp/lyric-jvm-b133/iface.jar"
+            try if File.Exists jarPath then File.Delete jarPath with _ -> ()
+
             let src =
-                match findSource () with
+                match findJvmSource "self_test_b133.l" with
                 | Some path -> File.ReadAllText path
                 | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b133.l"
 
@@ -54,7 +38,6 @@ let tests =
             Expect.stringContains stdout "jar_written=true"
                 (sprintf "expected jar_written=true in stdout, got: '%s'" stdout)
 
-            let jarPath = "/tmp/lyric-jvm-b133/iface.jar"
             Expect.isTrue (File.Exists jarPath)
                 (sprintf "expected %s to exist" jarPath)
 

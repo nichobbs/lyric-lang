@@ -279,9 +279,9 @@
     <Compile Include="JvmLoweringB125Test.fs" />
     <Compile Include="JvmLoweringB126Test.fs" />
     <Compile Include="JvmLoweringB127Test.fs" />
+    <Compile Include="JvmTestKit.fs" />
     <Compile Include="JvmLoweringB128Test.fs" />
     <Compile Include="JvmLoweringB129Test.fs" />
-    <Compile Include="JvmTestKit.fs" />
     <Compile Include="JvmLoweringB130Test.fs" />
     <Compile Include="JvmLoweringB131Test.fs" />
     <Compile Include="JvmLoweringB132Test.fs" />

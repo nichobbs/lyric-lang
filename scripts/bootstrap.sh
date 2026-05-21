@@ -10,16 +10,21 @@
 #           the full CLI dependency closure (cli.l + ~25 Lyric packages)
 #           and copies the artefacts into `.bootstrap/stage1/`.  These are
 #           the DLLs Track A's AOT entry-point project will reference.
-# Stage 2:  Use stage-1 lyric (self-hosted MSIL path) to recompile those same
-#           packages from source.  If stage-2 output is byte-for-byte identical
-#           to stage-1 output the bootstrap is reproducible.
+# Stage 2:  [BLOCKED — A1.2 stage-2 rewrite pending: snapshot the
+#           `Lyric.Lyric.*.dll` outputs from stage 1, recompile the
+#           CLI-bundle driver via stage-1 lyric, then compare bundles
+#           file-by-file.  The current `stage2()` hard-fails because
+#           the COMPILER_SOURCES loop assumes per-source DLL names
+#           (`lexer.dll`, …) that no longer match stage 1's per-
+#           package output.  Set `SKIP_VERIFY=1` to bypass until the
+#           rewrite lands.]
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # run all three stages
+#   ./scripts/bootstrap.sh              # all stages (stage 2 fails unless SKIP_VERIFY=1)
 #   ./scripts/bootstrap.sh --stage 0   # build F# compiler only
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
-#   ./scripts/bootstrap.sh --stage 2   # all stages including reproducibility check
-#   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip byte-for-byte comparison
+#   ./scripts/bootstrap.sh --stage 2   # all stages; stage 2 currently blocked
+#   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip the (blocked) reproducibility check
 #   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
 #                                              loop; the CLI bundle step is skipped.
 #                                              Useful when iterating on a single

@@ -7,7 +7,8 @@
 /// (stdout, exitCode) — `(""", -1)` on process-start failure.
 ///
 /// Both functions are extracted to retire the verbatim duplication that
-/// accumulated across `JvmLoweringB128..B132Test.fs` (#880).
+/// accumulated across the `JvmLoweringB128..B134Test.fs` family (#880,
+/// #886, #898).
 module Lyric.Emitter.Tests.JvmTestKit
 
 open System
