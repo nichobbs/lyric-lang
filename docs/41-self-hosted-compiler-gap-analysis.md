@@ -658,8 +658,10 @@ package + bridge protocol + F# shim, per `SelfHostedFmt.fs` pattern:
 
 - `Lyric.ContractMeta` — partially shipped (`contract_meta.l`); finish
   per `docs/36-v1-roadmap.md` R4.
-- `Lyric.Derives` (or equivalent) — `@derive(Equals)`, `@derive(Hash)`,
-  `@derive(Show)`, `@generate(Json)`.
+- ✅ `Lyric.Derives` — `@derive(Equals)`, `@derive(Hash)`, `@derive(Show)`,
+  `@generate(Json)` on records, exposed records, and distinct types;
+  wired into both MSIL and JVM bridges after contract elaboration
+  (D-progress-287).
 - `Lyric.Generics.Monomorphizer` — cross-package + value-generic
   extensions.  (Same-package mono via `Lyric.Mono.monoFile` is now
   wired in both bridges — D-progress-286; cross-package and

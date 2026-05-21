@@ -18,6 +18,7 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
+import Lyric.Derives
 import Msil.Lowering
 import Msil.Codegen
 
@@ -89,8 +90,11 @@ pub func compileToMsil(
 
   val elaborated = elaborateFile(file0)
 
+  // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
+  val derived = deriveFile(elaborated)
+
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
-  val monoRes = monoFile(elaborated)
+  val monoRes = monoFile(derived)
   val file = monoRes.file
 
   // Reconstruct the package name as a dotted string (e.g. "Hello" or
