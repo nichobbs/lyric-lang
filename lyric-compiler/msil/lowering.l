@@ -119,6 +119,15 @@ pub func buildValueTypeFieldSig(typeDefOrRef: in Int): List[Byte] {
 
 // Build a 4-byte little-endian blob for an I4 Constant table entry.
 pub func buildI4ConstantBlob(v: in Int): List[Byte] {
+  // Byte extraction below uses `%` / `/` which follow Lyric's sign-of-
+  // dividend remainder rule (`-1 % 256 == -1`, not `255`).  The
+  // result is still correct because the kernel's `bufU1` /
+  // `JvmByteBuilder.AppendByte` masks with `v & 0xFF` before
+  // writing — verified in `bootstrap/src/Lyric.Jvm.Hosts/JvmHosts.fs`.
+  // If a future kernel reimplementation drops that mask, rewrite this
+  // helper to either pre-normalise via two's-complement wraparound
+  // (e.g. `if v < 0 { (v % 256) + 256 } else { v % 256 }` per byte)
+  // or use real bitwise primitives once they land in Lyric (#875).
   val w = bufNew()
   bufU1(w, v % 256)
   bufU1(w, (v / 256) % 256)
@@ -910,7 +919,10 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
     signature = bI4Sig))
 
   // Emit one static literal field per case + a Constant row for its ordinal value.
-  val enumTypeDefRow = t.typeDefs.count + 2  // +2: this TypeDef will be typeDefs.count+1 after addTypeDef
+  // The enum's own TypeDef is appended at the end of this function via
+  // `addTypeDef`, so its row number will be `t.typeDefs.count + 1`
+  // (1-based row indices, current count snapshot taken before append).
+  val enumTypeDefRow = t.typeDefs.count + 1
 
   var ci = 0
   while ci < e.cases.count {

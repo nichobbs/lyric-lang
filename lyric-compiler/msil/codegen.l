@@ -2745,14 +2745,30 @@ func matchesAspectMatcherMsil(matcher: in AspectMatcher, fn: in FunctionDecl): B
   }
 }
 
-// Check whether a function is excluded from aspect matching.
+// Check whether a function is excluded from matching `aspectName`.
+// `@no_aspect` with no args opts the function out of every aspect;
+// `@no_aspect(Foo)` (or `@no_aspect(Foo, Bar)`) opts out only the
+// named aspects, leaving others free to match.
 func isOptedOutMsil(fn: in FunctionDecl, aspectName: in String): Bool {
   var i = 0
   while i < fn.annotations.count {
     val ann = fn.annotations[i]
     val segs = ann.name.segments
     if segs.count > 0 and segs[0] == "no_aspect" {
-      return true
+      // Bare `@no_aspect` (no args) → opt out of everything.
+      if ann.args.count == 0 { return true }
+      // Targeted `@no_aspect(Name1, Name2, …)` → opt out only when
+      // `aspectName` is in the arg list.  Both `AAName` and `ABare`
+      // are accepted; only the leading identifier portion matters.
+      var j = 0
+      while j < ann.args.count {
+        val argName = match ann.args[j] {
+          case AAName(n, _, _) -> n
+          case ABare(n, _)     -> n
+        }
+        if argName == aspectName { return true }
+        j = j + 1
+      }
     }
     i = i + 1
   }

@@ -28,10 +28,14 @@ func main(): Unit {
     case Err(_) -> ()
   }
 
+  // #879: actually construct a Direction value so the JVM codegen path
+  // for enum-case access (static field lookup) is exercised, not just
+  // the type-definition lowering pass.
   val src =
     "package TestEnum131\n" +
     "enum Direction { case North, case South, case East, case West }\n" +
     "func main(): Unit {\n" +
+    "  val d = Direction.North\n" +
     "  println(\"enum_ok\")\n" +
     "}\n"
 

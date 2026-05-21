@@ -28,6 +28,14 @@ func main(): Unit {
     case Err(_) -> ()
   }
 
+  // #879 deferred: the issue suggested constructing a `UserId(42)` value
+  // here to exercise the distinct-type constructor codegen, but the
+  // self-hosted JVM emitter does not yet implement distinct-type wrapper
+  // class lowering for value construction.  The test would fail at
+  // `java -jar` runtime (NoSuchMethodError on the synthesized
+  // constructor).  This self-test stays as a codegen-pipeline smoke
+  // test until the wrapper class is wired up; a follow-up issue
+  // should extend it once #879's deeper coverage lands.
   val src =
     "package TestDistinct132\n" +
     "type UserId = Int\n" +
