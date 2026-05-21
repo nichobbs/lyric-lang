@@ -13809,3 +13809,39 @@ script edits.
 Followup (Track A, A1.3): build an AOT entry-point project that
 references `.bootstrap/stage1/Lyric.Lyric.Cli.dll` + the transitive
 DLLs and publishes with `<PublishAot>true</PublishAot>`.
+
+---
+
+### D-progress-285 — Band 6: multi-segment type resolver + emitProject verification
+
+**Multi-segment qualified type resolver** (`typechecker_resolver.l`):
+
+The self-hosted type checker's `resolveTypePath` previously deferred all
+multi-segment qualified type names (e.g. `Std.Collections.List`,
+`Lib.Point`) with a `T0014 "qualified type names not yet resolved"` error.
+
+The fix: for paths with more than one segment, first try looking up the
+last segment in the symbol table before falling through to the primitive
+check and T0014 error.  Since `checkWithImports` registers imported types
+by their simple name (e.g. `"List"` not `"Std.Collections.List"`), this
+single lookup resolves qualified references that were already imported
+— which is exactly what Band 6 stdlib resolution (D-progress-284) supplies.
+
+Two new tests in `typechecker_self_test.l`:
+- `testQualifiedTypeResolvesViaImport` — parses a library source defining
+  `record Point`, passes it as an imported item, then checks that
+  `Lib.Point` in a function parameter resolves without T0014.
+- `testQualifiedTypeUnknownEmitsT0014` — confirms that a truly unknown
+  qualified name (`Unknown.Pkg.Blorp`) still produces T0014.
+
+**emitProject path verification** (`docs/41 §9 Band 6` item 2):
+
+Confirmed (via code audit and existing tests) that the self-hosted CLI's
+`emitProject` reaches the same F# codegen as the direct F# path:
+`cli.l:buildProject` → `Lyric.Emitter:emitProject` shells out to
+`--internal-project-build`, handled by F# `internalProjectBuild` →
+`Emitter.emitProject`.  `ProjectBuildTests.fs` already exercises this
+path (two tests: multi-package bundle happy path + empty-packages
+rejection).  In-process multi-file bridge is deferred to Track A A1.x.
+
+All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
