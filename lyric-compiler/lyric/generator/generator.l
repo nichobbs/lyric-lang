@@ -756,17 +756,44 @@ func resolveGeneratorDll(manifestPath: in String, generatorPkg: in String): Resu
 ///
 /// `manifestPath` must be `Some` when the source contains custom generators;
 /// if it is `None` and custom generators are present, the function returns Err.
+
+// `["exec", dllPath]` captured into a typed helper so the call site
+// stays AOT-safe and JIT-verifiable.  See #867 — when this list is
+// built inline as `val xs = newList(); xs.add(...)` the F# bootstrap
+// emitter erases its type argument to Object and the resulting
+// `runCapture(... List<object>, ...)` IL is rejected by the CLR JIT
+// with InvalidProgramException at first call.  The helper's explicit
+// `List[String]` return type forces the type to stay concrete.
+func buildCaptureArgs(dllPath: in String): List[String] {
+    val args: List[String] = newList()
+    args.add("exec")
+    args.add(dllPath)
+    args
+}
+
 pub func preprocess(source: in String, manifestPath: in Option[String], sourceFilePath: in String): Result[String, String] {
     val pkgName = extractPackageName(source)
     val directives = scanDirectives(source, pkgName)
 
     if directives.count == 0 { return Ok(value = source) }
 
-    val mfPath = match manifestPath {
+    // #867 workaround: cannot write
+    //   val mfPath = match manifestPath { case None -> return Err(...); case Some(p) -> p }
+    // because the F# bootstrap emitter mis-emits the match join — the
+    // diverging `case None -> return` arm leaves the stack empty at the
+    // join point while the `case Some(p) -> p` arm leaves the bound
+    // value, producing IL with inconsistent stack depths at the merge
+    // (ilverify: PathStackDepth at offset 0x6F).  Split into an
+    // early-return guard + a dedicated unwrap.
+    match manifestPath {
         case None ->
             return Err(error =
                 "custom @generate(...) requires --manifest to locate generator packages")
+        case Some(_) -> ()
+    }
+    val mfPath = match manifestPath {
         case Some(p) -> p
+        case None    -> ""   // unreachable; guarded above
     }
 
     var augmented = source
@@ -787,16 +814,26 @@ pub func preprocess(source: in String, manifestPath: in Option[String], sourceFi
             case Ok(_)  -> ()
         }
 
-        val dllPath = match resolveGeneratorDll(mfPath, dir.generatorArg) {
+        // #867 workaround — diverging-arm `val x = match` shape (see
+        // mfPath comment above).  Same shape, same restructure.
+        val dllPathRes = resolveGeneratorDll(mfPath, dir.generatorArg)
+        match dllPathRes {
             case Err(e) -> return Err(error = e)
+            case Ok(_)  -> ()
+        }
+        val dllPath = match dllPathRes {
             case Ok(p)  -> p
+            case Err(_) -> ""   // unreachable; guarded above
         }
 
         val requestJson = buildRequestJson(dir, sourceFilePath)
-        // Build args as List[String] using newList + add (slice literals can't be passed as List[String]).
-        val captureArgs = newList()
-        captureArgs.add("exec")
-        captureArgs.add(dllPath)
+        // Build args via a helper so the F# bootstrap emitter sees a
+        // `List[String]` return type and emits `List<string>`-typed IL.
+        // Inlining `val captureArgs = newList(); captureArgs.add(...);`
+        // makes the F# emitter erase the list's type argument to Object
+        // and the resulting `runCapture(... List<object>, ...)` call is
+        // rejected by the CLR JIT with InvalidProgramException — #867.
+        val captureArgs = buildCaptureArgs(dllPath)
         val responseJson = ProcessCapture.runCapture("dotnet", captureArgs, requestJson)
 
         match parseResponseJson(responseJson) {
