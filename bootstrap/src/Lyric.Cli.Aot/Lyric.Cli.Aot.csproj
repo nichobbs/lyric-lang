@@ -13,7 +13,7 @@
        set the AOT linker needs: Lyric.Lyric.Cli.dll + transitive
        Lyric.Lyric.Pkg.dll + Lyric.Stdlib.Pkg.dll. -->
   <ItemGroup>
-    <Reference Include="..\..\..\.bootstrap\stage1\Lyric.*.dll">
+    <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
       <Private>true</Private>
     </Reference>
   </ItemGroup>

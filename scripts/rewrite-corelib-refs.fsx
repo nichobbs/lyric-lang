@@ -37,17 +37,39 @@ open System
 open System.IO
 open Mono.Cecil
 
-let refPackVersion = "10.0.7"
+// Discover the installed `Microsoft.NETCore.App.Ref` major-10 patch
+// version dynamically.  Hard-coding a specific 10.x.y string breaks
+// every host whose dotnet SDK ships a different patch — and the patch
+// number changes with each monthly servicing release.  We scan the
+// candidate pack roots, list directories whose name starts with `10.`,
+// and prefer the highest-sorting version (a lexicographic compare on
+// dotted version strings is close enough for `10.x.y` patches).
 let refPackDir =
     let home = Environment.GetEnvironmentVariable("HOME")
-    let candidates =
-        [ Path.Combine(home, ".dotnet/packs/Microsoft.NETCore.App.Ref", refPackVersion, "ref/net10.0")
-          $"/root/.dotnet/packs/Microsoft.NETCore.App.Ref/{refPackVersion}/ref/net10.0"
-          $"/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref/{refPackVersion}/ref/net10.0" ]
-    candidates
-    |> List.tryFind Directory.Exists
+    let packRoots =
+        [ Path.Combine(home, ".dotnet/packs/Microsoft.NETCore.App.Ref")
+          "/root/.dotnet/packs/Microsoft.NETCore.App.Ref"
+          "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref" ]
+        |> List.filter Directory.Exists
+    let pickVersion (root: string) : string option =
+        try
+            Directory.GetDirectories(root)
+            |> Array.map Path.GetFileName
+            |> Array.filter (fun n -> n.StartsWith "10.")
+            |> Array.sortDescending
+            |> Array.tryHead
+        with _ -> None
+    let candidate =
+        packRoots
+        |> List.tryPick (fun root ->
+            pickVersion root
+            |> Option.map (fun v -> Path.Combine(root, v, "ref/net10.0"))
+            |> Option.filter Directory.Exists)
+    candidate
     |> Option.defaultWith (fun () ->
-        failwithf "Reference pack not found.  Searched: %A" candidates)
+        failwithf
+            "Reference pack not found.  Searched roots: %A (expected a 10.x.y directory under one of them)"
+            packRoots)
 
 // Identity record for a ref-pack assembly: name + the version and
 // public-key token the runtime expects.  Version + PKT vary across
@@ -153,7 +175,11 @@ let rewriteOne
         (facadeIds: Map<string, FacadeId>)
         (path: string)
         : bool =
-    let asm = AssemblyDefinition.ReadAssembly(path, ReaderParameters(ReadWrite = true))
+    // `use` ensures `asm` is disposed even when `getOrAddAssemblyRef` /
+    // `Write()` throw mid-flight.  Without this a `ReadWrite = true`
+    // handle would stay locked on Windows and the next pass would fail
+    // with a sharing-violation IOException.
+    use asm = AssemblyDefinition.ReadAssembly(path, ReaderParameters(ReadWrite = true))
     let m = asm.MainModule
 
     // Find the System.Private.CoreLib AssemblyRef, if any.
@@ -163,7 +189,6 @@ let rewriteOne
 
     match coreLibRef with
     | None ->
-        asm.Dispose()
         false
     | Some _ ->
         // For each TypeRef pointing at System.Private.CoreLib, find
@@ -173,16 +198,19 @@ let rewriteOne
         for tr in m.GetTypeReferences() do
             match tr.Scope with
             | :? AssemblyNameReference as r when r.Name = "System.Private.CoreLib" ->
-                // Type names with nested-class `+` separators in Cecil's
-                // FullName don't always match the `.` separator used in
-                // System.Reflection.GetExportedTypes() / .FullName.
-                // Try both forms.
-                let dottedName = tr.FullName.Replace('/', '+')
+                // Cecil reports nested types as `Outer/Inner` in
+                // `FullName` while `System.Reflection` produces
+                // `Outer+Inner`.  Our `typeMap` is keyed by the
+                // reflection form (`+`), so first normalise Cecil's
+                // `/` to `+`; if that misses, also try a fully-dotted
+                // form for the rare ref-pack types whose `FullName`
+                // we recorded with `.` separators.
+                let plusName = tr.FullName.Replace('/', '+')
                 let lookupKey =
-                    if Map.containsKey dottedName typeMap then Some dottedName
+                    if Map.containsKey plusName typeMap then Some plusName
                     else
-                        let alt = tr.FullName.Replace('+', '.')
-                        if Map.containsKey alt typeMap then Some alt
+                        let dotted = tr.FullName.Replace('+', '.')
+                        if Map.containsKey dotted typeMap then Some dotted
                         else None
                 match lookupKey with
                 | Some k ->
@@ -196,19 +224,18 @@ let rewriteOne
             | _ -> ()
 
         if not (List.isEmpty unmapped) then
+            let distinctUnmapped = List.distinct unmapped
             eprintfn "  warning: %d typerefs in %s have no facade mapping; left pointing at System.Private.CoreLib"
                 (List.length unmapped) (Path.GetFileName path)
-            for u in (List.distinct unmapped |> List.take (min 5 (List.length (List.distinct unmapped)))) do
+            for u in (distinctUnmapped |> List.take (min 5 (List.length distinctUnmapped))) do
                 eprintfn "    %s" u
 
         pruneUnusedAssemblyRefs m
 
         if rewrites > 0 then
             asm.Write()
-            asm.Dispose()
             true
         else
-            asm.Dispose()
             false
 
 let main args =
