@@ -13739,3 +13739,73 @@ file. The fatal gate is deferred until builtin-function coverage is complete.
   4-arg / 3-arg signatures.
 
 Closes issue #846.
+
+### D-progress-285 — Track A A1.2: bootstrap.sh stage 1 CLI-bundle precompile
+
+Second step of Track A (`docs/41 §860` — F# CLI elimination + Native-AOT
+publishing).  After A1.1 made `Lyric.Emitter.emit` compile in-process,
+A1.2 produces the static DLL artefacts the AOT entry-point project
+(A1.3) will reference.
+
+Changes to `scripts/bootstrap.sh`:
+
+* **`stage1_cli_bundle()`** (new) — emits a one-line driver program
+  that does `import Lyric.Cli`, compiles it via `--internal-build`
+  (forces the F# emitter path; the self-hosted CLI dispatcher in cli.l
+  doesn't understand `--target dotnet-legacy` post-A1.1 and would
+  otherwise route the driver through the in-process MSIL bridge that
+  isn't yet feature-complete for compiling the whole compiler).  The
+  F# emitter's stdlib auto-resolve recursively compiles every Lyric
+  package the driver transitively imports — cli.l + lexer / parser /
+  type-checker / mode-checker / contract-elaborator / MSIL backend /
+  manifest / pack / workspace / gitdep / lockfile / generator /
+  emitter / fmt / lint / verifier / doc / contract-meta / repl /
+  test-synth / bench-synth / openapi-parser / openapi-gen — and lands
+  each as a DLL in its per-process scratch cache.  The script then
+  copies every cached DLL into `.bootstrap/stage1/`.  Output:
+  `Lyric.Lyric.Cli.dll` plus ~66 transitive-dependency DLLs.
+
+* **`SKIP_CLI_BUNDLE=1`** env var skips the CLI-bundle step so users
+  iterating on a single compiler package can avoid the ~30-second
+  recompile.
+
+* **Removed**: the old manual `COMPILER_SOURCES` compile loop in stage
+  1.  The F# emitter's auto-resolve does dependency ordering correctly
+  and there's no value in the shell script re-implementing it.  The
+  `COMPILER_SOURCES` variable is still defined because stage 2 references
+  it; stage 2's reproducibility check now reports MISSING for every
+  entry (per-source-file vs per-package DLL naming mismatch) and is
+  documented as such in the script.  Long-term, stage 2 should be
+  rewritten to drive the same `import Lyric.Cli` driver and compare
+  bundles file-by-file.
+
+* **Side fix**: `mkdir -p "$(dirname "$STAGE0_BIN")"` in stage 0 — the
+  symlink target's parent dir wasn't being created, which made stage 0
+  fail on a clean checkout.
+
+* **Side fix**: `--output` → `-o` in two manifest-mode invocations.
+  The Lyric CLI's `build` command only recognises `-o` for output path;
+  `--output` was silently treated as a positional argument and made the
+  CLI complain about "source file not found".
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1
+    [bootstrap] Stage 0: building F# bootstrap compiler
+    [bootstrap] OK: Stage 0 complete
+    [bootstrap] Stage 1: compiling Lyric compiler packages with stage-0 lyric
+    [bootstrap]   compiling stdlib bundle
+    built .bootstrap/stage1/Lyric.Stdlib.dll
+    [bootstrap] Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps
+    [bootstrap]   CLI bundle cache: /tmp/lyric-stdlib-…
+    [bootstrap]   copied 67 DLLs into .bootstrap/stage1
+    [bootstrap] OK: Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + 66 deps
+    [bootstrap] OK: Stage 1 complete
+
+Tests: 810/810 emitter, 254/254 Lyric.Cli — unchanged by the build
+script edits.
+
+Followup (Track A, A1.3): build an AOT entry-point project that
+references `.bootstrap/stage1/Lyric.Lyric.Cli.dll` + the transitive
+DLLs and publishes with `<PublishAot>true</PublishAot>`.
