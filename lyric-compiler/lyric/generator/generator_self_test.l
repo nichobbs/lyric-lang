@@ -154,6 +154,46 @@ func testScanDirectives_LineCommentIgnored(): Unit {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// preprocess regression tests (#867 / #890).
+//
+// Both tests must JIT and run `preprocess` to completion — that's the
+// load-bearing assertion.  If the F# bootstrap emitter regresses to the
+// pre-#867 IL shape, calling `preprocess` from this self-test would
+// throw `InvalidProgramException` before any assertion executes, and the
+// test binary would exit non-zero with a clear stack trace pointing at
+// `Lyric.Generator.Program.preprocess`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Source with no `@generate(X.Y)` directives — exercises the
+// `directives.count == 0` fast-path before any of the bug-prone code
+// runs.  Equivalent to `preprocess`'s happy path for the common case.
+func testPreprocess_NoDirectives_PassesThrough(): Unit {
+  val src = "package P\nfunc main(): Unit { println(\"hi\") }\n"
+  match preprocess(src, None, "p.l") {
+    case Ok(s)  -> assertEqual(s, src, "no-directives: source returned unchanged")
+    case Err(e) -> assertTrue(false, "no-directives: unexpected Err: " + e)
+  }
+}
+
+// Source WITH a `@generate(Foo.Bar)` directive but `manifestPath = None`.
+// Exercises the exact `val mfPath = match manifestPath { case None ->
+// return Err(...); case Some(p) -> p }` shape that triggered the
+// PathStackDepth bug at offset 0x6F.  Returns Err with the
+// "requires --manifest" message.
+func testPreprocess_DirectiveWithoutManifest_ReturnsErr(): Unit {
+  val src =
+    "package P\n" +
+    "@generate(Foo.Bar)\n" +
+    "pub record Order { id: Int }\n"
+  match preprocess(src, None, "p.l") {
+    case Ok(_)  -> assertTrue(false, "missing-manifest: expected Err, got Ok")
+    case Err(e) ->
+      assertTrue(e.contains("--manifest"),
+        "missing-manifest: error mentions --manifest (got: " + e + ")")
+  }
+}
+
 func main(): Int {
   testG0008_DepNotDeclared()
   testG0008_DepDeclared()
@@ -165,6 +205,9 @@ func main(): Int {
   testScanDirectives_BareNameSkipped()
   testScanDirectives_StringLiteralIgnored()
   testScanDirectives_LineCommentIgnored()
+
+  testPreprocess_NoDirectives_PassesThrough()
+  testPreprocess_DirectiveWithoutManifest_ReturnsErr()
 
   println("generator self-test: ok")
   return 0

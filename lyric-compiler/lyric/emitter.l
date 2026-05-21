@@ -1,17 +1,39 @@
 // lyric/emitter.l — Lyric.Emitter bootstrap package.
 //
 // Implements the `emit(req): EmitResult` contract that cli.l and repl.l
-// depend on.  In the bootstrap phase the actual MSIL/JVM lowering still
-// lives in the F# Lyric.Emitter project; this package shells out to the
-// current `lyric` process (via `--internal-build`) to invoke it.
+// depend on.
+//
+// As of Track A (docs/41 §860, A1), `--target dotnet` single-source
+// compilation runs IN-PROCESS via `Msil.Bridge.compileToMsil`.  No
+// subprocess hop, no F# emitter touched at runtime.  `--target jvm`
+// still uses the subprocess fallback because importing `Jvm.Bridge`
+// here would pull `Jvm.Bytecode.BranchInsn` into the same F# emitter
+// scope as `Lyric.Manifest.Branch` / `Lyric.GitDep.Branch` and the F#
+// emitter has known issues with that closure (now mitigated by PR #868
+// but not yet exhaustively retested for the JVM path).
+//
+// The subprocess shellout to `lyric --internal-build` also survives
+// unconditionally when `LYRIC_FORCE_SUBPROCESS=1`, used by the
+// bootstrap validation pipeline to compare in-process vs subprocess
+// output, and for `emitProject` — multi-package + restored-dep builds
+// still route through F# `Program.fs::internalProjectBuild` until the
+// bridges gain a multi-package entry point.
 //
 // Environment variables:
-//   LYRIC_BIN      — path to the dotnet (or lyric) executable.
-//                    Set automatically by Program.fs before routing to the
-//                    self-hosted CLI.  Defaults to "lyric".
-//   LYRIC_CLI_DLL  — when the CLI is a dotnet exec DLL rather than a
-//                    native binary, this is set to the DLL path.
-//                    Program.fs populates it from Assembly.GetEntryAssembly.
+//   LYRIC_FORCE_SUBPROCESS — set to "1" to opt out of the in-process
+//                            compile path; forces every emit() call to
+//                            shell back to `lyric --internal-build`.
+//                            Default: in-process when available.
+//   LYRIC_BIN              — path to the dotnet (or lyric) executable.
+//                            Used by the subprocess fallback only.
+//                            Set automatically by Program.fs before
+//                            routing to the self-hosted CLI.
+//                            Defaults to "lyric".
+//   LYRIC_CLI_DLL          — when the CLI is a dotnet exec DLL rather
+//                            than a native binary, this is set to the
+//                            DLL path.  Subprocess-fallback only.
+//                            Program.fs populates it from
+//                            Assembly.GetEntryAssembly.
 //
 // Thread safety: emit() has no shared mutable state; it is safe to call
 // concurrently.
@@ -31,6 +53,7 @@ import Std.Environment as Environment
 import Std.Uuid as Uuid
 import Lyric.Lexer
 import Lyric.CliShell as CliShell
+import Msil.Bridge as MsilBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
@@ -252,27 +275,66 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
 
 /// Compile Lyric source to a .NET DLL or JVM JAR.
 ///
-/// Shells out to `lyric --internal-build` which is handled by the F#
-/// bootstrap CLI before it routes to the self-hosted CLI dispatcher.
-/// Errors from the compiler are printed directly to stderr by the
-/// subprocess; `EmitResult.diagnostics` carries a synthetic failure
-/// marker so callers can detect the failure without parsing stderr.
+/// Default path (AOT-friendly): `--target dotnet` calls
+/// `Msil.Bridge.compileToMsil` in-process via a direct package import.
+/// No subprocess hop, no F# emitter touched at runtime.
+///
+/// `--target jvm` still uses the subprocess fallback (see header
+/// comment for why).  Set `LYRIC_FORCE_SUBPROCESS=1` to route every
+/// call through the subprocess shellout for differential testing.
 @stable(since="0.1")
 pub func emit(req: in EmitRequest): EmitResult {
+  // Ensure the output directory exists so the bridges' raw byte-write
+  // doesn't fail with ENOENT on the first build into a fresh tree.
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_)  -> ()
+      case Err(_) -> ()   // non-fatal; the bridge / subprocess will report
+    }
+  }
+
+  if useSubprocessFallback() {
+    emitViaSubprocess(req)
+  } else {
+    match req.target {
+      case Dotnet -> emitMsilInProcess(req)
+      // JVM stays on subprocess fallback (see header comment).
+      case Jvm    -> emitViaSubprocess(req)
+    }
+  }
+}
+
+func useSubprocessFallback(): Bool {
+  Environment.getVarOrDefault("LYRIC_FORCE_SUBPROCESS", "") == "1"
+}
+
+// In-process MSIL emit — direct call into `Msil.Bridge.compileToMsil`.
+// Diagnostics from the bridge land on stdout (see
+// `msil/bridge.l:reportAndAbort`); the bridge returns true on success
+// and false on any error (parse, type-check, mode-check, codegen).
+// CLI consumers that want stderr-shaped diagnostics should layer a
+// redirect at the dispatch boundary rather than inside the bridge.
+func emitMsilInProcess(req: in EmitRequest): EmitResult {
+  val ok = MsilBridge.compileToMsil(req.source, req.outputPath)
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+  } else {
+    failResult("MSIL compilation failed (see stdout)")
+  }
+}
+
+// Subprocess fallback — preserved for `LYRIC_FORCE_SUBPROCESS=1` and
+// the JVM target.  Writes the source to a temp file and shells back
+// to `lyric --internal-build` which the F# bootstrap CLI dispatches
+// through `Program.fs::internalBuild`.
+func emitViaSubprocess(req: in EmitRequest): EmitResult {
   // Write source text to a temp file.
   val srcPath = match writeTempSource(req.source, req.assemblyName) {
     case Ok(p)  -> p
     case Err(e) ->
       return failResult("cannot write temp source: " + IOError.message(e))
-  }
-
-  // Ensure the output directory exists.
-  val outDir = Path.dirname(req.outputPath)
-  if Str.isNotEmpty(outDir) {
-    match File.createDir(outDir) {
-      case Ok(_)  -> ()
-      case Err(_) -> ()   // non-fatal; `--internal-build` will report the failure
-    }
   }
 
   val targetStr = match req.target {

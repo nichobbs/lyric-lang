@@ -749,14 +749,6 @@ func resolveGeneratorDll(manifestPath: in String, generatorPkg: in String): Resu
 // §6. Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Scan `source` for custom @generate(X.Y) directives and invoke the
-/// generator subprocess for each annotated type.  Returns augmented source
-/// with the generated Lyric fragments appended, or Err with a diagnostic
-/// message if any generator fails.
-///
-/// `manifestPath` must be `Some` when the source contains custom generators;
-/// if it is `None` and custom generators are present, the function returns Err.
-
 // `["exec", dllPath]` captured into a typed helper so the call site
 // stays AOT-safe and JIT-verifiable.  See #867 — when this list is
 // built inline as `val xs = newList(); xs.add(...)` the F# bootstrap
@@ -771,6 +763,13 @@ func buildCaptureArgs(dllPath: in String): List[String] {
     args
 }
 
+/// Scan `source` for custom @generate(X.Y) directives and invoke the
+/// generator subprocess for each annotated type.  Returns augmented source
+/// with the generated Lyric fragments appended, or Err with a diagnostic
+/// message if any generator fails.
+///
+/// `manifestPath` must be `Some` when the source contains custom generators;
+/// if it is `None` and custom generators are present, the function returns Err.
 pub func preprocess(source: in String, manifestPath: in Option[String], sourceFilePath: in String): Result[String, String] {
     val pkgName = extractPackageName(source)
     val directives = scanDirectives(source, pkgName)
