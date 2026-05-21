@@ -1,14 +1,8 @@
 // jvm/bridge.l — Self-hosted JVM compilation pipeline (Phase R4).
 //
 // Public entry point that chains the self-hosted Lyric pipeline to produce a
-// JAR file from Lyric source text.  Calls parse → codegen → lower → write.
-
-// `Lyric.Mono` (call-site monomorphiser) is NOT yet wired in.  Its source
-// `lyric-compiler/lyric/mono.l` uses Lyric idioms that the frozen F#
-// bootstrap parser can't compile (literal-pattern match arms followed by
-// further arms), so importing it here would break the precompile of
-// `Lyric.Jvm.Bridge.dll` itself.  See header comment in `msil/bridge.l`
-// for details.  Tracking: docs/41 §9 Bands 5–6.
+// JAR file from Lyric source text.  Calls parse → typecheck → modecheck →
+// elaborate → mono → codegen → lower → write.
 
 package Jvm.Bridge
 
@@ -21,7 +15,7 @@ import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.DiagnosticUtil as DiagUtil
-// import Lyric.Mono     // (see header) — wiring deferred
+import Lyric.Mono
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
@@ -158,7 +152,11 @@ pub func compileToJar(
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) { return false }
 
-  val file = elaborateFile(file0)
+  val elaborated = elaborateFile(file0)
+
+  // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
+  val monoRes = monoFile(elaborated)
+  val file = monoRes.file
 
   val pkg    = codegenPackage(file)
   val pool   = poolNew()
