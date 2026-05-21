@@ -301,4 +301,50 @@ func main(): Unit {
 }
 """
             "protected ok"
+
+        // ── Band 2 (R6): ELambda — non-capturing lambda lifted to static method ──────────
+        // ELambda nodes are lifted to synthetic __lambda_<i> static methods so that
+        // addPackageTokens assigns them stable MethodDef tokens before codegen.
+        // The lambda is lowered to: ldnull + ldftn __lambda_0 + newobj Action::.ctor.
+        mkBridge "shm_lambda_non_capturing"
+            """package ShMLambda
+
+func main(): Unit {
+  val f = { n: Int -> n + 1 }
+  println("lambda ok")
+}
+"""
+            "lambda ok"
+
+        // ── Band 2 (R6): EYield — collect-all generator model ────────────────────────────
+        // async func with yield is detected by isAsync && funcBodyContainsYield.
+        // Lowered as: allocate List<object> collector, each yield appends to it,
+        // return collector at end (return type = MObject regardless of annotation).
+        mkBridge "shm_yield_collect"
+            """package ShMYield
+
+async func gen(): Object {
+  yield 1
+  yield 2
+  yield 3
+}
+
+func main(): Unit {
+  val items = gen()
+  println("yield ok")
+}
+"""
+            "yield ok"
+
+        // ── Band 2 (R6): Auto-FFI — extern type method resolution without @externTarget ──
+        mkBridge "shm_extern_type_smoke"
+            """package ShMExternType
+
+extern type StringWrapper = "System.String"
+
+func main(): Unit {
+  println("extern type ok")
+}
+"""
+            "extern type ok"
     ]

@@ -111,12 +111,16 @@ pub func compileToMsil(
   // short-circuits when the file has no IAspect items remaining.
   val weavedFile = weaveAspectsMsil(file)
 
+  // Lambda-lifting: extract ELambda nodes into synthetic __lambda_<i> IFunc items
+  // so that addPackageTokens assigns them stable MethodDef tokens before codegen.
+  val liftedFile = liftLambdasMsil(weavedFile)
+
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
   // same-package types and functions.
-  addPackageTokens(cctx, weavedFile, pkgName)
+  addPackageTokens(cctx, liftedFile, pkgName)
 
   // Walk the AST and produce the MSIL package IR.
-  val pkg = codegenMPackage(weavedFile, cctx)
+  val pkg = codegenMPackage(liftedFile, cctx)
 
   // Determine the entry-point MethodDef token (0 = no entry point / library).
   val entryToken = resolveEntryToken(cctx)

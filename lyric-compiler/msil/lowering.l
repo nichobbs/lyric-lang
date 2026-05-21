@@ -53,6 +53,9 @@ pub union MsilType {
   // Generic type parameter !n (ELEMENT_TYPE_VAR = 0x13 + index byte).
   // Used in MemberRef signatures on TypeSpecs per ECMA-335 §II.14.4.2.
   case MTypeVar(index: Int)
+  // Native integer (ELEMENT_TYPE_I = 0x18).
+  // Used in delegate constructor signatures (second param is a method pointer).
+  case MNativeInt
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -67,9 +70,10 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MLong      -> 0x0A
     case MDouble    -> 0x0D
     case MString    -> 0x0E
-    case MObject    -> 0x1C
-    case MClass(_)  -> 0x12
+    case MObject     -> 0x1C
+    case MClass(_)   -> 0x12
     case MTypeVar(_) -> 0x13  // prefix only; index byte emitted separately by bufMsilType
+    case MNativeInt  -> 0x18
   }
 }
 
@@ -260,6 +264,7 @@ pub union MInsn {
   case MPop
   case MThrow
   case MLdlen                          // load array length
+  case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -654,6 +659,7 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MPop               -> emitPop(mb)
     case MThrow             -> emitThrow(mb)
     case MLdlen             -> emitLdlen(mb)
+    case MLdftn(tok)        -> emitLdftn(mb, tok)
   }
 }
 
