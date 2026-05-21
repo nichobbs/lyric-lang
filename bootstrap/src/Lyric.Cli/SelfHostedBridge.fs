@@ -34,6 +34,8 @@
 /// — see `loadFromCache` below for the single seam to swap.
 module internal Lyric.Cli.SelfHostedBridge
 
+open System
+open System.IO
 open System.Reflection
 open Lyric.Emitter
 
@@ -54,3 +56,29 @@ let preloadStdlibAssemblies () : unit =
 /// collectible-ALC migration only has to change one call site.
 let loadFromCache (path: string) : Assembly =
     Assembly.LoadFrom path
+
+/// Band 6: locate the `lyric-stdlib/std/` directory by walking up from
+/// `AppContext.BaseDirectory`, then read every top-level `*.l` source file
+/// (excluding the `_kernel/` subdirectory, which contains extern declarations
+/// that are not meaningful to the self-hosted parser when used as plain items).
+///
+/// Returns the file contents as a `System.Collections.Generic.List<string>`.
+/// Returns an empty list when the stdlib directory cannot be found (graceful
+/// degradation — callers fall back to advisory-only type checking).
+let findStdlibSources () : System.Collections.Generic.List<string> =
+    let result = System.Collections.Generic.List<string>()
+    let mutable dir = Some (DirectoryInfo(AppContext.BaseDirectory))
+    let mutable stdlibDir : DirectoryInfo option = None
+    while stdlibDir.IsNone && dir.IsSome do
+        let candidate = Path.Combine(dir.Value.FullName, "lyric-stdlib", "std")
+        if Directory.Exists candidate then
+            stdlibDir <- Some (DirectoryInfo candidate)
+        dir <- dir.Value.Parent |> Option.ofObj
+    match stdlibDir with
+    | None -> ()
+    | Some sd ->
+        for f in sd.GetFiles("*.l") do
+            try result.Add(File.ReadAllText f.FullName)
+            with ex ->
+                eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message
+    result

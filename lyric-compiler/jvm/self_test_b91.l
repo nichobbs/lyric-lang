@@ -28,7 +28,7 @@ func makePointBytes(): List[Byte] {
 
   val methods: List[LFunc] = newList()
 
-  val rec = LRecord(className = "Point", fields = fields, methods = methods)
+  val rec = LRecord(className = "Point", fields = fields, methods = methods, implementsIfaces = newList())
   val cf  = lowerRecord(rec, pool)
   serializeClassWithPool(cf, pool)
 }

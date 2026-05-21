@@ -32,7 +32,7 @@ func main(): Unit { }
 /// slow part (~3-5 s on a cold cache); we only do it once per `lyric`
 /// invocation that touches the JVM emitter.
 let private bridgeLock = obj ()
-let mutable private resolved : (string -> string -> string -> bool) option = None
+let mutable private resolved : (string -> string -> string -> System.Collections.Generic.List<string> -> bool) option = None
 
 /// Compile the driver source so the emitter produces and caches
 /// `Lyric.Jvm.Bridge.dll`.  Returns the absolute path to it.
@@ -93,7 +93,9 @@ let private ensureLyricJvmBridgeAssembly () : string =
         failwithf "self-hosted JVM bridge: 'Lyric.Jvm.Bridge.dll' not found in stdlib cache after emit (cached: %s)" cached
 
 /// Reflect out the `compileToJar` entry point and stash it in `resolved`.
-let private resolveDelegates () : string -> string -> string -> bool =
+/// Band 6: the bridge now accepts a 4th parameter (stdlibSources) so the
+/// self-hosted typechecker can resolve cross-package stdlib names.
+let private resolveDelegates () : string -> string -> string -> System.Collections.Generic.List<string> -> bool =
     let dll = ensureLyricJvmBridgeAssembly ()
     let asm = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let progType =
@@ -102,19 +104,24 @@ let private resolveDelegates () : string -> string -> string -> bool =
         | None ->
             failwithf "self-hosted JVM bridge: 'Jvm.Bridge.Program' type missing from %s" dll
 
+    let listOfStringType = typeof<System.Collections.Generic.List<string>>
     let compileToJarM =
-        match Option.ofObj (progType.GetMethod("compileToJar", [| typeof<string>; typeof<string>; typeof<string> |])) with
+        match Option.ofObj (progType.GetMethod("compileToJar", [| typeof<string>; typeof<string>; typeof<string>; listOfStringType |])) with
         | Some m when m.IsStatic -> m
-        | _ -> failwithf "self-hosted JVM bridge: static method 'compileToJar' not found on Jvm.Bridge.Program"
+        | _ -> failwithf "self-hosted JVM bridge: static method 'compileToJar(string,string,string,List<string>)' not found on Jvm.Bridge.Program"
 
-    let compileToJarFn (source: string) (outputPath: string) (packageName: string) : bool =
-        match Option.ofObj (compileToJarM.Invoke(null, [| box source; box outputPath; box packageName |])) with
+    let compileToJarFn
+        (source: string)
+        (outputPath: string)
+        (packageName: string)
+        (stdlibSources: System.Collections.Generic.List<string>) : bool =
+        match Option.ofObj (compileToJarM.Invoke(null, [| box source; box outputPath; box packageName; box stdlibSources |])) with
         | Some o -> unbox<bool> o
         | None   -> false
 
     compileToJarFn
 
-let private getDelegate () : string -> string -> string -> bool =
+let private getDelegate () : string -> string -> string -> System.Collections.Generic.List<string> -> bool =
     lock bridgeLock (fun () ->
         match resolved with
         | None ->
@@ -125,7 +132,9 @@ let private getDelegate () : string -> string -> string -> bool =
 
 /// Compile `source` to a JAR at `outputPath` using the self-hosted
 /// `Jvm.Bridge` pipeline.  Returns true on success, false on parse errors
-/// or write failure.
+/// or write failure.  Band 6: stdlib sources are pre-read from disk and
+/// passed to the bridge for cross-package type resolution.
 let compileToJar (source: string) (outputPath: string) (packageName: string) : bool =
     let fn = getDelegate ()
-    fn source outputPath packageName
+    let stdlibSources = Lyric.Cli.SelfHostedBridge.findStdlibSources ()
+    fn source outputPath packageName stdlibSources

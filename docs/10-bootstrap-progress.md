@@ -13669,3 +13669,73 @@ tests pass (0 failures).
 - `EAwait` async state machine (item 9) and `EYield` async generator
   (item 10) — unchanged; still panic.
 - Auto-FFI scoring (item 12) — unchanged.
+
+### D-progress-283 — JVM backend: IInterface and IImpl codegen (Band 3 — #856 remainder)
+
+Wires `IInterface` and `IImpl` AST items through the JVM self-hosted
+backend (`jvm/codegen.l` + `jvm/lowering.l`), completing the structural
+Band 3 items for `interface` and `impl Y for X` declarations.
+
+**`jvm/lowering.l`**
+- Added `implementsIfaces: List[String]` to `LRecord` (all construction sites
+  updated to include `implementsIfaces = newList()`).
+- Added `LInterface` record, `lowerInterface` helper, and `LPInterface` variant
+  in `LPackageItem` so interface ClassFiles flow through `lowerPackage`.
+- `lowerRecord` calls `makeClassFullWithInterfaces` when `implementsIfaces` is
+  non-empty, otherwise falls back to `makeClassFull` (no-change for existing
+  records).
+
+**`jvm/codegen.l`**
+- Added `ImplEntry` record and a pre-pass over all `IImpl` items before the
+  main item loop, so each `IRecord` can look up its interface list at class
+  construction time.
+- `IInterface(decl)` emits `LPInterface` with abstract methods (from `IMSig`)
+  and concrete default methods (from `IMFunc`). Parameter types derived from
+  `Param.ty` directly (fix: removed invalid `PNamed` pattern match; fixed
+  `FunctionSig.returnTy` → `FunctionSig.ret` typo).
+- `IRecord` uses pre-collected impl entries to inject `implementsIfaces` and
+  merged method lists into `LRecord`.
+- `IAspect`, `ELambda`, and general `EPropagate` remain stubbed (need
+  `invokedynamic` infrastructure not yet present).
+
+**Tests**
+- `jvm/self_test_b133.l` + `JvmLoweringB133Test.fs`: interface smoke (compiles
+  `interface Greeter { func greet(): String }` + `impl Greeter for SimpleGreeter`,
+  runs JAR, asserts `jar_written=true`).
+- `jvm/self_test_b134.l` + `JvmLoweringB134Test.fs`: impl smoke (record
+  implementing an interface).
+- All existing self-tests (b3/b4/b91/b95/b124/b130/b131/b132) updated with
+  `implementsIfaces = newList()` and 4-arg `compileToJar`.
+
+Closes issue #856 (IInterface + IImpl wired; IAspect/ELambda/EPropagate deferred to Band 5+).
+
+### D-progress-284 — Band 6: cross-package stdlib type resolution (#846)
+
+Implements Shape 2c of Band 6 (docs/41 §9): the self-hosted MSIL and JVM
+bridges now resolve stdlib type names (`List`, `Option`, `Result`, `Map`, etc.)
+so the self-hosted type checker no longer emits false-positive T0010/T0014
+diagnostics for those names.
+
+**Strategy**: F# shims (`SelfHostedBridge.findStdlibSources`) walk up from
+`AppContext.BaseDirectory` to find `lyric-stdlib/std/`, read every top-level
+`*.l` file, and pass the source texts to `compileToMsil`/`compileToJar` as a
+`List[String]`. Inside the bridges (`msil/bridge.l`, `jvm/bridge.l`), each
+source is parsed and only type declarations (IRecord, IUnion, IEnum,
+IDistinctType, IInterface, ITypeAlias, IOpaque, IExposedRec) are extracted as
+imported items (function items are skipped: multiple stdlib files define
+functions with the same name, and `checkWithImports` uses a strict-insert map
+that throws on duplicates). `checkWithImports(file0, importedItems)` is called
+instead of bare `check(file0)`, providing cross-package type context.
+
+Type-checker output remains advisory (`reportDiagnostics` not `reportAndAbort`):
+the self-hosted checker still generates T0020 false positives for builtin
+functions (`newList`, `println`, etc.) that are not defined in any Lyric source
+file. The fatal gate is deferred until builtin-function coverage is complete.
+
+**Updated call sites**
+- `lyric/emitter.l:emitMsilInProcess` updated to pass `newList()` as third arg
+  to `MsilBridge.compileToMsil` (compat fix for the new signature).
+- F# `SelfHostedJvm.fs` + `SelfHostedMsil.fs` updated to reflect the new
+  4-arg / 3-arg signatures.
+
+Closes issue #846.

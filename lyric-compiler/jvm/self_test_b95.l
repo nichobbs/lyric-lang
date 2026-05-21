@@ -48,7 +48,7 @@ func makeVector2Bytes(): List[Byte] {
   val methods: List[LFunc] = newList()
   methods.add(maxFn)
 
-  val rec = LRecord(className = "Vector2", fields = fields, methods = methods)
+  val rec = LRecord(className = "Vector2", fields = fields, methods = methods, implementsIfaces = newList())
   val cf  = lowerRecord(rec, pool)
   serializeClassWithPool(cf, pool)
 }

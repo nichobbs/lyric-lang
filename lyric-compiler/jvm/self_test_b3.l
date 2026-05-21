@@ -45,9 +45,10 @@ func makeAdderBytes(): List[Byte] {
 
   val adderFields: List[LField] = newList()
   val adder = LRecord(
-    className = "Adder",
-    fields    = adderFields,
-    methods   = adderMethods
+    className        = "Adder",
+    fields           = adderFields,
+    methods          = adderMethods,
+    implementsIfaces = newList()
   )
 
   val cf = lowerRecord(adder, pool)
@@ -74,9 +75,10 @@ func makePointBytes(): List[Byte] {
   val pointMethods: List[LFunc] = newList()
 
   val point = LRecord(
-    className = "Point",
-    fields    = pointFields,
-    methods   = pointMethods
+    className        = "Point",
+    fields           = pointFields,
+    methods          = pointMethods,
+    implementsIfaces = newList()
   )
 
   val cf = lowerRecord(point, pool)

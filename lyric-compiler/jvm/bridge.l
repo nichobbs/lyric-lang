@@ -84,7 +84,17 @@ func mainReturns2SlotType(file: in SourceFile): Option[String] {
 /// source's actual `package` declaration so a Lyric program saved as
 /// `hello_jvm.l` but declaring `package Hello` still produces a runnable
 /// `java -jar` artefact.
-pub func compileToJar(source: in String, outputPath: in String, packageName: in String): Bool {
+/// Band 6: accept pre-read stdlib source texts and use them as imported items
+/// for cross-package type resolution.  Callers (F# shims) read the stdlib .l
+/// files from disk and pass them here; this function parses them and feeds the
+/// resulting items to checkWithImports so that stdlib names like `List`, `Option`,
+/// `Result`, and `Map` resolve correctly rather than raising T0010 / T0014.
+pub func compileToJar(
+  source:        in String,
+  outputPath:    in String,
+  packageName:   in String,
+  stdlibSources: in List[String]
+): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) { return false }
 
@@ -101,20 +111,44 @@ pub func compileToJar(source: in String, outputPath: in String, packageName: in 
     case None -> ()
   }
 
-  // ── Middle-end (Band 1 of docs/41 §9) ─────────────────────────────────
-  // Run the self-hosted type checker, mode checker, and contract
-  // elaborator before codegen.  The F# emitter co-runs today, but
-  // wiring the self-hosted middle-end here lets the JVM bridge stand on
-  // its own once `--target dotnet-legacy` is removed.
+  // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
+  // Run the self-hosted type checker with stdlib imports, mode checker, and
+  // contract elaborator before codegen.
   //
-  // Type-checker diagnostics are advisory only (no cross-package import
-  // resolution yet — see Band 6 in docs/41).  Mode-checker and elaborator
-  // output is fully self-contained, so V-codes / elaborated requires-and-
-  // ensures asserts are load-bearing here.
+  // Band 6: parse each stdlib source and register only their type declarations
+  // as imported items.  Only type items (IRecord, IUnion, IEnum, IDistinctType,
+  // IInterface, ITypeAlias, IOpaque, IExposedRec) are collected — function items
+  // are skipped because multiple stdlib files define functions with the same name
+  // (e.g. toString) and checkWithImports uses a strict-insert map that throws on
+  // duplicate keys.  Type names are unique across the stdlib so safe to merge.
+  val importedItems: List[Item] = newList()
+  var si = 0
+  while si < stdlibSources.count {
+    val stdPr = parse(stdlibSources[si])
+    var ii = 0
+    while ii < stdPr.file.items.count {
+      val it = stdPr.file.items[ii]
+      val isType = match it.kind {
+        case IRecord(_)       -> true
+        case IExposedRec(_)   -> true
+        case IUnion(_)        -> true
+        case IEnum(_)         -> true
+        case IDistinctType(_) -> true
+        case IInterface(_)    -> true
+        case ITypeAlias(_)    -> true
+        case IOpaque(_)       -> true
+        case _                -> false
+      }
+      if isType { importedItems.add(it) }
+      ii = ii + 1
+    }
+    si = si + 1
+  }
+
   val file0 = parseResult.file
 
-  val tcRes = check(file0)
-  reportDiagnostics(tcRes.diagnostics)   // advisory until Band 6
+  val tcRes = checkWithImports(file0, importedItems)
+  reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
 
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) { return false }

@@ -35,31 +35,57 @@ import Msil.Codegen
 ///
 /// Returns true on success; false if the source contains parse / type /
 /// mode errors, or if the file write fails.  All error- and warning-severity
+/// Band 6: accept pre-read stdlib source texts for cross-package type resolution.
 /// diagnostics from each pass are printed to stdout before the bridge
 /// returns.  The package name and assembly name are taken from the parsed
 /// `package` declaration in the source.
-pub func compileToMsil(source: in String, outputPath: in String): Bool {
+pub func compileToMsil(
+  source:        in String,
+  outputPath:    in String,
+  stdlibSources: in List[String]
+): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) { return false }
 
-  // ── Middle-end (Band 1 of docs/41 §9) ─────────────────────────────────
-  // Run the self-hosted type checker, mode checker, and contract
-  // elaborator before codegen so that source-level diagnostics surface
+  // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
+  // Run the self-hosted type checker with stdlib imports, mode checker, and
+  // contract elaborator before codegen so that source-level diagnostics surface
   // here instead of producing broken IL further down.
   //
-  // Type-checker diagnostics are printed but NOT fatal yet: the self-hosted
-  // typechecker doesn't resolve cross-package imports (Band 6 in docs/41 —
-  // typechecker_resolver.l:129 "deferred to T7+"), so it raises T0010 /
-  // T0020 / T0050 for every reference to a stdlib name like `newList` or
-  // `List[Int]`.  Treating those as build failures here would regress every
-  // production program that imports `Std.*`.  Mode-checker diagnostics are
-  // fatal — V0001–V0011 enforcement only consults the file itself plus
-  // imported metadata, which the bridge supplies as the empty list (M4.1
-  // conservative fallback per modechecker_check.l:81).
+  // Band 6: parse each stdlib source and register only their type declarations
+  // as imported items.  Only type items (IRecord, IUnion, IEnum, IDistinctType,
+  // IInterface, ITypeAlias, IOpaque, IExposedRec) are collected — function items
+  // are skipped because multiple stdlib files define functions with the same name
+  // (e.g. toString) and checkWithImports uses a strict-insert map that throws on
+  // duplicate keys.  Type names are unique across the stdlib so safe to merge.
+  val importedItems: List[Item] = newList()
+  var si = 0
+  while si < stdlibSources.count {
+    val stdPr = parse(stdlibSources[si])
+    var ii = 0
+    while ii < stdPr.file.items.count {
+      val it = stdPr.file.items[ii]
+      val isType = match it.kind {
+        case IRecord(_)       -> true
+        case IExposedRec(_)   -> true
+        case IUnion(_)        -> true
+        case IEnum(_)         -> true
+        case IDistinctType(_) -> true
+        case IInterface(_)    -> true
+        case ITypeAlias(_)    -> true
+        case IOpaque(_)       -> true
+        case _                -> false
+      }
+      if isType { importedItems.add(it) }
+      ii = ii + 1
+    }
+    si = si + 1
+  }
+
   val file0 = parseResult.file
 
-  val tcRes = check(file0)
-  reportDiagnostics(tcRes.diagnostics)   // advisory until Band 6
+  val tcRes = checkWithImports(file0, importedItems)
+  reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
 
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) { return false }

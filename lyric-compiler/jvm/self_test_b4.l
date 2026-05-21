@@ -99,9 +99,10 @@ func makeHelperClass(pool: in Pool): ClassFile {
   helperMethods.add(fn)
   val helperFields: List[LField] = newList()
   val helper = LRecord(
-    className = "OptionHelper",
-    fields    = helperFields,
-    methods   = helperMethods
+    className        = "OptionHelper",
+    fields           = helperFields,
+    methods          = helperMethods,
+    implementsIfaces = newList()
   )
   lowerRecord(helper, pool)
 }

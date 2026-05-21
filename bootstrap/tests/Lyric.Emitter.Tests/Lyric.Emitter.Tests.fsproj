@@ -285,6 +285,8 @@
     <Compile Include="JvmLoweringB130Test.fs" />
     <Compile Include="JvmLoweringB131Test.fs" />
     <Compile Include="JvmLoweringB132Test.fs" />
+    <Compile Include="JvmLoweringB133Test.fs" />
+    <Compile Include="JvmLoweringB134Test.fs" />
     <Compile Include="SelfHostedLexerTests.fs" />
     <Compile Include="SelfHostedParserTests.fs" />
     <Compile Include="SelfHostedTypeCheckerTests.fs" />
