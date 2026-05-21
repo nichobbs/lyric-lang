@@ -407,7 +407,7 @@ func insnSize(insn: in AsmInsn): Int {
                                             //   computed from classIdx; see emitInsn2)
     case InvokeInterface(_, _, _) -> 5      // op + u2 + u1 count + u1 zero
     case InvokeDynamic(_)        -> 5       // op + u2 + u2 zero
-    case BranchInsn(_, _)            -> 3       // op + i16
+    case BranchInsn(_, _)        -> 3       // op + i16
     case GotoW(_)                -> 5       // goto_w + i32
     case ClassRef(_, _)          -> 3       // op + u2
     case NewArray(_)             -> 2       // op + u1

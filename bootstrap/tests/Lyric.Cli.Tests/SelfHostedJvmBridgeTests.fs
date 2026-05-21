@@ -13,13 +13,13 @@ open Expecto
 open Lyric.Cli
 
 /// Probe whether `SelfHostedJvm.compileToJar` is callable in this
-/// environment by handing it a trivial-but-valid program.  If it
-/// returns true the bridge is healthy and the Band-1 gating tests
-/// below run their assertions; otherwise they `skiptest` so that a
-/// JVM-less host produces a clean skip rather than a false-pass on
-/// `Expect.isFalse ok` (the bridge would return false because it
-/// couldn't initialise, not because gating fired — #862).
-let private jvmBridgeAvailable () : bool =
+/// environment by handing it a trivial-but-valid program.  Memoised
+/// as a `lazy` (#866) so the bridge compilation runs once across
+/// every `mkBridgeFails` test case rather than per-case (each probe
+/// is itself a full self-hosted JVM compile, expensive).  Also
+/// avoids racing the `Console.Error` redirection under parallel
+/// Expecto runs.
+let private jvmBridgeAvailable : Lazy<bool> = lazy (
     let dir =
         Path.Combine(
             Path.GetTempPath(),
@@ -38,14 +38,15 @@ let private jvmBridgeAvailable () : bool =
             Console.SetError prevErr
     finally
         try Directory.Delete(dir, recursive = true) with _ -> ()
+)
 
 /// Compile `source` via `SelfHostedJvm.compileToJar` and assert it
-/// FAILS.  Skips when `jvmBridgeAvailable()` returns false so that a
+/// FAILS.  Skips when `jvmBridgeAvailable` reports false so that a
 /// JVM-less host can't pass-by-accident on the `Expect.isFalse ok`
 /// assertion below.
 let private mkBridgeFails (label: string) (pkgName: string) (source: string) : Test =
     testCase (sprintf "[%s]" label) <| fun () ->
-        if not (jvmBridgeAvailable ()) then
+        if not jvmBridgeAvailable.Value then
             skiptest "SelfHostedJvm.compileToJar unavailable in this environment"
         let dir =
             Path.Combine(

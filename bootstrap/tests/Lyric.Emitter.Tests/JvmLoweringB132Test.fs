@@ -7,36 +7,14 @@ open System
 open System.IO
 open Expecto
 open Lyric.Emitter.Tests.EmitTestKit
-
-let private findSource () : string option =
-    let mutable dir : DirectoryInfo option = Some (DirectoryInfo(AppContext.BaseDirectory))
-    let mutable found : string option = None
-    while found.IsNone && dir.IsSome do
-        let candidate = Path.Combine(dir.Value.FullName, "lyric-compiler", "jvm", "self_test_b132.l")
-        if File.Exists candidate then found <- Some candidate
-        dir <- dir.Value.Parent |> Option.ofObj
-    found
-
-let private runJar (jarPath: string) : string * int =
-    try
-        let psi = System.Diagnostics.ProcessStartInfo("java", $"-jar {jarPath}")
-        psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError  <- true
-        psi.UseShellExecute        <- false
-        match System.Diagnostics.Process.Start(psi) |> Option.ofObj with
-        | None -> "", -1
-        | Some proc ->
-            let stdout = proc.StandardOutput.ReadToEnd()
-            proc.WaitForExit()
-            stdout, proc.ExitCode
-    with _ -> "", -1
+open Lyric.Emitter.Tests.JvmTestKit
 
 let tests =
     testList "Jvm.Lowering B132 (IDistinctType codegen pipeline, Band 3)" [
 
         testCase "b132_distinct_type_codegen_pipeline" <| fun () ->
             let src =
-                match findSource () with
+                match findJvmSource "self_test_b132.l" with
                 | Some path -> File.ReadAllText path
                 | None      -> failwith "cannot locate lyric-compiler/jvm/self_test_b132.l"
 

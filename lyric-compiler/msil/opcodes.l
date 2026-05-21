@@ -735,7 +735,7 @@ func insnSize(i: in Insn): Int {
     case Token2(_, _)    -> 6
     case VarS(_, _)      -> 2
     case VarF(_, _)      -> 4
-    case BranchInsn(_, _)    -> 5
+    case BranchInsn(_, _)  -> 5
     case Switch(n, _)    -> 1 + 4 + n * 4
   }
 }
