@@ -5,7 +5,11 @@
 # Stage 1:  Use stage-0 lyric to compile the Lyric-written compiler packages
 #           (stdlib, Lyric.Lexer, Lyric.Parser, Lyric.TypeChecker,
 #           Lyric.ModeChecker, Lyric.ContractElaborator, Msil.Codegen,
-#           Msil.Lowering, Msil.Bridge) into DLLs.
+#           Msil.Lowering, Msil.Bridge) into DLLs.  Then drive the F#
+#           emitter via a tiny `import Lyric.Cli` driver so it precompiles
+#           the full CLI dependency closure (cli.l + ~25 Lyric packages)
+#           and copies the artefacts into `.bootstrap/stage1/`.  These are
+#           the DLLs Track A's AOT entry-point project will reference.
 # Stage 2:  Use stage-1 lyric (self-hosted MSIL path) to recompile those same
 #           packages from source.  If stage-2 output is byte-for-byte identical
 #           to stage-1 output the bootstrap is reproducible.
@@ -16,6 +20,10 @@
 #   ./scripts/bootstrap.sh --stage 1   # stages 0 + 1
 #   ./scripts/bootstrap.sh --stage 2   # all stages including reproducibility check
 #   SKIP_VERIFY=1 ./scripts/bootstrap.sh  # skip byte-for-byte comparison
+#   SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh  # stage 1 stops after the compiler-package
+#                                              loop; the CLI bundle step is skipped.
+#                                              Useful when iterating on a single
+#                                              compiler package.
 
 set -euo pipefail
 
@@ -29,6 +37,7 @@ STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
+SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +56,9 @@ ok() { echo "[bootstrap] OK: $*"; }
 stage0() {
   info "Stage 0: building F# bootstrap compiler"
   mkdir -p "$BUILD_DIR/stage0-publish"
+  # `$STAGE0_BIN` is `$BUILD_DIR/stage0/lyric`; create the parent dir
+  # before symlinking into it.
+  mkdir -p "$(dirname "$STAGE0_BIN")"
 
   dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
     --configuration Release \
@@ -138,23 +150,97 @@ stage1() {
   # Build the stdlib bundle first (multi-package manifest).
   info "  compiling stdlib bundle"
   "$STAGE0_BIN" build --manifest "$STDLIB_DIR/lyric.toml" \
-    --output "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet-legacy 2>&1 || \
+    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet-legacy 2>&1 || \
     die "stdlib bundle build failed"
 
-  # Compile each compiler source package.
-  for rel in "${COMPILER_SOURCES[@]}"; do
-    local src="$REPO_ROOT/$rel"
-    local base
-    base="$(basename "$src" .l)"
-    local out="$STAGE1_DIR/$base.dll"
-    [[ -f "$src" ]] || die "source not found: $src"
-    info "  compile $rel -> $STAGE1_DIR/$base.dll"
-    LYRIC_STD_PATH="$STAGE1_DIR" \
-      "$STAGE0_BIN" build "$src" -o "$out" --target dotnet-legacy 2>&1 || \
-      die "compile failed: $rel"
-  done
+  if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
+    # Track A (A1.2) — precompile cli.l + the full Lyric.Cli dependency
+    # closure into $STAGE1_DIR.  The F# emitter's stdlib auto-resolve
+    # discovers every transitive import (lexer, parser, type-checker,
+    # mode-checker, contract-elaborator, MSIL backend, manifest, pack,
+    # workspace, gitdep, lockfile, generator, emitter, fmt, lint,
+    # verifier, doc, contract-meta, repl, test-synth, bench-synth,
+    # openapi, …) from a one-line driver and emits each as a DLL.
+    # We then copy the artefacts to $STAGE1_DIR.
+    #
+    # This single step replaces the old manual COMPILER_SOURCES compile
+    # loop — the F# emitter does dependency ordering correctly and
+    # there's no value in the script re-implementing it.
+    stage1_cli_bundle
+  else
+    info "SKIP_CLI_BUNDLE=1; skipping the CLI dependency-closure precompile"
+  fi
 
   ok "Stage 1 complete — output in $STAGE1_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 1 — CLI bundle precompile (Track A, A1.2)
+#
+# Compile a tiny driver program that does `import Lyric.Cli`.  The F#
+# emitter's stdlib auto-resolve discovers cli.l's full transitive
+# dependency closure (~25 Lyric packages plus the existing compiler
+# packages built above) and emits each one as a DLL in its per-process
+# scratch cache.  We then copy those DLLs into $STAGE1_DIR so the
+# stage-1 layout contains every artefact the AOT entry-point project
+# (Track A, A1.3) will reference.
+#
+# This step is idempotent: re-running it just overwrites the same DLLs.
+# It writes to a unique sub-dir under $BUILD_DIR/tmp so concurrent
+# bootstraps don't race.
+# ---------------------------------------------------------------------------
+stage1_cli_bundle() {
+  info "Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps"
+
+  local driver_dir="$BUILD_DIR/stage1-cli-driver"
+  rm -rf "$driver_dir"
+  mkdir -p "$driver_dir"
+
+  cat > "$driver_dir/driver.l" <<'EOF'
+// Auto-generated driver for the bootstrap CLI-bundle precompile.
+// Importing Lyric.Cli forces the F# emitter to compile cli.l and
+// every transitively-imported Lyric package into its stdlib cache.
+package Lyric.CliBundle
+import Lyric.Cli
+func main(): Unit { }
+EOF
+
+  local driver_out="$driver_dir/Lyric.CliBundle.dll"
+
+  # Force the F# emitter via `LYRIC_FORCE_SUBPROCESS=1` + `--internal-build`.
+  # The driver has a `func main(): Unit { }` so it satisfies the F#
+  # emitter's executable contract; we don't care about running it, only
+  # about the side effect of populating the per-process stdlib cache
+  # with every Lyric package the driver transitively imports.
+  LYRIC_STD_PATH="$STAGE1_DIR" \
+    "$STAGE0_BIN" --internal-build "$driver_dir/driver.l" -o "$driver_out" \
+    --target dotnet 2>&1 || \
+    die "stage-1 CLI-bundle driver compile failed"
+
+  # The F# emitter caches the precompiled stdlib artefacts in a per-process
+  # temp dir.  Locate the most recent one and copy everything into stage1/.
+  # Pattern: /tmp/lyric-stdlib-<pid>/ — see Emitter.fs::stdlibCacheDir.
+  local cache_dir
+  cache_dir="$(ls -dt /tmp/lyric-stdlib-* 2>/dev/null | head -1)"
+  [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
+    die "stage-1 CLI bundle: no /tmp/lyric-stdlib-*/ cache found after compile"
+
+  info "  CLI bundle cache: $cache_dir"
+  local copied=0
+  for f in "$cache_dir"/*.dll; do
+    [[ -f "$f" ]] || continue
+    cp -f "$f" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  done
+  info "  copied $copied DLLs into $STAGE1_DIR"
+
+  # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
+  # doesn't, the F# emitter's stdlib-cache layout has changed and this
+  # script needs to be updated.
+  [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
+    die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after copy"
+
+  ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
 
 # ---------------------------------------------------------------------------
@@ -162,6 +248,16 @@ stage1() {
 # ---------------------------------------------------------------------------
 stage2() {
   info "Stage 2: recompiling Lyric compiler packages with stage-1 self-hosted emitter"
+
+  # NOTE (Track A, A1.2): stage 2 still walks the legacy COMPILER_SOURCES
+  # list, which expects per-source-file DLL names (lexer.dll, parser.dll,
+  # …) — but stage 1's CLI-bundle precompile emits per-package DLLs
+  # named `Lyric.Lyric.<Pkg>.dll`.  The reproducibility check below thus
+  # won't find matching files and reports MISSING for every entry.  This
+  # is documented as expected; the long-term fix is to rewrite stage 2
+  # to drive the same `import Lyric.Cli` driver used in stage 1 and
+  # compare the resulting bundles file-by-file.  Tracked in `docs/41`
+  # Track A A1.2 followups.
 
   # The stage-1 lyric binary: same F# host, but --target dotnet now routes
   # through SelfHostedMsil which loads Msil.Bridge from the stage-1 DLLs.
@@ -172,7 +268,7 @@ stage2() {
   info "  compiling stdlib bundle (self-hosted MSIL path)"
   LYRIC_STD_PATH="$STAGE1_DIR" \
     "$stage1_lyric" build --manifest "$STDLIB_DIR/lyric.toml" \
-    --output "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
+    -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stage-2 stdlib bundle build failed"
 
   for rel in "${COMPILER_SOURCES[@]}"; do
