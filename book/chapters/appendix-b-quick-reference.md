@@ -784,6 +784,15 @@ lyric --sdk-info                       # print SDK root, stdlib DLL path, and ve
 lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compatible) or 2 (breaking)
 ```
 
+### CLI environment variables
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LYRIC_BIN` | `lyric` | Path to the `lyric` (or `dotnet`) executable used by the self-hosted CLI when it needs to shell back to itself (e.g. for `emitProject` multi-package builds).  Set automatically by `Program.fs` before dispatching to `cli.l`. |
+| `LYRIC_CLI_DLL` | unset | When the CLI is running as a `dotnet exec <dll>` invocation rather than an AppHost-native binary, the DLL path.  `Program.fs` populates from `Assembly.GetEntryAssembly`.  Subprocess-fallback only. |
+| `LYRIC_FORCE_SUBPROCESS` | `0` | When set to `1`, every `lyric build` runs through the subprocess shellout to `lyric --internal-build` even for `--target dotnet`.  Default is the in-process MSIL emit path that lands `Msil.Bridge.compileToMsil` directly without spawning a subprocess.  Used by the bootstrap reproducibility pipeline to compare in-process vs subprocess output during the Track A migration (`docs/41 §860`). |
+| `LYRIC_STD_PATH` | unset | Override the stdlib source root (`lyric-stdlib/std/`) used by the F# emitter's package-import resolver.  Mainly useful when running stage-1 / stage-2 bootstrap builds out of a non-standard layout. |
+
 ---
 
 ## B.11 Error codes

@@ -310,18 +310,19 @@ func useSubprocessFallback(): Bool {
 }
 
 // In-process MSIL emit — direct call into `Msil.Bridge.compileToMsil`.
-// Diagnostics from the bridge land on stdout (see
-// `msil/bridge.l:reportAndAbort`); the bridge returns true on success
-// and false on any error (parse, type-check, mode-check, codegen).
-// CLI consumers that want stderr-shaped diagnostics should layer a
-// redirect at the dispatch boundary rather than inside the bridge.
+// Diagnostics from the bridge land on **stderr** (#893) via
+// `Lyric.DiagnosticUtil`, matching the F# bootstrap CLI convention so
+// IDE integrations, CI scripts, and `2>errors.txt` redirects continue
+// to work the same way they did with the old subprocess path.  The
+// bridge returns true on success and false on any error (parse,
+// type-check, mode-check, codegen).
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
   val ok = MsilBridge.compileToMsil(req.source, req.outputPath)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
   } else {
-    failResult("MSIL compilation failed (see stdout)")
+    failResult("MSIL compilation failed (see stderr)")
   }
 }
 
