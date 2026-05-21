@@ -465,9 +465,11 @@ func funcAlreadyExists(items: in List[Item], name: in String): Bool {
 
 // addIfNew avoids synthesising a function that already exists in the file's
 // items (idempotency: a second deriveFile call on an already-derived file
-// must not duplicate the synthesised helpers).
+// must not duplicate the synthesised helpers).  Also checks `synths` so
+// that a type with both a `derives X` clause and a `@derive(X)` annotation
+// does not add the same helper twice in one pass.
 func addIfNew(synths: inout List[Item], existingItems: in List[Item], candidate: in Item, funcName: in String) {
-  if not funcAlreadyExists(existingItems, funcName) {
+  if not funcAlreadyExists(existingItems, funcName) and not funcAlreadyExists(synths, funcName) {
     synths.add(candidate)
   }
 }
