@@ -13845,3 +13845,30 @@ path (two tests: multi-package bundle happy path + empty-packages
 rejection).  In-process multi-file bridge is deferred to Track A A1.x.
 
 All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
+
+### D-progress-286 — Band 5: Lyric.Mono wired into both MSIL and JVM bridges (#858)
+
+`lyric-compiler/lyric/mono.l` restructured to compile under the F# bootstrap
+parser.  The F# parser rejected five categories of constructs in the original:
+
+1. `&&` in if/while conditions — replaced with `and`.
+2. Unbraced mutation expressions as match arm bodies (`case X -> var = expr`)
+   — wrapped in braces.
+3. Newline between `->` and match arm body without braces — braces added.
+4. `result` as a local variable name — `KwResult` in the Lyric lexer maps to
+   `EResult` in expression position, causing "EResult outside contract context"
+   at runtime.  Renamed to `acc`, `names`, or `buf` depending on context.
+5. `out` as a local variable name — `KwOut` for parameter-mode declarations.
+   Renamed to `buf`.
+
+Both bridges updated to run the mono pass:
+- `lyric-compiler/msil/bridge.l`: `import Lyric.Mono`; `monoFile(elaborated)`
+  inserted between `elaborateFile` and `codegenMPackage`.
+- `lyric-compiler/jvm/bridge.l`: same — removed the deferred-import comment,
+  added `import Lyric.Mono`, inserted `monoFile(elaborated)` between
+  `elaborateFile` and `codegenPackage`.
+
+The Band 1 pipeline for both targets is now complete:
+  parse → typecheck (advisory) → modecheck (fatal) → elaborate → **mono** → codegen
+
+All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.

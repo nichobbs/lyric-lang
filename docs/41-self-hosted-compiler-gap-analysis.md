@@ -565,16 +565,13 @@ Touch points:
   3. `Lyric.ContractElaborator.elaborateFile(file)` — lower
      requires/ensures.  **Shipped.**
   4. `Lyric.Mono.monoFile(file)` — same-package monomorphisation.
-     **Deferred.**  The F# bootstrap parser cannot compile mono.l
-     because its match arms like
-     `case Some(te) -> result = result + typeExprKey(te)` are
-     literal-pattern-shaped from the parser's view (followed by a
-     further arm) and trigger P0040 ("expected an item declaration")
-     on the next `case _ -> …`.  Until mono.l is restructured around
-     constructor-only patterns or the F# parser is patched (which is
-     blocked by the F# surface freeze in
-     `docs/23-fsharp-shim-elimination.md`), Band 1's mono step stays
-     commented out in both bridges.
+     **Shipped (D-progress-286).**  `mono.l` was restructured to
+     compile under the F# bootstrap parser (replaced `&&` with `and`,
+     wrapped unbraced mutation match arms in braces, renamed `result`
+     and `out` locals that collided with Lyric keywords `KwResult` /
+     `KwOut`).  Both `msil/bridge.l` and `jvm/bridge.l` now import
+     `Lyric.Mono` and call `monoFile(elaborated)` between
+     `elaborateFile` and the backend codegen step.
   5. Then `codegenMPackage(file, ctx)` / `codegenPackage(file)`.
 
 - Smoke tests landed in `SelfHostedMsilBridgeTests`:
@@ -664,7 +661,9 @@ package + bridge protocol + F# shim, per `SelfHostedFmt.fs` pattern:
 - `Lyric.Derives` (or equivalent) — `@derive(Equals)`, `@derive(Hash)`,
   `@derive(Show)`, `@generate(Json)`.
 - `Lyric.Generics.Monomorphizer` — cross-package + value-generic
-  extensions.
+  extensions.  (Same-package mono via `Lyric.Mono.monoFile` is now
+  wired in both bridges — D-progress-286; cross-package and
+  value-generic specialisation remain F#-only.)
 - `Lyric.RestoredPackages` — cross-package symbol resolution.
 
 ### Band 6 — Cross-package support
