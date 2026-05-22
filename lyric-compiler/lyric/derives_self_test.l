@@ -139,6 +139,50 @@ func testIdempotent(): Unit {
     "idempotent: second deriveFile adds nothing")
 }
 
+// #938 / #952: projection of a distinct type whose underlying is `Bool`
+// must call `.toBool()` — without the Bool arm in `projectionMethod` this
+// falls through to the non-existent `.toValue()` and the synthesised
+// helpers wouldn't compile.  We exercise the path via `derives Equals`
+// on `type Flag = Bool`; the synthesiser is hit and the result builds
+// without error.
+func testDeriveEqualsDistinctBool(): Unit {
+  val src = "package P\ntype Flag = Bool derives Equals\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Flag.equals"),
+    "equals-distinct-bool: Flag.equals synthesised (projectionMethod Bool arm)")
+}
+
+func testDeriveShowDistinctBool(): Unit {
+  val src = "package P\ntype Flag = Bool derives Show\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Flag.show"),
+    "show-distinct-bool: Flag.show synthesised (projectionMethod Bool arm)")
+}
+
+// #937 / #951: a type carrying BOTH a `derives X` clause and a
+// `@derive(X)` annotation must not produce a duplicate helper.
+// `addIfNew` consults both `existingItems` and the in-progress `synths`
+// accumulator to suppress the second synthesis.  Without that guard
+// the file would type-check fail on the duplicate `.equals` definition.
+func testDeriveAndAnnotationDontDuplicate(): Unit {
+  val src =
+    "package P\n" +
+    "@derive(Equals)\n" +
+    "record Foo derives Equals { x: Int }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  // Count Foo.equals occurrences — exactly one expected.
+  var count = 0
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(fn) -> if fn.name == "Foo.equals" { count = count + 1 }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  assertEqualInt(count, 1,
+    "derives-and-annotation: Foo.equals synthesised exactly once (not duplicated)")
+}
+
 func main(): Unit {
   testNoAnnotationNoSynth()
   testDeriveEqualsRecord()
@@ -151,6 +195,9 @@ func main(): Unit {
   testDeriveShowDistinctType()
   testDeriveEqualsEmptyRecord()
   testDeriveShowEmptyRecord()
+  testDeriveEqualsDistinctBool()
+  testDeriveShowDistinctBool()
+  testDeriveAndAnnotationDontDuplicate()
   testExposedRecordDerive()
   testNoDerivesInListDoesNotSynth()
   testIdempotent()

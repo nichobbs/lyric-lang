@@ -13985,7 +13985,11 @@ End-to-end verification:
     $ dotnet exec /tmp/hello.dll
     hello from aot-wrapped lyric
 
-Tests: 810/810 emitter, 254/254 Lyric.Cli — unchanged.
+Tests: 811/811 emitter, 254/254 Lyric.Cli — unchanged from
+D-progress-287.  (The original write-up here recorded `810/810`,
+which was a transcription error noticed in #944; the actual run
+total is `811/811` matching the prior milestone — no tests were
+dropped between D-progress-287 and this PR.)
 
 Known limitation: `dotnet publish -p:PublishAot=true` on
 `Lyric.Cli.Aot.csproj` fails inside `ilc` codegen on a specific

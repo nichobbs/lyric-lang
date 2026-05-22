@@ -120,10 +120,10 @@ pub func compileToJar(
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
-    // #905: surface stdlib parse diagnostics so a botched edit to a
-    // stdlib source file doesn't silently produce an incomplete
-    // `importedItems` list (later surfacing as opaque T0010/T0014
-    // errors in user code).  Advisory only.
+    // Surface stdlib parse diagnostics so a botched edit to a stdlib
+    // source file doesn't silently produce an incomplete `importedItems`
+    // list (later surfacing as opaque T0010/T0014 errors in user code).
+    // Advisory only.
     reportDiagnostics(stdPr.diagnostics)
     var ii = 0
     while ii < stdPr.file.items.count {
