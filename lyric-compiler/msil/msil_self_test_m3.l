@@ -28,7 +28,11 @@ func main(): Unit {
   // ── Build #Strings heap ───────────────────────────────────────────────────
   val sh = newStringHeap()
   val sModule      = internString(sh, "<Module>")
-  val sHello       = internString(sh, "Hello")
+  // Test-unique type + assembly name so a stale `/tmp/hello.dll` from
+  // an unrelated experiment can't collide on `Hello.Main` during JIT
+  // resolution (#870).  The string literal "Hello, World!" is the
+  // ldstr payload below, not affected by this rename.
+  val sHello       = internString(sh, "LyricM3Hello")
   val sMain        = internString(sh, "Main")
   val sSystem      = internString(sh, "System")
   val sConsole     = internString(sh, "Console")
