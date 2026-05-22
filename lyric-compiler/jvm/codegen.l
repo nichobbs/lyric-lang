@@ -3114,7 +3114,34 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           implementsIfaces = ifaces)))
       }
       case IExposedRec(decl) -> {
-        items.add(LPRecord(rec = lowerRecord(decl, pkgName)))
+        // Same impl-injection logic as `IRecord` (#900): `impl Trait
+        // for ExposedRec { … }` blocks targeting an exposed-record
+        // type must inject `implements` clauses + method bodies into
+        // the emitted ClassFile, otherwise the record carries the
+        // declared interface only in source-level AST and the JVM
+        // verifier rejects dispatch through `Trait`-typed slots.
+        val className = pkgName + "/" + decl.name
+        val ifaces: List[String] = newList()
+        val implFuncs: List[LFunc] = newList()
+        var ei = 0
+        while ei < implEntries.count {
+          if implEntries[ei].targetClass == className {
+            ifaces.add(implEntries[ei].ifaceClass)
+            val ms = implEntries[ei].methods
+            var mi3 = 0
+            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+          }
+          ei = ei + 1
+        }
+        val baseRec = lowerRecord(decl, pkgName)
+        val mergedMethods: List[LFunc] = newList()
+        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
+        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
+        items.add(LPRecord(rec = LRecord(
+          className        = baseRec.className,
+          fields           = baseRec.fields,
+          methods          = mergedMethods,
+          implementsIfaces = ifaces)))
       }
       case IUnion(decl) -> {
         items.add(LPSealedUnion(su = lowerUnion(decl, pkgName)))
