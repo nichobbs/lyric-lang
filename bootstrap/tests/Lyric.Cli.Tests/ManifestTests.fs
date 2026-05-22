@@ -83,11 +83,11 @@ version = "1.0.0"
 """
             match r with
             | Ok _ -> failwith "expected Error, got Ok"
-            | Error (InvalidFieldType (_, _, expected)) ->
+            | Error (InvalidFieldType ("dependencies", "MyLib", expected)) ->
                 Expect.stringContains expected "path"
                     "error message names the missing 'path' key"
             | Error other ->
-                failwithf "expected InvalidFieldType, got %A" other
+                failwithf "expected InvalidFieldType (\"dependencies\", \"MyLib\", _), got %A" other
 
         testCase "build section optional" <| fun () ->
             let m = parseOk """

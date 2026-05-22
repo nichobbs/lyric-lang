@@ -359,16 +359,29 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   var methodDefRow = 1
   var fieldDefRow  = 1
 
-  // Pre-scan: does any IVal need a .cctor (non-literal init)?
+  // Pre-scan: does any IVal need a `.cctor` (non-literal init)?
   // After the literal-IVal inlining fix, only non-literal IVals produce
-  // a non-empty initInsns list and therefore a .cctor MethodDef row.
+  // a non-empty `initInsns` list and therefore a `.cctor` MethodDef row.
+  //
+  // The predicate must mirror the codegen-side check exactly (see
+  // `isLiteralI4ExprMsilWithEnv` / #877), including the `EPath`-to-
+  // earlier-const path that the codegen inlines into `constValues`.
+  // We thread a local `constEnv` through the scan so source-order
+  // references see the same set of inlined names the codegen will.
   var hasValCctor = false
+  val constEnv: Map[String, Bool] = newMap()
   var pi = 0
   while pi < file.items.count {
     match file.items[pi].kind {
       case IVal(decl) -> {
-        if not isLiteralI4ExprMsil(decl.init) {
+        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        if not isLit {
           hasValCctor = true
+        }
+        // Record the binding so later vals can resolve `EPath` to it.
+        match decl.pattern.kind {
+          case PBinding(name, _) -> constEnv.add(name, isLit)
+          case _                 -> {}
         }
       }
       case _ -> {}
@@ -541,9 +554,23 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   }
 }
 
-// True when an IVal's init expression will produce a single MLdcI4 instruction
-// (so no .cctor is needed after the literal-inlining fix).
-func isLiteralI4ExprMsil(e: in Expr): Bool {
+// True when an IVal's init expression will lower to either zero instructions
+// (LUnit) or a single MLdcI4 instruction — i.e. no .cctor body is needed.
+//
+// The codegen side (see `IVal` case in `lowerMFuncsToHostClass`) makes its
+// decision by inspecting `initInsns.count == 1 && initInsns[0] is MLdcI4`
+// *after* `lowerExprMsil` runs.  This predicate must produce the SAME verdict
+// from the AST alone, or `addPackageTokens` reserves a `.cctor` MethodDef row
+// that the codegen never emits — shifting every subsequent IFunc token by 1
+// and causing intra-package calls to dispatch to the wrong method (#877).
+//
+// `constEnv` tracks vals seen earlier in the same source-order pass whose
+// init lowers to a single MLdcI4 (the codegen inlines them into
+// `cctx.constValues`).  An `EPath` to one of those names also lowers to a
+// single MLdcI4 at the codegen site (line 821 — the `constValues` lookup
+// path); without `constEnv` the predicate would mis-classify `val b = a`
+// (where `val a = 42`) and reserve a phantom `.cctor` row.
+func isLiteralI4ExprMsilWithEnv(e: in Expr, constEnv: in Map[String, Bool]): Bool {
   match e.kind {
     case ELiteral(lit) -> match lit {
       case LInt(v, _)  -> intToLong(longToInt(v)) == v  // fits in I4
@@ -552,9 +579,24 @@ func isLiteralI4ExprMsil(e: in Expr): Bool {
       case LUnit       -> true  // 0 insns emitted; no .cctor needed
       case _           -> false
     }
-    case EParen(inner) -> isLiteralI4ExprMsil(inner)
+    case EParen(inner) -> isLiteralI4ExprMsilWithEnv(inner, constEnv)
+    case EPath(path)   -> {
+      val name = lastSegmentMsil(path)
+      match mapGet(constEnv, name) {
+        case Some(b) -> b
+        case None    -> false
+      }
+    }
     case _             -> false
   }
+}
+
+// Back-compat wrapper for callers that don't have a `constEnv` to thread
+// through — used by paths that don't participate in the constValues
+// inlining chain.  Recognises only literals + parens.
+func isLiteralI4ExprMsil(e: in Expr): Bool {
+  val empty: Map[String, Bool] = newMap()
+  isLiteralI4ExprMsilWithEnv(e, empty)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

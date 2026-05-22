@@ -408,4 +408,22 @@ func main(): Unit {
 }
 """
             "22\n12\n85\n3\n2"
+
+        // Regression for #877: a module-level `val b = a` whose
+        // initialiser is just a reference to a previously-declared
+        // literal `val a` lowers to a single `ldc.i4` at codegen.
+        // The pre-scan predicate must agree (no phantom `.cctor`
+        // MethodDef row), otherwise IFunc tokens shift by 1 and
+        // calls dispatch to the wrong method.  The crash shape was
+        // `MethodNotFoundException` / `MissingMethodException` at
+        // entry-point invocation.
+        mkBridge "shm_module_const_chain"
+            """package ShMConstChain
+val first  = 7
+val second = first
+func main(): Unit {
+  println(second)
+}
+"""
+            "7"
     ]

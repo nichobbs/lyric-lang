@@ -11117,7 +11117,11 @@ Phase 5 §M5.2 stage 4 ships the self-hosted monomorphizer as the Lyric-language
 
 ```lyric
 pub func monoFile(file: in SourceFile): MonoResult
-pub record MonoResult { file: SourceFile; rewrites: Map[String, String] }
+pub record MonoResult {
+  file:        SourceFile
+  rewrites:    Map[String, String]
+  diagnostics: List[Diagnostic]   // added in PR #969 (closes #922) — empty today, populated as the pass starts emitting inference/specialisation diagnostics
+}
 ```
 
 **Scope notes:**
