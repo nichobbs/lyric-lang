@@ -332,6 +332,23 @@ EOF
     die "stage-1 CLI bundle: Lyric.Storage.Host.dll not found in publish output"
   fi
 
+  # `Lyric.Jobs.Host.dll` is the Phase-3 host shim for #733 — bridges the
+  # lyric-jobs in-process scheduler through `Lyric.Jobs.InProcessHost` and
+  # the threading primitives through `Lyric.Jobs.Threading`.  No NuGet
+  # dependencies (BCL System.Threading + DateTimeOffset only); Hangfire and
+  # Quartz.NET shims land as separate phases under #781 with their own
+  # durable-persistence Testcontainers infrastructure.
+  dotnet publish "$COMPILER_DIR/src/Lyric.Jobs.Host/Lyric.Jobs.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-jobs" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Jobs.Host.dll not found in publish output"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
