@@ -11,20 +11,22 @@ The Lyric VS Code extension is backed by `lyric-lsp`, a language server built fr
 
 **Step 1.** Obtain `lyric-lsp` — the language server binary the extension talks to.
 
-> **Heads up:** today the standard install (`scripts/install.sh` and the published release archives at `https://github.com/nichobbs/lyric-lang/releases`) ship only the `lyric` compiler binary, not `lyric-lsp`.  Pre-built `lyric-lsp` binaries will ship alongside `lyric` in a future release (see #652).  In the meantime, build the language server from source:
+> **Heads up:** today the standard install (`scripts/install.sh` and the published release archives at `https://github.com/nichobbs/lyric-lang/releases`) ship only the `lyric` compiler binary, not a separate `lyric-lsp` binary.  Pre-built standalone `lyric-lsp` binaries will ship alongside `lyric` in a future release (see #652).  The compiler binary itself dispatches the `lsp` subcommand into the self-hosted `Lyric.Lsp.lspRunLoop`, so `lyric lsp` works today end-to-end.
+
+In the meantime, build from source and either invoke `lyric lsp` directly or symlink the compiler binary as `lyric-lsp`:
 
 ```sh
 cd lyric-lang
 ./scripts/bootstrap.sh --stage 1
-# Build the self-hosted LSP driver from `lyric-compiler/lyric/lsp.l`:
 dotnet build bootstrap/src/Lyric.Cli.Aot
-# The resulting binary at
-#   bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric
-# can run the LSP via `lyric lsp`; alias or symlink it as `lyric-lsp`:
+# Option A — keep the binary named `lyric` and tell VS Code to invoke `lyric lsp`:
+export PATH="$(pwd)/bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0:$PATH"
+# Option B — symlink as `lyric-lsp` so the extension's autodiscovery
+# finds it on PATH without an explicit serverPath setting:
 ln -sf "$(pwd)/bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric" ~/.local/bin/lyric-lsp
 ```
 
-Set `lyric.serverPath` in VS Code (see below) to point at the symlink.
+For option (B), set `lyric.serverPath` in VS Code (see below) to point at the symlink; for option (A), point `lyric.serverPath` at the compiler binary and add `lyric.serverArgs: ["lsp"]`.
 
 **Step 2.** Install the extension's Node.js dependencies and compile the TypeScript:
 

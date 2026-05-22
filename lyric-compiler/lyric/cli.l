@@ -103,6 +103,7 @@ import Lyric.TestSynth as TestSynth    // synthesize, listEntries
 import Lyric.BenchSynth as BenchSynth  // synthesizeBench
 import Lyric.OpenApiParser as OAParser // parseSpec(json) -> Result[ParsedSpec, String]
 import Lyric.OpenApiGen as OAGen       // generateOpenApi(spec, clientName, packageName) -> String
+import Lyric.Lsp as Lsp                // lspRunLoop() — language server stdio loop
 
 func VERSION(): String { "0.1.0" }
 
@@ -2565,6 +2566,15 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "openapi" {
     return cmdOpenApi(argv)
+  }
+
+  if cmd == "lsp" {
+    // Dispatch to the self-hosted LSP stdio loop in
+    // `lyric-compiler/lyric/lsp.l`.  No CLI args are consumed —
+    // the language server speaks the Language Server Protocol
+    // over stdin/stdout per LSP §3.0.
+    Lsp.lspRunLoop()
+    return 0
   }
 
   printErr("unknown command: " + cmd)
