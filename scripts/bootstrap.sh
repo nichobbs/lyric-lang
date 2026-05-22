@@ -43,6 +43,7 @@ STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
+SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -255,6 +256,21 @@ EOF
     cp -f "$f" "$STAGE1_DIR/"
     copied=$((copied + 1))
   done
+
+  # `Lyric.Jvm.Hosts.dll` is a hand-written F# project (provides the
+  # `Jvm.Hosts.*` extern surface that the JVM kernel calls into), not
+  # a Lyric-emitted artefact, so it doesn't land in the F# emitter's
+  # stdlib cache.  But Msil.Lowering / Msil.Codegen reference it
+  # statically.  Copy it from the stage-0 publish output so stage 1
+  # contains a complete reference set for the AOT entry-point project
+  # (#860 A1.3).
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
@@ -262,6 +278,22 @@ EOF
   # script needs to be updated.
   [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
     die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after copy"
+
+  # Track A A1.3: retarget Lyric-emitted DLLs' AssemblyRefs from
+  # `System.Private.CoreLib` (the unified CoreCLR runtime assembly)
+  # to the matching public-facade reference assemblies (System.Runtime,
+  # System.Collections, System.Console, mscorlib, ...).  Without this
+  # rewrite the AOT entry-point project (#860 A1.3) can't reference the
+  # stage-1 DLLs as compile-time inputs — the C# compiler refuses to
+  # accept refs whose AssemblyRef table points at System.Private.CoreLib.
+  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
+    info "  retargeting System.Private.CoreLib refs -> public facades"
+    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
+      > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
+      die "stage-1 CLI bundle: corelib-ref rewrite failed (see $BUILD_DIR/rewrite-corelib-refs.log)"
+  else
+    info "SKIP_COREREF_REWRITE=1; leaving stage-1 DLLs with raw CoreLib refs"
+  fi
 
   ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
