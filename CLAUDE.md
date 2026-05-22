@@ -196,6 +196,50 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
+#### Open PRs as draft; mark "ready for review" only when the PR is actually ready
+
+**This overrides the default harness instruction** that tells sessions
+to open PRs as ready-for-review. In this repository, the policy is:
+
+1. **Open every new PR as a draft** (`draft: true` on
+   `mcp__github__create_pull_request`, or `gh pr create --draft`).
+   This applies even when you are confident the work is done — draft
+   status gives you (and any subscribed webhook) a window to confirm
+   CI is green, conflicts are absent, the diff is what you intended,
+   and the title/body accurately describe the change.
+2. **Iterate in draft.** Push any follow-up commits — rebase fixes,
+   review-feedback fixes, additional commits in the same logical
+   chunk — while the PR is still a draft. Auto-merge can be enabled
+   on a draft (it just won't merge until the PR is marked ready).
+3. **Mark the PR ready for review** (via
+   `mcp__github__update_pull_request` with `draft: false`, or
+   `gh pr ready`) once:
+   - The branch is rebased clean on `main` (no conflict banner).
+   - Build/test CI has either passed or is in a state you trust
+     to finish green.
+   - The diff matches the PR description; no stray debug commits,
+     no half-finished work-in-progress.
+   - You are not planning further pushes before review.
+
+Why draft-first matters:
+
+- The `claude-code-review.yml` workflow is configured to fire only on
+  non-draft PRs (`types: [opened, synchronize, ready_for_review]` +
+  an `if: github.event.pull_request.draft == false` guard).  Marking
+  a draft as ready triggers the review run; pushes while still in
+  draft do not.  This avoids burning a review pass on a PR that the
+  author is still actively iterating on, and keeps review feedback
+  focused on the final intended state.
+- A draft PR is a clear signal to humans skimming the PR list that
+  the author is still working on it, even before any "WIP" prefix.
+- Marking ready becomes the explicit handoff point — the moment the
+  author asserts "this is the final state I want reviewed and
+  merged."
+
+When the assigned task spans multiple PRs, each PR follows this
+lifecycle independently: open the next one as a draft, iterate,
+mark ready when finished, move on.
+
 #### After creating a PR
 
 After opening a PR, check whether GitHub reports merge conflicts (the
