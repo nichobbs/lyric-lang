@@ -321,7 +321,7 @@ work, not historical bookkeeping debt.
 
 The F# bootstrap compiler surface is closed to new logic. All new
 functionality must be implemented in Lyric (`.l` files). The only
-acceptable new F# code is thin bridge shims (`SelfHosted*.fs`) and
+acceptable new F# code is thin bridge shims (test infrastructure) and
 infrastructure that has no Lyric equivalent yet (e.g. MSBuild
 integration, NuGet plumbing that talks directly to the host runtime).
 
@@ -331,12 +331,11 @@ Rules:
   `lyric-stdlib/std/_kernel/<module>_host.l` (externs, only when a BCL
   boundary is unavoidable).
 - **New CLI logic** → implement in `lyric-compiler/lyric/<feature>.l`
-  (as a `Lyric.<Feature>` package), expose a single string-in /
-  string-out bridge function, then wire it up via a thin
-  `bootstrap/src/Lyric.Cli/SelfHosted<Feature>.fs` shim that compiles
-  the Lyric driver, loads the DLL by reflection, and calls the bridge.
-  Follow the pattern in `SelfHostedFmt.fs`, `SelfHostedManifest.fs`,
-  and `SelfHostedTestSynth.fs`.
+  (as a `Lyric.<Feature>` package).  Track A A1.4 (#860) deleted the
+  F# `SelfHosted<Feature>.fs` dispatcher shims; the AOT entry-point
+  project (`bootstrap/src/Lyric.Cli.Aot/`) now trampolines straight
+  into the Lyric-emitted `Lyric.Cli.Program.main`, so new commands
+  just need to land in `lyric-compiler/lyric/cli.l`'s dispatcher.
 - **New externs** → `lyric-stdlib/std/_kernel/` only; no `@externTarget`
   or `extern type` declarations outside the kernel boundary.
 - **Do not** add new modules, types, or functions to any existing
@@ -533,50 +532,28 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   event-based builder live in
   `lyric-compiler/lyric/parser/parser_cst.l`.  The F# bootstrap
   parser/lexer are deliberately untouched.
-- `bootstrap/src/Lyric.Cli/` — the `lyric` command-line tool. `Manifest.fs`
-  parses `lyric.toml`; `Pack.fs` lowers it to a generated `.csproj` for
-  `lyric publish` / `lyric restore`; `Program.fs` is the command dispatch.
-  `lyric build --manifest <lyric.toml>` resolves `import <Pkg>` declarations
-  against restored Lyric packages (D-progress-078) via the
-  `Lyric.Emitter.RestoredPackages` module, which reads each restored DLL's
-  embedded `Lyric.Contract` resource (D-progress-031) and feeds the surface
-  into the existing import pipeline.  `lyric prove <source.l>` runs the
-  Phase 4 verifier (M4.1 fragment).  `lyric fmt` routes through the
-  self-hosted `Lyric.Fmt` package via `SelfHostedFmt.fs` (in-process
-  compile + reflection): walks the red/green CST, preserves `//` and
-  `/* */` comments at item / member / statement / nested-block
-  boundaries, preserves intentional blank lines (max one per spot,
-  Black-style), width-driven multi-line expression layout at 120-char
-  budget.  `--write` and `--check` flags.  `Lint.fs` is the linter
-  (`lyric lint`): six AST-only rules (L001–L006), `--error-on-warning`
-  flag, runs on non-compiling code.  Additional modules in the same project:
-  - `Doc.fs` — `lyric doc` documentation generator.
-  - `Maven.fs` / `MavenShim.fs` — Maven Central dependency resolution and
-    JAR discovery for `--target jvm` builds; backed by the Java-side
-    `resolver/` JAR (D-progress-224 / D-progress-225 / D053).
-  - `NugetAssets.fs` / `NugetShim.fs` — NuGet asset resolution, DLL path
-    extraction from `project.assets.json`, and extern shim generation
-    (D-progress-075 / D-progress-078 / D023).
-  - `TestSynth.fs` — F# implementation of the test-synthesis rewriter
-    (backs `lyric test`; self-hosted mirror is `Lyric.TestSynth`).
-  - `SelfHostedJvm.fs` — in-process JVM bridge; reflects
-    `Jvm.Bridge.Program.compileToJar` for `--target jvm` (D-progress-239).
-  - `SelfHostedManifest.fs` — in-process manifest bridge; reflects
-    `Lyric.ManifestBridge.Program.serializeManifest` (D-progress-231).
-  - `SelfHostedMsil.fs` — in-process MSIL bridge; reflects
-    `Msil.Bridge.Program.compileToMsil` for `--target dotnet` (D-progress-227 /
-    D-progress-240).
-  - `SelfHostedTestSynth.fs` — in-process test-synth bridge; reflects
-    `Lyric.TestSynthBridge.Program.synthesizeToProtocol` (D-progress-231).
-  - `SelfHostedCli.fs` — primary CLI dispatcher bridge; compiles a tiny
-    `Lyric.CliBridge` driver, loads `Lyric.Lyric.Cli.dll` by reflection,
-    and dispatches all CLI commands through `Lyric.Cli.Program.main`.
-    Falls back to the F# bootstrap dispatcher only on bridge failure
-    (compile or reflection error).
-- The Phase 4 proof system (`Lyric.Verifier`) is fully self-hosted in
-  `lyric-compiler/lyric/verifier/` (see entry above).  The F# `Lyric.Verifier`
-  project and its test project have been deleted; `lyric prove` routes
-  through the self-hosted verifier via `SelfHostedCli.fs`.
+- `bootstrap/src/Lyric.Cli/` — bootstrap-only entry point.  Track A
+  A1.4 (#860) deleted the F# user-facing CLI dispatcher; every user
+  command (`lyric build`, `lyric run`, `lyric fmt`, `lyric publish`,
+  `lyric restore`, `lyric prove`, `lyric doc`, `lyric lint`,
+  `lyric test`, `lyric bench`, `lyric openapi`, …) now flows through
+  the **AOT entry-point project** at `bootstrap/src/Lyric.Cli.Aot/`,
+  which trampolines straight into the Lyric-emitted
+  `Lyric.Cli.Program.main` (in `Lyric.Lyric.Cli.dll`, produced by
+  `bootstrap.sh -stage 1`).  What remains in this project:
+  - `Program.fs` — bootstrap entry; only handles the three internal
+    flags `--internal-build`, `--internal-project-build`,
+    `--internal-contract-meta`, plus `--internal-manifest-build`
+    (used by stage 1 to compile the multi-package stdlib bundle).
+    Any other argv prints a one-line error pointing at the AOT
+    binary and exits non-zero.
+  - `Manifest.fs` — TOML parser for `lyric.toml`; consumed by
+    `--internal-manifest-build`.  Self-hosted equivalent lives in
+    `lyric-compiler/lyric/manifest.l`.
+  - `SelfHostedBridge.fs` / `SelfHostedMsil.fs` / `SelfHostedJvm.fs` —
+    test-infrastructure shims that drive the self-hosted MSIL / JVM
+    pipeline in-process via reflection.  Used by
+    `bootstrap/tests/Lyric.Cli.Tests/SelfHosted{Msil,Jvm}BridgeTests.fs`.
 - `bootstrap/tests/Lyric.Lexer.Tests/`, `bootstrap/tests/Lyric.Parser.Tests/`,
   `bootstrap/tests/Lyric.TypeChecker.Tests/`,
   `bootstrap/tests/Lyric.Emitter.Tests/`, and
