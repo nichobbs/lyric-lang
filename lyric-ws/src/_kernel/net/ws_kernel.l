@@ -68,7 +68,10 @@ extern package System.Threading.RateLimiting {
 
 /// Allocate a kernel connection registry.
 @stable(since="0.1")
-pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
+pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String]
+  requires: maxMessageSizeBytes >= 1024
+  requires: pingIntervalMs >= 0
+{
   return Microsoft.AspNetCore.WebSockets.createRegistry(maxMessageSizeBytes, pingIntervalMs)
 }
 

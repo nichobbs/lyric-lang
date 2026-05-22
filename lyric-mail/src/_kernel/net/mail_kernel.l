@@ -25,6 +25,8 @@
 
 package Mail.Kernel.Net
 
+import Std.Core
+
 // ─── SMTP provider (MailKit) ──────────────────────────────────────────────────
 
 @axiom("MailKit SMTP client for .NET")

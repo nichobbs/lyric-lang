@@ -156,7 +156,7 @@ config SecretCache {
 /// values up to the point of failure are committed to the cache.
 @stable(since="0.1")
 pub func init(): Result[Unit, SecretsError] {
-  return Ok(())
+  return SecretsKernel.initFromAnnotations(SecretCache.ttlSeconds)
 }
 
 // ─── Explicit fetch API ───────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ pub func init(): Result[Unit, SecretsError] {
 pub func getSecret(name: in String): Result[String, SecretsError]
   requires: name.length > 0
 {
-  return Err(NotFound(name = name))
+  return SecretsKernel.fetchSecret(name, None, SecretCache.ttlSeconds)
 }
 
 /// Fetch a single JSON field from a Secrets Manager secret.
@@ -179,7 +179,7 @@ pub func getSecretField(name: in String, key: in String): Result[String, Secrets
   requires: name.length > 0
   requires: key.length > 0
 {
-  return Err(NotFound(name = name))
+  return SecretsKernel.fetchSecret(name, Some(key), SecretCache.ttlSeconds)
 }
 
 /// Fetch a plain String or SecureString Parameter Store parameter.
@@ -189,7 +189,7 @@ pub func getSecretField(name: in String, key: in String): Result[String, Secrets
 pub func getParameter(path: in String): Result[String, SecretsError]
   requires: path.length > 0
 {
-  return Err(NotFound(name = path))
+  return SecretsKernel.fetchParameter(path, true, SecretCache.ttlSeconds)
 }
 
 /// Fetch a Parameter Store parameter without KMS decryption.
@@ -199,5 +199,5 @@ pub func getParameter(path: in String): Result[String, SecretsError]
 pub func getParameterRaw(path: in String): Result[String, SecretsError]
   requires: path.length > 0
 {
-  return Err(NotFound(name = path))
+  return SecretsKernel.fetchParameter(path, false, SecretCache.ttlSeconds)
 }

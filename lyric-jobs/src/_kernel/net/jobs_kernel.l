@@ -163,11 +163,17 @@ pub func generateId(): String {
 
 /// Open a backend scheduler.  For Hangfire, reads the connection string from
 /// the `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` env var automatically.
+/// Returns `Err` if the env var is unset or empty — `Hangfire.Core.connect`
+/// requires a non-empty connection string.
 @cfg(feature = "hangfire")
 pub func connect(workerCount: in Int): Result[Int, String]
   requires: workerCount >= 1
 {
-  return Hangfire.Core.connect(hangfireConnectionString(), workerCount)
+  val cs = hangfireConnectionString()
+  if cs.length == 0 {
+    return Err(error = "Hangfire requires LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING to be set")
+  }
+  return Hangfire.Core.connect(cs, workerCount)
 }
 
 /// Open a backend scheduler.  For Quartz the scheduler is memory-backed by default.
