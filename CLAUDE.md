@@ -664,7 +664,15 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     port of the Phase 4 proof system: `vcir.l` (VC IR types), `vcgen.l`
     (WP/SP calculus, loop invariant goals, Hoare call rule), `smt.l`
     (SMT-LIB v2.6 renderer), `solver.l` (trivial syntactic discharger),
-    `driver.l` (`prove(source): VerifySummary` entry point).
+    `driver.l` (`prove(source): VerifySummary` entry point).  The
+    driver invokes `Lyric.Weaver.weaveFile` before VC generation so
+    proofs discharge against the woven body (D-progress-292 / #336).
+  - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
+    Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.
+    Replaces each aspect-matched IFunc with a renamed
+    `__aspect_target` plus a wrapper carrying the composed
+    (aspect ++ target) contracts; called from the verifier driver
+    so `lyric prove` sees the woven body (#336).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `test_synth_self_test.l`,

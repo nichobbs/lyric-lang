@@ -3,18 +3,22 @@
 **Status:** Partially shipped — v1 surface (parser + AST +
 type-check + symbol table) implemented in the F# bootstrap and
 self-hosted compiler (PRs #206, #227).  Runtime weaver
-(wrapper synthesis, contract composition, ordering, runtime
-config, `@no_aspect` opt-out) is the remaining v1 work;
-deferred to whichever compiler ships it first.  Library
-distribution: `docs/27-aspect-libraries.md`.  Worked-example
-pressure-test: `docs/28-std-aspects-sketch.md`.  Aspect
-contract inheritance v1.x sketch:
-`docs/30-aspect-contract-inheritance-sketch.md` (specced in D049).
+(wrapper synthesis, contract composition, ordering,
+`@no_aspect` opt-out) shipped in `bootstrap/src/Lyric.Emitter/
+Weaver.fs` and ported to `lyric-compiler/lyric/weaver/weaver.l`
+(D-progress-292, #336); the latter is wired into the verifier
+driver so `lyric prove` discharges against the woven body.
+Runtime config (typed env-backed) still uses the per-aspect
+`config { }` block (D046).  Library distribution:
+`docs/27-aspect-libraries.md`.  Worked-example pressure-test:
+`docs/28-std-aspects-sketch.md`.  Aspect contract inheritance
+v1.x sketch: `docs/30-aspect-contract-inheritance-sketch.md`
+(specced in D049).
 **Implementation:** Phase 2 — depends on `docs/24-build-features.md`
 (compile-time gating) and `docs/25-config-blocks.md` (typed env-backed
-config) shipping first. The verifier-side discharge (§11) lights up
-when `docs/15-phase-4-proof-plan.md`'s VC pipeline can ingest woven
-contracts.
+config) shipping first. The verifier-side discharge (§11) is live
+via D-progress-292: `Lyric.Weaver.weaveFile` runs in the verifier
+driver between mode-check and VC generation.
 **Decision-log entry:** D047; contract inheritance v1.x in D049.
 
 > **v1 scope note.** The first slice of implementation lands the
