@@ -97,6 +97,61 @@ ambiguity is uncovered, fix the reference and append a decision-log entry).
 
 ## Working conventions
 
+### Production-readiness standard — no shortcuts, no bootstrap-grade fixes
+
+The goal is a **production-ready compiler, standard library, and ecosystem,
+fully self-hosted in Lyric.** This is the bar every change is measured
+against. Bootstrap-grade workarounds, "good enough for now" fixes,
+temporary hacks, stubbed implementations, and TODO-laden landings are
+**no longer acceptable**. Treat the codebase as if it ships to external
+users tomorrow.
+
+Concretely, the following are **not acceptable** as a way to close out a
+task:
+
+- Hand-routed BCL externs added to plug a stdlib gap "for now" instead of
+  a properly audited `lyric-stdlib/std/_kernel/` boundary with the public
+  Lyric API on top.
+- New F# code that carries domain logic, parsing, lowering, emission,
+  diagnostics, or any user-visible behaviour. The F# surface is frozen
+  to test/bootstrap shims only — new logic goes in `.l` (see "F# surface
+  is frozen" below).
+- "Bootstrap-grade" caveats in commit messages, PR bodies, or docs
+  ("we'll do this properly later", "leaving the hand-routed path in
+  place for now", "MSIL-only for this release"). If the proper version
+  is out of scope for the current PR, file a tracked issue with a
+  concrete plan and link it — do **not** ship the shortcut as if it
+  were the final state.
+- Disabled, skipped, or `Ignore`-attributed tests added to make a build
+  go green. Either fix the underlying issue or, if the test is wrong,
+  delete it with a justification in the commit message.
+- Diagnostics, error messages, or CLI output that are placeholders
+  ("TODO: better message", `printfn "%A"`-style dumps, untyped panics).
+  User-visible surfaces ship at production quality.
+- One-platform implementations (MSIL-only or JVM-only) of constructs that
+  the language reference defines for both targets. If parity is genuinely
+  out of scope, the gap is a tracked, dated issue — not an undocumented
+  silent skip.
+- Self-hosted/F# parity gaps that quietly route through the F# path at
+  runtime. The self-hosted Lyric implementation is the source of truth;
+  F# shims exist only to bootstrap and are on a deletion schedule (see
+  `docs/23-fsharp-shim-elimination.md`).
+- "Make the test pass" patches that paper over a real bug instead of
+  fixing it. Reach for the root cause every time.
+
+When in doubt, prefer landing **less scope** at production quality over
+landing **more scope** at bootstrap quality. A smaller, fully-finished
+slice is always preferred to a broad slice with caveats. If the
+production-quality version is genuinely larger than the current task
+allows, split the work and ship the slice you can finish properly —
+do not ship the bootstrap-grade version of the larger slice.
+
+This standard applies to every directory: the self-hosted compiler
+(`lyric-compiler/`), the standard library (`lyric-stdlib/`), every
+ecosystem library at the repo root (`lyric-web/`, `lyric-mq/`,
+`lyric-auth/`, etc.), and tooling (`lyric-vscode/`, `scripts/`,
+`book/`). There is no second-class directory.
+
 ### Edits to design documents
 
 - The decision log (`03`) is append-only. Reversed decisions are marked
@@ -157,6 +212,58 @@ After opening a PR, check whether GitHub reports merge conflicts (the
 Repeat until GitHub shows the branch as mergeable. If auto-merge was
 enabled before the conflict appeared, re-enable it after pushing the
 resolution.
+
+#### If CI checks haven't started, suspect conflicts first — don't wait
+
+When you open a PR (or push to one) and the expected status checks
+(`claude-review`, build, tests, etc.) do **not** appear within ~30
+seconds of the push landing, the overwhelmingly common cause is a
+**merge conflict with `main`**. GitHub's checks don't run on a PR
+that can't be merged — and **no `<github-webhook-activity>` event
+will ever arrive** for a workflow that was never queued. Waiting
+on webhooks in that state is waiting forever.
+
+Be proactive. The moment a check looks stuck, **don't sit on
+webhooks** — go check the PR state directly:
+
+```sh
+git fetch origin main
+git log --oneline HEAD..origin/main   # is main ahead?
+```
+
+Or, via the GitHub MCP, call
+`mcp__github__pull_request_read` with `method: "get"` and inspect
+`mergeable` / `mergeable_state`:
+
+- `mergeable: false` or `mergeable_state: "dirty"` → the PR has
+  conflicts. Rebase onto `main`, resolve, force-with-lease,
+  re-poll.
+- `mergeable_state: "unknown"` → GitHub is still computing.
+  Re-poll once after a few seconds; if it stays `unknown` for
+  more than a minute it usually means a conflict is being
+  detected.
+- `mergeable_state: "behind"` → branch is out of date but not
+  conflicted. Rebase and push.
+- `mergeable_state: "blocked"` → mergeable but blocked by a
+  required check or review (different problem; see the review
+  loop below).
+- `mergeable_state: "clean"` and no checks → the workflow
+  trigger may not match (paths filter, branch filter, draft
+  state). Investigate `.github/workflows/` rather than waiting.
+
+Decision rule: **if a check that was expected hasn't started
+within ~30s, actively diagnose. Do not wait for a webhook that
+will never fire.** Always check first:
+
+1. Is the branch in conflict? (most common)
+2. Is the PR a draft when the workflow only fires on ready PRs?
+3. Did a paths/branches filter exclude the change?
+4. Did the workflow fail at the setup/parse stage before queuing
+   any job?
+
+Resolve whichever one applies, push, and only **then** lean on
+webhook events. Treat a silent CI as a problem to investigate
+immediately, not as a state to wait through.
 
 #### Watching an open PR
 
