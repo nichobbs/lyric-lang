@@ -13665,6 +13665,18 @@ Seven new bridge tests added to
 `shm_opaque_smoke`, `shm_aspect_weave`, `shm_protected_smoke`.  All 251
 tests pass (0 failures).
 
+**`IWire` placeholder (item 5 in the Band 2 list)**
+
+`IWire` is promoted from skipped to a `lowerWireMsil`-shaped
+placeholder.  Wire blocks no longer panic the codegen; they emit a
+static-factory-class stub via `lowerWireMsil` that supports the
+binding-site smoke shape used by `shm_aspect_weave` and friends.
+Full DI graph synthesis (`@scope`, `@factory`, transitive
+resolution) remains deferred to Band 3 — see `docs/41 §3.1` for the
+live status (`**Placeholder** — static factory class stub; full DI
+graph lowering deferred to Band 3`).  This downgrades the §8 risk
+matrix entry from HIGH to MEDIUM.
+
 **Remaining Band 2 items deferred to Band 3**
 
 - `ELambda` display-class capture (item 6 in the Band 2 list) — the
