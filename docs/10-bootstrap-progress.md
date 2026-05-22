@@ -14171,3 +14171,62 @@ Files:
 - edited: `lyric-resilience/src/resilience.l`
 - edited: `lyric-resilience/src/_kernel/net/resilience_kernel.l`
 - edited: `lyric-resilience/tests/resilience_tests.l`
+
+### D-progress-291 — Band 5: value generics + cross-package surface + constraint validation in Lyric.Mono (#858)
+
+Closes `docs/41 §9 Band 5` monomorphizer entry partway.  `Lyric.Mono`
+gains three capabilities and a self-test consumer; the cross-package
+specialisation needed to retire the F# emitter's reified-generics path
+still depends on Band 6 (`Lyric.RestoredPackages`).
+
+What shipped:
+
+1. **Value generic parameters (`GPValue`).**  Each specialisation tracks
+   a parallel `valueSubst: Map[String, Expr]` alongside the existing
+   type substitution.  At specialisation time the value-param map is
+   applied across the body (every `EPath([N])` leaf and every
+   `TAValue(EPath([N]))` inside a `TArray.size` or `TGenericApp.args`
+   gets rewritten to the bound concrete Expr) before the worklist
+   walks for nested generic calls.  Mangled names append `V<key>`
+   segments — `valueExprKey` covers integer/bool/char/string literals
+   and single-segment paths.
+
+2. **Cross-package entry point.**  `monoFileWithImports(file,
+   importedGenDecls)` merges caller-supplied generic decls into the
+   same lookup as same-package generics.  The bridges still call
+   `monoFile(file)` (empty imports list) — wiring them through awaits
+   the Band 6 cross-package resolver.
+
+3. **Best-effort marker-constraint validation.**  When a generic
+   function carries a `where T: Marker` bound and `T` substitutes to a
+   primitive, the well-known marker set (`Equals`, `Hash`, `Show`,
+   `Ord`, `Compare`) is checked against the BCL primitive set.
+   Unknown concrete types accept silently because cross-package trait
+   dispatch is Band 6.  Confirmed mismatches emit `M0001` error
+   diagnostics that flow through `MonoResult.diagnostics`.
+
+The new code path activates either when a future surface adds explicit
+type-app syntax at call sites, or when another middle-end pass
+synthesises `ETypeApp(EPath(f), targs)` nodes — Lyric's parser today
+treats `f[T](x)` as `EIndex` followed by `ECall`, so user-written value
+generics still rely on inference from argument types (which works for
+`GPType` but not for `GPValue`).
+
+Files touched:
+
+- `lyric-compiler/lyric/mono.l` — extended the existing pass.
+- `lyric-compiler/lyric/mono_self_test.l` — new consumer with eleven
+  test cases covering type-generic inference, explicit `ETypeApp`
+  type-app, value generics (single + multiple distinct + body
+  substitution), mixed type + value mangling, constraint validation,
+  nested call chains, cross-package, and the no-op fast path.
+- `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedMonoTests.fs` — F#
+  Expecto runner that compiles the self-test through the bootstrap
+  emitter and asserts exit-0 + "ok" in stdout.
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      812/812 (1 new self-host test, 2 ignored unchanged)
+- Lyric.Cli:     65/65
