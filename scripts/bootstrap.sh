@@ -317,6 +317,21 @@ EOF
     die "stage-1 CLI bundle: Lyric.Session.Host.dll not found in publish output"
   fi
 
+  # `Lyric.Storage.Host.dll` is the Phase-2 host shim for #733 — bridges
+  # the lyric-storage local-filesystem backend through `Lyric.Storage.LocalHost`.
+  # No NuGet dependencies (System.IO only); S3 / Azure Blob shims land as
+  # separate phases under #782 with their own Testcontainers infrastructure.
+  dotnet publish "$COMPILER_DIR/src/Lyric.Storage.Host/Lyric.Storage.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-storage" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-storage/Lyric.Storage.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-storage/Lyric.Storage.Host.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Storage.Host.dll not found in publish output"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
