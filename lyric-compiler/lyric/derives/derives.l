@@ -360,8 +360,6 @@ func synthesizeShowDistinct(typeName: in String, projMethod: in String): Item {
 // contain those bytes today produce technically-invalid JSON but
 // the common chat/HTTP-message corpus avoids them.
 // Primitive types use `toString`.
-// Originally emitted `"\"" + self.field + "\""` directly, producing
-// invalid JSON when `self.field` contained `"` or `\`.
 func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
   val typeName = match ty.kind {
     case TRef(path) -> {
@@ -429,9 +427,9 @@ func projectionMethod(underlyingName: in String): String {
   if underlyingName == "Float"  { return "toFloat" }
   if underlyingName == "Double" { return "toDouble" }
   if underlyingName == "String" { return "toString" }
-  // #938 / #952: Bool falls through to "toValue" without this case;
-  // distinct-type wrappers around Bool need toBool() projection or
-  // the synthesised UFCS calls reference a method that doesn't exist.
+  // Distinct-type wrappers around Bool need `.toBool()` projection;
+  // without this arm they would fall through to the `"toValue"`
+  // fallback and reference a method that doesn't exist on Bool.
   if underlyingName == "Bool"   { return "toBool" }
   "toValue"
 }
