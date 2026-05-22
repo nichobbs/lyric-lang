@@ -431,5 +431,5 @@ let main (argv: string array) : int =
         printErr "lyric (F# bootstrap): user-facing commands have moved to the AOT entry point."
         printErr "Run `dotnet build bootstrap/src/Lyric.Cli.Aot` and use the resulting `lyric` binary,"
         printErr "or invoke the self-hosted CLI directly via `bootstrap/src/Lyric.Cli.Aot/bin/.../lyric`."
-        printErr "This bootstrap binary only handles `--internal-build`, `--internal-project-build`, and `--internal-contract-meta`."
+        printErr "This bootstrap binary only handles `--internal-build`, `--internal-project-build`, `--internal-contract-meta`, and `--internal-manifest-build`."
         1
