@@ -2570,25 +2570,13 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
             // `lowerBlockMsil` treats every SExpr as a discard-and-pop
             // statement, which would emit `ldc.i4 0; pop; ret` and
             // produce IL the verifier rejects with "Return value
-            // missing on the stack".  When the function returns a
-            // non-void type we route the last statement separately so
-            // its value stays on the stack for MRet to consume.
-            val n = block.statements.count
-            if n > 0 and retTy != MVoid {
-              var i = 0
-              while i < n - 1 {
-                lowerStmtMsil(cctx, fctx, insns, block.statements[i])
-                i = i + 1
-              }
-              val last = block.statements[n - 1]
-              match last.kind {
-                case SExpr(e) -> {
-                  val _ = lowerExprMsil(cctx, fctx, insns, e)
-                }
-                case _ -> {
-                  lowerStmtMsil(cctx, fctx, insns, last)
-                }
-              }
+            // missing on the stack".  `lowerBlockExprMsil` already
+            // handles the trailing-expression-stays-on-stack semantic
+            // (it's used by EBlock); delegate to it for non-void
+            // returns and keep the discard-everything `lowerBlockMsil`
+            // path for `Unit`.
+            if retTy != MVoid {
+              val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
             } else {
               lowerBlockMsil(cctx, fctx, insns, block)
             }
@@ -3020,22 +3008,8 @@ func lowerProtectedMsil(cctx: in CodegenCtx, decl: in ProtectedTypeDecl,
           case FBBlock(block) -> {
             // Non-void entry: trailing expression is the implicit return
             // value (see lowerFuncMsil for the matching FBBlock path).
-            val n = block.statements.count
-            if n > 0 and retTy != MVoid {
-              var li = 0
-              while li < n - 1 {
-                lowerStmtMsil(cctx, entryFctx, entryInsns, block.statements[li])
-                li = li + 1
-              }
-              val last = block.statements[n - 1]
-              match last.kind {
-                case SExpr(e) -> {
-                  val _ = lowerExprMsil(cctx, entryFctx, entryInsns, e)
-                }
-                case _ -> {
-                  lowerStmtMsil(cctx, entryFctx, entryInsns, last)
-                }
-              }
+            if retTy != MVoid {
+              val _ = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
             } else {
               lowerBlockMsil(cctx, entryFctx, entryInsns, block)
             }

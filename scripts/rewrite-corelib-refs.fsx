@@ -42,22 +42,37 @@ open Mono.Cecil
 // every host whose dotnet SDK ships a different patch — and the patch
 // number changes with each monthly servicing release.  We scan the
 // candidate pack roots, list directories whose name starts with `10.`,
-// and prefer the highest-sorting version (a lexicographic compare on
-// dotted version strings is close enough for `10.x.y` patches).
+// and prefer the highest semantic version.  Lexicographic sorting is
+// wrong for `10.0.9` vs `10.0.10` (`9` > `1`), so parse via
+// `System.Version` and pick the maximum.
 let refPackDir =
-    let home = Environment.GetEnvironmentVariable("HOME")
+    // HOME may legitimately be unset (rootless containers, Windows
+    // CI runners shelling F# scripts).  `Path.Combine(null, …)`
+    // throws ArgumentNullException, so guard explicitly and skip
+    // the home-relative candidate when it's missing.
+    let homeOpt =
+        Environment.GetEnvironmentVariable("HOME")
+        |> Option.ofObj
+        |> Option.filter (fun s -> not (System.String.IsNullOrEmpty s))
     let packRoots =
-        [ Path.Combine(home, ".dotnet/packs/Microsoft.NETCore.App.Ref")
-          "/root/.dotnet/packs/Microsoft.NETCore.App.Ref"
-          "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref" ]
+        [ yield! homeOpt |> Option.toList
+                         |> List.map (fun h -> Path.Combine(h, ".dotnet/packs/Microsoft.NETCore.App.Ref"))
+          yield "/root/.dotnet/packs/Microsoft.NETCore.App.Ref"
+          yield "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref" ]
         |> List.filter Directory.Exists
     let pickVersion (root: string) : string option =
         try
             Directory.GetDirectories(root)
             |> Array.map Path.GetFileName
-            |> Array.filter (fun n -> n.StartsWith "10.")
-            |> Array.sortDescending
+            |> Array.choose (fun n ->
+                if n.StartsWith "10." then
+                    match System.Version.TryParse n with
+                    | true,  v -> Some (v, n)
+                    | false, _ -> None
+                else None)
+            |> Array.sortByDescending fst
             |> Array.tryHead
+            |> Option.map snd
         with _ -> None
     let candidate =
         packRoots
