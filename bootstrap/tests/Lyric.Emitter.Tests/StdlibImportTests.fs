@@ -244,6 +244,15 @@ func main(): Unit {
     // type checker rejects returning a literal Int from an Int?-typed function
     // body, so we rely on default() for the null case and on a non-nullable
     // local for the non-null path below.
+    //
+    // DEFERRED (#722): the *non-null* BCoalesce arm
+    // (`ldloca / call get_HasValue / brtrue / ldloca / call get_Value`) is
+    // NOT exercised by this test — constructing a non-null `Int?` from
+    // Lyric source requires either an implicit `Int → Int?` lifting that
+    // the typechecker doesn't currently allow (T0060), or a BCL extern
+    // returning `Int?`.  Reintroduce coverage when one of those lands;
+    // until then the JIT verifies the IL sequence structurally via
+    // ilverify but no runtime test pins it.
     "bcoalesce_value_type_nullable_null_arm",
     """
 package NullCoalesce1

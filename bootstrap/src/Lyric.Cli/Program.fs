@@ -402,12 +402,22 @@ let main (argv: string array) : int =
     // Bootstrap.sh and the F# `Lyric.Emitter` package shell back into
     // this process for `--internal-*` operations; expose the entry
     // path so the Lyric driver can find it without `lyric` on PATH.
+    //
+    // `Process.GetCurrentProcess().MainModule` can return `null` on
+    // musl Linux (Alpine, etc. — see #425 item 7).  Prefer
+    // `Environment.ProcessPath` (.NET 6+) which is reliable across
+    // all .NET 6+ platforms, falling back to the legacy MainModule
+    // path for any future runtime that lacks it.
     if isNull (Environment.GetEnvironmentVariable "LYRIC_BIN") then
         try
-            match Option.ofObj (Diagnostics.Process.GetCurrentProcess().MainModule) with
-            | Some m when not (String.IsNullOrEmpty m.FileName) ->
-                Environment.SetEnvironmentVariable("LYRIC_BIN", m.FileName)
-            | _ -> ()
+            let processPath = Environment.ProcessPath
+            if not (isNull processPath) && not (String.IsNullOrEmpty processPath) then
+                Environment.SetEnvironmentVariable("LYRIC_BIN", processPath)
+            else
+                match Option.ofObj (Diagnostics.Process.GetCurrentProcess().MainModule) with
+                | Some m when not (String.IsNullOrEmpty m.FileName) ->
+                    Environment.SetEnvironmentVariable("LYRIC_BIN", m.FileName)
+                | _ -> ()
         with _ -> ()
     if isNull (Environment.GetEnvironmentVariable "LYRIC_CLI_DLL") then
         try

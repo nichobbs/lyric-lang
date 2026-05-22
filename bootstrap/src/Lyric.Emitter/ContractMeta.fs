@@ -496,16 +496,34 @@ let buildContract
     // signatures that reference those types (e.g. Map[K,V], Instant, etc.).
     let ownNames = ownDecls |> List.map (fun d -> d.Name) |> Set.ofList
     let typeAnchorKinds = System.Collections.Generic.HashSet<string>(["extern_type"; "opaque"])
+    // Dedup by (Kind, Name) so an `extern_type Map` from one import
+    // doesn't shadow an `opaque Map` from another (#718) — they're
+    // genuinely different types even with the same short name.
+    // When two anchors share both Kind and Name, also warn if their
+    // `Repr` fields disagree, since one source is being silently dropped.
     let anchorDecls =
-        importedSources
-        |> Map.toList
-        |> List.collect (fun (_, src) ->
-            src.Items
-            |> List.choose declOf
-            |> List.filter (fun d ->
-                typeAnchorKinds.Contains d.Kind
-                && not (Set.contains d.Name ownNames)))
-        |> List.distinctBy (fun d -> d.Name)
+        let raw =
+            importedSources
+            |> Map.toList
+            |> List.collect (fun (_, src) ->
+                src.Items
+                |> List.choose declOf
+                |> List.filter (fun d ->
+                    typeAnchorKinds.Contains d.Kind
+                    && not (Set.contains d.Name ownNames)))
+        // Surface representational disagreements before the dedup
+        // discards the loser.  Grouped on (Kind, Name); a single-Repr
+        // group is fine, multi-Repr means two packages contributed
+        // distinct definitions for the same short name.
+        raw
+        |> List.groupBy (fun d -> d.Kind, d.Name)
+        |> List.iter (fun ((kind, name), group) ->
+            let distinctReprs = group |> List.map (fun d -> d.Repr) |> List.distinct
+            if distinctReprs.Length > 1 then
+                System.Console.Error.WriteLine
+                    (sprintf "warning: contract type-anchor '%s %s' has %d disagreeing reprs across imports; keeping first only (#718)"
+                        kind name distinctReprs.Length))
+        raw |> List.distinctBy (fun d -> d.Kind, d.Name)
     { PackageName   = pkg
       Version       = version
       Level         = levelOfFile sf

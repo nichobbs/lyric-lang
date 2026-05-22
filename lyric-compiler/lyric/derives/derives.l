@@ -349,15 +349,19 @@ func synthesizeShowDistinct(typeName: in String, projMethod: in String): Item {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Render a field value as a JSON string fragment.
-// String fields get JSON-escaped (backslash and double-quote rewritten
+// String fields get JSON-escaped (`\`, `"`, `\n`, `\r`, `\t` rewritten
 // to their `\\`-prefixed escape sequences) and wrapped in double quotes
-// so the resulting `toJson` output is valid JSON even when the field
-// contains `"` or `\`.  Newlines / tabs / other control characters are
-// NOT yet escaped — that's a follow-up once the synthesiser can call a
-// dedicated `__lyricJsonEscape` helper or `Std.Json.encodeString`.
+// so the resulting `toJson` output is valid JSON for the common escape
+// classes.  The remaining C0 control characters (` `-``
+// minus `\n`/`\r`/`\t`) are NOT yet escaped — that final-coverage
+// follow-up needs the synthesiser to call a `__lyricJsonEscape`
+// helper or `Std.Json.encodeString` so it can emit a `\uXXXX`
+// sequence per remaining control byte.  Strings that happen to
+// contain those bytes today produce technically-invalid JSON but
+// the common chat/HTTP-message corpus avoids them.
 // Primitive types use `toString`.
-// #936: previously emitted `"\"" + self.field + "\""` directly,
-// producing invalid JSON when `self.field` contained `"` or `\`.
+// Originally emitted `"\"" + self.field + "\""` directly, producing
+// invalid JSON when `self.field` contained `"` or `\`.
 func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
   val typeName = match ty.kind {
     case TRef(path) -> {

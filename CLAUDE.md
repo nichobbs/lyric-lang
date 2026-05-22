@@ -497,8 +497,9 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `cli.l` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260).
     Handles all CLI commands: `build`, `run`, `fmt`, `lint`, `prove`
     (including `--json`, `--explain`, `--goal`), `doc`, `public-api-diff`,
-    `restore`, `publish`, `repl`, `test`, `bench`, `openapi`, and
-    `--version`.  Wired as the primary dispatcher via `SelfHostedCli.fs`.
+    `restore`, `publish`, `repl`, `test`, `bench`, `openapi`, `lsp`
+    (dispatched into `Lyric.Lsp.lspRunLoop`), and `--version`.  Wired
+    as the primary dispatcher via `SelfHostedCli.fs`.
   - `repl/repl.l` — `Lyric.Repl` interactive REPL (D-progress-260).
     Script-accumulation loop; entry point `pub func runRepl(argv)`.
     `lyric repl` routes through this package via `SelfHostedCli`.

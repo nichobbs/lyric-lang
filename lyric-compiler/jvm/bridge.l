@@ -120,10 +120,11 @@ pub func compileToJar(
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
-    // Surface stdlib parse diagnostics so a botched edit to a stdlib
-    // source file doesn't silently produce an incomplete `importedItems`
-    // list (later surfacing as opaque T0010/T0014 errors in user code).
-    // Advisory only.
+    // Surface stdlib parse diagnostics — advisory, not fatal (#914).
+    // See the matching block in `lyric-compiler/msil/bridge.l` for the
+    // rationale: self-hosted `Lyric.Parser` has known gaps vs. the
+    // stdlib source files, so promoting these to fatal would break
+    // every user build until the parser reaches stdlib parity.
     reportDiagnostics(stdPr.diagnostics)
     var ii = 0
     while ii < stdPr.file.items.count {
@@ -160,6 +161,7 @@ pub func compileToJar(
 
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
   val monoRes = monoFile(derived)
+  if reportAndAbort(monoRes.diagnostics) { return false }
   val file = monoRes.file
 
   val pkg    = codegenPackage(file)
