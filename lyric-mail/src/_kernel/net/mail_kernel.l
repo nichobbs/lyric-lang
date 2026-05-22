@@ -1,12 +1,15 @@
 /// Mail.Kernel.Net — extern boundary for email-sending providers.
 ///
-/// Bridges Lyric's Mail package to .NET email libraries:
-///   MailKit.Net.Smtp  — SMTP client via MailKit  (@cfg feature = "smtp")
-///   AWSSDK.SimpleEmail — Amazon SES             (@cfg feature = "ses")
-///   SendGrid           — SendGrid email API      (@cfg feature = "sendgrid")
+/// Phase 4 of #733: BCL System.Net.Mail SMTP backend functional via
+/// `Lyric.Mail.SmtpHost`.  Amazon SES and SendGrid backends remain
+/// declarative-only — their bindings are routed to placeholder
+/// `*NotYet` targets that return a clear "not yet implemented" error
+/// until provider-specific Testcontainers infrastructure lands
+/// (#780 follow-up).
 ///
-/// Each provider exposes three functions: connect (returns an opaque Int handle),
-/// send (accepts a JSON-serialised EmailMessage), and close.
+/// Each provider exposes three functions: `connectXxx` (returns an
+/// opaque Int handle), `send` (accepts a JSON-serialised
+/// EmailMessage), and `close`.
 ///
 /// Message JSON format (produced by Mail.serialiseMessage):
 ///   {
@@ -27,62 +30,10 @@ package Mail.Kernel.Net
 
 import Std.Core
 
-// ─── SMTP provider (MailKit) ──────────────────────────────────────────────────
+// ─── SMTP provider (BCL System.Net.Mail.SmtpClient) ──────────────────────────
 
-@axiom("MailKit SMTP client for .NET")
-@cfg(feature = "smtp")
-extern package MailKit.Net.Smtp {
-  /// Open an authenticated SMTP connection.  Returns an opaque connection handle.
-  pub func connect(
-    host:      String,
-    port:      Int,
-    username:  String,
-    password:  String,
-    useTls:    Bool,
-    timeoutMs: Int
-  ): Result[Int, String]
-
-  /// Send a message encoded as JSON.  `senderHandle` is the handle returned by connect.
-  pub func send(senderHandle: Int, messageJson: String): Result[Unit, String]
-
-  /// Close the SMTP connection and release resources.
-  pub func close(senderHandle: Int): Unit
-}
-
-// ─── Amazon SES provider ──────────────────────────────────────────────────────
-
-@axiom("Amazon SES SDK for .NET")
-@cfg(feature = "ses")
-extern package AWSSDK.SimpleEmail {
-  /// Initialise an SES client for the given region and credentials.
-  /// Pass empty strings for accessKey/secretKey to use the ambient IAM role.
-  pub func connect(region: String, accessKey: String, secretKey: String): Result[Int, String]
-
-  /// Send a message encoded as JSON via SES.
-  pub func send(senderHandle: Int, messageJson: String): Result[Unit, String]
-
-  /// Release the SES client.
-  pub func close(senderHandle: Int): Unit
-}
-
-// ─── SendGrid provider ────────────────────────────────────────────────────────
-
-@axiom("SendGrid SDK for .NET")
-@cfg(feature = "sendgrid")
-extern package SendGrid {
-  /// Initialise a SendGrid client with the given API key.
-  pub func connect(apiKey: String): Result[Int, String]
-
-  /// Send a message encoded as JSON via SendGrid.
-  pub func send(senderHandle: Int, messageJson: String): Result[Unit, String]
-
-  /// Release the SendGrid client.
-  pub func close(senderHandle: Int): Unit
-}
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
-
-/// Open a MailKit SMTP connection.
+@axiom("Lyric.Mail.SmtpHost.connect — System.Net.Mail.SmtpClient over the supplied host/port; useTls maps to EnableSsl")
+@externTarget("Lyric.Mail.SmtpHost.connect")
 @cfg(feature = "smtp")
 pub func connectSmtp(
   host:      in String,
@@ -91,58 +42,43 @@ pub func connectSmtp(
   password:  in String,
   useTls:    in Bool,
   timeoutMs: in Int
-): Result[Int, String] {
-  MailKit.Net.Smtp.connect(host, port, username, password, useTls, timeoutMs)
-}
+): Result[Int, String]
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+  requires: timeoutMs >= 1
+  = ()
 
-/// Open an Amazon SES client.
+// ─── Amazon SES (Phase 4 follow-up of #733) ──────────────────────────────────
+
+@axiom("Amazon SES backend not yet implemented (#733 follow-up)")
+@externTarget("Lyric.Mail.SmtpHost.sesConnectNotYet")
 @cfg(feature = "ses")
 pub func connectSes(
   region:    in String,
   accessKey: in String,
   secretKey: in String
-): Result[Int, String] {
-  AWSSDK.SimpleEmail.connect(region, accessKey, secretKey)
-}
+): Result[Int, String]
+  requires: region.length > 0
+  = ()
 
-/// Open a SendGrid client.
+// ─── SendGrid (Phase 4 follow-up of #733) ────────────────────────────────────
+
+@axiom("SendGrid backend not yet implemented (#733 follow-up)")
+@externTarget("Lyric.Mail.SmtpHost.sendGridConnectNotYet")
 @cfg(feature = "sendgrid")
-pub func connectSendGrid(apiKey: in String): Result[Int, String] {
-  SendGrid.connect(apiKey)
-}
+pub func connectSendGrid(apiKey: in String): Result[Int, String]
+  requires: apiKey.length > 0
+  = ()
 
-/// Send a JSON-encoded message via the SMTP provider.
-@cfg(feature = "smtp")
-pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  return MailKit.Net.Smtp.send(senderHandle, messageJson)
-}
+// ─── Shared send / close (dispatched by handle's backend tag) ────────────────
 
-/// Send a JSON-encoded message via Amazon SES.
-@cfg(feature = "ses")
-pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  return AWSSDK.SimpleEmail.send(senderHandle, messageJson)
-}
+@axiom("Lyric.Mail.SmtpHost.send — parses the messageJson shape produced by Mail.serialiseMessage and dispatches via System.Net.Mail.SmtpClient.Send")
+@externTarget("Lyric.Mail.SmtpHost.send")
+pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String]
+  requires: messageJson.length > 0
+  = ()
 
-/// Send a JSON-encoded message via SendGrid.
-@cfg(feature = "sendgrid")
-pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String] {
-  return SendGrid.send(senderHandle, messageJson)
-}
-
-/// Release the SMTP provider connection.
-@cfg(feature = "smtp")
-pub func close(senderHandle: in Int): Unit {
-  MailKit.Net.Smtp.close(senderHandle)
-}
-
-/// Release the SES provider connection.
-@cfg(feature = "ses")
-pub func close(senderHandle: in Int): Unit {
-  AWSSDK.SimpleEmail.close(senderHandle)
-}
-
-/// Release the SendGrid provider connection.
-@cfg(feature = "sendgrid")
-pub func close(senderHandle: in Int): Unit {
-  SendGrid.close(senderHandle)
-}
+@axiom("Lyric.Mail.SmtpHost.close — disposes the underlying SmtpClient and removes the handle from the registry")
+@externTarget("Lyric.Mail.SmtpHost.close")
+pub func close(senderHandle: in Int): Unit = ()
