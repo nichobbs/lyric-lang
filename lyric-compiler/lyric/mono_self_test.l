@@ -17,6 +17,13 @@
 //   • Cross-package surface: `monoFileWithImports` specialises an
 //     imported generic decl into the user's compilation unit.
 //   • Worklist termination + nested generic call sites.
+//
+// Plus #349 inference improvements:
+//   • Nested generic-call return inference (outer call's type arg
+//     comes from inner call's return).
+//   • Record field projection inference (recv.field).
+//   • Non-generic same-package return chaining.
+//   • Multi-param inference mixing nested calls and literals.
 package Lyric.MonoSelfTest
 
 import Std.Core
@@ -424,6 +431,74 @@ func testImportsPreserved(): Unit {
     "import declarations preserved in mono output")
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #349 inference improvements
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Outer generic call's type arg comes from an inner generic call's
+// return type — pre-#349 the inferer returned None for `id(7)` because
+// `inferExprTE` didn't see ECall.  Post-#349 it reads
+// `state.funcDecls`, finds id is generic with return T, infers T=Int
+// from the literal 7, and specialises wrap to wrap__Int.
+func testNestedGenericReturnInferred(): Unit {
+  val src =
+    "package P\n" +
+    "func id[T](x: in T): T { x }\n" +
+    "func wrap[T](y: in T): T { y }\n" +
+    "func caller(): Int { wrap(id(7)) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "id__Int"),
+    "#349 nested: id__Int specialisation present (inner)")
+  assertTrue(hasFunc(res.file, "wrap__Int"),
+    "#349 nested: wrap__Int specialisation present (outer)")
+}
+
+// Record field projection `b.value` should be inferred to the field's
+// declared type via `state.recordDecls`, threading b's record type
+// through the env from the un-annotated `val b = Box(...)`.
+func testFieldProjectionInferred(): Unit {
+  val src =
+    "package P\n" +
+    "record Box { value: Int }\n" +
+    "func consume[T](x: in T): T { x }\n" +
+    "func caller(): Int { val b = Box(value = 11); consume(b.value) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "consume__Int"),
+    "#349 field: consume__Int specialisation (b.value inferred as Int)")
+}
+
+// Non-generic same-package callee return chains into the inferer.
+// `origin(): Int` is non-generic, so the inferer skips unification
+// and returns the declared return type directly — that feeds into
+// consume's inference.
+func testNonGenericReturnFeedsInference(): Unit {
+  val src =
+    "package P\n" +
+    "func consume[T](x: in T): T { x }\n" +
+    "func origin(): Int { 0 }\n" +
+    "func caller(): Int { consume(origin()) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "consume__Int"),
+    "#349 non-generic-return: consume__Int via origin(): Int")
+}
+
+// Mixed positional inference — one type-param inferred via nested
+// generic call, the other via literal.
+func testMixedInferenceShapes(): Unit {
+  val src =
+    "package P\n" +
+    "func wrap[T](x: in T): T { x }\n" +
+    "func pair[A, B](a: in A, b: in B): A { a }\n" +
+    "func caller(): Int { pair(wrap(3), 9) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "pair__Int__Int"),
+    "#349 mixed: pair__Int__Int specialisation (A from wrap(3), B from 9)")
+  assertTrue(hasFunc(res.file, "wrap__Int"),
+    "#349 mixed: wrap__Int (nested) specialisation")
+}
+
+
 func main(): Unit {
   testTypeGenericInferred()
   testTypeGenericExplicitTypeApp()
@@ -436,5 +511,9 @@ func main(): Unit {
   testCrossPackageImportedGeneric()
   testNoGenericsNoOp()
   testImportsPreserved()
+  testNestedGenericReturnInferred()
+  testFieldProjectionInferred()
+  testNonGenericReturnFeedsInference()
+  testMixedInferenceShapes()
   println("mono self-test: ok")
 }

@@ -1,5 +1,8 @@
-/// Phase 5 §M5.2 Band 5 (#858) — exercises the self-hosted `Lyric.Mono`
-/// monomorphizer through a Lyric.MonoSelfTest consumer.
+/// Phase 5 §M5.2 Band 5 (#858) + #349 — exercises the self-hosted
+/// `Lyric.Mono` monomorphizer through a Lyric.MonoSelfTest consumer.
+/// Covers the #858 value-generic / cross-package / constraint surface
+/// plus the #349 inference improvements (nested generic-call return,
+/// record field projection, non-generic-return chaining, multi-param).
 ///
 /// Compiles `lyric-compiler/lyric/mono_self_test.l` via the bootstrap
 /// emitter, runs the resulting program, and asserts that every

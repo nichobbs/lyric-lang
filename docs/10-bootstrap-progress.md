@@ -14230,6 +14230,7 @@ Tests:
 - TypeChecker:  189/189
 - Emitter:      812/812 (1 new self-host test, 2 ignored unchanged)
 - Lyric.Cli:     65/65
+
 ### D-progress-292 — Self-hosted aspect weaver wired into `lyric prove` (#336)
 
 Closes the option-(a) path of #336.  The verifier no longer walks the
@@ -14295,3 +14296,107 @@ Two notable bootstrap-emitter workarounds surfaced during the port:
 
 **Test results:** 811/811 emitter (unchanged), 65/65 CLI, 189/189
 typechecker, 323/323 parser, 128/128 lexer.
+
+### D-progress-293 — Monomorphizer type-arg inference for nested calls, records, and impl/interface generics (#349 follow-up)
+
+Closes the inference gap that D-progress-269 left open: at the start
+of this session `inferExprTE` returned `None` for `ECall`, `EMember`,
+and `ETypeApp` expressions because the helper only saw the local env,
+never `state.genDecls` / `state.recordDecls`.  The fall-through left
+the surrounding generic call un-specialised, which the self-hosted
+MSIL / JVM emitters cannot instantiate.  The fix threads state into
+the helper and adds three new cases plus a record-constructor return
+recogniser:
+
+* **`ECall(EPath(fname), args)`** — look up `fname` in
+  `state.funcDecls` (newly tracked: every same-package IFunc, generic
+  or not).  Unify the callee's declared param types against the
+  inferred arg types; if every type param is bound, substitute the
+  callee's return TypeExpr and return it.  Non-generic callees skip
+  the inference branch and return the declared return type
+  unchanged, so chains like `consume(origin())` where
+  `origin(): Int` is non-generic now specialise the outer generic.
+
+* **`EMember(recv, name)`** — infer `recv`'s type, and when it
+  resolves to a same-package record (or exposed record) in the new
+  `state.recordDecls` map, walk the record's fields, find the named
+  field, and substitute the record's generic params with the
+  receiver's concrete type arguments before returning the field's
+  TypeExpr.  Unblocks the `consume(b.value)` shape called out in the
+  issue once `b` has a known type.
+
+* **`ECall(EPath(recName), args)` for same-package records** —
+  Lyric record literals share the call syntax (`Box(value = 11)`),
+  so the new `inferRecordCtorTE` helper checks
+  `state.recordDecls` before the generic-function branch and
+  returns the record type expression directly.  Together with the
+  init-expression inference added to `rewriteBinding` this means
+  `val b = Box(value = 11)` now seeds `b: Box` into env without
+  requiring an annotation.
+
+* **`ETypeApp(EPath(fname), targs)`** — forward-compatible arm.
+  The current Lyric parser produces `EIndex`, not `ETypeApp`, for
+  `f[T](x)` (the bootstrap grammar treats `[…]` after an
+  expression as indexing), so this case is exercised only when a
+  future explicit-type-app lowering lands.  The arm is here so the
+  monomorphizer reads cleanly when that work comes online.
+
+Beyond the inferer:
+
+* **`MonoState`** gains `funcDecls: Map[String, FunctionDecl]`
+  (all same-package IFuncs, generic and non-generic) and
+  `recordDecls: Map[String, RecordDecl]` (records + exposed
+  records).  Phase 1 collects both alongside the existing
+  `genDecls`.
+
+* **Phase 1 also walks `IInterface` and `IImpl` member lists** via
+  the new `collectIfaceGenerics` / `collectImplGenerics` helpers,
+  so generic default methods inside `interface I { … }` and
+  generic methods on `impl T for X { … }` blocks now feed both
+  the inferer and the specialisation worklist.  The F# bootstrap
+  monomorphises these via CLR runtime generics today, so this
+  closes the divergence the issue called out at `mono.l:898-915`.
+
+* **`rewriteBinding`** falls back to `inferExprTE(init)` when the
+  binding has no annotation, so chains starting from an inferred
+  local (record constructor, generic call return) stay legible to
+  downstream inference rather than dropping the type info at the
+  first `val`/`var`/`let`.
+
+* **`LBVar` / `LBLet` re-binding** drops the existing env entry
+  before adding the new one (`env.remove(name); env.add(name, te)`),
+  closing the MEDIUM gap the issue noted at `mono.l:808-820` where
+  a shadowed `var` left the inferer stuck on the prior annotation.
+
+Bootstrap-grade emitter quirk worked around: the F# bootstrap's
+type checker unifies the V in `mapGet[String, V]` with the
+enclosing function's `Option[TypeExpr]` return type when the lookup
+result is matched directly, which routes downstream field access
+through `TypeExpr` and fails at codegen with
+`'TypeExpr' has no field 'generics'`.  Both
+`inferReturnFromName` and `lookupFieldTE` now hold the lookup in
+a `val recOpt: Option[<Decl>] = …` annotated binding before
+matching, which forces the correct specialisation.  Noted with a
+comment so the workaround moves with the call sites.
+
+* **`lyric-compiler/lyric/mono_self_test.l`** + matching F# runner
+  `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedMonoTests.fs`
+  exercise the five inference shapes (literal arg, nested generic
+  call, record field projection, non-generic-return chaining,
+  multi-param inference).  The runner compiles the self-test
+  source through the bootstrap emitter and asserts `exit 0` + an
+  `ok` line on stdout — same pattern as the other self-hosted
+  library tests (Lyric.Derives, Lyric.Fmt, …).
+
+What is **still** un-specialised: lambda return types, BCL method
+returns (the inferer has no signature info for imported types),
+method calls into impl blocks via the type-class targeting layer.
+These were explicit non-goals for #349 and would need either a
+real type checker bridge or an opaque-imports surface.  Per the
+docstring at the top of `mono.l` they fall through to the
+unchanged `None` branch, which keeps the existing imported-generic
+behaviour intact.
+
+**Test results:** 812/812 emitter (+1 over the previous baseline,
+covering the new mono self-test), 128/128 lexer, 323/323 parser,
+189/189 type checker, 65/65 CLI bridge.
