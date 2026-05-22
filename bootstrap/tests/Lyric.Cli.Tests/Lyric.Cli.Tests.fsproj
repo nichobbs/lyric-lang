@@ -8,10 +8,16 @@
   <!--
     Track A A1.4 (#860) deletes the F# user-facing CLI dispatcher.  The
     tests that exercised those F# command handlers go with it; what
-    remains is the self-hosted MSIL / JVM bridge tests, which drive the
-    self-hosted compiler in-process via SelfHostedMsil / SelfHostedJvm.
+    remains is:
+      * ManifestTests: covers the retained TOML parser
+        (bootstrap/src/Lyric.Cli/Manifest.fs), still used by stage 1's
+        internal-manifest-build flag.
+      * SelfHosted{Msil,Jvm}BridgeTests: drive the self-hosted MSIL
+        / JVM compiler pipeline in-process via SelfHostedMsil /
+        SelfHostedJvm.
   -->
   <ItemGroup>
+    <Compile Include="ManifestTests.fs" />
     <Compile Include="SelfHostedMsilBridgeTests.fs" />
     <Compile Include="SelfHostedJvmBridgeTests.fs" />
     <Compile Include="Program.fs" />
