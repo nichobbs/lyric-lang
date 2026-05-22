@@ -126,70 +126,95 @@ pub func isSafePrefix(prefix: in String): Bool {
 
 // ─── Kernel boundary (inlined) ────────────────────────────────────────────────
 // Declared here rather than imported from Storage.Kernel.Net because
-// intra-project import resolution does not yet propagate function signatures
-// to the caller's type-checker.  Storage.Kernel.Net still exports these for
-// aspects and external consumers.
+// intra-project import resolution does not yet propagate function
+// signatures to the caller's type-checker.
 //
-// Each provider gets its own `@cfg`-gated `extern package` block.  The shared
-// data-plane functions (`storagePut`/`storageGet`/...) dispatch on the
-// runtime bucket-handle type, so we declare them in a single non-feature-
-// gated kernel namespace (`Lyric.Storage.Kernel`) that the host shim will
-// resolve at link time once the storage backends are wired up (#733).
+// Phase-2 of #733 host-shim path: the `@externTarget` annotations bind
+// each kernel function to a real static method on `Lyric.Storage.LocalHost`
+// (bootstrap/src/Lyric.Storage.Host/StorageHost.fs).  The local-fs backend
+// is fully functional; S3 and Azure Blob shims land as separate phases
+// (each needs LocalStack / Azurite Testcontainers infrastructure for
+// regression coverage, while local-fs stays self-contained).  Until those
+// land, opening an S3 or Azure handle returns a clear "not yet
+// implemented" error and the data-plane funcs reject the handle.
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) — connectS3 opens a bucket handle")
+/// Open an S3 bucket.  Not yet implemented under the Phase-2 host-shim
+/// rollout — tracked under #733.
+@axiom("AWSSDK.S3 (Phase 2 follow-up of #733) — returns Err until the S3 host shim lands")
 @cfg(feature = "s3")
-extern package AWSSDK.S3 {
-  func storageConnectS3(region: String, bucket: String, accessKey: String, secretKey: String, endpointUrl: String): Result[Int, String]
-    requires: region.length > 0
-    requires: bucket.length > 0
-}
+@externTarget("Lyric.Storage.LocalHost.storageConnectS3NotYet")
+func storageConnectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[Int, String]
+  requires: region.length > 0
+  requires: bucket.length > 0
+  = ()
 
-@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs) — connectAzure opens a container handle")
+/// Open an Azure Blob container.  Not yet implemented under the Phase-2
+/// host-shim rollout — tracked under #733.
+@axiom("Azure.Storage.Blobs (Phase 2 follow-up of #733) — returns Err until the Azure host shim lands")
 @cfg(feature = "azureblob")
-extern package Azure.Storage.Blobs {
-  func storageConnectAzure(connectionString: String, containerName: String): Result[Int, String]
-    requires: connectionString.length > 0
-    requires: containerName.length > 0
-}
+@externTarget("Lyric.Storage.LocalHost.storageConnectAzureNotYet")
+func storageConnectAzure(connectionString: in String, containerName: in String): Result[Int, String]
+  requires: connectionString.length > 0
+  requires: containerName.length > 0
+  = ()
 
-@axiom("Local filesystem storage using System.IO — connectLocal opens a directory-backed bucket handle")
+/// Open a directory-backed bucket on the local filesystem.  Phase-2 of
+/// #733: fully functional through `Lyric.Storage.LocalHost`.
+@axiom("Lyric.Storage.LocalHost.storageConnectLocal — System.IO directory-backed bucket; creates the directory if absent")
 @cfg(feature = "local")
-extern package System.IO {
-  func storageConnectLocal(basePath: String, bucketName: String): Result[Int, String]
-    requires: basePath.length > 0
-    requires: bucketName.length > 0
-}
+@externTarget("Lyric.Storage.LocalHost.storageConnectLocal")
+func storageConnectLocal(basePath: in String, bucketName: in String): Result[Int, String]
+  requires: basePath.length > 0
+  requires: bucketName.length > 0
+  = ()
 
-@axiom("Shared data-plane: Amazon.S3.AmazonS3Client / Azure.Storage.Blobs.BlobContainerClient / System.IO.File — dispatched by the runtime bucket-handle provider tag")
-extern package Lyric.Storage.Kernel {
-  /// Upload an object.  userMetaJson is a JSON object of string key-value pairs.
-  /// Returns JSON-serialised StorageMetadata on success.
-  func storagePut(bucketHandle: Int, key: String, dataBase64: String, contentType: String, userMetaJson: String): Result[String, String]
-    requires: key.length > 0
+// ─── Shared data-plane (host dispatches by handle's backend tag) ─────────────
 
-  /// Download an object.  Returns JSON-serialised StorageObject on success.
-  func storageGet(bucketHandle: Int, key: String): Result[String, String]
-    requires: key.length > 0
+/// Upload an object.  userMetaJson is a JSON object of string key-value pairs.
+/// Returns JSON-serialised StorageMetadata on success.
+@axiom("Lyric.Storage.LocalHost.storagePut — dispatches to System.IO for local-fs handles; rejects S3/Azure handles until those shims land")
+@externTarget("Lyric.Storage.LocalHost.storagePut")
+func storagePut(bucketHandle: in Int, key: in String, dataBase64: in String, contentType: in String, userMetaJson: in String): Result[String, String]
+  requires: key.length > 0
+  = ()
 
-  /// Delete an object.
-  func storageDelete(bucketHandle: Int, key: String): Result[Unit, String]
-    requires: key.length > 0
+/// Download an object.  Returns JSON-serialised StorageObject on success.
+@axiom("Lyric.Storage.LocalHost.storageGet — dispatches by backend tag")
+@externTarget("Lyric.Storage.LocalHost.storageGet")
+func storageGet(bucketHandle: in Int, key: in String): Result[String, String]
+  requires: key.length > 0
+  = ()
 
-  /// List objects with an optional prefix.  Returns JSON-serialised ListResult.
-  func storageList(bucketHandle: Int, prefix: String, continuationToken: String, maxKeys: Int): Result[String, String]
-    requires: maxKeys >= 1
-    requires: maxKeys <= 1000
+/// Delete an object.  Idempotent.
+@axiom("Lyric.Storage.LocalHost.storageDelete — dispatches by backend tag")
+@externTarget("Lyric.Storage.LocalHost.storageDelete")
+func storageDelete(bucketHandle: in Int, key: in String): Result[Unit, String]
+  requires: key.length > 0
+  = ()
 
-  /// Generate a pre-signed URL that grants temporary access to the object.
-  /// expiresInSeconds is clamped to the provider's maximum (S3: 7 days).
-  func storagePresignedUrl(bucketHandle: Int, key: String, expiresInSeconds: Int): Result[String, String]
-    requires: key.length > 0
-    requires: expiresInSeconds >= 1
+/// List objects with an optional prefix.  Returns JSON-serialised ListResult.
+@axiom("Lyric.Storage.LocalHost.storageList — dispatches by backend tag; local-fs uses Directory.EnumerateFiles")
+@externTarget("Lyric.Storage.LocalHost.storageList")
+func storageList(bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int): Result[String, String]
+  requires: maxKeys >= 1
+  requires: maxKeys <= 1000
+  = ()
 
-  /// Return true if an object with the given key exists in the bucket.
-  func storageExists(bucketHandle: Int, key: String): Result[Bool, String]
-    requires: key.length > 0
-}
+/// Generate a pre-signed URL.  The local-fs backend has no signing service
+/// and returns an Err; S3/Azure will support this once their shims land.
+@axiom("Lyric.Storage.LocalHost.storagePresignedUrl — not supported on local-fs backend")
+@externTarget("Lyric.Storage.LocalHost.storagePresignedUrl")
+func storagePresignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String]
+  requires: key.length > 0
+  requires: expiresInSeconds >= 1
+  = ()
+
+/// Return true if the key exists in the bucket.
+@axiom("Lyric.Storage.LocalHost.storageExists — dispatches by backend tag")
+@externTarget("Lyric.Storage.LocalHost.storageExists")
+func storageExists(bucketHandle: in Int, key: in String): Result[Bool, String]
+  requires: key.length > 0
+  = ()
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
