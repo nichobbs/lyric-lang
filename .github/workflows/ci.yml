@@ -70,6 +70,14 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/audit-kernel-stubs.sh
 
+      # Guardrail for #335: keep `docs/17-axiom-audit.md` section 18
+      # totals in sync with the actual `@axiom("...")`-bearing files
+      # under `lyric-stdlib/std/_kernel*/`.  Forces the audit doc to
+      # be updated whenever a new BCL surface gets an `@axiom`.
+      - name: Audit stdlib axioms (#335 guardrail)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/audit-axioms.sh
+
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-dotnet@v5
