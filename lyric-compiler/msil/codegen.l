@@ -2456,7 +2456,23 @@ func emitExternTargetBody(
 
   val hint = hintFromAnnotations(decl.annotations)
   match resolveExternTarget(target, hint) {
-    case None -> false
+    case None -> {
+      // `resolveExternTarget` returned None — the @externTarget string
+      // is malformed (no dot to split into Type / Member).  Emit the
+      // same throw-stub used for class-typed params (#791) instead of
+      // returning `false`, otherwise the caller falls through to the
+      // normal body path which emits bare `MRet` on a non-void return
+      // — invalid IL caught only at JIT time with no build-time signal
+      // (#811).  Surfaces a clear runtime exception at the call site.
+      val msg = "FFI '" + target + "' on '" + decl.name
+        + "' is malformed: expected 'Type.Member' or 'Namespace.Type.Member' "
+        + "form.  Check the @externTarget(\"...\") annotation."
+      val msgTok = ctxInternUs(cctx.lctx, msg)
+      insns.add(MLdStr(token = msgTok))
+      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MThrow)
+      true
+    }
     case Some(r) -> {
       // Map every Lyric param + return type to MSIL.
       val paramTypes: List[MsilType] = newList()
