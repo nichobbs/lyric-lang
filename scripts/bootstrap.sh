@@ -292,6 +292,31 @@ EOF
     die "stage-1 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
   fi
 
+  # `Lyric.Session.Host.dll` is the path-finder host shim for the #733
+  # ecosystem-library restoration plan: it bridges the
+  # `Session.Kernel.Net` Lyric kernel to StackExchange.Redis via the
+  # `Lyric.Session.RedisStore` static class.  The Lyric-emitted Session
+  # DLL carries `@externTarget("Lyric.Session.RedisStore.*")` references
+  # that need this DLL on disk at runtime.  Build + copy it alongside
+  # the other bootstrap DLLs so the AOT entry-point project + any user
+  # program that links `lyric-session` resolves the externs.
+  dotnet publish "$COMPILER_DIR/src/Lyric.Session.Host/Lyric.Session.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-session" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" "$STAGE1_DIR/"
+    # The Redis client library is shipped alongside so the host shim's
+    # AssemblyRef to StackExchange.Redis resolves at runtime.
+    if [[ -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" ]]; then
+      cp -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" "$STAGE1_DIR/"
+      copied=$((copied + 1))
+    fi
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Session.Host.dll not found in publish output"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
